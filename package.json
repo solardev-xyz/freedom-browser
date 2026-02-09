@@ -1,0 +1,155 @@
+{
+  "name": "freedom-browser",
+  "version": "0.6.1",
+  "license": "MPL-2.0",
+  "description": "Freedom – A browser for the decentralized web, with Swarm, IPFS, and ENS as first-class protocols.",
+  "author": {
+    "name": "Freedom Team",
+    "email": "browser@freedom.baby"
+  },
+  "homepage": "https://freedombrowser.eth.limo/",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/solardev-xyz/freedom-browser"
+  },
+  "bugs": {
+    "url": "https://github.com/solardev-xyz/freedom-browser/issues"
+  },
+  "main": "src/main/index.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "jest",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "check-binaries": "node scripts/check-binaries.js",
+    "build": "node scripts/build.js",
+    "dist": "node scripts/build.js --dist",
+    "dist:linux:arm64:docker": "docker run --rm -v \"$PWD\":/app -v /app/node_modules -v \"${ELECTRON_CACHE:-$HOME/Library/Caches/electron}\":/root/.cache/electron -w /app -e USE_SYSTEM_FPM=true --platform linux/arm64 node:20 bash -c \"apt-get update && apt-get install -y ruby ruby-dev build-essential && gem install fpm --no-document && npm ci && npm run dist -- --linux --arm64\"",
+    "dist:linux:x64:docker": "docker run --rm -v \"$PWD\":/app -v /app/node_modules -v \"${ELECTRON_CACHE:-$HOME/Library/Caches/electron}\":/root/.cache/electron -w /app --platform linux/amd64 electronuserland/builder:20 bash -c \"npm ci && npm run dist -- --linux --x64\"",
+    "bee:download": "node scripts/fetch-bee.js",
+    "bee:init": "node scripts/init-bee.js",
+    "bee:start": "test -f bee-data/config.yaml || npm run bee:init; ./bee-bin/mac-arm64/bee start --config=./bee-data/config.yaml",
+    "bee:stop": "pkill -SIGTERM bee || echo 'Bee not running or failed to stop'",
+    "bee:status": "echo '--- HEALTH ---'; curl -s http://127.0.0.1:1633/health; echo '\n\n--- READINESS ---'; curl -s http://127.0.0.1:1633/readiness; echo '\n\n--- STATUS ---'; curl -s http://127.0.0.1:1633/status; echo '\n\n--- PEERS ---'; curl -s http://127.0.0.1:1633/peers | grep -o '\"address\":' | wc -l | xargs echo 'Peer Count:'; echo '\n--- ADDRESSES ---'; curl -s http://127.0.0.1:1633/addresses",
+    "bee:reset": "rm -rf bee-data && echo 'Bee data reset.'",
+    "ipfs:download": "node scripts/fetch-ipfs.js",
+    "ipfs:init": "node scripts/init-ipfs.js",
+    "ipfs:start": "test -d ipfs-data || npm run ipfs:init; IPFS_PATH=./ipfs-data ./ipfs-bin/mac-arm64/ipfs daemon",
+    "ipfs:stop": "pkill -SIGTERM ipfs || echo 'IPFS not running or failed to stop'",
+    "ipfs:status": "echo '--- ID ---'; IPFS_PATH=./ipfs-data curl -s -X POST http://127.0.0.1:5001/api/v0/id | head -c 500; echo '\n\n--- PEERS ---'; curl -s -X POST http://127.0.0.1:5001/api/v0/swarm/peers | grep -o '\"Peer\":' | wc -l | xargs echo 'Peer Count:'",
+    "ipfs:reset": "rm -rf ipfs-data && echo 'IPFS data reset.'",
+    "serve:updates": "node scripts/serve-updates.js",
+    "start:test-updater": "ENABLE_DEV_UPDATER=true npm start",
+    "postinstall": "electron-builder install-app-deps"
+  },
+  "build": {
+    "appId": "baby.freedom.browser",
+    "productName": "Freedom",
+    "afterPack": "./scripts/remove-locales.js",
+    "directories": {
+      "output": "dist"
+    },
+    "publish": {
+      "provider": "generic",
+      "url": "https://freedom.baby/downloads"
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "icon": "assets/icon.png",
+      "identity": "Solar Dev Ltd (46XPHRBLH5)",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "config/entitlements.mac.plist",
+      "entitlementsInherit": "config/entitlements.mac.plist",
+      "notarize": true
+    },
+    "linux": {
+      "target": [
+        "deb"
+      ],
+      "icon": "assets/icons",
+      "category": "Network;WebBrowser",
+      "executableName": "freedom",
+      "mimeTypes": [
+        "x-scheme-handler/ipfs",
+        "x-scheme-handler/ipns",
+        "x-scheme-handler/bzz"
+      ]
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "zip"
+      ],
+      "icon": "assets/icon.png"
+    },
+    "files": [
+      "src/**/*",
+      "package.json",
+      "!**/*.test.js",
+      "!**/coverage/**"
+    ],
+    "asarUnpack": [
+      "**/node_modules/better-sqlite3/**"
+    ],
+    "extraResources": [
+      {
+        "from": "bee-bin/${os}-${arch}/",
+        "to": "bee-bin",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "ipfs-bin/${os}-${arch}/",
+        "to": "ipfs-bin",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "assets/",
+        "to": "assets",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "config/bee.yaml",
+        "to": "bee.yaml"
+      },
+      {
+        "from": "config/default-bookmarks.json",
+        "to": "default-bookmarks.json"
+      }
+    ]
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "@babel/preset-env": "^7.29.0",
+    "@eslint/js": "^10.0.1",
+    "babel-jest": "^30.2.0",
+    "dotenv-cli": "^11.0.0",
+    "electron": "^40.2.1",
+    "electron-builder": "^26.7.0",
+    "eslint": "^10.0.0",
+    "globals": "^17.3.0",
+    "jest": "^30.2.0",
+    "prettier": "^3.8.1"
+  },
+  "dependencies": {
+    "@ensdomains/content-hash": "^3.0.0",
+    "better-sqlite3": "^12.6.2",
+    "electron-log": "^5.4.3",
+    "electron-updater": "^6.7.3",
+    "ethers": "^6.16.0"
+  },
+  "title": "Freedom",
+  "displayName": "Freedom"
+}

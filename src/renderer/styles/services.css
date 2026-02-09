@@ -1,0 +1,227 @@
+.status-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.bee-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+}
+
+.bee-toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  width: 100%;
+  justify-content: space-between;
+}
+
+.bee-toggle-switch {
+  width: 36px;
+  height: 18px;
+  border-radius: 9px;
+  background: var(--border);
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  transition: background 0.2s ease;
+}
+
+.bee-toggle-knob {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--text);
+  transition: transform 0.2s ease;
+}
+
+.bee-toggle-switch.running {
+  background: #4caf50;
+}
+
+.bee-toggle-switch.starting {
+  background: #ffcc00;
+}
+
+.bee-toggle-switch.running .bee-toggle-knob {
+  transform: translateX(18px);
+}
+
+/* Node Status Row - shown as first metric row when status message exists */
+.node-status-row {
+  display: none;
+}
+
+.node-status-row.visible {
+  display: flex;
+}
+
+.bee-info {
+  padding: 8px 14px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+  opacity: 0.8;
+}
+
+.bee-info:not(.visible) {
+  display: none;
+}
+
+.bee-info-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.bee-info-label {
+  color: var(--muted);
+}
+
+/* Divider between Swarm and IPFS */
+.nodes-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 8px 14px;
+}
+
+/* IPFS Toggle and Info */
+.ipfs-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+}
+
+.ipfs-toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  width: 100%;
+  justify-content: space-between;
+}
+
+.ipfs-toggle-switch {
+  width: 36px;
+  height: 18px;
+  border-radius: 9px;
+  background: var(--border);
+  position: relative;
+  transition: background 0.2s ease;
+  flex-shrink: 0;
+}
+
+.ipfs-toggle-knob {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--text);
+  transition: transform 0.2s ease;
+  position: absolute;
+  top: 2px;
+  left: 2px;
+}
+
+.ipfs-toggle-switch.running {
+  background: #4caf50;
+}
+
+.ipfs-toggle-switch.starting {
+  background: #ffcc00;
+}
+
+.ipfs-toggle-switch.running .ipfs-toggle-knob {
+  transform: translateX(18px);
+}
+
+/* Disable hover highlight on toggle menu items */
+.bee-toggle:hover,
+.ipfs-toggle:hover {
+  background: transparent;
+}
+
+/* Disabled toggle states for missing binaries */
+.bee-toggle.disabled,
+.ipfs-toggle.disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.bee-toggle.disabled .bee-toggle-switch,
+.ipfs-toggle.disabled .ipfs-toggle-switch {
+  background: var(--border);
+}
+
+/* External node toggle states (reused existing daemon) */
+.bee-toggle.external .bee-toggle-switch,
+.ipfs-toggle.external .ipfs-toggle-switch {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.bee-toggle.external .bee-toggle-switch.running,
+.ipfs-toggle.external .ipfs-toggle-switch.running {
+  background: #4caf50;
+}
+
+.ipfs-info {
+  padding: 8px 14px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+  opacity: 0.8;
+}
+
+.ipfs-info:not(.visible) {
+  display: none;
+}
+
+.ipfs-info-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ipfs-info-label {
+  color: var(--muted);
+}
+
+#ipfs-bandwidth-down,
+#ipfs-bandwidth-up {
+  text-align: right;
+}
+
+.status-indicator.running {
+  background: #4caf50;
+  box-shadow: 0 0 4px #4caf50;
+}
+
+.status-indicator.starting {
+  background: #ff9800;
+  animation: pulse 1s infinite;
+}
+
+@keyframes pulse {
+  0% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+  100% {
+    opacity: 1;
+  }
+}

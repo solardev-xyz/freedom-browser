@@ -1,0 +1,9 @@
+dist/
+out/
+coverage/
+node_modules/
+bee-bin/
+ipfs-bin/
+bee-data/
+ipfs-data/
+package-lock.json

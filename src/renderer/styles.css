@@ -1,0 +1,13 @@
+@import './styles/variables.css';
+@import './styles/base.css';
+@import './styles/tabs.css';
+@import './styles/toolbar.css';
+@import './styles/menus.css';
+@import './styles/services.css';
+@import './styles/bookmarks.css';
+@import './styles/modal.css';
+@import './styles/settings.css';
+@import './styles/window-controls.css';
+@import './styles/autocomplete.css';
+@import './styles/update-toast.css';
+@import './styles/light-theme.css';

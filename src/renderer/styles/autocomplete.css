@@ -1,0 +1,170 @@
+/* ========================================
+   Address Bar Autocomplete
+   ======================================== */
+
+.address-bar-container {
+  position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.autocomplete-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  margin-top: 4px;
+  background: var(--menu-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  max-height: 360px;
+  overflow-y: auto;
+  z-index: 10000;
+  padding: 4px;
+}
+
+.autocomplete-dropdown.hidden {
+  display: none;
+}
+
+.autocomplete-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: default;
+  transition: background-color 0.1s ease;
+}
+
+.autocomplete-item:hover,
+.autocomplete-item.selected {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.autocomplete-item.selected {
+  background: rgba(94, 193, 255, 0.15);
+}
+
+.autocomplete-icon-container {
+  position: relative;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.autocomplete-icon-placeholder {
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  background: var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.autocomplete-favicon {
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  object-fit: contain;
+  background: var(--border);
+}
+
+.autocomplete-protocol-badge {
+  position: absolute;
+  bottom: -1px;
+  right: -1px;
+  font-size: 7px;
+  padding: 1px 3px;
+  border-radius: 2px;
+  font-weight: 600;
+  text-transform: uppercase;
+  border: 1px solid var(--bg);
+}
+
+.autocomplete-protocol-badge.protocol-swarm {
+  background: #f7931a;
+  color: #000;
+}
+.autocomplete-protocol-badge.protocol-ipfs,
+.autocomplete-protocol-badge.protocol-ipns {
+  background: #65c2cb;
+  color: #000;
+}
+.autocomplete-protocol-badge.protocol-https {
+  background: #6b9e7a;
+  color: #000;
+}
+.autocomplete-protocol-badge.protocol-http {
+  background: var(--muted);
+  color: #000;
+}
+
+/* Legacy icon styles (can be removed) */
+.autocomplete-icon {
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--muted);
+}
+
+.autocomplete-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.autocomplete-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.autocomplete-title {
+  font-size: 13px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.autocomplete-url {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.autocomplete-match {
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.autocomplete-type {
+  font-size: 10px;
+  color: var(--muted);
+  padding: 2px 6px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.autocomplete-type.tab-badge {
+  background: rgba(94, 193, 255, 0.15);
+  color: var(--accent);
+  font-weight: 500;
+}

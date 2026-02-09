@@ -1,0 +1,625 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: http: https:; connect-src 'self' http://127.0.0.1:*;"
+    />
+    <title>Freedom</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <!-- Update Toast Notification -->
+    <div id="update-toast" class="update-toast" hidden>
+      <div class="update-toast-content">
+        <span id="update-toast-message">Update available for Freedom</span>
+        <button id="update-toast-action" class="update-toast-btn" hidden>Install now</button>
+        <button id="update-toast-close" class="update-toast-close" aria-label="Close">×</button>
+      </div>
+    </div>
+
+    <div class="title-bar">
+      <div class="title-bar-spacer"></div>
+      <div class="tab-bar">
+        <div class="tabs-container" id="tab-bar">
+          <!-- Tabs inserted dynamically -->
+        </div>
+        <button id="new-tab-btn" class="new-tab-btn" type="button" aria-label="New Tab">
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 12 12"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+          >
+            <path d="M6 1v10M1 6h10" />
+          </svg>
+        </button>
+      </div>
+      <div class="title-bar-drag"></div>
+      <!-- Window controls for Linux (hidden by default, shown via JS) -->
+      <div class="window-controls" id="window-controls">
+        <button class="window-control-btn" id="minimize-btn" aria-label="Minimize">
+          <svg width="10" height="10" viewBox="0 0 10 10">
+            <path d="M1 5h8" stroke="currentColor" stroke-width="1.2" />
+          </svg>
+        </button>
+        <button class="window-control-btn" id="maximize-btn" aria-label="Maximize">
+          <svg width="10" height="10" viewBox="0 0 10 10">
+            <rect
+              x="1"
+              y="1"
+              width="8"
+              height="8"
+              stroke="currentColor"
+              stroke-width="1.2"
+              fill="none"
+            />
+          </svg>
+        </button>
+        <button class="window-control-btn window-control-close" id="close-btn" aria-label="Close">
+          <svg width="10" height="10" viewBox="0 0 10 10">
+            <path d="M1 1l8 8M9 1l-8 8" stroke="currentColor" stroke-width="1.2" />
+          </svg>
+        </button>
+      </div>
+    </div>
+    <header class="toolbar">
+      <div class="nav-buttons">
+        <button id="back-btn" class="icon-btn" aria-label="Back" disabled>
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="24"
+            height="24"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="m15 20-8-8 8-8" />
+          </svg>
+        </button>
+        <button id="forward-btn" class="icon-btn" aria-label="Forward" disabled>
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="24"
+            height="24"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="m9 4 8 8-8 8" />
+          </svg>
+        </button>
+        <button id="reload-btn" class="icon-btn" aria-label="Reload" data-state="reload">
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="24"
+            height="24"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            class="icon-reload"
+          >
+            <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
+            <path d="M21 3v5h-5" />
+            <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" />
+            <path d="M8 16H3v5" />
+          </svg>
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="24"
+            height="24"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            class="icon-stop"
+          >
+            <path d="M20 4 4 20" />
+            <path d="M4 4 20 20" />
+          </svg>
+        </button>
+        <button id="home-btn" class="icon-btn" aria-label="Home">
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="24"
+            height="24"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+            <polyline points="9 22 9 12 15 12 15 22" />
+          </svg>
+        </button>
+      </div>
+      <form id="nav-form" autocomplete="off">
+        <div class="address-bar-container">
+          <div class="address-wrapper">
+            <span id="protocol-icon" class="protocol-icon" aria-hidden="true">
+              <!-- Swarm icon (official logo) -->
+              <svg class="icon-swarm" viewBox="18 34 44 45" fill="currentColor">
+                <!-- Bottom-left hexagon -->
+                <polygon points="20.3 71.7 29.6 76.8 38.8 71.7 38.8 61.3 29.6 56.1 20.3 61.3" />
+                <!-- Small hexagon top-right -->
+                <polygon points="50.8 36.6 46 39.4 46 44.9 50.8 47.6 55.8 44.9 55.8 39.4" />
+                <!-- Bottom-right hexagon -->
+                <polygon points="59.9 61.3 50.7 56.1 41.5 61.3 41.5 71.7 50.7 76.8 59.9 71.7" />
+                <!-- Top-left hexagon with notch -->
+                <polygon
+                  points="40.1 38.1 30.8 43.3 30.8 53.6 40.1 58.8 49.3 53.6 49.3 49.5 44.8 47 43.6 46.3 43.6 44.9 43.6 40.2"
+                />
+              </svg>
+              <!-- IPFS icon (official logo) -->
+              <svg class="icon-ipfs" viewBox="0 0 169 196">
+                <!-- Outer hexagon -->
+                <path d="m.3 146 84 48.5 84-48.5v-97l-84-48.5-84 48.5z" fill="#469ea2" />
+                <!-- Inner triangular connections -->
+                <path
+                  d="m75.7 12.1-61 35.2c.1 1.1.1 2.2 0 3.3l60.9 35.2c5.1-3.8 12.2-3.8 17.3 0l60.9-35.2c-.1-1.1-.1-2.2 0-3.3l-60.8-35.2c-5.1 3.8-12.2 3.8-17.3 0zm84 48.2-61 35.6c.7 6.3-2.8 12.4-8.6 15l.1 70c1 .4 1.9 1 2.8 1.6l60.9-35.2c-.7-6.3 2.8-12.4 8.6-15v-70.4c-1-.5-1.9-1-2.8-1.6zm-150.8.4c-.9.6-1.8 1.2-2.8 1.6v70.4c5.9 2.5 9.4 8.6 8.6 15l60.9 35.2c.9-.6 1.8-1.2 2.8-1.6v-70.4c-5.9-2.5-9.4-8.6-8.6-15z"
+                  fill="#6acad1"
+                />
+                <!-- Border -->
+                <path
+                  d="m84.3 11 75.1 43.4v86.7l-75.1 43.4-75.1-43.4v-86.8zm0-10.3-84 48.5v97l84 48.5 84-48.5v-97z"
+                  fill="#469ea2"
+                />
+              </svg>
+              <!-- HTTP/Globe icon -->
+              <svg
+                class="icon-http"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <circle cx="12" cy="12" r="10" />
+                <path d="M2 12h20" />
+                <path
+                  d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"
+                />
+              </svg>
+            </span>
+            <input
+              id="address-input"
+              class="address-input"
+              type="text"
+              placeholder="Enter hash, ID or URL"
+              spellcheck="false"
+            />
+            <button
+              id="add-bookmark-btn"
+              class="icon-btn input-action-btn hidden"
+              type="button"
+              aria-label="Bookmark this page"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="24"
+                height="24"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <polygon
+                  points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"
+                />
+              </svg>
+            </button>
+          </div>
+          <div id="autocomplete-dropdown" class="autocomplete-dropdown hidden" role="listbox">
+            <!-- Suggestions inserted dynamically -->
+          </div>
+        </div>
+      </form>
+      <div class="bee-menu" data-bee-menu>
+        <button
+          id="bee-menu-button"
+          class="menu-button bee-menu-button"
+          type="button"
+          aria-label="Nodes Menu"
+          aria-haspopup="true"
+          aria-expanded="false"
+        >
+          <svg width="200" height="200" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <style>
+                .net-line {
+                  stroke: white;
+                  stroke-width: 8;
+                  stroke-linecap: round;
+                }
+                .net-node {
+                  fill: none;
+                  stroke: white;
+                  stroke-width: 8;
+                }
+              </style>
+            </defs>
+            <!-- Lines -->
+            <line x1="44.5" y1="33.5" x2="25.5" y2="66.5" class="net-line" />
+            <line x1="55.5" y1="33.5" x2="74.5" y2="66.5" class="net-line" />
+            <line x1="31" y1="76" x2="69" y2="76" class="net-line" />
+            <!-- Nodes -->
+            <circle cx="50" cy="24" r="11" class="net-node" />
+            <circle cx="20" cy="76" r="11" class="net-node" />
+            <circle cx="80" cy="76" r="11" class="net-node" />
+          </svg>
+        </button>
+        <div id="bee-menu-dropdown" class="bee-dropdown" role="menu">
+          <!-- Swarm Section -->
+          <button id="bee-toggle-btn" class="menu-item bee-toggle" type="button">
+            <span class="bee-toggle-label">
+              Swarm
+              <span class="bee-toggle-switch" id="bee-toggle-switch">
+                <span class="bee-toggle-knob"></span>
+              </span>
+            </span>
+          </button>
+          <div class="bee-info">
+            <div class="bee-info-row node-status-row" id="bee-status-row">
+              <span class="bee-info-label" id="bee-status-label"></span>
+              <span id="bee-status-value"></span>
+            </div>
+            <div class="bee-info-row">
+              <span class="bee-info-label">Connected Peers:</span>
+              <span id="bee-peers-count">--</span>
+            </div>
+            <div class="bee-info-row">
+              <span class="bee-info-label">Visible Peers:</span>
+              <span id="bee-network-peers">--</span>
+            </div>
+            <div class="bee-info-row">
+              <span class="bee-info-label">Version:</span>
+              <span id="bee-version-text"></span>
+            </div>
+          </div>
+
+          <!-- Divider -->
+          <div class="nodes-divider"></div>
+
+          <!-- IPFS Section -->
+          <button id="ipfs-toggle-btn" class="menu-item ipfs-toggle" type="button">
+            <span class="ipfs-toggle-label">
+              IPFS
+              <span class="ipfs-toggle-switch" id="ipfs-toggle-switch">
+                <span class="ipfs-toggle-knob"></span>
+              </span>
+            </span>
+          </button>
+          <div class="ipfs-info">
+            <div class="ipfs-info-row node-status-row" id="ipfs-status-row">
+              <span class="ipfs-info-label" id="ipfs-status-label"></span>
+              <span id="ipfs-status-value"></span>
+            </div>
+            <div class="ipfs-info-row">
+              <span class="ipfs-info-label">Connected Peers:</span>
+              <span id="ipfs-peers-count">--</span>
+            </div>
+            <div class="ipfs-info-row">
+              <span class="ipfs-info-label">Bandwidth:</span>
+              <span id="ipfs-bandwidth-down"></span>
+            </div>
+            <div class="ipfs-info-row">
+              <span class="ipfs-info-label"></span>
+              <span id="ipfs-bandwidth-up"></span>
+            </div>
+            <div class="ipfs-info-row">
+              <span class="ipfs-info-label">Version:</span>
+              <span id="ipfs-version-text"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="menu" data-menu id="main-menu">
+        <button
+          id="menu-button"
+          class="menu-button"
+          type="button"
+          aria-label="Menu"
+          aria-haspopup="true"
+          aria-expanded="false"
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="24"
+            height="24"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <line x1="4" x2="20" y1="12" y2="12" />
+            <line x1="4" x2="20" y1="6" y2="6" />
+            <line x1="4" x2="20" y1="18" y2="18" />
+          </svg>
+        </button>
+        <div id="menu-dropdown" class="menu-dropdown" role="menu">
+          <!-- Group 1: Tab & Window Actions -->
+          <button id="new-tab-menu-btn" class="menu-item" type="button">
+            <span class="menu-item-label">New Tab</span>
+            <span class="menu-item-shortcut" data-shortcut="CmdOrCtrl+T"></span>
+          </button>
+          <button id="new-window-menu-btn" class="menu-item" type="button">
+            <span class="menu-item-label">New Window</span>
+            <span class="menu-item-shortcut" data-shortcut="CmdOrCtrl+N"></span>
+          </button>
+
+          <div class="menu-divider"></div>
+
+          <!-- Group 2: Browser Data -->
+          <button id="history-btn" class="menu-item" type="button">
+            <span class="menu-item-label">History</span>
+            <span class="menu-item-shortcut" data-shortcut="CmdOrCtrl+Y"></span>
+          </button>
+
+          <div class="menu-divider"></div>
+
+          <!-- Group 3: Page Actions - Zoom -->
+          <div class="menu-zoom-row">
+            <span class="menu-zoom-label">Zoom</span>
+            <div class="menu-zoom-controls">
+              <button id="zoom-out-btn" class="zoom-btn" type="button" aria-label="Zoom out">
+                −
+              </button>
+              <span id="zoom-level" class="zoom-level">100%</span>
+              <button id="zoom-in-btn" class="zoom-btn" type="button" aria-label="Zoom in">
+                +
+              </button>
+              <button
+                id="fullscreen-btn"
+                class="zoom-btn fullscreen-btn"
+                type="button"
+                aria-label="Toggle fullscreen"
+              >
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M8 3H5a2 2 0 0 0-2 2v3" />
+                  <path d="M21 8V5a2 2 0 0 0-2-2h-3" />
+                  <path d="M3 16v3a2 2 0 0 0 2 2h3" />
+                  <path d="M16 21h3a2 2 0 0 0 2-2v-3" />
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          <div class="menu-divider"></div>
+
+          <!-- Group 4: Page Actions -->
+          <button id="print-btn" class="menu-item" type="button">
+            <span class="menu-item-label">Print...</span>
+            <span class="menu-item-shortcut" data-shortcut="CmdOrCtrl+P"></span>
+          </button>
+
+          <div class="menu-divider"></div>
+
+          <!-- Group 5: Developer -->
+          <button id="devtools-btn" class="menu-item" type="button">
+            <span class="menu-item-label">Developer Tools</span>
+            <span class="menu-item-shortcut" data-shortcut="CmdOrCtrl+Alt+I"></span>
+          </button>
+
+          <div class="menu-divider"></div>
+
+          <!-- Group 6: Settings -->
+          <button id="settings-btn" class="menu-item" type="button">
+            <span class="menu-item-label">Settings</span>
+          </button>
+
+          <div class="menu-divider"></div>
+
+          <!-- Group 7: About & Updates -->
+          <button id="about-btn" class="menu-item" type="button">
+            <span class="menu-item-label">About Freedom</span>
+          </button>
+          <button id="check-updates-btn" class="menu-item" type="button">
+            <span class="menu-item-label">Check for Updates…</span>
+          </button>
+        </div>
+      </div>
+    </header>
+    <nav class="bookmarks" aria-label="Bookmarks" id="bookmarks-bar"></nav>
+    <section class="app-body">
+      <main class="content">
+        <div id="webview-container" class="webview-container">
+          <!-- Webviews inserted dynamically by tabs.js -->
+        </div>
+      </main>
+    </section>
+
+    <dialog id="settings-modal" class="modal settings-modal">
+      <div class="settings-panel">
+        <div class="settings-header">
+          <h2>Settings</h2>
+          <button id="close-settings" class="icon-btn close-modal" aria-label="Close settings">
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="24"
+              height="24"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M18 6 6 18" />
+              <path d="M6 6 18 18" />
+            </svg>
+          </button>
+        </div>
+        <form id="settings-form" class="settings-body">
+          <!-- Appearance Section -->
+          <section class="settings-section">
+            <h3 class="settings-section-header">Appearance</h3>
+            <div class="settings-select-row">
+              <span class="select-label">Mode</span>
+              <select id="theme-mode" class="settings-select">
+                <option value="light">Light</option>
+                <option value="dark">Dark</option>
+                <option value="system">System</option>
+              </select>
+            </div>
+          </section>
+
+          <!-- Automatic Startup Section -->
+          <section class="settings-section">
+            <h3 class="settings-section-header">Automatic Startup</h3>
+            <div class="settings-toggle-row">
+              <span class="toggle-label">Start Swarm node</span>
+              <label class="toggle-switch">
+                <input type="checkbox" id="start-bee-at-launch" />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="settings-toggle-row">
+              <span class="toggle-label">Start IPFS node</span>
+              <label class="toggle-switch">
+                <input type="checkbox" id="start-ipfs-at-launch" />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </section>
+
+          <!-- Updates Section -->
+          <section class="settings-section">
+            <h3 class="settings-section-header">Updates</h3>
+            <div class="settings-toggle-row">
+              <span class="toggle-label">Automatically check for updates</span>
+              <label class="toggle-switch">
+                <input type="checkbox" id="auto-update" />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </section>
+        </form>
+      </div>
+    </dialog>
+
+    <dialog id="add-bookmark-modal" class="modal">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2 id="bookmark-modal-title">Add Bookmark</h2>
+          <button id="close-add-bookmark" class="icon-btn close-modal" aria-label="Close">
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="24"
+              height="24"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M18 6 6 18" />
+              <path d="M6 6 18 18" />
+            </svg>
+          </button>
+        </div>
+        <form id="add-bookmark-form">
+          <div class="form-group">
+            <label for="bookmark-label">Name</label>
+            <input type="text" id="bookmark-label" class="form-input" required autofocus />
+          </div>
+          <div class="form-group">
+            <label for="bookmark-target">Target</label>
+            <input type="text" id="bookmark-target" class="form-input" />
+          </div>
+          <div class="modal-actions">
+            <button type="submit" id="bookmark-submit-btn" class="primary-btn">Add Bookmark</button>
+          </div>
+        </form>
+      </div>
+    </dialog>
+
+    <!-- Tab Context Menu -->
+    <div id="tab-context-menu" class="context-menu hidden">
+      <button class="context-menu-item" data-action="close">Close Tab</button>
+      <button class="context-menu-item" data-action="close-others">Close Other Tabs</button>
+      <button class="context-menu-item" data-action="close-right">Close Tabs to the Right</button>
+      <div class="context-menu-separator"></div>
+      <button class="context-menu-item" data-action="pin">Pin Tab</button>
+    </div>
+
+    <!-- Page Context Menu -->
+    <div id="page-context-menu" class="context-menu hidden">
+      <!-- Page actions (shown when clicking on page background) -->
+      <div class="context-menu-group" data-group="page">
+        <button class="context-menu-item" data-action="back">Back</button>
+        <button class="context-menu-item" data-action="forward">Forward</button>
+        <button class="context-menu-item" data-action="reload">Reload</button>
+        <div class="context-menu-separator"></div>
+        <button class="context-menu-item" data-action="view-source">View Page Source</button>
+        <button class="context-menu-item" data-action="inspect">Inspect</button>
+      </div>
+      <!-- Link actions -->
+      <div class="context-menu-group" data-group="link">
+        <button class="context-menu-item" data-action="open-link-new-tab">
+          Open Link in New Tab
+        </button>
+        <button class="context-menu-item" data-action="open-link-new-window">
+          Open Link in New Window
+        </button>
+        <div class="context-menu-separator"></div>
+        <button class="context-menu-item" data-action="copy-link">Copy Link Address</button>
+        <div class="context-menu-separator"></div>
+        <button class="context-menu-item" data-action="inspect">Inspect</button>
+      </div>
+      <!-- Selection actions -->
+      <div class="context-menu-group" data-group="selection">
+        <button class="context-menu-item" data-action="copy">Copy</button>
+        <div class="context-menu-separator"></div>
+        <button class="context-menu-item" data-action="inspect">Inspect</button>
+      </div>
+      <!-- Image actions -->
+      <div class="context-menu-group" data-group="image">
+        <button class="context-menu-item" data-action="open-image-new-tab">
+          Open Image in New Tab
+        </button>
+        <button class="context-menu-item" data-action="save-image">Save Image As…</button>
+        <button class="context-menu-item" data-action="copy-image">Copy Image</button>
+        <button class="context-menu-item" data-action="copy-image-address">
+          Copy Image Address
+        </button>
+      </div>
+    </div>
+
+    <!-- Menu backdrop to catch clicks on drag regions -->
+    <div id="menu-backdrop" class="menu-backdrop hidden"></div>
+
+    <script type="module" src="./index.js"></script>
+  </body>
+</html>

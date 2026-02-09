@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src * data:; media-src *;"
+    />
+    <title>Protocol Test</title>
+    <style>
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        background: #141414;
+        color: #f5f5f5;
+        padding: 48px;
+        box-sizing: border-box;
+      }
+      h1 {
+        font-size: 32px;
+        margin-bottom: 32px;
+      }
+      .image-section {
+        margin-bottom: 48px;
+      }
+      h2 {
+        font-size: 18px;
+        margin-bottom: 16px;
+        color: #aaa;
+      }
+      .protocol-url {
+        color: #6eb5ff;
+        background: #2a2a2a;
+        padding: 4px 8px;
+        border-radius: 4px;
+        font-family: 'SF Mono', Menlo, monospace;
+        font-size: 13px;
+        display: inline-block;
+        margin-bottom: 16px;
+        word-break: break-all;
+      }
+      .image-container {
+        background: #1a1a1a;
+        border: 1px solid #333;
+        border-radius: 8px;
+        padding: 16px;
+        display: inline-block;
+      }
+      .image-container img,
+      .image-container video {
+        max-width: 400px;
+        max-height: 400px;
+        display: block;
+        border-radius: 4px;
+      }
+      .status {
+        margin-top: 12px;
+        font-size: 13px;
+        color: #888;
+      }
+      .status.loading {
+        color: #f0ad4e;
+      }
+      .status.success {
+        color: #5cb85c;
+      }
+      .status.error {
+        color: #d9534f;
+      }
+
+      /* Light theme */
+      @media (prefers-color-scheme: light) {
+        body {
+          background: #ffffff;
+          color: #24292f;
+        }
+        h2 {
+          color: #57606a;
+        }
+        .protocol-url {
+          color: #0969da;
+          background: #f6f8fa;
+        }
+        .image-container {
+          background: #f6f8fa;
+          border-color: #d0d7de;
+        }
+        .status {
+          color: #57606a;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Protocol Link Test Page</h1>
+    <p style="color: #888; margin-bottom: 32px">
+      This page tests loading media via custom protocols (bzz://, ipfs://)
+    </p>
+
+    <div class="image-section">
+      <h2>Hosted on Swarm:</h2>
+      <div class="protocol-url">
+        bzz://48a905ac0970d342371dec73b1e2a7c81fd3d6cac42e70a197533195a7e87d75
+      </div>
+      <div class="image-container">
+        <img
+          src="bzz://48a905ac0970d342371dec73b1e2a7c81fd3d6cac42e70a197533195a7e87d75"
+          alt="Swarm hosted image"
+          onload="
+            this.parentElement.querySelector('.status').className = 'status success';
+            this.parentElement.querySelector('.status').textContent = '✓ Loaded successfully';
+          "
+          onerror="
+            this.parentElement.querySelector('.status').className = 'status error';
+            this.parentElement.querySelector('.status').textContent = '✗ Failed to load';
+          "
+        />
+        <div class="status loading">Loading...</div>
+      </div>
+    </div>
+
+    <div class="image-section">
+      <h2>Hosted on IPFS:</h2>
+      <div class="protocol-url">
+        ipfs://QmSnuWmxptJZdLJpKRarxBMS2Ju2oANVrgbr2xWbie9b2D/frontend/thumbnails/21710806961_f87f821c9b_o.jpg._t.jpg
+      </div>
+      <div class="image-container">
+        <img
+          src="ipfs://QmSnuWmxptJZdLJpKRarxBMS2Ju2oANVrgbr2xWbie9b2D/frontend/thumbnails/21710806961_f87f821c9b_o.jpg._t.jpg"
+          alt="IPFS hosted image"
+          onload="
+            this.parentElement.querySelector('.status').className = 'status success';
+            this.parentElement.querySelector('.status').textContent = '✓ Loaded successfully';
+          "
+          onerror="
+            this.parentElement.querySelector('.status').className = 'status error';
+            this.parentElement.querySelector('.status').textContent = '✗ Failed to load';
+          "
+        />
+        <div class="status loading">Loading...</div>
+      </div>
+    </div>
+
+    <div class="image-section">
+      <h2>Video on IPFS:</h2>
+      <div class="protocol-url">
+        ipfs://QmTKZgRNwDNZwHtJSjCp6r5FYefzpULfy37JvMt9DwvXse/video.mp4
+      </div>
+      <div class="image-container">
+        <video
+          src="ipfs://QmTKZgRNwDNZwHtJSjCp6r5FYefzpULfy37JvMt9DwvXse/video.mp4"
+          controls
+          onloadeddata="
+            this.parentElement.querySelector('.status').className = 'status success';
+            this.parentElement.querySelector('.status').textContent = '✓ Loaded successfully';
+          "
+          onerror="
+            this.parentElement.querySelector('.status').className = 'status error';
+            this.parentElement.querySelector('.status').textContent = '✗ Failed to load';
+          "
+        ></video>
+        <div class="status loading">Loading...</div>
+      </div>
+    </div>
+  </body>
+</html>

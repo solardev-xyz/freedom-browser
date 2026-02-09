@@ -1,0 +1,179 @@
+/* ========================================
+   Light Theme Overrides
+   ======================================== */
+
+[data-theme='light'] .tab:not(.active):hover {
+  background-color: rgba(0, 0, 0, 0.1);
+}
+
+[data-theme='light'] .tab.active {
+  background-color: #ffffff;
+  box-shadow: none;
+}
+
+[data-theme='light'] .tab.active::before,
+[data-theme='light'] .tab.active::after {
+  background-color: #ffffff;
+}
+
+[data-theme='light'] .tab.active .tab-corner {
+  color: #ffffff;
+}
+
+[data-theme='light'] .tab-close:hover {
+  background: rgba(0, 0, 0, 0.1);
+}
+
+[data-theme='light'] .icon-btn:hover,
+[data-theme='light'] .menu-button:hover {
+  background: rgba(0, 0, 0, 0.1);
+}
+
+[data-theme='light'] .address-input {
+  background-color: #f1f3f4;
+  border-color: transparent;
+}
+
+[data-theme='light'] .address-input:focus {
+  background-color: #ffffff;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+[data-theme='light'] .autocomplete-dropdown {
+  background: #ffffff;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+}
+
+[data-theme='light'] .autocomplete-item:hover,
+[data-theme='light'] .autocomplete-item.selected {
+  background: rgba(0, 0, 0, 0.08);
+}
+
+[data-theme='light'] .autocomplete-item.selected {
+  background: rgba(0, 113, 227, 0.1);
+}
+
+[data-theme='light'] .autocomplete-type {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+[data-theme='light'] .autocomplete-type.tab-badge {
+  background: rgba(0, 113, 227, 0.12);
+}
+
+[data-theme='light'] .modal::backdrop {
+  background: rgba(0, 0, 0, 0.4);
+}
+
+[data-theme='light'] .context-menu {
+  background: #ffffff;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+}
+
+[data-theme='light'] .context-menu-item:hover {
+  background: rgba(0, 0, 0, 0.1);
+}
+
+[data-theme='light'] .settings-modal {
+  --settings-section-bg: rgba(0, 0, 0, 0.02);
+  --settings-divider: rgba(0, 0, 0, 0.08);
+}
+
+[data-theme='light'] .toggle-slider {
+  background-color: #d1d1d6;
+}
+
+[data-theme='light'] .toggle-slider::before {
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+[data-theme='light'] .toggle-switch input:checked + .toggle-slider {
+  background-color: #4caf50;
+}
+
+[data-theme='light'] .window-control-btn:hover {
+  background: rgba(0, 0, 0, 0.1);
+}
+
+[data-theme='light'] .update-toast-content {
+  background: #ffffff;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+}
+
+[data-theme='light'] .new-tab-btn:hover {
+  background: rgba(0, 0, 0, 0.1);
+}
+
+[data-theme='light'] .menu-dropdown,
+[data-theme='light'] .bee-dropdown {
+  background: #ffffff;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+}
+
+[data-theme='light'] .menu-item:hover {
+  background: rgba(0, 0, 0, 0.1);
+}
+
+[data-theme='light'] .menu-item-shortcut {
+  color: var(--muted);
+}
+
+[data-theme='light'] .menu-divider {
+  background: rgba(0, 0, 0, 0.08);
+}
+
+[data-theme='light'] .settings-select {
+  background-color: #f1f3f4;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none' stroke='%235f6368' stroke-width='1.5' stroke-linecap='round'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5'/%3E%3C/svg%3E");
+}
+
+[data-theme='light'] .settings-select:focus {
+  box-shadow: 0 0 0 2px rgba(26, 115, 232, 0.2);
+}
+
+[data-theme='light'] .bee-menu-button .net-line {
+  stroke: #1d1d1f !important;
+}
+
+[data-theme='light'] .bee-menu-button .net-node {
+  stroke: #1d1d1f !important;
+}
+
+[data-theme='light'] .bee-toggle-knob,
+[data-theme='light'] .ipfs-toggle-knob {
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+[data-theme='light'] .bookmarks-overflow-menu {
+  background: #ffffff;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+}
+
+[data-theme='light'] .bookmarks-overflow-item:hover {
+  background: rgba(0, 0, 0, 0.1);
+}
+
+[data-theme='light'] .bookmark:hover {
+  background: rgba(0, 0, 0, 0.1);
+}
+
+[data-theme='light'] .form-input {
+  background: #f1f3f4;
+  border-color: var(--border);
+}
+
+[data-theme='light'] .form-input:focus {
+  background: #ffffff;
+  border-color: var(--accent);
+}
+
+[data-theme='light'] .input-action-btn:hover {
+  background: rgba(0, 0, 0, 0.1);
+}
+
+[data-theme='light'] .modal-content {
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.15);
+}

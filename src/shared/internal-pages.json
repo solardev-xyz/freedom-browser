@@ -1,0 +1,9 @@
+{
+  "routable": {
+    "home": "home.html",
+    "history": "history.html",
+    "links": "links.html",
+    "protocol-test": "protocol-test.html"
+  },
+  "other": ["error.html"]
+}

@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'unsafe-inline'; img-src 'self';"
+    />
+    <style>
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        padding: 48px;
+        box-sizing: border-box;
+        position: relative;
+      }
+
+      /* Dark theme (default) */
+      body {
+        background: #1f2020;
+        color: #c7c7c7;
+      }
+      body::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: url('images/home.png') no-repeat center center;
+        background-size: cover;
+        opacity: 0.6;
+        z-index: -1;
+      }
+      h1 {
+        font-size: 32px;
+        margin-bottom: 16px;
+      }
+      p {
+        max-width: 640px;
+        line-height: 1.6;
+        margin-bottom: 12px;
+      }
+      h2 {
+        font-size: 18px;
+        margin-top: 32px;
+        margin-bottom: 12px;
+        color: #999;
+      }
+      code {
+        background: #2a2a2a;
+        padding: 2px 6px;
+        border-radius: 4px;
+        font-family: 'SF Mono', Menlo, monospace;
+        font-size: 13px;
+      }
+      ul {
+        margin: 0;
+        padding-left: 20px;
+        line-height: 1.8;
+      }
+      li {
+        margin-bottom: 4px;
+      }
+      a.protocol-link {
+        color: #6eb5ff;
+        text-decoration: none;
+        background: #2a2a2a;
+        padding: 2px 6px;
+        border-radius: 4px;
+        font-family: 'SF Mono', Menlo, monospace;
+        font-size: 13px;
+        cursor: pointer;
+        transition:
+          background 0.15s ease,
+          color 0.15s ease;
+      }
+      a.protocol-link:hover {
+        background: #3a3a4a;
+        color: #8ecfff;
+      }
+      .logo-dark {
+        display: block;
+      }
+      .logo-light {
+        display: none;
+      }
+
+      /* Light theme */
+      @media (prefers-color-scheme: light) {
+        body {
+          background: #ffffff;
+          color: #202124;
+        }
+        h2 {
+          color: #5f6368;
+        }
+        code {
+          background: #f1f3f4;
+        }
+        a.protocol-link {
+          color: #1a73e8;
+          background: #f1f3f4;
+        }
+        a.protocol-link:hover {
+          background: #e8eaed;
+          color: #1558b0;
+        }
+        .logo-dark {
+          display: none;
+        }
+        .logo-light {
+          display: block;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <img
+      class="logo-dark"
+      src="images/freedom-logo-white.svg"
+      alt="Freedom"
+      style="height: 48px; margin-bottom: 24px"
+    />
+    <img
+      class="logo-light"
+      src="images/freedom-logo-black.svg"
+      alt="Freedom"
+      style="height: 48px; margin-bottom: 24px"
+    />
+    <p>
+      The decentralized web is here. Powered by built-in nodes, this browser connects you directly
+      to peers, keeping the network strong and user-controlled.
+    </p>
+  </body>
+</html>

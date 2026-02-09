@@ -1,0 +1,23 @@
+Third-Party Notices
+
+This software includes the following third-party components:
+
+Swarm Bee
+  License: BSD-3-Clause
+  Copyright (c) 2020 Ethereum Swarm
+  https://github.com/ethersphere/bee
+
+IPFS Kubo
+  License: MIT OR Apache-2.0
+  Copyright (c) Protocol Labs
+  https://github.com/ipfs/kubo
+
+Electron
+  License: MIT
+  Copyright (c) Electron contributors
+  https://github.com/electron/electron
+  Chromium licenses: see LICENSES.chromium.html in app bundle
+
+npm dependencies
+  See package.json for full list.
+  All use permissive licenses (MIT, ISC, BSD, Apache-2.0).

@@ -1,0 +1,46 @@
+/* ========================================
+   Window Controls (Linux)
+   ======================================== */
+
+.window-controls {
+  display: none; /* Hidden by default, shown on Linux via JS */
+  align-items: center;
+  gap: 0;
+  -webkit-app-region: no-drag;
+  margin-left: 8px;
+  padding-bottom: 5px;
+}
+
+.window-controls.visible {
+  display: flex;
+}
+
+.window-control-btn {
+  width: 32px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: default;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.window-control-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text);
+}
+
+.window-control-btn.window-control-close:hover {
+  background: #e81123;
+  color: white;
+}
+
+/* Linux-specific styles */
+body.platform-linux .title-bar-spacer {
+  width: 12px;
+}

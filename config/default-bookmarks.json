@@ -1,0 +1,26 @@
+[
+  {
+    "label": "Swarm: OSM",
+    "target": "bzz://ab77201f6541a9ceafb98a46c643273cfa397a87798273dd17feb2aa366ce2e6"
+  },
+  {
+    "label": "IPFS Web UI",
+    "target": "ipfs://QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"
+  },
+  {
+    "label": "IPFS Docs",
+    "target": "ipns://docs.ipfs.tech"
+  },
+  {
+    "label": "vitalik.eth",
+    "target": "ens://vitalik.eth"
+  },
+  {
+    "label": "Vitalik CID",
+    "target": "ipfs://bafybeibod3h35zt43dwzz74ji6kqrhdlbhwzy7zol66lrtnqhj63vyzrgy"
+  },
+  {
+    "label": "meinhard.eth",
+    "target": "ens://meinhard.eth"
+  }
+]

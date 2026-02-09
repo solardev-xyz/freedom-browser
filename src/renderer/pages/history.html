@@ -1,0 +1,857 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:;"
+    />
+    <title>History</title>
+    <style>
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+      body {
+        font-family:
+          'IBM Plex Sans',
+          -apple-system,
+          BlinkMacSystemFont,
+          sans-serif;
+        background: linear-gradient(135deg, #0d1117 0%, #161b22 50%, #21262d 100%);
+        color: #c9d1d9;
+        padding: 48px;
+        box-sizing: border-box;
+        min-height: 100vh;
+      }
+      h1 {
+        font-size: 28px;
+        margin-bottom: 8px;
+        color: #58a6ff;
+        font-weight: 600;
+        letter-spacing: -0.5px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      .subtitle {
+        color: #8b949e;
+        margin-bottom: 24px;
+        font-size: 14px;
+      }
+      .toolbar {
+        display: flex;
+        gap: 12px;
+        margin-bottom: 24px;
+        align-items: center;
+      }
+      .search-input {
+        flex: 1;
+        max-width: 400px;
+        padding: 10px 16px;
+        background: #21262d;
+        border: 1px solid #30363d;
+        border-radius: 8px;
+        color: #c9d1d9;
+        font-size: 14px;
+        font-family: inherit;
+        outline: none;
+        transition: border-color 0.15s;
+      }
+      .search-input:focus {
+        border-color: #58a6ff;
+      }
+      .search-input::placeholder {
+        color: #6e7681;
+      }
+      .btn {
+        padding: 10px 16px;
+        background: #21262d;
+        border: 1px solid #30363d;
+        border-radius: 8px;
+        color: #c9d1d9;
+        font-size: 14px;
+        font-family: inherit;
+        cursor: pointer;
+        transition: all 0.15s ease;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .btn:hover {
+        background: #30363d;
+        border-color: #484f58;
+      }
+      .btn.danger {
+        color: #f85149;
+      }
+      .btn.danger:hover {
+        border-color: #f85149;
+        background: #f8514915;
+      }
+      .history-list {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .history-item {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        padding: 14px 16px;
+        background: rgba(22, 27, 34, 0.6);
+        border: 1px solid transparent;
+        border-radius: 8px;
+        cursor: pointer;
+        transition: all 0.15s ease;
+      }
+      .history-item:hover {
+        background: #21262d;
+        border-color: #30363d;
+      }
+      .history-item:active {
+        background: #30363d;
+      }
+      .favicon-container {
+        position: relative;
+        width: 32px;
+        height: 32px;
+        flex-shrink: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .favicon {
+        width: 24px;
+        height: 24px;
+        border-radius: 4px;
+        object-fit: contain;
+        background: #21262d;
+      }
+      .favicon-placeholder {
+        width: 24px;
+        height: 24px;
+        border-radius: 4px;
+        background: #21262d;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 12px;
+        color: #6e7681;
+      }
+      /* Protocol icon shown when no favicon */
+      .protocol-icon-full {
+        width: 24px;
+        height: 24px;
+        border-radius: 4px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 10px;
+        font-weight: 600;
+        text-transform: uppercase;
+      }
+      .protocol-icon-full.swarm {
+        background: #f0883e33;
+        color: #f0883e;
+      }
+      .protocol-icon-full.ipfs {
+        background: #3fb95033;
+        color: #3fb950;
+      }
+      .protocol-icon-full.ipns {
+        background: #3fb95033;
+        color: #3fb950;
+      }
+      .protocol-icon-full.ens {
+        background: #a371f733;
+        color: #a371f7;
+      }
+      .protocol-icon-full.https {
+        background: #388bfd33;
+        color: #58a6ff;
+      }
+      .protocol-icon-full.http {
+        background: #6e768133;
+        color: #8b949e;
+      }
+      .protocol-icon-full.unknown {
+        background: #6e768133;
+        color: #8b949e;
+      }
+      /* Small badge overlay (only for non-HTTP with favicon) */
+      .protocol-badge {
+        position: absolute;
+        bottom: -2px;
+        right: -2px;
+        font-size: 8px;
+        padding: 1px 4px;
+        border-radius: 3px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.3px;
+        border: 1px solid #0d1117;
+        display: none;
+      }
+      .protocol-badge.show {
+        display: block;
+      }
+      .protocol-badge.swarm {
+        background: #f0883e;
+        color: #0d1117;
+      }
+      .protocol-badge.ipfs {
+        background: #3fb950;
+        color: #0d1117;
+      }
+      .protocol-badge.ipns {
+        background: #3fb950;
+        color: #0d1117;
+      }
+      .protocol-badge.ens {
+        background: #a371f7;
+        color: #0d1117;
+      }
+      .history-content {
+        flex: 1;
+        min-width: 0;
+      }
+      .history-title {
+        font-size: 14px;
+        color: #f0f6fc;
+        margin-bottom: 4px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .history-url {
+        font-size: 12px;
+        color: #58a6ff;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .history-meta {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        flex-shrink: 0;
+        color: #6e7681;
+        font-size: 12px;
+      }
+      .history-time {
+        min-width: 100px;
+        text-align: right;
+      }
+      .history-visits {
+        min-width: 60px;
+        text-align: right;
+      }
+      .delete-btn {
+        opacity: 0;
+        padding: 6px;
+        background: transparent;
+        border: none;
+        border-radius: 4px;
+        color: #6e7681;
+        cursor: pointer;
+        transition: all 0.15s;
+      }
+      .history-item:hover .delete-btn {
+        opacity: 1;
+      }
+      .delete-btn:hover {
+        color: #f85149;
+        background: #f8514915;
+      }
+      .empty-state {
+        text-align: center;
+        padding: 64px;
+        color: #6e7681;
+      }
+      .empty-state svg {
+        width: 64px;
+        height: 64px;
+        margin-bottom: 16px;
+        opacity: 0.5;
+      }
+      .empty-state p {
+        margin: 0;
+        font-size: 14px;
+      }
+      .loading {
+        text-align: center;
+        padding: 64px;
+        color: #6e7681;
+      }
+      .stats {
+        color: #6e7681;
+        font-size: 13px;
+      }
+      /* Sort dropdown */
+      .sort-select {
+        padding: 10px 32px 10px 16px;
+        background: #21262d
+          url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="%236e7681" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>')
+          no-repeat right 12px center;
+        border: 1px solid #30363d;
+        border-radius: 8px;
+        color: #c9d1d9;
+        font-size: 14px;
+        font-family: inherit;
+        cursor: pointer;
+        appearance: none;
+        -webkit-appearance: none;
+        outline: none;
+        transition: border-color 0.15s;
+      }
+      .sort-select:focus {
+        border-color: #58a6ff;
+      }
+      .sort-select:hover {
+        background-color: #30363d;
+        border-color: #484f58;
+      }
+      /* Date group headers */
+      .date-group {
+        margin-bottom: 24px;
+      }
+      .date-group:last-child {
+        margin-bottom: 0;
+      }
+      .date-header {
+        font-size: 13px;
+        font-weight: 600;
+        color: #8b949e;
+        margin-bottom: 8px;
+        padding: 0 4px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .date-header::after {
+        content: '';
+        flex: 1;
+        height: 1px;
+        background: #30363d;
+      }
+      .toolbar-right {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        margin-left: auto;
+      }
+
+      /* Light theme */
+      @media (prefers-color-scheme: light) {
+        body {
+          background: linear-gradient(135deg, #ffffff 0%, #f6f8fa 50%, #f0f2f5 100%);
+          color: #24292f;
+        }
+        h1 {
+          color: #0969da;
+        }
+        .subtitle {
+          color: #57606a;
+        }
+        .search-input {
+          background: #ffffff;
+          border-color: #d0d7de;
+          color: #24292f;
+        }
+        .search-input:focus {
+          border-color: #0969da;
+        }
+        .search-input::placeholder {
+          color: #8c959f;
+        }
+        .btn {
+          background: #ffffff;
+          border-color: #d0d7de;
+          color: #24292f;
+        }
+        .btn:hover {
+          background: #f6f8fa;
+          border-color: #8c959f;
+        }
+        .btn.danger {
+          color: #cf222e;
+        }
+        .btn.danger:hover {
+          border-color: #cf222e;
+          background: #ffebe9;
+        }
+        .history-item {
+          background: rgba(255, 255, 255, 0.8);
+        }
+        .history-item:hover {
+          background: #ffffff;
+          border-color: #d0d7de;
+        }
+        .history-item:active {
+          background: #f6f8fa;
+        }
+        .favicon {
+          background: #f6f8fa;
+        }
+        .favicon-placeholder {
+          background: #f6f8fa;
+          color: #8c959f;
+        }
+        .protocol-badge {
+          border-color: #ffffff;
+        }
+        .history-title {
+          color: #24292f;
+        }
+        .history-url {
+          color: #0969da;
+        }
+        .history-meta {
+          color: #57606a;
+        }
+        .delete-btn {
+          color: #57606a;
+        }
+        .delete-btn:hover {
+          color: #cf222e;
+          background: #ffebe9;
+        }
+        .empty-state {
+          color: #57606a;
+        }
+        .loading {
+          color: #57606a;
+        }
+        .sort-select {
+          background: #ffffff
+            url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="%2357606a" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>')
+            no-repeat right 12px center;
+          border-color: #d0d7de;
+          color: #24292f;
+        }
+        .sort-select:focus {
+          border-color: #0969da;
+        }
+        .sort-select:hover {
+          background-color: #f6f8fa;
+          border-color: #8c959f;
+        }
+        .date-header {
+          color: #57606a;
+        }
+        .date-header::after {
+          background: #d0d7de;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <h1>
+      <svg
+        width="28"
+        height="28"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
+        <circle cx="12" cy="12" r="10"></circle>
+        <polyline points="12 6 12 12 16 14"></polyline>
+      </svg>
+      Browsing History
+    </h1>
+    <p class="subtitle" id="stats">Loading...</p>
+
+    <div class="toolbar">
+      <input
+        type="text"
+        class="search-input"
+        id="search-input"
+        placeholder="Search history..."
+        autofocus
+      />
+      <div class="toolbar-right">
+        <select class="sort-select" id="sort-select">
+          <option value="recent">Most Recent</option>
+          <option value="visited">Most Visited</option>
+          <option value="title">A-Z by Title</option>
+        </select>
+        <button class="btn danger" id="clear-btn">
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <polyline points="3 6 5 6 21 6"></polyline>
+            <path
+              d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"
+            ></path>
+          </svg>
+          Clear All
+        </button>
+      </div>
+    </div>
+
+    <div id="history-container">
+      <div class="loading">Loading history...</div>
+    </div>
+
+    <script>
+      // freedomAPI is exposed globally by webview-preload.js via contextBridge
+
+      const container = document.getElementById('history-container');
+      const searchInput = document.getElementById('search-input');
+      const clearBtn = document.getElementById('clear-btn');
+      const sortSelect = document.getElementById('sort-select');
+      const statsEl = document.getElementById('stats');
+
+      let allHistory = [];
+      let currentSort = localStorage.getItem('history-sort') || 'recent';
+
+      // Initialize sort dropdown
+      sortSelect.value = currentSort;
+
+      // Format relative timestamp (e.g., "5 minutes ago", "2 hours ago")
+      function formatRelativeTime(timestamp) {
+        const date = new Date(timestamp);
+        const now = new Date();
+        const diffMs = now - date;
+        const diffSec = Math.floor(diffMs / 1000);
+        const diffMin = Math.floor(diffSec / 60);
+        const diffHour = Math.floor(diffMin / 60);
+        const diffDay = Math.floor(diffHour / 24);
+
+        // Less than 1 minute
+        if (diffSec < 60) {
+          return 'Just now';
+        }
+
+        // Less than 1 hour
+        if (diffMin < 60) {
+          return `${diffMin} minute${diffMin !== 1 ? 's' : ''} ago`;
+        }
+
+        // Less than 24 hours
+        if (diffHour < 24) {
+          return `${diffHour} hour${diffHour !== 1 ? 's' : ''} ago`;
+        }
+
+        // Yesterday
+        const yesterday = new Date(now);
+        yesterday.setDate(yesterday.getDate() - 1);
+        if (date.toDateString() === yesterday.toDateString()) {
+          return `Yesterday at ${date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
+        }
+
+        // Within this year
+        if (date.getFullYear() === now.getFullYear()) {
+          return date.toLocaleDateString([], {
+            month: 'short',
+            day: 'numeric',
+            hour: 'numeric',
+            minute: '2-digit',
+          });
+        }
+
+        // Older
+        return date.toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' });
+      }
+
+      // Get date group key for an entry
+      function getDateGroup(timestamp) {
+        const date = new Date(timestamp);
+        const now = new Date();
+        const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        const yesterday = new Date(today);
+        yesterday.setDate(yesterday.getDate() - 1);
+        const weekAgo = new Date(today);
+        weekAgo.setDate(weekAgo.getDate() - 7);
+        const monthAgo = new Date(today);
+        monthAgo.setDate(monthAgo.getDate() - 30);
+
+        if (date >= today) return 'Today';
+        if (date >= yesterday) return 'Yesterday';
+        if (date >= weekAgo) return 'Last 7 Days';
+        if (date >= monthAgo) return 'Last 30 Days';
+
+        // Return month and year for older entries
+        return date.toLocaleDateString([], { year: 'numeric', month: 'long' });
+      }
+
+      // Group entries by date
+      function groupByDate(entries) {
+        const groups = new Map();
+        for (const entry of entries) {
+          const group = getDateGroup(entry.timestamp);
+          if (!groups.has(group)) {
+            groups.set(group, []);
+          }
+          groups.get(group).push(entry);
+        }
+        return groups;
+      }
+
+      // Sort entries based on current sort option
+      function sortEntries(entries) {
+        const sorted = [...entries];
+        switch (currentSort) {
+          case 'visited':
+            sorted.sort((a, b) => b.visit_count - a.visit_count);
+            break;
+          case 'title':
+            sorted.sort((a, b) => {
+              const titleA = (a.title || a.url || '').toLowerCase();
+              const titleB = (b.title || b.url || '').toLowerCase();
+              return titleA.localeCompare(titleB);
+            });
+            break;
+          case 'recent':
+          default:
+            sorted.sort((a, b) => b.timestamp - a.timestamp);
+            break;
+        }
+        return sorted;
+      }
+
+      // Get first letter for placeholder
+      function getPlaceholderLetter(url) {
+        try {
+          if (url.startsWith('http://') || url.startsWith('https://')) {
+            const host = new URL(url).host;
+            return host
+              .replace(/^www\./, '')
+              .charAt(0)
+              .toUpperCase();
+          }
+          return url.charAt(0).toUpperCase();
+        } catch {
+          return '?';
+        }
+      }
+
+      // Check if protocol needs a badge when favicon is present
+      function needsProtocolBadge(protocol) {
+        return protocol && !['http', 'https', 'unknown'].includes(protocol);
+      }
+
+      // Render a single history entry
+      function renderEntry(entry) {
+        const protocol = entry.protocol || 'unknown';
+        const protocolLabel = protocol.slice(0, 3).toUpperCase();
+
+        return `
+          <div class="history-item" data-url="${escapeHtml(entry.url)}" data-id="${entry.id}" data-protocol="${protocol}">
+            <div class="favicon-container" data-favicon-url="${escapeHtml(entry.url)}">
+              <div class="protocol-icon-full ${protocol}">${protocolLabel}</div>
+              <span class="protocol-badge ${protocol}">${protocolLabel}</span>
+            </div>
+            <div class="history-content">
+              <div class="history-title">${escapeHtml(entry.title) || escapeHtml(entry.url)}</div>
+              <div class="history-url">${escapeHtml(entry.url)}</div>
+            </div>
+            <div class="history-meta">
+              <span class="history-visits">${entry.visit_count} visit${entry.visit_count !== 1 ? 's' : ''}</span>
+              <span class="history-time">${formatRelativeTime(entry.timestamp)}</span>
+            </div>
+            <button class="delete-btn" data-id="${entry.id}" title="Remove from history">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="18" y1="6" x2="6" y2="18"></line>
+                <line x1="6" y1="6" x2="18" y2="18"></line>
+              </svg>
+            </button>
+          </div>
+        `;
+      }
+
+      // Render history list with date grouping
+      function renderHistory(entries) {
+        if (!entries || entries.length === 0) {
+          container.innerHTML = `
+            <div class="empty-state">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <circle cx="12" cy="12" r="10"></circle>
+                <polyline points="12 6 12 12 16 14"></polyline>
+              </svg>
+              <p>No history yet</p>
+            </div>
+          `;
+          return;
+        }
+
+        // Sort entries
+        const sorted = sortEntries(entries);
+
+        // For "Most Recent" sort, group by date; otherwise show flat list
+        if (currentSort === 'recent') {
+          const groups = groupByDate(sorted);
+          let html = '';
+          for (const [groupName, groupEntries] of groups) {
+            html += `
+              <div class="date-group">
+                <div class="date-header">${groupName}</div>
+                <div class="history-list">
+                  ${groupEntries.map(renderEntry).join('')}
+                </div>
+              </div>
+            `;
+          }
+          container.innerHTML = html;
+        } else {
+          // Flat list for other sort options
+          container.innerHTML = `
+            <div class="history-list">
+              ${sorted.map(renderEntry).join('')}
+            </div>
+          `;
+        }
+
+        // Attach click handlers
+        container.querySelectorAll('.history-item').forEach((item) => {
+          item.addEventListener('click', (e) => {
+            if (e.target.closest('.delete-btn')) return;
+            const url = item.dataset.url;
+            if (url) {
+              // Open in new tab
+              freedomAPI.openInNewTab(url);
+            }
+          });
+        });
+
+        container.querySelectorAll('.delete-btn').forEach((btn) => {
+          btn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            const id = parseInt(btn.dataset.id, 10);
+            if (id && freedomAPI?.removeHistory) {
+              await freedomAPI.removeHistory(id);
+              loadHistory();
+            }
+          });
+        });
+
+        // Load favicons for visible entries
+        loadFavicons();
+      }
+
+      // Load favicons asynchronously
+      async function loadFavicons() {
+        if (!freedomAPI?.getCachedFavicon) return;
+
+        const containers = container.querySelectorAll('.favicon-container');
+        for (const faviconContainer of containers) {
+          const url = faviconContainer.dataset.faviconUrl;
+          if (!url) continue;
+
+          try {
+            const favicon = await freedomAPI.getCachedFavicon(url);
+            if (favicon) {
+              const protocolIcon = faviconContainer.querySelector('.protocol-icon-full');
+              const protocolBadge = faviconContainer.querySelector('.protocol-badge');
+              const historyItem = faviconContainer.closest('.history-item');
+              const protocol = historyItem?.dataset.protocol;
+
+              if (protocolIcon) {
+                // Replace protocol icon with favicon
+                const img = document.createElement('img');
+                img.className = 'favicon';
+                img.src = favicon;
+                img.alt = '';
+                img.onerror = () => {
+                  // Put back the protocol icon on error
+                  img.replaceWith(protocolIcon);
+                  if (protocolBadge) protocolBadge.classList.remove('show');
+                };
+                protocolIcon.replaceWith(img);
+
+                // Show protocol badge only for non-HTTP protocols
+                if (protocolBadge && protocol && !['http', 'https', 'unknown'].includes(protocol)) {
+                  protocolBadge.classList.add('show');
+                }
+              }
+            }
+          } catch {
+            // Keep protocol icon on error
+          }
+        }
+      }
+
+      // Escape HTML to prevent XSS
+      function escapeHtml(str) {
+        if (!str) return '';
+        const div = document.createElement('div');
+        div.textContent = str;
+        return div.innerHTML;
+      }
+
+      // Load history from main process
+      async function loadHistory() {
+        try {
+          if (!freedomAPI?.getHistory) {
+            container.innerHTML = '<div class="empty-state"><p>History API not available</p></div>';
+            return;
+          }
+
+          allHistory = await freedomAPI.getHistory();
+          statsEl.textContent = `${allHistory.length} entries`;
+          renderHistory(allHistory);
+        } catch (err) {
+          console.error('Failed to load history:', err);
+          container.innerHTML = '<div class="empty-state"><p>Failed to load history</p></div>';
+        }
+      }
+
+      // Search history
+      function searchHistory(query) {
+        if (!query.trim()) {
+          renderHistory(allHistory);
+          return;
+        }
+
+        const q = query.toLowerCase();
+        const filtered = allHistory.filter(
+          (entry) =>
+            (entry.url && entry.url.toLowerCase().includes(q)) ||
+            (entry.title && entry.title.toLowerCase().includes(q))
+        );
+        renderHistory(filtered);
+      }
+
+      // Clear all history
+      async function clearAllHistory() {
+        if (!confirm('Are you sure you want to clear all browsing history?')) return;
+
+        try {
+          if (freedomAPI?.clearHistory) {
+            await freedomAPI.clearHistory();
+            loadHistory();
+          }
+        } catch (err) {
+          console.error('Failed to clear history:', err);
+        }
+      }
+
+      // Event listeners
+      searchInput.addEventListener('input', (e) => {
+        searchHistory(e.target.value);
+      });
+
+      sortSelect.addEventListener('change', (e) => {
+        currentSort = e.target.value;
+        localStorage.setItem('history-sort', currentSort);
+        // Re-render with current search filter
+        searchHistory(searchInput.value);
+      });
+
+      clearBtn.addEventListener('click', clearAllHistory);
+
+      // Initial load
+      loadHistory();
+    </script>
+  </body>
+</html>

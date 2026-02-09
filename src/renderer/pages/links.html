@@ -1,0 +1,536 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline';"
+    />
+    <title>Link Test Page</title>
+    <style>
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+      body {
+        font-family:
+          'IBM Plex Sans',
+          -apple-system,
+          BlinkMacSystemFont,
+          sans-serif;
+        background: linear-gradient(135deg, #0d1117 0%, #161b22 50%, #21262d 100%);
+        color: #c9d1d9;
+        padding: 48px;
+        box-sizing: border-box;
+        min-height: 100vh;
+      }
+      h1 {
+        font-size: 28px;
+        margin-bottom: 8px;
+        color: #58a6ff;
+        font-weight: 600;
+        letter-spacing: -0.5px;
+      }
+      .subtitle {
+        color: #8b949e;
+        margin-bottom: 32px;
+        font-size: 14px;
+      }
+      .test-section {
+        background: rgba(22, 27, 34, 0.8);
+        border: 1px solid #30363d;
+        border-radius: 12px;
+        padding: 24px;
+        margin-bottom: 24px;
+        backdrop-filter: blur(10px);
+      }
+      h2 {
+        font-size: 16px;
+        margin: 0 0 16px 0;
+        color: #f0f6fc;
+        font-weight: 500;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      h2::before {
+        content: '';
+        display: inline-block;
+        width: 4px;
+        height: 16px;
+        background: #58a6ff;
+        border-radius: 2px;
+      }
+      .link-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+        gap: 12px;
+      }
+      a {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 12px 16px;
+        background: #21262d;
+        border: 1px solid #30363d;
+        border-radius: 8px;
+        color: #58a6ff;
+        text-decoration: none;
+        font-size: 13px;
+        transition: all 0.15s ease;
+      }
+      a:hover {
+        background: #30363d;
+        border-color: #58a6ff;
+        transform: translateY(-1px);
+      }
+      a:active {
+        transform: translateY(0);
+      }
+      .link-icon {
+        width: 20px;
+        height: 20px;
+        flex-shrink: 0;
+        opacity: 0.7;
+      }
+      .link-text {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .badge {
+        font-size: 10px;
+        padding: 2px 6px;
+        border-radius: 4px;
+        background: #388bfd33;
+        color: #58a6ff;
+        font-weight: 500;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin-left: auto;
+        flex-shrink: 0;
+      }
+      .badge.js {
+        background: #f0883e33;
+        color: #f0883e;
+      }
+      button {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 12px 16px;
+        background: #21262d;
+        border: 1px solid #30363d;
+        border-radius: 8px;
+        color: #f0883e;
+        font-size: 13px;
+        cursor: pointer;
+        transition: all 0.15s ease;
+        font-family: inherit;
+      }
+      button:hover {
+        background: #30363d;
+        border-color: #f0883e;
+        transform: translateY(-1px);
+      }
+      button:active {
+        transform: translateY(0);
+      }
+      .info {
+        background: #388bfd15;
+        border: 1px solid #388bfd33;
+        border-radius: 8px;
+        padding: 16px;
+        margin-bottom: 24px;
+        font-size: 13px;
+        line-height: 1.6;
+        color: #8b949e;
+      }
+      .info strong {
+        color: #c9d1d9;
+      }
+      code {
+        background: #30363d;
+        padding: 2px 6px;
+        border-radius: 4px;
+        font-family: 'SF Mono', Monaco, monospace;
+        font-size: 12px;
+        color: #79c0ff;
+      }
+
+      /* Light theme */
+      @media (prefers-color-scheme: light) {
+        body {
+          background: linear-gradient(135deg, #ffffff 0%, #f6f8fa 50%, #f0f2f5 100%);
+          color: #24292f;
+        }
+        h1 {
+          color: #0969da;
+        }
+        .subtitle {
+          color: #57606a;
+        }
+        .test-section {
+          background: rgba(255, 255, 255, 0.9);
+          border-color: #d0d7de;
+        }
+        h2 {
+          color: #24292f;
+        }
+        h2::before {
+          background: #0969da;
+        }
+        a {
+          background: #ffffff;
+          border-color: #d0d7de;
+          color: #0969da;
+        }
+        a:hover {
+          background: #f6f8fa;
+          border-color: #0969da;
+        }
+        .badge {
+          background: #ddf4ff;
+          color: #0969da;
+        }
+        .badge.js {
+          background: #fff8c5;
+          color: #9a6700;
+        }
+        button {
+          background: #ffffff;
+          border-color: #d0d7de;
+          color: #9a6700;
+        }
+        button:hover {
+          background: #f6f8fa;
+          border-color: #9a6700;
+        }
+        .info {
+          background: #ddf4ff;
+          border-color: #54aeff66;
+          color: #57606a;
+        }
+        .info strong {
+          color: #24292f;
+        }
+        code {
+          background: #f6f8fa;
+          color: #0969da;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <h1>🔗 Link Test Page</h1>
+    <p class="subtitle">Test that new windows open in new tabs instead of separate windows</p>
+
+    <div class="info">
+      <strong>How it works:</strong> Click any link below. Links with
+      <code>target="_blank"</code> or JavaScript <code>window.open()</code> calls should open in a
+      <strong>new tab</strong>
+      within this browser window, not in a separate window.
+    </div>
+
+    <div class="test-section">
+      <h2>target="_blank" Links</h2>
+      <div class="link-grid">
+        <a href="https://example.com" target="_blank">
+          <svg
+            class="link-icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+            <polyline points="15 3 21 3 21 9"></polyline>
+            <line x1="10" y1="14" x2="21" y2="3"></line>
+          </svg>
+          <span class="link-text">example.com</span>
+          <span class="badge">_blank</span>
+        </a>
+        <a href="https://wikipedia.org" target="_blank">
+          <svg
+            class="link-icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+            <polyline points="15 3 21 3 21 9"></polyline>
+            <line x1="10" y1="14" x2="21" y2="3"></line>
+          </svg>
+          <span class="link-text">wikipedia.org</span>
+          <span class="badge">_blank</span>
+        </a>
+        <a href="https://github.com" target="_blank">
+          <svg
+            class="link-icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+            <polyline points="15 3 21 3 21 9"></polyline>
+            <line x1="10" y1="14" x2="21" y2="3"></line>
+          </svg>
+          <span class="link-text">github.com</span>
+          <span class="badge">_blank</span>
+        </a>
+      </div>
+    </div>
+
+    <div class="test-section">
+      <h2>JavaScript window.open()</h2>
+      <div class="link-grid">
+        <button onclick="window.open('https://example.com', '_blank')">
+          <svg
+            class="link-icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+            <line x1="9" y1="9" x2="15" y2="15"></line>
+            <line x1="15" y1="9" x2="15" y2="15"></line>
+            <line x1="9" y1="15" x2="15" y2="15"></line>
+          </svg>
+          <span class="link-text">window.open('example.com', '_blank')</span>
+          <span class="badge js">JS</span>
+        </button>
+        <button onclick="window.open('https://httpbin.org/html')">
+          <svg
+            class="link-icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+            <line x1="9" y1="9" x2="15" y2="15"></line>
+            <line x1="15" y1="9" x2="15" y2="15"></line>
+            <line x1="9" y1="15" x2="15" y2="15"></line>
+          </svg>
+          <span class="link-text">window.open('httpbin.org/html')</span>
+          <span class="badge js">JS</span>
+        </button>
+        <button
+          onclick="
+            window.open('https://jsonplaceholder.typicode.com', 'popup', 'width=600,height=400')
+          "
+        >
+          <svg
+            class="link-icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+            <line x1="9" y1="9" x2="15" y2="15"></line>
+            <line x1="15" y1="9" x2="15" y2="15"></line>
+            <line x1="9" y1="15" x2="15" y2="15"></line>
+          </svg>
+          <span class="link-text">window.open() with features</span>
+          <span class="badge js">JS</span>
+        </button>
+      </div>
+    </div>
+
+    <div class="test-section">
+      <h2>Named Window Targets</h2>
+      <div class="link-grid">
+        <a href="https://example.com" target="mywindow">
+          <svg
+            class="link-icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
+            <line x1="8" y1="21" x2="16" y2="21"></line>
+            <line x1="12" y1="17" x2="12" y2="21"></line>
+          </svg>
+          <span class="link-text">target="mywindow" (1)</span>
+          <span class="badge">named</span>
+        </a>
+        <a href="https://httpbin.org/html" target="mywindow">
+          <svg
+            class="link-icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
+            <line x1="8" y1="21" x2="16" y2="21"></line>
+            <line x1="12" y1="17" x2="12" y2="21"></line>
+          </svg>
+          <span class="link-text">target="mywindow" (2)</span>
+          <span class="badge">named</span>
+        </a>
+        <a href="https://jsonplaceholder.typicode.com" target="anotherwindow">
+          <svg
+            class="link-icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
+            <line x1="8" y1="21" x2="16" y2="21"></line>
+            <line x1="12" y1="17" x2="12" y2="21"></line>
+          </svg>
+          <span class="link-text">target="anotherwindow"</span>
+          <span class="badge">named</span>
+        </a>
+      </div>
+    </div>
+
+    <div class="test-section">
+      <h2>Regular Links (Same Tab)</h2>
+      <div class="link-grid">
+        <a href="https://example.com">
+          <svg
+            class="link-icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
+            <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
+          </svg>
+          <span class="link-text">example.com (same tab)</span>
+          <span class="badge">_self</span>
+        </a>
+        <a href="home.html">
+          <svg
+            class="link-icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
+            <polyline points="9 22 9 12 15 12 15 22"></polyline>
+          </svg>
+          <span class="link-text">Home Page</span>
+          <span class="badge">_self</span>
+        </a>
+      </div>
+    </div>
+
+    <div class="test-section">
+      <h2>Context Menu Test</h2>
+      <div class="link-grid">
+        <a href="https://example.com" id="context-link">
+          <svg
+            class="link-icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <circle cx="12" cy="12" r="1"></circle>
+            <circle cx="19" cy="12" r="1"></circle>
+            <circle cx="5" cy="12" r="1"></circle>
+          </svg>
+          <span class="link-text">Right-click → "Open in New Tab"</span>
+          <span class="badge">context</span>
+        </a>
+      </div>
+    </div>
+
+    <div class="test-section">
+      <h2>Example IPFS/IPNS Links</h2>
+      <div class="link-grid">
+        <a href="http://127.0.0.1:8080/ipfs/QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG">
+          <svg
+            class="link-icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
+            <polyline points="2 17 12 22 22 17"></polyline>
+            <polyline points="2 12 12 17 22 12"></polyline>
+          </svg>
+          <span class="link-text">ipfs://QmYwAPJzv5... (IPFS webui)</span>
+          <span class="badge">ipfs</span>
+        </a>
+        <a href="http://127.0.0.1:8080/ipns/docs.ipfs.tech">
+          <svg
+            class="link-icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
+            <polyline points="2 17 12 22 22 17"></polyline>
+            <polyline points="2 12 12 17 22 12"></polyline>
+          </svg>
+          <span class="link-text">ipns://docs.ipfs.tech (IPFS docs)</span>
+          <span class="badge">ipns</span>
+        </a>
+      </div>
+    </div>
+
+    <div class="test-section">
+      <h2>Internal Pages</h2>
+      <div class="link-grid">
+        <a href="freedom://protocol-test">
+          <svg
+            class="link-icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <path
+              d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"
+            ></path>
+          </svg>
+          <span class="link-text">Protocol Test Page</span>
+          <span class="badge">freedom</span>
+        </a>
+        <a href="freedom://history">
+          <svg
+            class="link-icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <circle cx="12" cy="12" r="10"></circle>
+            <polyline points="12 6 12 12 16 14"></polyline>
+          </svg>
+          <span class="link-text">History</span>
+          <span class="badge">freedom</span>
+        </a>
+        <a href="freedom://home">
+          <svg
+            class="link-icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
+            <polyline points="9 22 9 12 15 12 15 22"></polyline>
+          </svg>
+          <span class="link-text">Home</span>
+          <span class="badge">freedom</span>
+        </a>
+      </div>
+    </div>
+  </body>
+</html>

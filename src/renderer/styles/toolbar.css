@@ -1,0 +1,201 @@
+.toolbar {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  align-items: center;
+  gap: 0;
+  padding: 6px 10px;
+  background-color: var(--toolbar);
+  border-bottom: none;
+  min-height: 48px;
+  user-select: none;
+}
+
+.nav-buttons {
+  gap: 0;
+  display: flex;
+  align-items: center;
+}
+
+#nav-form {
+  gap: 6px;
+}
+
+.icon-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-family:
+    'SF Pro Display',
+    'SF Pro Icons',
+    'Inter',
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    sans-serif;
+  font-size: 18px;
+  font-weight: 500;
+  cursor: default;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  overflow: hidden;
+  line-height: 1;
+  transition: background-color 0.2s ease;
+  margin: 0 1px;
+}
+
+.icon-btn[data-state='stop'] .icon-reload {
+  display: none;
+}
+
+.icon-btn[data-state='stop'] .icon-stop {
+  display: block;
+}
+
+.icon-btn[data-state='reload'] .icon-stop {
+  display: none;
+}
+
+.icon-btn[data-state='reload'] .icon-reload {
+  display: block;
+}
+.icon-btn svg,
+.menu-button svg {
+  width: 15px;
+  height: 15px;
+  pointer-events: none;
+}
+
+.bookmark svg {
+  width: 15px;
+  height: 15px;
+  pointer-events: none;
+}
+
+.icon-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.icon-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+#nav-form {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 6px;
+  margin-right: 6px;
+}
+
+.address-wrapper {
+  position: relative;
+  flex: 1;
+}
+
+/* Protocol icon in address bar */
+.protocol-icon {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.protocol-icon svg {
+  width: 16px;
+  height: 16px;
+  display: none;
+}
+
+.protocol-icon.visible {
+  opacity: 1;
+}
+
+/* Swarm - orange */
+.protocol-icon[data-protocol='swarm'] .icon-swarm {
+  display: block;
+  fill: #f7931a;
+}
+
+/* IPFS - uses official colors from SVG */
+.protocol-icon[data-protocol='ipfs'] .icon-ipfs,
+.protocol-icon[data-protocol='ipns'] .icon-ipfs {
+  display: block;
+}
+
+/* HTTP - muted */
+.protocol-icon[data-protocol='http'] .icon-http {
+  display: block;
+  stroke: var(--muted);
+}
+
+/* HTTPS secure - subtle green */
+.protocol-icon[data-protocol='https'] .icon-http {
+  display: block;
+  stroke: #6b9e7a;
+}
+
+.address-input {
+  width: 100%;
+  height: 36px;
+  border-radius: 18px;
+  border: 1px solid transparent;
+  background: #282828;
+  color: var(--text);
+  padding: 6px 38px 6px 16px;
+  font-size: 14px;
+  transition: padding-left 0.2s ease;
+}
+
+/* Shift input text when icon is visible */
+.address-wrapper:has(.protocol-icon.visible) .address-input {
+  padding-left: 34px;
+}
+
+.input-action-btn {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 24px;
+  height: 24px;
+  margin: 0;
+  padding: 0;
+  color: var(--muted);
+  transition:
+    color 0.2s ease,
+    background-color 0.2s ease;
+  z-index: 2;
+}
+
+.icon-btn.input-action-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+.input-action-btn:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.input-action-btn.bookmarked svg {
+  fill: currentColor;
+}
+
+.input-action-btn.hidden {
+  display: none;
+}
