@@ -5,5 +5,5 @@
     "links": "links.html",
     "protocol-test": "protocol-test.html"
   },
-  "other": ["error.html"]
+  "other": ["error.html", "rad-browser.html"]
 }
