@@ -25,6 +25,7 @@ export const detectProtocol = (url) => {
   if (url.startsWith('bzz://')) return 'swarm';
   if (url.startsWith('ipfs://')) return 'ipfs';
   if (url.startsWith('ipns://')) return 'ipns';
+  if (url.startsWith('rad:')) return 'radicle';
   if (url.startsWith('https://')) return 'https';
   if (url.startsWith('http://')) return 'http';
   return 'unknown';

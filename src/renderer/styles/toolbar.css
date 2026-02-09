@@ -137,6 +137,12 @@
   display: block;
 }
 
+/* Radicle - purple/violet (matches Radicle branding) */
+.protocol-icon[data-protocol='radicle'] .icon-radicle {
+  display: block;
+  stroke: #9b59b6;
+}
+
 /* HTTP - muted */
 .protocol-icon[data-protocol='http'] .icon-http {
   display: block;
