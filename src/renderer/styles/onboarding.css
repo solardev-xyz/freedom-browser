@@ -1,0 +1,679 @@
+/* ============================================
+   Onboarding Modal
+   ============================================ */
+
+.onboarding-modal {
+  position: relative; /* For close button positioning */
+  max-width: 480px;
+  width: 90vw;
+  max-height: min(85vh, 600px);
+  overflow-y: auto;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--modal-bg);
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.4);
+  /* Center the dialog */
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  margin: 0;
+}
+
+.onboarding-modal::backdrop {
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(2px);
+}
+
+.onboarding-panel {
+  position: relative;
+  min-height: 400px;
+}
+
+.onboarding-step {
+  padding: 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.onboarding-step.hidden {
+  display: none;
+}
+
+.onboarding-header {
+  text-align: center;
+}
+
+.onboarding-logo {
+  margin-bottom: 16px;
+}
+
+.onboarding-header h2 {
+  margin: 0 0 8px 0;
+  font-size: 24px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.onboarding-subtitle {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.onboarding-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.onboarding-description {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.6;
+  text-align: center;
+}
+
+.onboarding-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+/* Horizontal layout for steps with back/continue buttons */
+.onboarding-step[data-step="create-password"] .onboarding-actions,
+.onboarding-step[data-step="backup"] .onboarding-actions,
+.onboarding-step[data-step="import"] .onboarding-actions {
+  flex-direction: row;
+  justify-content: center;
+}
+
+.onboarding-btn {
+  padding: 12px 24px;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.onboarding-btn.primary {
+  background: var(--accent);
+  color: #fff;
+}
+
+.onboarding-btn.primary:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
+.onboarding-btn.primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.onboarding-btn.secondary {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text);
+}
+
+.onboarding-btn.secondary:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.onboarding-btn.text {
+  background: transparent;
+  color: var(--muted);
+}
+
+.onboarding-btn.text:hover {
+  color: var(--text);
+}
+
+/* Close button */
+.onboarding-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+  z-index: 1;
+}
+
+.onboarding-close:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text);
+}
+
+.onboarding-close svg {
+  width: 18px;
+  height: 18px;
+}
+
+/* Link styles */
+.onboarding-link {
+  color: var(--accent);
+  text-decoration: none;
+  font-size: 14px;
+  transition: opacity 0.15s ease;
+}
+
+.onboarding-link:hover {
+  opacity: 0.8;
+}
+
+/* Button with icon */
+.onboarding-btn .btn-icon {
+  margin-right: 8px;
+  vertical-align: middle;
+  margin-top: -2px;
+}
+
+/* Alternative links row */
+.onboarding-alt-links {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.link-separator {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* Footer with skip link */
+.onboarding-footer {
+  margin-top: 8px;
+  text-align: center;
+}
+
+.onboarding-skip-link {
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 13px;
+  transition: color 0.15s ease;
+}
+
+.onboarding-skip-link:hover {
+  color: var(--text);
+}
+
+/* Skip footer (positioned at bottom of dialog) */
+.onboarding-skip-footer {
+  position: absolute;
+  bottom: 24px;
+  left: 0;
+  right: 0;
+  text-align: center;
+}
+
+/* Welcome step specific layout */
+.welcome-actions {
+  margin-top: 32px;
+}
+
+/* Form styles */
+.onboarding-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.onboarding-form .form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.onboarding-form label {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.onboarding-form .form-input {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+  font-family: inherit;
+}
+
+.onboarding-form .form-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.onboarding-form .mnemonic-input {
+  font-family: monospace;
+  resize: none;
+}
+
+.form-error {
+  color: var(--danger);
+  font-size: 12px;
+  min-height: 16px;
+}
+
+.form-hint {
+  color: var(--muted);
+  font-size: 12px;
+  min-height: 16px;
+}
+
+.form-hint.valid {
+  color: #4caf50;
+}
+
+.form-hint.invalid {
+  color: var(--danger);
+}
+
+/* Password strength meter */
+.password-strength {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.strength-bar {
+  width: 100%;
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.strength-fill {
+  height: 100%;
+  width: 0;
+  transition: width 0.2s ease, background-color 0.2s ease;
+  border-radius: 2px;
+}
+
+.strength-fill.weak {
+  width: 33%;
+  background: var(--danger);
+}
+
+.strength-fill.medium {
+  width: 66%;
+  background: #ff9800;
+}
+
+.strength-fill.strong {
+  width: 100%;
+  background: #4caf50;
+}
+
+.strength-label {
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+}
+
+/* Warning banner */
+.warning-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 16px;
+  background: rgba(255, 152, 0, 0.15);
+  border: 1px solid rgba(255, 152, 0, 0.3);
+  border-radius: 8px;
+  font-size: 13px;
+  color: #ffb74d;
+}
+
+.warning-icon {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  stroke: #ffb74d;
+}
+
+/* Mnemonic display */
+.mnemonic-display {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  padding: 16px;
+  background: var(--bg);
+  border-radius: 8px;
+  font-family: monospace;
+  overflow: hidden;
+}
+
+.mnemonic-display.blurred .mnemonic-word-text {
+  filter: blur(4px);
+  user-select: none;
+}
+
+.mnemonic-word {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.mnemonic-word-num {
+  color: var(--muted);
+  font-size: 10px;
+  min-width: 16px;
+}
+
+.mnemonic-word-text {
+  color: var(--text);
+  transition: filter 0.2s ease;
+}
+
+.mnemonic-actions {
+  display: flex;
+  justify-content: center;
+  gap: 16px;
+}
+
+.mnemonic-action-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.mnemonic-action-btn:hover {
+  color: var(--text);
+  border-color: var(--text);
+}
+
+.mnemonic-action-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+.mnemonic-action-btn .icon-hide {
+  display: none;
+}
+
+.mnemonic-action-btn.showing .icon-show {
+  display: none;
+}
+
+.mnemonic-action-btn.showing .icon-hide {
+  display: block;
+}
+
+/* Checkbox */
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.checkbox-label input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+/* Verify inputs */
+.verify-instruction {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+  text-align: center;
+}
+
+.verify-inputs {
+  display: flex;
+  justify-content: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.verify-input-group {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.verify-input-group label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.verify-input-group input {
+  width: 100px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+  font-family: monospace;
+  text-align: center;
+}
+
+.verify-input-group input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.verify-input-group input.error {
+  border-color: var(--danger);
+}
+
+/* Wallet card (primary identity) */
+.identity-wallet-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 20px;
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.15), rgba(139, 92, 246, 0.15));
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  border-radius: 12px;
+}
+
+.identity-wallet-label {
+  font-size: 12px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.identity-wallet-address {
+  font-size: 14px;
+  font-family: monospace;
+  color: var(--text);
+  background: transparent;
+  padding: 0;
+  word-break: break-all;
+  text-align: center;
+}
+
+/* Node identities label */
+.identity-nodes-label {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-top: 8px;
+}
+
+/* Identity summary (node identities) */
+.identity-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  background: var(--bg);
+  border-radius: 8px;
+}
+
+.identity-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.identity-label {
+  font-size: 13px;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.identity-value {
+  font-size: 12px;
+  color: var(--text);
+  font-family: monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: transparent;
+  padding: 0;
+}
+
+/* Touch ID step */
+.touch-id-icon {
+  width: 80px;
+  height: 80px;
+  margin: 0 auto 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.15), rgba(139, 92, 246, 0.15));
+  border-radius: 50%;
+}
+
+.touch-id-icon svg {
+  width: 44px;
+  height: 44px;
+  stroke: rgba(139, 92, 246, 0.9);
+}
+
+.touch-id-description {
+  text-align: center;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.6;
+  margin: 0 0 16px;
+}
+
+.touch-id-note {
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+  margin: 0;
+}
+
+/* Success icon */
+.success-icon {
+  width: 64px;
+  height: 64px;
+  margin: 0 auto 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(76, 175, 80, 0.15);
+  border-radius: 50%;
+}
+
+.success-icon svg {
+  width: 32px;
+  height: 32px;
+  stroke: #4caf50;
+}
+
+/* Loading overlay */
+.onboarding-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  background: var(--modal-bg);
+  border-radius: 16px;
+  z-index: 10;
+}
+
+.onboarding-loading.hidden {
+  display: none;
+}
+
+.loading-spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.loading-text {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+/* Light theme adjustments */
+[data-theme="light"] .onboarding-btn.secondary {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+[data-theme="light"] .onboarding-btn.secondary:hover {
+  background: rgba(0, 0, 0, 0.1);
+}
+
+[data-theme="light"] .warning-banner {
+  background: rgba(255, 152, 0, 0.1);
+  color: #e65100;
+}
+
+[data-theme="light"] .warning-icon {
+  stroke: #e65100;
+}
+
+[data-theme="light"] .mnemonic-word {
+  background: rgba(0, 0, 0, 0.03);
+}
