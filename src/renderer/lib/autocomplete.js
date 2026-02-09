@@ -20,6 +20,7 @@ let selectedIndex = -1;
 let currentSuggestions = [];
 let debounceTimer = null;
 let isOpen = false;
+let originalQuery = ''; // Store original query for restoring on Escape
 
 // Callbacks
 let onNavigate = null;
@@ -367,6 +368,7 @@ export const hide = () => {
   isOpen = false;
   selectedIndex = -1;
   currentSuggestions = [];
+  originalQuery = '';
   if (wasOpen) {
     hideMenuBackdrop();
   }
@@ -427,14 +429,22 @@ const handleKeyDown = (e) => {
   switch (e.key) {
     case 'ArrowDown':
       e.preventDefault();
+      if (selectedIndex === -1) {
+        originalQuery = addressInput.value; // Save original query on first navigation
+      }
       selectedIndex = (selectedIndex + 1) % currentSuggestions.length;
       updateSelection();
+      addressInput.value = currentSuggestions[selectedIndex].url;
       break;
 
     case 'ArrowUp':
       e.preventDefault();
+      if (selectedIndex === -1) {
+        originalQuery = addressInput.value; // Save original query on first navigation
+      }
       selectedIndex = selectedIndex <= 0 ? currentSuggestions.length - 1 : selectedIndex - 1;
       updateSelection();
+      addressInput.value = currentSuggestions[selectedIndex].url;
       break;
 
     case 'Enter':
@@ -460,6 +470,10 @@ const handleKeyDown = (e) => {
 
     case 'Escape':
       e.preventDefault();
+      if (originalQuery) {
+        addressInput.value = originalQuery;
+        originalQuery = '';
+      }
       hide();
       break;
 

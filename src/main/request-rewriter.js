@@ -292,6 +292,7 @@ function registerRequestRewriter(targetSession) {
       return;
     }
 
+
     // No rewrite needed
     callback({});
   });

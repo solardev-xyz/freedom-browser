@@ -48,7 +48,6 @@ let backBtn = null;
 let forwardBtn = null;
 let reloadBtn = null;
 let homeBtn = null;
-let bookmarksBar = null;
 let protocolIcon = null;
 
 // Track previous active tab ID to save address bar state when switching
@@ -673,6 +672,22 @@ const getRadicleDisplayUrl = (url) => {
   return null;
 };
 
+// Convert rad-browser.html URL back to rad:// format
+const getRadicleDisplayUrl = (url) => {
+  if (!url || !url.includes('rad-browser.html')) return null;
+  try {
+    const parsed = new URL(url);
+    const rid = parsed.searchParams.get('rid');
+    const path = parsed.searchParams.get('path') || '';
+    if (rid) {
+      return `rad://${rid}${path}`;
+    }
+  } catch (err) {
+    // Ignore parse errors
+  }
+  return null;
+};
+
 const handleNavigationEvent = (event) => {
   const navState = getNavState();
   const webview = getActiveWebview();
@@ -874,7 +889,6 @@ export const initNavigation = () => {
   forwardBtn = document.getElementById('forward-btn');
   reloadBtn = document.getElementById('reload-btn');
   homeBtn = document.getElementById('home-btn');
-  bookmarksBar = document.querySelector('.bookmarks');
   protocolIcon = document.getElementById('protocol-icon');
 
   // Load bookmark bar visibility from saved settings
@@ -1191,6 +1205,8 @@ export const initNavigation = () => {
         }
         pushDebug(`did-navigate event fired: ${data.event?.url}`);
         if (data.event) handleNavigationEvent(data.event);
+        // Notify other modules that navigation completed (for dApp connection banner)
+        document.dispatchEvent(new CustomEvent('navigation-completed'));
         break;
 
       case 'certificate-error':
@@ -1202,6 +1218,8 @@ export const initNavigation = () => {
 
       case 'did-navigate-in-page':
         if (data.event) handleNavigationEvent(data.event);
+        // Notify other modules that navigation completed (for dApp connection banner)
+        document.dispatchEvent(new CustomEvent('navigation-completed'));
         break;
 
       case 'dom-ready':

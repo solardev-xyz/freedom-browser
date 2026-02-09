@@ -5,6 +5,7 @@ import { hideBookmarkContextMenu } from './bookmarks-ui.js';
 import { showMenuBackdrop, hideMenuBackdrop } from './menu-backdrop.js';
 import { setupWebviewContextMenu } from './page-context-menu.js';
 import { homeUrl } from './page-urls.js';
+import { setupWebviewProvider, setActiveWebview } from './dapp-provider.js';
 
 const electronAPI = window.electronAPI;
 
@@ -349,6 +350,9 @@ const createWebview = (tabId, initialUrl) => {
 
   // Set up context menu listener
   setupWebviewContextMenu(webview);
+
+  // Set up Ethereum provider (window.ethereum)
+  setupWebviewProvider(webview);
 
   return webview;
 };
@@ -900,6 +904,11 @@ export const switchTab = (tabId, options = {}) => {
     if (t.webview) {
       t.webview.classList.toggle('hidden', t.id !== tabId);
     }
+  }
+
+  // Update active webview for dApp provider
+  if (tab.webview) {
+    setActiveWebview(tab.webview);
   }
 
   // Update window title

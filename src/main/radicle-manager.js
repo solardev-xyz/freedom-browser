@@ -1,3 +1,4 @@
+const log = require('./logger');
 const { ipcMain, app } = require('electron');
 const { spawn, execSync, execFile } = require('child_process');
 const { promisify } = require('util');
@@ -34,6 +35,10 @@ let radicleHttpdProcess = null;
 let healthCheckInterval = null;
 let pendingStart = false;
 let forceKillTimeout = null;
+
+// Identity injection flag - when true, skip rad auth and use pre-injected identity
+let useInjectedIdentity = false;
+
 
 // Port configuration
 let currentHttpPort = DEFAULTS.radicle.httpPort;
@@ -91,11 +96,11 @@ function getRadicleSocketPath(radHome) {
 function cleanupStaleSocket(radHome) {
   const socketPath = getRadicleSocketPath(radHome);
   if (fs.existsSync(socketPath)) {
-    console.log('[Radicle] Removing stale control.sock from previous unclean shutdown');
+    log.info('[Radicle] Removing stale control.sock from previous unclean shutdown');
     try {
       fs.unlinkSync(socketPath);
     } catch (err) {
-      console.warn('[Radicle] Failed to remove stale socket:', err.message);
+      log.warn('[Radicle] Failed to remove stale socket:', err.message);
     }
   }
 }
@@ -105,20 +110,28 @@ function cleanupStaleSocket(radHome) {
  */
 function ensureIdentity(radHome) {
   const keysDir = path.join(radHome, 'keys');
+  const privateKeyPath = path.join(keysDir, 'radicle');
 
-  if (fs.existsSync(keysDir) && fs.readdirSync(keysDir).length > 0) {
-    console.log('[Radicle] Identity already exists');
+  if (fs.existsSync(privateKeyPath)) {
+    log.info('[Radicle] Identity already exists (injected or created)');
     return true;
   }
 
+  // Check if we should wait for identity injection
+  if (useInjectedIdentity) {
+    log.info('[Radicle] Waiting for identity injection (useInjectedIdentity=true)');
+    return false;
+  }
+
+
   const radPath = getRadicleBinaryPath('rad');
   if (!fs.existsSync(radPath)) {
-    console.error('[Radicle] rad binary not found for identity creation');
+    log.error('[Radicle] rad binary not found for identity creation');
     return false;
   }
 
   try {
-    console.log('[Radicle] Creating identity with rad auth...');
+    log.info('[Radicle] Creating identity with rad auth...');
     // Use empty passphrase for non-interactive creation
     // Note: alias cannot contain spaces or control characters
     execSync(`"${radPath}" auth --alias FreedomBrowser`, {
@@ -129,16 +142,16 @@ function ensureIdentity(radHome) {
       },
       stdio: 'pipe',
     });
-    console.log('[Radicle] Identity created successfully');
+    log.info('[Radicle] Identity created successfully');
     return true;
   } catch (err) {
-    console.error('[Radicle] Failed to create identity:', err.message);
+    log.error('[Radicle] Failed to create identity:', err.message);
     return false;
   }
 }
 
 function updateState(newState, error = null) {
-  console.log('[Radicle] State change:', currentState, '->', newState, error ? `(error: ${error})` : '');
+  log.info('[Radicle] State change:', currentState, '->', newState, error ? `(error: ${error})` : '');
   currentState = newState;
   lastError = error;
   // Broadcast to all windows
@@ -244,7 +257,7 @@ async function findAvailablePort(defaultPort, maxAttempts = DEFAULTS.radicle.fal
     if (!open) {
       return port;
     }
-    console.log(`[Radicle] Port ${port} is busy, trying next...`);
+    log.info(`[Radicle] Port ${port} is busy, trying next...`);
   }
   return null;
 }
@@ -264,7 +277,7 @@ async function detectExistingDaemon() {
   // Probe to see if it's actually Radicle httpd
   const probe = await probeRadicleApi(defaultPort);
   if (probe.valid) {
-    console.log('[Radicle] Found existing httpd on port', defaultPort);
+    log.info('[Radicle] Found existing httpd on port', defaultPort);
     return {
       found: true,
       port: defaultPort,
@@ -273,7 +286,7 @@ async function detectExistingDaemon() {
   }
 
   // Port is open but not Radicle - conflict
-  console.log('[Radicle] Port', defaultPort, 'is busy (not Radicle httpd)');
+  log.info('[Radicle] Port', defaultPort, 'is busy (not Radicle httpd)');
   return { found: false, conflict: true, port: defaultPort };
 }
 
@@ -313,15 +326,15 @@ function startHealthCheck() {
 }
 
 async function startRadicle() {
-  console.log('[Radicle] startRadicle() called, currentState:', currentState);
+  log.info('[Radicle] startRadicle() called, currentState:', currentState);
 
   if (currentState === STATUS.RUNNING || currentState === STATUS.STARTING) {
-    console.log(`[Radicle] Ignoring start request, current state: ${currentState}`);
+    log.info(`[Radicle] Ignoring start request, current state: ${currentState}`);
     return;
   }
 
   if (currentState === STATUS.STOPPING) {
-    console.log('[Radicle] Currently stopping, queuing start for after stop completes');
+    log.info('[Radicle] Currently stopping, queuing start for after stop completes');
     pendingStart = true;
     return;
   }
@@ -346,7 +359,7 @@ async function startRadicle() {
 
     updateState(STATUS.RUNNING);
     startHealthCheck();
-    console.log('[Radicle] Reusing existing httpd on port', currentHttpPort);
+    log.info('[Radicle] Reusing existing httpd on port', currentHttpPort);
     return;
   }
 
@@ -399,7 +412,7 @@ async function startRadicle() {
   cleanupStaleSocket(radHome);
 
   // Step 6: Start radicle-node
-  console.log(`[Radicle] Starting node: ${nodeBinPath}`);
+  log.info(`[Radicle] Starting node: ${nodeBinPath}`);
 
   try {
     radicleNodeProcess = spawn(nodeBinPath, [], {
@@ -411,15 +424,15 @@ async function startRadicle() {
     });
 
     radicleNodeProcess.stdout.on('data', (data) => {
-      console.log(`[Radicle-node stdout]: ${data}`);
+      log.info(`[Radicle-node stdout]: ${data}`);
     });
 
     radicleNodeProcess.stderr.on('data', (data) => {
-      console.error(`[Radicle-node stderr]: ${data}`);
+      log.error(`[Radicle-node stderr]: ${data}`);
     });
 
     radicleNodeProcess.on('close', (code) => {
-      console.log(`[Radicle-node] Process exited with code ${code}`);
+      log.info(`[Radicle-node] Process exited with code ${code}`);
       radicleNodeProcess = null;
 
       // If httpd is still running, stop it too
@@ -429,18 +442,18 @@ async function startRadicle() {
     });
 
     radicleNodeProcess.on('error', (err) => {
-      console.error('[Radicle-node] Failed to start process:', err);
+      log.error('[Radicle-node] Failed to start process:', err);
       updateState(STATUS.ERROR, err.message);
       setStatusMessage('radicle', 'Node failed to start');
     });
 
     // Step 7: Wait for socket to appear
-    console.log('[Radicle] Waiting for node socket...');
+    log.info('[Radicle] Waiting for node socket...');
     try {
       await waitForSocket(socketPath, 30000);
-      console.log('[Radicle] Node socket ready');
+      log.info('[Radicle] Node socket ready');
     } catch (err) {
-      console.error('[Radicle] Socket wait failed:', err.message);
+      log.error('[Radicle] Socket wait failed:', err.message);
       if (radicleNodeProcess) {
         radicleNodeProcess.kill('SIGTERM');
       }
@@ -450,7 +463,7 @@ async function startRadicle() {
     }
 
     // Step 8: Start radicle-httpd
-    console.log(`[Radicle] Starting httpd: ${httpdBinPath} on port ${httpPort}`);
+    log.info(`[Radicle] Starting httpd: ${httpdBinPath} on port ${httpPort}`);
 
     radicleHttpdProcess = spawn(httpdBinPath, ['--listen', `127.0.0.1:${httpPort}`], {
       env: {
@@ -461,15 +474,15 @@ async function startRadicle() {
     });
 
     radicleHttpdProcess.stdout.on('data', (data) => {
-      console.log(`[Radicle-httpd stdout]: ${data}`);
+      log.info(`[Radicle-httpd stdout]: ${data}`);
     });
 
     radicleHttpdProcess.stderr.on('data', (data) => {
-      console.error(`[Radicle-httpd stderr]: ${data}`);
+      log.error(`[Radicle-httpd stderr]: ${data}`);
     });
 
     radicleHttpdProcess.on('close', (code) => {
-      console.log(`[Radicle-httpd] Process exited with code ${code}`);
+      log.info(`[Radicle-httpd] Process exited with code ${code}`);
       radicleHttpdProcess = null;
 
       if (forceKillTimeout) {
@@ -486,14 +499,14 @@ async function startRadicle() {
       clearService('radicle');
 
       if (pendingStart) {
-        console.log('[Radicle] Processing queued start request');
+        log.info('[Radicle] Processing queued start request');
         pendingStart = false;
         setTimeout(() => startRadicle(), 100);
       }
     });
 
     radicleHttpdProcess.on('error', (err) => {
-      console.error('[Radicle-httpd] Failed to start process:', err);
+      log.error('[Radicle-httpd] Failed to start process:', err);
       updateState(STATUS.ERROR, err.message);
       setStatusMessage('radicle', 'Node failed to start');
     });
@@ -602,11 +615,11 @@ function stopRadicle() {
     if (forceKillTimeout) clearTimeout(forceKillTimeout);
     forceKillTimeout = setTimeout(() => {
       if (radicleHttpdProcess) {
-        console.warn('[Radicle] Force killing httpd...');
+        log.warn('[Radicle] Force killing httpd...');
         radicleHttpdProcess.kill('SIGKILL');
       }
       if (radicleNodeProcess) {
-        console.warn('[Radicle] Force killing node...');
+        log.warn('[Radicle] Force killing node...');
         radicleNodeProcess.kill('SIGKILL');
       }
       forceKillTimeout = null;
@@ -618,6 +631,24 @@ function checkBinary() {
   const nodeBinPath = getRadicleBinaryPath('radicle-node');
   const httpdBinPath = getRadicleBinaryPath('radicle-httpd');
   return fs.existsSync(nodeBinPath) && fs.existsSync(httpdBinPath);
+}
+
+/**
+ * Enable injected identity mode - skip rad auth and expect pre-injected identity
+ * Call this before starting Radicle when using the unified identity system
+ */
+function setUseInjectedIdentity(enabled) {
+  useInjectedIdentity = enabled;
+  log.info(`[Radicle] Injected identity mode: ${enabled}`);
+}
+
+/**
+ * Check if identity has been injected
+ */
+function hasInjectedIdentity() {
+  const dataDir = getRadicleDataPath();
+  const privateKeyPath = path.join(dataDir, 'keys', 'radicle');
+  return fs.existsSync(privateKeyPath);
 }
 
 function getActivePort() {
@@ -645,7 +676,7 @@ async function seedRepository(rid) {
     fullRid = `rad:${rid}`;
   }
 
-  console.log(`[Radicle] Seeding repository: ${fullRid}`);
+  log.info(`[Radicle] Seeding repository: ${fullRid}`);
 
   try {
     // Use async execFile to avoid blocking the main process
@@ -657,10 +688,10 @@ async function seedRepository(rid) {
       },
       timeout: 120000, // 120 second timeout for large repos
     });
-    console.log(`[Radicle] Repository seeded: ${fullRid}`);
+    log.info(`[Radicle] Repository seeded: ${fullRid}`);
     return { success: true };
   } catch (err) {
-    console.error(`[Radicle] Seed failed for ${fullRid}:`, err.message);
+    log.error(`[Radicle] Seed failed for ${fullRid}:`, err.message);
     // Try to extract meaningful error from stderr
     const stderrStr = err.stderr?.toString() || '';
     const errorMsg = stderrStr.includes('not found')
@@ -706,7 +737,7 @@ async function getRepoPayload(rid) {
     const payload = JSON.parse(stdout);
     return { success: true, payload };
   } catch (err) {
-    console.error(`[Radicle] Failed to get payload for ${fullRid}:`, err.message);
+    log.error(`[Radicle] Failed to get payload for ${fullRid}:`, err.message);
     return { success: false, error: err.message };
   }
 }
@@ -732,7 +763,7 @@ async function syncRepository(rid) {
     fullRid = `rad:${rid}`;
   }
 
-  console.log(`[Radicle] Syncing repository: ${fullRid}`);
+  log.info(`[Radicle] Syncing repository: ${fullRid}`);
 
   try {
     const { stdout, stderr } = await execFileAsync(radBinPath, ['sync', fullRid], {
@@ -743,10 +774,10 @@ async function syncRepository(rid) {
       },
       timeout: 60000, // 60 second timeout
     });
-    console.log(`[Radicle] Repository synced: ${fullRid}`);
+    log.info(`[Radicle] Repository synced: ${fullRid}`);
     return { success: true, output: stdout || stderr };
   } catch (err) {
-    console.error(`[Radicle] Sync failed for ${fullRid}:`, err.message);
+    log.error(`[Radicle] Sync failed for ${fullRid}:`, err.message);
     const stderrStr = err.stderr?.toString() || '';
     return { success: false, error: stderrStr || err.message };
   }
@@ -791,22 +822,22 @@ async function getConnections() {
       count: connectedCount,
     };
   } catch (err) {
-    console.error('[Radicle] Failed to get connections:', err.message);
+    log.error('[Radicle] Failed to get connections:', err.message);
     return { success: false, error: err.message, count: 0 };
   }
 }
 
 function registerRadicleIpc() {
-  console.log('[Radicle] Registering IPC handlers');
+  log.info('[Radicle] Registering IPC handlers');
 
   ipcMain.handle(IPC.RADICLE_START, () => {
-    console.log('[Radicle] IPC: start requested');
+    log.info('[Radicle] IPC: start requested');
     startRadicle();
     return { status: currentState, error: lastError };
   });
 
   ipcMain.handle(IPC.RADICLE_STOP, () => {
-    console.log('[Radicle] IPC: stop requested');
+    log.info('[Radicle] IPC: stop requested');
     stopRadicle();
     return { status: currentState, error: lastError };
   });
@@ -817,12 +848,12 @@ function registerRadicleIpc() {
 
   ipcMain.handle(IPC.RADICLE_CHECK_BINARY, () => {
     const available = checkBinary();
-    console.log('[Radicle] IPC: checkBinary requested, available:', available);
+    log.info('[Radicle] IPC: checkBinary requested, available:', available);
     return { available };
   });
 
   ipcMain.handle(IPC.RADICLE_SEED, async (_event, rid) => {
-    console.log('[Radicle] IPC: seed requested for', rid);
+    log.info('[Radicle] IPC: seed requested for', rid);
     return await seedRepository(rid);
   });
 
@@ -831,12 +862,12 @@ function registerRadicleIpc() {
   });
 
   ipcMain.handle(IPC.RADICLE_GET_REPO_PAYLOAD, async (_event, rid) => {
-    console.log('[Radicle] IPC: getRepoPayload requested for', rid);
+    log.info('[Radicle] IPC: getRepoPayload requested for', rid);
     return await getRepoPayload(rid);
   });
 
   ipcMain.handle(IPC.RADICLE_SYNC_REPO, async (_event, rid) => {
-    console.log('[Radicle] IPC: syncRepo requested for', rid);
+    log.info('[Radicle] IPC: syncRepo requested for', rid);
     return await syncRepository(rid);
   });
 }
@@ -848,5 +879,7 @@ module.exports = {
   getActivePort,
   getRadicleBinaryPath,
   getRadicleDataPath,
+  setUseInjectedIdentity,
+  hasInjectedIdentity,
   STATUS
 };

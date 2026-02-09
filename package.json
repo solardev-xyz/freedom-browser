@@ -43,6 +43,8 @@
     "radicle:init": "node scripts/init-radicle.js",
     "radicle:status": "curl -s http://127.0.0.1:8780/api/v1/ | head -c 500",
     "radicle:reset": "rm -rf radicle-data && echo 'Radicle data reset.'",
+    "identity:reset": "rm -rf bee-data ipfs-data radicle-data identity-data && echo 'All identity data reset (bee, ipfs, radicle, vault).'",
+    "dapp:reset": "node scripts/reset-dapp-permissions.js",
     "test:updater": "bash scripts/test-updater.sh",
     "serve:updates": "node scripts/serve-updates.js",
     "start:test-updater": "ENABLE_DEV_UPDATER=true npm start",
@@ -157,10 +159,14 @@
   },
   "dependencies": {
     "@ensdomains/content-hash": "^3.0.0",
+    "@metamask/browser-passworder": "^6.0.0",
+    "@scure/bip39": "^2.0.1",
     "better-sqlite3": "^12.6.2",
     "electron-log": "^5.4.3",
     "electron-updater": "^6.7.3",
-    "ethers": "^6.16.0"
+    "ethers": "^6.16.0",
+    "micro-key-producer": "^0.8.2",
+    "qrcode": "^1.5.4"
   },
   "title": "Freedom",
   "displayName": "Freedom"

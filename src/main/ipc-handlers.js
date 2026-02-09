@@ -90,7 +90,7 @@ function registerBaseIpcHandlers(callbacks = {}) {
       const normalized = new URL(baseUrl);
       activeRadBases.set(webContentsId, normalized);
     } catch (err) {
-      console.error('Invalid Radicle base URL received from renderer', err);
+      log.error('Invalid Radicle base URL received from renderer', err);
     }
   });
 

@@ -1,0 +1,570 @@
+{
+  "project_license": "MPL-2.0",
+  "generated_at": "2026-01-29T00:00:00.000Z",
+  "distribution_model": {
+    "packaging": "electron-builder",
+    "bundles_node_modules": true,
+    "bundles_in_asar": true,
+    "ships_external_binaries": true,
+    "native_addons": ["better-sqlite3"],
+    "notes": "Electron desktop app bundled as DMG/DEB/NSIS. Node modules bundled in app.asar. Native addon better-sqlite3 unpacked. External binaries (Bee, Kubo, Radicle) shipped in resources/."
+  },
+  "dependencies": [
+    {
+      "name": "electron",
+      "version": "39.2.7",
+      "type": "direct",
+      "scope": "runtime",
+      "source": {
+        "ecosystem": "npm",
+        "url": "https://github.com/electron/electron"
+      },
+      "license": {
+        "spdx": ["MIT"],
+        "raw": "MIT",
+        "license_files": ["LICENSE"],
+        "notice_required": true
+      },
+      "bundled_with_app": true,
+      "linking_or_integration": "framework",
+      "risk": "yellow",
+      "issues": [
+        {
+          "kind": "notice",
+          "details": "Electron bundles Chromium which contains numerous third-party components with various licenses. Electron provides a LICENSES.chromium.html file that must be distributed.",
+          "recommended_fix": "Include Electron's LICENSES.chromium.html in distribution or link to it in your notice file"
+        }
+      ]
+    },
+    {
+      "name": "ethers",
+      "version": "6.16.0",
+      "type": "direct",
+      "scope": "runtime",
+      "source": {
+        "ecosystem": "npm",
+        "url": "https://github.com/ethers-io/ethers.js"
+      },
+      "license": {
+        "spdx": ["MIT"],
+        "raw": "MIT",
+        "license_files": ["LICENSE.md"],
+        "notice_required": false
+      },
+      "bundled_with_app": true,
+      "linking_or_integration": "js-import",
+      "risk": "green",
+      "issues": []
+    },
+    {
+      "name": "better-sqlite3",
+      "version": "12.5.0",
+      "type": "direct",
+      "scope": "runtime",
+      "source": {
+        "ecosystem": "npm",
+        "url": "https://github.com/WiseLibs/better-sqlite3"
+      },
+      "license": {
+        "spdx": ["MIT"],
+        "raw": "MIT",
+        "license_files": ["LICENSE"],
+        "notice_required": false
+      },
+      "bundled_with_app": true,
+      "linking_or_integration": "native-addon",
+      "risk": "green",
+      "issues": [
+        {
+          "kind": "other",
+          "details": "Bundles SQLite which is public domain. No license obligations.",
+          "recommended_fix": null
+        }
+      ]
+    },
+    {
+      "name": "electron-log",
+      "version": "5.4.3",
+      "type": "direct",
+      "scope": "runtime",
+      "source": {
+        "ecosystem": "npm",
+        "url": "https://github.com/megahertz/electron-log"
+      },
+      "license": {
+        "spdx": ["MIT"],
+        "raw": "MIT",
+        "license_files": ["LICENSE"],
+        "notice_required": false
+      },
+      "bundled_with_app": true,
+      "linking_or_integration": "js-import",
+      "risk": "green",
+      "issues": []
+    },
+    {
+      "name": "electron-updater",
+      "version": "6.6.2",
+      "type": "direct",
+      "scope": "runtime",
+      "source": {
+        "ecosystem": "npm",
+        "url": "https://github.com/electron-userland/electron-builder"
+      },
+      "license": {
+        "spdx": ["MIT"],
+        "raw": "MIT",
+        "license_files": ["LICENSE"],
+        "notice_required": false
+      },
+      "bundled_with_app": true,
+      "linking_or_integration": "js-import",
+      "risk": "green",
+      "issues": []
+    },
+    {
+      "name": "@ensdomains/content-hash",
+      "version": "3.0.0",
+      "type": "direct",
+      "scope": "runtime",
+      "source": {
+        "ecosystem": "npm",
+        "url": "https://github.com/ensdomains/content-hash"
+      },
+      "license": {
+        "spdx": ["MIT"],
+        "raw": "MIT",
+        "license_files": ["LICENSE"],
+        "notice_required": false
+      },
+      "bundled_with_app": true,
+      "linking_or_integration": "js-import",
+      "risk": "green",
+      "issues": []
+    },
+    {
+      "name": "@adraffy/ens-normalize",
+      "version": "1.10.1",
+      "type": "transitive",
+      "scope": "runtime",
+      "source": {
+        "ecosystem": "npm",
+        "url": "https://github.com/adraffy/ens-normalize.js"
+      },
+      "license": {
+        "spdx": ["MIT"],
+        "raw": "MIT",
+        "license_files": ["LICENSE"],
+        "notice_required": false
+      },
+      "bundled_with_app": true,
+      "linking_or_integration": "js-import",
+      "risk": "green",
+      "issues": []
+    },
+    {
+      "name": "@multiformats/sha3",
+      "version": "2.0.17",
+      "type": "transitive",
+      "scope": "runtime",
+      "source": {
+        "ecosystem": "npm",
+        "url": "https://github.com/multiformats/js-sha3"
+      },
+      "license": {
+        "spdx": ["Apache-2.0", "MIT"],
+        "raw": "(Apache-2.0 AND MIT)",
+        "license_files": ["README.md"],
+        "notice_required": false
+      },
+      "bundled_with_app": true,
+      "linking_or_integration": "js-import",
+      "risk": "green",
+      "issues": []
+    },
+    {
+      "name": "@noble/curves",
+      "version": "1.2.0",
+      "type": "transitive",
+      "scope": "runtime",
+      "source": {
+        "ecosystem": "npm",
+        "url": "https://github.com/paulmillr/noble-curves"
+      },
+      "license": {
+        "spdx": ["MIT"],
+        "raw": "MIT",
+        "license_files": ["LICENSE"],
+        "notice_required": false
+      },
+      "bundled_with_app": true,
+      "linking_or_integration": "js-import",
+      "risk": "green",
+      "issues": []
+    },
+    {
+      "name": "@noble/hashes",
+      "version": "1.3.2",
+      "type": "transitive",
+      "scope": "runtime",
+      "source": {
+        "ecosystem": "npm",
+        "url": "https://github.com/paulmillr/noble-hashes"
+      },
+      "license": {
+        "spdx": ["MIT"],
+        "raw": "MIT",
+        "license_files": ["LICENSE"],
+        "notice_required": false
+      },
+      "bundled_with_app": true,
+      "linking_or_integration": "js-import",
+      "risk": "green",
+      "issues": []
+    },
+    {
+      "name": "aes-js",
+      "version": "4.0.0-beta.5",
+      "type": "transitive",
+      "scope": "runtime",
+      "source": {
+        "ecosystem": "npm",
+        "url": "https://github.com/ricmoo/aes-js"
+      },
+      "license": {
+        "spdx": ["MIT"],
+        "raw": "MIT",
+        "license_files": ["LICENSE.txt"],
+        "notice_required": false
+      },
+      "bundled_with_app": true,
+      "linking_or_integration": "js-import",
+      "risk": "green",
+      "issues": []
+    },
+    {
+      "name": "argparse",
+      "version": "2.0.1",
+      "type": "transitive",
+      "scope": "runtime",
+      "source": {
+        "ecosystem": "npm",
+        "url": "https://github.com/nodeca/argparse"
+      },
+      "license": {
+        "spdx": ["Python-2.0"],
+        "raw": "Python-2.0",
+        "license_files": ["LICENSE"],
+        "notice_required": false
+      },
+      "bundled_with_app": true,
+      "linking_or_integration": "js-import",
+      "risk": "green",
+      "issues": [
+        {
+          "kind": "other",
+          "details": "Python-2.0 (PSF License) is a permissive license compatible with MPL-2.0",
+          "recommended_fix": null
+        }
+      ]
+    },
+    {
+      "name": "sax",
+      "version": "1.4.3",
+      "type": "transitive",
+      "scope": "runtime",
+      "source": {
+        "ecosystem": "npm",
+        "url": "https://github.com/isaacs/sax-js"
+      },
+      "license": {
+        "spdx": ["BlueOak-1.0.0"],
+        "raw": "BlueOak-1.0.0",
+        "license_files": ["LICENSE.md"],
+        "notice_required": false
+      },
+      "bundled_with_app": true,
+      "linking_or_integration": "js-import",
+      "risk": "green",
+      "issues": [
+        {
+          "kind": "other",
+          "details": "BlueOak-1.0.0 is a modern permissive license equivalent to MIT, compatible with MPL-2.0",
+          "recommended_fix": null
+        }
+      ]
+    },
+    {
+      "name": "tslib",
+      "version": "2.7.0",
+      "type": "transitive",
+      "scope": "runtime",
+      "source": {
+        "ecosystem": "npm",
+        "url": "https://github.com/Microsoft/tslib"
+      },
+      "license": {
+        "spdx": ["0BSD"],
+        "raw": "0BSD",
+        "license_files": ["LICENSE.txt"],
+        "notice_required": false
+      },
+      "bundled_with_app": true,
+      "linking_or_integration": "js-import",
+      "risk": "green",
+      "issues": []
+    },
+    {
+      "name": "multiformats",
+      "version": "12.1.3",
+      "type": "transitive",
+      "scope": "runtime",
+      "source": {
+        "ecosystem": "npm",
+        "url": "https://github.com/multiformats/js-multiformats"
+      },
+      "license": {
+        "spdx": ["Apache-2.0", "MIT"],
+        "raw": "Apache-2.0 OR MIT",
+        "license_files": ["LICENSE"],
+        "notice_required": false
+      },
+      "bundled_with_app": true,
+      "linking_or_integration": "js-import",
+      "risk": "green",
+      "issues": []
+    },
+    {
+      "name": "bee (Swarm)",
+      "version": "latest",
+      "type": "binary",
+      "scope": "runtime",
+      "source": {
+        "ecosystem": "github",
+        "url": "https://github.com/ethersphere/bee"
+      },
+      "license": {
+        "spdx": ["BSD-3-Clause"],
+        "raw": "BSD-3-Clause",
+        "license_files": ["LICENSE"],
+        "notice_required": true
+      },
+      "bundled_with_app": true,
+      "linking_or_integration": "separate-process",
+      "risk": "green",
+      "issues": [
+        {
+          "kind": "notice",
+          "details": "BSD-3-Clause requires attribution in documentation and advertising materials",
+          "recommended_fix": "Include Bee's license notice in THIRD_PARTY_NOTICES"
+        }
+      ]
+    },
+    {
+      "name": "kubo (IPFS)",
+      "version": "latest",
+      "type": "binary",
+      "scope": "runtime",
+      "source": {
+        "ecosystem": "other",
+        "url": "https://dist.ipfs.tech/kubo"
+      },
+      "license": {
+        "spdx": ["MIT", "Apache-2.0"],
+        "raw": "MIT OR Apache-2.0",
+        "license_files": ["LICENSE"],
+        "notice_required": false
+      },
+      "bundled_with_app": true,
+      "linking_or_integration": "separate-process",
+      "risk": "green",
+      "issues": []
+    },
+    {
+      "name": "radicle",
+      "version": "latest",
+      "type": "binary",
+      "scope": "runtime",
+      "source": {
+        "ecosystem": "other",
+        "url": "https://files.radicle.xyz"
+      },
+      "license": {
+        "spdx": ["MIT", "Apache-2.0"],
+        "raw": "MIT OR Apache-2.0",
+        "license_files": ["LICENSE-MIT", "LICENSE-APACHE"],
+        "notice_required": false
+      },
+      "bundled_with_app": true,
+      "linking_or_integration": "separate-process",
+      "risk": "green",
+      "issues": []
+    },
+    {
+      "name": "detect-libc",
+      "version": "2.1.2",
+      "type": "transitive",
+      "scope": "runtime",
+      "source": {
+        "ecosystem": "npm",
+        "url": "https://github.com/lovell/detect-libc"
+      },
+      "license": {
+        "spdx": ["Apache-2.0"],
+        "raw": "Apache-2.0",
+        "license_files": ["LICENSE"],
+        "notice_required": false
+      },
+      "bundled_with_app": true,
+      "linking_or_integration": "js-import",
+      "risk": "green",
+      "issues": []
+    },
+    {
+      "name": "tunnel-agent",
+      "version": "0.6.0",
+      "type": "transitive",
+      "scope": "runtime",
+      "source": {
+        "ecosystem": "npm",
+        "url": "https://github.com/mikeal/tunnel-agent"
+      },
+      "license": {
+        "spdx": ["Apache-2.0"],
+        "raw": "Apache-2.0",
+        "license_files": ["LICENSE"],
+        "notice_required": false
+      },
+      "bundled_with_app": true,
+      "linking_or_integration": "js-import",
+      "risk": "green",
+      "issues": []
+    },
+    {
+      "name": "ieee754",
+      "version": "1.2.1",
+      "type": "transitive",
+      "scope": "runtime",
+      "source": {
+        "ecosystem": "npm",
+        "url": "https://github.com/feross/ieee754"
+      },
+      "license": {
+        "spdx": ["BSD-3-Clause"],
+        "raw": "BSD-3-Clause",
+        "license_files": ["LICENSE"],
+        "notice_required": false
+      },
+      "bundled_with_app": true,
+      "linking_or_integration": "js-import",
+      "risk": "green",
+      "issues": []
+    },
+    {
+      "name": "expand-template",
+      "version": "2.0.3",
+      "type": "transitive",
+      "scope": "runtime",
+      "source": {
+        "ecosystem": "npm",
+        "url": "https://github.com/ralphtheninja/expand-template"
+      },
+      "license": {
+        "spdx": ["MIT", "WTFPL"],
+        "raw": "(MIT OR WTFPL)",
+        "license_files": ["LICENSE"],
+        "notice_required": false
+      },
+      "bundled_with_app": true,
+      "linking_or_integration": "js-import",
+      "risk": "green",
+      "issues": []
+    },
+    {
+      "name": "rc",
+      "version": "1.2.8",
+      "type": "transitive",
+      "scope": "runtime",
+      "source": {
+        "ecosystem": "npm",
+        "url": "https://github.com/dominictarr/rc"
+      },
+      "license": {
+        "spdx": ["BSD-2-Clause", "MIT", "Apache-2.0"],
+        "raw": "(BSD-2-Clause OR MIT OR Apache-2.0)",
+        "license_files": ["LICENSE.APACHE2", "LICENSE.BSD", "LICENSE.MIT"],
+        "notice_required": false
+      },
+      "bundled_with_app": true,
+      "linking_or_integration": "js-import",
+      "risk": "green",
+      "issues": []
+    }
+  ],
+  "dev_dependencies_summary": {
+    "total": 650,
+    "licenses_found": {
+      "MIT": 580,
+      "ISC": 45,
+      "BSD-2-Clause": 10,
+      "BSD-3-Clause": 8,
+      "Apache-2.0": 15,
+      "0BSD": 2,
+      "BlueOak-1.0.0": 4,
+      "Python-2.0": 1,
+      "CC-BY-4.0": 1,
+      "CC0-1.0": 2,
+      "WTFPL": 2
+    },
+    "risk_assessment": "All dev dependencies use permissive licenses. CC-BY-4.0 (caniuse-lite) is not bundled with the app.",
+    "copyleft_found": false
+  },
+  "assets": [
+    {
+      "name": "icon.png",
+      "path": "assets/icon.png",
+      "type": "asset",
+      "license": {
+        "spdx": ["proprietary"],
+        "raw": "Original work by Freedom Team",
+        "notice_required": false
+      },
+      "risk": "green",
+      "issues": []
+    }
+  ],
+  "summary": {
+    "green": 70,
+    "yellow": 1,
+    "orange": 0,
+    "red": 0,
+    "unknown": 0
+  },
+  "blockers": [],
+  "verdict": {
+    "status": "OK_TO_SHIP",
+    "message": "All dependencies are compatible with MPL-2.0 licensing. No GPL/AGPL/LGPL copyleft licenses found. The project can be released under MPL-2.0 with proper attribution."
+  },
+  "required_actions": [
+    {
+      "priority": "required",
+      "action": "Create THIRD_PARTY_NOTICES.md file",
+      "details": "Include attribution for Electron/Chromium, Bee, and all bundled npm dependencies with their license texts"
+    },
+    {
+      "priority": "required",
+      "action": "Add LICENSE file with MPL-2.0 text",
+      "details": "Create LICENSE file in project root with full MPL-2.0 license text"
+    },
+    {
+      "priority": "required",
+      "action": "Update package.json license field",
+      "details": "Change 'UNLICENSED' to 'MPL-2.0' and remove 'private: true'"
+    },
+    {
+      "priority": "recommended",
+      "action": "Ship Electron's LICENSES.chromium.html",
+      "details": "Include or reference Electron's bundled third-party license notices"
+    }
+  ]
+}

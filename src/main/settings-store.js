@@ -23,6 +23,8 @@ const DEFAULT_SETTINGS = {
   startRadicleAtLaunch: false,
   autoUpdate: true,
   showBookmarkBar: false,
+  sidebarOpen: false,
+  sidebarWidth: 320,
 };
 
 let cachedSettings = null;

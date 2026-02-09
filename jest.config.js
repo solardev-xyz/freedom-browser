@@ -5,5 +5,7 @@ module.exports = {
   transform: {
     '^.+\\.js$': 'babel-jest',
   },
-  transformIgnorePatterns: ['/node_modules/'],
+  transformIgnorePatterns: [
+    '/node_modules/(?!(@scure|@noble|micro-key-producer)/)',
+  ],
 };
