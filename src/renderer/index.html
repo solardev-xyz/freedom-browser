@@ -198,6 +198,20 @@
                   d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"
                 />
               </svg>
+              <!-- Radicle icon (simplified seedling/branch) -->
+              <svg
+                class="icon-radicle"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M12 22V8" />
+                <path d="M12 8c0-4-3-6-7-6 0 4 2 7 7 6" />
+                <path d="M12 14c0-4 3-6 7-6 0 4-2 7-7 6" />
+              </svg>
             </span>
             <input
               id="address-input"
@@ -206,6 +220,25 @@
               placeholder="Enter hash, ID or URL"
               spellcheck="false"
             />
+            <button
+              id="github-bridge-btn"
+              class="icon-btn input-action-btn github-bridge-btn hidden"
+              type="button"
+              aria-label="Seed to Radicle"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M12 22V8" />
+                <path d="M12 8c0-4-3-6-7-6 0 4 2 7 7 6" />
+                <path d="M12 14c0-4 3-6 7-6 0 4-2 7-7 6" />
+              </svg>
+            </button>
             <button
               id="add-bookmark-btn"
               class="icon-btn input-action-btn hidden"
@@ -228,6 +261,113 @@
                 />
               </svg>
             </button>
+          </div>
+          <!-- GitHub Bridge dropdown panel -->
+          <div id="github-bridge-panel" class="github-bridge-panel hidden">
+            <div class="ghb-header">
+              <span class="ghb-title">Seed to Radicle</span>
+              <button id="ghb-close" class="icon-btn ghb-close" type="button" aria-label="Close">
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </div>
+            <!-- Prerequisites error state -->
+            <div id="ghb-prereq-error" class="ghb-state hidden">
+              <div class="ghb-prereq-message">
+                <svg class="ghb-warn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="10" />
+                  <line x1="12" y1="8" x2="12" y2="12" />
+                  <line x1="12" y1="16" x2="12.01" y2="16" />
+                </svg>
+                <span id="ghb-prereq-text"></span>
+              </div>
+            </div>
+            <!-- Ready state: repo info + import button -->
+            <div id="ghb-ready" class="ghb-state hidden">
+              <div class="ghb-repo-info">
+                <span class="ghb-repo-label">Repository</span>
+                <span id="ghb-repo-name" class="ghb-repo-name"></span>
+              </div>
+              <button id="ghb-import-btn" class="ghb-import-btn" type="button">Seed to Radicle</button>
+            </div>
+            <!-- Importing state: progress steps -->
+            <div id="ghb-importing" class="ghb-state hidden">
+              <div class="ghb-steps">
+                <div class="ghb-step" data-step="cloning">
+                  <span class="ghb-step-indicator"></span>
+                  <span class="ghb-step-label">Cloning repository</span>
+                </div>
+                <div class="ghb-step" data-step="initializing">
+                  <span class="ghb-step-indicator"></span>
+                  <span class="ghb-step-label">Initializing Radicle project</span>
+                </div>
+                <div class="ghb-step" data-step="pushing">
+                  <span class="ghb-step-indicator"></span>
+                  <span class="ghb-step-label">Pushing to network</span>
+                </div>
+              </div>
+            </div>
+            <!-- Success state -->
+            <div id="ghb-success" class="ghb-state hidden">
+              <div class="ghb-success-icon">
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <polyline points="20 6 9 17 4 12" />
+                </svg>
+              </div>
+              <div class="ghb-success-text">Seeded successfully</div>
+              <div class="ghb-rid-row">
+                <code id="ghb-rid"></code>
+                <button id="ghb-copy-rid" class="ghb-copy-btn" type="button" title="Copy RID">
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                    <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
+                  </svg>
+                </button>
+              </div>
+              <button id="ghb-browse-btn" class="ghb-import-btn" type="button">Browse on Radicle</button>
+            </div>
+            <!-- Error state -->
+            <div id="ghb-error" class="ghb-state hidden">
+              <div class="ghb-error-icon">
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </div>
+              <div class="ghb-error-text">Seeding failed</div>
+              <div id="ghb-error-detail" class="ghb-error-detail"></div>
+              <button id="ghb-retry-btn" class="ghb-import-btn" type="button">Try Again</button>
+            </div>
           </div>
           <div id="autocomplete-dropdown" class="autocomplete-dropdown hidden" role="listbox">
             <!-- Suggestions inserted dynamically -->
@@ -329,6 +469,41 @@
             <div class="ipfs-info-row">
               <span class="ipfs-info-label">Version:</span>
               <span id="ipfs-version-text"></span>
+            </div>
+          </div>
+
+          <!-- Divider -->
+          <div class="nodes-divider"></div>
+
+          <!-- Radicle Section -->
+          <button id="radicle-toggle-btn" class="menu-item radicle-toggle" type="button">
+            <span class="radicle-toggle-label">
+              Radicle
+              <span class="radicle-toggle-switch" id="radicle-toggle-switch">
+                <span class="radicle-toggle-knob"></span>
+              </span>
+            </span>
+          </button>
+          <div class="radicle-info">
+            <div class="radicle-info-row node-status-row" id="radicle-status-row">
+              <span class="radicle-info-label" id="radicle-status-label"></span>
+              <span id="radicle-status-value"></span>
+            </div>
+            <div class="radicle-info-row">
+              <span class="radicle-info-label">Connected Peers:</span>
+              <span id="radicle-peers-count">--</span>
+            </div>
+            <div class="radicle-info-row">
+              <span class="radicle-info-label">Seeded Repos:</span>
+              <span id="radicle-repos-count">--</span>
+            </div>
+            <div class="radicle-info-row">
+              <span class="radicle-info-label">Version:</span>
+              <span id="radicle-version-text"></span>
+            </div>
+            <div class="radicle-info-row">
+              <span class="radicle-info-label">Node ID:</span>
+              <span id="radicle-node-id" class="node-id-truncated" title="">--</span>
             </div>
           </div>
         </div>
@@ -508,6 +683,13 @@
               <span class="toggle-label">Start IPFS node</span>
               <label class="toggle-switch">
                 <input type="checkbox" id="start-ipfs-at-launch" />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="settings-toggle-row">
+              <span class="toggle-label">Start Radicle node</span>
+              <label class="toggle-switch">
+                <input type="checkbox" id="start-radicle-at-launch" />
                 <span class="toggle-slider"></span>
               </label>
             </div>

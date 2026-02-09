@@ -18,6 +18,13 @@ export const state = {
       statusMessage: null,
       tempMessage: null,
     },
+    radicle: {
+      api: null,
+      gateway: null,
+      mode: 'none',
+      statusMessage: null,
+      tempMessage: null,
+    },
   },
 
   // Bee/Swarm Gateway config (defaults from env or hardcoded, updated from registry)
@@ -70,6 +77,22 @@ export const state = {
   ipfsVersionFetched: false,
   ipfsVersionValue: '',
   suppressIpfsRunningStatus: false,
+
+  // Radicle state
+  currentRadicleStatus: 'stopped',
+  radicleInfoInterval: null,
+  radicleVersionFetched: false,
+  radicleVersionValue: '',
+  suppressRadicleRunningStatus: false,
+
+  // Radicle Gateway config (defaults updated from registry)
+  radicleBase: 'http://127.0.0.1:8780',
+  get radicleApiPrefix() {
+    return `${this.radicleBase}/api/v1/repos/`;
+  },
+
+  // Navigation state for Radicle
+  currentRadBase: null,
 };
 
 // Build Bee URL using registry or fallback to defaults
@@ -81,6 +104,12 @@ export const buildBeeUrl = (endpoint) => {
 // Build IPFS API URL using registry or fallback to defaults
 export const buildIpfsApiUrl = (endpoint) => {
   const base = state.registry.ipfs.api || state.ipfsApiBase;
+  return `${base}${endpoint}`;
+};
+
+// Build Radicle API URL using registry or fallback to defaults
+export const buildRadicleUrl = (endpoint) => {
+  const base = state.registry.radicle.api || state.radicleBase;
   return `${base}${endpoint}`;
 };
 
@@ -97,6 +126,9 @@ export const updateRegistry = (newRegistry) => {
   }
   if (newRegistry.ipfs.api) {
     state.ipfsApiBase = newRegistry.ipfs.api.replace(/\/$/, '');
+  }
+  if (newRegistry.radicle?.api) {
+    state.radicleBase = newRegistry.radicle.api.replace(/\/$/, '');
   }
 };
 

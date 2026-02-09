@@ -3,6 +3,7 @@ const path = require('path');
 
 const BEE_BIN_DIR = path.join(__dirname, '..', 'bee-bin');
 const IPFS_BIN_DIR = path.join(__dirname, '..', 'ipfs-bin');
+const RADICLE_BIN_DIR = path.join(__dirname, '..', 'radicle-bin');
 
 function getPlatformArch() {
   const args = process.argv.slice(2);
@@ -84,6 +85,19 @@ function checkBinaries(platforms) {
     if (!fs.existsSync(ipfsPath)) {
       missing.push(`ipfs binary for ${platformDir}: ${ipfsPath}`);
     }
+
+    // Radicle: no official Windows binaries yet — skip check for win targets
+    if (os !== 'win') {
+      const nodePath = path.join(RADICLE_BIN_DIR, platformDir, 'radicle-node');
+      const httpdPath = path.join(RADICLE_BIN_DIR, platformDir, 'radicle-httpd');
+
+      if (!fs.existsSync(nodePath)) {
+        missing.push(`radicle-node binary for ${platformDir}: ${nodePath}`);
+      }
+      if (!fs.existsSync(httpdPath)) {
+        missing.push(`radicle-httpd binary for ${platformDir}: ${httpdPath}`);
+      }
+    }
   }
 
   return missing;
@@ -100,7 +114,8 @@ function main() {
     missing.forEach((m) => console.error(`  - ${m}`));
     console.error('\nRun the following commands to download binaries:');
     console.error('  npm run bee:download');
-    console.error('  npm run ipfs:download\n');
+    console.error('  npm run ipfs:download');
+    console.error('  npm run radicle:download\n');
     process.exit(1);
   }
 

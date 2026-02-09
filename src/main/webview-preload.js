@@ -56,6 +56,16 @@ contextBridge.exposeInMainWorld('freedomAPI', {
   getCachedFavicon: guardInternal('getCachedFavicon', (url) =>
     ipcRenderer.invoke('favicon:get-cached', url)
   ),
+
+  // Radicle
+  seedRadicle: guardInternal('seedRadicle', (rid) => ipcRenderer.invoke('radicle:seed', rid)),
+  getRadicleStatus: guardInternal('getRadicleStatus', () => ipcRenderer.invoke('radicle:getStatus')),
+  getRadicleRepoPayload: guardInternal('getRadicleRepoPayload', (rid) =>
+    ipcRenderer.invoke('radicle:getRepoPayload', rid)
+  ),
+  syncRadicleRepo: guardInternal('syncRadicleRepo', (rid) =>
+    ipcRenderer.invoke('radicle:syncRepo', rid)
+  ),
 });
 
 // ============================================

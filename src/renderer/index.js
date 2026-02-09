@@ -3,6 +3,11 @@ import { updateRegistry } from './lib/state.js';
 import { initBeeUi, updateBeeStatusLine, updateBeeToggleState } from './lib/bee-ui.js';
 import { initIpfsUi, updateIpfsStatusLine, updateIpfsToggleState } from './lib/ipfs-ui.js';
 import {
+  initRadicleUi,
+  updateRadicleStatusLine,
+  updateRadicleToggleState,
+} from './lib/radicle-ui.js';
+import {
   initMenus,
   setOnOpenHistory,
   setOnNewTab,
@@ -40,6 +45,7 @@ import {
   refreshCache as refreshAutocompleteCache,
   hide as hideAutocomplete,
 } from './lib/autocomplete.js';
+import { initGithubBridgeUi, setOnOpenRadicleUrl } from './lib/github-bridge-ui.js';
 import { initMenuBackdrop } from './lib/menu-backdrop.js';
 import { initPageContextMenu, hidePageContextMenu } from './lib/page-context-menu.js';
 import { pushDebug } from './lib/debug.js';
@@ -57,6 +63,8 @@ window.serviceRegistry?.onUpdate?.((registry) => {
   updateBeeToggleState();
   updateIpfsStatusLine();
   updateIpfsToggleState();
+  updateRadicleStatusLine();
+  updateRadicleToggleState();
 });
 
 // Fetch initial registry state
@@ -77,6 +85,7 @@ setOnNavigate(loadTarget);
 setOnHistoryRecorded(refreshAutocompleteCache);
 setOnOpenHistory(() => loadTarget('freedom://history'));
 setOnNewTab(() => createTab());
+setOnOpenRadicleUrl((url) => loadTarget(url));
 setOnMenuOpening(hideAutocomplete);
 setOnTabContextMenuOpening(hideAutocomplete);
 setOnBookmarkContextMenuOpening(hideAutocomplete);
@@ -173,6 +182,8 @@ window.addEventListener('DOMContentLoaded', () => {
   initMenus();
   initBeeUi();
   initIpfsUi();
+  initRadicleUi();
+  initGithubBridgeUi();
   initSettings();
   initBookmarks();
   initNavigation(); // Sets up event handler with tabs module

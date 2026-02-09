@@ -28,6 +28,20 @@ export const isValidCid = (str) => {
   return false;
 };
 
+// Check if a string looks like a valid Radicle ID (RID)
+// RIDs are base58 strings starting with 'z', variable length
+export const isValidRadicleId = (str) => {
+  if (!str || typeof str !== 'string') return false;
+
+  // Radicle IDs start with 'z' followed by base58 characters
+  // Length varies - e.g. z3gqcJUoA1n9HaHKufZs5FCSGazv5 is 30 chars
+  if (/^z[1-9A-HJ-NP-Za-km-z]{20,60}$/.test(str)) {
+    return true;
+  }
+
+  return false;
+};
+
 // Check if a string looks like a domain name (not a Swarm hash)
 const looksLikeDomain = (str) => {
   // Must contain at least one dot
@@ -248,7 +262,8 @@ export const deriveDisplayValue = (
   bzzRoutePrefix,
   homeUrlNormalized,
   ipfsRoutePrefix = null,
-  ipnsRoutePrefix = null
+  ipnsRoutePrefix = null,
+  radicleApiPrefix = null
 ) => {
   if (!url) {
     return '';
@@ -301,6 +316,17 @@ export const deriveDisplayValue = (
     } catch {
       const cleaned = remainder.replace(/\/+$/, '');
       return cleaned ? `ipns://${cleaned}` : '';
+    }
+  }
+
+  if (radicleApiPrefix && url.startsWith(radicleApiPrefix)) {
+    const remainder = url.slice(radicleApiPrefix.length);
+    try {
+      const decoded = decodeURIComponent(remainder).replace(/\/+$/, '');
+      return decoded ? `rad://${decoded}` : '';
+    } catch (err) {
+      const cleaned = remainder.replace(/\/+$/, '');
+      return cleaned ? `rad://${cleaned}` : '';
     }
   }
 
@@ -484,4 +510,171 @@ export const formatIpfsUrl = (input, ipfsRoutePrefix) => {
 
     return null;
   }
+};
+
+// ============ Radicle URL Utilities ============
+
+/**
+ * Parse a Radicle input (RID with optional path)
+ * Accepts both rad:RID and rad://RID formats
+ * @param {string} rawInput - Input like "zRID", "rad:zRID/tree/main/path", or "rad://zRID"
+ * @param {string} radicleApiPrefix - API prefix like "http://127.0.0.1:8080/api/v1/repos/"
+ * @returns {object|null} Parsed result with rid, tail, baseUrl, displayValue
+ */
+export const parseRadicleInput = (rawInput, radicleApiPrefix) => {
+  // Remove rad: or rad:// prefix
+  let withoutScheme = rawInput.replace(/^rad:\/\//i, '').replace(/^rad:/i, '').replace(/^\/+/, '');
+
+  if (!withoutScheme) {
+    return null;
+  }
+
+  let working = withoutScheme;
+  let fragment = '';
+  let query = '';
+
+  const hashIndex = working.indexOf('#');
+  if (hashIndex !== -1) {
+    fragment = working.slice(hashIndex);
+    working = working.slice(0, hashIndex);
+  }
+
+  const queryIndex = working.indexOf('?');
+  if (queryIndex !== -1) {
+    query = working.slice(queryIndex);
+    working = working.slice(0, queryIndex);
+  }
+
+  const slashIndex = working.indexOf('/');
+  let rid = working;
+  let path = '';
+  if (slashIndex !== -1) {
+    rid = working.slice(0, slashIndex);
+    path = working.slice(slashIndex);
+  }
+
+  if (!rid) {
+    return null;
+  }
+
+  const tail = `${path}${query}${fragment}`;
+  const baseUrl = ensureTrailingSlash(`${radicleApiPrefix}${rid}`);
+
+  return {
+    rid,
+    tail,
+    baseUrl,
+    displayValue: `rad://${rid}${tail}`,
+  };
+};
+
+/**
+ * Derive Radicle base URL from an API URL
+ * @param {string|URL} input - URL like "http://127.0.0.1:8080/api/v1/repos/zRID/tree/main"
+ * @returns {string|null} Base URL like "http://127.0.0.1:8080/api/v1/repos/zRID/"
+ */
+export const deriveRadBaseFromUrl = (input) => {
+  if (!input) {
+    return null;
+  }
+  try {
+    const parsed = typeof input === 'string' ? new URL(input) : input;
+    const segments = parsed.pathname.split('/').filter(Boolean);
+    // Look for /api/v1/repos/RID pattern
+    if (segments.length >= 4 &&
+        segments[0] === 'api' &&
+        segments[1] === 'v1' &&
+        segments[2] === 'projects') {
+      const rid = segments[3];
+      if (rid && rid.startsWith('z')) {
+        return ensureTrailingSlash(`${parsed.origin}/api/v1/repos/${rid}`);
+      }
+    }
+  } catch (err) {
+    return null;
+  }
+  return null;
+};
+
+/**
+ * Format user input into a Radicle browser page URL
+ * @param {string} input - User input (RID, rad:RID, etc.)
+ * @param {string} radicleBase - Radicle httpd base URL like "http://127.0.0.1:8780"
+ * @returns {object|null} Object with targetUrl, displayValue, protocol
+ */
+export const formatRadicleUrl = (input, radicleBase) => {
+  const raw = (input || '').trim();
+  if (!raw) {
+    return null;
+  }
+
+  // Helper to build rad-browser.html URL
+  const buildBrowserUrl = (rid, path) => {
+    const browserUrl = new URL('pages/rad-browser.html', window.location.href);
+    browserUrl.searchParams.set('rid', rid);
+    browserUrl.searchParams.set('base', radicleBase);
+    if (path) {
+      browserUrl.searchParams.set('path', path);
+    }
+    return browserUrl.toString();
+  };
+
+  // Check if it starts with rad: or rad:// prefix
+  if (raw.toLowerCase().startsWith('rad:')) {
+    // Handle both rad:RID and rad://RID formats
+    const withoutScheme = raw.replace(/^rad:\/\//i, '').replace(/^rad:/i, '').replace(/^\/+/, '');
+    if (!withoutScheme) return null;
+
+    const slashIndex = withoutScheme.indexOf('/');
+    const rid = slashIndex === -1 ? withoutScheme : withoutScheme.slice(0, slashIndex);
+    const path = slashIndex === -1 ? '' : withoutScheme.slice(slashIndex);
+
+    if (!rid || !isValidRadicleId(rid)) return null;
+
+    return {
+      targetUrl: buildBrowserUrl(rid, path),
+      displayValue: `rad://${rid}${path}`,
+      protocol: 'radicle',
+    };
+  }
+
+  // Check if it's a raw Radicle ID (starts with z)
+  const slashIndex = raw.indexOf('/');
+  const firstSegment = slashIndex === -1 ? raw : raw.slice(0, slashIndex);
+
+  if (isValidRadicleId(firstSegment)) {
+    const rid = firstSegment;
+    const path = slashIndex === -1 ? '' : raw.slice(slashIndex);
+
+    return {
+      targetUrl: buildBrowserUrl(rid, path),
+      displayValue: `rad://${rid}${path}`,
+      protocol: 'radicle',
+    };
+  }
+
+  return null;
+};
+
+/**
+ * Derive display value for Radicle URLs
+ * @param {string} url - API URL like "http://127.0.0.1:8080/api/v1/repos/zRID/tree/main"
+ * @param {string} radicleApiPrefix - API prefix to strip
+ * @returns {string} Display value like "rad://zRID/tree/main"
+ */
+export const deriveRadicleDisplayValue = (url, radicleApiPrefix) => {
+  if (!url || !radicleApiPrefix) return url;
+
+  if (url.startsWith(radicleApiPrefix)) {
+    const remainder = url.slice(radicleApiPrefix.length);
+    try {
+      const decoded = decodeURIComponent(remainder).replace(/\/+$/, '');
+      return decoded ? `rad://${decoded}` : '';
+    } catch (err) {
+      const cleaned = remainder.replace(/\/+$/, '');
+      return cleaned ? `rad://${cleaned}` : '';
+    }
+  }
+
+  return url;
 };

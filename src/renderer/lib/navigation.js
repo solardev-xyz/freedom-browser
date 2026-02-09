@@ -2,12 +2,17 @@
 import { state } from './state.js';
 import { pushDebug } from './debug.js';
 import { updateBookmarkButtonVisibility } from './bookmarks-ui.js';
+import { updateGithubBridgeIcon } from './github-bridge-ui.js';
 import {
   formatBzzUrl,
   formatIpfsUrl,
+  formatRadicleUrl,
   deriveDisplayValue,
   deriveBzzBaseFromUrl,
   deriveIpfsBaseFromUrl,
+  deriveRadBaseFromUrl,
+  isValidCid,
+  isValidRadicleId,
   applyEnsNamePreservation,
 } from './url-utils.js';
 import {
@@ -67,6 +72,7 @@ export const setOnHistoryRecorded = (callback) => {
 const setLoading = (isLoading) => {
   setTabLoading(isLoading);
   updateBookmarkButtonVisibility();
+  updateGithubBridgeIcon();
 };
 
 // Track certificate status for current page
@@ -90,6 +96,8 @@ const updateProtocolIcon = () => {
     protocol = 'ipfs';
   } else if (value.startsWith('ipns://')) {
     protocol = 'ipns';
+  } else if (value.startsWith('rad://')) {
+    protocol = 'radicle';
   } else if (value.startsWith('freedom://')) {
     // Internal pages - no icon
     protocol = null;
@@ -200,6 +208,29 @@ const syncIpfsBase = (nextBase) => {
     })
     .catch((err) => {
       console.error('Failed to sync ipfs base', err);
+    });
+};
+
+const syncRadBase = (nextBase) => {
+  const navState = getNavState();
+  if (!electronAPI || (!electronAPI.setRadBase && !electronAPI.clearRadBase)) {
+    return;
+  }
+  if (navState.currentRadBase === nextBase) {
+    return;
+  }
+  navState.currentRadBase = nextBase || null;
+  ensureWebContentsId()
+    .then((id) => {
+      if (!id) return;
+      if (navState.currentRadBase) {
+        electronAPI.setRadBase?.(id, navState.currentRadBase);
+      } else {
+        electronAPI.clearRadBase?.(id);
+      }
+    })
+    .catch((err) => {
+      console.error('Failed to sync rad base', err);
     });
 };
 
@@ -321,7 +352,8 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null) 
       state.bzzRoutePrefix,
       homeUrlNormalized,
       state.ipfsRoutePrefix,
-      state.ipnsRoutePrefix
+      state.ipnsRoutePrefix,
+      state.radicleApiPrefix
     );
     displayInner = applyEnsNamePreservation(displayInner, state.knownEnsNames);
     const displayUrl = `view-source:${displayInner || innerUrl}`;
@@ -431,7 +463,48 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null) 
     return;
   }
 
-  // Try IPFS first (ipfs://, ipns://, or raw CID)
+  // Try Radicle (rad:RID or rad://RID)
+  if (value.trim().toLowerCase().startsWith('rad:') || value.trim().toLowerCase().startsWith('rad://')) {
+    const radicleTarget = formatRadicleUrl(value, state.radicleBase);
+    if (radicleTarget) {
+      addressInput.value = displayOverride || radicleTarget.displayValue;
+      pushDebug(`[AddressBar] Loading Radicle target, set to: ${addressInput.value}`);
+      navState.pendingTitleForUrl = radicleTarget.targetUrl;
+      navState.pendingNavigationUrl = radicleTarget.targetUrl;
+      navState.hasNavigatedDuringCurrentLoad = false;
+      // If node is offline, pass status param so rad-browser.html shows error immediately
+      if (state.currentRadicleStatus === 'stopped' || state.currentRadicleStatus === 'error') {
+        const offlineUrl = new URL(radicleTarget.targetUrl);
+        offlineUrl.searchParams.set('status', 'offline');
+        webview.loadURL(offlineUrl.toString());
+      } else {
+        webview.loadURL(radicleTarget.targetUrl);
+      }
+      pushDebug(`Loading ${radicleTarget.displayValue} via ${radicleTarget.targetUrl}`);
+      // rad-browser.html handles its own API calls, no base sync needed
+      syncRadBase(null);
+      syncBzzBase(null);
+      syncIpfsBase(null);
+      updateProtocolIcon();
+      return;
+    }
+    // Invalid Radicle ID — show error page
+    const withoutScheme = value.trim().replace(/^rad:\/\//i, '').replace(/^rad:/i, '');
+    pushDebug(`Invalid Radicle ID: ${withoutScheme}`);
+    const errorUrl = new URL('pages/rad-browser.html', window.location.href);
+    errorUrl.searchParams.set('error', 'invalid-rid');
+    errorUrl.searchParams.set('input', withoutScheme);
+    addressInput.value = value.trim();
+    navState.pendingNavigationUrl = errorUrl.toString();
+    navState.hasNavigatedDuringCurrentLoad = false;
+    webview.loadURL(errorUrl.toString());
+    syncRadBase(null);
+    syncBzzBase(null);
+    syncIpfsBase(null);
+    return;
+  }
+
+  // Try IPFS (ipfs://, ipns://, or raw CID)
   const ipfsTarget = formatIpfsUrl(value, state.ipfsRoutePrefix);
   if (ipfsTarget) {
     // Clear ENS mapping if directly navigating (not via ENS resolution)
@@ -450,6 +523,7 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null) 
     pushDebug(`Loading ${ipfsTarget.displayValue} via ${ipfsTarget.targetUrl}`);
     syncIpfsBase(ipfsTarget.baseUrl || null);
     syncBzzBase(null); // Clear bzz base when loading IPFS
+    syncRadBase(null); // Clear rad base when loading IPFS
     return;
   }
 
@@ -470,6 +544,7 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null) 
     pushDebug(`Loading ${target.displayValue} via ${target.targetUrl}`);
     syncBzzBase(target.baseUrl || null);
     syncIpfsBase(null); // Clear ipfs base when loading bzz
+    syncRadBase(null); // Clear rad base when loading bzz
     return;
   }
 
@@ -484,6 +559,7 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null) 
     pushDebug(`Loading ${value}`);
     syncBzzBase(null);
     syncIpfsBase(null);
+    syncRadBase(null);
     return;
   }
 
@@ -509,7 +585,8 @@ const stopLoadingAndRestore = () => {
       state.bzzRoutePrefix,
       homeUrlNormalized,
       state.ipfsRoutePrefix,
-      state.ipnsRoutePrefix
+      state.ipnsRoutePrefix,
+      state.radicleApiPrefix
     );
     addressInput.value = display;
     pushDebug(`[AddressBar] Restored to: ${display} (raw: ${targetUrl})`);
@@ -527,6 +604,7 @@ export const loadHomePage = () => {
   }
   syncBzzBase(null);
   syncIpfsBase(null);
+  syncRadBase(null);
   addressInput.value = '';
   updateProtocolIcon();
   navState.pendingNavigationUrl = homeUrlNormalized;
@@ -579,6 +657,22 @@ export const hardReloadPage = () => {
   retryErrorPageOrReload(webview, true);
 };
 
+// Convert rad-browser.html URL back to rad:// format
+const getRadicleDisplayUrl = (url) => {
+  if (!url || !url.includes('rad-browser.html')) return null;
+  try {
+    const parsed = new URL(url);
+    const rid = parsed.searchParams.get('rid');
+    const path = parsed.searchParams.get('path') || '';
+    if (rid) {
+      return `rad://${rid}${path}`;
+    }
+  } catch (err) {
+    // Ignore parse errors
+  }
+  return null;
+};
+
 const handleNavigationEvent = (event) => {
   const navState = getNavState();
   const webview = getActiveWebview();
@@ -610,7 +704,8 @@ const handleNavigationEvent = (event) => {
         state.bzzRoutePrefix,
         homeUrlNormalized,
         state.ipfsRoutePrefix,
-        state.ipnsRoutePrefix
+        state.ipnsRoutePrefix,
+        state.radicleApiPrefix
       );
       displayInner = applyEnsNamePreservation(displayInner, state.knownEnsNames);
       const displayUrl = `view-source:${displayInner || event.url}`;
@@ -622,6 +717,7 @@ const handleNavigationEvent = (event) => {
       electronAPI?.setWindowTitle?.(displayUrl);
       updateNavigationState();
       updateBookmarkButtonVisibility();
+  updateGithubBridgeIcon();
       updateProtocolIcon();
       return;
     }
@@ -640,6 +736,23 @@ const handleNavigationEvent = (event) => {
       navState.hasNavigatedDuringCurrentLoad = true;
       updateNavigationState();
       updateBookmarkButtonVisibility();
+  updateGithubBridgeIcon();
+      return;
+    }
+
+    // Check for rad-browser.html URLs (Radicle protocol)
+    const radicleDisplayUrl = getRadicleDisplayUrl(event.url);
+    if (radicleDisplayUrl) {
+      addressInput.value = radicleDisplayUrl;
+      pushDebug(`[AddressBar] Radicle page: ${radicleDisplayUrl}`);
+      navState.pendingTitleForUrl = event.url;
+      navState.pendingNavigationUrl = event.url;
+      navState.currentPageUrl = event.url;
+      navState.hasNavigatedDuringCurrentLoad = true;
+      updateNavigationState();
+      updateBookmarkButtonVisibility();
+  updateGithubBridgeIcon();
+      updateProtocolIcon();
       return;
     }
 
@@ -653,7 +766,8 @@ const handleNavigationEvent = (event) => {
             state.bzzRoutePrefix,
             homeUrlNormalized,
             state.ipfsRoutePrefix,
-            state.ipnsRoutePrefix
+            state.ipnsRoutePrefix,
+            state.radicleApiPrefix
           );
           addressInput.value = display;
           pushDebug(`[AddressBar] Error Page -> Original: ${display}`);
@@ -671,7 +785,8 @@ const handleNavigationEvent = (event) => {
         state.bzzRoutePrefix,
         homeUrlNormalized,
         state.ipfsRoutePrefix,
-        state.ipnsRoutePrefix
+        state.ipnsRoutePrefix,
+        state.radicleApiPrefix
       );
       derived = applyEnsNamePreservation(derived, state.knownEnsNames);
 
@@ -686,11 +801,13 @@ const handleNavigationEvent = (event) => {
         pushDebug(`[AddressBar] Skipped update (already ${derived})`);
       }
 
-      // Sync bases for both protocols
+      // Sync bases for all protocols
       const bzzBase = deriveBzzBaseFromUrl(event.url);
       const ipfsBase = deriveIpfsBaseFromUrl(event.url);
+      const radBase = deriveRadBaseFromUrl(event.url);
       syncBzzBase(bzzBase);
       syncIpfsBase(ipfsBase);
+      syncRadBase(radBase);
     }
 
     navState.pendingTitleForUrl = event.url;
@@ -702,6 +819,7 @@ const handleNavigationEvent = (event) => {
   }
   updateNavigationState();
   updateBookmarkButtonVisibility();
+  updateGithubBridgeIcon();
   updateProtocolIcon();
 };
 
@@ -794,7 +912,8 @@ export const initNavigation = () => {
           state.bzzRoutePrefix,
           homeUrlNormalized,
           state.ipfsRoutePrefix,
-          state.ipnsRoutePrefix
+          state.ipnsRoutePrefix,
+          state.radicleApiPrefix
         );
       }
       updateProtocolIcon();
@@ -1130,7 +1249,8 @@ export const initNavigation = () => {
                 state.bzzRoutePrefix,
                 homeUrlNormalized,
                 state.ipfsRoutePrefix,
-                state.ipnsRoutePrefix
+                state.ipnsRoutePrefix,
+                state.radicleApiPrefix
               );
               // Apply ENS name preservation to show ens:// URLs instead of resolved bzz/ipfs URLs
               display = applyEnsNamePreservation(display, state.knownEnsNames);
@@ -1157,6 +1277,9 @@ export const initNavigation = () => {
           if (tabNavState.currentIpfsBase) {
             syncIpfsBase(tabNavState.currentIpfsBase);
           }
+          if (tabNavState.currentRadBase) {
+            syncRadBase(tabNavState.currentRadBase);
+          }
           // Sync navigationState.currentPageUrl if tab.url is more recent
           if (data.tab.url && data.tab.url !== tabNavState.currentPageUrl) {
             tabNavState.currentPageUrl = data.tab.url;
@@ -1181,6 +1304,7 @@ export const initNavigation = () => {
         }
         updateNavigationState();
         updateBookmarkButtonVisibility();
+  updateGithubBridgeIcon();
         updateProtocolIcon();
         break;
     }

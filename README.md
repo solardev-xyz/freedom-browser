@@ -3,8 +3,8 @@
 [![License: MPL-2.0](https://img.shields.io/badge/License-MPL_2.0-brightgreen.svg)](https://opensource.org/licenses/MPL-2.0)
 [![Platform](https://img.shields.io/badge/platform-macOS%20|%20Linux%20|%20Windows-lightgrey)](https://github.com/solardev-xyz/freedom-browser/releases)
 
-Freedom is a browser for the decentralized web, with Swarm, IPFS, and ENS as first-class protocols.
-It ships with integrated Swarm and IPFS nodes, enabling direct peer-to-peer network access without relying on centralized HTTP gateways.
+Freedom is a browser for the decentralized web, with Swarm, IPFS, Radicle, and ENS as first-class protocols.
+It ships with integrated Swarm, IPFS, and Radicle nodes, enabling direct peer-to-peer network access without relying on centralized HTTP gateways.
 
 ---
 
@@ -23,6 +23,7 @@ It ships with integrated Swarm and IPFS nodes, enabling direct peer-to-peer netw
    ```bash
    npm run bee:download
    npm run ipfs:download
+   npm run radicle:download
    ```
 
 4. **Launch the app:**
@@ -31,40 +32,40 @@ It ships with integrated Swarm and IPFS nodes, enabling direct peer-to-peer netw
    npm start
    ```
 
-5. Both nodes start automatically by default. Enter a Swarm hash, IPFS CID, `bzz://` URL, `ipfs://` URL, or `.eth`/`.box` domain in the address bar.
+5. All nodes start automatically by default. Enter a Swarm hash, IPFS CID, Radicle ID, `bzz://` URL, `ipfs://` URL, `rad://` URL, or `.eth`/`.box` domain in the address bar.
 
 ---
 
 ## Architecture
 
-Freedom Browser is an Electron application. Protocol logic lives in the main process; the renderer is a modular UI layer that talks to it over IPC (channels defined in `src/shared/ipc-channels.js`). The main process manages node lifecycles (`bee-manager.js`, `ipfs-manager.js`), URL rewriting (`request-rewriter.js`), and persistent data (settings, bookmarks, history). A central `service-registry.js` tracks node endpoints, modes, and status, and broadcasts state to all windows — both node managers and the request rewriter read from it.
+Freedom Browser is an Electron application. Protocol logic lives in the main process; the renderer is a modular UI layer that talks to it over IPC (channels defined in `src/shared/ipc-channels.js`). The main process manages node lifecycles (`bee-manager.js`, `ipfs-manager.js`, `radicle-manager.js`), URL rewriting (`request-rewriter.js`), and persistent data (settings, bookmarks, history). A central `service-registry.js` tracks node endpoints, modes, and status, and broadcasts state to all windows — both node managers and the request rewriter read from it.
 
-When a user enters a `bzz://`, `ipfs://`, `ipns://`, or ENS URL, the main process rewrites it to the active gateway URL via the registry, and subsequent webview requests are normalized to stay within the active hash/CID base.
+When a user enters a `bzz://`, `ipfs://`, `ipns://`, `rad://`, or ENS URL, the main process rewrites it to the active gateway URL via the registry, and subsequent webview requests are normalized to stay within the active hash/CID/RID base.
 
 ---
 
 ## Features
 
-### Dual Node Architecture
+### Triple Node Architecture
 
-Freedom runs both Swarm and IPFS nodes simultaneously, giving you access to two major decentralized storage networks from a single interface.
+Freedom runs Swarm, IPFS, and Radicle nodes, giving you access to three major decentralized networks from a single interface.
 
-|                      | Swarm          | IPFS                                 |
-| -------------------- | -------------- | ------------------------------------ |
-| **Protocol**         | `bzz://`       | `ipfs://`, `ipns://`                 |
-| **Node Software**    | Bee            | Kubo                                 |
-| **Hash Format**      | 64-char hex    | CIDv0 (`Qm...`) or CIDv1 (`bafy...`) |
-| **Gateway Port**     | 1633           | 8080                                 |
-| **API Port**         | 1633           | 5001                                 |
-| **Route Prefix**     | `/bzz/{hash}/` | `/ipfs/{cid}/`, `/ipns/{name}/`      |
-| **Data Directory**   | `bee-data/`    | `ipfs-data/`                         |
-| **Binary Directory** | `bee-bin/`     | `ipfs-bin/`                          |
+|                      | Swarm          | IPFS                                  | Radicle                        |
+| -------------------- | -------------- | ------------------------------------- | ------------------------------ |
+| **Protocol**         | `bzz://`       | `ipfs://`, `ipns://`                  | `rad://`                       |
+| **Node Software**    | Bee            | Kubo                                  | radicle-node + radicle-httpd   |
+| **Hash Format**      | 64-char hex    | CIDv0 (`Qm...`) or CIDv1 (`bafy...`) | Repository ID (`z...`)         |
+| **Gateway Port**     | 1633           | 8080                                  | 8780                           |
+| **API Port**         | 1633           | 5001                                  | 8780                           |
+| **Route Prefix**     | `/bzz/{hash}/` | `/ipfs/{cid}/`, `/ipns/{name}/`       | `/api/v1/repos/{rid}/`         |
+| **Data Directory**   | `bee-data/`    | `ipfs-data/`                          | `radicle-data/`                |
+| **Binary Directory** | `bee-bin/`     | `ipfs-bin/`                           | `radicle-bin/`                 |
 
 ### Smart Node Connection
 
 Freedom intelligently manages node connections:
 
-1. **Detect Existing Nodes**: On launch, checks if Swarm or IPFS nodes are already running on default ports
+1. **Detect Existing Nodes**: On launch, checks if Swarm, IPFS, or Radicle nodes are already running on default ports
 2. **Reuse When Available**: If a healthy node is detected, Freedom connects to it instead of starting a new one
 3. **Automatic Fallback**: If default ports are busy (but not by a compatible node), Freedom starts bundled nodes on alternative ports
 4. **Visual Feedback**: The Nodes panel shows connection status, including when using an external node or fallback port
@@ -72,7 +73,7 @@ Freedom intelligently manages node connections:
 This means Freedom works seamlessly whether you:
 
 - Run it standalone (bundled nodes start automatically)
-- Already have system-wide Bee/IPFS daemons running (Freedom reuses them)
+- Already have system-wide Bee/IPFS/Radicle daemons running (Freedom reuses them)
 - Have port conflicts with other software (Freedom finds available ports)
 
 ### Integrated Swarm Bee Node
@@ -88,6 +89,16 @@ This means Freedom works seamlessly whether you:
 - **Live Statistics**: View peer count, bandwidth usage, and Kubo version.
 - **Low-bandwidth Mode**: Configured as DHT client with reduced connection limits.
 
+### Integrated Radicle Node
+
+- **Two-Process Architecture**: Manages both `radicle-node` (P2P network) and `radicle-httpd` (HTTP API) as a coordinated pair.
+- **Automatic Identity**: Creates a Radicle identity on first run (no manual setup required).
+- **Independent Toggle**: Start and stop Radicle separately from Swarm and IPFS (configurable in Settings).
+- **Live Statistics**: View connected peers, seeded repos, version, and Node ID.
+- **Repository Seeding**: Seed Radicle repositories directly from the browser to help replicate them across the network.
+- **Stale Socket Cleanup**: Automatically cleans up control sockets from unclean shutdowns.
+- **Port Conflict Resolution**: Falls back to ports 8781+ if default port 8780 is unavailable.
+
 ### Universal Address Bar
 
 Enter any of the following in the address bar:
@@ -99,6 +110,7 @@ Enter any of the following in the address bar:
 | IPFS CID    | `QmHash...` or `bafybeic...`                    |
 | IPFS URL    | `ipfs://QmHash.../path`                         |
 | IPNS URL    | `ipns://k51...` or `ipns://domain.eth`          |
+| Radicle ID  | `rad://z3gqc...`                                |
 | ENS Domain  | `vitalik.eth`, `mysite.box`, `mysite.eth/about` |
 | HTTP(S) URL | `https://example.com`                           |
 | Domain      | `example.com` (auto-prefixes `https://`)        |
@@ -150,6 +162,7 @@ The address bar also provides **autocomplete suggestions** from browsing history
 ### Bookmarks
 
 - **Address Bar Star**: Click the star icon to bookmark or unbookmark the current page.
+- **Supported Protocols**: Bookmark any `bzz://`, `ipfs://`, `ipns://`, `rad://`, `http://`, or `https://` URL.
 - **Named Bookmarks**: Name and edit bookmarks via modal or right-click.
 - **Bookmarks Bar**: Quick access below the toolbar, with an overflow menu when bookmarks don't fit. Always visible on the new tab page; toggle visibility on other pages with `Cmd+Shift+B` / `Ctrl+Shift+B` (persisted across sessions).
 
@@ -193,13 +206,14 @@ Access built-in browser pages using the `freedom://` protocol:
 | `freedom://history`       | Browsing history             |
 | `freedom://links`         | Link behavior test page      |
 | `freedom://protocol-test` | Protocol and media test page |
+| `rad://{rid}`             | Radicle repository browser   |
 
 ### Settings & UI
 
 - **Theme**: Light, Dark, or System (follows OS preference).
-- **Node Auto-start**: Toggle whether Swarm and IPFS nodes start automatically at launch (both enabled by default).
+- **Node Auto-start**: Toggle whether Swarm, IPFS, and Radicle nodes start automatically at launch (Swarm and IPFS enabled by default).
 - **Auto-Updates**: Toggle automatic update checks (enabled by default).
-- **Protocol Icons**: Address bar shows Swarm (hexagon), IPFS (cube), or HTTP (globe) icon based on current protocol.
+- **Protocol Icons**: Address bar shows Swarm (hexagon), IPFS (cube), Radicle (seedling), or HTTP (globe) icon based on current protocol.
 - **Hamburger Menu**: Access browser features (New Tab, New Window, History, Zoom, Print, Developer Tools, Settings, About).
 
 ### Error Handling
@@ -219,6 +233,7 @@ Freedom automatically manages node connections. By default:
 - **Swarm Bee**: `http://127.0.0.1:1633`
 - **IPFS Gateway**: `http://127.0.0.1:8080`
 - **IPFS API**: `http://127.0.0.1:5001`
+- **Radicle httpd**: `http://127.0.0.1:8780`
 
 The browser automatically detects existing nodes and handles port conflicts. For advanced users who need to override the defaults (e.g., connecting to a remote node), use environment variables:
 
@@ -277,19 +292,28 @@ Edit `src/renderer/pages/home.html` to customize the welcome view shown on start
 
 The `build` and `dist` scripts accept `--mac`, `--linux`, or `--win` with optional `--arm64`, `--x64`, `--unsigned`, and `--verbose` flags. See `scripts/build.js` for details.
 
+### Radicle Scripts
+
+| Script | Description |
+|--------|-------------|
+| `npm run radicle:download` | Download the Radicle binaries for your platform |
+| `npm run radicle:init` | Initialize Radicle identity and configuration |
+| `npm run radicle:status` | Check Radicle httpd API status |
+| `npm run radicle:reset` | Delete all Radicle data and start fresh |
+
 ---
 
 ## Project Structure
 
-| Directory             | Contents                                                                                                       |
-| --------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `src/main/`           | Electron main process — node managers, ENS resolver, IPC, settings, history, bookmarks, favicons, auto-updater |
-| `src/renderer/`       | UI — tabs, navigation, address bar, menus, context menus, bookmarks bar, debug console, settings modal         |
-| `src/renderer/pages/` | Internal pages (home, history, error, links, protocol-test)                                                    |
-| `src/shared/`         | Constants shared between main and renderer                                                                     |
-| `config/`             | Bee config template, default bookmarks, macOS entitlements                                                     |
-| `scripts/`            | Build and setup helpers (binary downloads, Bee/IPFS init)                                                      |
-| `assets/`             | App icons                                                                                                      |
+| Directory             | Contents                                                                                                                  |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `src/main/`           | Electron main process — node managers (Bee, IPFS, Radicle), ENS resolver, IPC, settings, history, bookmarks, auto-updater |
+| `src/renderer/`       | UI — tabs, navigation, address bar, menus, context menus, bookmarks bar, debug console, settings modal                    |
+| `src/renderer/pages/` | Internal pages (home, history, error, links, protocol-test, rad-browser)                                                  |
+| `src/shared/`         | Constants shared between main and renderer                                                                                |
+| `config/`             | Bee config template, default bookmarks, macOS entitlements                                                                |
+| `scripts/`            | Build and setup helpers (binary downloads, Bee/IPFS/Radicle init)                                                         |
+| `assets/`             | App icons                                                                                                                 |
 
 ---
 
@@ -305,9 +329,9 @@ npm test
 
 The test suite covers:
 
-- **url-utils**: Swarm hash parsing, IPFS CID validation (CIDv0/CIDv1), IPFS/IPNS URL parsing, ENS name preservation, display value derivation, edge cases
+- **url-utils**: Swarm hash parsing, IPFS CID validation (CIDv0/CIDv1), IPFS/IPNS URL parsing, Radicle ID validation, ENS name preservation, display value derivation, edge cases
 - **tabs**: Tab creation, management, and state handling
-- **request-rewriter**: Swarm and IPFS path rewriting for absolute and relative paths
+- **request-rewriter**: Swarm, IPFS, and Radicle path rewriting for absolute and relative paths
 
 ### Logging
 
@@ -331,7 +355,7 @@ DEBUG=1 /Applications/Freedom.app/Contents/MacOS/Freedom
 
 - Toggle the debug panel via **Menu (☰) > Debug Console**.
 - Check the terminal for main process logs (visible at `info` level and above in development):
-  - Bee/IPFS stdout and stderr
+  - Bee/IPFS/Radicle stdout and stderr
   - IPC events
   - Request rewrites
   - ENS resolution
@@ -357,7 +381,7 @@ Output goes to the `dist/` folder as DMG and ZIP archives.
 
 The build includes:
 
-- Bundled Bee and Kubo binaries
+- Bundled Bee, Kubo, and Radicle binaries
 - Bee configuration template
 - All renderer assets
 
@@ -465,7 +489,7 @@ npm run start:test-updater
 - **Context Isolation**: Uses `contextIsolation: true` and `nodeIntegration: false`.
 - **Remote Module Disabled**: The remote module is not available.
 - **Minimal API Surface**: Only necessary IPC methods are exposed to the renderer. The `freedomAPI` (history, bookmarks, etc.) is restricted to internal `freedom://` pages — external websites cannot call it.
-- **Local Nodes**: Bee and IPFS run locally; no external services required for basic operation.
+- **Local Nodes**: Bee, IPFS, and Radicle run locally; no external services required for basic operation.
 - **Permission Handling**: Pointer lock and fullscreen permissions are granted for better UX in Swarm/IPFS apps.
 - **Public RPC Fallback**: ENS resolution uses public RPCs by default. For trustless verification, use a local Helios client.
 
@@ -485,9 +509,16 @@ npm run start:test-updater
 - Check for stale lock file: the app should auto-clean, but you can manually delete `ipfs-data/repo.lock`
 - Reset IPFS data: `npm run ipfs:reset`
 
+### Radicle fails to start
+- Freedom automatically detects port conflicts and uses fallback ports
+- Ensure both `radicle-node` and `radicle-httpd` binaries exist in `radicle-bin/`
+- If starting for the first time, Freedom creates a Radicle identity automatically
+- Check terminal output for specific error messages
+- Reset Radicle data: `npm run radicle:reset`
+
 ### Using an external node
 
-- If you have a system-wide Bee or IPFS daemon running, Freedom will detect and reuse it
+- If you have a system-wide Bee, IPFS, or Radicle daemon running, Freedom will detect and reuse it
 - The Nodes panel will show "Node: localhost:PORT" when connected to an external node
 - The toggle switch is disabled for external nodes (can't stop a node Freedom didn't start)
 
@@ -499,6 +530,6 @@ npm run start:test-updater
 
 ### Content not loading
 
-- Ensure the respective node (Bee or IPFS) is running (check Nodes panel)
+- Ensure the respective node (Bee, IPFS, or Radicle) is running (check Nodes panel)
 - Verify the hash/CID is correct
 - Check the debug console for error messages

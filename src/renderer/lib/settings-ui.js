@@ -11,6 +11,7 @@ let closeSettingsBtn = null;
 let themeModeSelect = null;
 let startBeeAtLaunchCheckbox = null;
 let startIpfsAtLaunchCheckbox = null;
+let startRadicleAtLaunchCheckbox = null;
 let autoUpdateCheckbox = null;
 
 // Current theme mode setting
@@ -64,6 +65,7 @@ const saveSettings = async () => {
     theme: themeModeSelect?.value || 'system',
     startBeeAtLaunch: startBeeAtLaunchCheckbox?.checked ?? true,
     startIpfsAtLaunch: startIpfsAtLaunchCheckbox?.checked ?? true,
+    startRadicleAtLaunch: startRadicleAtLaunchCheckbox?.checked ?? false,
     autoUpdate: autoUpdateCheckbox?.checked ?? true,
   };
 
@@ -88,12 +90,14 @@ export const initSettings = () => {
   themeModeSelect = document.getElementById('theme-mode');
   startBeeAtLaunchCheckbox = document.getElementById('start-bee-at-launch');
   startIpfsAtLaunchCheckbox = document.getElementById('start-ipfs-at-launch');
+  startRadicleAtLaunchCheckbox = document.getElementById('start-radicle-at-launch');
   autoUpdateCheckbox = document.getElementById('auto-update');
 
   // Auto-save on any setting change
   themeModeSelect?.addEventListener('change', saveSettings);
   startBeeAtLaunchCheckbox?.addEventListener('change', saveSettings);
   startIpfsAtLaunchCheckbox?.addEventListener('change', saveSettings);
+  startRadicleAtLaunchCheckbox?.addEventListener('change', saveSettings);
   autoUpdateCheckbox?.addEventListener('change', saveSettings);
 
   settingsBtn?.addEventListener('click', async () => {
@@ -105,6 +109,8 @@ export const initSettings = () => {
         startBeeAtLaunchCheckbox.checked = settings.startBeeAtLaunch !== false;
       if (startIpfsAtLaunchCheckbox)
         startIpfsAtLaunchCheckbox.checked = settings.startIpfsAtLaunch !== false;
+      if (startRadicleAtLaunchCheckbox)
+        startRadicleAtLaunchCheckbox.checked = settings.startRadicleAtLaunch === true;
       if (autoUpdateCheckbox) autoUpdateCheckbox.checked = settings.autoUpdate !== false;
     }
     settingsModal?.showModal();

@@ -21,6 +21,17 @@ module.exports = {
   IPFS_STATUS_UPDATE: 'ipfs:statusUpdate',
   IPFS_CHECK_BINARY: 'ipfs:checkBinary',
 
+  // Radicle node management
+  RADICLE_START: 'radicle:start',
+  RADICLE_STOP: 'radicle:stop',
+  RADICLE_GET_STATUS: 'radicle:getStatus',
+  RADICLE_STATUS_UPDATE: 'radicle:statusUpdate',
+  RADICLE_CHECK_BINARY: 'radicle:checkBinary',
+  RADICLE_SEED: 'radicle:seed',
+  RADICLE_GET_CONNECTIONS: 'radicle:getConnections',
+  RADICLE_GET_REPO_PAYLOAD: 'radicle:getRepoPayload',
+  RADICLE_SYNC_REPO: 'radicle:syncRepo',
+
   // ENS resolution
   ENS_RESOLVE: 'ens:resolve',
 
@@ -35,6 +46,10 @@ module.exports = {
   // IPFS routing
   IPFS_SET_BASE: 'ipfs:set-base',
   IPFS_CLEAR_BASE: 'ipfs:clear-base',
+
+  // Radicle routing
+  RAD_SET_BASE: 'rad:set-base',
+  RAD_CLEAR_BASE: 'rad:clear-base',
 
   // Window
   WINDOW_SET_TITLE: 'window:set-title',
@@ -84,4 +99,10 @@ module.exports = {
 
   // Bookmarks bar
   BOOKMARKS_TOGGLE_BAR: 'bookmarks:toggle-bar',
+
+  // GitHub Bridge
+  GITHUB_BRIDGE_IMPORT: 'github-bridge:import',
+  GITHUB_BRIDGE_PROGRESS: 'github-bridge:progress',
+  GITHUB_BRIDGE_CHECK_GIT: 'github-bridge:check-git',
+  GITHUB_BRIDGE_VALIDATE_URL: 'github-bridge:validate-url',
 };

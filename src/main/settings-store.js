@@ -20,6 +20,7 @@ const DEFAULT_SETTINGS = {
   theme: 'system',
   startBeeAtLaunch: true,
   startIpfsAtLaunch: true,
+  startRadicleAtLaunch: false,
   autoUpdate: true,
   showBookmarkBar: false,
 };

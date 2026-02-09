@@ -2,7 +2,7 @@ const log = require('./logger');
 const { ipcMain, app, dialog, clipboard, nativeImage } = require('electron');
 const { URL } = require('url');
 const path = require('path');
-const { activeBzzBases, activeIpfsBases } = require('./state');
+const { activeBzzBases, activeIpfsBases, activeRadBases } = require('./state');
 const { fetchBuffer, fetchToFile } = require('./http-fetch');
 const IPC = require('../shared/ipc-channels');
 
@@ -79,6 +79,27 @@ function registerBaseIpcHandlers(callbacks = {}) {
       return;
     }
     activeIpfsBases.delete(webContentsId);
+  });
+
+  ipcMain.handle(IPC.RAD_SET_BASE, (_event, payload = {}) => {
+    const { webContentsId, baseUrl } = payload;
+    if (!webContentsId || !baseUrl) {
+      return;
+    }
+    try {
+      const normalized = new URL(baseUrl);
+      activeRadBases.set(webContentsId, normalized);
+    } catch (err) {
+      console.error('Invalid Radicle base URL received from renderer', err);
+    }
+  });
+
+  ipcMain.handle(IPC.RAD_CLEAR_BASE, (_event, payload = {}) => {
+    const { webContentsId } = payload;
+    if (!webContentsId) {
+      return;
+    }
+    activeRadBases.delete(webContentsId);
   });
 
   ipcMain.on(IPC.WINDOW_SET_TITLE, (event, title) => {

@@ -26,6 +26,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setIpfsBase: (webContentsId, baseUrl) =>
     ipcRenderer.invoke('ipfs:set-base', { webContentsId, baseUrl }),
   clearIpfsBase: (webContentsId) => ipcRenderer.invoke('ipfs:clear-base', { webContentsId }),
+  setRadBase: (webContentsId, baseUrl) =>
+    ipcRenderer.invoke('rad:set-base', { webContentsId, baseUrl }),
+  clearRadBase: (webContentsId) => ipcRenderer.invoke('rad:clear-base', { webContentsId }),
   setWindowTitle: (title) => ipcRenderer.send('window:set-title', title),
   closeWindow: () => ipcRenderer.send('window:close'),
   minimizeWindow: () => ipcRenderer.send('window:minimize'),
@@ -190,6 +193,31 @@ contextBridge.exposeInMainWorld('ipfs', {
     ipcRenderer.on('ipfs:statusUpdate', handler);
     ipcRenderer.invoke('ipfs:getStatus').then(callback);
     return () => ipcRenderer.removeListener('ipfs:statusUpdate', handler);
+  },
+});
+
+contextBridge.exposeInMainWorld('radicle', {
+  start: () => ipcRenderer.invoke('radicle:start'),
+  stop: () => ipcRenderer.invoke('radicle:stop'),
+  getStatus: () => ipcRenderer.invoke('radicle:getStatus'),
+  checkBinary: () => ipcRenderer.invoke('radicle:checkBinary'),
+  getConnections: () => ipcRenderer.invoke('radicle:getConnections'),
+  onStatusUpdate: (callback) => {
+    const handler = (_event, value) => callback(value);
+    ipcRenderer.on('radicle:statusUpdate', handler);
+    ipcRenderer.invoke('radicle:getStatus').then(callback);
+    return () => ipcRenderer.removeListener('radicle:statusUpdate', handler);
+  },
+});
+
+contextBridge.exposeInMainWorld('githubBridge', {
+  import: (url) => ipcRenderer.invoke('github-bridge:import', url),
+  checkGit: () => ipcRenderer.invoke('github-bridge:check-git'),
+  validateUrl: (url) => ipcRenderer.invoke('github-bridge:validate-url', url),
+  onProgress: (callback) => {
+    const handler = (_event, data) => callback(data);
+    ipcRenderer.on('github-bridge:progress', handler);
+    return () => ipcRenderer.removeListener('github-bridge:progress', handler);
   },
 });
 
