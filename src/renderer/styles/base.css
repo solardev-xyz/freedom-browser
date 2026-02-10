@@ -2,6 +2,11 @@
   box-sizing: border-box;
 }
 
+/* Utility class for hiding elements */
+.hidden {
+  display: none !important;
+}
+
 body,
 html {
   height: 100%;
