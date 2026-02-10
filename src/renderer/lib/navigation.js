@@ -672,22 +672,6 @@ const getRadicleDisplayUrl = (url) => {
   return null;
 };
 
-// Convert rad-browser.html URL back to rad:// format
-const getRadicleDisplayUrl = (url) => {
-  if (!url || !url.includes('rad-browser.html')) return null;
-  try {
-    const parsed = new URL(url);
-    const rid = parsed.searchParams.get('rid');
-    const path = parsed.searchParams.get('path') || '';
-    if (rid) {
-      return `rad://${rid}${path}`;
-    }
-  } catch (err) {
-    // Ignore parse errors
-  }
-  return null;
-};
-
 const handleNavigationEvent = (event) => {
   const navState = getNavState();
   const webview = getActiveWebview();
