@@ -624,6 +624,7 @@ function getActivePort() {
   return currentHttpPort;
 }
 
+
 /**
  * Seed a repository from the Radicle network
  * @param {string} rid - Repository ID (with or without rad: prefix)
@@ -839,6 +840,7 @@ function registerRadicleIpc() {
     console.log('[Radicle] IPC: syncRepo requested for', rid);
     return await syncRepository(rid);
   });
+
 }
 
 module.exports = {

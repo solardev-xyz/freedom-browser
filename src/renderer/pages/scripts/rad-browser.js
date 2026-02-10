@@ -779,7 +779,7 @@
 
   async function fetchAvailableRepos() {
     try {
-      const res = await fetch(`${base}/api/v1/repos`);
+      const res = await fetch(`${base}/api/v1/repos?show=all`);
       if (!res.ok) return [];
       return await res.json();
     } catch (e) {
