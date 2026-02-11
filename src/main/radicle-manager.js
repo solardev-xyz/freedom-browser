@@ -8,6 +8,28 @@ const fs = require('fs');
 const http = require('http');
 const net = require('net');
 const IPC = require('../shared/ipc-channels');
+
+/**
+ * Validate a Radicle Repository ID (RID).
+ * Valid RIDs start with 'z' followed by 20-60 base58 characters.
+ * @param {string} rid - Raw RID (may include rad: or rad:// prefix)
+ * @returns {string|null} Cleaned RID with rad: prefix, or null if invalid
+ */
+function validateAndNormalizeRid(rid) {
+  if (!rid || typeof rid !== 'string') return null;
+
+  // Strip rad:// or rad: prefix to get the bare ID
+  let bare = rid;
+  if (bare.startsWith('rad://')) bare = bare.slice(6);
+  else if (bare.startsWith('rad:')) bare = bare.slice(4);
+
+  // Validate: must start with z, followed by base58 chars (no 0, O, I, l)
+  if (!/^z[1-9A-HJ-NP-Za-km-z]{20,60}$/.test(bare)) {
+    return null;
+  }
+
+  return `rad:${bare}`;
+}
 const {
   MODE,
   DEFAULTS,
@@ -635,16 +657,13 @@ async function seedRepository(rid) {
     return { success: false, error: 'Radicle node is not running' };
   }
 
+  const fullRid = validateAndNormalizeRid(rid);
+  if (!fullRid) {
+    return { success: false, error: 'Invalid Radicle Repository ID' };
+  }
+
   const radBinPath = getRadicleBinaryPath('rad');
   const dataDir = getRadicleDataPath();
-
-  // Ensure RID has rad: prefix (CLI expects rad: format, not rad://)
-  let fullRid = rid;
-  if (rid.startsWith('rad://')) {
-    fullRid = `rad:${rid.slice(6)}`;
-  } else if (!rid.startsWith('rad:')) {
-    fullRid = `rad:${rid}`;
-  }
 
   console.log(`[Radicle] Seeding repository: ${fullRid}`);
 
@@ -683,16 +702,13 @@ async function getRepoPayload(rid) {
     return { success: false, error: 'Radicle node is not running' };
   }
 
+  const fullRid = validateAndNormalizeRid(rid);
+  if (!fullRid) {
+    return { success: false, error: 'Invalid Radicle Repository ID' };
+  }
+
   const radBinPath = getRadicleBinaryPath('rad');
   const dataDir = getRadicleDataPath();
-
-  // Ensure RID has rad: prefix
-  let fullRid = rid;
-  if (rid.startsWith('rad://')) {
-    fullRid = `rad:${rid.slice(6)}`;
-  } else if (!rid.startsWith('rad:')) {
-    fullRid = `rad:${rid}`;
-  }
 
   try {
     const { stdout } = await execFileAsync(radBinPath, ['inspect', '--payload', fullRid], {
@@ -722,16 +738,13 @@ async function syncRepository(rid) {
     return { success: false, error: 'Radicle node is not running' };
   }
 
+  const fullRid = validateAndNormalizeRid(rid);
+  if (!fullRid) {
+    return { success: false, error: 'Invalid Radicle Repository ID' };
+  }
+
   const radBinPath = getRadicleBinaryPath('rad');
   const dataDir = getRadicleDataPath();
-
-  // Ensure RID has rad: prefix
-  let fullRid = rid;
-  if (rid.startsWith('rad://')) {
-    fullRid = `rad:${rid.slice(6)}`;
-  } else if (!rid.startsWith('rad:')) {
-    fullRid = `rad:${rid}`;
-  }
 
   console.log(`[Radicle] Syncing repository: ${fullRid}`);
 
