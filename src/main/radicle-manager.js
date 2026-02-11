@@ -1,5 +1,5 @@
 const { ipcMain, app } = require('electron');
-const { spawn, execSync, execFile } = require('child_process');
+const { spawn, execFileSync, execFile } = require('child_process');
 const { promisify } = require('util');
 const path = require('path');
 
@@ -121,7 +121,7 @@ function ensureIdentity(radHome) {
     console.log('[Radicle] Creating identity with rad auth...');
     // Use empty passphrase for non-interactive creation
     // Note: alias cannot contain spaces or control characters
-    execSync(`"${radPath}" auth --alias FreedomBrowser`, {
+    execFileSync(radPath, ['auth', '--alias', 'FreedomBrowser'], {
       env: {
         ...process.env,
         RAD_HOME: radHome,
