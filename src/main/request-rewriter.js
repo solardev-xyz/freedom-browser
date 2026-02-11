@@ -110,25 +110,25 @@ function convertProtocolUrl(url) {
   }
 
   // Handle rad: and rad:// protocols
-  // rad:RID or rad://RID -> http://127.0.0.1:8080/api/v1/repos/RID
-  // rad:RID/tree/branch/path -> http://127.0.0.1:8080/api/v1/repos/RID/tree/branch/path
+  // rad:RID or rad://RID -> http://127.0.0.1:8780/api/v1/repos/RID
+  // rad:RID/tree/branch/path -> http://127.0.0.1:8780/api/v1/repos/RID/tree/branch/path
   if (url.startsWith('rad:')) {
     // Handle both rad:RID and rad://RID formats
     const remainder = url.startsWith('rad://') ? url.slice(6) : url.slice(4);
     const radicleApiUrl = getRadicleApiUrl();
     // Parse the remainder to extract RID and optional path
     const slashIndex = remainder.indexOf('/');
-    if (slashIndex === -1) {
-      // Just RID, redirect to tree view
-      const gatewayUrl = `${radicleApiUrl}/api/v1/repos/${remainder}`;
-      return { converted: true, url: gatewayUrl };
-    } else {
-      // RID with path
-      const rid = remainder.slice(0, slashIndex);
-      const pathPart = remainder.slice(slashIndex);
-      const gatewayUrl = `${radicleApiUrl}/api/v1/repos/${rid}${pathPart}`;
-      return { converted: true, url: gatewayUrl };
+    const rid = slashIndex === -1 ? remainder : remainder.slice(0, slashIndex);
+    const pathPart = slashIndex === -1 ? '' : remainder.slice(slashIndex);
+
+    // Validate RID: must start with z followed by base58 characters
+    if (!/^z[1-9A-HJ-NP-Za-km-z]{20,60}$/.test(rid)) {
+      log.warn(`[rewrite] Blocked invalid Radicle RID: ${rid}`);
+      return { converted: false, url };
     }
+
+    const gatewayUrl = `${radicleApiUrl}/api/v1/repos/${rid}${pathPart}`;
+    return { converted: true, url: gatewayUrl };
   }
 
   return { converted: false, url };
