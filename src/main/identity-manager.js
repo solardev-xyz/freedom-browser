@@ -391,8 +391,17 @@ async function injectBeeIdentity() {
     fs.mkdirSync(dataDir, { recursive: true });
   }
 
-  // Remove pre-existing auxiliary keys that may be encrypted with a different password.
-  // Bee will regenerate libp2p_v2 and pss from scratch on next start.
+  // When re-injecting with a new key, Bee's persisted state (overlay address,
+  // auxiliary keys) becomes invalid. Remove everything except the directories
+  // we're about to write fresh (keys/ and config.yaml).
+  const staleDirs = ['statestore', 'localstore', 'kademlia-metrics', 'stamperstore'];
+  for (const dir of staleDirs) {
+    const dirPath = path.join(dataDir, dir);
+    if (fs.existsSync(dirPath)) {
+      fs.rmSync(dirPath, { recursive: true });
+      console.log(`[IdentityManager] Removed old ${dir} (identity change)`);
+    }
+  }
   for (const keyFile of ['libp2p_v2.key', 'pss.key']) {
     const keyPath = path.join(dataDir, 'keys', keyFile);
     if (fs.existsSync(keyPath)) {
