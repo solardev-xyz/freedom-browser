@@ -391,6 +391,16 @@ async function injectBeeIdentity() {
     fs.mkdirSync(dataDir, { recursive: true });
   }
 
+  // Remove pre-existing auxiliary keys that may be encrypted with a different password.
+  // Bee will regenerate libp2p_v2 and pss from scratch on next start.
+  for (const keyFile of ['libp2p_v2.key', 'pss.key']) {
+    const keyPath = path.join(dataDir, 'keys', keyFile);
+    if (fs.existsSync(keyPath)) {
+      fs.unlinkSync(keyPath);
+      console.log(`[IdentityManager] Removed old ${keyFile} (password mismatch prevention)`);
+    }
+  }
+
   // Generate a random password for the Bee keystore
   // This is separate from the vault password - defense in depth
   const beePassword = generateBeeKeystorePassword();
