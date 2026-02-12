@@ -40,6 +40,12 @@ const {
   clearService,
 } = require('./service-registry');
 
+// Radicle community seed nodes for peer discovery
+const PREFERRED_SEEDS = [
+  'z6MkrLMMsiPWUcNPHcRajuMi9mDfYckSoJyPwwnknocNYPm7@iris.radicle.xyz:8776',
+  'z6Mkmqogy2qEM2ummccUthFEaaHvyYmYBYh3dbe9W4ebScxo@rosa.radicle.xyz:8776',
+];
+
 // States
 const STATUS = {
   STOPPED: 'stopped',
@@ -123,6 +129,34 @@ function cleanupStaleSocket(radHome) {
 }
 
 /**
+ * Ensure config.json contains preferredSeeds for peer discovery.
+ * Merges seeds into an existing config or creates a new one.
+ */
+function ensureConfig(radHome) {
+  const configPath = path.join(radHome, 'config.json');
+  let config = {};
+
+  if (fs.existsSync(configPath)) {
+    try {
+      config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    } catch (err) {
+      console.warn('[Radicle] Could not parse config.json, recreating:', err.message);
+    }
+  }
+
+  if (config.preferredSeeds && config.preferredSeeds.length > 0) {
+    return; // already has seeds
+  }
+
+  config.preferredSeeds = PREFERRED_SEEDS;
+  config.node = config.node || {};
+  config.node.alias = config.node.alias || 'FreedomBrowser';
+
+  fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+  console.log('[Radicle] Config updated with preferredSeeds');
+}
+
+/**
  * Check if Radicle identity exists, create if not
  */
 function ensureIdentity(radHome) {
@@ -130,6 +164,7 @@ function ensureIdentity(radHome) {
 
   if (fs.existsSync(keysDir) && fs.readdirSync(keysDir).length > 0) {
     console.log('[Radicle] Identity already exists');
+    ensureConfig(radHome);
     return true;
   }
 
@@ -152,6 +187,7 @@ function ensureIdentity(radHome) {
       stdio: 'pipe',
     });
     console.log('[Radicle] Identity created successfully');
+    ensureConfig(radHome);
     return true;
   } catch (err) {
     console.error('[Radicle] Failed to create identity:', err.message);
