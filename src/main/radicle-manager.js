@@ -3,6 +3,7 @@ const { ipcMain, app } = require('electron');
 const { spawn, execFileSync, execFile } = require('child_process');
 const { promisify } = require('util');
 const path = require('path');
+const os = require('os');
 
 const execFileAsync = promisify(execFile);
 const fs = require('fs');
@@ -67,6 +68,7 @@ let forceKillTimeout = null;
 // Port configuration
 let currentHttpPort = DEFAULTS.radicle.httpPort;
 let currentMode = MODE.NONE;
+let activeRadHome = null;
 
 function getRadicleBinaryPath(binary) {
   const arch = process.arch;
@@ -336,6 +338,31 @@ async function detectExistingDaemon() {
   return { found: false, conflict: true, port: defaultPort };
 }
 
+/**
+ * Detect if a system-wide radicle-node is already running (~/.radicle).
+ * The control socket is the definitive indicator — the node may not bind
+ * the P2P port (e.g. when started with --force or custom config).
+ */
+function detectSystemNode() {
+  const systemRadHome = path.join(os.homedir(), '.radicle');
+  const socketPath = getRadicleSocketPath(systemRadHome);
+
+  if (!fs.existsSync(socketPath)) {
+    return { found: false };
+  }
+
+  log.info('[Radicle] Detected system radicle-node at', systemRadHome);
+  return { found: true, radHome: systemRadHome, socketPath };
+}
+
+/**
+ * Return the active RAD_HOME — the system ~/.radicle when reusing
+ * a system node, otherwise the bundled radicle-data directory.
+ */
+function getActiveRadHome() {
+  return activeRadHome || getRadicleDataPath();
+}
+
 async function checkHealth() {
   return new Promise((resolve) => {
     // Note: radicle-httpd 0.23+ uses / as the root endpoint (not /api/v1/)
@@ -388,7 +415,138 @@ async function startRadicle() {
   pendingStart = false;
   updateState(STATUS.STARTING);
 
-  // Step 1: Detect existing daemon
+  // Step 0: Detect system-wide radicle-node (~/.radicle)
+  const systemNode = await detectSystemNode();
+
+  if (systemNode.found) {
+    activeRadHome = systemNode.radHome;
+
+    // Start only radicle-httpd against the system node
+    const httpdBinPath = getRadicleBinaryPath('radicle-httpd');
+    if (!fs.existsSync(httpdBinPath)) {
+      updateState(STATUS.ERROR, `radicle-httpd binary not found at ${httpdBinPath}`);
+      setStatusMessage('radicle', 'Node failed to start');
+      return;
+    }
+
+    // Find an available HTTP port
+    let httpPort = DEFAULTS.radicle.httpPort;
+    const portBusy = await isPortOpen(httpPort);
+    if (portBusy) {
+      // Check if it's already a working httpd we can reuse
+      const probe = await probeRadicleApi(httpPort);
+      if (probe.valid) {
+        currentHttpPort = httpPort;
+        currentMode = MODE.REUSED;
+        updateService('radicle', {
+          api: `http://127.0.0.1:${currentHttpPort}`,
+          gateway: `http://127.0.0.1:${currentHttpPort}`,
+          mode: MODE.REUSED,
+        });
+        setStatusMessage('radicle', `System node: localhost:${currentHttpPort}`);
+        updateState(STATUS.RUNNING);
+        startHealthCheck();
+        log.info('[Radicle] Reusing system node + existing httpd on port', currentHttpPort);
+        return;
+      }
+      // Port busy but not httpd — find another
+      const newPort = await findAvailablePort(httpPort + 1);
+      if (!newPort) {
+        updateState(STATUS.ERROR, 'No available ports for Radicle httpd');
+        setStatusMessage('radicle', 'Node failed to start');
+        return;
+      }
+      httpPort = newPort;
+    }
+
+    currentHttpPort = httpPort;
+    currentMode = MODE.REUSED;
+
+    log.info(`[Radicle] Starting httpd against system node: ${httpdBinPath} on port ${httpPort}`);
+    radicleHttpdProcess = spawn(httpdBinPath, ['--listen', `127.0.0.1:${httpPort}`], {
+      env: {
+        ...process.env,
+        RAD_HOME: activeRadHome,
+        RAD_PASSPHRASE: '',
+      },
+    });
+
+    radicleHttpdProcess.stdout.on('data', (data) => {
+      log.info(`[Radicle-httpd stdout]: ${data}`);
+    });
+
+    radicleHttpdProcess.stderr.on('data', (data) => {
+      log.error(`[Radicle-httpd stderr]: ${data}`);
+    });
+
+    radicleHttpdProcess.on('close', (code) => {
+      log.info(`[Radicle-httpd] Process exited with code ${code}`);
+      radicleHttpdProcess = null;
+
+      if (forceKillTimeout) {
+        clearTimeout(forceKillTimeout);
+        forceKillTimeout = null;
+      }
+
+      if (currentState !== STATUS.STOPPING) {
+        updateState(STATUS.STOPPED, code !== 0 ? `httpd exited with code ${code}` : null);
+      } else {
+        updateState(STATUS.STOPPED);
+      }
+      if (healthCheckInterval) clearInterval(healthCheckInterval);
+      clearService('radicle');
+
+      if (pendingStart) {
+        log.info('[Radicle] Processing queued start request');
+        pendingStart = false;
+        setTimeout(() => startRadicle(), 100);
+      }
+    });
+
+    radicleHttpdProcess.on('error', (err) => {
+      log.error('[Radicle-httpd] Failed to start process:', err);
+      updateState(STATUS.ERROR, err.message);
+      setStatusMessage('radicle', 'Node failed to start');
+    });
+
+    // Poll for httpd health
+    let attempts = 0;
+    const maxAttempts = 60;
+    const pollInterval = setInterval(async () => {
+      if (currentState === STATUS.STOPPED || currentState === STATUS.ERROR) {
+        clearInterval(pollInterval);
+        return;
+      }
+
+      const isHealthy = await checkHealth();
+      if (isHealthy) {
+        clearInterval(pollInterval);
+        updateService('radicle', {
+          api: `http://127.0.0.1:${currentHttpPort}`,
+          gateway: `http://127.0.0.1:${currentHttpPort}`,
+          mode: MODE.REUSED,
+        });
+        setStatusMessage('radicle', `System node: localhost:${currentHttpPort}`);
+        updateState(STATUS.RUNNING);
+        startHealthCheck();
+      } else {
+        attempts++;
+        if (attempts >= maxAttempts) {
+          clearInterval(pollInterval);
+          stopRadicle();
+          updateState(STATUS.ERROR, 'Startup timed out');
+          setStatusMessage('radicle', 'Node failed to start');
+        }
+      }
+    }, 1000);
+
+    return;
+  }
+
+  // No system node — use bundled flow
+  activeRadHome = getRadicleDataPath();
+
+  // Step 1: Detect existing daemon (httpd already running)
   const existing = await detectExistingDaemon();
 
   if (existing.found) {
@@ -425,7 +583,7 @@ async function startRadicle() {
     return;
   }
 
-  const radHome = getRadicleDataPath();
+  const radHome = activeRadHome;
 
   // Step 3: Ensure identity exists
   if (!ensureIdentity(radHome)) {
@@ -606,11 +764,33 @@ function stopRadicle() {
   return new Promise((resolve) => {
     pendingStart = false;
 
-    // If we reused an external daemon, just clear state (don't stop it)
+    // If we reused an external daemon, stop our httpd but not the system node
     if (currentMode === MODE.REUSED) {
+      if (radicleHttpdProcess) {
+        // We spawned httpd against the system node — kill it
+        radicleHttpdProcess.once('close', () => {
+          updateState(STATUS.STOPPED);
+          clearService('radicle');
+          currentMode = MODE.NONE;
+          activeRadHome = null;
+          resolve();
+        });
+        radicleHttpdProcess.kill('SIGTERM');
+
+        // Force kill if httpd doesn't exit within 5 seconds
+        setTimeout(() => {
+          if (radicleHttpdProcess) {
+            log.warn('[Radicle] Force killing reused-mode httpd...');
+            radicleHttpdProcess.kill('SIGKILL');
+          }
+        }, 5000);
+        return;
+      }
+      // No httpd process (fully external) — just clear state
       updateState(STATUS.STOPPED);
       clearService('radicle');
       currentMode = MODE.NONE;
+      activeRadHome = null;
       resolve();
       return;
     }
@@ -635,6 +815,7 @@ function stopRadicle() {
           clearTimeout(forceKillTimeout);
           forceKillTimeout = null;
         }
+        activeRadHome = null;
         resolve();
       }
     };
@@ -700,7 +881,7 @@ async function seedRepository(rid) {
   }
 
   const radBinPath = getRadicleBinaryPath('rad');
-  const dataDir = getRadicleDataPath();
+  const dataDir = getActiveRadHome();
 
   log.info(`[Radicle] Seeding repository: ${fullRid}`);
 
@@ -745,7 +926,7 @@ async function getRepoPayload(rid) {
   }
 
   const radBinPath = getRadicleBinaryPath('rad');
-  const dataDir = getRadicleDataPath();
+  const dataDir = getActiveRadHome();
 
   try {
     const { stdout } = await execFileAsync(radBinPath, ['inspect', '--payload', fullRid], {
@@ -781,7 +962,7 @@ async function syncRepository(rid) {
   }
 
   const radBinPath = getRadicleBinaryPath('rad');
-  const dataDir = getRadicleDataPath();
+  const dataDir = getActiveRadHome();
 
   log.info(`[Radicle] Syncing repository: ${fullRid}`);
 
@@ -813,7 +994,7 @@ async function getConnections() {
   }
 
   const radBinPath = getRadicleBinaryPath('rad');
-  const dataDir = getRadicleDataPath();
+  const dataDir = getActiveRadHome();
 
   try {
     const { stdout } = await execFileAsync(radBinPath, ['node', 'status'], {
@@ -900,5 +1081,6 @@ module.exports = {
   getActivePort,
   getRadicleBinaryPath,
   getRadicleDataPath,
+  getActiveRadHome,
   STATUS
 };

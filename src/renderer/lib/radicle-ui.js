@@ -212,7 +212,7 @@ export const updateRadicleStatusLine = () => {
   }
 };
 
-// Update toggle disabled state based on node mode
+// Update toggle visual state based on node mode
 export const updateRadicleToggleState = () => {
   if (!radicleToggleBtn) return;
 
@@ -221,10 +221,8 @@ export const updateRadicleToggleState = () => {
 
   if (isReused) {
     radicleToggleBtn.classList.add('external');
-    radicleToggleBtn.setAttribute('title', 'Using existing node — cannot be controlled from Freedom');
-  } else if (radicleBinaryAvailable) {
+  } else {
     radicleToggleBtn.classList.remove('external');
-    radicleToggleBtn.removeAttribute('title');
   }
 };
 
@@ -255,10 +253,6 @@ export const initRadicleUi = () => {
   // Toggle button listener
   radicleToggleBtn?.addEventListener('click', () => {
     if (!radicleBinaryAvailable) return;
-
-    // Don't allow toggling when using an external node
-    const mode = state.registry?.radicle?.mode;
-    if (mode === 'reused') return;
 
     if (state.currentRadicleStatus === 'running' || state.currentRadicleStatus === 'starting') {
       state.suppressRadicleRunningStatus = true;
