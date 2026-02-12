@@ -524,6 +524,17 @@ async function injectRadicleIdentity(alias = 'FreedomBrowser') {
     fs.mkdirSync(dataDir, { recursive: true });
   }
 
+  // When re-injecting with a new key, Radicle's persisted node state (fingerprint,
+  // routing db, etc.) becomes invalid. Remove stale state directories.
+  const staleDirs = ['node', 'cobs', 'storage'];
+  for (const dir of staleDirs) {
+    const dirPath = path.join(dataDir, dir);
+    if (fs.existsSync(dirPath)) {
+      fs.rmSync(dirPath, { recursive: true });
+      console.log(`[IdentityManager] Removed old ${dir} (identity change)`);
+    }
+  }
+
   const did = identity.injectRadicleKey(
     dataDir,
     derivedKeys.radicleKey.privateKey,
