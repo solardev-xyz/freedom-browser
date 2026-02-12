@@ -1,6 +1,6 @@
 const log = require('./logger');
 const { ipcMain, app } = require('electron');
-const { spawn, execSync, execFile } = require('child_process');
+const { spawn, execFileSync, execFile } = require('child_process');
 const { promisify } = require('util');
 const path = require('path');
 
@@ -9,6 +9,28 @@ const fs = require('fs');
 const http = require('http');
 const net = require('net');
 const IPC = require('../shared/ipc-channels');
+
+/**
+ * Validate a Radicle Repository ID (RID).
+ * Valid RIDs start with 'z' followed by 20-60 base58 characters.
+ * @param {string} rid - Raw RID (may include rad: or rad:// prefix)
+ * @returns {string|null} Cleaned RID with rad: prefix, or null if invalid
+ */
+function validateAndNormalizeRid(rid) {
+  if (!rid || typeof rid !== 'string') return null;
+
+  // Strip rad:// or rad: prefix to get the bare ID
+  let bare = rid;
+  if (bare.startsWith('rad://')) bare = bare.slice(6);
+  else if (bare.startsWith('rad:')) bare = bare.slice(4);
+
+  // Validate: must start with z, followed by base58 chars (no 0, O, I, l)
+  if (!/^z[1-9A-HJ-NP-Za-km-z]{20,60}$/.test(bare)) {
+    return null;
+  }
+
+  return `rad:${bare}`;
+}
 const {
   MODE,
   DEFAULTS,
@@ -18,6 +40,12 @@ const {
   clearErrorState,
   clearService,
 } = require('./service-registry');
+
+// Radicle community seed nodes for peer discovery
+const PREFERRED_SEEDS = [
+  'z6MkrLMMsiPWUcNPHcRajuMi9mDfYckSoJyPwwnknocNYPm7@iris.radicle.xyz:8776',
+  'z6Mkmqogy2qEM2ummccUthFEaaHvyYmYBYh3dbe9W4ebScxo@rosa.radicle.xyz:8776',
+];
 
 // States
 const STATUS = {
@@ -106,6 +134,34 @@ function cleanupStaleSocket(radHome) {
 }
 
 /**
+ * Ensure config.json contains preferredSeeds for peer discovery.
+ * Merges seeds into an existing config or creates a new one.
+ */
+function ensureConfig(radHome) {
+  const configPath = path.join(radHome, 'config.json');
+  let config = {};
+
+  if (fs.existsSync(configPath)) {
+    try {
+      config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    } catch (err) {
+      log.warn('[Radicle] Could not parse config.json, recreating:', err.message);
+    }
+  }
+
+  if (config.preferredSeeds && config.preferredSeeds.length > 0) {
+    return; // already has seeds
+  }
+
+  config.preferredSeeds = PREFERRED_SEEDS;
+  config.node = config.node || {};
+  config.node.alias = config.node.alias || 'FreedomBrowser';
+
+  fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+  log.info('[Radicle] Config updated with preferredSeeds');
+}
+
+/**
  * Check if Radicle identity exists, create if not
  */
 function ensureIdentity(radHome) {
@@ -114,6 +170,7 @@ function ensureIdentity(radHome) {
 
   if (fs.existsSync(privateKeyPath)) {
     log.info('[Radicle] Identity already exists (injected or created)');
+    ensureConfig(radHome);
     return true;
   }
 
@@ -134,7 +191,7 @@ function ensureIdentity(radHome) {
     log.info('[Radicle] Creating identity with rad auth...');
     // Use empty passphrase for non-interactive creation
     // Note: alias cannot contain spaces or control characters
-    execSync(`"${radPath}" auth --alias FreedomBrowser`, {
+    execFileSync(radPath, ['auth', '--alias', 'FreedomBrowser'], {
       env: {
         ...process.env,
         RAD_HOME: radHome,
@@ -143,6 +200,7 @@ function ensureIdentity(radHome) {
       stdio: 'pipe',
     });
     log.info('[Radicle] Identity created successfully');
+    ensureConfig(radHome);
     return true;
   } catch (err) {
     log.error('[Radicle] Failed to create identity:', err.message);
@@ -655,6 +713,7 @@ function getActivePort() {
   return currentHttpPort;
 }
 
+
 /**
  * Seed a repository from the Radicle network
  * @param {string} rid - Repository ID (with or without rad: prefix)
@@ -665,16 +724,13 @@ async function seedRepository(rid) {
     return { success: false, error: 'Radicle node is not running' };
   }
 
+  const fullRid = validateAndNormalizeRid(rid);
+  if (!fullRid) {
+    return { success: false, error: 'Invalid Radicle Repository ID' };
+  }
+
   const radBinPath = getRadicleBinaryPath('rad');
   const dataDir = getRadicleDataPath();
-
-  // Ensure RID has rad: prefix (CLI expects rad: format, not rad://)
-  let fullRid = rid;
-  if (rid.startsWith('rad://')) {
-    fullRid = `rad:${rid.slice(6)}`;
-  } else if (!rid.startsWith('rad:')) {
-    fullRid = `rad:${rid}`;
-  }
 
   log.info(`[Radicle] Seeding repository: ${fullRid}`);
 
@@ -713,16 +769,13 @@ async function getRepoPayload(rid) {
     return { success: false, error: 'Radicle node is not running' };
   }
 
+  const fullRid = validateAndNormalizeRid(rid);
+  if (!fullRid) {
+    return { success: false, error: 'Invalid Radicle Repository ID' };
+  }
+
   const radBinPath = getRadicleBinaryPath('rad');
   const dataDir = getRadicleDataPath();
-
-  // Ensure RID has rad: prefix
-  let fullRid = rid;
-  if (rid.startsWith('rad://')) {
-    fullRid = `rad:${rid.slice(6)}`;
-  } else if (!rid.startsWith('rad:')) {
-    fullRid = `rad:${rid}`;
-  }
 
   try {
     const { stdout } = await execFileAsync(radBinPath, ['inspect', '--payload', fullRid], {
@@ -752,16 +805,13 @@ async function syncRepository(rid) {
     return { success: false, error: 'Radicle node is not running' };
   }
 
+  const fullRid = validateAndNormalizeRid(rid);
+  if (!fullRid) {
+    return { success: false, error: 'Invalid Radicle Repository ID' };
+  }
+
   const radBinPath = getRadicleBinaryPath('rad');
   const dataDir = getRadicleDataPath();
-
-  // Ensure RID has rad: prefix
-  let fullRid = rid;
-  if (rid.startsWith('rad://')) {
-    fullRid = `rad:${rid.slice(6)}`;
-  } else if (!rid.startsWith('rad:')) {
-    fullRid = `rad:${rid}`;
-  }
 
   log.info(`[Radicle] Syncing repository: ${fullRid}`);
 
@@ -870,6 +920,7 @@ function registerRadicleIpc() {
     log.info('[Radicle] IPC: syncRepo requested for', rid);
     return await syncRepository(rid);
   });
+
 }
 
 module.exports = {

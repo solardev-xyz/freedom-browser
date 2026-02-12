@@ -779,7 +779,7 @@
 
   async function fetchAvailableRepos() {
     try {
-      const res = await fetch(`${base}/api/v1/repos`);
+      const res = await fetch(`${base}/api/v1/repos?show=all`);
       if (!res.ok) return [];
       return await res.json();
     } catch (e) {
@@ -802,6 +802,7 @@
       const repoData = repo.payloads?.['xyz.radicle.project']?.data || {};
       const name = repoData.name || repo.name || 'Unnamed';
       const desc = repoData.description || repo.description || 'No description';
+      const seeders = repo.seeding || 0;
       return `
         <div class="repo-item" data-rid="${repoRid}">
           <div class="repo-item-header">
@@ -809,6 +810,17 @@
             <span class="repo-item-rid">${shortRid}</span>
           </div>
           <div class="repo-item-desc">${escapeHtml(desc)}</div>
+          <div class="repo-item-meta">
+            <span class="seeders">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+                <circle cx="9" cy="7" r="4"/>
+                <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+                <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+              </svg>
+              ${seeders} seeders
+            </span>
+          </div>
         </div>
       `;
     }).join('');

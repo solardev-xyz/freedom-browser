@@ -9,6 +9,7 @@ const {
 jest.mock('./service-registry', () => ({
   getBeeApiUrl: () => 'http://127.0.0.1:1633',
   getIpfsGatewayUrl: () => 'http://127.0.0.1:8080',
+  getRadicleApiUrl: () => 'http://127.0.0.1:8780',
 }));
 
 const BASE_URL = 'http://127.0.0.1:1633/bzz/abc123def456/';
@@ -295,6 +296,97 @@ describe('request-rewriter', () => {
     test('allows non-bzz URLs on the same origin', () => {
       expect(shouldBlockInvalidBzzRequest('http://127.0.0.1:1633/bytes/abcdef')).toBe(false);
       expect(shouldBlockInvalidBzzRequest('http://127.0.0.1:1633/chunks/abcdef')).toBe(false);
+    });
+  });
+
+  // =========================================
+  // Radicle protocol support
+  // =========================================
+  describe('convertProtocolUrl – rad: protocol', () => {
+    const RADICLE_API = 'http://127.0.0.1:8780';
+    const SAMPLE_RID = 'z3gqcJUoA1n9HaHKufZs5FCSGazv5';
+
+    test('converts rad:RID to API URL', () => {
+      const result = convertProtocolUrl(`rad:${SAMPLE_RID}`);
+      expect(result).toEqual({
+        converted: true,
+        url: `${RADICLE_API}/api/v1/repos/${SAMPLE_RID}`,
+      });
+    });
+
+    test('converts rad://RID to API URL', () => {
+      const result = convertProtocolUrl(`rad://${SAMPLE_RID}`);
+      expect(result).toEqual({
+        converted: true,
+        url: `${RADICLE_API}/api/v1/repos/${SAMPLE_RID}`,
+      });
+    });
+
+    test('converts rad:RID with sub-path', () => {
+      const result = convertProtocolUrl(`rad:${SAMPLE_RID}/tree/main/README.md`);
+      expect(result).toEqual({
+        converted: true,
+        url: `${RADICLE_API}/api/v1/repos/${SAMPLE_RID}/tree/main/README.md`,
+      });
+    });
+
+    test('converts rad://RID with sub-path', () => {
+      const result = convertProtocolUrl(`rad://${SAMPLE_RID}/tree/main/src`);
+      expect(result).toEqual({
+        converted: true,
+        url: `${RADICLE_API}/api/v1/repos/${SAMPLE_RID}/tree/main/src`,
+      });
+    });
+
+    test('does not convert non-rad protocols', () => {
+      expect(convertProtocolUrl('https://example.com')).toEqual({
+        converted: false,
+        url: 'https://example.com',
+      });
+    });
+
+    test('blocks rad: with path traversal attempt', () => {
+      const malicious = 'rad://../../etc/passwd';
+      const result = convertProtocolUrl(malicious);
+      expect(result.converted).toBe(false);
+    });
+
+    test('blocks rad: with invalid RID characters', () => {
+      expect(convertProtocolUrl('rad:invalid!rid').converted).toBe(false);
+      expect(convertProtocolUrl('rad:0000000000000000000000').converted).toBe(false);
+    });
+
+    test('blocks rad: with too-short RID', () => {
+      expect(convertProtocolUrl('rad:zabc').converted).toBe(false);
+    });
+  });
+
+  describe('shouldRewriteRequest – Radicle paths', () => {
+    const RAD_BASE = 'http://127.0.0.1:8780/api/v1/repos/z3gqcJUoA1n9HaHKufZs5FCSGazv5/';
+
+    test('does not rewrite requests already on /api/v1/repos/ path', () => {
+      const result = shouldRewriteRequest(
+        'http://127.0.0.1:8780/api/v1/repos/z3gqcJUoA1n9HaHKufZs5FCSGazv5/tree/main',
+        RAD_BASE
+      );
+      expect(result.shouldRewrite).toBe(false);
+      expect(result.reason).toBe('already_rad_path');
+    });
+
+    test('rewrites relative resource requests from a Radicle base', () => {
+      const result = shouldRewriteRequest(
+        'http://127.0.0.1:8780/some-relative-asset.js',
+        RAD_BASE
+      );
+      expect(result.shouldRewrite).toBe(true);
+    });
+
+    test('does not rewrite cross-origin requests', () => {
+      const result = shouldRewriteRequest(
+        'https://cdn.example.com/lib.js',
+        RAD_BASE
+      );
+      expect(result.shouldRewrite).toBe(false);
     });
   });
 });
