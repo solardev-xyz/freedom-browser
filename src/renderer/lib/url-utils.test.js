@@ -10,6 +10,9 @@ import {
   deriveIpfsBaseFromUrl,
   formatIpfsUrl,
   applyEnsNamePreservation,
+  isValidRadicleId,
+  parseRadicleInput,
+  deriveRadicleDisplayValue,
 } from './url-utils.js';
 
 const BZZ_ROUTE_PREFIX = 'http://127.0.0.1:1633/bzz/';
@@ -713,6 +716,111 @@ describe('url-utils', () => {
 
         expect(result).toBe(`bzz://${hash}`);
       });
+    });
+  });
+
+  // =========================================
+  // Radicle utilities
+  // =========================================
+  describe('isValidRadicleId', () => {
+    test('accepts valid Radicle ID', () => {
+      expect(isValidRadicleId('z3gqcJUoA1n9HaHKufZs5FCSGazv5')).toBe(true);
+    });
+
+    test('accepts various valid RID lengths', () => {
+      // 21 chars minimum (z + 20 base58)
+      expect(isValidRadicleId('z' + 'a'.repeat(20))).toBe(true);
+      expect(isValidRadicleId('z' + 'A'.repeat(40))).toBe(true);
+    });
+
+    test('rejects empty/null/undefined', () => {
+      expect(isValidRadicleId('')).toBe(false);
+      expect(isValidRadicleId(null)).toBe(false);
+      expect(isValidRadicleId(undefined)).toBe(false);
+    });
+
+    test('rejects IDs not starting with z', () => {
+      expect(isValidRadicleId('a3gqcJUoA1n9HaHKufZs5FCSGazv5')).toBe(false);
+    });
+
+    test('rejects IDs with invalid base58 chars (0, O, I, l)', () => {
+      expect(isValidRadicleId('z0000000000000000000000')).toBe(false);
+      expect(isValidRadicleId('zOOOOOOOOOOOOOOOOOOOOO')).toBe(false);
+      expect(isValidRadicleId('zIIIIIIIIIIIIIIIIIIIII')).toBe(false);
+      expect(isValidRadicleId('zllllllllllllllllllllll')).toBe(false);
+    });
+
+    test('rejects too-short IDs', () => {
+      expect(isValidRadicleId('z' + 'a'.repeat(5))).toBe(false);
+    });
+  });
+
+  describe('parseRadicleInput', () => {
+    const RAD_PREFIX = 'http://127.0.0.1:8780/api/v1/repos/';
+    const SAMPLE_RID = 'z3gqcJUoA1n9HaHKufZs5FCSGazv5';
+
+    test('parses rad:RID', () => {
+      const result = parseRadicleInput(`rad:${SAMPLE_RID}`, RAD_PREFIX);
+      expect(result).not.toBeNull();
+      expect(result.rid).toBe(SAMPLE_RID);
+      expect(result.tail).toBe('');
+      expect(result.baseUrl).toBe(`${RAD_PREFIX}${SAMPLE_RID}/`);
+    });
+
+    test('parses rad://RID', () => {
+      const result = parseRadicleInput(`rad://${SAMPLE_RID}`, RAD_PREFIX);
+      expect(result).not.toBeNull();
+      expect(result.rid).toBe(SAMPLE_RID);
+    });
+
+    test('parses rad://RID with path', () => {
+      const result = parseRadicleInput(`rad://${SAMPLE_RID}/tree/main`, RAD_PREFIX);
+      expect(result).not.toBeNull();
+      expect(result.rid).toBe(SAMPLE_RID);
+      expect(result.tail).toBe('/tree/main');
+    });
+
+    test('parses rad://RID with query and fragment', () => {
+      const result = parseRadicleInput(`rad://${SAMPLE_RID}/tree/main?tab=files#readme`, RAD_PREFIX);
+      expect(result).not.toBeNull();
+      expect(result.rid).toBe(SAMPLE_RID);
+      expect(result.tail).toBe('/tree/main?tab=files#readme');
+    });
+
+    test('returns null for empty input after stripping scheme', () => {
+      expect(parseRadicleInput('rad://', RAD_PREFIX)).toBeNull();
+      expect(parseRadicleInput('rad:', RAD_PREFIX)).toBeNull();
+    });
+  });
+
+  describe('deriveRadicleDisplayValue', () => {
+    const RAD_PREFIX = 'http://127.0.0.1:8780/api/v1/repos/';
+    const SAMPLE_RID = 'z3gqcJUoA1n9HaHKufZs5FCSGazv5';
+
+    test('converts API URL to rad:// display', () => {
+      const result = deriveRadicleDisplayValue(
+        `${RAD_PREFIX}${SAMPLE_RID}/tree/main`,
+        RAD_PREFIX
+      );
+      expect(result).toBe(`rad://${SAMPLE_RID}/tree/main`);
+    });
+
+    test('converts API URL without path to rad:// display', () => {
+      const result = deriveRadicleDisplayValue(
+        `${RAD_PREFIX}${SAMPLE_RID}/`,
+        RAD_PREFIX
+      );
+      expect(result).toBe(`rad://${SAMPLE_RID}`);
+    });
+
+    test('returns original URL if not matching prefix', () => {
+      const url = 'https://example.com/page';
+      expect(deriveRadicleDisplayValue(url, RAD_PREFIX)).toBe(url);
+    });
+
+    test('returns input for null/undefined', () => {
+      expect(deriveRadicleDisplayValue(null, RAD_PREFIX)).toBe(null);
+      expect(deriveRadicleDisplayValue(undefined, RAD_PREFIX)).toBe(undefined);
     });
   });
 });
