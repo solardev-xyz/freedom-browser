@@ -48,6 +48,9 @@ const PREFERRED_SEEDS = [
   'z6Mkmqogy2qEM2ummccUthFEaaHvyYmYBYh3dbe9W4ebScxo@rosa.radicle.xyz:8776',
 ];
 
+// Canonical Freedom Browser repo — bundled nodes auto-seed this
+const FREEDOM_BROWSER_RID = 'rad:z3QXuMvMmSeEX3ZgoUidZC1v5MkKE';
+
 // States
 const STATUS = {
   STOPPED: 'stopped',
@@ -398,6 +401,35 @@ function startHealthCheck() {
   }, 5000);
 }
 
+/**
+ * Auto-seed default repositories on the bundled node.
+ * Runs in the background after the node is healthy — failures are non-fatal.
+ */
+async function autoSeedDefaults() {
+  const radBinPath = getRadicleBinaryPath('rad');
+  const dataDir = getActiveRadHome();
+
+  try {
+    await execFileAsync(radBinPath, ['seed', FREEDOM_BROWSER_RID], {
+      env: {
+        ...process.env,
+        RAD_HOME: dataDir,
+        RAD_PASSPHRASE: '',
+      },
+      timeout: 120000,
+    });
+    log.info(`[Radicle] Auto-seeded ${FREEDOM_BROWSER_RID}`);
+  } catch (err) {
+    // "already tracking" is expected on subsequent starts
+    const stderr = err.stderr?.toString() || '';
+    if (stderr.includes('already tracking')) {
+      log.info(`[Radicle] Already seeding ${FREEDOM_BROWSER_RID}`);
+    } else {
+      log.warn(`[Radicle] Auto-seed failed for ${FREEDOM_BROWSER_RID}:`, err.message);
+    }
+  }
+}
+
 async function startRadicle() {
   log.info('[Radicle] startRadicle() called, currentState:', currentState);
 
@@ -742,6 +774,7 @@ async function startRadicle() {
 
         updateState(STATUS.RUNNING);
         startHealthCheck();
+        autoSeedDefaults();
       } else {
         attempts++;
         if (attempts >= maxAttempts) {
