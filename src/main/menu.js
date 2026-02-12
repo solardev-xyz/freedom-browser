@@ -134,6 +134,17 @@ function setupApplicationMenu() {
           },
         },
         { type: 'separator' },
+        {
+          label: 'Focus Address Bar',
+          accelerator: 'CmdOrCtrl+L',
+          click: () => {
+            const win = getTargetWindow();
+            if (win) {
+              win.webContents.send('focus:address-bar');
+            }
+          },
+        },
+        { type: 'separator' },
         { role: 'close' },
       ],
     },
