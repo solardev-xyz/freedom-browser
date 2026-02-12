@@ -92,9 +92,15 @@ export function injectRadicleKey(radHome, privateKey, publicKey, alias = 'Freedo
   const publicKeyPath = path.join(keysDir, 'radicle.pub');
   fs.writeFileSync(publicKeyPath, identity.publicKeyFile);
 
-  // Create config with alias
+  // Ensure config has the alias, but preserve existing settings (e.g. preferredSeeds).
+  // The full config (including seeds) is managed by radicle-manager's ensureConfig().
   const configPath = path.join(radHome, 'config.json');
-  const config = { node: { alias } };
+  let config = {};
+  if (fs.existsSync(configPath)) {
+    try { config = JSON.parse(fs.readFileSync(configPath, 'utf-8')); } catch { /* recreate */ }
+  }
+  config.node = config.node || {};
+  config.node.alias = alias;
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
 
   console.log(`[Identity] Radicle identity injected: DID=${identity.did}`);
