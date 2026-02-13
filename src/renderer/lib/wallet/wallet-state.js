@@ -30,6 +30,9 @@ export const walletState = {
     radicle: '',
   },
 
+  // Current view mode: 'setup' or 'identity' (set by coordinator showView)
+  viewMode: 'setup',
+
   // Shared DOM reference (set by coordinator init)
   identityView: null,
 };

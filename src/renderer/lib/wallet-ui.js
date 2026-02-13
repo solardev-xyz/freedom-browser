@@ -156,8 +156,12 @@ export async function updateIdentityState() {
  * Show a specific view
  */
 function showView(view) {
+  walletState.viewMode = view;
   setupCta?.classList.toggle('hidden', view !== 'setup');
   walletState.identityView?.classList.toggle('hidden', view !== 'identity');
+
+  const tabBar = document.querySelector('.sidebar-tabs');
+  tabBar?.classList.toggle('hidden', view === 'setup');
 }
 
 /**
@@ -268,6 +272,8 @@ async function updateSecurityStatus() {
  * Switch between Wallet and Identity tabs
  */
 function switchTab(tabName) {
+  if (walletState.viewMode === 'setup') return;
+
   closeAllSubscreens();
 
   document.querySelectorAll('.sidebar-tab').forEach(tab => {
@@ -291,6 +297,8 @@ function switchTab(tabName) {
  * Close all open sub-screens (proper cleanup)
  */
 function closeAllSubscreens() {
+  if (walletState.viewMode === 'setup') return;
+
   closeExportMnemonic();
   closeCreateWallet();
   closeReceive();
