@@ -592,7 +592,7 @@ export const initBookmarks = () => {
 
   // Initialize bookmarks bar visibility from settings
   electronAPI?.getSettings?.().then((settings) => {
-    bookmarksBarVisible = settings?.showBookmarksBar === true;
+    bookmarksBarVisible = settings?.showBookmarkBar === true;
     updateBookmarksBarVisibility();
   });
 
