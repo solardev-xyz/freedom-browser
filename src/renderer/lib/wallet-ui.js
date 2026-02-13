@@ -24,7 +24,6 @@ let activeWalletIndex = 0;
 
 // DOM references
 let setupCta;
-let lockedView;
 let identityView;
 let swarmIdEl;
 
@@ -281,7 +280,6 @@ let fullAddresses = {
 export function initWalletUi() {
   // Cache DOM references
   setupCta = document.getElementById('sidebar-setup-cta');
-  lockedView = document.getElementById('sidebar-locked');
   identityView = document.getElementById('sidebar-identity');
   swarmIdEl = document.getElementById('sidebar-swarm-id');
   ipfsIdEl = document.getElementById('sidebar-ipfs-id');
@@ -570,17 +568,6 @@ function setupEventListeners() {
     });
   }
 
-  // Unlock button
-  const unlockBtn = document.getElementById('sidebar-unlock-btn');
-  if (unlockBtn) {
-    unlockBtn.addEventListener('click', handleUnlock);
-  }
-
-  // Lock button
-  const lockBtn = document.getElementById('sidebar-lock-btn');
-  if (lockBtn) {
-    lockBtn.addEventListener('click', handleLock);
-  }
 
   // Copy node identities
   document.querySelectorAll('.node-copy-btn').forEach(btn => {
@@ -669,16 +656,8 @@ export async function updateIdentityState() {
       return;
     }
 
-    // Fallback: vault exists but no addresses available (shouldn't happen with new vaults)
-    // This could happen with old vaults created before we stored addresses in metadata
-    if (!status.isUnlocked) {
-      showView('locked');
-      return;
-    }
-
-    // Vault unlocked - show identity
-    showView('identity');
-    await loadIdentityData();
+    // Vault exists but no addresses — show setup as fallback
+    showView('setup');
 
   } catch (err) {
     console.error('[WalletUI] Failed to update identity state:', err);
@@ -691,7 +670,6 @@ export async function updateIdentityState() {
  */
 function showView(view) {
   setupCta?.classList.toggle('hidden', view !== 'setup');
-  lockedView?.classList.toggle('hidden', view !== 'locked');
   identityView?.classList.toggle('hidden', view !== 'identity');
 }
 
@@ -735,14 +713,6 @@ async function loadIdentityData() {
     } else {
       radicleIdEl.textContent = '--';
       radicleIdEl.title = '';
-    }
-
-    // Hide lock button - it serves no purpose currently since identity info
-    // is visible regardless of lock state. Re-enable when we add transaction
-    // signing which requires vault unlock.
-    const lockBtn = document.getElementById('sidebar-lock-btn');
-    if (lockBtn) {
-      lockBtn.classList.add('hidden');
     }
 
     // Update security status
@@ -1179,47 +1149,6 @@ function timeAgo(date) {
   }
 
   return 'Just now';
-}
-
-/**
- * Handle unlock button click
- */
-async function handleUnlock() {
-  try {
-    // Try Touch ID first if available
-    const touchIdEnabled = await window.quickUnlock.isEnabled();
-
-    if (touchIdEnabled) {
-      const result = await window.quickUnlock.unlock();
-      if (result.success) {
-        // Unlock vault with the password from Touch ID
-        await window.identity.unlock(result.password);
-        updateIdentityState();
-        return;
-      }
-    }
-
-    // Fall back to password prompt
-    // TODO: Implement password prompt modal
-    // For now, just log
-    console.log('[WalletUI] Password prompt not implemented yet');
-    alert('Password unlock coming soon. Use Touch ID if available.');
-
-  } catch (err) {
-    console.error('[WalletUI] Unlock failed:', err);
-  }
-}
-
-/**
- * Handle lock button click
- */
-async function handleLock() {
-  try {
-    await window.identity.lock();
-    updateIdentityState();
-  } catch (err) {
-    console.error('[WalletUI] Lock failed:', err);
-  }
 }
 
 // ============================================

@@ -353,62 +353,6 @@
 }
 
 /* ============================================
-   Locked State
-   ============================================ */
-
-.sidebar-locked {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  flex: 1;
-  padding: 16px;
-  padding: 32px;
-  text-align: center;
-}
-
-.locked-icon {
-  width: 56px;
-  height: 56px;
-  margin-bottom: 20px;
-  color: var(--muted);
-}
-
-.locked-icon svg {
-  width: 100%;
-  height: 100%;
-}
-
-.locked-title {
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--text);
-  margin: 0 0 8px 0;
-}
-
-.locked-text {
-  font-size: 13px;
-  color: var(--muted);
-  margin: 0 0 24px 0;
-}
-
-.unlock-btn {
-  padding: 10px 24px;
-  font-size: 14px;
-  font-weight: 500;
-  color: #fff;
-  background: var(--accent);
-  border: none;
-  border-radius: 8px;
-  cursor: pointer;
-  transition: opacity 0.15s ease;
-}
-
-.unlock-btn:hover {
-  opacity: 0.9;
-}
-
-/* ============================================
    Wallet Address Card
    ============================================ */
 

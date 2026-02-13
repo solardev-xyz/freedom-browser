@@ -676,19 +676,6 @@
               <button type="button" class="setup-cta-btn" id="sidebar-setup-btn">Get Started</button>
             </div>
 
-            <!-- Locked state (shown if vault exists but locked) -->
-            <div id="sidebar-locked" class="sidebar-locked hidden">
-              <div class="locked-icon">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
-                  <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
-                </svg>
-              </div>
-              <h3 class="locked-title">Vault Locked</h3>
-              <p class="locked-text">Unlock to view your identity and wallet.</p>
-              <button type="button" class="unlock-btn" id="sidebar-unlock-btn">Unlock</button>
-            </div>
-
             <!-- Tab panels (shown if vault exists with addresses) -->
             <div id="sidebar-identity" class="hidden">
               <!-- Wallet Tab Panel -->
@@ -951,14 +938,6 @@
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                       <polyline points="9 18 15 12 9 6"/>
                     </svg>
-                  </button>
-                  <!-- Lock button hidden until transaction signing is implemented -->
-                  <button type="button" class="sidebar-link-btn hidden" id="sidebar-lock-btn">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
-                      <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
-                    </svg>
-                    Lock Vault
                   </button>
                 </div>
 
