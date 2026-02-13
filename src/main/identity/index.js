@@ -49,4 +49,5 @@ export {
   deleteVault,
   exportMnemonic,
   exportPrivateKey,
+  verifyPassword,
 } from './vault.js';

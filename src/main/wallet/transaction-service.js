@@ -349,12 +349,10 @@ async function signPersonalMessage(message, privateKey) {
   try {
     const wallet = new Wallet(privateKey);
 
-    // If message is hex-encoded, convert to bytes
+    // If message is hex-encoded, convert to raw bytes (not UTF-8 string)
     let messageToSign = message;
     if (message.startsWith('0x')) {
-      // Convert hex to string for personal_sign
-      const bytes = Buffer.from(message.slice(2), 'hex');
-      messageToSign = bytes.toString('utf8');
+      messageToSign = Buffer.from(message.slice(2), 'hex');
     }
 
     // signMessage automatically applies EIP-191 prefix

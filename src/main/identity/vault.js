@@ -223,6 +223,29 @@ export async function deleteVault(dataDir, password) {
 }
 
 /**
+ * Verify a password against the vault without mutating state.
+ * Used for gating sensitive exports (private key, mnemonic).
+ * @param {string} dataDir - App data directory
+ * @param {string} password - Password to verify
+ * @throws {Error} If password is incorrect or vault doesn't exist
+ */
+export async function verifyPassword(dataDir, password) {
+  if (!vaultExists(dataDir)) {
+    throw new Error('No vault found');
+  }
+  const vaultPath = getVaultPath(dataDir);
+  const vaultData = JSON.parse(fs.readFileSync(vaultPath, 'utf-8'));
+  try {
+    await decrypt(password, vaultData.encrypted);
+  } catch (err) {
+    if (err.message.includes('Incorrect password')) {
+      throw new Error('Incorrect password');
+    }
+    throw err;
+  }
+}
+
+/**
  * Export mnemonic (for backup)
  * Vault must be unlocked
  * @returns {string} The mnemonic

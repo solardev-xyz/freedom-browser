@@ -67,6 +67,7 @@ let exportUnlockRequired;
 let exportMnemonicDisplay;
 let exportTouchIdBtn;
 let exportPasswordSection;
+let exportMnemonicPassword = null; // Holds verified password for mnemonic export session
 
 // Balance DOM references (dynamically populated)
 let assetListEl;
@@ -1363,17 +1364,9 @@ async function openExportMnemonic() {
   identityView?.classList.add('hidden');
   exportMnemonicScreen?.classList.remove('hidden');
 
-  // Check vault status
-  const status = await window.identity.getStatus();
-
-  if (status.isUnlocked) {
-    // Already unlocked - show mnemonic directly
-    await showMnemonicWords();
-  } else {
-    // Need to unlock - configure unlock UI
-    await configureUnlockUI();
-    showExportView('unlock');
-  }
+  // Always require password/Touch ID for mnemonic export
+  await configureUnlockUI();
+  showExportView('unlock');
 }
 
 /**
@@ -1386,7 +1379,8 @@ async function closeExportMnemonic() {
     wordsContainer.innerHTML = '';
   }
 
-  // Clear password input
+  // Clear password input and stored password
+  exportMnemonicPassword = null;
   const passwordInput = document.getElementById('export-password-input');
   if (passwordInput) {
     passwordInput.value = '';
@@ -1485,13 +1479,14 @@ async function handleExportTouchIdUnlock() {
     }
 
     // Unlock the vault with the password from Touch ID
-    const unlockResult = await window.identity.unlock(result.password);
+    const password = result.password;
+    const unlockResult = await window.identity.unlock(password);
     if (!unlockResult.success) {
       throw new Error(unlockResult.error || 'Failed to unlock vault');
     }
 
-    // Show mnemonic
-    await showMnemonicWords();
+    // Show mnemonic (pass password for re-verification)
+    await showMnemonicWords(password);
   } catch (err) {
     console.error('[WalletUI] Touch ID unlock failed:', err);
     if (errorEl && err.message !== 'Touch ID cancelled') {
@@ -1523,8 +1518,8 @@ async function handleExportPasswordUnlock() {
       throw new Error(result.error || 'Incorrect password');
     }
 
-    // Show mnemonic
-    await showMnemonicWords();
+    // Show mnemonic (pass password for re-verification)
+    await showMnemonicWords(password);
   } catch (err) {
     console.error('[WalletUI] Password unlock failed:', err);
     if (errorEl) {
@@ -1537,9 +1532,10 @@ async function handleExportPasswordUnlock() {
 /**
  * Display mnemonic words
  */
-async function showMnemonicWords() {
+async function showMnemonicWords(password) {
   try {
-    const result = await window.identity.exportMnemonic();
+    if (password) exportMnemonicPassword = password;
+    const result = await window.identity.exportMnemonic(exportMnemonicPassword);
     if (!result.success) {
       throw new Error(result.error || 'Failed to export mnemonic');
     }
@@ -1577,7 +1573,7 @@ async function showMnemonicWords() {
  */
 async function copyMnemonicToClipboard() {
   try {
-    const result = await window.identity.exportMnemonic();
+    const result = await window.identity.exportMnemonic(exportMnemonicPassword);
     if (!result.success) {
       throw new Error(result.error);
     }
@@ -2250,17 +2246,9 @@ function resetExportPkView() {
  * Handle export private key button click
  */
 async function handleExportPrivateKeyClick() {
-  // Check if vault is already unlocked
-  const status = await window.identity.getStatus();
-
-  if (status.isUnlocked) {
-    // Already unlocked - show private key directly
-    await showPrivateKey();
-  } else {
-    // Need to unlock - show unlock view
-    await configureExportPkUnlockUI();
-    showExportPkView('unlock');
-  }
+  // Always require password/Touch ID for private key export
+  await configureExportPkUnlockUI();
+  showExportPkView('unlock');
 }
 
 /**
@@ -2315,13 +2303,14 @@ async function handleExportPkTouchIdUnlock() {
     }
 
     // Unlock the vault with the password from Touch ID
-    const unlockResult = await window.identity.unlock(result.password);
+    const password = result.password;
+    const unlockResult = await window.identity.unlock(password);
     if (!unlockResult.success) {
       throw new Error(unlockResult.error || 'Failed to unlock vault');
     }
 
-    // Show private key
-    await showPrivateKey();
+    // Show private key (pass password for re-verification)
+    await showPrivateKey(password);
   } catch (err) {
     console.error('[WalletUI] Touch ID unlock failed:', err);
     if (err.message !== 'Touch ID cancelled') {
@@ -2346,8 +2335,8 @@ async function handleExportPkPasswordUnlock() {
       throw new Error(result.error || 'Incorrect password');
     }
 
-    // Show private key
-    await showPrivateKey();
+    // Show private key (pass password for re-verification)
+    await showPrivateKey(password);
   } catch (err) {
     console.error('[WalletUI] Password unlock failed:', err);
     showExportPkError(err.message || 'Failed to unlock');
@@ -2367,9 +2356,9 @@ function showExportPkError(message) {
 /**
  * Show the private key
  */
-async function showPrivateKey() {
+async function showPrivateKey(password) {
   try {
-    const result = await window.identity.exportPrivateKey(activeWalletIndex);
+    const result = await window.identity.exportPrivateKey(activeWalletIndex, password);
     if (!result.success) {
       throw new Error(result.error || 'Failed to export private key');
     }

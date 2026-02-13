@@ -132,7 +132,7 @@ async function createNewVault(password, strength = 256, userKnowsPassword = true
   console.log('[IdentityManager] New vault created');
 
   // Auto-unlock after creation
-  await identity.unlockVault(dataDir, password, 0); // 0 = no auto-lock for now
+  await identity.unlockVault(dataDir, password);
   derivedKeys = identity.deriveAllKeys(mnemonic);
 
   // Save vault metadata including public addresses (so we can display without unlock)
@@ -168,7 +168,7 @@ async function importExistingMnemonic(password, mnemonic, userKnowsPassword = tr
   console.log('[IdentityManager] Mnemonic imported to vault');
 
   // Auto-unlock after import
-  await identity.unlockVault(dataDir, password, 0);
+  await identity.unlockVault(dataDir, password);
   derivedKeys = identity.deriveAllKeys(mnemonic);
 
   // Save vault metadata including public addresses (so we can display without unlock)
@@ -191,7 +191,7 @@ async function unlockVault(password) {
   const identity = await loadIdentityModule();
   const dataDir = getIdentityDataDir();
 
-  await identity.unlockVault(dataDir, password, 0); // 0 = no auto-lock for now
+  await identity.unlockVault(dataDir, password);
 
   const mnemonic = identity.getMnemonic();
   if (!mnemonic) {
@@ -1047,9 +1047,15 @@ function registerIdentityIpc() {
     }
   });
 
-  // Export mnemonic
-  ipcMain.handle(IPC.IDENTITY_EXPORT_MNEMONIC, async () => {
+  // Export mnemonic (requires password re-verification)
+  ipcMain.handle(IPC.IDENTITY_EXPORT_MNEMONIC, async (_event, password) => {
     try {
+      if (!password) {
+        return { success: false, error: 'Password is required to export mnemonic' };
+      }
+      const identity = await loadIdentityModule();
+      const dataDir = getIdentityDataDir();
+      await identity.verifyPassword(dataDir, password);
       const mnemonic = await exportMnemonic();
       return { success: true, mnemonic };
     } catch (err) {
@@ -1057,10 +1063,15 @@ function registerIdentityIpc() {
     }
   });
 
-  // Export private key for a specific wallet
-  ipcMain.handle(IPC.IDENTITY_EXPORT_PRIVATE_KEY, async (_event, accountIndex) => {
+  // Export private key for a specific wallet (requires password re-verification)
+  ipcMain.handle(IPC.IDENTITY_EXPORT_PRIVATE_KEY, async (_event, accountIndex, password) => {
     try {
+      if (!password) {
+        return { success: false, error: 'Password is required to export private key' };
+      }
       const identity = await loadIdentityModule();
+      const dataDir = getIdentityDataDir();
+      await identity.verifyPassword(dataDir, password);
       const privateKey = identity.exportPrivateKey(accountIndex);
       return { success: true, privateKey };
     } catch (err) {
