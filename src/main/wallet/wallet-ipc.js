@@ -332,7 +332,14 @@ function registerWalletIpc() {
           params: params || [],
         }),
       });
-      const data = await response.json();
+      const text = await response.text();
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        // Non-JSON response (e.g. "GNOSIS_MAINNET not enabled")
+        return { success: false, error: { code: -32603, message: text.slice(0, 200) } };
+      }
       if (data.error) {
         return { success: false, error: data.error };
       }

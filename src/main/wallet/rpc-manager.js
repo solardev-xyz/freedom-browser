@@ -376,9 +376,21 @@ function registerRpcManagerIpc() {
     return { success: true, chains: getProviderSupportedChains() };
   });
 
-  // Get effective RPC URLs for a chain (includes provider URLs)
+  // Get effective RPC URLs for a chain (built-in public RPCs first, then provider URLs)
   ipcMain.handle('rpc:get-effective-urls', (_event, chainId) => {
-    const urls = getEffectiveRpcUrls(chainId);
+    const { getChain } = require('./chains');
+    const chain = getChain(chainId);
+    const builtinUrls = chain?.rpcUrls || [];
+    const providerUrls = getEffectiveRpcUrls(chainId);
+    // Deduplicate: built-in public RPCs first, then provider URLs
+    const seen = new Set(builtinUrls);
+    const urls = [...builtinUrls];
+    for (const url of providerUrls) {
+      if (!seen.has(url)) {
+        urls.push(url);
+        seen.add(url);
+      }
+    }
     return { success: true, urls };
   });
 
