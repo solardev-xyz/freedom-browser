@@ -294,6 +294,9 @@ contextBridge.exposeInMainWorld('wallet', {
   dappSendTransaction: (params, walletIndex) => ipcRenderer.invoke('wallet:dapp-send-transaction', params, walletIndex),
   signMessage: (message, walletIndex) => ipcRenderer.invoke('wallet:sign-message', message, walletIndex),
   signTypedData: (typedData, walletIndex) => ipcRenderer.invoke('wallet:sign-typed-data', typedData, walletIndex),
+
+  // RPC proxy (renderer CSP blocks direct fetch to external endpoints)
+  proxyRpc: (rpcUrl, method, params) => ipcRenderer.invoke('wallet:proxy-rpc', { rpcUrl, method, params }),
 });
 
 contextBridge.exposeInMainWorld('chainRegistry', {

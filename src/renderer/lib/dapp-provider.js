@@ -292,34 +292,23 @@ async function proxyRpcCall(method, params) {
     };
   }
 
-  // Try each RPC URL until one succeeds
+  // Try each RPC URL until one succeeds (via main process to avoid renderer CSP)
   let lastError = null;
   for (const rpcUrl of rpcUrls) {
     try {
-      const response = await fetch(rpcUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          id: Date.now(),
-          method,
-          params: params || [],
-        }),
-      });
+      const data = await window.wallet.proxyRpc(rpcUrl, method, params);
 
-      const data = await response.json();
-
-      if (data.error) {
+      if (!data.success) {
         // RPC returned an error - try next endpoint
-        console.warn(`[DappProvider] RPC error from ${rpcUrl}:`, data.error.message);
-        lastError = { code: data.error.code, message: data.error.message };
+        console.warn(`[DappProvider] RPC error from ${rpcUrl}:`, data.error?.message);
+        lastError = { code: data.error?.code, message: data.error?.message };
         continue;
       }
 
       return data.result;
     } catch (err) {
-      // Network/fetch error - try next endpoint
-      console.warn(`[DappProvider] RPC fetch failed for ${rpcUrl}:`, err.message);
+      // IPC/network error - try next endpoint
+      console.warn(`[DappProvider] RPC proxy failed for ${rpcUrl}:`, err.message);
       lastError = { ...ERRORS.INTERNAL_ERROR, message: err.message };
     }
   }

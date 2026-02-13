@@ -319,6 +319,29 @@ function registerWalletIpc() {
     }
   });
 
+  // Proxy JSON-RPC calls to external endpoints (renderer CSP blocks direct fetch)
+  ipcMain.handle('wallet:proxy-rpc', async (_event, { rpcUrl, method, params }) => {
+    try {
+      const response = await fetch(rpcUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: Date.now(),
+          method,
+          params: params || [],
+        }),
+      });
+      const data = await response.json();
+      if (data.error) {
+        return { success: false, error: data.error };
+      }
+      return { success: true, result: data.result };
+    } catch (err) {
+      return { success: false, error: { code: -32603, message: err.message } };
+    }
+  });
+
   console.log('[WalletIPC] Handlers registered');
 }
 
