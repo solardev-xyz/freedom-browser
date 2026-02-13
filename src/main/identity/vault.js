@@ -79,8 +79,8 @@ export async function importVault(dataDir, password, mnemonic, overwrite = false
  * @private
  */
 async function saveVault(dataDir, password, mnemonic) {
-  if (!password || password.length < 1) {
-    throw new Error('Password is required');
+  if (!password || password.length < 8) {
+    throw new Error('Password must be at least 8 characters');
   }
 
   // Ensure directory exists

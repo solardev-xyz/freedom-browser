@@ -7,6 +7,7 @@
  * - Radicle: OpenSSH format + DID
  */
 
+import crypto from 'crypto';
 import { Wallet } from 'ethers';
 import { base58 } from '@scure/base';
 
@@ -186,7 +187,7 @@ function createOpenSSHPrivateKey(privateKey, publicKey, comment) {
   ]);
 
   // Random check integers (both same for integrity check)
-  const checkInt = Math.floor(Math.random() * 0xffffffff);
+  const checkInt = crypto.randomBytes(4).readUInt32BE(0);
   const checkBuf = Buffer.alloc(8);
   checkBuf.writeUInt32BE(checkInt, 0);
   checkBuf.writeUInt32BE(checkInt, 4);

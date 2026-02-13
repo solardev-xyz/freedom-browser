@@ -58,8 +58,6 @@ let radicleIdEl;
 let passwordValueEl;
 let touchIdValueEl;
 let createdValueEl;
-let qrContainer;
-let qrCanvas;
 
 // Export mnemonic sub-screen references
 let exportMnemonicScreen;
@@ -1300,46 +1298,6 @@ async function copyToClipboard(type, buttonEl) {
   } catch (err) {
     console.error('[WalletUI] Copy failed:', err);
   }
-}
-
-/**
- * Toggle QR code display
- */
-function toggleQrCode() {
-  if (!qrContainer || !qrCanvas) return;
-
-  const isHidden = qrContainer.classList.contains('hidden');
-
-  if (isHidden && fullAddresses.wallet) {
-    // Generate and show QR code
-    generateQrCode(fullAddresses.wallet);
-    qrContainer.classList.remove('hidden');
-  } else {
-    qrContainer.classList.add('hidden');
-  }
-}
-
-/**
- * Generate QR code on canvas
- */
-function generateQrCode(text) {
-  // Simple QR code using a library would be better
-  // For now, just show the address text as placeholder
-  // TODO: Add qrcode library or use a simple implementation
-
-  const ctx = qrCanvas.getContext('2d');
-  const size = 150;
-  qrCanvas.width = size;
-  qrCanvas.height = size;
-
-  // Placeholder - draw a simple pattern
-  ctx.fillStyle = '#fff';
-  ctx.fillRect(0, 0, size, size);
-  ctx.fillStyle = '#000';
-  ctx.font = '10px monospace';
-  ctx.textAlign = 'center';
-  ctx.fillText('QR Code', size/2, size/2 - 10);
-  ctx.fillText('Coming Soon', size/2, size/2 + 10);
 }
 
 /**
