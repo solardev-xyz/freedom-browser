@@ -21,6 +21,48 @@ const {
   signTypedData,
 } = require('./transaction-service');
 const { loadIdentityModule, getActiveWalletIndex } = require('../identity-manager');
+const { getEffectiveRpcUrls } = require('./rpc-manager');
+
+/**
+ * Validate that an RPC URL is a known, trusted endpoint.
+ * Builds an allowlist from all chain configs + configured provider URLs.
+ */
+function isAllowedRpcUrl(rpcUrl) {
+  try {
+    const parsed = new URL(rpcUrl);
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+      return false;
+    }
+  } catch {
+    return false;
+  }
+
+  // Build allowlist from all known chains
+  const chains = getAllChains();
+  for (const chain of Object.values(chains)) {
+    // Check builtin public RPCs
+    if (chain.rpcUrls) {
+      for (const url of chain.rpcUrls) {
+        if (url === rpcUrl) return true;
+      }
+    }
+    // Check configured provider URLs for this chain
+    const providerUrls = getEffectiveRpcUrls(chain.chainId);
+    for (const url of providerUrls) {
+      if (url === rpcUrl) return true;
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Validate walletIndex parameter from renderer.
+ * Must be a non-negative integer.
+ */
+function isValidWalletIndex(walletIndex) {
+  return typeof walletIndex === 'number' && Number.isInteger(walletIndex) && walletIndex >= 0;
+}
 
 /**
  * Register wallet IPC handlers
@@ -246,6 +288,10 @@ function registerWalletIpc() {
   // Sign and send transaction for a dApp (uses specified wallet index)
   ipcMain.handle('wallet:dapp-send-transaction', async (_event, params, walletIndex) => {
     try {
+      if (!isValidWalletIndex(walletIndex)) {
+        return { success: false, error: 'Invalid wallet index' };
+      }
+
       const { to, value, data, gasLimit, maxFeePerGas, maxPriorityFeePerGas, gasPrice, chainId } = params;
 
       if (!to || chainId === undefined || !gasLimit) {
@@ -276,6 +322,10 @@ function registerWalletIpc() {
   // Sign a personal message (EIP-191) for a dApp
   ipcMain.handle('wallet:sign-message', async (_event, message, walletIndex) => {
     try {
+      if (!isValidWalletIndex(walletIndex)) {
+        return { success: false, error: 'Invalid wallet index' };
+      }
+
       if (!message) {
         return { success: false, error: 'Message is required' };
       }
@@ -299,6 +349,10 @@ function registerWalletIpc() {
   // Sign typed data (EIP-712) for a dApp
   ipcMain.handle('wallet:sign-typed-data', async (_event, typedData, walletIndex) => {
     try {
+      if (!isValidWalletIndex(walletIndex)) {
+        return { success: false, error: 'Invalid wallet index' };
+      }
+
       if (!typedData) {
         return { success: false, error: 'Typed data is required' };
       }
@@ -322,6 +376,10 @@ function registerWalletIpc() {
   // Proxy JSON-RPC calls to external endpoints (renderer CSP blocks direct fetch)
   ipcMain.handle('wallet:proxy-rpc', async (_event, { rpcUrl, method, params }) => {
     try {
+      if (!isAllowedRpcUrl(rpcUrl)) {
+        return { success: false, error: { code: -32603, message: 'RPC URL not in allowlist' } };
+      }
+
       const response = await fetch(rpcUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
