@@ -278,13 +278,6 @@ export const initPageContextMenu = async () => {
     }
   });
 
-  // Hide on escape
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') {
-      hidePageContextMenu();
-    }
-  });
-
   // Hide when window loses focus
   window.addEventListener('blur', hidePageContextMenu);
 

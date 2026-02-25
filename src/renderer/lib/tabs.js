@@ -957,12 +957,6 @@ export const initTabs = async () => {
     }
   });
 
-  // Hide context menu on escape or when window loses focus
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') {
-      hideTabContextMenu();
-    }
-  });
   window.addEventListener('blur', hideTabContextMenu);
 
   // Hide context menu when webview gets focus
