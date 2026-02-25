@@ -1,7 +1,7 @@
 export const ensureTrailingSlash = (value = '') => (value.endsWith('/') ? value : `${value}/`);
 
-// Check if a string looks like a valid Swarm hash (64 hex characters)
-const isValidSwarmHash = (str) => /^[a-fA-F0-9]{64}$/.test(str);
+// Check if a string looks like a valid Swarm reference (64 or 128 hex characters)
+const isValidSwarmHash = (str) => /^[a-fA-F0-9]{64}([a-fA-F0-9]{64})?$/.test(str);
 
 // Check if a string looks like a valid IPFS CID
 // CIDv0: Starts with Qm, 46 characters, base58
@@ -165,7 +165,7 @@ export const formatBzzUrl = (input, bzzRoutePrefix) => {
     // Extract potential hash (first segment before /)
     const firstSegment = raw.split('/')[0].replace(/^bzz:\/\//i, '');
 
-    // Only treat as Swarm hash if it's valid hex (64 chars)
+    // Only treat as Swarm reference if it's valid hex (64 or 128 chars)
     if (!isValidSwarmHash(firstSegment)) {
       return null;
     }
