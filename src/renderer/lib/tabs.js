@@ -957,12 +957,6 @@ export const initTabs = async () => {
     }
   });
 
-  // Hide context menu on escape or when window loses focus
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') {
-      hideTabContextMenu();
-    }
-  });
   window.addEventListener('blur', hideTabContextMenu);
 
   // Hide context menu when webview gets focus
@@ -992,7 +986,10 @@ export const initTabs = async () => {
 
   electronAPI?.onCloseTab?.(() => {
     if (tabState.activeTabId) {
-      closeTab(tabState.activeTabId);
+      const activeTab = tabState.tabs.find((t) => t.id === tabState.activeTabId);
+      if (activeTab && !activeTab.pinned) {
+        closeTab(tabState.activeTabId);
+      }
     }
   });
 
@@ -1107,89 +1104,30 @@ export const initTabs = async () => {
     reopenLastClosedTab();
   });
 
-  // Keyboard shortcuts (fallback for when menu doesn't handle it)
+  // Keyboard shortcuts not covered by menu accelerators
   window.addEventListener('keydown', (event) => {
-    // Cmd+T - New tab (exclude Shift to avoid conflict with Cmd+Shift+T)
-    if (event.metaKey && !event.shiftKey && event.key.toLowerCase() === 't') {
-      event.preventDefault();
-      createTab(homeUrl);
-    }
-    // Cmd+W - Close tab (skip pinned tabs)
-    if (event.metaKey && event.key.toLowerCase() === 'w') {
-      event.preventDefault();
-      if (tabState.activeTabId) {
-        const activeTab = tabState.tabs.find((t) => t.id === tabState.activeTabId);
-        if (activeTab && !activeTab.pinned) {
-          closeTab(tabState.activeTabId);
-        }
-      }
-    }
-    // Cmd+Option+I (Mac) or Ctrl+Shift+I (Win/Linux) - Toggle DevTools
-    if (
-      (event.metaKey && event.altKey && event.key.toLowerCase() === 'i') ||
-      (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 'i')
-    ) {
-      event.preventDefault();
-      toggleDevTools();
-    }
-    // Cmd+L (Mac) or Ctrl+L (Win/Linux) - Focus address bar
-    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'l') {
-      event.preventDefault();
-      const addressInput = document.getElementById('address-input');
-      if (addressInput) {
-        addressInput.focus();
-        addressInput.select();
-      }
-    }
-    // Ctrl+Tab / Ctrl+PageDown - Next tab (all platforms)
+    // Ctrl+Tab - Next tab (all platforms)
     // Cmd+Shift+] - Next tab (macOS alternative)
     if (
       (event.ctrlKey && event.key === 'Tab' && !event.shiftKey) ||
-      (event.ctrlKey && event.key === 'PageDown' && !event.shiftKey) ||
       (event.metaKey && event.shiftKey && event.key === ']')
     ) {
       event.preventDefault();
       switchToNextTab();
     }
-    // Ctrl+Shift+Tab / Ctrl+PageUp - Previous tab (all platforms)
+    // Ctrl+Shift+Tab - Previous tab (all platforms)
     // Cmd+Shift+[ - Previous tab (macOS alternative)
     if (
       (event.ctrlKey && event.key === 'Tab' && event.shiftKey) ||
-      (event.ctrlKey && event.key === 'PageUp' && !event.shiftKey) ||
       (event.metaKey && event.shiftKey && event.key === '[')
     ) {
       event.preventDefault();
       switchToPrevTab();
     }
-    // Ctrl+Shift+PageDown - Move tab right
-    if (event.ctrlKey && event.shiftKey && event.key === 'PageDown') {
+    // Ctrl+Shift+I (Win/Linux) - Toggle DevTools
+    if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 'i') {
       event.preventDefault();
-      moveTab('right');
-    }
-    // Ctrl+Shift+PageUp - Move tab left
-    if (event.ctrlKey && event.shiftKey && event.key === 'PageUp') {
-      event.preventDefault();
-      moveTab('left');
-    }
-    // Ctrl+F4 - Close tab (Windows/Linux)
-    if (event.ctrlKey && event.key === 'F4') {
-      event.preventDefault();
-      if (tabState.activeTabId) {
-        const activeTab = tabState.tabs.find((t) => t.id === tabState.activeTabId);
-        if (activeTab && !activeTab.pinned) {
-          closeTab(tabState.activeTabId);
-        }
-      }
-    }
-    // Cmd+Shift+T / Ctrl+Shift+T - Reopen closed tab
-    if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === 't') {
-      event.preventDefault();
-      reopenLastClosedTab();
-    }
-    // F11 - Toggle fullscreen
-    if (event.key === 'F11') {
-      event.preventDefault();
-      electronAPI?.toggleFullscreen?.();
+      toggleDevTools();
     }
     // F12 - Toggle DevTools
     if (event.key === 'F12') {
