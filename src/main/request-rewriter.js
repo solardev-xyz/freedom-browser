@@ -71,7 +71,7 @@ function convertProtocolUrl(url) {
       return { converted: false, url };
     }
     const hash = afterScheme.split(/[/?#]/)[0];
-    if (!hash || !/^[a-fA-F0-9]{64}$/.test(hash)) {
+    if (!hash || !/^[a-fA-F0-9]{64}([a-fA-F0-9]{64})?$/.test(hash)) {
       return { converted: false, url };
     }
     const beeApiUrl = getBeeApiUrl();

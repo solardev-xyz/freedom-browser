@@ -56,6 +56,14 @@ describe('request-rewriter', () => {
       });
     });
 
+    test('converts valid bzz:// URL with 128-char encrypted hash', () => {
+      const result = convertProtocolUrl(`bzz://${VALID_ENCRYPTED_HASH}`);
+      expect(result).toEqual({
+        converted: true,
+        url: `http://127.0.0.1:1633/bzz/${VALID_ENCRYPTED_HASH}`,
+      });
+    });
+
     test('rejects bzz:// with empty hash', () => {
       expect(convertProtocolUrl('bzz://')).toEqual({ converted: false, url: 'bzz://' });
     });

@@ -185,6 +185,17 @@ describe('url-utils', () => {
       });
     });
 
+    test('formats raw 128-char hex hash as bzz://', () => {
+      const input =
+        '1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdefabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890';
+      const result = formatBzzUrl(input, BZZ_ROUTE_PREFIX);
+      expect(result).toEqual({
+        targetUrl: `http://127.0.0.1:1633/bzz/${input}/`,
+        displayValue: `bzz://${input}`,
+        baseUrl: `http://127.0.0.1:1633/bzz/${input}/`,
+      });
+    });
+
     test('returns null for short hex string (not valid Swarm hash)', () => {
       // Short hex strings should not be treated as Swarm hashes
       const input = '1234567890abcdef';
