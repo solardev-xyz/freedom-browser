@@ -169,6 +169,7 @@ function setupApplicationMenu() {
           click: () => {
             const win = getTargetWindow();
             if (win) {
+              win.webContents.send('menus:close');
               win.webContents.send('focus:address-bar');
             }
           },
