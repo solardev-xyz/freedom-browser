@@ -383,11 +383,6 @@ export const initBookmarks = () => {
       hideBookmarkContextMenu();
     }
   });
-  document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') {
-      hideAllBookmarkMenus();
-    }
-  });
   // Close when webview gets focus or is clicked
   const webviewElement = document.getElementById('bzz-webview');
   webviewElement?.addEventListener('focus', hideAllBookmarkMenus);

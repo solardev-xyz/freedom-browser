@@ -71,7 +71,7 @@ function convertProtocolUrl(url) {
       return { converted: false, url };
     }
     const hash = afterScheme.split(/[/?#]/)[0];
-    if (!hash || !/^[a-fA-F0-9]{64}$/.test(hash)) {
+    if (!hash || !/^[a-fA-F0-9]{64}([a-fA-F0-9]{64})?$/.test(hash)) {
       return { converted: false, url };
     }
     const beeApiUrl = getBeeApiUrl();
@@ -209,7 +209,7 @@ function shouldBlockInvalidBzzRequest(url) {
     if (pathParts.length >= 1 && pathParts[0] === 'bzz') {
       // /bzz/ with no hash or an invalid hash
       const hash = pathParts[1] || '';
-      if (!hash || !/^[a-fA-F0-9]{64}$/.test(hash)) {
+      if (!hash || !/^[a-fA-F0-9]{64}([a-fA-F0-9]{64})?$/.test(hash)) {
         return true;
       }
     }

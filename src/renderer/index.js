@@ -20,6 +20,7 @@ import {
   loadBookmarks,
   setOnLoadTarget,
   hideBookmarkContextMenu,
+  hideOverflowMenu,
   setOnBookmarkContextMenuOpening,
 } from './lib/bookmarks-ui.js';
 import {
@@ -104,6 +105,7 @@ const closeAllMenus = () => {
   closeMenus();
   hideTabContextMenu();
   hideBookmarkContextMenu();
+  hideOverflowMenu();
   hidePageContextMenu();
 };
 
@@ -112,6 +114,16 @@ const closeAllOverlays = () => {
   closeAllMenus();
   hideAutocomplete();
 };
+
+// Close all menus on Escape and clear focus from the trigger element
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    closeAllMenus();
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+  }
+});
 
 // Listen for close menus from main process (e.g., system menu clicked)
 // Don't close autocomplete here - mirrors browser behavior where address bar stays open

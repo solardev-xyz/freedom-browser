@@ -54,7 +54,7 @@ Freedom runs Swarm, IPFS, and Radicle nodes, giving you access to three major de
 | -------------------- | -------------- | ------------------------------------- | ------------------------------ |
 | **Protocol**         | `bzz://`       | `ipfs://`, `ipns://`                  | `rad://`                       |
 | **Node Software**    | Bee            | Kubo                                  | radicle-node + radicle-httpd   |
-| **Hash Format**      | 64-char hex    | CIDv0 (`Qm...`) or CIDv1 (`bafy...`) | Repository ID (`z...`)         |
+| **Hash Format**      | 64 or 128-char hex (encrypted refs supported) | CIDv0 (`Qm...`) or CIDv1 (`bafy...`) | Repository ID (`z...`)         |
 | **Gateway Port**     | 1633           | 8080                                  | 8780                           |
 | **API Port**         | 1633           | 5001                                  | 8780                           |
 | **Route Prefix**     | `/bzz/{hash}/` | `/ipfs/{cid}/`, `/ipns/{name}/`       | `/api/v1/repos/{rid}/`         |
@@ -105,8 +105,8 @@ Enter any of the following in the address bar:
 
 | Input Type  | Example                                         |
 | ----------- | ----------------------------------------------- |
-| Swarm Hash  | `a1b2c3...` (64 hex characters)                 |
-| Swarm URL   | `bzz://a1b2c3.../path/to/file.html`             |
+| Swarm Hash  | `a1b2c3...` (64 or 128 hex characters)          |
+| Swarm URL   | `bzz://a1b2c3.../path/to/file.html` (`a1b2c3...` can be 64 or 128 hex) |
 | IPFS CID    | `QmHash...` or `bafybeic...`                    |
 | IPFS URL    | `ipfs://QmHash.../path`                         |
 | IPNS URL    | `ipns://k51...` or `ipns://domain.eth`          |
@@ -531,5 +531,5 @@ npm run start:test-updater
 ### Content not loading
 
 - Ensure the respective node (Bee, IPFS, or Radicle) is running (check Nodes panel)
-- Verify the hash/CID is correct
+- Verify the Swarm reference (64 or 128 hex), CID, or Radicle ID is correct
 - Check the debug console for error messages

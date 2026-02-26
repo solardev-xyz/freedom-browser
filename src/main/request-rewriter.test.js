@@ -14,6 +14,7 @@ jest.mock('./service-registry', () => ({
 
 const BASE_URL = 'http://127.0.0.1:1633/bzz/abc123def456/';
 const VALID_HASH = 'a'.repeat(64);
+const VALID_ENCRYPTED_HASH = 'a'.repeat(128);
 
 describe('request-rewriter', () => {
   describe('convertProtocolUrl', () => {
@@ -53,6 +54,14 @@ describe('request-rewriter', () => {
       expect(result).toEqual({
         converted: true,
         url: `http://127.0.0.1:1633/bzz/${VALID_HASH}/page?v=1#top`,
+      });
+    });
+
+    test('converts valid bzz:// URL with 128-char encrypted hash', () => {
+      const result = convertProtocolUrl(`bzz://${VALID_ENCRYPTED_HASH}`);
+      expect(result).toEqual({
+        converted: true,
+        url: `http://127.0.0.1:1633/bzz/${VALID_ENCRYPTED_HASH}`,
       });
     });
 
@@ -286,6 +295,22 @@ describe('request-rewriter', () => {
       expect(
         shouldBlockInvalidBzzRequest(`http://127.0.0.1:1633/bzz/${VALID_HASH}/page?v=1#top`)
       ).toBe(false);
+    });
+
+    test('allows /bzz/ with valid 128-char hex hash (encrypted reference)', () => {
+      expect(shouldBlockInvalidBzzRequest(`http://127.0.0.1:1633/bzz/${VALID_ENCRYPTED_HASH}`)).toBe(
+        false
+      );
+    });
+
+    test('allows /bzz/ with valid encrypted hash and sub-path', () => {
+      expect(
+        shouldBlockInvalidBzzRequest(`http://127.0.0.1:1633/bzz/${VALID_ENCRYPTED_HASH}/index.html`)
+      ).toBe(false);
+    });
+
+    test('blocks /bzz/ with invalid length hash (65 chars)', () => {
+      expect(shouldBlockInvalidBzzRequest(`http://127.0.0.1:1633/bzz/${'a'.repeat(65)}`)).toBe(true);
     });
 
     test('allows non-bzz URLs', () => {
