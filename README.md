@@ -271,11 +271,16 @@ Edit `src/renderer/pages/home.html` to customize the welcome view shown on start
 | `npm run ipfs:start` / `ipfs:stop` / `ipfs:status` / `ipfs:reset` | Manage IPFS outside the app                  |
 | `npm run build -- --mac --unsigned`                               | Build unsigned macOS app (for local testing) |
 | `npm run dist -- --mac`                                           | Build signed macOS distributable (DMG + ZIP) |
+| `npm run dist:mac:prepare-notary`                                 | Build signed macOS artifacts without notarization wait |
+| `npm run dist:mac:submit-notary`                                  | Submit macOS artifacts to Apple asynchronously |
+| `npm run dist:mac:notary-status`                                  | Check notarization status from saved receipts |
+| `npm run dist:mac:notary-log -- <submission-id>`                  | Fetch notarization log JSON for a submission ID |
+| `npm run dist:mac:staple-notary`                                  | Staple and validate accepted notarized artifacts |
 | `npm run dist:linux:arm64:docker`                                 | Build Linux ARM64 via Docker (recommended)   |
 | `npm run dist:linux:x64:docker`                                   | Build Linux x64 via Docker                   |
 | `npm run dist -- --win`                                           | Build Windows x64 distributable (NSIS + ZIP) |
 
-The `build` and `dist` scripts accept `--mac`, `--linux`, or `--win` with optional `--arm64`, `--x64`, `--unsigned`, and `--verbose` flags. See `scripts/build.js` for details.
+The `build` and `dist` scripts accept `--mac`, `--linux`, or `--win` with optional `--arm64`, `--x64`, `--unsigned`, `--no-notarize`, and `--verbose` flags. See `scripts/build.js` for details.
 
 ---
 
@@ -408,6 +413,47 @@ so you don't need to manually export these variables. The signed build commands
 these credentials for code signing and notarization.
 
 **Note:** The `.env` file is git-ignored. Keep credentials out of the repo.
+
+#### Non-blocking notarization (submit now, resume later)
+
+If Apple notarization might take a long time, you can split distribution into
+two phases so your terminal does not block:
+
+1. Build signed artifacts without waiting for notarization:
+
+   ```bash
+   npm run dist:mac:prepare-notary
+   ```
+
+2. Submit artifacts to Apple asynchronously (no `--wait`):
+
+   ```bash
+   npm run dist:mac:submit-notary
+   ```
+
+3. Check notarization status later (safe after reboot/shutdown):
+
+   ```bash
+   npm run dist:mac:notary-status
+   ```
+
+   Inspect Apple processing details for a specific submission:
+
+   ```bash
+   npm run dist:mac:notary-log -- <submission-id>
+   ```
+
+4. Once all submissions are `Accepted`, staple and validate artifacts:
+
+   ```bash
+   npm run dist:mac:staple-notary
+   ```
+
+Submission receipts are stored in `dist/notary-submissions/` so the process can
+be resumed later. These scripts load the same `.env` Apple credentials used by
+`electron-builder` (`APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_SPECIFIC_PASSWORD`),
+so only one credential source needs to be maintained. If preferred, you can use
+a keychain profile instead with `NOTARY_PROFILE=your-profile`.
 
 ### Deploying Updates
 

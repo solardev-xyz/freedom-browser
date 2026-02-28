@@ -13,11 +13,13 @@
  *   --arm64, --x64          Target architecture (can specify both; defaults vary by platform)
  *   --dist                  Create distributable (default: unpacked build via --dir)
  *   --unsigned              Skip code signing (macOS only)
+ *   --no-notarize           Disable built-in notarization (macOS dist only)
  *   --verbose               Enable electron-builder debug output
  *
  * Examples:
  *   npm run build -- --mac --arm64
  *   npm run build -- --mac --arm64 --unsigned --verbose
+ *   npm run dist -- --mac --no-notarize
  *   npm run dist -- --linux --x64
  *   npm run dist -- --win --arm64
  */
@@ -31,6 +33,7 @@ const platforms = ['mac', 'linux', 'win'].filter((p) => args.includes(`--${p}`))
 const archs = ['arm64', 'x64'].filter((a) => args.includes(`--${a}`));
 const dist = args.includes('--dist');
 const unsigned = args.includes('--unsigned');
+const noNotarize = args.includes('--no-notarize');
 const verbose = args.includes('--verbose');
 
 if (platforms.length === 0) {
@@ -66,6 +69,10 @@ if (!dist) {
 
 if (unsigned && platform === 'mac') {
   builderArgs.push('-c.mac.identity=null');
+}
+
+if (noNotarize && platform === 'mac' && dist) {
+  builderArgs.push('-c.mac.notarize=false');
 }
 
 // Windows publish channels (signed dist only)
