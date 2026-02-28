@@ -27,11 +27,11 @@ export const stopRadicleInfoPolling = () => {
     radicleInfoInterval = null;
   }
   radicleInfoPanel?.classList.remove('visible');
-  if (radiclePeersCount) radiclePeersCount.textContent = '--';
-  if (radicleReposCount) radicleReposCount.textContent = '--';
+  if (radiclePeersCount) radiclePeersCount.textContent = '0';
+  if (radicleReposCount) radicleReposCount.textContent = '';
   if (radicleVersionText) radicleVersionText.textContent = state.radicleVersionFetched ? state.radicleVersionValue : '';
   if (radicleNodeId) {
-    radicleNodeId.textContent = '--';
+    radicleNodeId.textContent = '';
     radicleNodeId.title = '';
   }
 };
@@ -61,10 +61,10 @@ const fetchRadicleInfo = async () => {
       if (connResult.success && radiclePeersCount) {
         radiclePeersCount.textContent = String(connResult.count);
       } else if (radiclePeersCount) {
-        radiclePeersCount.textContent = '--';
+        radiclePeersCount.textContent = '0';
       }
     } catch {
-      if (radiclePeersCount) radiclePeersCount.textContent = '--';
+      if (radiclePeersCount) radiclePeersCount.textContent = '0';
     }
   }
 
@@ -77,14 +77,14 @@ const fetchRadicleInfo = async () => {
       const count = stats?.repos?.total ?? 0;
       if (radicleReposCount) radicleReposCount.textContent = String(count);
     } else if (radicleReposCount) {
-      radicleReposCount.textContent = '--';
+      radicleReposCount.textContent = '';
     }
   } catch {
-    if (radicleReposCount) radicleReposCount.textContent = '--';
+    if (radicleReposCount) radicleReposCount.textContent = '';
   }
 
   // Fetch node ID from /api/v1/node (only once, it doesn't change)
-  if (radicleNodeId && radicleNodeId.textContent === '--') {
+  if (radicleNodeId && !radicleNodeId.textContent.trim()) {
     try {
       const nodeResponse = await fetch(buildRadicleUrl('/api/v1/node'));
       if (!radicleInfoPanel?.classList.contains('visible')) return;
@@ -101,7 +101,7 @@ const fetchRadicleInfo = async () => {
         }
       }
     } catch {
-      // Node ID fetch failed, leave as --
+      // Node ID fetch failed, leave empty while unknown
     }
   }
 };
