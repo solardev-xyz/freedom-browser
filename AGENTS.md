@@ -10,15 +10,17 @@ This file defines mandatory constraints for automated agents and contributors. I
 4. Before writing code, read `eslint.config.js` and follow active linting conventions.
 5. After code changes, run `npm run lint` and fix any introduced errors or warnings.
 6. Do not change top-level package boundaries or module responsibilities described in `README.md` unless explicitly instructed.
+7. Match existing naming and file conventions in nearby code. Do not reformat or change behavior outside the requested scope.
+8. Run `npm test` after modifying files that have corresponding `.test.js` files.
+9. Do not add or upgrade dependencies without user approval.
 
 ## Task Routing (Read On Demand)
 
 Before executing task-specific work, read the corresponding playbook:
 
-- Architecture-sensitive changes: `docs/agent-playbooks/architecture-boundaries.md`
-- Code style and linting workflow: `docs/agent-playbooks/code-style-and-linting.md`
-- Commit message conventions: `docs/agent-playbooks/commit-messages.md`
-- Changelog updates: `docs/agent-playbooks/changelog-process.md`
-- Security checklist before commit/PR: `docs/agent-playbooks/security-checklist.md`
+- Architecture-sensitive changes *(adding files to `src/main/` or `src/renderer/`, creating new IPC channels, moving logic between processes)*: `docs/agent-playbooks/architecture-boundaries.md`
+- Commit message conventions *(any git commit)*: `docs/agent-playbooks/commit-messages.md`
+- Changelog updates *(version bumps, release prep)*: `docs/agent-playbooks/changelog-process.md`
+- Security checklist *(before commit or PR)*: `docs/agent-playbooks/security-checklist.md`
 
 If multiple categories apply, read all relevant playbooks.
