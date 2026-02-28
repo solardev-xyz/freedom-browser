@@ -12,6 +12,7 @@ import {
   applyEnsNamePreservation,
   isValidRadicleId,
   parseRadicleInput,
+  deriveRadBaseFromUrl,
   deriveRadicleDisplayValue,
 } from './url-utils.js';
 
@@ -790,6 +791,42 @@ describe('url-utils', () => {
     test('returns null for empty input after stripping scheme', () => {
       expect(parseRadicleInput('rad://', RAD_PREFIX)).toBeNull();
       expect(parseRadicleInput('rad:', RAD_PREFIX)).toBeNull();
+    });
+  });
+
+  describe('deriveRadBaseFromUrl', () => {
+    const RAD_BASE = 'http://127.0.0.1:8780/api/v1/repos/';
+    const SAMPLE_RID = 'z3gqcJUoA1n9HaHKufZs5FCSGazv5';
+
+    test('extracts base from Radicle API URL', () => {
+      const url = `${RAD_BASE}${SAMPLE_RID}/tree/main/README.md`;
+      expect(deriveRadBaseFromUrl(url)).toBe(`${RAD_BASE}${SAMPLE_RID}/`);
+    });
+
+    test('extracts base from URL object input', () => {
+      const url = new URL(`${RAD_BASE}${SAMPLE_RID}/commits`);
+      expect(deriveRadBaseFromUrl(url)).toBe(`${RAD_BASE}${SAMPLE_RID}/`);
+    });
+
+    test('returns null for legacy /projects/ path', () => {
+      const url = `http://127.0.0.1:8780/api/v1/projects/${SAMPLE_RID}/tree/main`;
+      expect(deriveRadBaseFromUrl(url)).toBeNull();
+    });
+
+    test('returns null for non-Radicle API paths', () => {
+      expect(deriveRadBaseFromUrl('http://127.0.0.1:8780/api/v1/')).toBeNull();
+      expect(deriveRadBaseFromUrl('http://127.0.0.1:8780/')).toBeNull();
+    });
+
+    test('returns null for invalid RID segment', () => {
+      const url = 'http://127.0.0.1:8780/api/v1/repos/not-a-rid/tree/main';
+      expect(deriveRadBaseFromUrl(url)).toBeNull();
+    });
+
+    test('returns null for invalid input values', () => {
+      expect(deriveRadBaseFromUrl(null)).toBeNull();
+      expect(deriveRadBaseFromUrl(undefined)).toBeNull();
+      expect(deriveRadBaseFromUrl('not-a-url')).toBeNull();
     });
   });
 

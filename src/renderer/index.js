@@ -1,5 +1,5 @@
 // Renderer process entry point
-import { updateRegistry } from './lib/state.js';
+import { updateRegistry, setRadicleIntegrationEnabled } from './lib/state.js';
 import { initBeeUi, updateBeeStatusLine, updateBeeToggleState } from './lib/bee-ui.js';
 import { initIpfsUi, updateIpfsStatusLine, updateIpfsToggleState } from './lib/ipfs-ui.js';
 import {
@@ -181,6 +181,16 @@ document.addEventListener('open-url-new-tab', (e) => {
 
 // Initialize all modules
 window.addEventListener('DOMContentLoaded', async () => {
+  try {
+    const settings = await electronAPI.getSettings();
+    setRadicleIntegrationEnabled(settings?.enableRadicleIntegration === true);
+  } catch {
+    setRadicleIntegrationEnabled(false);
+  }
+  window.addEventListener('settings:updated', (event) => {
+    setRadicleIntegrationEnabled(event.detail?.enableRadicleIntegration === true);
+  });
+
   initMenuBackdrop(closeAllOverlays);
   initMenus();
   initBeeUi();

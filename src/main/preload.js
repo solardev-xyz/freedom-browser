@@ -213,7 +213,9 @@ contextBridge.exposeInMainWorld('radicle', {
 contextBridge.exposeInMainWorld('githubBridge', {
   import: (url) => ipcRenderer.invoke('github-bridge:import', url),
   checkGit: () => ipcRenderer.invoke('github-bridge:check-git'),
+  checkPrerequisites: () => ipcRenderer.invoke('github-bridge:check-prerequisites'),
   validateUrl: (url) => ipcRenderer.invoke('github-bridge:validate-url', url),
+  checkExisting: (url) => ipcRenderer.invoke('github-bridge:check-existing', url),
   onProgress: (callback) => {
     const handler = (_event, data) => callback(data);
     ipcRenderer.on('github-bridge:progress', handler);

@@ -158,7 +158,7 @@ async function bootstrap() {
   } else {
     log.info('[App] Deferring node startup until onboarding completes');
   }
-  if (settings.startRadicleAtLaunch) {
+  if (settings.enableRadicleIntegration && settings.startRadicleAtLaunch) {
     startRadicle();
   }
 

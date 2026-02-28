@@ -32,7 +32,7 @@ It ships with integrated Swarm, IPFS, and Radicle nodes, enabling direct peer-to
    npm start
    ```
 
-5. All nodes start automatically by default. Enter a Swarm hash, IPFS CID, Radicle ID, `bzz://` URL, `ipfs://` URL, `rad://` URL, or `.eth`/`.box` domain in the address bar.
+5. Swarm and IPFS nodes start automatically by default. To use `rad://`, first enable **Settings → Experimental → Enable Radicle integration (Beta)**. Enter a Swarm hash, IPFS CID, Radicle ID, `bzz://` URL, `ipfs://` URL, `rad://` URL, or `.eth`/`.box` domain in the address bar.
 
 ---
 
@@ -40,7 +40,7 @@ It ships with integrated Swarm, IPFS, and Radicle nodes, enabling direct peer-to
 
 Freedom Browser is an Electron application. Protocol logic lives in the main process; the renderer is a modular UI layer that talks to it over IPC (channels defined in `src/shared/ipc-channels.js`). The main process manages node lifecycles (`bee-manager.js`, `ipfs-manager.js`, `radicle-manager.js`), URL rewriting (`request-rewriter.js`), and persistent data (settings, bookmarks, history). A central `service-registry.js` tracks node endpoints, modes, and status, and broadcasts state to all windows — both node managers and the request rewriter read from it.
 
-When a user enters a `bzz://`, `ipfs://`, `ipns://`, `rad://`, or ENS URL, the main process rewrites it to the active gateway URL via the registry, and subsequent webview requests are normalized to stay within the active hash/CID/RID base.
+When a user enters a `bzz://`, `ipfs://`, `ipns://`, `rad://`, or ENS URL, the main process rewrites it to the active gateway URL via the registry, and subsequent webview requests are normalized to stay within the active hash/CID/RID base. `rad://` handling is gated by the Radicle integration setting.
 
 ---
 
@@ -54,7 +54,7 @@ Freedom runs Swarm, IPFS, and Radicle nodes, giving you access to three major de
 | -------------------- | -------------- | ------------------------------------- | ------------------------------ |
 | **Protocol**         | `bzz://`       | `ipfs://`, `ipns://`                  | `rad://`                       |
 | **Node Software**    | Bee            | Kubo                                  | radicle-node + radicle-httpd   |
-| **Hash Format**      | 64-char hex    | CIDv0 (`Qm...`) or CIDv1 (`bafy...`) | Repository ID (`z...`)         |
+| **Hash Format**      | 64 or 128-char hex (encrypted refs supported) | CIDv0 (`Qm...`) or CIDv1 (`bafy...`) | Repository ID (`z...`)         |
 | **Gateway Port**     | 1633           | 8080                                  | 8780                           |
 | **API Port**         | 1633           | 5001                                  | 8780                           |
 | **Route Prefix**     | `/bzz/{hash}/` | `/ipfs/{cid}/`, `/ipns/{name}/`       | `/api/v1/repos/{rid}/`         |
@@ -72,7 +72,7 @@ Freedom intelligently manages node connections:
 
 This means Freedom works seamlessly whether you:
 
-- Run it standalone (bundled nodes start automatically)
+- Run it standalone (bundled Swarm and IPFS nodes start automatically; Radicle is optional and behind an Experimental setting)
 - Already have system-wide Bee/IPFS/Radicle daemons running (Freedom reuses them)
 - Have port conflicts with other software (Freedom finds available ports)
 
@@ -93,7 +93,8 @@ This means Freedom works seamlessly whether you:
 
 - **Two-Process Architecture**: Manages both `radicle-node` (P2P network) and `radicle-httpd` (HTTP API) as a coordinated pair.
 - **Automatic Identity**: Creates a Radicle identity on first run (no manual setup required).
-- **Independent Toggle**: Start and stop Radicle separately from Swarm and IPFS (configurable in Settings).
+- **Experimental Gate**: Radicle is controlled via **Settings → Experimental → Enable Radicle integration (Beta)**.
+- **Node Toggle**: Once enabled, start and stop Radicle from the Nodes panel.
 - **Live Statistics**: View connected peers, seeded repos, version, and Node ID.
 - **Repository Seeding**: Seed Radicle repositories directly from the browser to help replicate them across the network.
 - **Stale Socket Cleanup**: Automatically cleans up control sockets from unclean shutdowns.
@@ -211,7 +212,8 @@ Access built-in browser pages using the `freedom://` protocol:
 ### Settings & UI
 
 - **Theme**: Light, Dark, or System (follows OS preference).
-- **Node Auto-start**: Toggle whether Swarm, IPFS, and Radicle nodes start automatically at launch (Swarm and IPFS enabled by default).
+- **Node Auto-start**: Toggle whether Swarm and IPFS nodes start automatically at launch (enabled by default).
+- **Experimental**: Enable Radicle integration (Beta) and set `Start Radicle node when Freedom opens`.
 - **Auto-Updates**: Toggle automatic update checks (enabled by default).
 - **Protocol Icons**: Address bar shows Swarm (hexagon), IPFS (cube), Radicle (seedling), or HTTP (globe) icon based on current protocol.
 - **Hamburger Menu**: Access browser features (New Tab, New Window, History, Zoom, Print, Developer Tools, Settings, About).
@@ -219,6 +221,7 @@ Access built-in browser pages using the `freedom://` protocol:
 ### Error Handling
 
 - **Friendly Error Pages**: Clear error messages with the original URL preserved.
+- **Feature-Gated Radicle Errors**: Opening `rad://` while integration is disabled shows: `Radicle integration is disabled. Enable it in Settings > Experimental`.
 - **Retry on Reload**: Pressing reload on an error page retries the original request.
 - **Graceful Degradation**: Navigation errors don't crash the browser.
 
@@ -286,11 +289,16 @@ Edit `src/renderer/pages/home.html` to customize the welcome view shown on start
 | `npm run ipfs:start` / `ipfs:stop` / `ipfs:status` / `ipfs:reset` | Manage IPFS outside the app                  |
 | `npm run build -- --mac --unsigned`                               | Build unsigned macOS app (for local testing) |
 | `npm run dist -- --mac`                                           | Build signed macOS distributable (DMG + ZIP) |
+| `npm run dist:mac:prepare-notary`                                 | Build signed macOS artifacts without notarization wait |
+| `npm run dist:mac:submit-notary`                                  | Submit macOS artifacts to Apple asynchronously |
+| `npm run dist:mac:notary-status`                                  | Check notarization status from saved receipts |
+| `npm run dist:mac:notary-log -- <submission-id>`                  | Fetch notarization log JSON for a submission ID |
+| `npm run dist:mac:staple-notary`                                  | Staple and validate accepted notarized artifacts |
 | `npm run dist:linux:arm64:docker`                                 | Build Linux ARM64 via Docker (recommended)   |
 | `npm run dist:linux:x64:docker`                                   | Build Linux x64 via Docker                   |
 | `npm run dist -- --win`                                           | Build Windows x64 distributable (NSIS + ZIP) |
 
-The `build` and `dist` scripts accept `--mac`, `--linux`, or `--win` with optional `--arm64`, `--x64`, `--unsigned`, and `--verbose` flags. See `scripts/build.js` for details.
+The `build` and `dist` scripts accept `--mac`, `--linux`, or `--win` with optional `--arm64`, `--x64`, `--unsigned`, `--no-notarize`, and `--verbose` flags. See `scripts/build.js` for details.
 
 ### Radicle Scripts
 
@@ -433,6 +441,47 @@ these credentials for code signing and notarization.
 
 **Note:** The `.env` file is git-ignored. Keep credentials out of the repo.
 
+#### Non-blocking notarization (submit now, resume later)
+
+If Apple notarization might take a long time, you can split distribution into
+two phases so your terminal does not block:
+
+1. Build signed artifacts without waiting for notarization:
+
+   ```bash
+   npm run dist:mac:prepare-notary
+   ```
+
+2. Submit artifacts to Apple asynchronously (no `--wait`):
+
+   ```bash
+   npm run dist:mac:submit-notary
+   ```
+
+3. Check notarization status later (safe after reboot/shutdown):
+
+   ```bash
+   npm run dist:mac:notary-status
+   ```
+
+   Inspect Apple processing details for a specific submission:
+
+   ```bash
+   npm run dist:mac:notary-log -- <submission-id>
+   ```
+
+4. Once all submissions are `Accepted`, staple and validate artifacts:
+
+   ```bash
+   npm run dist:mac:staple-notary
+   ```
+
+Submission receipts are stored in `dist/notary-submissions/` so the process can
+be resumed later. These scripts load the same `.env` Apple credentials used by
+`electron-builder` (`APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_SPECIFIC_PASSWORD`),
+so only one credential source needs to be maintained. If preferred, you can use
+a keychain profile instead with `NOTARY_PROFILE=your-profile`.
+
 ### Deploying Updates
 
 Freedom includes **non-intrusive auto-update functionality** that silently checks for and downloads updates in the background.
@@ -510,6 +559,7 @@ npm run start:test-updater
 - Reset IPFS data: `npm run ipfs:reset`
 
 ### Radicle fails to start
+- Ensure **Settings → Experimental → Enable Radicle integration (Beta)** is enabled
 - Freedom automatically detects port conflicts and uses fallback ports
 - Ensure both `radicle-node` and `radicle-httpd` binaries exist in `radicle-bin/`
 - If starting for the first time, Freedom creates a Radicle identity automatically
@@ -530,6 +580,6 @@ npm run start:test-updater
 
 ### Content not loading
 
-- Ensure the respective node (Bee, IPFS, or Radicle) is running (check Nodes panel)
-- Verify the hash/CID is correct
+- Ensure the respective node (Bee, IPFS, or Radicle) is running (check Nodes panel, for Radicle, first enable it in **Settings → Experimental**)
+- Verify the Swarm reference (64 or 128 hex), CID, or Radicle ID is correct
 - Check the debug console for error messages

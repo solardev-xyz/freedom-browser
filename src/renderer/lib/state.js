@@ -93,6 +93,9 @@ export const state = {
 
   // Navigation state for Radicle
   currentRadBase: null,
+
+  // Feature flags
+  enableRadicleIntegration: false,
 };
 
 // Build Bee URL using registry or fallback to defaults
@@ -130,6 +133,10 @@ export const updateRegistry = (newRegistry) => {
   if (newRegistry.radicle?.api) {
     state.radicleBase = newRegistry.radicle.api.replace(/\/$/, '');
   }
+};
+
+export const setRadicleIntegrationEnabled = (enabled) => {
+  state.enableRadicleIntegration = enabled === true;
 };
 
 // Get display message for a service (temp message takes priority)

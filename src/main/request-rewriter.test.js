@@ -3,7 +3,10 @@ const {
   buildRewriteTarget,
   convertProtocolUrl,
   shouldBlockInvalidBzzRequest,
+  registerRequestRewriter,
 } = require('./request-rewriter');
+const { activeRadBases } = require('./state');
+const { formatRadicleUrl, deriveRadBaseFromUrl, deriveDisplayValue } = require('../renderer/lib/url-utils.js');
 
 // Mock service-registry so convertProtocolUrl can resolve gateway URLs
 jest.mock('./service-registry', () => ({
@@ -12,10 +15,20 @@ jest.mock('./service-registry', () => ({
   getRadicleApiUrl: () => 'http://127.0.0.1:8780',
 }));
 
+jest.mock('./settings-store', () => ({
+  loadSettings: jest.fn(() => ({ enableRadicleIntegration: true })),
+}));
+const { loadSettings } = require('./settings-store');
+
 const BASE_URL = 'http://127.0.0.1:1633/bzz/abc123def456/';
 const VALID_HASH = 'a'.repeat(64);
 
 describe('request-rewriter', () => {
+  afterEach(() => {
+    activeRadBases.clear();
+    loadSettings.mockReturnValue({ enableRadicleIntegration: true });
+  });
+
   describe('convertProtocolUrl', () => {
     test('returns converted: false for null/undefined/empty', () => {
       expect(convertProtocolUrl(null)).toEqual({ converted: false, url: null });
@@ -359,6 +372,14 @@ describe('request-rewriter', () => {
     test('blocks rad: with too-short RID', () => {
       expect(convertProtocolUrl('rad:zabc').converted).toBe(false);
     });
+
+    test('does not convert rad: when integration is disabled', () => {
+      loadSettings.mockReturnValue({ enableRadicleIntegration: false });
+      expect(convertProtocolUrl(`rad:${SAMPLE_RID}`)).toEqual({
+        converted: false,
+        url: `rad:${SAMPLE_RID}`,
+      });
+    });
   });
 
   describe('shouldRewriteRequest – Radicle paths', () => {
@@ -387,6 +408,110 @@ describe('request-rewriter', () => {
         RAD_BASE
       );
       expect(result.shouldRewrite).toBe(false);
+    });
+  });
+
+  describe('integration: rad:// entry -> navigation -> rewrite -> display roundtrip', () => {
+    const SAMPLE_RID = 'z3gqcJUoA1n9HaHKufZs5FCSGazv5';
+    const RADICLE_BASE = 'http://127.0.0.1:8780';
+    const RADICLE_API_PREFIX = `${RADICLE_BASE}/api/v1/repos/`;
+
+    test('roundtrips rad:// URL through target, rewrite, and display value', () => {
+      const previousWindow = global.window;
+      try {
+        global.window = { location: { href: 'file:///app/index.html' } };
+
+        const entryUrl = `rad://${SAMPLE_RID}/tree/main/README.md`;
+
+        // Entry -> navigation target
+        const navTarget = formatRadicleUrl(entryUrl, RADICLE_BASE);
+        expect(navTarget).not.toBeNull();
+        expect(navTarget.displayValue).toBe(entryUrl);
+
+        // Custom protocol conversion used by request interception
+        const converted = convertProtocolUrl(entryUrl);
+        expect(converted).toEqual({
+          converted: true,
+          url: `${RADICLE_BASE}/api/v1/repos/${SAMPLE_RID}/tree/main/README.md`,
+        });
+
+        // Navigation-derived base enables same-origin relative request rewriting
+        const radBase = deriveRadBaseFromUrl(converted.url);
+        expect(radBase).toBe(`${RADICLE_API_PREFIX}${SAMPLE_RID}/`);
+
+        const relativeRequest = `${RADICLE_BASE}/assets/code.css`;
+        expect(shouldRewriteRequest(relativeRequest, radBase)).toEqual({ shouldRewrite: true });
+        expect(buildRewriteTarget(relativeRequest, radBase)).toBe(
+          `${RADICLE_API_PREFIX}${SAMPLE_RID}/assets/code.css`
+        );
+
+        // Internal API URL -> display value in address bar
+        const display = deriveDisplayValue(
+          converted.url,
+          'http://127.0.0.1:1633/bzz/',
+          'file:///app/home.html',
+          'http://127.0.0.1:8080/ipfs/',
+          'http://127.0.0.1:8080/ipns/',
+          RADICLE_API_PREFIX
+        );
+        expect(display).toBe(entryUrl);
+      } finally {
+        global.window = previousWindow;
+      }
+    });
+
+    test('rewrites same-origin Radicle requests via registered session handler', () => {
+      const webContentsId = 42;
+      const sessionMock = {
+        webRequest: {
+          onBeforeRequest: jest.fn(),
+        },
+      };
+
+      activeRadBases.set(webContentsId, `${RADICLE_API_PREFIX}${SAMPLE_RID}/`);
+      registerRequestRewriter(sessionMock);
+
+      expect(sessionMock.webRequest.onBeforeRequest).toHaveBeenCalledTimes(1);
+      const [handler] = sessionMock.webRequest.onBeforeRequest.mock.calls[0];
+      const callback = jest.fn();
+
+      handler(
+        {
+          webContentsId,
+          url: `${RADICLE_BASE}/blob/main/src/index.js`,
+        },
+        callback
+      );
+
+      expect(callback).toHaveBeenCalledWith({
+        redirectURL: `${RADICLE_API_PREFIX}${SAMPLE_RID}/blob/main/src/index.js`,
+      });
+    });
+
+    test('does not rewrite Radicle requests when integration is disabled', () => {
+      loadSettings.mockReturnValue({ enableRadicleIntegration: false });
+      const webContentsId = 42;
+      const sessionMock = {
+        webRequest: {
+          onBeforeRequest: jest.fn(),
+        },
+      };
+
+      activeRadBases.set(webContentsId, `${RADICLE_API_PREFIX}${SAMPLE_RID}/`);
+      registerRequestRewriter(sessionMock);
+
+      const [handler] = sessionMock.webRequest.onBeforeRequest.mock.calls[0];
+      const callback = jest.fn();
+
+      handler(
+        {
+          webContentsId,
+          url: `${RADICLE_BASE}/blob/main/src/index.js`,
+        },
+        callback
+      );
+
+      expect(callback).toHaveBeenCalledWith({});
     });
   });
 });

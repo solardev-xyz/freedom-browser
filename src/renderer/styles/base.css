@@ -26,6 +26,10 @@ body {
   flex-direction: column;
 }
 
+.hidden {
+  display: none !important;
+}
+
 /* Webview container */
 .webview-container {
   position: relative;

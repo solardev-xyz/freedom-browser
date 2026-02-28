@@ -324,7 +324,7 @@ export const deriveDisplayValue = (
     try {
       const decoded = decodeURIComponent(remainder).replace(/\/+$/, '');
       return decoded ? `rad://${decoded}` : '';
-    } catch (err) {
+    } catch {
       const cleaned = remainder.replace(/\/+$/, '');
       return cleaned ? `rad://${cleaned}` : '';
     }
@@ -584,13 +584,13 @@ export const deriveRadBaseFromUrl = (input) => {
     if (segments.length >= 4 &&
         segments[0] === 'api' &&
         segments[1] === 'v1' &&
-        segments[2] === 'projects') {
+        segments[2] === 'repos') {
       const rid = segments[3];
-      if (rid && rid.startsWith('z')) {
+      if (isValidRadicleId(rid)) {
         return ensureTrailingSlash(`${parsed.origin}/api/v1/repos/${rid}`);
       }
     }
-  } catch (err) {
+  } catch {
     return null;
   }
   return null;
@@ -670,7 +670,7 @@ export const deriveRadicleDisplayValue = (url, radicleApiPrefix) => {
     try {
       const decoded = decodeURIComponent(remainder).replace(/\/+$/, '');
       return decoded ? `rad://${decoded}` : '';
-    } catch (err) {
+    } catch {
       const cleaned = remainder.replace(/\/+$/, '');
       return cleaned ? `rad://${cleaned}` : '';
     }

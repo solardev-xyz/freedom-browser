@@ -18,6 +18,7 @@ function applyNativeTheme(theme) {
 const SETTINGS_FILE = 'settings.json';
 const DEFAULT_SETTINGS = {
   theme: 'system',
+  enableRadicleIntegration: false,
   startBeeAtLaunch: true,
   startIpfsAtLaunch: true,
   startRadicleAtLaunch: false,

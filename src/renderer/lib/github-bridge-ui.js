@@ -28,6 +28,22 @@ let progressCleanup = null;
 let panelOpen = false;
 let currentUrl = '';
 let lastRid = '';
+let bridgeCheckRequestId = 0;
+
+function getErrorMessage(resultOrError) {
+  if (!resultOrError) return 'Unknown error';
+  if (typeof resultOrError.error === 'string') return resultOrError.error;
+  if (resultOrError.error?.message) return resultOrError.error.message;
+  if (resultOrError.message) return resultOrError.message;
+  return 'Unknown error';
+}
+
+function showPrereqError(message) {
+  showState('prereq-error');
+  if (prereqTextEl) {
+    prereqTextEl.textContent = message;
+  }
+}
 
 /**
  * Check if a URL matches a GitHub repository page.
@@ -49,12 +65,6 @@ function parseGitHubUrl(url) {
     return { owner: match[1], repo: match[2] };
   }
   return null;
-}
-
-function escapeHtml(str) {
-  const div = document.createElement('div');
-  div.textContent = str;
-  return div.innerHTML;
 }
 
 /**
@@ -131,31 +141,28 @@ async function openPanel() {
   panel.classList.remove('hidden');
   resetSteps();
 
-  // Check prerequisites
-  const radicleStatus = state.currentRadicleStatus;
-  if (radicleStatus !== 'running') {
-    showState('prereq-error');
-    if (prereqTextEl) {
-      prereqTextEl.textContent = 'Radicle node is not running. Enable it from the Nodes menu in the toolbar.';
-    }
+  if (!state.enableRadicleIntegration) {
+    showPrereqError('Radicle integration is disabled. Enable it in Settings > Experimental');
     return;
   }
 
-  // Check git availability
+  // Check prerequisites
+  const radicleStatus = state.currentRadicleStatus;
+  if (radicleStatus !== 'running') {
+    showPrereqError('Radicle node is not running. Enable it from the Nodes menu in the toolbar.');
+    return;
+  }
+
+  // Check bridge prerequisites from backend
   try {
-    const gitCheck = await window.githubBridge.checkGit();
-    if (!gitCheck.available) {
-      showState('prereq-error');
-      if (prereqTextEl) {
-        prereqTextEl.textContent = 'Git is not installed or not found in PATH. Please install Git to use this feature.';
-      }
+    const prereqCheck = await window.githubBridge.checkPrerequisites();
+    if (!prereqCheck?.success) {
+      const errorMsg = getErrorMessage(prereqCheck);
+      showPrereqError(errorMsg || 'Prerequisite check failed.');
       return;
     }
-  } catch (err) {
-    showState('prereq-error');
-    if (prereqTextEl) {
-      prereqTextEl.textContent = 'Could not verify Git availability.';
-    }
+  } catch {
+    showPrereqError('Could not verify GitHub bridge prerequisites.');
     return;
   }
 
@@ -181,6 +188,28 @@ function closePanel() {
  * Start the import process.
  */
 async function startImport() {
+  if (!state.enableRadicleIntegration) {
+    showPrereqError('Radicle integration is disabled. Enable it in Settings > Experimental');
+    return;
+  }
+
+  // Re-check fast-changing prerequisites immediately before import.
+  if (state.currentRadicleStatus !== 'running') {
+    showPrereqError('Radicle node is not running. Enable it from the Nodes menu in the toolbar.');
+    return;
+  }
+
+  try {
+    const prereqCheck = await window.githubBridge.checkPrerequisites();
+    if (!prereqCheck?.success) {
+      showPrereqError(getErrorMessage(prereqCheck) || 'Prerequisite check failed.');
+      return;
+    }
+  } catch {
+    showPrereqError('Could not verify GitHub bridge prerequisites.');
+    return;
+  }
+
   showState('importing');
   resetSteps();
 
@@ -224,13 +253,25 @@ async function startImport() {
       }
       showState('success');
     } else {
+      if (result.error?.code === 'ALREADY_BRIDGED') {
+        markAllStepsDone();
+        lastRid = result.rid || result.error?.details?.rid || '';
+        if (ridEl) {
+          ridEl.textContent = lastRid ? `rad:${lastRid}` : 'Already bridged';
+        }
+        showState('success');
+        bridgeBtn?.classList.add('hidden');
+        return;
+      }
+
+      const errorMessage = getErrorMessage(result);
       // Determine which step failed based on the error
-      const failedStep = result.step || detectFailedStep(result.error);
+      const failedStep = result.step || detectFailedStep(errorMessage);
       if (failedStep) {
         markStepError(failedStep);
       }
       if (errorDetailEl) {
-        errorDetailEl.textContent = result.error || 'Unknown error';
+        errorDetailEl.textContent = errorMessage;
       }
       showState('error');
     }
@@ -240,7 +281,7 @@ async function startImport() {
       progressCleanup = null;
     }
     if (errorDetailEl) {
-      errorDetailEl.textContent = err.message || 'Unknown error';
+      errorDetailEl.textContent = getErrorMessage(err);
     }
     showState('error');
   }
@@ -258,20 +299,56 @@ function detectFailedStep(errorMsg) {
   return 'cloning'; // default to first step
 }
 
+async function refreshBridgeButtonForUrl(url) {
+  if (!bridgeBtn) return;
+  const requestId = ++bridgeCheckRequestId;
+
+  if (!window.githubBridge?.checkExisting) {
+    bridgeBtn.classList.remove('hidden');
+    return;
+  }
+
+  try {
+    const status = await window.githubBridge.checkExisting(url);
+    if (requestId !== bridgeCheckRequestId) return;
+
+    if (status?.success && status.bridged) {
+      lastRid = status.rid || '';
+      bridgeBtn.classList.add('hidden');
+      if (panelOpen) closePanel();
+      return;
+    }
+  } catch {
+    // Fall through to showing the button when status checks fail.
+  }
+
+  if (requestId === bridgeCheckRequestId) {
+    bridgeBtn.classList.remove('hidden');
+  }
+}
+
 /**
  * Update bridge icon visibility based on current address bar URL.
  * Called from navigation.js whenever the URL changes.
  */
-export function updateGithubBridgeIcon() {
+export async function updateGithubBridgeIcon() {
   if (!bridgeBtn) return;
+  if (!state.enableRadicleIntegration) {
+    bridgeBtn.classList.add('hidden');
+    if (panelOpen) {
+      closePanel();
+    }
+    return;
+  }
 
   const addressInput = document.getElementById('address-input');
   const url = addressInput?.value || '';
 
   if (isGitHubRepoUrl(url)) {
     currentUrl = url;
-    bridgeBtn.classList.remove('hidden');
+    await refreshBridgeButtonForUrl(url);
   } else {
+    bridgeCheckRequestId++;
     bridgeBtn.classList.add('hidden');
     // Close panel if URL changes away from GitHub
     if (panelOpen) {
@@ -365,5 +442,9 @@ export function initGithubBridgeUi() {
     if (e.key === 'Escape' && panelOpen) {
       closePanel();
     }
+  });
+
+  window.addEventListener('settings:updated', () => {
+    updateGithubBridgeIcon();
   });
 }

@@ -11,8 +11,6 @@ import {
   deriveBzzBaseFromUrl,
   deriveIpfsBaseFromUrl,
   deriveRadBaseFromUrl,
-  isValidCid,
-  isValidRadicleId,
   applyEnsNamePreservation,
 } from './url-utils.js';
 import {
@@ -40,6 +38,8 @@ import {
 const getNavState = () => getActiveTabState() || {};
 
 const electronAPI = window.electronAPI;
+const RADICLE_DISABLED_MESSAGE =
+  'Radicle integration is disabled. Enable it in Settings > Experimental';
 
 // DOM elements (initialized in initNavigation)
 let addressInput = null;
@@ -95,7 +95,7 @@ const updateProtocolIcon = () => {
     protocol = 'ipfs';
   } else if (value.startsWith('ipns://')) {
     protocol = 'ipns';
-  } else if (value.startsWith('rad://')) {
+  } else if (value.startsWith('rad://') && state.enableRadicleIntegration) {
     protocol = 'radicle';
   } else if (value.startsWith('freedom://')) {
     // Internal pages - no icon
@@ -231,6 +231,15 @@ const syncRadBase = (nextBase) => {
     .catch((err) => {
       console.error('Failed to sync rad base', err);
     });
+};
+
+const buildRadicleDisabledUrl = (inputValue = '') => {
+  const errorUrl = new URL('pages/rad-browser.html', window.location.href);
+  errorUrl.searchParams.set('error', 'disabled');
+  if (inputValue) {
+    errorUrl.searchParams.set('input', inputValue);
+  }
+  return errorUrl.toString();
 };
 
 export const loadTarget = (value, displayOverride = null, targetWebview = null) => {
@@ -464,6 +473,18 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null) 
 
   // Try Radicle (rad:RID or rad://RID)
   if (value.trim().toLowerCase().startsWith('rad:') || value.trim().toLowerCase().startsWith('rad://')) {
+    if (!state.enableRadicleIntegration) {
+      pushDebug(RADICLE_DISABLED_MESSAGE);
+      const disabledUrl = buildRadicleDisabledUrl(value.trim());
+      addressInput.value = value.trim();
+      navState.pendingNavigationUrl = disabledUrl;
+      navState.hasNavigatedDuringCurrentLoad = false;
+      webview.loadURL(disabledUrl);
+      syncRadBase(null);
+      syncBzzBase(null);
+      syncIpfsBase(null);
+      return;
+    }
     const radicleTarget = formatRadicleUrl(value, state.radicleBase);
     if (radicleTarget) {
       addressInput.value = displayOverride || radicleTarget.displayValue;
@@ -666,7 +687,7 @@ const getRadicleDisplayUrl = (url) => {
     if (rid) {
       return `rad://${rid}${path}`;
     }
-  } catch (err) {
+  } catch {
     // Ignore parse errors
   }
   return null;
@@ -847,6 +868,11 @@ export const toggleBookmarkBar = async () => {
 // Called when settings change to refresh current page if needed
 export const onSettingsChanged = () => {
   const navState = getNavState();
+  updateProtocolIcon();
+  if (!state.enableRadicleIntegration && addressInput?.value?.trim().toLowerCase().startsWith('rad:')) {
+    loadTarget(addressInput.value);
+    return;
+  }
   if (navState.currentPageUrl && navState.currentPageUrl.startsWith('bzz://')) {
     loadTarget(addressInput.value);
   }

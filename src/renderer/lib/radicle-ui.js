@@ -13,6 +13,7 @@ let radicleInfoPanel = null;
 let radicleStatusRow = null;
 let radicleStatusLabel = null;
 let radicleStatusValue = null;
+let radicleNodesSection = null;
 
 // Binary availability state
 let radicleBinaryAvailable = true;
@@ -26,12 +27,21 @@ export const stopRadicleInfoPolling = () => {
     radicleInfoInterval = null;
   }
   radicleInfoPanel?.classList.remove('visible');
-  if (radiclePeersCount) radiclePeersCount.textContent = '--';
-  if (radicleReposCount) radicleReposCount.textContent = '--';
+  if (radiclePeersCount) radiclePeersCount.textContent = '0';
+  if (radicleReposCount) radicleReposCount.textContent = '';
   if (radicleVersionText) radicleVersionText.textContent = state.radicleVersionFetched ? state.radicleVersionValue : '';
   if (radicleNodeId) {
-    radicleNodeId.textContent = '--';
+    radicleNodeId.textContent = '';
     radicleNodeId.title = '';
+  }
+};
+
+const updateRadicleSectionVisibility = () => {
+  const enabled = state.enableRadicleIntegration === true;
+  radicleNodesSection?.classList.toggle('hidden', !enabled);
+  if (!enabled) {
+    stopRadicleInfoPolling();
+    radicleToggleSwitch?.classList.remove('running');
   }
 };
 
@@ -51,10 +61,10 @@ const fetchRadicleInfo = async () => {
       if (connResult.success && radiclePeersCount) {
         radiclePeersCount.textContent = String(connResult.count);
       } else if (radiclePeersCount) {
-        radiclePeersCount.textContent = '--';
+        radiclePeersCount.textContent = '0';
       }
-    } catch (err) {
-      if (radiclePeersCount) radiclePeersCount.textContent = '--';
+    } catch {
+      if (radiclePeersCount) radiclePeersCount.textContent = '0';
     }
   }
 
@@ -67,14 +77,14 @@ const fetchRadicleInfo = async () => {
       const count = stats?.repos?.total ?? 0;
       if (radicleReposCount) radicleReposCount.textContent = String(count);
     } else if (radicleReposCount) {
-      radicleReposCount.textContent = '--';
+      radicleReposCount.textContent = '';
     }
-  } catch (err) {
-    if (radicleReposCount) radicleReposCount.textContent = '--';
+  } catch {
+    if (radicleReposCount) radicleReposCount.textContent = '';
   }
 
   // Fetch node ID from /api/v1/node (only once, it doesn't change)
-  if (radicleNodeId && radicleNodeId.textContent === '--') {
+  if (radicleNodeId && !radicleNodeId.textContent.trim()) {
     try {
       const nodeResponse = await fetch(buildRadicleUrl('/api/v1/node'));
       if (!radicleInfoPanel?.classList.contains('visible')) return;
@@ -90,8 +100,8 @@ const fetchRadicleInfo = async () => {
           radicleNodeId.title = fullId; // Full ID on hover
         }
       }
-    } catch (err) {
-      // Node ID fetch failed, leave as --
+    } catch {
+      // Node ID fetch failed, leave empty while unknown
     }
   }
 };
@@ -111,12 +121,16 @@ const fetchRadicleVersionOnce = async () => {
     } else if (radicleVersionText) {
       radicleVersionText.textContent = '';
     }
-  } catch (err) {
+  } catch {
     if (radicleVersionText) radicleVersionText.textContent = '';
   }
 };
 
 export const startRadicleInfoPolling = () => {
+  if (!state.enableRadicleIntegration) {
+    stopRadicleInfoPolling();
+    return;
+  }
   if (!state.beeMenuOpen || state.currentRadicleStatus === 'stopped') {
     stopRadicleInfoPolling();
     return;
@@ -132,6 +146,10 @@ export const startRadicleInfoPolling = () => {
 };
 
 export const updateRadicleUi = (status, error) => {
+  if (!state.enableRadicleIntegration) {
+    state.currentRadicleStatus = 'stopped';
+    return;
+  }
   if (state.suppressRadicleRunningStatus && status === 'running') {
     return;
   }
@@ -187,8 +205,20 @@ const setToggleDisabled = (disabled) => {
   }
 };
 
+const refreshRadicleBinaryAvailability = () => {
+  if (!window.radicle?.checkBinary) return;
+  window.radicle.checkBinary().then(({ available }) => {
+    radicleBinaryAvailable = available;
+    setToggleDisabled(!available);
+    if (!available) {
+      pushDebug('Radicle binaries not found - toggle disabled');
+    }
+  });
+};
+
 // Update the status row from registry
 export const updateRadicleStatusLine = () => {
+  if (!state.enableRadicleIntegration) return;
   if (!radicleStatusRow || !radicleStatusLabel || !radicleStatusValue) return;
 
   const message = getDisplayMessage('radicle');
@@ -214,6 +244,7 @@ export const updateRadicleStatusLine = () => {
 
 // Update toggle visual state based on node mode
 export const updateRadicleToggleState = () => {
+  if (!state.enableRadicleIntegration) return;
   if (!radicleToggleBtn) return;
 
   const mode = state.registry?.radicle?.mode;
@@ -238,20 +269,15 @@ export const initRadicleUi = () => {
   radicleStatusRow = document.getElementById('radicle-status-row');
   radicleStatusLabel = document.getElementById('radicle-status-label');
   radicleStatusValue = document.getElementById('radicle-status-value');
+  radicleNodesSection = document.getElementById('radicle-nodes-section');
+  updateRadicleSectionVisibility();
 
   // Check binary availability
-  if (window.radicle) {
-    window.radicle.checkBinary().then(({ available }) => {
-      radicleBinaryAvailable = available;
-      setToggleDisabled(!available);
-      if (!available) {
-        pushDebug('Radicle binaries not found - toggle disabled');
-      }
-    });
-  }
+  refreshRadicleBinaryAvailability();
 
   // Toggle button listener
   radicleToggleBtn?.addEventListener('click', () => {
+    if (!state.enableRadicleIntegration) return;
     if (!radicleBinaryAvailable) return;
 
     if (state.currentRadicleStatus === 'running' || state.currentRadicleStatus === 'starting') {
@@ -298,4 +324,14 @@ export const initRadicleUi = () => {
     refreshRadicleStatus();
     setInterval(refreshRadicleStatus, 5000);
   }
+
+  window.addEventListener('settings:updated', (event) => {
+    const wasEnabled = state.enableRadicleIntegration === true;
+    const isEnabled = event.detail?.enableRadicleIntegration === true;
+    state.enableRadicleIntegration = isEnabled;
+    updateRadicleSectionVisibility();
+    if (!wasEnabled && isEnabled) {
+      refreshRadicleBinaryAvailability();
+    }
+  });
 };
