@@ -7,6 +7,7 @@
 
 // State
 let isOpen = false;
+let featureEnabled = false;
 
 // DOM references
 let sidebar;
@@ -26,6 +27,26 @@ export function initSidebar() {
     return;
   }
 
+  // Load initial feature flag state
+  window.electronAPI.getSettings().then((settings) => {
+    featureEnabled = settings?.enableIdentityWallet === true;
+    applyFeatureVisibility();
+  }).catch(() => {
+    featureEnabled = false;
+    applyFeatureVisibility();
+  });
+
+  // React to settings changes
+  window.addEventListener('settings:updated', (event) => {
+    const wasEnabled = featureEnabled;
+    featureEnabled = event.detail?.enableIdentityWallet === true;
+    applyFeatureVisibility();
+    // Close sidebar if feature was just disabled while open
+    if (wasEnabled && !featureEnabled && isOpen) {
+      close();
+    }
+  });
+
   // Apply initial state (sidebar starts closed)
   applyState();
 
@@ -39,6 +60,7 @@ export function initSidebar() {
   // Keyboard shortcut: Cmd/Ctrl+Shift+W
   document.addEventListener('keydown', (e) => {
     if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === 'W') {
+      if (!featureEnabled) return;
       e.preventDefault();
       toggle();
     }
@@ -48,9 +70,18 @@ export function initSidebar() {
 }
 
 /**
+ * Show/hide the toolbar toggle button based on feature flag
+ */
+function applyFeatureVisibility() {
+  if (!toggleBtn) return;
+  toggleBtn.classList.toggle('hidden', !featureEnabled);
+}
+
+/**
  * Toggle sidebar open/closed
  */
 export function toggle() {
+  if (!featureEnabled) return;
   const wasOpen = isOpen;
   isOpen = !isOpen;
   applyState();
@@ -66,6 +97,7 @@ export function toggle() {
  * Open the sidebar
  */
 export function open() {
+  if (!featureEnabled) return;
   if (!isOpen) {
     isOpen = true;
     applyState();

@@ -87,6 +87,11 @@ async function checkTouchIdAvailability() {
  */
 export async function checkAndShowOnboarding() {
   try {
+    const settings = await window.electronAPI.getSettings();
+    if (!settings?.enableIdentityWallet) {
+      return false;
+    }
+
     const status = await window.identity.getStatus();
 
     // If vault exists, user completed onboarding

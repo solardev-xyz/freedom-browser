@@ -19,6 +19,7 @@ const SETTINGS_FILE = 'settings.json';
 const DEFAULT_SETTINGS = {
   theme: 'system',
   enableRadicleIntegration: false,
+  enableIdentityWallet: false,
   startBeeAtLaunch: true,
   startIpfsAtLaunch: true,
   startRadicleAtLaunch: false,

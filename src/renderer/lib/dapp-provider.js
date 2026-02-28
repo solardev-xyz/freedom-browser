@@ -12,6 +12,17 @@
 
 import { showDappConnect, getSelectedChainId, setSelectedChainId, updateConnectionBanner, showDappTxApproval, showDappSignApproval } from './wallet-ui.js';
 
+// Feature flag state
+let identityWalletEnabled = false;
+
+// Load initial flag state and listen for changes
+window.electronAPI?.getSettings?.().then((settings) => {
+  identityWalletEnabled = settings?.enableIdentityWallet === true;
+}).catch(() => {});
+window.addEventListener('settings:updated', (event) => {
+  identityWalletEnabled = event.detail?.enableIdentityWallet === true;
+});
+
 // Provider state per webview (keyed by webview ID or reference)
 const providerStates = new WeakMap();
 
@@ -185,6 +196,12 @@ async function getCurrentChainId() {
  */
 async function handleProviderRequest(webview, request) {
   const { id, method, params } = request;
+
+  // Gate: if Identity & Wallet feature is disabled, reject all provider requests
+  if (!identityWalletEnabled) {
+    sendProviderResponse(webview, id, null, ERRORS.DISCONNECTED);
+    return;
+  }
 
   console.log('[DappProvider] handleProviderRequest:', { id, method, params });
 
