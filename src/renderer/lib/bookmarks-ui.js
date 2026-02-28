@@ -6,6 +6,10 @@ import { showMenuBackdrop, hideMenuBackdrop } from './menu-backdrop.js';
 
 const electronAPI = window.electronAPI;
 
+// Bookmarks bar visibility state
+let bookmarksBarVisible = false; // User preference for non-home pages
+let isOnHomePage = true; // Track if we're on the home page
+
 // Check if a URL is bookmarkable
 const isBookmarkableUrl = (url) => {
   if (!url) return false;
@@ -383,6 +387,11 @@ export const initBookmarks = () => {
       hideBookmarkContextMenu();
     }
   });
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      hideAllBookmarkMenus();
+    }
+  });
   // Close when webview gets focus or is clicked
   const webviewElement = document.getElementById('bzz-webview');
   webviewElement?.addEventListener('focus', hideAllBookmarkMenus);
@@ -580,4 +589,49 @@ export const initBookmarks = () => {
       alert('An error occurred while saving the bookmark.');
     }
   });
+
+  // Initialize bookmarks bar visibility from settings
+  electronAPI?.getSettings?.().then((settings) => {
+    bookmarksBarVisible = settings?.showBookmarkBar === true;
+    updateBookmarksBarVisibility();
+  });
+
+  // Listen for bookmarks bar toggle from menu
+  electronAPI?.onToggleBookmarksBar?.((visible) => {
+    bookmarksBarVisible = visible;
+    updateBookmarksBarVisibility();
+  });
 };
+
+/**
+ * Update bookmarks bar visibility based on current state
+ * Shows if: on home page OR user preference is enabled
+ */
+const updateBookmarksBarVisibility = () => {
+  if (bookmarksBar) {
+    const shouldShow = isOnHomePage || bookmarksBarVisible;
+    bookmarksBar.classList.toggle('hidden', !shouldShow);
+  }
+};
+
+/**
+ * Update bookmarks bar for current page
+ * Called by navigation module when page changes
+ */
+export const updateBookmarksBarForPage = (onHomePage) => {
+  isOnHomePage = onHomePage;
+  updateBookmarksBarVisibility();
+};
+
+/**
+ * Set bookmarks bar user preference (for non-home pages)
+ */
+export const setBookmarksBarVisible = (visible) => {
+  bookmarksBarVisible = visible;
+  updateBookmarksBarVisibility();
+};
+
+/**
+ * Get bookmarks bar user preference
+ */
+export const isBookmarksBarVisible = () => bookmarksBarVisible;

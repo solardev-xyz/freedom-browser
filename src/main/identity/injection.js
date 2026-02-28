@@ -1,0 +1,174 @@
+/**
+ * Key injection for nodes
+ *
+ * Writes derived keys to the correct locations for each node:
+ * - Bee: keys/swarm.key (JSON keystore)
+ * - IPFS: config (Identity fields)
+ * - Radicle: keys/radicle + keys/radicle.pub
+ */
+
+import fs from 'fs';
+import path from 'path';
+import { createBeeKeystore, createIpfsIdentity, createRadicleIdentity } from './formats.js';
+
+/**
+ * Inject Bee key into data directory
+ * @param {string} dataDir - Bee data directory
+ * @param {string} privateKey - 0x-prefixed hex private key
+ * @param {string} password - Password to encrypt the keystore
+ * @returns {Promise<void>}
+ */
+export async function injectBeeKey(dataDir, privateKey, password) {
+  const keysDir = path.join(dataDir, 'keys');
+
+  // Create keys directory if it doesn't exist
+  if (!fs.existsSync(keysDir)) {
+    fs.mkdirSync(keysDir, { recursive: true });
+  }
+
+  // Create and write keystore
+  const keystore = await createBeeKeystore(privateKey, password);
+  const keystorePath = path.join(keysDir, 'swarm.key');
+  fs.writeFileSync(keystorePath, keystore);
+
+  console.log(`[Identity] Bee key injected at ${keystorePath}`);
+}
+
+/**
+ * Inject IPFS identity into config
+ * @param {string} ipfsPath - IPFS repo directory (contains config file)
+ * @param {Uint8Array} privateKey - 32-byte Ed25519 private key
+ * @param {Uint8Array} publicKey - 32-byte Ed25519 public key
+ */
+export function injectIpfsKey(ipfsPath, privateKey, publicKey) {
+  const configPath = path.join(ipfsPath, 'config');
+
+  // Config must exist (run ipfs init first, or create minimal config)
+  if (!fs.existsSync(configPath)) {
+    throw new Error(`IPFS config not found at ${configPath}. Run 'ipfs init' first.`);
+  }
+
+  // Read existing config
+  const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+
+  // Generate identity fields
+  const identity = createIpfsIdentity(privateKey, publicKey);
+
+  // Update config
+  config.Identity = config.Identity || {};
+  config.Identity.PrivKey = identity.privKey;
+  config.Identity.PeerID = identity.peerId;
+
+  // Write back
+  fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+
+  console.log(`[Identity] IPFS identity injected: PeerID=${identity.peerId}`);
+  return identity.peerId;
+}
+
+/**
+ * Inject Radicle key into data directory
+ * @param {string} radHome - Radicle home directory
+ * @param {Uint8Array} privateKey - 32-byte Ed25519 private key
+ * @param {Uint8Array} publicKey - 32-byte Ed25519 public key
+ * @param {string} alias - Node alias (e.g., "FreedomBrowser")
+ */
+export function injectRadicleKey(radHome, privateKey, publicKey, alias = 'FreedomBrowser') {
+  const keysDir = path.join(radHome, 'keys');
+
+  // Create keys directory if it doesn't exist
+  if (!fs.existsSync(keysDir)) {
+    fs.mkdirSync(keysDir, { recursive: true });
+  }
+
+  // Generate identity
+  const identity = createRadicleIdentity(privateKey, publicKey, alias);
+
+  // Write private key with restrictive permissions
+  const privateKeyPath = path.join(keysDir, 'radicle');
+  fs.writeFileSync(privateKeyPath, identity.privateKeyFile, { mode: 0o600 });
+
+  // Write public key
+  const publicKeyPath = path.join(keysDir, 'radicle.pub');
+  fs.writeFileSync(publicKeyPath, identity.publicKeyFile);
+
+  // Ensure config has the alias, but preserve existing settings (e.g. preferredSeeds).
+  // The full config (including seeds) is managed by radicle-manager's ensureConfig().
+  const configPath = path.join(radHome, 'config.json');
+  let config = {};
+  if (fs.existsSync(configPath)) {
+    try { config = JSON.parse(fs.readFileSync(configPath, 'utf-8')); } catch { /* recreate */ }
+  }
+  config.node = config.node || {};
+  config.node.alias = alias;
+  fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+
+  console.log(`[Identity] Radicle identity injected: DID=${identity.did}`);
+  return identity.did;
+}
+
+/**
+ * Create a minimal IPFS config for testing
+ * @param {string} ipfsPath - IPFS repo directory
+ * @param {number} apiPort - API port
+ * @param {number} gatewayPort - Gateway port
+ */
+export function createMinimalIpfsConfig(ipfsPath, apiPort = 5001, gatewayPort = 8080) {
+  if (!fs.existsSync(ipfsPath)) {
+    fs.mkdirSync(ipfsPath, { recursive: true });
+  }
+
+  const config = {
+    Identity: {},
+    Addresses: {
+      Swarm: [],
+      API: `/ip4/127.0.0.1/tcp/${apiPort}`,
+      Gateway: `/ip4/127.0.0.1/tcp/${gatewayPort}`,
+    },
+    Bootstrap: [],
+    Routing: {
+      Type: 'dhtclient',
+    },
+  };
+
+  const configPath = path.join(ipfsPath, 'config');
+  fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+
+  // Create required directories
+  fs.mkdirSync(path.join(ipfsPath, 'blocks'), { recursive: true });
+  fs.mkdirSync(path.join(ipfsPath, 'datastore'), { recursive: true });
+
+  console.log(`[Identity] Created minimal IPFS config at ${ipfsPath}`);
+}
+
+/**
+ * Create Bee config for testing
+ * @param {string} dataDir - Bee data directory
+ * @param {string} password - Password for the keystore
+ * @param {number} apiPort - API port
+ */
+export function createBeeConfig(dataDir, password, apiPort = 1633) {
+  if (!fs.existsSync(dataDir)) {
+    fs.mkdirSync(dataDir, { recursive: true });
+  }
+
+  const configContent = `# Bee Configuration (generated by identity injection)
+api-addr: 127.0.0.1:${apiPort}
+swap-enable: false
+mainnet: true
+full-node: false
+cors-allowed-origins: "*"
+use-postage-snapshot: false
+skip-postage-snapshot: true
+resolver-options: https://cloudflare-eth.com
+storage-incentives-enable: false
+data-dir: ${dataDir}
+password: ${password}
+`;
+
+  const configPath = path.join(dataDir, 'config.yaml');
+  fs.writeFileSync(configPath, configContent);
+
+  console.log(`[Identity] Created Bee config at ${configPath}`);
+  return configPath;
+}

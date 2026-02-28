@@ -1,0 +1,31 @@
+{
+  "1": {
+    "chainId": 1,
+    "chainIdHex": "0x1",
+    "name": "Ethereum",
+    "shortName": "ETH",
+    "nativeSymbol": "ETH",
+    "rpcUrls": [],
+    "blockExplorer": "https://etherscan.io",
+    "logo": "ethereum.png",
+    "builtin": true,
+    "hasPublicRpc": false
+  },
+  "100": {
+    "chainId": 100,
+    "chainIdHex": "0x64",
+    "name": "Gnosis Chain",
+    "shortName": "GNO",
+    "nativeSymbol": "xDAI",
+    "rpcUrls": [
+      "https://rpc.gnosischain.com",
+      "https://rpc.ankr.com/gnosis",
+      "https://gnosis-rpc.publicnode.com",
+      "https://gnosis.drpc.org"
+    ],
+    "blockExplorer": "https://gnosisscan.io",
+    "logo": "gnosis.png",
+    "builtin": true,
+    "hasPublicRpc": true
+  }
+}

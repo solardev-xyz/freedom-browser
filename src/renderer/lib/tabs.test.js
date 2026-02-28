@@ -29,8 +29,9 @@ const createMockWebview = (tabId) => ({
 // Setup DOM mocks before importing modules
 beforeAll(() => {
   global.window = {
-    electronAPI: mockElectronAPI,
+    electronAPI: { ...mockElectronAPI, getSettings: jest.fn(() => Promise.resolve({})) },
     location: { href: 'file:///app/index.html' },
+    addEventListener: jest.fn(),
   };
 
   global.document = {

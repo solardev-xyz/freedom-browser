@@ -20,7 +20,6 @@ import {
   loadBookmarks,
   setOnLoadTarget,
   hideBookmarkContextMenu,
-  hideOverflowMenu,
   setOnBookmarkContextMenuOpening,
 } from './lib/bookmarks-ui.js';
 import {
@@ -50,6 +49,9 @@ import { initGithubBridgeUi, setOnOpenRadicleUrl } from './lib/github-bridge-ui.
 import { initMenuBackdrop } from './lib/menu-backdrop.js';
 import { initPageContextMenu, hidePageContextMenu } from './lib/page-context-menu.js';
 import { pushDebug } from './lib/debug.js';
+import { initOnboarding, checkAndShowOnboarding } from './lib/onboarding.js';
+import { initSidebar } from './lib/sidebar.js';
+import { initWalletUi, updateIdentityState } from './lib/wallet-ui.js';
 
 const electronAPI = window.electronAPI;
 
@@ -105,7 +107,6 @@ const closeAllMenus = () => {
   closeMenus();
   hideTabContextMenu();
   hideBookmarkContextMenu();
-  hideOverflowMenu();
   hidePageContextMenu();
 };
 
@@ -114,16 +115,6 @@ const closeAllOverlays = () => {
   closeAllMenus();
   hideAutocomplete();
 };
-
-// Close all menus on Escape and clear focus from the trigger element
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') {
-    closeAllMenus();
-    if (document.activeElement instanceof HTMLElement) {
-      document.activeElement.blur();
-    }
-  }
-});
 
 // Listen for close menus from main process (e.g., system menu clicked)
 // Don't close autocomplete here - mirrors browser behavior where address bar stays open
@@ -212,7 +203,13 @@ window.addEventListener('DOMContentLoaded', async () => {
   initTabs(); // Creates first tab and starts loading home page
   initAutocomplete(); // Address bar autocomplete
   initPageContextMenu(); // Page context menu for webviews
+  initOnboarding();  // Identity onboarding wizard
+  initSidebar();     // Identity & wallet sidebar
+  initWalletUi();    // Wallet & identity display in sidebar
   loadBookmarks();
   initPlatformUI();
   initUpdateNotifications();
+
+  // Check if onboarding is needed (first run)
+  await checkAndShowOnboarding();
 });

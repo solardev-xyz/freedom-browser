@@ -34,6 +34,9 @@ let forceKillTimeout = null;
 
 const CONFIG_FILE = 'config.yaml';
 
+// Identity injection flag - when true, skip bee init and use pre-injected keys
+let useInjectedIdentity = false;
+
 // Port configuration (resolved at startup)
 // Note: Newer Bee versions serve debug endpoints on the main API port
 let currentApiPort = DEFAULTS.bee.apiPort;
@@ -124,15 +127,26 @@ password: ${password}
   log.info(`[Bee] Config written at ${configPath} with API:${apiPort}`);
 
   // Initialize keys if this is a fresh config
-  if (!fs.existsSync(path.join(dataDir, 'keys'))) {
-    const binPath = getBeeBinaryPath();
-    try {
-      const { execSync } = require('child_process');
-      log.info('[Bee] Running init to generate keys...');
-      execSync(`"${binPath}" init --config="${configPath}"`);
-    } catch (e) {
-      log.error('[Bee] Init failed:', e.message);
+  // Skip if identity system has injected keys (swarm.key exists)
+  const keysDir = path.join(dataDir, 'keys');
+  const swarmKeyPath = path.join(keysDir, 'swarm.key');
+
+  if (!fs.existsSync(keysDir)) {
+    if (useInjectedIdentity) {
+      log.info('[Bee] Waiting for identity injection (useInjectedIdentity=true)');
+      // Keys should be injected by identity-manager before starting
+    } else {
+      const binPath = getBeeBinaryPath();
+      try {
+        const { execSync } = require('child_process');
+        log.info('[Bee] Running init to generate keys...');
+        execSync(`"${binPath}" init --config="${configPath}"`);
+      } catch (e) {
+        log.error('[Bee] Init failed:', e.message);
+      }
     }
+  } else if (fs.existsSync(swarmKeyPath)) {
+    log.info('[Bee] Using existing/injected keys from', keysDir);
   }
 
   return configPath;
@@ -501,6 +515,24 @@ function checkBinary() {
   return fs.existsSync(binPath);
 }
 
+/**
+ * Enable injected identity mode - skip bee init and expect pre-injected keys
+ * Call this before starting Bee when using the unified identity system
+ */
+function setUseInjectedIdentity(enabled) {
+  useInjectedIdentity = enabled;
+  log.info(`[Bee] Injected identity mode: ${enabled}`);
+}
+
+/**
+ * Check if keys have been injected
+ */
+function hasInjectedKeys() {
+  const dataDir = getBeeDataPath();
+  const swarmKeyPath = path.join(dataDir, 'keys', 'swarm.key');
+  return fs.existsSync(swarmKeyPath);
+}
+
 function getActivePort() {
   return currentApiPort;
 }
@@ -530,5 +562,8 @@ module.exports = {
   startBee,
   stopBee,
   getActivePort,
+  getBeeDataPath,
+  setUseInjectedIdentity,
+  hasInjectedKeys,
   STATUS,
 };

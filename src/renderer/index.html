@@ -10,6 +10,7 @@
     />
     <title>Freedom</title>
     <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./styles/sidebar.css" />
   </head>
   <body>
     <!-- Update Toast Notification -->
@@ -511,6 +512,19 @@
           </div>
         </div>
       </div>
+      <button
+        id="wallet-toggle-btn"
+        class="wallet-toggle-btn"
+        type="button"
+        aria-label="Toggle Identity & Wallet"
+        aria-expanded="false"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="2" y="4" width="20" height="16" rx="2"/>
+          <path d="M2 10h20"/>
+          <circle cx="17" cy="14" r="2"/>
+        </svg>
+      </button>
       <div class="menu" data-menu id="main-menu">
         <button
           id="menu-button"
@@ -635,6 +649,1068 @@
           <!-- Webviews inserted dynamically by tabs.js -->
         </div>
       </main>
+      <aside id="sidebar" class="sidebar collapsed">
+        <div class="sidebar-inner">
+          <div class="sidebar-header">
+            <div class="sidebar-tabs">
+              <button type="button" class="sidebar-tab active" data-tab="wallet">Wallet</button>
+              <button type="button" class="sidebar-tab" data-tab="nodes">Nodes</button>
+              <button type="button" class="sidebar-tab" data-tab="settings">Settings</button>
+            </div>
+            <button type="button" class="sidebar-close" id="sidebar-close" aria-label="Close sidebar">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M18 6 6 18"/><path d="M6 6 18 18"/>
+              </svg>
+            </button>
+          </div>
+          <div class="sidebar-content">
+            <!-- Setup CTA (shown if no vault) -->
+            <div id="sidebar-setup-cta" class="sidebar-setup-cta hidden">
+              <div class="setup-cta-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                  <rect x="2" y="4" width="20" height="16" rx="2"/>
+                  <path d="M2 10h20"/>
+                  <circle cx="17" cy="14" r="2"/>
+                </svg>
+              </div>
+              <h3 class="setup-cta-title">Set Up Your Identity</h3>
+              <p class="setup-cta-text">Create a unified identity to access all decentralized networks.</p>
+              <button type="button" class="setup-cta-btn" id="sidebar-setup-btn">Get Started</button>
+            </div>
+
+            <!-- Tab panels (shown if vault exists with addresses) -->
+            <div id="sidebar-identity" class="hidden">
+              <!-- Wallet Tab Panel -->
+              <div id="tab-wallet" class="tab-panel">
+                <!-- Notification Area (contextual, shown when action needed) -->
+                <div class="wallet-notification hidden" id="wallet-notification">
+                  <div class="wallet-notification-content">
+                    <svg class="wallet-notification-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <circle cx="12" cy="12" r="10"/>
+                      <line x1="12" y1="8" x2="12" y2="12"/>
+                      <line x1="12" y1="16" x2="12.01" y2="16"/>
+                    </svg>
+                    <span class="wallet-notification-text" id="wallet-notification-text"></span>
+                  </div>
+                  <button type="button" class="wallet-notification-action" id="wallet-notification-action"></button>
+                </div>
+
+                <!-- Wallet Section -->
+                <div class="sidebar-section">
+                  <!-- dApp Connection Banner (shown when current tab is connected) -->
+                  <div class="dapp-connection-banner hidden" id="dapp-connection-banner">
+                    <div class="dapp-connection-info">
+                      <span class="dapp-connection-indicator"></span>
+                      <span class="dapp-connection-text">
+                        <span class="dapp-connection-site" id="dapp-connection-site">site.eth</span>
+                        <span class="dapp-connection-wallet" id="dapp-connection-wallet">Main Wallet</span>
+                      </span>
+                    </div>
+                    <button type="button" class="dapp-connection-disconnect" id="dapp-connection-disconnect" title="Disconnect">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M18 6L6 18M6 6l12 12"/>
+                      </svg>
+                    </button>
+                  </div>
+
+                  <!-- Wallet Selector -->
+                  <div class="wallet-selector" id="wallet-selector">
+                    <button type="button" class="wallet-selector-btn" id="wallet-selector-btn">
+                      <div class="wallet-selector-info">
+                        <span class="wallet-selector-name" id="wallet-selector-name">Main Wallet</span>
+                        <code class="wallet-selector-address" id="wallet-selector-address"></code>
+                      </div>
+                      <svg class="wallet-selector-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="m6 9 6 6 6-6"/>
+                      </svg>
+                    </button>
+                    <div class="wallet-selector-dropdown hidden" id="wallet-selector-dropdown">
+                      <div class="wallet-selector-list" id="wallet-selector-list">
+                        <!-- Wallet items inserted dynamically -->
+                      </div>
+                      <div class="wallet-selector-divider"></div>
+                      <button type="button" class="wallet-selector-action" id="wallet-create-btn">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <path d="M12 5v14M5 12h14"/>
+                        </svg>
+                        <span>Create New Wallet</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <!-- Wallet Headline -->
+                  <div class="wallet-headline-row">
+                    <span class="wallet-headline-name" id="wallet-headline-name">MAIN WALLET</span>
+                    <button type="button" class="wallet-headline-settings" id="wallet-settings-btn">Settings</button>
+                  </div>
+
+                  <!-- Send / Receive Actions -->
+                  <div class="wallet-actions-row">
+                    <button type="button" class="wallet-action-primary" id="wallet-send-btn">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 19V5M5 12l7-7 7 7"/>
+                      </svg>
+                      <span>Send</span>
+                    </button>
+                    <button type="button" class="wallet-action-primary" id="wallet-receive-btn">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 5v14M5 12l7 7 7-7"/>
+                      </svg>
+                      <span>Receive</span>
+                    </button>
+                  </div>
+
+                  <!-- Asset Balances (dynamically populated from chain registry) -->
+                  <div id="asset-list" class="asset-list"></div>
+
+                  <div class="balance-error hidden" id="balance-error">
+                    <span class="balance-error-text" id="balance-error-text"></span>
+                  </div>
+                </div>
+
+                <!-- Chain Switcher (sticky at bottom) -->
+                <div class="chain-switcher" id="chain-switcher">
+                  <button type="button" class="chain-switcher-btn" id="chain-switcher-btn">
+                    <div class="chain-switcher-info">
+                      <img class="chain-switcher-logo" id="chain-switcher-logo" src="" alt="">
+                      <span class="chain-switcher-name" id="chain-switcher-name">Gnosis Chain</span>
+                    </div>
+                    <svg class="chain-switcher-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="m6 15 6-6 6 6"/>
+                    </svg>
+                  </button>
+                  <div class="chain-switcher-dropdown hidden" id="chain-switcher-dropdown">
+                    <div class="chain-switcher-list" id="chain-switcher-list">
+                      <!-- Chain items inserted dynamically -->
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Nodes Tab Panel -->
+              <div id="tab-nodes" class="tab-panel hidden">
+                <!-- Swarm Node Card (expanded by default) -->
+                <div class="node-card expanded" id="node-card-swarm">
+                  <button type="button" class="node-card-header" data-node="swarm">
+                    <div class="node-card-header-left">
+                      <svg class="node-card-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="m9 18 6-6-6-6"/>
+                      </svg>
+                      <span class="node-card-title">Swarm</span>
+                    </div>
+                    <div class="node-card-header-right">
+                      <span class="node-card-mode" id="swarm-mode-badge">Ultra-light</span>
+                      <span class="node-card-status" id="swarm-status-badge" data-status="stopped">Stopped</span>
+                    </div>
+                  </button>
+                  <div class="node-card-content" id="swarm-card-content">
+                    <!-- Node Wallet -->
+                    <div class="node-info-group">
+                      <span class="node-info-label">Node Wallet</span>
+                      <div class="node-info-row">
+                        <code class="node-info-value mono" id="sidebar-swarm-id"></code>
+                        <button type="button" class="node-copy-btn" data-copy="swarm" title="Copy">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                            <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
+                          </svg>
+                        </button>
+                      </div>
+                    </div>
+
+                    <!-- Balances -->
+                    <div class="node-info-group">
+                      <span class="node-info-label">Balances</span>
+                      <div class="node-balance-row">
+                        <span class="node-balance-symbol">xDAI</span>
+                        <span class="node-balance-value" id="swarm-balance-xdai">--</span>
+                      </div>
+                      <div class="node-balance-row">
+                        <span class="node-balance-symbol">xBZZ</span>
+                        <span class="node-balance-value" id="swarm-balance-xbzz">--</span>
+                      </div>
+                    </div>
+
+                    <!-- Stamps -->
+                    <div class="node-info-group">
+                      <div class="node-info-label-row">
+                        <span class="node-info-label">Postage Stamps</span>
+                        <span class="node-stamps-count" id="swarm-stamps-count">0</span>
+                      </div>
+                      <div class="node-stamps-summary" id="swarm-stamps-summary">
+                        <span class="node-stamps-empty">No stamps available</span>
+                      </div>
+                    </div>
+
+                    <!-- Upgrade CTA (for ultra-light mode) -->
+                    <div class="node-upgrade-cta" id="swarm-upgrade-cta">
+                      <button type="button" class="node-upgrade-btn" id="swarm-upgrade-btn">
+                        <span>Upgrade to Light Node</span>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <path d="m9 18 6-6-6-6"/>
+                        </svg>
+                      </button>
+                      <span class="node-upgrade-hint">Enable uploads and publishing</span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- IPFS Node Card (collapsed by default) -->
+                <div class="node-card" id="node-card-ipfs">
+                  <button type="button" class="node-card-header" data-node="ipfs">
+                    <div class="node-card-header-left">
+                      <svg class="node-card-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="m9 18 6-6-6-6"/>
+                      </svg>
+                      <span class="node-card-title">IPFS</span>
+                    </div>
+                    <div class="node-card-header-right">
+                      <span class="node-card-status" id="ipfs-status-badge" data-status="stopped">Stopped</span>
+                    </div>
+                  </button>
+                  <div class="node-card-content hidden" id="ipfs-card-content">
+                    <div class="node-info-group">
+                      <span class="node-info-label">Peer ID</span>
+                      <div class="node-info-row">
+                        <code class="node-info-value mono" id="sidebar-ipfs-id"></code>
+                        <button type="button" class="node-copy-btn" data-copy="ipfs" title="Copy">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                            <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
+                          </svg>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Radicle Node Card (collapsed by default) -->
+                <div class="node-card" id="node-card-radicle">
+                  <button type="button" class="node-card-header" data-node="radicle">
+                    <div class="node-card-header-left">
+                      <svg class="node-card-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="m9 18 6-6-6-6"/>
+                      </svg>
+                      <span class="node-card-title">Radicle</span>
+                    </div>
+                    <div class="node-card-header-right">
+                      <span class="node-card-status" id="radicle-status-badge" data-status="stopped">Stopped</span>
+                    </div>
+                  </button>
+                  <div class="node-card-content hidden" id="radicle-card-content">
+                    <div class="node-info-group">
+                      <span class="node-info-label">DID</span>
+                      <div class="node-info-row">
+                        <code class="node-info-value mono" id="sidebar-radicle-id"></code>
+                        <button type="button" class="node-copy-btn" data-copy="radicle" title="Copy">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                            <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
+                          </svg>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div><!-- /tab-nodes -->
+
+              <!-- Settings Tab Panel -->
+              <div id="tab-settings" class="tab-panel hidden">
+                <!-- Security Section -->
+                <div class="sidebar-section">
+                  <div class="sidebar-section-header">
+                    <span class="sidebar-section-title">Security</span>
+                  </div>
+                  <div class="security-status">
+                    <div class="security-row">
+                      <span class="security-label">Password</span>
+                      <span class="security-value" id="sidebar-password-value">--</span>
+                    </div>
+                    <div class="security-row" id="sidebar-touchid-status">
+                      <span class="security-label">Touch ID</span>
+                      <span class="security-value" id="sidebar-touchid-value">--</span>
+                    </div>
+                    <div class="security-row">
+                      <span class="security-label">Created</span>
+                      <span class="security-value" id="sidebar-created-value">--</span>
+                    </div>
+                  </div>
+                  <button type="button" class="sidebar-nav-btn" id="sidebar-export-mnemonic-btn">
+                    <span>Export Recovery Phrase</span>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <polyline points="9 18 15 12 9 6"/>
+                    </svg>
+                  </button>
+                </div>
+
+                <!-- RPC Providers Section -->
+                <div class="sidebar-section">
+                  <div class="sidebar-section-header">
+                    <span class="sidebar-section-title">RPC Providers</span>
+                  </div>
+                  <div id="rpc-providers-list" class="rpc-providers-list">
+                    <!-- Populated dynamically -->
+                  </div>
+                </div>
+              </div><!-- /tab-settings -->
+            </div>
+
+            <!-- Export Mnemonic sub-screen -->
+            <div id="sidebar-export-mnemonic" class="sidebar-subscreen hidden">
+              <div class="subscreen-header">
+                <button type="button" class="subscreen-back-btn" id="export-mnemonic-back">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="15 18 9 12 15 6"/>
+                  </svg>
+                  <span>Back</span>
+                </button>
+                <h3 class="subscreen-title">Recovery Phrase</h3>
+              </div>
+
+              <!-- Unlock required state -->
+              <div id="export-unlock-required" class="subscreen-content">
+                <p class="unlock-message">Unlock your vault to view your recovery phrase.</p>
+
+                <!-- Touch ID unlock (shown if available) -->
+                <button type="button" class="unlock-touchid-btn" id="export-touchid-btn">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 11c0-1.1.9-2 2-2s2 .9 2 2-2 4-2 4"/>
+                    <path d="M8 15s-2-2.9-2-4c0-2.2 1.8-4 4-4"/>
+                    <path d="M12 3c4.4 0 8 3.6 8 8 0 1.4-.4 2.8-1 4"/>
+                    <path d="M3 11c0-1.4.4-2.8 1-4"/>
+                    <path d="M12 21c-4.4 0-8-3.6-8-8"/>
+                    <path d="M21 12c0 4.4-3.6 8-8 8"/>
+                  </svg>
+                  <span>Unlock with Touch ID</span>
+                </button>
+
+                <!-- Password unlock (shown only if user knows password) -->
+                <div id="export-password-section" class="password-section hidden">
+                  <div class="section-divider">
+                    <span>or enter password</span>
+                  </div>
+                  <div class="password-input-group">
+                    <input type="password" id="export-password-input" class="password-input" placeholder="Password" autocomplete="off">
+                    <button type="button" class="password-submit-btn" id="export-password-submit">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="9 18 15 12 9 6"/>
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+
+                <div id="export-unlock-error" class="unlock-error hidden"></div>
+              </div>
+
+              <!-- Mnemonic display (shown after unlock) -->
+              <div id="export-mnemonic-display" class="subscreen-content hidden">
+                <div class="mnemonic-warning">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                    <line x1="12" y1="9" x2="12" y2="13"/>
+                    <line x1="12" y1="17" x2="12.01" y2="17"/>
+                  </svg>
+                  <p>Never share these words. Anyone with them can access your wallet.</p>
+                </div>
+                <div class="mnemonic-words" id="mnemonic-words"></div>
+                <button type="button" class="copy-mnemonic-btn" id="copy-mnemonic-btn">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                  </svg>
+                  <span>Copy to Clipboard</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- RPC API Key sub-screen -->
+            <div id="sidebar-rpc-apikey" class="sidebar-subscreen hidden">
+              <div class="subscreen-header">
+                <button type="button" class="subscreen-back-btn" id="rpc-apikey-back">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="15 18 9 12 15 6"/>
+                  </svg>
+                  <span>Back</span>
+                </button>
+                <h3 class="subscreen-title" id="rpc-apikey-title">API Key</h3>
+              </div>
+
+              <div class="subscreen-content">
+                <p class="rpc-apikey-description">
+                  Enter your API key to enable blockchain access.
+                  <a href="#" id="rpc-apikey-website-link" class="rpc-apikey-link" target="_blank">Get an API key</a>
+                </p>
+
+                <div class="rpc-apikey-form">
+                  <label class="rpc-apikey-label" for="rpc-apikey-input">API Key</label>
+                  <div class="rpc-apikey-input-group">
+                    <input type="password" id="rpc-apikey-input" class="rpc-apikey-input" placeholder="Enter API key" autocomplete="off">
+                    <button type="button" class="rpc-apikey-toggle" id="rpc-apikey-toggle" title="Show/hide">
+                      <svg class="eye-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                        <circle cx="12" cy="12" r="3"/>
+                      </svg>
+                    </button>
+                  </div>
+
+                  <button type="button" class="rpc-apikey-test-btn" id="rpc-apikey-test">
+                    <span>Test Connection</span>
+                  </button>
+                  <div class="rpc-apikey-test-status hidden" id="rpc-apikey-test-status"></div>
+                </div>
+
+                <div class="rpc-apikey-actions">
+                  <button type="button" class="rpc-apikey-cancel-btn" id="rpc-apikey-cancel">Cancel</button>
+                  <button type="button" class="rpc-apikey-save-btn" id="rpc-apikey-save">Save</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Create Wallet sub-screen -->
+            <div id="sidebar-create-wallet" class="sidebar-subscreen hidden">
+              <div class="subscreen-header">
+                <button type="button" class="subscreen-back-btn" id="create-wallet-back">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="15 18 9 12 15 6"/>
+                  </svg>
+                  <span>Back</span>
+                </button>
+                <h3 class="subscreen-title">Create Wallet</h3>
+              </div>
+
+              <!-- Step 1: Unlock (shown if vault is locked) -->
+              <div id="create-wallet-unlock" class="subscreen-content hidden">
+                <p class="unlock-message">Unlock your vault to create a new wallet.</p>
+
+                <!-- Touch ID button -->
+                <button type="button" class="unlock-touchid-btn hidden" id="create-wallet-touchid-btn">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 11c0-1.1.9-2 2-2s2 .9 2 2-2 4-2 4"/>
+                    <path d="M8 15s-2-2.9-2-4c0-2.2 1.8-4 4-4"/>
+                    <path d="M12 3c4.4 0 8 3.6 8 8 0 1.4-.4 2.8-1 4"/>
+                    <path d="M3 11c0-1.4.4-2.8 1-4"/>
+                    <path d="M12 21c-4.4 0-8-3.6-8-8"/>
+                    <path d="M21 12c0 4.4-3.6 8-8 8"/>
+                  </svg>
+                  <span>Unlock with Touch ID</span>
+                </button>
+
+                <!-- Password section -->
+                <div id="create-wallet-password-section" class="password-section hidden">
+                  <div class="section-divider">
+                    <span>or enter password</span>
+                  </div>
+                  <div class="password-input-group">
+                    <input type="password" id="create-wallet-password" class="password-input" placeholder="Password" autocomplete="off">
+                    <button type="button" class="password-submit-btn" id="create-wallet-password-submit">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="9 18 15 12 9 6"/>
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+
+                <div id="create-wallet-unlock-error" class="unlock-error hidden"></div>
+              </div>
+
+              <!-- Step 2: Name wallet (shown after unlock) -->
+              <div id="create-wallet-name-step" class="subscreen-content hidden">
+                <p class="create-wallet-message">Choose a name for your new wallet.</p>
+
+                <input type="text" id="create-wallet-name-input"
+                       class="create-wallet-input"
+                       placeholder="e.g. Trading, Savings, NFTs"
+                       maxlength="32"
+                       autocomplete="off">
+
+                <button type="button" id="create-wallet-submit" class="create-wallet-submit-btn">
+                  Create Wallet
+                </button>
+
+                <div id="create-wallet-name-error" class="unlock-error hidden"></div>
+              </div>
+
+              <!-- Step 3: Success (shown after creation) -->
+              <div id="create-wallet-success" class="subscreen-content hidden">
+                <div class="create-wallet-success-icon">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                    <circle cx="12" cy="12" r="10"/>
+                    <polyline points="8 12 11 15 16 9"/>
+                  </svg>
+                </div>
+                <h4 class="create-wallet-success-title">Wallet Created!</h4>
+
+                <div class="create-wallet-result">
+                  <span class="create-wallet-result-name" id="create-wallet-result-name"></span>
+                  <code class="create-wallet-result-address" id="create-wallet-result-address"></code>
+                </div>
+
+                <button type="button" id="create-wallet-done" class="create-wallet-done-btn">
+                  Done
+                </button>
+              </div>
+            </div>
+
+            <!-- Receive sub-screen -->
+            <div id="sidebar-receive" class="sidebar-subscreen hidden">
+              <div class="subscreen-header">
+                <button type="button" class="subscreen-back-btn" id="receive-back">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="15 18 9 12 15 6"/>
+                  </svg>
+                  <span>Back</span>
+                </button>
+                <h3 class="subscreen-title">Receive</h3>
+              </div>
+
+              <div class="subscreen-content">
+                <!-- QR Code -->
+                <div class="receive-qr-container">
+                  <img id="receive-qr-image" class="receive-qr-image" alt="Wallet QR Code">
+                </div>
+
+                <!-- Address display -->
+                <div class="receive-address-box">
+                  <code class="receive-address" id="receive-address"></code>
+                </div>
+
+                <!-- Copy button -->
+                <button type="button" class="receive-copy-btn" id="receive-copy-btn">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                  </svg>
+                  <span>Copy Address</span>
+                </button>
+
+                <!-- Helper text -->
+                <p class="receive-helper-text">
+                  Your address works on Ethereum, Gnosis, and all EVM-compatible chains.
+                </p>
+              </div>
+            </div>
+
+            <!-- Wallet Settings sub-screen -->
+            <div id="sidebar-wallet-settings" class="sidebar-subscreen hidden">
+              <div class="subscreen-header">
+                <button type="button" class="subscreen-back-btn" id="wallet-settings-back">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="15 18 9 12 15 6"/>
+                  </svg>
+                  <span>Back</span>
+                </button>
+                <h3 class="subscreen-title">Wallet Settings</h3>
+              </div>
+
+              <div class="subscreen-content">
+                <!-- Wallet name display -->
+                <div class="wallet-settings-section">
+                  <label class="wallet-settings-label">Wallet Name</label>
+                  <div class="wallet-settings-value" id="wallet-settings-name">Main Wallet</div>
+                </div>
+
+                <!-- Wallet address display -->
+                <div class="wallet-settings-section">
+                  <label class="wallet-settings-label">Address</label>
+                  <code class="wallet-settings-address" id="wallet-settings-address"></code>
+                </div>
+
+                <!-- Export Private Key Section -->
+                <div class="wallet-settings-section">
+                  <label class="wallet-settings-label">Private Key</label>
+
+                  <!-- Export button (initial state) -->
+                  <div id="export-pk-button-view">
+                    <button type="button" class="wallet-settings-export-btn" id="wallet-settings-export-pk">
+                      Export Private Key
+                    </button>
+                  </div>
+
+                  <!-- Unlock required view -->
+                  <div id="export-pk-unlock-view" class="hidden">
+                    <p class="export-pk-unlock-text">Unlock your vault to export the private key.</p>
+
+                    <button type="button" class="export-pk-touchid-btn hidden" id="export-pk-touchid-btn">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 11c0-1.1.9-2 2-2s2 .9 2 2-2 4-2 4"/>
+                        <path d="M8 15c0-2.2 1.8-4 4-4"/>
+                        <path d="M12 4a8 8 0 0 0-8 8c0 1.5.4 2.9 1.1 4.1"/>
+                        <path d="M19.9 15A8 8 0 0 0 20 12a8 8 0 0 0-8-8"/>
+                        <path d="M12 20a8 8 0 0 0 4.8-1.6"/>
+                      </svg>
+                      <span>Unlock with Touch ID</span>
+                    </button>
+
+                    <div class="export-pk-password-section hidden" id="export-pk-password-section">
+                      <div class="export-pk-password-row">
+                        <input type="password" class="password-input" id="export-pk-password-input" placeholder="Enter password" autocomplete="off">
+                        <button type="button" class="export-pk-password-submit" id="export-pk-password-submit">Unlock</button>
+                      </div>
+                    </div>
+
+                    <div class="export-pk-error hidden" id="export-pk-error"></div>
+                  </div>
+
+                  <!-- Private key display view -->
+                  <div id="export-pk-display-view" class="hidden">
+                    <div class="export-pk-warning">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+                        <line x1="12" y1="9" x2="12" y2="13"/>
+                        <line x1="12" y1="17" x2="12.01" y2="17"/>
+                      </svg>
+                      <span>Never share your private key. Anyone with it can steal your funds.</span>
+                    </div>
+                    <code class="export-pk-value" id="export-pk-value"></code>
+                    <button type="button" class="export-pk-copy-btn" id="export-pk-copy-btn">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                      </svg>
+                      <span>Copy</span>
+                    </button>
+                  </div>
+                </div>
+
+                <!-- Danger zone -->
+                <div class="wallet-settings-danger">
+                  <h4 class="wallet-settings-danger-title">Danger Zone</h4>
+                  <p class="wallet-settings-danger-text">
+                    Deleting this wallet removes it from the list. You can recover it later using your mnemonic phrase.
+                  </p>
+                  <button type="button" class="wallet-settings-delete-btn" id="wallet-settings-delete">
+                    Delete Wallet
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Send sub-screen -->
+            <div id="sidebar-send" class="sidebar-subscreen hidden">
+              <div class="subscreen-header">
+                <button type="button" class="subscreen-back-btn" id="send-back">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="15 18 9 12 15 6"/>
+                  </svg>
+                  <span>Back</span>
+                </button>
+                <h3 class="subscreen-title">Send</h3>
+              </div>
+
+              <!-- Input form view -->
+              <div class="subscreen-content" id="send-input-view">
+                <!-- Recipient input (first) -->
+                <div class="send-field">
+                  <label class="send-label">Recipient</label>
+                  <input type="text" class="send-input" id="send-recipient" placeholder="Address or ENS name" autocomplete="off" spellcheck="false">
+                  <div class="send-resolved-address hidden" id="send-resolved-address"></div>
+                  <div class="send-field-error hidden" id="send-recipient-error"></div>
+                </div>
+
+                <!-- Chain + Asset selector row -->
+                <div class="send-selector-row">
+                  <!-- Chain selector -->
+                  <div class="send-field send-field-half">
+                    <label class="send-label">Chain</label>
+                    <div class="send-selector" id="send-chain-selector">
+                      <button type="button" class="send-selector-btn" id="send-chain-btn">
+                        <div class="send-selector-info">
+                          <img class="send-selector-logo" id="send-chain-logo" src="" alt="">
+                          <span class="send-selector-name" id="send-chain-name">Select</span>
+                        </div>
+                        <svg class="send-selector-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <path d="m6 9 6 6 6-6"/>
+                        </svg>
+                      </button>
+                      <div class="send-selector-dropdown hidden" id="send-chain-dropdown">
+                        <div class="send-selector-list" id="send-chain-list">
+                          <!-- Chain items inserted dynamically -->
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- Asset selector -->
+                  <div class="send-field send-field-half">
+                    <label class="send-label">Asset</label>
+                    <div class="send-selector" id="send-asset-selector">
+                      <button type="button" class="send-selector-btn" id="send-asset-btn">
+                        <div class="send-selector-info">
+                          <img class="send-selector-logo" id="send-asset-logo" src="" alt="">
+                          <span class="send-selector-name" id="send-asset-name">Select</span>
+                        </div>
+                        <svg class="send-selector-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <path d="m6 9 6 6 6-6"/>
+                        </svg>
+                      </button>
+                      <div class="send-selector-dropdown hidden" id="send-asset-dropdown">
+                        <div class="send-selector-list" id="send-asset-list">
+                          <!-- Asset items inserted dynamically -->
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Amount input -->
+                <div class="send-field">
+                  <label class="send-label">Amount</label>
+                  <div class="send-amount-row">
+                    <input type="text" class="send-input send-amount-input" id="send-amount" placeholder="0.0" autocomplete="off" inputmode="decimal">
+                    <button type="button" class="send-max-btn" id="send-max-btn">MAX</button>
+                  </div>
+                  <div class="send-balance-hint" id="send-balance-hint">Available: --</div>
+                  <div class="send-field-error hidden" id="send-amount-error"></div>
+                </div>
+
+                <!-- Continue button -->
+                <button type="button" class="send-continue-btn" id="send-continue-btn" disabled>
+                  Continue
+                </button>
+
+                <!-- General error -->
+                <div class="send-error hidden" id="send-general-error"></div>
+              </div>
+
+              <!-- Review/confirm view -->
+              <div class="subscreen-content hidden" id="send-review-view">
+                <div class="send-review-section">
+                  <div class="send-review-label">To</div>
+                  <div class="send-review-value send-review-address" id="send-review-to"></div>
+                </div>
+
+                <div class="send-review-section">
+                  <div class="send-review-label">Amount</div>
+                  <div class="send-review-value send-review-amount" id="send-review-amount"></div>
+                </div>
+
+                <div class="send-review-section">
+                  <div class="send-review-label">Network</div>
+                  <div class="send-review-value" id="send-review-network"></div>
+                </div>
+
+                <div class="send-review-section">
+                  <div class="send-review-label">Network Fee</div>
+                  <div class="send-review-value send-review-fee" id="send-review-fee">
+                    <span id="send-review-fee-value">--</span>
+                  </div>
+                </div>
+
+                <div class="send-review-divider"></div>
+
+                <div class="send-review-section send-review-total">
+                  <div class="send-review-label">Total</div>
+                  <div class="send-review-value" id="send-review-total">--</div>
+                </div>
+
+                <!-- Action buttons -->
+                <div class="send-review-actions">
+                  <button type="button" class="send-edit-btn" id="send-edit-btn">Edit</button>
+                  <button type="button" class="send-confirm-btn" id="send-confirm-btn">Confirm & Send</button>
+                </div>
+
+                <!-- Unlock section (shown if vault is locked) -->
+                <div class="send-unlock-section hidden" id="send-unlock-section">
+                  <p class="send-unlock-text">Unlock your vault to sign this transaction.</p>
+
+                  <button type="button" class="send-touchid-btn hidden" id="send-touchid-btn">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M12 11c0-1.1.9-2 2-2s2 .9 2 2-2 4-2 4"/>
+                      <path d="M8 15c0-2.2 1.8-4 4-4"/>
+                      <path d="M12 4a8 8 0 0 0-8 8c0 1.5.4 2.9 1.1 4.1"/>
+                      <path d="M19.9 15A8 8 0 0 0 20 12a8 8 0 0 0-8-8"/>
+                      <path d="M12 20a8 8 0 0 0 4.8-1.6"/>
+                    </svg>
+                    <span>Unlock with Touch ID</span>
+                  </button>
+
+                  <button type="button" class="send-password-link hidden" id="send-password-link">or enter your password</button>
+
+                  <div class="send-password-section hidden" id="send-password-section">
+                    <div class="send-password-row">
+                      <input type="password" class="password-input" id="send-password-input" placeholder="Enter password" autocomplete="off">
+                      <button type="button" class="send-password-submit" id="send-password-submit">Unlock</button>
+                    </div>
+                  </div>
+
+                  <div class="send-unlock-error hidden" id="send-unlock-error"></div>
+                </div>
+
+                <!-- Error display -->
+                <div class="send-error hidden" id="send-review-error"></div>
+              </div>
+
+              <!-- Pending view -->
+              <div class="subscreen-content hidden" id="send-pending-view">
+                <div class="send-pending-content">
+                  <div class="send-pending-spinner"></div>
+                  <h3 class="send-pending-title">Sending Transaction</h3>
+                  <p class="send-pending-text">Please wait while your transaction is being processed...</p>
+                </div>
+              </div>
+
+              <!-- Success view -->
+              <div class="subscreen-content hidden" id="send-success-view">
+                <div class="send-success-content">
+                  <div class="send-success-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <circle cx="12" cy="12" r="10"/>
+                      <path d="M9 12l2 2 4-4"/>
+                    </svg>
+                  </div>
+                  <h3 class="send-success-title">Transaction Sent</h3>
+                  <p class="send-success-text" id="send-success-text">Your transaction has been broadcast to the network.</p>
+                  <a href="#" class="send-explorer-link" id="send-explorer-link" target="_blank">View on Explorer</a>
+                  <button type="button" class="send-done-btn" id="send-done-btn">Done</button>
+                </div>
+              </div>
+
+              <!-- Error view -->
+              <div class="subscreen-content hidden" id="send-error-view">
+                <div class="send-error-content">
+                  <div class="send-error-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <circle cx="12" cy="12" r="10"/>
+                      <line x1="15" y1="9" x2="9" y2="15"/>
+                      <line x1="9" y1="9" x2="15" y2="15"/>
+                    </svg>
+                  </div>
+                  <h3 class="send-error-title">Transaction Failed</h3>
+                  <p class="send-error-text" id="send-error-text">An error occurred while processing your transaction.</p>
+                  <button type="button" class="send-retry-btn" id="send-retry-btn">Try Again</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- dApp Connect sub-screen -->
+            <div id="sidebar-dapp-connect" class="sidebar-subscreen hidden">
+              <div class="subscreen-header">
+                <button type="button" class="subscreen-back-btn" id="dapp-connect-back">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="15 18 9 12 15 6"/>
+                  </svg>
+                  <span>Back</span>
+                </button>
+                <h3 class="subscreen-title">Connect</h3>
+              </div>
+
+              <div class="subscreen-content" id="dapp-connect-content">
+                <!-- Origin info -->
+                <div class="dapp-connect-origin">
+                  <div class="dapp-connect-icon" id="dapp-connect-icon">
+                    <img class="dapp-connect-favicon" id="dapp-connect-favicon" alt="" />
+                  </div>
+                  <div class="dapp-connect-site" id="dapp-connect-site">example.com</div>
+                  <div class="dapp-connect-wants">wants to connect</div>
+                </div>
+
+                <!-- Wallet selector -->
+                <div class="dapp-connect-field">
+                  <label class="dapp-connect-label">Select wallet to connect</label>
+                  <div class="dapp-connect-selector" id="dapp-connect-wallet-selector">
+                    <button type="button" class="dapp-connect-selector-btn" id="dapp-connect-wallet-btn">
+                      <div class="dapp-connect-selector-info">
+                        <span class="dapp-connect-wallet-name" id="dapp-connect-wallet-name">Main Wallet</span>
+                        <code class="dapp-connect-wallet-address" id="dapp-connect-wallet-address">0x0000...0000</code>
+                      </div>
+                      <svg class="dapp-connect-selector-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="m6 9 6 6 6-6"/>
+                      </svg>
+                    </button>
+                    <div class="dapp-connect-selector-dropdown hidden" id="dapp-connect-wallet-dropdown">
+                      <div class="dapp-connect-selector-list" id="dapp-connect-wallet-list">
+                        <!-- Wallet items inserted dynamically -->
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Permissions info -->
+                <div class="dapp-connect-permissions">
+                  <div class="dapp-connect-permissions-title">This will allow the site to:</div>
+                  <ul class="dapp-connect-permissions-list">
+                    <li>View your wallet address</li>
+                    <li>Request transaction approval</li>
+                    <li>Request message signatures</li>
+                  </ul>
+                </div>
+
+                <!-- Action buttons -->
+                <div class="dapp-connect-actions">
+                  <button type="button" class="dapp-connect-reject-btn" id="dapp-connect-reject">Reject</button>
+                  <button type="button" class="dapp-connect-approve-btn" id="dapp-connect-approve">Connect</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- dApp Transaction Approval sub-screen -->
+            <div id="sidebar-dapp-tx" class="sidebar-subscreen hidden">
+              <div class="subscreen-header">
+                <button type="button" class="subscreen-back-btn" id="dapp-tx-back">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="15 18 9 12 15 6"/>
+                  </svg>
+                </button>
+                <h3 class="subscreen-title">Confirm Transaction</h3>
+              </div>
+
+              <div class="subscreen-content" id="dapp-tx-content">
+                <!-- Origin info -->
+                <div class="dapp-tx-origin">
+                  <div class="dapp-tx-site" id="dapp-tx-site">example.com</div>
+                  <div class="dapp-tx-action">requests a transaction</div>
+                </div>
+
+                <!-- Transaction details -->
+                <div class="dapp-tx-details">
+                  <div class="dapp-tx-row">
+                    <span class="dapp-tx-label">To</span>
+                    <code class="dapp-tx-value dapp-tx-address" id="dapp-tx-to">0x0000...0000</code>
+                  </div>
+                  <div class="dapp-tx-row" id="dapp-tx-value-row">
+                    <span class="dapp-tx-label">Value</span>
+                    <span class="dapp-tx-value" id="dapp-tx-value">0 ETH</span>
+                  </div>
+                  <div class="dapp-tx-row" id="dapp-tx-data-row">
+                    <span class="dapp-tx-label">Data</span>
+                    <span class="dapp-tx-value dapp-tx-data-preview" id="dapp-tx-data">No data</span>
+                  </div>
+                  <div class="dapp-tx-row">
+                    <span class="dapp-tx-label">Network</span>
+                    <span class="dapp-tx-value" id="dapp-tx-network">Ethereum</span>
+                  </div>
+                  <div class="dapp-tx-row">
+                    <span class="dapp-tx-label">Est. Fee</span>
+                    <span class="dapp-tx-value" id="dapp-tx-fee">~0.001 ETH</span>
+                  </div>
+                </div>
+
+                <!-- Warning for contract interactions -->
+                <div class="dapp-tx-warning hidden" id="dapp-tx-warning">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                    <line x1="12" y1="9" x2="12" y2="13"/>
+                    <line x1="12" y1="17" x2="12.01" y2="17"/>
+                  </svg>
+                  <span id="dapp-tx-warning-text">This transaction interacts with a smart contract.</span>
+                </div>
+
+                <!-- Unlock section -->
+                <div class="dapp-tx-unlock hidden" id="dapp-tx-unlock">
+                  <p class="dapp-tx-unlock-text">Unlock your vault to sign this transaction.</p>
+                  <button type="button" class="dapp-tx-touchid-btn hidden" id="dapp-tx-touchid-btn">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M12 11c0-1.1.9-2 2-2s2 .9 2 2-2 4-2 4"/>
+                      <path d="M8 15c0-2.2 1.8-4 4-4"/>
+                      <path d="M12 4a8 8 0 0 0-8 8c0 1.5.3 2.9.9 4.2"/>
+                      <path d="M12 4a8 8 0 0 1 8 8c0 1.5-.3 2.9-.9 4.2"/>
+                      <path d="M2 12c-.1 1.1-.1 3 .2 4.5"/>
+                      <path d="M22 12c.1 1.1.1 3-.2 4.5"/>
+                    </svg>
+                    <span>Unlock with Touch ID</span>
+                  </button>
+                  <button type="button" class="dapp-unlock-password-link hidden" id="dapp-tx-password-link">or enter your password</button>
+                  <div class="dapp-tx-password-section hidden" id="dapp-tx-password-section">
+                    <div class="dapp-tx-password-row">
+                      <input type="password" class="password-input" id="dapp-tx-password-input" placeholder="Enter password" autocomplete="off">
+                      <button type="button" class="dapp-tx-password-submit" id="dapp-tx-password-submit">Unlock</button>
+                    </div>
+                  </div>
+                  <div class="dapp-tx-error hidden" id="dapp-tx-unlock-error"></div>
+                </div>
+
+                <!-- Error display -->
+                <div class="dapp-tx-error hidden" id="dapp-tx-error"></div>
+
+                <!-- Action buttons -->
+                <div class="dapp-tx-actions">
+                  <button type="button" class="dapp-tx-reject-btn" id="dapp-tx-reject">Reject</button>
+                  <button type="button" class="dapp-tx-approve-btn" id="dapp-tx-approve" disabled>Confirm</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- dApp Message Signing sub-screen -->
+            <div id="sidebar-dapp-sign" class="sidebar-subscreen hidden">
+              <div class="subscreen-header">
+                <button type="button" class="subscreen-back-btn" id="dapp-sign-back">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="15 18 9 12 15 6"/>
+                  </svg>
+                </button>
+                <h3 class="subscreen-title">Sign Message</h3>
+              </div>
+
+              <div class="subscreen-content" id="dapp-sign-content">
+                <!-- Origin info -->
+                <div class="dapp-sign-origin">
+                  <div class="dapp-sign-site" id="dapp-sign-site">example.com</div>
+                  <div class="dapp-sign-action">requests your signature</div>
+                </div>
+
+                <!-- Message display -->
+                <div class="dapp-sign-message-container">
+                  <div class="dapp-sign-message-label">Message</div>
+                  <div class="dapp-sign-message" id="dapp-sign-message">
+                    <!-- Message content will be inserted here -->
+                  </div>
+                </div>
+
+                <!-- Typed data display (for EIP-712) -->
+                <div class="dapp-sign-typed-data hidden" id="dapp-sign-typed-data-section">
+                  <div class="dapp-sign-typed-label">Structured Data (EIP-712)</div>
+                  <div class="dapp-sign-typed-content" id="dapp-sign-typed-data">
+                    <!-- Typed data will be formatted and inserted here -->
+                  </div>
+                </div>
+
+                <!-- Warning -->
+                <div class="dapp-sign-warning">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10"/>
+                    <line x1="12" y1="16" x2="12" y2="12"/>
+                    <line x1="12" y1="8" x2="12.01" y2="8"/>
+                  </svg>
+                  <span>Only sign messages from sites you trust. Signing can authorize actions on your behalf.</span>
+                </div>
+
+                <!-- Unlock section -->
+                <div class="dapp-sign-unlock hidden" id="dapp-sign-unlock">
+                  <p class="dapp-sign-unlock-text">Unlock your vault to sign this message.</p>
+                  <button type="button" class="dapp-sign-touchid-btn hidden" id="dapp-sign-touchid-btn">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M12 11c0-1.1.9-2 2-2s2 .9 2 2-2 4-2 4"/>
+                      <path d="M8 15c0-2.2 1.8-4 4-4"/>
+                      <path d="M12 4a8 8 0 0 0-8 8c0 1.5.3 2.9.9 4.2"/>
+                      <path d="M12 4a8 8 0 0 1 8 8c0 1.5-.3 2.9-.9 4.2"/>
+                      <path d="M2 12c-.1 1.1-.1 3 .2 4.5"/>
+                      <path d="M22 12c.1 1.1.1 3-.2 4.5"/>
+                    </svg>
+                    <span>Unlock with Touch ID</span>
+                  </button>
+                  <button type="button" class="dapp-unlock-password-link hidden" id="dapp-sign-password-link">or enter your password</button>
+                  <div class="dapp-sign-password-section hidden" id="dapp-sign-password-section">
+                    <div class="dapp-sign-password-row">
+                      <input type="password" class="password-input" id="dapp-sign-password-input" placeholder="Enter password" autocomplete="off">
+                      <button type="button" class="dapp-sign-password-submit" id="dapp-sign-password-submit">Unlock</button>
+                    </div>
+                  </div>
+                  <div class="dapp-sign-error hidden" id="dapp-sign-unlock-error"></div>
+                </div>
+
+                <!-- Error display -->
+                <div class="dapp-sign-error hidden" id="dapp-sign-error"></div>
+
+                <!-- Action buttons -->
+                <div class="dapp-sign-actions">
+                  <button type="button" class="dapp-sign-reject-btn" id="dapp-sign-reject">Reject</button>
+                  <button type="button" class="dapp-sign-approve-btn" id="dapp-sign-approve" disabled>Sign</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </aside>
     </section>
 
     <dialog id="settings-modal" class="modal settings-modal">
@@ -705,6 +1781,13 @@
               <span class="toggle-label">Start Radicle node when Freedom opens</span>
               <label class="toggle-switch">
                 <input type="checkbox" id="start-radicle-at-launch" />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="settings-toggle-row">
+              <span class="toggle-label">Enable Identity &amp; Wallet (Beta)</span>
+              <label class="toggle-switch">
+                <input type="checkbox" id="enable-identity-wallet" />
                 <span class="toggle-slider"></span>
               </label>
             </div>
@@ -816,6 +1899,246 @@
 
     <!-- Menu backdrop to catch clicks on drag regions -->
     <div id="menu-backdrop" class="menu-backdrop hidden"></div>
+
+    <!-- Onboarding Modal -->
+    <dialog id="onboarding-modal" class="modal onboarding-modal">
+      <!-- Close button (positioned relative to dialog) -->
+      <button type="button" class="onboarding-close" id="onboarding-close" aria-label="Close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M18 6 6 18"/><path d="M6 6 18 18"/>
+        </svg>
+      </button>
+
+      <!-- Skip link (positioned at bottom of dialog, only visible on welcome) -->
+      <div class="onboarding-skip-footer" id="onboarding-skip-footer">
+        <a href="#" class="onboarding-skip-link" data-action="skip">Skip for now</a>
+      </div>
+
+      <div class="onboarding-panel">
+        <!-- Step 1: Welcome -->
+        <div class="onboarding-step welcome-step" data-step="welcome">
+          <div class="onboarding-header">
+            <h2>Welcome to Freedom</h2>
+            <p class="onboarding-subtitle">Your gateway to the decentralized web</p>
+          </div>
+          <div class="onboarding-body">
+            <p class="onboarding-description">
+              Freedom Browser uses a unified identity to connect you to decentralized networks.
+              Your identity is secured with a recovery phrase that only you control.
+            </p>
+          </div>
+          <!-- Quick Setup UI (shown when Touch ID available) -->
+          <div class="onboarding-actions welcome-actions hidden" id="welcome-quick-setup">
+            <button type="button" class="onboarding-btn primary" data-action="quick-setup">
+              <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="20" height="20">
+                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/>
+                <path d="M12 6c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6"/>
+                <path d="M12 8c-2.21 0-4 1.79-4 4s1.79 4 4 4"/>
+                <path d="M12 10c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2"/>
+              </svg>
+              Quick Setup with Touch ID
+            </button>
+            <div class="onboarding-alt-links">
+              <a href="#" class="onboarding-link" data-action="create">Secure setup with password</a>
+              <span class="link-separator">or</span>
+              <a href="#" class="onboarding-link" data-action="import">Import recovery phrase</a>
+            </div>
+          </div>
+          <!-- Standard UI (shown when Touch ID not available) -->
+          <div class="onboarding-actions welcome-actions" id="welcome-standard">
+            <button type="button" class="onboarding-btn primary" data-action="create">Create New Identity</button>
+            <a href="#" class="onboarding-link" data-action="import">Import existing recovery phrase</a>
+          </div>
+        </div>
+
+        <!-- Step 2a: Create - Set Password -->
+        <div class="onboarding-step hidden" data-step="create-password">
+          <div class="onboarding-header">
+            <h2>Secure Your Identity</h2>
+            <p class="onboarding-subtitle">Create a password to protect your recovery phrase</p>
+          </div>
+          <div class="onboarding-body">
+            <form id="create-password-form" class="onboarding-form">
+              <div class="form-group">
+                <label for="create-password">Password</label>
+                <input type="password" id="create-password" class="form-input" required minlength="8" autocomplete="new-password" />
+              </div>
+              <div class="form-group hidden" id="confirm-password-group">
+                <label for="create-password-confirm">Confirm Password</label>
+                <input type="password" id="create-password-confirm" class="form-input" required minlength="8" autocomplete="new-password" />
+                <span class="form-error" id="password-match-error"></span>
+              </div>
+              <div class="password-strength hidden" id="password-strength">
+                <div class="strength-bar"><div class="strength-fill"></div></div>
+                <span class="strength-label"></span>
+              </div>
+            </form>
+          </div>
+          <div class="onboarding-actions">
+            <button type="button" class="onboarding-btn text" data-action="back">Back</button>
+            <button type="button" class="onboarding-btn primary" data-action="create-vault" disabled>Continue</button>
+          </div>
+        </div>
+
+        <!-- Step 2c: Touch ID Setup (macOS only) -->
+        <div class="onboarding-step hidden" data-step="touch-id">
+          <div class="onboarding-header">
+            <h2>Enable Touch ID</h2>
+            <p class="onboarding-subtitle">Unlock your vault with your fingerprint</p>
+          </div>
+          <div class="onboarding-body">
+            <div class="touch-id-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/>
+                <path d="M12 6c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6"/>
+                <path d="M12 8c-2.21 0-4 1.79-4 4s1.79 4 4 4"/>
+                <path d="M12 10c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2"/>
+                <path d="M12 11v4"/>
+              </svg>
+            </div>
+            <p class="touch-id-description">
+              Use Touch ID to quickly unlock your vault without typing your password each time.
+              Your password is stored securely in the macOS Keychain.
+            </p>
+            <p class="touch-id-note">
+              You can always use your password as a backup.
+            </p>
+          </div>
+          <div class="onboarding-actions">
+            <button type="button" class="onboarding-btn text" data-action="skip-touch-id">Skip</button>
+            <button type="button" class="onboarding-btn primary" data-action="enable-touch-id">Enable Touch ID</button>
+          </div>
+        </div>
+
+        <!-- Step 3: Backup Recovery Phrase -->
+        <div class="onboarding-step hidden" data-step="backup">
+          <div class="onboarding-header">
+            <h2>Backup Your Recovery Phrase</h2>
+            <p class="onboarding-subtitle">Write down these 24 words and store them safely</p>
+          </div>
+          <div class="onboarding-body">
+            <div class="warning-banner">
+              <svg class="warning-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+              </svg>
+              <span>Anyone with these words can access your identity. Never share them.</span>
+            </div>
+            <div class="mnemonic-display" id="mnemonic-display">
+              <!-- Words will be inserted here -->
+            </div>
+            <div class="mnemonic-actions">
+              <button type="button" class="mnemonic-action-btn" id="copy-mnemonic">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                  <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
+                </svg>
+                Copy
+              </button>
+              <button type="button" class="mnemonic-action-btn" id="toggle-mnemonic">
+                <svg class="icon-show" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                  <circle cx="12" cy="12" r="3"/>
+                </svg>
+                <svg class="icon-hide hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
+                  <line x1="1" y1="1" x2="23" y2="23"/>
+                </svg>
+                <span class="toggle-label">Show</span>
+              </button>
+            </div>
+            <label class="checkbox-label">
+              <input type="checkbox" id="backup-confirmed" />
+              <span>I have saved my recovery phrase securely</span>
+            </label>
+          </div>
+          <div class="onboarding-actions">
+            <button type="button" class="onboarding-btn text" data-action="back-to-welcome">Start Over</button>
+            <button type="button" class="onboarding-btn primary" data-action="continue-to-verify" disabled>Finish Setup</button>
+          </div>
+        </div>
+
+        <!-- Step 2b: Import -->
+        <div class="onboarding-step hidden" data-step="import">
+          <div class="onboarding-header">
+            <h2>Import Recovery Phrase</h2>
+            <p class="onboarding-subtitle">Enter your 12 or 24 word recovery phrase</p>
+          </div>
+          <div class="onboarding-body">
+            <form id="import-form" class="onboarding-form">
+              <div class="form-group">
+                <label for="import-mnemonic">Recovery Phrase</label>
+                <textarea id="import-mnemonic" class="form-input mnemonic-input" rows="4" placeholder="Enter words separated by spaces..." spellcheck="false" autocomplete="off"></textarea>
+                <span class="form-hint" id="import-mnemonic-hint"></span>
+              </div>
+              <div class="form-group">
+                <label for="import-password">Password</label>
+                <input type="password" id="import-password" class="form-input" required minlength="8" autocomplete="new-password" />
+                <div class="password-strength" id="import-password-strength">
+                  <div class="strength-bar"><div class="strength-fill"></div></div>
+                  <span class="strength-label"></span>
+                </div>
+              </div>
+              <div class="form-group">
+                <label for="import-password-confirm">Confirm Password</label>
+                <input type="password" id="import-password-confirm" class="form-input" required minlength="8" autocomplete="new-password" />
+                <span class="form-error" id="import-password-match-error"></span>
+              </div>
+            </form>
+          </div>
+          <div class="onboarding-actions">
+            <button type="button" class="onboarding-btn text" data-action="back">Back</button>
+            <button type="button" class="onboarding-btn primary" data-action="import-vault" disabled>Import</button>
+          </div>
+        </div>
+
+        <!-- Step 5: Complete -->
+        <div class="onboarding-step hidden" data-step="complete">
+          <div class="onboarding-header">
+            <div class="success-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <polyline points="20 6 9 17 4 12"/>
+              </svg>
+            </div>
+            <h2>You're All Set!</h2>
+            <p class="onboarding-subtitle">Your identity is ready</p>
+          </div>
+          <div class="onboarding-body">
+            <!-- Primary: User Wallet -->
+            <div class="identity-wallet-card">
+              <div class="identity-wallet-label">Your Ethereum Wallet</div>
+              <code class="identity-wallet-address" id="identity-wallet"></code>
+            </div>
+
+            <!-- Secondary: Node Identities -->
+            <div class="identity-nodes-label">Node Identities</div>
+            <div class="identity-summary">
+              <div class="identity-row">
+                <span class="identity-label">Swarm</span>
+                <code class="identity-value" id="identity-eth"></code>
+              </div>
+              <div class="identity-row">
+                <span class="identity-label">IPFS</span>
+                <code class="identity-value" id="identity-ipfs"></code>
+              </div>
+              <div class="identity-row">
+                <span class="identity-label">Radicle</span>
+                <code class="identity-value" id="identity-radicle"></code>
+              </div>
+            </div>
+          </div>
+          <div class="onboarding-actions">
+            <button type="button" class="onboarding-btn primary" data-action="finish">Start Browsing</button>
+          </div>
+        </div>
+
+        <!-- Loading overlay -->
+        <div class="onboarding-loading hidden" id="onboarding-loading">
+          <div class="loading-spinner"></div>
+          <span class="loading-text" id="loading-text">Setting up your identity...</span>
+        </div>
+      </div>
+    </dialog>
 
     <script type="module" src="./index.js"></script>
   </body>

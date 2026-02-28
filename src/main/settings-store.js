@@ -19,11 +19,14 @@ const SETTINGS_FILE = 'settings.json';
 const DEFAULT_SETTINGS = {
   theme: 'system',
   enableRadicleIntegration: false,
+  enableIdentityWallet: false,
   startBeeAtLaunch: true,
   startIpfsAtLaunch: true,
   startRadicleAtLaunch: false,
   autoUpdate: true,
   showBookmarkBar: false,
+  sidebarOpen: false,
+  sidebarWidth: 320,
 };
 
 let cachedSettings = null;

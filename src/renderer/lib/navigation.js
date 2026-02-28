@@ -1,7 +1,7 @@
 // Navigation, webview, and address bar handling
 import { state } from './state.js';
 import { pushDebug } from './debug.js';
-import { updateBookmarkButtonVisibility } from './bookmarks-ui.js';
+import { updateBookmarkButtonVisibility, updateBookmarksBarForPage, setBookmarksBarVisible, isBookmarksBarVisible } from './bookmarks-ui.js';
 import { updateGithubBridgeIcon } from './github-bridge-ui.js';
 import {
   formatBzzUrl,
@@ -48,14 +48,13 @@ let backBtn = null;
 let forwardBtn = null;
 let reloadBtn = null;
 let homeBtn = null;
-let bookmarksBar = null;
 let protocolIcon = null;
 
 // Track previous active tab ID to save address bar state when switching
 let previousActiveTabId = null;
 
-// Bookmark bar toggle state: true = always show, false = hide on non-home pages (default)
-let bookmarkBarOverride = false;
+// Helper: check if URL is the home/new-tab page
+const isHomePage = (url) => url === homeUrlNormalized || url === homeUrl || !url;
 
 // Last recorded URL to avoid duplicates in quick succession
 let lastRecordedUrl = null;
@@ -844,37 +843,24 @@ const handleNavigationEvent = (event) => {
   updateProtocolIcon();
 };
 
-// Update bookmark bar visibility based on toggle state and current page
-// Like Chrome: bookmark bar always shows on new tab page; toggle only affects other pages
+// Update bookmark bar visibility for a URL change
 const updateBookmarkBarState = (url) => {
-  if (!bookmarksBar) return;
-  const isHomePage = url === homeUrlNormalized || url === homeUrl || !url;
-  if (isHomePage) {
-    // Always show on new tab page regardless of toggle
-    bookmarksBar.classList.remove('hidden');
-  } else if (bookmarkBarOverride) {
-    bookmarksBar.classList.remove('hidden');
-  } else {
-    bookmarksBar.classList.add('hidden');
-  }
-  // Disable the menu item on the new tab page (toggle has no effect there)
-  electronAPI?.setBookmarkBarToggleEnabled?.(!isHomePage);
+  const onHome = isHomePage(url);
+  updateBookmarksBarForPage(onHome);
+  electronAPI?.setBookmarkBarToggleEnabled?.(!onHome);
 };
 
 // Toggle bookmark bar visibility and persist to settings
 export const toggleBookmarkBar = async () => {
-  bookmarkBarOverride = !bookmarkBarOverride;
-  // Apply immediately
-  const webview = getActiveWebview();
-  const url = webview?.getURL?.() || '';
-  updateBookmarkBarState(url);
+  const newVisible = !isBookmarksBarVisible();
+  setBookmarksBarVisible(newVisible);
   // Sync checkbox state in system menu
-  electronAPI?.setBookmarkBarChecked?.(bookmarkBarOverride);
-  pushDebug(`Bookmark bar: ${bookmarkBarOverride ? 'always shown' : 'always hidden'}`);
+  electronAPI?.setBookmarkBarChecked?.(newVisible);
+  pushDebug(`Bookmark bar: ${newVisible ? 'always shown' : 'always hidden'}`);
   // Persist to settings
   const settings = await electronAPI?.getSettings?.();
   if (settings) {
-    settings.showBookmarkBar = bookmarkBarOverride;
+    settings.showBookmarkBar = newVisible;
     await electronAPI?.saveSettings?.(settings);
   }
 };
@@ -900,14 +886,13 @@ export const initNavigation = () => {
   forwardBtn = document.getElementById('forward-btn');
   reloadBtn = document.getElementById('reload-btn');
   homeBtn = document.getElementById('home-btn');
-  bookmarksBar = document.querySelector('.bookmarks');
   protocolIcon = document.getElementById('protocol-icon');
 
   // Load bookmark bar visibility from saved settings
   electronAPI?.getSettings?.().then((settings) => {
     if (settings && typeof settings.showBookmarkBar === 'boolean') {
-      bookmarkBarOverride = settings.showBookmarkBar;
-      electronAPI?.setBookmarkBarChecked?.(bookmarkBarOverride);
+      setBookmarksBarVisible(settings.showBookmarkBar);
+      electronAPI?.setBookmarkBarChecked?.(settings.showBookmarkBar);
     }
   });
 
@@ -1217,6 +1202,8 @@ export const initNavigation = () => {
         }
         pushDebug(`did-navigate event fired: ${data.event?.url}`);
         if (data.event) handleNavigationEvent(data.event);
+        // Notify other modules that navigation completed (for dApp connection banner)
+        document.dispatchEvent(new CustomEvent('navigation-completed'));
         break;
 
       case 'certificate-error':
@@ -1228,6 +1215,8 @@ export const initNavigation = () => {
 
       case 'did-navigate-in-page':
         if (data.event) handleNavigationEvent(data.event);
+        // Notify other modules that navigation completed (for dApp connection banner)
+        document.dispatchEvent(new CustomEvent('navigation-completed'));
         break;
 
       case 'dom-ready':

@@ -70,6 +70,10 @@ let healthCheckInterval = null;
 let pendingStart = false;
 let forceKillTimeout = null;
 
+// Identity injection flag - when true, skip rad auth and use pre-injected identity
+let useInjectedIdentity = false;
+
+
 // Port configuration
 let currentHttpPort = DEFAULTS.radicle.httpPort;
 let currentMode = MODE.NONE;
@@ -169,12 +173,20 @@ function ensureConfig(radHome) {
  */
 function ensureIdentity(radHome) {
   const keysDir = path.join(radHome, 'keys');
+  const privateKeyPath = path.join(keysDir, 'radicle');
 
-  if (fs.existsSync(keysDir) && fs.readdirSync(keysDir).length > 0) {
-    log.info('[Radicle] Identity already exists');
+  if (fs.existsSync(privateKeyPath)) {
+    log.info('[Radicle] Identity already exists (injected or created)');
     ensureConfig(radHome);
     return true;
   }
+
+  // Check if we should wait for identity injection
+  if (useInjectedIdentity) {
+    log.info('[Radicle] Waiting for identity injection (useInjectedIdentity=true)');
+    return false;
+  }
+
 
   const radPath = getRadicleBinaryPath('rad');
   if (!fs.existsSync(radPath)) {
@@ -895,6 +907,24 @@ function checkBinary() {
   return fs.existsSync(nodeBinPath) && fs.existsSync(httpdBinPath);
 }
 
+/**
+ * Enable injected identity mode - skip rad auth and expect pre-injected identity
+ * Call this before starting Radicle when using the unified identity system
+ */
+function setUseInjectedIdentity(enabled) {
+  useInjectedIdentity = enabled;
+  log.info(`[Radicle] Injected identity mode: ${enabled}`);
+}
+
+/**
+ * Check if identity has been injected
+ */
+function hasInjectedIdentity() {
+  const dataDir = getRadicleDataPath();
+  const privateKeyPath = path.join(dataDir, 'keys', 'radicle');
+  return fs.existsSync(privateKeyPath);
+}
+
 function getActivePort() {
   return currentHttpPort;
 }
@@ -1174,6 +1204,8 @@ module.exports = {
   getActivePort,
   getRadicleBinaryPath,
   getRadicleDataPath,
+  setUseInjectedIdentity,
+  hasInjectedIdentity,
   getActiveRadHome,
   STATUS
 };

@@ -32,6 +32,9 @@ let healthCheckInterval = null;
 let pendingStart = false;
 let forceKillTimeout = null;
 
+// Identity injection flag - when true, skip ipfs init and use pre-injected identity
+let useInjectedIdentity = false;
+
 // Port configuration (resolved at startup)
 let currentApiPort = DEFAULTS.ipfs.apiPort;
 let currentGatewayPort = DEFAULTS.ipfs.gatewayPort;
@@ -100,6 +103,19 @@ function initRepo(binPath, dataDir) {
     return true;
   }
 
+  // Check if identity was injected (identity-manager creates config with Identity fields)
+  const markerPath = path.join(dataDir, '.identity-injected');
+  if (useInjectedIdentity || fs.existsSync(markerPath)) {
+    log.info('[IPFS] Using injected identity, skipping ipfs init');
+    // Config should already exist with injected identity
+    if (isRepoInitialized(dataDir)) {
+      return true;
+    }
+    // If config doesn't exist yet, wait for identity injection
+    log.info('[IPFS] Waiting for identity injection...');
+    return false;
+  }
+
   log.info('[IPFS] Initializing repo...');
   try {
     const { execSync } = require('child_process');
@@ -137,13 +153,20 @@ function enforceConfig(dataDir, apiPort, gatewayPort) {
     config.API.HTTPHeaders['Access-Control-Allow-Origin'] = ['null'];
     config.API.HTTPHeaders['Access-Control-Allow-Methods'] = ['GET', 'POST', 'PUT'];
 
-    // DHT client for general P2P content discovery + IPNI delegated routing for
-    // providers like Pinata that only advertise via IPNI (cid.contact), not DHT.
-    // 'autoclient' = DHT client mode + HTTP delegated router support.
-    config.Routing = config.Routing || {};
-    config.Routing.Type = 'autoclient';
-    config.Routing.DelegatedRouters = ['https://cid.contact'];
-    delete config.Routing.AcceleratedDHTClient;
+    // Delegated routing: autoclient (DHT client mode) + IPNI for fast provider discovery
+    // - autoclient: like dhtclient but with HTTP router support, never becomes DHT server
+    // - DelegatedRouters: adds IPNI (cid.contact) on top of DHT for find-providers
+    // This keeps full DHT connectivity (~150 peers) while adding fast IPNI lookups.
+    config.Routing = {
+      Type: 'autoclient',
+      DelegatedRouters: ['https://cid.contact'],
+    };
+
+    // Disable HTTPRetrieval (not needed with current setup)
+    if (config.HTTPRetrieval) {
+      delete config.HTTPRetrieval.Enabled;
+    }
+
 
     // Connection limits - balanced for embedded use while still able to fetch content
     config.Swarm = config.Swarm || {};
@@ -184,7 +207,7 @@ function enforceConfig(dataDir, apiPort, gatewayPort) {
 
     fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
     log.info('[IPFS] Config enforced with API port:', apiPort, 'Gateway port:', gatewayPort);
-    log.info('[IPFS] Routing.Type:', config.Routing.Type);
+    log.info('[IPFS] Routing: autoclient + DelegatedRouters:', config.Routing.DelegatedRouters);
     return true;
   } catch (err) {
     log.error('[IPFS] Failed to enforce config:', err.message);
@@ -629,6 +652,24 @@ function checkBinary() {
   return fs.existsSync(binPath);
 }
 
+/**
+ * Enable injected identity mode - skip ipfs init and expect pre-injected identity
+ * Call this before starting IPFS when using the unified identity system
+ */
+function setUseInjectedIdentity(enabled) {
+  useInjectedIdentity = enabled;
+  log.info(`[IPFS] Injected identity mode: ${enabled}`);
+}
+
+/**
+ * Check if identity has been injected
+ */
+function hasInjectedIdentity() {
+  const dataDir = getIpfsDataPath();
+  const markerPath = path.join(dataDir, '.identity-injected');
+  return fs.existsSync(markerPath);
+}
+
 function getActivePort() {
   return currentApiPort;
 }
@@ -663,5 +704,8 @@ module.exports = {
   stopIpfs,
   getActivePort,
   getActiveGatewayPort,
+  getIpfsDataPath,
+  setUseInjectedIdentity,
+  hasInjectedIdentity,
   STATUS,
 };

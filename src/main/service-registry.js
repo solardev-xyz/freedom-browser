@@ -42,6 +42,14 @@ const registry = {
     tempMessage: null,
     tempMessageTimeout: null,
   },
+  radicle: {
+    api: null,        // e.g., 'http://127.0.0.1:8780'
+    gateway: null,    // Same as api for radicle-httpd
+    mode: MODE.NONE,
+    statusMessage: null,
+    tempMessage: null,
+    tempMessageTimeout: null,
+  },
 };
 
 // Default ports

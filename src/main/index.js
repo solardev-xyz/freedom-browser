@@ -45,9 +45,15 @@ const { registerBookmarksIpc } = require('./bookmarks-store');
 const { registerHistoryIpc, closeDb: closeHistoryDb } = require('./history');
 const { registerFaviconsIpc } = require('./favicons');
 const { registerEnsIpc } = require('./ens-resolver');
-const { registerBeeIpc, stopBee, startBee } = require('./bee-manager');
-const { registerIpfsIpc, stopIpfs, startIpfs } = require('./ipfs-manager');
-const { registerRadicleIpc, stopRadicle, startRadicle } = require('./radicle-manager');
+const { registerBeeIpc, stopBee, startBee, setUseInjectedIdentity: setBeeInjectedIdentity } = require('./bee-manager');
+const { registerIpfsIpc, stopIpfs, startIpfs, setUseInjectedIdentity: setIpfsInjectedIdentity } = require('./ipfs-manager');
+const { registerRadicleIpc, stopRadicle, startRadicle, setUseInjectedIdentity: setRadicleInjectedIdentity } = require('./radicle-manager');
+const { registerIdentityIpc, hasVault, isBeeIdentityInjected, isIpfsIdentityInjected, isRadicleIdentityInjected } = require('./identity-manager');
+const { registerQuickUnlockIpc } = require('./quick-unlock');
+const { registerWalletIpc } = require('./wallet/wallet-ipc');
+const { registerChainRegistryIpc } = require('./chain-registry');
+const { registerRpcManagerIpc } = require('./wallet/rpc-manager');
+const { registerDappPermissionsIpc } = require('./wallet/dapp-permissions');
 const { registerGithubBridgeIpc, cleanupTempDirs } = require('./github-bridge');
 const { registerServiceRegistryIpc } = require('./service-registry');
 const { createMainWindow, setWindowTitle, getMainWindows } = require('./windows/mainWindow');
@@ -96,17 +102,61 @@ async function bootstrap() {
   registerRadicleIpc();
   registerGithubBridgeIpc();
   registerServiceRegistryIpc();
+  registerIdentityIpc();
+  registerQuickUnlockIpc();
+  registerWalletIpc();
+  registerChainRegistryIpc();
+  registerRpcManagerIpc();
+  registerDappPermissionsIpc();
   registerRequestRewriter(defaultSession);
   allowInteractivePermissions(defaultSession);
   registerWebContentsHandlers();
   setupApplicationMenu();
 
-  const settings = loadSettings();
-  if (settings.startBeeAtLaunch) {
-    startBee();
+  // Check identity vault and key status
+  // Three scenarios:
+  // 1. Vault exists + keys injected → use derived keys, start nodes
+  // 2. No vault + keys exist → user skipped onboarding, use random keys, start nodes
+  // 3. No vault + no keys → true first run, defer to onboarding wizard
+  let vaultExists = false;
+  let keysExist = false;
+  try {
+    vaultExists = await hasVault();
+    keysExist = isBeeIdentityInjected() || isIpfsIdentityInjected() || isRadicleIdentityInjected();
+
+    if (vaultExists) {
+      log.info('[App] Identity vault found, enabling injected identity mode');
+      setBeeInjectedIdentity(true);
+      setIpfsInjectedIdentity(true);
+      setRadicleInjectedIdentity(true);
+    } else if (keysExist) {
+      log.info('[App] No vault but keys exist - user previously skipped onboarding');
+      // Don't enable injected identity mode - these are random keys, not derived
+    } else {
+      log.info('[App] No vault and no keys - waiting for onboarding');
+    }
+  } catch (err) {
+    log.error('[App] Failed to check vault status:', err.message);
   }
-  if (settings.startIpfsAtLaunch) {
-    startIpfs();
+
+  const settings = loadSettings();
+
+  // Start nodes automatically if:
+  // - Vault exists and keys are injected (completed onboarding), OR
+  // - No vault but keys exist (skipped onboarding, using random keys)
+  // If no vault AND no keys, defer to onboarding wizard (renderer handles this)
+  if (vaultExists || keysExist) {
+    if (settings.startBeeAtLaunch && isBeeIdentityInjected()) {
+      startBee();
+    }
+    if (settings.startIpfsAtLaunch && isIpfsIdentityInjected()) {
+      startIpfs();
+    }
+    if (settings.startRadicleAtLaunch && isRadicleIdentityInjected()) {
+      startRadicle();
+    }
+  } else {
+    log.info('[App] Deferring node startup until onboarding completes');
   }
   if (settings.enableRadicleIntegration && settings.startRadicleAtLaunch) {
     startRadicle();
@@ -185,6 +235,7 @@ app.on('before-quit', async (event) => {
   log.info('[App] Waiting for Bee, IPFS, and Radicle to stop...');
   await Promise.all([stopBee(), stopIpfs(), stopRadicle()]);
   log.info('[App] All processes stopped, quitting...');
+
 
   app.quit();
 });
