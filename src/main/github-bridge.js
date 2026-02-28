@@ -72,7 +72,7 @@ async function checkGitAvailable() {
   try {
     const { stdout } = await execFileAsync('git', ['--version'], { timeout: 5000 });
     return { available: true, version: stdout.trim() };
-  } catch (err) {
+  } catch {
     return { available: false, error: 'Git is not installed or not found in PATH' };
   }
 }

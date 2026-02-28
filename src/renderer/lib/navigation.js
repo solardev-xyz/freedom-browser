@@ -11,8 +11,6 @@ import {
   deriveBzzBaseFromUrl,
   deriveIpfsBaseFromUrl,
   deriveRadBaseFromUrl,
-  isValidCid,
-  isValidRadicleId,
   applyEnsNamePreservation,
 } from './url-utils.js';
 import {
@@ -667,7 +665,7 @@ const getRadicleDisplayUrl = (url) => {
     if (rid) {
       return `rad://${rid}${path}`;
     }
-  } catch (err) {
+  } catch {
     // Ignore parse errors
   }
   return null;

@@ -51,12 +51,6 @@ function parseGitHubUrl(url) {
   return null;
 }
 
-function escapeHtml(str) {
-  const div = document.createElement('div');
-  div.textContent = str;
-  return div.innerHTML;
-}
-
 /**
  * Show a specific panel state, hide all others.
  */
@@ -151,7 +145,7 @@ async function openPanel() {
       }
       return;
     }
-  } catch (err) {
+  } catch {
     showState('prereq-error');
     if (prereqTextEl) {
       prereqTextEl.textContent = 'Could not verify Git availability.';

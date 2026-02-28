@@ -53,7 +53,7 @@ const fetchRadicleInfo = async () => {
       } else if (radiclePeersCount) {
         radiclePeersCount.textContent = '--';
       }
-    } catch (err) {
+    } catch {
       if (radiclePeersCount) radiclePeersCount.textContent = '--';
     }
   }
@@ -69,7 +69,7 @@ const fetchRadicleInfo = async () => {
     } else if (radicleReposCount) {
       radicleReposCount.textContent = '--';
     }
-  } catch (err) {
+  } catch {
     if (radicleReposCount) radicleReposCount.textContent = '--';
   }
 
@@ -90,7 +90,7 @@ const fetchRadicleInfo = async () => {
           radicleNodeId.title = fullId; // Full ID on hover
         }
       }
-    } catch (err) {
+    } catch {
       // Node ID fetch failed, leave as --
     }
   }
@@ -111,7 +111,7 @@ const fetchRadicleVersionOnce = async () => {
     } else if (radicleVersionText) {
       radicleVersionText.textContent = '';
     }
-  } catch (err) {
+  } catch {
     if (radicleVersionText) radicleVersionText.textContent = '';
   }
 };

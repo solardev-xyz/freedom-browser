@@ -324,7 +324,7 @@ export const deriveDisplayValue = (
     try {
       const decoded = decodeURIComponent(remainder).replace(/\/+$/, '');
       return decoded ? `rad://${decoded}` : '';
-    } catch (err) {
+    } catch {
       const cleaned = remainder.replace(/\/+$/, '');
       return cleaned ? `rad://${cleaned}` : '';
     }
@@ -670,7 +670,7 @@ export const deriveRadicleDisplayValue = (url, radicleApiPrefix) => {
     try {
       const decoded = decodeURIComponent(remainder).replace(/\/+$/, '');
       return decoded ? `rad://${decoded}` : '';
-    } catch (err) {
+    } catch {
       const cleaned = remainder.replace(/\/+$/, '');
       return cleaned ? `rad://${cleaned}` : '';
     }

@@ -1,4 +1,5 @@
 // Radicle Browser JavaScript
+/* global marked, hljs, DOMPurify */
   // =============================================
   // STATE & CONFIGURATION
   // =============================================
@@ -630,10 +631,6 @@
 
     html += '</div>';
     fileViewerEl.innerHTML = html;
-  }
-
-  function renderFileHeader(blob) {
-    // File header info is now part of renderBlob
   }
 
   // =============================================
