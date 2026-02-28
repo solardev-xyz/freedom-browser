@@ -6,6 +6,7 @@ const os = require('os');
 const fs = require('fs');
 const https = require('https');
 const IPC = require('../shared/ipc-channels');
+const { success, failure, validateNonEmptyString } = require('./ipc-contract');
 const { getRadicleBinaryPath, getRadicleDataPath } = require('./radicle-manager');
 
 const execFileAsync = promisify(execFile);
@@ -30,10 +31,13 @@ function stripAnsi(str) {
  *   owner/repo (shorthand)
  */
 function validateGitHubUrl(url) {
-  const input = (url || '').trim().replace(/\/+$/, '');
-  if (!input) {
-    return { valid: false, error: 'Please enter a GitHub repository URL' };
+  if (!validateNonEmptyString(url)) {
+    return {
+      valid: false,
+      ...failure('INVALID_URL', 'Please enter a GitHub repository URL', { field: 'url' }),
+    };
   }
+  const input = url.trim().replace(/\/+$/, '');
 
   // Try full URL: https://github.com/owner/repo or github.com/owner/repo
   const fullMatch = input.match(
@@ -41,6 +45,7 @@ function validateGitHubUrl(url) {
   );
   if (fullMatch) {
     return {
+      ...success(),
       valid: true,
       owner: fullMatch[1],
       repo: fullMatch[2],
@@ -52,6 +57,7 @@ function validateGitHubUrl(url) {
   const shortMatch = input.match(/^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?$/);
   if (shortMatch) {
     return {
+      ...success(),
       valid: true,
       owner: shortMatch[1],
       repo: shortMatch[2],
@@ -61,7 +67,11 @@ function validateGitHubUrl(url) {
 
   return {
     valid: false,
-    error: 'Invalid GitHub URL. Expected: https://github.com/owner/repo or owner/repo',
+    ...failure(
+      'INVALID_URL_FORMAT',
+      'Invalid GitHub URL. Expected: https://github.com/owner/repo or owner/repo',
+      { field: 'url', value: input }
+    ),
   };
 }
 
@@ -136,20 +146,27 @@ async function importGitHubRepo(url, sender) {
     sendProgress({ step: 'validating', message: 'Validating GitHub URL...' });
     const validation = validateGitHubUrl(url);
     if (!validation.valid) {
-      return { success: false, error: validation.error, step: 'validating' };
+      return failure(
+        validation.error.code,
+        validation.error.message,
+        validation.error.details,
+        { step: 'validating' }
+      );
     }
 
     // Step 2: Check git is available
     sendProgress({ step: 'checking-git', message: 'Checking git availability...' });
     const gitCheck = await checkGitAvailable();
     if (!gitCheck.available) {
-      return { success: false, error: gitCheck.error, step: 'checking-git' };
+      return failure('GIT_UNAVAILABLE', gitCheck.error, undefined, { step: 'checking-git' });
     }
 
     // Step 3: Check rad binary exists
     const radPath = getRadicleBinaryPath('rad');
     if (!fs.existsSync(radPath)) {
-      return { success: false, error: 'Radicle CLI (rad) not found', step: 'checking-radicle' };
+      return failure('RADICLE_CLI_MISSING', 'Radicle CLI (rad) not found', undefined, {
+        step: 'checking-radicle',
+      });
     }
 
     const radicleEnv = getRadicleEnv();
@@ -234,7 +251,7 @@ async function importGitHubRepo(url, sender) {
     console.log(`[GitHubBridge] Success: ${validation.owner}/${validation.repo} -> ${rid}`);
 
     return {
-      success: true,
+      ...success(),
       rid: rid ? rid.replace('rad:', '') : null,
       name: validation.repo,
       owner: validation.owner,
@@ -258,7 +275,7 @@ async function importGitHubRepo(url, sender) {
       activeTempDirs.delete(clonePath);
     }
 
-    return { success: false, error: errorMsg };
+    return failure('IMPORT_FAILED', errorMsg);
   }
 }
 
@@ -286,6 +303,9 @@ function registerGithubBridgeIpc() {
   console.log('[GitHubBridge] Registering IPC handlers');
 
   ipcMain.handle(IPC.GITHUB_BRIDGE_IMPORT, async (event, url) => {
+    if (!validateNonEmptyString(url)) {
+      return failure('INVALID_URL', 'Missing GitHub URL', { field: 'url' });
+    }
     return await importGitHubRepo(url, event.sender);
   });
 

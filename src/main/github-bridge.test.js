@@ -15,6 +15,7 @@ describe('github-bridge', () => {
   describe('validateGitHubUrl', () => {
     test('accepts full HTTPS GitHub URL', () => {
       const result = validateGitHubUrl('https://github.com/solardev-xyz/freedom-browser');
+      expect(result.success).toBe(true);
       expect(result.valid).toBe(true);
       expect(result.owner).toBe('solardev-xyz');
       expect(result.repo).toBe('freedom-browser');
@@ -37,6 +38,7 @@ describe('github-bridge', () => {
 
     test('accepts shorthand owner/repo', () => {
       const result = validateGitHubUrl('owner/repo');
+      expect(result.success).toBe(true);
       expect(result.valid).toBe(true);
       expect(result.owner).toBe('owner');
       expect(result.repo).toBe('repo');
@@ -56,9 +58,13 @@ describe('github-bridge', () => {
     });
 
     test('rejects empty input', () => {
-      expect(validateGitHubUrl('')).toEqual({
-        valid: false,
-        error: 'Please enter a GitHub repository URL',
+      const result = validateGitHubUrl('');
+      expect(result.valid).toBe(false);
+      expect(result.success).toBe(false);
+      expect(result.error).toEqual({
+        code: 'INVALID_URL',
+        message: 'Please enter a GitHub repository URL',
+        details: { field: 'url' },
       });
     });
 

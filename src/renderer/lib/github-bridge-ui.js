@@ -29,6 +29,14 @@ let panelOpen = false;
 let currentUrl = '';
 let lastRid = '';
 
+function getErrorMessage(resultOrError) {
+  if (!resultOrError) return 'Unknown error';
+  if (typeof resultOrError.error === 'string') return resultOrError.error;
+  if (resultOrError.error?.message) return resultOrError.error.message;
+  if (resultOrError.message) return resultOrError.message;
+  return 'Unknown error';
+}
+
 /**
  * Check if a URL matches a GitHub repository page.
  * Matches: https://github.com/owner/repo and subpaths.
@@ -218,13 +226,14 @@ async function startImport() {
       }
       showState('success');
     } else {
+      const errorMessage = getErrorMessage(result);
       // Determine which step failed based on the error
-      const failedStep = result.step || detectFailedStep(result.error);
+      const failedStep = result.step || detectFailedStep(errorMessage);
       if (failedStep) {
         markStepError(failedStep);
       }
       if (errorDetailEl) {
-        errorDetailEl.textContent = result.error || 'Unknown error';
+        errorDetailEl.textContent = errorMessage;
       }
       showState('error');
     }
@@ -234,7 +243,7 @@ async function startImport() {
       progressCleanup = null;
     }
     if (errorDetailEl) {
-      errorDetailEl.textContent = err.message || 'Unknown error';
+      errorDetailEl.textContent = getErrorMessage(err);
     }
     showState('error');
   }

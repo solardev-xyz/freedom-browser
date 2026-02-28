@@ -10,6 +10,7 @@ const fs = require('fs');
 const http = require('http');
 const net = require('net');
 const IPC = require('../shared/ipc-channels');
+const { success, failure, validateNonEmptyString } = require('./ipc-contract');
 
 /**
  * Validate a Radicle Repository ID (RID).
@@ -905,12 +906,12 @@ function getActivePort() {
  */
 async function seedRepository(rid) {
   if (currentState !== STATUS.RUNNING) {
-    return { success: false, error: 'Radicle node is not running' };
+    return failure('RADICLE_NOT_RUNNING', 'Radicle node is not running');
   }
 
   const fullRid = validateAndNormalizeRid(rid);
   if (!fullRid) {
-    return { success: false, error: 'Invalid Radicle Repository ID' };
+    return failure('INVALID_RID', 'Invalid Radicle Repository ID', { rid });
   }
 
   const radBinPath = getRadicleBinaryPath('rad');
@@ -929,7 +930,7 @@ async function seedRepository(rid) {
       timeout: 120000, // 120 second timeout for large repos
     });
     log.info(`[Radicle] Repository seeded: ${fullRid}`);
-    return { success: true };
+    return success();
   } catch (err) {
     log.error(`[Radicle] Seed failed for ${fullRid}:`, err.message);
     // Try to extract meaningful error from stderr
@@ -939,7 +940,7 @@ async function seedRepository(rid) {
       : stderrStr.includes('already tracking')
         ? 'Repository is already seeded'
         : err.message;
-    return { success: false, error: errorMsg };
+    return failure('SEED_FAILED', errorMsg, { rid: fullRid });
   }
 }
 
@@ -950,12 +951,12 @@ async function seedRepository(rid) {
  */
 async function getRepoPayload(rid) {
   if (currentState !== STATUS.RUNNING) {
-    return { success: false, error: 'Radicle node is not running' };
+    return failure('RADICLE_NOT_RUNNING', 'Radicle node is not running');
   }
 
   const fullRid = validateAndNormalizeRid(rid);
   if (!fullRid) {
-    return { success: false, error: 'Invalid Radicle Repository ID' };
+    return failure('INVALID_RID', 'Invalid Radicle Repository ID', { rid });
   }
 
   const radBinPath = getRadicleBinaryPath('rad');
@@ -972,10 +973,10 @@ async function getRepoPayload(rid) {
     });
 
     const payload = JSON.parse(stdout);
-    return { success: true, payload };
+    return success({ payload });
   } catch (err) {
     log.error(`[Radicle] Failed to get payload for ${fullRid}:`, err.message);
-    return { success: false, error: err.message };
+    return failure('GET_PAYLOAD_FAILED', err.message, { rid: fullRid });
   }
 }
 
@@ -986,12 +987,12 @@ async function getRepoPayload(rid) {
  */
 async function syncRepository(rid) {
   if (currentState !== STATUS.RUNNING) {
-    return { success: false, error: 'Radicle node is not running' };
+    return failure('RADICLE_NOT_RUNNING', 'Radicle node is not running');
   }
 
   const fullRid = validateAndNormalizeRid(rid);
   if (!fullRid) {
-    return { success: false, error: 'Invalid Radicle Repository ID' };
+    return failure('INVALID_RID', 'Invalid Radicle Repository ID', { rid });
   }
 
   const radBinPath = getRadicleBinaryPath('rad');
@@ -1009,11 +1010,11 @@ async function syncRepository(rid) {
       timeout: 60000, // 60 second timeout
     });
     log.info(`[Radicle] Repository synced: ${fullRid}`);
-    return { success: true, output: stdout || stderr };
+    return success({ output: stdout || stderr });
   } catch (err) {
     log.error(`[Radicle] Sync failed for ${fullRid}:`, err.message);
     const stderrStr = err.stderr?.toString() || '';
-    return { success: false, error: stderrStr || err.message };
+    return failure('SYNC_FAILED', stderrStr || err.message, { rid: fullRid });
   }
 }
 
@@ -1023,7 +1024,7 @@ async function syncRepository(rid) {
  */
 async function getConnections() {
   if (currentState !== STATUS.RUNNING) {
-    return { success: false, error: 'Node not running', count: 0 };
+    return failure('RADICLE_NOT_RUNNING', 'Node not running', undefined, { count: 0 });
   }
 
   const radBinPath = getRadicleBinaryPath('rad');
@@ -1051,13 +1052,10 @@ async function getConnections() {
       }
     }
 
-    return {
-      success: true,
-      count: connectedCount,
-    };
+    return success({ count: connectedCount });
   } catch (err) {
     log.error('[Radicle] Failed to get connections:', err.message);
-    return { success: false, error: err.message, count: 0 };
+    return failure('GET_CONNECTIONS_FAILED', err.message, undefined, { count: 0 });
   }
 }
 
@@ -1087,8 +1085,15 @@ function registerRadicleIpc() {
   });
 
   ipcMain.handle(IPC.RADICLE_SEED, async (_event, rid) => {
+    if (!validateNonEmptyString(rid)) {
+      return failure('INVALID_RID', 'Missing Radicle Repository ID', { field: 'rid' });
+    }
+    const normalizedRid = validateAndNormalizeRid(rid);
+    if (!normalizedRid) {
+      return failure('INVALID_RID', 'Invalid Radicle Repository ID', { rid });
+    }
     log.info('[Radicle] IPC: seed requested for', rid);
-    return await seedRepository(rid);
+    return await seedRepository(normalizedRid);
   });
 
   ipcMain.handle(IPC.RADICLE_GET_CONNECTIONS, async () => {
@@ -1096,13 +1101,27 @@ function registerRadicleIpc() {
   });
 
   ipcMain.handle(IPC.RADICLE_GET_REPO_PAYLOAD, async (_event, rid) => {
+    if (!validateNonEmptyString(rid)) {
+      return failure('INVALID_RID', 'Missing Radicle Repository ID', { field: 'rid' });
+    }
+    const normalizedRid = validateAndNormalizeRid(rid);
+    if (!normalizedRid) {
+      return failure('INVALID_RID', 'Invalid Radicle Repository ID', { rid });
+    }
     log.info('[Radicle] IPC: getRepoPayload requested for', rid);
-    return await getRepoPayload(rid);
+    return await getRepoPayload(normalizedRid);
   });
 
   ipcMain.handle(IPC.RADICLE_SYNC_REPO, async (_event, rid) => {
+    if (!validateNonEmptyString(rid)) {
+      return failure('INVALID_RID', 'Missing Radicle Repository ID', { field: 'rid' });
+    }
+    const normalizedRid = validateAndNormalizeRid(rid);
+    if (!normalizedRid) {
+      return failure('INVALID_RID', 'Invalid Radicle Repository ID', { rid });
+    }
     log.info('[Radicle] IPC: syncRepo requested for', rid);
-    return await syncRepository(rid);
+    return await syncRepository(normalizedRid);
   });
 
 }

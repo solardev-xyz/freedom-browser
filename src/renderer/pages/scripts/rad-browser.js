@@ -892,6 +892,14 @@
     });
   }
 
+  function getErrorMessage(resultOrError) {
+    if (!resultOrError) return 'Unknown error';
+    if (typeof resultOrError.error === 'string') return resultOrError.error;
+    if (resultOrError.error?.message) return resultOrError.error.message;
+    if (resultOrError.message) return resultOrError.message;
+    return 'Unknown error';
+  }
+
   async function seedRepository() {
     if (!rid) return;
 
@@ -907,7 +915,7 @@
           seedStatus.textContent = 'Repository seeded successfully! Reloading...';
           setTimeout(() => window.location.reload(), 1500);
         } else {
-          throw new Error(result.error || 'Unknown error');
+          throw new Error(getErrorMessage(result));
         }
       } else {
         throw new Error('Freedom API not available');
