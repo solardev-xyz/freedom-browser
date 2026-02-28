@@ -26,6 +26,23 @@ Before writing code, read `eslint.config.js` to understand the project's coding 
 
 After making code changes, run `npm run lint` to check the entire project for ESLint errors. Fix any errors or warnings you introduced before considering the task complete.
 
+## Commit Messages
+
+Use Conventional Commit style:
+
+`<type>(<scope>): <summary>`
+
+Examples:
+- `fix(radicle-ui): normalize node menu loading placeholders`
+- `feat(github-bridge): add preflight validation for imports`
+
+Guidelines:
+1. Allowed types: `feat`, `fix`, `docs`, `test`, `refactor`, `chore`, `build`, `ci`, `perf`, `revert`.
+2. Use a meaningful scope (for example: `radicle`, `ipfs`, `renderer`, `main`, `github-bridge`).
+3. Write the summary in imperative mood and avoid trailing punctuation.
+4. Add a body for non-trivial changes explaining why the change was made and user impact.
+5. For breaking changes, use `!` (for example `feat(api)!:`) and/or include `BREAKING CHANGE:` in the body.
+
 ## Generating a Changelog Entry
 
 When asked to update the changelog for a new version (e.g. 0.6.1):
