@@ -32,7 +32,7 @@ It ships with integrated Swarm, IPFS, and Radicle nodes, enabling direct peer-to
    npm start
    ```
 
-5. All nodes start automatically by default. Enter a Swarm hash, IPFS CID, Radicle ID, `bzz://` URL, `ipfs://` URL, `rad://` URL, or `.eth`/`.box` domain in the address bar.
+5. Swarm and IPFS nodes start automatically by default; Radicle can be enabled in Settings. Enter a Swarm hash, IPFS CID, Radicle ID, `bzz://` URL, `ipfs://` URL, `rad://` URL, or `.eth`/`.box` domain in the address bar.
 
 ---
 
@@ -72,7 +72,7 @@ Freedom intelligently manages node connections:
 
 This means Freedom works seamlessly whether you:
 
-- Run it standalone (bundled nodes start automatically)
+- Run it standalone (bundled Swarm and IPFS nodes start automatically; Radicle is optional)
 - Already have system-wide Bee/IPFS/Radicle daemons running (Freedom reuses them)
 - Have port conflicts with other software (Freedom finds available ports)
 
