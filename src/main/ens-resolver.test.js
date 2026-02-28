@@ -4,7 +4,7 @@ jest.mock('electron', () => ({
 }));
 
 // Mock settings-store
-const mockLoadSettings = jest.fn(() => ({ ensRpcUrl: '' }));
+const mockLoadSettings = jest.fn(() => ({ enableEnsCustomRpc: false, ensRpcUrl: '' }));
 jest.mock('./settings-store', () => ({
   loadSettings: (...args) => mockLoadSettings(...args),
 }));
@@ -25,18 +25,17 @@ jest.mock('ethers', () => ({
 }));
 
 const { ethers } = require('ethers');
-const { resolveEnsContent, testRpcUrl, _setCustomRpcUrl } = require('./ens-resolver');
+const { resolveEnsContent, testRpcUrl, invalidateCachedProvider } = require('./ens-resolver');
 
 beforeEach(() => {
   jest.clearAllMocks();
-  // Reset custom RPC URL between tests
-  _setCustomRpcUrl('');
+  invalidateCachedProvider();
   // Default: provider connects successfully
   mockGetBlockNumber.mockResolvedValue(12345678);
   // Default: resolver returns null (no resolver found)
   mockGetResolver.mockResolvedValue(null);
   // Default: no custom RPC
-  mockLoadSettings.mockReturnValue({ ensRpcUrl: '' });
+  mockLoadSettings.mockReturnValue({ enableEnsCustomRpc: false, ensRpcUrl: '' });
 });
 
 describe('ens-resolver', () => {
@@ -246,7 +245,7 @@ describe('ens-resolver', () => {
 
   describe('custom RPC URL', () => {
     test('uses custom RPC URL from settings when set', async () => {
-      mockLoadSettings.mockReturnValue({ ensRpcUrl: 'http://localhost:8545' });
+      mockLoadSettings.mockReturnValue({ enableEnsCustomRpc: true, ensRpcUrl: 'http://localhost:8545' });
       mockGetResolver.mockResolvedValue({
         getContentHash: jest.fn().mockResolvedValue('ipfs://QmCustomRpc'),
         address: '0xTest',
@@ -261,7 +260,7 @@ describe('ens-resolver', () => {
     });
 
     test('falls back to public RPCs when custom RPC fails', async () => {
-      mockLoadSettings.mockReturnValue({ ensRpcUrl: 'http://localhost:8545' });
+      mockLoadSettings.mockReturnValue({ enableEnsCustomRpc: true, ensRpcUrl: 'http://localhost:8545' });
 
       // First call (custom RPC) fails, second call (public) succeeds
       let callCount = 0;
@@ -289,7 +288,7 @@ describe('ens-resolver', () => {
 
     test('clearing custom RPC reverts to default behavior', async () => {
       // Start with custom RPC
-      mockLoadSettings.mockReturnValue({ ensRpcUrl: 'http://localhost:8545' });
+      mockLoadSettings.mockReturnValue({ enableEnsCustomRpc: true, ensRpcUrl: 'http://localhost:8545' });
       mockGetResolver.mockResolvedValue({
         getContentHash: jest.fn().mockResolvedValue('ipfs://QmFirst'),
         address: '0xTest',
@@ -299,11 +298,12 @@ describe('ens-resolver', () => {
       const firstUrl = ethers.JsonRpcProvider.mock.calls[0][0];
       expect(firstUrl).toBe('http://localhost:8545');
 
-      // Clear custom RPC
+      // Disable custom RPC — cached provider URL won't match the new first provider,
+      // so getWorkingProvider will invalidate and re-connect
       jest.clearAllMocks();
       mockGetBlockNumber.mockResolvedValue(12345678);
-      mockLoadSettings.mockReturnValue({ ensRpcUrl: '' });
-      _setCustomRpcUrl(''); // Force reset the cached custom URL
+      mockLoadSettings.mockReturnValue({ enableEnsCustomRpc: false, ensRpcUrl: '' });
+      invalidateCachedProvider();
       mockGetResolver.mockResolvedValue({
         getContentHash: jest.fn().mockResolvedValue('ipfs://QmSecond'),
         address: '0xTest',

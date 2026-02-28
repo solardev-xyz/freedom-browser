@@ -59,6 +59,20 @@
   color: var(--muted);
 }
 
+.settings-section-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.settings-section-header-row .settings-section-header {
+  margin-bottom: 0;
+}
+
+.settings-section-header-row + .settings-field {
+  margin-top: 14px;
+}
+
 /* Settings Fields */
 .settings-field {
   margin-bottom: 14px;
@@ -250,6 +264,12 @@
   box-shadow: 0 0 0 2px rgba(94, 193, 255, 0.3);
 }
 
+/* Disabled field (toggled off) */
+.settings-field.disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
 /* Input with inline button */
 .settings-input-with-btn {
   display: flex;
@@ -287,6 +307,14 @@
 .settings-test-btn:disabled {
   opacity: 0.5;
   pointer-events: none;
+}
+
+/* Field hint text below inputs */
+.field-hint {
+  display: block;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--muted);
 }
 
 /* Field status (success/error feedback below inputs) */

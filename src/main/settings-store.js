@@ -24,6 +24,7 @@ const DEFAULT_SETTINGS = {
   startRadicleAtLaunch: false,
   autoUpdate: true,
   showBookmarkBar: false,
+  enableEnsCustomRpc: false,
   ensRpcUrl: '',
 };
 

@@ -15,30 +15,24 @@ const PUBLIC_RPC_PROVIDERS = [
   'https://eth.merkle.io',
 ].filter(Boolean);
 
-// Custom RPC URL from settings (prepended to provider list when set)
-let customRpcUrl = '';
+// Read effective custom RPC URL from settings (empty string = disabled/unset)
+function getCustomRpcUrl() {
+  try {
+    const settings = loadSettings();
+    if (settings.enableEnsCustomRpc !== true) return '';
+    return (settings.ensRpcUrl || '').trim();
+  } catch {
+    return '';
+  }
+}
 
 // Build the effective provider list: custom RPC first (if set), then public fallbacks
 function getRpcProviders() {
-  if (customRpcUrl) {
-    return [customRpcUrl, ...PUBLIC_RPC_PROVIDERS];
+  const custom = getCustomRpcUrl();
+  if (custom) {
+    return [custom, ...PUBLIC_RPC_PROVIDERS];
   }
   return PUBLIC_RPC_PROVIDERS;
-}
-
-// Load custom RPC URL from settings
-function loadCustomRpcUrl() {
-  try {
-    const settings = loadSettings();
-    const newUrl = (settings.ensRpcUrl || '').trim();
-    if (newUrl !== customRpcUrl) {
-      log.info(`[ens] Custom RPC URL changed: "${customRpcUrl}" -> "${newUrl}"`);
-      customRpcUrl = newUrl;
-      invalidateCachedProvider();
-    }
-  } catch (err) {
-    log.warn(`[ens] Failed to load custom RPC setting: ${err.message}`);
-  }
 }
 
 // Cache for working provider
@@ -51,8 +45,16 @@ const ensResultCache = new Map();
 
 // Get a working provider, trying each in sequence with fallback
 async function getWorkingProvider() {
-  // Re-read custom RPC setting on each resolution attempt
-  loadCustomRpcUrl();
+  // If the cached provider's URL no longer matches the current settings, invalidate it
+  if (cachedProvider && cachedProviderUrl) {
+    const providers = getRpcProviders();
+    if (providers[0] !== cachedProviderUrl) {
+      log.info(`[ens] Settings changed, invalidating cached provider: ${cachedProviderUrl}`);
+      cachedProvider.destroy();
+      cachedProvider = null;
+      cachedProviderUrl = null;
+    }
+  }
 
   // Return cached provider if still working
   if (cachedProvider && cachedProviderUrl) {
@@ -62,7 +64,6 @@ async function getWorkingProvider() {
       return cachedProvider;
     } catch {
       log.warn(`[ens] Cached provider ${cachedProviderUrl} failed, trying fallbacks...`);
-      // Destroy failed provider to stop its background retry loop
       cachedProvider.destroy();
       cachedProvider = null;
       cachedProviderUrl = null;
@@ -81,13 +82,11 @@ async function getWorkingProvider() {
       provider = new ethers.JsonRpcProvider(rpcUrl);
       await provider.getBlockNumber(); // Health check
       log.info(`[ens] Using provider ${providerNum}: ${rpcUrl}`);
-      // Cache the working provider
       cachedProvider = provider;
       cachedProviderUrl = rpcUrl;
       return provider;
     } catch (err) {
       log.warn(`[ens] Provider ${providerNum} failed: ${err.message}`);
-      // Destroy failed provider to stop its background retry loop
       if (provider) {
         provider.destroy();
       }
@@ -365,12 +364,5 @@ module.exports = {
   registerEnsIpc,
   resolveEnsContent,
   testRpcUrl,
-  // Exposed for testing
-  _setCustomRpcUrl(url) {
-    customRpcUrl = url;
-    invalidateCachedProvider();
-  },
-  _getCustomRpcUrl() {
-    return customRpcUrl;
-  },
+  invalidateCachedProvider,
 };

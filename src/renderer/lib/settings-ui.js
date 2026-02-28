@@ -15,6 +15,8 @@ let enableRadicleIntegrationCheckbox = null;
 let startRadicleRow = null;
 let startRadicleAtLaunchCheckbox = null;
 let autoUpdateCheckbox = null;
+let enableEnsCustomRpcCheckbox = null;
+let ensRpcField = null;
 let ensRpcUrlInput = null;
 let ensRpcTestBtn = null;
 let ensRpcStatus = null;
@@ -35,11 +37,12 @@ const systemPrefersDark = () => {
   return window.matchMedia('(prefers-color-scheme: dark)').matches;
 };
 
-const updateRadicleSettingsVisibility = () => {
-  const enabled = enableRadicleIntegrationCheckbox?.checked === true;
-  startRadicleRow?.classList.toggle('disabled', !enabled);
-  if (startRadicleAtLaunchCheckbox) {
-    startRadicleAtLaunchCheckbox.disabled = !enabled;
+// Toggle a dependent field's disabled state based on a checkbox
+const setFieldEnabled = (checkbox, field, ...inputs) => {
+  const enabled = checkbox?.checked === true;
+  field?.classList.toggle('disabled', !enabled);
+  for (const input of inputs) {
+    if (input) input.disabled = !enabled;
   }
 };
 
@@ -84,6 +87,7 @@ const saveSettings = async () => {
     enableRadicleIntegration: enableRadicleIntegrationCheckbox?.checked ?? false,
     startRadicleAtLaunch: startRadicleAtLaunchCheckbox?.checked ?? false,
     autoUpdate: autoUpdateCheckbox?.checked ?? true,
+    enableEnsCustomRpc: enableEnsCustomRpcCheckbox?.checked ?? false,
     ensRpcUrl: ensRpcUrlInput?.value?.trim() || '',
   };
 
@@ -137,7 +141,7 @@ const testEnsRpc = async () => {
   } catch (err) {
     setEnsRpcStatus(err.message || 'Test failed', 'error');
   } finally {
-    if (ensRpcTestBtn) ensRpcTestBtn.disabled = false;
+    setFieldEnabled(enableEnsCustomRpcCheckbox, ensRpcField, ensRpcUrlInput, ensRpcTestBtn);
   }
 };
 
@@ -156,6 +160,8 @@ export const initSettings = () => {
   startRadicleRow = document.getElementById('start-radicle-row');
   startRadicleAtLaunchCheckbox = document.getElementById('start-radicle-at-launch');
   autoUpdateCheckbox = document.getElementById('auto-update');
+  enableEnsCustomRpcCheckbox = document.getElementById('enable-ens-custom-rpc');
+  ensRpcField = document.getElementById('ens-rpc-field');
   ensRpcUrlInput = document.getElementById('ens-rpc-url');
   ensRpcTestBtn = document.getElementById('ens-rpc-test');
   ensRpcStatus = document.getElementById('ens-rpc-status');
@@ -165,21 +171,30 @@ export const initSettings = () => {
   startBeeAtLaunchCheckbox?.addEventListener('change', saveSettings);
   startIpfsAtLaunchCheckbox?.addEventListener('change', saveSettings);
   enableRadicleIntegrationCheckbox?.addEventListener('change', () => {
-    updateRadicleSettingsVisibility();
+    setFieldEnabled(enableRadicleIntegrationCheckbox, startRadicleRow, startRadicleAtLaunchCheckbox);
     saveSettings();
   });
   startRadicleAtLaunchCheckbox?.addEventListener('change', saveSettings);
   autoUpdateCheckbox?.addEventListener('change', saveSettings);
 
-  // ENS RPC: save on blur, debounced save on input
-  ensRpcUrlInput?.addEventListener('blur', () => {
-    clearTimeout(ensRpcSaveTimer);
+  // ENS RPC toggle
+  enableEnsCustomRpcCheckbox?.addEventListener('change', () => {
+    setFieldEnabled(enableEnsCustomRpcCheckbox, ensRpcField, ensRpcUrlInput, ensRpcTestBtn);
     saveSettings();
   });
+
+  // ENS RPC: debounced save on input, flush on blur
   ensRpcUrlInput?.addEventListener('input', () => {
     clearTimeout(ensRpcSaveTimer);
     setEnsRpcStatus('', '');
     ensRpcSaveTimer = setTimeout(saveSettings, 800);
+  });
+  ensRpcUrlInput?.addEventListener('blur', () => {
+    if (ensRpcSaveTimer) {
+      clearTimeout(ensRpcSaveTimer);
+      ensRpcSaveTimer = null;
+      saveSettings();
+    }
   });
   ensRpcTestBtn?.addEventListener('click', testEnsRpc);
 
@@ -198,9 +213,12 @@ export const initSettings = () => {
       if (startRadicleAtLaunchCheckbox)
         startRadicleAtLaunchCheckbox.checked = settings.startRadicleAtLaunch === true;
       if (autoUpdateCheckbox) autoUpdateCheckbox.checked = settings.autoUpdate !== false;
+      if (enableEnsCustomRpcCheckbox)
+        enableEnsCustomRpcCheckbox.checked = settings.enableEnsCustomRpc === true;
       if (ensRpcUrlInput) ensRpcUrlInput.value = settings.ensRpcUrl || '';
       setEnsRpcStatus('', '');
-      updateRadicleSettingsVisibility();
+      setFieldEnabled(enableRadicleIntegrationCheckbox, startRadicleRow, startRadicleAtLaunchCheckbox);
+      setFieldEnabled(enableEnsCustomRpcCheckbox, ensRpcField, ensRpcUrlInput, ensRpcTestBtn);
     }
     settingsModal?.showModal();
   });
