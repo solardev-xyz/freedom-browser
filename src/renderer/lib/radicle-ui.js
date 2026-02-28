@@ -13,6 +13,7 @@ let radicleInfoPanel = null;
 let radicleStatusRow = null;
 let radicleStatusLabel = null;
 let radicleStatusValue = null;
+let radicleNodesSection = null;
 
 // Binary availability state
 let radicleBinaryAvailable = true;
@@ -32,6 +33,15 @@ export const stopRadicleInfoPolling = () => {
   if (radicleNodeId) {
     radicleNodeId.textContent = '--';
     radicleNodeId.title = '';
+  }
+};
+
+const updateRadicleSectionVisibility = () => {
+  const enabled = state.enableRadicleIntegration === true;
+  radicleNodesSection?.classList.toggle('hidden', !enabled);
+  if (!enabled) {
+    stopRadicleInfoPolling();
+    radicleToggleSwitch?.classList.remove('running');
   }
 };
 
@@ -117,6 +127,10 @@ const fetchRadicleVersionOnce = async () => {
 };
 
 export const startRadicleInfoPolling = () => {
+  if (!state.enableRadicleIntegration) {
+    stopRadicleInfoPolling();
+    return;
+  }
   if (!state.beeMenuOpen || state.currentRadicleStatus === 'stopped') {
     stopRadicleInfoPolling();
     return;
@@ -132,6 +146,10 @@ export const startRadicleInfoPolling = () => {
 };
 
 export const updateRadicleUi = (status, error) => {
+  if (!state.enableRadicleIntegration) {
+    state.currentRadicleStatus = 'stopped';
+    return;
+  }
   if (state.suppressRadicleRunningStatus && status === 'running') {
     return;
   }
@@ -187,8 +205,20 @@ const setToggleDisabled = (disabled) => {
   }
 };
 
+const refreshRadicleBinaryAvailability = () => {
+  if (!window.radicle?.checkBinary) return;
+  window.radicle.checkBinary().then(({ available }) => {
+    radicleBinaryAvailable = available;
+    setToggleDisabled(!available);
+    if (!available) {
+      pushDebug('Radicle binaries not found - toggle disabled');
+    }
+  });
+};
+
 // Update the status row from registry
 export const updateRadicleStatusLine = () => {
+  if (!state.enableRadicleIntegration) return;
   if (!radicleStatusRow || !radicleStatusLabel || !radicleStatusValue) return;
 
   const message = getDisplayMessage('radicle');
@@ -214,6 +244,7 @@ export const updateRadicleStatusLine = () => {
 
 // Update toggle visual state based on node mode
 export const updateRadicleToggleState = () => {
+  if (!state.enableRadicleIntegration) return;
   if (!radicleToggleBtn) return;
 
   const mode = state.registry?.radicle?.mode;
@@ -238,20 +269,15 @@ export const initRadicleUi = () => {
   radicleStatusRow = document.getElementById('radicle-status-row');
   radicleStatusLabel = document.getElementById('radicle-status-label');
   radicleStatusValue = document.getElementById('radicle-status-value');
+  radicleNodesSection = document.getElementById('radicle-nodes-section');
+  updateRadicleSectionVisibility();
 
   // Check binary availability
-  if (window.radicle) {
-    window.radicle.checkBinary().then(({ available }) => {
-      radicleBinaryAvailable = available;
-      setToggleDisabled(!available);
-      if (!available) {
-        pushDebug('Radicle binaries not found - toggle disabled');
-      }
-    });
-  }
+  refreshRadicleBinaryAvailability();
 
   // Toggle button listener
   radicleToggleBtn?.addEventListener('click', () => {
+    if (!state.enableRadicleIntegration) return;
     if (!radicleBinaryAvailable) return;
 
     if (state.currentRadicleStatus === 'running' || state.currentRadicleStatus === 'starting') {
@@ -298,4 +324,14 @@ export const initRadicleUi = () => {
     refreshRadicleStatus();
     setInterval(refreshRadicleStatus, 5000);
   }
+
+  window.addEventListener('settings:updated', (event) => {
+    const wasEnabled = state.enableRadicleIntegration === true;
+    const isEnabled = event.detail?.enableRadicleIntegration === true;
+    state.enableRadicleIntegration = isEnabled;
+    updateRadicleSectionVisibility();
+    if (!wasEnabled && isEnabled) {
+      refreshRadicleBinaryAvailability();
+    }
+  });
 };

@@ -11,6 +11,7 @@ const http = require('http');
 const net = require('net');
 const IPC = require('../shared/ipc-channels');
 const { success, failure, validateNonEmptyString } = require('./ipc-contract');
+const { loadSettings } = require('./settings-store');
 
 /**
  * Validate a Radicle Repository ID (RID).
@@ -1061,8 +1062,19 @@ async function getConnections() {
 
 function registerRadicleIpc() {
   log.info('[Radicle] Registering IPC handlers');
+  const radicleDisabledResponse = {
+    status: STATUS.STOPPED,
+    error: 'Radicle integration is disabled. Enable it in Settings > Experimental',
+  };
+  const isRadicleIntegrationEnabled = () => {
+    return loadSettings().enableRadicleIntegration === true;
+  };
 
   ipcMain.handle(IPC.RADICLE_START, () => {
+    if (!isRadicleIntegrationEnabled()) {
+      log.info('[Radicle] IPC: start blocked, integration disabled');
+      return radicleDisabledResponse;
+    }
     log.info('[Radicle] IPC: start requested');
     startRadicle();
     return { status: currentState, error: lastError };
@@ -1075,6 +1087,9 @@ function registerRadicleIpc() {
   });
 
   ipcMain.handle(IPC.RADICLE_GET_STATUS, () => {
+    if (!isRadicleIntegrationEnabled()) {
+      return radicleDisabledResponse;
+    }
     return { status: currentState, error: lastError };
   });
 
@@ -1085,6 +1100,12 @@ function registerRadicleIpc() {
   });
 
   ipcMain.handle(IPC.RADICLE_SEED, async (_event, rid) => {
+    if (!isRadicleIntegrationEnabled()) {
+      return failure(
+        'RADICLE_DISABLED',
+        'Radicle integration is disabled. Enable it in Settings > Experimental'
+      );
+    }
     if (!validateNonEmptyString(rid)) {
       return failure('INVALID_RID', 'Missing Radicle Repository ID', { field: 'rid' });
     }
@@ -1097,10 +1118,24 @@ function registerRadicleIpc() {
   });
 
   ipcMain.handle(IPC.RADICLE_GET_CONNECTIONS, async () => {
+    if (!isRadicleIntegrationEnabled()) {
+      return failure(
+        'RADICLE_DISABLED',
+        'Radicle integration is disabled. Enable it in Settings > Experimental',
+        undefined,
+        { count: 0 }
+      );
+    }
     return await getConnections();
   });
 
   ipcMain.handle(IPC.RADICLE_GET_REPO_PAYLOAD, async (_event, rid) => {
+    if (!isRadicleIntegrationEnabled()) {
+      return failure(
+        'RADICLE_DISABLED',
+        'Radicle integration is disabled. Enable it in Settings > Experimental'
+      );
+    }
     if (!validateNonEmptyString(rid)) {
       return failure('INVALID_RID', 'Missing Radicle Repository ID', { field: 'rid' });
     }
@@ -1113,6 +1148,12 @@ function registerRadicleIpc() {
   });
 
   ipcMain.handle(IPC.RADICLE_SYNC_REPO, async (_event, rid) => {
+    if (!isRadicleIntegrationEnabled()) {
+      return failure(
+        'RADICLE_DISABLED',
+        'Radicle integration is disabled. Enable it in Settings > Experimental'
+      );
+    }
     if (!validateNonEmptyString(rid)) {
       return failure('INVALID_RID', 'Missing Radicle Repository ID', { field: 'rid' });
     }

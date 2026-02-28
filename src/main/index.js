@@ -108,7 +108,7 @@ async function bootstrap() {
   if (settings.startIpfsAtLaunch) {
     startIpfs();
   }
-  if (settings.startRadicleAtLaunch) {
+  if (settings.enableRadicleIntegration && settings.startRadicleAtLaunch) {
     startRadicle();
   }
 

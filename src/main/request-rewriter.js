@@ -1,6 +1,7 @@
 const log = require('./logger');
 const { activeBzzBases, activeIpfsBases, activeRadBases } = require('./state');
 const { getBeeApiUrl, getIpfsGatewayUrl, getRadicleApiUrl } = require('./service-registry');
+const { loadSettings } = require('./settings-store');
 const { URL } = require('url');
 
 const sanitizeUrlForLog = (rawUrl) => {
@@ -113,6 +114,9 @@ function convertProtocolUrl(url) {
   // rad:RID or rad://RID -> http://127.0.0.1:8780/api/v1/repos/RID
   // rad:RID/tree/branch/path -> http://127.0.0.1:8780/api/v1/repos/RID/tree/branch/path
   if (url.startsWith('rad:')) {
+    if (loadSettings().enableRadicleIntegration !== true) {
+      return { converted: false, url };
+    }
     // Handle both rad:RID and rad://RID formats
     const remainder = url.startsWith('rad://') ? url.slice(6) : url.slice(4);
     const radicleApiUrl = getRadicleApiUrl();
@@ -271,7 +275,7 @@ function registerRequestRewriter(targetSession) {
 
     // Check for Radicle base
     const radBaseUrl = activeRadBases.get(webContentsId);
-    if (radBaseUrl) {
+    if (radBaseUrl && loadSettings().enableRadicleIntegration === true) {
       const { shouldRewrite } = shouldRewriteRequest(details.url, radBaseUrl);
       if (shouldRewrite) {
         const redirectTarget = buildRewriteTarget(details.url, radBaseUrl);

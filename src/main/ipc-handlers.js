@@ -3,6 +3,7 @@ const { ipcMain, app, dialog, clipboard, nativeImage } = require('electron');
 const { URL } = require('url');
 const path = require('path');
 const { activeBzzBases, activeIpfsBases, activeRadBases } = require('./state');
+const { loadSettings } = require('./settings-store');
 const { fetchBuffer, fetchToFile } = require('./http-fetch');
 const { success, failure, validateWebContentsId } = require('./ipc-contract');
 const IPC = require('../shared/ipc-channels');
@@ -95,6 +96,13 @@ function registerBaseIpcHandlers(callbacks = {}) {
   });
 
   ipcMain.handle(IPC.RAD_SET_BASE, (_event, payload = {}) => {
+    const settings = loadSettings();
+    if (!settings.enableRadicleIntegration) {
+      return failure(
+        'RADICLE_DISABLED',
+        'Radicle integration is disabled. Enable it in Settings > Experimental'
+      );
+    }
     const { webContentsId, baseUrl } = payload;
     if (!validateWebContentsId(webContentsId)) {
       return failure('INVALID_WEB_CONTENTS_ID', 'Invalid webContentsId', { webContentsId });

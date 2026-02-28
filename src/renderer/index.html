@@ -472,39 +472,41 @@
             </div>
           </div>
 
-          <!-- Divider -->
-          <div class="nodes-divider"></div>
+          <div id="radicle-nodes-section">
+            <!-- Divider -->
+            <div class="nodes-divider"></div>
 
-          <!-- Radicle Section -->
-          <button id="radicle-toggle-btn" class="menu-item radicle-toggle" type="button">
-            <span class="radicle-toggle-label">
-              Radicle
-              <span class="radicle-external-badge" id="radicle-external-badge" title="Using system radicle-node (~/.radicle)">external</span>
-              <span class="radicle-toggle-switch" id="radicle-toggle-switch">
-                <span class="radicle-toggle-knob"></span>
+            <!-- Radicle Section -->
+            <button id="radicle-toggle-btn" class="menu-item radicle-toggle" type="button">
+              <span class="radicle-toggle-label">
+                Radicle
+                <span class="radicle-external-badge" id="radicle-external-badge" title="Using system radicle-node (~/.radicle)">external</span>
+                <span class="radicle-toggle-switch" id="radicle-toggle-switch">
+                  <span class="radicle-toggle-knob"></span>
+                </span>
               </span>
-            </span>
-          </button>
-          <div class="radicle-info">
-            <div class="radicle-info-row node-status-row" id="radicle-status-row">
-              <span class="radicle-info-label" id="radicle-status-label"></span>
-              <span id="radicle-status-value"></span>
-            </div>
-            <div class="radicle-info-row">
-              <span class="radicle-info-label">Connected Peers:</span>
-              <span id="radicle-peers-count">--</span>
-            </div>
-            <div class="radicle-info-row">
-              <span class="radicle-info-label">Seeded Repos:</span>
-              <span id="radicle-repos-count">--</span>
-            </div>
-            <div class="radicle-info-row">
-              <span class="radicle-info-label">Version:</span>
-              <span id="radicle-version-text"></span>
-            </div>
-            <div class="radicle-info-row">
-              <span class="radicle-info-label">Node ID:</span>
-              <span id="radicle-node-id" class="node-id-truncated" title="">--</span>
+            </button>
+            <div class="radicle-info">
+              <div class="radicle-info-row node-status-row" id="radicle-status-row">
+                <span class="radicle-info-label" id="radicle-status-label"></span>
+                <span id="radicle-status-value"></span>
+              </div>
+              <div class="radicle-info-row">
+                <span class="radicle-info-label">Connected Peers:</span>
+                <span id="radicle-peers-count">--</span>
+              </div>
+              <div class="radicle-info-row">
+                <span class="radicle-info-label">Seeded Repos:</span>
+                <span id="radicle-repos-count">--</span>
+              </div>
+              <div class="radicle-info-row">
+                <span class="radicle-info-label">Version:</span>
+                <span id="radicle-version-text"></span>
+              </div>
+              <div class="radicle-info-row">
+                <span class="radicle-info-label">Node ID:</span>
+                <span id="radicle-node-id" class="node-id-truncated" title="">--</span>
+              </div>
             </div>
           </div>
         </div>
@@ -687,8 +689,20 @@
                 <span class="toggle-slider"></span>
               </label>
             </div>
+          </section>
+
+          <!-- Experimental Section -->
+          <section class="settings-section">
+            <h3 class="settings-section-header">Experimental</h3>
             <div class="settings-toggle-row">
-              <span class="toggle-label">Start Radicle node</span>
+              <span class="toggle-label">Enable Radicle integration (Beta)</span>
+              <label class="toggle-switch">
+                <input type="checkbox" id="enable-radicle-integration" />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="settings-toggle-row sub-toggle" id="start-radicle-row">
+              <span class="toggle-label">Start Radicle node when Freedom opens</span>
               <label class="toggle-switch">
                 <input type="checkbox" id="start-radicle-at-launch" />
                 <span class="toggle-slider"></span>

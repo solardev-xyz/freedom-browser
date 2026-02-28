@@ -32,7 +32,7 @@ It ships with integrated Swarm, IPFS, and Radicle nodes, enabling direct peer-to
    npm start
    ```
 
-5. Swarm and IPFS nodes start automatically by default; Radicle can be enabled in Settings. Enter a Swarm hash, IPFS CID, Radicle ID, `bzz://` URL, `ipfs://` URL, `rad://` URL, or `.eth`/`.box` domain in the address bar.
+5. Swarm and IPFS nodes start automatically by default. To use `rad://`, first enable **Settings → Experimental → Enable Radicle integration (Beta)**. Enter a Swarm hash, IPFS CID, Radicle ID, `bzz://` URL, `ipfs://` URL, `rad://` URL, or `.eth`/`.box` domain in the address bar.
 
 ---
 
@@ -40,7 +40,7 @@ It ships with integrated Swarm, IPFS, and Radicle nodes, enabling direct peer-to
 
 Freedom Browser is an Electron application. Protocol logic lives in the main process; the renderer is a modular UI layer that talks to it over IPC (channels defined in `src/shared/ipc-channels.js`). The main process manages node lifecycles (`bee-manager.js`, `ipfs-manager.js`, `radicle-manager.js`), URL rewriting (`request-rewriter.js`), and persistent data (settings, bookmarks, history). A central `service-registry.js` tracks node endpoints, modes, and status, and broadcasts state to all windows — both node managers and the request rewriter read from it.
 
-When a user enters a `bzz://`, `ipfs://`, `ipns://`, `rad://`, or ENS URL, the main process rewrites it to the active gateway URL via the registry, and subsequent webview requests are normalized to stay within the active hash/CID/RID base.
+When a user enters a `bzz://`, `ipfs://`, `ipns://`, `rad://`, or ENS URL, the main process rewrites it to the active gateway URL via the registry, and subsequent webview requests are normalized to stay within the active hash/CID/RID base. `rad://` handling is gated by the Radicle integration setting.
 
 ---
 
@@ -72,7 +72,7 @@ Freedom intelligently manages node connections:
 
 This means Freedom works seamlessly whether you:
 
-- Run it standalone (bundled Swarm and IPFS nodes start automatically; Radicle is optional)
+- Run it standalone (bundled Swarm and IPFS nodes start automatically; Radicle is optional and behind an Experimental setting)
 - Already have system-wide Bee/IPFS/Radicle daemons running (Freedom reuses them)
 - Have port conflicts with other software (Freedom finds available ports)
 
@@ -93,7 +93,8 @@ This means Freedom works seamlessly whether you:
 
 - **Two-Process Architecture**: Manages both `radicle-node` (P2P network) and `radicle-httpd` (HTTP API) as a coordinated pair.
 - **Automatic Identity**: Creates a Radicle identity on first run (no manual setup required).
-- **Independent Toggle**: Start and stop Radicle separately from Swarm and IPFS (configurable in Settings).
+- **Experimental Gate**: Radicle is controlled via **Settings → Experimental → Enable Radicle integration (Beta)**.
+- **Node Toggle**: Once enabled, start and stop Radicle from the Nodes panel.
 - **Live Statistics**: View connected peers, seeded repos, version, and Node ID.
 - **Repository Seeding**: Seed Radicle repositories directly from the browser to help replicate them across the network.
 - **Stale Socket Cleanup**: Automatically cleans up control sockets from unclean shutdowns.
@@ -211,7 +212,8 @@ Access built-in browser pages using the `freedom://` protocol:
 ### Settings & UI
 
 - **Theme**: Light, Dark, or System (follows OS preference).
-- **Node Auto-start**: Toggle whether Swarm, IPFS, and Radicle nodes start automatically at launch (Swarm and IPFS enabled by default).
+- **Node Auto-start**: Toggle whether Swarm and IPFS nodes start automatically at launch (enabled by default).
+- **Experimental**: Enable Radicle integration (Beta) and set `Start Radicle node when Freedom opens`.
 - **Auto-Updates**: Toggle automatic update checks (enabled by default).
 - **Protocol Icons**: Address bar shows Swarm (hexagon), IPFS (cube), Radicle (seedling), or HTTP (globe) icon based on current protocol.
 - **Hamburger Menu**: Access browser features (New Tab, New Window, History, Zoom, Print, Developer Tools, Settings, About).
@@ -219,6 +221,7 @@ Access built-in browser pages using the `freedom://` protocol:
 ### Error Handling
 
 - **Friendly Error Pages**: Clear error messages with the original URL preserved.
+- **Feature-Gated Radicle Errors**: Opening `rad://` while integration is disabled shows: `Radicle integration is disabled. Enable it in Settings > Experimental`.
 - **Retry on Reload**: Pressing reload on an error page retries the original request.
 - **Graceful Degradation**: Navigation errors don't crash the browser.
 
@@ -556,6 +559,7 @@ npm run start:test-updater
 - Reset IPFS data: `npm run ipfs:reset`
 
 ### Radicle fails to start
+- Ensure **Settings → Experimental → Enable Radicle integration (Beta)** is enabled
 - Freedom automatically detects port conflicts and uses fallback ports
 - Ensure both `radicle-node` and `radicle-httpd` binaries exist in `radicle-bin/`
 - If starting for the first time, Freedom creates a Radicle identity automatically
@@ -576,6 +580,6 @@ npm run start:test-updater
 
 ### Content not loading
 
-- Ensure the respective node (Bee, IPFS, or Radicle) is running (check Nodes panel)
+- Ensure the respective node (Bee, IPFS, or Radicle) is running (check Nodes panel, for Radicle, first enable it in **Settings → Experimental**)
 - Verify the Swarm reference (64 or 128 hex), CID, or Radicle ID is correct
 - Check the debug console for error messages

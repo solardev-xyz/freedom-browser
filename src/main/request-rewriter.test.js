@@ -15,6 +15,11 @@ jest.mock('./service-registry', () => ({
   getRadicleApiUrl: () => 'http://127.0.0.1:8780',
 }));
 
+jest.mock('./settings-store', () => ({
+  loadSettings: jest.fn(() => ({ enableRadicleIntegration: true })),
+}));
+const { loadSettings } = require('./settings-store');
+
 const BASE_URL = 'http://127.0.0.1:1633/bzz/abc123def456/';
 const VALID_HASH = 'a'.repeat(64);
 const VALID_ENCRYPTED_HASH = 'a'.repeat(128);
@@ -22,6 +27,7 @@ const VALID_ENCRYPTED_HASH = 'a'.repeat(128);
 describe('request-rewriter', () => {
   afterEach(() => {
     activeRadBases.clear();
+    loadSettings.mockReturnValue({ enableRadicleIntegration: true });
   });
 
   describe('convertProtocolUrl', () => {
@@ -391,6 +397,14 @@ describe('request-rewriter', () => {
     test('blocks rad: with too-short RID', () => {
       expect(convertProtocolUrl('rad:zabc').converted).toBe(false);
     });
+
+    test('does not convert rad: when integration is disabled', () => {
+      loadSettings.mockReturnValue({ enableRadicleIntegration: false });
+      expect(convertProtocolUrl(`rad:${SAMPLE_RID}`)).toEqual({
+        converted: false,
+        url: `rad:${SAMPLE_RID}`,
+      });
+    });
   });
 
   describe('shouldRewriteRequest – Radicle paths', () => {
@@ -497,6 +511,32 @@ describe('request-rewriter', () => {
       expect(callback).toHaveBeenCalledWith({
         redirectURL: `${RADICLE_API_PREFIX}${SAMPLE_RID}/blob/main/src/index.js`,
       });
+    });
+
+    test('does not rewrite Radicle requests when integration is disabled', () => {
+      loadSettings.mockReturnValue({ enableRadicleIntegration: false });
+      const webContentsId = 42;
+      const sessionMock = {
+        webRequest: {
+          onBeforeRequest: jest.fn(),
+        },
+      };
+
+      activeRadBases.set(webContentsId, `${RADICLE_API_PREFIX}${SAMPLE_RID}/`);
+      registerRequestRewriter(sessionMock);
+
+      const [handler] = sessionMock.webRequest.onBeforeRequest.mock.calls[0];
+      const callback = jest.fn();
+
+      handler(
+        {
+          webContentsId,
+          url: `${RADICLE_BASE}/blob/main/src/index.js`,
+        },
+        callback
+      );
+
+      expect(callback).toHaveBeenCalledWith({});
     });
   });
 });

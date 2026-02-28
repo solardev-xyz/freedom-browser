@@ -9,6 +9,7 @@ const http = require('http');
 const IPC = require('../shared/ipc-channels');
 const { success, failure, validateNonEmptyString } = require('./ipc-contract');
 const { getRadicleBinaryPath, getRadicleDataPath, getActivePort } = require('./radicle-manager');
+const { loadSettings } = require('./settings-store');
 
 const execFileAsync = promisify(execFile);
 
@@ -723,8 +724,14 @@ function cleanupTempDirs() {
  */
 function registerGithubBridgeIpc() {
   console.log('[GitHubBridge] Registering IPC handlers');
+  const radicleDisabledFailure = () =>
+    failure('RADICLE_DISABLED', 'Radicle integration is disabled. Enable it in Settings > Experimental');
+  const ensureRadicleEnabled = () => loadSettings().enableRadicleIntegration === true;
 
   ipcMain.handle(IPC.GITHUB_BRIDGE_IMPORT, async (event, url) => {
+    if (!ensureRadicleEnabled()) {
+      return radicleDisabledFailure();
+    }
     if (!validateNonEmptyString(url)) {
       return failure('INVALID_URL', 'Missing GitHub URL', { field: 'url' });
     }
@@ -736,6 +743,9 @@ function registerGithubBridgeIpc() {
   });
 
   ipcMain.handle(IPC.GITHUB_BRIDGE_CHECK_PREREQUISITES, async () => {
+    if (!ensureRadicleEnabled()) {
+      return radicleDisabledFailure();
+    }
     return await checkImportPrerequisites();
   });
 
@@ -744,6 +754,9 @@ function registerGithubBridgeIpc() {
   });
 
   ipcMain.handle(IPC.GITHUB_BRIDGE_CHECK_EXISTING, async (_event, url) => {
+    if (!ensureRadicleEnabled()) {
+      return radicleDisabledFailure();
+    }
     if (!validateNonEmptyString(url)) {
       return failure('INVALID_URL', 'Missing GitHub URL', { field: 'url' });
     }

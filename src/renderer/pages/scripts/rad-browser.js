@@ -22,6 +22,7 @@
   const errorState = document.getElementById('error-state');
   const successState = document.getElementById('success-state');
   const connectionError = document.getElementById('connection-error');
+  const radicleDisabledError = document.getElementById('radicle-disabled-error');
   const invalidRidError = document.getElementById('invalid-rid-error');
   const errorRid = document.getElementById('error-rid');
   const seedBtn = document.getElementById('seed-btn');
@@ -765,12 +766,14 @@
     errorState.classList.add('hidden');
     successState.classList.add('hidden');
     connectionError.classList.add('hidden');
+    radicleDisabledError.classList.add('hidden');
     invalidRidError.classList.add('hidden');
 
     if (state === 'loading') loadingState.classList.remove('hidden');
     else if (state === 'error') errorState.classList.remove('hidden');
     else if (state === 'success') successState.classList.remove('hidden');
     else if (state === 'connection-error') connectionError.classList.remove('hidden');
+    else if (state === 'radicle-disabled') radicleDisabledError.classList.remove('hidden');
     else if (state === 'invalid-rid') invalidRidError.classList.remove('hidden');
   }
 
@@ -932,6 +935,13 @@
   // =============================================
 
   async function init() {
+    if (params.get('error') === 'disabled') {
+      const input = params.get('input') || '';
+      displayRid.textContent = input || 'rad://...';
+      showState('radicle-disabled');
+      return;
+    }
+
     // Handle invalid RID error (passed from navigation.js)
     if (params.get('error') === 'invalid-rid') {
       const input = params.get('input') || '';
