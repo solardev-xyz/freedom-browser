@@ -106,4 +106,5 @@ module.exports = {
   GITHUB_BRIDGE_CHECK_GIT: 'github-bridge:check-git',
   GITHUB_BRIDGE_CHECK_PREREQUISITES: 'github-bridge:check-prerequisites',
   GITHUB_BRIDGE_VALIDATE_URL: 'github-bridge:validate-url',
+  GITHUB_BRIDGE_CHECK_EXISTING: 'github-bridge:check-existing',
 };

@@ -5,14 +5,242 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs');
 const https = require('https');
+const http = require('http');
 const IPC = require('../shared/ipc-channels');
 const { success, failure, validateNonEmptyString } = require('./ipc-contract');
-const { getRadicleBinaryPath, getRadicleDataPath } = require('./radicle-manager');
+const { getRadicleBinaryPath, getRadicleDataPath, getActivePort } = require('./radicle-manager');
 
 const execFileAsync = promisify(execFile);
 
 // Track active temp directories for cleanup on quit
 const activeTempDirs = new Set();
+const bridgeMapCache = new Map();
+let bridgeMapLoaded = false;
+const GITHUB_BRIDGE_MAP_FILE = 'github-bridge-map.json';
+
+function normalizeRid(rid) {
+  if (!validateNonEmptyString(rid)) return null;
+  return rid.startsWith('rad:') ? rid.slice(4) : rid;
+}
+
+function extractGitHubRepoFromUrl(url) {
+  if (!validateNonEmptyString(url)) return null;
+  const match = url.trim().match(
+    /^https?:\/\/(?:www\.)?github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)/
+  );
+  if (!match) return null;
+  return {
+    owner: match[1],
+    repo: match[2].replace(/\.git$/, ''),
+  };
+}
+
+function toBridgeRepoKey(owner, repo) {
+  return `${owner.toLowerCase()}/${repo.toLowerCase()}`;
+}
+
+function getBridgeMapPath() {
+  return path.join(getRadicleDataPath(), GITHUB_BRIDGE_MAP_FILE);
+}
+
+function loadBridgeMap() {
+  if (bridgeMapLoaded) return;
+  bridgeMapLoaded = true;
+
+  const mapPath = getBridgeMapPath();
+  if (!fs.existsSync(mapPath)) return;
+
+  try {
+    const parsed = JSON.parse(fs.readFileSync(mapPath, 'utf8'));
+    for (const [repoKey, rid] of Object.entries(parsed || {})) {
+      if (validateNonEmptyString(repoKey) && validateNonEmptyString(rid)) {
+        bridgeMapCache.set(repoKey, normalizeRid(rid));
+      }
+    }
+  } catch (err) {
+    console.warn('[GitHubBridge] Failed to load bridge map:', err.message);
+  }
+}
+
+function persistBridgeMap() {
+  try {
+    const mapPath = getBridgeMapPath();
+    fs.writeFileSync(mapPath, JSON.stringify(Object.fromEntries(bridgeMapCache), null, 2));
+  } catch (err) {
+    console.warn('[GitHubBridge] Failed to persist bridge map:', err.message);
+  }
+}
+
+function rememberBridge(owner, repo, rid) {
+  const normalizedRid = normalizeRid(rid);
+  if (!validateNonEmptyString(owner) || !validateNonEmptyString(repo) || !normalizedRid) return;
+
+  loadBridgeMap();
+  bridgeMapCache.set(toBridgeRepoKey(owner, repo), normalizedRid);
+  persistBridgeMap();
+}
+
+function lookupBridge(owner, repo) {
+  if (!validateNonEmptyString(owner) || !validateNonEmptyString(repo)) return null;
+  loadBridgeMap();
+  return bridgeMapCache.get(toBridgeRepoKey(owner, repo)) || null;
+}
+
+function fetchLocalRepos(port) {
+  return new Promise((resolve) => {
+    const req = http.get(`http://127.0.0.1:${port}/api/v1/repos?show=all`, { timeout: 3000 }, (res) => {
+      if (res.statusCode !== 200) {
+        res.resume();
+        resolve([]);
+        return;
+      }
+      let raw = '';
+      res.on('data', (chunk) => { raw += chunk; });
+      res.on('end', () => {
+        try {
+          const repos = JSON.parse(raw);
+          resolve(Array.isArray(repos) ? repos : []);
+        } catch {
+          resolve([]);
+        }
+      });
+    });
+
+    req.on('error', () => resolve([]));
+    req.on('timeout', () => {
+      req.destroy();
+      resolve([]);
+    });
+  });
+}
+
+function fetchLocalRepoRemotes(port, rid) {
+  return new Promise((resolve) => {
+    const req = http.get(
+      `http://127.0.0.1:${port}/api/v1/repos/rad:${rid}/remotes`,
+      { timeout: 3000 },
+      (res) => {
+        if (res.statusCode !== 200) {
+          res.resume();
+          resolve([]);
+          return;
+        }
+        let raw = '';
+        res.on('data', (chunk) => { raw += chunk; });
+        res.on('end', () => {
+          try {
+            const remotes = JSON.parse(raw);
+            resolve(Array.isArray(remotes) ? remotes : []);
+          } catch {
+            resolve([]);
+          }
+        });
+      }
+    );
+
+    req.on('error', () => resolve([]));
+    req.on('timeout', () => {
+      req.destroy();
+      resolve([]);
+    });
+  });
+}
+
+function fetchGitHubRepoInfo(owner, repo) {
+  return new Promise((resolve) => {
+    const req = https.get(
+      `https://api.github.com/repos/${owner}/${repo}`,
+      { headers: { 'User-Agent': 'Freedom-Browser' }, timeout: 5000 },
+      (res) => {
+        if (res.statusCode !== 200) {
+          res.resume();
+          resolve(null);
+          return;
+        }
+        let data = '';
+        res.on('data', (chunk) => { data += chunk; });
+        res.on('end', () => {
+          try {
+            resolve(JSON.parse(data));
+          } catch {
+            resolve(null);
+          }
+        });
+      }
+    );
+
+    req.on('error', () => resolve(null));
+    req.on('timeout', () => {
+      req.destroy();
+      resolve(null);
+    });
+  });
+}
+
+function fetchGitHubHeadSha(owner, repo, branch) {
+  return new Promise((resolve) => {
+    const req = https.get(
+      `https://api.github.com/repos/${owner}/${repo}/commits/${encodeURIComponent(branch)}`,
+      { headers: { 'User-Agent': 'Freedom-Browser' }, timeout: 5000 },
+      (res) => {
+        if (res.statusCode !== 200) {
+          res.resume();
+          resolve(null);
+          return;
+        }
+        let data = '';
+        res.on('data', (chunk) => { data += chunk; });
+        res.on('end', () => {
+          try {
+            const parsed = JSON.parse(data);
+            resolve(typeof parsed?.sha === 'string' ? parsed.sha : null);
+          } catch {
+            resolve(null);
+          }
+        });
+      }
+    );
+
+    req.on('error', () => resolve(null));
+    req.on('timeout', () => {
+      req.destroy();
+      resolve(null);
+    });
+  });
+}
+
+async function findLegacyBridgeByHeadMatch(port, owner, repo, repos) {
+  const ghRepo = await fetchGitHubRepoInfo(owner, repo);
+  const defaultBranch = ghRepo?.default_branch;
+  if (!validateNonEmptyString(defaultBranch)) return null;
+
+  const githubHeadSha = await fetchGitHubHeadSha(owner, repo, defaultBranch);
+  if (!validateNonEmptyString(githubHeadSha)) return null;
+
+  const targetName = repo.toLowerCase();
+  const exactNameCandidates = repos.filter((item) => {
+    const localName = (item?.payloads?.['xyz.radicle.project']?.data?.name || item?.name || '').toLowerCase();
+    return localName === targetName;
+  });
+  const candidates = exactNameCandidates.length > 0 ? exactNameCandidates : repos;
+
+  for (const candidate of candidates) {
+    const rid = normalizeRid(candidate?.rid || '');
+    if (!rid) continue;
+
+    const remotes = await fetchLocalRepoRemotes(port, rid);
+    const hasMatchingHead = remotes.some((remote) => {
+      const heads = remote?.heads || {};
+      return Object.values(heads).some((sha) => sha === githubHeadSha);
+    });
+
+    if (hasMatchingHead) {
+      return rid;
+    }
+  }
+
+  return null;
+}
 
 /**
  * Strip ANSI escape codes from a string.
@@ -188,6 +416,44 @@ async function checkImportPrerequisites() {
   return success({
     gitVersion: gitCheck.version,
   });
+}
+
+async function checkExistingBridge(url) {
+  const parsed = extractGitHubRepoFromUrl(url);
+  if (!parsed) {
+    return failure('INVALID_URL_FORMAT', 'Invalid GitHub repository URL');
+  }
+
+  const knownRid = lookupBridge(parsed.owner, parsed.repo);
+  if (knownRid) {
+    return success({ bridged: true, rid: knownRid });
+  }
+
+  // Best-effort detection for pre-map imports where the source URL was used
+  // in the fallback project description.
+  const port = getActivePort();
+  if (!port) return success({ bridged: false });
+
+  const marker = `github.com/${parsed.owner}/${parsed.repo}`.toLowerCase();
+  const repos = await fetchLocalRepos(port);
+  for (const repo of repos) {
+    const description = repo?.payloads?.['xyz.radicle.project']?.data?.description || '';
+    if (description.toLowerCase().includes(marker)) {
+      const rid = normalizeRid(repo?.rid || '');
+      if (rid) {
+        rememberBridge(parsed.owner, parsed.repo, rid);
+        return success({ bridged: true, rid });
+      }
+    }
+  }
+
+  const legacyRid = await findLegacyBridgeByHeadMatch(port, parsed.owner, parsed.repo, repos);
+  if (legacyRid) {
+    rememberBridge(parsed.owner, parsed.repo, legacyRid);
+    return success({ bridged: true, rid: legacyRid });
+  }
+
+  return success({ bridged: false });
 }
 
 function getFriendlyImportError(err, fallbackMessage) {
@@ -387,6 +653,9 @@ async function importGitHubRepo(url, sender) {
 
     sendProgress({ step: 'success', message: 'Repository seeded successfully!' });
     console.log(`[GitHubBridge] Success: ${validation.owner}/${validation.repo} -> ${rid}`);
+    if (rid) {
+      rememberBridge(validation.owner, validation.repo, rid);
+    }
 
     return {
       ...success(),
@@ -400,6 +669,28 @@ async function importGitHubRepo(url, sender) {
 
     const stderrStr = stripAnsi(err.stderr?.toString() || '');
     const fallbackMessage = stderrStr || stripAnsi(err.message);
+    const ridMatch = fallbackMessage.match(/rad:z[a-zA-Z0-9]+/);
+    const ridFromError = ridMatch ? ridMatch[0].slice(4) : null;
+    const parsed = extractGitHubRepoFromUrl(url);
+    const alreadyBridged = /already (exists|initialized)|already a radicle project|project exists/i.test(
+      fallbackMessage
+    );
+
+    if (alreadyBridged) {
+      if (parsed && ridFromError) {
+        rememberBridge(parsed.owner, parsed.repo, ridFromError);
+      }
+      return failure(
+        'ALREADY_BRIDGED',
+        'This GitHub repository is already bridged to Radicle.',
+        ridFromError ? { rid: ridFromError } : undefined,
+        {
+          step: 'initializing',
+          rid: ridFromError || (parsed ? lookupBridge(parsed.owner, parsed.repo) : null),
+        }
+      );
+    }
+
     const friendlyError = getFriendlyImportError(err, fallbackMessage);
 
     sendProgress({ step: 'error', message: friendlyError.message });
@@ -450,6 +741,13 @@ function registerGithubBridgeIpc() {
 
   ipcMain.handle(IPC.GITHUB_BRIDGE_VALIDATE_URL, (_event, url) => {
     return validateGitHubUrl(url);
+  });
+
+  ipcMain.handle(IPC.GITHUB_BRIDGE_CHECK_EXISTING, async (_event, url) => {
+    if (!validateNonEmptyString(url)) {
+      return failure('INVALID_URL', 'Missing GitHub URL', { field: 'url' });
+    }
+    return await checkExistingBridge(url);
   });
 }
 

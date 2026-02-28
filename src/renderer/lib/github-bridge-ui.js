@@ -28,6 +28,7 @@ let progressCleanup = null;
 let panelOpen = false;
 let currentUrl = '';
 let lastRid = '';
+let bridgeCheckRequestId = 0;
 
 function getErrorMessage(resultOrError) {
   if (!resultOrError) return 'Unknown error';
@@ -242,6 +243,17 @@ async function startImport() {
       }
       showState('success');
     } else {
+      if (result.error?.code === 'ALREADY_BRIDGED') {
+        markAllStepsDone();
+        lastRid = result.rid || result.error?.details?.rid || '';
+        if (ridEl) {
+          ridEl.textContent = lastRid ? `rad:${lastRid}` : 'Already bridged';
+        }
+        showState('success');
+        bridgeBtn?.classList.add('hidden');
+        return;
+      }
+
       const errorMessage = getErrorMessage(result);
       // Determine which step failed based on the error
       const failedStep = result.step || detectFailedStep(errorMessage);
@@ -277,11 +289,39 @@ function detectFailedStep(errorMsg) {
   return 'cloning'; // default to first step
 }
 
+async function refreshBridgeButtonForUrl(url) {
+  if (!bridgeBtn) return;
+  const requestId = ++bridgeCheckRequestId;
+
+  if (!window.githubBridge?.checkExisting) {
+    bridgeBtn.classList.remove('hidden');
+    return;
+  }
+
+  try {
+    const status = await window.githubBridge.checkExisting(url);
+    if (requestId !== bridgeCheckRequestId) return;
+
+    if (status?.success && status.bridged) {
+      lastRid = status.rid || '';
+      bridgeBtn.classList.add('hidden');
+      if (panelOpen) closePanel();
+      return;
+    }
+  } catch {
+    // Fall through to showing the button when status checks fail.
+  }
+
+  if (requestId === bridgeCheckRequestId) {
+    bridgeBtn.classList.remove('hidden');
+  }
+}
+
 /**
  * Update bridge icon visibility based on current address bar URL.
  * Called from navigation.js whenever the URL changes.
  */
-export function updateGithubBridgeIcon() {
+export async function updateGithubBridgeIcon() {
   if (!bridgeBtn) return;
 
   const addressInput = document.getElementById('address-input');
@@ -289,8 +329,9 @@ export function updateGithubBridgeIcon() {
 
   if (isGitHubRepoUrl(url)) {
     currentUrl = url;
-    bridgeBtn.classList.remove('hidden');
+    await refreshBridgeButtonForUrl(url);
   } else {
+    bridgeCheckRequestId++;
     bridgeBtn.classList.add('hidden');
     // Close panel if URL changes away from GitHub
     if (panelOpen) {
