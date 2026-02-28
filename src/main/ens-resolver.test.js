@@ -3,6 +3,12 @@ jest.mock('electron', () => ({
   ipcMain: { handle: jest.fn() },
 }));
 
+// Mock settings-store
+const mockLoadSettings = jest.fn(() => ({ enableEnsCustomRpc: false, ensRpcUrl: '' }));
+jest.mock('./settings-store', () => ({
+  loadSettings: (...args) => mockLoadSettings(...args),
+}));
+
 // Mock ethers with controllable provider and resolver behavior
 const mockGetBlockNumber = jest.fn();
 const mockDestroy = jest.fn();
@@ -18,14 +24,18 @@ jest.mock('ethers', () => ({
   },
 }));
 
-const { resolveEnsContent } = require('./ens-resolver');
+const { ethers } = require('ethers');
+const { resolveEnsContent, testRpcUrl, invalidateCachedProvider } = require('./ens-resolver');
 
 beforeEach(() => {
   jest.clearAllMocks();
+  invalidateCachedProvider();
   // Default: provider connects successfully
   mockGetBlockNumber.mockResolvedValue(12345678);
   // Default: resolver returns null (no resolver found)
   mockGetResolver.mockResolvedValue(null);
+  // Default: no custom RPC
+  mockLoadSettings.mockReturnValue({ enableEnsCustomRpc: false, ensRpcUrl: '' });
 });
 
 describe('ens-resolver', () => {
@@ -230,6 +240,126 @@ describe('ens-resolver', () => {
 
       // getResolver called only once (second call used cache)
       expect(mockGetResolver).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('custom RPC URL', () => {
+    test('uses custom RPC URL from settings when set', async () => {
+      mockLoadSettings.mockReturnValue({ enableEnsCustomRpc: true, ensRpcUrl: 'http://localhost:8545' });
+      mockGetResolver.mockResolvedValue({
+        getContentHash: jest.fn().mockResolvedValue('ipfs://QmCustomRpc'),
+        address: '0xTest',
+      });
+
+      const result = await resolveEnsContent('custom.eth');
+      expect(result.type).toBe('ok');
+
+      // JsonRpcProvider should have been called with custom URL first
+      const calls = ethers.JsonRpcProvider.mock.calls;
+      expect(calls[0][0]).toBe('http://localhost:8545');
+    });
+
+    test('falls back to public RPCs when custom RPC fails', async () => {
+      mockLoadSettings.mockReturnValue({ enableEnsCustomRpc: true, ensRpcUrl: 'http://localhost:8545' });
+
+      // First call (custom RPC) fails, second call (public) succeeds
+      let callCount = 0;
+      mockGetBlockNumber.mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          return Promise.reject(new Error('ECONNREFUSED'));
+        }
+        return Promise.resolve(12345678);
+      });
+
+      mockGetResolver.mockResolvedValue({
+        getContentHash: jest.fn().mockResolvedValue('ipfs://QmFallback'),
+        address: '0xTest',
+      });
+
+      const result = await resolveEnsContent('fallback.eth');
+      expect(result.type).toBe('ok');
+      expect(result.uri).toBe('ipfs://QmFallback');
+
+      // Should have tried custom URL first, then a public one
+      expect(ethers.JsonRpcProvider).toHaveBeenCalledTimes(2);
+      expect(ethers.JsonRpcProvider.mock.calls[0][0]).toBe('http://localhost:8545');
+    });
+
+    test('clearing custom RPC reverts to default behavior', async () => {
+      // Start with custom RPC
+      mockLoadSettings.mockReturnValue({ enableEnsCustomRpc: true, ensRpcUrl: 'http://localhost:8545' });
+      mockGetResolver.mockResolvedValue({
+        getContentHash: jest.fn().mockResolvedValue('ipfs://QmFirst'),
+        address: '0xTest',
+      });
+
+      await resolveEnsContent('first.eth');
+      const firstUrl = ethers.JsonRpcProvider.mock.calls[0][0];
+      expect(firstUrl).toBe('http://localhost:8545');
+
+      // Disable custom RPC — cached provider URL won't match the new first provider,
+      // so getWorkingProvider will invalidate and re-connect
+      jest.clearAllMocks();
+      mockGetBlockNumber.mockResolvedValue(12345678);
+      mockLoadSettings.mockReturnValue({ enableEnsCustomRpc: false, ensRpcUrl: '' });
+      invalidateCachedProvider();
+      mockGetResolver.mockResolvedValue({
+        getContentHash: jest.fn().mockResolvedValue('ipfs://QmSecond'),
+        address: '0xTest',
+      });
+
+      await resolveEnsContent('second.eth');
+
+      // Should use the first public provider, not localhost
+      const secondUrl = ethers.JsonRpcProvider.mock.calls[0][0];
+      expect(secondUrl).not.toBe('http://localhost:8545');
+    });
+  });
+
+  describe('testRpcUrl', () => {
+    test('returns success for working RPC endpoint', async () => {
+      const result = await testRpcUrl('http://localhost:8545');
+      expect(result.success).toBe(true);
+      expect(result.blockNumber).toBe(12345678);
+    });
+
+    test('returns failure for empty URL', async () => {
+      const result = await testRpcUrl('');
+      expect(result.success).toBe(false);
+      expect(result.error.code).toBe('INVALID_URL');
+    });
+
+    test('returns failure for invalid URL format', async () => {
+      const result = await testRpcUrl('not-a-url');
+      expect(result.success).toBe(false);
+      expect(result.error.code).toBe('INVALID_URL');
+    });
+
+    test('returns failure for non-http URL', async () => {
+      const result = await testRpcUrl('ftp://localhost:8545');
+      expect(result.success).toBe(false);
+      expect(result.error.code).toBe('INVALID_URL');
+      expect(result.error.message).toContain('http');
+    });
+
+    test('returns failure when connection fails', async () => {
+      mockGetBlockNumber.mockRejectedValue(new Error('ECONNREFUSED'));
+
+      const result = await testRpcUrl('http://localhost:9999');
+      expect(result.success).toBe(false);
+      expect(result.error.code).toBe('CONNECTION_FAILED');
+    });
+
+    test('destroys provider after test', async () => {
+      await testRpcUrl('http://localhost:8545');
+      expect(mockDestroy).toHaveBeenCalled();
+    });
+
+    test('destroys provider even on failure', async () => {
+      mockGetBlockNumber.mockRejectedValue(new Error('fail'));
+      await testRpcUrl('http://localhost:8545');
+      expect(mockDestroy).toHaveBeenCalled();
     });
   });
 });

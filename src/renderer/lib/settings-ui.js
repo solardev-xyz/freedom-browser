@@ -15,6 +15,11 @@ let enableRadicleIntegrationCheckbox = null;
 let startRadicleRow = null;
 let startRadicleAtLaunchCheckbox = null;
 let autoUpdateCheckbox = null;
+let enableEnsCustomRpcCheckbox = null;
+let ensRpcField = null;
+let ensRpcUrlInput = null;
+let ensRpcTestBtn = null;
+let ensRpcStatus = null;
 
 // Current theme mode setting
 let currentThemeMode = 'system';
@@ -32,11 +37,12 @@ const systemPrefersDark = () => {
   return window.matchMedia('(prefers-color-scheme: dark)').matches;
 };
 
-const updateRadicleSettingsVisibility = () => {
-  const enabled = enableRadicleIntegrationCheckbox?.checked === true;
-  startRadicleRow?.classList.toggle('disabled', !enabled);
-  if (startRadicleAtLaunchCheckbox) {
-    startRadicleAtLaunchCheckbox.disabled = !enabled;
+// Toggle a dependent field's disabled state based on a checkbox
+const setFieldEnabled = (checkbox, field, ...inputs) => {
+  const enabled = checkbox?.checked === true;
+  field?.classList.toggle('disabled', !enabled);
+  for (const input of inputs) {
+    if (input) input.disabled = !enabled;
   }
 };
 
@@ -81,10 +87,12 @@ const saveSettings = async () => {
     enableRadicleIntegration: enableRadicleIntegrationCheckbox?.checked ?? false,
     startRadicleAtLaunch: startRadicleAtLaunchCheckbox?.checked ?? false,
     autoUpdate: autoUpdateCheckbox?.checked ?? true,
+    enableEnsCustomRpc: enableEnsCustomRpcCheckbox?.checked ?? false,
+    ensRpcUrl: ensRpcUrlInput?.value?.trim() || '',
   };
 
-  const success = await electronAPI.saveSettings(newSettings);
-  if (success) {
+  const saved = await electronAPI.saveSettings(newSettings);
+  if (saved) {
     if (wasRadicleIntegrationEnabled && !newSettings.enableRadicleIntegration) {
       window.radicle?.stop?.().catch(() => {});
     }
@@ -105,6 +113,41 @@ const saveSettings = async () => {
   }
 };
 
+// Set ENS RPC status feedback
+const setEnsRpcStatus = (text, type) => {
+  if (!ensRpcStatus) return;
+  ensRpcStatus.textContent = text;
+  ensRpcStatus.className = 'field-status' + (type ? ` ${type}` : '');
+};
+
+// Test ENS RPC endpoint
+const testEnsRpc = async () => {
+  const url = ensRpcUrlInput?.value?.trim();
+  if (!url) {
+    setEnsRpcStatus('Enter a URL to test', 'error');
+    return;
+  }
+
+  setEnsRpcStatus('Testing...', 'testing');
+  if (ensRpcTestBtn) ensRpcTestBtn.disabled = true;
+
+  try {
+    const result = await electronAPI.testEnsRpc(url);
+    if (result.success) {
+      setEnsRpcStatus(`Connected (block #${result.blockNumber})`, 'success');
+    } else {
+      setEnsRpcStatus(result.error?.message || 'Connection failed', 'error');
+    }
+  } catch (err) {
+    setEnsRpcStatus(err.message || 'Test failed', 'error');
+  } finally {
+    setFieldEnabled(enableEnsCustomRpcCheckbox, ensRpcField, ensRpcUrlInput, ensRpcTestBtn);
+  }
+};
+
+// Debounce timer for ENS RPC URL auto-save
+let ensRpcSaveTimer = null;
+
 export const initSettings = () => {
   // Initialize DOM elements
   settingsBtn = document.getElementById('settings-btn');
@@ -117,17 +160,43 @@ export const initSettings = () => {
   startRadicleRow = document.getElementById('start-radicle-row');
   startRadicleAtLaunchCheckbox = document.getElementById('start-radicle-at-launch');
   autoUpdateCheckbox = document.getElementById('auto-update');
+  enableEnsCustomRpcCheckbox = document.getElementById('enable-ens-custom-rpc');
+  ensRpcField = document.getElementById('ens-rpc-field');
+  ensRpcUrlInput = document.getElementById('ens-rpc-url');
+  ensRpcTestBtn = document.getElementById('ens-rpc-test');
+  ensRpcStatus = document.getElementById('ens-rpc-status');
 
   // Auto-save on any setting change
   themeModeSelect?.addEventListener('change', saveSettings);
   startBeeAtLaunchCheckbox?.addEventListener('change', saveSettings);
   startIpfsAtLaunchCheckbox?.addEventListener('change', saveSettings);
   enableRadicleIntegrationCheckbox?.addEventListener('change', () => {
-    updateRadicleSettingsVisibility();
+    setFieldEnabled(enableRadicleIntegrationCheckbox, startRadicleRow, startRadicleAtLaunchCheckbox);
     saveSettings();
   });
   startRadicleAtLaunchCheckbox?.addEventListener('change', saveSettings);
   autoUpdateCheckbox?.addEventListener('change', saveSettings);
+
+  // ENS RPC toggle
+  enableEnsCustomRpcCheckbox?.addEventListener('change', () => {
+    setFieldEnabled(enableEnsCustomRpcCheckbox, ensRpcField, ensRpcUrlInput, ensRpcTestBtn);
+    saveSettings();
+  });
+
+  // ENS RPC: debounced save on input, flush on blur
+  ensRpcUrlInput?.addEventListener('input', () => {
+    clearTimeout(ensRpcSaveTimer);
+    setEnsRpcStatus('', '');
+    ensRpcSaveTimer = setTimeout(saveSettings, 800);
+  });
+  ensRpcUrlInput?.addEventListener('blur', () => {
+    if (ensRpcSaveTimer) {
+      clearTimeout(ensRpcSaveTimer);
+      ensRpcSaveTimer = null;
+      saveSettings();
+    }
+  });
+  ensRpcTestBtn?.addEventListener('click', testEnsRpc);
 
   settingsBtn?.addEventListener('click', async () => {
     setMenuOpen(false);
@@ -144,7 +213,12 @@ export const initSettings = () => {
       if (startRadicleAtLaunchCheckbox)
         startRadicleAtLaunchCheckbox.checked = settings.startRadicleAtLaunch === true;
       if (autoUpdateCheckbox) autoUpdateCheckbox.checked = settings.autoUpdate !== false;
-      updateRadicleSettingsVisibility();
+      if (enableEnsCustomRpcCheckbox)
+        enableEnsCustomRpcCheckbox.checked = settings.enableEnsCustomRpc === true;
+      if (ensRpcUrlInput) ensRpcUrlInput.value = settings.ensRpcUrl || '';
+      setEnsRpcStatus('', '');
+      setFieldEnabled(enableRadicleIntegrationCheckbox, startRadicleRow, startRadicleAtLaunchCheckbox);
+      setFieldEnabled(enableEnsCustomRpcCheckbox, ensRpcField, ensRpcUrlInput, ensRpcTestBtn);
     }
     settingsModal?.showModal();
   });
