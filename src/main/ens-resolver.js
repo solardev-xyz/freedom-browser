@@ -2,9 +2,11 @@ const log = require('./logger');
 const { ipcMain } = require('electron');
 const { ethers } = require('ethers');
 const IPC = require('../shared/ipc-channels');
+const { success, failure } = require('./ipc-contract');
+const { loadSettings } = require('./settings-store');
 
-// RPC providers in order of preference. User can override with ETH_RPC env var.
-const RPC_PROVIDERS = [
+// Public RPC providers as fallbacks
+const PUBLIC_RPC_PROVIDERS = [
   process.env.ETH_RPC,
   'https://ethereum.publicnode.com',
   'https://1rpc.io/eth',
@@ -12,6 +14,32 @@ const RPC_PROVIDERS = [
   'https://eth-mainnet.public.blastapi.io',
   'https://eth.merkle.io',
 ].filter(Boolean);
+
+// Custom RPC URL from settings (prepended to provider list when set)
+let customRpcUrl = '';
+
+// Build the effective provider list: custom RPC first (if set), then public fallbacks
+function getRpcProviders() {
+  if (customRpcUrl) {
+    return [customRpcUrl, ...PUBLIC_RPC_PROVIDERS];
+  }
+  return PUBLIC_RPC_PROVIDERS;
+}
+
+// Load custom RPC URL from settings
+function loadCustomRpcUrl() {
+  try {
+    const settings = loadSettings();
+    const newUrl = (settings.ensRpcUrl || '').trim();
+    if (newUrl !== customRpcUrl) {
+      log.info(`[ens] Custom RPC URL changed: "${customRpcUrl}" -> "${newUrl}"`);
+      customRpcUrl = newUrl;
+      invalidateCachedProvider();
+    }
+  } catch (err) {
+    log.warn(`[ens] Failed to load custom RPC setting: ${err.message}`);
+  }
+}
 
 // Cache for working provider
 let cachedProvider = null;
@@ -23,6 +51,9 @@ const ensResultCache = new Map();
 
 // Get a working provider, trying each in sequence with fallback
 async function getWorkingProvider() {
+  // Re-read custom RPC setting on each resolution attempt
+  loadCustomRpcUrl();
+
   // Return cached provider if still working
   if (cachedProvider && cachedProviderUrl) {
     try {
@@ -39,9 +70,10 @@ async function getWorkingProvider() {
   }
 
   // Try each provider in sequence
-  const total = RPC_PROVIDERS.length;
+  const providers = getRpcProviders();
+  const total = providers.length;
   for (let i = 0; i < total; i++) {
-    const rpcUrl = RPC_PROVIDERS[i];
+    const rpcUrl = providers[i];
     const providerNum = `${i + 1}/${total}`;
     let provider;
     try {
@@ -272,6 +304,40 @@ async function doResolveEnsContent(normalized, attempt) {
   return result;
 }
 
+// Test an RPC URL by connecting and fetching the block number
+async function testRpcUrl(url) {
+  const trimmed = (url || '').trim();
+  if (!trimmed) {
+    return failure('INVALID_URL', 'RPC URL is empty');
+  }
+
+  let parsed;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return failure('INVALID_URL', 'Invalid URL format');
+  }
+
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return failure('INVALID_URL', 'URL must use http:// or https://');
+  }
+
+  let provider;
+  try {
+    provider = new ethers.JsonRpcProvider(trimmed);
+    const blockNumber = await provider.getBlockNumber();
+    log.info(`[ens] RPC test succeeded for ${trimmed}: block ${blockNumber}`);
+    return success({ blockNumber });
+  } catch (err) {
+    log.warn(`[ens] RPC test failed for ${trimmed}: ${err.message}`);
+    return failure('CONNECTION_FAILED', err.message);
+  } finally {
+    if (provider) {
+      provider.destroy();
+    }
+  }
+}
+
 function registerEnsIpc() {
   ipcMain.handle(IPC.ENS_RESOLVE, async (_event, payload = {}) => {
     const { name } = payload;
@@ -289,9 +355,22 @@ function registerEnsIpc() {
       };
     }
   });
+
+  ipcMain.handle(IPC.ENS_TEST_RPC, async (_event, payload = {}) => {
+    return testRpcUrl(payload.url);
+  });
 }
 
 module.exports = {
   registerEnsIpc,
   resolveEnsContent,
+  testRpcUrl,
+  // Exposed for testing
+  _setCustomRpcUrl(url) {
+    customRpcUrl = url;
+    invalidateCachedProvider();
+  },
+  _getCustomRpcUrl() {
+    return customRpcUrl;
+  },
 };

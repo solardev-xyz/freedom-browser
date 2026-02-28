@@ -250,6 +250,66 @@
   box-shadow: 0 0 0 2px rgba(94, 193, 255, 0.3);
 }
 
+/* Input with inline button */
+.settings-input-with-btn {
+  display: flex;
+  gap: 8px;
+}
+
+.settings-input-with-btn .settings-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-test-btn {
+  flex-shrink: 0;
+  padding: 8px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--border);
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+  cursor: default;
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.settings-test-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.settings-test-btn:active {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.settings-test-btn:disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* Field status (success/error feedback below inputs) */
+.field-status {
+  display: block;
+  margin-top: 6px;
+  font-size: 11px;
+  min-height: 16px;
+  transition: color 0.15s ease;
+}
+
+.field-status.success {
+  color: #4caf50;
+}
+
+.field-status.error {
+  color: var(--danger);
+}
+
+.field-status.testing {
+  color: var(--muted);
+}
+
 /* Settings Footer */
 .settings-footer {
   padding: 16px 24px 20px;

@@ -691,6 +691,25 @@
             </div>
           </section>
 
+          <!-- Ethereum RPC Section -->
+          <section class="settings-section">
+            <h3 class="settings-section-header">Ethereum RPC</h3>
+            <div class="settings-field">
+              <label for="ens-rpc-url">Custom RPC endpoint for ENS lookups</label>
+              <div class="settings-input-with-btn">
+                <input
+                  type="text"
+                  id="ens-rpc-url"
+                  class="settings-input mono"
+                  placeholder="http://localhost:8545"
+                  spellcheck="false"
+                />
+                <button type="button" id="ens-rpc-test" class="settings-test-btn">Test</button>
+              </div>
+              <span id="ens-rpc-status" class="field-status"></span>
+            </div>
+          </section>
+
           <!-- Experimental Section -->
           <section class="settings-section">
             <h3 class="settings-section-header">Experimental</h3>
