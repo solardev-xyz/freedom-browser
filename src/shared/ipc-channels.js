@@ -104,5 +104,6 @@ module.exports = {
   GITHUB_BRIDGE_IMPORT: 'github-bridge:import',
   GITHUB_BRIDGE_PROGRESS: 'github-bridge:progress',
   GITHUB_BRIDGE_CHECK_GIT: 'github-bridge:check-git',
+  GITHUB_BRIDGE_CHECK_PREREQUISITES: 'github-bridge:check-prerequisites',
   GITHUB_BRIDGE_VALIDATE_URL: 'github-bridge:validate-url',
 };

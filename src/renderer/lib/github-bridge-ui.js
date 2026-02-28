@@ -37,6 +37,13 @@ function getErrorMessage(resultOrError) {
   return 'Unknown error';
 }
 
+function showPrereqError(message) {
+  showState('prereq-error');
+  if (prereqTextEl) {
+    prereqTextEl.textContent = message;
+  }
+}
+
 /**
  * Check if a URL matches a GitHub repository page.
  * Matches: https://github.com/owner/repo and subpaths.
@@ -136,28 +143,20 @@ async function openPanel() {
   // Check prerequisites
   const radicleStatus = state.currentRadicleStatus;
   if (radicleStatus !== 'running') {
-    showState('prereq-error');
-    if (prereqTextEl) {
-      prereqTextEl.textContent = 'Radicle node is not running. Enable it from the Nodes menu in the toolbar.';
-    }
+    showPrereqError('Radicle node is not running. Enable it from the Nodes menu in the toolbar.');
     return;
   }
 
-  // Check git availability
+  // Check bridge prerequisites from backend
   try {
-    const gitCheck = await window.githubBridge.checkGit();
-    if (!gitCheck.available) {
-      showState('prereq-error');
-      if (prereqTextEl) {
-        prereqTextEl.textContent = 'Git is not installed or not found in PATH. Please install Git to use this feature.';
-      }
+    const prereqCheck = await window.githubBridge.checkPrerequisites();
+    if (!prereqCheck?.success) {
+      const errorMsg = getErrorMessage(prereqCheck);
+      showPrereqError(errorMsg || 'Prerequisite check failed.');
       return;
     }
   } catch {
-    showState('prereq-error');
-    if (prereqTextEl) {
-      prereqTextEl.textContent = 'Could not verify Git availability.';
-    }
+    showPrereqError('Could not verify GitHub bridge prerequisites.');
     return;
   }
 
@@ -183,6 +182,23 @@ function closePanel() {
  * Start the import process.
  */
 async function startImport() {
+  // Re-check fast-changing prerequisites immediately before import.
+  if (state.currentRadicleStatus !== 'running') {
+    showPrereqError('Radicle node is not running. Enable it from the Nodes menu in the toolbar.');
+    return;
+  }
+
+  try {
+    const prereqCheck = await window.githubBridge.checkPrerequisites();
+    if (!prereqCheck?.success) {
+      showPrereqError(getErrorMessage(prereqCheck) || 'Prerequisite check failed.');
+      return;
+    }
+  } catch {
+    showPrereqError('Could not verify GitHub bridge prerequisites.');
+    return;
+  }
+
   showState('importing');
   resetSteps();
 

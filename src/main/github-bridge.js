@@ -22,6 +22,20 @@ function stripAnsi(str) {
   return str.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '');
 }
 
+function cleanupTempDir(tempDir) {
+  if (!tempDir) return;
+
+  try {
+    if (fs.existsSync(tempDir)) {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  } catch (err) {
+    console.warn('[GitHubBridge] Cleanup failed:', err.message);
+  } finally {
+    activeTempDirs.delete(tempDir);
+  }
+}
+
 /**
  * Validate a GitHub repository URL.
  * Accepts:
@@ -88,6 +102,139 @@ async function checkGitAvailable() {
 }
 
 /**
+ * Check if required Radicle bridge binaries are available.
+ */
+function checkRadicleBridgeAvailable() {
+  const radPath = getRadicleBinaryPath('rad');
+  const gitRemoteRadPath = getRadicleBinaryPath('git-remote-rad');
+
+  if (!fs.existsSync(radPath)) {
+    return {
+      available: false,
+      code: 'RADICLE_CLI_MISSING',
+      error: 'Radicle CLI (rad) not found',
+    };
+  }
+
+  if (!fs.existsSync(gitRemoteRadPath)) {
+    return {
+      available: false,
+      code: 'GIT_REMOTE_RAD_MISSING',
+      error: 'Radicle Git bridge (git-remote-rad) not found',
+    };
+  }
+
+  return { available: true };
+}
+
+/**
+ * Verify GitHub network reachability (best-effort prerequisite check).
+ */
+function checkNetworkAccess() {
+  return new Promise((resolve) => {
+    const req = https.request(
+      'https://github.com/',
+      { method: 'HEAD', timeout: 5000 },
+      (res) => {
+        res.resume();
+        resolve({
+          available: res.statusCode >= 200 && res.statusCode < 500,
+        });
+      }
+    );
+
+    req.on('error', () => {
+      resolve({
+        available: false,
+        error: 'Network unavailable. Could not reach GitHub.',
+      });
+    });
+    req.on('timeout', () => {
+      req.destroy();
+      resolve({
+        available: false,
+        error: 'Network check timed out while reaching GitHub.',
+      });
+    });
+    req.end();
+  });
+}
+
+async function checkImportPrerequisites() {
+  const gitCheck = await checkGitAvailable();
+  if (!gitCheck.available) {
+    return {
+      ...failure('GIT_UNAVAILABLE', gitCheck.error),
+      step: 'checking-git',
+    };
+  }
+
+  const radicleCheck = checkRadicleBridgeAvailable();
+  if (!radicleCheck.available) {
+    return {
+      ...failure(radicleCheck.code, radicleCheck.error),
+      step: 'checking-radicle',
+    };
+  }
+
+  const networkCheck = await checkNetworkAccess();
+  if (!networkCheck.available) {
+    return {
+      ...failure('NETWORK_UNAVAILABLE', networkCheck.error),
+      step: 'checking-network',
+    };
+  }
+
+  return success({
+    gitVersion: gitCheck.version,
+  });
+}
+
+function getFriendlyImportError(err, fallbackMessage) {
+  const lower = fallbackMessage.toLowerCase();
+
+  if (
+    lower.includes('enotfound')
+    || lower.includes('eai_again')
+    || lower.includes('timed out')
+    || lower.includes('could not resolve host')
+    || lower.includes('connection refused')
+    || lower.includes('failed to connect')
+  ) {
+    return {
+      code: 'NETWORK_UNAVAILABLE',
+      message: 'Network unavailable. Please check your internet connection and try again.',
+    };
+  }
+
+  if (lower.includes('git-remote-rad') && lower.includes('not found')) {
+    return {
+      code: 'GIT_REMOTE_RAD_MISSING',
+      message: 'Radicle Git bridge (git-remote-rad) is not available.',
+    };
+  }
+
+  if (lower.includes('repository not found')) {
+    return {
+      code: 'REPOSITORY_NOT_FOUND',
+      message: 'GitHub repository not found or not accessible.',
+    };
+  }
+
+  if (err.killed && lower.includes('timed out')) {
+    return {
+      code: 'IMPORT_TIMEOUT',
+      message: 'Import timed out. Please try again.',
+    };
+  }
+
+  return {
+    code: 'IMPORT_FAILED',
+    message: fallbackMessage,
+  };
+}
+
+/**
  * Fetch repository description from GitHub API (best-effort).
  */
 function fetchGitHubDescription(owner, repo) {
@@ -140,6 +287,7 @@ async function importGitHubRepo(url, sender) {
   };
 
   let clonePath = null;
+  let prereqStep = 'checking-prereqs';
 
   try {
     // Step 1: Validate URL
@@ -154,21 +302,19 @@ async function importGitHubRepo(url, sender) {
       );
     }
 
-    // Step 2: Check git is available
-    sendProgress({ step: 'checking-git', message: 'Checking git availability...' });
-    const gitCheck = await checkGitAvailable();
-    if (!gitCheck.available) {
-      return failure('GIT_UNAVAILABLE', gitCheck.error, undefined, { step: 'checking-git' });
+    // Step 2: Check CLI and network prerequisites
+    sendProgress({ step: 'checking-prereqs', message: 'Checking prerequisites...' });
+    const prereqCheck = await checkImportPrerequisites();
+    if (!prereqCheck.success) {
+      return failure(
+        prereqCheck.error.code,
+        prereqCheck.error.message,
+        prereqCheck.error.details,
+        { step: prereqCheck.step || prereqStep }
+      );
     }
 
-    // Step 3: Check rad binary exists
     const radPath = getRadicleBinaryPath('rad');
-    if (!fs.existsSync(radPath)) {
-      return failure('RADICLE_CLI_MISSING', 'Radicle CLI (rad) not found', undefined, {
-        step: 'checking-radicle',
-      });
-    }
-
     const radicleEnv = getRadicleEnv();
 
     // Step 4: Clone
@@ -239,14 +385,6 @@ async function importGitHubRepo(url, sender) {
       console.warn('[GitHubBridge] Tag push failed (non-critical):', tagErr.message);
     }
 
-    // Step 10: Cleanup
-    try {
-      fs.rmSync(clonePath, { recursive: true, force: true });
-    } catch (cleanErr) {
-      console.warn('[GitHubBridge] Cleanup failed:', cleanErr.message);
-    }
-    activeTempDirs.delete(clonePath);
-
     sendProgress({ step: 'success', message: 'Repository seeded successfully!' });
     console.log(`[GitHubBridge] Success: ${validation.owner}/${validation.repo} -> ${rid}`);
 
@@ -261,21 +399,14 @@ async function importGitHubRepo(url, sender) {
     console.error('[GitHubBridge] Import failed:', err.message);
 
     const stderrStr = stripAnsi(err.stderr?.toString() || '');
-    const errorMsg = stderrStr || stripAnsi(err.message);
+    const fallbackMessage = stderrStr || stripAnsi(err.message);
+    const friendlyError = getFriendlyImportError(err, fallbackMessage);
 
-    sendProgress({ step: 'error', message: errorMsg });
+    sendProgress({ step: 'error', message: friendlyError.message });
 
-    // Cleanup temp dir on error
-    if (clonePath && fs.existsSync(clonePath)) {
-      try {
-        fs.rmSync(clonePath, { recursive: true, force: true });
-      } catch (cleanErr) {
-        console.warn('[GitHubBridge] Error cleanup failed:', cleanErr.message);
-      }
-      activeTempDirs.delete(clonePath);
-    }
-
-    return failure('IMPORT_FAILED', errorMsg);
+    return failure(friendlyError.code, friendlyError.message);
+  } finally {
+    cleanupTempDir(clonePath);
   }
 }
 
@@ -311,6 +442,10 @@ function registerGithubBridgeIpc() {
 
   ipcMain.handle(IPC.GITHUB_BRIDGE_CHECK_GIT, async () => {
     return await checkGitAvailable();
+  });
+
+  ipcMain.handle(IPC.GITHUB_BRIDGE_CHECK_PREREQUISITES, async () => {
+    return await checkImportPrerequisites();
   });
 
   ipcMain.handle(IPC.GITHUB_BRIDGE_VALIDATE_URL, (_event, url) => {
