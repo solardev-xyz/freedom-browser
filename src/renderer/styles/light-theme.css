@@ -142,7 +142,8 @@
 }
 
 [data-theme='light'] .bee-toggle-knob,
-[data-theme='light'] .ipfs-toggle-knob {
+[data-theme='light'] .ipfs-toggle-knob,
+[data-theme='light'] .radicle-toggle-knob {
   background: #ffffff;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
 }
@@ -176,4 +177,60 @@
 
 [data-theme='light'] .modal-content {
   box-shadow: 0 12px 24px rgba(0, 0, 0, 0.15);
+}
+
+/* GitHub Bridge - Light theme */
+[data-theme='light'] .github-bridge-panel {
+  background: #ffffff;
+  border-color: #d0d7de;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+
+[data-theme='light'] .ghb-header {
+  border-bottom-color: #d0d7de;
+}
+
+[data-theme='light'] .ghb-import-btn {
+  background: #f6f8fa;
+  border-color: #d0d7de;
+  color: #202124;
+}
+
+[data-theme='light'] .ghb-import-btn:hover {
+  background: #e8eaed;
+}
+
+[data-theme='light'] .ghb-step-indicator {
+  border-color: #d0d7de;
+}
+
+[data-theme='light'] .ghb-step.active .ghb-step-indicator {
+  border-color: #202124;
+  border-top-color: transparent;
+}
+
+[data-theme='light'] .ghb-step.done .ghb-step-indicator {
+  border-color: #1a7f37;
+  background: #1a7f37;
+}
+
+[data-theme='light'] .ghb-success-icon svg {
+  stroke: #1a7f37;
+}
+
+[data-theme='light'] .ghb-error-icon svg {
+  stroke: #cf222e;
+}
+
+[data-theme='light'] .ghb-step.error .ghb-step-indicator {
+  border-color: #cf222e;
+  background: #cf222e;
+}
+
+[data-theme='light'] .ghb-rid-row {
+  background: #f1f3f4;
+}
+
+[data-theme='light'] .ghb-error-detail {
+  background: #f1f3f4;
 }

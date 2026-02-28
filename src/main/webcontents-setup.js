@@ -1,6 +1,6 @@
 const log = require('./logger');
 const { BrowserWindow, app } = require('electron');
-const { activeBzzBases, activeIpfsBases } = require('./state');
+const { activeBzzBases, activeIpfsBases, activeRadBases } = require('./state');
 
 const sanitizeUrlForLog = (rawUrl) => {
   if (!rawUrl || typeof rawUrl !== 'string') return 'unknown';
@@ -36,6 +36,7 @@ function registerWebContentsHandlers() {
     contents.once('destroyed', () => {
       activeBzzBases.delete(contents.id);
       activeIpfsBases.delete(contents.id);
+      activeRadBases.delete(contents.id);
     });
 
     const id = contents.id;
@@ -84,7 +85,8 @@ function registerWebContentsHandlers() {
           url.startsWith('freedom://') ||
           url.startsWith('bzz://') ||
           url.startsWith('ipfs://') ||
-          url.startsWith('ipns://')
+          url.startsWith('ipns://') ||
+          url.startsWith('rad:')
         ) {
           log.info(`${tag} intercepted custom protocol navigation: ${sanitizeUrlForLog(url)}`);
           event.preventDefault();

@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Radicle Repository</title>
+    <link rel="stylesheet" id="hljs-theme" href="../vendor/hljs-github-dark.css" />
+    <link rel="stylesheet" href="styles/rad-browser.css">
+  </head>
+  <body>
+    <header class="header">
+      <div class="header-content">
+        <svg class="radicle-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+          <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/>
+        </svg>
+        <div class="header-text">
+          <h1>Radicle Repository</h1>
+          <div class="rid" id="display-rid">rad://...</div>
+        </div>
+      </div>
+    </header>
+
+    <main class="main">
+      <!-- Loading State -->
+      <div id="loading-state" class="loading">
+        <div class="loading-spinner"></div>
+        <div>Loading repository...</div>
+      </div>
+
+      <!-- Connection Error -->
+      <div id="connection-error" class="connection-error hidden">
+        <h2>Cannot Connect to Radicle Node</h2>
+        <p>
+          The Radicle node is not running. Open the Nodes menu in the toolbar and enable Radicle.
+        </p>
+      </div>
+
+      <!-- Radicle Integration Disabled -->
+      <div id="radicle-disabled-error" class="connection-error hidden">
+        <h2>Radicle Integration Disabled</h2>
+        <p>
+          Radicle integration is disabled. Enable it in Settings > Experimental
+        </p>
+      </div>
+
+      <!-- Invalid RID Error -->
+      <div id="invalid-rid-error" class="invalid-rid-error hidden">
+        <h2>Invalid Radicle ID</h2>
+        <p>
+          <code id="invalid-rid-input"></code> is not a valid Repository ID.
+        </p>
+        <p>
+          Radicle Repository IDs start with <code>z</code> followed by base58 characters.
+        </p>
+        <p class="example">
+          Example: <code>rad://z4V1sjrXqjvFdnCUbxPFqd5p4DtH5</code>
+        </p>
+      </div>
+
+      <!-- 404 Error -->
+      <div id="error-state" class="hidden">
+        <div class="error-container">
+          <h2>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"/>
+              <line x1="12" y1="8" x2="12" y2="12"/>
+              <line x1="12" y1="16" x2="12.01" y2="16"/>
+            </svg>
+            Repository Not Found
+          </h2>
+          <p>
+            The repository <strong id="error-rid"></strong> is not available on this node.
+          </p>
+          <ul>
+            <li>The repository hasn't been seeded to your node</li>
+            <li>The RID might be incorrect</li>
+            <li>The repository doesn't exist on the network</li>
+          </ul>
+          <button id="seed-btn" class="seed-btn">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 2v6m0 4v10M5 12h14"/>
+            </svg>
+            Seed this repository
+          </button>
+          <div id="seed-status" class="seed-status"></div>
+        </div>
+
+        <div class="section">
+          <h3>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+            </svg>
+            Your Seeded Repositories
+            <span class="count" id="repo-count">0</span>
+          </h3>
+          <div id="repo-list" class="repo-list">
+            <div class="empty-state">
+              <p>No repositories seeded yet</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="section network-section">
+          <h3>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"/>
+              <line x1="2" y1="12" x2="22" y2="12"/>
+              <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+            </svg>
+            Browse Network
+            <span class="count" id="network-count">0</span>
+          </h3>
+          <p class="network-desc">
+            Popular repositories from the Radicle network (seed.radicle.xyz)
+          </p>
+          <div id="network-list" class="repo-list">
+            <div class="loading-inline">
+              <div class="spinner"></div>
+              <span>Loading from network...</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Success State: Code Browser -->
+      <div id="success-state" class="hidden">
+        <div class="repo-header" id="repo-header"></div>
+        <div class="stats-bar hidden" id="stats-bar"></div>
+        <div id="breadcrumb-container"></div>
+        <div id="last-commit" class="hidden"></div>
+        <div id="file-tree-container"></div>
+        <div id="file-viewer-container"></div>
+        <div id="readme-container"></div>
+      </div>
+    </main>
+
+    <script src="../vendor/marked.min.js"></script>
+    <script src="../vendor/highlight.min.js"></script>
+    <script src="../vendor/purify.min.js"></script>
+    <script src="scripts/rad-browser.js"></script>
+  </body>
+</html>

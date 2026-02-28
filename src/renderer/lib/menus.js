@@ -2,6 +2,7 @@
 import { state } from './state.js';
 import { startBeeInfoPolling, stopBeeInfoPolling } from './bee-ui.js';
 import { startIpfsInfoPolling, stopIpfsInfoPolling } from './ipfs-ui.js';
+import { startRadicleInfoPolling, stopRadicleInfoPolling } from './radicle-ui.js';
 import { hideTabContextMenu, getActiveWebview } from './tabs.js';
 import { hideBookmarkContextMenu, hideOverflowMenu } from './bookmarks-ui.js';
 import { showMenuBackdrop, hideMenuBackdrop } from './menu-backdrop.js';
@@ -81,12 +82,14 @@ export const setBeeMenuOpen = (open) => {
     showMenuBackdrop();
     startBeeInfoPolling();
     startIpfsInfoPolling();
+    startRadicleInfoPolling();
   } else {
     if (!state.menuOpen) {
       hideMenuBackdrop();
     }
     stopBeeInfoPolling();
     stopIpfsInfoPolling();
+    stopRadicleInfoPolling();
     if (beePeersCount) beePeersCount.textContent = '0';
     if (beeNetworkPeers) beeNetworkPeers.textContent = '0';
     if (beeVersionText)

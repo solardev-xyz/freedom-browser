@@ -22,5 +22,9 @@
   {
     "label": "meinhard.eth",
     "target": "ens://meinhard.eth"
+  },
+  {
+    "label": "Radicle Heartwood",
+    "target": "rad://z3gqcJUoA1n9HaHKufZs5FCSGazv5"
   }
 ]

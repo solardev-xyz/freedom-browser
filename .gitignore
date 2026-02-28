@@ -19,4 +19,10 @@ ipfs-data/
 dev-scripts/
 docs/
 helios-bin/
+radicle-bin/
+radicle-data/
+dev-app-update.yml
+CLAUDE.md
+urbit-bin/
+urbit-data/
 .codex

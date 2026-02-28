@@ -44,6 +44,11 @@
     "ipfs:stop": "pkill -SIGTERM ipfs || echo 'IPFS not running or failed to stop'",
     "ipfs:status": "echo '--- ID ---'; IPFS_PATH=./ipfs-data curl -s -X POST http://127.0.0.1:5001/api/v0/id | head -c 500; echo '\n\n--- PEERS ---'; curl -s -X POST http://127.0.0.1:5001/api/v0/swarm/peers | grep -o '\"Peer\":' | wc -l | xargs echo 'Peer Count:'",
     "ipfs:reset": "rm -rf ipfs-data && echo 'IPFS data reset.'",
+    "radicle:download": "node scripts/fetch-radicle.js",
+    "radicle:init": "node scripts/init-radicle.js",
+    "radicle:status": "curl -s http://127.0.0.1:8780/api/v1/ | head -c 500",
+    "radicle:reset": "rm -rf radicle-data && echo 'Radicle data reset.'",
+    "test:updater": "bash scripts/test-updater.sh",
     "serve:updates": "node scripts/serve-updates.js",
     "start:test-updater": "ENABLE_DEV_UPDATER=true npm start",
     "postinstall": "electron-builder install-app-deps"
@@ -112,6 +117,13 @@
       {
         "from": "ipfs-bin/${os}-${arch}/",
         "to": "ipfs-bin",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "radicle-bin/${os}-${arch}/",
+        "to": "radicle-bin",
         "filter": [
           "**/*"
         ]

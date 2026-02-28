@@ -1,0 +1,289 @@
+/* GitHub Bridge icon in address bar */
+.github-bridge-btn {
+  right: 36px;
+}
+
+.github-bridge-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* GitHub Bridge dropdown panel */
+.github-bridge-panel {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  width: 340px;
+  background: var(--menu-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  z-index: 10001;
+  padding: 0;
+  overflow: hidden;
+}
+
+.github-bridge-panel.hidden {
+  display: none;
+}
+
+.ghb-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.ghb-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.ghb-close {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  color: var(--muted);
+}
+
+.ghb-close svg {
+  width: 14px;
+  height: 14px;
+}
+
+.ghb-state {
+  padding: 14px;
+}
+
+.ghb-state.hidden {
+  display: none;
+}
+
+/* Prerequisites error */
+.ghb-prereq-message {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.ghb-warn-icon {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  stroke: #888;
+  margin-top: 1px;
+}
+
+/* Ready state */
+.ghb-repo-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.ghb-repo-label {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.ghb-repo-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  font-family: 'SF Mono', Menlo, Monaco, monospace;
+}
+
+.ghb-import-btn {
+  display: block;
+  width: 100%;
+  padding: 8px 14px;
+  border: 1px solid #444;
+  border-radius: 6px;
+  background: #2c2c2c;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.ghb-import-btn:hover {
+  background: #3a3a3a;
+}
+
+/* Progress steps */
+.ghb-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ghb-step {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.ghb-step-indicator {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid #444;
+  flex-shrink: 0;
+  position: relative;
+  box-sizing: border-box;
+}
+
+.ghb-step.active .ghb-step-indicator {
+  border-color: var(--text);
+  border-top-color: transparent;
+  animation: ghb-spin 0.8s linear infinite;
+}
+
+.ghb-step.active .ghb-step-label {
+  color: var(--text);
+}
+
+.ghb-step.done .ghb-step-indicator {
+  border-color: #4caf50;
+  background: #4caf50;
+}
+
+.ghb-step.done .ghb-step-indicator::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 4px;
+  width: 4px;
+  height: 7px;
+  border: solid #fff;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+
+.ghb-step.done .ghb-step-label {
+  color: var(--text);
+}
+
+.ghb-step.error .ghb-step-indicator {
+  border-color: #ff5e5e;
+  background: #ff5e5e;
+}
+
+.ghb-step.error .ghb-step-indicator::after {
+  content: '\00d7';
+  position: absolute;
+  top: -3px;
+  left: 2px;
+  font-size: 12px;
+  color: #fff;
+  line-height: 1;
+}
+
+@keyframes ghb-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Success state */
+.ghb-success-icon {
+  text-align: center;
+  margin-bottom: 6px;
+}
+
+.ghb-success-icon svg {
+  width: 28px;
+  height: 28px;
+  stroke: #4caf50;
+}
+
+.ghb-success-text {
+  text-align: center;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  margin-bottom: 10px;
+}
+
+.ghb-rid-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 12px;
+  background: #2a2a2a;
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+.ghb-rid-row code {
+  flex: 1;
+  font-size: 11px;
+  font-family: 'SF Mono', Menlo, Monaco, monospace;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ghb-copy-btn {
+  background: none;
+  border: none;
+  padding: 2px;
+  cursor: pointer;
+  color: var(--muted);
+  flex-shrink: 0;
+  transition: color 0.15s ease;
+}
+
+.ghb-copy-btn:hover {
+  color: var(--text);
+}
+
+.ghb-copy-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* Error state */
+.ghb-error-icon {
+  text-align: center;
+  margin-bottom: 6px;
+}
+
+.ghb-error-icon svg {
+  width: 28px;
+  height: 28px;
+  stroke: #ff5e5e;
+}
+
+.ghb-error-text {
+  text-align: center;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  margin-bottom: 8px;
+}
+
+.ghb-error-detail {
+  font-size: 11px;
+  color: var(--muted);
+  background: #2a2a2a;
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 12px;
+  max-height: 60px;
+  overflow-y: auto;
+  word-break: break-word;
+  font-family: 'SF Mono', Menlo, Monaco, monospace;
+}

@@ -34,6 +34,14 @@ const registry = {
     tempMessage: null,
     tempMessageTimeout: null,
   },
+  radicle: {
+    api: null,        // e.g., 'http://127.0.0.1:8780'
+    gateway: null,    // Same as api for radicle-httpd
+    mode: MODE.NONE,
+    statusMessage: null,
+    tempMessage: null,
+    tempMessageTimeout: null,
+  },
 };
 
 // Default ports
@@ -48,6 +56,11 @@ const DEFAULTS = {
     apiPort: 1633,
     // Note: Newer Bee versions serve debug/gateway endpoints on the main API port
     p2pPort: 1634,
+    fallbackRange: 10,
+  },
+  radicle: {
+    httpPort: 8780,   // radicle-httpd port (avoids 8080 conflicts)
+    p2pPort: 8776,    // radicle-node P2P port
     fallbackRange: 10,
   },
 };
@@ -66,6 +79,7 @@ function getRegistry() {
   return {
     ipfs: { ...registry.ipfs },
     bee: { ...registry.bee },
+    radicle: { ...registry.radicle },
   };
 }
 
@@ -226,6 +240,13 @@ function getBeeGatewayUrl() {
 }
 
 /**
+ * Get URL for Radicle API (radicle-httpd)
+ */
+function getRadicleApiUrl() {
+  return registry.radicle.api || `http://127.0.0.1:${DEFAULTS.radicle.httpPort}`;
+}
+
+/**
  * Register IPC handlers for service registry
  */
 function registerServiceRegistryIpc() {
@@ -250,6 +271,7 @@ module.exports = {
   getIpfsGatewayUrl,
   getBeeApiUrl,
   getBeeGatewayUrl,
+  getRadicleApiUrl,
   broadcastRegistryUpdate,
   registerServiceRegistryIpc,
 };

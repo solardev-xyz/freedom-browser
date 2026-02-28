@@ -1,0 +1,1039 @@
+/* Radicle Browser Styles */
+  * {
+    box-sizing: border-box;
+  }
+  html, body {
+    height: 100%;
+    margin: 0;
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: #1f2020;
+    color: #c7c7c7;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+  }
+
+  /* Header */
+  .header {
+    background: #1a1a1a;
+    border-bottom: 1px solid #4a4a4a;
+    padding: 24px 32px;
+  }
+  .header-content {
+    max-width: 900px;
+    margin: 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+  .radicle-icon {
+    width: 48px;
+    height: 48px;
+    fill: #c7c7c7;
+  }
+  .header-text h1 {
+    font-size: 24px;
+    margin: 0 0 4px 0;
+    color: #f5f5f5;
+  }
+  .header-text .rid {
+    font-family: 'SF Mono', Menlo, Monaco, monospace;
+    font-size: 13px;
+    color: #888;
+    word-break: break-all;
+  }
+
+  /* Main Content */
+  .main {
+    flex: 1;
+    padding: 32px;
+    max-width: 900px;
+    margin: 0 auto;
+    width: 100%;
+  }
+
+  /* Loading State */
+  .loading {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 64px 0;
+    color: #888;
+  }
+  .loading-spinner {
+    width: 40px;
+    height: 40px;
+    border: 3px solid #333;
+    border-top-color: #c7c7c7;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    margin-bottom: 16px;
+  }
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+
+  /* Error State (404) */
+  .error-container {
+    background: rgba(255, 94, 94, 0.08);
+    border: 1px solid rgba(255, 94, 94, 0.3);
+    border-radius: 12px;
+    padding: 32px;
+    margin-bottom: 32px;
+  }
+  .error-container h2 {
+    color: #ff5e5e;
+    font-size: 20px;
+    margin: 0 0 12px 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .error-container p {
+    color: #ccc;
+    line-height: 1.6;
+    margin: 0 0 16px 0;
+  }
+  .error-container ul {
+    color: #aaa;
+    margin: 0 0 24px 0;
+    padding-left: 20px;
+    line-height: 1.8;
+  }
+  .seed-btn {
+    background: #2c2c2c;
+    color: white;
+    border: 1px solid #444;
+    padding: 12px 24px;
+    border-radius: 8px;
+    font-size: 15px;
+    font-weight: 500;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    transition: all 0.2s ease;
+  }
+  .seed-btn:hover {
+    background: #3a3a3a;
+  }
+  .seed-btn:disabled {
+    background: #333;
+    color: #666;
+    cursor: not-allowed;
+    border-color: #333;
+  }
+  .seed-btn .icon {
+    width: 18px;
+    height: 18px;
+  }
+  .seed-status {
+    margin-top: 16px;
+    padding: 12px 16px;
+    border-radius: 8px;
+    font-size: 14px;
+    display: none;
+  }
+  .seed-status.show {
+    display: block;
+  }
+  .seed-status.seeding {
+    background: rgba(136, 136, 136, 0.2);
+    border: 1px solid rgba(136, 136, 136, 0.4);
+    color: #aaa;
+  }
+  .seed-status.success {
+    background: rgba(76, 175, 80, 0.2);
+    border: 1px solid rgba(76, 175, 80, 0.4);
+    color: #4caf50;
+  }
+  .seed-status.error {
+    background: rgba(255, 94, 94, 0.2);
+    border: 1px solid rgba(255, 94, 94, 0.4);
+    color: #ff5e5e;
+  }
+
+  /* Available Repos Section */
+  .section {
+    margin-top: 32px;
+  }
+  .section h3 {
+    font-size: 16px;
+    color: #888;
+    margin: 0 0 16px 0;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .section h3 .count {
+    background: #2a2a2a;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 12px;
+    color: #666;
+  }
+  .repo-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .repo-item {
+    background: #1a1a1a;
+    border: 1px solid #2a2a2a;
+    border-radius: 8px;
+    padding: 16px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .repo-item:hover {
+    border-color: #555;
+    background: #252525;
+  }
+  .repo-item-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 6px;
+  }
+  .repo-item-name {
+    font-size: 15px;
+    font-weight: 500;
+    color: #f5f5f5;
+  }
+  .repo-item-rid {
+    font-family: 'SF Mono', Menlo, Monaco, monospace;
+    font-size: 11px;
+    color: #666;
+    background: #252525;
+    padding: 2px 6px;
+    border-radius: 4px;
+  }
+  .repo-item-desc {
+    font-size: 13px;
+    color: #888;
+    line-height: 1.4;
+  }
+  .empty-state {
+    text-align: center;
+    padding: 32px;
+    color: #666;
+  }
+  .empty-state p {
+    margin: 0;
+  }
+
+  /* Network repos styling */
+  .network-section {
+    margin-top: 40px;
+    padding-top: 32px;
+    border-top: 1px solid #2a2a2a;
+  }
+  .network-section h3 {
+    color: #888;
+  }
+  .network-section .count {
+    background: #2a2a2a;
+    color: #888;
+  }
+  .network-desc {
+    color: #666;
+    font-size: 13px;
+    margin: 0 0 16px 0;
+  }
+  .repo-item.network {
+    border-color: #2a2a2a;
+  }
+  .repo-item.network:hover {
+    border-color: #555;
+    background: #252525;
+  }
+  .repo-item-meta {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 8px;
+    font-size: 12px;
+    color: #666;
+  }
+  .repo-item-meta .seeders {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    color: #888;
+  }
+  .repo-item-meta .seeders svg {
+    width: 14px;
+    height: 14px;
+  }
+  .loading-inline {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 16px;
+    color: #888;
+  }
+  .loading-inline .spinner {
+    width: 16px;
+    height: 16px;
+    border: 2px solid #333;
+    border-top-color: #c7c7c7;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+  }
+
+  /* Connection Error */
+  .connection-error {
+    background: #1a1a1a;
+    border: 1px solid #333;
+    border-radius: 12px;
+    padding: 32px;
+    text-align: center;
+  }
+  .connection-error h2 {
+    color: #ccc;
+    margin: 0 0 12px 0;
+  }
+  .connection-error p {
+    color: #aaa;
+    margin: 0 0 16px 0;
+  }
+
+  /* Invalid RID Error */
+  .invalid-rid-error {
+    background: rgba(255, 94, 94, 0.08);
+    border: 1px solid rgba(255, 94, 94, 0.3);
+    border-radius: 12px;
+    padding: 32px;
+    text-align: center;
+  }
+  .invalid-rid-error h2 {
+    color: #ff5e5e;
+    margin: 0 0 12px 0;
+  }
+  .invalid-rid-error p {
+    color: #aaa;
+    margin: 0 0 8px 0;
+    line-height: 1.6;
+  }
+  .invalid-rid-error code {
+    background: #2a2a2a;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-family: 'SF Mono', Menlo, Monaco, monospace;
+    font-size: 13px;
+    color: #ff5e5e;
+  }
+  .invalid-rid-error .example {
+    color: #666;
+    font-size: 13px;
+    margin-top: 16px;
+  }
+  .invalid-rid-error .example code {
+    color: #aaa;
+  }
+
+  /* Hidden utility */
+  .hidden {
+    display: none !important;
+  }
+
+  /* =============================================
+     CODE BROWSER STYLES
+     ============================================= */
+
+  /* Repo Header Card */
+  .repo-header {
+    margin-bottom: 16px;
+  }
+  .repo-header h2 {
+    margin: 0 0 6px 0;
+    font-size: 22px;
+    color: #f5f5f5;
+  }
+  .repo-header .description {
+    color: #aaa;
+    font-size: 15px;
+    line-height: 1.5;
+    margin: 0 0 12px 0;
+  }
+  .repo-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    font-size: 13px;
+    color: #888;
+  }
+  .repo-meta-item {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .repo-meta-item svg {
+    width: 14px;
+    height: 14px;
+    opacity: 0.7;
+  }
+  .repo-meta-item .value {
+    color: #bbb;
+  }
+
+  /* Metadata Notice */
+  .metadata-notice {
+    margin-top: 12px;
+    padding: 8px 12px;
+    background: rgba(124, 172, 248, 0.1);
+    border: 1px solid rgba(124, 172, 248, 0.3);
+    border-radius: 6px;
+    font-size: 12px;
+    color: #7cacf8;
+  }
+
+  /* Stats Bar */
+  .stats-bar {
+    display: flex;
+    gap: 20px;
+    padding: 10px 16px;
+    background: #1a1a1a;
+    border: 1px solid #333;
+    border-radius: 8px;
+    margin-bottom: 16px;
+    font-size: 13px;
+    color: #aaa;
+  }
+  .stat-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .stat-item svg {
+    width: 16px;
+    height: 16px;
+    opacity: 0.6;
+  }
+  .stat-item strong {
+    color: #e0e0e0;
+    font-weight: 600;
+  }
+
+  /* Breadcrumb */
+  .breadcrumb {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 14px;
+    padding: 8px 0;
+    margin-bottom: 8px;
+    flex-wrap: wrap;
+  }
+  .breadcrumb a {
+    color: #7cacf8;
+    text-decoration: none;
+    font-weight: 500;
+  }
+  .breadcrumb a:hover {
+    text-decoration: underline;
+  }
+  .breadcrumb .separator {
+    color: #666;
+    margin: 0 2px;
+  }
+  .breadcrumb .current {
+    color: #e0e0e0;
+    font-weight: 600;
+  }
+
+  /* Last Commit Bar */
+  .last-commit {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 16px;
+    background: #1a1a1a;
+    border: 1px solid #333;
+    border-bottom: none;
+    border-radius: 8px 8px 0 0;
+    font-size: 13px;
+  }
+  .last-commit .commit-author {
+    color: #e0e0e0;
+    font-weight: 500;
+  }
+  .last-commit .commit-message {
+    color: #aaa;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+    min-width: 0;
+  }
+  .last-commit .commit-sha {
+    font-family: 'SF Mono', Menlo, Monaco, monospace;
+    font-size: 12px;
+    color: #7cacf8;
+    flex-shrink: 0;
+  }
+  .last-commit .commit-time {
+    color: #666;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  /* File Tree */
+  .file-tree {
+    border: 1px solid #333;
+    border-radius: 0 0 8px 8px;
+    overflow: hidden;
+  }
+  .file-tree.no-commit-header {
+    border-radius: 8px;
+  }
+  .file-tree-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 16px;
+    border-bottom: 1px solid #2a2a2a;
+    cursor: pointer;
+    transition: background 0.1s ease;
+    font-size: 14px;
+    color: #e0e0e0;
+  }
+  .file-tree-row:last-child {
+    border-bottom: none;
+  }
+  .file-tree-row:hover {
+    background: #252525;
+  }
+  .file-tree-row .icon {
+    flex-shrink: 0;
+    width: 16px;
+    text-align: center;
+  }
+  .file-tree-row .icon.folder {
+    color: #7cacf8;
+  }
+  .file-tree-row .icon.file {
+    color: #888;
+  }
+  .file-tree-row .icon.submodule {
+    color: #aaa;
+  }
+  .file-tree-row .name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .file-tree-row .name.folder-name {
+    font-weight: 500;
+  }
+
+  /* README Section */
+  .readme-section {
+    margin-top: 24px;
+    border: 1px solid #333;
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .readme-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 16px;
+    background: #1a1a1a;
+    border-bottom: 1px solid #333;
+    font-size: 14px;
+    font-weight: 500;
+    color: #e0e0e0;
+  }
+  .readme-header svg {
+    width: 16px;
+    height: 16px;
+    opacity: 0.7;
+  }
+  .readme-body {
+    padding: 24px 32px;
+    background: #1a1a1a;
+  }
+
+  /* Markdown Body Styles */
+  .markdown-body {
+    color: #c7c7c7;
+    font-size: 15px;
+    line-height: 1.7;
+    word-wrap: break-word;
+  }
+  .markdown-body h1, .markdown-body h2, .markdown-body h3,
+  .markdown-body h4, .markdown-body h5, .markdown-body h6 {
+    color: #f5f5f5;
+    margin-top: 24px;
+    margin-bottom: 16px;
+    font-weight: 600;
+    line-height: 1.25;
+  }
+  .markdown-body h1 {
+    font-size: 2em;
+    padding-bottom: 0.3em;
+    border-bottom: 1px solid #333;
+  }
+  .markdown-body h2 {
+    font-size: 1.5em;
+    padding-bottom: 0.3em;
+    border-bottom: 1px solid #333;
+  }
+  .markdown-body h3 { font-size: 1.25em; }
+  .markdown-body h4 { font-size: 1em; }
+  .markdown-body p {
+    margin-top: 0;
+    margin-bottom: 16px;
+  }
+  .markdown-body a {
+    color: #7cacf8;
+    text-decoration: none;
+  }
+  .markdown-body a:hover {
+    text-decoration: underline;
+  }
+  .markdown-body code {
+    background: #2a2a2a;
+    padding: 0.2em 0.4em;
+    border-radius: 4px;
+    font-family: 'SF Mono', Menlo, Monaco, monospace;
+    font-size: 85%;
+  }
+  .markdown-body pre {
+    background: #161b22;
+    border-radius: 8px;
+    padding: 16px;
+    overflow-x: auto;
+    margin-bottom: 16px;
+  }
+  .markdown-body pre code {
+    background: none;
+    padding: 0;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  .markdown-body blockquote {
+    margin: 0 0 16px 0;
+    padding: 0 16px;
+    border-left: 4px solid #444;
+    color: #888;
+  }
+  .markdown-body ul, .markdown-body ol {
+    padding-left: 2em;
+    margin-bottom: 16px;
+  }
+  .markdown-body li {
+    margin-bottom: 4px;
+  }
+  .markdown-body table {
+    border-collapse: collapse;
+    width: 100%;
+    margin-bottom: 16px;
+  }
+  .markdown-body th, .markdown-body td {
+    border: 1px solid #333;
+    padding: 8px 12px;
+    text-align: left;
+  }
+  .markdown-body th {
+    background: #252525;
+    font-weight: 600;
+    color: #e0e0e0;
+  }
+  .markdown-body img {
+    max-width: 100%;
+    height: auto;
+  }
+  .markdown-body hr {
+    border: none;
+    border-top: 1px solid #333;
+    margin: 24px 0;
+  }
+
+  /* File Viewer */
+  .file-viewer {
+    border: 1px solid #333;
+    border-radius: 8px;
+    overflow: hidden;
+    margin-bottom: 24px;
+  }
+  .file-viewer-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 16px;
+    background: #1a1a1a;
+    border-bottom: 1px solid #333;
+    font-size: 13px;
+    color: #aaa;
+  }
+  .file-viewer-header .file-info {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+  .file-viewer-header .file-info span {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .file-viewer-content {
+    background: #161b22;
+    overflow-x: auto;
+  }
+  .file-viewer-content table {
+    border-collapse: collapse;
+    width: 100%;
+    font-family: 'SF Mono', Menlo, Monaco, monospace;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  .file-viewer-content td {
+    padding: 0;
+    vertical-align: top;
+  }
+  .file-viewer-content .line-number {
+    width: 1%;
+    min-width: 50px;
+    padding: 0 12px;
+    text-align: right;
+    color: #555;
+    user-select: none;
+    white-space: nowrap;
+    background: #1a1a1a;
+    border-right: 1px solid #333;
+  }
+  .file-viewer-content .line-code {
+    padding: 0 16px;
+    white-space: pre;
+  }
+  .file-viewer-binary {
+    padding: 40px;
+    text-align: center;
+    color: #888;
+    font-size: 14px;
+    background: #161b22;
+  }
+  .file-viewer-plain {
+    padding: 16px;
+    white-space: pre-wrap;
+    word-break: break-all;
+    font-family: 'SF Mono', Menlo, Monaco, monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    color: #c7c7c7;
+    background: #161b22;
+  }
+
+  /* =============================================
+     LIGHT THEME
+     ============================================= */
+  @media (prefers-color-scheme: light) {
+    body {
+      background: #ffffff;
+      color: #202124;
+    }
+    .header {
+      background: #f6f8fa;
+      border-bottom-color: #dfe1e5;
+    }
+    .radicle-icon {
+      fill: #202124;
+    }
+    .header-text h1 {
+      color: #202124;
+    }
+    .header-text .rid {
+      color: #5f6368;
+    }
+    .loading {
+      color: #5f6368;
+    }
+    .loading-spinner {
+      border-color: #dfe1e5;
+      border-top-color: #202124;
+    }
+    .error-container {
+      background: rgba(207, 34, 46, 0.05);
+      border-color: rgba(207, 34, 46, 0.3);
+    }
+    .error-container h2 {
+      color: #cf222e;
+    }
+    .error-container p {
+      color: #57606a;
+    }
+    .error-container ul {
+      color: #57606a;
+    }
+    .seed-btn {
+      background: #f6f8fa;
+      border-color: #d0d7de;
+      color: #24292f;
+    }
+    .seed-btn:hover {
+      background: #e8eaed;
+    }
+    .seed-btn:disabled {
+      background: #f6f8fa;
+      color: #8c959f;
+      border-color: #d0d7de;
+    }
+    .seed-status.seeding {
+      background: rgba(99, 99, 99, 0.1);
+      border-color: rgba(99, 99, 99, 0.3);
+      color: #57606a;
+    }
+    .seed-status.success {
+      background: rgba(26, 127, 55, 0.1);
+      border-color: rgba(26, 127, 55, 0.3);
+      color: #1a7f37;
+    }
+    .seed-status.error {
+      background: rgba(207, 34, 46, 0.1);
+      border-color: rgba(207, 34, 46, 0.3);
+      color: #cf222e;
+    }
+    .section h3 {
+      color: #57606a;
+    }
+    .section h3 .count {
+      background: #e8eaed;
+      color: #5f6368;
+    }
+    .repo-item {
+      background: #ffffff;
+      border-color: #d0d7de;
+    }
+    .repo-item:hover {
+      border-color: #8c959f;
+      background: #f6f8fa;
+    }
+    .repo-item-name {
+      color: #202124;
+    }
+    .repo-item-rid {
+      color: #57606a;
+      background: #e8eaed;
+    }
+    .repo-item-desc {
+      color: #57606a;
+    }
+    .empty-state {
+      color: #8c959f;
+    }
+    .network-section {
+      border-top-color: #d0d7de;
+    }
+    .network-section h3 {
+      color: #57606a;
+    }
+    .network-section .count {
+      background: #e8eaed;
+      color: #5f6368;
+    }
+    .network-desc {
+      color: #8c959f;
+    }
+    .repo-item.network {
+      border-color: #d0d7de;
+    }
+    .repo-item.network:hover {
+      border-color: #8c959f;
+      background: #f6f8fa;
+    }
+    .repo-item-meta .seeders {
+      color: #57606a;
+    }
+    .loading-inline {
+      color: #5f6368;
+    }
+    .loading-inline .spinner {
+      border-color: #dfe1e5;
+      border-top-color: #202124;
+    }
+    .connection-error {
+      background: #f6f8fa;
+      border-color: #d0d7de;
+    }
+    .connection-error h2 {
+      color: #24292f;
+    }
+    .connection-error p {
+      color: #57606a;
+    }
+    .invalid-rid-error {
+      background: rgba(207, 34, 46, 0.05);
+      border-color: rgba(207, 34, 46, 0.3);
+    }
+    .invalid-rid-error h2 {
+      color: #cf222e;
+    }
+    .invalid-rid-error p {
+      color: #57606a;
+    }
+    .invalid-rid-error code {
+      background: #f1f3f4;
+      color: #cf222e;
+    }
+    .invalid-rid-error .example code {
+      color: #57606a;
+    }
+
+    /* Code browser light overrides */
+    .repo-header h2 {
+      color: #202124;
+    }
+    .repo-header .description {
+      color: #57606a;
+    }
+    .repo-meta {
+      color: #57606a;
+    }
+    .repo-meta-item .value {
+      color: #24292f;
+    }
+
+    .metadata-notice {
+      background: rgba(9, 105, 218, 0.1);
+      border-color: rgba(9, 105, 218, 0.3);
+      color: #0969da;
+    }
+
+    .stats-bar {
+      background: #f6f8fa;
+      border-color: #d0d7de;
+      color: #57606a;
+    }
+    .stat-item strong {
+      color: #24292f;
+    }
+
+    .breadcrumb a {
+      color: #0969da;
+    }
+    .breadcrumb .separator {
+      color: #8c959f;
+    }
+    .breadcrumb .current {
+      color: #24292f;
+    }
+
+    .last-commit {
+      background: #f6f8fa;
+      border-color: #d0d7de;
+    }
+    .last-commit .commit-author {
+      color: #24292f;
+    }
+    .last-commit .commit-message {
+      color: #57606a;
+    }
+    .last-commit .commit-sha {
+      color: #0969da;
+    }
+    .last-commit .commit-time {
+      color: #8c959f;
+    }
+
+    .file-tree {
+      border-color: #d0d7de;
+    }
+    .file-tree-row {
+      border-bottom-color: #eaeef2;
+      color: #24292f;
+    }
+    .file-tree-row:hover {
+      background: #f6f8fa;
+    }
+    .file-tree-row .icon.folder {
+      color: #54aeff;
+    }
+    .file-tree-row .icon.file {
+      color: #57606a;
+    }
+
+    .readme-section {
+      border-color: #d0d7de;
+    }
+    .readme-header {
+      background: #f6f8fa;
+      border-bottom-color: #d0d7de;
+      color: #24292f;
+    }
+    .readme-body {
+      background: #ffffff;
+    }
+
+    .markdown-body {
+      color: #24292f;
+    }
+    .markdown-body h1, .markdown-body h2, .markdown-body h3,
+    .markdown-body h4, .markdown-body h5, .markdown-body h6 {
+      color: #1f2328;
+    }
+    .markdown-body h1, .markdown-body h2 {
+      border-bottom-color: #d0d7de;
+    }
+    .markdown-body a {
+      color: #0969da;
+    }
+    .markdown-body code {
+      background: #eff1f3;
+    }
+    .markdown-body pre {
+      background: #f6f8fa;
+    }
+    .markdown-body blockquote {
+      border-left-color: #d0d7de;
+      color: #57606a;
+    }
+    .markdown-body th, .markdown-body td {
+      border-color: #d0d7de;
+    }
+    .markdown-body th {
+      background: #f6f8fa;
+      color: #24292f;
+    }
+    .markdown-body hr {
+      border-top-color: #d0d7de;
+    }
+
+    .file-viewer {
+      border-color: #d0d7de;
+    }
+    .file-viewer-header {
+      background: #f6f8fa;
+      border-bottom-color: #d0d7de;
+      color: #57606a;
+    }
+    .file-viewer-content {
+      background: #ffffff;
+    }
+    .file-viewer-content .line-number {
+      color: #8c959f;
+      background: #f6f8fa;
+      border-right-color: #d0d7de;
+    }
+    .file-viewer-content .line-code {
+      color: #24292f;
+    }
+    .file-viewer-binary {
+      background: #ffffff;
+      color: #57606a;
+    }
+    .file-viewer-plain {
+      background: #ffffff;
+      color: #24292f;
+    }
+  }
+/* Paste CSS here (everything between <style> and </style>) */

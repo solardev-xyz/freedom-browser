@@ -1,6 +1,7 @@
 const log = require('./logger');
-const { activeBzzBases, activeIpfsBases } = require('./state');
-const { getBeeApiUrl, getIpfsGatewayUrl } = require('./service-registry');
+const { activeBzzBases, activeIpfsBases, activeRadBases } = require('./state');
+const { getBeeApiUrl, getIpfsGatewayUrl, getRadicleApiUrl } = require('./service-registry');
+const { loadSettings } = require('./settings-store');
 const { URL } = require('url');
 
 const sanitizeUrlForLog = (rawUrl) => {
@@ -109,6 +110,31 @@ function convertProtocolUrl(url) {
     return { converted: true, url: gatewayUrl };
   }
 
+  // Handle rad: and rad:// protocols
+  // rad:RID or rad://RID -> http://127.0.0.1:8780/api/v1/repos/RID
+  // rad:RID/tree/branch/path -> http://127.0.0.1:8780/api/v1/repos/RID/tree/branch/path
+  if (url.startsWith('rad:')) {
+    if (loadSettings().enableRadicleIntegration !== true) {
+      return { converted: false, url };
+    }
+    // Handle both rad:RID and rad://RID formats
+    const remainder = url.startsWith('rad://') ? url.slice(6) : url.slice(4);
+    const radicleApiUrl = getRadicleApiUrl();
+    // Parse the remainder to extract RID and optional path
+    const slashIndex = remainder.indexOf('/');
+    const rid = slashIndex === -1 ? remainder : remainder.slice(0, slashIndex);
+    const pathPart = slashIndex === -1 ? '' : remainder.slice(slashIndex);
+
+    // Validate RID: must start with z followed by base58 characters
+    if (!/^z[1-9A-HJ-NP-Za-km-z]{20,60}$/.test(rid)) {
+      log.warn(`[rewrite] Blocked invalid Radicle RID: ${rid}`);
+      return { converted: false, url };
+    }
+
+    const gatewayUrl = `${radicleApiUrl}/api/v1/repos/${rid}${pathPart}`;
+    return { converted: true, url: gatewayUrl };
+  }
+
   return { converted: false, url };
 }
 
@@ -141,6 +167,9 @@ function shouldRewriteRequest(requestUrl, baseUrl) {
   }
   if (normalizedPath.startsWith('/ipfs/') || normalizedPath.startsWith('/ipns/')) {
     return { shouldRewrite: false, reason: 'already_ipfs_path' };
+  }
+  if (normalizedPath.startsWith('/api/v1/repos/')) {
+    return { shouldRewrite: false, reason: 'already_rad_path' };
   }
 
   // Don't rewrite cross-origin requests
@@ -237,6 +266,22 @@ function registerRequestRewriter(targetSession) {
         if (redirectTarget) {
           log.info(
             `[rewrite:ipfs] ${sanitizeUrlForLog(details.url)} -> ${sanitizeUrlForLog(redirectTarget)}`
+          );
+          callback({ redirectURL: redirectTarget });
+          return;
+        }
+      }
+    }
+
+    // Check for Radicle base
+    const radBaseUrl = activeRadBases.get(webContentsId);
+    if (radBaseUrl && loadSettings().enableRadicleIntegration === true) {
+      const { shouldRewrite } = shouldRewriteRequest(details.url, radBaseUrl);
+      if (shouldRewrite) {
+        const redirectTarget = buildRewriteTarget(details.url, radBaseUrl);
+        if (redirectTarget) {
+          log.info(
+            `[rewrite:rad] ${sanitizeUrlForLog(details.url)} -> ${sanitizeUrlForLog(redirectTarget)}`
           );
           callback({ redirectURL: redirectTarget });
           return;

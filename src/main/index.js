@@ -47,6 +47,8 @@ const { registerFaviconsIpc } = require('./favicons');
 const { registerEnsIpc } = require('./ens-resolver');
 const { registerBeeIpc, stopBee, startBee } = require('./bee-manager');
 const { registerIpfsIpc, stopIpfs, startIpfs } = require('./ipfs-manager');
+const { registerRadicleIpc, stopRadicle, startRadicle } = require('./radicle-manager');
+const { registerGithubBridgeIpc, cleanupTempDirs } = require('./github-bridge');
 const { registerServiceRegistryIpc } = require('./service-registry');
 const { createMainWindow, setWindowTitle, getMainWindows } = require('./windows/mainWindow');
 const { migrateUserData } = require('./migrate-user-data');
@@ -91,6 +93,8 @@ async function bootstrap() {
   registerEnsIpc();
   registerBeeIpc();
   registerIpfsIpc();
+  registerRadicleIpc();
+  registerGithubBridgeIpc();
   registerServiceRegistryIpc();
   registerRequestRewriter(defaultSession);
   allowInteractivePermissions(defaultSession);
@@ -103,6 +107,9 @@ async function bootstrap() {
   }
   if (settings.startIpfsAtLaunch) {
     startIpfs();
+  }
+  if (settings.enableRadicleIntegration && settings.startRadicleAtLaunch) {
+    startRadicle();
   }
 
   const mainWindow = createMainWindow();
@@ -172,8 +179,11 @@ app.on('before-quit', async (event) => {
   log.info('[App] Closing history database...');
   closeHistoryDb();
 
-  log.info('[App] Waiting for Bee and IPFS to stop...');
-  await Promise.all([stopBee(), stopIpfs()]);
+  // Clean up any GitHub bridge temp directories
+  cleanupTempDirs();
+
+  log.info('[App] Waiting for Bee, IPFS, and Radicle to stop...');
+  await Promise.all([stopBee(), stopIpfs(), stopRadicle()]);
   log.info('[App] All processes stopped, quitting...');
 
   app.quit();

@@ -137,6 +137,22 @@
   padding-top: 0;
 }
 
+.settings-toggle-row.sub-toggle {
+  padding-left: 16px;
+}
+
+.settings-toggle-row.sub-toggle.disabled {
+  opacity: 0.55;
+}
+
+.settings-toggle-row.sub-toggle.disabled .toggle-switch {
+  pointer-events: none;
+}
+
+.settings-toggle-row.sub-toggle.disabled .toggle-switch input:checked + .toggle-slider {
+  background: var(--border);
+}
+
 .toggle-label {
   font-size: 13px;
   color: var(--text);

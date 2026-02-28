@@ -9,6 +9,7 @@ module.exports = [
       'out/**',
       'coverage/**',
       'node_modules/**',
+      'src/renderer/vendor/**',
       'bee-bin/**',
       'ipfs-bin/**',
       'bee-data/**',
