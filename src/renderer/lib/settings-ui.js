@@ -1,6 +1,7 @@
 // Settings modal UI
 import { pushDebug } from './debug.js';
 import { setMenuOpen } from './menus.js';
+import { refreshRadicleBinaryAvailability } from './radicle-ui.js';
 
 const electronAPI = window.electronAPI;
 
@@ -14,6 +15,7 @@ let startIpfsAtLaunchCheckbox = null;
 let enableRadicleIntegrationCheckbox = null;
 let startRadicleRow = null;
 let startRadicleAtLaunchCheckbox = null;
+let radicleGitWarning = null;
 let autoUpdateCheckbox = null;
 let experimentalSection = null;
 let isWindows = false;
@@ -39,6 +41,28 @@ const updateRadicleSettingsVisibility = () => {
   startRadicleRow?.classList.toggle('disabled', !enabled);
   if (startRadicleAtLaunchCheckbox) {
     startRadicleAtLaunchCheckbox.disabled = !enabled;
+  }
+};
+
+const updateRadicleGitWarning = async () => {
+  if (!radicleGitWarning) return;
+
+  radicleGitWarning.textContent = '';
+  radicleGitWarning.hidden = true;
+
+  if (isWindows) {
+    return;
+  }
+
+  try {
+    const availability = await refreshRadicleBinaryAvailability();
+    if (availability?.startBlocked && availability.reason) {
+      const { reason } = availability;
+      radicleGitWarning.textContent = reason;
+      radicleGitWarning.hidden = false;
+    }
+  } catch {
+    pushDebug('Failed to refresh Radicle prerequisite warning');
   }
 };
 
@@ -118,6 +142,7 @@ export const initSettings = async () => {
   enableRadicleIntegrationCheckbox = document.getElementById('enable-radicle-integration');
   startRadicleRow = document.getElementById('start-radicle-row');
   startRadicleAtLaunchCheckbox = document.getElementById('start-radicle-at-launch');
+  radicleGitWarning = document.getElementById('radicle-git-warning');
   autoUpdateCheckbox = document.getElementById('auto-update');
   experimentalSection = document.getElementById('experimental-section');
 
@@ -134,6 +159,7 @@ export const initSettings = async () => {
   startIpfsAtLaunchCheckbox?.addEventListener('change', saveSettings);
   enableRadicleIntegrationCheckbox?.addEventListener('change', () => {
     updateRadicleSettingsVisibility();
+    updateRadicleGitWarning();
     saveSettings();
   });
   startRadicleAtLaunchCheckbox?.addEventListener('change', saveSettings);
@@ -155,6 +181,7 @@ export const initSettings = async () => {
         startRadicleAtLaunchCheckbox.checked = settings.startRadicleAtLaunch === true;
       if (autoUpdateCheckbox) autoUpdateCheckbox.checked = settings.autoUpdate !== false;
       updateRadicleSettingsVisibility();
+      await updateRadicleGitWarning();
     }
     settingsModal?.showModal();
   });
