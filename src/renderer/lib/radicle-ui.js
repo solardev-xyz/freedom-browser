@@ -17,6 +17,8 @@ let radicleNodesSection = null;
 
 // Binary availability state
 let radicleBinaryAvailable = true;
+let radicleStartBlocked = false;
+let radicleStartBlockedReason = '';
 
 // Polling state
 let radicleInfoInterval = null;
@@ -197,7 +199,10 @@ const setToggleDisabled = (disabled) => {
   if (disabled) {
     radicleToggleBtn.classList.add('disabled');
     radicleToggleBtn.setAttribute('disabled', 'true');
-    radicleToggleBtn.setAttribute('title', 'Radicle binaries not found');
+    radicleToggleBtn.setAttribute(
+      'title',
+      radicleStartBlockedReason || 'Radicle binaries not found'
+    );
   } else {
     radicleToggleBtn.classList.remove('disabled');
     radicleToggleBtn.removeAttribute('disabled');
@@ -205,14 +210,20 @@ const setToggleDisabled = (disabled) => {
   }
 };
 
-const refreshRadicleBinaryAvailability = () => {
-  if (!window.radicle?.checkBinary) return;
-  window.radicle.checkBinary().then(({ available }) => {
+export const refreshRadicleBinaryAvailability = () => {
+  if (!window.radicle?.checkBinary) return Promise.resolve(null);
+  return window.radicle.checkBinary().then(({ available, startBlocked, reason }) => {
     radicleBinaryAvailable = available;
-    setToggleDisabled(!available);
+    radicleStartBlocked = startBlocked === true;
+    radicleStartBlockedReason = radicleStartBlocked ? reason || '' : '';
+    setToggleDisabled(!available || radicleStartBlocked);
     if (!available) {
       pushDebug('Radicle binaries not found - toggle disabled');
     }
+    if (radicleStartBlocked && radicleStartBlockedReason) {
+      pushDebug(`Radicle start blocked: ${radicleStartBlockedReason}`);
+    }
+    return { available, startBlocked, reason };
   });
 };
 
@@ -278,7 +289,7 @@ export const initRadicleUi = () => {
   // Toggle button listener
   radicleToggleBtn?.addEventListener('click', () => {
     if (!state.enableRadicleIntegration) return;
-    if (!radicleBinaryAvailable) return;
+    if (!radicleBinaryAvailable || radicleStartBlocked) return;
 
     if (state.currentRadicleStatus === 'running' || state.currentRadicleStatus === 'starting') {
       state.suppressRadicleRunningStatus = true;

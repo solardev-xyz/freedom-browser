@@ -3,6 +3,9 @@ const mockSetStatusMessage = jest.fn();
 const mockSetErrorState = jest.fn();
 const mockClearErrorState = jest.fn();
 const mockClearService = jest.fn();
+const mockReaddirSync = jest.fn(() => ['key']);
+const mockExecFileSync = jest.fn();
+const mockExecFile = jest.fn((_file, _args, _opts, cb) => cb(null, '', ''));
 
 jest.mock('./logger', () => ({
   info: jest.fn(),
@@ -54,7 +57,7 @@ jest.mock('fs', () => ({
   existsSync: (filePath) => mockExistsSync(filePath),
   mkdirSync: jest.fn(),
   unlinkSync: jest.fn(),
-  readdirSync: jest.fn(() => ['key']),
+  readdirSync: (...args) => mockReaddirSync(...args),
   readFileSync: jest.fn(() => '{}'),
   writeFileSync: jest.fn(),
 }));
@@ -93,8 +96,8 @@ const mockSpawn = jest.fn((name) => {
 
 jest.mock('child_process', () => ({
   spawn: (...args) => mockSpawn(...args),
-  execFileSync: jest.fn(),
-  execFile: jest.fn((_file, _args, _opts, cb) => cb(null, '', '')),
+  execFileSync: (...args) => mockExecFileSync(...args),
+  execFile: (...args) => mockExecFile(...args),
 }));
 
 jest.mock('net', () => ({
@@ -150,16 +153,29 @@ describe('radicle-manager lifecycle integration', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockSpawnedProcesses.length = 0;
+    mockReaddirSync.mockImplementation(() => ['key']);
+    mockExecFileSync.mockImplementation(() => {});
+    mockExecFile.mockImplementation((_file, _args, _opts, cb) => cb(null, '', ''));
   });
 
   afterEach(async () => {
     await stopRadicle();
   });
 
-  test('starts bundled node/httpd and shuts them down cleanly', async () => {
+  test('creates an identity when needed, then starts bundled node/httpd and shuts them down cleanly', async () => {
+    mockReaddirSync.mockImplementation(() => []);
+
     await startRadicle();
     await new Promise((resolve) => setTimeout(resolve, 1200));
 
+    expect(mockExecFile.mock.calls.some(([file]) => file === 'git')).toBe(true);
+    expect(mockExecFileSync).toHaveBeenCalledWith(
+      expect.stringContaining('rad'),
+      ['auth', '--alias', 'FreedomBrowser'],
+      expect.objectContaining({
+        stdio: 'pipe',
+      })
+    );
     expect(mockSpawn).toHaveBeenCalledTimes(2);
     expect(mockSpawnedProcesses[0].bin).toContain('radicle-node');
     expect(mockSpawnedProcesses[1].bin).toContain('radicle-httpd');
@@ -176,5 +192,43 @@ describe('radicle-manager lifecycle integration', () => {
     expect(mockSpawnedProcesses[1].kills).toContain('SIGTERM');
     expect(mockSpawnedProcesses[0].kills).toContain('SIGTERM');
     expect(mockClearService).toHaveBeenCalledWith('radicle');
+  });
+
+  test('skips the git preflight when an identity already exists', async () => {
+    mockExecFile.mockImplementation((file, _args, _opts, cb) => {
+      if (file === 'git') {
+        cb(new Error('git missing'));
+        return;
+      }
+      cb(null, '', '');
+    });
+
+    await startRadicle();
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+
+    expect(mockExecFile.mock.calls.some(([file]) => file === 'git')).toBe(false);
+    expect(mockExecFileSync).not.toHaveBeenCalled();
+    expect(mockSpawn).toHaveBeenCalledTimes(2);
+  });
+
+  test('fails early when git is missing and a new identity is required', async () => {
+    mockReaddirSync.mockImplementation(() => []);
+    mockExecFile.mockImplementation((file, _args, _opts, cb) => {
+      if (file === 'git') {
+        cb(new Error('git missing'));
+        return;
+      }
+      cb(null, '', '');
+    });
+
+    await startRadicle();
+
+    expect(mockSpawn).not.toHaveBeenCalled();
+    expect(mockExecFileSync).not.toHaveBeenCalled();
+    expect(mockSetStatusMessage).toHaveBeenCalledWith(
+      'radicle',
+      'Git is required to create a Radicle identity. Install Git and try again.'
+    );
+    expect(mockUpdateService).not.toHaveBeenCalled();
   });
 });
