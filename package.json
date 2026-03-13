@@ -18,7 +18,9 @@
   "main": "src/main/index.js",
   "scripts": {
     "start": "electron .",
-    "test": "jest",
+    "test": "npm run test:unit",
+    "test:unit": "jest",
+    "test:coverage": "jest --coverage --runInBand",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
@@ -48,7 +50,6 @@
     "radicle:init": "node scripts/init-radicle.js",
     "radicle:status": "curl -s http://127.0.0.1:8780/api/v1/ | head -c 500",
     "radicle:reset": "rm -rf radicle-data && echo 'Radicle data reset.'",
-    "test:updater": "bash scripts/test-updater.sh",
     "serve:updates": "node scripts/serve-updates.js",
     "start:test-updater": "ENABLE_DEV_UPDATER=true npm start",
     "postinstall": "electron-builder install-app-deps"

@@ -378,13 +378,16 @@ async function startBee() {
         clearTimeout(forceKillTimeout);
         forceKillTimeout = null;
       }
+      if (healthCheckInterval) {
+        clearInterval(healthCheckInterval);
+        healthCheckInterval = null;
+      }
 
       if (currentState !== STATUS.STOPPING) {
         updateState(STATUS.STOPPED, code !== 0 ? `Exited with code ${code}` : null);
       } else {
         updateState(STATUS.STOPPED);
       }
-      if (healthCheckInterval) clearInterval(healthCheckInterval);
       clearService('bee');
 
       if (pendingStart) {
@@ -453,6 +456,10 @@ function stopBee() {
 
     // If we reused an external daemon, just clear state (don't stop it)
     if (currentMode === MODE.REUSED) {
+      if (healthCheckInterval) {
+        clearInterval(healthCheckInterval);
+        healthCheckInterval = null;
+      }
       updateState(STATUS.STOPPED);
       clearService('bee');
       currentMode = MODE.NONE;
@@ -469,6 +476,10 @@ function stopBee() {
 
     // Listen for the process to exit
     const onExit = () => {
+      if (healthCheckInterval) {
+        clearInterval(healthCheckInterval);
+        healthCheckInterval = null;
+      }
       if (forceKillTimeout) {
         clearTimeout(forceKillTimeout);
         forceKillTimeout = null;
@@ -479,10 +490,10 @@ function stopBee() {
     beeProcess.once('close', onExit);
 
     updateState(STATUS.STOPPING);
-    if (healthCheckInterval) clearInterval(healthCheckInterval);
-
-    // Try graceful shutdown via SIGTERM
-    beeProcess.kill('SIGTERM');
+    if (healthCheckInterval) {
+      clearInterval(healthCheckInterval);
+      healthCheckInterval = null;
+    }
 
     // Force kill if it doesn't exit within 5 seconds
     if (forceKillTimeout) clearTimeout(forceKillTimeout);
@@ -493,6 +504,9 @@ function stopBee() {
       }
       forceKillTimeout = null;
     }, 5000);
+
+    // Try graceful shutdown via SIGTERM
+    beeProcess.kill('SIGTERM');
   });
 }
 

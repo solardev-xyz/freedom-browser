@@ -4,6 +4,18 @@ import { pushDebug } from './debug.js';
 import { updateBookmarkButtonVisibility } from './bookmarks-ui.js';
 import { updateGithubBridgeIcon } from './github-bridge-ui.js';
 import {
+  applyEnsSuffix,
+  buildRadicleDisabledUrl,
+  buildViewSourceNavigation,
+  deriveDisplayAddress,
+  deriveSwitchedTabDisplay,
+  extractEnsResolutionMetadata,
+  getBookmarkBarState,
+  getOriginalUrlFromErrorPage,
+  getRadicleDisplayUrl,
+  resolveProtocolIconType,
+} from './navigation-utils.js';
+import {
   formatBzzUrl,
   formatIpfsUrl,
   formatRadicleUrl,
@@ -11,7 +23,6 @@ import {
   deriveBzzBaseFromUrl,
   deriveIpfsBaseFromUrl,
   deriveRadBaseFromUrl,
-  applyEnsNamePreservation,
 } from './url-utils.js';
 import {
   getActiveWebview,
@@ -75,6 +86,18 @@ const setLoading = (isLoading) => {
   updateGithubBridgeIcon();
 };
 
+const storeEnsResolutionMetadata = (targetUri, ensName, { trackProtocol = true } = {}) => {
+  const { knownEnsPairs, resolvedProtocol } = extractEnsResolutionMetadata(targetUri, ensName);
+
+  for (const [key, name] of knownEnsPairs) {
+    state.knownEnsNames.set(key, name);
+  }
+
+  if (trackProtocol && resolvedProtocol) {
+    state.ensProtocols.set(ensName, resolvedProtocol);
+  }
+};
+
 // Track certificate status for current page
 let currentPageSecure = false;
 
@@ -82,30 +105,12 @@ let currentPageSecure = false;
 const updateProtocolIcon = () => {
   if (!protocolIcon) return;
 
-  const value = (addressInput?.value || '').toLowerCase();
-  let protocol = 'http'; // Default to HTTP/globe icon
-
-  if (value.startsWith('ens://') || value.endsWith('.eth') || value.endsWith('.box')) {
-    // For ENS names, show the underlying protocol icon
-    const ensName = value.startsWith('ens://') ? value.slice(6).split('/')[0] : value.split('/')[0];
-    const resolvedProtocol = state.ensProtocols.get(ensName);
-    protocol = resolvedProtocol || 'http'; // Fallback to http if not yet resolved
-  } else if (value.startsWith('bzz://')) {
-    protocol = 'swarm';
-  } else if (value.startsWith('ipfs://')) {
-    protocol = 'ipfs';
-  } else if (value.startsWith('ipns://')) {
-    protocol = 'ipns';
-  } else if (value.startsWith('rad://') && state.enableRadicleIntegration) {
-    protocol = 'radicle';
-  } else if (value.startsWith('freedom://')) {
-    // Internal pages - no icon
-    protocol = null;
-  } else if (value.startsWith('https://') || currentPageSecure) {
-    // HTTPS pages without certificate errors
-    protocol = 'https';
-  }
-  // For empty or any other input, use default 'http'
+  const protocol = resolveProtocolIconType({
+    value: addressInput?.value || '',
+    ensProtocols: state.ensProtocols,
+    enableRadicleIntegration: state.enableRadicleIntegration,
+    currentPageSecure,
+  });
 
   if (protocol) {
     protocolIcon.setAttribute('data-protocol', protocol);
@@ -234,15 +239,6 @@ const syncRadBase = (nextBase) => {
     });
 };
 
-const buildRadicleDisabledUrl = (inputValue = '') => {
-  const errorUrl = new URL('pages/rad-browser.html', window.location.href);
-  errorUrl.searchParams.set('error', 'disabled');
-  if (inputValue) {
-    errorUrl.searchParams.set('input', inputValue);
-  }
-  return errorUrl.toString();
-};
-
 export const loadTarget = (value, displayOverride = null, targetWebview = null) => {
   // Use provided webview or fall back to active webview
   const webview = targetWebview || getActiveWebview();
@@ -274,43 +270,24 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null) 
             return;
           }
           // Build target URI with path suffix
-          let targetUri = result.uri;
-          if (ens.suffix) {
-            try {
-              const composed = new URL(ens.suffix, targetUri);
-              targetUri = composed.toString();
-            } catch {
-              targetUri = `${targetUri.replace(/\/+$/, '')}${ens.suffix}`;
-            }
-          }
+          const targetUri = applyEnsSuffix(result.uri, ens.suffix);
+          storeEnsResolutionMetadata(targetUri, ens.name, { trackProtocol: false });
 
-          // Store ENS name mapping
-          const bzzMatch = targetUri.match(/^bzz:\/\/([a-fA-F0-9]+)/);
-          if (bzzMatch) {
-            state.knownEnsNames.set(bzzMatch[1].toLowerCase(), ens.name);
-          }
-          const ipfsMatch = targetUri.match(/^ipfs:\/\/([A-Za-z0-9]+)/);
-          if (ipfsMatch) {
-            state.knownEnsNames.set(ipfsMatch[1], ens.name);
-          }
-          const ipnsMatch = targetUri.match(/^ipns:\/\/([A-Za-z0-9.-]+)/);
-          if (ipnsMatch) {
-            state.knownEnsNames.set(ipnsMatch[1], ens.name);
-          }
+          const { loadUrl } = buildViewSourceNavigation({
+            value: `view-source:${targetUri}`,
+            bzzRoutePrefix: state.bzzRoutePrefix,
+            homeUrlNormalized,
+            ipfsRoutePrefix: state.ipfsRoutePrefix,
+            ipnsRoutePrefix: state.ipnsRoutePrefix,
+            radicleApiPrefix: state.radicleApiPrefix,
+            knownEnsNames: state.knownEnsNames,
+          });
 
-          // Convert dweb URI to gateway URL
-          let gatewayUrl;
-          if (result.protocol === 'bzz' && bzzMatch) {
-            gatewayUrl = `${state.bzzRoutePrefix}${targetUri.slice(6)}`; // Remove 'bzz://'
-          } else if (result.protocol === 'ipfs' && ipfsMatch) {
-            gatewayUrl = `${state.ipfsRoutePrefix}${targetUri.slice(7)}`; // Remove 'ipfs://'
-          } else if (result.protocol === 'ipns' && ipnsMatch) {
-            gatewayUrl = `${state.ipnsRoutePrefix}${targetUri.slice(7)}`; // Remove 'ipns://'
-          } else {
+          if (loadUrl === `view-source:${targetUri}`) {
             alert(`Unsupported protocol: ${result.protocol}`);
             return;
           }
-          capturedWebview.loadURL(`view-source:${gatewayUrl}`);
+          capturedWebview.loadURL(loadUrl);
         })
         .catch((err) => {
           setLoading(false);
@@ -319,56 +296,18 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null) 
       return;
     }
 
-    // Check for bzz:// URLs
-    const bzzMatch = innerUrl.match(/^bzz:\/\/([a-fA-F0-9]+)(\/.*)?$/);
-    if (bzzMatch) {
-      const hash = bzzMatch[1];
-      const path = bzzMatch[2] || '/';
-      const gatewayUrl = `${state.bzzRoutePrefix}${hash}${path}`;
-      addressInput.value = value;
-      updateProtocolIcon();
-      webview.loadURL(`view-source:${gatewayUrl}`);
-      return;
-    }
-
-    // Check for ipfs:// URLs
-    const ipfsMatch = innerUrl.match(/^ipfs:\/\/([A-Za-z0-9]+)(\/.*)?$/);
-    if (ipfsMatch) {
-      const cid = ipfsMatch[1];
-      const path = ipfsMatch[2] || '';
-      const gatewayUrl = `${state.ipfsRoutePrefix}${cid}${path}`;
-      addressInput.value = value;
-      updateProtocolIcon();
-      webview.loadURL(`view-source:${gatewayUrl}`);
-      return;
-    }
-
-    // Check for ipns:// URLs
-    const ipnsMatch = innerUrl.match(/^ipns:\/\/([A-Za-z0-9.-]+)(\/.*)?$/);
-    if (ipnsMatch) {
-      const name = ipnsMatch[1];
-      const path = ipnsMatch[2] || '';
-      const gatewayUrl = `${state.ipnsRoutePrefix}${name}${path}`;
-      addressInput.value = value;
-      updateProtocolIcon();
-      webview.loadURL(`view-source:${gatewayUrl}`);
-      return;
-    }
-
-    // For other URLs (http/https, already gateway URLs), load directly
-    let displayInner = deriveDisplayValue(
-      innerUrl,
-      state.bzzRoutePrefix,
+    const viewSourceNavigation = buildViewSourceNavigation({
+      value,
+      bzzRoutePrefix: state.bzzRoutePrefix,
       homeUrlNormalized,
-      state.ipfsRoutePrefix,
-      state.ipnsRoutePrefix,
-      state.radicleApiPrefix
-    );
-    displayInner = applyEnsNamePreservation(displayInner, state.knownEnsNames);
-    const displayUrl = `view-source:${displayInner || innerUrl}`;
-    addressInput.value = displayUrl;
+      ipfsRoutePrefix: state.ipfsRoutePrefix,
+      ipnsRoutePrefix: state.ipnsRoutePrefix,
+      radicleApiPrefix: state.radicleApiPrefix,
+      knownEnsNames: state.knownEnsNames,
+    });
+    addressInput.value = viewSourceNavigation.addressValue;
     updateProtocolIcon();
-    webview.loadURL(value);
+    webview.loadURL(viewSourceNavigation.loadUrl);
     return;
   }
 
@@ -423,38 +362,11 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null) 
           return;
         }
 
-        let targetUri = result.uri;
-        if (ens.suffix) {
-          try {
-            const composed = new URL(ens.suffix, targetUri);
-            targetUri = composed.toString();
-          } catch {
-            targetUri = `${targetUri.replace(/\/+$/, '')}${ens.suffix}`;
-          }
-        }
+        const targetUri = applyEnsSuffix(result.uri, ens.suffix);
 
         pushDebug(`ENS resolved: ${ens.name} -> ${targetUri}`);
 
-        // Store ENS name mapping for Swarm
-        const bzzMatch = targetUri.match(/^bzz:\/\/([a-fA-F0-9]+)/);
-        if (bzzMatch) {
-          state.knownEnsNames.set(bzzMatch[1].toLowerCase(), ens.name);
-          state.ensProtocols.set(ens.name, 'swarm');
-        }
-
-        // Store ENS name mapping for IPFS
-        const ipfsMatch = targetUri.match(/^ipfs:\/\/([A-Za-z0-9]+)/);
-        if (ipfsMatch) {
-          state.knownEnsNames.set(ipfsMatch[1], ens.name);
-          state.ensProtocols.set(ens.name, 'ipfs');
-        }
-
-        // Store ENS name mapping for IPNS
-        const ipnsMatch = targetUri.match(/^ipns:\/\/([A-Za-z0-9.-]+)/);
-        if (ipnsMatch) {
-          state.knownEnsNames.set(ipnsMatch[1], ens.name);
-          state.ensProtocols.set(ens.name, 'ipfs'); // IPNS uses IPFS icon
-        }
+        storeEnsResolutionMetadata(targetUri, ens.name);
 
         // Pass captured webview to ensure we load in the correct tab
         loadTarget(
@@ -476,7 +388,7 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null) 
   if (value.trim().toLowerCase().startsWith('rad:') || value.trim().toLowerCase().startsWith('rad://')) {
     if (!state.enableRadicleIntegration) {
       pushDebug(RADICLE_DISABLED_MESSAGE);
-      const disabledUrl = buildRadicleDisabledUrl(value.trim());
+      const disabledUrl = buildRadicleDisabledUrl(window.location.href, value.trim());
       addressInput.value = value.trim();
       navState.pendingNavigationUrl = disabledUrl;
       navState.hasNavigatedDuringCurrentLoad = false;
@@ -644,14 +556,15 @@ export const loadHomePage = () => {
 // Shared error-page retry logic used by both reload variants and the reload button
 const retryErrorPageOrReload = (webview, hard) => {
   const current = webview.getURL();
+  const originalUrl = getOriginalUrlFromErrorPage(current, errorUrlBase);
+  if (originalUrl) {
+    pushDebug(`Retrying original URL from error page: ${originalUrl}`);
+    loadTarget(originalUrl);
+    return;
+  }
   if (current.startsWith(errorUrlBase) || current.includes('/error.html?')) {
     try {
-      const originalUrl = new URL(current).searchParams.get('url');
-      if (originalUrl) {
-        pushDebug(`Retrying original URL from error page: ${originalUrl}`);
-        loadTarget(originalUrl);
-        return;
-      }
+      new URL(current);
     } catch (err) {
       pushDebug(`[Nav] Could not extract original URL from error page: ${err.message}`);
     }
@@ -676,22 +589,6 @@ export const hardReloadPage = () => {
   const webview = getActiveWebview();
   if (!webview) return;
   retryErrorPageOrReload(webview, true);
-};
-
-// Convert rad-browser.html URL back to rad:// format
-const getRadicleDisplayUrl = (url) => {
-  if (!url || !url.includes('rad-browser.html')) return null;
-  try {
-    const parsed = new URL(url);
-    const rid = parsed.searchParams.get('rid');
-    const path = parsed.searchParams.get('path') || '';
-    if (rid) {
-      return `rad://${rid}${path}`;
-    }
-  } catch {
-    // Ignore parse errors
-  }
-  return null;
 };
 
 const handleNavigationEvent = (event) => {
@@ -720,15 +617,15 @@ const handleNavigationEvent = (event) => {
       if (event.url === homeUrl || event.url === homeUrlNormalized) {
         return;
       }
-      let displayInner = deriveDisplayValue(
-        event.url,
-        state.bzzRoutePrefix,
+      const displayInner = deriveDisplayAddress({
+        url: event.url,
+        bzzRoutePrefix: state.bzzRoutePrefix,
         homeUrlNormalized,
-        state.ipfsRoutePrefix,
-        state.ipnsRoutePrefix,
-        state.radicleApiPrefix
-      );
-      displayInner = applyEnsNamePreservation(displayInner, state.knownEnsNames);
+        ipfsRoutePrefix: state.ipfsRoutePrefix,
+        ipnsRoutePrefix: state.ipnsRoutePrefix,
+        radicleApiPrefix: state.radicleApiPrefix,
+        knownEnsNames: state.knownEnsNames,
+      });
       const displayUrl = `view-source:${displayInner || event.url}`;
       addressInput.value = displayUrl;
       pushDebug(`[AddressBar] View source: ${displayUrl}`);
@@ -801,15 +698,15 @@ const handleNavigationEvent = (event) => {
       }
       electronAPI?.setWindowTitle?.('Error');
     } else {
-      let derived = deriveDisplayValue(
-        event.url,
-        state.bzzRoutePrefix,
+      const derived = deriveDisplayAddress({
+        url: event.url,
+        bzzRoutePrefix: state.bzzRoutePrefix,
         homeUrlNormalized,
-        state.ipfsRoutePrefix,
-        state.ipnsRoutePrefix,
-        state.radicleApiPrefix
-      );
-      derived = applyEnsNamePreservation(derived, state.knownEnsNames);
+        ipfsRoutePrefix: state.ipfsRoutePrefix,
+        ipnsRoutePrefix: state.ipnsRoutePrefix,
+        radicleApiPrefix: state.radicleApiPrefix,
+        knownEnsNames: state.knownEnsNames,
+      });
 
       // Don't clear address bar if navigating to about:blank and it has a value
       // (happens during "open in new window" before loadTarget runs)
@@ -848,17 +745,20 @@ const handleNavigationEvent = (event) => {
 // Like Chrome: bookmark bar always shows on new tab page; toggle only affects other pages
 const updateBookmarkBarState = (url) => {
   if (!bookmarksBar) return;
-  const isHomePage = url === homeUrlNormalized || url === homeUrl || !url;
-  if (isHomePage) {
+  const bookmarkBarState = getBookmarkBarState({
+    url,
+    bookmarkBarOverride,
+    homeUrl,
+    homeUrlNormalized,
+  });
+  if (bookmarkBarState.visible) {
     // Always show on new tab page regardless of toggle
-    bookmarksBar.classList.remove('hidden');
-  } else if (bookmarkBarOverride) {
     bookmarksBar.classList.remove('hidden');
   } else {
     bookmarksBar.classList.add('hidden');
   }
   // Disable the menu item on the new tab page (toggle has no effect there)
-  electronAPI?.setBookmarkBarToggleEnabled?.(!isHomePage);
+  electronAPI?.setBookmarkBarToggleEnabled?.(!bookmarkBarState.isHomePage);
 };
 
 // Toggle bookmark bar visibility and persist to settings
@@ -1009,38 +909,11 @@ export const initNavigation = () => {
             return;
           }
 
-          let targetUri = result.uri;
-          if (ens.suffix) {
-            try {
-              const composed = new URL(ens.suffix, targetUri);
-              targetUri = composed.toString();
-            } catch {
-              targetUri = `${targetUri.replace(/\/+$/, '')}${ens.suffix}`;
-            }
-          }
+          const targetUri = applyEnsSuffix(result.uri, ens.suffix);
 
           pushDebug(`ENS resolved: ${ens.name} -> ${targetUri}`);
 
-          // Store ENS name mapping for Swarm
-          const bzzMatch = targetUri.match(/^bzz:\/\/([a-fA-F0-9]+)/);
-          if (bzzMatch) {
-            state.knownEnsNames.set(bzzMatch[1].toLowerCase(), ens.name);
-            state.ensProtocols.set(ens.name, 'swarm');
-          }
-
-          // Store ENS name mapping for IPFS
-          const ipfsMatch = targetUri.match(/^ipfs:\/\/([A-Za-z0-9]+)/);
-          if (ipfsMatch) {
-            state.knownEnsNames.set(ipfsMatch[1], ens.name);
-            state.ensProtocols.set(ens.name, 'ipfs');
-          }
-
-          // Store ENS name mapping for IPNS
-          const ipnsMatch = targetUri.match(/^ipns:\/\/([A-Za-z0-9.-]+)/);
-          if (ipnsMatch) {
-            state.knownEnsNames.set(ipnsMatch[1], ens.name);
-            state.ensProtocols.set(ens.name, 'ipfs'); // IPNS uses IPFS icon
-          }
+          storeEnsResolutionMetadata(targetUri, ens.name);
 
           // Pass captured webview to ensure we load in the correct tab
           loadTarget(targetUri, 'ens://' + ens.name + (ens.suffix || ''), capturedWebview);
@@ -1259,34 +1132,18 @@ export const initNavigation = () => {
 
           // If tab is loading, prefer addressBarSnapshot (what user typed/was shown)
           // Otherwise derive from the actual URL
-          let display;
-          if (isLoading && tabNavState.addressBarSnapshot) {
-            display = tabNavState.addressBarSnapshot;
-          } else {
-            // Handle view-source URLs - derive display from inner URL
-            const urlToDerive = url.startsWith('view-source:') ? url.slice(12) : url;
-            // Check for internal pages first
-            const switchedInternalPage = getInternalPageName(urlToDerive);
-            if (switchedInternalPage && switchedInternalPage !== 'home') {
-              display = `freedom://${switchedInternalPage}`;
-            } else {
-              display = deriveDisplayValue(
-                urlToDerive,
-                state.bzzRoutePrefix,
-                homeUrlNormalized,
-                state.ipfsRoutePrefix,
-                state.ipnsRoutePrefix,
-                state.radicleApiPrefix
-              );
-              // Apply ENS name preservation to show ens:// URLs instead of resolved bzz/ipfs URLs
-              display = applyEnsNamePreservation(display, state.knownEnsNames);
-            }
-            if (display === homeUrlNormalized) display = '';
-            // Prepend view-source: for view-source tabs
-            if (isViewingSource && display) {
-              display = `view-source:${display}`;
-            }
-          }
+          const display = deriveSwitchedTabDisplay({
+            url,
+            isLoading,
+            addressBarSnapshot: tabNavState.addressBarSnapshot,
+            isViewingSource,
+            bzzRoutePrefix: state.bzzRoutePrefix,
+            homeUrlNormalized,
+            ipfsRoutePrefix: state.ipfsRoutePrefix,
+            ipnsRoutePrefix: state.ipnsRoutePrefix,
+            radicleApiPrefix: state.radicleApiPrefix,
+            knownEnsNames: state.knownEnsNames,
+          });
           // Don't clear address bar if it has a value and we're on about:blank
           // (happens during "open in new window" before loadTarget runs)
           if (url === 'about:blank' && addressInput.value) {
