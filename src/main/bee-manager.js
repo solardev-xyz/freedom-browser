@@ -329,7 +329,10 @@ async function checkHealth() {
 }
 
 function startHealthCheck() {
-  if (healthCheckInterval) clearInterval(healthCheckInterval);
+  if (healthCheckInterval) {
+    clearInterval(healthCheckInterval);
+    healthCheckInterval = null;
+  }
   healthCheckInterval = setInterval(async () => {
     const isHealthy = await checkHealth();
     if (!isHealthy && currentState === STATUS.RUNNING) {
@@ -449,7 +452,10 @@ async function startBee() {
       } else {
         updateState(STATUS.STOPPED);
       }
-      if (healthCheckInterval) clearInterval(healthCheckInterval);
+      if (healthCheckInterval) {
+        clearInterval(healthCheckInterval);
+        healthCheckInterval = null;
+      }
       clearService('bee');
 
       if (pendingStart) {
@@ -518,6 +524,10 @@ function stopBee() {
 
     // If we reused an external daemon, just clear state (don't stop it)
     if (currentMode === MODE.REUSED) {
+      if (healthCheckInterval) {
+        clearInterval(healthCheckInterval);
+        healthCheckInterval = null;
+      }
       updateState(STATUS.STOPPED);
       clearService('bee');
       currentMode = MODE.NONE;
@@ -526,6 +536,10 @@ function stopBee() {
     }
 
     if (!beeProcess) {
+      if (healthCheckInterval) {
+        clearInterval(healthCheckInterval);
+        healthCheckInterval = null;
+      }
       updateState(STATUS.STOPPED);
       clearService('bee');
       resolve();
@@ -544,7 +558,10 @@ function stopBee() {
     beeProcess.once('close', onExit);
 
     updateState(STATUS.STOPPING);
-    if (healthCheckInterval) clearInterval(healthCheckInterval);
+    if (healthCheckInterval) {
+      clearInterval(healthCheckInterval);
+      healthCheckInterval = null;
+    }
 
     // Try graceful shutdown via SIGTERM
     beeProcess.kill('SIGTERM');
