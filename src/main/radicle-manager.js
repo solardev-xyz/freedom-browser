@@ -804,6 +804,10 @@ function stopRadicle() {
       if (radicleHttpdProcess) {
         // We spawned httpd against the system node — kill it
         radicleHttpdProcess.once('close', () => {
+          if (forceKillTimeout) {
+            clearTimeout(forceKillTimeout);
+            forceKillTimeout = null;
+          }
           updateState(STATUS.STOPPED);
           clearService('radicle');
           currentMode = MODE.NONE;
@@ -813,11 +817,13 @@ function stopRadicle() {
         radicleHttpdProcess.kill('SIGTERM');
 
         // Force kill if httpd doesn't exit within 5 seconds
-        setTimeout(() => {
+        if (forceKillTimeout) clearTimeout(forceKillTimeout);
+        forceKillTimeout = setTimeout(() => {
           if (radicleHttpdProcess) {
             log.warn('[Radicle] Force killing reused-mode httpd...');
             radicleHttpdProcess.kill('SIGKILL');
           }
+          forceKillTimeout = null;
         }, 5000);
         return;
       }
