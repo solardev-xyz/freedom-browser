@@ -8,7 +8,7 @@
  */
 
 import { walletState, registerScreenHider } from './wallet-state.js';
-import { formatRawTokenBalance } from './wallet-utils.js';
+import { formatRawTokenBalance, formatBytes } from './wallet-utils.js';
 import { fetchBeeJson } from './bee-api.js';
 
 const PRESETS = [
@@ -161,7 +161,7 @@ function renderBatchList(stamps) {
     sizeLabel.textContent = 'Size';
     const sizeValue = document.createElement('span');
     sizeValue.className = 'stamp-batch-value';
-    sizeValue.textContent = formatSize(batch.sizeBytes);
+    sizeValue.textContent = batch.sizeBytes > 0 ? formatBytes(batch.sizeBytes) : '--';
     sizeRow.appendChild(sizeLabel);
     sizeRow.appendChild(sizeValue);
     card.appendChild(sizeRow);
@@ -203,16 +203,6 @@ function renderBatchList(stamps) {
 
     batchListContainer.appendChild(card);
   });
-}
-
-function formatSize(bytes) {
-  if (!bytes || bytes <= 0) return '--';
-  const gb = bytes / (1024 * 1024 * 1024);
-  if (gb >= 1) return `${gb.toFixed(1)} GB`;
-  const mb = bytes / (1024 * 1024);
-  if (mb >= 1) return `${mb.toFixed(0)} MB`;
-  const kb = bytes / 1024;
-  return `${kb.toFixed(0)} KB`;
 }
 
 function formatDuration(seconds) {
@@ -379,9 +369,13 @@ async function pollForUsable() {
 
     if (usable) {
       transitionTo(STATE.USABLE);
-      // Refresh the batch list so the user can see their new batch
+      // Show the batch list with the data we already have
+      const stamps = result.stamps;
       setTimeout(() => {
-        if (isOpen) loadBatchList();
+        if (isOpen) {
+          renderBatchList(stamps);
+          showListView();
+        }
       }, 2000);
       return;
     }
