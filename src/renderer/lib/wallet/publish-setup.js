@@ -191,17 +191,11 @@ async function evaluateSteps() {
     }
   }
 
-  // Main wallet xBZZ balance (to know if user already swapped)
-  if (!beeHasXbzz && mainAddr && mainAddr !== beeAddr && window.wallet?.getBalances) {
-    try {
-      const result = await window.wallet.getBalances(mainAddr);
-      if (result?.success && result.balances) {
-        const xbzzRaw = parseFloat(result.balances[XBZZ_TOKEN_KEY]?.formatted || '0');
-        mainWalletHasXbzz = xbzzRaw > 0;
-      }
-    } catch {
-      // Non-critical
-    }
+  // Main wallet xBZZ balance (to know if user already swapped).
+  // Read from walletState.currentBalances — already kept fresh by balance-display polling.
+  if (!beeHasXbzz && mainAddr && mainAddr.toLowerCase() !== beeAddr?.toLowerCase()) {
+    const xbzzRaw = parseFloat(walletState.currentBalances[XBZZ_TOKEN_KEY]?.formatted || '0');
+    mainWalletHasXbzz = xbzzRaw > 0;
   }
 
   // Tier 2 + sync progress queries (run in parallel when available)

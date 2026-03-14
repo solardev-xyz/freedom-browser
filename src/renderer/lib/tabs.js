@@ -663,8 +663,8 @@ export const createTab = (url = null) => {
 
   // For protocol URLs (ens://, bzz://, ipfs://, etc.), route through the
   // URL resolution pipeline instead of setting webview src directly
-  if (!isDirectUrl && url && onLoadTarget) {
-    setTimeout(() => onLoadTarget(url), 50);
+  if (!isDirectUrl && url) {
+    setTimeout(() => { if (onLoadTarget) onLoadTarget(url); }, 50);
   }
 
   pushDebug(`Created tab ${tabId}`);
