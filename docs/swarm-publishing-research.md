@@ -1095,27 +1095,13 @@ When the user reaches step 5, they need to buy at least one postage batch. The U
 
 1. User sees step 5 active: "Purchase postage stamps"
 2. Clicks "Buy Stamps"
-3. A stamp purchase sub-screen or inline form appears with:
-   - Size selector: preset tiers (1 GB, 5 GB, 10 GB) or a custom input
-   - Duration selector: preset tiers (7 days, 30 days, 90 days) or custom
-   - Estimated cost in xBZZ (from `bee.getStorageCost(size, duration)`)
-   - Current xBZZ balance in the Bee wallet
-   - Confirm button
-4. On confirm, Freedom calls `bee.buyStorage(size, duration)` via IPC
-5. Shows a "Purchasing..." state (transaction takes a few seconds to ~1 minute)
-6. After purchase, the batch becomes `usable` within ~1 minute
-7. The checklist polls until `usable` is true, then step 5 completes
-8. The publish setup shows all steps green — "Ready to publish"
-
-**Default values:**
-
-For a first-time user who just wants to try publishing, suggest:
-
-- Size: 1 GB (depth ~20, the minimum practical tier)
-- Duration: 30 days
-- Cost: estimated dynamically from `bee.getStorageCost()`
-
-These defaults should be enough for experimenting with file uploads and small site publishing without significant cost.
+3. A stamp purchase form appears with preset options (see "First-time stamp defaults" below for tiers). Custom size/duration inputs are deferred to Milestone 1b.
+4. The selected preset shows estimated cost in xBZZ (from `bee.getStorageCost(size, duration)`) alongside the current Bee wallet xBZZ balance.
+5. On confirm, Freedom calls `bee.buyStorage(size, duration)` via IPC.
+6. Shows a "Purchasing..." state (transaction takes a few seconds to ~1 minute).
+7. After purchase, the batch becomes `usable` within ~1 minute.
+8. The checklist polls until `usable` is true, then step 5 completes.
+9. The publish setup shows all steps green — "Ready to publish".
 
 #### Stamp management after setup
 
@@ -1206,7 +1192,7 @@ bee-js should stay behind the service boundary. The renderer should never receiv
   sizeBytes: number,        // total storable bytes
   remainingBytes: number,   // available bytes
   usagePercent: number,     // 0-100
-  ttlSeconds: number,       // estimated remaining lifetime
+  ttlSeconds: number,       // estimated remaining lifetime (derived from current storage price, not exact — assumes price stays static)
   costBzz: string | null,   // original cost if known, formatted
 }
 ```
@@ -1258,7 +1244,7 @@ Custom size and duration inputs are deferred to Milestone 1b.
 
 Decided now to avoid shaping the stamp UI incorrectly:
 
-- **v1: automatic best-fit.** When the user uploads content, Freedom selects the best usable batch automatically. "Best" means: usable, has enough remaining space, longest TTL. If multiple batches qualify, prefer the one with the most remaining space.
+- **v1: automatic best-fit.** When the user uploads content, Freedom selects the best usable batch automatically. "Best" means: usable, has enough remaining space, longest TTL. If multiple batches qualify, prefer the one with the most remaining space. Freedom should use a conservative size estimate when checking whether a batch has enough room — upload size on Swarm is not just raw file bytes, especially for manifests and directories, so a safety margin (e.g. 1.5× raw size) should be applied when comparing against `remainingBytes`.
 - **v2 (later): optional explicit choice.** Add a batch selector to the upload UI for users who want control. The automatic policy remains the default.
 
 This means the stamp management UI does not need a "set as default batch" concept in v1. It just needs to show which batches exist and let the user extend or buy more.
