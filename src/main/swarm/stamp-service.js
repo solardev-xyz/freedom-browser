@@ -153,44 +153,39 @@ function registerSwarmIpc() {
 }
 
 /**
+ * Fetch the Bee wallet's xBZZ balance in PLUR (raw BigInt).
+ * Returns null if the balance cannot be determined.
+ */
+async function getBzzBalance() {
+  const bee = getBee();
+  const walletData = await bee.getWalletBalance();
+  if (walletData?.bzzBalance && typeof walletData.bzzBalance.toPLURBigInt === 'function') {
+    return walletData.bzzBalance.toPLURBigInt();
+  }
+  return null;
+}
+
+/**
  * Check if the Bee wallet has enough xBZZ for the given storage purchase.
+ * Uses exact PLUR values for comparison, not rounded display strings.
  * Returns an error string if insufficient, or null if OK.
  */
 async function checkBzzSufficiency(sizeGB, durationDays) {
   try {
     const bee = getBee();
-    const { getBeeApiUrl } = require('../service-registry');
-    const http = require('http');
 
-    // Get cost estimate
     const cost = await bee.getStorageCost(
       Size.fromGigabytes(sizeGB),
       Duration.fromDays(durationDays)
     );
-    const costStr = cost.toSignificantDigits(4);
 
-    // Get wallet balance from Bee API
-    const walletUrl = `${getBeeApiUrl()}/wallet`;
-    const walletData = await new Promise((resolve, reject) => {
-      http.get(walletUrl, (res) => {
-        let body = '';
-        res.on('data', (chunk) => { body += chunk; });
-        res.on('end', () => {
-          try { resolve(JSON.parse(body)); } catch { resolve(null); }
-        });
-        res.on('error', reject);
-      }).on('error', reject);
-    });
+    const costPlur = cost.toPLURBigInt();
+    const bzzBalance = await getBzzBalance();
 
-    if (!walletData?.bzzBalance) return null; // Can't check — let Bee handle it
-
-    const bzzBalance = BigInt(walletData.bzzBalance);
-    // Cost is in BZZ (16 decimals). Convert the significant-digits string to raw PLUR.
-    const costNum = parseFloat(costStr);
-    const costPlur = BigInt(Math.ceil(costNum * 1e16));
+    if (bzzBalance === null) return null; // Can't check — let Bee handle it
 
     if (costPlur > 0n && bzzBalance < costPlur) {
-      return `Insufficient xBZZ. Estimated cost is ~${costStr} xBZZ.`;
+      return `Insufficient xBZZ. Estimated cost is ~${cost.toSignificantDigits(4)} xBZZ.`;
     }
 
     return null;

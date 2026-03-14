@@ -13,12 +13,14 @@ jest.mock('electron', () => ({
 const mockGetPostageBatches = jest.fn();
 const mockGetStorageCost = jest.fn();
 const mockBuyStorage = jest.fn();
+const mockGetWalletBalance = jest.fn();
 
 jest.mock('@ethersphere/bee-js', () => ({
   Bee: jest.fn().mockImplementation(() => ({
     getPostageBatches: mockGetPostageBatches,
     getStorageCost: mockGetStorageCost,
     buyStorage: mockBuyStorage,
+    getWalletBalance: mockGetWalletBalance,
   })),
   Size: {
     fromGigabytes: jest.fn((gb) => ({ gb })),
@@ -181,6 +183,13 @@ describe('stamp-service', () => {
 
     test('swarm:buy-storage returns batch ID hex string on success', async () => {
       mockBuyStorage.mockResolvedValue({ toHex: () => 'abcdef1234567890' });
+      mockGetStorageCost.mockResolvedValue({
+        toPLURBigInt: () => 1000n,
+        toSignificantDigits: () => '0.001',
+      });
+      mockGetWalletBalance.mockResolvedValue({
+        bzzBalance: { toPLURBigInt: () => 99999999n },
+      });
 
       const result = await invokeIpc('swarm:buy-storage', 1, 30);
       expect(result.success).toBe(true);
@@ -191,7 +200,11 @@ describe('stamp-service', () => {
     test('swarm:buy-storage passes waitForUsable:false and timeout', async () => {
       mockBuyStorage.mockResolvedValue({ toHex: () => 'abc' });
       mockGetStorageCost.mockResolvedValue({
+        toPLURBigInt: () => 1000n,
         toSignificantDigits: () => '0.001',
+      });
+      mockGetWalletBalance.mockResolvedValue({
+        bzzBalance: { toPLURBigInt: () => 99999999n },
       });
 
       await invokeIpc('swarm:buy-storage', 1, 30);
@@ -203,12 +216,46 @@ describe('stamp-service', () => {
       );
     });
 
-    test('swarm:buy-storage handles purchase failure', async () => {
-      mockBuyStorage.mockRejectedValue(new Error('insufficient BZZ balance'));
+    test('swarm:buy-storage rejects when xBZZ balance is insufficient', async () => {
+      mockGetStorageCost.mockResolvedValue({
+        toPLURBigInt: () => 50000000000000000n, // 0.5 BZZ in PLUR
+        toSignificantDigits: () => '0.5',
+      });
+      mockGetWalletBalance.mockResolvedValue({
+        bzzBalance: { toPLURBigInt: () => 10000000000000000n }, // 0.1 BZZ
+      });
 
       const result = await invokeIpc('swarm:buy-storage', 1, 30);
       expect(result.success).toBe(false);
-      expect(result.error).toBe('insufficient BZZ balance');
+      expect(result.error).toContain('Insufficient xBZZ');
+    });
+
+    test('swarm:buy-storage proceeds when pre-check cannot determine balance', async () => {
+      mockBuyStorage.mockResolvedValue({ toHex: () => 'def' });
+      mockGetStorageCost.mockResolvedValue({
+        toPLURBigInt: () => 1000n,
+        toSignificantDigits: () => '0.001',
+      });
+      mockGetWalletBalance.mockRejectedValue(new Error('network error'));
+
+      const result = await invokeIpc('swarm:buy-storage', 1, 30);
+      expect(result.success).toBe(true);
+      expect(result.batchId).toBe('def');
+    });
+
+    test('swarm:buy-storage handles purchase failure', async () => {
+      mockGetStorageCost.mockResolvedValue({
+        toPLURBigInt: () => 1000n,
+        toSignificantDigits: () => '0.001',
+      });
+      mockGetWalletBalance.mockResolvedValue({
+        bzzBalance: { toPLURBigInt: () => 99999999n },
+      });
+      mockBuyStorage.mockRejectedValue(new Error('tx reverted'));
+
+      const result = await invokeIpc('swarm:buy-storage', 1, 30);
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('tx reverted');
     });
 
     test('swarm:buy-storage rejects invalid inputs', async () => {
