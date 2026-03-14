@@ -5,16 +5,16 @@
  * light mode, chequebook deployment, acquire xBZZ, purchase stamps.
  */
 
-import { state, buildBeeUrl } from '../state.js';
+import { state } from '../state.js';
 import { walletState, registerScreenHider } from './wallet-state.js';
+import { isChequebookDeployed } from './wallet-utils.js';
 import { openSend } from './send.js';
 import { normalizeSwarmMode } from './swarm-readiness.js';
+import { fetchBeeJson } from './bee-api.js';
 
 const GNOSIS_CHAIN_ID = 100;
 const XDAI_TOKEN_KEY = '100:native';
-const XBZZ_TOKEN_ADDRESS = '0xdBF3Ea6F5beE45c02255B2c26a16F300502F68da';
-const XBZZ_TOKEN_KEY = `${GNOSIS_CHAIN_ID}:${XBZZ_TOKEN_ADDRESS}`;
-const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
+const XBZZ_TOKEN_KEY = '100:0xdBF3Ea6F5beE45c02255B2c26a16F300502F68da';
 const POLL_MS = 5000;
 
 // DOM references
@@ -72,6 +72,7 @@ export function openPublishSetup() {
   walletState.identityView?.classList.add('hidden');
   publishSetupScreen?.classList.remove('hidden');
 
+  clearBeeWalletCache();
   refreshChecklist();
   startPolling();
 }
@@ -104,15 +105,13 @@ async function refreshChecklist() {
 }
 
 async function evaluateSteps() {
-  const beeApiUrl = buildBeeUrl('');
-
   // Tier 1 queries (always available when Bee is running)
   let nodeResult, addressesResult, chequebookAddrResult;
   try {
     [nodeResult, addressesResult, chequebookAddrResult] = await Promise.all([
-      fetchJson(`${beeApiUrl}/node`),
-      fetchJson(`${beeApiUrl}/addresses`),
-      fetchJson(`${beeApiUrl}/chequebook/address`),
+      fetchBeeJson('/node'),
+      fetchBeeJson('/addresses'),
+      fetchBeeJson('/chequebook/address'),
     ]);
   } catch {
     // Bee API unreachable — return empty state, all steps pending
@@ -137,8 +136,7 @@ async function evaluateSteps() {
   }
 
   const chequebookAddr = chequebookAddrResult.data?.chequebookAddress;
-  const chequebookDeployed =
-    typeof chequebookAddr === 'string' && chequebookAddr !== ZERO_ADDRESS && chequebookAddr.length > 2;
+  const chequebookDeployed = isChequebookDeployed(chequebookAddr);
 
   // Balance check via existing wallet infrastructure (main process IPC)
   let hasXdai = false;
@@ -146,7 +144,6 @@ async function evaluateSteps() {
   const beeAddr = cachedBeeWalletAddress || walletState.fullAddresses.swarm;
   if (beeAddr && window.wallet?.getBalances) {
     try {
-      await clearBeeWalletCache();
       const result = await window.wallet.getBalances(beeAddr);
       if (result?.success && result.balances) {
         const xdaiRaw = parseFloat(result.balances[XDAI_TOKEN_KEY]?.formatted || '0');
@@ -159,19 +156,26 @@ async function evaluateSteps() {
     }
   }
 
-  // Tier 2 queries (only available after chequebook deployment)
+  // Tier 2 + sync progress queries (run in parallel when available)
   let hasXbzz = hasXbzzFromWallet;
   let hasUsableStamps = false;
   let stampsSynced = false;
+  let syncProgress = null;
 
-  if (isLightOrFull && chequebookDeployed) {
-    let walletResult, stampsResult;
+  if (isLightOrFull) {
+    const tier2Promises = [fetchBeeJson('/status')];
+    if (chequebookDeployed) {
+      tier2Promises.push(fetchBeeJson('/wallet'), fetchBeeJson('/stamps'));
+    }
+
+    let statusResult, walletResult, stampsResult;
     try {
-      [walletResult, stampsResult] = await Promise.all([
-        fetchJson(`${beeApiUrl}/wallet`),
-        fetchJson(`${beeApiUrl}/stamps`),
-      ]);
+      const results = await Promise.all(tier2Promises);
+      statusResult = results[0];
+      walletResult = chequebookDeployed ? results[1] : { ok: false, data: null };
+      stampsResult = chequebookDeployed ? results[2] : { ok: false, data: null };
     } catch {
+      statusResult = { ok: false, data: null };
       walletResult = { ok: false, data: null };
       stampsResult = { ok: false, data: null };
     }
@@ -187,26 +191,21 @@ async function evaluateSteps() {
       stampsSynced = true;
       hasUsableStamps = stampsResult.data.stamps.some((s) => s?.usable === true);
     }
-  }
 
-  // Sync progress (for chequebook/postage step)
-  let syncProgress = null;
-  if (isLightOrFull) {
-    try {
-      const statusResult = await fetchJson(`${beeApiUrl}/status`);
-      if (statusResult.ok && statusResult.data?.lastSyncedBlock) {
-        const lastSynced = statusResult.data.lastSyncedBlock;
-        let chainHead = null;
+    if (statusResult.ok && statusResult.data?.lastSyncedBlock) {
+      const lastSynced = statusResult.data.lastSyncedBlock;
+      let chainHead = null;
+      try {
         if (window.wallet?.testProvider) {
           const providerResult = await window.wallet.testProvider(GNOSIS_CHAIN_ID);
           if (providerResult?.success) {
             chainHead = providerResult.blockNumber;
           }
         }
-        syncProgress = { lastSynced, chainHead };
+      } catch {
+        // Non-critical
       }
-    } catch {
-      // Non-critical
+      syncProgress = { lastSynced, chainHead };
     }
   }
 
@@ -378,20 +377,6 @@ function handleBuyStamps() {
 // ============================================
 // Helpers
 // ============================================
-
-async function fetchJson(url) {
-  const response = await fetch(url);
-  const text = await response.text();
-
-  let data;
-  try {
-    data = text ? JSON.parse(text) : null;
-  } catch {
-    data = null;
-  }
-
-  return { ok: response.ok, status: response.status, data };
-}
 
 async function clearBeeWalletCache() {
   const addr = cachedBeeWalletAddress || walletState.fullAddresses.swarm;

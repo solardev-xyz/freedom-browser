@@ -1,4 +1,4 @@
-const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
+import { ZERO_ADDRESS } from './wallet-utils.js';
 
 export function normalizeSwarmMode(mode) {
   if (typeof mode !== 'string') {

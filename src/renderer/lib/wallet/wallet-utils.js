@@ -49,6 +49,12 @@ export function formatBalance(formatted, maxDecimals = 4) {
   });
 }
 
+export const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
+
+export function isChequebookDeployed(address) {
+  return typeof address === 'string' && address !== ZERO_ADDRESS && address.length > 2;
+}
+
 export function formatBytes(bytes) {
   if (bytes === 0) return '0 B';
   const k = 1024;

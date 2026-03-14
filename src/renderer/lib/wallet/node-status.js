@@ -4,8 +4,9 @@
  * Node cards, status badges, Swarm balances, and publishing setup CTA.
  */
 
-import { state, buildBeeUrl } from '../state.js';
+import { state } from '../state.js';
 import { formatBalance } from './wallet-utils.js';
+import { fetchBeeJson } from './bee-api.js';
 import { walletState } from './wallet-state.js';
 import {
   classifySwarmPublishState,
@@ -154,14 +155,14 @@ function subscribeToNodeStatus() {
 
   if (window.ipfs?.onStatusUpdate) {
     const unsubIpfs = window.ipfs.onStatusUpdate(({ status, error }) => {
-      updateIpfsStatus(status, error);
+      updateNodeBadge('ipfs-status-badge', status);
     });
     if (unsubIpfs) nodeStatusUnsubscribers.push(unsubIpfs);
   }
 
   if (window.radicle?.onStatusUpdate) {
-    const unsubRadicle = window.radicle.onStatusUpdate(({ status, error }) => {
-      updateRadicleStatus(status, error);
+    const unsubRadicle = window.radicle.onStatusUpdate(({ status }) => {
+      updateNodeBadge('radicle-status-badge', status);
     });
     if (unsubRadicle) nodeStatusUnsubscribers.push(unsubRadicle);
   }
@@ -177,13 +178,13 @@ async function fetchInitialNodeStatus() {
     }
 
     if (window.ipfs?.getStatus) {
-      const { status, error } = await window.ipfs.getStatus();
-      updateIpfsStatus(status, error);
+      const { status } = await window.ipfs.getStatus();
+      updateNodeBadge('ipfs-status-badge', status);
     }
 
     if (window.radicle?.getStatus) {
-      const { status, error } = await window.radicle.getStatus();
-      updateRadicleStatus(status, error);
+      const { status } = await window.radicle.getStatus();
+      updateNodeBadge('radicle-status-badge', status);
     }
   } catch (err) {
     console.error('[WalletUI] Failed to fetch initial node status:', err);
@@ -282,20 +283,6 @@ async function refreshSwarmRuntimeInfo() {
   updateSwarmUi();
 }
 
-async function fetchBeeJson(endpoint) {
-  const response = await fetch(buildBeeUrl(endpoint));
-  const text = await response.text();
-
-  let data;
-  try {
-    data = text ? JSON.parse(text) : null;
-  } catch {
-    data = null;
-  }
-
-  return { ok: response.ok, status: response.status, data };
-}
-
 function updateSwarmUi() {
   updateSwarmModeUi();
   updateSwarmSectionVisibility();
@@ -378,17 +365,8 @@ function updateSwarmWalletBalances(walletInfo) {
   }
 }
 
-function updateIpfsStatus(status, _error) {
-  const badge = document.getElementById('ipfs-status-badge');
-  if (badge) {
-    const badgeState = getStatusBadgeState(status);
-    badge.textContent = badgeState.text;
-    badge.dataset.status = badgeState.value;
-  }
-}
-
-function updateRadicleStatus(status, _error) {
-  const badge = document.getElementById('radicle-status-badge');
+function updateNodeBadge(elementId, status) {
+  const badge = document.getElementById(elementId);
   if (badge) {
     const badgeState = getStatusBadgeState(status);
     badge.textContent = badgeState.text;
