@@ -5,7 +5,7 @@
  */
 
 import { state } from '../state.js';
-import { formatBalance } from './wallet-utils.js';
+import { formatBalance, formatRawTokenBalance } from './wallet-utils.js';
 import { fetchBeeJson } from './bee-api.js';
 import { walletState } from './wallet-state.js';
 import {
@@ -350,24 +350,6 @@ function updateSwarmSetupCta() {
       };
       swarmSetupHint.textContent = hints[publishState.key] || '';
     }
-  }
-}
-
-function formatRawTokenBalance(rawValue, decimals = 18) {
-  if (rawValue === undefined || rawValue === null || rawValue === '') {
-    return '--';
-  }
-
-  try {
-    const value = BigInt(rawValue);
-    const divisor = 10n ** BigInt(decimals);
-    const integerPart = value / divisor;
-    const fractionalPart = value % divisor;
-    const fractional = fractionalPart.toString().padStart(decimals, '0').replace(/0+$/, '');
-    const formatted = fractional ? `${integerPart}.${fractional}` : integerPart.toString();
-    return formatBalance(formatted);
-  } catch {
-    return '--';
   }
 }
 

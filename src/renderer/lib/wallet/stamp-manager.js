@@ -7,6 +7,7 @@
  */
 
 import { walletState, registerScreenHider } from './wallet-state.js';
+import { formatRawTokenBalance } from './wallet-utils.js';
 import { fetchBeeJson } from './bee-api.js';
 
 const PRESETS = [
@@ -44,9 +45,11 @@ let retryBtn;
 
 let currentState = STATE.IDLE;
 let selectedPreset = null;
-let usablePollInterval = null;
+let usablePollTimeout = null;
 let pendingBatchId = null;
 let usablePollStart = 0;
+let isOpen = false;
+let estimationId = 0;
 
 export function initStampManager() {
   stampManagerScreen = document.getElementById('sidebar-stamp-manager');
@@ -73,13 +76,15 @@ export function initStampManager() {
 export function openStampManager() {
   walletState.identityView?.classList.add('hidden');
   stampManagerScreen?.classList.remove('hidden');
+  isOpen = true;
+  pendingBatchId = null;
 
-  transitionTo(STATE.IDLE);
   selectPreset(DEFAULT_PRESET_INDEX);
   refreshBalance();
 }
 
 export function closeStampManager() {
+  isOpen = false;
   stopUsablePoll();
   stampManagerScreen?.classList.add('hidden');
   walletState.identityView?.classList.remove('hidden');
@@ -94,7 +99,17 @@ function buildPresetButtons() {
     btn.type = 'button';
     btn.className = 'stamp-preset-btn';
     btn.dataset.index = index;
-    btn.innerHTML = `<span class="stamp-preset-label">${preset.label}</span><span class="stamp-preset-desc">${preset.description}</span>`;
+
+    const labelSpan = document.createElement('span');
+    labelSpan.className = 'stamp-preset-label';
+    labelSpan.textContent = preset.label;
+
+    const descSpan = document.createElement('span');
+    descSpan.className = 'stamp-preset-desc';
+    descSpan.textContent = preset.description;
+
+    btn.appendChild(labelSpan);
+    btn.appendChild(descSpan);
     btn.addEventListener('click', () => selectPreset(index));
     presetContainer.appendChild(btn);
   });
@@ -118,11 +133,16 @@ async function estimateCost() {
     return;
   }
 
+  const thisEstimation = ++estimationId;
+
   try {
     const result = await window.swarmNode.getStorageCost(
       selectedPreset.sizeGB,
       selectedPreset.durationDays
     );
+
+    // Discard stale response if user switched presets during the await
+    if (thisEstimation !== estimationId || !isOpen) return;
 
     if (!result?.success) {
       transitionTo(STATE.FAILED, result?.error || 'Failed to estimate cost.');
@@ -135,6 +155,7 @@ async function estimateCost() {
 
     transitionTo(STATE.READY_TO_BUY);
   } catch (err) {
+    if (thisEstimation !== estimationId || !isOpen) return;
     transitionTo(STATE.FAILED, err.message || 'Failed to estimate cost.');
   }
 }
@@ -145,12 +166,7 @@ async function refreshBalance() {
   try {
     const walletResult = await fetchBeeJson('/wallet');
     if (walletResult.ok && walletResult.data?.bzzBalance) {
-      const raw = BigInt(walletResult.data.bzzBalance);
-      const divisor = 10n ** 16n;
-      const integer = raw / divisor;
-      const frac = ((raw % divisor) * 10000n) / divisor;
-      const fracStr = frac > 0n ? `.${frac.toString().padStart(4, '0').replace(/0+$/, '')}` : '';
-      balanceDisplay.textContent = `Balance: ${integer}${fracStr} xBZZ`;
+      balanceDisplay.textContent = `Balance: ${formatRawTokenBalance(walletResult.data.bzzBalance, 16)} xBZZ`;
     } else {
       balanceDisplay.textContent = 'Balance: --';
     }
@@ -170,6 +186,8 @@ async function handlePurchase() {
       selectedPreset.durationDays
     );
 
+    if (!isOpen) return;
+
     if (!result?.success) {
       transitionTo(STATE.FAILED, result?.error || 'Purchase failed.');
       return;
@@ -179,6 +197,7 @@ async function handlePurchase() {
     transitionTo(STATE.WAITING_FOR_USABLE);
     startUsablePoll();
   } catch (err) {
+    if (!isOpen) return;
     transitionTo(STATE.FAILED, err.message || 'Purchase failed.');
   }
 }
@@ -186,38 +205,50 @@ async function handlePurchase() {
 function startUsablePoll() {
   stopUsablePoll();
   usablePollStart = Date.now();
-  usablePollInterval = setInterval(() => pollForUsable(), USABLE_POLL_MS);
   pollForUsable();
 }
 
 function stopUsablePoll() {
-  if (usablePollInterval) {
-    clearInterval(usablePollInterval);
-    usablePollInterval = null;
+  if (usablePollTimeout) {
+    clearTimeout(usablePollTimeout);
+    usablePollTimeout = null;
   }
 }
 
 async function pollForUsable() {
+  if (!isOpen) return;
+
   if (Date.now() - usablePollStart > USABLE_TIMEOUT_MS) {
-    stopUsablePoll();
     transitionTo(STATE.FAILED, 'Timed out waiting for batch to become usable.');
     return;
   }
 
   try {
     const result = await window.swarmNode?.getStamps();
-    if (!result?.success) return;
+    if (!isOpen) return;
+    if (!result?.success) {
+      scheduleNextPoll();
+      return;
+    }
 
     const usable = result.stamps.some(
       (s) => s.usable && (!pendingBatchId || s.batchId === pendingBatchId)
     );
 
     if (usable) {
-      stopUsablePoll();
       transitionTo(STATE.USABLE);
+      return;
     }
   } catch {
     // Keep polling
+  }
+
+  scheduleNextPoll();
+}
+
+function scheduleNextPoll() {
+  if (isOpen && currentState === STATE.WAITING_FOR_USABLE) {
+    usablePollTimeout = setTimeout(() => pollForUsable(), USABLE_POLL_MS);
   }
 }
 
