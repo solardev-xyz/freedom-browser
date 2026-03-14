@@ -819,7 +819,7 @@
                     </div>
 
                     <!-- Balances -->
-                    <div class="node-info-group">
+                    <div class="node-info-group" id="swarm-balances-group">
                       <span class="node-info-label">Balances</span>
                       <div class="node-balance-row">
                         <span class="node-balance-symbol">xDAI</span>
@@ -831,26 +831,15 @@
                       </div>
                     </div>
 
-                    <!-- Stamps -->
-                    <div class="node-info-group">
-                      <div class="node-info-label-row">
-                        <span class="node-info-label">Postage Stamps</span>
-                        <span class="node-stamps-count" id="swarm-stamps-count">0</span>
-                      </div>
-                      <div class="node-stamps-summary" id="swarm-stamps-summary">
-                        <span class="node-stamps-empty">No stamps available</span>
-                      </div>
-                    </div>
-
-                    <!-- Upgrade CTA (for ultra-light mode) -->
-                    <div class="node-upgrade-cta" id="swarm-upgrade-cta">
-                      <button type="button" class="node-upgrade-btn" id="swarm-upgrade-btn">
-                        <span>Upgrade to Light Node</span>
+                    <!-- Publishing Setup CTA -->
+                    <div class="node-upgrade-cta" id="swarm-setup-cta">
+                      <button type="button" class="node-upgrade-btn" id="swarm-setup-btn">
+                        <span id="swarm-setup-btn-label">Set Up Publishing</span>
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                           <path d="m9 18 6-6-6-6"/>
                         </svg>
                       </button>
-                      <span class="node-upgrade-hint">Enable uploads and publishing</span>
+                      <span class="node-upgrade-hint" id="swarm-setup-hint">Enable uploads and publishing</span>
                     </div>
                   </div>
                 </div>
@@ -1705,6 +1694,96 @@
                 <div class="dapp-sign-actions">
                   <button type="button" class="dapp-sign-reject-btn" id="dapp-sign-reject">Reject</button>
                   <button type="button" class="dapp-sign-approve-btn" id="dapp-sign-approve" disabled>Sign</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Publish Setup sub-screen -->
+            <div id="sidebar-publish-setup" class="sidebar-subscreen hidden">
+              <div class="subscreen-header">
+                <button type="button" class="subscreen-back-btn" id="publish-setup-back">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="15 18 9 12 15 6"/>
+                  </svg>
+                  <span>Back</span>
+                </button>
+                <h3 class="subscreen-title">Publish Setup</h3>
+              </div>
+
+              <div class="subscreen-content">
+                <p class="publish-setup-intro">Complete these steps to publish content on Swarm.</p>
+
+                <div class="publish-setup-checklist" id="publish-setup-checklist">
+                  <div class="publish-step" id="publish-step-fund-xdai" data-status="pending">
+                    <div class="publish-step-indicator">
+                      <span class="publish-step-number">1</span>
+                      <svg class="publish-step-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                        <polyline points="20 6 9 17 4 12"/>
+                      </svg>
+                    </div>
+                    <div class="publish-step-body">
+                      <div class="publish-step-title">Fund node with xDAI</div>
+                      <div class="publish-step-detail">Needed for gas fees on Gnosis Chain.</div>
+                      <div class="publish-step-meta hidden" id="publish-step-fund-xdai-meta"></div>
+                      <button type="button" class="publish-step-btn hidden" id="publish-step-fund-xdai-btn">Send xDAI</button>
+                    </div>
+                  </div>
+
+                  <div class="publish-step" id="publish-step-light-mode" data-status="pending">
+                    <div class="publish-step-indicator">
+                      <span class="publish-step-number">2</span>
+                      <svg class="publish-step-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                        <polyline points="20 6 9 17 4 12"/>
+                      </svg>
+                    </div>
+                    <div class="publish-step-body">
+                      <div class="publish-step-title">Switch to light mode</div>
+                      <div class="publish-step-detail">Enables chain participation and uploads.</div>
+                      <button type="button" class="publish-step-btn hidden" id="publish-step-light-mode-btn">Switch to Light Mode</button>
+                    </div>
+                  </div>
+
+                  <div class="publish-step" id="publish-step-chequebook" data-status="pending">
+                    <div class="publish-step-indicator">
+                      <span class="publish-step-number">3</span>
+                      <svg class="publish-step-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                        <polyline points="20 6 9 17 4 12"/>
+                      </svg>
+                    </div>
+                    <div class="publish-step-body">
+                      <div class="publish-step-title">Chequebook and postage sync</div>
+                      <div class="publish-step-detail">Automatic once Bee has xDAI in light mode.</div>
+                      <div class="publish-step-waiting hidden" id="publish-step-chequebook-waiting">Initializing&hellip;</div>
+                    </div>
+                  </div>
+
+                  <div class="publish-step" id="publish-step-fund-xbzz" data-status="pending">
+                    <div class="publish-step-indicator">
+                      <span class="publish-step-number">4</span>
+                      <svg class="publish-step-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                        <polyline points="20 6 9 17 4 12"/>
+                      </svg>
+                    </div>
+                    <div class="publish-step-body">
+                      <div class="publish-step-title">Acquire xBZZ</div>
+                      <div class="publish-step-detail">Needed to purchase storage on Swarm.</div>
+                      <button type="button" class="publish-step-btn hidden" id="publish-step-fund-xbzz-btn">Send xBZZ</button>
+                    </div>
+                  </div>
+
+                  <div class="publish-step" id="publish-step-stamps" data-status="pending">
+                    <div class="publish-step-indicator">
+                      <span class="publish-step-number">5</span>
+                      <svg class="publish-step-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                        <polyline points="20 6 9 17 4 12"/>
+                      </svg>
+                    </div>
+                    <div class="publish-step-body">
+                      <div class="publish-step-title">Purchase postage stamps</div>
+                      <div class="publish-step-detail">Reserve storage space for your content.</div>
+                      <button type="button" class="publish-step-btn hidden" id="publish-step-stamps-btn">Buy Stamps</button>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>

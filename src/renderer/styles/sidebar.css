@@ -1731,6 +1731,153 @@
   color: var(--text);
 }
 
+/* ============================================
+   Publish Setup Checklist
+   ============================================ */
+
+.publish-setup-intro {
+  margin: 0 0 20px 0;
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.publish-setup-checklist {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.publish-step {
+  display: flex;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.publish-step:last-child {
+  border-bottom: none;
+}
+
+.publish-step-indicator {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.06);
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+.publish-step-number {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.publish-step-check {
+  display: none;
+  width: 14px;
+  height: 14px;
+}
+
+/* Step states */
+.publish-step[data-status="pending"] {
+  opacity: 0.45;
+}
+
+.publish-step[data-status="active"] .publish-step-indicator {
+  background: rgba(26, 115, 232, 0.15);
+}
+
+.publish-step[data-status="active"] .publish-step-number {
+  color: var(--accent);
+}
+
+.publish-step[data-status="waiting"] .publish-step-indicator {
+  background: rgba(255, 152, 0, 0.15);
+}
+
+.publish-step[data-status="waiting"] .publish-step-number {
+  color: #ff9800;
+}
+
+.publish-step[data-status="complete"] .publish-step-indicator {
+  background: rgba(76, 175, 80, 0.15);
+}
+
+.publish-step[data-status="complete"] .publish-step-number {
+  display: none;
+}
+
+.publish-step[data-status="complete"] .publish-step-check {
+  display: block;
+  color: #4caf50;
+}
+
+.publish-step-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.publish-step-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  margin-bottom: 2px;
+}
+
+.publish-step-detail {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.publish-step-meta {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--muted);
+  font-family: var(--font-mono, monospace);
+}
+
+.publish-step-btn {
+  margin-top: 8px;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--accent);
+  background: rgba(26, 115, 232, 0.1);
+  border: 1px solid rgba(26, 115, 232, 0.25);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.publish-step-btn:hover {
+  background: rgba(26, 115, 232, 0.18);
+}
+
+.publish-step-waiting {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #ff9800;
+  font-style: italic;
+}
+
+[data-theme="light"] .publish-step {
+  border-bottom-color: rgba(0, 0, 0, 0.06);
+}
+
+[data-theme="light"] .publish-step-indicator {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+[data-theme="light"] .publish-step[data-status="active"] .publish-step-indicator {
+  background: rgba(26, 115, 232, 0.1);
+}
+
 /* Node stamps */
 .node-stamps-count {
   font-size: 11px;
@@ -1820,6 +1967,7 @@
 [data-theme="light"] .node-stamps-count {
   background: rgba(0, 0, 0, 0.08);
 }
+
 
 [data-theme="light"] .node-upgrade-btn {
   background: rgba(26, 115, 232, 0.08);
