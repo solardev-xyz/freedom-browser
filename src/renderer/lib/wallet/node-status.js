@@ -18,6 +18,8 @@ import { topUpXdai, topUpXbzz } from './funding-actions.js';
 import { openChequebookDeposit } from './chequebook-deposit.js';
 
 const SWARM_REFRESH_MS = 15000;
+const SWARM_STARTUP_REFRESH_MS = 2000;
+const SWARM_STARTUP_MAX_MS = 30000;
 
 // DOM references
 let swarmModeBadge;
@@ -36,6 +38,8 @@ let swarmSetupHint;
 let desiredSwarmMode = 'ultraLight';
 let actualSwarmMode = null;
 let swarmRefreshInterval = null;
+let swarmStartupTimeout = null;
+let isStartupConverging = false;
 let swarmRuntimeInfo = createEmptySwarmRuntimeInfo();
 
 // Node status tracking
@@ -246,13 +250,15 @@ function updateSwarmStatus(status, _error) {
 
   if (status === 'running') {
     refreshSwarmRuntimeInfo();
-    startSwarmRefresh();
+    startSwarmStartupBurst();
   } else {
     stopSwarmRefresh();
+    stopSwarmStartupBurst();
 
     if (status !== 'starting' && status !== 'stopping') {
       actualSwarmMode = null;
       chequebookFullAddress = null;
+      isStartupConverging = false;
       swarmRuntimeInfo = createEmptySwarmRuntimeInfo();
     }
 
@@ -260,7 +266,25 @@ function updateSwarmStatus(status, _error) {
   }
 }
 
-function startSwarmRefresh() {
+function startSwarmStartupBurst() {
+  stopSwarmRefresh();
+  stopSwarmStartupBurst();
+  isStartupConverging = true;
+
+  // Poll fast during startup until state converges
+  swarmRefreshInterval = setInterval(() => {
+    refreshSwarmRuntimeInfo();
+  }, SWARM_STARTUP_REFRESH_MS);
+
+  // After max startup time, switch to steady-state polling
+  swarmStartupTimeout = setTimeout(() => {
+    switchToSteadyStatePolling();
+  }, SWARM_STARTUP_MAX_MS);
+}
+
+function switchToSteadyStatePolling() {
+  isStartupConverging = false;
+  stopSwarmStartupBurst();
   stopSwarmRefresh();
   swarmRefreshInterval = setInterval(() => {
     refreshSwarmRuntimeInfo();
@@ -271,6 +295,13 @@ function stopSwarmRefresh() {
   if (swarmRefreshInterval) {
     clearInterval(swarmRefreshInterval);
     swarmRefreshInterval = null;
+  }
+}
+
+function stopSwarmStartupBurst() {
+  if (swarmStartupTimeout) {
+    clearTimeout(swarmStartupTimeout);
+    swarmStartupTimeout = null;
   }
 }
 
@@ -302,6 +333,11 @@ async function refreshSwarmRuntimeInfo() {
       stamps,
       stampsKnown,
     };
+
+    // Once stamps are known, startup convergence is complete
+    if (stampsKnown && isStartupConverging) {
+      switchToSteadyStatePolling();
+    }
 
     if (walletResult.ok && walletResult.data) {
       updateSwarmWalletBalances(walletResult.data);
@@ -354,9 +390,11 @@ function updateSwarmSetupCta() {
   const inspectOnly = state.registry?.bee?.mode === 'reused';
   const beeAvailable = state.currentBeeStatus === 'running' || state.currentBeeStatus === 'starting';
   const isReady = publishState.key === 'ready';
+  const isConverging = publishState.key === 'initializing' && isStartupConverging;
 
-  // Show CTA when Bee is available and not an external node
-  const showCta = !inspectOnly && beeAvailable;
+  // Hide CTA during startup convergence (state not yet reliable)
+  // Show CTA when Bee is available, state is resolved, and not an external node
+  const showCta = !inspectOnly && beeAvailable && !isConverging;
 
   if (swarmSetupCta) {
     swarmSetupCta.classList.toggle('hidden', !showCta);
