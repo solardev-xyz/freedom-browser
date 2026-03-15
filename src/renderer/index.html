@@ -816,11 +816,11 @@
                           </svg>
                         </button>
                       </div>
-                      <div class="node-balance-row">
+                      <div class="node-balance-row node-balance-clickable" id="swarm-topup-xdai" title="Click to top up">
                         <span class="node-balance-symbol">xDAI</span>
                         <span class="node-balance-value" id="swarm-balance-xdai">--</span>
                       </div>
-                      <div class="node-balance-row">
+                      <div class="node-balance-row node-balance-clickable" id="swarm-topup-xbzz" title="Click to top up">
                         <span class="node-balance-symbol">xBZZ</span>
                         <span class="node-balance-value" id="swarm-balance-xbzz">--</span>
                       </div>
@@ -838,7 +838,7 @@
                           </svg>
                         </button>
                       </div>
-                      <div class="node-balance-row">
+                      <div class="node-balance-row node-balance-clickable" id="swarm-topup-chequebook" title="Click to deposit xBZZ">
                         <span class="node-balance-symbol">xBZZ</span>
                         <span class="node-balance-value" id="swarm-chequebook-balance">--</span>
                       </div>
@@ -1847,6 +1847,43 @@
                   <div class="stamp-purchase-error hidden" id="stamp-purchase-error"></div>
                   <button type="button" class="stamp-retry-btn hidden" id="stamp-retry-btn">Try Again</button>
                 </div>
+              </div>
+            </div>
+
+            <!-- Chequebook Deposit sub-screen -->
+            <div id="sidebar-chequebook-deposit" class="sidebar-subscreen hidden">
+              <div class="subscreen-header">
+                <button type="button" class="subscreen-back-btn" id="chequebook-deposit-back">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="15 18 9 12 15 6"/>
+                  </svg>
+                  <span>Back</span>
+                </button>
+                <h3 class="subscreen-title">Deposit to Chequebook</h3>
+              </div>
+
+              <div class="subscreen-content">
+                <p class="stamp-manager-intro">Move xBZZ from your Bee wallet into the chequebook contract for bandwidth payments.</p>
+
+                <div class="stamp-cost-section" id="chequebook-balances">
+                  <div class="stamp-cost-row">
+                    <span class="stamp-cost-label">Bee wallet xBZZ</span>
+                    <span class="stamp-cost-value" id="chequebook-wallet-bzz">--</span>
+                  </div>
+                  <div class="stamp-cost-row">
+                    <span class="stamp-cost-label">Chequebook xBZZ</span>
+                    <span class="stamp-cost-value" id="chequebook-current-bzz">--</span>
+                  </div>
+                </div>
+
+                <div class="stamp-presets" id="chequebook-deposit-presets">
+                  <!-- Preset buttons inserted dynamically -->
+                </div>
+
+                <button type="button" class="stamp-purchase-btn" id="chequebook-deposit-btn" disabled>Deposit</button>
+
+                <div class="stamp-purchase-status hidden" id="chequebook-deposit-status"></div>
+                <div class="stamp-purchase-error hidden" id="chequebook-deposit-error"></div>
               </div>
             </div>
           </div>

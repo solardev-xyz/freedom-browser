@@ -14,6 +14,8 @@ import {
 } from './swarm-readiness.js';
 import { openPublishSetup } from './publish-setup.js';
 import { openStampManager } from './stamp-manager.js';
+import { topUpXdai, topUpXbzz } from './funding-actions.js';
+import { openChequebookDeposit } from './chequebook-deposit.js';
 
 const SWARM_REFRESH_MS = 15000;
 
@@ -62,6 +64,18 @@ export function initNodeStatus() {
   swarmSetupHint = document.getElementById('swarm-setup-hint');
 
   setupNodeCards();
+
+  document.getElementById('swarm-topup-xdai')?.addEventListener('click', () => {
+    topUpXdai();
+  });
+
+  document.getElementById('swarm-topup-xbzz')?.addEventListener('click', () => {
+    topUpXbzz();
+  });
+
+  document.getElementById('swarm-topup-chequebook')?.addEventListener('click', () => {
+    openChequebookDeposit();
+  });
 
   const chequebookCopyBtn = document.getElementById('swarm-chequebook-copy');
   if (chequebookCopyBtn) {

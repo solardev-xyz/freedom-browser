@@ -216,6 +216,10 @@ function registerSwarmIpc() {
       }
 
       const batchId = await buyStorage(sizeGB, durationDays);
+
+      // Auto-deposit into chequebook if empty (for bandwidth payments)
+      await autoDepositChequebookIfEmpty();
+
       return { success: true, batchId };
     } catch (err) {
       log.error('[StampService] Failed to buy storage:', err.message);
@@ -301,6 +305,41 @@ function registerSwarmIpc() {
     }
   });
 
+  ipcMain.handle('swarm:get-chequebook-balance', async () => {
+    try {
+      const bee = getBee();
+      const bal = await bee.getChequebookBalance();
+      return {
+        success: true,
+        totalBalance: bal.totalBalance.toSignificantDigits(4),
+        availableBalance: bal.availableBalance.toSignificantDigits(4),
+        totalBalancePlur: bal.totalBalance.toPLURBigInt().toString(),
+        availableBalancePlur: bal.availableBalance.toPLURBigInt().toString(),
+      };
+    } catch (err) {
+      log.error('[StampService] Failed to get chequebook balance:', err.message);
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('swarm:deposit-chequebook', async (_event, amountBzz) => {
+    try {
+      if (!isPositiveNumber(amountBzz)) {
+        return { success: false, error: 'Amount must be a positive number' };
+      }
+      const bee = getBee();
+      // Convert BZZ decimal to PLUR string for depositTokens
+      const plurAmount = BigInt(Math.round(amountBzz * 1e16)).toString();
+      const txId = await bee.depositTokens(plurAmount, undefined, { timeout: BUY_TIMEOUT_MS });
+      const txHex = toHex(txId);
+      log.info(`[StampService] Deposited ${amountBzz} xBZZ into chequebook (tx: ${txHex})`);
+      return { success: true, transactionId: txHex };
+    } catch (err) {
+      log.error('[StampService] Failed to deposit into chequebook:', err.message);
+      return { success: false, error: err.message };
+    }
+  });
+
   log.info('[StampService] IPC handlers registered');
 }
 
@@ -337,6 +376,30 @@ async function checkBzzBalance(costBzz) {
   } catch (err) {
     log.error('[StampService] Balance pre-check failed:', err.message);
     return null; // Non-fatal — let the purchase attempt proceed
+  }
+}
+
+const AUTO_DEPOSIT_BZZ = '1000000000000000'; // 0.1 xBZZ in PLUR
+
+/**
+ * Auto-deposit 0.1 xBZZ into the chequebook if it's empty and the
+ * wallet has enough. Non-fatal — silently skips on any failure.
+ */
+async function autoDepositChequebookIfEmpty() {
+  try {
+    const bee = getBee();
+    const bal = await bee.getChequebookBalance();
+    const available = bal.availableBalance.toPLURBigInt();
+
+    if (available > 0n) return; // Already funded
+
+    const walletBal = await getBzzBalance();
+    if (!walletBal || walletBal < BigInt(AUTO_DEPOSIT_BZZ)) return; // Not enough
+
+    await bee.depositTokens(AUTO_DEPOSIT_BZZ);
+    log.info('[StampService] Auto-deposited 0.1 xBZZ into chequebook');
+  } catch (err) {
+    log.error('[StampService] Auto-deposit failed (non-fatal):', err.message);
   }
 }
 

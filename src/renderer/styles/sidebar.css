@@ -1763,6 +1763,22 @@
   background: rgba(0, 0, 0, 0.06);
 }
 
+.node-balance-clickable {
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 2px 4px;
+  margin: -2px -4px;
+  transition: background-color 0.15s ease;
+}
+
+.node-balance-clickable:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+[data-theme="light"] .node-balance-clickable:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+
 /* Node balance rows */
 .node-balance-row {
   display: flex;

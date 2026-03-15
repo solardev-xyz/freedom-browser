@@ -25,6 +25,7 @@ import { initWalletSettings, closeWalletSettings } from './wallet/wallet-setting
 import { initCreateWallet, openCreateWallet, closeCreateWallet } from './wallet/create-wallet.js';
 import { initPublishSetup, closePublishSetup } from './wallet/publish-setup.js';
 import { initStampManager, closeStampManager } from './wallet/stamp-manager.js';
+import { initChequebookDeposit, closeChequebookDeposit } from './wallet/chequebook-deposit.js';
 
 // Re-export public API consumed by dapp-provider.js and index.js
 export { showDappConnect, updateConnectionBanner, showDappTxApproval, showDappSignApproval };
@@ -69,6 +70,7 @@ export function initWalletUi() {
   initCreateWallet();
   initPublishSetup();
   initStampManager();
+  initChequebookDeposit();
 
   // Load chain registry (updates registeredTokens/registeredChains, then render)
   loadChainRegistry().then(() => {
@@ -310,6 +312,7 @@ function closeAllSubscreens() {
   closeSend();
   closePublishSetup();
   closeStampManager();
+  closeChequebookDeposit();
   closeRpcApiKeyScreen();
 }
 
