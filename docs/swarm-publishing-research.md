@@ -1564,17 +1564,31 @@ Live testing revealed that uploads produce continuous "chequebook out of funds" 
 3. Show chequebook balance in the stamp manager alongside wallet balance
 4. Surface the "chequebook out of funds" state to the user rather than silently logging it
 
-### Next: Publish history and polish
+Milestone 2c — publish history:
+- ~~`src/main/swarm/publish-history.js`: versioned JSON store (100-entry cap)~~ — done
+- ~~Entry model: `{ id, reference, bzzUrl, type, name, timestamp, tagUid, batchIdUsed, status }`~~ — done
+- ~~Status lifecycle: `uploading` → `completed` / `failed` (recorded after validation, updated in catch)~~ — done
+- ~~IPC: `swarm:get-publish-history`, `swarm:clear-publish-history`~~ — done
+- ~~Exposed via `freedomAPI.swarm.getPublishHistory()`, `.clearPublishHistory()`~~ — done
+- ~~Auto-record on upload in publish-service IPC handlers~~ — done
+- ~~"Recent Publishes" section in `freedom://publish` with type icons, status badges, clickable bzz:// URLs, clear button~~ — done
+- ~~9 history tests + 1 failure-path test~~ — done
 
-**WP2-C: Publish history**
+End-to-end verified (2026-03-15):
+- Text upload → bzz:// URL works, opens in new tab
+- Image upload → progress display works, content retrievable
+- 250 MB file upload → streaming works, progress bar tracks sent/split
+- Folder upload with index.html → loads as website via bzz://
+- Publish history persists across page reloads, shows correct status
 
-1. `src/main/swarm/publish-history.js`: persist recent publishes to JSON file
-2. Entry model: `{ reference, bzzUrl, type, name, timestamp, tagUid, batchIdUsed, status }`
-3. Status lifecycle: `uploading` → `completed` / `failed`
-4. IPC: `swarm:get-publish-history`, `swarm:clear-publish-history`
-5. Expose via `freedomAPI.swarm.getPublishHistory()`, `.clearPublishHistory()` in webview preload
-6. Auto-record on upload completion in publish-service
-7. Show in the `freedom://publish` page as a recent publishes list
+### Next: Chequebook funding
+
+See "Chequebook funding vs postage stamps" section above. Must be addressed before shipping. Concrete tasks:
+
+1. Add `swarm:deposit-chequebook` and `swarm:get-chequebook-balance` IPC handlers
+2. Either add a checklist step or auto-deposit during stamp purchase
+3. Show chequebook balance in stamp manager
+4. Surface "chequebook out of funds" state to user
 
 ### Later: Milestones 3-5
 
@@ -1611,7 +1625,12 @@ Live testing revealed that uploads produce continuous "chequebook out of funds" 
 - `src/renderer/lib/tabs.js` — createTab with protocol URL routing (ens://, bzz://, ipfs://)
 - `src/main/swarm/swarm-service.js` — Bee client lifecycle, selectBestBatch, shared toHex
 - `src/main/swarm/stamp-service.js` — stamp operations (list, cost, buy, extend) with Freedom batch model
-- `src/main/swarm/publish-service.js` — upload operations (data, file stream, directory async walk)
+- `src/main/swarm/publish-service.js` — upload operations (data, file stream, directory async walk), file picker IPC
+- `src/main/swarm/publish-history.js` — versioned JSON store for recent publishes (100-entry cap)
+- `src/main/webview-preload.js` — `freedomAPI.swarm.*` namespace for internal pages
+- `src/renderer/pages/publish.html` — `freedom://publish` internal app page
+- `src/renderer/pages/scripts/publish.js` — publish page logic (file/folder/text, progress, history)
+- `src/renderer/pages/styles/publish.css` — publish page styling
 
 ### External docs
 
