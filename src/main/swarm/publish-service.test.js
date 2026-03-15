@@ -152,6 +152,19 @@ describe('publish-service', () => {
       );
     });
 
+    test('swarm:publish-data marks history entry as failed on upload error', async () => {
+      const { addEntry, updateEntry } = require('./publish-history');
+      mockGetPostageBatches.mockResolvedValue([
+        makeBatch('batch1', 1000000000, 86400),
+      ]);
+      mockUploadFile.mockRejectedValue(new Error('Bee upload failed'));
+
+      const result = await invokeIpc('swarm:publish-data', 'test');
+      expect(result.success).toBe(false);
+      expect(addEntry).toHaveBeenCalledWith(expect.objectContaining({ status: 'uploading' }));
+      expect(updateEntry).toHaveBeenCalledWith('test-history-id', { status: 'failed' });
+    });
+
     test('swarm:publish-data fails when no usable batch', async () => {
       mockGetPostageBatches.mockResolvedValue([]);
 

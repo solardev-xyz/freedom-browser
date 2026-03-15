@@ -165,54 +165,57 @@ async function getUploadStatus(tagUid) {
  */
 function registerPublishIpc() {
   ipcMain.handle('swarm:publish-data', async (_event, data) => {
+    if (!data && data !== '') {
+      return { success: false, error: 'Data is required' };
+    }
+    const historyEntry = addEntry({ type: 'data', name: 'Text', status: 'uploading' });
     try {
-      if (!data && data !== '') {
-        return { success: false, error: 'Data is required' };
-      }
-      const historyEntry = addEntry({ type: 'data', name: 'Text', status: 'uploading' });
       const result = await publishData(data);
       updateEntry(historyEntry.id, { status: 'completed', ...result });
       return { success: true, ...result };
     } catch (err) {
       log.error('[PublishService] Failed to publish data:', err.message);
+      updateEntry(historyEntry.id, { status: 'failed' });
       return { success: false, error: err.message };
     }
   });
 
   ipcMain.handle('swarm:publish-file', async (_event, filePath) => {
+    if (!filePath || typeof filePath !== 'string') {
+      return { success: false, error: 'File path is required' };
+    }
+    if (!fs.existsSync(filePath)) {
+      return { success: false, error: `File not found: ${filePath}` };
+    }
+    const name = path.basename(filePath);
+    const historyEntry = addEntry({ type: 'file', name, status: 'uploading' });
     try {
-      if (!filePath || typeof filePath !== 'string') {
-        return { success: false, error: 'File path is required' };
-      }
-      if (!fs.existsSync(filePath)) {
-        return { success: false, error: `File not found: ${filePath}` };
-      }
-      const name = path.basename(filePath);
-      const historyEntry = addEntry({ type: 'file', name, status: 'uploading' });
       const result = await publishFile(filePath);
       updateEntry(historyEntry.id, { status: 'completed', ...result });
       return { success: true, ...result };
     } catch (err) {
       log.error('[PublishService] Failed to publish file:', err.message);
+      updateEntry(historyEntry.id, { status: 'failed' });
       return { success: false, error: err.message };
     }
   });
 
   ipcMain.handle('swarm:publish-directory', async (_event, dirPath) => {
+    if (!dirPath || typeof dirPath !== 'string') {
+      return { success: false, error: 'Directory path is required' };
+    }
+    if (!fs.existsSync(dirPath) || !fs.statSync(dirPath).isDirectory()) {
+      return { success: false, error: `Directory not found: ${dirPath}` };
+    }
+    const name = path.basename(dirPath);
+    const historyEntry = addEntry({ type: 'directory', name, status: 'uploading' });
     try {
-      if (!dirPath || typeof dirPath !== 'string') {
-        return { success: false, error: 'Directory path is required' };
-      }
-      if (!fs.existsSync(dirPath) || !fs.statSync(dirPath).isDirectory()) {
-        return { success: false, error: `Directory not found: ${dirPath}` };
-      }
-      const name = path.basename(dirPath);
-      const historyEntry = addEntry({ type: 'directory', name, status: 'uploading' });
       const result = await publishDirectory(dirPath);
       updateEntry(historyEntry.id, { status: 'completed', ...result });
       return { success: true, ...result };
     } catch (err) {
       log.error('[PublishService] Failed to publish directory:', err.message);
+      updateEntry(historyEntry.id, { status: 'failed' });
       return { success: false, error: err.message };
     }
   });
