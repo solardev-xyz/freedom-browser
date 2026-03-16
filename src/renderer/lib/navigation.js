@@ -841,6 +841,11 @@ const handleNavigationEvent = (event) => {
   updateBookmarkButtonVisibility();
   updateGithubBridgeIcon();
   updateProtocolIcon();
+
+  // Snapshot the committed display URL for provider origin derivation.
+  // This ensures getDisplayUrlForWebview() reads the post-navigation identity,
+  // not a stale or user-edited address bar value.
+  navState.addressBarSnapshot = addressInput.value;
 };
 
 // Update bookmark bar visibility for a URL change

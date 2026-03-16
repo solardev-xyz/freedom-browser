@@ -174,27 +174,21 @@ export const closeAllDevTools = () => {
 export const getTabs = () => tabState.tabs;
 
 /**
- * Get the display URL for a specific webview.
- * For the active tab, reads the address bar (ground truth).
- * For background tabs, uses the saved addressBarSnapshot.
- * This is critical for provider permission checks — using the global
- * address bar for a background tab's request would grant/check against
- * the wrong origin.
+ * Get the committed display URL for a specific webview.
+ * Always reads from the tab's addressBarSnapshot — the last display URL
+ * committed by a navigation event or tab switch. Never reads the live
+ * address bar input, which could contain user edits in progress.
+ *
+ * This is critical for provider permission checks — if a page fires a
+ * request while the user is typing in the address bar, we must derive
+ * the origin from the committed navigation identity, not partial input.
  *
  * @param {HTMLElement} webview - The webview element
- * @returns {string} The display URL for this webview's tab
+ * @returns {string} The committed display URL for this webview's tab
  */
 export const getDisplayUrlForWebview = (webview) => {
   const tab = tabState.tabs.find((t) => t.webview === webview);
   if (!tab) return '';
-
-  // Active tab: address bar is the ground truth
-  if (tab.id === tabState.activeTabId) {
-    const addressInput = document.getElementById('address-input');
-    return addressInput?.value || '';
-  }
-
-  // Background tab: use saved snapshot from last time it was active
   return tab.navigationState?.addressBarSnapshot || '';
 };
 

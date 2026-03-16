@@ -87,16 +87,20 @@ describe('swarm-permissions', () => {
     });
 
     test('getAllPermissions returns sorted by lastUsed desc', () => {
-      grantPermission('first.eth');
-      grantPermission('second.eth');
-      // Manually set lastUsed to ensure deterministic order
-      const perms = getAllPermissions();
-      expect(perms).toHaveLength(2);
-      // Update second.eth to have a definitively later timestamp
-      updateLastUsed('second.eth');
-      const sorted = getAllPermissions();
-      expect(sorted[0].origin).toBe('second.eth');
-      expect(sorted[1].origin).toBe('first.eth');
+      const realDateNow = Date.now;
+      let mockTime = 1000;
+      Date.now = () => mockTime;
+      try {
+        grantPermission('first.eth');
+        mockTime = 2000;
+        grantPermission('second.eth');
+        const sorted = getAllPermissions();
+        expect(sorted).toHaveLength(2);
+        expect(sorted[0].origin).toBe('second.eth');
+        expect(sorted[1].origin).toBe('first.eth');
+      } finally {
+        Date.now = realDateNow;
+      }
     });
 
     test('updateLastUsed updates timestamp', () => {
