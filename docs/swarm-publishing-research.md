@@ -1523,11 +1523,14 @@ This is not blocking for the current milestone but should be addressed before re
 
 ### Still open from implementation
 
-- **Chequebook funding strategy**: should Freedom auto-deposit a fraction of xBZZ into the chequebook, add a manual checklist step, or show the chequebook balance in the stamp manager with a "Deposit" action? What's the right default deposit amount?
 - Should the stamp management UI show cost in xBZZ or also estimate in USD/EUR (via a price feed)?
-- Should `window.swarmNode` (internal renderer API) and `window.swarm` (page-facing provider) share the same IPC backend, or should the page-facing provider have its own permission-gated layer on top?
 - How should the `Bee` client instance handle Bee restarts? Should it detect connection loss and recreate, or rely on the service registry URL change?
 - How should Freedom handle batch expiry warnings long-term? Currently shows TTL warnings in the stamp manager (orange < 7 days, red < 1 day), but no proactive notifications when the stamp manager is closed.
+
+### Resolved from M3 design
+
+- ~~Should `window.swarmNode` (internal renderer API) and `window.swarm` (page-facing provider) share the same IPC backend, or should the page-facing provider have its own permission-gated layer on top?~~ **Resolved: shared backend, separate permission layer.** `window.swarm` routes through a renderer-side `swarm-provider.js` that checks permissions and then calls the same main-process IPC handlers that `window.swarmNode` uses. The permission layer is in the renderer, not the main process.
+- ~~Chequebook funding strategy~~ **Resolved: auto-deposit 0.1 xBZZ on stamp purchase + manual deposit sub-screen.** Already implemented.
 
 ## Branch-Specific TODOs
 
@@ -1623,9 +1626,554 @@ Startup UX — DONE:
 - **xDAI in Bee wallet appears idle**: the xDAI is a gas reserve for on-chain Swarm operations (stamp purchases, chequebook deposits, extensions). Gas on Gnosis is very cheap so it depletes slowly, but it IS being used.
 - **Bee wallet not in wallet dropdown**: the Bee wallet is a system identity with a different derivation path, not suitable for dApp connections or user spending. It's displayed in the Nodes tab instead.
 
-### Next: Milestones 3-5
+### Next: Milestone 3 — `window.swarm` Provider (Narrow Scope)
 
-- Milestone 3: `window.swarm` provider for third-party pages (depends on Milestone 2)
+#### Strategic rationale
+
+The current branch has a complete internal publishing substrate: first-party `freedom://publish` app proves the backend works end-to-end. The next meaningful step is crossing the trust boundary — turning that into a permissioned page API so third-party dweb apps can publish through the user's node.
+
+This is deliberately scoped to **immutable publishing only**. Feeds, pinning, batch management, and anything raw/low-level is deferred. The goal is to prove the provider boundary and permission model before adding capabilities.
+
+#### What M3 delivers
+
+A `window.swarm` provider injected into all webview pages, gated by per-origin permissions:
+
+- Pages can request publishing access
+- Pages can publish data (text, JSON, blobs) and files (via content bytes, not file paths)
+- Pages can track upload progress
+- Freedom shows approval UI and manages permissions
+- Freedom uses the user's existing stamps and node — pages cannot manage batches, switch modes, or access keys
+
+#### What M3 does NOT deliver
+
+- Feed creation or update (`swarm_createFeed`, `swarm_updateFeed`) — Milestone 4
+- Pinning control (`swarm_pin`) — Milestone 5
+- Batch management from pages — never (browser-owned)
+- Raw Bee API passthrough — never
+- Raw bee-js exposure — never
+- Local file path access — never (pages send content bytes, not paths)
+- App-scoped publisher identities — Milestone 4
+- Balances, batch IDs, or detailed node internals exposed to pages — never
+
+#### Architecture: two enforcement layers
+
+The page-facing provider has two enforcement layers, not one. The **main process is the authority** — it re-derives origin, checks permissions, enforces limits, and only then calls publish infrastructure. The renderer layer is a convenience for fast-fail UX (show prompts, pre-flight checks) but is never the final gate.
+
+This is different from `window.ethereum`, where the renderer owns the permission flow. Swarm publishing is more resource-sensitive (spending stamps, consuming bandwidth), so the trust model is stricter.
+
+```
+Third-party page (webview context)
+  ↓ window.swarm.request({method, params})
+  ↓ window.postMessage(type: 'FREEDOM_SWARM_REQUEST')
+Webview preload context
+  ↓ ipcRenderer.sendToHost('swarm:provider-request', {id, method, params, origin})
+Renderer process (swarm-provider.js)
+  ↓ Fast-fail checks (feature gate, display origin for prompts)
+  ↓ Shows approval UI when needed
+  ↓ Forwards to main process with origin attached
+Main process — swarm-provider-ipc.js (THE AUTHORITY)
+  ↓ Re-derives origin from sender frame ID
+  ↓ Checks swarm-permissions store
+  ↓ Validates params, enforces size limits
+  ↓ Pre-flight: node running, light mode, usable stamps
+  ↓ Calls existing publish-service.js / stamp-service.js
+  ↓ Returns normalized result
+Renderer (relays response)
+  ↓ webview.send('swarm:provider-response', {id, result, error})
+Webview preload
+  ↓ window.postMessage(type: 'FREEDOM_SWARM_RESPONSE')
+Page context
+  ↓ Resolves pending promise with result
+```
+
+**Why main-process enforcement matters:** The renderer process runs in a less trusted context. A compromised or buggy renderer-side check should not be sufficient to authorize publishing. The main process owns the Bee client, the permission store, and the publish infrastructure — it is the natural enforcement point. Renderer checks are duplicates for UX responsiveness (fast rejection, prompt display), not for security.
+
+Key design choices:
+
+- **postMessage bridge** for injection (not contextBridge) — works with arbitrary third-party pages that dynamically check property existence
+- **IPC channels via `sendToHost`** from preload → renderer → main
+- **Request IDs** with timeouts for pending request tracking
+- **Origin derived from address bar** in renderer (for display/prompts), **re-derived from sender frame** in main process (for enforcement)
+- **Single `request({ method, params })` entry point** — all methods route through one dispatcher. Convenience wrappers (like `window.swarm.publishData()`) are syntactic sugar over `request()`. This scales cleanly when feeds, pinning, and events arrive later.
+
+#### Provider API: `window.swarm`
+
+```js
+window.swarm = {
+  isFreedomBrowser: true,
+
+  /**
+   * Single entry point for all operations. All convenience methods
+   * delegate here. This is the real API surface — everything else
+   * is sugar.
+   */
+  async request({ method, params }) { ... },
+
+  /**
+   * Convenience wrappers (delegate to request internally):
+   */
+  async requestAccess() {
+    return this.request({ method: 'swarm_requestAccess' });
+  },
+  async publishData(params) {
+    return this.request({ method: 'swarm_publishData', params });
+  },
+  async publishFiles(params) {
+    return this.request({ method: 'swarm_publishFiles', params });
+  },
+  async getUploadStatus(params) {
+    return this.request({ method: 'swarm_getUploadStatus', params });
+  },
+  async getCapabilities() {
+    return this.request({ method: 'swarm_getCapabilities' });
+  },
+
+  /**
+   * Event emitter (connect, disconnect).
+   */
+  on(event, handler) { ... },
+  removeListener(event, handler) { ... },
+};
+```
+
+#### Method set
+
+| Method | Params | Returns | Approval |
+| --- | --- | --- | --- |
+| `swarm_requestAccess` | `{}` | `{ capabilities: ['publish'] }` | Connect prompt |
+| `swarm_getCapabilities` | `{}` | `{ canPublish, reason?, limits }` | No (after connect) |
+| `swarm_publishData` | `{ data, contentType, name? }` | `{ reference, bzzUrl }` | Per-publish prompt |
+| `swarm_publishFiles` | `{ files, indexDocument? }` | `{ reference, bzzUrl, tagUid }` | Per-publish prompt |
+| `swarm_getUploadStatus` | `{ tagUid }` | `{ tagUid, split, sent, progress, done }` | No (after connect) |
+
+#### Method parameter specs
+
+**`swarm_requestAccess`**
+
+The connection handshake. Shows approval prompt in the sidebar. Returns granted capabilities. Must be called before any method that requires connect (publish, status). `swarm_getCapabilities` works pre-connect with limited info.
+
+Request: `{}`
+Response: `{ capabilities: ['publish'] }`
+
+**`swarm_getCapabilities`**
+
+Coarse readiness check. Answers: can this node publish right now, and if not, why? Does **not** expose balances, batch IDs, or detailed node internals.
+
+Request: `{}`
+Response:
+```js
+{
+  canPublish: boolean,       // true if node is light mode + has usable stamps
+  reason: string | null,     // if canPublish is false: 'not-connected', 'node-stopped',
+                             //   'ultra-light-mode', 'no-usable-stamps', 'feature-disabled'
+  limits: {
+    maxDataBytes: number,    // e.g. 10485760 (10 MB)
+    maxFilesBytes: number,   // e.g. 52428800 (50 MB)
+    maxFileCount: number,    // e.g. 100
+  },
+}
+```
+
+**`swarm_publishData`**
+
+Publish a single piece of content. For text, images, JSON, small blobs.
+
+Request:
+```js
+{
+  data: Uint8Array | string,   // Raw bytes (Uint8Array) or UTF-8 string
+  contentType: string,         // MIME type, e.g. 'text/plain', 'application/json', 'image/png'
+  name?: string,               // Optional human-readable name for history/display
+}
+```
+
+- If `data` is a `string`, it is treated as UTF-8 text.
+- If `data` is a `Uint8Array`, it is treated as raw bytes. The `contentType` determines how Swarm indexes it.
+- **Transport**: `Uint8Array` is serialized to base64 for the IPC boundary (postMessage → sendToHost → main process). The main process decodes back to a `Buffer`.
+- **Size limit**: 10 MB after decoding. Enforced in the main process.
+- Backend calls existing `publishData` in `publish-service.js` (which uses `bee.uploadFile` for manifest-wrapped uploads).
+
+Response: `{ reference: string, bzzUrl: string }`
+
+**`swarm_publishFiles`**
+
+Publish a collection of files as a Swarm manifest (website, multi-file bundle).
+
+Request:
+```js
+{
+  files: [
+    {
+      path: string,             // Virtual path in manifest, e.g. 'index.html', 'assets/style.css'
+      bytes: Uint8Array,        // Raw file content
+      contentType?: string,     // Optional MIME type (auto-detected from path extension if omitted)
+    },
+  ],
+  indexDocument?: string,       // Path to use as website entry point, e.g. 'index.html'
+}
+```
+
+**Validation rules (enforced in main process):**
+
+- `files` must contain **at least one file**. Empty array → `-32602`.
+- **Duplicate virtual paths are rejected** (error, not last-write-wins). Deterministic manifests require deterministic input.
+- Each file's `bytes` is serialized to base64 for transport. Main process decodes.
+- **Size limits**: 50 MB total across all files, max 100 files. Enforced in main process after base64 decode.
+- If `indexDocument` is provided, it must match an existing file path. If omitted, auto-detection of `index.html` applies (existing behavior).
+- **Backend**: Main process writes decoded files to a temp directory, calls existing `publishDirectory(tempDir)`, cleans up. Reuses all manifest/index.html logic.
+
+**Virtual path normalization rules:**
+
+Virtual paths determine manifest structure. These rules are deterministic and enforced in main process:
+
+- Forward slashes only (`/`). Backslashes → rejected.
+- No empty segments (`foo//bar` → rejected).
+- No leading slash (`/index.html` → rejected). Paths are always relative.
+- No `.` or `..` segments (`../etc/passwd`, `./file` → rejected).
+- Preserve case (`README.md` ≠ `readme.md`).
+- Max path length: 256 characters.
+- No null bytes or control characters.
+
+These rules ensure the manifest shape matches what the page declared in the approval prompt. A page cannot trick the user into approving `index.html` and then write to a different path.
+
+Response: `{ reference: string, bzzUrl: string, tagUid: number }`
+
+`tagUid` is returned for `publishFiles` (deferred uploads) but not for `publishData` (synchronous small uploads).
+
+**`swarm_getUploadStatus`**
+
+Poll tag-based progress for a deferred upload. **Origin-scoped**: a page can only query tags from uploads it initiated through this provider.
+
+Request: `{ tagUid: number }`
+Response:
+```js
+{
+  tagUid: number,
+  split: number,       // Total chunks
+  sent: number,        // Chunks sent to network
+  progress: number,    // 0-100
+  done: boolean,
+}
+```
+
+**Tag ownership enforcement (security-critical):**
+
+The main process maintains an in-memory map of `tagUid → origin` for all tags created through the provider. This map is:
+
+- Populated when `swarm_publishFiles` returns a `tagUid`
+- Checked on every `swarm_getUploadStatus` call — if the requesting origin doesn't match, return `4100 Unauthorized`
+- Cleared when Bee restarts (tags are not persisted across restarts anyway)
+- Not persisted to disk (session-scoped, same lifecycle as the tags themselves)
+
+Without this, a page could enumerate tag UIDs to learn about other origins' upload activity — file sizes, progress, timing. This is a small but real information leak into node activity.
+
+#### Error codes
+
+Follow the EIP-1193 numeric convention used by `window.ethereum`, extended with a structured `data.reason` field for actionable sub-codes:
+
+| Code | Meaning | When |
+| --- | --- | --- |
+| 4001 | User rejected | Connect or publish prompt cancelled |
+| 4100 | Unauthorized | Method requires connect, or tag not owned by this origin |
+| 4200 | Method not supported | Unknown method name |
+| 4900 | Disconnected | Node stopped, ultra-light mode, no stamps, feature disabled |
+| -32602 | Invalid parameters | Missing/malformed params, validation failures (see sub-codes) |
+| -32603 | Internal error | Upload failed, IPC error, unexpected exception |
+
+**Structured error `data` for `-32602` (Invalid parameters):**
+
+Errors with code `-32602` include a `data.reason` string so apps can distinguish specific failures:
+
+| `data.reason` | Meaning |
+| --- | --- |
+| `payload_too_large` | Data exceeds `maxDataBytes` or total file bytes exceeds `maxFilesBytes` |
+| `too_many_files` | File count exceeds `maxFileCount` |
+| `invalid_path` | Path contains `..`, leading `/`, backslashes, empty segments, or control characters |
+| `duplicate_path` | Two files have the same virtual path |
+| `empty_files` | `files` array is empty |
+| `missing_content_type` | `contentType` is required for `publishData` but was not provided |
+| `invalid_index_document` | `indexDocument` does not match any file path |
+
+Example error shape:
+```js
+{
+  code: -32602,
+  message: 'Payload exceeds maximum size of 10 MB',
+  data: { reason: 'payload_too_large', limit: 10485760, actual: 15000000 }
+}
+```
+
+This lets app developers show meaningful error messages and react programmatically (e.g., split a large upload into smaller parts).
+
+#### Origin normalization rules (security-critical)
+
+These rules are the canonical specification. They apply identically in the renderer (for display/prompts) and main process (for enforcement). The rules are extracted from the existing `getPermissionKey()` in `dapp-provider.js` and locked down here:
+
+| Protocol | Input example | Permission key | Rule |
+| --- | --- | --- | --- |
+| `https://` | `https://app.example.com/path` | `https://app.example.com` | scheme + host + port (default port omitted) |
+| `http://` | `http://localhost:3000/page` | `http://localhost:3000` | scheme + host + port |
+| `ens://` | `ens://myapp.eth/#/publish` | `myapp.eth` | Normalized ENS name only (lowercased). NOT the resolved bzz:// reference. |
+| bare ENS | `myapp.eth/blog` | `myapp.eth` | Same as ens:// — ENS name only |
+| `bzz://` | `bzz://abc123def/page/index.html` | `bzz://abc123def` | Root reference only. Path-insensitive. |
+| `ipfs://` | `ipfs://QmABC123/docs/readme` | `ipfs://QmABC123` | Root CID only. Path-insensitive. |
+| `ipns://` | `ipns://docs.ipfs.tech/guide` | `ipns://docs.ipfs.tech` | Hostname/key only. Path-insensitive. |
+| `rad://` | `rad://z123abc/tree/main/src` | `rad://z123abc` | RID only. Path-insensitive. |
+
+**Key invariant**: For all dweb protocols, the permission key is the **root content identity** (reference, CID, ENS name, RID), never including paths. A page at `bzz://ref/admin` has the same permissions as `bzz://ref/public`.
+
+**ENS is special**: ENS names are the stable identity. A Swarm dApp that updates its content (new bzz:// reference) keeps its permissions. This is the right behavior — the user trusts the app by its name, not by its content hash.
+
+#### Permission model
+
+**Separate from wallet permissions.** Swarm permissions consume storage and bandwidth. Wallet permissions expose accounts. Mixing them would create confusing revocation semantics. A new `swarm-permissions.json` file (parallel to `dapp-permissions.json`).
+
+**Permission object:**
+
+```js
+{
+  origin: "normalized-origin",     // Per the origin normalization rules above
+  connectedAt: number,             // Unix ms timestamp
+  lastUsed: number,                // Unix ms timestamp
+  autoPublish: false,              // v1: always false (per-publish confirmation required)
+}
+```
+
+**Approval flow (v1 — layered, conservative):**
+
+Two distinct persistence scopes — connection and publishing — deliberately kept separate:
+
+1. **Connection prompt** (on `swarm_requestAccess`):
+   - Shows: app identity/origin
+   - Shows: what it can do: "Publish content through your Swarm node"
+   - Shows: what it cannot do: "Cannot manage storage, access keys, or modify node settings"
+   - Shows: resource warning: "Uses your node's stamps and bandwidth"
+   - Actions: "Allow" / "Cancel"
+   - **Persisted**: connection permission is remembered in `swarm-permissions.json`. The app can call `swarm_getCapabilities` and `swarm_getUploadStatus` without re-prompting. This is the "remembered access" scope.
+
+2. **Per-publish confirmation** (on `swarm_publishData` / `swarm_publishFiles`):
+   - Shows: app identity/origin
+   - Shows: content summary — human-readable size, file count, virtual path names
+   - Actions: "Publish" / "Cancel"
+   - v1: **always** shows this prompt, even for remembered connections. Connection permission means "may ask to publish without reconnecting," NOT "may publish without confirmation."
+   - **Not persisted** in v1. Every publish requires user approval.
+   - Future: "Always allow for this app" option that sets `autoPublish: true` — deliberately deferred until we've observed real usage patterns and have confidence in the limits.
+
+3. **Revocation:**
+   - Sidebar banner shows "Publishing via {origin}" with disconnect button (parallel to wallet connection banner)
+   - Revoking removes the connection permission — the app must call `swarm_requestAccess` again
+   - Future: settings page lists all Swarm-connected apps with individual revoke
+
+**Feature gate:** Uses `enableIdentityWallet` setting (same gate as `window.ethereum`), since Swarm publishing requires the identity/wallet infrastructure.
+
+#### Main-process enforcement layer
+
+This is the critical design change from the initial spec. The main process does NOT trust the renderer's permission checks. It has its own enforcement layer in `swarm-provider-ipc.js`:
+
+```
+swarm:provider-execute  (renderer → main)
+  ├── Re-derive origin from webContents / sender frame
+  ├── Load permission from swarm-permissions store
+  ├── Validate method + params
+  ├── Enforce size limits
+  ├── Pre-flight: node running, light mode, usable stamps
+  ├── Call publish-service.js or stamp-service.js
+  └── Return normalized result (or error)
+```
+
+**What the main process checks on every provider request:**
+
+1. **Origin**: Re-derive from the sender webContents ID, not from what the renderer claims. The renderer passes the origin for display purposes, but the main process independently determines the true origin.
+2. **Permission**: Check `swarm-permissions.json` for the re-derived origin.
+3. **Method**: Only allow known methods. Unknown methods → 4200.
+4. **Params**: Validate structure, types, and values. Reject malformed input before any I/O.
+5. **Size limits**: Enforce `maxDataBytes`, `maxFilesBytes`, `maxFileCount` on the decoded content. This happens after base64 decoding, not before.
+6. **Pre-flight**: Node must be running, in light mode, with at least one usable stamp. If not → 4900 with descriptive reason.
+7. **Path validation** (for `publishFiles`): All paths must be relative, no `..` traversal, no absolute paths.
+
+**What the renderer checks (convenience, not authority):**
+
+1. Feature gate (fast fail if wallet feature disabled)
+2. Display origin for prompts
+3. Show approval UI (connect prompt, publish prompt)
+4. Fast-fail obvious errors (missing params, clearly too large)
+
+The renderer's role is to provide good UX (prompts, fast feedback). The main process's role is to be correct and secure.
+
+#### File transport and memory limits
+
+Pages send content bytes across the page → renderer → main boundary. This is the biggest practical risk in M3.
+
+**Transport format:**
+
+- `Uint8Array` in the page context
+- Serialized to **base64 string** for postMessage and IPC transport
+- Decoded back to `Buffer` in the main process
+- Base64 encoding adds ~33% overhead, so a 10 MB payload becomes ~13.3 MB on the wire
+
+**Memory considerations:**
+
+- The entire file content lives in memory during transport (page → postMessage → preload → sendToHost → renderer → invoke → main → Buffer)
+- For `publishFiles`, all files are held in memory simultaneously until written to the temp directory
+- This is why limits must be conservative: 10 MB for single data, 50 MB total for file collections
+- The main process writes to temp dir as soon as possible to release the IPC buffer
+
+**Temp directory lifecycle (main process only):**
+
+Temp directories are created, used, and cleaned up exclusively in the main process. The renderer and provider code never see temp paths, never receive them in responses, and have no role in cleanup.
+
+1. Main process creates temp dir via `fs.mkdtemp(path.join(os.tmpdir(), 'freedom-swarm-'))`
+2. Writes decoded file content to the temp dir (preserving virtual path structure)
+3. Calls existing `publishDirectory(tempDir)`
+4. Cleans up temp dir in a `finally` block — **always**, including:
+   - Successful upload
+   - Upload failure (bee-js error, network error)
+   - Validation failure after partial write (e.g., path validation passes for first 5 files, fails on 6th — clean up all 5)
+   - Process interruption (best-effort via temp dir in `os.tmpdir()` which the OS cleans eventually)
+
+**v1 limits (enforced in main process after base64 decode):**
+
+| Limit | Value | Rationale |
+| --- | --- | --- |
+| `swarm_publishData` max size | 10 MB | Single content blob |
+| `swarm_publishFiles` total size | 50 MB | Sum of all file bytes |
+| `swarm_publishFiles` max files | 100 | Prevents manifest explosion |
+| Max individual file path length | 256 chars | Prevents deeply nested paths |
+| Request timeout | 5 minutes | Same as stamp purchase timeout |
+
+These can be raised after measuring real-world memory behavior.
+
+#### New files
+
+| File | Purpose |
+| --- | --- |
+| `src/main/swarm/swarm-permissions.js` | Permission store — CRUD, disk persistence, IPC handlers (parallel to `dapp-permissions.js`) |
+| `src/main/swarm/swarm-provider-ipc.js` | Main-process provider enforcement — origin validation, permission checks, param validation, size limits, pre-flight, method dispatch |
+| `src/renderer/lib/swarm-provider.js` | Renderer-side request handler — fast-fail checks, approval UI orchestration (parallel to `dapp-provider.js`) |
+| `src/renderer/lib/wallet/swarm-connect.js` | Connection + publish approval UI (parallel to `dapp-connect.js`) |
+
+#### Modified files
+
+| File | Changes |
+| --- | --- |
+| `src/main/webview-preload.js` | Add `window.swarm` injection via postMessage bridge (parallel to `window.ethereum`) |
+| `src/renderer/lib/tabs.js` | Add `swarm:provider-request` listener in `setupWebviewProvider()` |
+| `src/renderer/index.html` | Add Swarm connect + publish approval screen HTML |
+| `src/renderer/styles/sidebar.css` | Swarm connect/approval screen styles |
+| `src/shared/ipc-channels.js` | Add swarm provider + permission IPC channel constants |
+| `src/main/preload.js` | Add `window.swarmPermissions` IPC bindings |
+| `src/main/index.js` | Register swarm permissions + provider IPC handlers on startup |
+| `src/main/swarm/publish-service.js` | Add `publishFilesFromContent()` — accepts decoded content buffers, writes to temp dir, calls existing `publishDirectory` |
+
+#### IPC channels
+
+```
+// Provider execution (renderer → main, the authority)
+swarm:provider-execute         // Single channel for all provider methods
+
+// Provider UI (webview ↔ renderer, for prompts and fast-fail)
+swarm:provider-request         // webview → renderer (via sendToHost)
+swarm:provider-response        // renderer → webview (via webview.send)
+swarm:provider-event           // renderer → webview (connect/disconnect events)
+
+// Permission CRUD (renderer → main, for UI display and banner)
+swarm:get-swarm-permission
+swarm:grant-swarm-permission
+swarm:revoke-swarm-permission
+swarm:get-all-swarm-permissions
+swarm:update-swarm-last-used
+```
+
+The key split: `swarm:provider-execute` is the authoritative execution channel. The renderer uses it after showing prompts. The main process re-validates everything before executing.
+
+#### Implementation plan (work packages)
+
+Sequenced for incremental testability. Each WP produces a testable artifact.
+
+**WP3-A: Origin normalization + permission store + main-process provider IPC**
+
+The foundation. Build the enforcement layer first, test it in isolation.
+
+- Extract origin normalization to a shared module (`src/shared/origin-utils.js`) — used by both renderer and main process. Canonical rules from the origin normalization table above.
+- `swarm-permissions.js` (main process): CRUD, disk persistence, IPC handlers. Same pattern as `dapp-permissions.js`.
+- `swarm-provider-ipc.js` (main process): register `swarm:provider-execute` handler. Method dispatch, origin re-derivation, permission checks, param validation, size limits, pre-flight checks. At this point, publish methods return mock success (no actual bee-js calls yet) — the goal is to test the enforcement layer.
+- IPC channels in `ipc-channels.js`.
+- Preload bindings in `preload.js`.
+- **Tests**: permission CRUD, origin normalization for all protocol types, param validation, size limit enforcement, pre-flight check failure modes.
+
+**WP3-B: Provider injection + `swarm_requestAccess` + `swarm_getCapabilities`**
+
+Wire up the page-facing API and the connection handshake.
+
+- Add `window.swarm` to `webview-preload.js` — script-tag injection with postMessage bridge (same pattern as `window.ethereum`). Single `request({ method, params })` entry point with convenience wrappers.
+- Add preload-side `FREEDOM_SWARM_REQUEST` / `FREEDOM_SWARM_RESPONSE` message bridge.
+- Add `swarm:provider-request` listener in `tabs.js` `setupWebviewProvider()`.
+- `swarm-provider.js` (renderer): handle incoming requests, show connect prompt, forward to main via `swarm:provider-execute`.
+- `swarm-connect.js` (renderer UI): connection approval sidebar screen. Shows origin, capabilities, resource warning. Allow / Cancel.
+- Swarm connection banner in sidebar (parallel to dApp connection banner).
+- Wire `swarm_getCapabilities` to coarse node status check (main process queries node mode + stamp availability, returns `canPublish` + `reason` + `limits`).
+- **Tests**: provider injection in webview, requestAccess → prompt → grant → permission persisted, getCapabilities returns correct state.
+
+**WP3-C: `swarm_publishData`**
+
+The simplest publish path. Proves the full flow end-to-end.
+
+- Wire `swarm_publishData` through the main-process enforcement layer to existing `publishData` in `publish-service.js`.
+- Main process: decode base64/string → validate content type → validate size → call `publishData` → return `{ reference, bzzUrl }`.
+- Publish approval UI: sidebar prompt showing origin, content type, human-readable size. Publish / Cancel.
+- Record in publish history (existing infrastructure).
+- **Tests**: full flow mock (page request → permission check → approval → publish → result), size limit rejection, missing contentType rejection, unauthorized rejection.
+
+**WP3-D: `swarm_publishFiles` + `swarm_getUploadStatus`**
+
+Multi-file publishing with progress tracking.
+
+- `publishFilesFromContent()` in `publish-service.js`: accepts `[{ path, buffer, contentType }]` array, creates temp dir, writes files, calls existing `publishDirectory`, cleans up.
+- Main process enforcement: decode all file bytes, validate paths (relative, no `..`, no absolute), enforce total size + file count limits, validate indexDocument matches a file path.
+- Wire `swarm_getUploadStatus` — main process validates tagUid was issued to the requesting origin (tag-to-origin map).
+- Publish approval UI: shows file count, total size, file names/paths.
+- **Tests**: multi-file upload, path validation (reject `../etc/passwd`), temp dir cleanup on failure, tag ownership validation.
+
+**WP3-E: Prompt/revocation polish + integration tests**
+
+Final polish and end-to-end verification.
+
+- Revocation: disconnect button in Swarm connection banner, emits `disconnect` event to page.
+- Edge cases: what happens when node stops mid-upload, when stamps expire during upload, when user revokes mid-request.
+- Integration tests: full flow from page `window.swarm.request()` through to Bee API mock.
+- Origin normalization integration tests: ENS app publishes, bzz:// app publishes, HTTPS app publishes — permissions are keyed correctly.
+- **Tests**: revocation flow, concurrent requests from same origin, cross-origin tag rejection, node-down during publish.
+
+#### Design decisions log
+
+1. **Main-process enforcement is the authority, renderer is convenience.** The renderer shows prompts and provides fast UX feedback, but the main process re-validates everything. A compromised renderer cannot authorize publishing.
+
+2. **Single `request({ method, params })` entry point.** Convenience wrappers are sugar. The method-based dispatch scales cleanly for feeds, pinning, and future capabilities without changing the transport layer.
+
+3. **Separate permission store from wallet.** Swarm permissions consume resources (stamps, bandwidth). Wallet permissions expose accounts. Different threat model, different revocation semantics, different store.
+
+4. **Per-publish confirmation in v1.** Conservative. Users are spending stamps and bandwidth. Relax later with `autoPublish: true` after proving the model.
+
+5. **ENS name as permission key.** Not the resolved reference. The ENS name is the stable identity. A Swarm app that updates its content keeps its permissions.
+
+6. **Pages send content bytes, not file paths.** Hard security boundary. Pages never learn about the local filesystem. The temp-dir approach reuses existing infrastructure cleanly.
+
+7. **No `swarm_publishSite` method.** `swarm_publishFiles` with `indexDocument` covers this. A dedicated site method would add API surface without adding capability.
+
+8. **Same feature gate as wallet.** `enableIdentityWallet`. Swarm publishing requires the identity infrastructure. No point enabling one without the other.
+
+9. **No batch selection by pages.** Freedom auto-selects the best batch (existing `selectBestBatch()`). Pages don't know about batches. This is a browser responsibility.
+
+10. **`swarm_getCapabilities` is deliberately coarse.** It tells the page whether publishing will work and why not. It does not expose balances, batch IDs, node version, peer count, or any internal detail that could fingerprint the user or leak operational state.
+
+11. **Uint8Array + base64 for transport.** Pages work with `Uint8Array` (natural for binary data in JS). The IPC boundary serializes to base64. Main process decodes to `Buffer`. This is one extra copy per file but avoids structured-clone edge cases and keeps the transport layer simple and inspectable.
+
+12. **Tag ownership tracking.** The main process maps tagUid → origin so that `swarm_getUploadStatus` cannot be used to snoop on uploads from other origins. This is a cross-origin isolation concern, not just a permission concern.
+
+13. **Future event shape: EIP-1193 style, but not yet.** v1 is polling-only (`getUploadStatus`). When we add real-time events (upload complete, feed updated, permission revoked), they will use the existing `on(event, handler)` pattern already wired into the provider. The `swarm:provider-event` IPC channel is reserved for this. Planned event names: `connect`, `disconnect`, `uploadComplete`. This note exists to prevent awkward API drift — the event emitter is already on the provider object, we just don't emit anything yet.
+
+### Later: Milestones 4-5
+
 - Milestone 4: Mutable publishing and feed identities (depends on Milestone 3)
 - Milestone 5: Durability and advanced capabilities (depends on Milestone 4)
 

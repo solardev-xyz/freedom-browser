@@ -713,6 +713,22 @@
                     </button>
                   </div>
 
+                  <!-- Swarm Connection Banner (shown when current tab has Swarm publish access) -->
+                  <div class="swarm-connection-banner hidden" id="swarm-connection-banner">
+                    <div class="swarm-connection-info">
+                      <span class="swarm-connection-indicator"></span>
+                      <span class="swarm-connection-text">
+                        <span class="swarm-connection-label">Publishing via Swarm</span>
+                        <span class="swarm-connection-site" id="swarm-connection-site">site.eth</span>
+                      </span>
+                    </div>
+                    <button type="button" class="swarm-connection-disconnect" id="swarm-connection-disconnect" title="Revoke access">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M18 6L6 18M6 6l12 12"/>
+                      </svg>
+                    </button>
+                  </div>
+
                   <!-- Wallet Selector -->
                   <div class="wallet-selector" id="wallet-selector">
                     <button type="button" class="wallet-selector-btn" id="wallet-selector-btn">
@@ -1888,6 +1904,59 @@
             </div>
           </div>
         </div>
+
+            <!-- Swarm Connect sub-screen -->
+            <div id="sidebar-swarm-connect" class="sidebar-subscreen hidden">
+              <div class="subscreen-header">
+                <button type="button" class="subscreen-back-btn" id="swarm-connect-back">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="15 18 9 12 15 6"/>
+                  </svg>
+                  <span>Back</span>
+                </button>
+                <h3 class="subscreen-title">Swarm Access</h3>
+              </div>
+
+              <div class="subscreen-content" id="swarm-connect-content">
+                <div class="swarm-connect-origin">
+                  <div class="swarm-connect-site" id="swarm-connect-site">example.eth</div>
+                  <div class="swarm-connect-wants">wants to publish through your Swarm node</div>
+                </div>
+
+                <div class="swarm-connect-permissions">
+                  <div class="swarm-connect-permissions-title">This will allow the site to:</div>
+                  <ul class="swarm-connect-permissions-list">
+                    <li>Publish content through your Swarm node</li>
+                    <li>Use your node's postage stamps</li>
+                    <li>Check node capabilities and upload status</li>
+                  </ul>
+                </div>
+
+                <div class="swarm-connect-warning">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10"/>
+                    <line x1="12" y1="16" x2="12" y2="12"/>
+                    <line x1="12" y1="8" x2="12.01" y2="8"/>
+                  </svg>
+                  <span>Publishing uses your stamps and bandwidth. Each publish requires your approval.</span>
+                </div>
+
+                <div class="swarm-connect-cannot">
+                  <div class="swarm-connect-cannot-title">This site cannot:</div>
+                  <ul class="swarm-connect-cannot-list">
+                    <li>Access your wallet or private keys</li>
+                    <li>Manage your storage or stamps</li>
+                    <li>Read your files or browsing history</li>
+                  </ul>
+                </div>
+
+                <div class="swarm-connect-actions">
+                  <button type="button" class="swarm-connect-reject-btn" id="swarm-connect-reject">Cancel</button>
+                  <button type="button" class="swarm-connect-approve-btn" id="swarm-connect-approve">Allow</button>
+                </div>
+              </div>
+            </div>
+
       </aside>
     </section>
 

@@ -67,6 +67,7 @@ function getPermissionKey(displayUrl) {
   if (!displayUrl) return null;
 
   const trimmed = displayUrl.trim();
+  if (!trimmed) return null;
 
   // ENS name without protocol (e.g., 1inch.eth/path)
   if (/^[a-z0-9-]+\.(eth|box)/i.test(trimmed)) {
@@ -490,6 +491,9 @@ export function broadcastProviderEvent(event, data) {
     sendProviderEvent(activeWebview, event, data);
   }
 }
+
+// Exported for use by swarm-provider.js and swarm-connect.js
+export { getPermissionKey, getDisplayUrl };
 
 // Export state for wallet UI to access
 export const walletState = {

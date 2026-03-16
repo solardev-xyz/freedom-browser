@@ -6,6 +6,7 @@ import { showMenuBackdrop, hideMenuBackdrop } from './menu-backdrop.js';
 import { setupWebviewContextMenu } from './page-context-menu.js';
 import { homeUrl } from './page-urls.js';
 import { setupWebviewProvider, setActiveWebview } from './dapp-provider.js';
+import { setupSwarmProvider } from './swarm-provider.js';
 
 const electronAPI = window.electronAPI;
 
@@ -171,6 +172,31 @@ export const closeAllDevTools = () => {
 
 // Get all tabs
 export const getTabs = () => tabState.tabs;
+
+/**
+ * Get the display URL for a specific webview.
+ * For the active tab, reads the address bar (ground truth).
+ * For background tabs, uses the saved addressBarSnapshot.
+ * This is critical for provider permission checks — using the global
+ * address bar for a background tab's request would grant/check against
+ * the wrong origin.
+ *
+ * @param {HTMLElement} webview - The webview element
+ * @returns {string} The display URL for this webview's tab
+ */
+export const getDisplayUrlForWebview = (webview) => {
+  const tab = tabState.tabs.find((t) => t.webview === webview);
+  if (!tab) return '';
+
+  // Active tab: address bar is the ground truth
+  if (tab.id === tabState.activeTabId) {
+    const addressInput = document.getElementById('address-input');
+    return addressInput?.value || '';
+  }
+
+  // Background tab: use saved snapshot from last time it was active
+  return tab.navigationState?.addressBarSnapshot || '';
+};
 
 // Create default navigation state for a tab
 const createNavigationState = () => ({
@@ -351,8 +377,9 @@ const createWebview = (tabId, initialUrl) => {
   // Set up context menu listener
   setupWebviewContextMenu(webview);
 
-  // Set up Ethereum provider (window.ethereum)
+  // Set up providers (window.ethereum + window.swarm)
   setupWebviewProvider(webview);
+  setupSwarmProvider(webview);
 
   return webview;
 };

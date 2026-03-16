@@ -600,4 +600,123 @@ ipcRenderer.on('dapp:provider-state', (_event, state) => {
   }, window.location.origin);
 });
 
-console.log('[webview-preload] Loaded (freedomAPI + context menu + ethereum provider)');
+// ============================================
+// Swarm Provider (window.swarm)
+// ============================================
+
+try {
+  const swarmScript = document.createElement('script');
+  swarmScript.textContent = `
+    (function() {
+      const pendingRequests = new Map();
+      let requestId = 0;
+      const eventListeners = { connect: [], disconnect: [] };
+
+      function emitEvent(event, data) {
+        if (eventListeners[event]) {
+          eventListeners[event].forEach(h => { try { h(data); } catch(e) {} });
+        }
+      }
+
+      window.swarm = {
+        isFreedomBrowser: true,
+
+        async request({ method, params }) {
+          if (!method) throw new Error('method is required');
+          const id = ++requestId;
+          return new Promise((resolve, reject) => {
+            pendingRequests.set(id, { resolve, reject });
+            window.postMessage({ type: 'FREEDOM_SWARM_REQUEST', id, method, params: params || {} }, '*');
+            const timeout = method.startsWith('swarm_publish') ? 300000 : 60000;
+            setTimeout(() => {
+              if (pendingRequests.has(id)) {
+                pendingRequests.delete(id);
+                reject(new Error('Request timed out'));
+              }
+            }, timeout);
+          });
+        },
+
+        requestAccess() { return this.request({ method: 'swarm_requestAccess' }); },
+        getCapabilities() { return this.request({ method: 'swarm_getCapabilities' }); },
+        publishData(params) { return this.request({ method: 'swarm_publishData', params: params }); },
+        publishFiles(params) { return this.request({ method: 'swarm_publishFiles', params: params }); },
+        getUploadStatus(params) { return this.request({ method: 'swarm_getUploadStatus', params: params }); },
+
+        on(event, handler) { if (eventListeners[event]) eventListeners[event].push(handler); return this; },
+        removeListener(event, handler) {
+          if (eventListeners[event]) {
+            const i = eventListeners[event].indexOf(handler);
+            if (i > -1) eventListeners[event].splice(i, 1);
+          }
+          return this;
+        },
+        addListener(event, handler) { return this.on(event, handler); },
+        removeAllListeners(event) { if (event && eventListeners[event]) eventListeners[event] = []; return this; },
+      };
+
+      window.addEventListener('message', function(event) {
+        if (event.source !== window) return;
+        if (event.data.type === 'FREEDOM_SWARM_RESPONSE') {
+          const pending = pendingRequests.get(event.data.id);
+          if (pending) {
+            pendingRequests.delete(event.data.id);
+            if (event.data.error) {
+              const err = new Error(event.data.error.message);
+              err.code = event.data.error.code;
+              err.data = event.data.error.data;
+              pending.reject(err);
+            } else {
+              pending.resolve(event.data.result);
+            }
+          }
+        } else if (event.data.type === 'FREEDOM_SWARM_EVENT') {
+          emitEvent(event.data.event, event.data.data);
+        }
+      });
+    })();
+  `;
+
+  const injectSwarm = () => {
+    const head = document.head || document.documentElement;
+    head.insertBefore(swarmScript, head.firstChild);
+    swarmScript.remove();
+  };
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', injectSwarm, { once: true });
+  } else {
+    injectSwarm();
+  }
+} catch (err) {
+  console.error('[webview-preload] Failed to inject swarm provider:', err);
+}
+
+// Bridge postMessage from page to IPC (Swarm)
+window.addEventListener('message', (event) => {
+  if (event.source !== window) return;
+  if (event.data.type === 'FREEDOM_SWARM_REQUEST') {
+    const { id, method, params } = event.data;
+    ipcRenderer.sendToHost('swarm:provider-request', { id, method, params });
+  }
+});
+
+// Bridge IPC responses back to page (Swarm)
+ipcRenderer.on('swarm:provider-response', (_event, { id, result, error }) => {
+  window.postMessage({
+    type: 'FREEDOM_SWARM_RESPONSE',
+    id,
+    result,
+    error,
+  }, window.location.origin);
+});
+
+ipcRenderer.on('swarm:provider-event', (_event, { event, data }) => {
+  window.postMessage({
+    type: 'FREEDOM_SWARM_EVENT',
+    event,
+    data,
+  }, window.location.origin);
+});
+
+console.log('[webview-preload] Loaded (freedomAPI + context menu + ethereum + swarm provider)');

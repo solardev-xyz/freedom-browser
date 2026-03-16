@@ -356,3 +356,16 @@ contextBridge.exposeInMainWorld('dappPermissions', {
   getAllPermissions: () => ipcRenderer.invoke('dapp:get-all-permissions'),
   updateLastUsed: (origin, chainId) => ipcRenderer.invoke('dapp:update-last-used', origin, chainId),
 });
+
+contextBridge.exposeInMainWorld('swarmPermissions', {
+  getPermission: (origin) => ipcRenderer.invoke('swarm:get-permission', origin),
+  grantPermission: (origin) => ipcRenderer.invoke('swarm:grant-permission', origin),
+  revokePermission: (origin) => ipcRenderer.invoke('swarm:revoke-permission', origin),
+  getAllPermissions: () => ipcRenderer.invoke('swarm:get-all-permissions'),
+  updateLastUsed: (origin) => ipcRenderer.invoke('swarm:update-last-used', origin),
+});
+
+contextBridge.exposeInMainWorld('swarmProvider', {
+  execute: (method, params, origin) =>
+    ipcRenderer.invoke('swarm:provider-execute', { method, params, origin }),
+});

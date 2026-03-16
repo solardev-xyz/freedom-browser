@@ -2536,6 +2536,228 @@
 }
 
 /* ============================================
+   Swarm Connection Banner
+   ============================================ */
+
+.swarm-connection-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  border-radius: 8px;
+}
+
+.swarm-connection-banner.hidden {
+  display: none;
+}
+
+.swarm-connection-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+}
+
+.swarm-connection-indicator {
+  width: 8px;
+  height: 8px;
+  background: #f59e0b;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.swarm-connection-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.swarm-connection-label {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.swarm-connection-site {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--foreground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.swarm-connection-disconnect {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--muted);
+  flex-shrink: 0;
+  transition: color 0.15s, background 0.15s;
+}
+
+.swarm-connection-disconnect:hover {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.swarm-connection-disconnect svg {
+  width: 14px;
+  height: 14px;
+}
+
+[data-theme="light"] .swarm-connection-banner {
+  background: rgba(245, 158, 11, 0.08);
+  border-color: rgba(245, 158, 11, 0.25);
+}
+
+/* ============================================
+   Swarm Connect Screen
+   ============================================ */
+
+.swarm-connect-origin {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 24px 0;
+  margin-bottom: 20px;
+}
+
+.swarm-connect-site {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--foreground);
+  word-break: break-all;
+}
+
+.swarm-connect-wants {
+  font-size: 14px;
+  color: var(--muted);
+  margin-top: 6px;
+}
+
+.swarm-connect-permissions,
+.swarm-connect-cannot {
+  background: var(--toolbar);
+  border-radius: 8px;
+  padding: 14px;
+  margin-bottom: 16px;
+}
+
+.swarm-connect-permissions-title,
+.swarm-connect-cannot-title {
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+.swarm-connect-permissions-list,
+.swarm-connect-cannot-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.swarm-connect-permissions-list li,
+.swarm-connect-cannot-list li {
+  font-size: 13px;
+  color: var(--foreground);
+  padding: 4px 0;
+  padding-left: 16px;
+  position: relative;
+}
+
+.swarm-connect-permissions-list li::before {
+  content: "\2713";
+  position: absolute;
+  left: 0;
+  color: #22c55e;
+  font-weight: 700;
+}
+
+.swarm-connect-cannot-list li::before {
+  content: "\2717";
+  position: absolute;
+  left: 0;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.swarm-connect-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px;
+  margin-bottom: 16px;
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.25);
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--foreground);
+  line-height: 1.4;
+}
+
+.swarm-connect-warning svg {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  color: #f59e0b;
+  margin-top: 1px;
+}
+
+.swarm-connect-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 24px;
+}
+
+.swarm-connect-reject-btn,
+.swarm-connect-approve-btn {
+  flex: 1;
+  padding: 10px 16px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.swarm-connect-reject-btn {
+  background: var(--toolbar);
+  color: var(--foreground);
+  border-color: var(--border);
+}
+
+.swarm-connect-reject-btn:hover {
+  background: var(--hover);
+}
+
+.swarm-connect-approve-btn {
+  background: #f59e0b;
+  color: #fff;
+}
+
+.swarm-connect-approve-btn:hover {
+  background: #d97706;
+}
+
+/* ============================================
    Wallet Selector Dropdown
    ============================================ */
 

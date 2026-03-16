@@ -156,4 +156,14 @@ module.exports = {
   DAPP_PROVIDER_REQUEST: 'dapp:provider-request',
   DAPP_PROVIDER_RESPONSE: 'dapp:provider-response',
   DAPP_PROVIDER_EVENT: 'dapp:provider-event',
+
+  // Swarm Provider Permissions
+  SWARM_GET_PERMISSION: 'swarm:get-permission',
+  SWARM_GRANT_PERMISSION: 'swarm:grant-permission',
+  SWARM_REVOKE_PERMISSION: 'swarm:revoke-permission',
+  SWARM_GET_ALL_PERMISSIONS: 'swarm:get-all-permissions',
+  SWARM_UPDATE_LAST_USED: 'swarm:update-last-used',
+
+  // Swarm Provider (main-process authority)
+  SWARM_PROVIDER_EXECUTE: 'swarm:provider-execute',
 };
