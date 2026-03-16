@@ -160,15 +160,20 @@ async function handlePublishData(params, origin) {
     return { error: { ...ERRORS.INVALID_PARAMS, message: 'contentType is required', data: { reason: 'missing_content_type' } } };
   }
 
-  // Accept string or Buffer/Uint8Array (Electron structured clone preserves typed arrays)
-  const isString = typeof data === 'string';
-  const isBuffer = Buffer.isBuffer(data) || data instanceof Uint8Array;
+  // Accept string, Buffer, Uint8Array, or ArrayBuffer.
+  // Normalize ArrayBuffer to Buffer so publishData receives a consistent type.
+  let payload = data;
+  const isString = typeof payload === 'string';
+  if (!isString && payload instanceof ArrayBuffer) {
+    payload = Buffer.from(payload);
+  }
+  const isBuffer = Buffer.isBuffer(payload) || payload instanceof Uint8Array;
   if (!isString && !isBuffer) {
-    return { error: { ...ERRORS.INVALID_PARAMS, message: 'data must be a string or Uint8Array', data: { reason: 'invalid_params' } } };
+    return { error: { ...ERRORS.INVALID_PARAMS, message: 'data must be a string, Uint8Array, or ArrayBuffer', data: { reason: 'invalid_params' } } };
   }
 
   // Enforce size limit on decoded content
-  const size = isString ? Buffer.byteLength(data, 'utf-8') : data.length;
+  const size = isString ? Buffer.byteLength(payload, 'utf-8') : payload.length;
   if (size > LIMITS.maxDataBytes) {
     return {
       error: {
@@ -193,7 +198,7 @@ async function handlePublishData(params, origin) {
   });
 
   try {
-    const result = await publishData(data, {
+    const result = await publishData(payload, {
       contentType,
       name: name || undefined,
     });

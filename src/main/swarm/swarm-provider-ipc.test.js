@@ -233,6 +233,30 @@ describe('swarm-provider-ipc', () => {
       });
     });
 
+    test('normalizes ArrayBuffer to Buffer and publishes', async () => {
+      mockGetPermission.mockReturnValue({ origin: 'myapp.eth' });
+      mockPreFlightOk();
+      mockPublishData.mockResolvedValue({
+        reference: 'ghi789',
+        bzzUrl: 'bzz://ghi789',
+        tagUid: null,
+        batchIdUsed: 'batch3',
+      });
+
+      const ab = new ArrayBuffer(4);
+      new Uint8Array(ab).set([0x47, 0x49, 0x46, 0x38]); // GIF header
+      const result = await invokeProvider('swarm_publishData', {
+        data: ab,
+        contentType: 'image/gif',
+      }, 'myapp.eth');
+
+      expect(result.result).toEqual({ reference: 'ghi789', bzzUrl: 'bzz://ghi789' });
+      // Should arrive as Buffer (normalized from ArrayBuffer)
+      const calledData = mockPublishData.mock.calls[0][0];
+      expect(Buffer.isBuffer(calledData)).toBe(true);
+      expect(calledData.length).toBe(4);
+    });
+
     test('rejects non-string non-buffer data', async () => {
       mockGetPermission.mockReturnValue({ origin: 'myapp.eth' });
       const result = await invokeProvider('swarm_publishData', {
@@ -241,7 +265,7 @@ describe('swarm-provider-ipc', () => {
       }, 'myapp.eth');
 
       expect(result.error.code).toBe(-32602);
-      expect(result.error.message).toContain('string or Uint8Array');
+      expect(result.error.message).toContain('string, Uint8Array, or ArrayBuffer');
     });
 
     test('returns -32602 when contentType is missing', async () => {
