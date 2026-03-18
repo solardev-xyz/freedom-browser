@@ -10,7 +10,7 @@
  * webview (window.ethereum) → renderer (this) → main (RPC/signing)
  */
 
-import { showDappConnect, getSelectedChainId, setSelectedChainId, updateConnectionBanner, showDappTxApproval, showDappSignApproval } from './wallet-ui.js';
+import { showDappConnect, getSelectedChainId, setSelectedChainId, updateConnectionBanner, showDappTxApproval, showDappSignApproval, updateSwarmConnectionBanner } from './wallet-ui.js';
 
 // Feature flag state
 let identityWalletEnabled = false;
@@ -433,9 +433,10 @@ export function setupWebviewProvider(webview) {
 export function setActiveWebview(webview) {
   activeWebview = webview;
 
-  // Update connection banner after a small delay to allow address bar to update
+  // Update connection banners after a small delay to allow address bar to update
   setTimeout(() => {
     updateConnectionBanner();
+    updateSwarmConnectionBanner();
   }, 50);
 }
 

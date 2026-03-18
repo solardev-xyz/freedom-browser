@@ -8,7 +8,7 @@
 import { walletState, registerScreenHider, hideAllSubscreens } from './wallet-state.js';
 import { formatBytes } from './wallet-utils.js';
 import { open as openSidebarPanel, isVisible as isSidebarVisible } from '../sidebar.js';
-import { getPermissionKey } from '../dapp-provider.js';
+import { getPermissionKey, getActiveWebview } from '../dapp-provider.js';
 
 // DOM references — connect screen
 let swarmConnectScreen;
@@ -228,6 +228,15 @@ async function disconnectCurrentSwarmApp() {
   try {
     await window.swarmPermissions.revokePermission(currentBannerPermissionKey);
     console.log('[SwarmConnect] Disconnected:', currentBannerPermissionKey);
+
+    // Emit disconnect event to the active webview
+    const webview = getActiveWebview();
+    if (webview && webview.send) {
+      webview.send('swarm:provider-event', {
+        event: 'disconnect',
+        data: { origin: currentBannerPermissionKey },
+      });
+    }
 
     swarmConnectionBanner?.classList.add('hidden');
     currentBannerPermissionKey = null;
