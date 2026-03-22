@@ -83,12 +83,16 @@ async function handleSwarmRequest(webview, request) {
       // User approved — forward to main
       result = await executeWithPermission(method, params, permissionKey);
     } else if (method === 'swarm_createFeed' || method === 'swarm_updateFeed') {
-      // Feed operations require permission + feed grant
+      // Feed operations require permission + feed grant + unlocked vault
       await requirePermission(permissionKey);
 
       const hasFeedAccess = await window.swarmFeedStore?.hasFeedGrant?.(permissionKey);
-      if (!hasFeedAccess) {
-        // No active feed grant — show identity choice prompt (first use or reconnect)
+      const vaultStatus = await window.identity?.getStatus?.();
+      const vaultLocked = !vaultStatus?.isUnlocked;
+
+      if (!hasFeedAccess || vaultLocked) {
+        // Show feed approval screen: for identity choice (first use / reconnect)
+        // or for vault unlock (vault locked with existing grant)
         await new Promise((resolve, reject) => {
           showSwarmFeedApproval(permissionKey, params, resolve, reject);
         });
