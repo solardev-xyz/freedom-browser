@@ -1526,14 +1526,11 @@ This is not blocking for the current milestone but should be addressed before re
 
 ### Still open
 
-- Which derivation path should Freedom reserve for dedicated Swarm publisher keys?
-- Should we support one publisher key per feed/site, or a single publishing identity per profile?
-- Should the first publish UI live in the existing sidebar, a new `freedom://publish` page, or both?
-- Should folder/site publishing happen only in the main process, or also support browser-style `FileList` uploads from the renderer?
 - Should published references automatically become bookmarks or appear in a dedicated publish-history page?
 - Should the app offer a one-click "point ENS name at this feed manifest" helper later?
 - Should Freedom ever support full-node publishing for advanced users, or stay opinionated around light nodes?
 - Does `/chequebook/address` in ultra-light mode correctly reflect a previously-deployed chequebook? Likely yes based on statestore persistence, but not yet tested with a mode-switch roundtrip.
+- Should Freedom add an "App-Scoped Identities" management screen in the Nodes tab for viewing/searching stored publisher identities?
 
 ### Resolved from implementation
 
@@ -1548,6 +1545,13 @@ This is not blocking for the current milestone but should be addressed before re
 - Should the stamp management UI show cost in xBZZ or also estimate in USD/EUR (via a price feed)?
 - How should the `Bee` client instance handle Bee restarts? Should it detect connection loss and recreate, or rely on the service registry URL change?
 - How should Freedom handle batch expiry warnings long-term? Currently shows TTL warnings in the stamp manager (orange < 7 days, red < 1 day), but no proactive notifications when the stamp manager is closed.
+
+### Resolved from M4 implementation
+
+- ~~Which derivation path should Freedom reserve for dedicated Swarm publisher keys?~~ **Resolved: `m/44'/73406'/{originIndex}'/0/0`** — dedicated coin type 73406, one secp256k1 key per origin index, cleanly separated from user wallets (60), Bee wallet (60/0/1), Radicle (73404), IPFS (73405).
+- ~~Should we support one publisher key per feed/site, or a single publishing identity per profile?~~ **Resolved: one key per origin.** Multiple feeds per origin use different topics (`normalizedOrigin + "/" + feedName`). Identity mode (app-scoped vs bee-wallet) chosen once per origin at first feed grant.
+- ~~Should the first publish UI live in the sidebar, a new page, or both?~~ **Resolved: both.** `freedom://publish` for first-party manual publishing, sidebar approval screens for third-party provider operations.
+- ~~Should folder/site publishing happen only in the main process?~~ **Resolved: main process only.** Pages send content bytes via IPC; main process writes to temp dir and uploads via bee-js.
 
 ### Resolved from M3 design
 
