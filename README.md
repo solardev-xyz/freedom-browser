@@ -4,7 +4,7 @@
 [![Platform](https://img.shields.io/badge/platform-macOS%20|%20Linux%20|%20Windows-lightgrey)](https://github.com/solardev-xyz/freedom-browser/releases)
 
 Freedom is a browser for the decentralized web, with Swarm, IPFS, Radicle, and ENS as first-class protocols.
-It ships with integrated Swarm, IPFS, and Radicle nodes, enabling direct peer-to-peer network access without relying on centralized HTTP gateways.
+It ships with integrated Swarm, IPFS, and Radicle nodes, enabling direct peer-to-peer network access without relying on centralized HTTP gateways. Radicle is available on macOS and Linux; the Windows build ships without Radicle until official Windows binaries are published upstream.
 
 ---
 
@@ -89,7 +89,7 @@ This means Freedom works seamlessly whether you:
 - **Live Statistics**: View peer count, bandwidth usage, and Kubo version.
 - **Low-bandwidth Mode**: Configured as DHT client with reduced connection limits.
 
-### Integrated Radicle Node
+### Integrated Radicle Node (macOS & Linux)
 
 - **Two-Process Architecture**: Manages both `radicle-node` (P2P network) and `radicle-httpd` (HTTP API) as a coordinated pair.
 - **Automatic Identity**: Creates a Radicle identity on first run (no manual setup required).
@@ -99,6 +99,7 @@ This means Freedom works seamlessly whether you:
 - **Repository Seeding**: Seed Radicle repositories directly from the browser to help replicate them across the network.
 - **Stale Socket Cleanup**: Automatically cleans up control sockets from unclean shutdowns.
 - **Port Conflict Resolution**: Falls back to ports 8781+ if default port 8780 is unavailable.
+- **Windows**: Radicle is not available on Windows yet (no upstream binaries). The Experimental settings section is hidden on Windows builds.
 
 ### Universal Address Bar
 
@@ -422,6 +423,8 @@ npm run dist -- --win --arm64
 ```
 
 Output goes to the `dist/` folder as NSIS installer and ZIP archive.
+
+**Note:** Windows builds do not include Radicle binaries (no official upstream release yet). The Experimental settings section is hidden automatically on Windows.
 
 #### Apple Code Signing & Notarization
 

@@ -1,41 +1,26 @@
 # Agent Instructions
 
-This file defines operational constraints and conventions for automated agents and contributors interacting with this repository. In case of conflict or ambiguity, this file takes precedence over README.md.
+This file defines mandatory constraints for automated agents and contributors. In case of conflict or ambiguity, this file takes precedence over `README.md`.
 
-## General Rules
+## Core Rules (Always Apply)
 
-Never delete files unless the user specifically asks for it or you have confirmed with the user first.
+1. Never delete files unless the user specifically asks for it or confirms it.
+2. Do not commit secrets, credentials, API keys, or tokens.
+3. Do not comment out code to disable it; remove code instead.
+4. Before writing code, read `eslint.config.js` and follow active linting conventions.
+5. After code changes, run `npm run lint` and fix any introduced errors or warnings.
+6. Do not change top-level package boundaries or module responsibilities described in `README.md` unless explicitly instructed.
+7. Match existing naming and file conventions in nearby code. Do not reformat or change behavior outside the requested scope.
+8. Run `npm test` after modifying files that have corresponding `.test.js` files.
+9. Do not add or upgrade dependencies without user approval.
 
-## Architecture
+## Task Routing (Read On Demand)
 
-High-level architecture and design rationale are documented in README.md. Agents should familiarize themselves with it before making structural changes.
+Before executing task-specific work, read the corresponding playbook:
 
-Agents must not change top-level package boundaries or module responsibilities described in README.md without explicit instruction.
+- Architecture-sensitive changes *(adding files to `src/main/` or `src/renderer/`, creating new IPC channels, moving logic between processes)*: `docs/agent-playbooks/architecture-boundaries.md`
+- Commit message conventions *(any git commit)*: `docs/agent-playbooks/commit-messages.md`
+- Changelog updates *(version bumps, release prep)*: `docs/agent-playbooks/changelog-process.md`
+- Security checklist *(before commit or PR)*: `docs/agent-playbooks/security-checklist.md`
 
-## Security
-
-Do not commit secrets, credentials, API keys, or tokens to the repository.
-
-## Code Changes
-
-Do not comment out code to disable it. Remove the code entirely and add it back later if needed.
-
-## Code Style and Linting
-
-Before writing code, read `eslint.config.js` to understand the project's coding standards and active rules. Follow these conventions in all code you produce.
-
-After making code changes, run `npm run lint` to check the entire project for ESLint errors. Fix any errors or warnings you introduced before considering the task complete.
-
-## Generating a Changelog Entry
-
-When asked to update the changelog for a new version (e.g. 0.6.1):
-
-1. **Find the baseline commit** — Use `git log --oneline -p -- package.json` to find the commit where the version was last bumped. That commit (or the changelog update commit for the previous version) is your baseline.
-2. **Get all commits since then** — Run `git log --pretty=format:"%H%n%s%n%b%n---" <baseline>..HEAD` to see commit hashes, subjects, and bodies. Read the commit bodies carefully — they often contain the most useful detail (bullet points, rationale).
-3. **Get the date** — Use `git show -s --format="%ad" --date=short HEAD` or the most recent non-housekeeping commit for the release date. Don't assume today's date.
-4. **Categorize changes** into `### Added`, `### Changed`, `### Fixed`, and `### Security` sections following [Keep a Changelog](https://keepachangelog.com/) conventions. Use `### Security` for CSP, dependency updates, vulnerability fixes, and access control changes. Also use `### Deprecated` and `### Removed` when applicable.
-5. **Skip housekeeping commits** — TODO updates, changelog updates, version bumps, dependency lock file changes, README/docs rewrites, internal refactoring (code splits, module renames, logging infrastructure, build script reorganization), and test-only commits should not appear in the changelog.
-6. **Merge related commits** — If multiple commits relate to the same feature (e.g. a feature commit followed by a fix for it), combine them into a single changelog entry.
-7. **Check PR merge commits** — Merge commits are just pointers. Examine the individual commits within each merged PR to ensure nothing is missed.
-8. **Re-check before applying** — Re-run `git log` immediately before writing the changelog to catch any commits added during the conversation.
-9. **Prepend** the new version section (e.g. `## [0.6.1] - 2025-12-28`) above the previous version entry in `CHANGELOG.md`.
+If multiple categories apply, read all relevant playbooks.

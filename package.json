@@ -1,6 +1,6 @@
 {
   "name": "freedom-browser",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "license": "MPL-2.0",
   "description": "Freedom – A browser for the decentralized web, with Swarm, IPFS, and ENS as first-class protocols.",
   "author": {
@@ -30,8 +30,8 @@
     "dist:mac:notary-status": "dotenv -- node scripts/macos-notary.js status",
     "dist:mac:notary-log": "dotenv -- node scripts/macos-notary.js log",
     "dist:mac:staple-notary": "dotenv -- node scripts/macos-notary.js staple",
-    "dist:linux:arm64:docker": "docker run --rm -v \"$PWD\":/app -v /app/node_modules -v \"${ELECTRON_CACHE:-$HOME/Library/Caches/electron}\":/root/.cache/electron -w /app -e USE_SYSTEM_FPM=true --platform linux/arm64 node:20 bash -c \"apt-get update && apt-get install -y ruby ruby-dev build-essential && gem install fpm --no-document && npm ci && npm run dist -- --linux --arm64\"",
-    "dist:linux:x64:docker": "docker run --rm -v \"$PWD\":/app -v /app/node_modules -v \"${ELECTRON_CACHE:-$HOME/Library/Caches/electron}\":/root/.cache/electron -w /app --platform linux/amd64 electronuserland/builder:20 bash -c \"npm ci && npm run dist -- --linux --x64\"",
+    "dist:linux:arm64:docker": "docker run --rm -v \"$PWD\":/app -v /app/node_modules -v \"${ELECTRON_CACHE:-$HOME/Library/Caches/electron}\":/root/.cache/electron -w /app -e USE_SYSTEM_FPM=true --platform linux/arm64 node:20 bash -c \"apt-get update && apt-get install -y ruby ruby-dev build-essential xz-utils && gem install fpm --no-document && npm ci && npm run radicle:download && npm run dist -- --linux --arm64\"",
+    "dist:linux:x64:docker": "docker run --rm -v \"$PWD\":/app -v /app/node_modules -v \"${ELECTRON_CACHE:-$HOME/Library/Caches/electron}\":/root/.cache/electron -w /app --platform linux/amd64 electronuserland/builder:20 bash -c \"npm ci && npm run radicle:download && npm run dist -- --linux --x64\"",
     "bee:download": "node scripts/fetch-bee.js",
     "bee:init": "node scripts/init-bee.js",
     "bee:start": "test -f bee-data/config.yaml || npm run bee:init; ./bee-bin/mac-arm64/bee start --config=./bee-data/config.yaml",
@@ -77,7 +77,16 @@
       "gatekeeperAssess": false,
       "entitlements": "config/entitlements.mac.plist",
       "entitlementsInherit": "config/entitlements.mac.plist",
-      "notarize": true
+      "notarize": true,
+      "extraResources": [
+        {
+          "from": "radicle-bin/${os}-${arch}/",
+          "to": "radicle-bin",
+          "filter": [
+            "**/*"
+          ]
+        }
+      ]
     },
     "linux": {
       "target": [
@@ -90,6 +99,15 @@
         "x-scheme-handler/ipfs",
         "x-scheme-handler/ipns",
         "x-scheme-handler/bzz"
+      ],
+      "extraResources": [
+        {
+          "from": "radicle-bin/${os}-${arch}/",
+          "to": "radicle-bin",
+          "filter": [
+            "**/*"
+          ]
+        }
       ]
     },
     "win": {
@@ -119,13 +137,6 @@
       {
         "from": "ipfs-bin/${os}-${arch}/",
         "to": "ipfs-bin",
-        "filter": [
-          "**/*"
-        ]
-      },
-      {
-        "from": "radicle-bin/${os}-${arch}/",
-        "to": "radicle-bin",
         "filter": [
           "**/*"
         ]

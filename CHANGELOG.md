@@ -2,6 +2,28 @@
 
 All notable changes to Freedom will be documented in this file.
 
+## [0.6.2] - 2026-03-01
+
+### Added
+
+- Experimental support for Radicle (decentralized Git hosting) on macOS and Linux:
+  - Enable or disable Radicle from Settings > Experimental
+  - `rad://` URL handling across navigation and rewriting
+  - Bundled Radicle node lifecycle management and packaging support
+  - Integrated repo browser page and GitHub-to-Radicle import bridge
+  - Automatic seeding of Freedom's canonical Radicle repository when running the bundled node
+- Swarm encrypted reference support in navigation and URL rewriting (including 64- and 128-character hex references)
+
+### Fixed
+
+- `Cmd/Ctrl+L` now reliably focuses the address bar even when web content has focus
+- Pressing `Cmd/Ctrl+L` and `Escape` now consistently closes open menus and clears stale focus highlights
+- Pinned tabs can no longer be closed through keyboard-accelerator close-tab actions
+
+### Security
+
+- Validate protocol-specific identifiers in IPC handlers and URL rewriting to block malformed or malicious input
+
 ## [0.6.1] - 2026-02-08
 
 First public open-source release.

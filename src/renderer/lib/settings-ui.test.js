@@ -96,6 +96,7 @@ const loadSettingsModule = async (options = {}) => {
     catch: jest.fn(),
   };
   const electronAPI = {
+    getPlatform: jest.fn().mockResolvedValue('darwin'),
     getSettings: jest.fn().mockImplementation(async () => {
       if (settingsQueue.length === 0) {
         return settingsResponses[settingsResponses.length - 1] || null;
@@ -248,7 +249,7 @@ describe('settings-ui', () => {
 
     mod.setOnSettingsChanged(onSettingsChanged);
     await mod.initTheme();
-    mod.initSettings();
+    await mod.initSettings();
 
     elements.settingsBtn.dispatch('click');
     await flushMicrotasks();
