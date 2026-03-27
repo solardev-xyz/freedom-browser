@@ -508,13 +508,16 @@ async function startIpfs() {
         clearTimeout(forceKillTimeout);
         forceKillTimeout = null;
       }
+      if (healthCheckInterval) {
+        clearInterval(healthCheckInterval);
+        healthCheckInterval = null;
+      }
 
       if (currentState !== STATUS.STOPPING) {
         updateState(STATUS.STOPPED, code !== 0 ? `Exited with code ${code}` : null);
       } else {
         updateState(STATUS.STOPPED);
       }
-      if (healthCheckInterval) clearInterval(healthCheckInterval);
       clearService('ipfs');
 
       if (pendingStart) {
@@ -583,6 +586,10 @@ function stopIpfs() {
 
     // If we reused an external daemon, just clear state (don't stop it)
     if (currentMode === MODE.REUSED) {
+      if (healthCheckInterval) {
+        clearInterval(healthCheckInterval);
+        healthCheckInterval = null;
+      }
       updateState(STATUS.STOPPED);
       clearService('ipfs');
       currentMode = MODE.NONE;
@@ -599,6 +606,10 @@ function stopIpfs() {
 
     // Listen for the process to exit
     const onExit = () => {
+      if (healthCheckInterval) {
+        clearInterval(healthCheckInterval);
+        healthCheckInterval = null;
+      }
       if (forceKillTimeout) {
         clearTimeout(forceKillTimeout);
         forceKillTimeout = null;
@@ -609,9 +620,10 @@ function stopIpfs() {
     ipfsProcess.once('close', onExit);
 
     updateState(STATUS.STOPPING);
-    if (healthCheckInterval) clearInterval(healthCheckInterval);
-
-    ipfsProcess.kill('SIGTERM');
+    if (healthCheckInterval) {
+      clearInterval(healthCheckInterval);
+      healthCheckInterval = null;
+    }
 
     if (forceKillTimeout) clearTimeout(forceKillTimeout);
     forceKillTimeout = setTimeout(() => {
@@ -621,6 +633,8 @@ function stopIpfs() {
       }
       forceKillTimeout = null;
     }, 5000);
+
+    ipfsProcess.kill('SIGTERM');
   });
 }
 
