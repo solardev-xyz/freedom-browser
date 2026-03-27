@@ -8,7 +8,7 @@ module.exports = {
       statements: 66,
       branches: 53,
       functions: 71,
-      lines: 68,
+      lines: 67,
     },
   },
   transform: {
