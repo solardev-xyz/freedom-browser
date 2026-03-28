@@ -14,7 +14,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const IPC = require('../shared/ipc-channels');
 
-// Identity module (ESM) - loaded dynamically
+// Identity module - loaded lazily
 let identityModule = null;
 
 // Cached derived keys (only available when unlocked)
@@ -81,11 +81,11 @@ function saveVaultMeta(meta) {
 /**
  * Load the ESM identity module dynamically
  */
-async function loadIdentityModule() {
+function loadIdentityModule() {
   if (identityModule) return identityModule;
 
   try {
-    identityModule = await import('./identity/index.js');
+    identityModule = require('./identity');
     return identityModule;
   } catch (err) {
     console.error('[IdentityManager] Failed to load identity module:', err);
