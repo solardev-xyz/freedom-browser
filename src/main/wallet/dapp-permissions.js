@@ -14,6 +14,7 @@ const fs = require('fs');
 const IPC = require('../../shared/ipc-channels');
 
 const PERMISSIONS_FILE = 'dapp-permissions.json';
+const DEFAULT_AUTO_APPROVE = () => ({ signing: false, transactions: [] });
 
 // In-memory cache of permissions
 let permissionsCache = null;
@@ -108,7 +109,7 @@ function grantPermission(origin, walletIndex, chainId) {
     lastUsed: now,
     walletIndex: walletIndex,
     chainId: chainId,
-    autoApprove: { signing: false, transactions: [] },
+    autoApprove: DEFAULT_AUTO_APPROVE(),
   };
 
   permissions[normalizedOrigin] = permission;
@@ -215,7 +216,7 @@ function setSigningAutoApprove(origin, enabled) {
   if (!permissions[key]) return false;
 
   if (!permissions[key].autoApprove) {
-    permissions[key].autoApprove = { signing: false, transactions: [] };
+    permissions[key].autoApprove = DEFAULT_AUTO_APPROVE();
   }
 
   permissions[key].autoApprove.signing = enabled;

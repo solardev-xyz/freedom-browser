@@ -262,13 +262,17 @@ async function handleProviderRequest(webview, request) {
       // Need transaction approval
       result = await showDappTxApproval(webview, permissionKey, params[0]);
     } else if (method === 'personal_sign' || method === 'eth_signTypedData_v4') {
-      const signingAutoApproved = await window.dappPermissions.getSigningAutoApprove(permissionKey);
-      if (signingAutoApproved) {
+      const permission = await window.dappPermissions.getPermission(permissionKey);
+      if (!permission) {
+        throw { ...ERRORS.UNAUTHORIZED, message: 'Not connected. Call eth_requestAccounts first.' };
+      }
+
+      if (permission.autoApprove?.signing) {
         const vaultStatus = await window.identity?.getStatus?.();
         if (!vaultStatus?.isUnlocked) {
           await showVaultUnlock(permissionKey);
         }
-        result = await autoApproveSign(permissionKey, method, params);
+        result = await autoApproveSign(permission, method, params, permissionKey);
       } else {
         result = await showDappSignApproval(webview, permissionKey, method, params);
       }
@@ -295,31 +299,29 @@ async function handleProviderRequest(webview, request) {
 
 /**
  * Sign a message without showing the approval UI (auto-approved).
- * Requires vault to be unlocked.
+ * Accepts the already-fetched permission object to avoid redundant IPC.
  */
-async function autoApproveSign(permissionKey, method, params) {
-  const permission = await window.dappPermissions.getPermission(permissionKey);
-  if (!permission) {
-    throw { code: 4100, message: 'Unauthorized - not connected' };
-  }
+async function autoApproveSign(permission, method, params, permissionKey) {
+  const signature = await executeSign(method, params, permission.walletIndex);
+  window.dappPermissions.updateLastUsed(permissionKey);
+  return signature;
+}
 
-  const walletIndex = permission.walletIndex;
-  let signature;
-
+/**
+ * Execute a signing operation via the wallet IPC bridge.
+ * Shared by both auto-approve and manual approval paths.
+ */
+async function executeSign(method, params, walletIndex) {
+  let result;
   if (method === 'personal_sign') {
-    const result = await window.wallet.signMessage(params[0], walletIndex);
-    if (!result.success) throw new Error(result.error || 'Signing failed');
-    signature = result.signature;
+    result = await window.wallet.signMessage(params[0], walletIndex);
   } else if (method === 'eth_signTypedData_v4') {
-    const result = await window.wallet.signTypedData(params[1], walletIndex);
-    if (!result.success) throw new Error(result.error || 'Signing failed');
-    signature = result.signature;
+    result = await window.wallet.signTypedData(params[1], walletIndex);
   } else {
     throw new Error(`Unsupported signing method: ${method}`);
   }
-
-  await window.dappPermissions.updateLastUsed(permissionKey);
-  return signature;
+  if (!result.success) throw new Error(result.error || 'Signing failed');
+  return result.signature;
 }
 
 /**
@@ -531,7 +533,7 @@ export function broadcastProviderEvent(event, data) {
 }
 
 // Exported for use by swarm-provider.js and swarm-connect.js
-export { getPermissionKey, getDisplayUrl };
+export { getPermissionKey, getDisplayUrl, executeSign };
 
 // Export state for wallet UI to access
 export const walletState = {

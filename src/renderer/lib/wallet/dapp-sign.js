@@ -6,6 +6,7 @@
 
 import { walletState, registerScreenHider, hideAllSubscreens } from './wallet-state.js';
 import { open as openSidebarPanel } from '../sidebar.js';
+import { executeSign } from '../dapp-provider.js';
 
 // DOM references
 let dappSignScreen;
@@ -298,23 +299,7 @@ async function approveDappSign() {
       dappSignApproveBtn.textContent = 'Signing...';
     }
 
-    let signature;
-
-    if (method === 'personal_sign') {
-      const result = await window.wallet.signMessage(params[0], walletIndex);
-      if (!result.success) {
-        throw new Error(result.error || 'Signing failed');
-      }
-      signature = result.signature;
-    } else if (method === 'eth_signTypedData_v4') {
-      const result = await window.wallet.signTypedData(params[1], walletIndex);
-      if (!result.success) {
-        throw new Error(result.error || 'Signing failed');
-      }
-      signature = result.signature;
-    } else {
-      throw new Error(`Unsupported signing method: ${method}`);
-    }
+    const signature = await executeSign(method, params, walletIndex);
 
     if (dappSignAutoApproveCheckbox?.checked && permissionKey) {
       await window.dappPermissions.setSigningAutoApprove(permissionKey, true);
