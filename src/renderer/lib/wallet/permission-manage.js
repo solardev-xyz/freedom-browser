@@ -7,8 +7,8 @@
 
 import { walletState, hideAllSubscreens } from './wallet-state.js';
 import { open as openSidebarPanel } from '../sidebar.js';
-import { updateConnectionBanner } from './dapp-connect.js';
-import { updateSwarmConnectionBanner } from './swarm-connect.js';
+import { updateConnectionBanner, disconnectDapp } from './dapp-connect.js';
+import { updateSwarmConnectionBanner, disconnectSwarmApp } from './swarm-connect.js';
 
 // Wallet permission management
 let dappPermsScreen;
@@ -38,7 +38,7 @@ export function initPermissionManage() {
   dappPermsDisconnect = document.getElementById('dapp-perms-disconnect');
 
   dappPermsBack?.addEventListener('click', closeDappPerms);
-  dappPermsDisconnect?.addEventListener('click', disconnectDapp);
+  dappPermsDisconnect?.addEventListener('click', handleDappDisconnect);
   dappPermsSigningToggle?.addEventListener('change', async () => {
     if (dappPermsKey) {
       await window.dappPermissions.setSigningAutoApprove(dappPermsKey, dappPermsSigningToggle.checked);
@@ -55,7 +55,7 @@ export function initPermissionManage() {
   swarmPermsDisconnect = document.getElementById('swarm-perms-disconnect');
 
   swarmPermsBack?.addEventListener('click', closeSwarmPerms);
-  swarmPermsDisconnect?.addEventListener('click', disconnectSwarm);
+  swarmPermsDisconnect?.addEventListener('click', handleSwarmDisconnect);
   swarmPermsPublishToggle?.addEventListener('change', async () => {
     if (swarmPermsKey) {
       await window.swarmPermissions.setAutoApprove(swarmPermsKey, 'publish', swarmPermsPublishToggle.checked);
@@ -146,10 +146,9 @@ function closeDappPerms() {
   dappPermsKey = null;
 }
 
-async function disconnectDapp() {
+async function handleDappDisconnect() {
   if (!dappPermsKey) return;
-  await window.dappPermissions.revokePermission(dappPermsKey);
-  updateConnectionBanner();
+  await disconnectDapp(dappPermsKey);
   closeDappPerms();
 }
 
@@ -179,10 +178,8 @@ function closeSwarmPerms() {
   swarmPermsKey = null;
 }
 
-async function disconnectSwarm() {
+async function handleSwarmDisconnect() {
   if (!swarmPermsKey) return;
-  await window.swarmPermissions.revokePermission(swarmPermsKey);
-  await window.swarmFeedStore?.revokeFeedAccess?.(swarmPermsKey);
-  updateSwarmConnectionBanner();
+  await disconnectSwarmApp(swarmPermsKey);
   closeSwarmPerms();
 }

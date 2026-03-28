@@ -97,7 +97,7 @@ function setupDappConnectScreen() {
   }
 
   if (dappConnectionDisconnect) {
-    dappConnectionDisconnect.addEventListener('click', disconnectCurrentDapp);
+    dappConnectionDisconnect.addEventListener('click', () => disconnectDapp());
   }
 
   if (dappConnectionManage) {
@@ -351,12 +351,13 @@ export async function updateConnectionBanner(permissionKey = null) {
   }
 }
 
-async function disconnectCurrentDapp() {
-  if (!currentBannerPermissionKey) return;
+export async function disconnectDapp(permissionKey = null) {
+  const key = permissionKey || currentBannerPermissionKey;
+  if (!key) return;
 
   try {
-    await window.dappPermissions.revokePermission(currentBannerPermissionKey);
-    console.log('[WalletUI] Disconnected dApp:', currentBannerPermissionKey);
+    await window.dappPermissions.revokePermission(key);
+    console.log('[WalletUI] Disconnected dApp:', key);
 
     dappConnectionBanner?.classList.add('hidden');
     currentBannerPermissionKey = null;
@@ -364,7 +365,6 @@ async function disconnectCurrentDapp() {
     const webview = getActiveWebview();
     if (webview) {
       emitAccountsChanged(webview, []);
-      console.log('[WalletUI] Emitted accountsChanged with empty array to webview');
     }
   } catch (err) {
     console.error('[WalletUI] Failed to disconnect:', err);

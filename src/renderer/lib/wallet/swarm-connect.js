@@ -160,7 +160,7 @@ function setupSwarmConnectScreen() {
   }
 
   if (swarmConnectionDisconnect) {
-    swarmConnectionDisconnect.addEventListener('click', disconnectCurrentSwarmApp);
+    swarmConnectionDisconnect.addEventListener('click', () => disconnectSwarmApp());
   }
 
   if (swarmConnectionManage) {
@@ -286,20 +286,20 @@ export async function updateSwarmConnectionBanner(permissionKey = null) {
   }
 }
 
-async function disconnectCurrentSwarmApp() {
-  if (!currentBannerPermissionKey) return;
+export async function disconnectSwarmApp(permissionKey = null) {
+  const key = permissionKey || currentBannerPermissionKey;
+  if (!key) return;
 
   try {
-    await window.swarmPermissions.revokePermission(currentBannerPermissionKey);
-    await window.swarmFeedStore?.revokeFeedAccess?.(currentBannerPermissionKey);
-    console.log('[SwarmConnect] Disconnected:', currentBannerPermissionKey);
+    await window.swarmPermissions.revokePermission(key);
+    await window.swarmFeedStore?.revokeFeedAccess?.(key);
+    console.log('[SwarmConnect] Disconnected:', key);
 
-    // Emit disconnect event to the active webview
     const webview = getActiveWebview();
     if (webview && webview.send) {
       webview.send('swarm:provider-event', {
         event: 'disconnect',
-        data: { origin: currentBannerPermissionKey },
+        data: { origin: key },
       });
     }
 
