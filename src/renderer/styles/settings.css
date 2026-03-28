@@ -158,6 +158,28 @@
   color: var(--text);
 }
 
+.settings-note {
+  margin: 12px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.settings-warning {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 196, 107, 0.28);
+  border-radius: 8px;
+  background: rgba(255, 196, 107, 0.08);
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text);
+}
+
+.settings-warning[hidden] {
+  display: none;
+}
+
 /* Settings Select Rows */
 .settings-select-row {
   display: flex;

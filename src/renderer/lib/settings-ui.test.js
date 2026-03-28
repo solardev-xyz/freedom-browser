@@ -201,6 +201,7 @@ describe('settings-ui', () => {
 
     elements.settingsBtn.dispatch('click');
     await Promise.resolve();
+    await Promise.resolve();
 
     expect(menuMocks.setMenuOpen).toHaveBeenCalledWith(false);
     expect(elements.themeModeSelect.value).toBe('dark');

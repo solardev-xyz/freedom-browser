@@ -52,6 +52,8 @@ const PREFERRED_SEEDS = [
 
 // Canonical Freedom Browser repo — bundled nodes auto-seed this
 const FREEDOM_BROWSER_RID = 'rad:z3QXuMvMmSeEX3ZgoUidZC1v5MkKE';
+const RADICLE_GIT_MISSING_MESSAGE =
+  'Git is required to create a Radicle identity. Install Git and try again.';
 
 // States
 const STATUS = {
@@ -136,6 +138,23 @@ function cleanupStaleSocket(radHome) {
   }
 }
 
+function hasIdentity(radHome) {
+  const keysDir = path.join(radHome, 'keys');
+  return fs.existsSync(keysDir) && fs.readdirSync(keysDir).length > 0;
+}
+
+async function checkGitAvailable() {
+  try {
+    await execFileAsync('git', ['--version'], { timeout: 5000 });
+    return { available: true };
+  } catch {
+    return {
+      available: false,
+      error: RADICLE_GIT_MISSING_MESSAGE,
+    };
+  }
+}
+
 /**
  * Ensure config.json contains preferredSeeds for peer discovery.
  * Merges seeds into an existing config or creates a new one.
@@ -168,18 +187,20 @@ function ensureConfig(radHome) {
  * Check if Radicle identity exists, create if not
  */
 function ensureIdentity(radHome) {
-  const keysDir = path.join(radHome, 'keys');
-
-  if (fs.existsSync(keysDir) && fs.readdirSync(keysDir).length > 0) {
+  if (hasIdentity(radHome)) {
     log.info('[Radicle] Identity already exists');
     ensureConfig(radHome);
-    return true;
+    return { success: true };
   }
 
   const radPath = getRadicleBinaryPath('rad');
   if (!fs.existsSync(radPath)) {
     log.error('[Radicle] rad binary not found for identity creation');
-    return false;
+    return {
+      success: false,
+      code: 'RADICLE_CLI_MISSING',
+      message: 'Radicle CLI (rad) not found for identity creation',
+    };
   }
 
   try {
@@ -196,10 +217,23 @@ function ensureIdentity(radHome) {
     });
     log.info('[Radicle] Identity created successfully');
     ensureConfig(radHome);
-    return true;
+    return { success: true };
   } catch (err) {
-    log.error('[Radicle] Failed to create identity:', err.message);
-    return false;
+    const stderr = err.stderr?.toString() || '';
+    const stdout = err.stdout?.toString() || '';
+    const combinedOutput = `${stdout}\n${stderr}`;
+    const message = combinedOutput.includes('A Git installation is required')
+      ? RADICLE_GIT_MISSING_MESSAGE
+      : err.message;
+
+    log.error('[Radicle] Failed to create identity:', message);
+    return {
+      success: false,
+      code: combinedOutput.includes('A Git installation is required')
+        ? 'RADICLE_GIT_MISSING'
+        : 'RADICLE_IDENTITY_FAILED',
+      message,
+    };
   }
 }
 
@@ -620,9 +654,19 @@ async function startRadicle() {
   const radHome = activeRadHome;
 
   // Step 3: Ensure identity exists
-  if (!ensureIdentity(radHome)) {
-    updateState(STATUS.ERROR, 'Failed to create Radicle identity');
-    setStatusMessage('radicle', 'Node failed to start');
+  if (!hasIdentity(radHome)) {
+    const gitCheck = await checkGitAvailable();
+    if (!gitCheck.available) {
+      updateState(STATUS.ERROR, gitCheck.error);
+      setStatusMessage('radicle', gitCheck.error);
+      return;
+    }
+  }
+
+  const identityResult = ensureIdentity(radHome);
+  if (!identityResult.success) {
+    updateState(STATUS.ERROR, identityResult.message);
+    setStatusMessage('radicle', identityResult.message);
     return;
   }
 
@@ -910,6 +954,51 @@ function checkBinary() {
   return fs.existsSync(nodeBinPath) && fs.existsSync(httpdBinPath);
 }
 
+async function getRadicleAvailability() {
+  const available = checkBinary();
+  if (!available) {
+    return { available, startBlocked: false };
+  }
+
+  if (currentState === STATUS.RUNNING || currentState === STATUS.STARTING) {
+    return { available, startBlocked: false };
+  }
+
+  const radHome = getRadicleDataPath();
+  const identityExists = hasIdentity(radHome);
+
+  if (identityExists) {
+    return { available, identityExists, startBlocked: false };
+  }
+
+  if (detectSystemNode().found) {
+    return { available, identityExists, startBlocked: false };
+  }
+
+  const existingDaemon = await detectExistingDaemon();
+  if (existingDaemon.found) {
+    return { available, identityExists, startBlocked: false };
+  }
+
+  const gitCheck = await checkGitAvailable();
+  if (!gitCheck.available) {
+    return {
+      available,
+      identityExists,
+      gitAvailable: false,
+      startBlocked: true,
+      reason: gitCheck.error,
+    };
+  }
+
+  return {
+    available,
+    identityExists,
+    gitAvailable: true,
+    startBlocked: false,
+  };
+}
+
 function getActivePort() {
   return currentHttpPort;
 }
@@ -1108,10 +1197,10 @@ function registerRadicleIpc() {
     return { status: currentState, error: lastError };
   });
 
-  ipcMain.handle(IPC.RADICLE_CHECK_BINARY, () => {
-    const available = checkBinary();
-    log.info('[Radicle] IPC: checkBinary requested, available:', available);
-    return { available };
+  ipcMain.handle(IPC.RADICLE_CHECK_BINARY, async () => {
+    const availability = await getRadicleAvailability();
+    log.info('[Radicle] IPC: checkBinary requested, available:', availability.available);
+    return availability;
   });
 
   ipcMain.handle(IPC.RADICLE_SEED, async (_event, rid) => {

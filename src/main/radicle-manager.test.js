@@ -451,7 +451,7 @@ describe('radicle-manager', () => {
 
     ctx.mod.registerRadicleIpc();
 
-    await expect(ctx.ipcMain.invoke(IPC.RADICLE_CHECK_BINARY)).resolves.toEqual({ available: false });
+    await expect(ctx.ipcMain.invoke(IPC.RADICLE_CHECK_BINARY)).resolves.toEqual({ available: false, startBlocked: false });
     await expect(ctx.ipcMain.invoke(IPC.RADICLE_SEED, '')).resolves.toEqual(
       failure('INVALID_RID', 'Missing Radicle Repository ID', { field: 'rid' })
     );
@@ -666,7 +666,51 @@ describe('radicle-manager', () => {
     await flushMicrotasks();
 
     expect(ctx.spawn).not.toHaveBeenCalled();
-    expect(ctx.setStatusMessage).toHaveBeenCalledWith('radicle', 'Node failed to start');
+    expect(ctx.setStatusMessage).toHaveBeenCalledWith('radicle', 'Radicle CLI (rad) not found for identity creation');
     expect(ctx.log.error).toHaveBeenCalledWith('[Radicle] rad binary not found for identity creation');
+  });
+
+  test('skips the git preflight when an identity already exists', async () => {
+    const execFileAsync = jest.fn().mockRejectedValue(new Error('git missing'));
+    const ctx = loadRadicleManagerModule({
+      execFileAsync,
+      portSequence: [true],
+      httpResponse: (url) => {
+        if (url === 'http://127.0.0.1:8780/') {
+          return { statusCode: 200, body: { version: '0.1.0' } };
+        }
+        return { statusCode: 404, body: '' };
+      },
+    });
+
+    await ctx.mod.startRadicle();
+    await flushMicrotasks();
+
+    // Git is unavailable, but startup succeeds because the git preflight
+    // is skipped when an identity already exists
+    expect(ctx.updateService).toHaveBeenCalledWith('radicle', expect.objectContaining({
+      mode: 'reused',
+    }));
+  });
+
+  test('fails early when git is missing and a new identity is required', async () => {
+    const execFileAsync = jest.fn().mockRejectedValue(new Error('git missing'));
+    const ctx = loadRadicleManagerModule({
+      execFileAsync,
+      keyFiles: [],
+      portSequence: [false],
+      httpResponse: () => ({ statusCode: 404, body: '' }),
+    });
+
+    await ctx.mod.startRadicle();
+    await flushMicrotasks();
+
+    expect(ctx.spawnedProcesses).toHaveLength(0);
+    expect(ctx.execFileSync).not.toHaveBeenCalled();
+    expect(ctx.setStatusMessage).toHaveBeenCalledWith(
+      'radicle',
+      'Git is required to create a Radicle identity. Install Git and try again.'
+    );
+    expect(ctx.updateService).not.toHaveBeenCalled();
   });
 });
