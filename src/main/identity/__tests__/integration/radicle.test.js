@@ -5,13 +5,13 @@
  * the identity is correctly recognized.
  */
 
-import { execSync } from 'child_process';
-import fs from 'fs';
-import path from 'path';
-import os from 'os';
-import { deriveAllKeys } from '../../derivation.js';
-import { createRadicleIdentity } from '../../formats.js';
-import { injectRadicleKey } from '../../injection.js';
+const { execSync } = require('child_process');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const { deriveAllKeys } = require('../../derivation');
+const { createRadicleIdentity } = require('../../formats');
+const { injectRadicleKey } = require('../../injection');
 
 // Test mnemonic
 const TEST_MNEMONIC =

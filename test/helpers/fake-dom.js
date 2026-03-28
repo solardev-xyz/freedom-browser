@@ -318,6 +318,8 @@ const createDocument = ({ elementsById = {}, createElementOverride, body } = {})
 };
 
 module.exports = {
+  FakeElement,
+  createClassList,
   createDocument,
   createElement,
 };

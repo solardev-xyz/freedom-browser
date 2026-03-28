@@ -5,9 +5,9 @@
  * Uses the vault's derived keys for signing.
  */
 
-const { parseEther, parseUnits, formatUnits, Interface, Wallet, Transaction, hashMessage, TypedDataEncoder } = require('ethers');
+const { parseUnits, formatUnits, Interface, Wallet } = require('ethers');
 const { getProvider, withRetry } = require('./provider-manager');
-const { getChain, getTxExplorerUrl } = require('./chains');
+const { getTxExplorerUrl } = require('./chains');
 
 // ERC-20 transfer function interface
 const ERC20_INTERFACE = new Interface([
@@ -51,7 +51,7 @@ async function estimateGas({ from, to, value, data, chainId }) {
     };
   } catch (err) {
     console.error('[TransactionService] Gas estimation failed:', err);
-    throw new Error(`Gas estimation failed: ${err.message}`);
+    throw new Error(`Gas estimation failed: ${err.message}`, { cause: err });
   }
 }
 
@@ -99,7 +99,7 @@ async function getGasPrices(chainId) {
     };
   } catch (err) {
     console.error('[TransactionService] Failed to get gas prices:', err);
-    throw new Error(`Failed to get gas prices: ${err.message}`);
+    throw new Error(`Failed to get gas prices: ${err.message}`, { cause: err });
   }
 }
 
@@ -246,13 +246,13 @@ async function signAndSendTransaction(params, privateKey) {
 
     // Parse common error messages
     if (err.message.includes('insufficient funds')) {
-      throw new Error('Insufficient funds for transaction');
+      throw new Error('Insufficient funds for transaction', { cause: err });
     }
     if (err.message.includes('nonce')) {
-      throw new Error('Transaction nonce error. Please try again.');
+      throw new Error('Transaction nonce error. Please try again.', { cause: err });
     }
     if (err.message.includes('gas')) {
-      throw new Error('Gas estimation error. The transaction may fail.');
+      throw new Error('Gas estimation error. The transaction may fail.', { cause: err });
     }
     // Server errors (rate limiting, blocked, etc.)
     if (
@@ -262,10 +262,10 @@ async function signAndSendTransaction(params, privateKey) {
       err.message.includes('429') ||
       err.message.includes('invalid numeric value')
     ) {
-      throw new Error('RPC provider temporarily unavailable. Please try again.');
+      throw new Error('RPC provider temporarily unavailable. Please try again.', { cause: err });
     }
 
-    throw new Error(`Transaction failed: ${err.message}`);
+    throw new Error(`Transaction failed: ${err.message}`, { cause: err });
   }
 }
 
@@ -335,7 +335,7 @@ async function waitForTransaction(txHash, chainId, confirmations = 1) {
     };
   } catch (err) {
     console.error('[TransactionService] Wait for transaction failed:', err);
-    throw new Error(`Transaction confirmation timeout: ${err.message}`);
+    throw new Error(`Transaction confirmation timeout: ${err.message}`, { cause: err });
   }
 }
 
@@ -362,7 +362,7 @@ async function signPersonalMessage(message, privateKey) {
     return signature;
   } catch (err) {
     console.error('[TransactionService] Message signing failed:', err);
-    throw new Error(`Message signing failed: ${err.message}`);
+    throw new Error(`Message signing failed: ${err.message}`, { cause: err });
   }
 }
 
@@ -380,7 +380,7 @@ async function signTypedData(typedData, privateKey) {
     const data = typeof typedData === 'string' ? JSON.parse(typedData) : typedData;
 
     // Extract domain, types, and message from EIP-712 structure
-    const { domain, types, message, primaryType } = data;
+    const { domain, types, message } = data;
 
     // Remove EIP712Domain from types (ethers handles it internally)
     const typesWithoutDomain = { ...types };
@@ -393,7 +393,7 @@ async function signTypedData(typedData, privateKey) {
     return signature;
   } catch (err) {
     console.error('[TransactionService] Typed data signing failed:', err);
-    throw new Error(`Typed data signing failed: ${err.message}`);
+    throw new Error(`Typed data signing failed: ${err.message}`, { cause: err });
   }
 }
 

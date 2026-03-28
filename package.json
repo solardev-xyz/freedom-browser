@@ -18,7 +18,9 @@
   "main": "src/main/index.js",
   "scripts": {
     "start": "electron .",
-    "test": "jest",
+    "test": "npm run test:unit",
+    "test:unit": "jest",
+    "test:coverage": "jest --coverage --runInBand --forceExit",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
@@ -50,7 +52,6 @@
     "radicle:reset": "rm -rf radicle-data && echo 'Radicle data reset.'",
     "identity:reset": "rm -rf bee-data ipfs-data radicle-data identity-data && echo 'All identity data reset (bee, ipfs, radicle, vault).'",
     "dapp:reset": "node scripts/reset-dapp-permissions.js",
-    "test:updater": "bash scripts/test-updater.sh",
     "serve:updates": "node scripts/serve-updates.js",
     "start:test-updater": "ENABLE_DEV_UPDATER=true npm start",
     "postinstall": "electron-builder install-app-deps"

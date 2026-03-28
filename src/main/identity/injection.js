@@ -7,9 +7,9 @@
  * - Radicle: keys/radicle + keys/radicle.pub
  */
 
-import fs from 'fs';
-import path from 'path';
-import { createBeeKeystore, createIpfsIdentity, createRadicleIdentity } from './formats.js';
+const fs = require('fs');
+const path = require('path');
+const { createBeeKeystore, createIpfsIdentity, createRadicleIdentity } = require('./formats');
 
 /**
  * Inject Bee key into data directory
@@ -18,7 +18,7 @@ import { createBeeKeystore, createIpfsIdentity, createRadicleIdentity } from './
  * @param {string} password - Password to encrypt the keystore
  * @returns {Promise<void>}
  */
-export async function injectBeeKey(dataDir, privateKey, password) {
+async function injectBeeKey(dataDir, privateKey, password) {
   const keysDir = path.join(dataDir, 'keys');
 
   // Create keys directory if it doesn't exist
@@ -40,7 +40,7 @@ export async function injectBeeKey(dataDir, privateKey, password) {
  * @param {Uint8Array} privateKey - 32-byte Ed25519 private key
  * @param {Uint8Array} publicKey - 32-byte Ed25519 public key
  */
-export function injectIpfsKey(ipfsPath, privateKey, publicKey) {
+function injectIpfsKey(ipfsPath, privateKey, publicKey) {
   const configPath = path.join(ipfsPath, 'config');
 
   // Config must exist (run ipfs init first, or create minimal config)
@@ -73,7 +73,7 @@ export function injectIpfsKey(ipfsPath, privateKey, publicKey) {
  * @param {Uint8Array} publicKey - 32-byte Ed25519 public key
  * @param {string} alias - Node alias (e.g., "FreedomBrowser")
  */
-export function injectRadicleKey(radHome, privateKey, publicKey, alias = 'FreedomBrowser') {
+function injectRadicleKey(radHome, privateKey, publicKey, alias = 'FreedomBrowser') {
   const keysDir = path.join(radHome, 'keys');
 
   // Create keys directory if it doesn't exist
@@ -113,7 +113,7 @@ export function injectRadicleKey(radHome, privateKey, publicKey, alias = 'Freedo
  * @param {number} apiPort - API port
  * @param {number} gatewayPort - Gateway port
  */
-export function createMinimalIpfsConfig(ipfsPath, apiPort = 5001, gatewayPort = 8080) {
+function createMinimalIpfsConfig(ipfsPath, apiPort = 5001, gatewayPort = 8080) {
   if (!fs.existsSync(ipfsPath)) {
     fs.mkdirSync(ipfsPath, { recursive: true });
   }
@@ -147,7 +147,7 @@ export function createMinimalIpfsConfig(ipfsPath, apiPort = 5001, gatewayPort = 
  * @param {string} password - Password for the keystore
  * @param {number} apiPort - API port
  */
-export function createBeeConfig(dataDir, password, apiPort = 1633) {
+function createBeeConfig(dataDir, password, apiPort = 1633) {
   if (!fs.existsSync(dataDir)) {
     fs.mkdirSync(dataDir, { recursive: true });
   }
@@ -172,3 +172,11 @@ password: ${password}
   console.log(`[Identity] Created Bee config at ${configPath}`);
   return configPath;
 }
+
+module.exports = {
+  injectBeeKey,
+  injectIpfsKey,
+  injectRadicleKey,
+  createMinimalIpfsConfig,
+  createBeeConfig,
+};

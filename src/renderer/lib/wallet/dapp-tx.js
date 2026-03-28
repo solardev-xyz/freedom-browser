@@ -13,20 +13,17 @@ let dappTxBackBtn;
 let dappTxSite;
 let dappTxTo;
 let dappTxValue;
-let dappTxValueRow;
 let dappTxData;
 let dappTxDataRow;
 let dappTxNetwork;
 let dappTxFee;
 let dappTxWarning;
-let dappTxWarningText;
 let dappTxUnlock;
 let dappTxTouchIdBtn;
 let dappTxPasswordLink;
 let dappTxPasswordSection;
 let dappTxPasswordInput;
 let dappTxPasswordSubmit;
-let dappTxUnlockError;
 let dappTxError;
 let dappTxRejectBtn;
 let dappTxApproveBtn;
@@ -40,20 +37,18 @@ export function initDappTx() {
   dappTxSite = document.getElementById('dapp-tx-site');
   dappTxTo = document.getElementById('dapp-tx-to');
   dappTxValue = document.getElementById('dapp-tx-value');
-  dappTxValueRow = document.getElementById('dapp-tx-value-row');
+
   dappTxData = document.getElementById('dapp-tx-data');
   dappTxDataRow = document.getElementById('dapp-tx-data-row');
   dappTxNetwork = document.getElementById('dapp-tx-network');
   dappTxFee = document.getElementById('dapp-tx-fee');
   dappTxWarning = document.getElementById('dapp-tx-warning');
-  dappTxWarningText = document.getElementById('dapp-tx-warning-text');
   dappTxUnlock = document.getElementById('dapp-tx-unlock');
   dappTxTouchIdBtn = document.getElementById('dapp-tx-touchid-btn');
   dappTxPasswordLink = document.getElementById('dapp-tx-password-link');
   dappTxPasswordSection = document.getElementById('dapp-tx-password-section');
   dappTxPasswordInput = document.getElementById('dapp-tx-password-input');
   dappTxPasswordSubmit = document.getElementById('dapp-tx-password-submit');
-  dappTxUnlockError = document.getElementById('dapp-tx-unlock-error');
   dappTxError = document.getElementById('dapp-tx-error');
   dappTxRejectBtn = document.getElementById('dapp-tx-reject');
   dappTxApproveBtn = document.getElementById('dapp-tx-approve');
@@ -110,27 +105,28 @@ function setupDappTxScreen() {
  * Show dApp transaction approval screen
  */
 export async function showDappTxApproval(webview, permissionKey, txParams) {
-  return new Promise(async (resolve, reject) => {
-    const permission = await window.dappPermissions.getPermission(permissionKey);
-    if (!permission) {
-      reject({ code: 4100, message: 'Unauthorized - not connected' });
-      return;
-    }
+  const permission = await window.dappPermissions.getPermission(permissionKey);
+  if (!permission) {
+    throw Object.assign(new Error('Unauthorized - not connected'), { code: 4100 });
+  }
 
+  return new Promise((resolve, reject) => {
     dappTxPending = { permissionKey, walletIndex: permission.walletIndex, txParams, resolve, reject, webview };
 
     if (dappTxSite) {
       dappTxSite.textContent = permissionKey;
     }
 
-    await populateDappTxDetails(txParams, permission.chainId || walletState.selectedChainId);
-    await checkDappTxUnlockStatus();
+    Promise.all([
+      populateDappTxDetails(txParams, permission.chainId || walletState.selectedChainId),
+      checkDappTxUnlockStatus(),
+    ]).then(() => {
+      hideAllSubscreens();
+      walletState.identityView?.classList.add('hidden');
+      dappTxScreen?.classList.remove('hidden');
 
-    hideAllSubscreens();
-    walletState.identityView?.classList.add('hidden');
-    dappTxScreen?.classList.remove('hidden');
-
-    openSidebarPanel();
+      openSidebarPanel();
+    });
   });
 }
 

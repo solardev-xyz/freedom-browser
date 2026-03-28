@@ -7,9 +7,9 @@
  * - Radicle: OpenSSH format + DID
  */
 
-import crypto from 'crypto';
-import { Wallet } from 'ethers';
-import { base58 } from '@scure/base';
+const crypto = require('crypto');
+const { Wallet } = require('ethers');
+const { base58 } = require('@scure/base');
 
 // ============ BEE (Ethereum JSON Keystore) ============
 
@@ -19,7 +19,7 @@ import { base58 } from '@scure/base';
  * @param {string} password - Password to encrypt the keystore
  * @returns {Promise<string>} JSON keystore string
  */
-export async function createBeeKeystore(privateKey, password) {
+async function createBeeKeystore(privateKey, password) {
   const wallet = new Wallet(privateKey);
   // ethers.js Wallet.encrypt produces standard JSON keystore (scrypt + AES-128-CTR)
   const keystore = await wallet.encrypt(password);
@@ -31,7 +31,7 @@ export async function createBeeKeystore(privateKey, password) {
  * @param {string} privateKey - 0x-prefixed hex private key
  * @returns {string} 0x-prefixed checksummed address
  */
-export function getBeeAddress(privateKey) {
+function getBeeAddress(privateKey) {
   const wallet = new Wallet(privateKey);
   return wallet.address;
 }
@@ -49,7 +49,7 @@ export function getBeeAddress(privateKey) {
  * @param {Uint8Array} publicKey - 32-byte Ed25519 public key
  * @returns {Object} { privKey, peerId }
  */
-export function createIpfsIdentity(privateKey, publicKey) {
+function createIpfsIdentity(privateKey, publicKey) {
   // Build protobuf for private key
   // Protobuf: field 1 (Type) = varint 1 (Ed25519), field 2 (Data) = bytes (64 bytes)
   // Wire format: 0x08 0x01 (field 1, value 1), 0x12 0x40 (field 2, length 64), then data
@@ -104,26 +104,7 @@ export function createIpfsIdentity(privateKey, publicKey) {
  * @param {string} comment - Comment for the SSH key (e.g., "FreedomBrowser")
  * @returns {Object} { privateKeyFile, publicKeyFile, did, nodeId }
  */
-export function createRadicleIdentity(privateKey, publicKey, comment = 'FreedomBrowser') {
-  // Create OpenSSH format using micro-key-producer
-  // For now, let's implement the format directly since we need precise control
-
-  // OpenSSH v1 format for Ed25519:
-  // AUTH_MAGIC ("openssh-key-v1\0")
-  // cipher (string) = "none"
-  // kdfname (string) = "none"
-  // kdfoptions (string) = ""
-  // number of keys (uint32) = 1
-  // public key (string)
-  // private section (encrypted, but "none" means unencrypted):
-  //   checkint (uint32) random
-  //   checkint (uint32) same
-  //   keytype (string) = "ssh-ed25519"
-  //   pubkey (string)
-  //   privkey (string) = 64 bytes (priv || pub)
-  //   comment (string)
-  //   padding (1, 2, 3, ... to block size)
-
+function createRadicleIdentity(privateKey, publicKey, comment = 'FreedomBrowser') {
   const sshPrivate = createOpenSSHPrivateKey(privateKey, publicKey, comment);
   const sshPublic = createOpenSSHPublicKey(publicKey, comment);
 
@@ -153,10 +134,7 @@ export function createRadicleIdentity(privateKey, publicKey, comment = 'FreedomB
  * @param {Uint8Array} publicKey - 32-byte Ed25519 public key
  * @returns {string} DID in did:key format
  */
-export function didFromPublicKey(publicKey) {
-  // DID:key format for Ed25519
-  // did:key:z + base58btc(0xED01 || pubkey)
-  // 0xED01 is the multicodec for Ed25519 public key
+function didFromPublicKey(publicKey) {
   const didBytes = new Uint8Array(34);
   didBytes[0] = 0xed;
   didBytes[1] = 0x01;
@@ -256,3 +234,11 @@ function createOpenSSHPublicKey(publicKey, comment) {
 
   return `ssh-ed25519 ${b64} ${comment}\n`;
 }
+
+module.exports = {
+  createBeeKeystore,
+  getBeeAddress,
+  createIpfsIdentity,
+  createRadicleIdentity,
+  didFromPublicKey,
+};

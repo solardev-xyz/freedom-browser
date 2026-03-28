@@ -2,10 +2,10 @@
  * Tests for Identity Vault
  */
 
-import fs from 'fs';
-import path from 'path';
-import os from 'os';
-import {
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const {
   getVaultPath,
   vaultExists,
   createVault,
@@ -17,8 +17,8 @@ import {
   changePassword,
   deleteVault,
   exportMnemonic,
-} from './vault.js';
-import { isValidMnemonic } from './derivation.js';
+} = require('./vault');
+const { isValidMnemonic } = require('./derivation');
 
 const TEST_MNEMONIC =
   'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';

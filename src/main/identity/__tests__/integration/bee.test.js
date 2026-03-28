@@ -5,14 +5,14 @@
  * starts with the expected address.
  */
 
-import { spawn } from 'child_process';
-import fs from 'fs';
-import path from 'path';
-import os from 'os';
-import http from 'http';
-import { deriveAllKeys } from '../../derivation.js';
-import { getBeeAddress } from '../../formats.js';
-import { injectBeeKey, createBeeConfig } from '../../injection.js';
+const { spawn } = require('child_process');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const http = require('http');
+const { deriveAllKeys } = require('../../derivation');
+const { getBeeAddress } = require('../../formats');
+const { injectBeeKey, createBeeConfig } = require('../../injection');
 
 // Test mnemonic
 const TEST_MNEMONIC =

@@ -7,10 +7,10 @@
  * - Provides lock/unlock interface
  */
 
-import { encrypt, decrypt } from '@metamask/browser-passworder';
-import fs from 'fs';
-import path from 'path';
-import { isValidMnemonic, createMnemonic, deriveUserWallet } from './derivation.js';
+const { encrypt, decrypt } = require('@metamask/browser-passworder');
+const fs = require('fs');
+const path = require('path');
+const { isValidMnemonic, createMnemonic, deriveUserWallet } = require('./derivation');
 
 // Vault state
 let unlockedMnemonic = null;
@@ -24,7 +24,7 @@ const DEFAULT_AUTO_LOCK_MS = 15 * 60 * 1000;
  * @param {string} dataDir - App data directory
  * @returns {string} Path to vault file
  */
-export function getVaultPath(dataDir) {
+function getVaultPath(dataDir) {
   return path.join(dataDir, 'identity-vault.json');
 }
 
@@ -33,7 +33,7 @@ export function getVaultPath(dataDir) {
  * @param {string} dataDir - App data directory
  * @returns {boolean}
  */
-export function vaultExists(dataDir) {
+function vaultExists(dataDir) {
   return fs.existsSync(getVaultPath(dataDir));
 }
 
@@ -44,7 +44,7 @@ export function vaultExists(dataDir) {
  * @param {number} strength - Mnemonic strength (128=12 words, 256=24 words)
  * @returns {Promise<string>} The generated mnemonic (for backup display)
  */
-export async function createVault(dataDir, password, strength = 256) {
+async function createVault(dataDir, password, strength = 256) {
   if (vaultExists(dataDir)) {
     throw new Error('Vault already exists. Use importVault to replace.');
   }
@@ -62,7 +62,7 @@ export async function createVault(dataDir, password, strength = 256) {
  * @param {string} mnemonic - The mnemonic to import
  * @param {boolean} overwrite - Whether to overwrite existing vault
  */
-export async function importVault(dataDir, password, mnemonic, overwrite = false) {
+async function importVault(dataDir, password, mnemonic, overwrite = false) {
   if (!isValidMnemonic(mnemonic)) {
     throw new Error('Invalid mnemonic');
   }
@@ -109,7 +109,7 @@ async function saveVault(dataDir, password, mnemonic) {
  * @param {number} autoLockMs - Auto-lock timeout (0 to disable)
  * @returns {Promise<void>}
  */
-export async function unlockVault(dataDir, password, autoLockMs = DEFAULT_AUTO_LOCK_MS) {
+async function unlockVault(dataDir, password, autoLockMs = DEFAULT_AUTO_LOCK_MS) {
   if (!vaultExists(dataDir)) {
     throw new Error('No vault found. Create one first.');
   }
@@ -137,7 +137,7 @@ export async function unlockVault(dataDir, password, autoLockMs = DEFAULT_AUTO_L
     }
   } catch (err) {
     if (err.message.includes('Incorrect password')) {
-      throw new Error('Incorrect password');
+      throw new Error('Incorrect password', { cause: err });
     }
     throw err;
   }
@@ -146,7 +146,7 @@ export async function unlockVault(dataDir, password, autoLockMs = DEFAULT_AUTO_L
 /**
  * Lock the vault (clear mnemonic from memory)
  */
-export function lockVault() {
+function lockVault() {
   unlockedMnemonic = null;
   if (autoLockTimer) {
     clearTimeout(autoLockTimer);
@@ -158,7 +158,7 @@ export function lockVault() {
  * Check if vault is unlocked
  * @returns {boolean}
  */
-export function isUnlocked() {
+function isUnlocked() {
   return unlockedMnemonic !== null;
 }
 
@@ -166,7 +166,7 @@ export function isUnlocked() {
  * Get the unlocked mnemonic
  * @returns {string|null} Mnemonic or null if locked
  */
-export function getMnemonic() {
+function getMnemonic() {
   return unlockedMnemonic;
 }
 
@@ -174,7 +174,7 @@ export function getMnemonic() {
  * Reset the auto-lock timer (called on activity)
  * @param {number} autoLockMs - Timeout in milliseconds
  */
-export function resetAutoLockTimer(autoLockMs = DEFAULT_AUTO_LOCK_MS) {
+function resetAutoLockTimer(autoLockMs = DEFAULT_AUTO_LOCK_MS) {
   if (autoLockTimer) {
     clearTimeout(autoLockTimer);
   }
@@ -193,7 +193,7 @@ export function resetAutoLockTimer(autoLockMs = DEFAULT_AUTO_LOCK_MS) {
  * @param {string} currentPassword - Current password
  * @param {string} newPassword - New password
  */
-export async function changePassword(dataDir, currentPassword, newPassword) {
+async function changePassword(dataDir, currentPassword, newPassword) {
   // First verify current password by unlocking
   await unlockVault(dataDir, currentPassword, 0);
 
@@ -210,7 +210,7 @@ export async function changePassword(dataDir, currentPassword, newPassword) {
  * @param {string} dataDir - App data directory
  * @param {string} password - Password to confirm
  */
-export async function deleteVault(dataDir, password) {
+async function deleteVault(dataDir, password) {
   // Verify password first
   await unlockVault(dataDir, password, 0);
   lockVault();
@@ -229,7 +229,7 @@ export async function deleteVault(dataDir, password) {
  * @param {string} password - Password to verify
  * @throws {Error} If password is incorrect or vault doesn't exist
  */
-export async function verifyPassword(dataDir, password) {
+async function verifyPassword(dataDir, password) {
   if (!vaultExists(dataDir)) {
     throw new Error('No vault found');
   }
@@ -239,7 +239,7 @@ export async function verifyPassword(dataDir, password) {
     await decrypt(password, vaultData.encrypted);
   } catch (err) {
     if (err.message.includes('Incorrect password')) {
-      throw new Error('Incorrect password');
+      throw new Error('Incorrect password', { cause: err });
     }
     throw err;
   }
@@ -250,7 +250,7 @@ export async function verifyPassword(dataDir, password) {
  * Vault must be unlocked
  * @returns {string} The mnemonic
  */
-export function exportMnemonic() {
+function exportMnemonic() {
   if (!unlockedMnemonic) {
     throw new Error('Vault is locked');
   }
@@ -263,10 +263,27 @@ export function exportMnemonic() {
  * @param {number} accountIndex - Account index (0, 1, 2, ...)
  * @returns {string} The private key (0x-prefixed hex)
  */
-export function exportPrivateKey(accountIndex = 0) {
+function exportPrivateKey(accountIndex = 0) {
   if (!unlockedMnemonic) {
     throw new Error('Vault is locked');
   }
   const wallet = deriveUserWallet(unlockedMnemonic, accountIndex);
   return wallet.privateKey;
 }
+
+module.exports = {
+  getVaultPath,
+  vaultExists,
+  createVault,
+  importVault,
+  unlockVault,
+  lockVault,
+  isUnlocked,
+  getMnemonic,
+  resetAutoLockTimer,
+  changePassword,
+  deleteVault,
+  exportMnemonic,
+  exportPrivateKey,
+  verifyPassword,
+};

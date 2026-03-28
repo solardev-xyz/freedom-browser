@@ -6,12 +6,12 @@
  * - Ed25519 keys via SLIP-0010
  */
 
-import { mnemonicToSeedSync, validateMnemonic, generateMnemonic } from '@scure/bip39';
-import { wordlist } from '@scure/bip39/wordlists/english.js';
-import { HDNodeWallet, Mnemonic } from 'ethers';
+const { mnemonicToSeedSync, validateMnemonic, generateMnemonic } = require('@scure/bip39');
+const { wordlist } = require('@scure/bip39/wordlists/english.js');
+const { HDNodeWallet, Mnemonic } = require('ethers');
 
 // SLIP-0010 for Ed25519 derivation
-import HDKey from 'micro-key-producer/slip10.js';
+const { HDKey } = require('micro-key-producer/slip10.js');
 
 // Derivation paths
 // Using custom coin types for Ed25519 to avoid conflicts
@@ -37,7 +37,7 @@ const PATHS = {
  * @param {number} strength - Entropy bits (128 = 12 words, 256 = 24 words)
  * @returns {string} Space-separated mnemonic words
  */
-export function createMnemonic(strength = 256) {
+function createMnemonic(strength = 256) {
   return generateMnemonic(wordlist, strength);
 }
 
@@ -46,7 +46,7 @@ export function createMnemonic(strength = 256) {
  * @param {string} mnemonic - Space-separated mnemonic words
  * @returns {boolean} True if valid
  */
-export function isValidMnemonic(mnemonic) {
+function isValidMnemonic(mnemonic) {
   if (!mnemonic || typeof mnemonic !== 'string') return false;
   return validateMnemonic(mnemonic, wordlist);
 }
@@ -56,7 +56,7 @@ export function isValidMnemonic(mnemonic) {
  * @param {string} mnemonic - BIP-39 mnemonic
  * @returns {Object} All derived keys and identities
  */
-export function deriveAllKeys(mnemonic) {
+function deriveAllKeys(mnemonic) {
   if (!isValidMnemonic(mnemonic)) {
     throw new Error('Invalid mnemonic');
   }
@@ -85,7 +85,7 @@ export function deriveAllKeys(mnemonic) {
  * @param {string} path - Derivation path (e.g., "m/44'/60'/0'/0/0")
  * @returns {Object} { privateKey, publicKey, address }
  */
-export function deriveEthereumKey(mnemonic, path) {
+function deriveEthereumKey(mnemonic, path) {
   // Create Mnemonic object and derive HD wallet at specific path
   const mnemonicObj = Mnemonic.fromPhrase(mnemonic);
   const wallet = HDNodeWallet.fromMnemonic(mnemonicObj, path);
@@ -106,7 +106,7 @@ export function deriveEthereumKey(mnemonic, path) {
  * @param {number} accountIndex - Account index (0, 1, 2, ...)
  * @returns {Object} { privateKey, publicKey, address, path, accountIndex }
  */
-export function deriveUserWallet(mnemonic, accountIndex = 0) {
+function deriveUserWallet(mnemonic, accountIndex = 0) {
   if (!isValidMnemonic(mnemonic)) {
     throw new Error('Invalid mnemonic');
   }
@@ -129,7 +129,7 @@ export function deriveUserWallet(mnemonic, accountIndex = 0) {
  * @param {string} path - Derivation path (must be all hardened for Ed25519)
  * @returns {Object} { privateKey, publicKey, path }
  */
-export function deriveEd25519Key(seed, path) {
+function deriveEd25519Key(seed, path) {
   // micro-key-producer's slip10 HDKey for Ed25519 derivation
   const master = HDKey.fromMasterSeed(seed);
   const derived = master.derive(path);
@@ -150,7 +150,7 @@ export function deriveEd25519Key(seed, path) {
  * @param {number} originIndex - Origin index (0, 1, 2, ...)
  * @returns {Object} { privateKey, publicKey, address, path, originIndex }
  */
-export function derivePublisherKey(mnemonic, originIndex) {
+function derivePublisherKey(mnemonic, originIndex) {
   if (!isValidMnemonic(mnemonic)) {
     throw new Error('Invalid mnemonic');
   }
@@ -172,12 +172,21 @@ export function derivePublisherKey(mnemonic, originIndex) {
  * @param {string} mnemonic - BIP-39 mnemonic
  * @returns {Uint8Array} 64-byte seed
  */
-export function getSeed(mnemonic) {
+function getSeed(mnemonic) {
   if (!isValidMnemonic(mnemonic)) {
     throw new Error('Invalid mnemonic');
   }
   return mnemonicToSeedSync(mnemonic);
 }
 
-// Export paths for testing and reference
-export { PATHS };
+module.exports = {
+  createMnemonic,
+  isValidMnemonic,
+  deriveAllKeys,
+  deriveEthereumKey,
+  deriveEd25519Key,
+  deriveUserWallet,
+  derivePublisherKey,
+  getSeed,
+  PATHS,
+};

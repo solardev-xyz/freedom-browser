@@ -20,7 +20,6 @@ let dappSignPasswordLink;
 let dappSignPasswordSection;
 let dappSignPasswordInput;
 let dappSignPasswordSubmit;
-let dappSignUnlockError;
 let dappSignError;
 let dappSignRejectBtn;
 let dappSignApproveBtn;
@@ -41,7 +40,6 @@ export function initDappSign() {
   dappSignPasswordSection = document.getElementById('dapp-sign-password-section');
   dappSignPasswordInput = document.getElementById('dapp-sign-password-input');
   dappSignPasswordSubmit = document.getElementById('dapp-sign-password-submit');
-  dappSignUnlockError = document.getElementById('dapp-sign-unlock-error');
   dappSignError = document.getElementById('dapp-sign-error');
   dappSignRejectBtn = document.getElementById('dapp-sign-reject');
   dappSignApproveBtn = document.getElementById('dapp-sign-approve');
@@ -98,13 +96,12 @@ function setupDappSignScreen() {
  * Show dApp signing screen
  */
 export async function showDappSignApproval(webview, permissionKey, method, params) {
-  return new Promise(async (resolve, reject) => {
-    const permission = await window.dappPermissions.getPermission(permissionKey);
-    if (!permission) {
-      reject({ code: 4100, message: 'Unauthorized - not connected' });
-      return;
-    }
+  const permission = await window.dappPermissions.getPermission(permissionKey);
+  if (!permission) {
+    throw Object.assign(new Error('Unauthorized - not connected'), { code: 4100 });
+  }
 
+  return new Promise((resolve, reject) => {
     dappSignPending = { permissionKey, walletIndex: permission.walletIndex, method, params, resolve, reject, webview };
 
     if (dappSignSite) {
@@ -117,13 +114,13 @@ export async function showDappSignApproval(webview, permissionKey, method, param
       displayTypedDataMessage(params);
     }
 
-    await checkDappSignUnlockStatus();
+    checkDappSignUnlockStatus().then(() => {
+      hideAllSubscreens();
+      walletState.identityView?.classList.add('hidden');
+      dappSignScreen?.classList.remove('hidden');
 
-    hideAllSubscreens();
-    walletState.identityView?.classList.add('hidden');
-    dappSignScreen?.classList.remove('hidden');
-
-    openSidebarPanel();
+      openSidebarPanel();
+    });
   });
 }
 
@@ -169,7 +166,7 @@ function displayTypedDataMessage(params) {
       const typedData = typeof typedDataStr === 'string' ? JSON.parse(typedDataStr) : typedDataStr;
       const formatted = formatTypedDataForDisplay(typedData);
       dappSignTypedData.textContent = formatted;
-    } catch (err) {
+    } catch {
       dappSignTypedData.textContent = typedDataStr;
     }
   }

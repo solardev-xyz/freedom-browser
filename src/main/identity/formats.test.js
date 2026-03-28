@@ -2,14 +2,14 @@
  * Tests for key format converters
  */
 
-import {
+const {
   createBeeKeystore,
   getBeeAddress,
   createIpfsIdentity,
   createRadicleIdentity,
-} from './formats.js';
-import { deriveAllKeys, getSeed, PATHS } from './derivation.js';
-import { Wallet } from 'ethers';
+} = require('./formats');
+const { deriveAllKeys } = require('./derivation');
+const { Wallet } = require('ethers');
 
 // Test mnemonic - same as in derivation tests
 const TEST_MNEMONIC =
@@ -17,11 +17,9 @@ const TEST_MNEMONIC =
 
 describe('formats', () => {
   let keys;
-  let seed;
 
   beforeAll(() => {
     keys = deriveAllKeys(TEST_MNEMONIC);
-    seed = getSeed(TEST_MNEMONIC);
   });
 
   describe('Bee (Ethereum JSON Keystore)', () => {

@@ -305,7 +305,7 @@ function isIpfsIdentityInjected() {
     const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
     // Check if Identity.PeerID exists (indicates IPFS has been initialized with an identity)
     return !!(config.Identity && config.Identity.PeerID);
-  } catch (err) {
+  } catch {
     return false;
   }
 }
@@ -478,7 +478,7 @@ async function injectIpfsIdentity() {
         console.log('[IdentityManager] IPFS repo initialized');
       } catch (err) {
         console.error('[IdentityManager] Failed to init IPFS repo:', err.message);
-        throw new Error('Failed to initialize IPFS repo');
+        throw new Error('Failed to initialize IPFS repo', { cause: err });
       }
     } else {
       throw new Error('IPFS binary not found');

@@ -5,7 +5,7 @@
  */
 
 // Key derivation
-export {
+const {
   createMnemonic,
   isValidMnemonic,
   deriveAllKeys,
@@ -15,28 +15,28 @@ export {
   derivePublisherKey,
   getSeed,
   PATHS,
-} from './derivation.js';
+} = require('./derivation');
 
 // Key formats
-export {
+const {
   createBeeKeystore,
   getBeeAddress,
   createIpfsIdentity,
   createRadicleIdentity,
   didFromPublicKey,
-} from './formats.js';
+} = require('./formats');
 
 // Key injection
-export {
+const {
   injectBeeKey,
   injectIpfsKey,
   injectRadicleKey,
   createMinimalIpfsConfig,
   createBeeConfig,
-} from './injection.js';
+} = require('./injection');
 
 // Identity vault
-export {
+const {
   getVaultPath,
   vaultExists,
   createVault,
@@ -51,4 +51,39 @@ export {
   exportMnemonic,
   exportPrivateKey,
   verifyPassword,
-} from './vault.js';
+} = require('./vault');
+
+module.exports = {
+  createMnemonic,
+  isValidMnemonic,
+  deriveAllKeys,
+  deriveEthereumKey,
+  deriveEd25519Key,
+  deriveUserWallet,
+  getSeed,
+  PATHS,
+  createBeeKeystore,
+  getBeeAddress,
+  createIpfsIdentity,
+  createRadicleIdentity,
+  didFromPublicKey,
+  injectBeeKey,
+  injectIpfsKey,
+  injectRadicleKey,
+  createMinimalIpfsConfig,
+  createBeeConfig,
+  getVaultPath,
+  vaultExists,
+  createVault,
+  importVault,
+  unlockVault,
+  lockVault,
+  isUnlocked,
+  getMnemonic,
+  resetAutoLockTimer,
+  changePassword,
+  deleteVault,
+  exportMnemonic,
+  exportPrivateKey,
+  verifyPassword,
+};

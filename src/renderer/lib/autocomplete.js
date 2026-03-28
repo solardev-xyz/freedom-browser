@@ -4,6 +4,10 @@ import { getOpenTabs, switchTab, hideTabContextMenu } from './tabs.js';
 import { closeMenus } from './menus.js';
 import { hideBookmarkContextMenu } from './bookmarks-ui.js';
 import { showMenuBackdrop, hideMenuBackdrop } from './menu-backdrop.js';
+import {
+  generateSuggestions as generateAutocompleteSuggestions,
+  getPlaceholderLetter,
+} from './autocomplete-utils.js';
 
 const electronAPI = window.electronAPI;
 
@@ -51,174 +55,12 @@ export const refreshCache = async () => {
   }
 };
 
-/**
- * Extract root domain from a URL
- */
-const extractRootDomain = (url) => {
-  try {
-    // Handle protocol-prefixed URLs
-    if (url.startsWith('http://') || url.startsWith('https://')) {
-      const parsed = new URL(url);
-      return `${parsed.protocol}//${parsed.host}`;
-    }
-    // Handle bzz://, ipfs://, ipns://
-    if (url.startsWith('bzz://') || url.startsWith('ipfs://') || url.startsWith('ipns://')) {
-      const match = url.match(/^([a-z]+:\/\/[^\/]+)/);
-      return match ? match[1] : null;
-    }
-    // Handle .eth and .box domains (ENS)
-    if (url.includes('.eth') || url.includes('.box')) {
-      const match = url.match(/^([a-zA-Z0-9-]+\.(?:eth|box))/);
-      return match ? match[1] : null;
-    }
-    return null;
-  } catch {
-    return null;
-  }
-};
-
-/**
- * Detect protocol from URL for icon display
- */
-const detectProtocol = (url) => {
-  if (!url) return 'http';
-  if (url.startsWith('bzz://') || url.includes('.eth') || url.includes('.box')) return 'swarm';
-  if (url.startsWith('ipfs://')) return 'ipfs';
-  if (url.startsWith('ipns://')) return 'ipns';
-  if (url.startsWith('https://')) return 'https';
-  return 'http';
-};
-
-/**
- * Score and rank suggestions based on query match
- */
-const scoreSuggestion = (item, query) => {
-  const url = (item.url || item.target || '').toLowerCase();
-  const title = (item.title || item.label || '').toLowerCase();
-  const q = query.toLowerCase();
-
-  let score = 0;
-
-  // URL matching
-  if (url.startsWith(q)) score += 100;
-  else if (url.includes(q)) score += 50;
-
-  // Title matching
-  if (title.startsWith(q)) score += 80;
-  else if (title.includes(q)) score += 30;
-
-  // Visit count bonus (for history items)
-  if (item.visit_count) {
-    score += Math.min(Math.log(item.visit_count + 1) * 10, 50);
-  }
-
-  // Bookmark bonus
-  if (item.isBookmark) score += 20;
-
-  return score;
-};
-
-/**
- * Generate suggestions from query
- */
-const generateSuggestions = (query) => {
-  if (!query || query.length < 1) return [];
-
-  const q = query.toLowerCase();
-  const results = new Map(); // Use Map to dedupe by URL
-  const rootDomains = new Set(); // Track which root domains we've added
-
-  // Process open tabs first (highest priority)
-  const openTabs = getOpenTabs();
-  for (const tab of openTabs) {
-    const url = tab.url || '';
-    const title = tab.title || '';
-
-    // Skip home page and internal pages
-    if (!url || url.includes('/pages/home.html') || url.includes('/pages/')) continue;
-
-    if (url.toLowerCase().includes(q) || title.toLowerCase().includes(q)) {
-      const score = 200 + scoreSuggestion({ url, title }, query); // High base score for tabs
-      results.set(url, {
-        url,
-        title,
-        protocol: detectProtocol(url),
-        score,
-        type: 'tab',
-        tabId: tab.id,
-        isActive: tab.isActive,
-      });
-    }
-  }
-
-  // Process history
-  for (const item of historyCache) {
-    const url = item.url || '';
-    const title = item.title || '';
-
-    // Check if matches
-    if (url.toLowerCase().includes(q) || title.toLowerCase().includes(q)) {
-      const score = scoreSuggestion(item, query);
-      if (score > 0) {
-        // Don't overwrite tab entries
-        if (!results.has(url)) {
-          results.set(url, {
-            url,
-            title,
-            protocol: detectProtocol(url),
-            score,
-            type: 'history',
-            visit_count: item.visit_count || 1,
-          });
-        }
-
-        // Extract and add root domain if this is a deeplink
-        const root = extractRootDomain(url);
-        if (root && root !== url && !rootDomains.has(root)) {
-          rootDomains.add(root);
-          // Only add root if it also matches the query
-          if (root.toLowerCase().includes(q) && !results.has(root)) {
-            results.set(root, {
-              url: root,
-              title: root,
-              protocol: detectProtocol(root),
-              score: score * 0.8, // Slightly lower than the deeplink
-              type: 'history',
-              visit_count: item.visit_count || 1,
-            });
-          }
-        }
-      }
-    }
-  }
-
-  // Process bookmarks
-  for (const item of bookmarksCache) {
-    const url = item.target || '';
-    const title = item.label || '';
-
-    if (url.toLowerCase().includes(q) || title.toLowerCase().includes(q)) {
-      const score = scoreSuggestion({ ...item, url, title, isBookmark: true }, query);
-      const existing = results.get(url);
-      // Only add if no tab/history entry or if this scores higher
-      if (!existing || (existing.type !== 'tab' && existing.score < score)) {
-        results.set(url, {
-          url,
-          title,
-          protocol: detectProtocol(url),
-          score,
-          type: existing?.type === 'tab' ? 'tab' : 'bookmark', // Preserve tab type
-          tabId: existing?.tabId,
-        });
-      }
-    }
-  }
-
-  // Sort by score (highest first) and limit to 8
-  return Array.from(results.values())
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 8);
-};
+const generateSuggestions = (query) =>
+  generateAutocompleteSuggestions(query, {
+    openTabs: getOpenTabs(),
+    historyItems: historyCache,
+    bookmarks: bookmarksCache,
+  });
 
 /**
  * Get badge for item type
@@ -231,24 +73,6 @@ const getTypeBadge = (item) => {
     return '<span class="autocomplete-type">★</span>';
   }
   return '';
-};
-
-/**
- * Get first letter for placeholder
- */
-const getPlaceholderLetter = (url) => {
-  try {
-    if (url.startsWith('http://') || url.startsWith('https://')) {
-      const host = new URL(url).host;
-      return host
-        .replace(/^www\./, '')
-        .charAt(0)
-        .toUpperCase();
-    }
-    return url.charAt(0).toUpperCase();
-  } catch {
-    return '?';
-  }
 };
 
 /**

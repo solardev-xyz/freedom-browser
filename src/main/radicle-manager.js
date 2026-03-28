@@ -816,24 +816,36 @@ function stopRadicle() {
       if (radicleHttpdProcess) {
         // We spawned httpd against the system node — kill it
         radicleHttpdProcess.once('close', () => {
+          if (healthCheckInterval) {
+            clearInterval(healthCheckInterval);
+            healthCheckInterval = null;
+          }
+          if (forceKillTimeout) {
+            clearTimeout(forceKillTimeout);
+            forceKillTimeout = null;
+          }
           updateState(STATUS.STOPPED);
           clearService('radicle');
           currentMode = MODE.NONE;
           activeRadHome = null;
           resolve();
         });
-        radicleHttpdProcess.kill('SIGTERM');
-
-        // Force kill if httpd doesn't exit within 5 seconds
-        setTimeout(() => {
+        if (forceKillTimeout) clearTimeout(forceKillTimeout);
+        forceKillTimeout = setTimeout(() => {
           if (radicleHttpdProcess) {
             log.warn('[Radicle] Force killing reused-mode httpd...');
             radicleHttpdProcess.kill('SIGKILL');
           }
+          forceKillTimeout = null;
         }, 5000);
+        radicleHttpdProcess.kill('SIGTERM');
         return;
       }
       // No httpd process (fully external) — just clear state
+      if (healthCheckInterval) {
+        clearInterval(healthCheckInterval);
+        healthCheckInterval = null;
+      }
       updateState(STATUS.STOPPED);
       clearService('radicle');
       currentMode = MODE.NONE;
@@ -858,6 +870,10 @@ function stopRadicle() {
     const checkDone = () => {
       processesExited++;
       if (processesExited >= totalProcesses) {
+        if (healthCheckInterval) {
+          clearInterval(healthCheckInterval);
+          healthCheckInterval = null;
+        }
         if (forceKillTimeout) {
           clearTimeout(forceKillTimeout);
           forceKillTimeout = null;
@@ -866,6 +882,19 @@ function stopRadicle() {
         resolve();
       }
     };
+
+    if (forceKillTimeout) clearTimeout(forceKillTimeout);
+    forceKillTimeout = setTimeout(() => {
+      if (radicleHttpdProcess) {
+        log.warn('[Radicle] Force killing httpd...');
+        radicleHttpdProcess.kill('SIGKILL');
+      }
+      if (radicleNodeProcess) {
+        log.warn('[Radicle] Force killing node...');
+        radicleNodeProcess.kill('SIGKILL');
+      }
+      forceKillTimeout = null;
+    }, 10000);
 
     // Stop httpd first
     if (radicleHttpdProcess) {
@@ -884,20 +913,6 @@ function stopRadicle() {
         }
       }, 500);
     }
-
-    // Force kill if processes don't exit within 10 seconds
-    if (forceKillTimeout) clearTimeout(forceKillTimeout);
-    forceKillTimeout = setTimeout(() => {
-      if (radicleHttpdProcess) {
-        log.warn('[Radicle] Force killing httpd...');
-        radicleHttpdProcess.kill('SIGKILL');
-      }
-      if (radicleNodeProcess) {
-        log.warn('[Radicle] Force killing node...');
-        radicleNodeProcess.kill('SIGKILL');
-      }
-      forceKillTimeout = null;
-    }, 10000);
   });
 }
 

@@ -446,6 +446,10 @@ async function startBee() {
         clearTimeout(forceKillTimeout);
         forceKillTimeout = null;
       }
+      if (healthCheckInterval) {
+        clearInterval(healthCheckInterval);
+        healthCheckInterval = null;
+      }
 
       if (currentState !== STATUS.STOPPING) {
         updateState(STATUS.STOPPED, code !== 0 ? `Exited with code ${code}` : null);
@@ -548,6 +552,10 @@ function stopBee() {
 
     // Listen for the process to exit
     const onExit = () => {
+      if (healthCheckInterval) {
+        clearInterval(healthCheckInterval);
+        healthCheckInterval = null;
+      }
       if (forceKillTimeout) {
         clearTimeout(forceKillTimeout);
         forceKillTimeout = null;
@@ -575,6 +583,9 @@ function stopBee() {
       }
       forceKillTimeout = null;
     }, 5000);
+
+    // Try graceful shutdown via SIGTERM
+    beeProcess.kill('SIGTERM');
   });
 }
 

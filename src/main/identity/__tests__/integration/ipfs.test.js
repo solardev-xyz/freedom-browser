@@ -5,14 +5,14 @@
  * starts with the expected PeerID.
  */
 
-import { spawn, execSync } from 'child_process';
-import fs from 'fs';
-import path from 'path';
-import os from 'os';
-import http from 'http';
-import { deriveAllKeys, getSeed } from '../../derivation.js';
-import { createIpfsIdentity } from '../../formats.js';
-import { injectIpfsKey } from '../../injection.js';
+const { spawn, execSync } = require('child_process');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const http = require('http');
+const { deriveAllKeys } = require('../../derivation');
+const { createIpfsIdentity } = require('../../formats');
+const { injectIpfsKey } = require('../../injection');
 
 // Test mnemonic
 const TEST_MNEMONIC =

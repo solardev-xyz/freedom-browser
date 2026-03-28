@@ -2,6 +2,15 @@
 module.exports = {
   testMatch: ['**/*.test.js'],
   testPathIgnorePatterns: ['/node_modules/', '/dist/', '/bee-bin/', '/ipfs-bin/'],
+  collectCoverageFrom: ['src/**/*.js', '!src/**/*.test.js', '!src/renderer/vendor/**'],
+  coverageThreshold: {
+    global: {
+      statements: 42,
+      branches: 33,
+      functions: 43,
+      lines: 42,
+    },
+  },
   transform: {
     '^.+\\.js$': 'babel-jest',
   },
