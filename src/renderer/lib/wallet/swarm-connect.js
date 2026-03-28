@@ -327,8 +327,6 @@ function setupSwarmPublishScreen() {
  */
 export function showSwarmPublishApproval(permissionKey, params, resolve, reject) {
   swarmPublishPending = { permissionKey, resolve, reject };
-
-  // Reset auto-approve checkbox
   if (swarmPublishAutoApproveCheckbox) swarmPublishAutoApproveCheckbox.checked = false;
 
   if (swarmPublishSite) {
@@ -475,8 +473,6 @@ function setupSwarmFeedScreen() {
  */
 export async function showSwarmFeedApproval(permissionKey, params, resolve, reject) {
   swarmFeedPending = { permissionKey, resolve, reject };
-
-  // Reset auto-approve checkbox
   if (swarmFeedAutoApproveCheckbox) swarmFeedAutoApproveCheckbox.checked = false;
 
   if (swarmFeedSite) {

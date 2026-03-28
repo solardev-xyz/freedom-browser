@@ -72,47 +72,34 @@ async function handleSwarmRequest(webview, request) {
       if (response.error) throw response.error;
       result = response.result;
     } else if (method === 'swarm_publishData' || method === 'swarm_publishFiles') {
-      // Publish requires permission
-      await requirePermission(permissionKey);
+      const permission = await requirePermissionAndReturn(permissionKey);
 
-      // Skip approval UI if auto-approve is enabled for this origin
-      const autoApproved = await window.swarmPermissions.getAutoApprove(permissionKey, 'publish');
-      if (!autoApproved) {
-        // Show per-publish approval prompt (resolves on Publish, rejects on Cancel)
+      if (!permission?.autoApprove?.publish) {
         await new Promise((resolve, reject) => {
           showSwarmPublishApproval(permissionKey, params, resolve, reject);
         });
       }
 
-      // Forward to main
       result = await executeWithPermission(method, params, permissionKey);
     } else if (method === 'swarm_createFeed' || method === 'swarm_updateFeed') {
-      // Feed operations require permission + feed grant + unlocked vault
       await requirePermission(permissionKey);
 
-      const hasFeedAccess = await window.swarmFeedStore?.hasFeedGrant?.(permissionKey);
-      const vaultStatus = await window.identity?.getStatus?.();
+      const [hasFeedAccess, vaultStatus] = await Promise.all([
+        window.swarmFeedStore?.hasFeedGrant?.(permissionKey),
+        window.identity?.getStatus?.(),
+      ]);
       const vaultLocked = !vaultStatus?.isUnlocked;
-      const feedAutoApproved = await window.swarmPermissions.getAutoApprove(permissionKey, 'feeds');
 
-      if (!hasFeedAccess) {
-        // First time or reconnect: show full feed approval (identity choice + unlock)
-        await new Promise((resolve, reject) => {
-          showSwarmFeedApproval(permissionKey, params, resolve, reject);
-        });
-      } else if (vaultLocked) {
-        // Has access but vault locked: show feed approval for unlock
-        // TODO (WP2): replace with dedicated vault unlock screen
-        await new Promise((resolve, reject) => {
-          showSwarmFeedApproval(permissionKey, params, resolve, reject);
-        });
-      } else if (!feedAutoApproved) {
-        // Has access, vault unlocked, but no auto-approve: show approval
+      // Show approval when: first-time/reconnect, vault locked (TODO WP2: dedicated unlock screen),
+      // or no auto-approve granted. Skip UI only when all three are satisfied.
+      const canSkip = hasFeedAccess && !vaultLocked
+        && await window.swarmPermissions.getAutoApprove(permissionKey, 'feeds');
+
+      if (!canSkip) {
         await new Promise((resolve, reject) => {
           showSwarmFeedApproval(permissionKey, params, resolve, reject);
         });
       }
-      // else: auto-approved + vault unlocked → skip UI
 
       result = await executeWithPermission(method, params, permissionKey);
     } else {
@@ -138,6 +125,18 @@ async function requirePermission(permissionKey) {
   if (!permission) {
     throw { ...ERRORS.UNAUTHORIZED, message: 'Origin not authorized. Call swarm_requestAccess first.' };
   }
+}
+
+/**
+ * Same as requirePermission but returns the permission object for callers
+ * that need to inspect it (e.g., checking autoApprove) without a second IPC.
+ */
+async function requirePermissionAndReturn(permissionKey) {
+  const permission = await window.swarmPermissions.getPermission(permissionKey);
+  if (!permission) {
+    throw { ...ERRORS.UNAUTHORIZED, message: 'Origin not authorized. Call swarm_requestAccess first.' };
+  }
+  return permission;
 }
 
 /**

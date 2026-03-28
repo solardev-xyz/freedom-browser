@@ -59,7 +59,7 @@ describe('swarm-permissions', () => {
         origin: 'myapp.eth',
         connectedAt: expect.any(Number),
         lastUsed: expect.any(Number),
-        autoPublish: false,
+        autoApprove: { publish: false, feeds: false },
       });
     });
 

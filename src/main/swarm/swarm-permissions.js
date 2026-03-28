@@ -78,7 +78,7 @@ function grantPermission(origin) {
     origin: key,
     connectedAt: now,
     lastUsed: now,
-    autoApprove: { publish: false, feeds: false },
+    autoApprove: DEFAULT_AUTO_APPROVE(),
   };
 
   permissions[key] = permission;
@@ -137,6 +137,9 @@ function updateLastUsed(origin) {
   return false;
 }
 
+const VALID_AUTO_APPROVE_TYPES = new Set(['publish', 'feeds']);
+const DEFAULT_AUTO_APPROVE = () => ({ publish: false, feeds: false });
+
 /**
  * Check if an auto-approve type is enabled for an origin.
  * @param {string} origin
@@ -144,6 +147,7 @@ function updateLastUsed(origin) {
  * @returns {boolean}
  */
 function getAutoApprove(origin, type) {
+  if (!VALID_AUTO_APPROVE_TYPES.has(type)) return false;
   const permission = getPermission(origin);
   return permission?.autoApprove?.[type] === true;
 }
@@ -156,13 +160,15 @@ function getAutoApprove(origin, type) {
  * @returns {boolean} True if updated
  */
 function setAutoApprove(origin, type, enabled) {
+  if (!VALID_AUTO_APPROVE_TYPES.has(type)) return false;
+
   const permissions = loadPermissions();
   const key = normalizeOrigin(origin);
 
   if (!permissions[key]) return false;
 
   if (!permissions[key].autoApprove) {
-    permissions[key].autoApprove = { publish: false, feeds: false };
+    permissions[key].autoApprove = DEFAULT_AUTO_APPROVE();
   }
 
   permissions[key].autoApprove[type] = enabled;

@@ -112,7 +112,7 @@ describe('swarm-provider-ipc', () => {
 
   describe('swarm_requestAccess', () => {
     test('returns connected for authorized origin', async () => {
-      mockGetPermission.mockReturnValue({ origin: 'myapp.eth', connectedAt: 1, lastUsed: 1, autoPublish: false });
+      mockGetPermission.mockReturnValue({ origin: 'myapp.eth', connectedAt: 1, lastUsed: 1, autoApprove: { publish: false, feeds: false } });
       const result = await invokeProvider('swarm_requestAccess', {}, 'myapp.eth');
       expect(result.result).toEqual({
         connected: true,
@@ -673,7 +673,7 @@ describe('swarm-provider-ipc', () => {
     }
 
     function mockFeedCapability(origin, mode = 'app-scoped', keyIndex = 0) {
-      mockGetPermission.mockReturnValue({ origin, connectedAt: 1, lastUsed: 1, autoPublish: false });
+      mockGetPermission.mockReturnValue({ origin, connectedAt: 1, lastUsed: 1, autoApprove: { publish: false, feeds: false } });
       mockHasFeedGrant.mockReturnValue(true);
       mockGetOriginEntry.mockReturnValue({
         identityMode: mode,
@@ -832,7 +832,7 @@ describe('swarm-provider-ipc', () => {
     }
 
     function mockFeedCapability(origin, mode = 'app-scoped', keyIndex = 0) {
-      mockGetPermission.mockReturnValue({ origin, connectedAt: 1, lastUsed: 1, autoPublish: false });
+      mockGetPermission.mockReturnValue({ origin, connectedAt: 1, lastUsed: 1, autoApprove: { publish: false, feeds: false } });
       mockHasFeedGrant.mockReturnValue(true);
       mockGetOriginEntry.mockReturnValue({
         identityMode: mode,
