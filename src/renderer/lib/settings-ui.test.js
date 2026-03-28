@@ -230,6 +230,8 @@ describe('settings-ui', () => {
       enableRadicleIntegration: false,
       startRadicleAtLaunch: true,
       autoUpdate: true,
+      enableEnsCustomRpc: false,
+      ensRpcUrl: '',
     });
     expect(global.window.radicle.stop).toHaveBeenCalled();
     expect(radicleStopResult.catch).toHaveBeenCalledWith(expect.any(Function));
@@ -244,6 +246,8 @@ describe('settings-ui', () => {
         enableRadicleIntegration: false,
         startRadicleAtLaunch: true,
         autoUpdate: true,
+        enableEnsCustomRpc: false,
+        ensRpcUrl: '',
       },
     });
     expect(onSettingsChanged).toHaveBeenCalled();
@@ -291,6 +295,8 @@ describe('settings-ui', () => {
       enableRadicleIntegration: false,
       startRadicleAtLaunch: false,
       autoUpdate: false,
+      enableEnsCustomRpc: false,
+      ensRpcUrl: '',
     });
     expect(debugMocks.pushDebug).toHaveBeenCalledWith('Failed to save settings');
 

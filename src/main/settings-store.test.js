@@ -34,6 +34,8 @@ describe('settings-store', () => {
       startRadicleAtLaunch: false,
       autoUpdate: true,
       showBookmarkBar: false,
+      enableEnsCustomRpc: false,
+      ensRpcUrl: '',
     });
     expect(nativeTheme.themeSource).toBe('system');
   });

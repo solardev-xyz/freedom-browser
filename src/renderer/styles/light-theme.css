@@ -133,6 +133,25 @@
   box-shadow: 0 0 0 2px rgba(26, 115, 232, 0.2);
 }
 
+[data-theme='light'] .settings-input {
+  background: #f1f3f4;
+  border-color: #dadce0;
+}
+
+[data-theme='light'] .settings-input:focus {
+  border-color: #1a73e8;
+  box-shadow: 0 0 0 2px rgba(26, 115, 232, 0.15);
+}
+
+[data-theme='light'] .settings-test-btn {
+  background: #f1f3f4;
+  border-color: #dadce0;
+}
+
+[data-theme='light'] .settings-test-btn:hover {
+  background: #e8eaed;
+}
+
 [data-theme='light'] .bee-menu-button .net-line {
   stroke: #1d1d1f !important;
 }

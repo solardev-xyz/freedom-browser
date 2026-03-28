@@ -34,6 +34,7 @@ module.exports = {
 
   // ENS resolution
   ENS_RESOLVE: 'ens:resolve',
+  ENS_TEST_RPC: 'ens:test-rpc',
 
   // Settings
   SETTINGS_GET: 'settings:get',
