@@ -20,7 +20,7 @@
     "start": "electron .",
     "test": "npm run test:unit",
     "test:unit": "jest",
-    "test:coverage": "jest --coverage --runInBand",
+    "test:coverage": "jest --coverage --runInBand --forceExit",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
