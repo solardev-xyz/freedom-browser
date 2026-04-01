@@ -7,7 +7,8 @@
 import { walletState, registerScreenHider, hideAllSubscreens } from './wallet-state.js';
 import { escapeHtml } from './wallet-utils.js';
 import { open as openSidebarPanel, isVisible as isSidebarVisible } from '../sidebar.js';
-import { getActiveWebview, emitAccountsChanged } from '../dapp-provider.js';
+import { getActiveWebview, emitAccountsChanged, getPermissionKey } from '../dapp-provider.js';
+import { showDappPermissions } from './permission-manage.js';
 
 // DOM references
 let dappConnectScreen;
@@ -28,6 +29,8 @@ let dappConnectionBanner;
 let dappConnectionSite;
 let dappConnectionWallet;
 let dappConnectionDisconnect;
+let dappAutoApproveBadge;
+let dappConnectionManage;
 
 // Local state
 let dappConnectPending = null;
@@ -54,6 +57,8 @@ export function initDappConnect() {
   dappConnectionSite = document.getElementById('dapp-connection-site');
   dappConnectionWallet = document.getElementById('dapp-connection-wallet');
   dappConnectionDisconnect = document.getElementById('dapp-connection-disconnect');
+  dappAutoApproveBadge = document.getElementById('dapp-auto-approve-badge');
+  dappConnectionManage = document.getElementById('dapp-connection-manage');
 
   // Register screen hider
   registerScreenHider(() => dappConnectScreen?.classList.add('hidden'));
@@ -92,7 +97,15 @@ function setupDappConnectScreen() {
   }
 
   if (dappConnectionDisconnect) {
-    dappConnectionDisconnect.addEventListener('click', disconnectCurrentDapp);
+    dappConnectionDisconnect.addEventListener('click', () => disconnectDapp());
+  }
+
+  if (dappConnectionManage) {
+    dappConnectionManage.addEventListener('click', () => {
+      if (currentBannerPermissionKey) {
+        showDappPermissions(currentBannerPermissionKey);
+      }
+    });
   }
 
   document.addEventListener('sidebar-opened', () => {
@@ -296,7 +309,7 @@ export async function updateConnectionBanner(permissionKey = null) {
   if (!permissionKey) {
     const addressInput = document.getElementById('address-input');
     const displayUrl = addressInput?.value || '';
-    permissionKey = getPermissionKeyFromUrl(displayUrl);
+    permissionKey = getPermissionKey(displayUrl);
   }
 
   if (!permissionKey) {
@@ -321,6 +334,10 @@ export async function updateConnectionBanner(permissionKey = null) {
         dappConnectionWallet.textContent = walletName;
       }
 
+      const hasAutoApprove = permission.autoApprove?.signing
+        || (permission.autoApprove?.transactions?.length > 0);
+      dappAutoApproveBadge?.classList.toggle('hidden', !hasAutoApprove);
+
       currentBannerPermissionKey = permissionKey;
       dappConnectionBanner.classList.remove('hidden');
     } else {
@@ -334,12 +351,13 @@ export async function updateConnectionBanner(permissionKey = null) {
   }
 }
 
-async function disconnectCurrentDapp() {
-  if (!currentBannerPermissionKey) return;
+export async function disconnectDapp(permissionKey = null) {
+  const key = permissionKey || currentBannerPermissionKey;
+  if (!key) return;
 
   try {
-    await window.dappPermissions.revokePermission(currentBannerPermissionKey);
-    console.log('[WalletUI] Disconnected dApp:', currentBannerPermissionKey);
+    await window.dappPermissions.revokePermission(key);
+    console.log('[WalletUI] Disconnected dApp:', key);
 
     dappConnectionBanner?.classList.add('hidden');
     currentBannerPermissionKey = null;
@@ -347,40 +365,10 @@ async function disconnectCurrentDapp() {
     const webview = getActiveWebview();
     if (webview) {
       emitAccountsChanged(webview, []);
-      console.log('[WalletUI] Emitted accountsChanged with empty array to webview');
     }
   } catch (err) {
     console.error('[WalletUI] Failed to disconnect:', err);
   }
 }
 
-function getPermissionKeyFromUrl(displayUrl) {
-  if (!displayUrl) return null;
-  const trimmed = displayUrl.trim();
-
-  // ENS name without protocol
-  if (/^[a-z0-9-]+\.(eth|box)/i.test(trimmed)) {
-    return trimmed.split('/')[0].toLowerCase();
-  }
-
-  // ens:// protocol
-  const ensMatch = trimmed.match(/^ens:\/\/([^/#]+)/i);
-  if (ensMatch) return ensMatch[1].toLowerCase();
-
-  // dweb protocols
-  const dwebMatch = trimmed.match(/^(ipfs|bzz|ipns):\/\/([^/]+)/i);
-  if (dwebMatch) return `${dwebMatch[1].toLowerCase()}://${dwebMatch[2]}`;
-
-  // rad:// protocol
-  const radMatch = trimmed.match(/^rad:\/\/([^/]+)/i);
-  if (radMatch) return `rad://${radMatch[1]}`;
-
-  // Regular URL
-  try {
-    const url = new URL(trimmed);
-    if (url.origin === 'null') return trimmed;
-    return url.origin;
-  } catch {
-    return trimmed;
-  }
-}
+// getPermissionKey imported from ../dapp-provider.js (shared origin normalization)

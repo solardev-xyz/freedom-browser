@@ -22,6 +22,7 @@ const {
 } = require('./transaction-service');
 const { loadIdentityModule, getActiveWalletIndex } = require('../identity-manager');
 const { getEffectiveRpcUrls } = require('./rpc-manager');
+const { resetVaultAutoLockTimer } = require('../vault-timer');
 
 /**
  * Validate that an RPC URL is a known, trusted endpoint.
@@ -312,6 +313,7 @@ function registerWalletIpc() {
         privateKey
       );
 
+      resetVaultAutoLockTimer();
       return { success: true, ...result };
     } catch (err) {
       console.error('[WalletIPC] dApp transaction failed:', err);
@@ -339,6 +341,7 @@ function registerWalletIpc() {
       const privateKey = identity.exportPrivateKey(walletIndex);
       const signature = await signPersonalMessage(message, privateKey);
 
+      resetVaultAutoLockTimer();
       return { success: true, signature };
     } catch (err) {
       console.error('[WalletIPC] Message signing failed:', err);
@@ -366,6 +369,7 @@ function registerWalletIpc() {
       const privateKey = identity.exportPrivateKey(walletIndex);
       const signature = await signTypedData(typedData, privateKey);
 
+      resetVaultAutoLockTimer();
       return { success: true, signature };
     } catch (err) {
       console.error('[WalletIPC] Typed data signing failed:', err);

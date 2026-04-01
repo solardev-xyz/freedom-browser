@@ -6,6 +6,7 @@
 
 import { walletState, registerScreenHider, hideAllSubscreens } from './wallet-state.js';
 import { open as openSidebarPanel } from '../sidebar.js';
+import { executeSign } from '../dapp-provider.js';
 
 // DOM references
 let dappSignScreen;
@@ -23,6 +24,7 @@ let dappSignPasswordSubmit;
 let dappSignError;
 let dappSignRejectBtn;
 let dappSignApproveBtn;
+let dappSignAutoApproveCheckbox;
 
 // Local state
 let dappSignPending = null;
@@ -43,6 +45,7 @@ export function initDappSign() {
   dappSignError = document.getElementById('dapp-sign-error');
   dappSignRejectBtn = document.getElementById('dapp-sign-reject');
   dappSignApproveBtn = document.getElementById('dapp-sign-approve');
+  dappSignAutoApproveCheckbox = document.getElementById('dapp-sign-auto-approve');
 
   // Register screen hider
   registerScreenHider(() => dappSignScreen?.classList.add('hidden'));
@@ -103,6 +106,7 @@ export async function showDappSignApproval(webview, permissionKey, method, param
 
   return new Promise((resolve, reject) => {
     dappSignPending = { permissionKey, walletIndex: permission.walletIndex, method, params, resolve, reject, webview };
+    if (dappSignAutoApproveCheckbox) dappSignAutoApproveCheckbox.checked = false;
 
     if (dappSignSite) {
       dappSignSite.textContent = permissionKey;
@@ -287,7 +291,7 @@ async function handleDappSignPasswordUnlock() {
 async function approveDappSign() {
   if (!dappSignPending) return;
 
-  const { walletIndex, method, params, resolve } = dappSignPending;
+  const { permissionKey, walletIndex, method, params, resolve } = dappSignPending;
 
   try {
     if (dappSignApproveBtn) {
@@ -295,22 +299,11 @@ async function approveDappSign() {
       dappSignApproveBtn.textContent = 'Signing...';
     }
 
-    let signature;
+    const signature = await executeSign(method, params, walletIndex);
 
-    if (method === 'personal_sign') {
-      const result = await window.wallet.signMessage(params[0], walletIndex);
-      if (!result.success) {
-        throw new Error(result.error || 'Signing failed');
-      }
-      signature = result.signature;
-    } else if (method === 'eth_signTypedData_v4') {
-      const result = await window.wallet.signTypedData(params[1], walletIndex);
-      if (!result.success) {
-        throw new Error(result.error || 'Signing failed');
-      }
-      signature = result.signature;
-    } else {
-      throw new Error(`Unsupported signing method: ${method}`);
+    if (dappSignAutoApproveCheckbox?.checked && permissionKey) {
+      await window.dappPermissions.setSigningAutoApprove(permissionKey, true);
+      console.log('[WalletUI] Signing auto-approve enabled for:', permissionKey);
     }
 
     console.log('[WalletUI] dApp message signed');

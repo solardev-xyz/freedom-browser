@@ -14,6 +14,7 @@ const fs = require('fs');
 const IPC = require('../../shared/ipc-channels');
 
 const PERMISSIONS_FILE = 'dapp-permissions.json';
+const DEFAULT_AUTO_APPROVE = () => ({ signing: false, transactions: [] });
 
 // In-memory cache of permissions
 let permissionsCache = null;
@@ -108,6 +109,7 @@ function grantPermission(origin, walletIndex, chainId) {
     lastUsed: now,
     walletIndex: walletIndex,
     chainId: chainId,
+    autoApprove: DEFAULT_AUTO_APPROVE(),
   };
 
   permissions[normalizedOrigin] = permission;
@@ -192,6 +194,139 @@ function updateWalletIndex(origin, walletIndex) {
 }
 
 /**
+ * Check if signing auto-approve is enabled for an origin.
+ * @param {string} origin
+ * @returns {boolean}
+ */
+function getSigningAutoApprove(origin) {
+  const permission = getPermission(origin);
+  return permission?.autoApprove?.signing === true;
+}
+
+/**
+ * Set signing auto-approve for an origin.
+ * @param {string} origin
+ * @param {boolean} enabled
+ * @returns {boolean} True if updated
+ */
+function setSigningAutoApprove(origin, enabled) {
+  const permissions = loadPermissions();
+  const key = normalizeOrigin(origin);
+
+  if (!permissions[key]) return false;
+
+  if (!permissions[key].autoApprove) {
+    permissions[key].autoApprove = DEFAULT_AUTO_APPROVE();
+  }
+
+  permissions[key].autoApprove.signing = enabled;
+  permissionsCache = permissions;
+  savePermissions();
+
+  console.log(`[DAppPermissions] Signing auto-approve ${enabled ? 'enabled' : 'disabled'} for:`, key);
+  return true;
+}
+
+/**
+ * Check if a transaction is auto-approved for an origin.
+ * Matches on contract address + 4-byte function selector + chainId.
+ * Plain ETH transfers (no data) are never auto-approved.
+ * @param {string} origin
+ * @param {string} to - Contract address
+ * @param {string} selector - 4-byte function selector (0x prefixed, 10 chars)
+ * @param {number} chainId
+ * @returns {boolean}
+ */
+function isTransactionAutoApproved(origin, to, selector, chainId) {
+  if (!to || !selector || selector.length < 10) return false;
+
+  const permission = getPermission(origin);
+  const txRules = permission?.autoApprove?.transactions;
+  if (!Array.isArray(txRules) || txRules.length === 0) return false;
+
+  const normalizedTo = to.toLowerCase();
+  const normalizedSelector = selector.slice(0, 10).toLowerCase();
+
+  return txRules.some(
+    (rule) =>
+      rule.to.toLowerCase() === normalizedTo &&
+      rule.selector.toLowerCase() === normalizedSelector &&
+      rule.chainId === chainId
+  );
+}
+
+/**
+ * Add a transaction auto-approve rule for an origin.
+ * @param {string} origin
+ * @param {string} to - Contract address
+ * @param {string} selector - 4-byte function selector (0x prefixed)
+ * @param {number} chainId
+ * @returns {boolean} True if added
+ */
+function addTransactionAutoApprove(origin, to, selector, chainId) {
+  if (!to || !selector || selector.length < 10 || chainId === undefined) return false;
+
+  const permissions = loadPermissions();
+  const key = normalizeOrigin(origin);
+  if (!permissions[key]) return false;
+
+  if (!permissions[key].autoApprove) {
+    permissions[key].autoApprove = DEFAULT_AUTO_APPROVE();
+  }
+
+  const normalizedTo = to.toLowerCase();
+  const normalizedSelector = selector.slice(0, 10).toLowerCase();
+
+  // Don't add duplicates
+  const existing = permissions[key].autoApprove.transactions || [];
+  const alreadyExists = existing.some(
+    (r) => r.to.toLowerCase() === normalizedTo &&
+           r.selector.toLowerCase() === normalizedSelector &&
+           r.chainId === chainId
+  );
+  if (alreadyExists) return true;
+
+  existing.push({ to: normalizedTo, selector: normalizedSelector, chainId });
+  permissions[key].autoApprove.transactions = existing;
+  permissionsCache = permissions;
+  savePermissions();
+
+  console.log(`[DAppPermissions] Transaction auto-approve added for ${key}: ${normalizedTo} ${normalizedSelector} chain=${chainId}`);
+  return true;
+}
+
+/**
+ * Remove a transaction auto-approve rule for an origin.
+ * @param {string} origin
+ * @param {string} to - Contract address
+ * @param {string} selector - 4-byte function selector
+ * @param {number} chainId
+ * @returns {boolean} True if removed
+ */
+function removeTransactionAutoApprove(origin, to, selector, chainId) {
+  const permissions = loadPermissions();
+  const key = normalizeOrigin(origin);
+  if (!permissions[key]?.autoApprove?.transactions) return false;
+
+  const normalizedTo = to.toLowerCase();
+  const normalizedSelector = selector.slice(0, 10).toLowerCase();
+
+  const before = permissions[key].autoApprove.transactions.length;
+  permissions[key].autoApprove.transactions = permissions[key].autoApprove.transactions.filter(
+    (r) => !(r.to.toLowerCase() === normalizedTo &&
+             r.selector.toLowerCase() === normalizedSelector &&
+             r.chainId === chainId)
+  );
+
+  if (permissions[key].autoApprove.transactions.length === before) return false;
+
+  permissionsCache = permissions;
+  savePermissions();
+  console.log(`[DAppPermissions] Transaction auto-approve removed for ${key}: ${normalizedTo} ${normalizedSelector} chain=${chainId}`);
+  return true;
+}
+
+/**
  * Register IPC handlers for dApp permissions
  */
 function registerDappPermissionsIpc() {
@@ -215,6 +350,26 @@ function registerDappPermissionsIpc() {
     return updateLastUsed(origin, chainId);
   });
 
+  ipcMain.handle(IPC.DAPP_GET_SIGNING_AUTO_APPROVE, (_event, origin) => {
+    return getSigningAutoApprove(origin);
+  });
+
+  ipcMain.handle(IPC.DAPP_SET_SIGNING_AUTO_APPROVE, (_event, origin, enabled) => {
+    return setSigningAutoApprove(origin, enabled);
+  });
+
+  ipcMain.handle(IPC.DAPP_IS_TX_AUTO_APPROVED, (_event, origin, to, selector, chainId) => {
+    return isTransactionAutoApproved(origin, to, selector, chainId);
+  });
+
+  ipcMain.handle(IPC.DAPP_ADD_TX_AUTO_APPROVE, (_event, origin, to, selector, chainId) => {
+    return addTransactionAutoApprove(origin, to, selector, chainId);
+  });
+
+  ipcMain.handle(IPC.DAPP_REMOVE_TX_AUTO_APPROVE, (_event, origin, to, selector, chainId) => {
+    return removeTransactionAutoApprove(origin, to, selector, chainId);
+  });
+
   console.log('[DAppPermissions] IPC handlers registered');
 }
 
@@ -226,6 +381,11 @@ module.exports = {
   getAllPermissions,
   updateLastUsed,
   updateWalletIndex,
+  getSigningAutoApprove,
+  setSigningAutoApprove,
+  isTransactionAutoApproved,
+  addTransactionAutoApprove,
+  removeTransactionAutoApprove,
   normalizeOrigin,
   registerDappPermissionsIpc,
 };

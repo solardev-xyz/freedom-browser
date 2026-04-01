@@ -41,7 +41,7 @@ function setupReceiveScreen() {
   }
 }
 
-async function openReceive() {
+export async function openReceive() {
   if (!walletState.fullAddresses.wallet) {
     console.error('[WalletUI] No wallet address available');
     return;

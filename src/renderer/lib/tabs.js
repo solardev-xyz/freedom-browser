@@ -6,6 +6,7 @@ import { showMenuBackdrop, hideMenuBackdrop } from './menu-backdrop.js';
 import { setupWebviewContextMenu } from './page-context-menu.js';
 import { homeUrl } from './page-urls.js';
 import { setupWebviewProvider, setActiveWebview } from './dapp-provider.js';
+import { setupSwarmProvider } from './swarm-provider.js';
 
 const electronAPI = window.electronAPI;
 
@@ -171,6 +172,25 @@ export const closeAllDevTools = () => {
 
 // Get all tabs
 export const getTabs = () => tabState.tabs;
+
+/**
+ * Get the committed display URL for a specific webview.
+ * Always reads from the tab's addressBarSnapshot — the last display URL
+ * committed by a navigation event or tab switch. Never reads the live
+ * address bar input, which could contain user edits in progress.
+ *
+ * This is critical for provider permission checks — if a page fires a
+ * request while the user is typing in the address bar, we must derive
+ * the origin from the committed navigation identity, not partial input.
+ *
+ * @param {HTMLElement} webview - The webview element
+ * @returns {string} The committed display URL for this webview's tab
+ */
+export const getDisplayUrlForWebview = (webview) => {
+  const tab = tabState.tabs.find((t) => t.webview === webview);
+  if (!tab) return '';
+  return tab.navigationState?.addressBarSnapshot || '';
+};
 
 // Create default navigation state for a tab
 const createNavigationState = () => ({
@@ -351,8 +371,9 @@ const createWebview = (tabId, initialUrl) => {
   // Set up context menu listener
   setupWebviewContextMenu(webview);
 
-  // Set up Ethereum provider (window.ethereum)
+  // Set up providers (window.ethereum + window.swarm)
   setupWebviewProvider(webview);
+  setupSwarmProvider(webview);
 
   return webview;
 };
@@ -642,12 +663,13 @@ const renderTabs = () => {
 // Create a new tab
 export const createTab = (url = null) => {
   const tabId = tabState.nextTabId++;
-  const targetUrl = url || homeUrl;
-  const webview = createWebview(tabId, targetUrl);
+  const isDirectUrl = !url || url.startsWith('http://') || url.startsWith('https://');
+  const webviewUrl = isDirectUrl ? (url || homeUrl) : homeUrl;
+  const webview = createWebview(tabId, webviewUrl);
 
   const tab = {
     id: tabId,
-    url: targetUrl,
+    url: url || homeUrl,
     title: 'New Tab',
     isLoading: false,
     webview,
@@ -659,6 +681,12 @@ export const createTab = (url = null) => {
 
   // Switch to the new tab
   switchTab(tabId, { isNewTab: true });
+
+  // For protocol URLs (ens://, bzz://, ipfs://, etc.), route through the
+  // URL resolution pipeline instead of setting webview src directly
+  if (!isDirectUrl && url) {
+    setTimeout(() => { if (onLoadTarget) onLoadTarget(url); }, 50);
+  }
 
   pushDebug(`Created tab ${tabId}`);
   return tab;

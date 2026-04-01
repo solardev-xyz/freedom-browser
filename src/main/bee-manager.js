@@ -6,6 +6,8 @@ const fs = require('fs');
 const http = require('http');
 const net = require('net');
 const IPC = require('../shared/ipc-channels');
+const { loadSettings } = require('./settings-store');
+const { getChain } = require('./wallet/chains');
 const {
   MODE,
   DEFAULTS,
@@ -33,6 +35,11 @@ let pendingStart = false;
 let forceKillTimeout = null;
 
 const CONFIG_FILE = 'config.yaml';
+const BEE_NODE_MODE = {
+  ULTRA_LIGHT: 'ultraLight',
+  LIGHT: 'light',
+};
+const GNOSIS_CHAIN_ID = 100;
 
 // Identity injection flag - when true, skip bee init and use pre-injected keys
 let useInjectedIdentity = false;
@@ -84,7 +91,38 @@ function getBeeDataPath() {
   return dataDir;
 }
 
-function ensureConfig(dataDir, apiPort) {
+function getConfiguredBeeNodeMode() {
+  const settings = loadSettings();
+  return settings?.beeNodeMode === BEE_NODE_MODE.LIGHT
+    ? BEE_NODE_MODE.LIGHT
+    : BEE_NODE_MODE.ULTRA_LIGHT;
+}
+
+function getPrimaryGnosisRpcUrl() {
+  const chain = getChain(GNOSIS_CHAIN_ID);
+  const primaryUrl = chain?.rpcUrls?.[0];
+  return typeof primaryUrl === 'string' && primaryUrl.trim() ? primaryUrl.trim() : null;
+}
+
+function buildBeeConfigContent({ dataDir, apiPort, password, nodeMode, blockchainRpcEndpoint }) {
+  const isLightNode = nodeMode === BEE_NODE_MODE.LIGHT;
+
+  return `# Bee Configuration
+api-addr: 127.0.0.1:${apiPort}
+swap-enable: ${isLightNode ? 'true' : 'false'}
+mainnet: true
+full-node: false
+blockchain-rpc-endpoint: ${isLightNode ? `"${blockchainRpcEndpoint}"` : '""'}
+cors-allowed-origins: "null"
+skip-postage-snapshot: true
+resolver-options: https://cloudflare-eth.com
+storage-incentives-enable: false
+data-dir: ${dataDir}
+password: ${password}
+`;
+}
+
+function ensureConfig(dataDir, apiPort, nodeMode = BEE_NODE_MODE.ULTRA_LIGHT) {
   const configPath = path.join(dataDir, CONFIG_FILE);
   const crypto = require('crypto');
 
@@ -107,24 +145,27 @@ function ensureConfig(dataDir, apiPort) {
     password = crypto.randomBytes(32).toString('hex');
   }
 
+  const blockchainRpcEndpoint = nodeMode === BEE_NODE_MODE.LIGHT ? getPrimaryGnosisRpcUrl() : null;
+  if (nodeMode === BEE_NODE_MODE.LIGHT && !blockchainRpcEndpoint) {
+    throw new Error('No primary Gnosis RPC endpoint configured for Bee light mode');
+  }
+
   // Always write config with current port
   // Note: Newer Bee versions don't have separate debug-api-addr, debug endpoints are on main API
-  const configContent = `# Bee Configuration
-api-addr: 127.0.0.1:${apiPort}
-swap-enable: false
-mainnet: true
-full-node: false
-cors-allowed-origins: "null"
-use-postage-snapshot: false
-skip-postage-snapshot: true
-resolver-options: https://cloudflare-eth.com
-storage-incentives-enable: false
-data-dir: ${dataDir}
-password: ${password}
-`;
+  const configContent = buildBeeConfigContent({
+    dataDir,
+    apiPort,
+    password,
+    nodeMode,
+    blockchainRpcEndpoint,
+  });
 
   fs.writeFileSync(configPath, configContent);
-  log.info(`[Bee] Config written at ${configPath} with API:${apiPort}`);
+  log.info(
+    `[Bee] Config written at ${configPath} with API:${apiPort} mode:${nodeMode}${
+      blockchainRpcEndpoint ? ` rpc:${blockchainRpcEndpoint}` : ''
+    }`
+  );
 
   // Initialize keys if this is a fresh config
   // Skip if identity system has injected keys (swarm.key exists)
@@ -287,7 +328,10 @@ async function checkHealth() {
 }
 
 function startHealthCheck() {
-  if (healthCheckInterval) clearInterval(healthCheckInterval);
+  if (healthCheckInterval) {
+    clearInterval(healthCheckInterval);
+    healthCheckInterval = null;
+  }
   healthCheckInterval = setInterval(async () => {
     const isHealthy = await checkHealth();
     if (!isHealthy && currentState === STATUS.RUNNING) {
@@ -367,7 +411,16 @@ async function startBee() {
   currentApiPort = apiPort;
   currentMode = MODE.BUNDLED;
 
-  const configPath = ensureConfig(dataDir, apiPort);
+  const configuredNodeMode = getConfiguredBeeNodeMode();
+  let configPath;
+  try {
+    configPath = ensureConfig(dataDir, apiPort, configuredNodeMode);
+  } catch (err) {
+    log.error('[Bee] Failed to prepare config:', err.message);
+    updateState(STATUS.ERROR, err.message);
+    setStatusMessage('bee', 'Node failed to start');
+    return;
+  }
 
   const args = ['start', `--config=${configPath}`];
 
@@ -401,6 +454,10 @@ async function startBee() {
         updateState(STATUS.STOPPED, code !== 0 ? `Exited with code ${code}` : null);
       } else {
         updateState(STATUS.STOPPED);
+      }
+      if (healthCheckInterval) {
+        clearInterval(healthCheckInterval);
+        healthCheckInterval = null;
       }
       clearService('bee');
 
@@ -482,6 +539,10 @@ function stopBee() {
     }
 
     if (!beeProcess) {
+      if (healthCheckInterval) {
+        clearInterval(healthCheckInterval);
+        healthCheckInterval = null;
+      }
       updateState(STATUS.STOPPED);
       clearService('bee');
       resolve();
@@ -508,6 +569,9 @@ function stopBee() {
       clearInterval(healthCheckInterval);
       healthCheckInterval = null;
     }
+
+    // Try graceful shutdown via SIGTERM
+    beeProcess.kill('SIGTERM');
 
     // Force kill if it doesn't exit within 5 seconds
     if (forceKillTimeout) clearTimeout(forceKillTimeout);
@@ -552,13 +616,13 @@ function getActivePort() {
 }
 
 function registerBeeIpc() {
-  ipcMain.handle(IPC.BEE_START, () => {
-    startBee();
+  ipcMain.handle(IPC.BEE_START, async () => {
+    await startBee();
     return { status: currentState, error: lastError };
   });
 
-  ipcMain.handle(IPC.BEE_STOP, () => {
-    stopBee();
+  ipcMain.handle(IPC.BEE_STOP, async () => {
+    await stopBee();
     return { status: currentState, error: lastError };
   });
 
@@ -579,5 +643,8 @@ module.exports = {
   getBeeDataPath,
   setUseInjectedIdentity,
   hasInjectedKeys,
+  BEE_NODE_MODE,
+  getConfiguredBeeNodeMode,
+  getPrimaryGnosisRpcUrl,
   STATUS,
 };

@@ -8,6 +8,7 @@ const {
   deriveAllKeys,
   deriveEthereumKey,
   deriveEd25519Key,
+  derivePublisherKey,
   getSeed,
   PATHS,
 } = require('./derivation');
@@ -195,6 +196,58 @@ describe('derivation', () => {
       const rad1 = Buffer.from(keys1.radicleKey.publicKey).toString('hex');
       const rad2 = Buffer.from(keys2.radicleKey.publicKey).toString('hex');
       expect(rad1).toBe(rad2);
+    });
+  });
+
+  describe('derivePublisherKey', () => {
+    test('derives valid Ethereum key at dedicated path', () => {
+      const key = derivePublisherKey(TEST_MNEMONIC, 0);
+      expect(key.privateKey).toMatch(/^0x[0-9a-f]{64}$/i);
+      expect(key.address).toMatch(/^0x[0-9A-Fa-f]{40}$/);
+      expect(key.path).toBe(`${PATHS.SWARM_PUBLISHER}/0'/0/0`);
+      expect(key.originIndex).toBe(0);
+    });
+
+    test('different indices produce different keys', () => {
+      const key0 = derivePublisherKey(TEST_MNEMONIC, 0);
+      const key1 = derivePublisherKey(TEST_MNEMONIC, 1);
+      const key2 = derivePublisherKey(TEST_MNEMONIC, 2);
+      expect(key0.address).not.toBe(key1.address);
+      expect(key1.address).not.toBe(key2.address);
+      expect(key0.privateKey).not.toBe(key1.privateKey);
+    });
+
+    test('same index is deterministic', () => {
+      const key1 = derivePublisherKey(TEST_MNEMONIC, 0);
+      const key2 = derivePublisherKey(TEST_MNEMONIC, 0);
+      expect(key1.address).toBe(key2.address);
+      expect(key1.privateKey).toBe(key2.privateKey);
+    });
+
+    test('publisher keys are separate from user and Bee wallets', () => {
+      const keys = deriveAllKeys(TEST_MNEMONIC);
+      const pub0 = derivePublisherKey(TEST_MNEMONIC, 0);
+      const pub1 = derivePublisherKey(TEST_MNEMONIC, 1);
+      expect(pub0.address).not.toBe(keys.userWallet.address);
+      expect(pub0.address).not.toBe(keys.beeWallet.address);
+      expect(pub1.address).not.toBe(keys.userWallet.address);
+      expect(pub1.address).not.toBe(keys.beeWallet.address);
+    });
+
+    test('throws on invalid mnemonic', () => {
+      expect(() => derivePublisherKey('invalid', 0)).toThrow('Invalid mnemonic');
+    });
+
+    test('throws on negative index', () => {
+      expect(() => derivePublisherKey(TEST_MNEMONIC, -1)).toThrow('non-negative integer');
+    });
+
+    test('throws on non-integer index', () => {
+      expect(() => derivePublisherKey(TEST_MNEMONIC, 1.5)).toThrow('non-negative integer');
+    });
+
+    test('PATHS.SWARM_PUBLISHER is the expected base path', () => {
+      expect(PATHS.SWARM_PUBLISHER).toBe("m/44'/73406'");
     });
   });
 

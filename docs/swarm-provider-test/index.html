@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Swarm Provider Test</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0f0f0f;
+      color: #e0e0e0;
+      padding: 32px;
+      max-width: 640px;
+      margin: 0 auto;
+      line-height: 1.5;
+    }
+    h1 { font-size: 22px; margin-bottom: 8px; }
+    .subtitle { color: #888; font-size: 14px; margin-bottom: 32px; }
+    .section { margin-bottom: 24px; }
+    .section h2 {
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #888;
+      margin-bottom: 12px;
+    }
+    button {
+      background: #f59e0b;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 10px 20px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s;
+      margin-right: 8px;
+      margin-bottom: 8px;
+    }
+    button:hover { background: #d97706; }
+    button:disabled { background: #444; color: #888; cursor: not-allowed; }
+    button.secondary {
+      background: #222;
+      border: 1px solid #333;
+      color: #e0e0e0;
+    }
+    button.secondary:hover { background: #2a2a2a; }
+    .status {
+      background: #1a1a1a;
+      border: 1px solid #2a2a2a;
+      border-radius: 8px;
+      padding: 12px 16px;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 13px;
+      white-space: pre-wrap;
+      word-break: break-all;
+      min-height: 40px;
+      margin-top: 8px;
+    }
+    .status.success { border-color: #22c55e40; }
+    .status.error { border-color: #ef444440; }
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .badge.connected { background: #22c55e20; color: #22c55e; }
+    .badge.disconnected { background: #ef444420; color: #ef4444; }
+    .badge.available { background: #f59e0b20; color: #f59e0b; }
+    textarea {
+      width: 100%;
+      background: #1a1a1a;
+      border: 1px solid #333;
+      border-radius: 8px;
+      padding: 12px;
+      color: #e0e0e0;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 13px;
+      resize: vertical;
+      min-height: 80px;
+    }
+    textarea:focus { outline: none; border-color: #f59e0b; }
+    .result-link {
+      color: #f59e0b;
+      text-decoration: none;
+      word-break: break-all;
+    }
+    .result-link:hover { text-decoration: underline; }
+    hr { border: none; border-top: 1px solid #222; margin: 32px 0; }
+    .detect { margin-bottom: 16px; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <h1>Swarm Provider Test</h1>
+  <p class="subtitle">Test page for <code>window.swarm</code> provider in Freedom Browser</p>
+
+  <!-- Detection -->
+  <div class="section">
+    <h2>Provider Detection</h2>
+    <div class="detect" id="detect">Checking...</div>
+  </div>
+
+  <!-- Connect -->
+  <div class="section">
+    <h2>1. Connect</h2>
+    <button id="btn-connect">Request Access</button>
+    <button id="btn-capabilities" class="secondary" disabled>Get Capabilities</button>
+    <div class="status" id="status-connect"></div>
+  </div>
+
+  <hr>
+
+  <!-- Publish Text -->
+  <div class="section">
+    <h2>2. Publish Text</h2>
+    <textarea id="publish-text" placeholder="Type something to publish...">Hello from a Swarm dApp! 🐝</textarea>
+    <div style="margin-top: 12px;">
+      <button id="btn-publish-text" disabled>Publish Text</button>
+    </div>
+    <div class="status" id="status-publish-text"></div>
+  </div>
+
+  <hr>
+
+  <!-- Publish JSON -->
+  <div class="section">
+    <h2>3. Publish JSON</h2>
+    <button id="btn-publish-json" disabled>Publish Sample JSON</button>
+    <div class="status" id="status-publish-json"></div>
+  </div>
+
+  <hr>
+
+  <!-- Publish Files (website) -->
+  <div class="section">
+    <h2>4. Publish Files (Website)</h2>
+    <button id="btn-publish-site" disabled>Publish Mini Site</button>
+    <div class="status" id="status-publish-site"></div>
+  </div>
+
+  <hr>
+
+  <!-- Feed Publishing -->
+  <div class="section">
+    <h2>5. Feed Publishing</h2>
+    <button id="btn-create-feed" disabled>Create Feed</button>
+    <button id="btn-update-feed" class="secondary" disabled>Publish &amp; Update Feed</button>
+    <button id="btn-create-feed-again" class="secondary" disabled>Create Same Feed Again</button>
+    <div class="status" id="status-feed"></div>
+  </div>
+
+  <hr>
+
+  <!-- Log -->
+  <div class="section">
+    <h2>Event Log</h2>
+    <div class="status" id="log" style="max-height: 200px; overflow-y: auto;"></div>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+
+    const detectEl = $('detect');
+    const statusConnect = $('status-connect');
+    const statusText = $('status-publish-text');
+    const statusJson = $('status-publish-json');
+    const logEl = $('log');
+
+    let connected = false;
+
+    function log(msg) {
+      const ts = new Date().toLocaleTimeString();
+      logEl.textContent = `[${ts}] ${msg}\n` + logEl.textContent;
+    }
+
+    function showResult(el, text, ok) {
+      el.textContent = text;
+      el.className = 'status ' + (ok ? 'success' : 'error');
+    }
+
+    // Detection — provider is injected via DOMContentLoaded, so we need to
+    // wait for it. Poll briefly (the injection happens in the same event loop tick).
+    function detectProvider() {
+      if (window.swarm && window.swarm.isFreedomBrowser) {
+        detectEl.innerHTML = '<span class="badge available">window.swarm detected</span> — Freedom Browser provider is available';
+        log('Provider detected: window.swarm.isFreedomBrowser = true');
+        initEventListeners();
+        return true;
+      }
+      return false;
+    }
+
+    if (!detectProvider()) {
+      // Provider not available yet — wait for DOMContentLoaded (when preload injects it)
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', () => {
+          if (!detectProvider()) {
+            detectEl.innerHTML = '<span class="badge disconnected">Not detected</span> — window.swarm is not available. Open this page in Freedom Browser.';
+            log('Provider not detected after DOMContentLoaded');
+            document.querySelectorAll('button').forEach(b => b.disabled = true);
+          }
+        });
+      } else {
+        detectEl.innerHTML = '<span class="badge disconnected">Not detected</span> — window.swarm is not available. Open this page in Freedom Browser.';
+        log('Provider not detected');
+        document.querySelectorAll('button').forEach(b => b.disabled = true);
+      }
+    }
+
+    function initEventListeners() {
+      window.swarm.on('connect', (data) => {
+        log('Event: connect — ' + JSON.stringify(data));
+        connected = true;
+        showResult(statusConnect, `Connected!\nOrigin: ${data?.origin}`, true);
+        $('btn-capabilities').disabled = false;
+        $('btn-publish-text').disabled = false;
+        $('btn-publish-json').disabled = false;
+        $('btn-publish-site').disabled = false;
+        $('btn-create-feed').disabled = false;
+      });
+      window.swarm.on('disconnect', (data) => {
+        log('Event: disconnect — ' + JSON.stringify(data));
+        connected = false;
+        showResult(statusConnect, `Disconnected by browser.\nOrigin: ${data?.origin}`, false);
+        // Disable publish buttons until reconnected
+        $('btn-capabilities').disabled = true;
+        $('btn-publish-text').disabled = true;
+        $('btn-publish-json').disabled = true;
+        $('btn-publish-site').disabled = true;
+        $('btn-create-feed').disabled = true;
+        $('btn-update-feed').disabled = true;
+        $('btn-create-feed-again').disabled = true;
+      });
+    }
+
+    // Connect
+    $('btn-connect').addEventListener('click', async () => {
+      statusConnect.textContent = 'Requesting access...';
+      statusConnect.className = 'status';
+      log('Calling swarm.requestAccess()...');
+
+      try {
+        const result = await window.swarm.requestAccess();
+        connected = true;
+        showResult(statusConnect,
+          `Connected!\n` +
+          `Origin: ${result.origin}\n` +
+          `Capabilities: ${result.capabilities?.join(', ')}`,
+          true
+        );
+        log('Connected: ' + JSON.stringify(result));
+
+        // Enable other buttons
+        $('btn-capabilities').disabled = false;
+        $('btn-publish-text').disabled = false;
+        $('btn-publish-json').disabled = false;
+        $('btn-publish-site').disabled = false;
+        $('btn-create-feed').disabled = false;
+      } catch (err) {
+        showResult(statusConnect, `Error (${err.code || '?'}): ${err.message}`, false);
+        log('Connect failed: ' + err.message);
+      }
+    });
+
+    // Capabilities
+    $('btn-capabilities').addEventListener('click', async () => {
+      log('Calling swarm.getCapabilities()...');
+      try {
+        const caps = await window.swarm.getCapabilities();
+        showResult(statusConnect,
+          `Can publish: ${caps.canPublish}\n` +
+          `Reason: ${caps.reason || 'none'}\n` +
+          `Limits: data=${formatBytes(caps.limits?.maxDataBytes)}, files=${formatBytes(caps.limits?.maxFilesBytes)}, count=${caps.limits?.maxFileCount}`,
+          caps.canPublish
+        );
+        log('Capabilities: ' + JSON.stringify(caps));
+      } catch (err) {
+        showResult(statusConnect, `Error (${err.code || '?'}): ${err.message}`, false);
+        log('Capabilities failed: ' + err.message);
+      }
+    });
+
+    // Publish Text
+    $('btn-publish-text').addEventListener('click', async () => {
+      const text = $('publish-text').value;
+      if (!text) { showResult(statusText, 'Enter some text first', false); return; }
+
+      statusText.textContent = 'Publishing...';
+      statusText.className = 'status';
+      log(`Publishing ${text.length} chars of text...`);
+
+      try {
+        const result = await window.swarm.publishData({
+          data: text,
+          contentType: 'text/plain',
+          name: 'test-text',
+        });
+        statusText.innerHTML = '';
+        statusText.className = 'status success';
+        statusText.textContent = `Published!\nReference: ${result.reference}\n`;
+        const link = document.createElement('a');
+        link.href = result.bzzUrl;
+        link.className = 'result-link';
+        link.textContent = result.bzzUrl;
+        link.target = '_blank';
+        statusText.appendChild(link);
+        log('Published text: ' + result.bzzUrl);
+      } catch (err) {
+        showResult(statusText, `Error (${err.code || '?'}): ${err.message}`, false);
+        log('Publish text failed: ' + err.message);
+      }
+    });
+
+    // Publish JSON
+    $('btn-publish-json').addEventListener('click', async () => {
+      const payload = {
+        title: 'Swarm Provider Test',
+        timestamp: new Date().toISOString(),
+        message: 'This JSON was published by a dApp through window.swarm',
+        nested: { works: true, provider: 'Freedom Browser' },
+      };
+
+      statusJson.textContent = 'Publishing JSON...';
+      statusJson.className = 'status';
+      log('Publishing JSON object...');
+
+      try {
+        const result = await window.swarm.publishData({
+          data: JSON.stringify(payload, null, 2),
+          contentType: 'application/json',
+          name: 'test-json',
+        });
+        statusJson.innerHTML = '';
+        statusJson.className = 'status success';
+        statusJson.textContent = `Published!\nReference: ${result.reference}\n`;
+        const link = document.createElement('a');
+        link.href = result.bzzUrl;
+        link.className = 'result-link';
+        link.textContent = result.bzzUrl;
+        link.target = '_blank';
+        statusJson.appendChild(link);
+        log('Published JSON: ' + result.bzzUrl);
+      } catch (err) {
+        showResult(statusJson, `Error (${err.code || '?'}): ${err.message}`, false);
+        log('Publish JSON failed: ' + err.message);
+      }
+    });
+
+    // Publish Files (mini website)
+    const statusSite = $('status-publish-site');
+    $('btn-publish-site').addEventListener('click', async () => {
+      statusSite.textContent = 'Publishing site...';
+      statusSite.className = 'status';
+      log('Publishing mini site (2 files)...');
+
+      const enc = (s) => new TextEncoder().encode(s);
+
+      try {
+        const result = await window.swarm.publishFiles({
+          files: [
+            {
+              path: 'index.html',
+              bytes: enc('<!DOCTYPE html><html><head><link rel="stylesheet" href="style.css"></head><body><h1>Hello from Swarm!</h1><p>This mini site was published by a dApp through <code>window.swarm.publishFiles()</code>.</p></body></html>'),
+              contentType: 'text/html',
+            },
+            {
+              path: 'style.css',
+              bytes: enc('body { font-family: sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; background: #0f0f0f; color: #e0e0e0; } h1 { color: #f59e0b; }'),
+              contentType: 'text/css',
+            },
+          ],
+          indexDocument: 'index.html',
+        });
+
+        statusSite.innerHTML = '';
+        statusSite.className = 'status success';
+        statusSite.textContent = `Published!\nReference: ${result.reference}\n`;
+        const link = document.createElement('a');
+        link.href = result.bzzUrl;
+        link.className = 'result-link';
+        link.textContent = result.bzzUrl;
+        link.target = '_blank';
+        statusSite.appendChild(link);
+        log('Published site: ' + result.bzzUrl);
+
+        // Track upload progress if tagUid returned
+        if (result.tagUid) {
+          log('Tracking upload progress (tag ' + result.tagUid + ')...');
+          const pollStatus = async () => {
+            try {
+              const status = await window.swarm.getUploadStatus({ tagUid: result.tagUid });
+              log(`Upload progress: ${status.progress}% (sent ${status.sent}/${status.split})${status.done ? ' — DONE' : ''}`);
+              if (!status.done) setTimeout(pollStatus, 2000);
+            } catch (err) {
+              log('Status poll error: ' + err.message);
+            }
+          };
+          pollStatus();
+        }
+      } catch (err) {
+        showResult(statusSite, `Error (${err.code || '?'}): ${err.message}`, false);
+        log('Publish site failed: ' + err.message);
+      }
+    });
+
+    // Feed Publishing
+    const statusFeed = $('status-feed');
+    let lastFeedResult = null;
+
+    $('btn-create-feed').addEventListener('click', async () => {
+      statusFeed.textContent = 'Creating feed...';
+      statusFeed.className = 'status';
+      log('Calling swarm.createFeed({ name: "test-feed" })...');
+
+      try {
+        const result = await window.swarm.createFeed({ name: 'test-feed' });
+        lastFeedResult = result;
+
+        statusFeed.innerHTML = '';
+        statusFeed.className = 'status success';
+        statusFeed.textContent =
+          `Feed created!\n` +
+          `Feed ID: ${result.feedId}\n` +
+          `Owner: ${result.owner}\n` +
+          `Topic: ${result.topic}\n` +
+          `Identity: ${result.identityMode}\n` +
+          `Manifest: ${result.manifestReference}\n`;
+        const link = document.createElement('a');
+        link.href = result.bzzUrl;
+        link.className = 'result-link';
+        link.textContent = result.bzzUrl;
+        link.target = '_blank';
+        statusFeed.appendChild(link);
+
+        log('Feed created: ' + result.bzzUrl);
+        $('btn-update-feed').disabled = false;
+        $('btn-create-feed-again').disabled = false;
+      } catch (err) {
+        showResult(statusFeed, `Error (${err.code || '?'}): ${err.message}`, false);
+        log('Create feed failed: ' + err.message);
+      }
+    });
+
+    $('btn-update-feed').addEventListener('click', async () => {
+      statusFeed.textContent = 'Publishing site + updating feed...';
+      statusFeed.className = 'status';
+      log('Step 1: Publishing mini site via publishFiles...');
+
+      const enc = (s) => new TextEncoder().encode(s);
+      const ts = new Date().toISOString();
+
+      try {
+        // Step 1: Publish a mini site
+        const upload = await window.swarm.publishFiles({
+          files: [
+            {
+              path: 'index.html',
+              bytes: enc(`<!DOCTYPE html><html><head><link rel="stylesheet" href="style.css"></head><body><h1>Feed-backed site</h1><p>Updated at ${ts}</p><p>This site is served through a Swarm feed, so the URL stays the same across updates.</p></body></html>`),
+              contentType: 'text/html',
+            },
+            {
+              path: 'style.css',
+              bytes: enc('body { font-family: sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; background: #0f0f0f; color: #e0e0e0; } h1 { color: #f59e0b; }'),
+              contentType: 'text/css',
+            },
+          ],
+          indexDocument: 'index.html',
+        });
+
+        log('Step 1 done: published at ' + upload.reference);
+        log('Step 2: Updating feed with new reference...');
+
+        // Step 2: Update the feed to point at the new content
+        const update = await window.swarm.updateFeed({
+          feedId: 'test-feed',
+          reference: upload.reference,
+        });
+
+        statusFeed.innerHTML = '';
+        statusFeed.className = 'status success';
+        statusFeed.textContent =
+          `Feed updated!\n` +
+          `Feed ID: ${update.feedId}\n` +
+          `Content ref: ${update.reference}\n` +
+          `Stable URL (unchanged): `;
+        const link = document.createElement('a');
+        link.href = update.bzzUrl;
+        link.className = 'result-link';
+        link.textContent = update.bzzUrl;
+        link.target = '_blank';
+        statusFeed.appendChild(link);
+
+        log('Feed updated: ' + update.bzzUrl + ' -> ' + update.reference);
+      } catch (err) {
+        showResult(statusFeed, `Error (${err.code || '?'}): ${err.message}`, false);
+        log('Feed update failed: ' + err.message);
+      }
+    });
+
+    $('btn-create-feed-again').addEventListener('click', async () => {
+      statusFeed.textContent = 'Creating same feed again (idempotent)...';
+      statusFeed.className = 'status';
+      log('Calling swarm.createFeed({ name: "test-feed" }) again...');
+
+      try {
+        const result = await window.swarm.createFeed({ name: 'test-feed' });
+
+        const same = lastFeedResult &&
+          result.owner === lastFeedResult.owner &&
+          result.topic === lastFeedResult.topic &&
+          result.manifestReference === lastFeedResult.manifestReference;
+
+        statusFeed.className = 'status ' + (same ? 'success' : 'error');
+        statusFeed.textContent =
+          `${same ? 'Idempotent: same feed returned' : 'WARNING: different feed returned!'}\n` +
+          `Feed ID: ${result.feedId}\n` +
+          `Owner: ${result.owner}\n` +
+          `Manifest: ${result.manifestReference}`;
+
+        log('Idempotent check: ' + (same ? 'PASS' : 'FAIL'));
+      } catch (err) {
+        showResult(statusFeed, `Error (${err.code || '?'}): ${err.message}`, false);
+        log('Create feed again failed: ' + err.message);
+      }
+    });
+
+    function formatBytes(bytes) {
+      if (!bytes || bytes === 0) return '0 B';
+      const k = 1024;
+      const sizes = ['B', 'KB', 'MB', 'GB'];
+      const i = Math.floor(Math.log(bytes) / Math.log(k));
+      return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+    }
+  </script>
+</body>
+</html>

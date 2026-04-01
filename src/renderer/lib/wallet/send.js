@@ -5,7 +5,7 @@
  */
 
 import { walletState, registerScreenHider } from './wallet-state.js';
-import { escapeHtml, formatBalance } from './wallet-utils.js';
+import { escapeHtml } from './wallet-utils.js';
 import { refreshBalances, getTokensWithBalance, getChainsWithBalance, sortTokens } from './balance-display.js';
 import { createTab } from '../tabs.js';
 
@@ -55,7 +55,6 @@ let sendPasswordInput;
 let sendPasswordSubmit;
 let sendUnlockError;
 let sendReviewError;
-let sendSuccessText;
 let sendExplorerLink;
 let sendDoneBtn;
 let sendErrorText;
@@ -118,7 +117,6 @@ export function initSend() {
   sendPasswordSubmit = document.getElementById('send-password-submit');
   sendUnlockError = document.getElementById('send-unlock-error');
   sendReviewError = document.getElementById('send-review-error');
-  sendSuccessText = document.getElementById('send-success-text');
   sendExplorerLink = document.getElementById('send-explorer-link');
   sendDoneBtn = document.getElementById('send-done-btn');
   sendErrorText = document.getElementById('send-error-text');
@@ -220,20 +218,26 @@ function setupSendScreen() {
   }
 }
 
-function openSend() {
+export function openSend(options = {}) {
   if (!walletState.fullAddresses.wallet) {
     console.error('[WalletUI] No wallet address available');
     return;
   }
 
   resetSendState();
-  populateSendChainSelector();
+  applySendOpenOptions(options);
 
   walletState.identityView?.classList.add('hidden');
   sendScreen?.classList.remove('hidden');
 
   showSendInputView();
-  setTimeout(() => sendRecipientInput?.focus(), 100);
+  setTimeout(() => {
+    if (options.recipient) {
+      sendAmountInput?.focus();
+    } else {
+      sendRecipientInput?.focus();
+    }
+  }, 100);
 }
 
 export function closeSend() {
@@ -363,6 +367,41 @@ function populateSendChainSelector() {
     if (sendChainName) sendChainName.textContent = 'No funds';
     if (sendAssetName) sendAssetName.textContent = 'No assets';
   }
+}
+
+function applySendOpenOptions(options = {}) {
+  if (options.chainId) {
+    selectSendChain(options.chainId);
+  } else {
+    populateSendChainSelector();
+  }
+
+  if (options.tokenKey || options.tokenSymbol) {
+    const preferredToken = resolvePreferredSendToken(options);
+    if (preferredToken) {
+      selectSendAsset(preferredToken);
+    }
+  }
+
+  if (options.recipient && sendRecipientInput) {
+    sendRecipientInput.value = options.recipient;
+    sendTxState.recipient = options.recipient;
+  }
+}
+
+function resolvePreferredSendToken(options = {}) {
+  const candidateTokens = sortTokens(getTokensWithBalance(options.chainId || sendTxState.chainId));
+
+  if (options.tokenKey) {
+    const byKey = candidateTokens.find((token) => token.key === options.tokenKey);
+    if (byKey) return byKey;
+  }
+
+  if (options.tokenSymbol) {
+    return candidateTokens.find((token) => token.symbol === options.tokenSymbol) || null;
+  }
+
+  return null;
 }
 
 function renderSendChainList() {
@@ -967,6 +1006,7 @@ async function handleSendConfirm() {
     console.log('[WalletUI] Transaction sent:', result.hash);
     showSendSuccessView(result.explorerUrl);
 
+    window.dispatchEvent(new CustomEvent('wallet:tx-success', { detail: { hash: result.hash } }));
     setTimeout(() => refreshBalances(), 3000);
   } catch (err) {
     console.error('[WalletUI] Transaction failed:', err);

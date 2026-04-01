@@ -12,6 +12,7 @@ const {
   deriveEthereumKey,
   deriveEd25519Key,
   deriveUserWallet,
+  derivePublisherKey,
   getSeed,
   PATHS,
 } = require('./derivation');
@@ -59,6 +60,7 @@ module.exports = {
   deriveEthereumKey,
   deriveEd25519Key,
   deriveUserWallet,
+  derivePublisherKey,
   getSeed,
   PATHS,
   createBeeKeystore,

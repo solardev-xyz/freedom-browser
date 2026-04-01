@@ -26,6 +26,10 @@ const PATHS = {
   // All segments must be hardened for Ed25519
   RADICLE: "m/44'/73404'/0'/0'/0'",     // Radicle DID
   IPFS: "m/44'/73405'/0'/0'/0'",        // IPFS PeerID
+
+  // Swarm publisher keys (secp256k1) - dedicated namespace for feed signing
+  // One key per origin index: m/44'/73406'/{originIndex}'/0/0
+  SWARM_PUBLISHER: "m/44'/73406'",       // base path (without trailing segments)
 };
 
 /**
@@ -138,6 +142,32 @@ function deriveEd25519Key(seed, path) {
 }
 
 /**
+ * Derive a Swarm publisher key at a specific origin index.
+ * Uses BIP-44 path: m/44'/73406'/{originIndex}'/0/0
+ * These are dedicated secp256k1 keys for feed signing — separate from
+ * the user wallet, Bee wallet, and all other identity namespaces.
+ * @param {string} mnemonic - BIP-39 mnemonic
+ * @param {number} originIndex - Origin index (0, 1, 2, ...)
+ * @returns {Object} { privateKey, publicKey, address, path, originIndex }
+ */
+function derivePublisherKey(mnemonic, originIndex) {
+  if (!isValidMnemonic(mnemonic)) {
+    throw new Error('Invalid mnemonic');
+  }
+  if (typeof originIndex !== 'number' || originIndex < 0 || !Number.isInteger(originIndex)) {
+    throw new Error('Origin index must be a non-negative integer');
+  }
+
+  const path = `${PATHS.SWARM_PUBLISHER}/${originIndex}'/0/0`;
+  const key = deriveEthereumKey(mnemonic, path);
+
+  return {
+    ...key,
+    originIndex,
+  };
+}
+
+/**
  * Get the seed from a mnemonic (for direct use with SLIP-0010)
  * @param {string} mnemonic - BIP-39 mnemonic
  * @returns {Uint8Array} 64-byte seed
@@ -156,6 +186,7 @@ module.exports = {
   deriveEthereumKey,
   deriveEd25519Key,
   deriveUserWallet,
+  derivePublisherKey,
   getSeed,
   PATHS,
 };

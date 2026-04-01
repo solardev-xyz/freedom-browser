@@ -65,7 +65,9 @@ function createProcessMock(binary, options = {}) {
     kill: jest.fn((signal) => {
       proc.kills.push(signal);
       if (options.autoCloseOnKill !== false) {
-        proc.emit('close', options.closeCode ?? 0);
+        setTimeout(() => {
+          proc.emit('close', options.closeCode ?? 0);
+        }, 0);
       }
       return true;
     }),
@@ -91,11 +93,12 @@ function createSocketClass(portResolver) {
     destroy() {}
 
     connect(port, host) {
-      const result = typeof portResolver === 'function'
-        ? portResolver(port, host)
-        : queue && queue.length > 0
-          ? queue.shift()
-          : false;
+      const result =
+        typeof portResolver === 'function'
+          ? portResolver(port, host)
+          : queue && queue.length > 0
+            ? queue.shift()
+            : false;
 
       if (result === true) {
         this.handlers.connect?.();
@@ -217,6 +220,12 @@ function loadBeeManagerModule(options = {}) {
     spawnedProcesses.push(proc);
     return proc;
   });
+  const loadSettings = options.loadSettings || jest.fn(() => ({
+    beeNodeMode: options.beeNodeMode || 'ultraLight',
+  }));
+  const getChain = options.getChain || jest.fn(() => ({
+    rpcUrls: options.rpcUrls || ['https://rpc.gnosischain.com'],
+  }));
 
   const platformMap = {
     darwin: 'mac',
@@ -272,6 +281,12 @@ function loadBeeManagerModule(options = {}) {
         Socket,
       }),
       [require.resolve('./logger')]: () => log,
+      [require.resolve('./settings-store')]: () => ({
+        loadSettings,
+      }),
+      [require.resolve('./wallet/chains')]: () => ({
+        getChain,
+      }),
       [require.resolve('./service-registry')]: () => ({
         MODE: {
           BUNDLED: 'bundled',
@@ -303,9 +318,11 @@ function loadBeeManagerModule(options = {}) {
     dataDir,
     execSync,
     fsMock,
+    getChain,
     httpGet,
     ipcMain,
     keysPath,
+    loadSettings,
     log,
     mod,
     randomBytes,
@@ -333,12 +350,9 @@ describe('bee-manager', () => {
 
     ctx.mod.registerBeeIpc();
 
-    expect([...ctx.ipcMain.handlers.keys()].sort()).toEqual([
-      IPC.BEE_START,
-      IPC.BEE_STOP,
-      IPC.BEE_GET_STATUS,
-      IPC.BEE_CHECK_BINARY,
-    ].sort());
+    expect([...ctx.ipcMain.handlers.keys()].sort()).toEqual(
+      [IPC.BEE_START, IPC.BEE_STOP, IPC.BEE_GET_STATUS, IPC.BEE_CHECK_BINARY].sort()
+    );
 
     await expect(ctx.ipcMain.invoke(IPC.BEE_GET_STATUS)).resolves.toEqual({
       status: 'stopped',
@@ -395,7 +409,7 @@ describe('bee-manager', () => {
     expect(ctx.clearService).toHaveBeenCalledWith('bee');
   });
 
-  test('starts a bundled daemon on a fallback port, writes config, and leaves no shutdown timers behind', async () => {
+  test('starts a bundled ultra-light daemon on a fallback port and writes ultra-light config', async () => {
     jest.useFakeTimers();
 
     const platformMap = {
@@ -410,6 +424,7 @@ describe('bee-manager', () => {
     const configPath = path.join(dataDir, 'config.yaml');
     const keysPath = path.join(dataDir, 'keys');
     const ctx = loadBeeManagerModule({
+      beeNodeMode: 'ultraLight',
       existsSync: (target) => {
         if (target === beeBinPath) return true;
         if (target === dataDir) return false;
@@ -443,6 +458,7 @@ describe('bee-manager', () => {
     await jest.advanceTimersByTimeAsync(1000);
     await flushMicrotasks();
 
+    expect(ctx.loadSettings).toHaveBeenCalled();
     expect(ctx.fsMock.mkdirSync).toHaveBeenCalledWith(ctx.dataDir, { recursive: true });
     expect(ctx.randomBytes).toHaveBeenCalledWith(32);
     expect(ctx.execSync).toHaveBeenCalledWith(`"${ctx.beeBinPath}" init --config="${ctx.configPath}"`);
@@ -459,16 +475,56 @@ describe('bee-manager', () => {
 
     const configContent = ctx.fsMock.writeFileSync.mock.calls[0][1];
     expect(configContent).toContain('api-addr: 127.0.0.1:1634');
+    expect(configContent).toContain('swap-enable: false');
+    expect(configContent).toContain('blockchain-rpc-endpoint: ""');
     expect(configContent).toContain(`data-dir: ${ctx.dataDir}`);
     expect(configContent).toContain(`password: ${'ab'.repeat(32)}`);
 
     const stopPromise = ctx.mod.stopBee();
+    await jest.advanceTimersByTimeAsync(0);
     await flushMicrotasks();
     await stopPromise;
 
     expect(ctx.spawnedProcesses[0].kills).toContain('SIGTERM');
     expect(ctx.clearService).toHaveBeenCalledWith('bee');
     expect(jest.getTimerCount()).toBe(0);
+  });
+
+  test('writes light-node config with the primary Gnosis RPC endpoint', async () => {
+    jest.useFakeTimers();
+
+    const ctx = loadBeeManagerModule({
+      beeNodeMode: 'light',
+      rpcUrls: ['https://rpc.gnosischain.com', 'https://backup.gnosis.example'],
+      portSequence: [false],
+      httpResponse: (url) => {
+        if (url === 'http://127.0.0.1:1633/health') {
+          return {
+            statusCode: 200,
+            body: { version: '2.1.0' },
+          };
+        }
+        return {
+          statusCode: 500,
+          body: '',
+        };
+      },
+    });
+
+    await ctx.mod.startBee();
+    await flushMicrotasks();
+    await jest.advanceTimersByTimeAsync(1000);
+    await flushMicrotasks();
+
+    expect(ctx.getChain).toHaveBeenCalledWith(100);
+
+    const configContent = ctx.fsMock.writeFileSync.mock.calls[0][1];
+    expect(configContent).toContain('swap-enable: true');
+    expect(configContent).toContain('blockchain-rpc-endpoint: "https://rpc.gnosischain.com"');
+
+    const stopPromise = ctx.mod.stopBee();
+    await jest.advanceTimersByTimeAsync(0);
+    await stopPromise;
   });
 
   test('preserves an existing Bee password when rewriting config', async () => {
@@ -502,7 +558,31 @@ describe('bee-manager', () => {
     expect(configContent).toContain('password: keep-me');
     expect(ctx.execSync).not.toHaveBeenCalled();
 
-    await ctx.mod.stopBee();
+    const stopPromise = ctx.mod.stopBee();
+    await jest.advanceTimersByTimeAsync(0);
+    await stopPromise;
+  });
+
+  test('fails startup when Bee light mode has no configured primary Gnosis RPC', async () => {
+    const ctx = loadBeeManagerModule({
+      beeNodeMode: 'light',
+      getChain: jest.fn(() => ({ rpcUrls: [] })),
+      portSequence: [false],
+      httpResponse: () => ({
+        statusCode: 500,
+        body: '',
+      }),
+    });
+
+    await ctx.mod.startBee();
+    await flushMicrotasks();
+
+    expect(ctx.spawn).not.toHaveBeenCalled();
+    expect(ctx.setStatusMessage).toHaveBeenCalledWith('bee', 'Node failed to start');
+    expect(ctx.log.error).toHaveBeenCalledWith(
+      '[Bee] Failed to prepare config:',
+      'No primary Gnosis RPC endpoint configured for Bee light mode'
+    );
   });
 
   test('fails startup when the Bee binary is missing', async () => {

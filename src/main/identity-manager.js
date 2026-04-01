@@ -14,7 +14,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const IPC = require('../shared/ipc-channels');
 
-// Identity module (ESM) - loaded dynamically
+// Identity module - loaded lazily
 let identityModule = null;
 
 // Cached derived keys (only available when unlocked)
@@ -81,11 +81,11 @@ function saveVaultMeta(meta) {
 /**
  * Load the ESM identity module dynamically
  */
-async function loadIdentityModule() {
+function loadIdentityModule() {
   if (identityModule) return identityModule;
 
   try {
-    identityModule = await import('./identity/index.js');
+    identityModule = require('./identity');
     return identityModule;
   } catch (err) {
     console.error('[IdentityManager] Failed to load identity module:', err);
@@ -231,6 +231,24 @@ async function lockVault() {
  */
 function getDerivedKeys() {
   return derivedKeys;
+}
+
+/**
+ * Derive a Swarm publisher key at a specific origin index.
+ * Vault must be unlocked. Keys are derived on-demand (not pre-cached)
+ * because the number of origins is unbounded.
+ * @param {number} originIndex - Origin index (0, 1, 2, ...)
+ * @returns {Promise<Object>} { privateKey, publicKey, address, path, originIndex }
+ */
+async function getPublisherKey(originIndex) {
+  const identity = await loadIdentityModule();
+  const mnemonic = identity.getMnemonic();
+
+  if (!mnemonic) {
+    throw new Error('Vault must be unlocked to derive publisher keys');
+  }
+
+  return identity.derivePublisherKey(mnemonic, originIndex);
 }
 
 /**
@@ -1204,6 +1222,7 @@ module.exports = {
 
   // Key operations
   getDerivedKeys,
+  getPublisherKey,
 
   // Multi-wallet operations
   getDerivedWallets,

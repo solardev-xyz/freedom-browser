@@ -699,14 +699,32 @@
                 <div class="sidebar-section">
                   <!-- dApp Connection Banner (shown when current tab is connected) -->
                   <div class="dapp-connection-banner hidden" id="dapp-connection-banner">
-                    <div class="dapp-connection-info">
+                    <div class="dapp-connection-info" id="dapp-connection-manage" title="Manage permissions">
                       <span class="dapp-connection-indicator"></span>
                       <span class="dapp-connection-text">
                         <span class="dapp-connection-site" id="dapp-connection-site">site.eth</span>
                         <span class="dapp-connection-wallet" id="dapp-connection-wallet">Main Wallet</span>
                       </span>
+                      <span class="auto-approve-badge hidden" id="dapp-auto-approve-badge">auto</span>
                     </div>
                     <button type="button" class="dapp-connection-disconnect" id="dapp-connection-disconnect" title="Disconnect">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M18 6L6 18M6 6l12 12"/>
+                      </svg>
+                    </button>
+                  </div>
+
+                  <!-- Swarm Connection Banner (shown when current tab has Swarm publish access) -->
+                  <div class="swarm-connection-banner hidden" id="swarm-connection-banner">
+                    <div class="swarm-connection-info" id="swarm-connection-manage" title="Manage permissions">
+                      <span class="swarm-connection-indicator"></span>
+                      <span class="swarm-connection-text">
+                        <span class="swarm-connection-label">Publishing via Swarm</span>
+                        <span class="swarm-connection-site" id="swarm-connection-site">site.eth</span>
+                      </span>
+                      <span class="auto-approve-badge hidden" id="swarm-auto-approve-badge">auto</span>
+                    </div>
+                    <button type="button" class="swarm-connection-disconnect" id="swarm-connection-disconnect" title="Revoke access">
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M18 6L6 18M6 6l12 12"/>
                       </svg>
@@ -805,52 +823,64 @@
                   </button>
                   <div class="node-card-content" id="swarm-card-content">
                     <!-- Node Wallet -->
-                    <div class="node-info-group">
-                      <span class="node-info-label">Node Wallet</span>
-                      <div class="node-info-row">
-                        <code class="node-info-value mono" id="sidebar-swarm-id"></code>
-                        <button type="button" class="node-copy-btn" data-copy="swarm" title="Copy">
+                    <div class="node-info-group" id="swarm-wallet-group">
+                      <div class="node-section-header">
+                        <span class="node-info-label">Node Wallet</span>
+                        <code class="node-section-address" id="sidebar-swarm-id"></code>
+                        <button type="button" class="node-copy-btn-inline" data-copy="swarm" title="Copy address">
                           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
                             <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
                           </svg>
                         </button>
                       </div>
-                    </div>
-
-                    <!-- Balances -->
-                    <div class="node-info-group">
-                      <span class="node-info-label">Balances</span>
-                      <div class="node-balance-row">
+                      <div class="node-balance-row node-balance-clickable" id="swarm-topup-xdai" title="Click to top up">
                         <span class="node-balance-symbol">xDAI</span>
                         <span class="node-balance-value" id="swarm-balance-xdai">--</span>
                       </div>
-                      <div class="node-balance-row">
+                      <div class="node-balance-row node-balance-clickable" id="swarm-topup-xbzz" title="Click to top up">
                         <span class="node-balance-symbol">xBZZ</span>
                         <span class="node-balance-value" id="swarm-balance-xbzz">--</span>
                       </div>
                     </div>
 
-                    <!-- Stamps -->
-                    <div class="node-info-group">
-                      <div class="node-info-label-row">
-                        <span class="node-info-label">Postage Stamps</span>
-                        <span class="node-stamps-count" id="swarm-stamps-count">0</span>
+                    <!-- Chequebook -->
+                    <div class="node-info-group hidden" id="swarm-chequebook-group">
+                      <div class="node-section-header">
+                        <span class="node-info-label">Chequebook</span>
+                        <code class="node-section-address" id="swarm-chequebook-address">--</code>
+                        <button type="button" class="node-copy-btn-inline" id="swarm-chequebook-copy" title="Copy address">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                            <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
+                          </svg>
+                        </button>
                       </div>
-                      <div class="node-stamps-summary" id="swarm-stamps-summary">
-                        <span class="node-stamps-empty">No stamps available</span>
+                      <div class="node-balance-row node-balance-clickable" id="swarm-topup-chequebook" title="Click to deposit xBZZ">
+                        <span class="node-balance-symbol">xBZZ</span>
+                        <span class="node-balance-value" id="swarm-chequebook-balance">--</span>
                       </div>
                     </div>
 
-                    <!-- Upgrade CTA (for ultra-light mode) -->
-                    <div class="node-upgrade-cta" id="swarm-upgrade-cta">
-                      <button type="button" class="node-upgrade-btn" id="swarm-upgrade-btn">
-                        <span>Upgrade to Light Node</span>
+                    <!-- Publisher Identities CTA (visible when identities exist) -->
+                    <div class="node-upgrade-cta hidden" id="swarm-identities-cta">
+                      <button type="button" class="node-upgrade-btn" id="swarm-identities-btn">
+                        <span>Publisher Identities</span>
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                           <path d="m9 18 6-6-6-6"/>
                         </svg>
                       </button>
-                      <span class="node-upgrade-hint">Enable uploads and publishing</span>
+                    </div>
+
+                    <!-- Publishing Setup CTA -->
+                    <div class="node-upgrade-cta" id="swarm-setup-cta">
+                      <button type="button" class="node-upgrade-btn" id="swarm-setup-btn">
+                        <span id="swarm-setup-btn-label">Set Up Publishing</span>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <path d="m9 18 6-6-6-6"/>
+                        </svg>
+                      </button>
+                      <span class="node-upgrade-hint" id="swarm-setup-hint">Enable uploads and publishing</span>
                     </div>
                   </div>
                 </div>
@@ -1483,7 +1513,7 @@
             </div>
 
             <!-- dApp Connect sub-screen -->
-            <div id="sidebar-dapp-connect" class="sidebar-subscreen hidden">
+            <div id="sidebar-dapp-connect" class="sidebar-subscreen sidebar-modal hidden">
               <div class="subscreen-header">
                 <button type="button" class="subscreen-back-btn" id="dapp-connect-back">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -1544,7 +1574,7 @@
             </div>
 
             <!-- dApp Transaction Approval sub-screen -->
-            <div id="sidebar-dapp-tx" class="sidebar-subscreen hidden">
+            <div id="sidebar-dapp-tx" class="sidebar-subscreen sidebar-modal hidden">
               <div class="subscreen-header">
                 <button type="button" class="subscreen-back-btn" id="dapp-tx-back">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -1622,6 +1652,11 @@
                 <!-- Error display -->
                 <div class="dapp-tx-error hidden" id="dapp-tx-error"></div>
 
+                <label class="auto-approve-checkbox hidden" id="dapp-tx-auto-approve-row">
+                  <input type="checkbox" id="dapp-tx-auto-approve" />
+                  <span>Always allow this site to call this function without asking</span>
+                </label>
+
                 <!-- Action buttons -->
                 <div class="dapp-tx-actions">
                   <button type="button" class="dapp-tx-reject-btn" id="dapp-tx-reject">Reject</button>
@@ -1631,7 +1666,7 @@
             </div>
 
             <!-- dApp Message Signing sub-screen -->
-            <div id="sidebar-dapp-sign" class="sidebar-subscreen hidden">
+            <div id="sidebar-dapp-sign" class="sidebar-subscreen sidebar-modal hidden">
               <div class="subscreen-header">
                 <button type="button" class="subscreen-back-btn" id="dapp-sign-back">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -1701,6 +1736,11 @@
                 <!-- Error display -->
                 <div class="dapp-sign-error hidden" id="dapp-sign-error"></div>
 
+                <label class="auto-approve-checkbox">
+                  <input type="checkbox" id="dapp-sign-auto-approve" />
+                  <span>Always allow this site to request signatures without asking</span>
+                </label>
+
                 <!-- Action buttons -->
                 <div class="dapp-sign-actions">
                   <button type="button" class="dapp-sign-reject-btn" id="dapp-sign-reject">Reject</button>
@@ -1708,6 +1748,520 @@
                 </div>
               </div>
             </div>
+
+            <!-- Publish Setup sub-screen -->
+            <div id="sidebar-publish-setup" class="sidebar-subscreen hidden">
+              <div class="subscreen-header">
+                <button type="button" class="subscreen-back-btn" id="publish-setup-back">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="15 18 9 12 15 6"/>
+                  </svg>
+                  <span>Back</span>
+                </button>
+                <h3 class="subscreen-title">Publish Setup</h3>
+              </div>
+
+              <div class="subscreen-content">
+                <p class="publish-setup-intro">Complete these steps to publish content on Swarm.</p>
+
+                <div class="publish-setup-checklist" id="publish-setup-checklist">
+                  <div class="publish-step" id="publish-step-fund-xdai" data-status="pending">
+                    <div class="publish-step-indicator">
+                      <span class="publish-step-number">1</span>
+                      <svg class="publish-step-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                        <polyline points="20 6 9 17 4 12"/>
+                      </svg>
+                    </div>
+                    <div class="publish-step-body">
+                      <div class="publish-step-title">Fund node with xDAI</div>
+                      <div class="publish-step-detail">Needed for gas fees on Gnosis Chain.</div>
+                      <div class="publish-step-meta hidden" id="publish-step-fund-xdai-meta"></div>
+                      <button type="button" class="publish-step-btn hidden" id="publish-step-fund-xdai-btn">Send xDAI</button>
+                    </div>
+                  </div>
+
+                  <div class="publish-step" id="publish-step-light-mode" data-status="pending">
+                    <div class="publish-step-indicator">
+                      <span class="publish-step-number">2</span>
+                      <svg class="publish-step-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                        <polyline points="20 6 9 17 4 12"/>
+                      </svg>
+                    </div>
+                    <div class="publish-step-body">
+                      <div class="publish-step-title">Switch to light mode</div>
+                      <div class="publish-step-detail">Enables chain participation and uploads.</div>
+                      <button type="button" class="publish-step-btn hidden" id="publish-step-light-mode-btn">Switch to Light Mode</button>
+                    </div>
+                  </div>
+
+                  <div class="publish-step" id="publish-step-chequebook" data-status="pending">
+                    <div class="publish-step-indicator">
+                      <span class="publish-step-number">3</span>
+                      <svg class="publish-step-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                        <polyline points="20 6 9 17 4 12"/>
+                      </svg>
+                    </div>
+                    <div class="publish-step-body">
+                      <div class="publish-step-title">Chequebook and postage sync</div>
+                      <div class="publish-step-detail">Automatic once Bee has xDAI in light mode.</div>
+                      <div class="publish-step-waiting hidden" id="publish-step-chequebook-waiting">Initializing&hellip;</div>
+                    </div>
+                  </div>
+
+                  <div class="publish-step" id="publish-step-fund-xbzz" data-status="pending">
+                    <div class="publish-step-indicator">
+                      <span class="publish-step-number">4</span>
+                      <svg class="publish-step-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                        <polyline points="20 6 9 17 4 12"/>
+                      </svg>
+                    </div>
+                    <div class="publish-step-body">
+                      <div class="publish-step-title">Acquire xBZZ</div>
+                      <div class="publish-step-detail">Swap xDAI for xBZZ on Gnosis Chain.</div>
+                      <button type="button" class="publish-step-btn hidden" id="publish-step-fund-xbzz-btn">Swap xDAI → xBZZ</button>
+                    </div>
+                  </div>
+
+                  <div class="publish-step" id="publish-step-stamps" data-status="pending">
+                    <div class="publish-step-indicator">
+                      <span class="publish-step-number">5</span>
+                      <svg class="publish-step-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                        <polyline points="20 6 9 17 4 12"/>
+                      </svg>
+                    </div>
+                    <div class="publish-step-body">
+                      <div class="publish-step-title">Purchase postage stamps</div>
+                      <div class="publish-step-detail">Reserve storage space for your content.</div>
+                      <button type="button" class="publish-step-btn hidden" id="publish-step-stamps-btn">Buy Stamps</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Stamp Manager sub-screen -->
+            <div id="sidebar-stamp-manager" class="sidebar-subscreen hidden">
+              <div class="subscreen-header">
+                <button type="button" class="subscreen-back-btn" id="stamp-manager-back">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="15 18 9 12 15 6"/>
+                  </svg>
+                  <span>Back</span>
+                </button>
+                <h3 class="subscreen-title">Storage</h3>
+              </div>
+
+              <div class="subscreen-content">
+                <!-- Batch list view -->
+                <div id="stamp-list-view">
+                  <div class="stamp-batch-list" id="stamp-batch-list">
+                    <!-- Batch cards inserted dynamically -->
+                  </div>
+                  <button type="button" class="stamp-buy-another-btn" id="stamp-buy-another-btn">Buy Another Batch</button>
+                </div>
+
+                <!-- Purchase form view -->
+                <div id="stamp-purchase-view" class="hidden">
+                  <p class="stamp-manager-intro" id="stamp-purchase-intro">Purchase a storage batch to publish content on Swarm.</p>
+
+                  <div class="stamp-presets" id="stamp-presets">
+                    <!-- Preset buttons inserted dynamically -->
+                  </div>
+
+                  <div class="stamp-cost-section hidden" id="stamp-cost-display">
+                    <div class="stamp-cost-row">
+                      <span class="stamp-cost-label">Estimated cost</span>
+                      <span class="stamp-cost-spinner hidden" id="stamp-cost-spinner">Estimating&hellip;</span>
+                      <span class="stamp-cost-value hidden" id="stamp-cost-value">--</span>
+                    </div>
+                    <div class="stamp-balance-row">
+                      <span class="stamp-balance" id="stamp-balance">Balance: --</span>
+                    </div>
+                  </div>
+
+                  <button type="button" class="stamp-purchase-btn" id="stamp-purchase-btn" disabled>Buy Storage</button>
+
+                  <div class="stamp-purchase-status hidden" id="stamp-purchase-status"></div>
+                  <div class="stamp-purchase-error hidden" id="stamp-purchase-error"></div>
+                  <button type="button" class="stamp-retry-btn hidden" id="stamp-retry-btn">Try Again</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Chequebook Deposit sub-screen -->
+            <div id="sidebar-chequebook-deposit" class="sidebar-subscreen hidden">
+              <div class="subscreen-header">
+                <button type="button" class="subscreen-back-btn" id="chequebook-deposit-back">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="15 18 9 12 15 6"/>
+                  </svg>
+                  <span>Back</span>
+                </button>
+                <h3 class="subscreen-title">Deposit to Chequebook</h3>
+              </div>
+
+              <div class="subscreen-content">
+                <p class="stamp-manager-intro">Move xBZZ from your Bee wallet into the chequebook contract for bandwidth payments.</p>
+
+                <div class="stamp-cost-section" id="chequebook-balances">
+                  <div class="stamp-cost-row">
+                    <span class="stamp-cost-label">Bee wallet xBZZ</span>
+                    <span class="stamp-cost-value" id="chequebook-wallet-bzz">--</span>
+                  </div>
+                  <div class="stamp-cost-row">
+                    <span class="stamp-cost-label">Chequebook xBZZ</span>
+                    <span class="stamp-cost-value" id="chequebook-current-bzz">--</span>
+                  </div>
+                </div>
+
+                <div class="stamp-presets" id="chequebook-deposit-presets">
+                  <!-- Preset buttons inserted dynamically -->
+                </div>
+
+                <button type="button" class="stamp-purchase-btn" id="chequebook-deposit-btn" disabled>Deposit</button>
+
+                <div class="stamp-purchase-status hidden" id="chequebook-deposit-status"></div>
+                <div class="stamp-purchase-error hidden" id="chequebook-deposit-error"></div>
+              </div>
+            </div>
+
+            <!-- Swarm Connect sub-screen -->
+            <div id="sidebar-swarm-connect" class="sidebar-subscreen sidebar-modal hidden">
+              <div class="subscreen-header">
+                <button type="button" class="subscreen-back-btn" id="swarm-connect-back">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="15 18 9 12 15 6"/>
+                  </svg>
+                  <span>Back</span>
+                </button>
+                <h3 class="subscreen-title">Swarm Access</h3>
+              </div>
+
+              <div class="subscreen-content" id="swarm-connect-content">
+                <div class="swarm-connect-origin">
+                  <div class="swarm-connect-site" id="swarm-connect-site">example.eth</div>
+                  <div class="swarm-connect-wants">wants to publish through your Swarm node</div>
+                </div>
+
+                <div class="swarm-connect-permissions">
+                  <div class="swarm-connect-permissions-title">This will allow the site to:</div>
+                  <ul class="swarm-connect-permissions-list">
+                    <li>Publish content through your Swarm node</li>
+                    <li>Use your node's postage stamps</li>
+                    <li>Check node capabilities and upload status</li>
+                  </ul>
+                </div>
+
+                <div class="swarm-connect-warning">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10"/>
+                    <line x1="12" y1="16" x2="12" y2="12"/>
+                    <line x1="12" y1="8" x2="12.01" y2="8"/>
+                  </svg>
+                  <span>Publishing uses your stamps and bandwidth. Each publish requires your approval.</span>
+                </div>
+
+                <div class="swarm-connect-cannot">
+                  <div class="swarm-connect-cannot-title">This site cannot:</div>
+                  <ul class="swarm-connect-cannot-list">
+                    <li>Access your wallet or private keys</li>
+                    <li>Manage your storage or stamps</li>
+                    <li>Read your files or browsing history</li>
+                  </ul>
+                </div>
+
+                <div class="swarm-connect-actions">
+                  <button type="button" class="swarm-connect-reject-btn" id="swarm-connect-reject">Cancel</button>
+                  <button type="button" class="swarm-connect-approve-btn" id="swarm-connect-approve">Allow</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Swarm Publish Approval sub-screen -->
+            <div id="sidebar-swarm-publish-approve" class="sidebar-subscreen sidebar-modal hidden">
+              <div class="subscreen-header">
+                <button type="button" class="subscreen-back-btn" id="swarm-publish-back">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="15 18 9 12 15 6"/>
+                  </svg>
+                  <span>Back</span>
+                </button>
+                <h3 class="subscreen-title">Confirm Publish</h3>
+              </div>
+
+              <div class="subscreen-content">
+                <div class="swarm-connect-origin">
+                  <div class="swarm-connect-site" id="swarm-publish-site">site.eth</div>
+                  <div class="swarm-connect-wants">wants to publish content</div>
+                </div>
+
+                <div class="swarm-publish-details">
+                  <div class="swarm-publish-row">
+                    <span class="swarm-publish-label">Type</span>
+                    <span class="swarm-publish-value" id="swarm-publish-type">text/plain</span>
+                  </div>
+                  <div class="swarm-publish-row">
+                    <span class="swarm-publish-label">Size</span>
+                    <span class="swarm-publish-value" id="swarm-publish-size">0 B</span>
+                  </div>
+                  <div class="swarm-publish-row hidden" id="swarm-publish-name-row">
+                    <span class="swarm-publish-label">Name</span>
+                    <span class="swarm-publish-value" id="swarm-publish-name"></span>
+                  </div>
+                  <div class="swarm-publish-row hidden" id="swarm-publish-paths-row">
+                    <span class="swarm-publish-label">Files</span>
+                    <span class="swarm-publish-value" id="swarm-publish-paths"></span>
+                  </div>
+                </div>
+
+                <div class="swarm-connect-warning">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10"/>
+                    <line x1="12" y1="16" x2="12" y2="12"/>
+                    <line x1="12" y1="8" x2="12.01" y2="8"/>
+                  </svg>
+                  <span>This will use your stamps and bandwidth. Content will be publicly accessible on Swarm.</span>
+                </div>
+
+                <label class="auto-approve-checkbox">
+                  <input type="checkbox" id="swarm-publish-auto-approve" />
+                  <span>Always allow this site to publish to Swarm without asking</span>
+                </label>
+
+                <div class="swarm-connect-actions">
+                  <button type="button" class="swarm-connect-reject-btn" id="swarm-publish-reject">Cancel</button>
+                  <button type="button" class="swarm-connect-approve-btn" id="swarm-publish-confirm">Publish</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Swarm Feed Approval sub-screen -->
+            <div id="sidebar-swarm-feed-approve" class="sidebar-subscreen sidebar-modal hidden">
+              <div class="subscreen-header">
+                <button type="button" class="subscreen-back-btn" id="swarm-feed-back">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="15 18 9 12 15 6"/>
+                  </svg>
+                  <span>Back</span>
+                </button>
+                <h3 class="subscreen-title">Feed Access</h3>
+              </div>
+
+              <div class="subscreen-content">
+                <div class="swarm-connect-origin">
+                  <div class="swarm-connect-site" id="swarm-feed-site">site.eth</div>
+                  <div class="swarm-connect-wants">wants to create and manage feeds</div>
+                </div>
+
+                <div class="swarm-publish-details">
+                  <div class="swarm-publish-row">
+                    <span class="swarm-publish-label">Feed name</span>
+                    <span class="swarm-publish-value" id="swarm-feed-name">blog</span>
+                  </div>
+                </div>
+
+                <div class="swarm-feed-identity-choice">
+                  <div class="swarm-feed-identity-title">Choose publisher identity:</div>
+
+                  <label class="swarm-feed-identity-option">
+                    <input type="radio" name="swarm-feed-identity" value="app-scoped" checked>
+                    <div class="swarm-feed-identity-label">
+                      <span class="swarm-feed-identity-name">App-scoped identity</span>
+                      <span class="swarm-feed-identity-desc">Dedicated key for this app only (recommended)</span>
+                    </div>
+                  </label>
+
+                  <label class="swarm-feed-identity-option">
+                    <input type="radio" name="swarm-feed-identity" value="bee-wallet">
+                    <div class="swarm-feed-identity-label">
+                      <span class="swarm-feed-identity-name">Bee wallet identity</span>
+                      <span class="swarm-feed-identity-desc">Uses your node's wallet address</span>
+                    </div>
+                  </label>
+                </div>
+
+                <div class="swarm-connect-warning">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10"/>
+                    <line x1="12" y1="16" x2="12" y2="12"/>
+                    <line x1="12" y1="8" x2="12.01" y2="8"/>
+                  </svg>
+                  <span>Feeds provide stable URLs that this app can update over time. Uses your stamps and bandwidth.</span>
+                </div>
+
+                <!-- Vault unlock section (feed signing requires vault access) -->
+                <div class="dapp-tx-unlock hidden" id="swarm-feed-unlock">
+                  <p class="dapp-tx-unlock-text">Unlock your vault to enable feed signing.</p>
+                  <button type="button" class="dapp-tx-touchid-btn hidden" id="swarm-feed-touchid-btn">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M12 11c0-1.1.9-2 2-2s2 .9 2 2-2 4-2 4"/>
+                      <path d="M8 15c0-2.2 1.8-4 4-4"/>
+                      <path d="M12 4a8 8 0 0 0-8 8c0 1.5.3 2.9.9 4.2"/>
+                      <path d="M12 4a8 8 0 0 1 8 8c0 1.5-.3 2.9-.9 4.2"/>
+                      <path d="M2 12c-.1 1.1-.1 3 .2 4.5"/>
+                      <path d="M22 12c.1 1.1.1 3-.2 4.5"/>
+                    </svg>
+                    <span>Unlock with Touch ID</span>
+                  </button>
+                  <button type="button" class="dapp-unlock-password-link hidden" id="swarm-feed-password-link">or enter your password</button>
+                  <div class="dapp-tx-password-section hidden" id="swarm-feed-password-section">
+                    <div class="dapp-tx-password-row">
+                      <input type="password" class="password-input" id="swarm-feed-password-input" placeholder="Enter password" autocomplete="off">
+                      <button type="button" class="dapp-tx-password-submit" id="swarm-feed-password-submit">Unlock</button>
+                    </div>
+                  </div>
+                  <div class="dapp-tx-error hidden" id="swarm-feed-unlock-error"></div>
+                </div>
+
+                <label class="auto-approve-checkbox">
+                  <input type="checkbox" id="swarm-feed-auto-approve" />
+                  <span>Always allow this site to manage feeds without asking</span>
+                </label>
+
+                <div class="swarm-connect-actions">
+                  <button type="button" class="swarm-connect-reject-btn" id="swarm-feed-reject">Cancel</button>
+                  <button type="button" class="swarm-connect-approve-btn" id="swarm-feed-approve" disabled>Allow</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Vault Unlock sub-screen (standalone, used when auto-approve needs vault) -->
+            <div id="sidebar-vault-unlock" class="sidebar-subscreen sidebar-modal hidden">
+              <div class="subscreen-header">
+                <button type="button" class="subscreen-back-btn" id="vault-unlock-back">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="15 18 9 12 15 6"/>
+                  </svg>
+                  <span>Back</span>
+                </button>
+                <h3 class="subscreen-title">Unlock Vault</h3>
+              </div>
+
+              <div class="subscreen-content">
+                <div class="swarm-connect-origin">
+                  <div class="swarm-connect-site" id="vault-unlock-site">site.eth</div>
+                  <div class="swarm-connect-wants">needs your vault unlocked to continue</div>
+                </div>
+
+                <div class="dapp-tx-unlock" id="vault-unlock-section">
+                  <p class="dapp-tx-unlock-text">Unlock your vault to authorize this action.</p>
+                  <button type="button" class="dapp-tx-touchid-btn hidden" id="vault-unlock-touchid-btn">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M12 11c0-1.1.9-2 2-2s2 .9 2 2-2 4-2 4"/>
+                      <path d="M8 15c0-2.2 1.8-4 4-4"/>
+                      <path d="M12 4a8 8 0 0 0-8 8c0 1.5.3 2.9.9 4.2"/>
+                      <path d="M12 4a8 8 0 0 1 8 8c0 1.5-.3 2.9-.9 4.2"/>
+                      <path d="M2 12c-.1 1.1-.1 3 .2 4.5"/>
+                      <path d="M22 12c.1 1.1.1 3-.2 4.5"/>
+                    </svg>
+                    <span>Unlock with Touch ID</span>
+                  </button>
+                  <button type="button" class="dapp-unlock-password-link hidden" id="vault-unlock-password-link">or enter your password</button>
+                  <div class="dapp-tx-password-section hidden" id="vault-unlock-password-section">
+                    <div class="dapp-tx-password-row">
+                      <input type="password" class="password-input" id="vault-unlock-password-input" placeholder="Enter password" autocomplete="off">
+                      <button type="button" class="dapp-tx-password-submit" id="vault-unlock-password-submit">Unlock</button>
+                    </div>
+                  </div>
+                  <div class="dapp-tx-error hidden" id="vault-unlock-error"></div>
+                </div>
+
+                <div class="swarm-connect-actions">
+                  <button type="button" class="swarm-connect-reject-btn" id="vault-unlock-cancel">Cancel</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Wallet Permission Management sub-screen -->
+            <div id="sidebar-dapp-permissions" class="sidebar-subscreen hidden">
+              <div class="subscreen-header">
+                <button type="button" class="subscreen-back-btn" id="dapp-perms-back">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="15 18 9 12 15 6"/>
+                  </svg>
+                  <span>Back</span>
+                </button>
+                <h3 class="subscreen-title">Wallet Permissions</h3>
+              </div>
+              <div class="subscreen-content">
+                <div class="perms-site" id="dapp-perms-site">site.eth</div>
+                <div class="perms-section">
+                  <div class="perms-toggle-row">
+                    <span class="perms-label">Auto-approve signatures</span>
+                    <label class="toggle-switch">
+                      <input type="checkbox" id="dapp-perms-signing-toggle" />
+                      <span class="toggle-slider"></span>
+                    </label>
+                  </div>
+                </div>
+                <div class="perms-section">
+                  <div class="perms-section-header">Auto-approved contract calls</div>
+                  <div id="dapp-perms-tx-list" class="perms-tx-list">
+                    <div class="perms-empty">No auto-approved calls</div>
+                  </div>
+                </div>
+                <div class="perms-actions">
+                  <button type="button" class="perms-disconnect-btn" id="dapp-perms-disconnect">Disconnect</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Swarm Permission Management sub-screen -->
+            <div id="sidebar-swarm-permissions" class="sidebar-subscreen hidden">
+              <div class="subscreen-header">
+                <button type="button" class="subscreen-back-btn" id="swarm-perms-back">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="15 18 9 12 15 6"/>
+                  </svg>
+                  <span>Back</span>
+                </button>
+                <h3 class="subscreen-title">Swarm Permissions</h3>
+              </div>
+              <div class="subscreen-content">
+                <div class="perms-site" id="swarm-perms-site">site.eth</div>
+                <div class="perms-section">
+                  <div class="perms-toggle-row">
+                    <span class="perms-label">Auto-approve publishes</span>
+                    <label class="toggle-switch">
+                      <input type="checkbox" id="swarm-perms-publish-toggle" />
+                      <span class="toggle-slider"></span>
+                    </label>
+                  </div>
+                  <div class="perms-toggle-row">
+                    <span class="perms-label">Auto-approve feed operations</span>
+                    <label class="toggle-switch">
+                      <input type="checkbox" id="swarm-perms-feeds-toggle" />
+                      <span class="toggle-slider"></span>
+                    </label>
+                  </div>
+                </div>
+                <div class="perms-actions">
+                  <button type="button" class="perms-disconnect-btn" id="swarm-perms-disconnect">Disconnect</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Publisher Identities sub-screen -->
+            <div id="sidebar-publisher-identities" class="sidebar-subscreen hidden">
+              <div class="subscreen-header">
+                <button type="button" class="subscreen-back-btn" id="publisher-identities-back">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="15 18 9 12 15 6"/>
+                  </svg>
+                  <span>Back</span>
+                </button>
+                <h3 class="subscreen-title">Publisher Identities</h3>
+              </div>
+
+              <div class="subscreen-content">
+                <div class="publisher-identity-search">
+                  <input type="text" id="publisher-identity-filter" placeholder="Search origins..." autocomplete="off">
+                </div>
+                <div id="publisher-identity-list"></div>
+                <div class="publisher-identity-empty hidden" id="publisher-identity-empty">No publisher identities yet.</div>
+              </div>
+            </div>
+
           </div>
         </div>
       </aside>
@@ -1770,6 +2324,13 @@
           <!-- Experimental Section (hidden on Windows — no Radicle binaries yet) -->
           <section class="settings-section" id="experimental-section">
             <h3 class="settings-section-header">Experimental</h3>
+            <div class="settings-toggle-row">
+              <span class="toggle-label">Enable Swarm light node mode</span>
+              <label class="toggle-switch">
+                <input type="checkbox" id="enable-bee-light-mode" />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
             <div class="settings-toggle-row">
               <span class="toggle-label">Enable Radicle integration (Beta)</span>
               <label class="toggle-switch">

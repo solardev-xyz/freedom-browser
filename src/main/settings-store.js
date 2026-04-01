@@ -20,6 +20,7 @@ const DEFAULT_SETTINGS = {
   theme: 'system',
   enableRadicleIntegration: false,
   enableIdentityWallet: false,
+  beeNodeMode: 'ultraLight',
   startBeeAtLaunch: true,
   startIpfsAtLaunch: true,
   startRadicleAtLaunch: false,

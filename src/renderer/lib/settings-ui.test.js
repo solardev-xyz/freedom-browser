@@ -4,6 +4,10 @@ const originalWindow = global.window;
 const originalDocument = global.document;
 const originalCustomEvent = global.CustomEvent;
 
+function flushMicrotasks() {
+  return Promise.resolve().then(() => Promise.resolve());
+}
+
 const createCheckbox = () => {
   const checkbox = createElement('input');
   checkbox.checked = false;
@@ -11,23 +15,46 @@ const createCheckbox = () => {
   return checkbox;
 };
 
+const createWindowEventTarget = () => {
+  const listeners = new Map();
+
+  return {
+    listeners,
+    addEventListener: jest.fn((event, handler) => {
+      if (!listeners.has(event)) {
+        listeners.set(event, []);
+      }
+      listeners.get(event).push(handler);
+    }),
+    dispatchEvent: jest.fn((event) => {
+      for (const handler of listeners.get(event.type) || []) {
+        handler(event);
+      }
+      return true;
+    }),
+  };
+};
+
 const loadSettingsModule = async (options = {}) => {
   jest.resetModules();
 
   const {
-    platform = 'darwin',
     settingsResponses = [
       {
         theme: 'system',
+        beeNodeMode: 'ultraLight',
         startBeeAtLaunch: true,
         startIpfsAtLaunch: true,
         enableRadicleIntegration: false,
         startRadicleAtLaunch: false,
+        enableIdentityWallet: false,
         autoUpdate: true,
       },
     ],
     saveSettingsResult = true,
     prefersDark = true,
+    beeStatusResult = { status: 'stopped', error: null },
+    registryResult = { bee: { mode: 'bundled' } },
   } = options;
 
   const settingsQueue = [...settingsResponses];
@@ -37,11 +64,12 @@ const loadSettingsModule = async (options = {}) => {
   const themeModeSelect = createElement('select');
   const startBeeAtLaunchCheckbox = createCheckbox();
   const startIpfsAtLaunchCheckbox = createCheckbox();
+  const enableBeeLightModeCheckbox = createCheckbox();
   const enableRadicleIntegrationCheckbox = createCheckbox();
   const startRadicleRow = createElement('div');
   const startRadicleAtLaunchCheckbox = createCheckbox();
+  const enableIdentityWalletCheckbox = createCheckbox();
   const autoUpdateCheckbox = createCheckbox();
-  const experimentalSection = createElement('section');
   const mediaQueryList = {
     matches: prefersDark,
     addEventListener: jest.fn(),
@@ -54,18 +82,21 @@ const loadSettingsModule = async (options = {}) => {
       'theme-mode': themeModeSelect,
       'start-bee-at-launch': startBeeAtLaunchCheckbox,
       'start-ipfs-at-launch': startIpfsAtLaunchCheckbox,
+      'enable-bee-light-mode': enableBeeLightModeCheckbox,
       'enable-radicle-integration': enableRadicleIntegrationCheckbox,
       'start-radicle-row': startRadicleRow,
       'start-radicle-at-launch': startRadicleAtLaunchCheckbox,
+      'enable-identity-wallet': enableIdentityWalletCheckbox,
       'auto-update': autoUpdateCheckbox,
-      'experimental-section': experimentalSection,
     },
   });
+  const eventTarget = createWindowEventTarget();
   const settingsUpdatedEvents = [];
   const radicleStopResult = {
     catch: jest.fn(),
   };
   const electronAPI = {
+    getPlatform: jest.fn().mockResolvedValue('darwin'),
     getSettings: jest.fn().mockImplementation(async () => {
       if (settingsQueue.length === 0) {
         return settingsResponses[settingsResponses.length - 1] || null;
@@ -73,7 +104,14 @@ const loadSettingsModule = async (options = {}) => {
       return settingsQueue.shift();
     }),
     saveSettings: jest.fn().mockImplementation(async () => saveSettingsResult),
-    getPlatform: jest.fn().mockResolvedValue(platform),
+  };
+  const beeApi = {
+    getStatus: jest.fn().mockResolvedValue(beeStatusResult),
+    stop: jest.fn().mockResolvedValue({ status: 'stopped', error: null }),
+    start: jest.fn().mockResolvedValue({ status: 'running', error: null }),
+  };
+  const serviceRegistry = {
+    getRegistry: jest.fn().mockResolvedValue(registryResult),
   };
   const debugMocks = {
     pushDebug: jest.fn(),
@@ -90,15 +128,22 @@ const loadSettingsModule = async (options = {}) => {
   };
 
   global.window = {
+    ...eventTarget,
     electronAPI,
+    bee: beeApi,
+    serviceRegistry,
     matchMedia: jest.fn(() => mediaQueryList),
-    dispatchEvent: jest.fn((event) => {
-      settingsUpdatedEvents.push(event);
-    }),
     radicle: {
       stop: jest.fn(() => radicleStopResult),
     },
   };
+  global.window.dispatchEvent.mockImplementation((event) => {
+    settingsUpdatedEvents.push(event);
+    for (const handler of eventTarget.listeners.get(event.type) || []) {
+      handler(event);
+    }
+    return true;
+  });
   global.document = document;
   global.CustomEvent = jest.fn((type, init) => ({
     type,
@@ -112,6 +157,15 @@ const loadSettingsModule = async (options = {}) => {
 
   return {
     mod,
+    beeApi,
+    serviceRegistry,
+    electronAPI,
+    debugMocks,
+    menuMocks,
+    mediaQueryList,
+    radicleStopResult,
+    settingsUpdatedEvents,
+    documentElement: document.documentElement,
     elements: {
       settingsBtn,
       settingsModal,
@@ -119,19 +173,13 @@ const loadSettingsModule = async (options = {}) => {
       themeModeSelect,
       startBeeAtLaunchCheckbox,
       startIpfsAtLaunchCheckbox,
+      enableBeeLightModeCheckbox,
       enableRadicleIntegrationCheckbox,
       startRadicleRow,
       startRadicleAtLaunchCheckbox,
+      enableIdentityWalletCheckbox,
       autoUpdateCheckbox,
-      experimentalSection,
     },
-    electronAPI,
-    mediaQueryList,
-    settingsUpdatedEvents,
-    radicleStopResult,
-    debugMocks,
-    menuMocks,
-    documentElement: document.documentElement,
   };
 };
 
@@ -148,6 +196,7 @@ describe('settings-ui', () => {
       settingsResponses: [
         {
           theme: 'system',
+          beeNodeMode: 'ultraLight',
           enableRadicleIntegration: true,
         },
       ],
@@ -172,27 +221,30 @@ describe('settings-ui', () => {
     expect(documentElement.setAttribute).toHaveBeenCalledWith('data-theme', 'light');
   });
 
-  test('initializes settings modal and saves updated settings successfully', async () => {
+  test('loads bee mode settings and restarts bundled Bee when the mode changes', async () => {
     const onSettingsChanged = jest.fn();
-    const { mod, elements, electronAPI, settingsUpdatedEvents, radicleStopResult, debugMocks, menuMocks, documentElement } =
+    const { mod, elements, beeApi, serviceRegistry, electronAPI, settingsUpdatedEvents, debugMocks, documentElement } =
       await loadSettingsModule({
-        platform: 'darwin',
         settingsResponses: [
           {
             theme: 'dark',
+            beeNodeMode: 'ultraLight',
             enableRadicleIntegration: true,
           },
           {
             theme: 'dark',
+            beeNodeMode: 'ultraLight',
             startBeeAtLaunch: true,
             startIpfsAtLaunch: false,
             enableRadicleIntegration: true,
             startRadicleAtLaunch: true,
+            enableIdentityWallet: false,
             autoUpdate: false,
           },
         ],
         saveSettingsResult: true,
-        prefersDark: true,
+        beeStatusResult: { status: 'running', error: null },
+        registryResult: { bee: { mode: 'bundled' } },
       });
 
     mod.setOnSettingsChanged(onSettingsChanged);
@@ -200,71 +252,106 @@ describe('settings-ui', () => {
     await mod.initSettings();
 
     elements.settingsBtn.dispatch('click');
-    await Promise.resolve();
+    await flushMicrotasks();
 
-    expect(menuMocks.setMenuOpen).toHaveBeenCalledWith(false);
     expect(elements.themeModeSelect.value).toBe('dark');
-    expect(elements.startBeeAtLaunchCheckbox.checked).toBe(true);
-    expect(elements.startIpfsAtLaunchCheckbox.checked).toBe(false);
-    expect(elements.enableRadicleIntegrationCheckbox.checked).toBe(true);
-    expect(elements.startRadicleAtLaunchCheckbox.checked).toBe(true);
-    expect(elements.autoUpdateCheckbox.checked).toBe(false);
-    expect(elements.startRadicleAtLaunchCheckbox.disabled).toBe(false);
+    expect(elements.enableBeeLightModeCheckbox.checked).toBe(false);
+    expect(elements.enableIdentityWalletCheckbox.checked).toBe(false);
     expect(elements.settingsModal.showModal).toHaveBeenCalled();
 
     elements.themeModeSelect.value = 'light';
+    elements.enableBeeLightModeCheckbox.checked = true;
     elements.startBeeAtLaunchCheckbox.checked = false;
     elements.startIpfsAtLaunchCheckbox.checked = true;
     elements.enableRadicleIntegrationCheckbox.checked = false;
     elements.startRadicleAtLaunchCheckbox.checked = true;
+    elements.enableIdentityWalletCheckbox.checked = true;
     elements.autoUpdateCheckbox.checked = true;
-    elements.enableRadicleIntegrationCheckbox.dispatch('change');
-    await Promise.resolve();
+    elements.enableBeeLightModeCheckbox.dispatch('change');
+    await flushMicrotasks();
 
-    expect(elements.startRadicleRow.classList.toggle).toHaveBeenCalledWith('disabled', true);
-    expect(elements.startRadicleAtLaunchCheckbox.disabled).toBe(true);
     expect(electronAPI.saveSettings).toHaveBeenCalledWith({
       theme: 'light',
+      beeNodeMode: 'light',
       startBeeAtLaunch: false,
       startIpfsAtLaunch: true,
       enableRadicleIntegration: false,
       startRadicleAtLaunch: true,
-      enableIdentityWallet: false,
+      enableIdentityWallet: true,
       autoUpdate: true,
     });
-    expect(global.window.radicle.stop).toHaveBeenCalled();
-    expect(radicleStopResult.catch).toHaveBeenCalledWith(expect.any(Function));
+    expect(serviceRegistry.getRegistry).toHaveBeenCalled();
+    expect(beeApi.getStatus).toHaveBeenCalled();
+    expect(beeApi.stop).toHaveBeenCalled();
+    expect(beeApi.start).toHaveBeenCalled();
     expect(debugMocks.pushDebug).toHaveBeenCalledWith('Settings saved');
+    expect(debugMocks.pushDebug).toHaveBeenCalledWith(
+      'Restarting Swarm node to apply light mode'
+    );
     expect(documentElement.setAttribute).toHaveBeenCalledWith('data-theme', 'light');
     expect(settingsUpdatedEvents).toContainEqual({
       type: 'settings:updated',
       detail: {
         theme: 'light',
+        beeNodeMode: 'light',
         startBeeAtLaunch: false,
         startIpfsAtLaunch: true,
         enableRadicleIntegration: false,
         startRadicleAtLaunch: true,
-        enableIdentityWallet: false,
+        enableIdentityWallet: true,
         autoUpdate: true,
       },
     });
     expect(onSettingsChanged).toHaveBeenCalled();
   });
 
-  test('handles windows-specific settings behavior and failed saves', async () => {
-    const { mod, elements, electronAPI, debugMocks } = await loadSettingsModule({
-      platform: 'win32',
+  test('saves Bee mode changes without restarting when Freedom is reusing an existing node', async () => {
+    const { mod, elements, beeApi, serviceRegistry, electronAPI, debugMocks } =
+      await loadSettingsModule({
+        settingsResponses: [
+          {
+            theme: 'system',
+            beeNodeMode: 'ultraLight',
+          },
+        ],
+        saveSettingsResult: true,
+        registryResult: { bee: { mode: 'reused' } },
+      });
+
+    mod.initSettings();
+
+    elements.settingsBtn.dispatch('click');
+    await flushMicrotasks();
+
+    elements.enableBeeLightModeCheckbox.checked = true;
+    elements.enableBeeLightModeCheckbox.dispatch('change');
+    await flushMicrotasks();
+
+    expect(electronAPI.saveSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        beeNodeMode: 'light',
+      })
+    );
+    expect(serviceRegistry.getRegistry).toHaveBeenCalled();
+    expect(beeApi.getStatus).not.toHaveBeenCalled();
+    expect(beeApi.stop).not.toHaveBeenCalled();
+    expect(beeApi.start).not.toHaveBeenCalled();
+    expect(debugMocks.pushDebug).toHaveBeenCalledWith(
+      'Swarm light mode setting saved. Using an existing Swarm node, so the change only applies to bundled nodes.'
+    );
+  });
+
+  test('handles save failures and closes the settings modal', async () => {
+    const { mod, elements, beeApi, electronAPI, debugMocks } = await loadSettingsModule({
       settingsResponses: [
         {
           theme: 'system',
-          enableRadicleIntegration: false,
-        },
-        {
-          theme: 'system',
+          beeNodeMode: 'ultraLight',
           startBeeAtLaunch: false,
           startIpfsAtLaunch: false,
-          enableRadicleIntegration: true,
-          startRadicleAtLaunch: true,
+          enableRadicleIntegration: false,
+          startRadicleAtLaunch: false,
+          enableIdentityWallet: false,
           autoUpdate: true,
         },
       ],
@@ -273,29 +360,23 @@ describe('settings-ui', () => {
     });
 
     await mod.initTheme();
-    await mod.initSettings();
-
-    expect(elements.experimentalSection.style.display).toBe('none');
+    mod.initSettings();
 
     elements.settingsBtn.dispatch('click');
-    await Promise.resolve();
+    await flushMicrotasks();
 
-    elements.enableRadicleIntegrationCheckbox.checked = true;
-    elements.startRadicleAtLaunchCheckbox.checked = true;
     elements.autoUpdateCheckbox.checked = false;
     elements.autoUpdateCheckbox.dispatch('change');
-    await Promise.resolve();
+    await flushMicrotasks();
 
-    expect(electronAPI.saveSettings).toHaveBeenCalledWith({
-      theme: 'system',
-      startBeeAtLaunch: false,
-      startIpfsAtLaunch: false,
-      enableRadicleIntegration: false,
-      startRadicleAtLaunch: false,
-      enableIdentityWallet: false,
-      autoUpdate: false,
-    });
+    expect(electronAPI.saveSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        autoUpdate: false,
+        beeNodeMode: 'ultraLight',
+      })
+    );
     expect(debugMocks.pushDebug).toHaveBeenCalledWith('Failed to save settings');
+    expect(beeApi.stop).not.toHaveBeenCalled();
 
     elements.closeSettingsBtn.dispatch('click');
     expect(elements.settingsModal.close).toHaveBeenCalledTimes(1);

@@ -301,6 +301,22 @@ contextBridge.exposeInMainWorld('wallet', {
   proxyRpc: (rpcUrl, method, params) => ipcRenderer.invoke('wallet:proxy-rpc', { rpcUrl, method, params }),
 });
 
+contextBridge.exposeInMainWorld('swarmNode', {
+  getStamps: () => ipcRenderer.invoke('swarm:get-stamps'),
+  getStorageCost: (sizeGB, durationDays) => ipcRenderer.invoke('swarm:get-storage-cost', sizeGB, durationDays),
+  buyStorage: (sizeGB, durationDays) => ipcRenderer.invoke('swarm:buy-storage', sizeGB, durationDays),
+  getDurationExtensionCost: (batchId, additionalDays) => ipcRenderer.invoke('swarm:get-duration-extension-cost', batchId, additionalDays),
+  getSizeExtensionCost: (batchId, newSizeGB) => ipcRenderer.invoke('swarm:get-size-extension-cost', batchId, newSizeGB),
+  extendStorageDuration: (batchId, additionalDays) => ipcRenderer.invoke('swarm:extend-storage-duration', batchId, additionalDays),
+  extendStorageSize: (batchId, newSizeGB) => ipcRenderer.invoke('swarm:extend-storage-size', batchId, newSizeGB),
+  getChequebookBalance: () => ipcRenderer.invoke('swarm:get-chequebook-balance'),
+  depositChequebook: (amountBzz) => ipcRenderer.invoke('swarm:deposit-chequebook', amountBzz),
+  publishData: (data) => ipcRenderer.invoke('swarm:publish-data', data),
+  publishFile: (filePath) => ipcRenderer.invoke('swarm:publish-file', filePath),
+  publishDirectory: (dirPath) => ipcRenderer.invoke('swarm:publish-directory', dirPath),
+  getUploadStatus: (tagUid) => ipcRenderer.invoke('swarm:get-upload-status', tagUid),
+});
+
 contextBridge.exposeInMainWorld('chainRegistry', {
   getChains: () => ipcRenderer.invoke('chain-registry:get-chains'),
   getTokens: (chainId) => ipcRenderer.invoke('chain-registry:get-tokens', chainId),
@@ -339,4 +355,33 @@ contextBridge.exposeInMainWorld('dappPermissions', {
   revokePermission: (origin) => ipcRenderer.invoke('dapp:revoke-permission', origin),
   getAllPermissions: () => ipcRenderer.invoke('dapp:get-all-permissions'),
   updateLastUsed: (origin, chainId) => ipcRenderer.invoke('dapp:update-last-used', origin, chainId),
+  getSigningAutoApprove: (origin) => ipcRenderer.invoke('dapp:get-signing-auto-approve', origin),
+  setSigningAutoApprove: (origin, enabled) => ipcRenderer.invoke('dapp:set-signing-auto-approve', origin, enabled),
+  isTransactionAutoApproved: (origin, to, selector, chainId) => ipcRenderer.invoke('dapp:is-tx-auto-approved', origin, to, selector, chainId),
+  addTransactionAutoApprove: (origin, to, selector, chainId) => ipcRenderer.invoke('dapp:add-tx-auto-approve', origin, to, selector, chainId),
+  removeTransactionAutoApprove: (origin, to, selector, chainId) => ipcRenderer.invoke('dapp:remove-tx-auto-approve', origin, to, selector, chainId),
+});
+
+contextBridge.exposeInMainWorld('swarmPermissions', {
+  getPermission: (origin) => ipcRenderer.invoke('swarm:get-permission', origin),
+  grantPermission: (origin) => ipcRenderer.invoke('swarm:grant-permission', origin),
+  revokePermission: (origin) => ipcRenderer.invoke('swarm:revoke-permission', origin),
+  getAllPermissions: () => ipcRenderer.invoke('swarm:get-all-permissions'),
+  updateLastUsed: (origin) => ipcRenderer.invoke('swarm:update-last-used', origin),
+  getAutoApprove: (origin, type) => ipcRenderer.invoke('swarm:get-auto-approve', origin, type),
+  setAutoApprove: (origin, type, enabled) => ipcRenderer.invoke('swarm:set-auto-approve', origin, type, enabled),
+});
+
+contextBridge.exposeInMainWorld('swarmProvider', {
+  execute: (method, params, origin) =>
+    ipcRenderer.invoke('swarm:provider-execute', { method, params, origin }),
+});
+
+contextBridge.exposeInMainWorld('swarmFeedStore', {
+  getAllOrigins: () => ipcRenderer.invoke('swarm:get-all-origins'),
+  hasFeedIdentity: (origin) => ipcRenderer.invoke('swarm:has-feed-identity', origin),
+  hasFeedGrant: (origin) => ipcRenderer.invoke('swarm:has-feed-grant', origin),
+  getIdentityMode: (origin) => ipcRenderer.invoke('swarm:get-identity-mode', origin),
+  setFeedIdentity: (origin, identityMode) => ipcRenderer.invoke('swarm:set-feed-identity', origin, identityMode),
+  revokeFeedAccess: (origin) => ipcRenderer.invoke('swarm:revoke-feed-access', origin),
 });

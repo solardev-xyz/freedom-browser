@@ -149,7 +149,7 @@ describe('webview-preload', () => {
       expect(ipcRenderer.invoke).toHaveBeenCalledWith(channel, ...expectedArgs);
     }
 
-    expect(consoleLogSpy).toHaveBeenCalledWith('[webview-preload] Loaded (freedomAPI + context menu + ethereum provider)');
+    expect(consoleLogSpy).toHaveBeenCalledWith('[webview-preload] Loaded (freedomAPI + context menu + ethereum + swarm provider)');
   });
 
   test('blocks freedomAPI access on non-internal pages', async () => {

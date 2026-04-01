@@ -158,7 +158,6 @@ swap-enable: false
 mainnet: true
 full-node: false
 cors-allowed-origins: "*"
-use-postage-snapshot: false
 skip-postage-snapshot: true
 resolver-options: https://cloudflare-eth.com
 storage-incentives-enable: false

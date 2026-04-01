@@ -23,9 +23,18 @@ import { initChainSwitcher, updateChainSwitcherDisplay, getSelectedChainId, setS
 import { initReceive, closeReceive } from './wallet/receive.js';
 import { initWalletSettings, closeWalletSettings } from './wallet/wallet-settings.js';
 import { initCreateWallet, openCreateWallet, closeCreateWallet } from './wallet/create-wallet.js';
+import { initPublishSetup, closePublishSetup } from './wallet/publish-setup.js';
+import { initStampManager, closeStampManager } from './wallet/stamp-manager.js';
+import { initChequebookDeposit, closeChequebookDeposit } from './wallet/chequebook-deposit.js';
+import { initSwarmConnect, showSwarmConnect, updateSwarmConnectionBanner, showSwarmPublishApproval, showSwarmFeedApproval } from './wallet/swarm-connect.js';
+import { initVaultUnlock, showVaultUnlock } from './wallet/vault-unlock.js';
+import { initPermissionManage, showDappPermissions, showSwarmPermissions } from './wallet/permission-manage.js';
+import { initPublisherIdentities, closePublisherIdentities } from './wallet/publisher-identities.js';
 
-// Re-export public API consumed by dapp-provider.js and index.js
+// Re-export public API consumed by dapp-provider.js, swarm-provider.js, and index.js
 export { showDappConnect, updateConnectionBanner, showDappTxApproval, showDappSignApproval };
+export { showSwarmConnect, updateSwarmConnectionBanner, showSwarmPublishApproval, showSwarmFeedApproval, showVaultUnlock };
+export { showDappPermissions, showSwarmPermissions };
 export { getSelectedChainId, setSelectedChainId };
 
 // DOM references owned by the coordinator
@@ -56,6 +65,9 @@ export function initWalletUi() {
   initNodeStatus();
   initRpcSettings();
   initDappConnect();
+  initSwarmConnect();
+  initVaultUnlock();
+  initPermissionManage();
   initDappTx();
   initDappSign();
   initSend();
@@ -65,6 +77,10 @@ export function initWalletUi() {
   initReceive();
   initWalletSettings(switchTab);
   initCreateWallet();
+  initPublishSetup();
+  initStampManager();
+  initChequebookDeposit();
+  initPublisherIdentities();
 
   // Load chain registry (updates registeredTokens/registeredChains, then render)
   loadChainRegistry().then(() => {
@@ -105,7 +121,7 @@ function setupCoordinatorListeners() {
   }
 
   // Copy node identities
-  document.querySelectorAll('.node-copy-btn').forEach(btn => {
+  document.querySelectorAll('.node-copy-btn, .node-copy-btn-inline[data-copy]').forEach(btn => {
     btn.addEventListener('click', () => {
       const type = btn.dataset.copy;
       if (type) {
@@ -304,6 +320,10 @@ function closeAllSubscreens() {
   closeReceive();
   closeWalletSettings();
   closeSend();
+  closePublishSetup();
+  closeStampManager();
+  closeChequebookDeposit();
+  closePublisherIdentities();
   closeRpcApiKeyScreen();
 }
 

@@ -27,6 +27,8 @@ let dappTxPasswordSubmit;
 let dappTxError;
 let dappTxRejectBtn;
 let dappTxApproveBtn;
+let dappTxAutoApproveRow;
+let dappTxAutoApproveCheckbox;
 
 // Local state
 let dappTxPending = null;
@@ -52,6 +54,8 @@ export function initDappTx() {
   dappTxError = document.getElementById('dapp-tx-error');
   dappTxRejectBtn = document.getElementById('dapp-tx-reject');
   dappTxApproveBtn = document.getElementById('dapp-tx-approve');
+  dappTxAutoApproveRow = document.getElementById('dapp-tx-auto-approve-row');
+  dappTxAutoApproveCheckbox = document.getElementById('dapp-tx-auto-approve');
 
   // Register screen hider
   registerScreenHider(() => dappTxScreen?.classList.add('hidden'));
@@ -110,15 +114,24 @@ export async function showDappTxApproval(webview, permissionKey, txParams) {
     throw Object.assign(new Error('Unauthorized - not connected'), { code: 4100 });
   }
 
+  const chainId = permission.chainId || walletState.selectedChainId;
+  const selector = extractSelector(txParams.data);
+
   return new Promise((resolve, reject) => {
-    dappTxPending = { permissionKey, walletIndex: permission.walletIndex, txParams, resolve, reject, webview };
+    dappTxPending = { permissionKey, walletIndex: permission.walletIndex, txParams, resolve, reject, webview, chainId, selector };
 
     if (dappTxSite) {
       dappTxSite.textContent = permissionKey;
     }
 
+    // Show auto-approve checkbox only for contract calls (has function selector)
+    if (dappTxAutoApproveCheckbox) dappTxAutoApproveCheckbox.checked = false;
+    if (dappTxAutoApproveRow) {
+      dappTxAutoApproveRow.classList.toggle('hidden', !selector);
+    }
+
     Promise.all([
-      populateDappTxDetails(txParams, permission.chainId || walletState.selectedChainId),
+      populateDappTxDetails(txParams, chainId),
       checkDappTxUnlockStatus(),
     ]).then(() => {
       hideAllSubscreens();
@@ -296,7 +309,7 @@ async function handleDappTxPasswordUnlock() {
 async function approveDappTx() {
   if (!dappTxPending) return;
 
-  const { walletIndex, txParams, resolve, gasLimit, gasPrice, chainId } = dappTxPending;
+  const { permissionKey, walletIndex, txParams, resolve, gasLimit, gasPrice, chainId, selector } = dappTxPending;
 
   try {
     if (dappTxApproveBtn) {
@@ -325,6 +338,11 @@ async function approveDappTx() {
 
     if (!result.success) {
       throw new Error(result.error || 'Transaction failed');
+    }
+
+    if (dappTxAutoApproveCheckbox?.checked && permissionKey && selector && txParams.to) {
+      await window.dappPermissions.addTransactionAutoApprove(permissionKey, txParams.to, selector, chainId);
+      console.log('[WalletUI] Transaction auto-approve added:', txParams.to, selector, 'chain', chainId);
     }
 
     console.log('[WalletUI] dApp transaction sent:', result.hash);
@@ -367,4 +385,17 @@ function showDappTxError(message) {
 
 function hideDappTxError() {
   dappTxError?.classList.add('hidden');
+}
+
+/**
+ * Extract the 4-byte function selector from transaction data.
+ * Returns null for plain ETH transfers (no data or data < 4 bytes).
+ * @param {string} data - Hex-encoded transaction data (0x prefixed)
+ * @returns {string|null} e.g. "0xabcd1234" or null
+ */
+export function extractSelector(data) {
+  if (!data || typeof data !== 'string') return null;
+  const hex = data.startsWith('0x') ? data.slice(2) : data;
+  if (hex.length < 8) return null;
+  return '0x' + hex.slice(0, 8).toLowerCase();
 }
