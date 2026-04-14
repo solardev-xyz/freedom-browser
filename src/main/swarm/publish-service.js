@@ -196,6 +196,30 @@ async function getUploadStatus(tagUid) {
 
 /**
  * Register IPC handlers for publish operations.
+ *
+ * SECURITY INVARIANT — INTERNAL CALLERS ONLY
+ * ==========================================
+ * These handlers (swarm:publish-data/file/directory, swarm:pick-file/directory,
+ * swarm:get-upload-status, swarm:get-stamps, swarm:get-publish-history,
+ * swarm:clear-publish-history) accept raw filesystem paths and bypass the
+ * per-origin permission model that guards window.swarm.* for arbitrary pages.
+ *
+ * They MUST only be reachable from trusted internal contexts:
+ *
+ *   - The shell renderer (Freedom's own UI) via src/main/preload.js, which
+ *     is not injected into webviews.
+ *   - Internal pages served over the freedom:// scheme (freedom://publish),
+ *     where src/main/webview-preload.js wraps every call in guardInternal().
+ *     guardInternal() refuses to forward the call when location.origin is
+ *     not freedom://.
+ *
+ * Arbitrary web content MUST NOT be able to reach these handlers — it must
+ * go through swarm-provider-ipc.js (window.swarm.*), which enforces origin
+ * permissions, size limits, and pre-flight checks.
+ *
+ * If you add a new handler here, preserve this invariant: never expose it
+ * to webview-preload.js without guardInternal(), and never to arbitrary
+ * pages at all.
  */
 function registerPublishIpc() {
   ipcMain.handle('swarm:publish-data', async (_event, data) => {
