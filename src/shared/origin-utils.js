@@ -3,7 +3,8 @@
  *
  * Shared origin normalization for permission keying. Used by the main process
  * for swarm-permissions and swarm-provider-ipc. The renderer has an identical
- * copy in dapp-provider.js (ES module context can't require from shared/).
+ * copy in src/renderer/lib/origin-utils.js (ES modules cannot require() this
+ * file; keep both in sync — see origin-utils.test.js in that directory).
  *
  * Rules (security-critical, locked down in swarm-publishing-research.md):
  *

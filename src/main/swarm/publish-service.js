@@ -208,10 +208,12 @@ async function getUploadStatus(tagUid) {
  *
  *   - The shell renderer (Freedom's own UI) via src/main/preload.js, which
  *     is not injected into webviews.
- *   - Internal pages served over the freedom:// scheme (freedom://publish),
- *     where src/main/webview-preload.js wraps every call in guardInternal().
- *     guardInternal() refuses to forward the call when location.origin is
- *     not freedom://.
+ *   - Internal app pages opened in a webview: webview-preload.js wraps
+ *     freedomAPI.swarm.* in guardInternal(), which calls isInternalPage().
+ *     That allows only bundled pages loaded as file: URLs whose pathname ends
+ *     with /pages/<file> for a whitelisted file from internal-pages.json
+ *     (e.g. publish.html for freedom://publish in the address bar). Arbitrary
+ *     https://, bzz://, etc. in the webview does not pass the guard.
  *
  * Arbitrary web content MUST NOT be able to reach these handlers — it must
  * go through swarm-provider-ipc.js (window.swarm.*), which enforces origin
