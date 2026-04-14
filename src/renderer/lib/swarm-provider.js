@@ -67,10 +67,8 @@ async function handleSwarmRequest(webview, request) {
     if (method === 'swarm_requestAccess') {
       result = await handleRequestAccess(webview, displayUrl, permissionKey);
     } else if (method === 'swarm_getCapabilities') {
-      // No prompt needed — forward directly to main
-      const response = await window.swarmProvider.execute(method, params, permissionKey);
-      if (response.error) throw response.error;
-      result = response.result;
+      // No prompt needed — coarse capability info, safe for any origin
+      result = await forwardToMain(method, params, permissionKey);
     } else if (method === 'swarm_publishData' || method === 'swarm_publishFiles') {
       const permission = await requirePermissionAndReturn(permissionKey);
 
@@ -82,11 +80,8 @@ async function handleSwarmRequest(webview, request) {
 
       result = await executeWithPermission(method, params, permissionKey);
     } else if (method === 'swarm_readFeedEntry') {
-      // No permission required — feeds are public Swarm data. Forward
-      // straight to main, same pattern as swarm_getCapabilities.
-      const response = await window.swarmProvider.execute(method, params, permissionKey);
-      if (response.error) throw response.error;
-      result = response.result;
+      // No permission required — feeds are public Swarm data
+      result = await forwardToMain(method, params, permissionKey);
     } else if (method === 'swarm_createFeed' || method === 'swarm_updateFeed' || method === 'swarm_writeFeedEntry') {
       await requirePermission(permissionKey);
 
@@ -158,6 +153,17 @@ async function requirePermissionAndReturn(permissionKey) {
 async function executeWithPermission(method, params, permissionKey) {
   await requirePermission(permissionKey);
   await window.swarmPermissions.updateLastUsed(permissionKey);
+  const response = await window.swarmProvider.execute(method, params, permissionKey);
+  if (response.error) throw response.error;
+  return response.result;
+}
+
+/**
+ * Forward to main without any permission check — used for public-data
+ * methods like swarm_getCapabilities and swarm_readFeedEntry where the
+ * origin doesn't need to have called requestAccess.
+ */
+async function forwardToMain(method, params, permissionKey) {
   const response = await window.swarmProvider.execute(method, params, permissionKey);
   if (response.error) throw response.error;
   return response.result;
