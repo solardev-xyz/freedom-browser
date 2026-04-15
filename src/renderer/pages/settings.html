@@ -601,7 +601,7 @@
                 </label>
               </div>
             </div>
-            <div class="row">
+            <div class="row" data-radicle>
               <div class="row-body">
                 <p class="row-label">Enable Radicle integration <span style="color: var(--text-muted); font-weight: 400">(Beta)</span></p>
               </div>
@@ -612,7 +612,7 @@
                 </label>
               </div>
             </div>
-            <div class="row sub" id="start-radicle-row">
+            <div class="row sub" id="start-radicle-row" data-radicle>
               <div class="row-body">
                 <p class="row-label">Start Radicle node when Freedom opens</p>
               </div>
@@ -681,8 +681,6 @@
         autoUpdate: $('auto-update'),
       };
 
-      const experimentalSection = $('experimental');
-      const experimentalNav = $('nav-experimental');
       const savedIndicator = $('saved-indicator');
 
       let isWindows = false;
@@ -852,8 +850,10 @@
           const platform = await freedomAPI.getPlatform();
           isWindows = platform === 'win32';
           if (isWindows) {
-            experimentalSection.style.display = 'none';
-            if (experimentalNav) experimentalNav.style.display = 'none';
+            // No official Radicle binaries for Windows yet.
+            document
+              .querySelectorAll('[data-radicle]')
+              .forEach((el) => (el.style.display = 'none'));
           }
         } catch {
           // Non-fatal — assume non-Windows.
