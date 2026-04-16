@@ -81,6 +81,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('tab:new-with-url', handler);
     return () => ipcRenderer.removeListener('tab:new-with-url', handler);
   },
+  onOpenPublishSetup: (callback) => {
+    const handler = () => callback();
+    ipcRenderer.on('sidebar:open-publish-setup', handler);
+    return () => ipcRenderer.removeListener('sidebar:open-publish-setup', handler);
+  },
   onNavigateToUrl: (callback) => {
     const handler = (_event, url) => callback(url);
     ipcRenderer.on('navigate-to-url', handler);

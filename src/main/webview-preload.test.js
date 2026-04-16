@@ -137,6 +137,8 @@ describe('webview-preload', () => {
       ['saveSettings', [{ theme: 'light' }], IPC.SETTINGS_SAVE, [{ theme: 'light' }]],
       ['getPlatform', [], IPC.WINDOW_GET_PLATFORM, []],
       ['testEnsRpc', ['http://localhost:8545'], IPC.ENS_TEST_RPC, [{ url: 'http://localhost:8545' }]],
+      ['getServiceRegistry', [], IPC.SERVICE_REGISTRY_GET, []],
+      ['openPublishSetup', [], IPC.SIDEBAR_OPEN_PUBLISH_SETUP, []],
       ['getBookmarks', [], IPC.BOOKMARKS_GET, []],
       ['openInNewTab', ['https://example.com'], IPC.OPEN_URL_IN_NEW_TAB, ['https://example.com']],
       ['getCachedFavicon', ['https://example.com'], IPC.FAVICON_GET_CACHED, ['https://example.com']],

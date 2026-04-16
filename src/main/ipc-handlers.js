@@ -211,6 +211,10 @@ function registerBaseIpcHandlers(callbacks = {}) {
     }
   });
 
+  ipcMain.handle(IPC.SIDEBAR_OPEN_PUBLISH_SETUP, (event) => {
+    event.sender.hostWebContents?.send(IPC.SIDEBAR_OPEN_PUBLISH_SETUP);
+  });
+
   ipcMain.handle(IPC.CONTEXT_MENU_SAVE_IMAGE, async (event, imageUrl) => {
     if (!imageUrl) {
       return { success: false, error: 'No image URL provided' };

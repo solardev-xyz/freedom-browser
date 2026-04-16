@@ -85,6 +85,16 @@ contextBridge.exposeInMainWorld('freedomAPI', {
   // ENS RPC test (used by settings page)
   testEnsRpc: guardInternal('testEnsRpc', (url) => ipcRenderer.invoke('ens:test-rpc', { url })),
 
+  // Service registry snapshot (read-only).
+  getServiceRegistry: guardInternal('getServiceRegistry', () =>
+    ipcRenderer.invoke('service-registry:get')
+  ),
+
+  // Opens the sidebar publish-setup checklist in the host window.
+  openPublishSetup: guardInternal('openPublishSetup', () =>
+    ipcRenderer.invoke('sidebar:open-publish-setup')
+  ),
+
   // Auto-unsubscribed on pagehide.
   onSettingsUpdated: guardInternalSubscription('onSettingsUpdated', 'settings:updated'),
 
