@@ -17,6 +17,7 @@ const UPDATE_SQL = `UPDATE publishes SET
   bzz_url = COALESCE(?, bzz_url),
   tag_uid = COALESCE(?, tag_uid),
   batch_id = COALESCE(?, batch_id),
+  bytes_size = COALESCE(?, bytes_size),
   completed_at = COALESCE(?, completed_at),
   error_message = COALESCE(?, error_message)
 WHERE id = ?`;
@@ -85,7 +86,7 @@ class FakeBetterSqlite3PublishesDatabase {
 
     if (normalized === NORMALIZED.update) {
       return {
-        run: (status, reference, bzzUrl, tagUid, batchId, completedAt, errorMessage, id) => {
+        run: (status, reference, bzzUrl, tagUid, batchId, bytesSize, completedAt, errorMessage, id) => {
           const row = this.rows.find((r) => r.id === id);
           if (!row) return { changes: 0 };
           if (status !== null) row.status = status;
@@ -93,6 +94,7 @@ class FakeBetterSqlite3PublishesDatabase {
           if (bzzUrl !== null) row.bzz_url = bzzUrl;
           if (tagUid !== null) row.tag_uid = tagUid;
           if (batchId !== null) row.batch_id = batchId;
+          if (bytesSize !== null) row.bytes_size = bytesSize;
           if (completedAt !== null) row.completed_at = completedAt;
           if (errorMessage !== null) row.error_message = errorMessage;
           return { changes: 1 };

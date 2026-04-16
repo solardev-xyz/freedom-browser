@@ -15,16 +15,21 @@ const { getBee, selectBestBatch, toHex } = require('./swarm-service');
 const { addEntry, updateEntry } = require('./publish-history');
 const log = require('electron-log');
 
+// Sentinel for user-initiated publishes (text/file/directory triggered from
+// the freedom://publish UI). dApp-driven publishes pass their actual origin.
+const USER_ORIGIN = 'freedom://publish';
+
 /**
  * Normalize an UploadResult to a Freedom publish result.
  */
-function normalizeUploadResult(result, batchIdUsed) {
+function normalizeUploadResult(result, batchIdUsed, bytesSize) {
   const reference = toHex(result.reference);
   return {
     reference,
     bzzUrl: reference ? `bzz://${reference}` : null,
     tagUid: result.tagUid || null,
     batchIdUsed: batchIdUsed || null,
+    bytesSize: bytesSize ?? null,
   };
 }
 
@@ -74,7 +79,7 @@ async function publishData(data, options = {}) {
     ...options.uploadOptions,
   });
 
-  return normalizeUploadResult(result, batchId);
+  return normalizeUploadResult(result, batchId, sizeEstimate);
 }
 
 /**
@@ -101,7 +106,7 @@ async function publishFile(filePath, options = {}) {
     ...options.uploadOptions,
   });
 
-  return normalizeUploadResult(result, batchId);
+  return normalizeUploadResult(result, batchId, stat.size);
 }
 
 /**
@@ -131,7 +136,7 @@ async function publishDirectory(dirPath, options = {}) {
     ...options.uploadOptions,
   });
 
-  return normalizeUploadResult(result, batchId);
+  return normalizeUploadResult(result, batchId, totalSize);
 }
 
 /**
@@ -228,14 +233,19 @@ function registerPublishIpc() {
     if (!data && data !== '') {
       return { success: false, error: 'Data is required' };
     }
-    const historyEntry = addEntry({ type: 'data', name: 'Text', status: 'uploading' });
+    const historyEntry = addEntry({
+      type: 'data',
+      name: 'Text',
+      status: 'uploading',
+      origin: USER_ORIGIN,
+    });
     try {
       const result = await publishData(data);
       updateEntry(historyEntry.id, { status: 'completed', ...result });
       return { success: true, ...result };
     } catch (err) {
       log.error('[PublishService] Failed to publish data:', err.message);
-      updateEntry(historyEntry.id, { status: 'failed' });
+      updateEntry(historyEntry.id, { status: 'failed', errorMessage: err.message });
       return { success: false, error: err.message };
     }
   });
@@ -248,14 +258,19 @@ function registerPublishIpc() {
       return { success: false, error: `File not found: ${filePath}` };
     }
     const name = path.basename(filePath);
-    const historyEntry = addEntry({ type: 'file', name, status: 'uploading' });
+    const historyEntry = addEntry({
+      type: 'file',
+      name,
+      status: 'uploading',
+      origin: USER_ORIGIN,
+    });
     try {
       const result = await publishFile(filePath);
       updateEntry(historyEntry.id, { status: 'completed', ...result });
       return { success: true, ...result };
     } catch (err) {
       log.error('[PublishService] Failed to publish file:', err.message);
-      updateEntry(historyEntry.id, { status: 'failed' });
+      updateEntry(historyEntry.id, { status: 'failed', errorMessage: err.message });
       return { success: false, error: err.message };
     }
   });
@@ -268,14 +283,19 @@ function registerPublishIpc() {
       return { success: false, error: `Directory not found: ${dirPath}` };
     }
     const name = path.basename(dirPath);
-    const historyEntry = addEntry({ type: 'directory', name, status: 'uploading' });
+    const historyEntry = addEntry({
+      type: 'directory',
+      name,
+      status: 'uploading',
+      origin: USER_ORIGIN,
+    });
     try {
       const result = await publishDirectory(dirPath);
       updateEntry(historyEntry.id, { status: 'completed', ...result });
       return { success: true, ...result };
     } catch (err) {
       log.error('[PublishService] Failed to publish directory:', err.message);
-      updateEntry(historyEntry.id, { status: 'failed' });
+      updateEntry(historyEntry.id, { status: 'failed', errorMessage: err.message });
       return { success: false, error: err.message };
     }
   });
@@ -339,4 +359,5 @@ module.exports = {
   publishFilesFromContent,
   getUploadStatus,
   registerPublishIpc,
+  USER_ORIGIN,
 };

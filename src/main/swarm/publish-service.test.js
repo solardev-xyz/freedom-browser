@@ -53,7 +53,7 @@ jest.mock('fs/promises', () => ({
 
 const fs = require('fs');
 const fsp = require('fs/promises');
-const { normalizeUploadResult, normalizeTag, registerPublishIpc } = require('./publish-service');
+const { normalizeUploadResult, normalizeTag, registerPublishIpc, USER_ORIGIN } = require('./publish-service');
 
 registerPublishIpc();
 
@@ -81,20 +81,23 @@ describe('publish-service', () => {
     test('normalizes a bee-js UploadResult', () => {
       const result = normalizeUploadResult(
         { reference: makeRef('abc123'), tagUid: 42 },
-        'batch-hex'
+        'batch-hex',
+        1024
       );
       expect(result).toEqual({
         reference: 'abc123',
         bzzUrl: 'bzz://abc123',
         tagUid: 42,
         batchIdUsed: 'batch-hex',
+        bytesSize: 1024,
       });
     });
 
-    test('handles missing tagUid', () => {
+    test('handles missing tagUid and missing bytesSize', () => {
       const result = normalizeUploadResult({ reference: makeRef('def') }, null);
       expect(result.tagUid).toBeNull();
       expect(result.batchIdUsed).toBeNull();
+      expect(result.bytesSize).toBeNull();
     });
   });
 
@@ -161,8 +164,13 @@ describe('publish-service', () => {
 
       const result = await invokeIpc('swarm:publish-data', 'test');
       expect(result.success).toBe(false);
-      expect(addEntry).toHaveBeenCalledWith(expect.objectContaining({ status: 'uploading' }));
-      expect(updateEntry).toHaveBeenCalledWith('test-history-id', { status: 'failed' });
+      expect(addEntry).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'uploading', origin: USER_ORIGIN })
+      );
+      expect(updateEntry).toHaveBeenCalledWith('test-history-id', {
+        status: 'failed',
+        errorMessage: 'Bee upload failed',
+      });
     });
 
     test('swarm:publish-data fails when no usable batch', async () => {

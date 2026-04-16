@@ -158,6 +158,7 @@ function getStatements() {
         bzz_url       = COALESCE(?, bzz_url),
         tag_uid       = COALESCE(?, tag_uid),
         batch_id      = COALESCE(?, batch_id),
+        bytes_size    = COALESCE(?, bytes_size),
         completed_at  = COALESCE(?, completed_at),
         error_message = COALESCE(?, error_message)
       WHERE id = ?
@@ -224,6 +225,7 @@ function updateEntry(id, updates = {}) {
     updates.bzzUrl || null,
     updates.tagUid ?? null,
     updates.batchIdUsed || null,
+    updates.bytesSize ?? null,
     finalized ? Date.now() : null,
     updates.errorMessage || null,
     id
