@@ -43,6 +43,10 @@ let cachedProviderUrl = null;
 const ENS_CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
 const ensResultCache = new Map();
 
+// Cache for ENS address-record resolutions (name -> { address, timestamp })
+const ENS_ADDRESS_CACHE_TTL_MS = 15 * 60 * 1000;
+const ensAddressCache = new Map();
+
 // Get a working provider, trying each in sequence with fallback
 async function getWorkingProvider() {
   // If the cached provider's URL no longer matches the current settings, invalidate it
@@ -303,6 +307,62 @@ async function doResolveEnsContent(normalized, attempt) {
   return result;
 }
 
+// Resolve an ENS name's primary ETH address (the `addr` record).
+// This is the address most ENS profiles use as their receive/payment address,
+// and is what .eth tipping should target. Separate from content-hash resolution.
+async function resolveEnsAddress(name) {
+  const trimmed = (name || '').trim();
+  if (!trimmed) {
+    throw new Error('ENS name is empty');
+  }
+
+  const normalized = trimmed.toLowerCase();
+
+  const cached = ensAddressCache.get(normalized);
+  if (cached && Date.now() - cached.timestamp < ENS_ADDRESS_CACHE_TTL_MS) {
+    log.info(`[ens] Address cache hit for ${normalized} -> ${cached.address}`);
+    return { success: true, name: normalized, address: cached.address };
+  }
+
+  let lastError;
+  for (let attempt = 1; attempt <= MAX_RESOLUTION_RETRIES; attempt++) {
+    try {
+      const provider = await getWorkingProvider();
+      log.info(
+        `[ens] Resolving address record for: ${normalized}${attempt > 1 ? ` (attempt ${attempt})` : ''}`
+      );
+
+      // resolveName handles resolver lookup + addr record + CCIP-Read
+      const address = await provider.resolveName(normalized);
+
+      if (!address) {
+        return {
+          success: false,
+          name: normalized,
+          reason: 'NO_ADDRESS',
+          error: `No address record set for ${normalized}`,
+        };
+      }
+
+      ensAddressCache.set(normalized, { address, timestamp: Date.now() });
+      log.info(`[ens] Resolved address: ${normalized} -> ${address}`);
+      return { success: true, name: normalized, address };
+    } catch (err) {
+      lastError = err;
+      if (isProviderError(err) && attempt < MAX_RESOLUTION_RETRIES) {
+        log.warn(
+          `[ens] Address resolution provider error on attempt ${attempt}/${MAX_RESOLUTION_RETRIES}: ${err.message}`
+        );
+        invalidateCachedProvider();
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  throw lastError;
+}
+
 // Test an RPC URL by connecting and fetching the block number.
 // Note: this intentionally accepts any reachable http(s) URL — testing a
 // local node (anvil/geth on 127.0.0.1, an internal RPC, etc.) is the
@@ -362,11 +422,27 @@ function registerEnsIpc() {
   ipcMain.handle(IPC.ENS_TEST_RPC, async (_event, payload = {}) => {
     return testRpcUrl(payload.url);
   });
+
+  ipcMain.handle(IPC.ENS_RESOLVE_ADDRESS, async (_event, payload = {}) => {
+    const { name } = payload;
+    try {
+      return await resolveEnsAddress(name);
+    } catch (err) {
+      log.error('[ens] address resolution error', err);
+      return {
+        success: false,
+        name: (name || '').trim().toLowerCase(),
+        reason: 'RESOLUTION_ERROR',
+        error: err.message,
+      };
+    }
+  });
 }
 
 module.exports = {
   registerEnsIpc,
   resolveEnsContent,
+  resolveEnsAddress,
   testRpcUrl,
   invalidateCachedProvider,
 };

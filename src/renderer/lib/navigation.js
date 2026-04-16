@@ -3,6 +3,7 @@ import { state } from './state.js';
 import { pushDebug } from './debug.js';
 import { updateBookmarkButtonVisibility } from './bookmarks-ui.js';
 import { updateGithubBridgeIcon } from './github-bridge-ui.js';
+import { updateTipButtons } from './tip-ui.js';
 import {
   applyEnsSuffix,
   buildRadicleDisabledUrl,
@@ -86,6 +87,7 @@ const setLoading = (isLoading) => {
   setTabLoading(isLoading);
   updateBookmarkButtonVisibility();
   updateGithubBridgeIcon();
+  updateTipButtons();
 };
 
 const storeEnsResolutionMetadata = (targetUri, ensName, { trackProtocol = true } = {}) => {
@@ -638,6 +640,7 @@ const handleNavigationEvent = (event) => {
       updateNavigationState();
       updateBookmarkButtonVisibility();
   updateGithubBridgeIcon();
+  updateTipButtons();
       updateProtocolIcon();
       navState.addressBarSnapshot = addressInput.value;
       return;
@@ -658,6 +661,7 @@ const handleNavigationEvent = (event) => {
       updateNavigationState();
       updateBookmarkButtonVisibility();
   updateGithubBridgeIcon();
+  updateTipButtons();
       navState.addressBarSnapshot = addressInput.value;
       return;
     }
@@ -674,6 +678,7 @@ const handleNavigationEvent = (event) => {
       updateNavigationState();
       updateBookmarkButtonVisibility();
   updateGithubBridgeIcon();
+  updateTipButtons();
       updateProtocolIcon();
       navState.addressBarSnapshot = addressInput.value;
       return;
@@ -743,6 +748,7 @@ const handleNavigationEvent = (event) => {
   updateNavigationState();
   updateBookmarkButtonVisibility();
   updateGithubBridgeIcon();
+  updateTipButtons();
   updateProtocolIcon();
 
   // Snapshot the committed display URL for provider origin derivation.
@@ -833,6 +839,7 @@ export const initNavigation = () => {
   // Update protocol icon as user types
   addressInput.addEventListener('input', () => {
     updateProtocolIcon();
+    updateTipButtons();
   });
 
   addressInput.addEventListener('keydown', (event) => {
@@ -1201,6 +1208,7 @@ export const initNavigation = () => {
         updateNavigationState();
         updateBookmarkButtonVisibility();
   updateGithubBridgeIcon();
+  updateTipButtons();
         updateProtocolIcon();
         break;
     }

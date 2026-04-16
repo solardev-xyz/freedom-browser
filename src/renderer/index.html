@@ -241,6 +241,24 @@
               </svg>
             </button>
             <button
+              id="tip-1-btn"
+              class="icon-btn input-action-btn tip-btn tip-btn-1 hidden"
+              type="button"
+              aria-label="Tip $1 to this .eth address"
+              title="Tip $1 to this .eth address"
+            >
+              <span class="tip-btn-label">$1</span>
+            </button>
+            <button
+              id="tip-2-btn"
+              class="icon-btn input-action-btn tip-btn tip-btn-2 hidden"
+              type="button"
+              aria-label="Tip $2 to this .eth address"
+              title="Tip $2 to this .eth address"
+            >
+              <span class="tip-btn-label">$2</span>
+            </button>
+            <button
               id="add-bookmark-btn"
               class="icon-btn input-action-btn hidden"
               type="button"
@@ -368,6 +386,112 @@
               <div class="ghb-error-text">Seeding failed</div>
               <div id="ghb-error-detail" class="ghb-error-detail"></div>
               <button id="ghb-retry-btn" class="ghb-import-btn" type="button">Try Again</button>
+            </div>
+          </div>
+          <!-- Tip confirmation popover -->
+          <div id="tip-panel" class="tip-panel hidden" role="dialog" aria-label="Confirm tip">
+            <div class="tip-header">
+              <span id="tip-title" class="tip-title">Tip</span>
+              <button id="tip-close" class="icon-btn tip-close" type="button" aria-label="Close">
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </div>
+            <div id="tip-loading" class="tip-state tip-loading">
+              <div class="tip-spinner"></div>
+              <div class="tip-loading-text">Preparing tip…</div>
+            </div>
+            <div id="tip-confirm" class="tip-state hidden">
+              <div class="tip-row">
+                <span class="tip-label">To</span>
+                <span id="tip-recipient-name" class="tip-value tip-recipient-name"></span>
+              </div>
+              <div class="tip-row">
+                <span class="tip-label">Address</span>
+                <code id="tip-recipient-address" class="tip-value tip-recipient-address"></code>
+              </div>
+              <div class="tip-row">
+                <span class="tip-label">Amount</span>
+                <span id="tip-amount" class="tip-value"></span>
+              </div>
+              <div class="tip-row">
+                <span class="tip-label">Network fee</span>
+                <span id="tip-fee" class="tip-value">—</span>
+              </div>
+              <div id="tip-unlock" class="tip-unlock hidden">
+                <button id="tip-touchid-btn" class="tip-unlock-btn hidden" type="button">
+                  Unlock with Touch ID
+                </button>
+                <button id="tip-password-link" class="tip-link hidden" type="button">
+                  Use password instead
+                </button>
+                <div id="tip-password-section" class="tip-password-section hidden">
+                  <input
+                    id="tip-password-input"
+                    class="tip-password-input"
+                    type="password"
+                    placeholder="Vault password"
+                    autocomplete="current-password"
+                  />
+                  <button id="tip-password-submit" class="tip-unlock-btn" type="button">
+                    Unlock
+                  </button>
+                </div>
+                <div id="tip-unlock-error" class="tip-error hidden"></div>
+              </div>
+              <div class="tip-actions">
+                <button id="tip-cancel-btn" class="tip-btn-secondary" type="button">Cancel</button>
+                <button id="tip-confirm-btn" class="tip-btn-primary" type="button">Send tip</button>
+              </div>
+            </div>
+            <div id="tip-sending" class="tip-state hidden">
+              <div class="tip-spinner"></div>
+              <div class="tip-loading-text">Sending transaction…</div>
+            </div>
+            <div id="tip-success" class="tip-state hidden">
+              <div class="tip-success-icon">
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <polyline points="20 6 9 17 4 12" />
+                </svg>
+              </div>
+              <div class="tip-success-text">Tip sent</div>
+              <a id="tip-explorer-link" class="tip-link tip-explorer-link hidden" target="_blank" rel="noopener">
+                View on Etherscan
+              </a>
+              <button id="tip-success-close" class="tip-btn-secondary" type="button">Close</button>
+            </div>
+            <div id="tip-error" class="tip-state hidden">
+              <div class="tip-error-icon">
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </div>
+              <div id="tip-error-text" class="tip-error-text">Tip failed</div>
+              <button id="tip-error-close" class="tip-btn-secondary" type="button">Close</button>
             </div>
           </div>
           <div id="autocomplete-dropdown" class="autocomplete-dropdown hidden" role="listbox">

@@ -35,7 +35,11 @@ module.exports = {
 
   // ENS resolution
   ENS_RESOLVE: 'ens:resolve',
+  ENS_RESOLVE_ADDRESS: 'ens:resolve-address',
   ENS_TEST_RPC: 'ens:test-rpc',
+
+  // Price oracle
+  PRICE_GET_ETH_USD: 'price:get-eth-usd',
 
   // Settings
   SETTINGS_GET: 'settings:get',

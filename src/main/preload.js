@@ -46,7 +46,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('bookmarks:update', { originalTarget, bookmark }),
   removeBookmark: (target) => ipcRenderer.invoke('bookmarks:remove', target),
   resolveEns: (name) => ipcRenderer.invoke('ens:resolve', { name }),
+  resolveEnsAddress: (name) => ipcRenderer.invoke('ens:resolve-address', { name }),
   testEnsRpc: (url) => ipcRenderer.invoke('ens:test-rpc', { url }),
+  getEthUsdPrice: () => ipcRenderer.invoke('price:get-eth-usd'),
   // History
   getHistory: (options) => ipcRenderer.invoke('history:get', options),
   addHistory: (entry) => ipcRenderer.invoke('history:add', entry),

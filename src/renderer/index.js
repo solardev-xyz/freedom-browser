@@ -46,6 +46,7 @@ import {
   hide as hideAutocomplete,
 } from './lib/autocomplete.js';
 import { initGithubBridgeUi, setOnOpenRadicleUrl } from './lib/github-bridge-ui.js';
+import { initTipUi } from './lib/tip-ui.js';
 import { initMenuBackdrop } from './lib/menu-backdrop.js';
 import { initPageContextMenu, hidePageContextMenu } from './lib/page-context-menu.js';
 import { pushDebug } from './lib/debug.js';
@@ -200,6 +201,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   initIpfsUi();
   initRadicleUi();
   initGithubBridgeUi();
+  initTipUi();
   document.getElementById('settings-btn')?.addEventListener('click', () => {
     closeMenus();
     loadTarget('freedom://settings');

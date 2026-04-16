@@ -1,0 +1,344 @@
+/* Address-bar tipping buttons ($1 / $2) and confirmation popover */
+
+/* Tip buttons sit before the bookmark star. $2 is closer to the star,
+ * $1 is further out, leaving the star at right: 6px. */
+.icon-btn.tip-btn {
+  width: auto;
+  min-width: 26px;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.11);
+  color: var(--muted);
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.icon-btn.tip-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--muted);
+}
+
+.tip-btn.tip-btn-2 {
+  right: 36px;
+}
+.tip-btn.tip-btn-1 {
+  right: 70px;
+}
+
+/* Text-based button rather than svg */
+.tip-btn .tip-btn-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1;
+  letter-spacing: 0.2px;
+  color: inherit;
+}
+
+/* When tip buttons are visible, the github-bridge-btn (which never overlaps
+ * since it only shows on github.com) stays at its usual position. */
+
+/* Tip confirmation popover */
+.tip-panel {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  width: 320px;
+  background: var(--menu-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  z-index: 10001;
+  padding: 0;
+  overflow: hidden;
+}
+
+.tip-panel.hidden {
+  display: none;
+}
+
+.tip-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.tip-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.tip-close {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  color: var(--muted);
+}
+
+.tip-close svg {
+  width: 14px;
+  height: 14px;
+}
+
+.tip-state {
+  padding: 14px;
+}
+
+.tip-state.hidden {
+  display: none;
+}
+
+.tip-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+  font-size: 12px;
+}
+
+.tip-row:last-of-type {
+  margin-bottom: 14px;
+}
+
+.tip-label {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  flex-shrink: 0;
+}
+
+.tip-value {
+  color: var(--text);
+  font-size: 12px;
+  text-align: right;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tip-recipient-name {
+  font-weight: 600;
+}
+
+.tip-recipient-address {
+  font-family: 'SF Mono', Menlo, Monaco, monospace;
+  font-size: 11px;
+}
+
+.tip-unlock {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  margin-bottom: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 6px;
+}
+
+.tip-unlock.hidden {
+  display: none;
+}
+
+.tip-unlock-btn {
+  display: block;
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid #444;
+  border-radius: 6px;
+  background: #2c2c2c;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.tip-unlock-btn:hover {
+  background: #3a3a3a;
+}
+
+.tip-unlock-btn.hidden {
+  display: none;
+}
+
+.tip-password-section {
+  display: flex;
+  gap: 6px;
+}
+
+.tip-password-section.hidden {
+  display: none;
+}
+
+.tip-password-input {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--input-bg, #1b1b1b);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.tip-password-input:focus {
+  outline: none;
+  border-color: var(--text);
+}
+
+.tip-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 11px;
+  color: var(--muted);
+  cursor: pointer;
+  text-decoration: underline;
+  text-align: center;
+}
+
+.tip-link.hidden {
+  display: none;
+}
+
+.tip-link:hover {
+  color: var(--text);
+}
+
+.tip-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.tip-btn-primary,
+.tip-btn-secondary {
+  flex: 1;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s ease, opacity 0.15s ease;
+}
+
+.tip-btn-primary {
+  border: 1px solid #4caf50;
+  background: #2f7a34;
+  color: #fff;
+}
+
+.tip-btn-primary:hover:not(:disabled) {
+  background: #3a8c3f;
+}
+
+.tip-btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.tip-btn-secondary {
+  border: 1px solid #444;
+  background: #2c2c2c;
+  color: var(--text);
+}
+
+.tip-btn-secondary:hover {
+  background: #3a3a3a;
+}
+
+/* Loading spinner */
+.tip-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 24px 14px;
+}
+
+.tip-spinner {
+  width: 24px;
+  height: 24px;
+  border: 2px solid #444;
+  border-top-color: var(--text);
+  border-radius: 50%;
+  animation: tip-spin 0.8s linear infinite;
+}
+
+.tip-loading-text {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+@keyframes tip-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Success state */
+.tip-success-icon {
+  text-align: center;
+  margin-bottom: 8px;
+}
+
+.tip-success-icon svg {
+  width: 28px;
+  height: 28px;
+  stroke: #4caf50;
+}
+
+.tip-success-text {
+  text-align: center;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 10px;
+}
+
+.tip-explorer-link {
+  display: block;
+  text-align: center;
+  margin-bottom: 12px;
+  font-size: 12px;
+}
+
+.tip-explorer-link.hidden {
+  display: none;
+}
+
+/* Error state */
+.tip-error {
+  font-size: 11px;
+  color: #ff7a7a;
+  margin-top: 4px;
+}
+
+.tip-error.hidden {
+  display: none;
+}
+
+.tip-error-icon {
+  text-align: center;
+  margin-bottom: 6px;
+}
+
+.tip-error-icon svg {
+  width: 28px;
+  height: 28px;
+  stroke: #ff5e5e;
+}
+
+.tip-error-text {
+  text-align: center;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  margin-bottom: 12px;
+  word-break: break-word;
+}
