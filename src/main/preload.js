@@ -46,6 +46,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('bookmarks:update', { originalTarget, bookmark }),
   removeBookmark: (target) => ipcRenderer.invoke('bookmarks:remove', target),
   resolveEns: (name) => ipcRenderer.invoke('ens:resolve', { name }),
+  testEnsRpc: (url) => ipcRenderer.invoke('ens:test-rpc', { url }),
   // History
   getHistory: (options) => ipcRenderer.invoke('history:get', options),
   addHistory: (entry) => ipcRenderer.invoke('history:add', entry),
@@ -79,6 +80,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const handler = (_event, url, targetName) => callback(url, targetName);
     ipcRenderer.on('tab:new-with-url', handler);
     return () => ipcRenderer.removeListener('tab:new-with-url', handler);
+  },
+  onOpenPublishSetup: (callback) => {
+    const handler = () => callback();
+    ipcRenderer.on('sidebar:open-publish-setup', handler);
+    return () => ipcRenderer.removeListener('sidebar:open-publish-setup', handler);
   },
   onNavigateToUrl: (callback) => {
     const handler = (_event, url) => callback(url);
@@ -168,6 +174,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   restartAndInstallUpdate: () => ipcRenderer.send('update:restart-and-install'),
   checkForUpdates: () => ipcRenderer.send('update:check'),
+});
+
+// Re-dispatch main-process settings:updated broadcasts as a window CustomEvent
+// so existing renderer listeners (theme, radicle, sidebar, wallet, etc.) work
+// regardless of which UI surface triggered the save.
+ipcRenderer.on('settings:updated', (_event, settings) => {
+  try {
+    window.dispatchEvent(new CustomEvent('settings:updated', { detail: settings }));
+  } catch {
+    // Window may be closing
+  }
 });
 
 contextBridge.exposeInMainWorld('bee', {

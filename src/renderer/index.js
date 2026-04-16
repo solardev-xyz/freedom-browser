@@ -14,7 +14,7 @@ import {
   setOnMenuOpening,
   closeMenus,
 } from './lib/menus.js';
-import { initSettings, setOnSettingsChanged, initTheme } from './lib/settings-ui.js';
+import { initSettingsEffects, initTheme } from './lib/settings-ui.js';
 import {
   initBookmarks,
   loadBookmarks,
@@ -51,7 +51,7 @@ import { initPageContextMenu, hidePageContextMenu } from './lib/page-context-men
 import { pushDebug } from './lib/debug.js';
 import { initOnboarding, checkAndShowOnboarding } from './lib/onboarding.js';
 import { initSidebar } from './lib/sidebar.js';
-import { initWalletUi } from './lib/wallet-ui.js';
+import { initWalletUi, openPublishSetupFlow } from './lib/wallet-ui.js';
 
 const electronAPI = window.electronAPI;
 
@@ -79,7 +79,7 @@ window.serviceRegistry?.getRegistry?.().then((registry) => {
 });
 
 // Wire up cross-module callbacks
-setOnSettingsChanged(onSettingsChanged);
+initSettingsEffects(onSettingsChanged);
 setOnLoadTarget(loadTarget);
 setLoadTargetHandler(loadTarget);
 setReloadHandler(reloadPage);
@@ -119,6 +119,9 @@ const closeAllOverlays = () => {
 // Listen for close menus from main process (e.g., system menu clicked)
 // Don't close autocomplete here - mirrors browser behavior where address bar stays open
 electronAPI.onCloseMenus?.(closeAllMenus);
+
+// Internal pages can deep-link into the sidebar publish-setup checklist.
+electronAPI.onOpenPublishSetup?.(openPublishSetupFlow);
 
 // Initialize update notification toast
 function initUpdateNotifications() {
@@ -197,7 +200,10 @@ window.addEventListener('DOMContentLoaded', async () => {
   initIpfsUi();
   initRadicleUi();
   initGithubBridgeUi();
-  initSettings();
+  document.getElementById('settings-btn')?.addEventListener('click', () => {
+    closeMenus();
+    loadTarget('freedom://settings');
+  });
   initBookmarks();
   initNavigation(); // Sets up event handler with tabs module
   initTabs(); // Creates first tab and starts loading home page

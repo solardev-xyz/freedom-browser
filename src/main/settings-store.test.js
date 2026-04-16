@@ -47,6 +47,8 @@ describe('settings-store', () => {
         showBookmarkBar: false,
         sidebarOpen: false,
         sidebarWidth: 320,
+        enableEnsCustomRpc: false,
+        ensRpcUrl: '',
       })
     );
     expect(nativeTheme.themeSource).toBe('system');
@@ -106,6 +108,73 @@ describe('settings-store', () => {
       })
     );
     expect(nativeTheme.themeSource).toBe('light');
+  });
+
+  test('saveSettings broadcasts settings:updated to all webContents', () => {
+    const send = jest.fn();
+    const webContents = {
+      getAllWebContents: jest.fn(() => [{ send }, { send }]),
+    };
+    const { mod } = loadSettingsStore({ userDataDir, webContents });
+
+    expect(mod.saveSettings({ theme: 'light' })).toBe(true);
+
+    expect(webContents.getAllWebContents).toHaveBeenCalled();
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send).toHaveBeenCalledWith(
+      IPC.SETTINGS_UPDATED,
+      expect.objectContaining({ theme: 'light' })
+    );
+  });
+
+  test('saveSettings is a no-op when the merged payload is unchanged', () => {
+    fs.writeFileSync(
+      path.join(userDataDir, 'settings.json'),
+      JSON.stringify({ theme: 'dark', autoUpdate: true }),
+      'utf-8'
+    );
+    const send = jest.fn();
+    const webContents = {
+      getAllWebContents: jest.fn(() => [{ send }]),
+    };
+    const { mod } = loadSettingsStore({ userDataDir, webContents });
+    mod.loadSettings();
+
+    const filePath = path.join(userDataDir, 'settings.json');
+    const sizeBefore = fs.statSync(filePath).size;
+
+    expect(mod.saveSettings({ theme: 'dark' })).toBe(true);
+
+    expect(send).not.toHaveBeenCalled();
+    expect(fs.statSync(filePath).size).toBe(sizeBefore);
+  });
+
+  test('saveSettings drops keys that are not part of DEFAULT_SETTINGS', () => {
+    const { mod } = loadSettingsStore({ userDataDir });
+
+    expect(mod.saveSettings({ theme: 'light', injected: 'value', extra: 1 })).toBe(true);
+
+    const persisted = JSON.parse(
+      fs.readFileSync(path.join(userDataDir, 'settings.json'), 'utf-8')
+    );
+    expect(persisted.theme).toBe('light');
+    expect(persisted).not.toHaveProperty('injected');
+    expect(persisted).not.toHaveProperty('extra');
+  });
+
+  test('saveSettings swallows send errors from destroyed webContents', () => {
+    const webContents = {
+      getAllWebContents: jest.fn(() => [
+        {
+          send: () => {
+            throw new Error('Object has been destroyed');
+          },
+        },
+      ]),
+    };
+    const { mod } = loadSettingsStore({ userDataDir, webContents });
+
+    expect(mod.saveSettings({ theme: 'dark' })).toBe(true);
   });
 
   test('registers IPC handlers for loading and saving settings', async () => {

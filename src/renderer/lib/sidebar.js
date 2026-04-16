@@ -125,6 +125,13 @@ export function isVisible() {
 }
 
 /**
+ * Whether the Identity & Wallet feature flag is on (controls the sidebar).
+ */
+export function isFeatureEnabled() {
+  return featureEnabled;
+}
+
+/**
  * Apply current state to DOM
  */
 function applyState() {

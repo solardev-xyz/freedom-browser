@@ -1,0 +1,955 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:;"
+    />
+    <title>Settings</title>
+    <style>
+      :root {
+        --bg: #0d1117;
+        --bg-elev: #161b22;
+        --bg-card: #21262d;
+        --border: #30363d;
+        --border-strong: #484f58;
+        --text: #c9d1d9;
+        --text-muted: #8b949e;
+        --text-subtle: #6e7681;
+        --accent: #58a6ff;
+        --accent-muted: rgba(88, 166, 255, 0.12);
+        --danger: #f85149;
+        --success: #3fb950;
+        --warn: #d29922;
+      }
+
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+
+      body {
+        font-family:
+          'IBM Plex Sans',
+          -apple-system,
+          BlinkMacSystemFont,
+          sans-serif;
+        background: linear-gradient(135deg, #0d1117 0%, #161b22 50%, #21262d 100%);
+        color: var(--text);
+        min-height: 100vh;
+      }
+
+      .layout {
+        display: grid;
+        grid-template-columns: 260px 1fr;
+        min-height: 100vh;
+      }
+
+      /* Sidebar */
+      .sidebar {
+        position: sticky;
+        top: 0;
+        align-self: start;
+        height: 100vh;
+        padding: 40px 20px 40px 32px;
+        border-right: 1px solid var(--border);
+        background: rgba(13, 17, 23, 0.6);
+        backdrop-filter: blur(6px);
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
+
+      .sidebar-title {
+        font-size: 20px;
+        font-weight: 600;
+        letter-spacing: -0.3px;
+        color: var(--accent);
+        margin: 0 0 12px 0;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .nav {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+
+      .nav-item {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 9px 12px;
+        border-radius: 8px;
+        color: var(--text-muted);
+        cursor: pointer;
+        font-size: 14px;
+        background: transparent;
+        border: 0;
+        text-align: left;
+        font-family: inherit;
+        transition: background 0.1s, color 0.1s;
+      }
+
+      .nav-item:hover {
+        background: var(--bg-card);
+        color: var(--text);
+      }
+
+      .nav-item.active {
+        background: var(--accent-muted);
+        color: var(--accent);
+      }
+
+      .nav-item svg {
+        flex-shrink: 0;
+      }
+
+      /* Content */
+      .content {
+        padding: 48px 56px 80px 56px;
+        max-width: 820px;
+      }
+
+      h1 {
+        font-size: 32px;
+        margin: 0 0 8px 0;
+        font-weight: 600;
+        letter-spacing: -0.5px;
+      }
+
+      .page-subtitle {
+        color: var(--text-muted);
+        font-size: 14px;
+        margin: 0 0 40px 0;
+      }
+
+      .section {
+        margin-bottom: 48px;
+        scroll-margin-top: 24px;
+      }
+
+      .section-title {
+        font-size: 18px;
+        font-weight: 600;
+        margin: 0 0 4px 0;
+        color: var(--text);
+      }
+
+      .section-subtitle {
+        color: var(--text-muted);
+        font-size: 13px;
+        margin: 0 0 16px 0;
+      }
+
+      .card {
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        overflow: hidden;
+      }
+
+      .row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 14px 18px;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .row:last-child {
+        border-bottom: 0;
+      }
+
+      .row-body {
+        min-width: 0;
+        flex: 1;
+      }
+
+      .row-label {
+        font-size: 14px;
+        color: var(--text);
+        margin: 0;
+      }
+
+      .row-help {
+        font-size: 12px;
+        color: var(--text-muted);
+        margin: 4px 0 0 0;
+      }
+
+      .row-control {
+        flex-shrink: 0;
+      }
+
+      .row.sub {
+        padding-left: 40px;
+        background: rgba(22, 27, 34, 0.6);
+      }
+
+      .row.disabled {
+        opacity: 0.55;
+      }
+
+      /* Select */
+      select {
+        appearance: none;
+        -webkit-appearance: none;
+        background: var(--bg-elev)
+          url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="%238b949e" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>')
+          no-repeat right 10px center;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 7px 32px 7px 12px;
+        color: var(--text);
+        font-size: 13px;
+        font-family: inherit;
+        outline: none;
+        cursor: pointer;
+        transition: border-color 0.1s;
+      }
+
+      select:focus {
+        border-color: var(--accent);
+      }
+
+      select:hover {
+        border-color: var(--border-strong);
+      }
+
+      /* Toggle switch */
+      .toggle {
+        position: relative;
+        display: inline-block;
+        width: 38px;
+        height: 22px;
+        flex-shrink: 0;
+      }
+
+      .toggle input {
+        opacity: 0;
+        width: 0;
+        height: 0;
+      }
+
+      .toggle .slider {
+        position: absolute;
+        inset: 0;
+        background: var(--bg-elev);
+        border: 1px solid var(--border);
+        border-radius: 22px;
+        cursor: pointer;
+        transition: background 0.15s, border-color 0.15s;
+      }
+
+      .toggle .slider::before {
+        content: '';
+        position: absolute;
+        left: 2px;
+        top: 2px;
+        width: 16px;
+        height: 16px;
+        background: #8b949e;
+        border-radius: 50%;
+        transition: transform 0.15s, background 0.15s;
+      }
+
+      .toggle input:checked + .slider {
+        background: var(--accent);
+        border-color: var(--accent);
+      }
+
+      .toggle input:checked + .slider::before {
+        transform: translateX(16px);
+        background: #ffffff;
+      }
+
+      .toggle input:disabled + .slider {
+        cursor: not-allowed;
+        opacity: 0.5;
+      }
+
+      /* Input + test button */
+      .rpc-block {
+        padding: 16px 18px;
+        border-top: 1px solid var(--border);
+        background: rgba(22, 27, 34, 0.5);
+      }
+
+      .rpc-block.hidden {
+        display: none;
+      }
+
+      .rpc-row {
+        display: flex;
+        gap: 8px;
+      }
+
+      .rpc-input {
+        flex: 1;
+        min-width: 0;
+        padding: 8px 12px;
+        background: var(--bg-elev);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        color: var(--text);
+        font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+        font-size: 13px;
+        outline: none;
+        transition: border-color 0.1s;
+      }
+
+      .rpc-input:focus {
+        border-color: var(--accent);
+      }
+
+      .rpc-input::placeholder {
+        color: var(--text-subtle);
+      }
+
+      .btn {
+        padding: 8px 14px;
+        background: var(--bg-elev);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        color: var(--text);
+        font-size: 13px;
+        font-family: inherit;
+        cursor: pointer;
+        transition: border-color 0.1s, background 0.1s;
+      }
+
+      .btn:hover:not(:disabled) {
+        border-color: var(--border-strong);
+        background: var(--bg-card);
+      }
+
+      .btn:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      .rpc-hint {
+        font-size: 12px;
+        color: var(--text-muted);
+        margin: 8px 0 0 0;
+      }
+
+      .rpc-status {
+        font-size: 12px;
+        margin-top: 8px;
+        min-height: 16px;
+      }
+
+      .rpc-status.success {
+        color: var(--success);
+      }
+
+      .rpc-status.error {
+        color: var(--danger);
+      }
+
+      .rpc-status.testing {
+        color: var(--warn);
+      }
+
+      /* Save indicator */
+      .saved-indicator {
+        position: fixed;
+        bottom: 24px;
+        right: 24px;
+        background: var(--bg-card);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 10px 16px;
+        font-size: 13px;
+        color: var(--success);
+        opacity: 0;
+        transform: translateY(8px);
+        pointer-events: none;
+        transition: opacity 0.15s, transform 0.15s;
+      }
+
+      .saved-indicator.visible {
+        opacity: 1;
+        transform: translateY(0);
+      }
+
+      /* Light theme */
+      @media (prefers-color-scheme: light) {
+        :root {
+          --bg: #ffffff;
+          --bg-elev: #ffffff;
+          --bg-card: #ffffff;
+          --border: #d0d7de;
+          --border-strong: #8c959f;
+          --text: #24292f;
+          --text-muted: #57606a;
+          --text-subtle: #8c959f;
+          --accent: #0969da;
+          --accent-muted: rgba(9, 105, 218, 0.1);
+          --danger: #cf222e;
+          --success: #1a7f37;
+          --warn: #9a6700;
+        }
+
+        body {
+          background: linear-gradient(135deg, #ffffff 0%, #f6f8fa 50%, #f0f2f5 100%);
+        }
+
+        .sidebar {
+          background: rgba(255, 255, 255, 0.6);
+        }
+
+        .row.sub,
+        .rpc-block {
+          background: #f6f8fa;
+        }
+
+        .toggle .slider::before {
+          background: #57606a;
+        }
+
+        .toggle input:checked + .slider::before {
+          background: #ffffff;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="layout">
+      <aside class="sidebar">
+        <h2 class="sidebar-title">
+          <svg
+            width="22"
+            height="22"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <circle cx="12" cy="12" r="3"></circle>
+            <path
+              d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"
+            ></path>
+          </svg>
+          Settings
+        </h2>
+        <nav class="nav" id="nav">
+          <button type="button" class="nav-item active" data-target="appearance">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="5"></circle>
+              <line x1="12" y1="1" x2="12" y2="3"></line>
+              <line x1="12" y1="21" x2="12" y2="23"></line>
+              <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+              <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+              <line x1="1" y1="12" x2="3" y2="12"></line>
+              <line x1="21" y1="12" x2="23" y2="12"></line>
+              <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+              <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+            </svg>
+            Appearance
+          </button>
+          <button type="button" class="nav-item" data-target="startup">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+            </svg>
+            Startup
+          </button>
+          <button type="button" class="nav-item" data-target="ethereum">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="12 2 4 12 12 16 20 12 12 2"></polygon>
+              <polygon points="4 14 12 22 20 14 12 18 4 14"></polygon>
+            </svg>
+            Ethereum RPC
+          </button>
+          <button type="button" class="nav-item" data-target="experimental" id="nav-experimental">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M10 2v7.31"></path>
+              <path d="M14 9.3V2"></path>
+              <path d="M8.5 2h7"></path>
+              <path d="M14 9.3a6.5 6.5 0 1 1-4 0"></path>
+            </svg>
+            Experimental
+          </button>
+          <button type="button" class="nav-item" data-target="updates">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="23 4 23 10 17 10"></polyline>
+              <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+            </svg>
+            Updates
+          </button>
+        </nav>
+      </aside>
+
+      <main class="content">
+        <h1>Settings</h1>
+        <p class="page-subtitle">Configure how Freedom behaves on your machine.</p>
+
+        <!-- Appearance -->
+        <section class="section" id="appearance">
+          <h2 class="section-title">Appearance</h2>
+          <p class="section-subtitle">Theme and visual preferences.</p>
+          <div class="card">
+            <div class="row">
+              <div class="row-body">
+                <p class="row-label">Theme</p>
+                <p class="row-help">Applies to both the browser chrome and internal pages.</p>
+              </div>
+              <div class="row-control">
+                <select id="theme-mode">
+                  <option value="light">Light</option>
+                  <option value="dark">Dark</option>
+                  <option value="system">System</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Startup -->
+        <section class="section" id="startup">
+          <h2 class="section-title">Automatic Startup</h2>
+          <p class="section-subtitle">Which background nodes start when Freedom launches.</p>
+          <div class="card">
+            <div class="row">
+              <div class="row-body">
+                <p class="row-label">Start Swarm node</p>
+              </div>
+              <div class="row-control">
+                <label class="toggle">
+                  <input type="checkbox" id="start-bee-at-launch" />
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
+            <div class="row">
+              <div class="row-body">
+                <p class="row-label">Start IPFS node</p>
+              </div>
+              <div class="row-control">
+                <label class="toggle">
+                  <input type="checkbox" id="start-ipfs-at-launch" />
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Ethereum RPC -->
+        <section class="section" id="ethereum">
+          <h2 class="section-title">Ethereum RPC</h2>
+          <p class="section-subtitle">Custom RPC endpoint for ENS lookups.</p>
+          <div class="card">
+            <div class="row">
+              <div class="row-body">
+                <p class="row-label">Use a custom RPC endpoint</p>
+                <p class="row-help">Freedom uses a default public endpoint when this is off.</p>
+              </div>
+              <div class="row-control">
+                <label class="toggle">
+                  <input type="checkbox" id="enable-ens-custom-rpc" />
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
+            <div class="rpc-block" id="ens-rpc-field">
+              <div class="rpc-row">
+                <input
+                  type="text"
+                  id="ens-rpc-url"
+                  class="rpc-input"
+                  placeholder="http://localhost:8545"
+                  spellcheck="false"
+                />
+                <button type="button" id="ens-rpc-test" class="btn">Test</button>
+              </div>
+              <p class="rpc-hint">JSON-RPC endpoint reachable from this machine.</p>
+              <p id="ens-rpc-status" class="rpc-status"></p>
+            </div>
+          </div>
+        </section>
+
+        <!-- Experimental -->
+        <section class="section" id="experimental">
+          <h2 class="section-title">Experimental</h2>
+          <p class="section-subtitle">Features that are still being polished.</p>
+          <div class="card">
+            <div class="row" id="swarm-mode-row">
+              <div class="row-body">
+                <p class="row-label">Swarm node mode</p>
+                <p class="row-help" id="swarm-mode-help">Loading…</p>
+              </div>
+              <div class="row-control">
+                <button type="button" id="swarm-mode-action-btn" class="btn" hidden></button>
+              </div>
+            </div>
+            <div class="row" data-radicle>
+              <div class="row-body">
+                <p class="row-label">Enable Radicle integration <span style="color: var(--text-muted); font-weight: 400">(Beta)</span></p>
+              </div>
+              <div class="row-control">
+                <label class="toggle">
+                  <input type="checkbox" id="enable-radicle-integration" />
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
+            <div class="row sub" id="start-radicle-row" data-radicle>
+              <div class="row-body">
+                <p class="row-label">Start Radicle node when Freedom opens</p>
+              </div>
+              <div class="row-control">
+                <label class="toggle">
+                  <input type="checkbox" id="start-radicle-at-launch" />
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
+            <div class="row">
+              <div class="row-body">
+                <p class="row-label">Enable Identity &amp; Wallet <span style="color: var(--text-muted); font-weight: 400">(Beta)</span></p>
+              </div>
+              <div class="row-control">
+                <label class="toggle">
+                  <input type="checkbox" id="enable-identity-wallet" />
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Updates -->
+        <section class="section" id="updates">
+          <h2 class="section-title">Updates</h2>
+          <p class="section-subtitle">How Freedom handles software updates.</p>
+          <div class="card">
+            <div class="row">
+              <div class="row-body">
+                <p class="row-label">Automatically check for updates</p>
+              </div>
+              <div class="row-control">
+                <label class="toggle">
+                  <input type="checkbox" id="auto-update" />
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div id="saved-indicator" class="saved-indicator">Saved</div>
+
+    <script>
+      // freedomAPI is exposed globally by webview-preload.js via contextBridge.
+      const $ = (id) => document.getElementById(id);
+
+      const fields = {
+        themeMode: $('theme-mode'),
+        startBee: $('start-bee-at-launch'),
+        startIpfs: $('start-ipfs-at-launch'),
+        enableEnsCustomRpc: $('enable-ens-custom-rpc'),
+        ensRpcField: $('ens-rpc-field'),
+        ensRpcUrl: $('ens-rpc-url'),
+        ensRpcTest: $('ens-rpc-test'),
+        ensRpcStatus: $('ens-rpc-status'),
+        enableRadicle: $('enable-radicle-integration'),
+        startRadicleRow: $('start-radicle-row'),
+        startRadicle: $('start-radicle-at-launch'),
+        enableIdentity: $('enable-identity-wallet'),
+        autoUpdate: $('auto-update'),
+      };
+
+      const swarmModeHelp = $('swarm-mode-help');
+      const swarmModeBtn = $('swarm-mode-action-btn');
+      const savedIndicator = $('saved-indicator');
+
+      let isWindows = false;
+      let savedTimer = null;
+
+      const navItems = [...document.querySelectorAll('.nav-item')];
+      navItems.forEach((item) => {
+        item.addEventListener('click', () => {
+          const target = document.getElementById(item.dataset.target);
+          if (target) {
+            target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }
+        });
+      });
+
+      const sections = navItems
+        .map((item) => document.getElementById(item.dataset.target))
+        .filter(Boolean);
+
+      const observer = new IntersectionObserver(
+        (entries) => {
+          entries.forEach((entry) => {
+            if (!entry.isIntersecting) return;
+            const id = entry.target.id;
+            navItems.forEach((i) =>
+              i.classList.toggle('active', i.dataset.target === id)
+            );
+          });
+        },
+        { rootMargin: '-20% 0px -70% 0px', threshold: 0 }
+      );
+      sections.forEach((s) => observer.observe(s));
+
+      const setFieldEnabled = (checkbox, container, ...inputs) => {
+        const enabled = checkbox?.checked === true;
+        container?.classList.toggle('disabled', !enabled);
+        for (const input of inputs) {
+          if (input) input.disabled = !enabled;
+        }
+      };
+
+      const setEnsRpcBlockVisible = (visible) => {
+        fields.ensRpcField.classList.toggle('hidden', !visible);
+      };
+
+      const setEnsRpcStatus = (text, type) => {
+        fields.ensRpcStatus.textContent = text;
+        fields.ensRpcStatus.className = 'rpc-status' + (type ? ' ' + type : '');
+      };
+
+      const showSaved = () => {
+        savedIndicator.classList.add('visible');
+        clearTimeout(savedTimer);
+        savedTimer = setTimeout(() => savedIndicator.classList.remove('visible'), 1200);
+      };
+
+      const currentFormState = () => ({
+        theme: fields.themeMode.value || 'system',
+        startBeeAtLaunch: fields.startBee.checked,
+        startIpfsAtLaunch: fields.startIpfs.checked,
+        enableRadicleIntegration: isWindows ? false : fields.enableRadicle.checked,
+        startRadicleAtLaunch: isWindows ? false : fields.startRadicle.checked,
+        enableIdentityWallet: fields.enableIdentity.checked,
+        autoUpdate: fields.autoUpdate.checked,
+        enableEnsCustomRpc: fields.enableEnsCustomRpc.checked,
+        ensRpcUrl: (fields.ensRpcUrl.value || '').trim(),
+      });
+
+      const applyFormState = (settings) => {
+        if (!settings) return;
+        fields.themeMode.value = settings.theme || 'system';
+        fields.startBee.checked = settings.startBeeAtLaunch !== false;
+        fields.startIpfs.checked = settings.startIpfsAtLaunch !== false;
+        fields.enableRadicle.checked = settings.enableRadicleIntegration === true;
+        fields.startRadicle.checked = settings.startRadicleAtLaunch === true;
+        fields.enableIdentity.checked = settings.enableIdentityWallet === true;
+        fields.autoUpdate.checked = settings.autoUpdate !== false;
+        fields.enableEnsCustomRpc.checked = settings.enableEnsCustomRpc === true;
+        fields.ensRpcUrl.value = settings.ensRpcUrl || '';
+        setEnsRpcBlockVisible(fields.enableEnsCustomRpc.checked);
+        setFieldEnabled(fields.enableRadicle, fields.startRadicleRow, fields.startRadicle);
+        setEnsRpcStatus('', '');
+      };
+
+      let cachedSettings = null;
+      let cachedRegistry = null;
+
+      // Render the Swarm-mode row based on (beeNodeMode, registry.bee.mode).
+      // The toggle metaphor doesn't fit here: turning light mode ON requires a
+      // multi-step funding/chequebook/stamp flow (handled by the wallet
+      // sidebar's publish-setup checklist), while turning it OFF is a one-click
+      // revert. So we render an asymmetric row: setup-link vs revert-button.
+      const renderSwarmModeRow = (settings, registry) => {
+        const beeMode = settings?.beeNodeMode === 'light' ? 'light' : 'ultraLight';
+        const registryMode = registry?.bee?.mode || 'none';
+
+        // Use onclick (not addEventListener) so each render atomically replaces
+        // the prior handler — handler closes over the current state, and we
+        // re-render across state transitions.
+        const showAction = (label, handler) => {
+          swarmModeBtn.hidden = false;
+          swarmModeBtn.disabled = false;
+          swarmModeBtn.textContent = label;
+          swarmModeBtn.onclick = handler;
+        };
+
+        const hideAction = () => {
+          swarmModeBtn.hidden = true;
+          swarmModeBtn.onclick = null;
+        };
+
+        if (registryMode === 'reused' || registryMode === 'external') {
+          swarmModeHelp.textContent =
+            'Connected to an external Swarm node — mode is managed there.';
+          hideAction();
+          return;
+        }
+
+        if (registryMode === 'starting' || registryMode === 'stopping') {
+          swarmModeHelp.textContent = 'Switching…';
+          swarmModeBtn.hidden = false;
+          swarmModeBtn.disabled = true;
+          swarmModeBtn.textContent = 'Please wait';
+          swarmModeBtn.onclick = null;
+          return;
+        }
+
+        if (registryMode === 'none' || registryMode === 'error') {
+          swarmModeHelp.textContent = 'Start the Swarm node to configure its mode.';
+          hideAction();
+          return;
+        }
+
+        if (beeMode === 'light') {
+          swarmModeHelp.textContent = 'Light — node can publish to Swarm.';
+          showAction('Switch back to ultra-light', async () => {
+            swarmModeBtn.disabled = true;
+            const ok = await freedomAPI.saveSettings({ beeNodeMode: 'ultraLight' });
+            if (!ok) swarmModeBtn.disabled = false;
+          });
+          return;
+        }
+
+        // The publish-setup flow lives inside the wallet sidebar, which is gated
+        // by the Identity & Wallet feature flag. If that's off, offering a button
+        // would deep-link into a sidebar the user can't open.
+        if (settings?.enableIdentityWallet !== true) {
+          swarmModeHelp.textContent =
+            'Ultra-light — read-only. Enable Identity & Wallet (in Experimental, above) to set up publishing.';
+          hideAction();
+          return;
+        }
+
+        swarmModeHelp.textContent =
+          'Ultra-light — read-only. Set up publishing to switch to light mode.';
+        showAction('Set up publishing →', () => {
+          freedomAPI.openPublishSetup().catch(() => {});
+        });
+      };
+
+      const refreshSwarmModeRow = async () => {
+        try {
+          cachedRegistry = await freedomAPI.getServiceRegistry();
+        } catch {
+          cachedRegistry = null;
+        }
+        renderSwarmModeRow(cachedSettings, cachedRegistry);
+      };
+
+      const save = async () => {
+        const ok = await freedomAPI.saveSettings(currentFormState());
+        if (ok) {
+          showSaved();
+        } else {
+          setEnsRpcStatus('Failed to save settings', 'error');
+        }
+      };
+
+      fields.themeMode.addEventListener('change', save);
+      fields.startBee.addEventListener('change', save);
+      fields.startIpfs.addEventListener('change', save);
+      fields.enableRadicle.addEventListener('change', () => {
+        setFieldEnabled(fields.enableRadicle, fields.startRadicleRow, fields.startRadicle);
+        save();
+      });
+      fields.startRadicle.addEventListener('change', save);
+      fields.enableIdentity.addEventListener('change', save);
+      fields.autoUpdate.addEventListener('change', save);
+
+      fields.enableEnsCustomRpc.addEventListener('change', () => {
+        setEnsRpcBlockVisible(fields.enableEnsCustomRpc.checked);
+        save();
+      });
+
+      // Persist on blur only — autosaving mid-typing would briefly persist
+      // partial URLs (e.g. http://localh) that the ENS resolver picks up on
+      // the next lookup.
+      fields.ensRpcUrl.addEventListener('input', () => setEnsRpcStatus('', ''));
+      fields.ensRpcUrl.addEventListener('blur', save);
+
+      fields.ensRpcTest.addEventListener('click', async () => {
+        const url = (fields.ensRpcUrl.value || '').trim();
+        if (!url) {
+          setEnsRpcStatus('Enter a URL to test', 'error');
+          return;
+        }
+        setEnsRpcStatus('Testing...', 'testing');
+        fields.ensRpcTest.disabled = true;
+        try {
+          const result = await freedomAPI.testEnsRpc(url);
+          if (result?.success) {
+            setEnsRpcStatus('Connected (block #' + result.blockNumber + ')', 'success');
+          } else {
+            setEnsRpcStatus(result?.error?.message || 'Connection failed', 'error');
+          }
+        } catch (err) {
+          setEnsRpcStatus(err?.message || 'Test failed', 'error');
+        } finally {
+          fields.ensRpcTest.disabled = false;
+        }
+      });
+
+      const formStateMatches = (settings) => {
+        const form = currentFormState();
+        for (const key of Object.keys(form)) {
+          if (form[key] !== settings[key]) return false;
+        }
+        return true;
+      };
+
+      // Broadcasts from main keep a second open settings tab in sync; skip the
+      // form re-render when the payload matches what's already on screen so we
+      // don't clobber an in-flight edit (e.g. the ENS RPC input mid-type).
+      // Always refresh the Swarm-mode row — beeNodeMode lives outside the form
+      // and a flip changes the registry too.
+      freedomAPI.onSettingsUpdated?.((settings) => {
+        if (!settings) return;
+        cachedSettings = settings;
+        if (!formStateMatches(settings)) {
+          applyFormState(settings);
+        }
+        refreshSwarmModeRow();
+      });
+
+      (async () => {
+        try {
+          const platform = await freedomAPI.getPlatform();
+          isWindows = platform === 'win32';
+          if (isWindows) {
+            // No official Radicle binaries for Windows yet.
+            document
+              .querySelectorAll('[data-radicle]')
+              .forEach((el) => (el.style.display = 'none'));
+          }
+        } catch {
+          // Non-fatal — assume non-Windows.
+        }
+
+        try {
+          const [settings, registry] = await Promise.all([
+            freedomAPI.getSettings(),
+            freedomAPI.getServiceRegistry().catch(() => null),
+          ]);
+          cachedSettings = settings;
+          cachedRegistry = registry;
+          applyFormState(settings);
+          renderSwarmModeRow(settings, registry);
+        } catch {
+          setEnsRpcStatus('Failed to load settings', 'error');
+        }
+      })();
+    </script>
+  </body>
+</html>

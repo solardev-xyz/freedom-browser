@@ -240,6 +240,9 @@ describe('ipc-handlers', () => {
 
     await ctx.ipcMain.handlers.get(IPC.OPEN_URL_IN_NEW_TAB)(event, 'https://open.example');
     expect(hostWebContents.send).toHaveBeenCalledWith('tab:new-with-url', 'https://open.example');
+
+    await ctx.ipcMain.handlers.get(IPC.SIDEBAR_OPEN_PUBLISH_SETUP)(event);
+    expect(hostWebContents.send).toHaveBeenCalledWith(IPC.SIDEBAR_OPEN_PUBLISH_SETUP);
   });
 
   test('saves images through the dialog workflow', async () => {

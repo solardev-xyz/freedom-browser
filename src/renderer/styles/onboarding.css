@@ -420,6 +420,11 @@
   height: 14px;
 }
 
+.mnemonic-action-btn .toggle-label {
+  font-size: 13px;
+  color: var(--text);
+}
+
 .mnemonic-action-btn .icon-hide {
   display: none;
 }

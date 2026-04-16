@@ -33,6 +33,38 @@ const guardInternal =
     return fn(...args);
   };
 
+// Webviews reuse the same webContents across navigations, so ipcRenderer
+// listeners registered by one page survive into the next. Track every
+// subscription and tear them all down on pagehide so callers don't have to.
+const activeSubscriptions = new Set();
+if (typeof window !== 'undefined') {
+  window.addEventListener('pagehide', () => {
+    for (const unsubscribe of activeSubscriptions) {
+      try {
+        unsubscribe();
+      } catch {
+        // best-effort cleanup
+      }
+    }
+    activeSubscriptions.clear();
+  });
+}
+
+const guardInternalSubscription = (name, channel) => (callback) => {
+  if (!isInternalPage()) {
+    console.warn(`[freedomAPI] blocked subscription "${name}" on non-internal page`);
+    return () => {};
+  }
+  const handler = (_event, payload) => callback(payload);
+  ipcRenderer.on(channel, handler);
+  const unsubscribe = () => {
+    ipcRenderer.removeListener(channel, handler);
+    activeSubscriptions.delete(unsubscribe);
+  };
+  activeSubscriptions.add(unsubscribe);
+  return unsubscribe;
+};
+
 // Expose APIs to internal pages (guarded for safety)
 contextBridge.exposeInMainWorld('freedomAPI', {
   // History
@@ -41,8 +73,30 @@ contextBridge.exposeInMainWorld('freedomAPI', {
   removeHistory: guardInternal('removeHistory', (id) => ipcRenderer.invoke('history:remove', id)),
   clearHistory: guardInternal('clearHistory', () => ipcRenderer.invoke('history:clear')),
 
-  // Settings (read-only for internal pages)
+  // Settings
   getSettings: guardInternal('getSettings', () => ipcRenderer.invoke('settings:get')),
+  saveSettings: guardInternal('saveSettings', (settings) =>
+    ipcRenderer.invoke('settings:save', settings)
+  ),
+
+  // Platform / environment info needed by settings page
+  getPlatform: guardInternal('getPlatform', () => ipcRenderer.invoke('window:get-platform')),
+
+  // ENS RPC test (used by settings page)
+  testEnsRpc: guardInternal('testEnsRpc', (url) => ipcRenderer.invoke('ens:test-rpc', { url })),
+
+  // Service registry snapshot (read-only).
+  getServiceRegistry: guardInternal('getServiceRegistry', () =>
+    ipcRenderer.invoke('service-registry:get')
+  ),
+
+  // Opens the sidebar publish-setup checklist in the host window.
+  openPublishSetup: guardInternal('openPublishSetup', () =>
+    ipcRenderer.invoke('sidebar:open-publish-setup')
+  ),
+
+  // Auto-unsubscribed on pagehide.
+  onSettingsUpdated: guardInternalSubscription('onSettingsUpdated', 'settings:updated'),
 
   // Bookmarks (read-only for internal pages)
   getBookmarks: guardInternal('getBookmarks', () => ipcRenderer.invoke('bookmarks:get')),

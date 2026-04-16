@@ -4,7 +4,8 @@
     "history": "history.html",
     "links": "links.html",
     "protocol-test": "protocol-test.html",
-    "publish": "publish.html"
+    "publish": "publish.html",
+    "settings": "settings.html"
   },
   "other": ["error.html", "rad-browser.html"]
 }

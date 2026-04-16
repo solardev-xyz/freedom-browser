@@ -35,10 +35,12 @@ module.exports = {
 
   // ENS resolution
   ENS_RESOLVE: 'ens:resolve',
+  ENS_TEST_RPC: 'ens:test-rpc',
 
   // Settings
   SETTINGS_GET: 'settings:get',
   SETTINGS_SAVE: 'settings:save',
+  SETTINGS_UPDATED: 'settings:updated',
 
   // Bzz routing (Swarm)
   BZZ_SET_BASE: 'bzz:set-base',
@@ -74,6 +76,7 @@ module.exports = {
   GET_WEBVIEW_PRELOAD_PATH: 'internal:get-webview-preload-path',
   GET_INTERNAL_PAGES: 'internal:get-pages',
   OPEN_URL_IN_NEW_TAB: 'internal:open-url-in-new-tab',
+  SIDEBAR_OPEN_PUBLISH_SETUP: 'sidebar:open-publish-setup',
 
   // Favicons
   FAVICON_GET: 'favicon:get',

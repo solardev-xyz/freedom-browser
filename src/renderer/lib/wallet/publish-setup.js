@@ -400,13 +400,6 @@ async function handleSwitchToLightMode() {
     if (!success) {
       throw new Error('Failed to save settings');
     }
-
-    window.dispatchEvent(new CustomEvent('settings:updated', { detail: nextSettings }));
-
-    if (state.currentBeeStatus === 'running' || state.currentBeeStatus === 'starting') {
-      await window.bee?.stop?.();
-      await window.bee?.start?.();
-    }
   } catch (err) {
     console.error('[PublishSetup] Failed to switch to light mode:', err);
     alert(err.message || 'Failed to switch to light mode');

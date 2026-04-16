@@ -1,59 +1,16 @@
-// Settings modal UI
+// Theme bootstrap and chrome-side reactions to settings:updated broadcasts.
+// The settings form itself lives at freedom://settings.
+
 import { pushDebug } from './debug.js';
-import { setMenuOpen } from './menus.js';
 
 const electronAPI = window.electronAPI;
 
-// DOM elements (initialized in initSettings)
-let settingsBtn = null;
-let settingsModal = null;
-let closeSettingsBtn = null;
-let themeModeSelect = null;
-let startBeeAtLaunchCheckbox = null;
-let startIpfsAtLaunchCheckbox = null;
-let enableBeeLightModeCheckbox = null;
-let enableRadicleIntegrationCheckbox = null;
-let startRadicleRow = null;
-let startRadicleAtLaunchCheckbox = null;
-let enableIdentityWalletCheckbox = null;
-let autoUpdateCheckbox = null;
-let experimentalSection = null;
-let isWindows = false;
+let previous = { theme: 'system', beeNodeMode: 'ultraLight', enableRadicleIntegration: false };
 
-// Current theme mode setting
-let currentThemeMode = 'system';
-let currentBeeNodeMode = 'ultraLight';
-let currentRadicleIntegrationEnabled = false;
+const systemPrefersDark = () => window.matchMedia('(prefers-color-scheme: dark)').matches;
 
-// Callback for when settings change (set by navigation module)
-let onSettingsChanged = null;
-
-export const setOnSettingsChanged = (callback) => {
-  onSettingsChanged = callback;
-};
-
-// Check if system prefers dark mode
-const systemPrefersDark = () => {
-  return window.matchMedia('(prefers-color-scheme: dark)').matches;
-};
-
-const updateRadicleSettingsVisibility = () => {
-  const enabled = enableRadicleIntegrationCheckbox?.checked === true;
-  startRadicleRow?.classList.toggle('disabled', !enabled);
-  if (startRadicleAtLaunchCheckbox) {
-    startRadicleAtLaunchCheckbox.disabled = !enabled;
-  }
-};
-
-// Apply theme to document based on mode
 export const applyTheme = (mode) => {
-  let isDark;
-  if (mode === 'system') {
-    isDark = systemPrefersDark();
-  } else {
-    isDark = mode === 'dark';
-  }
-
+  const isDark = mode === 'system' ? systemPrefersDark() : mode === 'dark';
   if (isDark) {
     document.documentElement.removeAttribute('data-theme');
   } else {
@@ -61,17 +18,17 @@ export const applyTheme = (mode) => {
   }
 };
 
-// Load and apply theme on startup
 export const initTheme = async () => {
   const settings = await electronAPI.getSettings();
-  currentThemeMode = settings?.theme || 'system';
-  currentBeeNodeMode = settings?.beeNodeMode === 'light' ? 'light' : 'ultraLight';
-  currentRadicleIntegrationEnabled = settings?.enableRadicleIntegration === true;
-  applyTheme(currentThemeMode);
+  previous = {
+    theme: settings?.theme || 'system',
+    beeNodeMode: settings?.beeNodeMode === 'light' ? 'light' : 'ultraLight',
+    enableRadicleIntegration: settings?.enableRadicleIntegration === true,
+  };
+  applyTheme(previous.theme);
 
-  // Listen for system theme changes
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
-    if (currentThemeMode === 'system') {
+    if (previous.theme === 'system') {
       applyTheme('system');
     }
   });
@@ -84,7 +41,7 @@ const applyBeeModeChange = async (nextBeeNodeMode) => {
   try {
     registry = await window.serviceRegistry?.getRegistry?.();
   } catch {
-    // Fall back to restarting the bundled node if we can't inspect registry state.
+    // Fall back to restart check below when we can't inspect registry state.
   }
 
   if (registry?.bee?.mode === 'reused') {
@@ -96,9 +53,7 @@ const applyBeeModeChange = async (nextBeeNodeMode) => {
 
   try {
     const { status } = await window.bee.getStatus();
-    if (status !== 'running' && status !== 'starting') {
-      return;
-    }
+    if (status !== 'running' && status !== 'starting') return;
 
     pushDebug(
       `Restarting Swarm node to apply ${nextBeeNodeMode === 'light' ? 'light' : 'ultra-light'} mode`
@@ -110,118 +65,31 @@ const applyBeeModeChange = async (nextBeeNodeMode) => {
   }
 };
 
-// Save current settings state
-const saveSettings = async () => {
-  const previousBeeNodeMode = currentBeeNodeMode;
-  const wasRadicleIntegrationEnabled = currentRadicleIntegrationEnabled;
-  const newSettings = {
-    theme: themeModeSelect?.value || 'system',
-    beeNodeMode: enableBeeLightModeCheckbox?.checked ? 'light' : 'ultraLight',
-    startBeeAtLaunch: startBeeAtLaunchCheckbox?.checked ?? true,
-    startIpfsAtLaunch: startIpfsAtLaunchCheckbox?.checked ?? true,
-    enableRadicleIntegration: isWindows ? false : (enableRadicleIntegrationCheckbox?.checked ?? false),
-    startRadicleAtLaunch: isWindows ? false : (startRadicleAtLaunchCheckbox?.checked ?? false),
-    enableIdentityWallet: enableIdentityWalletCheckbox?.checked ?? false,
-    autoUpdate: autoUpdateCheckbox?.checked ?? true,
-  };
+export const initSettingsEffects = (onSettingsChanged) => {
+  window.addEventListener('settings:updated', async (event) => {
+    const next = event.detail;
+    if (!next) return;
 
-  const success = await electronAPI.saveSettings(newSettings);
-  if (success) {
-    if (wasRadicleIntegrationEnabled && !newSettings.enableRadicleIntegration) {
+    const prev = previous;
+    previous = {
+      theme: next.theme || 'system',
+      beeNodeMode: next.beeNodeMode === 'light' ? 'light' : 'ultraLight',
+      enableRadicleIntegration: next.enableRadicleIntegration === true,
+    };
+
+    if (prev.theme !== previous.theme) {
+      applyTheme(previous.theme);
+    }
+
+    if (prev.enableRadicleIntegration && !previous.enableRadicleIntegration) {
       window.radicle?.stop?.().catch(() => {});
     }
-    pushDebug('Settings saved');
-    currentThemeMode = newSettings.theme;
-    currentBeeNodeMode = newSettings.beeNodeMode;
-    currentRadicleIntegrationEnabled = newSettings.enableRadicleIntegration;
-    applyTheme(currentThemeMode);
-    window.dispatchEvent(
-      new CustomEvent('settings:updated', {
-        detail: newSettings,
-      })
-    );
-    if (onSettingsChanged) {
-      onSettingsChanged();
-    }
-    if (previousBeeNodeMode !== newSettings.beeNodeMode) {
-      await applyBeeModeChange(newSettings.beeNodeMode);
-    }
-  } else {
-    pushDebug('Failed to save settings');
-  }
-};
 
-export const initSettings = async () => {
-  // Initialize DOM elements
-  settingsBtn = document.getElementById('settings-btn');
-  settingsModal = document.getElementById('settings-modal');
-  closeSettingsBtn = document.getElementById('close-settings');
-  themeModeSelect = document.getElementById('theme-mode');
-  startBeeAtLaunchCheckbox = document.getElementById('start-bee-at-launch');
-  startIpfsAtLaunchCheckbox = document.getElementById('start-ipfs-at-launch');
-  enableBeeLightModeCheckbox = document.getElementById('enable-bee-light-mode');
-  enableRadicleIntegrationCheckbox = document.getElementById('enable-radicle-integration');
-  startRadicleRow = document.getElementById('start-radicle-row');
-  startRadicleAtLaunchCheckbox = document.getElementById('start-radicle-at-launch');
-  enableIdentityWalletCheckbox = document.getElementById('enable-identity-wallet');
-  autoUpdateCheckbox = document.getElementById('auto-update');
-  experimentalSection = document.getElementById('experimental-section');
+    pushDebug('Settings updated');
+    onSettingsChanged?.();
 
-  // No official Radicle binaries for Windows yet — hide the section entirely
-  const platform = await electronAPI.getPlatform();
-  isWindows = platform === 'win32';
-  if (isWindows && experimentalSection) {
-    experimentalSection.style.display = 'none';
-  }
-
-  // Auto-save on any setting change
-  themeModeSelect?.addEventListener('change', saveSettings);
-  startBeeAtLaunchCheckbox?.addEventListener('change', saveSettings);
-  startIpfsAtLaunchCheckbox?.addEventListener('change', saveSettings);
-  enableBeeLightModeCheckbox?.addEventListener('change', saveSettings);
-  enableRadicleIntegrationCheckbox?.addEventListener('change', () => {
-    updateRadicleSettingsVisibility();
-    saveSettings();
-  });
-  startRadicleAtLaunchCheckbox?.addEventListener('change', saveSettings);
-  enableIdentityWalletCheckbox?.addEventListener('change', saveSettings);
-  autoUpdateCheckbox?.addEventListener('change', saveSettings);
-  window.addEventListener('settings:updated', (event) => {
-    currentBeeNodeMode = event.detail?.beeNodeMode === 'light' ? 'light' : 'ultraLight';
-  });
-
-  settingsBtn?.addEventListener('click', async () => {
-    setMenuOpen(false);
-    const settings = await electronAPI.getSettings();
-    if (settings) {
-      if (themeModeSelect) themeModeSelect.value = settings.theme || 'system';
-      if (startBeeAtLaunchCheckbox)
-        startBeeAtLaunchCheckbox.checked = settings.startBeeAtLaunch !== false;
-      if (startIpfsAtLaunchCheckbox)
-        startIpfsAtLaunchCheckbox.checked = settings.startIpfsAtLaunch !== false;
-      if (enableBeeLightModeCheckbox)
-        enableBeeLightModeCheckbox.checked = settings.beeNodeMode === 'light';
-      currentBeeNodeMode = settings?.beeNodeMode === 'light' ? 'light' : 'ultraLight';
-      if (enableRadicleIntegrationCheckbox)
-        enableRadicleIntegrationCheckbox.checked = settings.enableRadicleIntegration === true;
-      currentRadicleIntegrationEnabled = settings.enableRadicleIntegration === true;
-      if (startRadicleAtLaunchCheckbox)
-        startRadicleAtLaunchCheckbox.checked = settings.startRadicleAtLaunch === true;
-      if (enableIdentityWalletCheckbox)
-        enableIdentityWalletCheckbox.checked = settings.enableIdentityWallet === true;
-      if (autoUpdateCheckbox) autoUpdateCheckbox.checked = settings.autoUpdate !== false;
-      updateRadicleSettingsVisibility();
-    }
-    settingsModal?.showModal();
-  });
-
-  closeSettingsBtn?.addEventListener('click', () => {
-    settingsModal?.close();
-  });
-
-  settingsModal?.addEventListener('click', (event) => {
-    if (event.target === settingsModal) {
-      settingsModal.close();
+    if (prev.beeNodeMode !== previous.beeNodeMode) {
+      await applyBeeModeChange(previous.beeNodeMode);
     }
   });
 };

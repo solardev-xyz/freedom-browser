@@ -134,6 +134,11 @@ describe('webview-preload', () => {
       ['removeHistory', [5], IPC.HISTORY_REMOVE, [5]],
       ['clearHistory', [], IPC.HISTORY_CLEAR, []],
       ['getSettings', [], IPC.SETTINGS_GET, []],
+      ['saveSettings', [{ theme: 'light' }], IPC.SETTINGS_SAVE, [{ theme: 'light' }]],
+      ['getPlatform', [], IPC.WINDOW_GET_PLATFORM, []],
+      ['testEnsRpc', ['http://localhost:8545'], IPC.ENS_TEST_RPC, [{ url: 'http://localhost:8545' }]],
+      ['getServiceRegistry', [], IPC.SERVICE_REGISTRY_GET, []],
+      ['openPublishSetup', [], IPC.SIDEBAR_OPEN_PUBLISH_SETUP, []],
       ['getBookmarks', [], IPC.BOOKMARKS_GET, []],
       ['openInNewTab', ['https://example.com'], IPC.OPEN_URL_IN_NEW_TAB, ['https://example.com']],
       ['getCachedFavicon', ['https://example.com'], IPC.FAVICON_GET_CACHED, ['https://example.com']],
@@ -150,6 +155,46 @@ describe('webview-preload', () => {
     }
 
     expect(consoleLogSpy).toHaveBeenCalledWith('[webview-preload] Loaded (freedomAPI + context menu + ethereum + swarm provider)');
+  });
+
+  test('onSettingsUpdated forwards the broadcast and unsubscribes on pagehide', () => {
+    const { exposures, ipcRenderer } = loadWebviewPreloadModule();
+
+    const callback = jest.fn();
+    const unsubscribe = exposures.freedomAPI.onSettingsUpdated(callback);
+    expect(typeof unsubscribe).toBe('function');
+
+    ipcRenderer.emit('settings:updated', { theme: 'dark' });
+    expect(callback).toHaveBeenCalledWith({ theme: 'dark' });
+
+    const pagehideHandler = global.window.addEventListener.mock.calls.find(
+      ([event]) => event === 'pagehide'
+    )?.[1];
+    expect(pagehideHandler).toBeDefined();
+
+    pagehideHandler();
+    callback.mockClear();
+    ipcRenderer.emit('settings:updated', { theme: 'light' });
+    expect(callback).not.toHaveBeenCalled();
+  });
+
+  test('onSettingsUpdated returns a noop on non-internal pages', () => {
+    const { exposures, ipcRenderer } = loadWebviewPreloadModule({
+      location: {
+        href: 'https://example.com/',
+        protocol: 'https:',
+        pathname: '/',
+      },
+    });
+
+    const callback = jest.fn();
+    const unsubscribe = exposures.freedomAPI.onSettingsUpdated(callback);
+    expect(typeof unsubscribe).toBe('function');
+    ipcRenderer.emit('settings:updated', { theme: 'dark' });
+    expect(callback).not.toHaveBeenCalled();
+    expect(consoleWarnSpy).toHaveBeenCalledWith(
+      '[freedomAPI] blocked subscription "onSettingsUpdated" on non-internal page'
+    );
   });
 
   test('blocks freedomAPI access on non-internal pages', async () => {

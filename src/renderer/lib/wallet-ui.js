@@ -6,6 +6,7 @@
  */
 
 import { showOnboarding } from './onboarding.js';
+import { open as openSidebarPanel, isFeatureEnabled as isSidebarFeatureEnabled } from './sidebar.js';
 import { walletState } from './wallet/wallet-state.js';
 import { truncateAddress, timeAgo } from './wallet/wallet-utils.js';
 
@@ -23,7 +24,7 @@ import { initChainSwitcher, updateChainSwitcherDisplay, getSelectedChainId, setS
 import { initReceive, closeReceive } from './wallet/receive.js';
 import { initWalletSettings, closeWalletSettings } from './wallet/wallet-settings.js';
 import { initCreateWallet, openCreateWallet, closeCreateWallet } from './wallet/create-wallet.js';
-import { initPublishSetup, closePublishSetup } from './wallet/publish-setup.js';
+import { initPublishSetup, openPublishSetup, closePublishSetup } from './wallet/publish-setup.js';
 import { initStampManager, closeStampManager } from './wallet/stamp-manager.js';
 import { initChequebookDeposit, closeChequebookDeposit } from './wallet/chequebook-deposit.js';
 import { initSwarmConnect, showSwarmConnect, updateSwarmConnectionBanner, showSwarmPublishApproval, showSwarmFeedApproval } from './wallet/swarm-connect.js';
@@ -283,6 +284,25 @@ async function updateSecurityStatus() {
 // ============================================
 // Tab Switching
 // ============================================
+
+/**
+ * Open the sidebar, switch to the Nodes tab, and surface the publish-setup
+ * checklist. Single entry point used by the freedom://settings deep-link.
+ *
+ * Bails out when:
+ *  - the Identity & Wallet feature is disabled (sidebar.open() would no-op
+ *    silently while openPublishSetup() would still start its 5s polling
+ *    interval against a hidden screen)
+ *  - the user is in onboarding (switchTab no-ops in setup mode and we don't
+ *    want publish-setup floating on top of the wizard)
+ */
+export function openPublishSetupFlow() {
+  if (!isSidebarFeatureEnabled()) return;
+  if (walletState.viewMode === 'setup') return;
+  openSidebarPanel();
+  switchTab('nodes');
+  openPublishSetup();
+}
 
 /**
  * Switch between Wallet and Identity tabs

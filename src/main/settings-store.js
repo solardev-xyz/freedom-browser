@@ -1,5 +1,5 @@
 const log = require('./logger');
-const { app, ipcMain, nativeTheme } = require('electron');
+const { app, ipcMain, nativeTheme, webContents } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const IPC = require('../shared/ipc-channels');
@@ -26,6 +26,8 @@ const DEFAULT_SETTINGS = {
   startRadicleAtLaunch: false,
   autoUpdate: true,
   showBookmarkBar: false,
+  enableEnsCustomRpc: false,
+  ensRpcUrl: '',
   sidebarOpen: false,
   sidebarWidth: 320,
 };
@@ -60,17 +62,50 @@ function loadSettings() {
   return cachedSettings;
 }
 
+function broadcastSettingsUpdated(merged) {
+  if (!webContents?.getAllWebContents) return;
+  for (const wc of webContents.getAllWebContents()) {
+    try {
+      wc.send(IPC.SETTINGS_UPDATED, merged);
+    } catch {
+      // webContents may be destroyed
+    }
+  }
+}
+
+// Walks DEFAULT_SETTINGS keys in one pass: drops unknown input keys (defense
+// against a buggy or compromised internal page persisting junk to disk) and
+// detects no-op saves at the same time. Relies on every settings value being
+// a primitive — revisit if a nested value is ever added.
 function saveSettings(newSettings) {
   try {
-    const merged = { ...loadSettings(), ...newSettings };
+    const previous = loadSettings();
+    const merged = { ...previous };
+    let changed = false;
+
+    if (newSettings && typeof newSettings === 'object') {
+      for (const key of Object.keys(DEFAULT_SETTINGS)) {
+        if (
+          Object.prototype.hasOwnProperty.call(newSettings, key) &&
+          newSettings[key] !== previous[key]
+        ) {
+          merged[key] = newSettings[key];
+          changed = true;
+        }
+      }
+    }
+
+    if (!changed) return true;
+
     const filePath = getSettingsPath();
     fs.writeFileSync(filePath, JSON.stringify(merged, null, 2), 'utf-8');
     cachedSettings = merged;
 
-    // Apply theme if it changed
-    if (newSettings.theme) {
-      applyNativeTheme(newSettings.theme);
+    if (merged.theme !== previous.theme) {
+      applyNativeTheme(merged.theme);
     }
+
+    broadcastSettingsUpdated(merged);
 
     return true;
   } catch (err) {

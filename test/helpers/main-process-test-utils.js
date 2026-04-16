@@ -147,6 +147,9 @@ function loadMainModule(modulePath, options = {}) {
   const BrowserWindow = options.BrowserWindow || {
     getAllWindows: jest.fn(() => options.windows ?? []),
   };
+  const webContentsMock = options.webContents || {
+    getAllWebContents: jest.fn(() => options.webContentsList ?? []),
+  };
   const dialog = options.dialog || { showSaveDialog: jest.fn() };
   const clipboard = options.clipboard || {
     writeText: jest.fn(),
@@ -164,6 +167,7 @@ function loadMainModule(modulePath, options = {}) {
     ipcRenderer,
     nativeTheme,
     BrowserWindow,
+    webContents: webContentsMock,
     contextBridge,
     dialog,
     clipboard,
@@ -186,6 +190,7 @@ function loadMainModule(modulePath, options = {}) {
     ipcRenderer,
     nativeTheme,
     BrowserWindow,
+    webContents: webContentsMock,
     contextBridge,
     dialog,
     clipboard,
