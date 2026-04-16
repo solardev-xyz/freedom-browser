@@ -1,0 +1,51 @@
+/* Generic on/off pill toggle. Used by the dApp permissions panel and any
+ * other in-app form that needs a checkbox-styled switch.
+ * Service-status toggles (Bee/IPFS/Radicle) live in services.css and use
+ * their own scoped class names. */
+
+.toggle-switch {
+  position: relative;
+  width: 40px;
+  height: 22px;
+  flex-shrink: 0;
+  cursor: default;
+}
+
+.toggle-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+  position: absolute;
+}
+
+.toggle-slider {
+  position: absolute;
+  inset: 0;
+  background: var(--border);
+  border-radius: 11px;
+  transition: background-color 0.2s ease;
+}
+
+.toggle-slider::before {
+  content: '';
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  left: 3px;
+  top: 3px;
+  background: var(--text);
+  border-radius: 50%;
+  transition: transform 0.2s ease;
+}
+
+.toggle-switch input:checked + .toggle-slider {
+  background: #4caf50;
+}
+
+.toggle-switch input:checked + .toggle-slider::before {
+  transform: translateX(18px);
+}
+
+.toggle-switch input:focus + .toggle-slider {
+  box-shadow: 0 0 0 2px rgba(94, 193, 255, 0.3);
+}
