@@ -33,6 +33,38 @@ const guardInternal =
     return fn(...args);
   };
 
+// Webviews reuse the same webContents across navigations, so ipcRenderer
+// listeners registered by one page survive into the next. Track every
+// subscription and tear them all down on pagehide so callers don't have to.
+const activeSubscriptions = new Set();
+if (typeof window !== 'undefined') {
+  window.addEventListener('pagehide', () => {
+    for (const unsubscribe of activeSubscriptions) {
+      try {
+        unsubscribe();
+      } catch {
+        // best-effort cleanup
+      }
+    }
+    activeSubscriptions.clear();
+  });
+}
+
+const guardInternalSubscription = (name, channel) => (callback) => {
+  if (!isInternalPage()) {
+    console.warn(`[freedomAPI] blocked subscription "${name}" on non-internal page`);
+    return () => {};
+  }
+  const handler = (_event, payload) => callback(payload);
+  ipcRenderer.on(channel, handler);
+  const unsubscribe = () => {
+    ipcRenderer.removeListener(channel, handler);
+    activeSubscriptions.delete(unsubscribe);
+  };
+  activeSubscriptions.add(unsubscribe);
+  return unsubscribe;
+};
+
 // Expose APIs to internal pages (guarded for safety)
 contextBridge.exposeInMainWorld('freedomAPI', {
   // History
@@ -53,15 +85,9 @@ contextBridge.exposeInMainWorld('freedomAPI', {
   // ENS RPC test (used by settings page)
   testEnsRpc: guardInternal('testEnsRpc', (url) => ipcRenderer.invoke('ens:test-rpc', { url })),
 
-  // Subscribe to settings:updated broadcasts from the main process
-  onSettingsUpdated: (callback) => {
-    if (!isInternalPage()) {
-      return () => {};
-    }
-    const handler = (_event, settings) => callback(settings);
-    ipcRenderer.on('settings:updated', handler);
-    return () => ipcRenderer.removeListener('settings:updated', handler);
-  },
+  // Subscribe to settings:updated broadcasts from the main process. The
+  // returned unsubscribe also fires automatically on pagehide.
+  onSettingsUpdated: guardInternalSubscription('onSettingsUpdated', 'settings:updated'),
 
   // Bookmarks (read-only for internal pages)
   getBookmarks: guardInternal('getBookmarks', () => ipcRenderer.invoke('bookmarks:get')),
