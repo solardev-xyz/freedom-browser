@@ -73,43 +73,36 @@ function broadcastSettingsUpdated(merged) {
   }
 }
 
-// Strict shallow equality. Safe because every value in DEFAULT_SETTINGS is a
-// primitive (string/number/boolean); revisit if a nested value is added.
-function shallowEqual(a, b) {
-  if (a === b) return true;
-  if (!a || !b) return false;
-  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
-  for (const key of keys) {
-    if (a[key] !== b[key]) return false;
-  }
-  return true;
-}
-
-function pickKnownSettings(input) {
-  if (!input || typeof input !== 'object') return {};
-  const filtered = {};
-  for (const key of Object.keys(DEFAULT_SETTINGS)) {
-    if (Object.prototype.hasOwnProperty.call(input, key)) {
-      filtered[key] = input[key];
-    }
-  }
-  return filtered;
-}
-
+// Walks DEFAULT_SETTINGS keys in one pass: drops unknown input keys (defense
+// against a buggy or compromised internal page persisting junk to disk) and
+// detects no-op saves at the same time. Relies on every settings value being
+// a primitive — revisit if a nested value is ever added.
 function saveSettings(newSettings) {
   try {
     const previous = loadSettings();
-    const sanitized = pickKnownSettings(newSettings);
-    const merged = { ...previous, ...sanitized };
-    if (shallowEqual(previous, merged)) {
-      return true;
+    const merged = { ...previous };
+    let changed = false;
+
+    if (newSettings && typeof newSettings === 'object') {
+      for (const key of Object.keys(DEFAULT_SETTINGS)) {
+        if (
+          Object.prototype.hasOwnProperty.call(newSettings, key) &&
+          newSettings[key] !== previous[key]
+        ) {
+          merged[key] = newSettings[key];
+          changed = true;
+        }
+      }
     }
+
+    if (!changed) return true;
+
     const filePath = getSettingsPath();
     fs.writeFileSync(filePath, JSON.stringify(merged, null, 2), 'utf-8');
     cachedSettings = merged;
 
-    if (sanitized.theme && sanitized.theme !== previous.theme) {
-      applyNativeTheme(sanitized.theme);
+    if (merged.theme !== previous.theme) {
+      applyNativeTheme(merged.theme);
     }
 
     broadcastSettingsUpdated(merged);

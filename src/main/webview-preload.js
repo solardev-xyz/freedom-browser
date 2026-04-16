@@ -85,8 +85,7 @@ contextBridge.exposeInMainWorld('freedomAPI', {
   // ENS RPC test (used by settings page)
   testEnsRpc: guardInternal('testEnsRpc', (url) => ipcRenderer.invoke('ens:test-rpc', { url })),
 
-  // Subscribe to settings:updated broadcasts from the main process. The
-  // returned unsubscribe also fires automatically on pagehide.
+  // Auto-unsubscribed on pagehide.
   onSettingsUpdated: guardInternalSubscription('onSettingsUpdated', 'settings:updated'),
 
   // Bookmarks (read-only for internal pages)
