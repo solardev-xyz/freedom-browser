@@ -1,4 +1,4 @@
-import { applyEnsNamePreservation, deriveDisplayValue } from './url-utils.js';
+import { applyEnsNamePreservation, deriveDisplayValue, isTonHost } from './url-utils.js';
 import { getInternalPageName } from './page-urls.js';
 
 export const resolveProtocolIconType = ({
@@ -23,6 +23,15 @@ export const resolveProtocolIconType = ({
     protocol = 'ipns';
   } else if (normalizedValue.startsWith('rad://') && enableRadicleIntegration) {
     protocol = 'radicle';
+  } else if (normalizedValue.startsWith('ton://')) {
+    protocol = 'ton';
+  } else if (isTonHost(normalizedValue.split(/[/?#]/)[0])) {
+    protocol = 'ton';
+  } else if (normalizedValue.startsWith('http://')) {
+    try {
+      const { hostname } = new URL(normalizedValue);
+      if (isTonHost(hostname)) protocol = 'ton';
+    } catch { /* ignore */ }
   } else if (normalizedValue.startsWith('freedom://')) {
     protocol = null;
   } else if (normalizedValue.startsWith('https://') || currentPageSecure) {

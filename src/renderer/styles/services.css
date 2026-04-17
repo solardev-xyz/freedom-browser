@@ -229,21 +229,99 @@
 /* Disable hover highlight on toggle menu items */
 .bee-toggle:hover,
 .ipfs-toggle:hover,
-.radicle-toggle:hover {
+.radicle-toggle:hover,
+.ton-toggle:hover {
   background: transparent;
+}
+
+/* TON Toggle and Info */
+.ton-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+}
+
+.ton-toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  width: 100%;
+  justify-content: space-between;
+}
+
+.ton-toggle-switch {
+  width: 36px;
+  height: 18px;
+  border-radius: 9px;
+  background: var(--border);
+  position: relative;
+  transition: background 0.2s ease;
+  flex-shrink: 0;
+}
+
+.ton-toggle-knob {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--text);
+  transition: transform 0.2s ease;
+  position: absolute;
+  top: 2px;
+  left: 2px;
+}
+
+.ton-toggle-switch.running {
+  background: #4caf50;
+}
+
+.ton-toggle-switch.starting {
+  background: #ffcc00;
+}
+
+.ton-toggle-switch.running .ton-toggle-knob {
+  transform: translateX(18px);
+}
+
+.ton-info {
+  padding: 8px 14px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+  opacity: 0.8;
+}
+
+.ton-info:not(.visible) {
+  display: none;
+}
+
+.ton-info-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ton-info-label {
+  color: var(--muted);
 }
 
 /* Disabled toggle states for missing binaries */
 .bee-toggle.disabled,
 .ipfs-toggle.disabled,
-.radicle-toggle.disabled {
+.radicle-toggle.disabled,
+.ton-toggle.disabled {
   opacity: 0.4;
   pointer-events: none;
 }
 
 .bee-toggle.disabled .bee-toggle-switch,
 .ipfs-toggle.disabled .ipfs-toggle-switch,
-.radicle-toggle.disabled .radicle-toggle-switch {
+.radicle-toggle.disabled .radicle-toggle-switch,
+.ton-toggle.disabled .ton-toggle-switch {
   background: var(--border);
 }
 

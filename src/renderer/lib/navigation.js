@@ -23,6 +23,7 @@ import {
   deriveBzzBaseFromUrl,
   deriveIpfsBaseFromUrl,
   deriveRadBaseFromUrl,
+  isTonHost,
 } from './url-utils.js';
 import {
   getActiveWebview,
@@ -423,7 +424,7 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null) 
       updateProtocolIcon();
       return;
     }
-    // Invalid Radicle ID — show error page
+    // Invalid Radicle ID, show error page
     const withoutScheme = value.trim().replace(/^rad:\/\//i, '').replace(/^rad:/i, '');
     pushDebug(`Invalid Radicle ID: ${withoutScheme}`);
     const errorUrl = new URL('pages/rad-browser.html', window.location.href);
@@ -437,6 +438,28 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null) 
     syncBzzBase(null);
     syncIpfsBase(null);
     return;
+  }
+
+  // Try TON (.ton / .adnl / .bag hostnames, route as plain HTTP, no TLS upgrade)
+  {
+    const stripped = value.trim().replace(/^(https?|tonsite|ton):\/\//i, '');
+    const rawHost = stripped.split('/')[0];
+    if (isTonHost(rawHost)) {
+      const path = stripped.slice(rawHost.length) || '/';
+      const tonUrl = `http://${rawHost}${path}`;
+      const displayPath = (stripped.slice(rawHost.length) || '').replace(/\/+$/, '');
+      addressInput.value = displayOverride || `ton://${rawHost}${displayPath}`;
+      pushDebug(`[AddressBar] Loading TON target: ${tonUrl}`);
+      navState.pendingTitleForUrl = tonUrl;
+      navState.pendingNavigationUrl = tonUrl;
+      navState.hasNavigatedDuringCurrentLoad = false;
+      webview.loadURL(tonUrl);
+      syncBzzBase(null);
+      syncIpfsBase(null);
+      syncRadBase(null);
+      updateProtocolIcon();
+      return;
+    }
   }
 
   // Try IPFS (ipfs://, ipns://, or raw CID)

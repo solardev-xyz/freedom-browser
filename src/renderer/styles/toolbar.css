@@ -143,6 +143,11 @@
   stroke: #9b59b6;
 }
 
+.protocol-icon[data-protocol='ton'] .icon-ton {
+  display: block;
+  color: #4db8ff;
+}
+
 /* HTTP - muted */
 .protocol-icon[data-protocol='http'] .icon-http {
   display: block;

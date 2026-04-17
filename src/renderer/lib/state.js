@@ -25,6 +25,11 @@ export const state = {
       statusMessage: null,
       tempMessage: null,
     },
+    ton: {
+      mode: 'none',
+      statusMessage: null,
+      tempMessage: null,
+    },
   },
 
   // Bee/Swarm Gateway config (defaults from env or hardcoded, updated from registry)
@@ -93,6 +98,10 @@ export const state = {
 
   // Navigation state for Radicle
   currentRadBase: null,
+
+  // TON state
+  currentTonStatus: 'stopped',
+  suppressTonRunningStatus: false,
 
   // Feature flags
   enableRadicleIntegration: false,
