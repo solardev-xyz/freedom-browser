@@ -133,7 +133,8 @@ export function initSend() {
 function setupSendScreen() {
   const sendBtn = document.getElementById('wallet-send-btn');
   if (sendBtn) {
-    sendBtn.addEventListener('click', openSend);
+    // Arrow wrapper so the click Event isn't passed as `options`.
+    sendBtn.addEventListener('click', () => openSend());
   }
 
   if (sendBackBtn) {
@@ -369,14 +370,23 @@ function closeSendChainDropdown() {
 }
 
 function populateSendChainSelector() {
-  const chainsWithBalance = getChainsWithBalance();
+  // Carry over the chain the user has active on the main wallet view, even
+  // if it has no balance yet — their intent beats "pick the top chain with
+  // funds". selectedChainId is null only in the "All chains" view.
+  const selected = walletState.selectedChainId;
+  if (selected !== null && walletState.registeredChains[selected]) {
+    selectSendChain(selected);
+    return;
+  }
 
+  const chainsWithBalance = getChainsWithBalance();
   if (chainsWithBalance.length > 0) {
     selectSendChain(chainsWithBalance[0].chainId);
-  } else {
-    if (sendChainName) sendChainName.textContent = 'No funds';
-    if (sendAssetName) sendAssetName.textContent = 'No assets';
+    return;
   }
+
+  if (sendChainName) sendChainName.textContent = 'No funds';
+  if (sendAssetName) sendAssetName.textContent = 'No assets';
 }
 
 function applySendOpenOptions(options = {}) {
