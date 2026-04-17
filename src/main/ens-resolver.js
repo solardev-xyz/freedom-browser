@@ -25,8 +25,9 @@ const CONTENTHASH_SELECTOR = '0xbc1c4a73';
 //   0xe3 01 70             — ipfs-ns, cidv1, dag-pb
 //   0xe5 01 72             — ipns-ns, cidv1, libp2p-key
 //   0xe4 01 01 fa 01 1b 20 — swarm-ns + manifest codec, 32-byte keccak
-const IPFS_CONTENTHASH_RE = /^0x(e3010170|e5010172)(([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]*))$/;
-const SWARM_CONTENTHASH_RE = /^0xe40101fa011b20([0-9a-f]{64})$/;
+const IPFS_CONTENTHASH_RE =
+  /^0x(?<codecPrefix>e3010170|e5010172)(?<multihash>(?<mhCode>[0-9a-f]{2})(?<mhLen>[0-9a-f]{2})(?<digest>[0-9a-f]*))$/;
+const SWARM_CONTENTHASH_RE = /^0xe40101fa011b20(?<swarmHash>[0-9a-f]{64})$/;
 
 // Public RPC providers as fallbacks
 const PUBLIC_RPC_PROVIDERS = [
@@ -58,12 +59,10 @@ function getRpcProviders() {
   return PUBLIC_RPC_PROVIDERS;
 }
 
-// Cache for working provider
 let cachedProvider = null;
 let cachedProviderUrl = null;
 
-// Cache for ENS resolution results (name -> { result, timestamp })
-const ENS_CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
+const ENS_CACHE_TTL_MS = 15 * 60 * 1000;
 const ensResultCache = new Map();
 
 // Independent from ensResultCache so content and addr lookups don't evict each other.
@@ -216,7 +215,7 @@ async function resolveEnsContent(name) {
   let lastError;
   for (let attempt = 1; attempt <= MAX_RESOLUTION_RETRIES; attempt++) {
     try {
-      return await doResolveEnsContent(normalized, attempt);
+      return await doResolveEnsContent(normalized);
     } catch (err) {
       lastError = err;
       if (isProviderError(err) && attempt < MAX_RESOLUTION_RETRIES) {
@@ -236,14 +235,10 @@ async function resolveEnsContent(name) {
   throw lastError;
 }
 
-async function doResolveEnsContent(normalized, attempt) {
+async function doResolveEnsContent(normalized) {
   const provider = await getWorkingProvider();
   const node = ethers.namehash(normalized);
   const callData = CONTENTHASH_SELECTOR + node.slice(2);
-
-  log.info(
-    `[ens] UR resolving content for: ${normalized}${attempt > 1 ? ` (attempt ${attempt})` : ''}`
-  );
 
   let urResult;
   try {
@@ -297,10 +292,10 @@ async function doResolveEnsContent(normalized, attempt) {
 function parseContentHashBytes(hex0x) {
   const ipfs = hex0x.match(IPFS_CONTENTHASH_RE);
   if (ipfs) {
-    const scheme = ipfs[1] === 'e3010170' ? 'ipfs' : 'ipns';
-    const length = parseInt(ipfs[4], 16);
-    if (ipfs[5].length === length * 2) {
-      const decoded = ethers.encodeBase58('0x' + ipfs[2]);
+    const { codecPrefix, multihash, mhLen, digest } = ipfs.groups;
+    if (digest.length === parseInt(mhLen, 16) * 2) {
+      const scheme = codecPrefix === 'e3010170' ? 'ipfs' : 'ipns';
+      const decoded = ethers.encodeBase58('0x' + multihash);
       return {
         codec: `${scheme}-ns`,
         protocol: scheme,
@@ -311,11 +306,12 @@ function parseContentHashBytes(hex0x) {
   }
   const swarm = hex0x.match(SWARM_CONTENTHASH_RE);
   if (swarm) {
+    const hash = swarm.groups.swarmHash;
     return {
       codec: 'swarm-ns',
       protocol: 'bzz',
-      uri: `bzz://${swarm[1]}`,
-      decoded: swarm[1],
+      uri: `bzz://${hash}`,
+      decoded: hash,
     };
   }
   return null;
