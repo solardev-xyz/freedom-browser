@@ -33,6 +33,13 @@ module.exports = {
   RADICLE_GET_REPO_PAYLOAD: 'radicle:getRepoPayload',
   RADICLE_SYNC_REPO: 'radicle:syncRepo',
 
+  // TON node management
+  TON_START: 'ton:start',
+  TON_STOP: 'ton:stop',
+  TON_GET_STATUS: 'ton:getStatus',
+  TON_STATUS_UPDATE: 'ton:statusUpdate',
+  TON_CHECK_BINARY: 'ton:checkBinary',
+
   // ENS resolution
   ENS_RESOLVE: 'ens:resolve',
   ENS_TEST_RPC: 'ens:test-rpc',

@@ -7,7 +7,6 @@ const { loadSettings } = require('./settings-store');
 const { fetchBuffer, fetchToFile } = require('./http-fetch');
 const { success, failure, validateWebContentsId } = require('./ipc-contract');
 const IPC = require('../shared/ipc-channels');
-
 // Path to webview preload script (for internal pages)
 const webviewPreloadPath = path.join(__dirname, 'webview-preload.js');
 

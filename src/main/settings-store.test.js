@@ -43,6 +43,7 @@ describe('settings-store', () => {
         startBeeAtLaunch: true,
         startIpfsAtLaunch: true,
         startRadicleAtLaunch: false,
+        startTonAtLaunch: false,
         autoUpdate: true,
         showBookmarkBar: false,
         sidebarOpen: false,
