@@ -20,7 +20,7 @@ const MODE = {
 const registry = {
   ipfs: {
     api: null, // e.g., 'http://127.0.0.1:5001'
-    gateway: null, // e.g., 'http://127.0.0.1:8080'
+    gateway: null, // e.g., 'http://localhost:8080'
     mode: MODE.NONE,
     statusMessage: null,
     tempMessage: null,
@@ -222,7 +222,8 @@ function getIpfsApiUrl() {
  * Get URL for IPFS Gateway
  */
 function getIpfsGatewayUrl() {
-  return registry.ipfs.gateway || `http://127.0.0.1:${DEFAULTS.ipfs.gatewayPort}`;
+  // `localhost` triggers Kubo's default subdomain gateway (required for `_redirects`).
+  return registry.ipfs.gateway || `http://localhost:${DEFAULTS.ipfs.gatewayPort}`;
 }
 
 /**

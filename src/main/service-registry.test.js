@@ -22,7 +22,7 @@ describe('service-registry', () => {
     const { mod } = loadServiceRegistry();
 
     expect(mod.getIpfsApiUrl()).toBe('http://127.0.0.1:5001');
-    expect(mod.getIpfsGatewayUrl()).toBe('http://127.0.0.1:8080');
+    expect(mod.getIpfsGatewayUrl()).toBe('http://localhost:8080');
     expect(mod.getBeeApiUrl()).toBe('http://127.0.0.1:1633');
     expect(mod.getBeeGatewayUrl()).toBe('http://127.0.0.1:1633');
     expect(mod.getRadicleApiUrl()).toBe('http://127.0.0.1:8780');

@@ -278,7 +278,7 @@ describe('preload', () => {
 
     expect(exposures.nodeConfig).toEqual({
       beeApi: 'http://127.0.0.1:1633',
-      ipfsGateway: 'http://127.0.0.1:8080',
+      ipfsGateway: 'http://localhost:8080',
     });
   });
 });

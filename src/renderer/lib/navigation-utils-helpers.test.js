@@ -31,6 +31,21 @@ describe('navigation-utils extracted helpers', () => {
       knownEnsPairs: [['QmHash', 'name.eth']],
       resolvedProtocol: 'ipfs',
     });
+    // Real CIDv0 → also stores the CIDv1 base32 form (Kubo subdomain gateway
+    // redirects CIDv0 to CIDv1 base32; without this the address bar loses the
+    // ens:// display after the redirect).
+    expect(
+      mod.extractEnsResolutionMetadata(
+        'ipfs://Qmbnp5ufs7kauPzwnu5boMjbXM97TvmuiNd5F7F2ex8ThC/path',
+        'jthor.eth'
+      )
+    ).toEqual({
+      knownEnsPairs: [
+        ['Qmbnp5ufs7kauPzwnu5boMjbXM97TvmuiNd5F7F2ex8ThC', 'jthor.eth'],
+        ['bafybeigh3oq6pwrkspwgj4jcguizd7muxw4zdyq6cckqi5vl72yixnzpvm', 'jthor.eth'],
+      ],
+      resolvedProtocol: 'ipfs',
+    });
     expect(mod.extractEnsResolutionMetadata('ipns://docs.example/path', 'name.eth')).toEqual({
       knownEnsPairs: [['docs.example', 'name.eth']],
       resolvedProtocol: 'ipfs',

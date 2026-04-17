@@ -1,5 +1,6 @@
 import { applyEnsNamePreservation, deriveDisplayValue } from './url-utils.js';
 import { getInternalPageName } from './page-urls.js';
+import { cidV0ToV1Base32 } from './cid-utils.js';
 
 export const resolveProtocolIconType = ({
   value = '',
@@ -81,6 +82,13 @@ export const extractEnsResolutionMetadata = (targetUri, ensName) => {
   const ipfsMatch = targetUri.match(/^ipfs:\/\/([A-Za-z0-9]+)/);
   if (ipfsMatch) {
     knownEnsPairs.push([ipfsMatch[1], ensName]);
+    // Kubo's subdomain gateway redirects CIDv0 ("Qm...") to CIDv1 base32
+    // ("bafybei..."). Store both so the address bar still collapses back to
+    // `ens://name` after the redirect lands.
+    if (ipfsMatch[1].startsWith('Qm')) {
+      const cidV1 = cidV0ToV1Base32(ipfsMatch[1]);
+      if (cidV1) knownEnsPairs.push([cidV1, ensName]);
+    }
     resolvedProtocol = 'ipfs';
   }
 

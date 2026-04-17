@@ -10,7 +10,9 @@ const internalPages = ipcRenderer.sendSync('internal:get-pages');
 
 // Environment variable overrides for gateways (for advanced users)
 const defaultBeeApi = process.env.BEE_API || 'http://127.0.0.1:1633';
-const defaultIpfsGateway = process.env.IPFS_GATEWAY || 'http://127.0.0.1:8080';
+// Gateway uses `localhost` (not 127.0.0.1) so Kubo's default subdomain-gateway
+// PublicGateways entry kicks in — required for `_redirects` file support.
+const defaultIpfsGateway = process.env.IPFS_GATEWAY || 'http://localhost:8080';
 
 contextBridge.exposeInMainWorld('nodeConfig', {
   beeApi: defaultBeeApi,

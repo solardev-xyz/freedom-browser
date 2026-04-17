@@ -14,8 +14,8 @@ describe('renderer state', () => {
   test('builds route prefixes from defaults or window config', async () => {
     const defaults = await loadModule();
     expect(defaults.state.bzzRoutePrefix).toBe('http://127.0.0.1:1633/bzz/');
-    expect(defaults.state.ipfsRoutePrefix).toBe('http://127.0.0.1:8080/ipfs/');
-    expect(defaults.state.ipnsRoutePrefix).toBe('http://127.0.0.1:8080/ipns/');
+    expect(defaults.state.ipfsRoutePrefix).toBe('http://localhost:8080/ipfs/');
+    expect(defaults.state.ipnsRoutePrefix).toBe('http://localhost:8080/ipns/');
     expect(defaults.state.radicleApiPrefix).toBe('http://127.0.0.1:8780/api/v1/repos/');
 
     const custom = await loadModule({

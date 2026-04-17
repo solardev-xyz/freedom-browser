@@ -1,5 +1,15 @@
 export const ensureTrailingSlash = (value = '') => (value.endsWith('/') ? value : `${value}/`);
 
+// decodeURIComponent throws on malformed `%` sequences that show up in
+// user-typed URLs; fall back to the raw value in that case.
+const decodeAndTrim = (value) => {
+  try {
+    return decodeURIComponent(value).replace(/\/+$/, '');
+  } catch {
+    return value.replace(/\/+$/, '');
+  }
+};
+
 // Check if a string looks like a valid Swarm reference (64 or 128 hex characters)
 const isValidSwarmHash = (str) => /^[a-fA-F0-9]{64}([a-fA-F0-9]{64})?$/.test(str);
 
@@ -287,47 +297,39 @@ export const deriveDisplayValue = (
   }
 
   if (url.startsWith(bzzRoutePrefix)) {
-    const remainder = url.slice(bzzRoutePrefix.length);
-    try {
-      const decoded = decodeURIComponent(remainder).replace(/\/+$/, '');
-      return decoded ? `bzz://${decoded}` : '';
-    } catch {
-      const cleaned = remainder.replace(/\/+$/, '');
-      return cleaned ? `bzz://${cleaned}` : '';
-    }
+    const decoded = decodeAndTrim(url.slice(bzzRoutePrefix.length));
+    return decoded ? `bzz://${decoded}` : '';
   }
 
   if (ipfsRoutePrefix && url.startsWith(ipfsRoutePrefix)) {
-    const remainder = url.slice(ipfsRoutePrefix.length);
-    try {
-      const decoded = decodeURIComponent(remainder).replace(/\/+$/, '');
-      return decoded ? `ipfs://${decoded}` : '';
-    } catch {
-      const cleaned = remainder.replace(/\/+$/, '');
-      return cleaned ? `ipfs://${cleaned}` : '';
-    }
+    const decoded = decodeAndTrim(url.slice(ipfsRoutePrefix.length));
+    return decoded ? `ipfs://${decoded}` : '';
   }
 
   if (ipnsRoutePrefix && url.startsWith(ipnsRoutePrefix)) {
-    const remainder = url.slice(ipnsRoutePrefix.length);
+    const decoded = decodeAndTrim(url.slice(ipnsRoutePrefix.length));
+    return decoded ? `ipns://${decoded}` : '';
+  }
+
+  // Subdomain-gateway form (http://<cid>.ipfs.localhost:8080/path).
+  // Cheap substring check avoids a full URL parse on every unrelated navigation.
+  if (url.includes('.ipfs.localhost') || url.includes('.ipns.localhost')) {
     try {
-      const decoded = decodeURIComponent(remainder).replace(/\/+$/, '');
-      return decoded ? `ipns://${decoded}` : '';
+      const parsed = new URL(url);
+      const sub = matchIpfsSubdomain(parsed);
+      if (sub) {
+        return `${sub.namespace}://${sub.cid}${decodeAndTrim(
+          parsed.pathname + parsed.search + parsed.hash
+        )}`;
+      }
     } catch {
-      const cleaned = remainder.replace(/\/+$/, '');
-      return cleaned ? `ipns://${cleaned}` : '';
+      // Not a valid URL; fall through
     }
   }
 
   if (radicleApiPrefix && url.startsWith(radicleApiPrefix)) {
-    const remainder = url.slice(radicleApiPrefix.length);
-    try {
-      const decoded = decodeURIComponent(remainder).replace(/\/+$/, '');
-      return decoded ? `rad://${decoded}` : '';
-    } catch {
-      const cleaned = remainder.replace(/\/+$/, '');
-      return cleaned ? `rad://${cleaned}` : '';
-    }
+    const decoded = decodeAndTrim(url.slice(radicleApiPrefix.length));
+    return decoded ? `rad://${decoded}` : '';
   }
 
   return url;
@@ -397,9 +399,38 @@ export const parseIpfsInput = (rawInput, ipfsRoutePrefix) => {
 };
 
 /**
- * Derive IPFS base URL from a gateway URL
- * @param {string|URL} input - URL like "http://127.0.0.1:8080/ipfs/QmHash/path"
- * @returns {string|null} Base URL like "http://127.0.0.1:8080/ipfs/QmHash/"
+ * Recognise a Kubo subdomain-gateway URL and extract the CID/name + namespace.
+ * Matches hostnames like:
+ *   - "<cid>.ipfs.localhost"              (CIDv1 base32 or libp2p base36)
+ *   - "<name>.ipns.localhost"             (IPNS key)
+ *   - "<dns.name>.ipns.localhost"         (DNSLink, dots preserved)
+ *   - "<dns-name>.ipns.localhost"         (DNSLink, dots inlined to dashes)
+ * Reverses Kubo's inline-DNSLink rule (. → -, - → --) for IPNS labels
+ * containing dashes so `docs-ipfs-tech.ipns.localhost` round-trips back to
+ * `ipns://docs.ipfs.tech`.
+ * @param {URL} parsed
+ * @returns {{cid: string, namespace: 'ipfs'|'ipns'}|null}
+ */
+const matchIpfsSubdomain = (parsed) => {
+  if (!parsed) return null;
+  const hostname = parsed.hostname.toLowerCase();
+  const m = hostname.match(/^([a-z0-9][a-z0-9.-]*)\.(ipfs|ipns)\.localhost$/);
+  if (!m) return null;
+  let label = m[1];
+  if (m[2] === 'ipns' && label.includes('-')) {
+    // Greedy `--?` matches `--` in preference to `-`, so the callback cleanly
+    // reverses Kubo's rule (. → -, - → --) in a single pass.
+    label = label.replace(/--?/g, (match) => (match === '--' ? '-' : '.'));
+  }
+  return { cid: label, namespace: m[2] };
+};
+
+/**
+ * Derive IPFS base URL from a gateway URL.
+ * Accepts both path-gateway form ("http://localhost:8080/ipfs/CID/path")
+ * and subdomain-gateway form ("http://CID.ipfs.localhost:8080/path").
+ * @param {string|URL} input
+ * @returns {string|null} Base URL with trailing slash
  */
 export const deriveIpfsBaseFromUrl = (input) => {
   if (!input) {
@@ -407,6 +438,10 @@ export const deriveIpfsBaseFromUrl = (input) => {
   }
   try {
     const parsed = typeof input === 'string' ? new URL(input) : input;
+    const sub = matchIpfsSubdomain(parsed);
+    if (sub) {
+      return ensureTrailingSlash(parsed.origin);
+    }
     const segments = parsed.pathname.split('/').filter(Boolean);
     if (segments.length >= 2) {
       const prefix = segments[0].toLowerCase();
@@ -666,14 +701,8 @@ export const deriveRadicleDisplayValue = (url, radicleApiPrefix) => {
   if (!url || !radicleApiPrefix) return url;
 
   if (url.startsWith(radicleApiPrefix)) {
-    const remainder = url.slice(radicleApiPrefix.length);
-    try {
-      const decoded = decodeURIComponent(remainder).replace(/\/+$/, '');
-      return decoded ? `rad://${decoded}` : '';
-    } catch {
-      const cleaned = remainder.replace(/\/+$/, '');
-      return cleaned ? `rad://${cleaned}` : '';
-    }
+    const decoded = decodeAndTrim(url.slice(radicleApiPrefix.length));
+    return decoded ? `rad://${decoded}` : '';
   }
 
   return url;

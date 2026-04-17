@@ -34,7 +34,7 @@ export const state = {
   },
 
   // IPFS Gateway config (defaults from env or hardcoded, updated from registry)
-  ipfsBase: (window.nodeConfig?.ipfsGateway || 'http://127.0.0.1:8080').replace(/\/$/, ''),
+  ipfsBase: (window.nodeConfig?.ipfsGateway || 'http://localhost:8080').replace(/\/$/, ''),
   ipfsApiBase: 'http://127.0.0.1:5001',
   get ipfsRoutePrefix() {
     return `${this.ipfsBase}/ipfs/`;

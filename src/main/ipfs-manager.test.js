@@ -386,7 +386,7 @@ describe('ipfs-manager', () => {
     expect(ctx.mod.getActiveGatewayPort()).toBe(8080);
     expect(ctx.updateService).toHaveBeenCalledWith('ipfs', {
       api: 'http://127.0.0.1:5001',
-      gateway: 'http://127.0.0.1:8080',
+      gateway: 'http://localhost:8080',
       mode: 'reused',
     });
     expect(ctx.setStatusMessage).toHaveBeenCalledWith('ipfs', 'Node: localhost:5001');
@@ -480,7 +480,7 @@ describe('ipfs-manager', () => {
     expect(ctx.mod.getActiveGatewayPort()).toBe(8081);
     expect(ctx.updateService).toHaveBeenCalledWith('ipfs', {
       api: 'http://127.0.0.1:5002',
-      gateway: 'http://127.0.0.1:8081',
+      gateway: 'http://localhost:8081',
       mode: 'bundled',
     });
     expect(ctx.setStatusMessage).toHaveBeenCalledWith('ipfs', 'Fallback Port: 5002');

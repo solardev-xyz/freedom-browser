@@ -235,7 +235,7 @@ Access built-in browser pages using the `freedom://` protocol:
 Freedom automatically manages node connections. By default:
 
 - **Swarm Bee**: `http://127.0.0.1:1633`
-- **IPFS Gateway**: `http://127.0.0.1:8080`
+- **IPFS Gateway**: `http://localhost:8080` (`localhost`, not `127.0.0.1`, so Kubo's built-in subdomain gateway kicks in — required for `_redirects` SPA support)
 - **IPFS API**: `http://127.0.0.1:5001`
 - **Radicle httpd**: `http://127.0.0.1:8780`
 

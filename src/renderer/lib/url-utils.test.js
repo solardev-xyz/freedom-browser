@@ -335,6 +335,53 @@ describe('url-utils', () => {
         deriveDisplayValue(url, BZZ_ROUTE_PREFIX, HOME_URL, IPFS_ROUTE_PREFIX, IPNS_ROUTE_PREFIX)
       ).toBe('ipns://docs.ipfs.tech/index.html');
     });
+
+    test('converts ipfs subdomain-gateway url to ipfs://', () => {
+      const url =
+        'http://bafybeigh3oq6pwrkspwgj4jcguizd7muxw4zdyq6cckqi5vl72yixnzpvm.ipfs.localhost:8080/readme';
+      expect(
+        deriveDisplayValue(url, BZZ_ROUTE_PREFIX, HOME_URL, IPFS_ROUTE_PREFIX, IPNS_ROUTE_PREFIX)
+      ).toBe('ipfs://bafybeigh3oq6pwrkspwgj4jcguizd7muxw4zdyq6cckqi5vl72yixnzpvm/readme');
+    });
+
+    test('strips trailing slash on subdomain-gateway root', () => {
+      const url =
+        'http://bafybeigh3oq6pwrkspwgj4jcguizd7muxw4zdyq6cckqi5vl72yixnzpvm.ipfs.localhost:8080/';
+      expect(
+        deriveDisplayValue(url, BZZ_ROUTE_PREFIX, HOME_URL, IPFS_ROUTE_PREFIX, IPNS_ROUTE_PREFIX)
+      ).toBe('ipfs://bafybeigh3oq6pwrkspwgj4jcguizd7muxw4zdyq6cckqi5vl72yixnzpvm');
+    });
+
+    test('converts ipns subdomain-gateway url to ipns://', () => {
+      const url = 'http://k51qzi5uqu5dlvj.ipns.localhost:8080/foo';
+      expect(
+        deriveDisplayValue(url, BZZ_ROUTE_PREFIX, HOME_URL, IPFS_ROUTE_PREFIX, IPNS_ROUTE_PREFIX)
+      ).toBe('ipns://k51qzi5uqu5dlvj/foo');
+    });
+
+    test('reverses inline-DNSLink dashes back to dots on ipns subdomain', () => {
+      // Kubo's InlineDNSLink rule maps "docs.ipfs.tech" → "docs-ipfs-tech".
+      const url = 'http://docs-ipfs-tech.ipns.localhost:8080/install';
+      expect(
+        deriveDisplayValue(url, BZZ_ROUTE_PREFIX, HOME_URL, IPFS_ROUTE_PREFIX, IPNS_ROUTE_PREFIX)
+      ).toBe('ipns://docs.ipfs.tech/install');
+    });
+
+    test('reverses inline-DNSLink escaped dashes (-- → -)', () => {
+      // "foo-bar.baz" inlines to "foo--bar-baz" (dashes doubled first, then dots → dashes).
+      const url = 'http://foo--bar-baz.ipns.localhost:8080/';
+      expect(
+        deriveDisplayValue(url, BZZ_ROUTE_PREFIX, HOME_URL, IPFS_ROUTE_PREFIX, IPNS_ROUTE_PREFIX)
+      ).toBe('ipns://foo-bar.baz');
+    });
+
+    test('preserves dotted DNS name on ipns multi-label subdomain', () => {
+      // Kubo with InlineDNSLink disabled (default) keeps dots in the subdomain.
+      const url = 'http://docs.ipfs.tech.ipns.localhost:8080/install';
+      expect(
+        deriveDisplayValue(url, BZZ_ROUTE_PREFIX, HOME_URL, IPFS_ROUTE_PREFIX, IPNS_ROUTE_PREFIX)
+      ).toBe('ipns://docs.ipfs.tech/install');
+    });
   });
 
   // ============ IPFS Tests ============
@@ -452,6 +499,21 @@ describe('url-utils', () => {
     test('accepts URL object', () => {
       const url = new URL('http://127.0.0.1:8080/ipfs/QmTest/file.html');
       expect(deriveIpfsBaseFromUrl(url)).toBe('http://127.0.0.1:8080/ipfs/QmTest/');
+    });
+
+    test('extracts origin from ipfs subdomain-gateway url', () => {
+      const url =
+        'http://bafybeigh3oq6pwrkspwgj4jcguizd7muxw4zdyq6cckqi5vl72yixnzpvm.ipfs.localhost:8080/readme';
+      expect(deriveIpfsBaseFromUrl(url)).toBe(
+        'http://bafybeigh3oq6pwrkspwgj4jcguizd7muxw4zdyq6cckqi5vl72yixnzpvm.ipfs.localhost:8080/'
+      );
+    });
+
+    test('extracts origin from ipns subdomain-gateway url', () => {
+      const url = 'http://k51qzi5uqu5dlvj.ipns.localhost:8080/install';
+      expect(deriveIpfsBaseFromUrl(url)).toBe(
+        'http://k51qzi5uqu5dlvj.ipns.localhost:8080/'
+      );
     });
   });
 

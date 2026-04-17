@@ -434,7 +434,7 @@ async function startIpfs() {
 
     updateService('ipfs', {
       api: `http://127.0.0.1:${currentApiPort}`,
-      gateway: `http://127.0.0.1:${currentGatewayPort}`,
+      gateway: `http://localhost:${currentGatewayPort}`,
       mode: MODE.REUSED,
     });
     setStatusMessage('ipfs', `Node: localhost:${currentApiPort}`);
@@ -572,7 +572,7 @@ async function startIpfs() {
         // Update registry
         updateService('ipfs', {
           api: `http://127.0.0.1:${currentApiPort}`,
-          gateway: `http://127.0.0.1:${currentGatewayPort}`,
+          gateway: `http://localhost:${currentGatewayPort}`,
           mode: MODE.BUNDLED,
         });
 
