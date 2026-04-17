@@ -444,31 +444,10 @@ async function resolveEnsReverse(address) {
       error: `Invalid address: ${address}`,
     };
   }
-  const normalized = address.toLowerCase();
-
-  const cached = ensReverseCache.get(normalized);
-  if (cached && Date.now() - cached.timestamp < ENS_CACHE_TTL_MS) {
-    log.info(`[ens] reverse cache hit for ${normalized}`);
-    return cached.result;
-  }
-
-  let lastError;
-  for (let attempt = 1; attempt <= MAX_RESOLUTION_RETRIES; attempt++) {
-    try {
-      return await doResolveEnsReverse(normalized);
-    } catch (err) {
-      lastError = err;
-      if (isProviderError(err) && attempt < MAX_RESOLUTION_RETRIES) {
-        log.warn(
-          `[ens] reverse provider error on attempt ${attempt}/${MAX_RESOLUTION_RETRIES}: ${err.message}`
-        );
-        invalidateCachedProvider();
-        continue;
-      }
-      throw err;
-    }
-  }
-  throw lastError;
+  // Address is already validated — delegate cache/retry plumbing to the
+  // shared helper. trim() + lowercase inside are no-ops on a canonical
+  // lowercased 40-hex address.
+  return resolveWithCache(address, ensReverseCache, doResolveEnsReverse, 'reverse');
 }
 
 async function doResolveEnsReverse(normalizedAddress) {
@@ -498,14 +477,16 @@ async function doResolveEnsReverse(normalizedAddress) {
     return cacheReverseResult(normalizedAddress, noReverseResult(normalizedAddress));
   }
 
-  // Forward-verify: resolve the claimed name's addr record and ensure it
-  // matches the input address. Otherwise the reverse is spoofed or stale.
+  // Otherwise the reverse is spoofed or stale — reject.
   const forward = await resolveEnsAddress(claimedName);
-  if (!forward.success || forward.address.toLowerCase() !== normalizedAddress) {
+  if (!forward.success || forward.address.toLowerCase() !== normalizedAddress.toLowerCase()) {
     return cacheReverseResult(normalizedAddress, {
       success: false,
       address: normalizedAddress,
-      claimed: claimedName,
+      // Deliberately verbose key so a naive UI can't mistake it for the
+      // verified name — callers reading `.claimedUnverifiedName` know it
+      // failed forward-verify and must not render it as the recipient.
+      claimedUnverifiedName: claimedName,
       reason: 'UNVERIFIED',
       error: `Reverse record ${claimedName} does not forward-verify to ${normalizedAddress}`,
     });

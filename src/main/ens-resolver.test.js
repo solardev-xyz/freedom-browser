@@ -16,6 +16,7 @@ const mockGetResolver = jest.fn();
 const mockResolveName = jest.fn();
 const mockUrResolve = jest.fn();
 const mockUrResolveMulticall = jest.fn();
+const mockUrReverse = jest.fn();
 
 jest.mock('ethers', () => {
   const actual = jest.requireActual('ethers').ethers;
@@ -30,6 +31,7 @@ jest.mock('ethers', () => {
       Contract: jest.fn().mockImplementation(() => ({
         resolve: mockUrResolve,
         resolveMulticall: mockUrResolveMulticall,
+        reverse: mockUrReverse,
       })),
       // Pure helpers — use the real implementations so the UR helper's
       // encoding and the inline contenthash decoder are actually exercised.
@@ -38,6 +40,7 @@ jest.mock('ethers', () => {
       AbiCoder: actual.AbiCoder,
       encodeBase58: actual.encodeBase58,
       decodeBase58: actual.decodeBase58,
+      getBytes: actual.getBytes,
       ZeroAddress: actual.ZeroAddress,
     },
   };
@@ -47,6 +50,7 @@ const { ethers } = require('ethers');
 const {
   resolveEnsContent,
   resolveEnsAddress,
+  resolveEnsReverse,
   testRpcUrl,
   invalidateCachedProvider,
   universalResolverCall,
@@ -425,6 +429,142 @@ describe('ens-resolver', () => {
       await resolveEnsAddress('oneshot-addr.eth');
 
       expect(mockUrResolve).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('resolveEnsReverse', () => {
+    const RESOLVER = '0x0000000000000000000000000000000000001234';
+    // Address pool — each test uses a unique one to avoid ensReverseCache
+    // pollution across tests (same pattern as the name-keyed tests above).
+    const addr = (n) => '0x' + String(n).padStart(40, '0');
+
+    test('returns verified name when forward-verify passes', async () => {
+      const input = addr('1001');
+      mockUrReverse.mockResolvedValue(['verified1.eth', RESOLVER, RESOLVER]);
+      mockUrResolve.mockResolvedValue(urReturnsAddress(input));
+
+      const result = await resolveEnsReverse(input);
+
+      expect(result).toEqual({
+        success: true,
+        address: input.toLowerCase(),
+        name: 'verified1.eth',
+      });
+    });
+
+    test('UNVERIFIED when reverse name resolves to a different address', async () => {
+      const input = addr('1002');
+      mockUrReverse.mockResolvedValue(['spoof.eth', RESOLVER, RESOLVER]);
+      mockUrResolve.mockResolvedValue(urReturnsAddress(addr('9999')));
+
+      const result = await resolveEnsReverse(input);
+
+      expect(result.success).toBe(false);
+      expect(result.reason).toBe('UNVERIFIED');
+      expect(result.claimedUnverifiedName).toBe('spoof.eth');
+    });
+
+    test('UNVERIFIED when the reverse-claimed name has no forward addr record', async () => {
+      const input = addr('1003');
+      mockUrReverse.mockResolvedValue(['orphan.eth', RESOLVER, RESOLVER]);
+      mockUrResolve.mockResolvedValue(
+        urReturnsAddress('0x0000000000000000000000000000000000000000')
+      );
+
+      const result = await resolveEnsReverse(input);
+
+      expect(result.success).toBe(false);
+      expect(result.reason).toBe('UNVERIFIED');
+    });
+
+    test('NO_REVERSE when UR returns empty name', async () => {
+      const input = addr('1004');
+      mockUrReverse.mockResolvedValue(['', RESOLVER, RESOLVER]);
+
+      const result = await resolveEnsReverse(input);
+
+      expect(result.success).toBe(false);
+      expect(result.reason).toBe('NO_REVERSE');
+    });
+
+    test('NO_REVERSE when UR reverts with ResolverNotFound', async () => {
+      const input = addr('1005');
+      mockUrReverse.mockRejectedValue(
+        new Error('execution reverted: ResolverNotFound')
+      );
+
+      const result = await resolveEnsReverse(input);
+
+      expect(result.success).toBe(false);
+      expect(result.reason).toBe('NO_REVERSE');
+    });
+
+    test('RESOLUTION_ERROR on generic UR revert', async () => {
+      const input = addr('1006');
+      mockUrReverse.mockRejectedValue(new Error('some other revert'));
+
+      const result = await resolveEnsReverse(input);
+
+      expect(result.success).toBe(false);
+      expect(result.reason).toBe('RESOLUTION_ERROR');
+    });
+
+    test('INVALID_ADDRESS for malformed input', async () => {
+      expect((await resolveEnsReverse('not-an-address')).reason).toBe('INVALID_ADDRESS');
+      expect((await resolveEnsReverse('')).reason).toBe('INVALID_ADDRESS');
+      expect((await resolveEnsReverse(null)).reason).toBe('INVALID_ADDRESS');
+      expect((await resolveEnsReverse('0x1234')).reason).toBe('INVALID_ADDRESS');
+      expect(mockUrReverse).not.toHaveBeenCalled();
+    });
+
+    test('retries on provider error then succeeds', async () => {
+      const input = addr('1007');
+      const providerError = new Error('server error');
+      providerError.code = 'SERVER_ERROR';
+
+      mockUrReverse
+        .mockRejectedValueOnce(providerError)
+        .mockResolvedValueOnce(['retry-reverse.eth', RESOLVER, RESOLVER]);
+      mockUrResolve.mockResolvedValue(urReturnsAddress(input));
+
+      const result = await resolveEnsReverse(input);
+
+      expect(result.success).toBe(true);
+      expect(result.name).toBe('retry-reverse.eth');
+      expect(mockUrReverse).toHaveBeenCalledTimes(2);
+    });
+
+    test('caches successful verified results', async () => {
+      const input = addr('1008');
+      mockUrReverse.mockResolvedValue(['cached.eth', RESOLVER, RESOLVER]);
+      mockUrResolve.mockResolvedValue(urReturnsAddress(input));
+
+      await resolveEnsReverse(input);
+      await resolveEnsReverse(input);
+
+      expect(mockUrReverse).toHaveBeenCalledTimes(1);
+    });
+
+    test('caches NO_REVERSE negative results too', async () => {
+      const input = addr('1009');
+      mockUrReverse.mockResolvedValue(['', RESOLVER, RESOLVER]);
+
+      await resolveEnsReverse(input);
+      await resolveEnsReverse(input);
+
+      expect(mockUrReverse).toHaveBeenCalledTimes(1);
+    });
+
+    test('normalizes input address to lowercase for caching', async () => {
+      const input = '0xAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAa10101010';
+      mockUrReverse.mockResolvedValue(['mixed.eth', RESOLVER, RESOLVER]);
+      mockUrResolve.mockResolvedValue(urReturnsAddress(input.toLowerCase()));
+
+      await resolveEnsReverse(input);
+      await resolveEnsReverse(input.toLowerCase());
+
+      // Second call hits the cache keyed on lowercase form.
+      expect(mockUrReverse).toHaveBeenCalledTimes(1);
     });
   });
 
