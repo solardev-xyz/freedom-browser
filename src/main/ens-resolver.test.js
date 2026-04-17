@@ -14,17 +14,28 @@ const mockGetBlockNumber = jest.fn();
 const mockDestroy = jest.fn();
 const mockGetResolver = jest.fn();
 const mockResolveName = jest.fn();
+const mockUrResolve = jest.fn();
 
-jest.mock('ethers', () => ({
-  ethers: {
-    JsonRpcProvider: jest.fn().mockImplementation(() => ({
-      getBlockNumber: mockGetBlockNumber,
-      getResolver: mockGetResolver,
-      resolveName: mockResolveName,
-      destroy: mockDestroy,
-    })),
-  },
-}));
+jest.mock('ethers', () => {
+  const actual = jest.requireActual('ethers').ethers;
+  return {
+    ethers: {
+      JsonRpcProvider: jest.fn().mockImplementation(() => ({
+        getBlockNumber: mockGetBlockNumber,
+        getResolver: mockGetResolver,
+        resolveName: mockResolveName,
+        destroy: mockDestroy,
+      })),
+      Contract: jest.fn().mockImplementation(() => ({
+        resolve: mockUrResolve,
+      })),
+      // dnsEncode / AbiCoder are pure — use the real implementations so the
+      // UR helper's encoding/decoding is actually exercised in tests.
+      dnsEncode: actual.dnsEncode,
+      AbiCoder: actual.AbiCoder,
+    },
+  };
+});
 
 const { ethers } = require('ethers');
 const {
@@ -32,6 +43,8 @@ const {
   resolveEnsAddress,
   testRpcUrl,
   invalidateCachedProvider,
+  universalResolverCall,
+  isResolverNotFoundError,
 } = require('./ens-resolver');
 
 beforeEach(() => {
@@ -439,6 +452,85 @@ describe('ens-resolver', () => {
       mockGetBlockNumber.mockRejectedValue(new Error('fail'));
       await testRpcUrl('http://localhost:8545');
       expect(mockDestroy).toHaveBeenCalled();
+    });
+  });
+
+  describe('universalResolverCall', () => {
+    const actualEthers = jest.requireActual('ethers').ethers;
+    const FAKE_RESOLVER = '0x0000000000000000000000000000000000001234';
+
+    // Helper: wrap raw hex bytes as the UR's ABI-encoded `(bytes)` return value.
+    const wrapAsUrBytes = (innerHex) => {
+      const coder = actualEthers.AbiCoder.defaultAbiCoder();
+      return coder.encode(['bytes'], [innerHex]);
+    };
+
+    test('encodes name, opts into CCIP-Read, and unwraps inner bytes', async () => {
+      const inner = '0xdeadbeef';
+      mockUrResolve.mockResolvedValue([wrapAsUrBytes(inner), FAKE_RESOLVER]);
+
+      const provider = new ethers.JsonRpcProvider('http://localhost:8545');
+      const callData = '0xbc1c4a73' + actualEthers.namehash('vitalik.eth').slice(2);
+      const result = await universalResolverCall(provider, 'vitalik.eth', callData);
+
+      expect(result.bytes.toLowerCase()).toBe(inner);
+      expect(result.resolverAddress).toBe(FAKE_RESOLVER);
+
+      // Verify the call shape the UR actually received
+      expect(mockUrResolve).toHaveBeenCalledTimes(1);
+      const [encodedName, passedCallData, overrides] = mockUrResolve.mock.calls[0];
+      expect(encodedName).toBe(actualEthers.dnsEncode('vitalik.eth', 255));
+      expect(passedCallData).toBe(callData);
+      expect(overrides).toEqual({ enableCcipRead: true });
+    });
+
+    test('constructs Contract with UR address and minimal ABI', async () => {
+      mockUrResolve.mockResolvedValue([wrapAsUrBytes('0x'), FAKE_RESOLVER]);
+      const provider = new ethers.JsonRpcProvider('http://localhost:8545');
+      await universalResolverCall(provider, 'vitalik.eth', '0xbc1c4a73');
+
+      expect(ethers.Contract).toHaveBeenCalledWith(
+        '0x5a9236e72a66d3e08b83dcf489b4d850792b6009',
+        expect.arrayContaining([expect.stringContaining('function resolve')]),
+        provider
+      );
+    });
+
+    test('propagates UR reverts to the caller', async () => {
+      const err = new Error('execution reverted: ResolverNotFound');
+      mockUrResolve.mockRejectedValue(err);
+      const provider = new ethers.JsonRpcProvider('http://localhost:8545');
+      await expect(
+        universalResolverCall(provider, 'unregistered.eth', '0xbc1c4a73')
+      ).rejects.toThrow('ResolverNotFound');
+    });
+  });
+
+  describe('isResolverNotFoundError', () => {
+    test('matches ResolverNotFound error message', () => {
+      expect(
+        isResolverNotFoundError(new Error('execution reverted: ResolverNotFound("foo.eth")'))
+      ).toBe(true);
+    });
+
+    test('matches ResolverNotContract error message', () => {
+      expect(
+        isResolverNotFoundError(new Error('execution reverted: ResolverNotContract'))
+      ).toBe(true);
+    });
+
+    test('matches ResolverNotFound selector in error data', () => {
+      const err = new Error('call exception');
+      err.info = { error: { data: '0x7199966d00000000000000000000000000000000' } };
+      expect(isResolverNotFoundError(err)).toBe(true);
+    });
+
+    test('rejects unrelated errors', () => {
+      expect(isResolverNotFoundError(new Error('network timeout'))).toBe(false);
+      expect(isResolverNotFoundError(new Error('ECONNREFUSED'))).toBe(false);
+      expect(isResolverNotFoundError(null)).toBe(false);
+      expect(isResolverNotFoundError(undefined)).toBe(false);
+      expect(isResolverNotFoundError({})).toBe(false);
     });
   });
 });

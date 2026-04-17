@@ -5,6 +5,16 @@ const IPC = require('../shared/ipc-channels');
 const { success, failure } = require('./ipc-contract');
 const { loadSettings } = require('./settings-store');
 
+// ENS v3 Universal Resolver (ENS Labs, current generation).
+// One call here replaces the 3-step "registry lookup → supportsWildcard
+// → contenthash" flow ethers would otherwise make, and handles CCIP-Read
+// transparently for offchain resolvers (.box via 3DNS).
+// If ENS ships a v4 UR, old deployments keep working — bumping is optional.
+const UNIVERSAL_RESOLVER_ADDRESS = '0x5a9236e72a66d3e08b83dcf489b4d850792b6009';
+const UR_ABI = [
+  'function resolve(bytes name, bytes data) view returns (bytes resolvedData, address resolverAddress)',
+];
+
 // Public RPC providers as fallbacks
 const PUBLIC_RPC_PROVIDERS = [
   process.env.ETH_RPC,
@@ -140,6 +150,36 @@ function isProviderError(err) {
 
 // Maximum retries for provider errors during resolution
 const MAX_RESOLUTION_RETRIES = 3;
+
+// UR reverts with these custom errors when a name has no resolver or its
+// resolver isn't a contract. Callers want to treat both as "not found".
+function isResolverNotFoundError(err) {
+  const msg = err?.message || '';
+  const data = err?.info?.error?.data || err?.data || '';
+  return (
+    /ResolverNotFound|ResolverNotContract/i.test(msg) ||
+    // ResolverNotFound(bytes) selector
+    (typeof data === 'string' && data.startsWith('0x7199966d'))
+  );
+}
+
+// Call the Universal Resolver's resolve(name, data). `callData` is the raw
+// ABI-encoded call the resolver would have received directly (selector +
+// args). Returns { bytes, resolverAddress } where `bytes` is the decoded
+// inner return value of that call.
+//
+// CCIP-Read is opted into per-call here because ethers v6 doesn't enable it
+// by default — needed for .box domains resolved via 3DNS.
+async function universalResolverCall(provider, name, callData) {
+  const ur = new ethers.Contract(UNIVERSAL_RESOLVER_ADDRESS, UR_ABI, provider);
+  const encodedName = ethers.dnsEncode(name, 255);
+  const [resolvedData, resolverAddress] = await ur.resolve(encodedName, callData, {
+    enableCcipRead: true,
+  });
+  // UR returns the resolver's ABI-encoded response as `bytes`; unwrap it.
+  const [bytes] = ethers.AbiCoder.defaultAbiCoder().decode(['bytes'], resolvedData);
+  return { bytes, resolverAddress };
+}
 
 async function resolveEnsContent(name) {
   const trimmed = (name || '').trim();
@@ -444,4 +484,6 @@ module.exports = {
   resolveEnsAddress,
   testRpcUrl,
   invalidateCachedProvider,
+  universalResolverCall,
+  isResolverNotFoundError,
 };
