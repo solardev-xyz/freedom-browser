@@ -15,6 +15,19 @@ const UR_ABI = [
   'function resolve(bytes name, bytes data) view returns (bytes resolvedData, address resolverAddress)',
 ];
 
+// bytes4(keccak256("contenthash(bytes32)"))
+const CONTENTHASH_SELECTOR = '0xbc1c4a73';
+
+// ENS contenthash byte patterns (EIP-1577). We preserve the CIDv0 base58
+// output ("QmFoo…") for IPFS/IPNS to stay byte-compatible with the
+// previous ethers-based implementation — users' bookmarks and history
+// entries keyed on the old URI form keep matching.
+//   0xe3 01 70             — ipfs-ns, cidv1, dag-pb
+//   0xe5 01 72             — ipns-ns, cidv1, libp2p-key
+//   0xe4 01 01 fa 01 1b 20 — swarm-ns + manifest codec, 32-byte keccak
+const IPFS_CONTENTHASH_RE = /^0x(e3010170|e5010172)(([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]*))$/;
+const SWARM_CONTENTHASH_RE = /^0xe40101fa011b20([0-9a-f]{64})$/;
+
 // Public RPC providers as fallbacks
 const PUBLIC_RPC_PROVIDERS = [
   process.env.ETH_RPC,
@@ -225,124 +238,96 @@ async function resolveEnsContent(name) {
 
 async function doResolveEnsContent(normalized, attempt) {
   const provider = await getWorkingProvider();
+  const node = ethers.namehash(normalized);
+  const callData = CONTENTHASH_SELECTOR + node.slice(2);
 
-  // Use ethers.js built-in resolver which handles CCIP-Read (EIP-3668) automatically.
-  // This is required for .box domains which use offchain resolution via 3dns.xyz.
   log.info(
-    `[ens] Getting resolver for: ${normalized}${attempt > 1 ? ` (attempt ${attempt})` : ''}`
+    `[ens] UR resolving content for: ${normalized}${attempt > 1 ? ` (attempt ${attempt})` : ''}`
   );
-  const resolver = await provider.getResolver(normalized);
 
-  if (!resolver) {
-    log.info(`[ens] No resolver found for: ${normalized}`);
-    const result = {
-      type: 'not_found',
-      reason: 'NO_RESOLVER',
-      name: normalized,
-    };
-    ensResultCache.set(normalized, { result, timestamp: Date.now() });
-    return result;
-  }
-
-  log.info(`[ens] Getting content hash for: ${normalized}`);
-  let contentHash;
+  let urResult;
   try {
-    // getContentHash() handles CCIP-Read and returns formatted URI like "ipfs://Qm..." or "bzz://..."
-    contentHash = await resolver.getContentHash();
+    urResult = await universalResolverCall(provider, normalized, callData);
   } catch (err) {
-    // Re-throw provider errors so they trigger retry logic
-    if (isProviderError(err)) {
-      throw err;
+    if (isProviderError(err)) throw err;
+    if (isResolverNotFoundError(err)) {
+      return cacheContentResult(normalized, {
+        type: 'not_found',
+        reason: 'NO_RESOLVER',
+        name: normalized,
+      });
     }
-    // CCIP-Read failures or missing contenthash
-    log.info(`[ens] Failed to get content hash for ${normalized}: ${err.message}`);
-    const result = {
+    // CCIP-Read gateway failures, resolver reverts, etc.
+    log.info(`[ens] UR resolve failed for ${normalized}: ${err.message}`);
+    return cacheContentResult(normalized, {
       type: 'not_found',
       reason: 'NO_CONTENTHASH',
       name: normalized,
       error: err.message,
-    };
-    ensResultCache.set(normalized, { result, timestamp: Date.now() });
-    return result;
+    });
   }
 
-  if (!contentHash) {
-    log.info(`[ens] Empty content hash for: ${normalized}`);
-    const result = {
+  if (!urResult.bytes || urResult.bytes === '0x') {
+    return cacheContentResult(normalized, {
       type: 'not_found',
       reason: 'EMPTY_CONTENTHASH',
       name: normalized,
-    };
-    ensResultCache.set(normalized, { result, timestamp: Date.now() });
-    return result;
+    });
   }
 
-  // ethers.js getContentHash() returns formatted URIs like:
-  // - "ipfs://QmHash" or "ipfs://bafyHash"
-  // - "ipns://name"
-  // - "bzz://hash"
-  // Parse the protocol and decoded value from the URI
-  log.info(`[ens] Raw content hash for ${normalized}: ${contentHash}`);
-  let result;
-  const match = contentHash.match(/^([a-z]+):\/\/(.+)$/i);
-
-  if (!match) {
-    log.warn(`[ens] Unsupported content hash format for ${normalized}: ${contentHash}`);
-    result = {
+  const parsed = parseContentHashBytes(urResult.bytes);
+  if (!parsed) {
+    log.warn(`[ens] UNSUPPORTED_CONTENTHASH_FORMAT for ${normalized}: ${urResult.bytes}`);
+    return cacheContentResult(normalized, {
       type: 'unsupported',
-      reason: `UNSUPPORTED_CONTENTHASH_FORMAT`,
+      reason: 'UNSUPPORTED_CONTENTHASH_FORMAT',
       name: normalized,
-      contentHash,
-    };
-    ensResultCache.set(normalized, { result, timestamp: Date.now() });
-    return result;
+      contentHash: urResult.bytes,
+    });
   }
 
-  const [, protocol, decoded] = match;
-  const protocolLower = protocol.toLowerCase();
+  return cacheContentResult(normalized, { type: 'ok', name: normalized, ...parsed });
+}
 
-  if (protocolLower === 'bzz' || protocolLower === 'swarm') {
-    result = {
-      type: 'ok',
-      name: normalized,
+// Decode raw ENS contenthash bytes into our result shape. Mirrors ethers'
+// internal decoder bit-for-bit to preserve CIDv0 base58 output for IPFS
+// — a content-hash library would normalize everything to CIDv1, breaking
+// history/bookmark matching on names users already visited.
+// Returns null for any format we don't support.
+function parseContentHashBytes(hex0x) {
+  const ipfs = hex0x.match(IPFS_CONTENTHASH_RE);
+  if (ipfs) {
+    const scheme = ipfs[1] === 'e3010170' ? 'ipfs' : 'ipns';
+    const length = parseInt(ipfs[4], 16);
+    if (ipfs[5].length === length * 2) {
+      const decoded = ethers.encodeBase58('0x' + ipfs[2]);
+      return {
+        codec: `${scheme}-ns`,
+        protocol: scheme,
+        uri: `${scheme}://${decoded}`,
+        decoded,
+      };
+    }
+  }
+  const swarm = hex0x.match(SWARM_CONTENTHASH_RE);
+  if (swarm) {
+    return {
       codec: 'swarm-ns',
       protocol: 'bzz',
-      uri: `bzz://${decoded}`,
-      decoded,
-    };
-  } else if (protocolLower === 'ipfs') {
-    result = {
-      type: 'ok',
-      name: normalized,
-      codec: 'ipfs-ns',
-      protocol: 'ipfs',
-      uri: `ipfs://${decoded}`,
-      decoded,
-    };
-  } else if (protocolLower === 'ipns') {
-    result = {
-      type: 'ok',
-      name: normalized,
-      codec: 'ipns-ns',
-      protocol: 'ipns',
-      uri: `ipns://${decoded}`,
-      decoded,
-    };
-  } else {
-    log.warn(`[ens] Unsupported protocol for ${normalized}: ${protocol}`);
-    result = {
-      type: 'unsupported',
-      reason: `UNSUPPORTED_PROTOCOL (${protocol})`,
-      name: normalized,
-      protocol,
-      decoded,
+      uri: `bzz://${swarm[1]}`,
+      decoded: swarm[1],
     };
   }
+  return null;
+}
 
+function cacheContentResult(normalized, result) {
+  ensResultCache.set(normalized, { result, timestamp: Date.now() });
   if (result.type === 'ok') {
     log.info(`[ens] Resolved: ${normalized} → ${result.uri}`);
+  } else {
+    log.info(`[ens] ${result.reason} for ${normalized}`);
   }
-  ensResultCache.set(normalized, { result, timestamp: Date.now() });
   return result;
 }
 
