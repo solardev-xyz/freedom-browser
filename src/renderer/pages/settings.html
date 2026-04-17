@@ -547,6 +547,17 @@
                 </label>
               </div>
             </div>
+            <div class="row">
+              <div class="row-body">
+                <p class="row-label">Start TON node</p>
+              </div>
+              <div class="row-control">
+                <label class="toggle">
+                  <input type="checkbox" id="start-ton-at-launch" />
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
           </div>
         </section>
 
@@ -673,6 +684,7 @@
         enableRadicle: $('enable-radicle-integration'),
         startRadicleRow: $('start-radicle-row'),
         startRadicle: $('start-radicle-at-launch'),
+        startTon: $('start-ton-at-launch'),
         enableIdentity: $('enable-identity-wallet'),
         autoUpdate: $('auto-update'),
       };
@@ -741,6 +753,7 @@
         startIpfsAtLaunch: fields.startIpfs.checked,
         enableRadicleIntegration: isWindows ? false : fields.enableRadicle.checked,
         startRadicleAtLaunch: isWindows ? false : fields.startRadicle.checked,
+        startTonAtLaunch: fields.startTon.checked,
         enableIdentityWallet: fields.enableIdentity.checked,
         autoUpdate: fields.autoUpdate.checked,
         enableEnsCustomRpc: fields.enableEnsCustomRpc.checked,
@@ -754,6 +767,7 @@
         fields.startIpfs.checked = settings.startIpfsAtLaunch !== false;
         fields.enableRadicle.checked = settings.enableRadicleIntegration === true;
         fields.startRadicle.checked = settings.startRadicleAtLaunch === true;
+        fields.startTon.checked = settings.startTonAtLaunch === true;
         fields.enableIdentity.checked = settings.enableIdentityWallet === true;
         fields.autoUpdate.checked = settings.autoUpdate !== false;
         fields.enableEnsCustomRpc.checked = settings.enableEnsCustomRpc === true;
@@ -865,6 +879,7 @@
         save();
       });
       fields.startRadicle.addEventListener('change', save);
+      fields.startTon.addEventListener('change', save);
       fields.enableIdentity.addEventListener('change', save);
       fields.autoUpdate.addEventListener('change', save);
 

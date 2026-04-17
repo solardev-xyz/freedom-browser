@@ -1,5 +1,18 @@
 export const ensureTrailingSlash = (value = '') => (value.endsWith('/') ? value : `${value}/`);
 
+// TON TLD suffixes recognised by the proxy
+export const TON_SUFFIXES = ['.ton', '.adnl', '.bag', '.t.me'];
+
+/**
+ * Return true when the given host (without port) belongs to a TON TLD.
+ * Matches exact dot-boundary suffixes only; no substring matches.
+ */
+export const isTonHost = (host) => {
+  if (!host || typeof host !== 'string') return false;
+  const lower = host.toLowerCase().split(':')[0]; // strip port if present
+  return TON_SUFFIXES.some((tld) => lower === tld.slice(1) || lower.endsWith(tld));
+};
+
 // Check if a string looks like a valid Swarm reference (64 or 128 hex characters)
 const isValidSwarmHash = (str) => /^[a-fA-F0-9]{64}([a-fA-F0-9]{64})?$/.test(str);
 
@@ -328,6 +341,13 @@ export const deriveDisplayValue = (
       const cleaned = remainder.replace(/\/+$/, '');
       return cleaned ? `rad://${cleaned}` : '';
     }
+  }
+
+  const tonMatch = url.match(/^https?:\/\/([^/]+)(\/.*)?$/i);
+  if (tonMatch && isTonHost(tonMatch[1])) {
+    const host = tonMatch[1];
+    const path = (tonMatch[2] || '').replace(/\/+$/, '');
+    return `ton://${host}${path}`;
   }
 
   return url;

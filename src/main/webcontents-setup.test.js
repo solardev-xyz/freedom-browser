@@ -1,3 +1,4 @@
+const EventEmitter = require('events');
 const {
   loadMainModule,
 } = require('../../test/helpers/main-process-test-utils');
@@ -54,10 +55,24 @@ function loadWebContentsSetupModule(options = {}) {
   const BrowserWindow = options.BrowserWindow || {
     getAllWindows: jest.fn(() => options.windows || []),
   };
+
+  // Default session mock (can be overridden via options.session)
+  const session = options.session || {
+    defaultSession: {
+      setProxy: jest.fn(() => Promise.resolve()),
+    },
+  };
+
+  // Default ton-manager mock with a real EventEmitter
+  const tonEvents = options.tonEvents || new EventEmitter();
+  const tonManagerMock = { events: tonEvents };
+
   const { app, mod } = loadMainModule(require.resolve('./webcontents-setup'), {
     BrowserWindow,
+    electronOverrides: { session },
     extraMocks: {
       [require.resolve('./logger')]: () => log,
+      [require.resolve('./ton-manager')]: () => tonManagerMock,
     },
   });
   const state = require('./state');
@@ -71,6 +86,8 @@ function loadWebContentsSetupModule(options = {}) {
     BrowserWindow,
     log,
     mod,
+    session,
+    tonEvents,
     state,
   };
 }
@@ -225,6 +242,152 @@ describe('webcontents-setup', () => {
     expect(ctx.log.error).toHaveBeenCalledWith('[render-process-gone-global]', {
       id: 99,
       reason: 'oom',
+    });
+  });
+
+  describe('TON proxy toggling', () => {
+    test('applies pac_script proxy when tonManager emits started', async () => {
+      const ctx = loadWebContentsSetupModule();
+      ctx.mod.registerWebContentsHandlers();
+
+      ctx.tonEvents.emit('started', { proxyPort: 18086 });
+
+      // setProxy is async; wait for the microtask queue to flush
+      await Promise.resolve();
+
+      expect(ctx.session.defaultSession.setProxy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          mode: 'pac_script',
+          pacScript: expect.stringContaining('18086'),
+        })
+      );
+    });
+
+    test('reverts to direct mode when tonManager emits stopped', async () => {
+      const ctx = loadWebContentsSetupModule();
+      ctx.mod.registerWebContentsHandlers();
+
+      ctx.tonEvents.emit('stopped');
+
+      await Promise.resolve();
+
+      expect(ctx.session.defaultSession.setProxy).toHaveBeenCalledWith({ mode: 'direct' });
+    });
+
+    test('PAC body in started event contains the correct port', async () => {
+      const ctx = loadWebContentsSetupModule();
+      ctx.mod.registerWebContentsHandlers();
+
+      ctx.tonEvents.emit('started', { proxyPort: 19999 });
+      await Promise.resolve();
+
+      const call = ctx.session.defaultSession.setProxy.mock.calls[0][0];
+      const decoded = decodeURIComponent(
+        call.pacScript.slice('data:application/x-ns-proxy-autoconfig,'.length)
+      );
+      expect(decoded).toContain('127.0.0.1:19999');
+    });
+  });
+
+  describe('certificate-error handler', () => {
+    test('accepts certificate errors for .ton hosts', () => {
+      const ctx = loadWebContentsSetupModule();
+      ctx.mod.registerWebContentsHandlers();
+
+      const event = { preventDefault: jest.fn() };
+      const callback = jest.fn();
+      ctx.app.emit(
+        'certificate-error',
+        event,
+        {},
+        'http://foo.ton/',
+        'ERR_CERT_AUTHORITY_INVALID',
+        {},
+        callback
+      );
+
+      expect(event.preventDefault).toHaveBeenCalled();
+      expect(callback).toHaveBeenCalledWith(true);
+    });
+
+    test('accepts certificate errors for .adnl hosts', () => {
+      const ctx = loadWebContentsSetupModule();
+      ctx.mod.registerWebContentsHandlers();
+
+      const event = { preventDefault: jest.fn() };
+      const callback = jest.fn();
+      ctx.app.emit(
+        'certificate-error',
+        event,
+        {},
+        'http://site.adnl/',
+        'ERR_CERT_AUTHORITY_INVALID',
+        {},
+        callback
+      );
+
+      expect(event.preventDefault).toHaveBeenCalled();
+      expect(callback).toHaveBeenCalledWith(true);
+    });
+
+    test('accepts self-signed cert for .bag host', () => {
+      const ctx = loadWebContentsSetupModule();
+      ctx.mod.registerWebContentsHandlers();
+
+      const event = { preventDefault: jest.fn() };
+      const callback = jest.fn();
+      ctx.app.emit(
+        'certificate-error',
+        event,
+        {},
+        'http://site.bag/',
+        'ERR_CERT_AUTHORITY_INVALID',
+        {},
+        callback
+      );
+
+      expect(event.preventDefault).toHaveBeenCalled();
+      expect(callback).toHaveBeenCalledWith(true);
+    });
+
+    test('accepts self-signed cert for .t.me host', () => {
+      const ctx = loadWebContentsSetupModule();
+      ctx.mod.registerWebContentsHandlers();
+
+      const event = { preventDefault: jest.fn() };
+      const callback = jest.fn();
+      ctx.app.emit(
+        'certificate-error',
+        event,
+        {},
+        'http://foo.t.me/',
+        'ERR_CERT_AUTHORITY_INVALID',
+        {},
+        callback
+      );
+
+      expect(event.preventDefault).toHaveBeenCalled();
+      expect(callback).toHaveBeenCalledWith(true);
+    });
+
+    test('does NOT call callback for clearnet hosts', () => {
+      const ctx = loadWebContentsSetupModule();
+      ctx.mod.registerWebContentsHandlers();
+
+      const event = { preventDefault: jest.fn() };
+      const callback = jest.fn();
+      ctx.app.emit(
+        'certificate-error',
+        event,
+        {},
+        'https://example.com/',
+        'ERR_CERT_AUTHORITY_INVALID',
+        {},
+        callback
+      );
+
+      expect(event.preventDefault).not.toHaveBeenCalled();
+      expect(callback).not.toHaveBeenCalled();
     });
   });
 });

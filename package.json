@@ -32,8 +32,13 @@
     "dist:mac:notary-status": "dotenv -- node scripts/macos-notary.js status",
     "dist:mac:notary-log": "dotenv -- node scripts/macos-notary.js log",
     "dist:mac:staple-notary": "dotenv -- node scripts/macos-notary.js staple",
-    "dist:linux:arm64:docker": "docker run --rm -v \"$PWD\":/app -v /app/node_modules -v \"${ELECTRON_CACHE:-$HOME/Library/Caches/electron}\":/root/.cache/electron -w /app -e USE_SYSTEM_FPM=true --platform linux/arm64 node:20 bash -c \"apt-get update && apt-get install -y ruby ruby-dev build-essential xz-utils && gem install fpm --no-document && npm ci && npm run radicle:download && npm run dist -- --linux --arm64\"",
-    "dist:linux:x64:docker": "docker run --rm -v \"$PWD\":/app -v /app/node_modules -v \"${ELECTRON_CACHE:-$HOME/Library/Caches/electron}\":/root/.cache/electron -w /app --platform linux/amd64 electronuserland/builder:20 bash -c \"npm ci && npm run radicle:download && npm run dist -- --linux --x64\"",
+    "dist:linux:arm64:docker": "docker run --rm -v \"$PWD\":/app -v /app/node_modules -v \"${ELECTRON_CACHE:-$HOME/Library/Caches/electron}\":/root/.cache/electron -w /app -e USE_SYSTEM_FPM=true --platform linux/arm64 node:20 bash -c \"apt-get update && apt-get install -y ruby ruby-dev build-essential xz-utils && gem install fpm --no-document && npm ci && npm run radicle:download && npm run ton:download && npm run dist -- --linux --arm64\"",
+    "dist:linux:x64:docker": "docker run --rm -v \"$PWD\":/app -v /app/node_modules -v \"${ELECTRON_CACHE:-$HOME/Library/Caches/electron}\":/root/.cache/electron -w /app --platform linux/amd64 electronuserland/builder:20 bash -c \"npm ci && npm run radicle:download && npm run ton:download && npm run dist -- --linux --x64\"",
+    "ton:download": "node scripts/fetch-tonutils-freedom.js",
+    "ton:start": "node -e \"const p=require('./scripts/fetch-tonutils-freedom');const b=p.checkBinary();if(!b.available){console.error('Binary missing. Run: npm run ton:download');process.exit(1);}require('child_process').spawnSync(b.path,['-addr','127.0.0.1:18085','-verbosity','1'],{stdio:'inherit'})\"",
+    "ton:stop": "pkill -SIGTERM tonutils-freedom-cli || echo 'TON proxy not running or failed to stop'",
+    "ton:status": "curl -s --max-time 5 -x http://127.0.0.1:18085 http://health.ton/ || echo 'TON proxy not responding'",
+    "ton:reset": "rm -rf ton-bin && echo 'TON binaries removed.'",
     "bee:download": "node scripts/fetch-bee.js",
     "bee:init": "node scripts/init-bee.js",
     "bee:start": "test -f bee-data/config.yaml || npm run bee:init; ./bee-bin/mac-arm64/bee start --config=./bee-data/config.yaml",
@@ -138,6 +143,13 @@
       {
         "from": "ipfs-bin/${os}-${arch}/",
         "to": "ipfs-bin",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "ton-bin/${os}-${arch}/",
+        "to": "ton-bin",
         "filter": [
           "**/*"
         ]

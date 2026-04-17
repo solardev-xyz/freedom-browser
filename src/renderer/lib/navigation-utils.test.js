@@ -66,6 +66,21 @@ describe('navigation-utils', () => {
         })
       ).toBe('https');
     });
+
+    test('detects bare TON host input without scheme', async () => {
+      const { resolveProtocolIconType } = await loadNavigationUtils();
+
+      expect(resolveProtocolIconType({ value: 'example.ton' })).toBe('ton');
+      expect(resolveProtocolIconType({ value: 'foundation.ton/path' })).toBe('ton');
+      expect(resolveProtocolIconType({ value: 'example.ton?query=1' })).toBe('ton');
+    });
+
+    test('detects ton:// canonical scheme', async () => {
+      const { resolveProtocolIconType } = await loadNavigationUtils();
+
+      expect(resolveProtocolIconType({ value: 'ton://foundation.ton' })).toBe('ton');
+      expect(resolveProtocolIconType({ value: 'ton://example.adnl/path' })).toBe('ton');
+    });
   });
 
   describe('buildRadicleDisabledUrl', () => {

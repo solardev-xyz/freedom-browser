@@ -1,6 +1,29 @@
 const log = require('./logger');
-const { BrowserWindow, app } = require('electron');
+const { BrowserWindow, app, session } = require('electron');
 const { activeBzzBases, activeIpfsBases, activeRadBases } = require('./state');
+const tonManager = require('./ton-manager');
+const { buildPacScript } = require('./ton-pac');
+const { isTonHost } = require('../shared/ton-suffixes');
+
+function registerTonCertHandler() {
+  if (registerTonCertHandler._registered) return;
+  registerTonCertHandler._registered = true;
+  app.on('certificate-error', (event, webContents, url, error, certificate, callback) => {
+    try {
+      const { hostname } = new URL(url);
+      if (isTonHost(hostname)) {
+        event.preventDefault();
+        callback(true);
+        return;
+      }
+    } catch {
+      // fall through: non-parseable URL is not a TON host
+    }
+    // Do NOT call callback(false) here: Electron's default handler takes over
+    // when we don't preventDefault(), and calling callback(false) would
+    // incorrectly reject clearnet certs that Chromium would otherwise accept.
+  });
+}
 
 const sanitizeUrlForLog = (rawUrl) => {
   if (!rawUrl || typeof rawUrl !== 'string') return 'unknown';
@@ -32,6 +55,28 @@ const sanitizeUrlForLog = (rawUrl) => {
 };
 
 function registerWebContentsHandlers() {
+  if (!registerWebContentsHandlers._tonEventsBound) {
+    registerWebContentsHandlers._tonEventsBound = true;
+    tonManager.events.on('started', ({ proxyPort }) => {
+      session.defaultSession
+        .setProxy({
+          mode: 'pac_script',
+          pacScript: buildPacScript({ proxyHost: '127.0.0.1', proxyPort }),
+        })
+        .then(() => log.info('[TON] session proxy applied, port=' + proxyPort))
+        .catch((err) => log.error('[TON] setProxy failed', err));
+    });
+
+    tonManager.events.on('stopped', () => {
+      session.defaultSession
+        .setProxy({ mode: 'direct' })
+        .then(() => log.info('[TON] session proxy cleared'))
+        .catch((err) => log.error('[TON] setProxy(direct) failed', err));
+    });
+  }
+
+  registerTonCertHandler();
+
   app.on('web-contents-created', (_event, contents) => {
     contents.once('destroyed', () => {
       activeBzzBases.delete(contents.id);

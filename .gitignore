@@ -16,6 +16,7 @@ bee-bin/
 bee-data/
 ipfs-bin/
 ipfs-data/
+ton-bin/
 dev-scripts/
 helios-bin/
 radicle-bin/

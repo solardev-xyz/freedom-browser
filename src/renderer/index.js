@@ -7,6 +7,7 @@ import {
   updateRadicleStatusLine,
   updateRadicleToggleState,
 } from './lib/radicle-ui.js';
+import { initTonUi, updateTonStatusLine } from './lib/ton-ui.js';
 import {
   initMenus,
   setOnOpenHistory,
@@ -68,6 +69,7 @@ window.serviceRegistry?.onUpdate?.((registry) => {
   updateIpfsToggleState();
   updateRadicleStatusLine();
   updateRadicleToggleState();
+  updateTonStatusLine();
 });
 
 // Fetch initial registry state
@@ -199,6 +201,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   initBeeUi();
   initIpfsUi();
   initRadicleUi();
+  initTonUi();
   initGithubBridgeUi();
   document.getElementById('settings-btn')?.addEventListener('click', () => {
     closeMenus();

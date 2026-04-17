@@ -335,6 +335,24 @@ describe('url-utils', () => {
         deriveDisplayValue(url, BZZ_ROUTE_PREFIX, HOME_URL, IPFS_ROUTE_PREFIX, IPNS_ROUTE_PREFIX)
       ).toBe('ipns://docs.ipfs.tech/index.html');
     });
+
+    test('rewrites TON http URLs to ton:// canonical form', () => {
+      expect(deriveDisplayValue('http://foo.ton/', BZZ_ROUTE_PREFIX, HOME_URL)).toBe(
+        'ton://foo.ton'
+      );
+      expect(deriveDisplayValue('http://foundation.ton/path', BZZ_ROUTE_PREFIX, HOME_URL)).toBe(
+        'ton://foundation.ton/path'
+      );
+      expect(deriveDisplayValue('http://example.adnl/', BZZ_ROUTE_PREFIX, HOME_URL)).toBe(
+        'ton://example.adnl'
+      );
+      expect(deriveDisplayValue('http://file.bag/path/to', BZZ_ROUTE_PREFIX, HOME_URL)).toBe(
+        'ton://file.bag/path/to'
+      );
+      expect(deriveDisplayValue('http://telegram.t.me/', BZZ_ROUTE_PREFIX, HOME_URL)).toBe(
+        'ton://telegram.t.me'
+      );
+    });
   });
 
   // ============ IPFS Tests ============

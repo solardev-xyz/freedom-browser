@@ -171,6 +171,7 @@ const loadNavigationModule = async (options = {}) => {
     deriveBzzBaseFromUrl: jest.fn((url) => (url.includes('/bzz/') ? 'https://gateway.example/bzz/hash/' : null)),
     deriveIpfsBaseFromUrl: jest.fn(() => null),
     deriveRadBaseFromUrl: jest.fn(() => null),
+    isTonHost: jest.fn((host) => /\.(ton|adnl|bag)$/.test((host || '').toLowerCase())),
   };
   const pageUrlsMocks = {
     homeUrl,
@@ -550,5 +551,53 @@ describe('navigation', () => {
     });
 
     expect(ctx.elements.addressInput.focus).toHaveBeenCalled();
+  });
+
+  test('loadTarget dispatches .ton host to http:// proxy URL', async () => {
+    const ctx = await loadNavigationModule();
+    await ctx.mod.initNavigation();
+
+    ctx.urlUtilsMocks.isTonHost.mockImplementation(
+      (host) => /\.(ton|adnl|bag)$/.test((host || '').toLowerCase())
+    );
+
+    ctx.mod.loadTarget('foundation.ton');
+
+    expect(ctx.urlUtilsMocks.isTonHost).toHaveBeenCalledWith('foundation.ton');
+    expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith('http://foundation.ton/');
+    expect(ctx.elements.addressInput.value).toBe('ton://foundation.ton');
+  });
+
+  test('loadTarget strips tonsite:// prefix and shows ton:// in address bar', async () => {
+    const ctx = await loadNavigationModule();
+    await ctx.mod.initNavigation();
+
+    ctx.urlUtilsMocks.isTonHost.mockImplementation(
+      (host) => /\.(ton|adnl|bag)$/.test((host || '').toLowerCase())
+    );
+
+    ctx.mod.loadTarget('tonsite://foundation.ton/path');
+
+    expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith('http://foundation.ton/path');
+    expect(ctx.elements.addressInput.value).toBe('ton://foundation.ton/path');
+  });
+
+  test('navigation-commit on TON host overwrites address bar to derived canonical form', async () => {
+    const ctx = await loadNavigationModule();
+    await ctx.mod.initNavigation();
+
+    global.document.dispatchEvent = jest.fn();
+
+    ctx.urlUtilsMocks.isTonHost.mockImplementation(
+      (host) => /\.(ton|adnl|bag)$/.test((host || '').toLowerCase())
+    );
+
+    ctx.elements.addressInput.value = 'foundation.ton';
+
+    ctx.tabsMocks.webviewEventHandler('did-navigate', {
+      event: { url: 'http://foundation.ton/' },
+    });
+
+    expect(ctx.elements.addressInput.value).toBe('display:http://foundation.ton/');
   });
 });

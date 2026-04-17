@@ -35,8 +35,15 @@ const registry = {
     tempMessageTimeout: null,
   },
   radicle: {
-    api: null,        // e.g., 'http://127.0.0.1:8780'
-    gateway: null,    // Same as api for radicle-httpd
+    api: null, // e.g., 'http://127.0.0.1:8780'
+    gateway: null, // Same as api for radicle-httpd
+    mode: MODE.NONE,
+    statusMessage: null,
+    tempMessage: null,
+    tempMessageTimeout: null,
+  },
+  ton: {
+    proxy: null,
     mode: MODE.NONE,
     statusMessage: null,
     tempMessage: null,
@@ -59,8 +66,12 @@ const DEFAULTS = {
     fallbackRange: 10,
   },
   radicle: {
-    httpPort: 8780,   // radicle-httpd port (avoids 8080 conflicts)
-    p2pPort: 8776,    // radicle-node P2P port
+    httpPort: 8780, // radicle-httpd port (avoids 8080 conflicts)
+    p2pPort: 8776, // radicle-node P2P port
+    fallbackRange: 10,
+  },
+  ton: {
+    proxyPort: 18085,
     fallbackRange: 10,
   },
 };
@@ -80,6 +91,7 @@ function getRegistry() {
     ipfs: { ...registry.ipfs },
     bee: { ...registry.bee },
     radicle: { ...registry.radicle },
+    ton: { ...registry.ton },
   };
 }
 
@@ -164,6 +176,14 @@ function clearErrorState(service) {
   broadcastRegistryUpdate();
 }
 
+// Initial shapes used to reset each service cleanly on clearService()
+const INITIAL_SHAPES = {
+  ipfs: { api: null, gateway: null, mode: MODE.NONE, statusMessage: null, tempMessage: null, tempMessageTimeout: null },
+  bee: { api: null, gateway: null, mode: MODE.NONE, statusMessage: null, tempMessage: null, tempMessageTimeout: null },
+  radicle: { api: null, gateway: null, mode: MODE.NONE, statusMessage: null, tempMessage: null, tempMessageTimeout: null },
+  ton: { proxy: null, mode: MODE.NONE, statusMessage: null, tempMessage: null, tempMessageTimeout: null },
+};
+
 /**
  * Clear service state (when stopped)
  */
@@ -174,14 +194,7 @@ function clearService(service) {
     clearTimeout(registry[service].tempMessageTimeout);
   }
 
-  registry[service] = {
-    api: null,
-    gateway: null,
-    mode: MODE.NONE,
-    statusMessage: null,
-    tempMessage: null,
-    tempMessageTimeout: null,
-  };
+  registry[service] = { ...INITIAL_SHAPES[service] };
 
   broadcastRegistryUpdate();
 }
