@@ -91,7 +91,8 @@
     },
     "linux": {
       "target": [
-        "deb"
+        "deb",
+        "AppImage"
       ],
       "icon": "assets/icons",
       "category": "Network;WebBrowser",
