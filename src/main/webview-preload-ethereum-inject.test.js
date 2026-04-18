@@ -358,7 +358,7 @@ describe('webview-preload-ethereum-inject', () => {
       expect(window.__FREEDOM_PROVIDER_CONFIG__).toBeUndefined();
     });
 
-    test('degrades gracefully if the provider config is missing', () => {
+    test('skips 6963 announce but keeps window.ethereum + legacy init when config missing', () => {
       const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
       const { window, dispatchedEvents } = createInstance({ providerConfig: null });
 
