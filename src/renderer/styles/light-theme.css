@@ -25,7 +25,8 @@
 }
 
 [data-theme='light'] .icon-btn:hover,
-[data-theme='light'] .menu-button:hover {
+[data-theme='light'] .menu-button:hover,
+[data-theme='light'] .menu-button[aria-expanded='true'] {
   background: rgba(0, 0, 0, 0.1);
 }
 

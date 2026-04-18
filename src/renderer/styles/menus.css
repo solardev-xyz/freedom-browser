@@ -96,7 +96,8 @@
   margin: 0 1px;
 }
 
-.menu-button:hover {
+.menu-button:hover,
+.menu-button[aria-expanded='true'] {
   background: rgba(255, 255, 255, 0.1);
 }
 
