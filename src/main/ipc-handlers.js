@@ -30,9 +30,18 @@ const ethereumProviderIconPath = app.isPackaged
   ? path.join(process.resourcesPath, 'assets', 'icon-6963.png')
   : path.join(__dirname, '..', '..', 'assets', 'icon-6963.png');
 const pkg = require('../../package.json');
+// Read the icon defensively: a missing/corrupt file must not block main-process
+// startup. Fall back to an empty icon and let the 6963 announcement still fire.
+let ethereumProviderIconDataUri = '';
+try {
+  ethereumProviderIconDataUri =
+    'data:image/png;base64,' + fs.readFileSync(ethereumProviderIconPath, 'base64');
+} catch (err) {
+  log.error('[eip6963] Failed to load provider icon:', err.message);
+}
 const ethereumProviderInfoStatic = Object.freeze({
   name: pkg.build.productName,
-  icon: 'data:image/png;base64,' + fs.readFileSync(ethereumProviderIconPath, 'base64'),
+  icon: ethereumProviderIconDataUri,
   rdns: pkg.build.appId,
 });
 
@@ -227,8 +236,12 @@ function registerBaseIpcHandlers(callbacks = {}) {
   ipcMain.on(IPC.GET_ETHEREUM_INJECT_SOURCE, (event) => {
     // Fresh UUID per request — spec says unique per EIP-1193 session, scoped
     // to a page's lifetime. Prepend as a global the IIFE picks up.
+    // Escape '<' as \u003c so a future field value containing '</script>' can't
+    // break out of the injected <script> tag (defense in depth; today's fields
+    // all come from package.json).
     const info = { ...ethereumProviderInfoStatic, uuid: crypto.randomUUID() };
-    const preamble = `window.__FREEDOM_PROVIDER_CONFIG__ = ${JSON.stringify(info)};\n`;
+    const infoJson = JSON.stringify(info).replace(/</g, '\\u003c');
+    const preamble = `window.__FREEDOM_PROVIDER_CONFIG__ = ${infoJson};\n`;
     event.returnValue = preamble + ethereumInjectSource;
   });
 

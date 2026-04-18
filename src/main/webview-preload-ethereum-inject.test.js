@@ -358,10 +358,19 @@ describe('webview-preload-ethereum-inject', () => {
       expect(window.__FREEDOM_PROVIDER_CONFIG__).toBeUndefined();
     });
 
-    test('throws if the provider config is missing', () => {
-      expect(() => createInstance({ providerConfig: null })).toThrow(
-        /provider config missing/
-      );
+    test('degrades gracefully if the provider config is missing', () => {
+      const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+      const { window, dispatchedEvents } = createInstance({ providerConfig: null });
+
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('provider config missing'));
+
+      // 6963 announce is skipped…
+      expect(dispatchedEvents.filter((e) => e.type === 'eip6963:announceProvider')).toHaveLength(0);
+      // …but window.ethereum is still installed and the legacy init still fires.
+      expect(window.ethereum).toBeDefined();
+      expect(dispatchedEvents.some((e) => e.type === 'ethereum#initialized')).toBe(true);
+
+      errorSpy.mockRestore();
     });
   });
 
