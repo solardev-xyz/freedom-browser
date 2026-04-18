@@ -8,7 +8,6 @@ let radicleToggleSwitch = null;
 let radiclePeersCount = null;
 let radicleReposCount = null;
 let radicleVersionText = null;
-let radicleNodeId = null;
 let radicleInfoPanel = null;
 let radicleStatusRow = null;
 let radicleStatusLabel = null;
@@ -30,10 +29,6 @@ export const stopRadicleInfoPolling = () => {
   if (radiclePeersCount) radiclePeersCount.textContent = '0';
   if (radicleReposCount) radicleReposCount.textContent = '';
   if (radicleVersionText) radicleVersionText.textContent = state.radicleVersionFetched ? state.radicleVersionValue : '';
-  if (radicleNodeId) {
-    radicleNodeId.textContent = '';
-    radicleNodeId.title = '';
-  }
 };
 
 const updateRadicleSectionVisibility = () => {
@@ -83,27 +78,6 @@ const fetchRadicleInfo = async () => {
     if (radicleReposCount) radicleReposCount.textContent = '';
   }
 
-  // Fetch node ID from /api/v1/node (only once, it doesn't change)
-  if (radicleNodeId && !radicleNodeId.textContent.trim()) {
-    try {
-      const nodeResponse = await fetch(buildRadicleUrl('/api/v1/node'));
-      if (!radicleInfoPanel?.classList.contains('visible')) return;
-      if (nodeResponse.ok) {
-        const nodeInfo = await nodeResponse.json();
-        const fullId = nodeInfo?.id || '';
-        if (fullId && radicleNodeId) {
-          // Truncate: first 8 chars + ... + last 4 chars
-          const truncated = fullId.length > 16
-            ? `${fullId.slice(0, 8)}...${fullId.slice(-4)}`
-            : fullId;
-          radicleNodeId.textContent = truncated;
-          radicleNodeId.title = fullId; // Full ID on hover
-        }
-      }
-    } catch {
-      // Node ID fetch failed, leave empty while unknown
-    }
-  }
 };
 
 const fetchRadicleVersionOnce = async () => {
@@ -264,7 +238,6 @@ export const initRadicleUi = () => {
   radiclePeersCount = document.getElementById('radicle-peers-count');
   radicleReposCount = document.getElementById('radicle-repos-count');
   radicleVersionText = document.getElementById('radicle-version-text');
-  radicleNodeId = document.getElementById('radicle-node-id');
   radicleInfoPanel = document.querySelector('.radicle-info');
   radicleStatusRow = document.getElementById('radicle-status-row');
   radicleStatusLabel = document.getElementById('radicle-status-label');

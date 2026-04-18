@@ -40,7 +40,6 @@ const loadRadicleModule = async (options = {}) => {
   const radiclePeersCount = createElement('span');
   const radicleReposCount = createElement('span');
   const radicleVersionText = createElement('span');
-  const radicleNodeId = createElement('span');
   const radicleInfoPanel = createElement('div', {
     classes: ['radicle-info'],
   });
@@ -58,7 +57,6 @@ const loadRadicleModule = async (options = {}) => {
       'radicle-peers-count': radiclePeersCount,
       'radicle-repos-count': radicleReposCount,
       'radicle-version-text': radicleVersionText,
-      'radicle-node-id': radicleNodeId,
       'radicle-status-row': radicleStatusRow,
       'radicle-status-label': radicleStatusLabel,
       'radicle-status-value': radicleStatusValue,
@@ -103,12 +101,6 @@ const loadRadicleModule = async (options = {}) => {
           json: async () => ({ repos: { total: 7 } }),
         };
       }
-      if (url.endsWith('/api/v1/node')) {
-        return {
-          ok: true,
-          json: async () => ({ id: 'rad123456789abcdef1234' }),
-        };
-      }
 
       return {
         ok: true,
@@ -149,7 +141,6 @@ const loadRadicleModule = async (options = {}) => {
       radiclePeersCount,
       radicleReposCount,
       radicleVersionText,
-      radicleNodeId,
       radicleInfoPanel,
       radicleStatusRow,
       radicleStatusLabel,
@@ -184,14 +175,11 @@ describe('radicle-ui', () => {
 
     expect(ctx.radicleApi.getConnections).toHaveBeenCalled();
     expect(ctx.buildRadicleUrl).toHaveBeenCalledWith('/api/v1/stats');
-    expect(ctx.buildRadicleUrl).toHaveBeenCalledWith('/api/v1/node');
     expect(ctx.buildRadicleUrl).toHaveBeenCalledWith('/');
     expect(ctx.elements.radicleInfoPanel.classList.contains('visible')).toBe(true);
     expect(ctx.elements.radiclePeersCount.textContent).toBe('5');
     expect(ctx.elements.radicleReposCount.textContent).toBe('7');
     expect(ctx.elements.radicleVersionText.textContent).toBe('1.2.3');
-    expect(ctx.elements.radicleNodeId.textContent).toBe('rad12345...1234');
-    expect(ctx.elements.radicleNodeId.title).toBe('rad123456789abcdef1234');
     expect(ctx.state.radicleVersionFetched).toBe(true);
     expect(ctx.setIntervalMock).toHaveBeenCalledWith(expect.any(Function), 2000);
 
@@ -202,7 +190,6 @@ describe('radicle-ui', () => {
     expect(ctx.elements.radiclePeersCount.textContent).toBe('0');
     expect(ctx.elements.radicleReposCount.textContent).toBe('');
     expect(ctx.elements.radicleVersionText.textContent).toBe('1.2.3');
-    expect(ctx.elements.radicleNodeId.textContent).toBe('');
   });
 
   test('updates Radicle status lines, toggle state, and running transitions', async () => {

@@ -116,7 +116,8 @@
   z-index: 10000;
 }
 
-.menu-dropdown {
+.menu-dropdown,
+.bee-dropdown {
   min-width: 240px;
 }
 

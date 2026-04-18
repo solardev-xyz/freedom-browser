@@ -220,12 +220,6 @@
   color: var(--muted);
 }
 
-.node-id-truncated {
-  font-family: monospace;
-  font-size: 0.9em;
-  cursor: help;
-}
-
 /* Disable hover highlight on toggle menu items */
 .bee-toggle:hover,
 .ipfs-toggle:hover,
