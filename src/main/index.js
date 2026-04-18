@@ -1,6 +1,16 @@
 // Set app name early, before electron-log initializes (it uses app name for log path)
-const { app } = require('electron');
+const { app, protocol } = require('electron');
 const appName = process.platform === 'linux' ? 'freedom' : 'Freedom';
+
+// Register custom schemes as privileged BEFORE app is ready so that Fetch API
+// and other browser features treat bzz://, ipfs://, and ipns:// as valid fetch
+// schemes. Without this, only XMLHttpRequest works (it bypasses scheme validation);
+// fetch() rejects unknown schemes before webRequest.onBeforeRequest can intercept them.
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'bzz',  privileges: { standard: true, supportFetchAPI: true } },
+  { scheme: 'ipfs', privileges: { standard: true, supportFetchAPI: true } },
+  { scheme: 'ipns', privileges: { standard: true, supportFetchAPI: true } },
+]);
 
 // Suppress Electron security warnings in development (CSP handles security in production)
 if (!app.isPackaged) {
