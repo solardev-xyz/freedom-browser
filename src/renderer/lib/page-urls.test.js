@@ -58,11 +58,23 @@ describe('page-urls', () => {
     const mod = await loadModule({
       history: 'history.html',
       links: 'links.html',
+      settings: 'settings.html',
     });
 
     expect(mod.getInternalPageName('file:///app/pages/history.html')).toBe('history');
     expect(mod.getInternalPageName('file:///app/pages/links.html')).toBe('links');
     expect(mod.getInternalPageName('https://example.com')).toBeNull();
+
+    // Hash fragments become sub-paths for sub-page deep links
+    // (freedom://settings/appearance → settings.html#appearance).
+    expect(mod.getInternalPageName('file:///app/pages/settings.html')).toBe('settings');
+    expect(mod.getInternalPageName('file:///app/pages/settings.html#appearance')).toBe(
+      'settings/appearance'
+    );
+    expect(mod.getInternalPageName('file:///app/pages/settings.html#updates')).toBe(
+      'settings/updates'
+    );
+    expect(mod.getInternalPageName('')).toBeNull();
   });
 
   test('parses ens inputs with prefixes, paths, and invalid names', async () => {

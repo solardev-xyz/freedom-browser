@@ -41,11 +41,18 @@ export const isHistoryRecordable = (displayUrl, internalUrl) => {
   return true;
 };
 
-// Convert internal page URL back to freedom:// format
+// Convert internal page URL back to freedom:// format.
+// A fragment on the internal URL (e.g. settings.html#appearance) becomes a
+// sub-path on the friendly name (e.g. "settings/appearance"), which the
+// address-bar code turns into freedom://settings/appearance.
 export const getInternalPageName = (url) => {
+  if (!url) return null;
+  const hashIndex = url.indexOf('#');
+  const base = hashIndex >= 0 ? url.slice(0, hashIndex) : url;
+  const fragment = hashIndex >= 0 ? url.slice(hashIndex + 1) : '';
   for (const [name, pageUrl] of Object.entries(internalPages)) {
-    if (url === pageUrl || url === pageUrl.replace(/\/$/, '')) {
-      return name;
+    if (base === pageUrl || base === pageUrl.replace(/\/$/, '')) {
+      return fragment ? `${name}/${fragment}` : name;
     }
   }
   return null;

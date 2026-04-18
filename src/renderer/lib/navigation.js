@@ -361,14 +361,19 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null) 
     return;
   }
 
-  // Handle freedom:// protocol for internal pages
-  const fbMatch = value.match(/^freedom:\/\/([a-zA-Z0-9-]+)$/i);
+  // Handle freedom:// protocol for internal pages, with optional sub-path
+  // (e.g. freedom://settings/appearance → pages/settings.html#appearance).
+  // The sub-path is carried as a URL fragment so client-side routing inside
+  // the page can show the matching section without a full reload.
+  const fbMatch = value.match(/^freedom:\/\/([a-zA-Z0-9-]+)(?:\/([a-zA-Z0-9-]+))?\/?$/i);
   if (fbMatch) {
     const pageName = fbMatch[1].toLowerCase();
+    const subPath = fbMatch[2]?.toLowerCase() || null;
     const pageUrl = internalPages[pageName];
     if (pageUrl) {
-      webview.loadURL(pageUrl);
-      pushDebug(`Loading internal page: ${pageName}`);
+      const targetUrl = subPath ? `${pageUrl}#${subPath}` : pageUrl;
+      webview.loadURL(targetUrl);
+      pushDebug(`Loading internal page: ${pageName}${subPath ? `/${subPath}` : ''}`);
     } else {
       pushDebug(`Unknown internal page: ${pageName}`);
       alert(

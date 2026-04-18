@@ -32,7 +32,9 @@ export const updateTabFavicon = async (tabId, pageUrl) => {
   const tab = tabState.tabs.find((t) => t.id === tabId);
   if (!tab) return;
 
-  // Skip for internal pages or empty URLs
+  // Skip for internal pages or empty URLs — internal pages that want a
+  // favicon declare it via <link rel="icon"> and are picked up by the
+  // page-favicon-updated webview event instead of the HTTP fetch pipeline.
   if (!pageUrl || pageUrl.startsWith('freedom://') || pageUrl.includes('/pages/')) {
     tab.favicon = null;
     renderTabs();
@@ -280,9 +282,15 @@ const createWebview = (tabId, initialUrl) => {
         tab.hasCertError = false; // Reset cert error on new navigation
         // Track view-source state directly on tab for reliable detection in page-title-updated
         tab.isViewingSource = webviewUrl.startsWith('view-source:');
-        // Clear favicon and set title for home page navigation (e.g., when hitting back)
-        if (homeUrl && (event.url === homeUrl || event.url.endsWith('/pages/home.html'))) {
+        // Clear any stale favicon from the previous page when navigating to
+        // an internal page — page-favicon-updated will paint one back in if
+        // the page declares a <link rel="icon">.
+        if (isInternalPageUrl(event.url)) {
           tab.favicon = null;
+          renderTabs();
+        }
+        // Reset title to "New Tab" on home-page navigation (e.g., back button)
+        if (homeUrl && (event.url === homeUrl || event.url.endsWith('/pages/home.html'))) {
           tab.title = 'New Tab';
           renderTabs();
           if (tabId === tabState.activeTabId) {
@@ -303,6 +311,19 @@ const createWebview = (tabId, initialUrl) => {
       if (tabId === tabState.activeTabId && onWebviewEvent) {
         onWebviewEvent('did-navigate-in-page', { tabId, event });
       }
+    },
+    'page-favicon-updated': (event) => {
+      const tab = tabState.tabs.find((t) => t.id === tabId);
+      if (!tab) return;
+      // Only honor this event for internal pages. External sites flow through
+      // the HTTP favicon pipeline (updateTabFavicon) which handles per-domain
+      // caching across sessions; letting this event override it would race
+      // with the cached value on subsequent loads.
+      if (!isInternalPageUrl(webview.getURL())) return;
+      const icon = event.favicons?.[0];
+      if (!icon) return;
+      tab.favicon = icon;
+      renderTabs();
     },
     'page-title-updated': (event) => {
       const tab = tabState.tabs.find((t) => t.id === tabId);
@@ -387,6 +408,12 @@ const CORNER_RIGHT_SVG = `<svg viewBox="0 0 10 10"><path d="M0 0C0 5.52 4.48 10 
 
 // Default globe icon (same as address bar HTTP icon)
 const GLOBE_ICON_SVG = `<svg class="tab-icon-default" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>`;
+
+// Internal pages are served from the bundled renderer (freedom:// or
+// file:///…/pages/…). The HTTP favicon fetch pipeline skips them, so their
+// favicons come in via the webview's page-favicon-updated event.
+const isInternalPageUrl = (url) =>
+  typeof url === 'string' && (url.startsWith('freedom://') || url.includes('/pages/'));
 
 // Loading spinner (same style as address bar)
 const SPINNER_HTML = `<span class="tab-icon-spinner"></span>`;

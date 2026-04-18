@@ -7,6 +7,11 @@
       content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:;"
     />
     <title>Settings</title>
+    <link
+      rel="icon"
+      type="image/svg+xml"
+      href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjOGI5NDllIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+PGNpcmNsZSBjeD0iMTIiIGN5PSIxMiIgcj0iMyIvPjxwYXRoIGQ9Ik0xOS40IDE1YTEuNjUgMS42NSAwIDAgMCAuMzMgMS44MmwuMDYuMDZhMiAyIDAgMSAxLTIuODMgMi44M2wtLjA2LS4wNmExLjY1IDEuNjUgMCAwIDAtMS44Mi0uMzMgMS42NSAxLjY1IDAgMCAwLTEgMS41MVYyMWEyIDIgMCAwIDEtNCAwdi0uMDlBMS42NSAxLjY1IDAgMCAwIDkgMTkuNGExLjY1IDEuNjUgMCAwIDAtMS44Mi4zM2wtLjA2LjA2YTIgMiAwIDEgMS0yLjgzLTIuODNsLjA2LS4wNmExLjY1IDEuNjUgMCAwIDAgLjMzLTEuODIgMS42NSAxLjY1IDAgMCAwLTEuNTEtMUgzYTIgMiAwIDAgMSAwLTRoLjA5QTEuNjUgMS42NSAwIDAgMCA0LjYgOWExLjY1IDEuNjUgMCAwIDAtLjMzLTEuODJsLS4wNi0uMDZhMiAyIDAgMSAxIDIuODMtMi44M2wuMDYuMDZhMS42NSAxLjY1IDAgMCAwIDEuODIuMzNIOWExLjY1IDEuNjUgMCAwIDAgMS0xLjUxVjNhMiAyIDAgMCAxIDQgMHYuMDlhMS42NSAxLjY1IDAgMCAwIDEgMS41MSAxLjY1IDEuNjUgMCAwIDAgMS44Mi0uMzNsLjA2LS4wNmEyIDIgMCAxIDEgMi44MyAyLjgzbC0uMDYuMDZhMS42NSAxLjY1IDAgMCAwLS4zMyAxLjgyVjlhMS42NSAxLjY1IDAgMCAwIDEuNTEgMUgyMWEyIDIgMCAwIDEgMCA0aC0uMDlhMS42NSAxLjY1IDAgMCAwLTEuNTEgMXoiLz48L3N2Zz4="
+    />
     <style>
       :root {
         --bg: #0d1117;
@@ -121,35 +126,19 @@
         max-width: 820px;
       }
 
-      h1 {
-        font-size: 32px;
-        margin: 0 0 8px 0;
-        font-weight: 600;
-        letter-spacing: -0.5px;
-      }
-
-      .page-subtitle {
-        color: var(--text-muted);
-        font-size: 14px;
-        margin: 0 0 40px 0;
-      }
-
       .section {
         margin-bottom: 48px;
-        scroll-margin-top: 24px;
+      }
+
+      .section.hidden {
+        display: none;
       }
 
       .section-title {
         font-size: 18px;
         font-weight: 600;
-        margin: 0 0 4px 0;
-        color: var(--text);
-      }
-
-      .section-subtitle {
-        color: var(--text-muted);
-        font-size: 13px;
         margin: 0 0 16px 0;
+        color: var(--text);
       }
 
       .card {
@@ -364,28 +353,6 @@
         color: var(--warn);
       }
 
-      /* Save indicator */
-      .saved-indicator {
-        position: fixed;
-        bottom: 24px;
-        right: 24px;
-        background: var(--bg-card);
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        padding: 10px 16px;
-        font-size: 13px;
-        color: var(--success);
-        opacity: 0;
-        transform: translateY(8px);
-        pointer-events: none;
-        transition: opacity 0.15s, transform 0.15s;
-      }
-
-      .saved-indicator.visible {
-        opacity: 1;
-        transform: translateY(0);
-      }
-
       /* Light theme */
       @media (prefers-color-scheme: light) {
         :root {
@@ -449,7 +416,7 @@
           Settings
         </h2>
         <nav class="nav" id="nav">
-          <button type="button" class="nav-item active" data-target="appearance">
+          <button type="button" class="nav-item" data-target="appearance">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="5"></circle>
               <line x1="12" y1="1" x2="12" y2="3"></line>
@@ -496,13 +463,9 @@
       </aside>
 
       <main class="content">
-        <h1>Settings</h1>
-        <p class="page-subtitle">Configure how Freedom behaves on your machine.</p>
-
         <!-- Appearance -->
         <section class="section" id="appearance">
           <h2 class="section-title">Appearance</h2>
-          <p class="section-subtitle">Theme and visual preferences.</p>
           <div class="card">
             <div class="row">
               <div class="row-body">
@@ -523,7 +486,6 @@
         <!-- Startup -->
         <section class="section" id="startup">
           <h2 class="section-title">Automatic Startup</h2>
-          <p class="section-subtitle">Which background nodes start when Freedom launches.</p>
           <div class="card">
             <div class="row">
               <div class="row-body">
@@ -553,7 +515,6 @@
         <!-- Ethereum RPC -->
         <section class="section" id="ethereum">
           <h2 class="section-title">Ethereum RPC</h2>
-          <p class="section-subtitle">Custom RPC endpoint for ENS lookups.</p>
           <div class="card">
             <div class="row">
               <div class="row-body">
@@ -587,7 +548,6 @@
         <!-- Experimental -->
         <section class="section" id="experimental">
           <h2 class="section-title">Experimental</h2>
-          <p class="section-subtitle">Features that are still being polished.</p>
           <div class="card">
             <div class="row">
               <div class="row-body">
@@ -637,7 +597,6 @@
         <!-- Updates -->
         <section class="section" id="updates">
           <h2 class="section-title">Updates</h2>
-          <p class="section-subtitle">How Freedom handles software updates.</p>
           <div class="card">
             <div class="row">
               <div class="row-body">
@@ -654,8 +613,6 @@
         </section>
       </main>
     </div>
-
-    <div id="saved-indicator" class="saved-indicator">Saved</div>
 
     <script>
       // freedomAPI is exposed globally by webview-preload.js via contextBridge.
@@ -679,38 +636,55 @@
 
       const swarmModeHelp = $('swarm-mode-help');
       const swarmModeBtn = $('swarm-mode-action-btn');
-      const savedIndicator = $('saved-indicator');
 
       let isWindows = false;
-      let savedTimer = null;
 
+      // Each sidebar entry maps to one section; the active section is driven
+      // by location.hash so the URL is the source of truth and the outer
+      // chrome can render freedom://settings/<section> in the address bar.
       const navItems = [...document.querySelectorAll('.nav-item')];
+      const SECTIONS = navItems.map((i) => i.dataset.target).filter(Boolean);
+      const DEFAULT_SECTION = SECTIONS[0] || 'appearance';
+
+      const resolveSection = (hash) => {
+        const candidate = (hash || '').replace(/^#/, '').toLowerCase();
+        return SECTIONS.includes(candidate) ? candidate : DEFAULT_SECTION;
+      };
+
+      const showSection = (section) => {
+        for (const id of SECTIONS) {
+          const el = document.getElementById(id);
+          if (el) el.classList.toggle('hidden', id !== section);
+        }
+        navItems.forEach((item) =>
+          item.classList.toggle('active', item.dataset.target === section)
+        );
+        // Always scroll the content area to the top when switching — avoids a
+        // stale scroll offset from a taller prior section.
+        window.scrollTo({ top: 0 });
+      };
+
       navItems.forEach((item) => {
         item.addEventListener('click', () => {
-          const target = document.getElementById(item.dataset.target);
-          if (target) {
-            target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-          }
+          const target = item.dataset.target;
+          if (!target || target === resolveSection(location.hash)) return;
+          location.hash = target;
         });
       });
 
-      const sections = navItems
-        .map((item) => document.getElementById(item.dataset.target))
-        .filter(Boolean);
+      window.addEventListener('hashchange', () => {
+        showSection(resolveSection(location.hash));
+      });
 
-      const observer = new IntersectionObserver(
-        (entries) => {
-          entries.forEach((entry) => {
-            if (!entry.isIntersecting) return;
-            const id = entry.target.id;
-            navItems.forEach((i) =>
-              i.classList.toggle('active', i.dataset.target === id)
-            );
-          });
-        },
-        { rootMargin: '-20% 0px -70% 0px', threshold: 0 }
-      );
-      sections.forEach((s) => observer.observe(s));
+      // On first load, normalize the URL so freedom://settings becomes
+      // freedom://settings/appearance in the address bar. history.replaceState
+      // keeps this out of the back/forward stack.
+      const initialSection = resolveSection(location.hash);
+      const initialHashIsCanonical = location.hash.replace(/^#/, '').toLowerCase() === initialSection;
+      if (!initialHashIsCanonical) {
+        history.replaceState(null, '', `#${initialSection}`);
+      }
+      showSection(initialSection);
 
       const setFieldEnabled = (checkbox, container, ...inputs) => {
         const enabled = checkbox?.checked === true;
@@ -727,12 +701,6 @@
       const setEnsRpcStatus = (text, type) => {
         fields.ensRpcStatus.textContent = text;
         fields.ensRpcStatus.className = 'rpc-status' + (type ? ' ' + type : '');
-      };
-
-      const showSaved = () => {
-        savedIndicator.classList.add('visible');
-        clearTimeout(savedTimer);
-        savedTimer = setTimeout(() => savedIndicator.classList.remove('visible'), 1200);
       };
 
       const currentFormState = () => ({
@@ -850,9 +818,7 @@
 
       const save = async () => {
         const ok = await freedomAPI.saveSettings(currentFormState());
-        if (ok) {
-          showSaved();
-        } else {
+        if (!ok) {
           setEnsRpcStatus('Failed to save settings', 'error');
         }
       };
