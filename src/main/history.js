@@ -36,6 +36,7 @@ function closeDb() {
     log.info('[History] Closing database');
     db.close();
     db = null;
+    statements = null;
   }
 }
 

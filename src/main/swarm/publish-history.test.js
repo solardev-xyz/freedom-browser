@@ -200,6 +200,37 @@ describe('publish-history (sqlite)', () => {
     }).not.toThrow();
   });
 
+  test('skips re-import when publish-history.json.migrated already exists', () => {
+    // Scenario: a prior run successfully migrated (leaving .migrated behind),
+    // and a stray .json reappeared — user drop-in, partial restore, etc.
+    // Re-importing would double the rows (the table has no unique key), so
+    // the stray .json should be dropped instead.
+    const jsonPath = path.join(userDataDir, 'publish-history.json');
+    const migratedPath = jsonPath + '.migrated';
+
+    fs.writeFileSync(
+      jsonPath,
+      JSON.stringify({
+        version: 1,
+        entries: [
+          {
+            type: 'data',
+            name: 'stray',
+            status: 'completed',
+            timestamp: '2026-04-15T19:30:32.540Z',
+          },
+        ],
+      })
+    );
+    fs.writeFileSync(migratedPath, '{}');
+
+    ({ mod } = loadPublishHistoryModule({ userDataDir }));
+
+    expect(mod.getEntries()).toHaveLength(0);
+    expect(fs.existsSync(jsonPath)).toBe(false);
+    expect(fs.existsSync(migratedPath)).toBe(true);
+  });
+
   test('sweepOrphans flips uploading rows to failed when getDb runs', () => {
     // Seed the fake by inserting two uploading rows, then explicitly invoke
     // the sweep path through a new module load. Since the fake DB is in-memory

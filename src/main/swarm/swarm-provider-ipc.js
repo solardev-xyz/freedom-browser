@@ -239,12 +239,14 @@ async function handlePublishData(params, origin) {
     return { error: { ...ERRORS.NODE_UNAVAILABLE, message: `Node not available: ${preFlight.reason}`, data: { reason: preFlight.reason } } };
   }
 
-  // Record history entry before upload
+  // Record history entry before upload. bytesSize is populated here (not only
+  // on the success-path update) so failed rows also carry payload size.
   const historyEntry = addEntry({
     type: 'data',
     name: name || 'Published data',
     status: 'uploading',
     origin,
+    bytesSize: size,
   });
 
   try {
@@ -395,6 +397,7 @@ async function handlePublishFiles(params, origin) {
     name: indexDocument || `${normalizedFiles.length} files`,
     status: 'uploading',
     origin,
+    bytesSize: totalSize,
   });
 
   try {
@@ -634,7 +637,7 @@ async function handleUpdateFeed(params, origin) {
     const updateResult = await updateFeed(signerKey, topicString, reference);
 
     updateFeedReference(origin, feedId, reference);
-    updateEntry(historyEntry.id, { status: 'completed', reference });
+    updateEntry(historyEntry.id, { status: 'completed', ...updateResult, reference });
 
     log.info(`[SwarmProvider] updateFeed succeeded for ${origin}: feed=${feedId}, ref=${reference}, index=${updateResult.index}`);
 

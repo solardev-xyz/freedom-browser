@@ -259,6 +259,7 @@ describe('swarm-provider-ipc', () => {
         name: 'greeting',
         status: 'uploading',
         origin: 'myapp.eth',
+        bytesSize: Buffer.byteLength('Hello world', 'utf-8'),
       });
       expect(mockUpdateEntry).toHaveBeenCalledWith('test-id', expect.objectContaining({ status: 'completed' }));
     });

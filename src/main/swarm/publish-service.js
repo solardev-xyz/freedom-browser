@@ -242,7 +242,7 @@ function registerPublishIpc() {
     try {
       const result = await publishData(data);
       updateEntry(historyEntry.id, { status: 'completed', ...result });
-      return { success: true, ...result };
+      return { success: true, reference: result.reference, bzzUrl: result.bzzUrl, tagUid: result.tagUid };
     } catch (err) {
       log.error('[PublishService] Failed to publish data:', err.message);
       updateEntry(historyEntry.id, { status: 'failed', errorMessage: err.message });
@@ -267,7 +267,7 @@ function registerPublishIpc() {
     try {
       const result = await publishFile(filePath);
       updateEntry(historyEntry.id, { status: 'completed', ...result });
-      return { success: true, ...result };
+      return { success: true, reference: result.reference, bzzUrl: result.bzzUrl, tagUid: result.tagUid };
     } catch (err) {
       log.error('[PublishService] Failed to publish file:', err.message);
       updateEntry(historyEntry.id, { status: 'failed', errorMessage: err.message });
@@ -292,7 +292,7 @@ function registerPublishIpc() {
     try {
       const result = await publishDirectory(dirPath);
       updateEntry(historyEntry.id, { status: 'completed', ...result });
-      return { success: true, ...result };
+      return { success: true, reference: result.reference, bzzUrl: result.bzzUrl, tagUid: result.tagUid };
     } catch (err) {
       log.error('[PublishService] Failed to publish directory:', err.message);
       updateEntry(historyEntry.id, { status: 'failed', errorMessage: err.message });

@@ -14,6 +14,7 @@ const Database = require('better-sqlite3');
 
 const SCHEMA_VERSION = 1;
 const ORPHAN_SWEEP_MESSAGE = 'interrupted by app exit';
+const MIGRATED_SUFFIX = '.migrated';
 
 const FINAL_STATUSES = new Set(['completed', 'failed']);
 const isFinalStatus = (status) => FINAL_STATUSES.has(status);
@@ -83,6 +84,19 @@ function migrateFromJson() {
   const jsonPath = path.join(app.getPath('userData'), 'publish-history.json');
   if (!fs.existsSync(jsonPath)) return;
 
+  // .migrated present = prior successful migration. The publishes table has
+  // no unique key, so re-importing a stray .json would duplicate every row.
+  const migratedPath = jsonPath + MIGRATED_SUFFIX;
+  if (fs.existsSync(migratedPath)) {
+    try {
+      fs.unlinkSync(jsonPath);
+      log.info('[PublishHistory] Dropped stray publish-history.json (already migrated)');
+    } catch (err) {
+      log.error('[PublishHistory] Failed to remove stray publish-history.json:', err.message);
+    }
+    return;
+  }
+
   try {
     const raw = JSON.parse(fs.readFileSync(jsonPath, 'utf-8'));
     const entries = Array.isArray(raw?.entries) ? raw.entries : [];
@@ -97,7 +111,11 @@ function migrateFromJson() {
 
       const insertMany = db.transaction((items) => {
         for (const e of items) {
-          const startedAt = e.timestamp ? Date.parse(e.timestamp) : Date.now();
+          // Date.parse returns NaN for malformed input; better-sqlite3 rejects
+          // NaN at bind, which would roll back the whole migration and trap us
+          // in a retry loop on every boot. Fall back to now() on bad input.
+          const parsed = e.timestamp ? Date.parse(e.timestamp) : NaN;
+          const startedAt = Number.isFinite(parsed) ? parsed : Date.now();
           const status = e.status || 'completed';
           const finalized = isFinalStatus(status);
           insert.run(
@@ -121,7 +139,7 @@ function migrateFromJson() {
       log.info(`[PublishHistory] Migrated ${entries.length} entries from JSON`);
     }
 
-    fs.renameSync(jsonPath, jsonPath + '.migrated');
+    fs.renameSync(jsonPath, migratedPath);
   } catch (err) {
     log.error('[PublishHistory] Failed to migrate from JSON:', err.message);
   }

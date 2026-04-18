@@ -146,7 +146,11 @@ describe('publish-service', () => {
       expect(result.success).toBe(true);
       expect(result.reference).toBe('dataref123');
       expect(result.bzzUrl).toBe('bzz://dataref123');
-      expect(result.batchIdUsed).toBe('batch1');
+      expect(result.tagUid).toBe(10);
+      // batchIdUsed and bytesSize are captured in the history row but not
+      // surfaced in the IPC reply — the renderer doesn't use them.
+      expect(result.batchIdUsed).toBeUndefined();
+      expect(result.bytesSize).toBeUndefined();
       expect(mockUploadFile).toHaveBeenCalledWith(
         'batch1',
         'hello world',
