@@ -117,8 +117,9 @@ let currentPageSecure = false;
 const TRUST_SUMMARY = {
   verified: (trust) => {
     const agreed = (trust.agreed || []).length;
-    const queried = (trust.queried || []).length;
-    return queried ? `Verified — ${agreed} of ${queried} public RPCs agreed.` : 'Verified.';
+    return agreed > 0
+      ? `Verified: quorum reached with ${agreed} matching public RPC responses.`
+      : 'Verified.';
   },
   'user-configured': () => 'Resolved via your configured RPC. Single source — no cross-check performed.',
   unverified: () => 'Only one RPC answered in time. The browser could not cross-check this resolution.',
