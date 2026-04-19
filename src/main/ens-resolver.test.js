@@ -3,33 +3,86 @@ jest.mock('electron', () => ({
   ipcMain: { handle: jest.fn() },
 }));
 
-// Mock settings-store
-const mockLoadSettings = jest.fn(() => ({ enableEnsCustomRpc: false, ensRpcUrl: '' }));
+// Mock settings-store. Test provider list is small (3 URLs) so the quorum
+// wave is bounded regardless of test input. Individual tests override
+// mockLoadSettings when they need different values.
+const TEST_PROVIDERS = [
+  'https://test-a.example.com',
+  'https://test-b.example.com',
+  'https://test-c.example.com',
+];
+const mockLoadSettings = jest.fn(() => ({
+  enableEnsCustomRpc: false,
+  ensRpcUrl: '',
+  enableEnsQuorum: true,
+  ensQuorumK: 3,
+  ensQuorumM: 2,
+  ensQuorumTimeoutMs: 5000,
+  ensBlockAnchor: 'latest',
+  ensBlockAnchorTtlMs: 30000,
+  ensPublicRpcProviders: TEST_PROVIDERS,
+}));
 jest.mock('./settings-store', () => ({
   loadSettings: (...args) => mockLoadSettings(...args),
+  DEFAULT_ENS_PUBLIC_RPC_PROVIDERS: [
+    'https://default-a.example.com',
+    'https://default-b.example.com',
+    'https://default-c.example.com',
+  ],
 }));
 
-// Mock ethers with controllable provider and resolver behavior
+// Mock ethers with controllable provider and resolver behavior.
+// `mockUrResolve` is shared across all Contract instances — this is fine
+// for tests that use `mockResolvedValue(X)` (every quorum leg returns X
+// and consensus reaches agreement). Tests that need per-provider behavior
+// use `setProviderResolveMap(url → result)` to differentiate.
 const mockGetBlockNumber = jest.fn();
+const mockGetBlock = jest.fn();
 const mockDestroy = jest.fn();
 const mockGetResolver = jest.fn();
 const mockResolveName = jest.fn();
 const mockUrResolve = jest.fn();
 const mockUrReverse = jest.fn();
 
+// Last URL passed to JsonRpcProvider — lets per-provider test helpers know
+// which URL they're being called on during the current ur.resolve invocation.
+let lastProviderUrl = null;
+
+// Per-URL response routing for quorum tests. When set, the Contract mock's
+// resolve function consults this map based on the underlying provider's URL
+// and returns the mapped response instead of delegating to mockUrResolve.
+// Leave null for tests that don't need per-provider differentiation — those
+// use mockUrResolve.mockResolvedValue() directly.
+let mockProviderRouteMap = null;
+
 jest.mock('ethers', () => {
   const actual = jest.requireActual('ethers').ethers;
   return {
     ethers: {
-      JsonRpcProvider: jest.fn().mockImplementation(() => ({
-        getBlockNumber: mockGetBlockNumber,
-        getResolver: mockGetResolver,
-        resolveName: mockResolveName,
-        destroy: mockDestroy,
-      })),
-      Contract: jest.fn().mockImplementation(() => ({
-        resolve: mockUrResolve,
-        reverse: mockUrReverse,
+      JsonRpcProvider: jest.fn().mockImplementation((url) => {
+        lastProviderUrl = url;
+        return {
+          url,
+          getBlockNumber: mockGetBlockNumber,
+          getBlock: mockGetBlock,
+          getResolver: mockGetResolver,
+          resolveName: mockResolveName,
+          destroy: mockDestroy,
+        };
+      }),
+      Contract: jest.fn().mockImplementation((_addr, _abi, provider) => ({
+        resolve: (...args) => {
+          // Per-URL routing takes precedence; otherwise the shared mock.
+          if (mockProviderRouteMap) {
+            const entry = mockProviderRouteMap.get(provider?.url);
+            if (entry) {
+              if (entry.kind === 'reject') return Promise.reject(entry.payload);
+              return Promise.resolve(entry.payload);
+            }
+          }
+          return mockUrResolve(...args);
+        },
+        reverse: (...args) => mockUrReverse(...args),
       })),
       // Pure helpers — use the real implementations so the UR helper's
       // encoding and the inline contenthash decoder are actually exercised.
@@ -53,20 +106,42 @@ const {
   invalidateCachedProvider,
   universalResolverCall,
   isResolverNotFoundError,
+  clearEnsCachesForTest,
 } = require('./ens-resolver');
+
+// Fake block anchor — stable hash so consensus legs querying the same
+// block get deterministic agreement.
+const FAKE_BLOCK = { number: 12345678, hash: '0xabcdef0000000000000000000000000000000000000000000000000000000000' };
 
 beforeEach(() => {
   jest.clearAllMocks();
   invalidateCachedProvider();
-  // Default: provider connects successfully
-  mockGetBlockNumber.mockResolvedValue(12345678);
-  // Default: resolver returns null (no resolver found)
+  clearEnsCachesForTest();
+  lastProviderUrl = null;
+  mockProviderRouteMap = null;
+  mockGetBlockNumber.mockResolvedValue(FAKE_BLOCK.number);
+  mockGetBlock.mockResolvedValue(FAKE_BLOCK);
   mockGetResolver.mockResolvedValue(null);
-  // Default: resolveName returns null (no addr record)
   mockResolveName.mockResolvedValue(null);
-  // Default: no custom RPC
-  mockLoadSettings.mockReturnValue({ enableEnsCustomRpc: false, ensRpcUrl: '' });
+  mockLoadSettings.mockReturnValue({
+    enableEnsCustomRpc: false,
+    ensRpcUrl: '',
+    enableEnsQuorum: true,
+    ensQuorumK: 3,
+    ensQuorumM: 2,
+    ensQuorumTimeoutMs: 5000,
+    ensBlockAnchor: 'latest',
+    ensBlockAnchorTtlMs: 30000,
+    ensPublicRpcProviders: TEST_PROVIDERS,
+  });
 });
+
+// Set up per-URL response routing for quorum tests. Map values:
+//   { kind: 'data',   payload: [resolvedData, resolverAddress] }
+//   { kind: 'reject', payload: Error }
+function routeByProvider(map) {
+  mockProviderRouteMap = map;
+}
 
 // Helpers for building mocked UR responses. The UR returns
 // [resolvedData, resolverAddress] where resolvedData is the RAW
@@ -119,7 +194,7 @@ describe('ens-resolver', () => {
 
       const result = await resolveEnsContent('vitalik.eth');
 
-      expect(result).toEqual({
+      expect(result).toMatchObject({
         type: 'ok',
         name: 'vitalik.eth',
         codec: 'ipfs-ns',
@@ -127,6 +202,8 @@ describe('ens-resolver', () => {
         uri: `ipfs://${IPFS_V0}`,
         decoded: IPFS_V0,
       });
+      expect(result.trust.level).toBe('verified');
+      expect(result.trust.quorum).toEqual({ k: 3, m: 2, achieved: true });
     });
 
     test('decodes swarm contenthash', async () => {
@@ -135,7 +212,7 @@ describe('ens-resolver', () => {
 
       const result = await resolveEnsContent('mysite.box');
 
-      expect(result).toEqual({
+      expect(result).toMatchObject({
         type: 'ok',
         name: 'mysite.box',
         codec: 'swarm-ns',
@@ -143,6 +220,7 @@ describe('ens-resolver', () => {
         uri: `bzz://${swarmHash}`,
         decoded: swarmHash,
       });
+      expect(result.trust.level).toBe('verified');
     });
 
     test('decodes ipns contenthash', async () => {
@@ -161,11 +239,12 @@ describe('ens-resolver', () => {
 
       const result = await resolveEnsContent('unreg.box');
 
-      expect(result).toEqual({
+      expect(result).toMatchObject({
         type: 'not_found',
         reason: 'NO_RESOLVER',
         name: 'unreg.box',
       });
+      expect(result.trust.level).toBe('verified');
     });
 
     test('maps generic UR revert to NO_CONTENTHASH', async () => {
@@ -185,11 +264,12 @@ describe('ens-resolver', () => {
 
       const result = await resolveEnsContent('empty.box');
 
-      expect(result).toEqual({
+      expect(result).toMatchObject({
         type: 'not_found',
         reason: 'EMPTY_CONTENTHASH',
         name: 'empty.box',
       });
+      expect(result.trust.level).toBe('verified');
     });
 
     test('returns UNSUPPORTED_CONTENTHASH_FORMAT for unknown bytes', async () => {
@@ -233,38 +313,47 @@ describe('ens-resolver', () => {
       await expect(resolveEnsContent('   ')).rejects.toThrow('ENS name is empty');
     });
 
-    test('retries on provider error then succeeds', async () => {
+    test('verified outcome survives one provider erroring (others still reach M)', async () => {
+      // K=3 legs, M=2. Route one provider to error and two to return valid
+      // bytes — quorum should still reach agreement on the valid bytes.
       const providerError = new Error('server error');
       providerError.code = 'SERVER_ERROR';
+      const goodBytes = urReturnsBytes(ipfsContenthashFor(IPFS_V0));
 
-      mockUrResolve
-        .mockRejectedValueOnce(providerError)
-        .mockResolvedValueOnce(urReturnsBytes(ipfsContenthashFor(IPFS_V0)));
+      routeByProvider(new Map([
+        [TEST_PROVIDERS[0], { kind: 'reject', payload: providerError }],
+        [TEST_PROVIDERS[1], { kind: 'data', payload: goodBytes }],
+        [TEST_PROVIDERS[2], { kind: 'data', payload: goodBytes }],
+      ]));
 
       const result = await resolveEnsContent('retry.box');
 
       expect(result.type).toBe('ok');
       expect(result.uri).toBe(`ipfs://${IPFS_V0}`);
-      expect(mockUrResolve).toHaveBeenCalledTimes(2);
+      expect(result.trust.level).toBe('verified');
+      expect(result.trust.agreed.length).toBeGreaterThanOrEqual(2);
     });
 
-    test('caches successful resolutions', async () => {
+    test('caches successful resolutions (warm resolution skips RPC entirely)', async () => {
       mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_V0)));
 
       const first = await resolveEnsContent('cached.box');
+      const callsAfterCold = mockUrResolve.mock.calls.length;
       const second = await resolveEnsContent('cached.box');
 
       expect(first.type).toBe('ok');
       expect(second.uri).toBe(`ipfs://${IPFS_V0}`);
-      expect(mockUrResolve).toHaveBeenCalledTimes(1);
+      // Cold path hits K=3 legs; warm path hits 0 (cache).
+      expect(mockUrResolve.mock.calls.length).toBe(callsAfterCold);
     });
 
-    test('makes exactly one UR call per cold resolution (perf regression guard)', async () => {
+    test('makes K UR calls per cold resolution (one per quorum leg)', async () => {
       mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_V0)));
 
       await resolveEnsContent('oneshot.eth');
 
-      expect(mockUrResolve).toHaveBeenCalledTimes(1);
+      // Default test settings: K=3, matching TEST_PROVIDERS.length.
+      expect(mockUrResolve).toHaveBeenCalledTimes(3);
     });
   });
 
@@ -333,11 +422,12 @@ describe('ens-resolver', () => {
 
       const result = await resolveEnsAddress('vitalik.eth');
 
-      expect(result).toEqual({
+      expect(result).toMatchObject({
         success: true,
         name: 'vitalik.eth',
         address: '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045',
       });
+      expect(result.trust.level).toBe('verified');
     });
 
     test('normalizes mixed-case input to lowercase', async () => {
@@ -356,12 +446,13 @@ describe('ens-resolver', () => {
 
       const result = await resolveEnsAddress('no-addr.eth');
 
-      expect(result).toEqual({
+      expect(result).toMatchObject({
         success: false,
         name: 'no-addr.eth',
         reason: 'NO_ADDRESS',
         error: 'No address record set for no-addr.eth',
       });
+      expect(result.trust.level).toBe('verified');
     });
 
     test('maps UR ResolverNotFound revert to NO_ADDRESS', async () => {
@@ -390,54 +481,58 @@ describe('ens-resolver', () => {
       await expect(resolveEnsAddress('   ')).rejects.toThrow('ENS name is empty');
     });
 
-    test('retries on provider error then succeeds', async () => {
+    test('verified addr outcome survives one provider erroring (others still reach M)', async () => {
       const providerError = new Error('server error');
       providerError.code = 'SERVER_ERROR';
+      const good = urReturnsAddress('0x0000000000000000000000000000000000000001');
 
-      mockUrResolve
-        .mockRejectedValueOnce(providerError)
-        .mockResolvedValueOnce(urReturnsAddress('0x0000000000000000000000000000000000000001'));
+      routeByProvider(new Map([
+        [TEST_PROVIDERS[0], { kind: 'reject', payload: providerError }],
+        [TEST_PROVIDERS[1], { kind: 'data', payload: good }],
+        [TEST_PROVIDERS[2], { kind: 'data', payload: good }],
+      ]));
 
       const result = await resolveEnsAddress('retry.eth');
 
       expect(result.success).toBe(true);
       expect(result.address).toBe('0x0000000000000000000000000000000000000001');
-      expect(mockUrResolve).toHaveBeenCalledTimes(2);
+      expect(result.trust.level).toBe('verified');
     });
 
-    test('caches successful resolutions', async () => {
+    test('caches successful resolutions (warm lookup skips RPC)', async () => {
       mockUrResolve.mockResolvedValue(
         urReturnsAddress('0x1111111111111111111111111111111111111111')
       );
 
       const first = await resolveEnsAddress('cached-addr.eth');
+      const callsAfterCold = mockUrResolve.mock.calls.length;
       const second = await resolveEnsAddress('cached-addr.eth');
 
       expect(first.address).toBe('0x1111111111111111111111111111111111111111');
       expect(second.address).toBe('0x1111111111111111111111111111111111111111');
-      expect(mockUrResolve).toHaveBeenCalledTimes(1);
+      expect(mockUrResolve.mock.calls.length).toBe(callsAfterCold);
     });
 
     test('caches negative results too (NO_ADDRESS misses)', async () => {
       mockUrResolve.mockResolvedValue(urReturnsAddress('0x0000000000000000000000000000000000000000'));
 
       const first = await resolveEnsAddress('no-addr-cached.eth');
+      const callsAfterCold = mockUrResolve.mock.calls.length;
       const second = await resolveEnsAddress('no-addr-cached.eth');
 
       expect(first.reason).toBe('NO_ADDRESS');
       expect(second.reason).toBe('NO_ADDRESS');
-      // Second call hit the cache, no second RPC round-trip.
-      expect(mockUrResolve).toHaveBeenCalledTimes(1);
+      expect(mockUrResolve.mock.calls.length).toBe(callsAfterCold);
     });
 
-    test('makes exactly one UR call per cold resolution (perf regression guard)', async () => {
+    test('makes K UR calls per cold resolution (one per quorum leg)', async () => {
       mockUrResolve.mockResolvedValue(
         urReturnsAddress('0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045')
       );
 
       await resolveEnsAddress('oneshot-addr.eth');
 
-      expect(mockUrResolve).toHaveBeenCalledTimes(1);
+      expect(mockUrResolve).toHaveBeenCalledTimes(3);
     });
   });
 
@@ -710,6 +805,289 @@ describe('ens-resolver', () => {
       const err = new Error('execution reverted: ReverseAddressMismatch');
       err.data = '0xef9c03ce00000000';
       expect(isResolverNotFoundError(err)).toBe(false);
+    });
+  });
+
+  // --------------------------------------------------------------------
+  // Quorum-path tests (Phase 1). Covers consensus outcomes that don't
+  // exist in the legacy single-provider flow: conflict, degraded K=1
+  // unverified, user-configured fast-path labelling, block pinning.
+  // --------------------------------------------------------------------
+  describe('consensus quorum', () => {
+    const IPFS_HASH = 'QmW81r84Aihiqqi2Jw6nM1LnpeMfRCenRxtjwHNkXVkZYa';
+
+    test('conflict: ≥2 providers return different bytes → type=conflict with groups', async () => {
+      const hashA = 'a'.repeat(64);
+      const hashB = 'b'.repeat(64);
+      routeByProvider(new Map([
+        [TEST_PROVIDERS[0], { kind: 'data', payload: urReturnsBytes(swarmContenthashFor(hashA)) }],
+        [TEST_PROVIDERS[1], { kind: 'data', payload: urReturnsBytes(swarmContenthashFor(hashB)) }],
+        [TEST_PROVIDERS[2], { kind: 'data', payload: urReturnsBytes(swarmContenthashFor(hashA + '').slice(0, 4) + 'cc'.repeat(40)) }],
+      ]));
+
+      const result = await resolveEnsContent('conflict.box');
+
+      expect(result.type).toBe('conflict');
+      expect(result.trust.level).toBe('conflict');
+      expect(result.trust.quorum.achieved).toBe(false);
+      expect(result.groups.length).toBeGreaterThanOrEqual(2);
+      // Groups each reference at least one test provider hostname.
+      const allUrls = result.groups.flatMap((g) => g.urls);
+      expect(allUrls.length).toBe(3);
+    });
+
+    test('conflict: honest vs lying provider → type=conflict', async () => {
+      const honest = urReturnsBytes(ipfsContenthashFor(IPFS_HASH));
+      const liar = urReturnsBytes(swarmContenthashFor('f'.repeat(64)));
+      // Two providers return different data, third errors — no M-group on data.
+      routeByProvider(new Map([
+        [TEST_PROVIDERS[0], { kind: 'data', payload: honest }],
+        [TEST_PROVIDERS[1], { kind: 'data', payload: liar }],
+        [TEST_PROVIDERS[2], { kind: 'reject', payload: Object.assign(new Error('ECONNREFUSED'), { code: 'NETWORK_ERROR' }) }],
+      ]));
+
+      const result = await resolveEnsContent('liar.eth');
+
+      expect(result.type).toBe('conflict');
+      expect(result.groups.length).toBe(2);
+    });
+
+    test('conflict is NOT positively cached (re-resolves on next call)', async () => {
+      const hashA = 'a'.repeat(64);
+      const hashB = 'b'.repeat(64);
+      // Conflict setup.
+      routeByProvider(new Map([
+        [TEST_PROVIDERS[0], { kind: 'data', payload: urReturnsBytes(swarmContenthashFor(hashA)) }],
+        [TEST_PROVIDERS[1], { kind: 'data', payload: urReturnsBytes(swarmContenthashFor(hashB)) }],
+        [TEST_PROVIDERS[2], { kind: 'reject', payload: Object.assign(new Error('ECONNREFUSED'), { code: 'NETWORK_ERROR' }) }],
+      ]));
+
+      const first = await resolveEnsContent('conflict-cache.box');
+      expect(first.type).toBe('conflict');
+
+      // Conflict cache is negative-only for 10s — advance past that window.
+      const realNow = Date.now;
+      try {
+        Date.now = () => realNow() + 11_000;
+        // Switch to agreement on B after the cache window.
+        routeByProvider(new Map([
+          [TEST_PROVIDERS[0], { kind: 'data', payload: urReturnsBytes(swarmContenthashFor(hashB)) }],
+          [TEST_PROVIDERS[1], { kind: 'data', payload: urReturnsBytes(swarmContenthashFor(hashB)) }],
+          [TEST_PROVIDERS[2], { kind: 'data', payload: urReturnsBytes(swarmContenthashFor(hashB)) }],
+        ]));
+
+        const second = await resolveEnsContent('conflict-cache.box');
+        expect(second.type).toBe('ok');
+        expect(second.trust.level).toBe('verified');
+      } finally {
+        Date.now = realNow;
+      }
+    });
+
+    test('verified cache is honored on warm lookup (15m TTL)', async () => {
+      mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_HASH)));
+
+      const first = await resolveEnsContent('ttl-verified.eth');
+      expect(first.trust.level).toBe('verified');
+
+      // Simulate 10min elapsed — well under 15min verified TTL.
+      const realNow = Date.now;
+      try {
+        Date.now = () => realNow() + 10 * 60 * 1000;
+        jest.clearAllMocks();
+        const second = await resolveEnsContent('ttl-verified.eth');
+        expect(second.type).toBe('ok');
+        expect(mockUrResolve).not.toHaveBeenCalled(); // cache hit
+      } finally {
+        Date.now = realNow;
+      }
+    });
+
+    test('unverified cache expires after 60s (re-resolves on next call)', async () => {
+      // Force unverified by giving only 1 non-quarantined provider.
+      mockLoadSettings.mockReturnValue({
+        enableEnsCustomRpc: false,
+        ensRpcUrl: '',
+        enableEnsQuorum: true,
+        ensQuorumK: 3,
+        ensQuorumM: 2,
+        ensQuorumTimeoutMs: 5000,
+        ensBlockAnchor: 'latest',
+        ensBlockAnchorTtlMs: 30000,
+        ensPublicRpcProviders: [TEST_PROVIDERS[0]], // just one
+      });
+      mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_HASH)));
+
+      const first = await resolveEnsContent('ttl-unverified.eth');
+      expect(first.trust.level).toBe('unverified');
+
+      const realNow = Date.now;
+      try {
+        // 90s elapsed — past the 60s unverified TTL.
+        Date.now = () => realNow() + 90_000;
+        const coldCallsBefore = mockUrResolve.mock.calls.length;
+        const second = await resolveEnsContent('ttl-unverified.eth');
+        expect(second.type).toBe('ok');
+        expect(mockUrResolve.mock.calls.length).toBeGreaterThan(coldCallsBefore);
+      } finally {
+        Date.now = realNow;
+      }
+    });
+
+    test('degraded: only 1 non-quarantined provider → outcome=unverified', async () => {
+      mockLoadSettings.mockReturnValue({
+        enableEnsCustomRpc: false,
+        ensRpcUrl: '',
+        enableEnsQuorum: true,
+        ensQuorumK: 3,
+        ensQuorumM: 2,
+        ensQuorumTimeoutMs: 5000,
+        ensBlockAnchor: 'latest',
+        ensBlockAnchorTtlMs: 30000,
+        ensPublicRpcProviders: [TEST_PROVIDERS[0]],
+      });
+      mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_HASH)));
+
+      const result = await resolveEnsContent('single-source.eth');
+
+      expect(result.type).toBe('ok');
+      expect(result.trust.level).toBe('unverified');
+      expect(result.trust.queried.length).toBe(1);
+    });
+
+    test('quorum disabled: outcome=unverified even with K providers available', async () => {
+      mockLoadSettings.mockReturnValue({
+        enableEnsCustomRpc: false,
+        ensRpcUrl: '',
+        enableEnsQuorum: false, // explicit opt-out
+        ensQuorumK: 3,
+        ensQuorumM: 2,
+        ensQuorumTimeoutMs: 5000,
+        ensBlockAnchor: 'latest',
+        ensBlockAnchorTtlMs: 30000,
+        ensPublicRpcProviders: TEST_PROVIDERS,
+      });
+      mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_HASH)));
+
+      const result = await resolveEnsContent('no-quorum.eth');
+
+      expect(result.type).toBe('ok');
+      expect(result.trust.level).toBe('unverified');
+      // Only one leg fired despite 3 available providers.
+      expect(mockUrResolve).toHaveBeenCalledTimes(1);
+    });
+
+    test('custom RPC fast-path: trust=user-configured, skips public quorum', async () => {
+      mockLoadSettings.mockReturnValue({
+        enableEnsCustomRpc: true,
+        ensRpcUrl: 'http://my-node.local:8545',
+        enableEnsQuorum: true,
+        ensQuorumK: 3,
+        ensQuorumM: 2,
+        ensQuorumTimeoutMs: 5000,
+        ensBlockAnchor: 'latest',
+        ensBlockAnchorTtlMs: 30000,
+        ensPublicRpcProviders: TEST_PROVIDERS,
+      });
+      mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_HASH)));
+
+      const result = await resolveEnsContent('my-node.eth');
+
+      expect(result.type).toBe('ok');
+      expect(result.trust.level).toBe('user-configured');
+      expect(result.trust.queried).toEqual(['my-node.local:8545']);
+      // Only one leg fired against the custom RPC; public quorum untouched.
+      expect(mockUrResolve).toHaveBeenCalledTimes(1);
+    });
+
+    test('custom RPC failure falls back to public quorum', async () => {
+      mockLoadSettings.mockReturnValue({
+        enableEnsCustomRpc: true,
+        ensRpcUrl: 'http://my-node.local:8545',
+        enableEnsQuorum: true,
+        ensQuorumK: 3,
+        ensQuorumM: 2,
+        ensQuorumTimeoutMs: 5000,
+        ensBlockAnchor: 'latest',
+        ensBlockAnchorTtlMs: 30000,
+        ensPublicRpcProviders: TEST_PROVIDERS,
+      });
+      const bytes = urReturnsBytes(ipfsContenthashFor(IPFS_HASH));
+      const networkErr = Object.assign(new Error('ECONNREFUSED'), { code: 'NETWORK_ERROR' });
+      routeByProvider(new Map([
+        ['http://my-node.local:8545', { kind: 'reject', payload: networkErr }],
+        [TEST_PROVIDERS[0], { kind: 'data', payload: bytes }],
+        [TEST_PROVIDERS[1], { kind: 'data', payload: bytes }],
+        [TEST_PROVIDERS[2], { kind: 'data', payload: bytes }],
+      ]));
+
+      const result = await resolveEnsContent('fallback-to-public.eth');
+
+      expect(result.type).toBe('ok');
+      // Fell back to public quorum — trust level reflects that, not user-configured.
+      expect(result.trust.level).toBe('verified');
+    });
+
+    test('all providers error → throws (no positive result)', async () => {
+      const err = Object.assign(new Error('ECONNREFUSED'), { code: 'NETWORK_ERROR' });
+      routeByProvider(new Map([
+        [TEST_PROVIDERS[0], { kind: 'reject', payload: err }],
+        [TEST_PROVIDERS[1], { kind: 'reject', payload: err }],
+        [TEST_PROVIDERS[2], { kind: 'reject', payload: err }],
+      ]));
+
+      await expect(resolveEnsContent('all-down.eth')).rejects.toThrow(/providers failed/i);
+    });
+
+    test('block pinning is cached within TTL (next resolve skips block fetch)', async () => {
+      mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_HASH)));
+
+      await resolveEnsContent('block-cache-a.eth');
+      const callsAfterFirst = mockGetBlock.mock.calls.length;
+
+      // Different name → bypasses result cache but block anchor is still cached.
+      await resolveEnsContent('block-cache-b.eth');
+
+      // Anchor wave fetches from up to 2 providers in parallel on miss;
+      // on cache hit it fetches 0. First resolve = N, second = N (no extra fetches).
+      expect(mockGetBlock.mock.calls.length).toBe(callsAfterFirst);
+    });
+
+    test('in-flight dedup: concurrent resolves of same name share one quorum wave', async () => {
+      mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_HASH)));
+
+      const [a, b, c] = await Promise.all([
+        resolveEnsContent('concurrent.eth'),
+        resolveEnsContent('concurrent.eth'),
+        resolveEnsContent('concurrent.eth'),
+      ]);
+
+      expect(a.type).toBe('ok');
+      expect(b).toBe(a); // same promise result
+      expect(c).toBe(a);
+      // Only K legs fired (not 3 × K), proving dedup.
+      expect(mockUrResolve).toHaveBeenCalledTimes(3);
+    });
+
+    test('dedup key separates content from addr lookups for same name', async () => {
+      mockUrResolve.mockImplementation((encodedName, callData) => {
+        // Dispatch by call selector: 0xbc1c58d1 = contenthash, 0x3b3b57de = addr.
+        if (callData.startsWith('0xbc1c58d1')) {
+          return Promise.resolve(urReturnsBytes(ipfsContenthashFor(IPFS_HASH)));
+        }
+        return Promise.resolve(urReturnsAddress('0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045'));
+      });
+
+      const [contentResult, addrResult] = await Promise.all([
+        resolveEnsContent('dual.eth'),
+        resolveEnsAddress('dual.eth'),
+      ]);
+
+      expect(contentResult.type).toBe('ok');
+      expect(addrResult.success).toBe(true);
+      // Both paths fired their own K legs; 6 total, proving the kind prefix
+      // differentiates in-flight keys.
+      expect(mockUrResolve).toHaveBeenCalledTimes(6);
     });
   });
 });
