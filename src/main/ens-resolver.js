@@ -5,7 +5,7 @@ const { ens_normalize } = require('@adraffy/ens-normalize');
 const IPC = require('../shared/ipc-channels');
 const { success, failure } = require('./ipc-contract');
 const { loadSettings, DEFAULT_ENS_PUBLIC_RPC_PROVIDERS } = require('./settings-store');
-const { prefetchGatewayUrl } = require('./ens-prefetch');
+const { prefetchGatewayUrl, NOOP_HANDLE: NOOP_PREFETCH } = require('./ens-prefetch');
 
 // Canonical ENS Universal Resolver — a DAO-owned proxy that delegates to
 // the current implementation, so future UR upgrades don't require a code
@@ -692,7 +692,6 @@ async function runConsensusWave({
   // the `?.abort` / noop fallback.
   let firstDataSeen = false;
   let prefetchHandle = null;
-  const NOOP_PREFETCH = { abort: () => {} };
   const kickOffPrefetch = (resolvedData) => {
     if (firstDataSeen || !onFirstData) return;
     firstDataSeen = true;
@@ -1088,12 +1087,8 @@ async function resolveEnsContent(name) {
   return resolveWithCache(name, ensResultCache, doResolveEnsContent, 'content');
 }
 
-// Callback for the first `data` response in a contenthash wave. Decodes
-// the UR's ABI-encoded return, parses the multicodec content hash, and
-// kicks off a gateway prefetch for bzz:// / ipfs:// (never ipns://). Must
-// not throw — consensusResolve's caller is bulletproofed but the whole
-// safety story is "prefetch cannot affect resolution", so we redundantly
-// swallow errors here too.
+// Decodes the UR's ABI-encoded return, parses the multicodec content hash,
+// and kicks off a gateway prefetch for bzz:// / ipfs:// (never ipns://).
 function prefetchOnFirstData(resolvedData) {
   try {
     const [inner] = ethers.AbiCoder.defaultAbiCoder().decode(['bytes'], resolvedData);

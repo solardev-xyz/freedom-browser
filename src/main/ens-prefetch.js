@@ -93,4 +93,5 @@ function prefetchGatewayUrl(uri) {
 module.exports = {
   prefetchGatewayUrl,
   PREFETCH_TIMEOUT_MS,
+  NOOP_HANDLE,
 };

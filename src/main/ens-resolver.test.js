@@ -152,8 +152,6 @@ beforeEach(() => {
   lastProviderUrl = null;
   mockProviderRouteMap = null;
   mockProviderAnchorMap = null;
-  // Default prefetch mock: each call returns a fresh handle whose abort
-  // function is a spy — tests can assert on both call count and aborts.
   mockPrefetchGatewayUrl.mockImplementation(() => ({ abort: jest.fn() }));
   mockGetBlockNumber.mockResolvedValue(FAKE_BLOCK.number);
   mockGetBlock.mockResolvedValue(FAKE_BLOCK);
