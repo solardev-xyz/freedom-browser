@@ -1,6 +1,6 @@
 const log = require('./logger');
 const { net } = require('electron');
-const { convertProtocolUrl } = require('./request-rewriter');
+const { convertProtocolUrl, sanitizeUrlForLog } = require('./request-rewriter');
 
 // Hygiene timeout — not trust-critical. A misbehaving gateway shouldn't
 // hold a socket open forever for speculative content the user may never
@@ -48,7 +48,7 @@ function prefetchGatewayUrl(uri) {
     const abort = () => {
       if (aborted) return;
       aborted = true;
-      log.info(`[ens-prefetch] aborted ${url}`);
+      log.info(`[ens-prefetch] aborted ${sanitizeUrlForLog(url)}`);
       cleanup();
     };
 
@@ -69,19 +69,19 @@ function prefetchGatewayUrl(uri) {
       response.on('error', markFinished);
     });
     request.on('error', (err) => {
-      log.info(`[ens-prefetch] ${url} — ${err.message}`);
+      log.info(`[ens-prefetch] ${sanitizeUrlForLog(url)} — ${err.message}`);
       markFinished();
     });
     request.end();
 
     timer = setTimeout(() => {
       if (!aborted) {
-        log.info(`[ens-prefetch] timeout ${url}`);
+        log.info(`[ens-prefetch] timeout ${sanitizeUrlForLog(url)}`);
         abort();
       }
     }, PREFETCH_TIMEOUT_MS);
 
-    log.info(`[ens-prefetch] warming ${url}`);
+    log.info(`[ens-prefetch] warming ${sanitizeUrlForLog(url)}`);
     return { abort };
   } catch (err) {
     // Hard rule: prefetch can never break the caller.
