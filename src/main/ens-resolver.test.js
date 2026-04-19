@@ -3,6 +3,15 @@ jest.mock('electron', () => ({
   ipcMain: { handle: jest.fn() },
 }));
 
+// Mock ens-prefetch so tests can assert when it fires and when it aborts,
+// without spinning up a real net.request. Default impl returns a fresh
+// abort-recording handle each call.
+const mockPrefetchGatewayUrl = jest.fn();
+jest.mock('./ens-prefetch', () => ({
+  prefetchGatewayUrl: (...args) => mockPrefetchGatewayUrl(...args),
+  PREFETCH_TIMEOUT_MS: 10_000,
+}));
+
 // Mock settings-store. Test provider list is small (3 URLs) so the quorum
 // wave is bounded regardless of test input. Individual tests override
 // mockLoadSettings when they need different values.
@@ -143,6 +152,9 @@ beforeEach(() => {
   lastProviderUrl = null;
   mockProviderRouteMap = null;
   mockProviderAnchorMap = null;
+  // Default prefetch mock: each call returns a fresh handle whose abort
+  // function is a spy — tests can assert on both call count and aborts.
+  mockPrefetchGatewayUrl.mockImplementation(() => ({ abort: jest.fn() }));
   mockGetBlockNumber.mockResolvedValue(FAKE_BLOCK.number);
   mockGetBlock.mockResolvedValue(FAKE_BLOCK);
   mockGetResolver.mockResolvedValue(null);
@@ -1530,6 +1542,122 @@ describe('ens-resolver', () => {
       expect(result.type).toBe('ok');
       expect(result.trust.level).toBe('unverified');
       expect(result.trust.queried.length).toBe(1);
+    });
+  });
+
+  describe('speculative gateway prefetch', () => {
+    const IPFS_HASH = 'QmW81r84Aihiqqi2Jw6nM1LnpeMfRCenRxtjwHNkXVkZYa';
+
+    test('verified content resolution kicks off prefetch once, does not abort', async () => {
+      mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_HASH)));
+
+      const result = await resolveEnsContent('prefetch-happy.eth');
+
+      expect(result.type).toBe('ok');
+      expect(mockPrefetchGatewayUrl).toHaveBeenCalledTimes(1);
+      expect(mockPrefetchGatewayUrl).toHaveBeenCalledWith(`ipfs://${IPFS_HASH}`);
+      // On verified, we let prefetch complete naturally — no abort.
+      const handle = mockPrefetchGatewayUrl.mock.results[0].value;
+      expect(handle.abort).not.toHaveBeenCalled();
+    });
+
+    test('conflict outcome aborts the in-flight prefetch', async () => {
+      const hashA = 'a'.repeat(64);
+      const hashB = 'b'.repeat(64);
+      const hashC = 'c'.repeat(64);
+      routeByProvider(new Map([
+        [TEST_PROVIDERS[0], { kind: 'data', payload: urReturnsBytes(swarmContenthashFor(hashA)) }],
+        [TEST_PROVIDERS[1], { kind: 'data', payload: urReturnsBytes(swarmContenthashFor(hashB)) }],
+        [TEST_PROVIDERS[2], { kind: 'data', payload: urReturnsBytes(swarmContenthashFor(hashC)) }],
+      ]));
+
+      const result = await resolveEnsContent('prefetch-conflict.box');
+
+      expect(result.type).toBe('conflict');
+      expect(mockPrefetchGatewayUrl).toHaveBeenCalledTimes(1);
+      const handle = mockPrefetchGatewayUrl.mock.results[0].value;
+      expect(handle.abort).toHaveBeenCalledTimes(1);
+    });
+
+    test('addr-path resolution never prefetches (only content lookups do)', async () => {
+      mockUrResolve.mockResolvedValue(
+        urReturnsAddress('0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045')
+      );
+
+      await resolveEnsAddress('prefetch-addr.eth');
+
+      expect(mockPrefetchGatewayUrl).not.toHaveBeenCalled();
+    });
+
+    test('custom-RPC fast path does not prefetch (single source is already fast)', async () => {
+      mockLoadSettings.mockReturnValue({
+        enableEnsCustomRpc: true,
+        ensRpcUrl: 'http://my-node.local:8545',
+        enableEnsQuorum: true,
+        ensQuorumK: 3,
+        ensQuorumM: 2,
+        ensQuorumTimeoutMs: 5000,
+        ensBlockAnchor: 'latest',
+        ensBlockAnchorTtlMs: 30000,
+        ensPublicRpcProviders: TEST_PROVIDERS,
+      });
+      mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_HASH)));
+
+      const result = await resolveEnsContent('prefetch-custom.eth');
+
+      expect(result.trust.level).toBe('user-configured');
+      expect(mockPrefetchGatewayUrl).not.toHaveBeenCalled();
+    });
+
+    test('cache hit does not re-prefetch', async () => {
+      mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_HASH)));
+
+      await resolveEnsContent('prefetch-cached.eth');
+      expect(mockPrefetchGatewayUrl).toHaveBeenCalledTimes(1);
+
+      await resolveEnsContent('prefetch-cached.eth');
+      // Second call is served from cache — consensusResolve isn't reached,
+      // so prefetch isn't fired either.
+      expect(mockPrefetchGatewayUrl).toHaveBeenCalledTimes(1);
+    });
+
+    test('unverified (single-source degraded) aborts prefetch', async () => {
+      // One provider only → degraded single-source path. In this path we
+      // DO call consensusResolve's inner leg directly, but the onFirstData
+      // hook is only wired for the wave path — so prefetch should not
+      // fire at all. (The degraded single-source path was chosen as NOT
+      // prefetch-worthy: the user will see an interstitial either way.)
+      mockLoadSettings.mockReturnValue({
+        enableEnsCustomRpc: false,
+        ensRpcUrl: '',
+        enableEnsQuorum: true,
+        ensQuorumK: 3,
+        ensQuorumM: 2,
+        ensQuorumTimeoutMs: 5000,
+        ensBlockAnchor: 'latest',
+        ensBlockAnchorTtlMs: 30000,
+        ensPublicRpcProviders: [TEST_PROVIDERS[0]],
+      });
+      mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_HASH)));
+
+      const result = await resolveEnsContent('prefetch-degraded.eth');
+
+      expect(result.trust.level).toBe('unverified');
+      expect(mockPrefetchGatewayUrl).not.toHaveBeenCalled();
+    });
+
+    test('onFirstData errors do not break resolution (never affect quorum)', async () => {
+      // Simulate a pathological prefetch that throws. The wave must still
+      // complete normally and the result must still be `ok`.
+      mockPrefetchGatewayUrl.mockImplementation(() => {
+        throw new Error('prefetch internal error');
+      });
+      mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_HASH)));
+
+      const result = await resolveEnsContent('prefetch-throws.eth');
+
+      expect(result.type).toBe('ok');
+      expect(result.trust.level).toBe('verified');
     });
   });
 });

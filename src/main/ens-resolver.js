@@ -5,6 +5,7 @@ const { ens_normalize } = require('@adraffy/ens-normalize');
 const IPC = require('../shared/ipc-channels');
 const { success, failure } = require('./ipc-contract');
 const { loadSettings, DEFAULT_ENS_PUBLIC_RPC_PROVIDERS } = require('./settings-store');
+const { prefetchGatewayUrl } = require('./ens-prefetch');
 
 // Canonical ENS Universal Resolver — a DAO-owned proxy that delegates to
 // the current implementation, so future UR upgrades don't require a code
@@ -672,7 +673,9 @@ async function runQuorumLeg(url, name, callData, blockHash, timeoutMs, cancelTok
 // bucket separately — they describe different states, so conflating them
 // would let a transient CCIP failure combine with a real NO_RESOLVER to
 // forge a "verified not-found".
-async function runConsensusWave({ providers, name, callData, blockHash, timeoutMs, m }) {
+async function runConsensusWave({
+  providers, name, callData, blockHash, timeoutMs, m, onFirstData,
+}) {
   const results = new Map();    // url → leg result
   const byData = new Map();     // resolvedData bytes → Set<url>
   const byNegative = new Map(); // reason (e.g. NO_RESOLVER) → Set<url>
@@ -682,6 +685,24 @@ async function runConsensusWave({ providers, name, callData, blockHash, timeoutM
   // fires before all legs settle — keeps sockets + parsing work from
   // running uselessly in the background.
   const cancelToken = { cleanups: new Set() };
+
+  // First `data` response kicks off speculative prefetch (if caller wired
+  // one). Stored so we can abort on non-verified outcomes. Hard invariant:
+  // onFirstData errors must never affect quorum — hence the try/catch and
+  // the `?.abort` / noop fallback.
+  let firstDataSeen = false;
+  let prefetchHandle = null;
+  const NOOP_PREFETCH = { abort: () => {} };
+  const kickOffPrefetch = (resolvedData) => {
+    if (firstDataSeen || !onFirstData) return;
+    firstDataSeen = true;
+    try {
+      prefetchHandle = onFirstData(resolvedData) || NOOP_PREFETCH;
+    } catch (err) {
+      log.info(`[ens] onFirstData threw, skipping prefetch: ${err.message}`);
+      prefetchHandle = NOOP_PREFETCH;
+    }
+  };
 
   let earlyResolve;
   const earlyPromise = new Promise((res) => { earlyResolve = res; });
@@ -706,6 +727,7 @@ async function runConsensusWave({ providers, name, callData, blockHash, timeoutM
     runQuorumLeg(url, name, callData, blockHash, timeoutMs, cancelToken).then((r) => {
       results.set(url, r);
       if (r.status === 'data') {
+        kickOffPrefetch(r.resolvedData);
         const bucket = byData.get(r.resolvedData) || new Set();
         bucket.add(url);
         byData.set(r.resolvedData, bucket);
@@ -727,6 +749,15 @@ async function runConsensusWave({ providers, name, callData, blockHash, timeoutM
   // is a no-op.
   if (outcome.kind !== 'all_settled') {
     for (const fn of cancelToken.cleanups) fn();
+  }
+
+  // Prefetch is only useful for `agreed_data` — everything else either
+  // routes to an interstitial or throws, and the gateway fetch would be
+  // wasted (or would warm attacker-chosen content the renderer will never
+  // load). Aborting on anything-but-agreed_data is the safe default; the
+  // prefetch module's abort is idempotent so this is fire-and-forget.
+  if (outcome.kind !== 'agreed_data' && prefetchHandle) {
+    try { prefetchHandle.abort(); } catch { /* never propagate */ }
   }
 
   return { outcome, results, byData, byNegative, queried, mUsed: m };
@@ -874,7 +905,7 @@ async function resolveSingleSourceUnverified(url, name, callData, anchor, timeou
 //   { outcome: 'not_found',  reason,                         trust, block }
 //   { outcome: 'conflict',   groups,                         trust, block }
 // Throws when there are no providers or both waves all-errored.
-async function consensusResolve(normalizedName, callData, kind = 'content') {
+async function consensusResolve(normalizedName, callData, kind = 'content', options = {}) {
   const settings = loadSettings();
 
   // Custom RPC: try first, fall back to public quorum on any failure so
@@ -956,6 +987,7 @@ async function consensusResolve(normalizedName, callData, kind = 'content') {
     blockHash: block.hash,
     timeoutMs,
     m: effectiveM,
+    onFirstData: options.onFirstData,
   });
 
   // All-errored first wave → escalate once to remaining non-quarantined providers.
@@ -974,6 +1006,7 @@ async function consensusResolve(normalizedName, callData, kind = 'content') {
           blockHash: block.hash,
           timeoutMs,
           m: Math.min(desiredM, secondK),
+          onFirstData: options.onFirstData,
         });
       }
     }
@@ -1055,11 +1088,31 @@ async function resolveEnsContent(name) {
   return resolveWithCache(name, ensResultCache, doResolveEnsContent, 'content');
 }
 
+// Callback for the first `data` response in a contenthash wave. Decodes
+// the UR's ABI-encoded return, parses the multicodec content hash, and
+// kicks off a gateway prefetch for bzz:// / ipfs:// (never ipns://). Must
+// not throw — consensusResolve's caller is bulletproofed but the whole
+// safety story is "prefetch cannot affect resolution", so we redundantly
+// swallow errors here too.
+function prefetchOnFirstData(resolvedData) {
+  try {
+    const [inner] = ethers.AbiCoder.defaultAbiCoder().decode(['bytes'], resolvedData);
+    if (!inner || inner === '0x') return null;
+    const parsed = parseContentHashBytes(inner);
+    if (!parsed || !parsed.uri) return null;
+    return prefetchGatewayUrl(parsed.uri);
+  } catch {
+    return null;
+  }
+}
+
 async function doResolveEnsContent(normalized) {
   const node = ethers.namehash(normalized);
   const callData = CONTENTHASH_SELECTOR + node.slice(2);
 
-  const consensus = await consensusResolve(normalized, callData, 'content');
+  const consensus = await consensusResolve(normalized, callData, 'content', {
+    onFirstData: prefetchOnFirstData,
+  });
   const { trust } = consensus;
 
   if (consensus.outcome === 'conflict') {
