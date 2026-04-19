@@ -49,7 +49,7 @@ import { initGithubBridgeUi, setOnOpenRadicleUrl } from './lib/github-bridge-ui.
 import { initMenuBackdrop } from './lib/menu-backdrop.js';
 import { initPageContextMenu, hidePageContextMenu } from './lib/page-context-menu.js';
 import { pushDebug } from './lib/debug.js';
-import { initOnboarding, checkAndShowOnboarding } from './lib/onboarding.js';
+import { initOnboarding } from './lib/onboarding.js';
 import { initSidebar } from './lib/sidebar.js';
 import { initWalletUi, openPublishSetupFlow } from './lib/wallet-ui.js';
 
@@ -215,7 +215,4 @@ window.addEventListener('DOMContentLoaded', async () => {
   loadBookmarks();
   initPlatformUI();
   initUpdateNotifications();
-
-  // Check if onboarding is needed (first run)
-  await checkAndShowOnboarding();
 });

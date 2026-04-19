@@ -81,42 +81,9 @@ async function checkTouchIdAvailability() {
 }
 
 /**
- * Check if onboarding is needed and show modal
- * Shows onboarding only if: no vault AND no node keys exist (true first run)
- * If user skipped before (no vault but keys exist), don't show again
- */
-export async function checkAndShowOnboarding() {
-  try {
-    const settings = await window.electronAPI.getSettings();
-    if (!settings?.enableIdentityWallet) {
-      return false;
-    }
-
-    const status = await window.identity.getStatus();
-
-    // If vault exists, user completed onboarding
-    if (status.hasVault) {
-      return false;
-    }
-
-    // No vault - check if any keys exist (user skipped before, or migrating from old version)
-    const keysExist = status.beeInjected || status.ipfsInjected || status.radicleInjected;
-    if (keysExist) {
-      console.log('[Onboarding] No vault but keys exist - user previously skipped');
-      return false;
-    }
-
-    // True first run - show onboarding
-    showOnboarding();
-    return true;
-  } catch (err) {
-    console.error('[Onboarding] Failed to check vault status:', err);
-  }
-  return false;
-}
-
-/**
- * Show the onboarding modal
+ * Show the onboarding modal. The sidebar's "Get Started" button is the
+ * only entry point — we no longer auto-show on first launch to avoid
+ * forcing new users through identity setup before they can use the browser.
  */
 export function showOnboarding() {
   showStep('welcome');
