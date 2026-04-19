@@ -1095,100 +1095,12 @@ export const initNavigation = () => {
   // Form submission (navigate)
   navForm.addEventListener('submit', (event) => {
     event.preventDefault();
-    const raw = addressInput.value;
-
-    // Handle freedom:// protocol for internal pages
-    const fbMatch = raw.match(/^freedom:\/\/([a-zA-Z0-9-]+)$/i);
-    if (fbMatch) {
-      const pageName = fbMatch[1].toLowerCase();
-      const pageUrl = internalPages[pageName];
-      if (pageUrl) {
-        const webview = getActiveWebview();
-        if (webview) {
-          webview.loadURL(pageUrl);
-          pushDebug(`Loading internal page: ${pageName}`);
-        }
-      } else {
-        pushDebug(`Unknown internal page: ${pageName}`);
-        alert(
-          `Unknown internal page: ${pageName}\nAvailable: ${Object.keys(internalPages).join(', ')}`
-        );
-      }
-      addressInput.blur();
-      return;
-    }
-
-    const ens = parseEnsInput(raw);
-
-    if (ens && electronAPI?.resolveEns) {
-      // Capture the webview reference before async operation to prevent loading in wrong tab
-      const capturedWebview = getActiveWebview();
-      setLoading(true);
-      pushDebug(`Resolving ENS name: ${ens.name}`);
-      electronAPI
-        .resolveEns(ens.name)
-        .then((result) => {
-          setLoading(false);
-          if (!result) {
-            alert('ENS resolution failed: no response');
-            return;
-          }
-
-          if (result.type !== 'ok') {
-            const reason = result.reason || 'Unknown error';
-            pushDebug(`ENS resolution failed for ${ens.name}: ${reason}`);
-            alert(`ENS resolution failed for ${ens.name}: ${reason}`);
-            return;
-          }
-
-          // Support both Swarm (bzz) and IPFS protocols
-          if (
-            result.protocol !== 'bzz' &&
-            result.protocol !== 'ipfs' &&
-            result.protocol !== 'ipns'
-          ) {
-            pushDebug(`ENS content for ${ens.name} uses unsupported protocol ${result.protocol}`);
-            alert(
-              `ENS content uses unsupported protocol "${result.protocol}". Supported: Swarm (bzz), IPFS, IPNS.`
-            );
-            return;
-          }
-
-          const targetUri = applyEnsSuffix(result.uri, ens.suffix);
-
-          pushDebug(`ENS resolved: ${ens.name} -> ${targetUri}`);
-
-          storeEnsResolutionMetadata(targetUri, ens.name);
-
-          // Pass captured webview to ensure we load in the correct tab
-          loadTarget(targetUri, 'ens://' + ens.name + (ens.suffix || ''), capturedWebview);
-          addressInput.blur();
-        })
-        .catch((err) => {
-          setLoading(false);
-          console.error('ENS resolution error', err);
-          pushDebug(`ENS resolution error for ${ens.name}: ${err.message}`);
-          alert(`ENS resolution error for ${ens.name}: ${err.message}`);
-        });
-    } else {
-      const target = formatBzzUrl(raw, state.bzzRoutePrefix);
-      if (target) {
-        let hashToCheck = null;
-        if (target.targetUrl.startsWith('bzz://')) {
-          const match = target.targetUrl.match(/^bzz:\/\/([a-fA-F0-9]+)/);
-          if (match) hashToCheck = match[1];
-        } else if (target.baseUrl) {
-          const match = target.baseUrl.match(/\/bzz\/([a-fA-F0-9]+)/);
-          if (match) hashToCheck = match[1];
-        }
-        if (hashToCheck) {
-          state.knownEnsNames.delete(hashToCheck.toLowerCase());
-        }
-      }
-
-      loadTarget(raw);
-      addressInput.blur();
-    }
+    // loadTarget handles all protocol dispatch (ENS, freedom://, bzz://,
+    // ipfs://, https://, rad://) and owns the ENS trust state mutation.
+    // Earlier this handler duplicated the ENS path, which bypassed the
+    // trust updates and left the shield empty for typed-address flows.
+    loadTarget(addressInput.value);
+    addressInput.blur();
   });
 
   // Navigation buttons
