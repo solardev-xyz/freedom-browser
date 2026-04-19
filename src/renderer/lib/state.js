@@ -54,6 +54,7 @@ export const state = {
   knownEnsNames: new Map(), // Maps hash/CID -> ENS name
   ensProtocols: new Map(), // Maps ENS name -> resolved protocol (swarm/ipfs/ipns)
   ensTrustByName: new Map(), // Maps ENS name -> trust object from last resolution
+  ensUriByName: new Map(), // Maps ENS name -> full resolved content URI (bzz://HASH, ipfs://CID, ipns://NAME)
   addressBarSnapshot: '',
 
   // Webview

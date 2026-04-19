@@ -171,8 +171,12 @@ const toggleTrustPopover = () => {
 
   if (title) title.textContent = name;
   if (subtitle) {
+    // Full resolved URI (e.g. bzz://<hash>, ipfs://<CID>) — the content
+    // address the ENS record points at. Falls back to protocol-only if
+    // the URI wasn't captured (shouldn't happen for successful resolves).
+    const uri = state.ensUriByName.get(name);
     const proto = state.ensProtocols.get(name);
-    subtitle.textContent = proto ? `Resolved as ${proto}://…` : '';
+    subtitle.textContent = uri || (proto ? `Resolved as ${proto}://…` : '');
   }
   if (summary) {
     const buildSummary = TRUST_SUMMARY[level];
@@ -532,6 +536,9 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
 
         if (result.trust) {
           state.ensTrustByName.set(ens.name, result.trust);
+        }
+        if (result.uri) {
+          state.ensUriByName.set(ens.name, result.uri);
         }
 
         // Conflict = hard block. Render the interstitial with the disputed

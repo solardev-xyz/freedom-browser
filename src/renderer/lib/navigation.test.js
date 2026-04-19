@@ -73,6 +73,7 @@ const loadNavigationModule = async (options = {}) => {
     knownEnsNames: new Map(),
     ensProtocols: new Map(),
     ensTrustByName: new Map(),
+    ensUriByName: new Map(),
     blockUnverifiedEns: options.blockUnverifiedEns !== false,
   };
   const debugMocks = {
