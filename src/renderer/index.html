@@ -156,6 +156,56 @@
       <form id="nav-form" autocomplete="off">
         <div class="address-bar-container">
           <div class="address-wrapper">
+            <button
+              id="trust-shield"
+              class="trust-shield"
+              type="button"
+              aria-label="ENS resolution trust status"
+              aria-haspopup="dialog"
+              aria-expanded="false"
+              aria-controls="trust-popover"
+              hidden
+            >
+              <!-- Verified: filled green shield -->
+              <svg class="icon-verified" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+                <path d="M12 2 L4 6 L4 12 C4 17 7.5 21 12 22 C16.5 21 20 17 20 12 L20 6 Z" />
+              </svg>
+              <!-- User-configured: green shield with dot -->
+              <svg class="icon-user-configured" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+                <path d="M12 2 L4 6 L4 12 C4 17 7.5 21 12 22 C16.5 21 20 17 20 12 L20 6 Z" />
+                <circle cx="12" cy="12" r="2.2" fill="white" />
+              </svg>
+              <!-- Unverified: amber outline -->
+              <svg class="icon-unverified" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 2 L4 6 L4 12 C4 17 7.5 21 12 22 C16.5 21 20 17 20 12 L20 6 Z" />
+                <line x1="12" y1="8" x2="12" y2="13" />
+                <circle cx="12" cy="17" r="0.5" fill="currentColor" />
+              </svg>
+              <!-- Conflict: red with slash -->
+              <svg class="icon-conflict" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 2 L4 6 L4 12 C4 17 7.5 21 12 22 C16.5 21 20 17 20 12 L20 6 Z" />
+                <line x1="7" y1="8" x2="17" y2="16" />
+              </svg>
+            </button>
+            <div id="trust-popover" class="trust-popover" role="dialog" aria-label="ENS trust details" hidden>
+              <div class="trust-popover-header">
+                <div class="trust-popover-title" id="trust-popover-title"></div>
+                <div class="trust-popover-subtitle" id="trust-popover-subtitle"></div>
+              </div>
+              <p class="trust-popover-summary" id="trust-popover-summary"></p>
+              <div class="trust-popover-section">
+                <div class="trust-popover-section-label">Block</div>
+                <div class="trust-popover-section-value" id="trust-popover-block"></div>
+              </div>
+              <div class="trust-popover-section" id="trust-popover-agreed-section">
+                <div class="trust-popover-section-label">Agreed</div>
+                <div class="trust-popover-section-value" id="trust-popover-agreed"></div>
+              </div>
+              <div class="trust-popover-section" id="trust-popover-dissented-section" hidden>
+                <div class="trust-popover-section-label">Dissented</div>
+                <div class="trust-popover-section-value" id="trust-popover-dissented"></div>
+              </div>
+            </div>
             <span id="protocol-icon" class="protocol-icon" aria-hidden="true">
               <!-- Swarm icon (official logo) -->
               <svg class="icon-swarm" viewBox="18 34 44 45" fill="currentColor">

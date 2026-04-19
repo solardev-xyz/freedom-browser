@@ -53,6 +53,8 @@ export const state = {
   currentIpfsBase: null,
   knownEnsNames: new Map(), // Maps hash/CID -> ENS name
   ensProtocols: new Map(), // Maps ENS name -> resolved protocol (swarm/ipfs/ipns)
+  ensTrustByName: new Map(), // Maps ENS name -> trust object from last resolution
+  ensUriByName: new Map(), // Maps ENS name -> full resolved content URI (bzz://HASH, ipfs://CID, ipns://NAME)
   addressBarSnapshot: '',
 
   // Webview
@@ -96,6 +98,7 @@ export const state = {
 
   // Feature flags
   enableRadicleIntegration: false,
+  blockUnverifiedEns: true, // When true, unverified ENS resolutions route through an interstitial
 };
 
 // Build Bee URL using registry or fallback to defaults
@@ -137,6 +140,10 @@ export const updateRegistry = (newRegistry) => {
 
 export const setRadicleIntegrationEnabled = (enabled) => {
   state.enableRadicleIntegration = enabled === true;
+};
+
+export const setBlockUnverifiedEns = (enabled) => {
+  state.blockUnverifiedEns = enabled !== false;
 };
 
 // Get display message for a service (temp message takes priority)

@@ -112,6 +112,18 @@ contextBridge.exposeInMainWorld('freedomAPI', {
     ipcRenderer.invoke('internal:open-url-in-new-tab', url)
   ),
 
+  // Signals from ENS interstitial pages back to the address-bar shell.
+  // Uses sendToHost because the shell is the webview's parent frame, not
+  // the main process — shorter, avoids a main round-trip. Channel names
+  // mirror ENS_CONTINUE_UNVERIFIED / ENS_OPEN_SETTINGS in ipc-channels.js
+  // (kept hardcoded here because preload's sandbox blocks relative require).
+  ensContinueUnverified: guardInternal('ensContinueUnverified', (name) => {
+    ipcRenderer.sendToHost('ens:continue-unverified', { name });
+  }),
+  ensOpenSettings: guardInternal('ensOpenSettings', () => {
+    ipcRenderer.sendToHost('ens:open-settings');
+  }),
+
   // Favicons
   getCachedFavicon: guardInternal('getCachedFavicon', (url) =>
     ipcRenderer.invoke('favicon:get-cached', url)
