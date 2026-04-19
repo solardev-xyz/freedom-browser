@@ -19,7 +19,7 @@ const SETTINGS_FILE = 'settings.json';
 const DEFAULT_SETTINGS = {
   theme: 'system',
   enableRadicleIntegration: false,
-  enableIdentityWallet: false,
+  enableIdentityWallet: true,
   beeNodeMode: 'ultraLight',
   startBeeAtLaunch: true,
   startIpfsAtLaunch: true,

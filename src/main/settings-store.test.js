@@ -38,7 +38,7 @@ describe('settings-store', () => {
       expect.objectContaining({
         theme: 'system',
         enableRadicleIntegration: false,
-        enableIdentityWallet: false,
+        enableIdentityWallet: true,
         beeNodeMode: 'ultraLight',
         startBeeAtLaunch: true,
         startIpfsAtLaunch: true,
