@@ -1047,6 +1047,13 @@ export const initNavigation = () => {
       setTrustPopoverOpen(false);
     }
   });
+  // Clicks inside the <webview> don't bubble to the main renderer's
+  // document (out-of-process frame), so a document-click listener alone
+  // misses them. window.blur fires when focus shifts to the webview,
+  // which covers any click into loaded page content.
+  window.addEventListener('blur', () => {
+    if (trustPopover && !trustPopover.hidden) setTrustPopoverOpen(false);
+  });
 
   // Load bookmark bar visibility from saved settings
   electronAPI?.getSettings?.().then((settings) => {
