@@ -55,6 +55,11 @@ let lastProviderUrl = null;
 // use mockUrResolve.mockResolvedValue() directly.
 let mockProviderRouteMap = null;
 
+// Per-URL anchor routing. Values: { headNumber, getBlock(tagOrNumber) }.
+// headNumber can be a number or an Error (rejects). getBlock is a function
+// the provider.getBlock proxy delegates to — typically returns {number, hash}.
+let mockProviderAnchorMap = null;
+
 jest.mock('ethers', () => {
   const actual = jest.requireActual('ethers').ethers;
   return {
@@ -63,8 +68,26 @@ jest.mock('ethers', () => {
         lastProviderUrl = url;
         return {
           url,
-          getBlockNumber: mockGetBlockNumber,
-          getBlock: mockGetBlock,
+          // getBlockNumber and getBlock consult mockProviderAnchorMap first
+          // for anchor-corroboration regression tests; otherwise delegate
+          // to the shared mocks that cover the common case.
+          getBlockNumber: () => {
+            if (mockProviderAnchorMap) {
+              const entry = mockProviderAnchorMap.get(url);
+              if (entry && 'headNumber' in entry) {
+                if (entry.headNumber instanceof Error) return Promise.reject(entry.headNumber);
+                return Promise.resolve(entry.headNumber);
+              }
+            }
+            return mockGetBlockNumber();
+          },
+          getBlock: (blockTagOrNumber) => {
+            if (mockProviderAnchorMap) {
+              const entry = mockProviderAnchorMap.get(url);
+              if (entry?.getBlock) return entry.getBlock(blockTagOrNumber);
+            }
+            return mockGetBlock(blockTagOrNumber);
+          },
           getResolver: mockGetResolver,
           resolveName: mockResolveName,
           destroy: mockDestroy,
@@ -119,6 +142,7 @@ beforeEach(() => {
   clearEnsCachesForTest();
   lastProviderUrl = null;
   mockProviderRouteMap = null;
+  mockProviderAnchorMap = null;
   mockGetBlockNumber.mockResolvedValue(FAKE_BLOCK.number);
   mockGetBlock.mockResolvedValue(FAKE_BLOCK);
   mockGetResolver.mockResolvedValue(null);
@@ -375,21 +399,32 @@ describe('ens-resolver', () => {
       mockLoadSettings.mockReturnValue({
         enableEnsCustomRpc: true,
         ensRpcUrl: 'http://localhost:8545',
+        enableEnsQuorum: true,
+        ensQuorumK: 3,
+        ensQuorumM: 2,
+        ensQuorumTimeoutMs: 5000,
+        ensBlockAnchor: 'latest',
+        ensBlockAnchorTtlMs: 30000,
+        ensPublicRpcProviders: TEST_PROVIDERS,
       });
 
-      let callCount = 0;
+      // Custom RPC returns ECONNREFUSED for every head fetch → fast-path
+      // returns null → falls through to public quorum.
       mockGetBlockNumber.mockImplementation(() => {
-        callCount++;
-        if (callCount === 1) return Promise.reject(new Error('ECONNREFUSED'));
+        if (lastProviderUrl === 'http://localhost:8545') {
+          return Promise.reject(new Error('ECONNREFUSED'));
+        }
         return Promise.resolve(12345678);
       });
 
       mockUrResolve.mockResolvedValue(urReturnsBytes('0xe30101701220' + 'ab'.repeat(32)));
 
-      await resolveEnsContent('fallback.eth');
+      const result = await resolveEnsContent('fallback-to-public-legacy.eth');
 
-      expect(ethers.JsonRpcProvider).toHaveBeenCalledTimes(2);
+      // First provider constructed is the custom RPC (fast-path attempt).
       expect(ethers.JsonRpcProvider.mock.calls[0][0]).toBe('http://localhost:8545');
+      // Resolution reached a public-quorum verified outcome.
+      expect(result.trust.level).toBe('verified');
     });
 
     test('clearing custom RPC reverts to default behavior', async () => {
@@ -853,13 +888,17 @@ describe('ens-resolver', () => {
     });
 
     test('conflict is NOT positively cached (re-resolves on next call)', async () => {
+      // All three providers respond but disagree → conflict, no
+      // quarantine. The re-resolve then has all 3 still available.
       const hashA = 'a'.repeat(64);
       const hashB = 'b'.repeat(64);
-      // Conflict setup.
+      const hashC = 'c'.repeat(64);
+      const bytesB = urReturnsBytes(swarmContenthashFor(hashB));
+
       routeByProvider(new Map([
         [TEST_PROVIDERS[0], { kind: 'data', payload: urReturnsBytes(swarmContenthashFor(hashA)) }],
-        [TEST_PROVIDERS[1], { kind: 'data', payload: urReturnsBytes(swarmContenthashFor(hashB)) }],
-        [TEST_PROVIDERS[2], { kind: 'reject', payload: Object.assign(new Error('ECONNREFUSED'), { code: 'NETWORK_ERROR' }) }],
+        [TEST_PROVIDERS[1], { kind: 'data', payload: bytesB }],
+        [TEST_PROVIDERS[2], { kind: 'data', payload: urReturnsBytes(swarmContenthashFor(hashC)) }],
       ]));
 
       const first = await resolveEnsContent('conflict-cache.box');
@@ -869,11 +908,10 @@ describe('ens-resolver', () => {
       const realNow = Date.now;
       try {
         Date.now = () => realNow() + 11_000;
-        // Switch to agreement on B after the cache window.
         routeByProvider(new Map([
-          [TEST_PROVIDERS[0], { kind: 'data', payload: urReturnsBytes(swarmContenthashFor(hashB)) }],
-          [TEST_PROVIDERS[1], { kind: 'data', payload: urReturnsBytes(swarmContenthashFor(hashB)) }],
-          [TEST_PROVIDERS[2], { kind: 'data', payload: urReturnsBytes(swarmContenthashFor(hashB)) }],
+          [TEST_PROVIDERS[0], { kind: 'data', payload: bytesB }],
+          [TEST_PROVIDERS[1], { kind: 'data', payload: bytesB }],
+          [TEST_PROVIDERS[2], { kind: 'data', payload: bytesB }],
         ]));
 
         const second = await resolveEnsContent('conflict-cache.box');
@@ -1088,6 +1126,410 @@ describe('ens-resolver', () => {
       // Both paths fired their own K legs; 6 total, proving the kind prefix
       // differentiates in-flight keys.
       expect(mockUrResolve).toHaveBeenCalledTimes(6);
+    });
+  });
+
+  describe('security regressions', () => {
+    const IPFS_HASH = 'QmW81r84Aihiqqi2Jw6nM1LnpeMfRCenRxtjwHNkXVkZYa';
+    const HONEST_HEAD = 20_000_000;
+    const CURRENT_HASH = '0x' + 'c'.repeat(64);
+    const STALE_HASH = '0x' + 's'.repeat(64);
+
+    // A malicious RPC returning a valid-but-old block number must not be
+    // able to pin stale ENS state: corroborated selection uses median +
+    // M-quorum on the hash, so a single lying provider cannot force an
+    // old anchor.
+    test('single malicious RPC returning an old head cannot pin stale state', async () => {
+      // 2 honest providers at current head + 1 attacker claiming head 1M
+      // blocks ago. Median = honest head. At target = head - 8 the honest
+      // providers return the current hash; attacker returns a stale hash
+      // → hash quorum is M=2 of honest → verified at current state.
+      mockProviderAnchorMap = new Map([
+        [TEST_PROVIDERS[0], {
+          headNumber: HONEST_HEAD - 1_000_000,
+          getBlock: () => Promise.resolve({ number: HONEST_HEAD - 1_000_008, hash: STALE_HASH }),
+        }],
+        [TEST_PROVIDERS[1], {
+          headNumber: HONEST_HEAD,
+          getBlock: () => Promise.resolve({ number: HONEST_HEAD - 8, hash: CURRENT_HASH }),
+        }],
+        [TEST_PROVIDERS[2], {
+          headNumber: HONEST_HEAD + 1,
+          getBlock: () => Promise.resolve({ number: HONEST_HEAD - 7, hash: CURRENT_HASH }),
+        }],
+      ]);
+      mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_HASH)));
+
+      const result = await resolveEnsContent('anti-stale.eth');
+
+      expect(result.type).toBe('ok');
+      expect(result.trust.level).toBe('verified');
+      expect(result.trust.block.hash).toBe(CURRENT_HASH);
+    });
+
+    // Same attack, but now the attacker colludes with itself by also
+    // returning the stale hash at the honest target. With only one liar,
+    // hash quorum still requires M=2 honest, so verification succeeds and
+    // the result reflects the honest block, not the attacker's.
+    test('lone malicious RPC cannot forge anchor hash quorum', async () => {
+      mockProviderAnchorMap = new Map([
+        [TEST_PROVIDERS[0], {
+          headNumber: HONEST_HEAD - 500_000,
+          getBlock: () => Promise.resolve({ number: HONEST_HEAD - 500_008, hash: STALE_HASH }),
+        }],
+        [TEST_PROVIDERS[1], {
+          headNumber: HONEST_HEAD,
+          getBlock: () => Promise.resolve({ number: HONEST_HEAD - 8, hash: CURRENT_HASH }),
+        }],
+        [TEST_PROVIDERS[2], {
+          headNumber: HONEST_HEAD,
+          getBlock: () => Promise.resolve({ number: HONEST_HEAD - 8, hash: CURRENT_HASH }),
+        }],
+      ]);
+      mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_HASH)));
+
+      const result = await resolveEnsContent('anti-stale-2.eth');
+
+      expect(result.trust.level).toBe('verified');
+      expect(result.trust.block.hash).toBe(CURRENT_HASH);
+    });
+
+    // If all providers disagree on the anchor hash, we refuse rather than
+    // silently picking one.
+    test('no hash quorum at anchor → resolution throws', async () => {
+      mockProviderAnchorMap = new Map([
+        [TEST_PROVIDERS[0], {
+          headNumber: HONEST_HEAD,
+          getBlock: () => Promise.resolve({ number: HONEST_HEAD - 8, hash: '0x' + 'a'.repeat(64) }),
+        }],
+        [TEST_PROVIDERS[1], {
+          headNumber: HONEST_HEAD,
+          getBlock: () => Promise.resolve({ number: HONEST_HEAD - 8, hash: '0x' + 'b'.repeat(64) }),
+        }],
+        [TEST_PROVIDERS[2], {
+          headNumber: HONEST_HEAD,
+          getBlock: () => Promise.resolve({ number: HONEST_HEAD - 8, hash: '0x' + 'c'.repeat(64) }),
+        }],
+      ]);
+
+      await expect(resolveEnsContent('anchor-conflict.eth')).rejects.toThrow(/hash quorum/);
+    });
+
+    // Negative responses bucket by exact reason: M agreeing NO_RESOLVER
+    // responses reach quorum even if a third provider returned a different
+    // negative reason (here CCIP failure classed as NO_CONTENTHASH). The
+    // odd-one-out does not block the verified outcome.
+    test('2 NO_RESOLVER + 1 NO_CONTENTHASH → verified NO_RESOLVER (quorum still reached)', async () => {
+      const resolverNotFoundErr = new Error('execution reverted: ResolverNotFound("foo.box")');
+      const ccipErr = new Error('response not found during CCIP fetch: 3dns CCIP_001');
+      routeByProvider(new Map([
+        [TEST_PROVIDERS[0], { kind: 'reject', payload: resolverNotFoundErr }],
+        [TEST_PROVIDERS[1], { kind: 'reject', payload: resolverNotFoundErr }],
+        [TEST_PROVIDERS[2], { kind: 'reject', payload: ccipErr }],
+      ]));
+
+      const result = await resolveEnsContent('mixed-negative.eth');
+
+      expect(result.type).toBe('not_found');
+      expect(result.reason).toBe('NO_RESOLVER');
+      expect(result.trust.level).toBe('verified');
+    });
+
+    // Three distinct responses — no bucket reaches M. Each surfaces as
+    // its own conflict group; the renderer can show what each provider
+    // claimed without silently collapsing mixed failures into a single
+    // fake "verified" negative.
+    test('1 NO_RESOLVER + 1 NO_CONTENTHASH + 1 data bytes → conflict (three distinct groups)', async () => {
+      const resolverNotFoundErr = new Error('execution reverted: ResolverNotFound("foo.eth")');
+      const ccipErr = new Error('response not found during CCIP fetch');
+      routeByProvider(new Map([
+        [TEST_PROVIDERS[0], { kind: 'reject', payload: resolverNotFoundErr }],
+        [TEST_PROVIDERS[1], { kind: 'reject', payload: ccipErr }],
+        [TEST_PROVIDERS[2], { kind: 'data', payload: urReturnsBytes(ipfsContenthashFor(IPFS_HASH)) }],
+      ]));
+
+      const result = await resolveEnsContent('three-way-split.eth');
+
+      expect(result.type).toBe('conflict');
+      // Three distinct groups: data bytes, NO_RESOLVER, NO_CONTENTHASH.
+      expect(result.groups.length).toBe(3);
+      const reasons = result.groups.filter((g) => g.reason).map((g) => g.reason).sort();
+      expect(reasons).toEqual(['NO_CONTENTHASH', 'NO_RESOLVER']);
+    });
+
+    // K=2 cannot safely produce a `verified` outcome: a single lying
+    // provider within the drift window can shift the anchor into the
+    // past, after which the honest provider faithfully returns the
+    // historical hash, forming a fake agreement. The fix is structural —
+    // K<3 falls through to the single-source unverified path.
+    test('K=2 agreeing providers do not produce a verified outcome', async () => {
+      mockLoadSettings.mockReturnValue({
+        enableEnsCustomRpc: false,
+        ensRpcUrl: '',
+        enableEnsQuorum: true,
+        ensQuorumK: 3,
+        ensQuorumM: 2,
+        ensQuorumTimeoutMs: 5000,
+        ensBlockAnchor: 'latest',
+        ensBlockAnchorTtlMs: 30000,
+        ensPublicRpcProviders: [TEST_PROVIDERS[0], TEST_PROVIDERS[1]], // K=2
+      });
+      mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_HASH)));
+
+      const result = await resolveEnsContent('k2-unverified.eth');
+
+      expect(result.type).toBe('ok');
+      expect(result.trust.level).toBe('unverified');
+      expect(result.trust.queried.length).toBe(1);
+      expect(result.trust.quorum.achieved).toBe(false);
+    });
+
+    // Even when K=2 providers would naturally agree on current-head
+    // state, an attacker claiming a head within the safety-depth window
+    // should not force a "verified" stale answer. Structural downgrade
+    // to unverified makes this scenario safe by construction — the
+    // trust shield reflects the genuine uncertainty.
+    test('K=2 attacker-lowered head cannot produce verified stale state', async () => {
+      mockLoadSettings.mockReturnValue({
+        enableEnsCustomRpc: false,
+        ensRpcUrl: '',
+        enableEnsQuorum: true,
+        ensQuorumK: 3,
+        ensQuorumM: 2,
+        ensQuorumTimeoutMs: 5000,
+        ensBlockAnchor: 'latest',
+        ensBlockAnchorTtlMs: 30000,
+        ensPublicRpcProviders: [TEST_PROVIDERS[0], TEST_PROVIDERS[1]],
+      });
+      mockProviderAnchorMap = new Map([
+        [TEST_PROVIDERS[0], {
+          // Attacker claims 10 blocks in the past (within a hypothetical
+          // drift tolerance that the OLD K=2 logic allowed).
+          headNumber: HONEST_HEAD - 10,
+          getBlock: () => Promise.resolve({ number: HONEST_HEAD - 18, hash: STALE_HASH }),
+        }],
+        [TEST_PROVIDERS[1], {
+          headNumber: HONEST_HEAD,
+          getBlock: () => Promise.resolve({ number: HONEST_HEAD - 8, hash: CURRENT_HASH }),
+        }],
+      ]);
+      mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_HASH)));
+
+      const result = await resolveEnsContent('k2-attacker-lower.eth');
+
+      expect(result.trust.level).toBe('unverified');
+      expect(result.trust.quorum.achieved).toBe(false);
+    });
+
+    // Reliability regression: a single flaky provider in the initial
+    // selection used to cascade into a hard-fail because the anchor step
+    // only probed effectiveK URLs. The fix probes the whole available
+    // pool, so healthy providers in the remainder still corroborate.
+    test('one flaky provider in anchor pool does not fail resolution', async () => {
+      const fiveProviders = [
+        ...TEST_PROVIDERS,
+        'https://test-d.example.com',
+        'https://test-e.example.com',
+      ];
+      mockLoadSettings.mockReturnValue({
+        enableEnsCustomRpc: false,
+        ensRpcUrl: '',
+        enableEnsQuorum: true,
+        ensQuorumK: 3,
+        ensQuorumM: 2,
+        ensQuorumTimeoutMs: 5000,
+        ensBlockAnchor: 'latest',
+        ensBlockAnchorTtlMs: 30000,
+        ensPublicRpcProviders: fiveProviders,
+      });
+      // First provider in the pool errors on getBlockNumber; the other
+      // four all respond cleanly. Resolution should still succeed.
+      const flakyErr = Object.assign(new Error('ECONNREFUSED'), { code: 'NETWORK_ERROR' });
+      mockProviderAnchorMap = new Map([
+        [TEST_PROVIDERS[0], { headNumber: flakyErr }],
+      ]);
+      mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_HASH)));
+
+      const result = await resolveEnsContent('one-flaky.eth');
+
+      expect(result.type).toBe('ok');
+      expect(result.trust.level).toBe('verified');
+    });
+
+    // Runtime reliability: with exactly MIN_QUORUM_PROVIDERS in the pool,
+    // a single flake during head collection used to throw because only 2
+    // heads came back. Since the failed provider gets quarantined and a
+    // retry would have degraded anyway, we downgrade on the first call
+    // rather than surfacing a spurious error.
+    test('3-provider pool with one flake downgrades to unverified (no throw)', async () => {
+      mockLoadSettings.mockReturnValue({
+        enableEnsCustomRpc: false,
+        ensRpcUrl: '',
+        enableEnsQuorum: true,
+        ensQuorumK: 3,
+        ensQuorumM: 2,
+        ensQuorumTimeoutMs: 5000,
+        ensBlockAnchor: 'latest',
+        ensBlockAnchorTtlMs: 30000,
+        ensPublicRpcProviders: TEST_PROVIDERS, // exactly 3
+      });
+      const flakyErr = Object.assign(new Error('ECONNREFUSED'), { code: 'NETWORK_ERROR' });
+      mockProviderAnchorMap = new Map([
+        [TEST_PROVIDERS[0], { headNumber: flakyErr }], // one provider flakes
+      ]);
+      mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_HASH)));
+
+      const result = await resolveEnsContent('3-pool-one-flake.eth');
+
+      expect(result.type).toBe('ok');
+      expect(result.trust.level).toBe('unverified');
+    });
+
+    // With the full-pool anchor probe, a "first bucket with ≥M" check
+    // would let two colluding attackers anywhere in the pool pin a stale
+    // hash if their bucket landed first in Map iteration order. The fix
+    // picks the LARGEST bucket subject to a majority-of-respondents
+    // threshold, so small collusions lose to the honest majority.
+    test('2 colluders in 9-provider pool cannot poison anchor (plurality wins)', async () => {
+      const nineProviders = [
+        ...TEST_PROVIDERS,
+        'https://test-d.example.com',
+        'https://test-e.example.com',
+        'https://test-f.example.com',
+        'https://test-g.example.com',
+        'https://test-h.example.com',
+        'https://test-i.example.com',
+      ];
+      mockLoadSettings.mockReturnValue({
+        enableEnsCustomRpc: false,
+        ensRpcUrl: '',
+        enableEnsQuorum: true,
+        ensQuorumK: 3,
+        ensQuorumM: 2,
+        ensQuorumTimeoutMs: 5000,
+        ensBlockAnchor: 'latest',
+        ensBlockAnchorTtlMs: 30000,
+        ensPublicRpcProviders: nineProviders,
+      });
+      // 7 honest providers: head = HONEST_HEAD, canonical hash at target.
+      // 2 colluding attackers: head = HONEST_HEAD, STALE hash at target.
+      const honestAnchor = {
+        headNumber: HONEST_HEAD,
+        getBlock: () => Promise.resolve({ number: HONEST_HEAD - 8, hash: CURRENT_HASH }),
+      };
+      const attackerAnchor = {
+        headNumber: HONEST_HEAD,
+        getBlock: () => Promise.resolve({ number: HONEST_HEAD - 8, hash: STALE_HASH }),
+      };
+      mockProviderAnchorMap = new Map([
+        // Attackers at the front of the pool — matches worst-case Map
+        // iteration order the old code was vulnerable to.
+        [TEST_PROVIDERS[0], attackerAnchor],
+        [TEST_PROVIDERS[1], attackerAnchor],
+        [TEST_PROVIDERS[2], honestAnchor],
+        ['https://test-d.example.com', honestAnchor],
+        ['https://test-e.example.com', honestAnchor],
+        ['https://test-f.example.com', honestAnchor],
+        ['https://test-g.example.com', honestAnchor],
+        ['https://test-h.example.com', honestAnchor],
+        ['https://test-i.example.com', honestAnchor],
+      ]);
+      mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_HASH)));
+
+      const result = await resolveEnsContent('anchor-plurality.eth');
+
+      expect(result.type).toBe('ok');
+      expect(result.trust.level).toBe('verified');
+      expect(result.trust.block.hash).toBe(CURRENT_HASH);
+    });
+
+    // The anchor step can quarantine flaky providers during its head
+    // probe. If the wave then uses the pre-anchor snapshot of `available`,
+    // it immediately retries those bad providers and may land on
+    // unverified_data from a single (potentially malicious) responder
+    // while healthy providers sit idle in the later positions. The fix
+    // refreshes `available` after getPinnedBlock so the wave selects from
+    // the post-anchor, actually-healthy set.
+    test('anchor-quarantined providers are excluded from the wave selection', async () => {
+      const fiveProviders = [
+        ...TEST_PROVIDERS, // p0, p1, p2
+        'https://test-d.example.com',
+        'https://test-e.example.com',
+      ];
+      mockLoadSettings.mockReturnValue({
+        enableEnsCustomRpc: false,
+        ensRpcUrl: '',
+        enableEnsQuorum: true,
+        ensQuorumK: 3,
+        ensQuorumM: 2,
+        ensQuorumTimeoutMs: 5000,
+        ensBlockAnchor: 'latest',
+        ensBlockAnchorTtlMs: 30000,
+        ensPublicRpcProviders: fiveProviders,
+      });
+      // Disable the provider-pool shuffle so the pre-anchor snapshot
+      // deterministically has the flaky providers at positions 0 and 1,
+      // which is exactly the case the pre-fix code mishandled.
+      const origRandom = Math.random;
+      Math.random = () => 0.999;
+      try {
+        invalidateCachedProvider(); // force re-shuffle with new Math.random
+        const flakyErr = Object.assign(new Error('ECONNREFUSED'), { code: 'NETWORK_ERROR' });
+        mockProviderAnchorMap = new Map([
+          // Flake on head probe → quarantined by the anchor step.
+          [TEST_PROVIDERS[0], { headNumber: flakyErr }],
+          [TEST_PROVIDERS[1], { headNumber: flakyErr }],
+        ]);
+        // Same providers also fail the Contract.resolve call, mirroring
+        // real flaky nodes (they don't become healthy between anchor and
+        // wave). Without the fix the wave would include p0 and p1 here
+        // and land on unverified_data from the single healthy leg; with
+        // the fix they're filtered out and three healthy providers reach
+        // a verified quorum.
+        routeByProvider(new Map([
+          [TEST_PROVIDERS[0], { kind: 'reject', payload: flakyErr }],
+          [TEST_PROVIDERS[1], { kind: 'reject', payload: flakyErr }],
+          [TEST_PROVIDERS[2], { kind: 'data', payload: urReturnsBytes(ipfsContenthashFor(IPFS_HASH)) }],
+          ['https://test-d.example.com', { kind: 'data', payload: urReturnsBytes(ipfsContenthashFor(IPFS_HASH)) }],
+          ['https://test-e.example.com', { kind: 'data', payload: urReturnsBytes(ipfsContenthashFor(IPFS_HASH)) }],
+        ]));
+
+        const result = await resolveEnsContent('anchor-quarantine.eth');
+
+        expect(result.type).toBe('ok');
+        expect(result.trust.level).toBe('verified');
+        expect(result.trust.queried.length).toBe(3);
+      } finally {
+        Math.random = origRandom;
+      }
+    });
+
+    // Config regression: user-set ensQuorumK=2 no longer hard-fails at
+    // the anchor step. Degrades to single-source unverified instead.
+    test('ensQuorumK=2 with ample providers degrades to unverified, not error', async () => {
+      const fiveProviders = [
+        ...TEST_PROVIDERS,
+        'https://test-d.example.com',
+        'https://test-e.example.com',
+      ];
+      mockLoadSettings.mockReturnValue({
+        enableEnsCustomRpc: false,
+        ensRpcUrl: '',
+        enableEnsQuorum: true,
+        ensQuorumK: 2, // below the structural minimum of 3
+        ensQuorumM: 2,
+        ensQuorumTimeoutMs: 5000,
+        ensBlockAnchor: 'latest',
+        ensBlockAnchorTtlMs: 30000,
+        ensPublicRpcProviders: fiveProviders,
+      });
+      mockUrResolve.mockResolvedValue(urReturnsBytes(ipfsContenthashFor(IPFS_HASH)));
+
+      const result = await resolveEnsContent('k2-configured.eth');
+
+      expect(result.type).toBe('ok');
+      expect(result.trust.level).toBe('unverified');
+      expect(result.trust.queried.length).toBe(1);
     });
   });
 });

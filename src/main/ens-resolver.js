@@ -179,36 +179,95 @@ function invalidateProviderPool() {
 
 let pinnedBlockCache = null; // { anchor, number, hash, expiresAt }
 
-async function fetchAnchorFromProvider(url, anchor, timeoutMs) {
+// Safety depth (in blocks) subtracted from the corroborated head before the
+// anchor hash is fetched. Keeps the anchor past typical reorg depth and
+// gives providers time to converge on block availability.
+//   latest:     ~1.5min behind head (12s * 8)
+//   latest-32:  ~6.5min behind head — stronger but fresher than finalized
+//   finalized:  already settled on-chain; no additional depth needed
+const ANCHOR_SAFETY_DEPTH = { latest: 8, 'latest-32': 32, finalized: 0 };
+
+// Minimum provider count for the corroborated quorum path. With K<3 a
+// single lying provider can bias the anchor selection (median needs 3 to
+// tolerate 1 outlier), so fewer than 3 available providers falls through
+// to the single-source unverified path instead of claiming "verified".
+const MIN_QUORUM_PROVIDERS = 3;
+
+// Create a short-lived provider for a single scoped operation, wrap the
+// caller's work in withTimeout, and guarantee the provider is destroyed
+// on both success and timeout. `fn` receives the bound provider.
+async function withEphemeralProvider(url, timeoutMs, fn) {
   const provider = new ethers.JsonRpcProvider(url);
-  const cleanup = () => {
-    try { provider.destroy(); } catch { /* already torn down */ }
-  };
+  const cleanup = () => { try { provider.destroy(); } catch { /* already torn down */ } };
   try {
-    const fetchBlock = async () => {
-      if (anchor === 'latest-32') {
-        // ~3min behind head on mainnet — safe against typical reorgs but
-        // fresher than finalized. Two RTTs because getBlock(n-32) depends
-        // on the latest block number first.
-        const latest = await provider.getBlockNumber();
-        const block = await provider.getBlock(latest - 32);
-        if (!block) throw new Error(`block ${latest - 32} not available`);
-        return { number: block.number, hash: block.hash };
-      }
-      const block = await provider.getBlock(anchor);
-      if (!block) throw new Error(`block tag ${anchor} returned null`);
-      return { number: block.number, hash: block.hash };
-    };
-    return await withTimeout(fetchBlock(), timeoutMs, cleanup);
+    return await withTimeout(fn(provider), timeoutMs, cleanup);
   } finally {
     cleanup();
   }
 }
 
-// Race the first two available providers; pick the LOWER block number so
-// everyone querying at that (older) hash sees identical state even if one
-// provider is ahead. On all-failed, fall back sequentially to remaining
-// providers and quarantine each failure.
+// Step 1 of anchor corroboration: the head (or finalized) block NUMBER.
+// The finalized tag requires getBlock; everything else uses getBlockNumber.
+async function fetchProviderHead(url, anchor, timeoutMs) {
+  return withEphemeralProvider(url, timeoutMs, async (provider) => {
+    if (anchor === 'finalized') {
+      const block = await provider.getBlock('finalized');
+      if (!block) throw new Error('finalized tag returned null');
+      return block.number;
+    }
+    return provider.getBlockNumber();
+  });
+}
+
+// Step 2 of anchor corroboration: the canonical block HASH at a specific
+// block NUMBER. M providers must agree for the anchor to be usable.
+async function fetchProviderBlockHashAt(url, blockNumber, timeoutMs) {
+  return withEphemeralProvider(url, timeoutMs, async (provider) => {
+    const block = await provider.getBlock(blockNumber);
+    if (!block) throw new Error(`block ${blockNumber} not available`);
+    return block.hash;
+  });
+}
+
+// Single-source anchor: both steps (head → depth-safe target → block hash)
+// against one provider, reusing one provider instance. Used by paths that
+// explicitly opt out of cross-provider corroboration (user's custom RPC
+// and the degraded single-available-provider case).
+async function fetchSingleSourceAnchor(url, anchor, timeoutMs) {
+  return withEphemeralProvider(url, timeoutMs, async (provider) => {
+    let headNumber;
+    if (anchor === 'finalized') {
+      const block = await provider.getBlock('finalized');
+      if (!block) throw new Error('finalized tag returned null');
+      headNumber = block.number;
+    } else {
+      headNumber = await provider.getBlockNumber();
+    }
+    const safetyDepth = ANCHOR_SAFETY_DEPTH[anchor] ?? 8;
+    const targetNumber = headNumber - safetyDepth;
+    const block = await provider.getBlock(targetNumber);
+    if (!block) throw new Error(`block ${targetNumber} not available`);
+    return { number: targetNumber, hash: block.hash };
+  });
+}
+
+// Pick a head number robust to up to (K-1)/2 lying providers — i.e. the
+// median. Only called when heads.length ≥ 3 (the K<3 path bypasses
+// corroboration entirely and falls through to single-source unverified).
+function deriveCorroboratedHead(heads) {
+  if (heads.length < MIN_QUORUM_PROVIDERS) {
+    return { head: null, ok: false, reason: `need ≥${MIN_QUORUM_PROVIDERS} heads, got ${heads.length}` };
+  }
+  const sorted = heads.slice().sort((a, b) => a - b);
+  return { head: sorted[Math.floor(sorted.length / 2)], ok: true };
+}
+
+// Two-step anchor corroboration: collect heads from K providers, derive a
+// safety-deep target number from the median, then require M providers to
+// agree on the block hash AT that target. A single malicious RPC cannot
+// force a stale anchor — the median is robust to one outlier, and the
+// hash-quorum step rejects solo forgeries. No M-agreement on the hash
+// → throw rather than silently promote uncorroborated state to verified.
 async function getPinnedBlock() {
   const settings = loadSettings();
   const anchor = settings.ensBlockAnchor || 'latest';
@@ -216,6 +275,8 @@ async function getPinnedBlock() {
     ? settings.ensBlockAnchorTtlMs
     : 30_000;
   const timeoutMs = Number(settings.ensQuorumTimeoutMs) || 5000;
+  const desiredK = Math.max(2, Math.min(Number(settings.ensQuorumK) || 3, 9));
+  const desiredM = Math.max(2, Math.min(Number(settings.ensQuorumM) || 2, desiredK));
 
   if (pinnedBlockCache
       && pinnedBlockCache.anchor === anchor
@@ -224,53 +285,97 @@ async function getPinnedBlock() {
   }
 
   const available = getAvailableProviders();
-  if (available.length === 0) {
-    throw new Error('No available RPC providers for block anchor');
+  if (available.length < MIN_QUORUM_PROVIDERS) {
+    // Caller will fall through to the single-source unverified path.
+    return null;
   }
 
-  // First wave: race the top two (if available).
-  const firstWave = available.slice(0, 2);
-  const firstResults = await Promise.allSettled(
-    firstWave.map((url) =>
-      fetchAnchorFromProvider(url, anchor, timeoutMs).then(
-        (block) => ({ url, block }),
-        (err) => { markProviderFailure(url); throw err; }
-      )
+  const effectiveM = Math.min(desiredM, available.length);
+
+  // Step 1: probe every available provider for its head in parallel. Using
+  // the whole pool (not just the first K) makes the median more robust
+  // and means a single flaky provider can't sink the anchor step — there
+  // are typically several more healthy RPCs left to corroborate against.
+  const headResults = await Promise.allSettled(
+    available.map((url) =>
+      fetchProviderHead(url, anchor, timeoutMs)
+        .then((number) => ({ url, number }))
+        .catch((err) => { markProviderFailure(url); throw err; })
     )
   );
+  const heads = headResults
+    .filter((r) => r.status === 'fulfilled')
+    .map((r) => r.value);
+  for (const { url } of heads) markProviderSuccess(url);
 
-  const firstWins = firstResults
+  if (heads.length < MIN_QUORUM_PROVIDERS) {
+    // Runtime flakes left us without enough heads to corroborate. Caller
+    // degrades to single-source unverified rather than failing the whole
+    // resolution — the next retry will almost certainly hit the same
+    // degraded path once the failed providers are quarantined anyway.
+    log.info(`[ens] anchor infeasible: ${heads.length} of ${available.length} heads collected`);
+    return null;
+  }
+
+  const { head, ok, reason } = deriveCorroboratedHead(heads.map((h) => h.number));
+  if (!ok) {
+    log.info(`[ens] anchor head disagreement: ${reason}`);
+    return null;
+  }
+
+  const safetyDepth = ANCHOR_SAFETY_DEPTH[anchor] ?? 8;
+  const targetNumber = head - safetyDepth;
+
+  // Step 2: ask the same head-responders for the hash at the target. Any
+  // provider reachable moments ago is likely still reachable, which keeps
+  // the hash-quorum set as large as possible (harder for an attacker to
+  // form a fake majority).
+  const hashResults = await Promise.allSettled(
+    heads.map(({ url }) =>
+      fetchProviderBlockHashAt(url, targetNumber, timeoutMs)
+        .then((hash) => ({ url, hash }))
+        .catch((err) => { markProviderFailure(url); throw err; })
+    )
+  );
+  const hashes = hashResults
     .filter((r) => r.status === 'fulfilled')
     .map((r) => r.value);
 
-  for (const { url } of firstWins) markProviderSuccess(url);
+  const byHash = new Map();
+  for (const { url, hash } of hashes) {
+    const bucket = byHash.get(hash) || [];
+    bucket.push(url);
+    byHash.set(hash, bucket);
+  }
 
-  if (firstWins.length > 0) {
-    // Take the lower block number — conservative anchor, shared by all.
-    const chosen = firstWins.reduce((a, b) =>
-      a.block.number <= b.block.number ? a : b
-    ).block;
+  // Pick the hash with the MOST agreement (plurality) and require it to
+  // meet both the user-configured M AND a strict majority of actual
+  // respondents. "First bucket with ≥M" let a small collusion win via
+  // Map iteration order when the probe set exceeds K — two attackers in
+  // a 9-provider pool could be inserted first and satisfy M=2 even
+  // though seven honest providers agreed on a different hash. On a
+  // canonical chain honest providers all return the same hash, so the
+  // largest bucket is the honest one unless attackers form a majority
+  // (outside the threat model).
+  let winner = { hash: null, urls: [] };
+  for (const [hash, urls] of byHash) {
+    if (urls.length > winner.urls.length) {
+      winner = { hash, urls };
+    }
+  }
+  const majorityThreshold = Math.floor(hashes.length / 2) + 1;
+  const hashQuorumThreshold = Math.max(effectiveM, majorityThreshold);
+
+  if (winner.urls.length >= hashQuorumThreshold) {
+    for (const url of winner.urls) markProviderSuccess(url);
+    const chosen = { number: targetNumber, hash: winner.hash };
     pinnedBlockCache = { anchor, ...chosen, expiresAt: Date.now() + ttl };
     return chosen;
   }
 
-  // Both failed — try the rest sequentially.
-  let lastError = null;
-  for (const url of available.slice(2)) {
-    try {
-      const block = await fetchAnchorFromProvider(url, anchor, timeoutMs);
-      markProviderSuccess(url);
-      pinnedBlockCache = { anchor, ...block, expiresAt: Date.now() + ttl };
-      return block;
-    } catch (err) {
-      lastError = err;
-      markProviderFailure(url);
-      log.warn(`[ens] anchor fetch failed via ${url}: ${err.message}`);
-    }
-  }
-
   throw new Error(
-    `Could not pin block anchor (${anchor}): ${lastError?.message || 'all providers failed'}`
+    `Could not reach hash quorum at block ${targetNumber} ` +
+    `(largest bucket ${winner.urls.length} of ${hashes.length} responses, need ≥${hashQuorumThreshold})`
   );
 }
 
@@ -562,13 +667,15 @@ async function runQuorumLeg(url, name, callData, blockHash, timeoutMs, cancelTok
 }
 
 // Race K provider legs to an M-agreement. Returns early as soon as M legs
-// produce byte-identical `data` OR M legs produce `not_found`. Stragglers
-// still in flight are left to settle on their own (their connections are
-// already torn down on timeout; otherwise they just complete and discard).
+// produce byte-identical `data` OR M legs produce `not_found` with the
+// same reason. Mixed negative reasons (NO_RESOLVER vs NO_CONTENTHASH)
+// bucket separately — they describe different states, so conflating them
+// would let a transient CCIP failure combine with a real NO_RESOLVER to
+// forge a "verified not-found".
 async function runConsensusWave({ providers, name, callData, blockHash, timeoutMs, m }) {
-  const results = new Map(); // url → leg result
-  const byData = new Map();  // resolvedData bytes → Set<url>
-  const byNotFound = new Set();
+  const results = new Map();    // url → leg result
+  const byData = new Map();     // resolvedData bytes → Set<url>
+  const byNegative = new Map(); // reason (e.g. NO_RESOLVER) → Set<url>
   const queried = providers.map(hostOf);
 
   // Shared token so we can tear down straggler providers when M-agreement
@@ -586,9 +693,11 @@ async function runConsensusWave({ providers, name, callData, blockHash, timeoutM
         return true;
       }
     }
-    if (byNotFound.size >= m) {
-      earlyResolve({ kind: 'agreed_not_found', urls: Array.from(byNotFound) });
-      return true;
+    for (const [reason, urls] of byNegative) {
+      if (urls.size >= m) {
+        earlyResolve({ kind: 'agreed_not_found', reason, urls: Array.from(urls) });
+        return true;
+      }
     }
     return false;
   };
@@ -601,7 +710,10 @@ async function runConsensusWave({ providers, name, callData, blockHash, timeoutM
         bucket.add(url);
         byData.set(r.resolvedData, bucket);
       } else if (r.status === 'not_found') {
-        byNotFound.add(url);
+        const reason = r.reason || 'NO_RESOLVER';
+        const bucket = byNegative.get(reason) || new Set();
+        bucket.add(url);
+        byNegative.set(reason, bucket);
       }
       checkEarly();
     })
@@ -617,20 +729,7 @@ async function runConsensusWave({ providers, name, callData, blockHash, timeoutM
     for (const fn of cancelToken.cleanups) fn();
   }
 
-  return { outcome, results, byData, byNotFound, queried };
-}
-
-// Pick the most common value in an array (first wins on tie).
-function pluralityOf(values) {
-  const counts = new Map();
-  let best = values[0];
-  let bestCount = 0;
-  for (const v of values) {
-    const c = (counts.get(v) || 0) + 1;
-    counts.set(v, c);
-    if (c > bestCount) { best = v; bestCount = c; }
-  }
-  return best;
+  return { outcome, results, byData, byNegative, queried, mUsed: m };
 }
 
 // Build the trust metadata object the renderer surfaces on the shield.
@@ -648,13 +747,13 @@ function buildTrust({ level, agreed, dissented, queried, k, m, block }) {
 // Build the `groups` payload for conflict outcomes. Mixed bytes groups and
 // a single synthetic not_found group are surfaced so the interstitial can
 // show "these hosts said A, these said B, these said not-registered."
-function buildConflictGroups({ byData, byNotFound }) {
+function buildConflictGroups({ byData, byNegative }) {
   const groups = [];
   for (const [bytes, urls] of byData) {
     groups.push({ resolvedData: bytes, urls: Array.from(urls).map(hostOf) });
   }
-  if (byNotFound.size > 0) {
-    groups.push({ resolvedData: null, reason: 'NO_RESOLVER', urls: Array.from(byNotFound).map(hostOf) });
+  for (const [reason, urls] of byNegative) {
+    groups.push({ resolvedData: null, reason, urls: Array.from(urls).map(hostOf) });
   }
   return groups;
 }
@@ -663,7 +762,7 @@ function buildConflictGroups({ byData, byNotFound }) {
 // aggregate shape into `unverified` (exactly one semantic response),
 // `conflict` (two or more disagreeing responses), or `all_errored` (no
 // response at all — caller may escalate to a second wave).
-function classifyNoAgreement({ results, byData, byNotFound }) {
+function classifyNoAgreement({ results }) {
   let dataResponses = 0;
   let notFoundResponses = 0;
   let errorCount = 0;
@@ -686,7 +785,8 @@ function classifyNoAgreement({ results, byData, byNotFound }) {
     return { kind: 'unverified_not_found', leg: sole };
   }
 
-  // 2+ responses but no M-group → they disagreed.
+  // 2+ responses but no M-group (across any data bucket or any single
+  // negative-reason bucket) → they disagreed.
   return { kind: 'conflict' };
 }
 
@@ -700,7 +800,7 @@ async function tryCustomRpcFastPath(customRpc, name, callData, settings) {
   const timeoutMs = Number(settings.ensQuorumTimeoutMs) || 5000;
   let block;
   try {
-    block = await fetchAnchorFromProvider(customRpc, anchor, timeoutMs);
+    block = await fetchSingleSourceAnchor(customRpc, anchor, timeoutMs);
   } catch (err) {
     log.warn(`[ens] custom RPC anchor fetch failed (${hostOf(customRpc)}): ${err.message}`);
     return null;
@@ -733,6 +833,42 @@ async function tryCustomRpcFastPath(customRpc, name, callData, settings) {
   return { outcome: 'not_found', reason: leg.reason || 'NO_RESOLVER', trust, block };
 }
 
+// Degraded resolution against a single RPC. Shared by the K<3 config
+// paths and the runtime "anchor corroboration infeasible" fallback so
+// both produce the same `unverified` shape. Throws only when the single
+// provider itself errors.
+async function resolveSingleSourceUnverified(url, name, callData, anchor, timeoutMs) {
+  let block;
+  try {
+    block = await fetchSingleSourceAnchor(url, anchor, timeoutMs);
+  } catch (err) {
+    throw new Error(`Single-provider anchor fetch failed: ${err.message}`, { cause: err });
+  }
+  const legResult = await runQuorumLeg(url, name, callData, block.hash, timeoutMs);
+  const trust = buildTrust({
+    level: 'unverified',
+    agreed: [hostOf(url)],
+    dissented: [],
+    queried: [hostOf(url)],
+    k: 1,
+    m: 1,
+    block,
+  });
+  if (legResult.status === 'data') {
+    return {
+      outcome: 'data',
+      resolvedData: legResult.resolvedData,
+      resolverAddress: legResult.resolverAddress,
+      trust,
+      block,
+    };
+  }
+  if (legResult.status === 'not_found') {
+    return { outcome: 'not_found', reason: legResult.reason || 'NO_RESOLVER', trust, block };
+  }
+  throw legResult.error || new Error('Single-provider resolution failed');
+}
+
 // Returns one of:
 //   { outcome: 'data',       resolvedData, resolverAddress, trust, block }
 //   { outcome: 'not_found',  reason,                         trust, block }
@@ -750,51 +886,63 @@ async function consensusResolve(normalizedName, callData, kind = 'content') {
     if (customResult) return customResult;
   }
 
-  // Settings override: if user disabled quorum explicitly, take one
-  // non-quarantined provider and return as unverified. No corroboration.
   const quorumDisabled = settings.enableEnsQuorum === false;
-
-  // Pin a shared block for all legs so honest-but-unsynced providers don't
-  // produce false conflicts.
-  const block = await getPinnedBlock();
-
-  const desiredK = Math.max(2, Math.min(Number(settings.ensQuorumK) || 3, 9));
-  const desiredM = Math.max(2, Math.min(Number(settings.ensQuorumM) || 2, desiredK));
+  const desiredK = Math.max(1, Math.min(Number(settings.ensQuorumK) || 3, 9));
+  const desiredM = Math.max(1, Math.min(Number(settings.ensQuorumM) || 2, desiredK));
   const timeoutMs = Number(settings.ensQuorumTimeoutMs) || 5000;
+  const anchor = settings.ensBlockAnchor || 'latest';
 
   const available = getAvailableProviders();
   if (available.length === 0) {
     throw new Error('No available RPC providers for ENS consensus resolution');
   }
 
-  // Degraded single-provider path (only one non-quarantined provider, or
-  // quorum disabled by user). Outcome is always `unverified` because there
-  // is no second source to corroborate against.
-  if (quorumDisabled || available.length === 1) {
-    const url = available[0];
-    const legResult = await runQuorumLeg(url, normalizedName, callData, block.hash, timeoutMs);
-    const trust = buildTrust({
-      level: 'unverified',
-      agreed: [hostOf(url)],
-      dissented: [],
-      queried: [hostOf(url)],
-      k: 1,
-      m: desiredM,
-      block,
-    });
-    if (legResult.status === 'data') {
-      return { outcome: 'data', resolvedData: legResult.resolvedData, resolverAddress: legResult.resolverAddress, trust, block };
-    }
-    if (legResult.status === 'not_found') {
-      return { outcome: 'not_found', reason: legResult.reason || 'NO_RESOLVER', trust, block };
-    }
-    throw legResult.error || new Error('Single-provider resolution failed');
+  // Degraded single-source path. Taken when:
+  //   - user disabled quorum explicitly, OR
+  //   - fewer than 3 providers are non-quarantined (not enough to tolerate
+  //     one outlier via median), OR
+  //   - user configured sub-minimum K/M (K<3 or M<2). In that case the
+  //     corroborated path can't honestly produce `verified` anyway, so we
+  //     respect the user's intent and downgrade rather than hard-failing.
+  // A single liar within the drift window can bias a K=2 anchor into the
+  // past; we surface the outcome as `unverified` rather than minting a
+  // "verified" badge we can't defend.
+  const quorumUnderpowered =
+    desiredK < MIN_QUORUM_PROVIDERS || desiredM < 2;
+  if (quorumDisabled || available.length < MIN_QUORUM_PROVIDERS || quorumUnderpowered) {
+    return resolveSingleSourceUnverified(available[0], normalizedName, callData, anchor, timeoutMs);
   }
 
-  const effectiveK = Math.min(desiredK, available.length);
+  // Corroborated anchor required before the quorum wave — a malicious
+  // provider lying about the head cannot unilaterally pin stale state.
+  // Returns null when corroboration is infeasible at runtime (flakes
+  // leaving fewer than MIN_QUORUM_PROVIDERS heads); we degrade to the
+  // single-source unverified path rather than failing the whole request.
+  const block = await getPinnedBlock();
+  if (!block) {
+    const freshAvailable = getAvailableProviders();
+    const fallbackUrl = freshAvailable[0] || available[0];
+    return resolveSingleSourceUnverified(fallbackUrl, normalizedName, callData, anchor, timeoutMs);
+  }
+
+  // Refresh the available pool — anchor corroboration may have quarantined
+  // flaky providers, and reusing the pre-anchor snapshot would immediately
+  // retry them in the wave. Worst case: one bad responder plus two
+  // already-quarantined flakes in the first K would let classifyNoAgreement
+  // return unverified_data from a single (possibly malicious) source while
+  // the providers that carried anchor corroboration sit idle.
+  const waveAvailable = getAvailableProviders();
+  if (waveAvailable.length < MIN_QUORUM_PROVIDERS) {
+    return resolveSingleSourceUnverified(
+      waveAvailable[0] || available[0],
+      normalizedName, callData, anchor, timeoutMs
+    );
+  }
+
+  const effectiveK = Math.min(desiredK, waveAvailable.length);
   const effectiveM = Math.min(desiredM, effectiveK);
 
-  const firstSelection = available.slice(0, effectiveK);
+  const firstSelection = waveAvailable.slice(0, effectiveK);
 
   log.info(
     `[ens] consensus kind=${kind} name=${normalizedName} k=${effectiveK} m=${effectiveM} ` +
@@ -831,13 +979,15 @@ async function consensusResolve(normalizedName, callData, kind = 'content') {
     }
   }
 
-  // Wave-scoped trust builder — the four shared parts (queried, k, m, block)
-  // would otherwise repeat across every terminal branch.
+  // Wave-scoped trust builder — `m` comes from the wave that actually
+  // produced the answer (second-wave fallbacks run with a lower m when
+  // fewer providers remain; using the caller's effectiveM here would
+  // report an impossible k=2, m=3, achieved=true on those paths).
   const trustFor = (level, agreed, dissented = []) => buildTrust({
     level, agreed, dissented,
     queried: wave.queried,
     k: wave.queried.length,
-    m: effectiveM,
+    m: wave.mUsed,
     block,
   });
 
@@ -855,11 +1005,10 @@ async function consensusResolve(normalizedName, callData, kind = 'content') {
 
   if (wave.outcome.kind === 'agreed_not_found') {
     const agreedUrls = wave.outcome.urls;
-    const reasons = agreedUrls.map((u) => wave.results.get(u)?.reason || 'NO_RESOLVER');
     const firstAgreer = wave.results.get(agreedUrls[0]);
     return {
       outcome: 'not_found',
-      reason: pluralityOf(reasons),
+      reason: wave.outcome.reason,
       error: firstAgreer?.error?.message,
       trust: trustFor('verified', agreedUrls.map(hostOf)),
       block,
