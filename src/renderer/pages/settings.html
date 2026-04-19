@@ -543,6 +543,119 @@
               <p id="ens-rpc-status" class="rpc-status"></p>
             </div>
           </div>
+
+          <!-- Cross-RPC verification — only active when no custom RPC is set -->
+          <h2 class="section-title" style="margin-top: 32px">Cross-RPC verification</h2>
+          <p class="row-help" style="margin-bottom: 16px">
+            When using public RPCs, Freedom asks multiple servers and only trusts answers where
+            several agree. A single malicious RPC cannot silently redirect an ENS name.
+          </p>
+          <div class="card">
+            <div class="row">
+              <div class="row-body">
+                <p class="row-label">Block unverified ENS navigation</p>
+                <p class="row-help">
+                  Show a warning page when only one RPC answers (no cross-check possible). Turn
+                  off to navigate directly with only the amber shield indicator.
+                </p>
+              </div>
+              <div class="row-control">
+                <label class="toggle">
+                  <input type="checkbox" id="block-unverified-ens" />
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
+            <div class="row">
+              <div class="row-body">
+                <p class="row-label">Cross-check across multiple public RPCs</p>
+                <p class="row-help">
+                  Disable only if you want single-source behavior without setting a custom RPC.
+                </p>
+              </div>
+              <div class="row-control">
+                <label class="toggle">
+                  <input type="checkbox" id="enable-ens-quorum" />
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
+
+            <details class="rpc-block" id="ens-quorum-advanced" style="border-top: 1px solid var(--border)">
+              <summary style="cursor: pointer; color: var(--text-muted); font-size: 13px">
+                Advanced quorum parameters
+              </summary>
+              <div class="row sub">
+                <div class="row-body">
+                  <p class="row-label">Providers per wave (K)</p>
+                  <p class="row-help">Number of RPCs queried in parallel per lookup. Minimum 3 for verified outcomes.</p>
+                </div>
+                <div class="row-control">
+                  <input type="number" id="ens-quorum-k" class="rpc-input" style="max-width: 80px" min="1" max="9" />
+                </div>
+              </div>
+              <div class="row sub">
+                <div class="row-body">
+                  <p class="row-label">Agreement threshold (M)</p>
+                  <p class="row-help">How many providers must return byte-identical answers. Must be ≤ K.</p>
+                </div>
+                <div class="row-control">
+                  <input type="number" id="ens-quorum-m" class="rpc-input" style="max-width: 80px" min="1" max="9" />
+                </div>
+              </div>
+              <div class="row sub">
+                <div class="row-body">
+                  <p class="row-label">Per-call timeout (ms)</p>
+                  <p class="row-help">Slow providers are skipped after this time.</p>
+                </div>
+                <div class="row-control">
+                  <input type="number" id="ens-quorum-timeout" class="rpc-input" style="max-width: 100px" min="500" max="30000" step="500" />
+                </div>
+              </div>
+              <div class="row sub">
+                <div class="row-body">
+                  <p class="row-label">Block anchor</p>
+                  <p class="row-help">
+                    All providers query at this block. <code>latest</code> is ~1.5 min behind head;
+                    <code>finalized</code> is ~12 min behind but strongest.
+                  </p>
+                </div>
+                <div class="row-control">
+                  <select id="ens-block-anchor" class="rpc-input" style="max-width: 140px">
+                    <option value="latest">latest</option>
+                    <option value="latest-32">latest-32</option>
+                    <option value="finalized">finalized</option>
+                  </select>
+                </div>
+              </div>
+              <div class="row sub">
+                <div class="row-body">
+                  <p class="row-label">Anchor cache TTL (ms)</p>
+                  <p class="row-help">How long one pinned block is reused across resolutions.</p>
+                </div>
+                <div class="row-control">
+                  <input type="number" id="ens-anchor-ttl" class="rpc-input" style="max-width: 100px" min="1000" max="600000" step="1000" />
+                </div>
+              </div>
+            </details>
+          </div>
+
+          <!-- Public RPC providers list editor -->
+          <h2 class="section-title" style="margin-top: 32px">Public RPC providers</h2>
+          <p class="row-help" style="margin-bottom: 16px">
+            Edit the list of Ethereum RPCs Freedom uses for cross-checking. Fewer than 3 entries
+            means every resolution will be marked unverified.
+          </p>
+          <div class="card">
+            <div id="ens-provider-list" class="rpc-block" style="border-top: none"></div>
+            <div class="rpc-block" style="border-top: 1px solid var(--border)">
+              <button type="button" id="ens-provider-add" class="btn">+ Add provider</button>
+              <button type="button" id="ens-provider-reset" class="btn" style="margin-left: 8px">
+                Reset to defaults
+              </button>
+              <p id="ens-provider-status" class="rpc-status"></p>
+            </div>
+          </div>
         </section>
 
         <!-- Experimental -->
@@ -627,12 +740,38 @@
         ensRpcUrl: $('ens-rpc-url'),
         ensRpcTest: $('ens-rpc-test'),
         ensRpcStatus: $('ens-rpc-status'),
+        blockUnverifiedEns: $('block-unverified-ens'),
+        enableEnsQuorum: $('enable-ens-quorum'),
+        ensQuorumK: $('ens-quorum-k'),
+        ensQuorumM: $('ens-quorum-m'),
+        ensQuorumTimeout: $('ens-quorum-timeout'),
+        ensBlockAnchor: $('ens-block-anchor'),
+        ensAnchorTtl: $('ens-anchor-ttl'),
+        ensProviderList: $('ens-provider-list'),
+        ensProviderAdd: $('ens-provider-add'),
+        ensProviderReset: $('ens-provider-reset'),
+        ensProviderStatus: $('ens-provider-status'),
         enableRadicle: $('enable-radicle-integration'),
         startRadicleRow: $('start-radicle-row'),
         startRadicle: $('start-radicle-at-launch'),
         enableIdentity: $('enable-identity-wallet'),
         autoUpdate: $('auto-update'),
       };
+
+      // Mirrors DEFAULT_ENS_PUBLIC_RPC_PROVIDERS in settings-store.js — kept
+      // in the page so "Reset to defaults" doesn't need a backend round-trip.
+      // Update both places when adding/removing a default RPC.
+      const ENS_DEFAULT_PROVIDERS = [
+        'https://ethereum.publicnode.com',
+        'https://1rpc.io/eth',
+        'https://eth.drpc.org',
+        'https://eth-mainnet.public.blastapi.io',
+        'https://eth.merkle.io',
+        'https://cloudflare-eth.com',
+        'https://rpc.ankr.com/eth',
+        'https://rpc.flashbots.net',
+        'https://eth.llamarpc.com',
+      ];
 
       const swarmModeHelp = $('swarm-mode-help');
       const swarmModeBtn = $('swarm-mode-action-btn');
@@ -703,6 +842,47 @@
         fields.ensRpcStatus.className = 'rpc-status' + (type ? ' ' + type : '');
       };
 
+      const setProviderStatus = (text, type) => {
+        fields.ensProviderStatus.textContent = text;
+        fields.ensProviderStatus.className = 'rpc-status' + (type ? ' ' + type : '');
+      };
+
+      // Shared Test-button runner for the custom-RPC field and per-provider
+      // rows. Returns immediately if `url` is blank.
+      const runRpcTest = async (url, btn, setStatus, prefix = '') => {
+        const u = (url || '').trim();
+        if (!u) {
+          setStatus('Enter a URL to test', 'error');
+          return;
+        }
+        setStatus((prefix ? prefix + ' — ' : '') + 'testing…', 'testing');
+        btn.disabled = true;
+        try {
+          const r = await freedomAPI.testEnsRpc(u);
+          if (r?.success) {
+            setStatus((prefix ? prefix + ' — ' : '') + 'connected (block #' + r.blockNumber + ')', 'success');
+          } else {
+            setStatus((prefix ? prefix + ' — ' : '') + (r?.error?.message || 'connection failed'), 'error');
+          }
+        } catch (err) {
+          setStatus((prefix ? prefix + ' — ' : '') + (err?.message || 'test failed'), 'error');
+        } finally {
+          btn.disabled = false;
+        }
+      };
+
+      const clampNumberInput = (input, min, max) => {
+        const n = Number(input.value);
+        if (!Number.isFinite(n)) return;
+        if (n < min) input.value = String(min);
+        else if (n > max) input.value = String(max);
+      };
+
+      const collectProviderUrls = () =>
+        [...fields.ensProviderList.querySelectorAll('.provider-input')]
+          .map((input) => (input.value || '').trim())
+          .filter((url) => url.length > 0);
+
       const currentFormState = () => ({
         theme: fields.themeMode.value || 'system',
         startBeeAtLaunch: fields.startBee.checked,
@@ -713,6 +893,14 @@
         autoUpdate: fields.autoUpdate.checked,
         enableEnsCustomRpc: fields.enableEnsCustomRpc.checked,
         ensRpcUrl: (fields.ensRpcUrl.value || '').trim(),
+        blockUnverifiedEns: fields.blockUnverifiedEns.checked,
+        enableEnsQuorum: fields.enableEnsQuorum.checked,
+        ensQuorumK: Number(fields.ensQuorumK.value) || 3,
+        ensQuorumM: Number(fields.ensQuorumM.value) || 2,
+        ensQuorumTimeoutMs: Number(fields.ensQuorumTimeout.value) || 5000,
+        ensBlockAnchor: fields.ensBlockAnchor.value || 'latest',
+        ensBlockAnchorTtlMs: Number(fields.ensAnchorTtl.value) || 30000,
+        ensPublicRpcProviders: collectProviderUrls(),
       });
 
       const applyFormState = (settings) => {
@@ -726,9 +914,86 @@
         fields.autoUpdate.checked = settings.autoUpdate !== false;
         fields.enableEnsCustomRpc.checked = settings.enableEnsCustomRpc === true;
         fields.ensRpcUrl.value = settings.ensRpcUrl || '';
+        fields.blockUnverifiedEns.checked = settings.blockUnverifiedEns !== false;
+        fields.enableEnsQuorum.checked = settings.enableEnsQuorum !== false;
+        fields.ensQuorumK.value = settings.ensQuorumK ?? 3;
+        fields.ensQuorumM.value = settings.ensQuorumM ?? 2;
+        fields.ensQuorumTimeout.value = settings.ensQuorumTimeoutMs ?? 5000;
+        fields.ensBlockAnchor.value = settings.ensBlockAnchor || 'latest';
+        fields.ensAnchorTtl.value = settings.ensBlockAnchorTtlMs ?? 30000;
+        renderProviderList(
+          Array.isArray(settings.ensPublicRpcProviders) && settings.ensPublicRpcProviders.length > 0
+            ? settings.ensPublicRpcProviders
+            : ENS_DEFAULT_PROVIDERS
+        );
         setEnsRpcBlockVisible(fields.enableEnsCustomRpc.checked);
         setFieldEnabled(fields.enableRadicle, fields.startRadicleRow, fields.startRadicle);
         setEnsRpcStatus('', '');
+        setProviderStatus('', '');
+      };
+
+      // Render the provider list. Each row owns its own Test + Remove handlers
+      // via a closure over its row element; no delegated event wiring.
+      const renderProviderList = (urls) => {
+        fields.ensProviderList.textContent = '';
+        for (const url of urls) appendProviderRow(url);
+        updateProviderListEmptyHint();
+      };
+
+      const updateProviderListEmptyHint = () => {
+        const count = fields.ensProviderList.querySelectorAll('.provider-input').length;
+        if (count === 0) {
+          fields.ensProviderList.innerHTML =
+            '<p class="rpc-hint" style="margin: 8px 0">' +
+            'No providers configured — falling back to the built-in default list. ' +
+            'Click <strong>Reset to defaults</strong> to restore the list.' +
+            '</p>';
+        }
+      };
+
+      const appendProviderRow = (url = '') => {
+        // First append wipes the empty-state hint that `renderProviderList`
+        // may have left behind, so we don't end up with hint + rows.
+        if (fields.ensProviderList.querySelector('.rpc-hint') &&
+            !fields.ensProviderList.querySelector('.provider-input')) {
+          fields.ensProviderList.textContent = '';
+        }
+
+        const row = document.createElement('div');
+        row.className = 'rpc-row';
+        row.style.marginBottom = '8px';
+
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'rpc-input provider-input';
+        input.placeholder = 'https://...';
+        input.spellcheck = false;
+        input.value = url;
+        input.setAttribute('aria-label', 'Public RPC provider URL');
+        input.addEventListener('blur', save);
+
+        const testBtn = document.createElement('button');
+        testBtn.type = 'button';
+        testBtn.className = 'btn';
+        testBtn.textContent = 'Test';
+        testBtn.addEventListener('click', () => {
+          runRpcTest(input.value, testBtn, setProviderStatus, input.value.trim());
+        });
+
+        const removeBtn = document.createElement('button');
+        removeBtn.type = 'button';
+        removeBtn.className = 'btn';
+        removeBtn.textContent = '✕';
+        removeBtn.title = 'Remove provider';
+        removeBtn.setAttribute('aria-label', 'Remove provider');
+        removeBtn.addEventListener('click', () => {
+          row.remove();
+          updateProviderListEmptyHint();
+          save();
+        });
+
+        row.append(input, testBtn, removeBtn);
+        fields.ensProviderList.appendChild(row);
       };
 
       let cachedSettings = null;
@@ -845,32 +1110,57 @@
       fields.ensRpcUrl.addEventListener('input', () => setEnsRpcStatus('', ''));
       fields.ensRpcUrl.addEventListener('blur', save);
 
-      fields.ensRpcTest.addEventListener('click', async () => {
-        const url = (fields.ensRpcUrl.value || '').trim();
-        if (!url) {
-          setEnsRpcStatus('Enter a URL to test', 'error');
-          return;
-        }
-        setEnsRpcStatus('Testing...', 'testing');
-        fields.ensRpcTest.disabled = true;
-        try {
-          const result = await freedomAPI.testEnsRpc(url);
-          if (result?.success) {
-            setEnsRpcStatus('Connected (block #' + result.blockNumber + ')', 'success');
-          } else {
-            setEnsRpcStatus(result?.error?.message || 'Connection failed', 'error');
-          }
-        } catch (err) {
-          setEnsRpcStatus(err?.message || 'Test failed', 'error');
-        } finally {
-          fields.ensRpcTest.disabled = false;
-        }
+      fields.blockUnverifiedEns.addEventListener('change', save);
+      fields.enableEnsQuorum.addEventListener('change', save);
+
+      // Clamp number inputs to their declared min/max before saving so the
+      // UI reflects the same value the backend will store (backend also
+      // clamps, so the UI would otherwise drift until the next settings:
+      // updated broadcast).
+      fields.ensQuorumK.addEventListener('change', () => {
+        clampNumberInput(fields.ensQuorumK, 1, 9);
+        save();
+      });
+      fields.ensQuorumM.addEventListener('change', () => {
+        clampNumberInput(fields.ensQuorumM, 1, 9);
+        save();
+      });
+      fields.ensQuorumTimeout.addEventListener('change', () => {
+        clampNumberInput(fields.ensQuorumTimeout, 500, 30000);
+        save();
+      });
+      fields.ensBlockAnchor.addEventListener('change', save);
+      fields.ensAnchorTtl.addEventListener('change', () => {
+        clampNumberInput(fields.ensAnchorTtl, 1000, 600000);
+        save();
+      });
+
+      fields.ensProviderAdd.addEventListener('click', () => {
+        appendProviderRow();
+        setProviderStatus('', '');
+        // Focus the new input so the user can type immediately.
+        const rows = fields.ensProviderList.querySelectorAll('.provider-input');
+        rows[rows.length - 1]?.focus();
+      });
+
+      fields.ensProviderReset.addEventListener('click', () => {
+        renderProviderList(ENS_DEFAULT_PROVIDERS);
+        save();
+        setProviderStatus('Reset to default provider list', 'success');
+      });
+
+      fields.ensRpcTest.addEventListener('click', () => {
+        runRpcTest(fields.ensRpcUrl.value, fields.ensRpcTest, setEnsRpcStatus);
       });
 
       const formStateMatches = (settings) => {
         const form = currentFormState();
         for (const key of Object.keys(form)) {
-          if (form[key] !== settings[key]) return false;
+          if (Array.isArray(form[key])) {
+            if (JSON.stringify(form[key]) !== JSON.stringify(settings[key])) return false;
+          } else if (form[key] !== settings[key]) {
+            return false;
+          }
         }
         return true;
       };
