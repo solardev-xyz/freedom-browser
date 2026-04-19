@@ -2,8 +2,6 @@
 
 All notable changes to Freedom will be documented in this file.
 
-## [Unreleased]
-
 ## [0.7.0] - 2026-04-19
 
 ### Added
