@@ -72,6 +72,8 @@ const loadNavigationModule = async (options = {}) => {
     currentRadicleStatus: options.currentRadicleStatus || 'running',
     knownEnsNames: new Map(),
     ensProtocols: new Map(),
+    ensTrustByName: new Map(),
+    blockUnverifiedEns: options.blockUnverifiedEns !== false,
   };
   const debugMocks = {
     pushDebug: jest.fn(),
@@ -140,6 +142,16 @@ const loadNavigationModule = async (options = {}) => {
       if (value?.startsWith('rad://') && state.enableRadicleIntegration) return 'radicle';
       return value ? 'http' : 'http';
     }),
+    resolveTrustBadge: jest.fn(({ value, ensTrustByName }) => {
+      // Mirror the production helper's shape. Tests that need specific
+      // trust levels populate ensTrustByName; default is null.
+      const m = value?.toLowerCase().match(/^(?:ens:\/\/)?([^/]+\.(?:eth|box))/);
+      if (!m) return null;
+      const name = m[1];
+      const trust = ensTrustByName?.get?.(name);
+      if (!trust?.level) return null;
+      return { level: trust.level, name, trust };
+    }),
   };
   const urlUtilsMocks = {
     formatBzzUrl: jest.fn((input, prefix) => {
@@ -178,6 +190,7 @@ const loadNavigationModule = async (options = {}) => {
     errorUrlBase,
     internalPages: {
       history: historyUrl,
+      settings: 'file:///app/pages/settings.html',
     },
     detectProtocol: jest.fn(() => 'https'),
     isHistoryRecordable: jest.fn((displayUrl, internalUrl) => {
@@ -190,6 +203,12 @@ const loadNavigationModule = async (options = {}) => {
     }),
     getInternalPageName: jest.fn((url) => (url === historyUrl ? 'history' : null)),
     parseEnsInput: jest.fn(() => null),
+    buildInternalPageUrl: jest.fn((file, params = null) => {
+      const base = `file:///app/pages/${file}`;
+      if (!params) return base;
+      const qs = new URLSearchParams(params).toString();
+      return qs ? `${base}?${qs}` : base;
+    }),
   };
   const settingsState = options.initialSettings || { showBookmarkBar: true };
   const electronHandlers = {};
@@ -210,6 +229,7 @@ const loadNavigationModule = async (options = {}) => {
     onToggleBookmarkBar: jest.fn((handler) => {
       electronHandlers.toggleBookmarkBar = handler;
     }),
+    resolveEns: jest.fn(),
   };
 
   const addressInput = createElement('input');
@@ -220,6 +240,16 @@ const loadNavigationModule = async (options = {}) => {
   const homeBtn = createElement('button');
   const bookmarksBar = createElement('div', { classes: ['hidden'] });
   const protocolIcon = createElement('div');
+  const trustShield = createElement('button');
+  const trustPopover = createElement('div');
+  const trustPopoverTitle = createElement('div');
+  const trustPopoverSubtitle = createElement('div');
+  const trustPopoverSummary = createElement('p');
+  const trustPopoverBlock = createElement('div');
+  const trustPopoverAgreed = createElement('div');
+  const trustPopoverAgreedSection = createElement('div');
+  const trustPopoverDissented = createElement('div');
+  const trustPopoverDissentedSection = createElement('div');
   const document = createDocument({
     elementsById: {
       'address-input': addressInput,
@@ -229,6 +259,16 @@ const loadNavigationModule = async (options = {}) => {
       'reload-btn': reloadBtn,
       'home-btn': homeBtn,
       'protocol-icon': protocolIcon,
+      'trust-shield': trustShield,
+      'trust-popover': trustPopover,
+      'trust-popover-title': trustPopoverTitle,
+      'trust-popover-subtitle': trustPopoverSubtitle,
+      'trust-popover-summary': trustPopoverSummary,
+      'trust-popover-block': trustPopoverBlock,
+      'trust-popover-agreed': trustPopoverAgreed,
+      'trust-popover-agreed-section': trustPopoverAgreedSection,
+      'trust-popover-dissented': trustPopoverDissented,
+      'trust-popover-dissented-section': trustPopoverDissentedSection,
     },
   });
 
@@ -306,6 +346,8 @@ const loadNavigationModule = async (options = {}) => {
       homeBtn,
       bookmarksBar,
       protocolIcon,
+      trustShield,
+      trustPopover,
     },
   };
 };
@@ -550,5 +592,206 @@ describe('navigation', () => {
     });
 
     expect(ctx.elements.addressInput.focus).toHaveBeenCalled();
+  });
+
+  describe('ENS trust dispatch', () => {
+    // setupEnsDispatch: bootstrap the navigation module with a realistic
+    // parseEnsInput mock (mirrors the production regex; real helper is
+    // unit-tested in page-urls.test.js), then run initNavigation so
+    // setWebviewEventHandler is registered. All dispatch tests start here.
+    const setupEnsDispatch = async (options = {}) => {
+      const ctx = await loadNavigationModule(options);
+      ctx.pageUrlsMocks.parseEnsInput.mockImplementation((value) => {
+        const m = value.match(/^(?:ens:\/\/)?([^?/]+\.(?:eth|box))(.*)?$/i);
+        return m ? { name: m[1].toLowerCase(), suffix: m[2] || '' } : null;
+      });
+      await ctx.mod.initNavigation();
+      return ctx;
+    };
+
+    // Drive one ENS resolution through loadTarget. Returns the webview's
+    // loadURL call history after the resolver promise settles so tests
+    // can inspect which interstitial (if any) was chosen.
+    const dispatchEns = async (ctx, url, result, options = {}) => {
+      ctx.electronAPI.resolveEns.mockResolvedValue(result);
+      ctx.mod.loadTarget(url, null, null, options);
+      await flushMicrotasks();
+      return ctx.activeRef.tab.webview.loadURL.mock.calls;
+    };
+
+    test('conflict result routes to ens-conflict interstitial', async () => {
+      const ctx = await setupEnsDispatch();
+      const conflictResult = {
+        type: 'conflict',
+        name: 'bad.eth',
+        trust: { level: 'conflict', block: { number: 123, hash: '0xabc' } },
+        groups: [
+          { resolvedData: '0x111', urls: ['a'] },
+          { resolvedData: '0x222', urls: ['b'] },
+        ],
+      };
+
+      const loadCalls = await dispatchEns(ctx, 'ens://bad.eth', conflictResult);
+
+      const interstitialCall = loadCalls.find(([u]) => u.includes('ens-conflict.html'));
+      expect(interstitialCall).toBeDefined();
+      const url = new URL(interstitialCall[0]);
+      expect(url.searchParams.get('name')).toBe('bad.eth');
+      const groups = JSON.parse(url.searchParams.get('groups'));
+      expect(groups).toEqual(conflictResult.groups);
+      expect(ctx.state.ensTrustByName.get('bad.eth')).toEqual(conflictResult.trust);
+    });
+
+    test('unverified result routes to ens-unverified interstitial when setting is on', async () => {
+      const ctx = await setupEnsDispatch({ blockUnverifiedEns: true });
+      const loadCalls = await dispatchEns(ctx, 'ens://lonely.eth', {
+        type: 'ok',
+        name: 'lonely.eth',
+        protocol: 'ipfs',
+        uri: 'ipfs://QmFake',
+        trust: { level: 'unverified', queried: ['a'], agreed: ['a'] },
+      });
+
+      const interstitialCall = loadCalls.find(([u]) => u.includes('ens-unverified.html'));
+      expect(interstitialCall).toBeDefined();
+      const url = new URL(interstitialCall[0]);
+      expect(url.searchParams.get('name')).toBe('lonely.eth');
+      expect(url.searchParams.get('uri')).toContain('ipfs://QmFake');
+    });
+
+    test('unverified proceeds normally when blockUnverifiedEns is off', async () => {
+      const ctx = await setupEnsDispatch({ blockUnverifiedEns: false });
+      const loadCalls = await dispatchEns(ctx, 'ens://ok.eth', {
+        type: 'ok',
+        name: 'ok.eth',
+        protocol: 'ipfs',
+        uri: 'ipfs://QmOk',
+        trust: { level: 'unverified', queried: ['a'], agreed: ['a'] },
+      });
+
+      expect(loadCalls.find(([u]) => u.includes('ens-unverified.html'))).toBeUndefined();
+    });
+
+    test('allowUnverifiedOnce option bypasses the unverified interstitial for one call', async () => {
+      const ctx = await setupEnsDispatch({ blockUnverifiedEns: true });
+      const loadCalls = await dispatchEns(
+        ctx,
+        'ens://once.eth',
+        {
+          type: 'ok',
+          name: 'once.eth',
+          protocol: 'ipfs',
+          uri: 'ipfs://QmOnce',
+          trust: { level: 'unverified', queried: ['a'], agreed: ['a'] },
+        },
+        { allowUnverifiedOnce: true }
+      );
+
+      expect(loadCalls.find(([u]) => u.includes('ens-unverified.html'))).toBeUndefined();
+    });
+
+    test('verified result proceeds normally and stores trust metadata', async () => {
+      const ctx = await setupEnsDispatch();
+      const verifiedTrust = { level: 'verified', queried: ['a', 'b', 'c'], agreed: ['a', 'b'] };
+
+      const loadCalls = await dispatchEns(ctx, 'ens://vitalik.eth', {
+        type: 'ok',
+        name: 'vitalik.eth',
+        protocol: 'ipfs',
+        uri: 'ipfs://QmVitalik',
+        trust: verifiedTrust,
+      });
+
+      expect(ctx.state.ensTrustByName.get('vitalik.eth')).toEqual(verifiedTrust);
+      expect(loadCalls.find(([u]) => u.includes('ens-conflict.html'))).toBeUndefined();
+      expect(loadCalls.find(([u]) => u.includes('ens-unverified.html'))).toBeUndefined();
+    });
+
+    test('ipc-message ens:continue-unverified re-dispatches with allow flag', async () => {
+      const ctx = await setupEnsDispatch({ blockUnverifiedEns: true });
+      const unverifiedResult = {
+        type: 'ok',
+        name: 'retry.eth',
+        protocol: 'ipfs',
+        uri: 'ipfs://QmRetry',
+        trust: { level: 'unverified', queried: ['a'], agreed: ['a'] },
+      };
+      ctx.electronAPI.resolveEns.mockResolvedValue(unverifiedResult);
+
+      // First load: blocked → interstitial.
+      ctx.mod.loadTarget('ens://retry.eth');
+      await flushMicrotasks();
+      expect(
+        ctx.activeRef.tab.webview.loadURL.mock.calls.find(([u]) => u.includes('ens-unverified.html'))
+      ).toBeDefined();
+
+      // Simulate interstitial "Continue once" sendToHost → tabs routes to
+      // the ipc-message webview event. The handler should re-dispatch with
+      // allowUnverifiedOnce=true, which bypasses the block and would call
+      // resolveEns again (we verify the follow-up resolveEns call).
+      ctx.electronAPI.resolveEns.mockClear();
+      ctx.tabsMocks.webviewEventHandler('ipc-message', {
+        tabId: ctx.activeRef.tab.id,
+        channel: 'ens:continue-unverified',
+        args: [{ name: 'retry.eth' }],
+      });
+      await flushMicrotasks();
+
+      expect(ctx.electronAPI.resolveEns).toHaveBeenCalledWith('retry.eth');
+    });
+
+    test('ipc-message ens:open-settings navigates to freedom://settings', async () => {
+      const ctx = await setupEnsDispatch();
+
+      ctx.tabsMocks.webviewEventHandler('ipc-message', {
+        tabId: ctx.activeRef.tab.id,
+        channel: 'ens:open-settings',
+        args: [],
+      });
+      await flushMicrotasks();
+
+      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(
+        'file:///app/pages/settings.html'
+      );
+    });
+  });
+
+  describe('trust shield', () => {
+    test('shows verified badge with aria-label when stored trust is verified', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+
+      ctx.state.ensTrustByName.set('vitalik.eth', {
+        level: 'verified',
+        queried: ['a', 'b'],
+        agreed: ['a', 'b'],
+      });
+      ctx.elements.addressInput.value = 'ens://vitalik.eth';
+      ctx.elements.addressInput.dispatch('input');
+
+      expect(ctx.elements.trustShield.getAttribute('data-trust')).toBe('verified');
+      expect(ctx.elements.trustShield.getAttribute('aria-label')).toContain('verified');
+      expect(ctx.elements.trustShield.hidden).toBe(false);
+    });
+
+    test('hides for non-ENS URLs', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+
+      ctx.elements.addressInput.value = 'https://example.com';
+      ctx.elements.addressInput.dispatch('input');
+
+      expect(ctx.elements.trustShield.hidden).toBe(true);
+    });
+
+    test('hides when ENS name has no stored trust', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+
+      ctx.elements.addressInput.value = 'ens://unknown.eth';
+      ctx.elements.addressInput.dispatch('input');
+
+      expect(ctx.elements.trustShield.hidden).toBe(true);
+    });
   });
 });

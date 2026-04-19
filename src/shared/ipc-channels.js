@@ -39,6 +39,10 @@ module.exports = {
   ENS_RESOLVE_REVERSE: 'ens:resolve-reverse',
   ENS_TEST_RPC: 'ens:test-rpc',
 
+  // ENS interstitial → shell (webview sendToHost channels)
+  ENS_CONTINUE_UNVERIFIED: 'ens:continue-unverified',
+  ENS_OPEN_SETTINGS: 'ens:open-settings',
+
   // Settings
   SETTINGS_GET: 'settings:get',
   SETTINGS_SAVE: 'settings:save',

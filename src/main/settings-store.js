@@ -58,6 +58,11 @@ const DEFAULT_SETTINGS = {
   ensBlockAnchor: 'latest',
   ensBlockAnchorTtlMs: 30000,
   ensPublicRpcProviders: DEFAULT_ENS_PUBLIC_RPC_PROVIDERS,
+  // When true, navigation to an ENS name that resolved with trust.level =
+  // 'unverified' is gated behind an interstitial with a single-use
+  // "Continue once" option. Turn off to navigate straight through with
+  // only the amber shield for signal.
+  blockUnverifiedEns: true,
   sidebarOpen: false,
   sidebarWidth: 320,
 };

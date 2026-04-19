@@ -18,6 +18,21 @@ export const internalPages = Object.fromEntries(
   ])
 );
 
+// Build a file:// URL for an internal page with optional query parameters.
+// `params` is a plain object; values are stringified. Used by navigation
+// dispatch (interstitials, error pages, etc.) — centralises the pattern so
+// page-name strings don't proliferate.
+export const buildInternalPageUrl = (pageFile, params = null) => {
+  const url = new URL(`pages/${pageFile}`, window.location.href);
+  if (params) {
+    for (const [key, value] of Object.entries(params)) {
+      if (value === undefined || value === null) continue;
+      url.searchParams.set(key, String(value));
+    }
+  }
+  return url.toString();
+};
+
 // Detect protocol from display URL for history recording
 export const detectProtocol = (url) => {
   if (!url) return 'unknown';

@@ -379,6 +379,15 @@ const createWebview = (tabId, initialUrl) => {
         onWebviewEvent('certificate-error', { tabId, event });
       }
     },
+    'ipc-message': (event) => {
+      // Messages from internal pages (e.g. ens-unverified interstitial
+      // bubbling a "Continue once" signal). Route through the registered
+      // onWebviewEvent handler so navigation.js can stay the sole owner
+      // of tab-state mutations.
+      if (tabId === tabState.activeTabId && onWebviewEvent) {
+        onWebviewEvent('ipc-message', { tabId, channel: event.channel, args: event.args });
+      }
+    },
   };
 
   // Attach event listeners
