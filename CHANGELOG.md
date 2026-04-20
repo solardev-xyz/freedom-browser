@@ -2,6 +2,12 @@
 
 All notable changes to Freedom will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- Linux pacman distribution target for Arch Linux and Omarchy users
+
 ## [0.7.0] - 2026-04-19
 
 ### Added

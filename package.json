@@ -92,7 +92,8 @@
     "linux": {
       "target": [
         "deb",
-        "AppImage"
+        "AppImage",
+        "pacman"
       ],
       "icon": "assets/icons",
       "category": "Network;WebBrowser",
@@ -110,6 +111,15 @@
             "**/*"
           ]
         }
+      ]
+    },
+    "pacman": {
+      "depends": [
+        "gtk3",
+        "nss",
+        "alsa-lib",
+        "libxtst",
+        "xdg-utils"
       ]
     },
     "win": {
