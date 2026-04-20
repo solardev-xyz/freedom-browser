@@ -173,6 +173,15 @@
         }
       ]
     },
+    "pacman": {
+      "depends": [
+        "gtk3",
+        "nss",
+        "alsa-lib",
+        "libxtst",
+        "xdg-utils"
+      ]
+    },
     "nsis": {
       "artifactName": "${productName}-Setup-${version}.${ext}"
     },
