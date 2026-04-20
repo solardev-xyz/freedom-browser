@@ -368,6 +368,12 @@ contextBridge.exposeInMainWorld('rpcManager', {
   getProviderSupportedChains: () => ipcRenderer.invoke('rpc:get-provider-supported-chains'),
   // Get effective RPC URLs for a chain (includes provider URLs)
   getEffectiveUrls: (chainId) => ipcRenderer.invoke('rpc:get-effective-urls', chainId),
+  // Custom RPC URLs (user-defined endpoints)
+  listCustomUrls: (chainId) => ipcRenderer.invoke('rpc:list-custom-urls', chainId),
+  addCustomUrl: (entry) => ipcRenderer.invoke('rpc:add-custom-url', entry),
+  updateCustomUrl: (id, patch) => ipcRenderer.invoke('rpc:update-custom-url', id, patch),
+  removeCustomUrl: (id) => ipcRenderer.invoke('rpc:remove-custom-url', id),
+  testCustomUrl: (url, expectedChainId) => ipcRenderer.invoke('rpc:test-custom-url', url, expectedChainId),
 });
 
 contextBridge.exposeInMainWorld('dappPermissions', {
