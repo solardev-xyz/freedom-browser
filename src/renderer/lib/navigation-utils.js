@@ -1,6 +1,6 @@
 import { applyEnsNamePreservation, deriveDisplayValue } from './url-utils.js';
 import { getInternalPageName } from './page-urls.js';
-import { cidV0ToV1Base32 } from './cid-utils.js';
+import { cidV0ToV1Base32, ipnsMhToCidV1Base36 } from './cid-utils.js';
 
 export const resolveProtocolIconType = ({
   value = '',
@@ -94,7 +94,15 @@ export const extractEnsResolutionMetadata = (targetUri, ensName) => {
 
   const ipnsMatch = targetUri.match(/^ipns:\/\/([A-Za-z0-9.-]+)/);
   if (ipnsMatch) {
-    knownEnsPairs.push([ipnsMatch[1], ensName]);
+    const ipnsId = ipnsMatch[1];
+    knownEnsPairs.push([ipnsId, ensName]);
+    // Same as IPFS above: Kubo's subdomain gateway rewrites base58btc
+    // IPNS names ("12D3Koo...", "Qm...") to CIDv1 libp2p-key base36
+    // ("k51qzi..." / "k2k4...") — store both forms.
+    if (ipnsId.startsWith('12D3Koo') || ipnsId.startsWith('Qm')) {
+      const cidV1 = ipnsMhToCidV1Base36(ipnsId);
+      if (cidV1) knownEnsPairs.push([cidV1, ensName]);
+    }
     resolvedProtocol = 'ipfs';
   }
 
