@@ -113,6 +113,15 @@
         }
       ]
     },
+    "pacman": {
+      "depends": [
+        "gtk3",
+        "nss",
+        "alsa-lib",
+        "libxtst",
+        "xdg-utils"
+      ]
+    },
     "win": {
       "target": [
         "nsis",
