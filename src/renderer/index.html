@@ -1092,6 +1092,50 @@
               </div>
             </div>
 
+            <!-- Custom RPC Endpoint sub-screen -->
+            <div id="sidebar-rpc-custom" class="sidebar-subscreen hidden">
+              <div class="subscreen-header">
+                <button type="button" class="subscreen-back-btn" id="rpc-custom-back">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="15 18 9 12 15 6"/>
+                  </svg>
+                  <span>Back</span>
+                </button>
+                <h3 class="subscreen-title" id="rpc-custom-title">Custom RPC endpoint</h3>
+              </div>
+
+              <div class="subscreen-content">
+                <p class="rpc-apikey-description">
+                  Point a chain at your own RPC URL — a self-hosted node, a team gateway, or any provider of your choice.
+                </p>
+
+                <div class="rpc-apikey-form">
+                  <label class="rpc-apikey-label" for="rpc-custom-chain-select">Chain</label>
+                  <select id="rpc-custom-chain-select" class="rpc-apikey-input" style="margin-bottom: 16px; font-family: inherit;"></select>
+
+                  <label class="rpc-apikey-label" for="rpc-custom-url-input">RPC URL</label>
+                  <div class="rpc-apikey-input-group">
+                    <input type="text" id="rpc-custom-url-input" class="rpc-apikey-input" placeholder="https://…" autocomplete="off" spellcheck="false">
+                  </div>
+
+                  <label class="rpc-apikey-label" for="rpc-custom-label-input">Label (optional)</label>
+                  <div class="rpc-apikey-input-group">
+                    <input type="text" id="rpc-custom-label-input" class="rpc-apikey-input" placeholder="e.g. Home node" autocomplete="off">
+                  </div>
+
+                  <button type="button" class="rpc-apikey-test-btn" id="rpc-custom-test">
+                    <span>Test Connection</span>
+                  </button>
+                  <div class="rpc-apikey-test-status hidden" id="rpc-custom-test-status"></div>
+                </div>
+
+                <div class="rpc-apikey-actions">
+                  <button type="button" class="rpc-apikey-cancel-btn" id="rpc-custom-cancel">Cancel</button>
+                  <button type="button" class="rpc-apikey-save-btn" id="rpc-custom-save">Save</button>
+                </div>
+              </div>
+            </div>
+
             <!-- Create Wallet sub-screen -->
             <div id="sidebar-create-wallet" class="sidebar-subscreen hidden">
               <div class="subscreen-header">

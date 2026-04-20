@@ -21,7 +21,7 @@ const {
   signTypedData,
 } = require('./transaction-service');
 const { loadIdentityModule, getActiveWalletIndex } = require('../identity-manager');
-const { getEffectiveRpcUrls } = require('./rpc-manager');
+const { getEffectiveRpcUrls, listCustomUrls } = require('./rpc-manager');
 const { resetVaultAutoLockTimer } = require('../vault-timer');
 
 /**
@@ -36,6 +36,12 @@ function isAllowedRpcUrl(rpcUrl) {
     }
   } catch {
     return false;
+  }
+
+  // User-configured custom URLs are always allowed, even if the chain isn't
+  // in the built-in registry.
+  for (const entry of listCustomUrls()) {
+    if (entry.url === rpcUrl) return true;
   }
 
   // Build allowlist from all known chains

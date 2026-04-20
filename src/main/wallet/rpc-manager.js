@@ -9,6 +9,7 @@
 const { app, ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 
 // Lazy-loaded to avoid circular dependencies
 let providerManager = null;
@@ -21,10 +22,12 @@ function getProviderManager() {
 
 // File paths
 const API_KEYS_FILE = 'rpc-api-keys.json';
+const CUSTOM_URLS_FILE = 'rpc-custom-urls.json';
 
 // Cache
 let apiKeysCache = null;
 let providersCache = null;
+let customUrlsCache = null;
 
 /**
  * Get path to user's API keys file
@@ -103,6 +106,245 @@ function saveApiKeys() {
   } catch (err) {
     console.error('[RpcManager] Failed to save API keys:', err);
     return false;
+  }
+}
+
+/**
+ * Get path to user's custom RPC URLs file
+ */
+function getCustomUrlsPath() {
+  return path.join(app.getPath('userData'), CUSTOM_URLS_FILE);
+}
+
+/**
+ * Load user's custom RPC URLs from disk.
+ * Shape: { entries: [{ id, chainId, url, label, addedAt }] }
+ */
+function loadCustomUrls() {
+  if (customUrlsCache !== null) {
+    return customUrlsCache;
+  }
+
+  try {
+    const filePath = getCustomUrlsPath();
+    if (fs.existsSync(filePath)) {
+      const data = fs.readFileSync(filePath, 'utf-8');
+      const parsed = JSON.parse(data);
+      customUrlsCache = {
+        entries: Array.isArray(parsed?.entries) ? parsed.entries : [],
+      };
+    } else {
+      customUrlsCache = { entries: [] };
+    }
+  } catch (err) {
+    console.error('[RpcManager] Failed to load custom URLs:', err);
+    customUrlsCache = { entries: [] };
+  }
+
+  return customUrlsCache;
+}
+
+/**
+ * Save custom RPC URLs to disk
+ */
+function saveCustomUrls() {
+  try {
+    const filePath = getCustomUrlsPath();
+    fs.writeFileSync(filePath, JSON.stringify(customUrlsCache, null, 2), 'utf-8');
+    return true;
+  } catch (err) {
+    console.error('[RpcManager] Failed to save custom URLs:', err);
+    return false;
+  }
+}
+
+/**
+ * Validate a custom URL (http/https only, parseable).
+ */
+function isValidRpcUrl(url) {
+  if (typeof url !== 'string' || !url.trim()) return false;
+  try {
+    const parsed = new URL(url.trim());
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Coerce a chainId input to a positive integer.
+ */
+function normalizeChainId(chainId) {
+  const n = Number(chainId);
+  if (!Number.isInteger(n) || n <= 0) return null;
+  return n;
+}
+
+/**
+ * List custom RPC URLs, optionally filtered by chain.
+ */
+function listCustomUrls(chainId) {
+  const { entries } = loadCustomUrls();
+  if (chainId === undefined || chainId === null) return entries.slice();
+  const n = normalizeChainId(chainId);
+  if (n === null) return [];
+  return entries.filter((e) => e.chainId === n);
+}
+
+/**
+ * Add a custom RPC URL entry.
+ */
+function addCustomUrl({ chainId, url, label }) {
+  const n = normalizeChainId(chainId);
+  if (n === null) {
+    return { success: false, error: 'Invalid chainId' };
+  }
+  if (!isValidRpcUrl(url)) {
+    return { success: false, error: 'URL must be a valid http(s) endpoint' };
+  }
+
+  const store = loadCustomUrls();
+  const trimmedUrl = url.trim();
+  if (store.entries.some((e) => e.chainId === n && e.url === trimmedUrl)) {
+    return { success: false, error: 'This URL is already configured for this chain' };
+  }
+
+  const entry = {
+    id: `cust_${crypto.randomBytes(8).toString('hex')}`,
+    chainId: n,
+    url: trimmedUrl,
+    label: typeof label === 'string' ? label.trim() : '',
+    addedAt: Date.now(),
+  };
+  store.entries.push(entry);
+  customUrlsCache = store;
+
+  if (!saveCustomUrls()) {
+    return { success: false, error: 'Failed to save custom URL' };
+  }
+
+  getProviderManager().onApiKeysChanged();
+  console.log(`[RpcManager] Custom URL added: ${entry.id} chain=${n}`);
+  return { success: true, entry };
+}
+
+/**
+ * Update a custom RPC URL entry. Only url, label, and chainId are updatable.
+ */
+function updateCustomUrl(id, patch) {
+  if (typeof id !== 'string' || !id) {
+    return { success: false, error: 'Invalid entry id' };
+  }
+  const store = loadCustomUrls();
+  const idx = store.entries.findIndex((e) => e.id === id);
+  if (idx === -1) {
+    return { success: false, error: 'Entry not found' };
+  }
+
+  const updated = { ...store.entries[idx] };
+  if (patch.chainId !== undefined) {
+    const n = normalizeChainId(patch.chainId);
+    if (n === null) return { success: false, error: 'Invalid chainId' };
+    updated.chainId = n;
+  }
+  if (patch.url !== undefined) {
+    if (!isValidRpcUrl(patch.url)) {
+      return { success: false, error: 'URL must be a valid http(s) endpoint' };
+    }
+    updated.url = patch.url.trim();
+  }
+  if (patch.label !== undefined) {
+    updated.label = typeof patch.label === 'string' ? patch.label.trim() : '';
+  }
+
+  // Reject a rename that collides with another entry
+  if (store.entries.some((e, i) => i !== idx && e.chainId === updated.chainId && e.url === updated.url)) {
+    return { success: false, error: 'Another entry already uses this URL for this chain' };
+  }
+
+  store.entries[idx] = updated;
+  customUrlsCache = store;
+
+  if (!saveCustomUrls()) {
+    return { success: false, error: 'Failed to save custom URL' };
+  }
+
+  getProviderManager().onApiKeysChanged();
+  return { success: true, entry: updated };
+}
+
+/**
+ * Remove a custom RPC URL entry by id.
+ */
+function removeCustomUrl(id) {
+  const store = loadCustomUrls();
+  const idx = store.entries.findIndex((e) => e.id === id);
+  if (idx === -1) {
+    return { success: false, error: 'Entry not found' };
+  }
+  store.entries.splice(idx, 1);
+  customUrlsCache = store;
+
+  if (!saveCustomUrls()) {
+    return { success: false, error: 'Failed to save custom URL' };
+  }
+
+  getProviderManager().onApiKeysChanged();
+  console.log(`[RpcManager] Custom URL removed: ${id}`);
+  return { success: true };
+}
+
+/**
+ * Test a custom URL by calling eth_chainId. If expectedChainId is provided,
+ * verify the endpoint responds with that chain id.
+ */
+async function testCustomUrl(url, expectedChainId) {
+  if (!isValidRpcUrl(url)) {
+    return { success: false, error: 'URL must be a valid http(s) endpoint' };
+  }
+
+  try {
+    const response = await fetch(url.trim(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'eth_chainId',
+        params: [],
+      }),
+    });
+
+    if (!response.ok) {
+      return { success: false, error: `HTTP ${response.status}: ${response.statusText}` };
+    }
+
+    const data = await response.json();
+
+    if (data.error) {
+      return { success: false, error: data.error.message || 'RPC error' };
+    }
+
+    if (!data.result) {
+      return { success: false, error: 'Invalid response from RPC' };
+    }
+
+    const returnedChainId = parseInt(data.result, 16);
+    const expected = expectedChainId === undefined || expectedChainId === null
+      ? null
+      : normalizeChainId(expectedChainId);
+
+    if (expected !== null && returnedChainId !== expected) {
+      return {
+        success: false,
+        error: `URL reports chainId ${returnedChainId}, but expected ${expected}`,
+        chainId: returnedChainId,
+      };
+    }
+
+    return { success: true, chainId: returnedChainId };
+  } catch (err) {
+    return { success: false, error: err.message };
   }
 }
 
@@ -217,16 +459,28 @@ function getRpcUrl(providerId, chainId) {
 }
 
 /**
- * Get all effective RPC URLs for a chain
- * Priority: configured providers (in order of configuration)
+ * Get all effective RPC URLs for a chain.
+ * Priority: user-configured custom URLs first, then configured providers.
  * @param {number|string} chainId - Chain ID
- * @returns {string[]} - Array of RPC URLs
+ * @returns {string[]} - Array of RPC URLs (deduped)
  */
 function getEffectiveRpcUrls(chainId) {
   const chainIdStr = String(chainId);
+  const normalized = normalizeChainId(chainId);
   const urls = [];
+  const seen = new Set();
 
-  // Get URLs from all configured providers that support this chain
+  // Custom URLs for this chain come first — user opted in explicitly
+  if (normalized !== null) {
+    for (const entry of listCustomUrls(normalized)) {
+      if (!seen.has(entry.url)) {
+        urls.push(entry.url);
+        seen.add(entry.url);
+      }
+    }
+  }
+
+  // Configured providers that support this chain
   const configuredProviders = getConfiguredProviders();
   const providers = loadProviders();
 
@@ -234,8 +488,9 @@ function getEffectiveRpcUrls(chainId) {
     const provider = providers[providerId];
     if (provider?.chains[chainIdStr]) {
       const url = getRpcUrl(providerId, chainId);
-      if (url) {
+      if (url && !seen.has(url)) {
         urls.push(url);
+        seen.add(url);
       }
     }
   }
@@ -257,6 +512,11 @@ function getProviderSupportedChains() {
     if (provider?.chains) {
       Object.keys(provider.chains).forEach((chainId) => chainIds.add(chainId));
     }
+  }
+
+  // Custom URLs also contribute supported chains
+  for (const entry of listCustomUrls()) {
+    chainIds.add(String(entry.chainId));
   }
 
   return Array.from(chainIds);
@@ -323,6 +583,7 @@ async function testApiKey(providerId, apiKey) {
 function clearCaches() {
   apiKeysCache = null;
   providersCache = null;
+  customUrlsCache = null;
 }
 
 /**
@@ -376,16 +637,44 @@ function registerRpcManagerIpc() {
     return { success: true, chains: getProviderSupportedChains() };
   });
 
-  // Get effective RPC URLs for a chain (built-in public RPCs first, then provider URLs)
+  // List all custom RPC URLs (optionally filtered by chain)
+  ipcMain.handle('rpc:list-custom-urls', (_event, chainId) => {
+    try {
+      return { success: true, entries: listCustomUrls(chainId) };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // Add a custom RPC URL
+  ipcMain.handle('rpc:add-custom-url', (_event, params) => {
+    return addCustomUrl(params || {});
+  });
+
+  // Update a custom RPC URL
+  ipcMain.handle('rpc:update-custom-url', (_event, id, patch) => {
+    return updateCustomUrl(id, patch || {});
+  });
+
+  // Remove a custom RPC URL
+  ipcMain.handle('rpc:remove-custom-url', (_event, id) => {
+    return removeCustomUrl(id);
+  });
+
+  // Test a custom RPC URL (optionally verifying the returned chainId)
+  ipcMain.handle('rpc:test-custom-url', async (_event, url, expectedChainId) => {
+    return testCustomUrl(url, expectedChainId);
+  });
+
+  // Get effective RPC URLs for a chain: user-configured endpoints first
+  // (custom URLs, then provider templates), then built-in public RPCs.
   ipcMain.handle('rpc:get-effective-urls', (_event, chainId) => {
     const { getChain } = require('./chains');
     const chain = getChain(chainId);
-    const builtinUrls = chain?.rpcUrls || [];
-    const providerUrls = getEffectiveRpcUrls(chainId);
-    // Deduplicate: built-in public RPCs first, then provider URLs
-    const seen = new Set(builtinUrls);
-    const urls = [...builtinUrls];
-    for (const url of providerUrls) {
+    const urls = getEffectiveRpcUrls(chainId);
+    const seen = new Set(urls);
+
+    for (const url of chain?.rpcUrls || []) {
       if (!seen.has(url)) {
         urls.push(url);
         seen.add(url);
@@ -411,6 +700,11 @@ module.exports = {
   getEffectiveRpcUrls,
   getProviderSupportedChains,
   testApiKey,
+  listCustomUrls,
+  addCustomUrl,
+  updateCustomUrl,
+  removeCustomUrl,
+  testCustomUrl,
   clearCaches,
   registerRpcManagerIpc,
 };

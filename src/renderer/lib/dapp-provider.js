@@ -346,7 +346,7 @@ async function proxyRpcCall(method, params) {
     const chainName = chain?.name || `Chain ${chainId}`;
     throw {
       ...ERRORS.INTERNAL_ERROR,
-      message: `${chainName} requires an RPC provider. Please configure Alchemy, Infura, or DRPC in Settings.`,
+      message: `${chainName} requires an RPC provider. Please configure Alchemy, Infura, DRPC, or a custom RPC endpoint in Settings.`,
     };
   }
 
@@ -397,7 +397,7 @@ async function handleSwitchChain(params, permissionKey, webview) {
     const chain = chains[requestedChainId];
     throw {
       code: 4902,
-      message: `${chain.name} requires an RPC provider. Please configure Alchemy, Infura, or DRPC in Settings.`,
+      message: `${chain.name} requires an RPC provider. Please configure Alchemy, Infura, DRPC, or a custom RPC endpoint in Settings.`,
     };
   }
 

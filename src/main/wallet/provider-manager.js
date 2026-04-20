@@ -31,13 +31,21 @@ function getRpcUrlsForChain(chainId) {
     return [];
   }
 
-  // If chain has public RPCs, use those
-  if (chain.hasPublicRpc && chain.rpcUrls && chain.rpcUrls.length > 0) {
-    return chain.rpcUrls;
+  // User-configured endpoints (custom URLs, then provider templates) take
+  // precedence over built-in public RPCs.
+  const urls = getEffectiveRpcUrls(chainId);
+  const seen = new Set(urls);
+
+  if (chain.hasPublicRpc && chain.rpcUrls) {
+    for (const url of chain.rpcUrls) {
+      if (!seen.has(url)) {
+        urls.push(url);
+        seen.add(url);
+      }
+    }
   }
 
-  // Otherwise, get URLs from configured RPC providers
-  return getEffectiveRpcUrls(chainId);
+  return urls;
 }
 
 /**
