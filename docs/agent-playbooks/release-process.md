@@ -101,7 +101,7 @@ npm run dist:linux:x64:docker
 npm run dist:linux:arm64:docker
 ```
 
-Both run `electron-builder` inside a Linux container and download the matching Radicle binaries for the target arch.
+Both run `electron-builder` inside a Linux container and download the matching Radicle binaries for the target arch. Each invocation produces `.deb`, `.AppImage`, and `.pacman` artifacts for the given arch; the `.pacman` package covers Arch Linux and Omarchy (`sudo pacman -U freedom-<version>.pacman`).
 
 ### Windows
 

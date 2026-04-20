@@ -92,7 +92,8 @@
     "linux": {
       "target": [
         "deb",
-        "AppImage"
+        "AppImage",
+        "pacman"
       ],
       "icon": "assets/icons",
       "category": "Network;WebBrowser",
