@@ -1,8 +1,10 @@
-// Minimal CIDv0 → CIDv1 base32 converter.
+// Minimal CIDv0 → CIDv1 base32 converter, plus an IPNS base58-multihash →
+// CIDv1 libp2p-key base36 converter.
 //
-// Needed because Kubo's subdomain gateway redirects requests from
-// `localhost:8080/ipfs/<CIDv0>` to `<CIDv1-base32>.ipfs.localhost:8080`
-// (DNS labels are case-insensitive, so base58btc CIDv0 is not subdomain-safe).
+// Needed because Kubo's subdomain gateway redirects:
+//   - `localhost:8080/ipfs/<CIDv0>`  → `<CIDv1-base32>.ipfs.localhost:8080`
+//   - `localhost:8080/ipns/<base58>` → `<CIDv1-base36>.ipns.localhost:8080`
+// DNS labels are case-insensitive, so base58btc is not subdomain-safe.
 //
 // Kept inline because the renderer has no bundler — bare module specifiers
 // like `multiformats/cid` don't resolve, and the sandboxed renderer can't
@@ -75,4 +77,42 @@ export const cidV0ToV1Base32 = (cidV0) => {
   v1[1] = 0x70; // dag-pb codec (varint, <128 so one byte)
   v1.set(mh, 2);
   return 'b' + base32Encode(v1);
+};
+
+// Base36 encode for multibase 'k' — lowercase, no padding, leading zero
+// bytes preserved as '0' chars (matches the multiformats basex convention).
+const base36Encode = (bytes) => {
+  let num = 0n;
+  for (let i = 0; i < bytes.length; i++) {
+    num = (num << 8n) | BigInt(bytes[i]);
+  }
+  const body = num === 0n ? '' : num.toString(36);
+  let leadingZeros = 0;
+  while (leadingZeros < bytes.length && bytes[leadingZeros] === 0) leadingZeros++;
+  return '0'.repeat(leadingZeros) + body;
+};
+
+/**
+ * Convert a base58btc IPNS multihash (peer-ID shape: "12D3Koo..." for
+ * Ed25519, "Qm..." for sha2-256) to the CIDv1 libp2p-key base36 form
+ * ("k51qzi..." / "k2k4...") used by Kubo's subdomain gateway. Accepts
+ * any well-formed multihash — not just sha2-256 — because Ed25519 peer
+ * IDs use the identity multihash (0x00). Returns null on malformed input.
+ */
+export const ipnsMhToCidV1Base36 = (mhBase58) => {
+  if (typeof mhBase58 !== 'string') return null;
+  const mh = base58Decode(mhBase58);
+  // Multihash = 1-byte code + 1-byte digest length + digest. We only accept
+  // single-byte-varint code/length (<128); fine for every code a libp2p peer
+  // ID can use (identity 0x00, sha2-256 0x12) and any realistic digest size.
+  if (!mh || mh.length < 3) return null;
+  const code = mh[0];
+  const digestLen = mh[1];
+  if (code >= 0x80 || digestLen >= 0x80) return null;
+  if (mh.length !== 2 + digestLen) return null;
+  const v1 = new Uint8Array(mh.length + 2);
+  v1[0] = 0x01; // CIDv1 version
+  v1[1] = 0x72; // libp2p-key codec
+  v1.set(mh, 2);
+  return 'k' + base36Encode(v1);
 };
