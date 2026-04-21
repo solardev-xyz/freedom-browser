@@ -231,7 +231,6 @@ function registerRequestRewriter(targetSession) {
   targetSession.webRequest.onBeforeRequest((details, callback) => {
     const webContentsId = details.webContentsId;
 
-    // First, check for custom protocol URLs (bzz://, ipfs://, ipns://)
     const { converted, url: convertedUrl } = convertProtocolUrl(details.url);
     if (converted) {
       log.info(
