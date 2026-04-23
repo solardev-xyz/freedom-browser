@@ -1,6 +1,6 @@
 const log = require('./logger');
 const { activeBzzBases, activeIpfsBases, activeRadBases } = require('./state');
-const { getBeeApiUrl, getIpfsGatewayUrl, getRadicleApiUrl } = require('./service-registry');
+const { getIpfsGatewayUrl, getRadicleApiUrl } = require('./service-registry');
 const { loadSettings } = require('./settings-store');
 const { URL } = require('url');
 
@@ -65,20 +65,9 @@ function convertProtocolUrl(url) {
     return { converted: false, url };
   }
 
-  // Handle bzz:// protocol
-  if (url.startsWith('bzz://')) {
-    const afterScheme = url.slice(6).replace(/^\/+/, '');
-    if (!afterScheme) {
-      return { converted: false, url };
-    }
-    const hash = afterScheme.split(/[/?#]/)[0];
-    if (!hash || !/^[a-fA-F0-9]{64}([a-fA-F0-9]{64})?$/.test(hash)) {
-      return { converted: false, url };
-    }
-    const beeApiUrl = getBeeApiUrl();
-    const gatewayUrl = `${beeApiUrl}/bzz/${afterScheme}`;
-    return { converted: true, url: gatewayUrl };
-  }
+  // Note: `bzz://` is handled by the custom protocol handler in
+  // `src/main/swarm/bzz-protocol.js`; see README "Swarm Content Retrieval".
+  // Requests for this scheme never reach the webRequest rewriter.
 
   // Handle ipfs:// protocol
   if (url.startsWith('ipfs://')) {

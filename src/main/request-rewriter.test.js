@@ -48,62 +48,21 @@ describe('request-rewriter', () => {
       });
     });
 
-    // bzz:// tests
-    test('converts valid bzz:// URL with 64-char hex hash', () => {
-      const result = convertProtocolUrl(`bzz://${VALID_HASH}`);
-      expect(result).toEqual({ converted: true, url: `http://127.0.0.1:1633/bzz/${VALID_HASH}` });
-    });
-
-    test('converts valid bzz:// URL with hash and path', () => {
-      const result = convertProtocolUrl(`bzz://${VALID_HASH}/index.html`);
-      expect(result).toEqual({
-        converted: true,
-        url: `http://127.0.0.1:1633/bzz/${VALID_HASH}/index.html`,
-      });
-    });
-
-    test('converts valid bzz:// URL with hash, path, query and fragment', () => {
-      const result = convertProtocolUrl(`bzz://${VALID_HASH}/page?v=1#top`);
-      expect(result).toEqual({
-        converted: true,
-        url: `http://127.0.0.1:1633/bzz/${VALID_HASH}/page?v=1#top`,
-      });
-    });
-
-    test('converts valid bzz:// URL with 128-char encrypted hash', () => {
-      const result = convertProtocolUrl(`bzz://${VALID_ENCRYPTED_HASH}`);
-      expect(result).toEqual({
-        converted: true,
-        url: `http://127.0.0.1:1633/bzz/${VALID_ENCRYPTED_HASH}`,
-      });
-    });
-
-    test('rejects bzz:// with empty hash', () => {
-      expect(convertProtocolUrl('bzz://')).toEqual({ converted: false, url: 'bzz://' });
-    });
-
-    test('rejects bzz:/// with no hash (only slashes)', () => {
-      expect(convertProtocolUrl('bzz:///')).toEqual({ converted: false, url: 'bzz:///' });
-    });
-
-    test('rejects bzz:///favicon.ico (no hash, just path)', () => {
-      expect(convertProtocolUrl('bzz:///favicon.ico')).toEqual({
+    // Note: `bzz://` is handled by the custom protocol handler in
+    // src/main/swarm/bzz-protocol.js, not by convertProtocolUrl, so
+    // convertProtocolUrl leaves it alone for any webRequest passes.
+    test('leaves bzz:// URLs alone (handled by bzz protocol handler)', () => {
+      expect(convertProtocolUrl(`bzz://${VALID_HASH}`)).toEqual({
         converted: false,
-        url: 'bzz:///favicon.ico',
+        url: `bzz://${VALID_HASH}`,
       });
-    });
-
-    test('rejects bzz:// with non-hex hash', () => {
-      expect(convertProtocolUrl('bzz://not-a-valid-hash')).toEqual({
+      expect(convertProtocolUrl(`bzz://${VALID_HASH}/index.html`)).toEqual({
         converted: false,
-        url: 'bzz://not-a-valid-hash',
+        url: `bzz://${VALID_HASH}/index.html`,
       });
-    });
-
-    test('rejects bzz:// with too-short hash', () => {
-      expect(convertProtocolUrl('bzz://abcdef1234')).toEqual({
+      expect(convertProtocolUrl(`bzz://${VALID_ENCRYPTED_HASH}`)).toEqual({
         converted: false,
-        url: 'bzz://abcdef1234',
+        url: `bzz://${VALID_ENCRYPTED_HASH}`,
       });
     });
 

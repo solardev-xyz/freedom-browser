@@ -58,6 +58,22 @@ const extractBzzHash = (gatewayUrl) => {
   return match ? match[1] : null;
 };
 
+// Convert a Bee gateway URL (http://127.0.0.1:1633/bzz/<hash>/path?q#h) into
+// the `bzz://<hash>/path?q#h` form that Chromium routes through the custom
+// protocol handler. Falls back to the gateway URL if the shape doesn't match.
+const gatewayUrlToBzzUrl = (gatewayUrl) => {
+  try {
+    const parsed = new URL(gatewayUrl);
+    const match = /^\/bzz\/([a-fA-F0-9]{64}(?:[a-fA-F0-9]{64})?)(\/.*)?$/.exec(parsed.pathname);
+    if (!match) return gatewayUrl;
+    const [, hash, tail] = match;
+    const path = tail || '/';
+    return `bzz://${hash}${path}${parsed.search}${parsed.hash}`;
+  } catch {
+    return gatewayUrl;
+  }
+};
+
 // Build a file:// URL for error.html. `targetUrl` is the user-facing URL
 // shown in the address bar and on the page. `extras` can include:
 //   - protocol: explicit protocol hint ('swarm' | 'ipfs' | 'ipns')
@@ -378,8 +394,13 @@ const startBzzNavigationWithProbe = (webview, target, navState, displayUrl) => {
 
       const outcome = awaitResult.outcome || { ok: false, reason: 'other' };
       if (outcome.ok) {
-        pushDebug(`[Swarm] Probe ok — loading ${gatewayUrl}`);
-        webview.loadURL(gatewayUrl);
+        // Navigate via the custom `bzz:` scheme so sub-resource fetches go
+        // through the main-process protocol handler (retries, redundancy
+        // headers, streaming Range support). See README "Swarm Content
+        // Retrieval". The handler ultimately proxies to the same gateway.
+        const bzzUrl = gatewayUrlToBzzUrl(gatewayUrl);
+        pushDebug(`[Swarm] Probe ok — loading ${bzzUrl}`);
+        webview.loadURL(bzzUrl);
         return;
       }
 

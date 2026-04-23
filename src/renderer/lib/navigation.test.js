@@ -546,8 +546,10 @@ describe('navigation', () => {
       settleAwait(ctx, 'probe-1', { ok: true });
       await flushMicrotasks();
 
+      // After a successful probe we hand off to the `bzz:` protocol handler
+      // rather than the raw gateway URL — see README "Swarm Content Retrieval".
       expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(
-        `https://gateway.example/bzz/${VALID_HASH}`
+        `bzz://${VALID_HASH}/`
       );
       expect(ctx.activeRef.tab.navigationState.pendingSwarmProbeId).toBeNull();
     });
@@ -626,7 +628,7 @@ describe('navigation', () => {
       settleAwait(ctx, 'probe-1', { ok: true });
       await flushMicrotasks();
       expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalledWith(
-        `https://gateway.example/bzz/${VALID_HASH}`
+        `bzz://${VALID_HASH}/`
       );
     });
 
@@ -650,14 +652,14 @@ describe('navigation', () => {
       settleAwait(ctx, 'probe-1', { ok: true });
       await flushMicrotasks();
       expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalledWith(
-        `https://gateway.example/bzz/${VALID_HASH}`
+        `bzz://${VALID_HASH}/`
       );
 
-      // Settle the second probe with success — it should load the gateway URL.
+      // Settle the second probe with success — it should load the bzz:// URL.
       settleAwait(ctx, 'probe-2', { ok: true });
       await flushMicrotasks();
       expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(
-        `https://gateway.example/bzz/${secondHash}`
+        `bzz://${secondHash}/`
       );
     });
 
