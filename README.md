@@ -40,7 +40,19 @@ It ships with integrated Swarm, IPFS, and Radicle nodes, enabling direct peer-to
 
 Freedom Browser is an Electron application. Protocol logic lives in the main process; the renderer is a modular UI layer that talks to it over IPC (channels defined in `src/shared/ipc-channels.js`). The main process manages node lifecycles (`bee-manager.js`, `ipfs-manager.js`, `radicle-manager.js`), URL rewriting (`request-rewriter.js`), and persistent data (settings, bookmarks, history). A central `service-registry.js` tracks node endpoints, modes, and status, and broadcasts state to all windows — both node managers and the request rewriter read from it.
 
-When a user enters a `bzz://`, `ipfs://`, `ipns://`, `rad://`, or ENS URL, the main process rewrites it to the active gateway URL via the registry, and subsequent webview requests are normalized to stay within the active hash/CID/RID base. `rad://` handling is gated by the Radicle integration setting.
+When a user enters a `bzz://`, `ipfs://`, `ipns://`, `rad://`, or ENS URL, the main process rewrites it to the active gateway URL via the registry, and subsequent webview requests are normalized to stay within the active hash/CID/RID base. `rad://` handling is gated by the Radicle integration setting. `bzz://` navigation is additionally gated by a cold-start probe and served through a custom protocol handler (see next section).
+
+---
+
+## Swarm Content Retrieval
+
+A fresh Bee node pulls chunks on-demand through the DHT, and any individual chunk lookup can transiently fail with `HTTP 404` even when the content is healthy and peers are connected. Across a page with 10–30 sub-resources (JS, CSS, fonts, images, video), a modest per-request failure rate compounds into visibly broken CSS, missing images, and videos that don't load. Retries almost always succeed — the problem is strictly first contact with cold content.
+
+Freedom mitigates this in two layers:
+
+1. **Navigation probe** (`src/main/swarm/swarm-probe.js`) — before loading a `bzz://` URL, the main process HEAD-polls `/bzz/<hash>` on the local Bee gateway with exponential backoff (30 s per attempt, 5 min overall). The tab spinner runs during the probe, so the user never sees Bee's raw 404 JSON; on timeout or Bee-unreachable we route to `error.html` with the original URL preserved and a **Try Again** button. Probes are cancellable.
+
+2. **Custom `bzz:` scheme** (`src/main/swarm/bzz-protocol.js`) — `bzz` is registered as a privileged standard scheme, so `bzz://<hash>/` becomes the page origin in Chromium. Every `bzz://` request (top-level, sub-resources, `fetch`, media `Range`, CSS descendants, service workers) routes through a main-process handler that proxies to the local Bee gateway, always sets `Swarm-Chunk-Retrieval-Timeout` + `Swarm-Redundancy-Strategy: 3` + `Swarm-Redundancy-Fallback-Mode: true`, retries transient `404`/`5xx` on idempotent methods with bounded exponential backoff (~3 min total), and streams the response back. Because `bzz://<hash>/` is the origin, same-origin relative paths (`/foo.js`, `url(/bg.png)`) resolve naturally with no URL rewriting.
 
 ---
 
@@ -185,9 +197,9 @@ Right-click on pages for context-sensitive actions:
 
 ### Request Rewriting
 
-- **Automatic Path Rewriting**: Absolute paths in decentralized content (e.g., `/images/logo.png`) are automatically rewritten to stay within the current hash/CID.
-- **Cross-Protocol Support**: Works for both Swarm (`/bzz/`) and IPFS (`/ipfs/`, `/ipns/`) content.
+- **Automatic Path Rewriting**: Absolute paths in decentralized content (e.g., `/images/logo.png`) are automatically rewritten to stay within the current hash/CID for IPFS (`/ipfs/`, `/ipns/`) and Radicle (`/api/v1/repos/`) content.
 - **Per-Tab Tracking**: Each tab tracks its own content base for correct path resolution.
+- **Swarm (`bzz://`)**: Handled by a custom protocol handler rather than gateway rewriting — see [Swarm Content Retrieval](#swarm-content-retrieval).
 
 ### Debug Console
 

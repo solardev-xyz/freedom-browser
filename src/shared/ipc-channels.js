@@ -47,6 +47,9 @@ module.exports = {
   // Bzz routing (Swarm)
   BZZ_SET_BASE: 'bzz:set-base',
   BZZ_CLEAR_BASE: 'bzz:clear-base',
+  BZZ_START_PROBE: 'bzz:start-probe',
+  BZZ_AWAIT_PROBE: 'bzz:await-probe',
+  BZZ_CANCEL_PROBE: 'bzz:cancel-probe',
 
   // IPFS routing
   IPFS_SET_BASE: 'ipfs:set-base',

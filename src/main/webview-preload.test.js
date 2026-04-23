@@ -44,12 +44,16 @@ function loadWebviewPreloadModule(options = {}) {
   ipcRenderer.sendToHost = jest.fn();
 
   const documentHandlers = {};
+  const documentCaptureHandlers = {};
   const body = { tagName: 'BODY' };
   const document = {
     title: options.title || 'Internal Page',
     body,
-    addEventListener: jest.fn((event, handler) => {
+    addEventListener: jest.fn((event, handler, useCapture) => {
       documentHandlers[event] = handler;
+      if (useCapture === true) {
+        documentCaptureHandlers[event] = handler;
+      }
     }),
     execCommand: jest.fn(),
   };
@@ -67,10 +71,12 @@ function loadWebviewPreloadModule(options = {}) {
   };
 
   global.document = document;
+  const windowFetch = options.fetch || jest.fn();
   global.window = {
     location,
     getSelection: jest.fn(() => selection),
     addEventListener: jest.fn(),
+    fetch: windowFetch,
   };
   global.location = location;
   global.navigator = {
@@ -89,9 +95,12 @@ function loadWebviewPreloadModule(options = {}) {
     contextBridge,
     document,
     documentHandlers,
+    documentCaptureHandlers,
     exposures: contextBridge.exposedValues,
     ipcRenderer,
     location,
+    windowFetch,
+    getWindowFetch: () => global.window.fetch,
   };
 }
 
@@ -342,4 +351,5 @@ describe('webview-preload', () => {
     await flushMicrotasks();
     expect(consoleErrorSpy).toHaveBeenCalledWith(expect.any(Error));
   });
+
 });

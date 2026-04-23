@@ -2,6 +2,13 @@
 
 All notable changes to Freedom will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- Navigating to a Swarm address (`bzz://` or ENS-resolved) now keeps the tab's loading spinner running while the Bee node looks up the content, instead of showing Bee's raw `{"code":404,"message":"address not found or incorrect"}` JSON while peers are still syncing. If the lookup times out we land on a friendlier "Content not ready yet" page; if the Bee HTTP API itself is unreachable we route to the existing "Swarm node is not running" error page. When the destination was an ENS name (e.g. `swarm.eth`), the error page and address bar show the original `ens://…` name rather than the resolved hash.
+- Images, stylesheets, scripts and other sub-resources on a Swarm page now silently retry when Bee transiently returns 404/500 or refuses the connection during peer warmup, so the page no longer renders with broken images and missing styles on a cold node. Per-resource retries use an exponential backoff (500ms → 30s, ~3 min total) and also cover `fetch()`-issued requests.
+
 ## [0.7.0] - 2026-04-19
 
 ### Added

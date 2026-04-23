@@ -52,6 +52,54 @@ import { formatWeiToDecimal } from './wallet/send.js';
 // Helper to get active tab's navigation state (with fallback to empty object)
 const getNavState = () => getActiveTabState() || {};
 
+// Extract the bzz reference (64- or 128-char hex) from a Bee gateway URL.
+const extractBzzHash = (gatewayUrl) => {
+  const match = /\/bzz\/([a-fA-F0-9]{64}(?:[a-fA-F0-9]{64})?)/.exec(gatewayUrl || '');
+  return match ? match[1] : null;
+};
+
+// Convert a Bee gateway URL (http://127.0.0.1:1633/bzz/<hash>/path?q#h) into
+// the `bzz://<hash>/path?q#h` form that Chromium routes through the custom
+// protocol handler. Falls back to the gateway URL if the shape doesn't match.
+const gatewayUrlToBzzUrl = (gatewayUrl) => {
+  try {
+    const parsed = new URL(gatewayUrl);
+    const match = /^\/bzz\/([a-fA-F0-9]{64}(?:[a-fA-F0-9]{64})?)(\/.*)?$/.exec(parsed.pathname);
+    if (!match) return gatewayUrl;
+    const [, hash, tail] = match;
+    const path = tail || '/';
+    return `bzz://${hash}${path}${parsed.search}${parsed.hash}`;
+  } catch {
+    return gatewayUrl;
+  }
+};
+
+// Build a file:// URL for error.html. `targetUrl` is the user-facing URL
+// shown in the address bar and on the page. `extras` can include:
+//   - protocol: explicit protocol hint ('swarm' | 'ipfs' | 'ipns')
+//   - retry: URL the in-page "Try Again" button should navigate to. Should
+//     always be a scheme Chromium can load (bzz://, http(s)://, …). If the
+//     display URL is an unregistered scheme like ens://, pass a gateway URL
+//     or a bzz://<hash> URL here so the in-page retry doesn't fail.
+const buildErrorPageUrl = (errorCode, targetUrl, extras = {}) => {
+  const errorUrl = new URL('pages/error.html', window.location.href);
+  errorUrl.searchParams.set('error', errorCode);
+  errorUrl.searchParams.set('url', targetUrl || '');
+  if (extras.protocol) errorUrl.searchParams.set('protocol', extras.protocol);
+  if (extras.retry) errorUrl.searchParams.set('retry', extras.retry);
+  return errorUrl.toString();
+};
+
+// Cancel any pending Swarm content probe on the given navState and clear it.
+const cancelPendingSwarmProbe = (navState) => {
+  if (!navState?.pendingSwarmProbeId) return;
+  const probeId = navState.pendingSwarmProbeId;
+  navState.pendingSwarmProbeId = null;
+  electronAPI?.cancelSwarmProbe?.(probeId).catch((err) => {
+    pushDebug(`[Swarm] cancelSwarmProbe failed: ${err?.message || err}`);
+  });
+};
+
 const electronAPI = window.electronAPI;
 const RADICLE_DISABLED_MESSAGE =
   'Radicle integration is disabled. Enable it in Settings > Experimental';
@@ -280,6 +328,113 @@ const handleEthereumUri = (value) => {
   }
 };
 
+/**
+ * Gate a bzz:// navigation on the main-process content probe. Keeps the tab
+ * spinner running while the Bee node is still connecting to peers, then loads
+ * the webview once the content is retrievable. On bee unreachable / timeout
+ * we route to the existing error page.
+ *
+ * `displayUrl` is the user-facing URL (e.g. `ens://swarm.eth` or
+ * `bzz://<hash>`) that appears in the address bar, and is what we want the
+ * error page to surface — not the internal Bee gateway URL.
+ */
+const startBzzNavigationWithProbe = (webview, target, navState, displayUrl) => {
+  const gatewayUrl = target.targetUrl;
+  const hash = extractBzzHash(gatewayUrl);
+  const errorDisplayUrl = displayUrl || target.displayValue || gatewayUrl;
+
+  if (!hash || !electronAPI?.startSwarmProbe) {
+    // No hash or no probe support — fall back to the pre-existing behaviour.
+    webview.loadURL(gatewayUrl);
+    pushDebug(`Loading ${target.displayValue} via ${gatewayUrl} (no probe)`);
+    return;
+  }
+
+  // Cancel any earlier Swarm probe still in flight for this tab.
+  cancelPendingSwarmProbe(navState);
+
+  setLoading(true);
+  navState.isWebviewLoading = true;
+  reloadBtn.dataset.state = 'stop';
+  pushDebug(`[Swarm] Probing ${gatewayUrl} before navigating`);
+
+  electronAPI
+    .startSwarmProbe(hash)
+    .then((startResult) => {
+      if (!startResult || startResult.success === false) {
+        const message = startResult?.error?.message || 'failed to start probe';
+        throw new Error(message);
+      }
+      const probeId = startResult.id;
+      navState.pendingSwarmProbeId = probeId;
+      return electronAPI.awaitSwarmProbe(probeId).then((awaitResult) => ({
+        probeId,
+        awaitResult,
+      }));
+    })
+    .then(({ probeId, awaitResult }) => {
+      // Guard: another navigation may have started a different probe in the
+      // meantime. If our probe id no longer matches, ignore the result.
+      if (navState.pendingSwarmProbeId !== probeId) {
+        pushDebug(`[Swarm] Probe ${probeId} superseded — discarding result`);
+        return;
+      }
+      navState.pendingSwarmProbeId = null;
+
+      const errorExtras = { protocol: 'swarm', retry: `bzz://${hash}` };
+
+      if (!awaitResult || awaitResult.success === false) {
+        const message = awaitResult?.error?.message || 'failed to await probe';
+        pushDebug(`[Swarm] Probe await failed: ${message}`);
+        webview.loadURL(
+          buildErrorPageUrl('swarm_content_not_found', errorDisplayUrl, errorExtras)
+        );
+        return;
+      }
+
+      const outcome = awaitResult.outcome || { ok: false, reason: 'other' };
+      if (outcome.ok) {
+        // Navigate via the custom `bzz:` scheme so sub-resource fetches go
+        // through the main-process protocol handler (retries, redundancy
+        // headers, streaming Range support). See README "Swarm Content
+        // Retrieval". The handler ultimately proxies to the same gateway.
+        const bzzUrl = gatewayUrlToBzzUrl(gatewayUrl);
+        pushDebug(`[Swarm] Probe ok — loading ${bzzUrl}`);
+        webview.loadURL(bzzUrl);
+        return;
+      }
+
+      if (outcome.reason === 'aborted') {
+        // Cancelled by the user (stop button / next navigation). Nothing to do.
+        pushDebug('[Swarm] Probe aborted');
+        return;
+      }
+
+      if (outcome.reason === 'bee_unreachable') {
+        pushDebug('[Swarm] Probe: Bee unreachable');
+        webview.loadURL(
+          buildErrorPageUrl('ERR_CONNECTION_REFUSED', errorDisplayUrl, errorExtras)
+        );
+        return;
+      }
+
+      pushDebug(`[Swarm] Probe failed (${outcome.reason}) — showing error page`);
+      webview.loadURL(
+        buildErrorPageUrl('swarm_content_not_found', errorDisplayUrl, errorExtras)
+      );
+    })
+    .catch((err) => {
+      pushDebug(`[Swarm] Probe error: ${err?.message || err}`);
+      navState.pendingSwarmProbeId = null;
+      webview.loadURL(
+        buildErrorPageUrl('swarm_content_not_found', errorDisplayUrl, {
+          protocol: 'swarm',
+          retry: `bzz://${hash}`,
+        })
+      );
+    });
+};
+
 export const loadTarget = (value, displayOverride = null, targetWebview = null) => {
   // Use provided webview or fall back to active webview
   const webview = targetWebview || getActiveWebview();
@@ -288,6 +443,12 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null) 
     pushDebug('No active webview to load target');
     return;
   }
+
+  // A new navigation invalidates any still-pending Swarm content probe for
+  // this tab: either a new bzz probe will start below, or the user is
+  // leaving Swarm entirely, in which case we don't want the old probe to
+  // eventually navigate the webview to a now-stale bzz URL.
+  cancelPendingSwarmProbe(navState);
 
   // Handle view-source: URLs - need to resolve dweb URLs before loading
   if (value.startsWith('view-source:')) {
@@ -520,16 +681,20 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null) 
       const hashMatch = target.displayValue.match(/^bzz:\/\/([a-fA-F0-9]+)/);
       if (hashMatch) state.knownEnsNames.delete(hashMatch[1].toLowerCase());
     }
-    addressInput.value = displayOverride || target.displayValue;
+    const displayValue = displayOverride || target.displayValue;
+    addressInput.value = displayValue;
     pushDebug(`[AddressBar] Loading target, set to: ${addressInput.value}`);
     navState.pendingTitleForUrl = target.targetUrl;
     navState.pendingNavigationUrl = target.targetUrl;
     navState.hasNavigatedDuringCurrentLoad = false;
-    webview.loadURL(target.targetUrl);
-    pushDebug(`Loading ${target.displayValue} via ${target.targetUrl}`);
     syncBzzBase(target.baseUrl || null);
     syncIpfsBase(null); // Clear ipfs base when loading bzz
     syncRadBase(null); // Clear rad base when loading bzz
+
+    // Probe the Bee gateway first so the tab spinner stays active while the
+    // node's peer set warms up; only load the webview once the content is
+    // actually retrievable (or bail to the error page).
+    startBzzNavigationWithProbe(webview, target, navState, displayValue);
     return;
   }
 
@@ -556,6 +721,7 @@ const stopLoadingAndRestore = () => {
   if (!navState.isWebviewLoading) {
     return false;
   }
+  cancelPendingSwarmProbe(navState);
   const webview = getActiveWebview();
   if (webview) {
     webview.stop();
