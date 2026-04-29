@@ -38,16 +38,6 @@ const IPFS_CONTENTHASH_RE =
   /^0x(?<codecPrefix>e3010170|e5010172)(?<multihash>(?<mhCode>[0-9a-f]{2})(?<mhLen>[0-9a-f]{2})(?<digest>[0-9a-f]*))$/;
 const SWARM_CONTENTHASH_RE = /^0xe40101fa011b20(?<swarmHash>[0-9a-f]{64})$/;
 
-// Public RPC providers as fallbacks
-const PUBLIC_RPC_PROVIDERS = [
-  process.env.ETH_RPC,
-  'https://ethereum.publicnode.com',
-  'https://1rpc.io/eth',
-  'https://eth.drpc.org',
-  'https://eth-mainnet.public.blastapi.io',
-  'https://eth.merkle.io',
-].filter(Boolean);
-
 // Read effective custom RPC URL from settings (empty string = disabled/unset)
 function getCustomRpcUrl() {
   try {
@@ -59,13 +49,14 @@ function getCustomRpcUrl() {
   }
 }
 
-// Build the effective provider list: custom RPC first (if set), then public fallbacks
+// Build the effective provider list for the legacy single-source path
+// (reverse resolution). Sources from the same user-configured list the
+// quorum path uses, so a provider the user removed in settings is also
+// excluded here.
 function getRpcProviders() {
   const custom = getCustomRpcUrl();
-  if (custom) {
-    return [custom, ...PUBLIC_RPC_PROVIDERS];
-  }
-  return PUBLIC_RPC_PROVIDERS;
+  const publicList = getEffectivePublicProviders();
+  return custom ? [custom, ...publicList] : publicList;
 }
 
 // ---------------------------------------------------------------------------
@@ -507,16 +498,26 @@ async function getWorkingProvider() {
   throw new Error('All RPC providers failed. Check your network connection.');
 }
 
-// Invalidate cached provider (legacy path) AND the shuffled/quarantine pool
-// used by consensusResolve. Tests call this between cases; production callers
-// invoke it after settings edits so a re-tested RPC gets a fresh chance.
-function invalidateCachedProvider() {
+// Drop the cached single-provider used by getWorkingProvider. Cheap reset
+// for the legacy retry loop — keeps quorum-path state (shuffled order,
+// quarantine memory, pinned block anchor) intact, so a transient flake
+// during reverse resolution doesn't make the next quorum wave pay an
+// extra anchor RTT.
+function dropCachedProvider() {
   if (cachedProvider) {
     log.info(`[ens] Invalidating cached provider: ${cachedProviderUrl}`);
     cachedProvider.destroy();
     cachedProvider = null;
     cachedProviderUrl = null;
   }
+}
+
+// Full reset: drop the legacy cached provider AND wipe the quorum pool
+// (shuffled order, quarantine, pinned block). External callers use this
+// after a settings edit so a re-tested RPC gets a fresh chance; tests
+// call it between cases for a clean slate.
+function invalidateCachedProvider() {
+  dropCachedProvider();
   invalidateProviderPool();
 }
 
@@ -1270,7 +1271,7 @@ async function resolveWithCache(name, cache, doResolve, label) {
           log.warn(
             `[ens] ${label} provider error on attempt ${attempt}/${MAX_RESOLUTION_RETRIES}: ${err.message}`
           );
-          invalidateCachedProvider();
+          dropCachedProvider();
           continue;
         }
         throw err;
