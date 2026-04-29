@@ -19,6 +19,7 @@ jest.mock('./logger', () => ({
   info: jest.fn(),
   warn: jest.fn(),
   error: jest.fn(),
+  debug: jest.fn(),
 }));
 
 const { prefetchGatewayUrl, PREFETCH_TIMEOUT_MS } = require('./ens-prefetch');

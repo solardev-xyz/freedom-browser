@@ -48,7 +48,7 @@ function prefetchGatewayUrl(uri) {
     const abort = () => {
       if (aborted) return;
       aborted = true;
-      log.info(`[ens-prefetch] aborted ${sanitizeUrlForLog(url)}`);
+      log.debug(`[ens-prefetch] aborted ${sanitizeUrlForLog(url)}`);
       cleanup();
     };
 
@@ -69,14 +69,14 @@ function prefetchGatewayUrl(uri) {
       response.on('error', markFinished);
     });
     request.on('error', (err) => {
-      log.info(`[ens-prefetch] ${sanitizeUrlForLog(url)} — ${err.message}`);
+      log.debug(`[ens-prefetch] ${sanitizeUrlForLog(url)} — ${err.message}`);
       markFinished();
     });
     request.end();
 
     timer = setTimeout(() => {
       if (!aborted) {
-        log.info(`[ens-prefetch] timeout ${sanitizeUrlForLog(url)}`);
+        log.debug(`[ens-prefetch] timeout ${sanitizeUrlForLog(url)}`);
         abort();
       }
     }, PREFETCH_TIMEOUT_MS);
