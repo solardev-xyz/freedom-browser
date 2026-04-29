@@ -114,9 +114,10 @@ contextBridge.exposeInMainWorld('freedomAPI', {
 
   // Signals from ENS interstitial pages back to the address-bar shell.
   // Uses sendToHost because the shell is the webview's parent frame, not
-  // the main process — shorter, avoids a main round-trip. Channel names
-  // mirror ENS_CONTINUE_UNVERIFIED / ENS_OPEN_SETTINGS in ipc-channels.js
-  // (kept hardcoded here because preload's sandbox blocks relative require).
+  // the main process — shorter, avoids a main round-trip. Both sides of
+  // this channel are renderer code; preload's sandbox blocks relative
+  // require, and navigation.js is ESM and can't import the CommonJS
+  // shared module — strings are kept hardcoded on both ends.
   ensContinueUnverified: guardInternal('ensContinueUnverified', (name) => {
     ipcRenderer.sendToHost('ens:continue-unverified', { name });
   }),

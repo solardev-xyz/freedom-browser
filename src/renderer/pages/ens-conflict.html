@@ -4,46 +4,12 @@
     <meta charset="UTF-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src data:;"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src data:;"
     />
     <title>RPC servers disagreed</title>
     <link rel="stylesheet" href="styles/interstitial.css" />
-    <style>
-      h1 { color: #ff5e5e; }
-      @media (prefers-color-scheme: light) { h1 { color: #cf222e; } }
-      .groups {
-        display: flex;
-        flex-direction: column;
-        gap: 12px;
-        margin-bottom: 24px;
-      }
-      .group {
-        background: #1a1a1a;
-        border: 1px solid #2c2c2c;
-        border-radius: 8px;
-        padding: 12px 16px;
-      }
-      .group-hosts {
-        font-family: monospace;
-        font-size: 12px;
-        color: #8fbcff;
-        margin-bottom: 4px;
-      }
-      .group-value {
-        font-family: monospace;
-        font-size: 13px;
-        color: #ccc;
-        word-break: break-all;
-      }
-      .group-reason { color: #d7a77c; }
-      @media (prefers-color-scheme: light) {
-        .group { background: #f6f8fa; border-color: #d0d7de; }
-        .group-value { color: #57606a; }
-        .group-hosts { color: #0969da; }
-      }
-    </style>
   </head>
-  <body>
+  <body class="conflict">
     <div class="container">
       <h1>
         <svg class="shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -74,8 +40,6 @@
         If you trust one of the answers above and want to proceed anyway, configure that server as
         your custom RPC in settings. The browser will trust it as a single source and skip the
         cross-check.
-        <br /><br />
-        <a href="https://docs.freedombrowser.eth" target="_blank">Learn more about RPC verification →</a>
       </p>
     </div>
     <script src="scripts/ens-conflict.js"></script>

@@ -4,16 +4,12 @@
     <meta charset="UTF-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src data:;"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src data:;"
     />
     <title>ENS resolution not cross-checked</title>
     <link rel="stylesheet" href="styles/interstitial.css" />
-    <style>
-      h1 { color: #d7a77c; }
-      @media (prefers-color-scheme: light) { h1 { color: #9a6700; } }
-    </style>
   </head>
-  <body>
+  <body class="unverified">
     <div class="container">
       <h1>
         <svg class="shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -44,8 +40,6 @@
         You can disable this warning globally in Settings (not recommended on public Wi-Fi).
         Running your own Ethereum node as a custom RPC is the strongest option — your own node
         becomes the single trusted source and this warning stops appearing.
-        <br /><br />
-        <a href="https://docs.freedombrowser.eth" target="_blank">Learn more about RPC verification →</a>
       </p>
     </div>
     <script src="scripts/ens-unverified.js"></script>
