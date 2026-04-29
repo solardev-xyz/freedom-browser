@@ -1543,6 +1543,139 @@ describe('ens-resolver', () => {
     });
   });
 
+  describe('second-wave escalation on unverified', () => {
+    const IPFS_HASH = 'QmW81r84Aihiqqi2Jw6nM1LnpeMfRCenRxtjwHNkXVkZYa';
+    const ALT_HASH = 'QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG';
+
+    function fivePoolWithDeterministicOrder(extraSettings = {}) {
+      const fiveProviders = [
+        ...TEST_PROVIDERS,
+        'https://test-d.example.com',
+        'https://test-e.example.com',
+      ];
+      mockLoadSettings.mockReturnValue({
+        enableEnsCustomRpc: false,
+        ensRpcUrl: '',
+        enableEnsQuorum: true,
+        ensQuorumK: 3,
+        ensQuorumM: 2,
+        ensQuorumTimeoutMs: 5000,
+        ensBlockAnchor: 'latest',
+        ensBlockAnchorTtlMs: 30000,
+        ensPublicRpcProviders: fiveProviders,
+        ...extraSettings,
+      });
+      // Disable shuffle so firstSelection is the first 3 providers and
+      // remaining is the last 2 — deterministic for test assertions.
+      const origRandom = Math.random;
+      Math.random = () => 0.999;
+      invalidateCachedProvider();
+      return { fiveProviders, restore: () => { Math.random = origRandom; } };
+    }
+
+    test('1 data + 2 errors → escalates and reaches verified via fresh providers', async () => {
+      const { restore } = fivePoolWithDeterministicOrder();
+      try {
+        const flakyErr = Object.assign(new Error('ECONNREFUSED'), { code: 'NETWORK_ERROR' });
+        const goodPayload = urReturnsBytes(ipfsContenthashFor(IPFS_HASH));
+        routeByProvider(new Map([
+          [TEST_PROVIDERS[0], { kind: 'data', payload: goodPayload }],
+          [TEST_PROVIDERS[1], { kind: 'reject', payload: flakyErr }],
+          [TEST_PROVIDERS[2], { kind: 'reject', payload: flakyErr }],
+          ['https://test-d.example.com', { kind: 'data', payload: goodPayload }],
+          ['https://test-e.example.com', { kind: 'data', payload: goodPayload }],
+        ]));
+
+        const result = await resolveEnsContent('flaky-network-upgrade.eth');
+
+        expect(result.type).toBe('ok');
+        expect(result.trust.level).toBe('verified');
+        // Trust metadata reflects the second wave that actually agreed.
+        expect(result.trust.queried).toEqual([
+          'test-d.example.com',
+          'test-e.example.com',
+        ]);
+      } finally {
+        restore();
+      }
+    });
+
+    test('1 data + 2 errors with too few fresh providers → no escalation, stays unverified', async () => {
+      // 4-provider pool: first wave runs against 3, leaving only 1
+      // fresh provider — below effectiveM=2, so escalation must not run.
+      const fourProviders = [
+        ...TEST_PROVIDERS,
+        'https://test-d.example.com',
+      ];
+      mockLoadSettings.mockReturnValue({
+        enableEnsCustomRpc: false,
+        ensRpcUrl: '',
+        enableEnsQuorum: true,
+        ensQuorumK: 3,
+        ensQuorumM: 2,
+        ensQuorumTimeoutMs: 5000,
+        ensBlockAnchor: 'latest',
+        ensBlockAnchorTtlMs: 30000,
+        ensPublicRpcProviders: fourProviders,
+      });
+      const origRandom = Math.random;
+      Math.random = () => 0.999;
+      try {
+        invalidateCachedProvider();
+        const flakyErr = Object.assign(new Error('ECONNREFUSED'), { code: 'NETWORK_ERROR' });
+        const goodPayload = urReturnsBytes(ipfsContenthashFor(IPFS_HASH));
+        routeByProvider(new Map([
+          [TEST_PROVIDERS[0], { kind: 'data', payload: goodPayload }],
+          [TEST_PROVIDERS[1], { kind: 'reject', payload: flakyErr }],
+          [TEST_PROVIDERS[2], { kind: 'reject', payload: flakyErr }],
+          // Even though this provider would have agreed, the guard
+          // prevents a second wave from running against it alone.
+          ['https://test-d.example.com', { kind: 'data', payload: goodPayload }],
+        ]));
+
+        const result = await resolveEnsContent('insufficient-remaining.eth');
+
+        expect(result.type).toBe('ok');
+        expect(result.trust.level).toBe('unverified');
+      } finally {
+        Math.random = origRandom;
+      }
+    });
+
+    test('second wave also unverified → keep first-wave evidence (no downgrade)', async () => {
+      const { restore } = fivePoolWithDeterministicOrder();
+      try {
+        const flakyErr = Object.assign(new Error('ECONNREFUSED'), { code: 'NETWORK_ERROR' });
+        const firstPayload = urReturnsBytes(ipfsContenthashFor(IPFS_HASH));
+        const altPayload = urReturnsBytes(ipfsContenthashFor(ALT_HASH));
+        routeByProvider(new Map([
+          // First wave: 1 data + 2 errors → unverified_data with IPFS_HASH.
+          [TEST_PROVIDERS[0], { kind: 'data', payload: firstPayload }],
+          [TEST_PROVIDERS[1], { kind: 'reject', payload: flakyErr }],
+          [TEST_PROVIDERS[2], { kind: 'reject', payload: flakyErr }],
+          // Second wave: 1 data (different hash) + 1 error → unverified
+          // again. Replacing first wave with this would downgrade the
+          // single piece of evidence we already had.
+          ['https://test-d.example.com', { kind: 'data', payload: altPayload }],
+          ['https://test-e.example.com', { kind: 'reject', payload: flakyErr }],
+        ]));
+
+        const result = await resolveEnsContent('second-wave-no-quorum.eth');
+
+        expect(result.type).toBe('ok');
+        expect(result.trust.level).toBe('unverified');
+        // First-wave provider's bytes are preserved.
+        expect(result.trust.queried).toEqual([
+          'test-a.example.com',
+          'test-b.example.com',
+          'test-c.example.com',
+        ]);
+      } finally {
+        restore();
+      }
+    });
+  });
+
   describe('speculative gateway prefetch', () => {
     const IPFS_HASH = 'QmW81r84Aihiqqi2Jw6nM1LnpeMfRCenRxtjwHNkXVkZYa';
 

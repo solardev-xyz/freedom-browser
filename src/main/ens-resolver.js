@@ -990,16 +990,30 @@ async function consensusResolve(normalizedName, callData, kind = 'content', opti
     onFirstData: options.onFirstData,
   });
 
-  // All-errored first wave → escalate once to remaining non-quarantined providers.
+  // First-wave settled without agreement → escalate once to remaining
+  // non-quarantined providers when they could plausibly do better.
+  //   - all_errored: any fresh response is an upgrade from "no evidence."
+  //   - unverified_data / unverified_not_found: replace ONLY if the second
+  //     wave actually reaches quorum. If the second wave also fails to
+  //     agree, the first wave's single data point is still our best
+  //     evidence; trading it for second-wave noise would be a downgrade.
   if (wave.outcome.kind === 'all_settled') {
     const verdict = classifyNoAgreement(wave);
-    if (verdict.kind === 'all_errored') {
+    const upgradable =
+      verdict.kind === 'all_errored' ||
+      verdict.kind === 'unverified_data' ||
+      verdict.kind === 'unverified_not_found';
+    if (upgradable) {
       const remaining = getAvailableProviders().filter((u) => !firstSelection.includes(u));
-      if (remaining.length > 0) {
+      // Unverified upgrades require enough fresh providers for the second
+      // wave alone to clear the quorum threshold; otherwise the escalation
+      // can only ever produce more unverified evidence.
+      const minRemaining = verdict.kind === 'all_errored' ? 1 : effectiveM;
+      if (remaining.length >= minRemaining) {
         const secondK = Math.min(desiredK, remaining.length);
         const secondSelection = remaining.slice(0, secondK);
         log.info(`[ens] consensus escalating to second wave providers=[${secondSelection.map(hostOf).join(',')}]`);
-        wave = await runConsensusWave({
+        const secondWave = await runConsensusWave({
           providers: secondSelection,
           name: normalizedName,
           callData,
@@ -1008,6 +1022,12 @@ async function consensusResolve(normalizedName, callData, kind = 'content', opti
           m: Math.min(desiredM, secondK),
           onFirstData: options.onFirstData,
         });
+        const secondAgreed =
+          secondWave.outcome.kind === 'agreed_data' ||
+          secondWave.outcome.kind === 'agreed_not_found';
+        if (verdict.kind === 'all_errored' || secondAgreed) {
+          wave = secondWave;
+        }
       }
     }
   }
@@ -1090,6 +1110,15 @@ async function resolveEnsContent(name) {
 
 // Decodes the UR's ABI-encoded return, parses the multicodec content hash,
 // and kicks off a gateway prefetch for bzz:// / ipfs:// (never ipns://).
+//
+// Caveat: prefetch fires on the FIRST responder's bytes, not the agreed
+// bytes. If the first responder is a lying RPC and the eventual quorum
+// outcome is `agreed_data` on different bytes (or `conflict`/unverified),
+// the warmed gateway entry is for content the renderer will never load.
+// That's bandwidth, not a trust hole — the gateway is content-addressed,
+// so a wrong-bytes warm doesn't poison the verified path. The "200–500ms
+// saving" assumes an honest first responder; under attack the optimization
+// degrades to a no-op (and may waste a small amount of gateway traffic).
 function prefetchOnFirstData(resolvedData) {
   try {
     const [inner] = ethers.AbiCoder.defaultAbiCoder().decode(['bytes'], resolvedData);
