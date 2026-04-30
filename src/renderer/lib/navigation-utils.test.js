@@ -81,6 +81,80 @@ describe('navigation-utils', () => {
     });
   });
 
+  describe('resolveTrustBadge', () => {
+    const verifiedTrust = { level: 'verified', agreed: ['a', 'b'], queried: ['a', 'b', 'c'] };
+    const conflictTrust = { level: 'conflict', agreed: [], dissented: ['a', 'b'] };
+
+    test('returns null for non-ENS URLs', async () => {
+      const { resolveTrustBadge } = await loadNavigationUtils();
+      const ensTrustByName = new Map([['vitalik.eth', verifiedTrust]]);
+
+      expect(resolveTrustBadge({ value: 'https://example.com', ensTrustByName })).toBeNull();
+      expect(resolveTrustBadge({ value: 'bzz://hash', ensTrustByName })).toBeNull();
+      expect(resolveTrustBadge({ value: 'freedom://history', ensTrustByName })).toBeNull();
+      expect(resolveTrustBadge({ value: '', ensTrustByName })).toBeNull();
+    });
+
+    test('returns null when the ENS name has no trust entry', async () => {
+      const { resolveTrustBadge } = await loadNavigationUtils();
+      const ensTrustByName = new Map([['other.eth', verifiedTrust]]);
+
+      expect(resolveTrustBadge({ value: 'ens://vitalik.eth', ensTrustByName })).toBeNull();
+    });
+
+    test('returns badge for ens:// URLs with trust entry', async () => {
+      const { resolveTrustBadge } = await loadNavigationUtils();
+      const ensTrustByName = new Map([['vitalik.eth', verifiedTrust]]);
+
+      const badge = resolveTrustBadge({ value: 'ens://vitalik.eth', ensTrustByName });
+
+      expect(badge).toEqual({
+        level: 'verified',
+        name: 'vitalik.eth',
+        trust: verifiedTrust,
+      });
+    });
+
+    test('returns badge for bare .eth and .box URLs', async () => {
+      const { resolveTrustBadge } = await loadNavigationUtils();
+      const ensTrustByName = new Map([
+        ['vitalik.eth', verifiedTrust],
+        ['example.box', conflictTrust],
+      ]);
+
+      expect(resolveTrustBadge({ value: 'vitalik.eth', ensTrustByName }).level).toBe('verified');
+      expect(resolveTrustBadge({ value: 'example.box', ensTrustByName }).level).toBe('conflict');
+    });
+
+    test('strips path and is case-insensitive', async () => {
+      const { resolveTrustBadge } = await loadNavigationUtils();
+      const ensTrustByName = new Map([['vitalik.eth', verifiedTrust]]);
+
+      expect(resolveTrustBadge({ value: 'ens://vitalik.eth/profile', ensTrustByName }).level).toBe(
+        'verified'
+      );
+      expect(resolveTrustBadge({ value: 'VITALIK.ETH', ensTrustByName }).level).toBe('verified');
+      expect(resolveTrustBadge({ value: 'ENS://Vitalik.ETH/x', ensTrustByName }).level).toBe(
+        'verified'
+      );
+    });
+
+    test('tolerates missing / empty arguments', async () => {
+      const { resolveTrustBadge } = await loadNavigationUtils();
+
+      expect(resolveTrustBadge()).toBeNull();
+      expect(resolveTrustBadge({})).toBeNull();
+      expect(resolveTrustBadge({ value: 'ens://x.eth' })).toBeNull();
+    });
+
+    test('returns null when trust has no level (defensive)', async () => {
+      const { resolveTrustBadge } = await loadNavigationUtils();
+      const ensTrustByName = new Map([['vitalik.eth', { agreed: ['a'] }]]);
+
+      expect(resolveTrustBadge({ value: 'ens://vitalik.eth', ensTrustByName })).toBeNull();
+    });
+  });
+
   describe('getRadicleDisplayUrl', () => {
     test('reconstructs rad urls from rad-browser pages', async () => {
       const { getRadicleDisplayUrl } = await loadNavigationUtils();

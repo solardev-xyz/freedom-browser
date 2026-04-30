@@ -14,6 +14,7 @@ import {
   getOriginalUrlFromErrorPage,
   getRadicleDisplayUrl,
   resolveProtocolIconType,
+  resolveTrustBadge,
 } from './navigation-utils.js';
 import {
   formatBzzUrl,
@@ -43,6 +44,7 @@ import {
   isHistoryRecordable,
   getInternalPageName,
   parseEnsInput,
+  buildInternalPageUrl,
 } from './page-urls.js';
 import { parseEthereumUri } from './ethereum-uri.js';
 import { openSendFlow } from './wallet-ui.js';
@@ -122,6 +124,8 @@ let reloadBtn = null;
 let homeBtn = null;
 let bookmarksBar = null;
 let protocolIcon = null;
+let trustShield = null;
+let trustPopover = null;
 
 // Bookmark bar toggle state: true = always show, false = hide on non-home pages (default)
 let bookmarkBarOverride = false;
@@ -164,23 +168,151 @@ const storeEnsResolutionMetadata = (targetUri, ensName, { trackProtocol = true }
 // Track certificate status for current page
 let currentPageSecure = false;
 
-// Update protocol icon based on address bar value
-const updateProtocolIcon = () => {
-  if (!protocolIcon) return;
+// Copy map for the trust popover — each level gets a short, user-facing
+// sentence. Phrased as cross-check language ("RPCs agreed") rather than
+// "trusted" / "safe", per the threat model discussion.
+const TRUST_SUMMARY = {
+  verified: (trust) => {
+    const agreed = (trust.agreed || []).length;
+    return agreed > 0
+      ? `Verified: quorum reached with ${agreed} matching public RPC responses.`
+      : 'Verified.';
+  },
+  'user-configured': () => 'Resolved via your configured RPC. Single source — no cross-check performed.',
+  unverified: () => 'Only one RPC answered in time. The browser could not cross-check this resolution.',
+  conflict: () => 'RPC servers disagreed. Navigation was blocked.',
+};
 
-  const protocol = resolveProtocolIconType({
+// Screen-reader label for the shield button, keyed on trust level. Updated
+// alongside the data-trust attribute so assistive tech announces the state.
+const TRUST_ARIA_LABEL = {
+  verified: 'ENS resolution trust: verified',
+  'user-configured': 'ENS resolution trust: user-configured',
+  unverified: 'ENS resolution trust: unverified',
+  conflict: 'ENS resolution trust: conflict',
+};
+
+// Build display text for the popover. The resolver's trust shape has
+// `agreed` and `queried` hostname arrays; we surface counts in the summary
+// and full lists in the sections below.
+const setTrustPopoverOpen = (open) => {
+  if (!trustPopover || !trustShield) return;
+  trustPopover.hidden = !open;
+  trustShield.setAttribute('aria-expanded', open ? 'true' : 'false');
+};
+
+const toggleTrustPopover = () => {
+  if (!trustPopover || !trustShield) return;
+  if (!trustPopover.hidden) {
+    setTrustPopoverOpen(false);
+    return;
+  }
+
+  const badge = resolveTrustBadge({
     value: addressInput?.value || '',
-    ensProtocols: state.ensProtocols,
-    enableRadicleIntegration: state.enableRadicleIntegration,
-    currentPageSecure,
+    ensTrustByName: state.ensTrustByName,
   });
+  if (!badge) return;
 
-  if (protocol) {
-    protocolIcon.setAttribute('data-protocol', protocol);
-    protocolIcon.classList.add('visible');
-  } else {
-    protocolIcon.removeAttribute('data-protocol');
-    protocolIcon.classList.remove('visible');
+  const { trust, name, level } = badge;
+  trustPopover.setAttribute('data-trust', level);
+
+  const title = document.getElementById('trust-popover-title');
+  const subtitle = document.getElementById('trust-popover-subtitle');
+  const summary = document.getElementById('trust-popover-summary');
+  const blockEl = document.getElementById('trust-popover-block');
+  const agreedEl = document.getElementById('trust-popover-agreed');
+  const dissentedEl = document.getElementById('trust-popover-dissented');
+  const dissentedSection = document.getElementById('trust-popover-dissented-section');
+  const agreedSection = document.getElementById('trust-popover-agreed-section');
+
+  if (title) title.textContent = name;
+  if (subtitle) {
+    // Full resolved URI (e.g. bzz://<hash>, ipfs://<CID>) — the content
+    // address the ENS record points at. Falls back to protocol-only if
+    // the URI wasn't captured (shouldn't happen for successful resolves).
+    const uri = state.ensUriByName.get(name);
+    const proto = state.ensProtocols.get(name);
+    subtitle.textContent = uri || (proto ? `Resolved as ${proto}://…` : '');
+  }
+  if (summary) {
+    const buildSummary = TRUST_SUMMARY[level];
+    if (!buildSummary) {
+      console.warn('[trust] unknown trust level:', level);
+      summary.textContent = 'Unknown trust state.';
+    } else {
+      summary.textContent = buildSummary(trust);
+    }
+  }
+  if (blockEl) {
+    if (trust.block?.number) {
+      const hash = trust.block.hash || '';
+      const short = hash ? `${hash.slice(0, 10)}…${hash.slice(-4)}` : '';
+      blockEl.textContent = `#${trust.block.number}${short ? '  ' + short : ''}`;
+    } else {
+      blockEl.textContent = '(not recorded)';
+    }
+  }
+  if (agreedEl && agreedSection) {
+    const agreed = trust.agreed || [];
+    if (agreed.length > 0) {
+      agreedEl.textContent = agreed.join(', ');
+      agreedSection.hidden = false;
+    } else {
+      agreedSection.hidden = true;
+    }
+  }
+  if (dissentedEl && dissentedSection) {
+    const dissented = trust.dissented || [];
+    if (dissented.length > 0) {
+      dissentedEl.textContent = dissented.join(', ');
+      dissentedSection.hidden = false;
+    } else {
+      dissentedSection.hidden = true;
+    }
+  }
+
+  setTrustPopoverOpen(true);
+};
+
+// Update protocol icon AND trust shield from the current address-bar value.
+// Called from every site that might change either (nav events, tab switches,
+// address-bar edits). Trust shield is hidden for non-ENS URLs; the protocol
+// icon keeps indicating bzz://, ipfs://, https://, etc. as before.
+const updateProtocolIcon = () => {
+  if (protocolIcon) {
+    const protocol = resolveProtocolIconType({
+      value: addressInput?.value || '',
+      ensProtocols: state.ensProtocols,
+      enableRadicleIntegration: state.enableRadicleIntegration,
+      currentPageSecure,
+    });
+    if (protocol) {
+      protocolIcon.setAttribute('data-protocol', protocol);
+      protocolIcon.classList.add('visible');
+    } else {
+      protocolIcon.removeAttribute('data-protocol');
+      protocolIcon.classList.remove('visible');
+    }
+  }
+
+  if (trustShield) {
+    const badge = resolveTrustBadge({
+      value: addressInput?.value || '',
+      ensTrustByName: state.ensTrustByName,
+    });
+    if (badge) {
+      trustShield.setAttribute('data-trust', badge.level);
+      trustShield.setAttribute(
+        'aria-label',
+        TRUST_ARIA_LABEL[badge.level] || 'ENS resolution trust status'
+      );
+      trustShield.hidden = false;
+    } else {
+      trustShield.removeAttribute('data-trust');
+      trustShield.setAttribute('aria-label', 'ENS resolution trust status');
+      trustShield.hidden = true;
+    }
   }
 };
 
@@ -467,7 +599,10 @@ const startBzzNavigationWithProbe = (webview, target, navState, displayUrl) => {
     });
 };
 
-export const loadTarget = (value, displayOverride = null, targetWebview = null) => {
+export const loadTarget = (value, displayOverride = null, targetWebview = null, options = {}) => {
+  // `options.allowUnverifiedOnce` — skip the unverified-ENS interstitial
+  // for this single call. Set by the ens-unverified page's "Continue once"
+  // handler. Scope is this single loadTarget invocation.
   // Use provided webview or fall back to active webview
   const webview = targetWebview || getActiveWebview();
   const navState = getNavState();
@@ -592,6 +727,31 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null) 
           return;
         }
 
+        if (result.trust) {
+          state.ensTrustByName.set(ens.name, result.trust);
+        }
+        if (result.uri) {
+          state.ensUriByName.set(ens.name, result.uri);
+        }
+
+        // Conflict = hard block. Render the interstitial with the disputed
+        // groups so the user can see which providers claimed what; no
+        // attempt to load the resolved URI.
+        if (result.type === 'conflict') {
+          // Defensive cap: the resolver already bounds groups by K (≤9),
+          // but a malformed payload shouldn't be able to explode the URL.
+          const groups = (result.groups || []).slice(0, 10);
+          pushDebug(`ENS conflict for ${ens.name}: ${groups.length} groups`);
+          capturedWebview.loadURL(
+            buildInternalPageUrl('ens-conflict.html', {
+              name: ens.name,
+              block: JSON.stringify(result.trust?.block || {}),
+              groups: JSON.stringify(groups),
+            })
+          );
+          return;
+        }
+
         if (result.type !== 'ok') {
           const reason = result.reason || 'Unknown error';
           pushDebug(`ENS resolution failed for ${ens.name}: ${reason}`);
@@ -608,6 +768,20 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null) 
         }
 
         const targetUri = applyEnsSuffix(result.uri, ens.suffix);
+
+        // Unverified = soft block. Interstitial lets the user continue once,
+        // bypassing this check for the follow-up load.
+        if (
+          result.trust?.level === 'unverified'
+          && state.blockUnverifiedEns
+          && !options.allowUnverifiedOnce
+        ) {
+          pushDebug(`ENS unverified for ${ens.name} → interstitial`);
+          capturedWebview.loadURL(
+            buildInternalPageUrl('ens-unverified.html', { name: ens.name, uri: targetUri })
+          );
+          return;
+        }
 
         pushDebug(`ENS resolved: ${ens.name} -> ${targetUri}`);
 
@@ -1059,6 +1233,33 @@ export const initNavigation = () => {
   homeBtn = document.getElementById('home-btn');
   bookmarksBar = document.querySelector('.bookmarks');
   protocolIcon = document.getElementById('protocol-icon');
+  trustShield = document.getElementById('trust-shield');
+  trustPopover = document.getElementById('trust-popover');
+
+  if (trustShield) {
+    trustShield.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleTrustPopover();
+    });
+  }
+  document.addEventListener('click', (e) => {
+    if (!trustPopover || trustPopover.hidden) return;
+    if (trustPopover.contains(e.target)) return;
+    if (trustShield && trustShield.contains(e.target)) return;
+    setTrustPopoverOpen(false);
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && trustPopover && !trustPopover.hidden) {
+      setTrustPopoverOpen(false);
+    }
+  });
+  // Clicks inside the <webview> don't bubble to the main renderer's
+  // document (out-of-process frame), so a document-click listener alone
+  // misses them. window.blur fires when focus shifts to the webview,
+  // which covers any click into loaded page content.
+  window.addEventListener('blur', () => {
+    if (trustPopover && !trustPopover.hidden) setTrustPopoverOpen(false);
+  });
 
   // Load bookmark bar visibility from saved settings
   electronAPI?.getSettings?.().then((settings) => {
@@ -1107,100 +1308,12 @@ export const initNavigation = () => {
   // Form submission (navigate)
   navForm.addEventListener('submit', (event) => {
     event.preventDefault();
-    const raw = addressInput.value;
-
-    // Handle freedom:// protocol for internal pages
-    const fbMatch = raw.match(/^freedom:\/\/([a-zA-Z0-9-]+)$/i);
-    if (fbMatch) {
-      const pageName = fbMatch[1].toLowerCase();
-      const pageUrl = internalPages[pageName];
-      if (pageUrl) {
-        const webview = getActiveWebview();
-        if (webview) {
-          webview.loadURL(pageUrl);
-          pushDebug(`Loading internal page: ${pageName}`);
-        }
-      } else {
-        pushDebug(`Unknown internal page: ${pageName}`);
-        alert(
-          `Unknown internal page: ${pageName}\nAvailable: ${Object.keys(internalPages).join(', ')}`
-        );
-      }
-      addressInput.blur();
-      return;
-    }
-
-    const ens = parseEnsInput(raw);
-
-    if (ens && electronAPI?.resolveEns) {
-      // Capture the webview reference before async operation to prevent loading in wrong tab
-      const capturedWebview = getActiveWebview();
-      setLoading(true);
-      pushDebug(`Resolving ENS name: ${ens.name}`);
-      electronAPI
-        .resolveEns(ens.name)
-        .then((result) => {
-          setLoading(false);
-          if (!result) {
-            alert('ENS resolution failed: no response');
-            return;
-          }
-
-          if (result.type !== 'ok') {
-            const reason = result.reason || 'Unknown error';
-            pushDebug(`ENS resolution failed for ${ens.name}: ${reason}`);
-            alert(`ENS resolution failed for ${ens.name}: ${reason}`);
-            return;
-          }
-
-          // Support both Swarm (bzz) and IPFS protocols
-          if (
-            result.protocol !== 'bzz' &&
-            result.protocol !== 'ipfs' &&
-            result.protocol !== 'ipns'
-          ) {
-            pushDebug(`ENS content for ${ens.name} uses unsupported protocol ${result.protocol}`);
-            alert(
-              `ENS content uses unsupported protocol "${result.protocol}". Supported: Swarm (bzz), IPFS, IPNS.`
-            );
-            return;
-          }
-
-          const targetUri = applyEnsSuffix(result.uri, ens.suffix);
-
-          pushDebug(`ENS resolved: ${ens.name} -> ${targetUri}`);
-
-          storeEnsResolutionMetadata(targetUri, ens.name);
-
-          // Pass captured webview to ensure we load in the correct tab
-          loadTarget(targetUri, 'ens://' + ens.name + (ens.suffix || ''), capturedWebview);
-          addressInput.blur();
-        })
-        .catch((err) => {
-          setLoading(false);
-          console.error('ENS resolution error', err);
-          pushDebug(`ENS resolution error for ${ens.name}: ${err.message}`);
-          alert(`ENS resolution error for ${ens.name}: ${err.message}`);
-        });
-    } else {
-      const target = formatBzzUrl(raw, state.bzzRoutePrefix);
-      if (target) {
-        let hashToCheck = null;
-        if (target.targetUrl.startsWith('bzz://')) {
-          const match = target.targetUrl.match(/^bzz:\/\/([a-fA-F0-9]+)/);
-          if (match) hashToCheck = match[1];
-        } else if (target.baseUrl) {
-          const match = target.baseUrl.match(/\/bzz\/([a-fA-F0-9]+)/);
-          if (match) hashToCheck = match[1];
-        }
-        if (hashToCheck) {
-          state.knownEnsNames.delete(hashToCheck.toLowerCase());
-        }
-      }
-
-      loadTarget(raw);
-      addressInput.blur();
-    }
+    // loadTarget handles all protocol dispatch (ENS, freedom://, bzz://,
+    // ipfs://, https://, rad://) and owns the ENS trust state mutation.
+    // Earlier this handler duplicated the ENS path, which bypassed the
+    // trust updates and left the shield empty for typed-address flows.
+    loadTarget(addressInput.value);
+    addressInput.blur();
   });
 
   // Navigation buttons
@@ -1370,6 +1483,19 @@ export const initNavigation = () => {
         ensureWebContentsId();
         pushDebug('Webview ready.');
         break;
+
+      case 'ipc-message': {
+        if (data.channel === 'ens:continue-unverified') {
+          const name = data.args?.[0]?.name;
+          if (name) {
+            pushDebug(`ENS continue-unverified requested for ${name}`);
+            loadTarget('ens://' + name, null, webview, { allowUnverifiedOnce: true });
+          }
+        } else if (data.channel === 'ens:open-settings') {
+          loadTarget('freedom://settings', null, webview);
+        }
+        break;
+      }
 
       case 'tab-switched':
         // Save address bar state to previous tab before switching

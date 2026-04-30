@@ -2,6 +2,35 @@ import { applyEnsNamePreservation, deriveDisplayValue } from './url-utils.js';
 import { getInternalPageName } from './page-urls.js';
 import { cidV0ToV1Base32 } from './cid-utils.js';
 
+// Extract the ENS name from an address bar value, or null if the value isn't
+// an ENS resolution input (ens://, .eth, .box). Shared by the protocol icon
+// and trust-shield helpers. Distinct from `parseEnsInput` in `page-urls.js`:
+// the latter is the canonical parser used during navigation (trims, regex,
+// allocates {name, suffix}); this helper is the render-loop fast path that
+// accepts already-lowercased input and returns just the name.
+const extractEnsName = (normalizedValue) => {
+  if (normalizedValue.startsWith('ens://')) {
+    return normalizedValue.slice(6).split('/')[0];
+  }
+  if (normalizedValue.endsWith('.eth') || normalizedValue.endsWith('.box')) {
+    return normalizedValue.split('/')[0];
+  }
+  return null;
+};
+
+// Trust-shield state for the address bar. Returns `null` to hide the shield
+// (non-ENS URLs, or ENS name we haven't resolved this session). Otherwise
+// returns `{ level, name, trust }` so the shield can render and the popover
+// can fill in details.
+export const resolveTrustBadge = ({ value = '', ensTrustByName = new Map() } = {}) => {
+  const normalizedValue = value.toLowerCase();
+  const ensName = extractEnsName(normalizedValue);
+  if (!ensName) return null;
+  const trust = ensTrustByName.get(ensName);
+  if (!trust || !trust.level) return null;
+  return { level: trust.level, name: ensName, trust };
+};
+
 export const resolveProtocolIconType = ({
   value = '',
   ensProtocols = new Map(),
@@ -11,10 +40,8 @@ export const resolveProtocolIconType = ({
   const normalizedValue = value.toLowerCase();
   let protocol = 'http';
 
-  if (normalizedValue.startsWith('ens://') || normalizedValue.endsWith('.eth') || normalizedValue.endsWith('.box')) {
-    const ensName = normalizedValue.startsWith('ens://')
-      ? normalizedValue.slice(6).split('/')[0]
-      : normalizedValue.split('/')[0];
+  const ensName = extractEnsName(normalizedValue);
+  if (ensName) {
     protocol = ensProtocols.get(ensName) || 'http';
   } else if (normalizedValue.startsWith('bzz://')) {
     protocol = 'swarm';

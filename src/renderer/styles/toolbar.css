@@ -98,6 +98,167 @@
   flex: 1;
 }
 
+/* Trust shield for ENS resolutions (sits to the LEFT of the protocol icon
+   when both are visible). Click opens the trust details popover. */
+.trust-shield {
+  position: absolute;
+  left: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  margin: 0;
+  border: none;
+  background: transparent;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 2;
+  border-radius: 4px;
+  transition: background-color 0.15s ease;
+}
+
+.trust-shield[hidden] {
+  display: none !important;
+}
+
+.trust-shield:not([hidden]) {
+  display: flex;
+}
+
+.trust-shield:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.trust-shield svg {
+  width: 16px;
+  height: 16px;
+  display: none;
+}
+
+.trust-shield[data-trust='verified'] .icon-verified,
+.trust-shield[data-trust='user-configured'] .icon-user-configured,
+.trust-shield[data-trust='unverified'] .icon-unverified,
+.trust-shield[data-trust='conflict'] .icon-conflict {
+  display: block;
+}
+
+.trust-shield[data-trust='verified'] .icon-verified {
+  color: #2ea043;
+}
+.trust-shield[data-trust='user-configured'] .icon-user-configured {
+  color: #2ea043;
+}
+.trust-shield[data-trust='unverified'] .icon-unverified {
+  color: #d29922;
+}
+.trust-shield[data-trust='conflict'] .icon-conflict {
+  color: #cf222e;
+}
+
+/* Trust details popover, anchored below the address bar when the shield
+   is clicked. Populated by navigation.js from state.ensTrustByName. */
+.trust-popover {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 6px;
+  min-width: 280px;
+  max-width: min(400px, calc(100vw - 24px));
+  background: var(--menu-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  z-index: 10000;
+  padding: 14px 16px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.trust-popover[hidden] {
+  display: none !important;
+}
+
+.trust-popover-header {
+  margin-bottom: 10px;
+}
+
+.trust-popover-title {
+  font-weight: 600;
+  word-break: break-all;
+}
+
+.trust-popover-subtitle {
+  font-family: monospace;
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+  word-break: break-all;
+}
+
+.trust-popover-summary {
+  margin: 0 0 12px;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.trust-popover[data-trust='verified'] .trust-popover-summary,
+.trust-popover[data-trust='user-configured'] .trust-popover-summary {
+  color: #4ac267;
+}
+.trust-popover[data-trust='unverified'] .trust-popover-summary {
+  color: #d29922;
+}
+.trust-popover[data-trust='conflict'] .trust-popover-summary {
+  color: #ff5e5e;
+}
+
+.trust-popover-section {
+  margin-top: 8px;
+}
+
+.trust-popover-section-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin-bottom: 3px;
+}
+
+.trust-popover-section-value {
+  font-family: monospace;
+  font-size: 12px;
+  color: var(--text);
+  word-break: break-all;
+}
+
+.trust-popover-learn {
+  display: inline-block;
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.trust-popover-learn:hover {
+  text-decoration: underline;
+}
+
+/* Shift the protocol icon right to make room for the shield when both show. */
+.address-wrapper:has(.trust-shield:not([hidden])) .protocol-icon {
+  left: 36px;
+}
+
+/* Address input padding accounts for whichever of the two icons is visible. */
+.address-wrapper:has(.trust-shield:not([hidden])) .address-input {
+  padding-left: 36px;
+}
+.address-wrapper:has(.trust-shield:not([hidden])):has(.protocol-icon.visible) .address-input {
+  padding-left: 62px;
+}
+
 /* Protocol icon in address bar */
 .protocol-icon {
   position: absolute;
@@ -112,7 +273,8 @@
   z-index: 2;
   pointer-events: none;
   opacity: 0;
-  transition: opacity 0.2s ease;
+  transition: opacity 0.2s ease,
+    left 0.2s ease;
 }
 
 .protocol-icon svg {

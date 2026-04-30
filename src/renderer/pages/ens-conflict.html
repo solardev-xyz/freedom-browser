@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src data:;"
+    />
+    <title>RPC servers disagreed</title>
+    <link rel="stylesheet" href="styles/interstitial.css" />
+  </head>
+  <body class="conflict">
+    <div class="container">
+      <h1>
+        <svg class="shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 2 L4 6 L4 12 C4 17 7.5 21 12 22 C16.5 21 20 17 20 12 L20 6 Z" />
+          <line x1="7" y1="8" x2="17" y2="16" />
+        </svg>
+        RPC servers disagreed
+      </h1>
+      <p>
+        Two or more public RPC servers returned different answers for this ENS name. One of them
+        may be lying. To protect you from navigating to attacker-chosen content, the browser has
+        blocked this load.
+      </p>
+
+      <div class="name-block">
+        <div class="name" id="name-el"></div>
+        <div class="block" id="block-el"></div>
+      </div>
+
+      <div class="groups" id="groups-el"></div>
+
+      <div class="buttons">
+        <button id="back-btn" class="button-primary">← Go back</button>
+        <button id="settings-btn">Set up your own RPC</button>
+      </div>
+
+      <p class="learn-more">
+        If you trust one of the answers above and want to proceed anyway, configure that server as
+        your custom RPC in settings. The browser will trust it as a single source and skip the
+        cross-check.
+      </p>
+    </div>
+    <script src="scripts/ens-conflict.js"></script>
+  </body>
+</html>

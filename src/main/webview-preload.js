@@ -112,6 +112,19 @@ contextBridge.exposeInMainWorld('freedomAPI', {
     ipcRenderer.invoke('internal:open-url-in-new-tab', url)
   ),
 
+  // Signals from ENS interstitial pages back to the address-bar shell.
+  // Uses sendToHost because the shell is the webview's parent frame, not
+  // the main process — shorter, avoids a main round-trip. Both sides of
+  // this channel are renderer code; preload's sandbox blocks relative
+  // require, and navigation.js is ESM and can't import the CommonJS
+  // shared module — strings are kept hardcoded on both ends.
+  ensContinueUnverified: guardInternal('ensContinueUnverified', (name) => {
+    ipcRenderer.sendToHost('ens:continue-unverified', { name });
+  }),
+  ensOpenSettings: guardInternal('ensOpenSettings', () => {
+    ipcRenderer.sendToHost('ens:open-settings');
+  }),
+
   // Favicons
   getCachedFavicon: guardInternal('getCachedFavicon', (url) =>
     ipcRenderer.invoke('favicon:get-cached', url)

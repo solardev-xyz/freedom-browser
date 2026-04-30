@@ -295,4 +295,5 @@ module.exports = {
   buildRewriteTarget,
   convertProtocolUrl,
   shouldBlockInvalidBzzRequest,
+  sanitizeUrlForLog,
 };

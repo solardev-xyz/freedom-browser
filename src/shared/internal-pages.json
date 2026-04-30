@@ -7,5 +7,5 @@
     "publish": "publish.html",
     "settings": "settings.html"
   },
-  "other": ["error.html", "rad-browser.html"]
+  "other": ["error.html", "rad-browser.html", "ens-conflict.html", "ens-unverified.html"]
 }

@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src data:;"
+    />
+    <title>ENS resolution not cross-checked</title>
+    <link rel="stylesheet" href="styles/interstitial.css" />
+  </head>
+  <body class="unverified">
+    <div class="container">
+      <h1>
+        <svg class="shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 2 L4 6 L4 12 C4 17 7.5 21 12 22 C16.5 21 20 17 20 12 L20 6 Z" />
+          <line x1="12" y1="8" x2="12" y2="13" />
+          <circle cx="12" cy="17" r="0.5" fill="currentColor" />
+        </svg>
+        Resolution not cross-checked
+      </h1>
+      <p>
+        Only one RPC server answered this ENS resolution, so the browser couldn't cross-check the
+        answer against independent sources. The destination may be correct, but a single malicious
+        server could have chosen it — we can't tell.
+      </p>
+
+      <div class="name-block">
+        <div class="name" id="name-el"></div>
+        <div class="uri" id="uri-el"></div>
+      </div>
+
+      <div class="buttons">
+        <button id="continue-btn" class="button-primary">Continue once</button>
+        <button id="back-btn">← Go back</button>
+        <button id="settings-btn">Set up your own RPC</button>
+      </div>
+
+      <p class="learn-more">
+        You can disable this warning globally in Settings (not recommended on public Wi-Fi).
+        Running your own Ethereum node as a custom RPC is the strongest option — your own node
+        becomes the single trusted source and this warning stops appearing.
+      </p>
+    </div>
+    <script src="scripts/ens-unverified.js"></script>
+  </body>
+</html>
