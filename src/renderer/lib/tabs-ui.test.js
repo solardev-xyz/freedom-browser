@@ -444,6 +444,76 @@ describe('tabs ui behavior', () => {
     expect(activeTab.isLoading).toBe(false);
   });
 
+  test('an unrelated abort during the suppression window is not swallowed', async () => {
+    // The suppression must compare the aborted URL to `pendingAbortUrl`,
+    // not just check that the flag is set. Otherwise a Stop-button click
+    // (or any other abort source) during the 1500 ms window after a
+    // custom-protocol click would be silently consumed and the spinner
+    // would only clear when the safety-net timer fires.
+    jest.useFakeTimers();
+    try {
+      const { mod, electronHandlers } = await loadTabsModule();
+      const onLoadTarget = jest.fn();
+      const onWebviewEvent = jest.fn();
+      mod.setLoadTargetHandler(onLoadTarget);
+      mod.setWebviewEventHandler(onWebviewEvent);
+      await mod.initTabs();
+
+      const activeTab = mod.getActiveTab();
+      const { webview } = activeTab;
+
+      electronHandlers.navigateToUrl('bzz://meinhard.eth');
+      activeTab.isLoading = true;
+      onWebviewEvent.mockClear();
+
+      webview.dispatch('did-fail-load', {
+        errorCode: -3,
+        errorDescription: 'ERR_ABORTED',
+        validatedURL: 'https://other.example',
+      });
+
+      expect(activeTab.isLoading).toBe(false);
+      expect(activeTab.pendingAbortUrl).toBe('bzz://meinhard.eth');
+      expect(onWebviewEvent).toHaveBeenCalledWith(
+        'did-fail-load',
+        expect.objectContaining({ tabId: activeTab.id })
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('closing a tab during the phantom-abort window cancels the safety timer', async () => {
+    // The 1500 ms self-clearing timer set by `navigateToUrl` must be
+    // cleared when the tab is closed before the timer fires — otherwise
+    // it pins the (detached) tab object until the timer expires and
+    // writes to a dead tab.
+    jest.useFakeTimers();
+    try {
+      const { mod, electronHandlers } = await loadTabsModule();
+      mod.setLoadTargetHandler(jest.fn());
+      await mod.initTabs();
+
+      const newTab = mod.createTab('https://example.test');
+      const tabId = newTab.id;
+      mod.switchTab(tabId);
+
+      electronHandlers.navigateToUrl('bzz://meinhard.eth');
+      const tabBeforeClose = mod.getTabs().find((t) => t.id === tabId);
+      expect(tabBeforeClose.pendingAbortTimer).toBeDefined();
+      expect(tabBeforeClose.pendingAbortTimer).not.toBeNull();
+
+      mod.closeTab(tabId);
+      // closeTab must clear the pendingAbortTimer field on the detached tab
+      // so a later fire can't write to it. We don't assert on the global
+      // timer count because the test bootstrap wires up unrelated debug /
+      // probe timers that are out of scope here.
+      expect(tabBeforeClose.pendingAbortTimer).toBeNull();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   test('closes and reopens tabs and closes the window when the last tab is removed', async () => {
     const firstLoad = await loadTabsModule();
     await firstLoad.mod.initTabs();

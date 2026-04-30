@@ -53,6 +53,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   resolveEns: (name) => ipcRenderer.invoke('ens:resolve', { name }),
   resolveEnsAddress: (name) => ipcRenderer.invoke('ens:resolve-address', { name }),
   resolveEnsReverse: (address) => ipcRenderer.invoke('ens:resolve-reverse', { address }),
+  invalidateEnsContent: (name) => ipcRenderer.invoke('ens:invalidate-content', { name }),
   testEnsRpc: (url) => ipcRenderer.invoke('ens:test-rpc', { url }),
   // History
   getHistory: (options) => ipcRenderer.invoke('history:get', options),

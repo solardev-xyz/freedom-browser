@@ -41,6 +41,7 @@
 const log = require('../logger');
 const { getBeeApiUrl } = require('../service-registry');
 const { resolveEnsContent } = require('../ens-resolver');
+const { isEnsHost } = require('../../shared/origin-utils');
 
 // Per-attempt retry schedule. First entry is the delay BEFORE the 2nd
 // attempt, etc. Total backoff budget ≈ sum of all values (~50s). The probe
@@ -67,9 +68,11 @@ const IDEMPOTENT_METHODS = new Set(['GET', 'HEAD']);
 // 64-char or 128-char lowercase/uppercase hex (unencrypted / encrypted refs).
 const BZZ_HASH_RE = /^[a-fA-F0-9]{64}([a-fA-F0-9]{64})?$/;
 
-// Hosts ending in .eth or .box are treated as ENS names. Everything else
-// in this protocol handler is a direct Swarm reference.
-const ENS_HOST_RE = /\.(?:eth|box)$/i;
+// Smallest legal ENS label is 3 chars (per ENS app rules); anything shorter
+// is necessarily malformed and the resolver would reject it. Used together
+// with `isEnsHost` to gate cheap pre-checks before paying the resolver
+// round-trip — a single `.eth` or `a.eth` would otherwise consume an RPC.
+const MIN_ENS_LABEL_LENGTH = 3;
 
 // Request headers we should not forward to Bee — either Chromium-injected
 // privileged-scheme noise or headers that refer to the bzz:// origin and
@@ -141,23 +144,27 @@ async function buildGatewayUrl(bzzUrl) {
     };
   }
 
-  if (ENS_HOST_RE.test(host)) {
+  if (isEnsHost(host) && hasMinimumLabel(host)) {
     return resolveEnsToGatewayUrl(host, parsed);
   }
 
   return null;
 }
 
+// Reject hosts whose first label is shorter than the ENS minimum (e.g.
+// `.eth`, `a.eth`). The resolver would reject these too, but pre-filtering
+// avoids a wasted RPC round-trip per malformed request.
+function hasMinimumLabel(host) {
+  const firstLabel = host.split('.')[0];
+  return firstLabel.length >= MIN_ENS_LABEL_LENGTH;
+}
+
 // Resolve an ENS host to a Bee gateway URL. `parsed` is the original
-// `bzz://name.eth/path?q` URL — we need its pathname/search verbatim.
-//
-// Cross-transport mismatch (e.g. `bzz://swarm.eth/` where swarm.eth's
-// contenthash is IPFS) is treated as the assertion the request literally
-// makes: "I want Swarm content from this name." We surface 404 with an
-// explanatory body rather than auto-redirecting, since a protocol handler
-// can't redirect a subresource and silently switching transports inside
-// the handler hides user intent. The address-bar layer makes the same
-// assertion explicit at the renderer side; both layers stay consistent.
+// `bzz://name.eth/path?q` URL — pathname/search are forwarded verbatim.
+// Cross-transport mismatches (e.g. bzz://swarm.eth where the contenthash
+// is IPFS) return 404 with an explanatory body, mirroring the renderer's
+// transport assertion: a typed scheme is taken as user intent and we
+// don't silently switch transports.
 async function resolveEnsToGatewayUrl(host, parsed) {
   let result;
   try {

@@ -82,7 +82,8 @@ function registerWebContentsHandlers() {
       // Intercept navigation to custom protocols (freedom://, bzz://, ipfs://,
       // ipns://, rad:, ethereum:, ens://). `ens://` is included so legacy
       // links inside pages route through the renderer's ENS resolver instead
-      // of failing as an unknown scheme — see research/ens_link_migration.md.
+      // of failing as an unknown scheme — bookmarks created before the
+      // transport-aware migration still carry the legacy prefix.
       contents.on('will-navigate', (event, url) => {
         if (
           url.startsWith('freedom://') ||

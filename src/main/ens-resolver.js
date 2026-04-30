@@ -1262,12 +1262,25 @@ const inFlightResolves = new Map();
 // names like "Vitalik.ETH", so callers that pass 0x addresses (reverse
 // lookup) are unaffected. Invalid labels throw — which propagates to
 // the IPC handler and surfaces as a RESOLUTION_ERROR to the renderer.
+// Pure-ASCII names (the vast majority — vitalik.eth, app.eth, …) survive
+// `ens_normalize` unchanged beyond a lowercase. Skipping the full UTS-46
+// pass for them avoids paying the normalization cost on every cache-hit
+// path (the bzz protocol handler now resolves on every subresource
+// request, so a busy page can fan out dozens of cache hits per page load).
+const PURE_ASCII_HOST = /^[a-z0-9-.]+$/;
+
+function fastNormalize(trimmed) {
+  const lowered = trimmed.toLowerCase();
+  if (PURE_ASCII_HOST.test(lowered)) return lowered;
+  return ens_normalize(trimmed);
+}
+
 async function resolveWithCache(name, cache, doResolve, label) {
   const trimmed = (name || '').trim();
   if (!trimmed) {
     throw new Error('ENS name is empty');
   }
-  const normalized = ens_normalize(trimmed);
+  const normalized = fastNormalize(trimmed);
 
   const cached = cache.get(normalized);
   if (cached && Date.now() < cached.expiresAt) {
@@ -1571,6 +1584,33 @@ function registerEnsIpc() {
       };
     }
   });
+
+  // Drop the cached contenthash for `name`. Used by the renderer's
+  // swarm-probe failure handler so a "Try Again" click does a fresh
+  // resolution rather than re-probing a stale contenthash.
+  ipcMain.handle(IPC.ENS_INVALIDATE_CONTENT, async (_event, payload = {}) => {
+    const { name } = payload;
+    return invalidateEnsContent(name);
+  });
+}
+
+// Drop the contenthash cache entry for `name` (no-op if absent). Returns
+// true when an entry was evicted, false otherwise.
+function invalidateEnsContent(name) {
+  const trimmed = (name || '').trim();
+  if (!trimmed) return false;
+  let key;
+  try {
+    key = fastNormalize(trimmed);
+  } catch {
+    return false;
+  }
+  const had = ensResultCache.has(key);
+  ensResultCache.delete(key);
+  if (had) {
+    log.info(`[ens] content cache invalidated for ${key}`);
+  }
+  return had;
 }
 
 // Test-only: drop all cached resolution results so tests can share ENS
@@ -1590,6 +1630,7 @@ module.exports = {
   resolveEnsReverse,
   testRpcUrl,
   invalidateCachedProvider,
+  invalidateEnsContent,
   universalResolverCall,
   isResolverNotFoundError,
   clearEnsCachesForTest,

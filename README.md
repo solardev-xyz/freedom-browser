@@ -193,7 +193,8 @@ The address bar also provides **autocomplete suggestions** from browsing history
 - **Automatic Resolution**: `.eth` and `.box` domains resolve to their Swarm, IPFS, or IPNS content.
 - **CCIP-Read Support**: `.box` domains resolve via offchain CCIP-Read (EIP-3668) through 3dns.xyz.
 - **Protocol Detection**: Automatically detects and routes to Swarm (`bzz://`), IPFS (`ipfs://`), or IPNS (`ipns://`) content.
-- **Address Bar Preservation**: ENS names stay visible in the address bar during navigation.
+- **Transport-Aware Address Bar**: After resolution, the address bar shows the resolved transport with the ENS name as the host — e.g. `vitalik.eth` resolves and displays as `ipfs://vitalik.eth`, a Swarm-backed `mysite.eth` displays as `bzz://mysite.eth`. The legacy `ens://` form is still accepted as input (and stored bookmarks keep working) but is no longer the canonical display.
+- **Typed Scheme Is an Assertion**: Typing `bzz://name.eth`, `ipfs://name.eth`, or `ipns://name.eth` only resolves if the contenthash matches the typed transport. Mismatches surface as a "resolves to X, not Y" message rather than silently switching transports — same rule the `bzz://` protocol handler enforces for subresource fetches. Bare names and the legacy `ens://` form make no assertion and accept any supported transport.
 - **Path Forwarding**: Paths appended to ENS names (e.g., `mysite.eth/docs`) are preserved after resolution.
 - **In-HTML Links**: ENS links inside web pages must carry a scheme — `ens://name.eth`, `bzz://name.eth`, `ipfs://name.eth`, or `ipns://name.eth`. Bare hrefs like `<a href="vitalik.eth">` are relative URLs by HTML/URL-spec rules and resolve against the page's base before any of our handlers see them; bare names are only resolved as ENS in the address bar, where input is always absolute.
 

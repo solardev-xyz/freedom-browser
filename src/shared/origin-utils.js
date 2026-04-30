@@ -26,6 +26,21 @@
  */
 
 /**
+ * True when `host` looks like an ENS name (ends in `.eth` or `.box`).
+ * Used by the carve-out below and (via the renderer mirror) by every other
+ * ENS-host-classifier in the codebase. Centralising the predicate keeps a
+ * single source of truth for the ENS TLD set.
+ *
+ * @param {string} host
+ * @returns {boolean}
+ */
+function isEnsHost(host) {
+  if (!host || typeof host !== 'string') return false;
+  const lower = host.toLowerCase();
+  return lower.endsWith('.eth') || lower.endsWith('.box');
+}
+
+/**
  * Extract the permission key from a display URL.
  * Returns the root content identity, never including paths.
  *
@@ -38,13 +53,16 @@ function getPermissionKey(displayUrl) {
   const trimmed = displayUrl.trim();
   if (!trimmed) return null;
 
-  // ENS name without protocol (e.g., 1inch.eth/path)
+  // ENS name without protocol (e.g., 1inch.eth/path).
+  // Split on /, ?, and # so that hash-routed SPAs (`name.eth#/swap`) and
+  // share-link queries (`name.eth?ref=...`) collapse to the same key as
+  // the canonical bare name.
   if (/^[a-z0-9-]+\.(eth|box)/i.test(trimmed)) {
-    return trimmed.split('/')[0].toLowerCase();
+    return trimmed.split(/[/?#]/, 1)[0].toLowerCase();
   }
 
   // ens:// protocol → extract ENS name (e.g., ens://1inch.eth/#/path → 1inch.eth)
-  const ensMatch = trimmed.match(/^ens:\/\/([^/#]+)/i);
+  const ensMatch = trimmed.match(/^ens:\/\/([^/?#]+)/i);
   if (ensMatch) {
     return ensMatch[1].toLowerCase();
   }
@@ -52,19 +70,19 @@ function getPermissionKey(displayUrl) {
   // dweb protocols: ipfs://CID/path → ipfs://CID
   // ENS-host carve-out: bzz://name.eth/path → name.eth (same key as the
   // legacy ens://name.eth form, so permissions don't fork across transport
-  // and legacy displays of the same site).
-  const dwebMatch = trimmed.match(/^(ipfs|bzz|ipns):\/\/([^/]+)/i);
+  // and legacy displays of the same site). The host pattern excludes
+  // ?, # and / so query/fragment components don't fork the key per route.
+  const dwebMatch = trimmed.match(/^(ipfs|bzz|ipns):\/\/([^/?#]+)/i);
   if (dwebMatch) {
     const host = dwebMatch[2];
-    const lowerHost = host.toLowerCase();
-    if (lowerHost.endsWith('.eth') || lowerHost.endsWith('.box')) {
-      return lowerHost;
+    if (isEnsHost(host)) {
+      return host.toLowerCase();
     }
     return `${dwebMatch[1].toLowerCase()}://${host}`;
   }
 
   // rad:// protocol
-  const radMatch = trimmed.match(/^rad:\/\/([^/]+)/i);
+  const radMatch = trimmed.match(/^rad:\/\/([^/?#]+)/i);
   if (radMatch) {
     return `rad://${radMatch[1]}`;
   }
@@ -92,4 +110,4 @@ function normalizeOrigin(origin) {
   return getPermissionKey(origin) || '';
 }
 
-module.exports = { getPermissionKey, normalizeOrigin };
+module.exports = { getPermissionKey, isEnsHost, normalizeOrigin };

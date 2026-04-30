@@ -1,4 +1,16 @@
+import { isEnsHost } from './origin-utils.js';
+
 export const ensureTrailingSlash = (value = '') => (value.endsWith('/') ? value : `${value}/`);
+
+// Set of transports an ENS contenthash can resolve to that the renderer
+// knows how to dispatch. Anything outside this set is treated as
+// "unsupported transport" — the navigation surface alerts and aborts
+// rather than synthesising a URL we can't load. Single source of truth
+// so adding a new transport (e.g. ipfs5) only touches one place.
+export const SUPPORTED_ENS_TRANSPORTS = ['bzz', 'ipfs', 'ipns'];
+
+export const isSupportedEnsTransport = (protocol) =>
+  typeof protocol === 'string' && SUPPORTED_ENS_TRANSPORTS.includes(protocol);
 
 // decodeURIComponent throws on malformed `%` sequences that show up in
 // user-typed URLs; fall back to the raw value in that case.
@@ -206,14 +218,6 @@ export const formatBzzUrl = (input, bzzRoutePrefix) => {
   }
 };
 
-// Lowercase ENS-host suffix check shared across the helpers below. Centralised
-// so all ENS-aware branches gate on the exact same set of TLDs.
-const isEnsHost = (host) => {
-  if (!host) return false;
-  const lower = host.toLowerCase();
-  return lower.endsWith('.eth') || lower.endsWith('.box');
-};
-
 /**
  * Build a transport-aware ENS display URI.
  *
@@ -237,9 +241,7 @@ const isEnsHost = (host) => {
  */
 export const buildEnsDisplayUri = (protocol, name, suffix = '') => {
   if (!name) return null;
-  if (protocol !== 'bzz' && protocol !== 'ipfs' && protocol !== 'ipns') {
-    return null;
-  }
+  if (!isSupportedEnsTransport(protocol)) return null;
   return `${protocol}://${name}${suffix || ''}`;
 };
 
@@ -252,6 +254,11 @@ export const buildEnsDisplayUri = (protocol, name, suffix = '') => {
  * Used to gate the "clear known ENS mappings on direct navigation" branches
  * in `loadTarget`, so that transport ENS URLs (post-resolution display) do
  * not delete the hash→name mapping that the new display relies on.
+ *
+ * Mirrors what `parseEnsInput` accepts, but kept here as a window-free
+ * helper so url-utils doesn't pull in page-urls' module-init `window`
+ * dependencies (homeUrl, internalPages). The test suite asserts both
+ * stay in sync.
  *
  * @param {string} displayUrl
  * @returns {boolean}

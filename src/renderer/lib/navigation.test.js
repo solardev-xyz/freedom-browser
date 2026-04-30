@@ -107,6 +107,20 @@ const loadNavigationModule = async (options = {}) => {
     updateTabFavicon: jest.fn(),
     setTabLoading: jest.fn(),
     getTabs: jest.fn(() => tabsRef.list),
+    getTabById: jest.fn((tabId) => {
+      if (tabId === null || tabId === undefined) return null;
+      return tabsRef.list.find((t) => t.id === tabId) || null;
+    }),
+    getTabIdForWebview: jest.fn((webview) => {
+      if (!webview) return null;
+      const raw = webview.dataset?.tabId;
+      if (raw === undefined) return null;
+      const parsed = Number(raw);
+      return Number.isFinite(parsed) ? parsed : null;
+    }),
+    isActiveTab: jest.fn(
+      (tabId) => tabId !== null && tabId !== undefined && tabId === activeRef.tab?.id
+    ),
   };
   const navigationUtilsMocks = {
     applyEnsSuffix: jest.fn((targetUri, suffix = '') => `${targetUri}${suffix}`),
@@ -205,6 +219,10 @@ const loadNavigationModule = async (options = {}) => {
       const host = transportMatch ? transportMatch[1] : trimmed.split(/[/?#]/)[0].toLowerCase();
       return host.endsWith('.eth') || host.endsWith('.box');
     }),
+    isSupportedEnsTransport: jest.fn(
+      (protocol) => protocol === 'bzz' || protocol === 'ipfs' || protocol === 'ipns'
+    ),
+    SUPPORTED_ENS_TRANSPORTS: ['bzz', 'ipfs', 'ipns'],
   };
   const pageUrlsMocks = {
     homeUrl,
@@ -846,11 +864,17 @@ describe('navigation', () => {
       // ipns://) when the host ends in .eth/.box. Hash/CID hosts return
       // null so the caller falls through to direct content navigation.
       ctx.pageUrlsMocks.parseEnsInput.mockImplementation((value) => {
+        const prefixMatch = value.match(/^(ens|bzz|ipfs|ipns):\/\//i);
+        const assertedTransport = prefixMatch
+          ? prefixMatch[1].toLowerCase() === 'ens'
+            ? null
+            : prefixMatch[1].toLowerCase()
+          : null;
         const m = value.match(/^(?:(?:ens|bzz|ipfs|ipns):\/\/)?([^?/]+)(.*)?$/i);
         if (!m) return null;
         const host = m[1].toLowerCase();
         if (!host.endsWith('.eth') && !host.endsWith('.box')) return null;
-        return { name: host, suffix: m[2] || '' };
+        return { name: host, suffix: m[2] || '', assertedTransport };
       });
       await ctx.mod.initNavigation();
       return ctx;
@@ -1211,12 +1235,11 @@ describe('navigation', () => {
     });
 
     test('cross-transport assertion: bzz://name.eth where the contenthash is IPFS errors instead of switching transports', async () => {
-      // Per research/ens_hosts_in_dweb_handlers.md §3, a typed transport
-      // scheme is an assertion. If the user typed `bzz://vitalik.eth/` and
-      // vitalik.eth's contenthash is IPFS, we surface the mismatch rather
-      // than silently transporting via IPFS — that mirrors what the bzz
-      // protocol handler does for subresource fetches (404 with
-      // explanatory body).
+      // A typed transport scheme is an assertion. If the user typed
+      // `bzz://vitalik.eth/` and vitalik.eth's contenthash is IPFS, we
+      // surface the mismatch rather than silently transporting via IPFS
+      // — that mirrors what the bzz protocol handler does for
+      // subresource fetches (404 with explanatory body).
       const ctx = await setupEnsDispatch();
 
       ctx.electronAPI.resolveEns.mockResolvedValue({

@@ -94,6 +94,25 @@ describe('origin-utils', () => {
       expect(getPermissionKey('bzz://Meinhard.ETH')).toBe('meinhard.eth');
       expect(getPermissionKey('ipfs://myapp.box/path')).toBe('myapp.box');
     });
+
+    test('query and fragment components do not fork the permission key', () => {
+      // Hash-routed SPAs and share-link queries must collapse to the same
+      // key as the canonical bare/legacy form. Otherwise users get
+      // re-prompted on every route change.
+      expect(getPermissionKey('vitalik.eth?ref=share')).toBe('vitalik.eth');
+      expect(getPermissionKey('vitalik.eth#/swap')).toBe('vitalik.eth');
+      expect(getPermissionKey('bzz://meinhard.eth?x=1')).toBe('meinhard.eth');
+      expect(getPermissionKey('bzz://meinhard.eth#/feed')).toBe('meinhard.eth');
+      expect(getPermissionKey('ipfs://vitalik.eth?utm=1')).toBe('vitalik.eth');
+      expect(getPermissionKey('ipfs://vitalik.eth#/lp')).toBe('vitalik.eth');
+      expect(getPermissionKey('ipns://app.eth?ref=foo')).toBe('app.eth');
+      expect(getPermissionKey('ens://name.eth?x=1')).toBe('name.eth');
+      expect(getPermissionKey('ens://name.eth#/swap')).toBe('name.eth');
+      expect(getPermissionKey('rad://z123abc?ref=foo')).toBe('rad://z123abc');
+      expect(getPermissionKey('rad://z123abc#/tree')).toBe('rad://z123abc');
+      expect(getPermissionKey('bzz://abc123def?x=1')).toBe('bzz://abc123def');
+      expect(getPermissionKey('ipfs://QmABC#frag')).toBe('ipfs://QmABC');
+    });
   });
 
   describe('normalizeOrigin', () => {

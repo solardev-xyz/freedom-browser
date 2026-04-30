@@ -175,6 +175,30 @@ export const closeAllDevTools = () => {
 // Get all tabs
 export const getTabs = () => tabState.tabs;
 
+// Get a tab by its numeric id, or null when no match is found.
+export const getTabById = (tabId) => {
+  if (tabId === null || tabId === undefined) return null;
+  return tabState.tabs.find((t) => t.id === tabId) || null;
+};
+
+// Resolve the tab id stored on a webview's `data-tab-id` attribute, or
+// null when the webview is unmanaged or missing the attribute. Centralised
+// so the renderer doesn't sprinkle `Number(webview.dataset.tabId)` across
+// async-tab-routing call sites.
+export const getTabIdForWebview = (webview) => {
+  if (!webview) return null;
+  const raw = webview.dataset?.tabId;
+  if (raw === undefined) return null;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+// True when `tabId` matches the currently active tab. Used by async
+// callbacks that want to gate UI updates (alerts, address bar writes,
+// favicon refresh) on the originating tab still being foregrounded.
+export const isActiveTab = (tabId) =>
+  tabId !== null && tabId !== undefined && tabId === tabState.activeTabId;
+
 /**
  * Get the committed display URL for a specific webview.
  * Always reads from the tab's addressBarSnapshot — the last display URL
@@ -284,21 +308,25 @@ const createWebview = (tabId, initialUrl) => {
         // When the main process intercepts a `will-navigate` for a custom
         // protocol (bzz://, ens://, ipfs://, ipns://, freedom://, rad:,
         // ethereum:) it calls `event.preventDefault()` on the source
-        // webview. Chromium still emits `did-fail-load` with errorCode
-        // `-3` (ERR_ABORTED) for the cancelled navigation, followed by a
-        // `did-stop-loading`. Without suppression these events clear
-        // `tab.isLoading` while the renderer is still resolving the URL
-        // (e.g. an ENS lookup that takes 100ms–1s+), so the user clicks a
-        // link and sees no spinner at all. The matching IPC handler in
-        // `onNavigateToUrl` sets `tab.pendingAbortUrl` to flag exactly this
-        // case; manual stop-button aborts hit the else-branch and clear
-        // `isLoading` as before.
+        // webview. Chromium emits `did-fail-load -3` (ERR_ABORTED) +
+        // `did-stop-loading` for the cancelled navigation. We swallow
+        // exactly that pair so the spinner survives the slow resolution
+        // that follows. The aborted URL must match `tab.pendingAbortUrl`
+        // — comparing URLs (rather than gating only on the flag's
+        // presence) prevents an unrelated abort during the suppression
+        // window (Stop button, programmatic abort) from being silently
+        // consumed.
         //
-        // We also skip the active-tab `onWebviewEvent` forwarding for the
-        // suppressed event because the navigation-side handler unconditionally
-        // calls `setLoading(false)` and resets the reload button — both
-        // wrong for the phantom abort.
-        if (event.errorCode === -3 && tab.pendingAbortUrl) {
+        // Active-tab `onWebviewEvent` forwarding is also skipped for the
+        // suppressed event since the navigation-side handler
+        // unconditionally calls `setLoading(false)` and resets the
+        // reload button — both wrong for the phantom abort.
+        const abortedUrl = event.validatedURL || event.url || null;
+        if (
+          event.errorCode === -3 &&
+          tab.pendingAbortUrl &&
+          abortedUrl === tab.pendingAbortUrl
+        ) {
           tab.pendingAbortUrl = null;
           if (tab.pendingAbortTimer) {
             clearTimeout(tab.pendingAbortTimer);
@@ -801,6 +829,14 @@ export const closeTab = (tabId) => {
   // Close DevTools before removing webview (prevents crash)
   if (tab.webview?.isDevToolsOpened?.()) {
     tab.webview.closeDevTools();
+  }
+
+  // Cancel the phantom-abort safety-net timer if it's still pending —
+  // otherwise it would fire on a detached tab object (writing to a dead
+  // tab and pinning it for up to 1.5s after close).
+  if (tab.pendingAbortTimer) {
+    clearTimeout(tab.pendingAbortTimer);
+    tab.pendingAbortTimer = null;
   }
 
   // Remove event listeners before removing webview (prevents memory leak)

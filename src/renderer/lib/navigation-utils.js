@@ -1,31 +1,13 @@
 import { applyEnsNamePreservation, deriveDisplayValue } from './url-utils.js';
-import { getInternalPageName } from './page-urls.js';
+import { getInternalPageName, parseEnsInput } from './page-urls.js';
 import { cidV0ToV1Base32 } from './cid-utils.js';
+import { isEnsHost } from './origin-utils.js';
 
 // Extract the ENS name from an address bar value, or null if the value isn't
-// an ENS resolution input. Recognises bare names (`vitalik.eth`), the legacy
-// `ens://` form, and the transport-aware forms introduced by the bzz handler
-// migration (`bzz://name.eth`, `ipfs://name.eth`, `ipns://name.box`). Shared
-// by the protocol icon and trust-shield helpers. Distinct from `parseEnsInput`
-// in `page-urls.js`: the latter is the canonical parser used during navigation
-// (trims, regex, allocates {name, suffix}); this helper is the render-loop
-// fast path that accepts already-lowercased input and returns just the host.
-const ENS_TRANSPORT_PREFIXES = ['ens://', 'bzz://', 'ipfs://', 'ipns://'];
-
-const extractEnsName = (normalizedValue) => {
-  let value = normalizedValue;
-  for (const prefix of ENS_TRANSPORT_PREFIXES) {
-    if (value.startsWith(prefix)) {
-      value = value.slice(prefix.length);
-      break;
-    }
-  }
-  const host = value.split(/[/?#]/, 1)[0];
-  if (host.endsWith('.eth') || host.endsWith('.box')) {
-    return host;
-  }
-  return null;
-};
+// an ENS resolution input. Thin wrapper around `parseEnsInput` so the
+// render-loop helpers (protocol icon, trust shield) share the single
+// parsing implementation in `page-urls.js`.
+const extractEnsName = (normalizedValue) => parseEnsInput(normalizedValue)?.name ?? null;
 
 // Trust-shield state for the address bar. Returns `null` to hide the shield
 // (non-ENS URLs, or ENS name we haven't resolved this session). Otherwise
@@ -176,11 +158,6 @@ export const deriveDisplayAddress = ({
 // already-resolved transport URI back through this function, so we only
 // need to skip ENS hosts in the strict "host is hex/CID/IPNS-id" branches
 // below.
-const isEnsTransportHost = (host) => {
-  if (!host) return false;
-  const lower = host.toLowerCase();
-  return lower.endsWith('.eth') || lower.endsWith('.box');
-};
 
 export const buildViewSourceNavigation = ({
   value = '',
@@ -194,7 +171,7 @@ export const buildViewSourceNavigation = ({
   const innerUrl = value.startsWith('view-source:') ? value.slice(12) : value;
 
   const bzzMatch = innerUrl.match(/^bzz:\/\/([a-fA-F0-9]+)(\/.*)?$/);
-  if (bzzMatch && !isEnsTransportHost(bzzMatch[1])) {
+  if (bzzMatch && !isEnsHost(bzzMatch[1])) {
     const hash = bzzMatch[1];
     const path = bzzMatch[2] || '/';
     return {
@@ -204,7 +181,7 @@ export const buildViewSourceNavigation = ({
   }
 
   const ipfsMatch = innerUrl.match(/^ipfs:\/\/([A-Za-z0-9]+)(\/.*)?$/);
-  if (ipfsMatch && !isEnsTransportHost(ipfsMatch[1])) {
+  if (ipfsMatch && !isEnsHost(ipfsMatch[1])) {
     const cid = ipfsMatch[1];
     const path = ipfsMatch[2] || '';
     return {
@@ -214,7 +191,7 @@ export const buildViewSourceNavigation = ({
   }
 
   const ipnsMatch = innerUrl.match(/^ipns:\/\/([A-Za-z0-9.-]+)(\/.*)?$/);
-  if (ipnsMatch && !isEnsTransportHost(ipnsMatch[1])) {
+  if (ipnsMatch && !isEnsHost(ipnsMatch[1])) {
     const name = ipnsMatch[1];
     const path = ipnsMatch[2] || '';
     return {

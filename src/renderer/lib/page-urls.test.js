@@ -83,10 +83,12 @@ describe('page-urls', () => {
     expect(mod.parseEnsInput('ens://Vitalik.ETH/docs?q=1')).toEqual({
       name: 'vitalik.eth',
       suffix: '/docs?q=1',
+      assertedTransport: null,
     });
     expect(mod.parseEnsInput('name.box#top')).toEqual({
       name: 'name.box',
       suffix: '#top',
+      assertedTransport: null,
     });
     expect(mod.parseEnsInput('example.com')).toBeNull();
     expect(mod.parseEnsInput('')).toBeNull();
@@ -96,24 +98,30 @@ describe('page-urls', () => {
     // Issue #16: bzz://meinhard.eth should resolve via ENS the same way
     // ens://meinhard.eth or a bare meinhard.eth does. Same applies to
     // ipfs://name.eth and ipns://name.eth so any DWeb scheme can carry an
-    // ENS host.
+    // ENS host. The `assertedTransport` field surfaces the typed scheme
+    // so the renderer can enforce cross-transport assertion at resolution
+    // time (typed bzz:// + IPFS contenthash → error).
     const mod = await loadModule();
 
     expect(mod.parseEnsInput('bzz://meinhard.eth')).toEqual({
       name: 'meinhard.eth',
       suffix: '',
+      assertedTransport: 'bzz',
     });
     expect(mod.parseEnsInput('bzz://Meinhard.ETH/path?x=1')).toEqual({
       name: 'meinhard.eth',
       suffix: '/path?x=1',
+      assertedTransport: 'bzz',
     });
     expect(mod.parseEnsInput('ipfs://vitalik.eth/docs')).toEqual({
       name: 'vitalik.eth',
       suffix: '/docs',
+      assertedTransport: 'ipfs',
     });
     expect(mod.parseEnsInput('ipns://app.box#fragment')).toEqual({
       name: 'app.box',
       suffix: '#fragment',
+      assertedTransport: 'ipns',
     });
 
     // Transport prefixes with non-ENS hosts must NOT be treated as ENS input;

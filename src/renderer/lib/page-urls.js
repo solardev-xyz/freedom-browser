@@ -3,6 +3,8 @@
 // Canonical source of truth: src/shared/internal-pages.json
 // Served to the renderer via sync IPC → preload → window.internalPages
 
+import { isEnsHost } from './origin-utils.js';
+
 const ROUTABLE_PAGES = window.internalPages?.routable || {};
 
 // URLs for pages
@@ -82,19 +84,31 @@ export const getInternalPageName = (url) => {
 // are returned as null so the caller can fall through to direct content
 // navigation. This is what makes `bzz://meinhard.eth/` work the same way as
 // `ens://meinhard.eth/` while leaving raw-hash navigation untouched.
+//
+// `assertedTransport` is the scheme the user explicitly typed (`bzz`, `ipfs`,
+// or `ipns`) when present; `null` for bare names and the legacy `ens://`
+// form. Callers gate the cross-transport assertion on this — if the user
+// typed `bzz://name.eth` and the contenthash is IPFS, the assertion fails
+// rather than silently switching transports.
+const ENS_INPUT_PREFIXES = [
+  { prefix: 'ens://', assertedTransport: null },
+  { prefix: 'bzz://', assertedTransport: 'bzz' },
+  { prefix: 'ipfs://', assertedTransport: 'ipfs' },
+  { prefix: 'ipns://', assertedTransport: 'ipns' },
+];
+
 export const parseEnsInput = (raw) => {
   let value = (raw || '').trim();
   if (!value) return null;
 
   const lower = value.toLowerCase();
-  if (lower.startsWith('ens://')) {
-    value = value.slice(6);
-  } else if (lower.startsWith('bzz://')) {
-    value = value.slice(6);
-  } else if (lower.startsWith('ipfs://')) {
-    value = value.slice(7);
-  } else if (lower.startsWith('ipns://')) {
-    value = value.slice(7);
+  let assertedTransport = null;
+  for (const { prefix, assertedTransport: assertion } of ENS_INPUT_PREFIXES) {
+    if (lower.startsWith(prefix)) {
+      value = value.slice(prefix.length);
+      assertedTransport = assertion;
+      break;
+    }
   }
 
   let name = value;
@@ -105,10 +119,9 @@ export const parseEnsInput = (raw) => {
     suffix = match[2] || '';
   }
 
-  const lowered = name.toLowerCase();
-  if (!lowered.endsWith('.eth') && !lowered.endsWith('.box')) {
+  if (!isEnsHost(name)) {
     return null;
   }
 
-  return { name: lowered, suffix };
+  return { name: name.toLowerCase(), suffix, assertedTransport };
 };
