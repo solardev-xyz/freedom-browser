@@ -502,13 +502,125 @@ describe('tabs ui behavior', () => {
       const tabBeforeClose = mod.getTabs().find((t) => t.id === tabId);
       expect(tabBeforeClose.pendingAbortTimer).toBeDefined();
       expect(tabBeforeClose.pendingAbortTimer).not.toBeNull();
+      // The proactive suppress-next-stop safety timer must also exist so
+      // closeTab gets a chance to cancel it (asserted below).
+      expect(tabBeforeClose.suppressNextStopTimer).toBeDefined();
+      expect(tabBeforeClose.suppressNextStopTimer).not.toBeNull();
 
       mod.closeTab(tabId);
-      // closeTab must clear the pendingAbortTimer field on the detached tab
+      // closeTab must clear both phantom-abort timers on the detached tab
       // so a later fire can't write to it. We don't assert on the global
       // timer count because the test bootstrap wires up unrelated debug /
       // probe timers that are out of scope here.
       expect(tabBeforeClose.pendingAbortTimer).toBeNull();
+      expect(tabBeforeClose.suppressNextStopTimer).toBeNull();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('keeps spinner on when phantom abort fires before navigate-to-url IPC arrives', async () => {
+    // Race regression: the webview's phantom `did-fail-load -3` +
+    // `did-stop-loading` pair travels via the <webview> DOM-event path,
+    // while `navigate-to-url` travels via the parent BrowserWindow's
+    // ipcRenderer channel. Their relative arrival order in the renderer
+    // is non-deterministic. When the phantom did-fail-load fires before
+    // the IPC handler runs, `pendingAbortUrl` is still null, so the
+    // did-fail-load suppression check falls through and the paired
+    // did-stop-loading also misses suppression — clearing the spinner
+    // *after* `loadTarget` (driven by the late IPC) flipped it on for
+    // the slow ENS resolution.
+    //
+    // The fix: the IPC handler proactively arms `suppressNextStop` (with
+    // a short safety timer) so a phantom did-stop-loading arriving after
+    // the IPC still gets swallowed.
+    jest.useFakeTimers();
+    try {
+      const { mod, electronHandlers } = await loadTabsModule();
+      const onLoadTarget = jest.fn();
+      const onWebviewEvent = jest.fn();
+      mod.setLoadTargetHandler(onLoadTarget);
+      mod.setWebviewEventHandler(onWebviewEvent);
+      await mod.initTabs();
+
+      const activeTab = mod.getActiveTab();
+      const { webview } = activeTab;
+
+      // Step 1: webview reports the click as a real load start.
+      webview.dispatch('did-start-loading');
+
+      // Step 2: phantom did-fail-load arrives BEFORE the IPC handler.
+      // pendingAbortUrl is null so suppression must miss and the
+      // navigation-side handler is correctly notified (it'll clear
+      // isLoading via setLoading(false), matching pre-fix behavior).
+      webview.dispatch('did-fail-load', {
+        errorCode: -3,
+        errorDescription: 'ERR_ABORTED',
+        validatedURL: 'bzz://meinhard.eth',
+      });
+      expect(activeTab.isLoading).toBe(false);
+
+      // Step 3: navigate-to-url IPC arrives. The handler arms both
+      // pendingAbortUrl (in case did-fail-load follows) AND
+      // suppressNextStop (in case the paired did-stop-loading is still
+      // in flight, which is exactly what's about to happen here).
+      electronHandlers.navigateToUrl('bzz://meinhard.eth');
+      expect(onLoadTarget).toHaveBeenCalledWith('bzz://meinhard.eth');
+      expect(activeTab.suppressNextStop).toBe(true);
+      expect(activeTab.suppressNextStopTimer).not.toBeNull();
+
+      // Step 4: simulate `loadTarget` flipping the spinner on synchronously
+      // (the ENS branch in navigation.js does this).
+      activeTab.isLoading = true;
+      onWebviewEvent.mockClear();
+
+      // Step 5: phantom did-stop-loading lands. With the proactive
+      // suppression in place it gets swallowed and the spinner stays on
+      // through the slow ENS resolution that follows.
+      webview.dispatch('did-stop-loading');
+      expect(activeTab.isLoading).toBe(true);
+      expect(activeTab.suppressNextStop).toBe(false);
+      expect(activeTab.suppressNextStopTimer).toBeNull();
+      expect(onWebviewEvent).not.toHaveBeenCalledWith('did-stop-loading', expect.anything());
+
+      // Counter-check: after the safety timer would have fired, a real
+      // did-stop-loading from the post-resolution content load is NOT
+      // swallowed. (suppressNextStop was already consumed above; this
+      // verifies the per-tab state is back to baseline.)
+      jest.advanceTimersByTime(500);
+      activeTab.isLoading = true;
+      webview.dispatch('did-stop-loading');
+      expect(activeTab.isLoading).toBe(false);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('safety timer clears suppressNextStop if no phantom did-stop-loading consumes it', async () => {
+    // If the phantom did-fail-load + did-stop-loading pair both already
+    // fired before the IPC handler runs (the most degenerate
+    // interleaving), the proactive `suppressNextStop=true` armed by the
+    // IPC handler has nothing to consume it. The 200 ms safety timer
+    // must clear it, otherwise a *real* did-stop-loading (e.g. from a
+    // very fast post-resolution load) arriving within the 1.5 s
+    // pendingAbortTimer window would be silently swallowed.
+    jest.useFakeTimers();
+    try {
+      const { mod, electronHandlers } = await loadTabsModule();
+      mod.setLoadTargetHandler(jest.fn());
+      mod.setWebviewEventHandler(jest.fn());
+      await mod.initTabs();
+
+      const activeTab = mod.getActiveTab();
+      electronHandlers.navigateToUrl('bzz://meinhard.eth');
+      expect(activeTab.suppressNextStop).toBe(true);
+
+      jest.advanceTimersByTime(200);
+
+      expect(activeTab.suppressNextStop).toBe(false);
+      expect(activeTab.suppressNextStopTimer).toBeNull();
+      // pendingAbortUrl has its own (longer) timer and is still armed.
+      expect(activeTab.pendingAbortUrl).toBe('bzz://meinhard.eth');
     } finally {
       jest.useRealTimers();
     }

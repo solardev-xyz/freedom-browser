@@ -16,7 +16,7 @@ export const setOnContextMenuOpening = (callback) => {
   onContextMenuOpening = callback;
 };
 
-// Set loading state for a specific tab (or active tab if no tabId)
+// Set loading state for a specific tab (or active tab if no tabId).
 export const setTabLoading = (isLoading, tabId = null) => {
   const tab = tabId
     ? tabState.tabs.find((t) => t.id === tabId)
@@ -292,6 +292,10 @@ const createWebview = (tabId, initialUrl) => {
         // resolution.
         if (tab.suppressNextStop) {
           tab.suppressNextStop = false;
+          if (tab.suppressNextStopTimer) {
+            clearTimeout(tab.suppressNextStopTimer);
+            tab.suppressNextStopTimer = null;
+          }
           return;
         }
         tab.isLoading = false;
@@ -831,12 +835,16 @@ export const closeTab = (tabId) => {
     tab.webview.closeDevTools();
   }
 
-  // Cancel the phantom-abort safety-net timer if it's still pending —
-  // otherwise it would fire on a detached tab object (writing to a dead
+  // Cancel the phantom-abort safety-net timers if they're still pending —
+  // otherwise they would fire on a detached tab object (writing to a dead
   // tab and pinning it for up to 1.5s after close).
   if (tab.pendingAbortTimer) {
     clearTimeout(tab.pendingAbortTimer);
     tab.pendingAbortTimer = null;
+  }
+  if (tab.suppressNextStopTimer) {
+    clearTimeout(tab.suppressNextStopTimer);
+    tab.suppressNextStopTimer = null;
   }
 
   // Remove event listeners before removing webview (prevents memory leak)
@@ -1191,15 +1199,32 @@ export const initTabs = async () => {
       // The main process intercepted a will-navigate for a custom protocol
       // (`bzz://`, `ens://`, `ipfs://`, `ipns://`, `freedom://`, `rad:`,
       // `ethereum:`) and called `event.preventDefault()`. That prevent
-      // causes Chromium to emit a `did-fail-load -3` + `did-stop-loading`
-      // pair on the source webview, which would clear `tab.isLoading` and
-      // kill the spinner during the slow ENS lookup that follows. We mark
-      // the active tab here so the per-tab handlers in `createWebview` can
-      // swallow exactly that one abort. The 1500ms self-clear is a
-      // safety net: if Chromium ever skips the abort (very rare) the flag
-      // shouldn't outlive the click and erroneously mute a later manual
-      // stop. Active tab is correct because the user just clicked a link
-      // in the foreground.
+      // causes Chromium to emit a phantom `did-stop-loading` (sometimes
+      // also preceded by `did-fail-load -3`) on the source webview for
+      // the cancelled navigation, which would clear `tab.isLoading` and
+      // kill the spinner during the slow ENS lookup that follows.
+      //
+      // We mark the active tab here so the per-tab handlers in
+      // `createWebview` can swallow exactly that one phantom. Active tab
+      // is correct because the user just clicked a link in the
+      // foreground. `pendingAbortUrl` (1500 ms self-clear) is the primary
+      // matcher used by `did-fail-load` when Chromium emits one.
+      //
+      // We also arm `suppressNextStop` proactively (with its own 200 ms
+      // self-clear) for two reasons exposed by live tracing:
+      //   1. The `<webview>` events and the `navigate-to-url` IPC
+      //      travel on independent channels, so the phantom can land
+      //      *after* this handler runs but *before* `did-fail-load`
+      //      arrives — there is no time for the existing chain
+      //      (did-fail-load → arm `suppressNextStop`) to fire.
+      //   2. Chromium can elide `did-fail-load -3` entirely for an
+      //      intercepted navigation, emitting only `did-start-loading`
+      //      → `did-stop-loading`. Without proactive arming, the
+      //      paired `did-stop-loading` has no entry point that would
+      //      mark it as a phantom.
+      // The 200 ms cap is far shorter than any real `did-stop-loading`
+      // following the ENS resolution + content fetch, so an unconsumed
+      // flag can't swallow a legitimate later stop.
       const activeTab = tabState.tabs.find((t) => t.id === tabState.activeTabId);
       if (activeTab) {
         activeTab.pendingAbortUrl = url;
@@ -1210,6 +1235,15 @@ export const initTabs = async () => {
           activeTab.pendingAbortUrl = null;
           activeTab.pendingAbortTimer = null;
         }, 1500);
+
+        activeTab.suppressNextStop = true;
+        if (activeTab.suppressNextStopTimer) {
+          clearTimeout(activeTab.suppressNextStopTimer);
+        }
+        activeTab.suppressNextStopTimer = setTimeout(() => {
+          activeTab.suppressNextStop = false;
+          activeTab.suppressNextStopTimer = null;
+        }, 200);
       }
       onLoadTarget(url);
     }
