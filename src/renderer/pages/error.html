@@ -96,7 +96,7 @@
   </head>
   <body>
     <div class="container">
-      <h1>Content Unavailable</h1>
+      <h1 id="title">Content Unavailable</h1>
       <p id="description">
         This content could not be retrieved from the decentralized network. The address may be
         invalid, the content may no longer exist, or no peers are serving it.
@@ -110,12 +110,13 @@
       const NODES_ICON =
         '<svg class="nodes-icon" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><style>.net-line{stroke:currentColor;stroke-width:8;stroke-linecap:round}.net-node{fill:none;stroke:currentColor;stroke-width:8}</style><line x1="44.5" y1="33.5" x2="25.5" y2="66.5" class="net-line"/><line x1="55.5" y1="33.5" x2="74.5" y2="66.5" class="net-line"/><line x1="31" y1="76" x2="69" y2="76" class="net-line"/><circle cx="50" cy="24" r="11" class="net-node"/><circle cx="20" cy="76" r="11" class="net-node"/><circle cx="80" cy="76" r="11" class="net-node"/></svg>';
 
-      // Detect protocol type from URL
+      // Detect protocol type from URL. Accepts both the internal gateway URL
+      // form (…/bzz/<hash>…) and the user-facing display URL form (bzz://…).
       function detectProtocol(url) {
         if (!url) return null;
-        if (url.match(/\/bzz\//i)) return 'swarm';
-        if (url.match(/\/ipfs\//i)) return 'ipfs';
-        if (url.match(/\/ipns\//i)) return 'ipns';
+        if (url.match(/^bzz:\/\//i) || url.match(/\/bzz\//i)) return 'swarm';
+        if (url.match(/^ipfs:\/\//i) || url.match(/\/ipfs\//i)) return 'ipfs';
+        if (url.match(/^ipns:\/\//i) || url.match(/\/ipns\//i)) return 'ipns';
         return null;
       }
 
@@ -147,11 +148,43 @@
       const params = new URLSearchParams(window.location.search);
       const error = params.get('error');
       const url = params.get('url');
+      const explicitProtocol = params.get('protocol');
+      // `retry` is an optional param carrying a URL that Chromium can
+      // actually navigate to (bzz://, http(s)://, …). Needed when `url` is
+      // a user-facing scheme like ens:// that isn't registered as a
+      // navigable protocol.
+      //
+      // We accept only an allowlist of schemes here. Both `retry` and `url`
+      // come straight from the query string, so a `javascript:` value would
+      // be evaluated by `window.location.href = ...`. Cross-origin navs to
+      // `file://` are blocked by Chromium so the practical surface is
+      // limited, but allowlisting keeps paste / bookmark social-engineering
+      // off the table.
+      const ALLOWED_RETRY_SCHEMES = [
+        'bzz:',
+        'ens:',
+        'ipfs:',
+        'ipns:',
+        'rad:',
+        'http:',
+        'https:',
+      ];
+      const sanitizeRetryUrl = (candidate) => {
+        if (!candidate) return null;
+        try {
+          const parsed = new URL(candidate, window.location.href);
+          return ALLOWED_RETRY_SCHEMES.includes(parsed.protocol) ? candidate : null;
+        } catch (e) {
+          return null;
+        }
+      };
+      const retryUrl = sanitizeRetryUrl(params.get('retry')) || sanitizeRetryUrl(url);
       const protocolUrl = toProtocolUrl(url);
-      const protocol = detectProtocol(url);
+      const protocol = explicitProtocol || detectProtocol(url);
 
       const detailsEl = document.getElementById('details');
       const descriptionEl = document.getElementById('description');
+      const titleEl = document.getElementById('title');
 
       async function checkSwarmStatus() {
         try {
@@ -178,7 +211,19 @@
         const parts = [];
         if (protocolUrl) parts.push(protocolUrl);
 
-        if (error && error.includes('ERR_CONNECTION_REFUSED')) {
+        if (error === 'swarm_content_not_found') {
+          // The Bee HTTP API is reachable, but the requested content didn't
+          // resolve within the probe timeout. Typically means the node is
+          // still connecting to enough peers to locate the manifest.
+          titleEl.textContent = "Content not ready yet";
+          descriptionEl.innerHTML =
+            "Couldn't find this content on the Swarm network yet. The node is " +
+            "still connecting to peers &mdash; try again in a moment.";
+          if (protocolUrl) {
+            parts.push('');
+            parts.push('Swarm content not found (timeout)');
+          }
+        } else if (error && error.includes('ERR_CONNECTION_REFUSED')) {
           if (protocol === 'swarm') {
             const status = await checkSwarmStatus();
             if (!status.running) {
@@ -204,8 +249,8 @@
 
       // Retry the original URL
       document.getElementById('retry-btn').onclick = () => {
-        if (url) {
-          window.location.href = url;
+        if (retryUrl) {
+          window.location.href = retryUrl;
         } else {
           window.location.reload();
         }

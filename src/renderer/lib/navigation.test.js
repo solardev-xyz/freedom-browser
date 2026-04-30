@@ -213,6 +213,13 @@ const loadNavigationModule = async (options = {}) => {
   };
   const settingsState = options.initialSettings || { showBookmarkBar: true };
   const electronHandlers = {};
+  const swarmProbeState = {
+    nextProbeId: 'probe-1',
+    pendingAwaits: [],
+    startCalls: [],
+    awaitCalls: [],
+    cancelCalls: [],
+  };
   const electronAPI = {
     getSettings: jest.fn().mockResolvedValue({ ...settingsState }),
     saveSettings: jest.fn().mockResolvedValue(true),
@@ -227,6 +234,22 @@ const loadNavigationModule = async (options = {}) => {
     clearIpfsBase: jest.fn(),
     setRadBase: jest.fn(),
     clearRadBase: jest.fn(),
+    startSwarmProbe: jest.fn((hash) => {
+      const id = swarmProbeState.nextProbeId;
+      swarmProbeState.startCalls.push({ id, hash });
+      return Promise.resolve({ success: true, id });
+    }),
+    awaitSwarmProbe: jest.fn(
+      (id) =>
+        new Promise((resolve) => {
+          swarmProbeState.awaitCalls.push(id);
+          swarmProbeState.pendingAwaits.push({ id, resolve });
+        })
+    ),
+    cancelSwarmProbe: jest.fn((id) => {
+      swarmProbeState.cancelCalls.push(id);
+      return Promise.resolve({ success: true, cancelled: true });
+    }),
     onToggleBookmarkBar: jest.fn((handler) => {
       electronHandlers.toggleBookmarkBar = handler;
     }),
@@ -338,6 +361,7 @@ const loadNavigationModule = async (options = {}) => {
     activeRef,
     tabsRef,
     windowHandlers,
+    swarmProbeState,
     elements: {
       addressInput,
       navForm,
@@ -534,6 +558,198 @@ describe('navigation', () => {
     ctx.tabsMocks.webviewEventHandler('dom-ready', {});
     await flushMicrotasks();
     expect(ctx.debugMocks.pushDebug).toHaveBeenCalledWith('Webview ready.');
+  });
+
+  describe('bzz navigation probe', () => {
+    const VALID_HASH = 'a'.repeat(64);
+
+    const settleAwait = (ctx, id, outcome) => {
+      const entry = ctx.swarmProbeState.pendingAwaits.find((p) => p.id === id);
+      if (!entry) throw new Error(`no pending await for ${id}`);
+      entry.resolve({ success: true, outcome });
+      ctx.swarmProbeState.pendingAwaits = ctx.swarmProbeState.pendingAwaits.filter(
+        (p) => p !== entry
+      );
+    };
+
+    test('loads gateway URL only after the probe succeeds', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+
+      ctx.mod.loadTarget(`bzz://${VALID_HASH}`);
+      await flushMicrotasks();
+
+      // Tab spinner is active and stop state is set, but no gateway load yet.
+      expect(ctx.tabsMocks.setTabLoading).toHaveBeenCalledWith(true);
+      expect(ctx.elements.reloadBtn.dataset.state).toBe('stop');
+      expect(ctx.electronAPI.startSwarmProbe).toHaveBeenCalledWith(VALID_HASH);
+      expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
+      expect(ctx.activeRef.tab.navigationState.pendingSwarmProbeId).toBe('probe-1');
+
+      settleAwait(ctx, 'probe-1', { ok: true });
+      await flushMicrotasks();
+
+      // After a successful probe we hand off to the `bzz:` protocol handler
+      // rather than the raw gateway URL — see README "Swarm Content Retrieval".
+      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(
+        `bzz://${VALID_HASH}/`
+      );
+      expect(ctx.activeRef.tab.navigationState.pendingSwarmProbeId).toBeNull();
+    });
+
+    test('routes to ERR_CONNECTION_REFUSED error page when Bee is unreachable', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+
+      ctx.mod.loadTarget(`bzz://${VALID_HASH}`);
+      await flushMicrotasks();
+      settleAwait(ctx, 'probe-1', { ok: false, reason: 'bee_unreachable' });
+      await flushMicrotasks();
+
+      const loadedUrl = ctx.activeRef.tab.webview.loadURL.mock.calls.at(-1)[0];
+      expect(loadedUrl).toContain('pages/error.html');
+      expect(loadedUrl).toContain('error=ERR_CONNECTION_REFUSED');
+      // The error page's `url` param should carry the user-facing display
+      // URL, not the internal Bee gateway URL — otherwise the address bar
+      // ends up showing the raw bzz hash instead of what the user typed.
+      expect(loadedUrl).toContain(encodeURIComponent(`bzz://${VALID_HASH}`));
+      expect(loadedUrl).not.toContain(
+        encodeURIComponent(`https://gateway.example/bzz/${VALID_HASH}`)
+      );
+    });
+
+    test('error page url param shows the ENS name, not the gateway URL', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+
+      ctx.mod.loadTarget(`bzz://${VALID_HASH}`, 'ens://swarm.eth');
+      await flushMicrotasks();
+      settleAwait(ctx, 'probe-1', { ok: false, reason: 'not_found' });
+      await flushMicrotasks();
+
+      const loadedUrl = ctx.activeRef.tab.webview.loadURL.mock.calls.at(-1)[0];
+      expect(loadedUrl).toContain('pages/error.html');
+      expect(loadedUrl).toContain('error=swarm_content_not_found');
+      expect(loadedUrl).toContain(encodeURIComponent('ens://swarm.eth'));
+      expect(loadedUrl).not.toContain(
+        encodeURIComponent(`https://gateway.example/bzz/${VALID_HASH}`)
+      );
+    });
+
+    test('routes to swarm_content_not_found error page on timeout', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+
+      ctx.mod.loadTarget(`bzz://${VALID_HASH}`);
+      await flushMicrotasks();
+      settleAwait(ctx, 'probe-1', { ok: false, reason: 'not_found' });
+      await flushMicrotasks();
+
+      const loadedUrl = ctx.activeRef.tab.webview.loadURL.mock.calls.at(-1)[0];
+      expect(loadedUrl).toContain('pages/error.html');
+      expect(loadedUrl).toContain('error=swarm_content_not_found');
+    });
+
+    test('stop button cancels probe even if start IPC has not resolved yet', async () => {
+      // Simulate the small window between calling startSwarmProbe and the
+      // IPC resolving with a probeId. Stopping in that window must still
+      // cancel the probe; otherwise it eventually navigates the webview
+      // after the user told it to stop.
+      const ctx = await loadNavigationModule();
+      let resolveStart;
+      ctx.electronAPI.startSwarmProbe.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveStart = resolve;
+          })
+      );
+      await ctx.mod.initNavigation();
+
+      ctx.mod.loadTarget(`bzz://${VALID_HASH}`);
+      // Do NOT flush — startSwarmProbe is still pending, no probeId yet.
+      expect(ctx.activeRef.tab.navigationState.pendingSwarmProbeId).toBeFalsy();
+
+      // User clicks stop in the early window.
+      ctx.elements.reloadBtn.dispatch('click');
+      expect(ctx.activeRef.tab.webview.stop).toHaveBeenCalled();
+
+      // The IPC eventually resolves with an id — the probe must be
+      // retroactively cancelled, never awaited, and the webview untouched.
+      resolveStart({ success: true, id: 'probe-late' });
+      await flushMicrotasks();
+
+      expect(ctx.electronAPI.cancelSwarmProbe).toHaveBeenCalledWith('probe-late');
+      expect(ctx.electronAPI.awaitSwarmProbe).not.toHaveBeenCalled();
+      expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
+    });
+
+    test('stop button cancels the pending probe', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+
+      ctx.mod.loadTarget(`bzz://${VALID_HASH}`);
+      await flushMicrotasks();
+      expect(ctx.activeRef.tab.navigationState.pendingSwarmProbeId).toBe('probe-1');
+      expect(ctx.activeRef.tab.navigationState.isWebviewLoading).toBe(true);
+
+      ctx.elements.reloadBtn.dispatch('click');
+
+      expect(ctx.electronAPI.cancelSwarmProbe).toHaveBeenCalledWith('probe-1');
+      expect(ctx.activeRef.tab.navigationState.pendingSwarmProbeId).toBeNull();
+      expect(ctx.activeRef.tab.webview.stop).toHaveBeenCalled();
+      expect(ctx.elements.reloadBtn.dataset.state).toBe('reload');
+
+      // A late probe resolution after cancel must be ignored — the id has
+      // already been cleared, so the webview stays on its original URL.
+      settleAwait(ctx, 'probe-1', { ok: true });
+      await flushMicrotasks();
+      expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalledWith(
+        `bzz://${VALID_HASH}/`
+      );
+    });
+
+    test('a second navigation cancels the first probe', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+
+      ctx.mod.loadTarget(`bzz://${VALID_HASH}`);
+      await flushMicrotasks();
+      expect(ctx.activeRef.tab.navigationState.pendingSwarmProbeId).toBe('probe-1');
+
+      ctx.swarmProbeState.nextProbeId = 'probe-2';
+      const secondHash = 'b'.repeat(64);
+      ctx.mod.loadTarget(`bzz://${secondHash}`);
+      await flushMicrotasks();
+
+      expect(ctx.electronAPI.cancelSwarmProbe).toHaveBeenCalledWith('probe-1');
+      expect(ctx.activeRef.tab.navigationState.pendingSwarmProbeId).toBe('probe-2');
+
+      // Settle the superseded first probe — result must be ignored.
+      settleAwait(ctx, 'probe-1', { ok: true });
+      await flushMicrotasks();
+      expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalledWith(
+        `bzz://${VALID_HASH}/`
+      );
+
+      // Settle the second probe with success — it should load the bzz:// URL.
+      settleAwait(ctx, 'probe-2', { ok: true });
+      await flushMicrotasks();
+      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(
+        `bzz://${secondHash}/`
+      );
+    });
+
+    test('aborted outcome leaves the webview alone', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+
+      ctx.mod.loadTarget(`bzz://${VALID_HASH}`);
+      await flushMicrotasks();
+      settleAwait(ctx, 'probe-1', { ok: false, reason: 'aborted' });
+      await flushMicrotasks();
+
+      expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
+    });
   });
 
   test('restores tab state on tab switches and updates navigation display', async () => {

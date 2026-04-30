@@ -49,7 +49,7 @@ Follow `changelog-process.md` in full. Key points for release branches:
 
 - The baseline for `git log` is the last `package.json` version bump commit.
 - Replace the `## [Unreleased]` heading with `## [<version>] - <YYYY-MM-DD>` using the date from `git show -s --format="%ad" --date=short HEAD`.
-- Leave a fresh empty `## [Unreleased]` section above it for the next cycle.
+- Do **not** leave an empty `## [Unreleased]` section behind. The first user-facing change after the release re-introduces the heading above the latest version.
 
 Commit style:
 
@@ -114,7 +114,10 @@ npm run dist -- --win --x64
 ## 5. Upload binaries and update the website
 
 1. Upload the generated artifacts from `dist/` to `https://freedom.baby/downloads`, including the `latest*.yml` manifests so existing installs pick up the update via `electron-updater` (which is configured with `publish.provider = generic` pointing at that URL).
-2. Update the Freedom website (download links, version string, release notes link) to point at the new version.
+2. Update the Freedom website to point at the new version:
+   - Download links and per-platform file-size metadata.
+   - Version string in the downloads intro (e.g. `Alpha release (<version>)`).
+   - `Changelog` link — pin to the release branch so the page shows the CHANGELOG state that matches the binaries being served: `https://github.com/solardev-xyz/freedom-browser/blob/release/<version>/CHANGELOG.md`. Do not link to `main`, which will absorb future releases' in-progress notes.
 
 Do this **before** tagging — if an upload reveals a broken artifact, you want to be able to fix it on the release branch without already having a tag pointing at a broken commit.
 

@@ -25,7 +25,7 @@ Use this playbook when asked to update `CHANGELOG.md` for a new version.
 6. Merge related commits into a single user-facing entry.
 7. Inspect PR merge commits by reviewing underlying commits.
 8. Re-run the git log before editing to catch late commits.
-9. Prepend the new version section above the previous one.
+9. Prepend the new version section above the previous one. If a `## [Unreleased]` heading is present, replace it with `## [<version>] - <YYYY-MM-DD>`. If it is absent (expected immediately after a release, per `release-process.md`), add the new version heading directly. When writing the first user-facing change after a release, re-introduce a `## [Unreleased]` heading above the latest released version.
 
 ## Output Style
 

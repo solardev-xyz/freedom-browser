@@ -1,6 +1,7 @@
 const log = require('./logger');
 const { net } = require('electron');
 const { convertProtocolUrl, sanitizeUrlForLog } = require('./request-rewriter');
+const { getBeeApiUrl } = require('./service-registry');
 
 // Hygiene timeout — not trust-critical. A misbehaving gateway shouldn't
 // hold a socket open forever for speculative content the user may never
@@ -30,8 +31,25 @@ function prefetchGatewayUrl(uri) {
     if (uri.startsWith('ipns://')) return NOOP_HANDLE;
     if (!uri.startsWith('bzz://') && !uri.startsWith('ipfs://')) return NOOP_HANDLE;
 
-    const { converted, url } = convertProtocolUrl(uri);
-    if (!converted) return NOOP_HANDLE;
+    // bzz:// is now served by the custom protocol handler in
+    // src/main/swarm/bzz-protocol.js, so convertProtocolUrl no longer
+    // rewrites it. The prefetch fires from the main process directly via
+    // net.request, which doesn't go through the protocol handler, so we
+    // build the Bee gateway URL ourselves — same shape the bzz-protocol
+    // handler ultimately proxies to.
+    let url;
+    if (uri.startsWith('bzz://')) {
+      const afterScheme = uri.slice(6).replace(/^\/+/, '');
+      const hash = afterScheme.split(/[/?#]/)[0];
+      if (!hash || !/^[a-fA-F0-9]{64}([a-fA-F0-9]{64})?$/.test(hash)) {
+        return NOOP_HANDLE;
+      }
+      url = `${getBeeApiUrl()}/bzz/${afterScheme}`;
+    } else {
+      const { converted, url: convertedUrl } = convertProtocolUrl(uri);
+      if (!converted) return NOOP_HANDLE;
+      url = convertedUrl;
+    }
 
     let aborted = false;
     let request = null;

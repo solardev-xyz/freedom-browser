@@ -57,6 +57,9 @@ function loadIpcHandlersModule(options = {}) {
         fetchBuffer,
         fetchToFile,
       }),
+      ...(options.swarmProbeMock
+        ? { [require.resolve('./swarm/swarm-probe')]: () => options.swarmProbeMock }
+        : {}),
     },
   });
   const state = require('./state');
@@ -381,5 +384,70 @@ describe('ipc-handlers', () => {
       '[clipboard] Failed to copy image:',
       expect.any(Error)
     );
+  });
+
+  test('wires bzz content probe handlers through start/await/cancel', async () => {
+    let probeResolve;
+    const startProbe = jest.fn(() => ({
+      id: 'probe-abc',
+      promise: new Promise((resolve) => {
+        probeResolve = resolve;
+      }),
+    }));
+    const cancelProbe = jest.fn(() => true);
+    const ctx = loadIpcHandlersModule({
+      swarmProbeMock: { startProbe, cancelProbe },
+    });
+
+    ctx.mod.registerBaseIpcHandlers();
+
+    await expect(ctx.ipcMain.invoke(IPC.BZZ_START_PROBE, {})).resolves.toEqual(
+      failure('INVALID_HASH', 'Missing hash')
+    );
+    await expect(ctx.ipcMain.invoke(IPC.BZZ_CANCEL_PROBE, {})).resolves.toEqual(
+      failure('INVALID_ID', 'Missing probe id')
+    );
+    await expect(ctx.ipcMain.invoke(IPC.BZZ_AWAIT_PROBE, { id: 'missing' })).resolves.toEqual(
+      failure('UNKNOWN_PROBE', 'Unknown probe id', { id: 'missing' })
+    );
+
+    const startResult = await ctx.ipcMain.invoke(IPC.BZZ_START_PROBE, {
+      hash: 'a'.repeat(64),
+    });
+    expect(startResult).toEqual(success({ id: 'probe-abc' }));
+    expect(startProbe).toHaveBeenCalledWith('a'.repeat(64));
+
+    const awaitPromise = ctx.ipcMain.invoke(IPC.BZZ_AWAIT_PROBE, { id: 'probe-abc' });
+    probeResolve({ ok: true });
+    await expect(awaitPromise).resolves.toEqual(success({ outcome: { ok: true } }));
+
+    // Once consumed, awaiting again reports unknown probe.
+    await expect(
+      ctx.ipcMain.invoke(IPC.BZZ_AWAIT_PROBE, { id: 'probe-abc' })
+    ).resolves.toEqual(failure('UNKNOWN_PROBE', 'Unknown probe id', { id: 'probe-abc' }));
+
+    // Race: a fast probe that settles before the renderer's await-probe IPC
+    // arrives must still deliver its outcome — the entry survives until
+    // await-probe consumes it.
+    let fastResolve;
+    startProbe.mockImplementationOnce(() => ({
+      id: 'probe-fast',
+      promise: new Promise((resolve) => {
+        fastResolve = resolve;
+      }),
+    }));
+    await ctx.ipcMain.invoke(IPC.BZZ_START_PROBE, { hash: 'b'.repeat(64) });
+    fastResolve({ ok: true });
+    // Let the probe promise microtask-settle before we await.
+    await Promise.resolve();
+    await Promise.resolve();
+    await expect(
+      ctx.ipcMain.invoke(IPC.BZZ_AWAIT_PROBE, { id: 'probe-fast' })
+    ).resolves.toEqual(success({ outcome: { ok: true } }));
+
+    await expect(
+      ctx.ipcMain.invoke(IPC.BZZ_CANCEL_PROBE, { id: 'probe-abc' })
+    ).resolves.toEqual(success({ cancelled: true }));
+    expect(cancelProbe).toHaveBeenCalledWith('probe-abc');
   });
 });

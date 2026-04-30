@@ -4,6 +4,11 @@ All notable changes to Freedom will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- Navigating to a Swarm address (`bzz://` or ENS-resolved) now keeps the tab's loading spinner running while the Bee node looks up the content, instead of showing Bee's raw `{"code":404,"message":"address not found or incorrect"}` JSON while peers are still syncing. If the lookup times out we land on a friendlier "Content not ready yet" page; if the Bee HTTP API itself is unreachable we route to the existing "Swarm node is not running" error page. When the destination was an ENS name (e.g. `swarm.eth`), the error page and address bar show the original `ens://…` name rather than the resolved hash.
+- Swarm pages are now loaded under the `bzz://` URL scheme directly. `window.location.protocol === 'bzz:'`, the hash is the host, and same-origin relative paths Just Work. Sub-resource fetches (including `<video>` Range requests, CSS `@import`, service workers, and `fetch()` calls before any preload-installed wrapper) flow through a main-process protocol handler that proxies to the local Bee gateway with `Swarm-Chunk-Retrieval-Timeout` + redundancy headers, retries transient `5xx` failures with bounded exponential backoff (~50 s total) and a 30 s per-attempt deadline, and streams the response back. **Note for Swarm site authors:** if your site builds absolute URLs from `window.location` (sniffing `protocol === 'http:'`, scraping the `/bzz/<hash>/` prefix from `pathname`, or appending `/bzz/<ref>/` onto `origin`) it will need updating. See "Migrating Swarm sites to the `bzz://` scheme" in the README.
+
 ## [0.7.0] - 2026-04-19
 
 ### Added

@@ -471,4 +471,8 @@ ipcRenderer.on('swarm:provider-event', (_event, { event, data }) => {
   }, window.location.origin);
 });
 
+// Note: transient 404/500 recovery for bzz:// sub-resources is handled by the
+// main-process `bzz:` protocol handler in `src/main/swarm/bzz-protocol.js`,
+// not by in-page JavaScript. See README "Swarm Content Retrieval".
+
 console.log('[webview-preload] Loaded (freedomAPI + context menu + ethereum + swarm provider)');

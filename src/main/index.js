@@ -36,10 +36,28 @@ process.on('unhandledRejection', (reason, _promise) => {
   log.error('Unhandled rejection:', reason);
 });
 
-const { BrowserWindow, session } = require('electron');
+const { BrowserWindow, protocol, session } = require('electron');
 const path = require('path');
 const { registerBaseIpcHandlers } = require('./ipc-handlers');
 const { registerRequestRewriter } = require('./request-rewriter');
+const { registerBzzProtocol } = require('./swarm/bzz-protocol');
+
+// Register `bzz:` as a privileged standard scheme. Must run before
+// `app.whenReady()` — see https://www.electronjs.org/docs/latest/api/protocol.
+// See README "Swarm Content Retrieval" for why this exists.
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: 'bzz',
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      corsEnabled: true,
+      stream: true,
+      allowServiceWorkers: true,
+    },
+  },
+]);
 const { registerSettingsIpc, loadSettings } = require('./settings-store');
 const { registerBookmarksIpc } = require('./bookmarks-store');
 const { registerHistoryIpc, closeDb: closeHistoryDb } = require('./history');
@@ -120,6 +138,7 @@ async function bootstrap() {
   registerSwarmPermissionsIpc();
   registerSwarmProviderIpc();
   registerFeedStoreIpc();
+  registerBzzProtocol(defaultSession);
   registerRequestRewriter(defaultSession);
   allowInteractivePermissions(defaultSession);
   registerWebContentsHandlers();
