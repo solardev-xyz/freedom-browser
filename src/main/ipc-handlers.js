@@ -9,6 +9,20 @@ const { loadSettings } = require('./settings-store');
 const { fetchBuffer, fetchToFile } = require('./http-fetch');
 const { success, failure, validateWebContentsId } = require('./ipc-contract');
 const IPC = require('../shared/ipc-channels');
+const { startProbe: startSwarmProbe, cancelProbe: cancelSwarmProbe } = require('./swarm/swarm-probe');
+
+// Bzz content probes, keyed by probe id. Each entry exposes a promise that
+// resolves to the probe outcome. Entries survive until BZZ_AWAIT_PROBE
+// consumes them (or a safety TTL elapses so abandoned entries don't leak).
+//
+// We *must not* drop entries the moment the probe settles: the renderer
+// receives the id from BZZ_START_PROBE over IPC, then calls BZZ_AWAIT_PROBE
+// in a second round-trip. Probes that resolve quickly (Bee already has the
+// content, returns 200 on the first HEAD) would otherwise be deleted before
+// the second call arrives, producing a spurious UNKNOWN_PROBE failure and
+// dumping the user on the error page.
+const bzzProbePromises = new Map();
+const BZZ_PROBE_ABANDON_TTL_MS = 5 * 60 * 1000;
 
 // Path to webview preload script (for internal pages)
 const webviewPreloadPath = path.join(__dirname, 'webview-preload.js');
@@ -97,6 +111,51 @@ function registerBaseIpcHandlers(callbacks = {}) {
     }
     activeBzzBases.delete(webContentsId);
     return success();
+  });
+
+  // Each probe is split across start/await/cancel so the renderer can
+  // obtain the id before the probe settles (enabling mid-flight cancel
+  // from the stop button / next navigation).
+  ipcMain.handle(IPC.BZZ_START_PROBE, (_event, payload = {}) => {
+    const { hash } = payload;
+    if (typeof hash !== 'string' || !hash) {
+      return failure('INVALID_HASH', 'Missing hash');
+    }
+    const { id, promise } = startSwarmProbe(hash);
+    // Keep the entry until await-probe consumes it. A safety TTL drops
+    // abandoned entries (e.g. the tab was closed before awaiting) without
+    // racing the start→await IPC round-trip for fast-resolving probes.
+    const timer = setTimeout(() => {
+      bzzProbePromises.delete(id);
+    }, BZZ_PROBE_ABANDON_TTL_MS);
+    // Avoid keeping the Electron event loop alive solely for this cleanup.
+    if (typeof timer.unref === 'function') timer.unref();
+    bzzProbePromises.set(id, { promise, timer });
+    return success({ id });
+  });
+
+  ipcMain.handle(IPC.BZZ_AWAIT_PROBE, async (_event, payload = {}) => {
+    const { id } = payload;
+    if (typeof id !== 'string' || !id) {
+      return failure('INVALID_ID', 'Missing probe id');
+    }
+    const entry = bzzProbePromises.get(id);
+    if (!entry) {
+      return failure('UNKNOWN_PROBE', 'Unknown probe id', { id });
+    }
+    const outcome = await entry.promise;
+    clearTimeout(entry.timer);
+    bzzProbePromises.delete(id);
+    return success({ outcome });
+  });
+
+  ipcMain.handle(IPC.BZZ_CANCEL_PROBE, (_event, payload = {}) => {
+    const { id } = payload;
+    if (typeof id !== 'string' || !id) {
+      return failure('INVALID_ID', 'Missing probe id');
+    }
+    const cancelled = cancelSwarmProbe(id);
+    return success({ cancelled });
   });
 
   ipcMain.handle(IPC.IPFS_SET_BASE, (_event, payload = {}) => {

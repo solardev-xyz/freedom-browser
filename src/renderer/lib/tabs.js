@@ -205,6 +205,8 @@ const createNavigationState = () => ({
   addressBarSnapshot: '',
   cachedWebContentsId: null,
   resolvingWebContentsId: null,
+  pendingSwarmProbeId: null,
+  swarmProbeVersion: 0,
 });
 
 // Get navigation state of the active tab
