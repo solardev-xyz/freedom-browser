@@ -153,7 +153,32 @@
       // actually navigate to (bzz://, http(s)://, …). Needed when `url` is
       // a user-facing scheme like ens:// that isn't registered as a
       // navigable protocol.
-      const retryUrl = params.get('retry') || url;
+      //
+      // We accept only an allowlist of schemes here. Both `retry` and `url`
+      // come straight from the query string, so a `javascript:` value would
+      // be evaluated by `window.location.href = ...`. Cross-origin navs to
+      // `file://` are blocked by Chromium so the practical surface is
+      // limited, but allowlisting keeps paste / bookmark social-engineering
+      // off the table.
+      const ALLOWED_RETRY_SCHEMES = [
+        'bzz:',
+        'ens:',
+        'ipfs:',
+        'ipns:',
+        'rad:',
+        'http:',
+        'https:',
+      ];
+      const sanitizeRetryUrl = (candidate) => {
+        if (!candidate) return null;
+        try {
+          const parsed = new URL(candidate, window.location.href);
+          return ALLOWED_RETRY_SCHEMES.includes(parsed.protocol) ? candidate : null;
+        } catch (e) {
+          return null;
+        }
+      };
+      const retryUrl = sanitizeRetryUrl(params.get('retry')) || sanitizeRetryUrl(url);
       const protocolUrl = toProtocolUrl(url);
       const protocol = explicitProtocol || detectProtocol(url);
 

@@ -91,8 +91,17 @@ const buildErrorPageUrl = (errorCode, targetUrl, extras = {}) => {
 };
 
 // Cancel any pending Swarm content probe on the given navState and clear it.
+//
+// Bumps `swarmProbeVersion` even when no `pendingSwarmProbeId` is set yet,
+// because the user can hit stop in the small window between
+// `startSwarmProbe` (the IPC) and the `.then()` that records the returned
+// probeId. If we only checked the id, that early-cancel would no-op and
+// the probe would eventually navigate the webview after the user told it
+// to stop.
 const cancelPendingSwarmProbe = (navState) => {
-  if (!navState?.pendingSwarmProbeId) return;
+  if (!navState) return;
+  navState.swarmProbeVersion = (navState.swarmProbeVersion || 0) + 1;
+  if (!navState.pendingSwarmProbeId) return;
   const probeId = navState.pendingSwarmProbeId;
   navState.pendingSwarmProbeId = null;
   electronAPI?.cancelSwarmProbe?.(probeId).catch((err) => {
@@ -353,6 +362,11 @@ const startBzzNavigationWithProbe = (webview, target, navState, displayUrl) => {
   // Cancel any earlier Swarm probe still in flight for this tab.
   cancelPendingSwarmProbe(navState);
 
+  // Capture the version after the cancel-and-bump above, so any subsequent
+  // bump (stop button, second navigation) invalidates this probe — even
+  // before `startSwarmProbe` has resolved and given us a probeId.
+  const myVersion = navState.swarmProbeVersion || 0;
+
   setLoading(true);
   navState.isWebviewLoading = true;
   reloadBtn.dataset.state = 'stop';
@@ -366,16 +380,30 @@ const startBzzNavigationWithProbe = (webview, target, navState, displayUrl) => {
         throw new Error(message);
       }
       const probeId = startResult.id;
+      // If the user cancelled (or another navigation started) before the
+      // start IPC resolved, swarmProbeVersion has been bumped. Tell the
+      // main process to drop the probe rather than letting it run to
+      // completion and waste cycles.
+      if (navState.swarmProbeVersion !== myVersion) {
+        pushDebug(`[Swarm] Probe ${probeId} cancelled before start IPC resolved`);
+        electronAPI?.cancelSwarmProbe?.(probeId).catch((err) => {
+          pushDebug(`[Swarm] cancelSwarmProbe failed: ${err?.message || err}`);
+        });
+        return null;
+      }
       navState.pendingSwarmProbeId = probeId;
       return electronAPI.awaitSwarmProbe(probeId).then((awaitResult) => ({
         probeId,
         awaitResult,
       }));
     })
-    .then(({ probeId, awaitResult }) => {
-      // Guard: another navigation may have started a different probe in the
-      // meantime. If our probe id no longer matches, ignore the result.
-      if (navState.pendingSwarmProbeId !== probeId) {
+    .then((result) => {
+      if (!result) return;
+      const { probeId, awaitResult } = result;
+      // Guard: a stop / second navigation may have happened during the
+      // await. swarmProbeVersion catches both the supersedence case and
+      // the early-cancel case where pendingSwarmProbeId was never set.
+      if (navState.swarmProbeVersion !== myVersion) {
         pushDebug(`[Swarm] Probe ${probeId} superseded — discarding result`);
         return;
       }
@@ -425,6 +453,10 @@ const startBzzNavigationWithProbe = (webview, target, navState, displayUrl) => {
     })
     .catch((err) => {
       pushDebug(`[Swarm] Probe error: ${err?.message || err}`);
+      // Don't surface an error page if the user (or a subsequent navigation)
+      // already cancelled this probe — they'd see the error flash on top of
+      // their actual destination.
+      if (navState.swarmProbeVersion !== myVersion) return;
       navState.pendingSwarmProbeId = null;
       webview.loadURL(
         buildErrorPageUrl('swarm_content_not_found', errorDisplayUrl, {

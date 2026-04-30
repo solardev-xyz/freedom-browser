@@ -17,7 +17,7 @@
  */
 
 const crypto = require('crypto');
-const log = require('electron-log');
+const log = require('../logger');
 const { getBeeApiUrl } = require('../service-registry');
 
 const DEFAULT_DELAYS_MS = [0, 500, 1000, 2000, 3000];

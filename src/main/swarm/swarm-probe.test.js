@@ -1,7 +1,8 @@
-jest.mock('electron-log', () => ({
+jest.mock('../logger', () => ({
   info: jest.fn(),
   error: jest.fn(),
   warn: jest.fn(),
+  debug: jest.fn(),
 }));
 
 const mockGetBeeApiUrl = jest.fn();

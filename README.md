@@ -52,7 +52,60 @@ Freedom mitigates this in two layers:
 
 1. **Navigation probe** (`src/main/swarm/swarm-probe.js`) — before loading a `bzz://` URL, the main process HEAD-polls `/bzz/<hash>` on the local Bee gateway with exponential backoff (30 s per attempt, 5 min overall). The tab spinner runs during the probe, so the user never sees Bee's raw 404 JSON; on timeout or Bee-unreachable we route to `error.html` with the original URL preserved and a **Try Again** button. Probes are cancellable.
 
-2. **Custom `bzz:` scheme** (`src/main/swarm/bzz-protocol.js`) — `bzz` is registered as a privileged standard scheme, so `bzz://<hash>/` becomes the page origin in Chromium. Every `bzz://` request (top-level, sub-resources, `fetch`, media `Range`, CSS descendants, service workers) routes through a main-process handler that proxies to the local Bee gateway, always sets `Swarm-Chunk-Retrieval-Timeout` + `Swarm-Redundancy-Strategy: 3` + `Swarm-Redundancy-Fallback-Mode: true`, retries transient `404`/`5xx` on idempotent methods with bounded exponential backoff (~3 min total), and streams the response back. Because `bzz://<hash>/` is the origin, same-origin relative paths (`/foo.js`, `url(/bg.png)`) resolve naturally with no URL rewriting.
+2. **Custom `bzz:` scheme** (`src/main/swarm/bzz-protocol.js`) — `bzz` is registered as a privileged standard scheme, so `bzz://<hash>/` becomes the page origin in Chromium. Every `bzz://` request (top-level, sub-resources, `fetch`, media `Range`, CSS descendants, service workers) routes through a main-process handler that proxies to the local Bee gateway, always sets `Swarm-Chunk-Retrieval-Timeout` + `Swarm-Redundancy-Strategy: 3` + `Swarm-Redundancy-Fallback-Mode: true`, retries transient `5xx` on idempotent methods with bounded exponential backoff (~50 s total) with a 30 s per-attempt deadline, and streams the response back. `404` responses are surfaced immediately so SPAs that feature-detect missing endpoints don't stall — the cold-start case that 404 retries used to absorb is now handled upstream by the navigation probe. Because `bzz://<hash>/` is the origin, same-origin relative paths (`/foo.js`, `url(/bg.png)`) resolve naturally with no URL rewriting.
+
+### Migrating Swarm sites to the `bzz://` scheme
+
+Versions of Freedom before this change loaded `bzz://<hash>/path` by rewriting it to the gateway URL `http://127.0.0.1:1633/bzz/<hash>/path` and navigating there. Pages saw `window.location.protocol === 'http:'` and `window.location.pathname === '/bzz/<hash>/path'`.
+
+With the custom scheme, pages now see:
+
+- `window.location.protocol === 'bzz:'`
+- `window.location.host === '<hash>'`
+- `window.location.pathname === '/path'` (the `/bzz/<hash>/` prefix is gone — it's encoded in the host)
+
+Most sites work without changes — relative URLs (`./assets/...`, `/foo.js`, `url(bar.png)`) resolve naturally because `bzz://<hash>/` is the origin. Sites break only when they sniff `window.location` to construct absolute Bee URLs.
+
+**Anti-pattern 1: protocol/pathname sniffing** (e.g. tile servers, Leaflet maps):
+
+```js
+// ✗ Old pattern — assumes the page is served from a gateway URL
+const urlServer = window.location.protocol === 'http:' ? '' : 'http://localhost:1633';
+const bzzMatch = window.location.pathname.match(/^\/bzz\/([\dA-Fa-f]{64})\//);
+const bzzRoot = bzzMatch ? `/bzz/${bzzMatch[1]}/` : '';
+const tileUrl = `${urlServer}${bzzRoot}{z}/{x}/{y}.png`;
+
+// ✓ New pattern — relative URLs work from any origin (gateway or bzz://)
+const tileUrl = './{z}/{x}/{y}.png';
+```
+
+**Anti-pattern 2: appending `/bzz/<ref>/` to `window.location.origin`** (e.g. SPAs fetching feeds, manifests, or other Swarm refs from JS):
+
+```js
+// ✗ Old pattern — works under http://127.0.0.1:1633, builds garbage under bzz://
+//   becomes: bzz://<app-hash>/bzz/<feedRef>/  → 404
+const feedUrl = `${window.location.origin}/bzz/${feedRef}/`;
+
+// ✓ New pattern — point at the content ref directly with the bzz:// scheme
+const feedUrl = `bzz://${feedRef}/`;
+
+// ✓ Or, to support both gateway and native scheme modes:
+const feedUrl =
+  window.location.protocol === 'bzz:'
+    ? `bzz://${feedRef}/`
+    : `${window.location.origin}/bzz/${feedRef}/`;
+```
+
+**When you really need an absolute URL to your own bzz root:**
+
+```js
+const bzzRoot =
+  window.location.protocol === 'bzz:'
+    ? `bzz://${window.location.host}/`
+    : `/bzz/${window.location.pathname.match(/^\/bzz\/([\dA-Fa-f]{64})\//)?.[1]}/`;
+```
+
+Don't hardcode `http://localhost:1633` — Freedom users may have Bee on a different port, and external visitors via a public Swarm gateway certainly do.
 
 ---
 
@@ -348,11 +401,13 @@ Run all tests:
 npm test
 ```
 
-The test suite covers:
+The suite covers most of `src/main/` and `src/renderer/lib/` — see `src/**/*.test.js` for the full list. Notable areas include:
 
-- **url-utils**: Swarm hash parsing, IPFS CID validation (CIDv0/CIDv1), IPFS/IPNS URL parsing, Radicle ID validation, ENS name preservation, display value derivation, edge cases
-- **tabs**: Tab creation, management, and state handling
-- **request-rewriter**: Swarm, IPFS, and Radicle path rewriting for absolute and relative paths
+- **Networking & protocols**: `bzz-protocol`, `swarm-probe`, `swarm-service`, `swarm-provider-ipc`, `request-rewriter`, `ens-resolver`, `ipfs-manager`, `radicle-manager`, `bee-manager`, `service-registry`
+- **Renderer navigation & UI**: `navigation`, `navigation-utils`, `tabs`, `tabs-ui`, `bookmarks-ui`, `autocomplete`, `menus`, `page-context-menu`, `settings-ui`, `wallet/*`
+- **Identity, vault & wallet**: `identity/derivation`, `identity/vault`, `identity/formats`, `wallet/dapp-permissions`, `wallet/transaction-service`
+- **Parsing & utilities**: `url-utils`, `cid-utils`, `origin-utils`, `ethereum-uri`, `page-urls`, `brand`
+- **Storage & history**: `bookmarks-store`, `settings-store`, `history`, `feed-store`, `publish-history`
 
 ### Logging
 

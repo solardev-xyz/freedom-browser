@@ -607,6 +607,39 @@ describe('navigation', () => {
       expect(loadedUrl).toContain('error=swarm_content_not_found');
     });
 
+    test('stop button cancels probe even if start IPC has not resolved yet', async () => {
+      // Simulate the small window between calling startSwarmProbe and the
+      // IPC resolving with a probeId. Stopping in that window must still
+      // cancel the probe; otherwise it eventually navigates the webview
+      // after the user told it to stop.
+      const ctx = await loadNavigationModule();
+      let resolveStart;
+      ctx.electronAPI.startSwarmProbe.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveStart = resolve;
+          })
+      );
+      await ctx.mod.initNavigation();
+
+      ctx.mod.loadTarget(`bzz://${VALID_HASH}`);
+      // Do NOT flush — startSwarmProbe is still pending, no probeId yet.
+      expect(ctx.activeRef.tab.navigationState.pendingSwarmProbeId).toBeFalsy();
+
+      // User clicks stop in the early window.
+      ctx.elements.reloadBtn.dispatch('click');
+      expect(ctx.activeRef.tab.webview.stop).toHaveBeenCalled();
+
+      // The IPC eventually resolves with an id — the probe must be
+      // retroactively cancelled, never awaited, and the webview untouched.
+      resolveStart({ success: true, id: 'probe-late' });
+      await flushMicrotasks();
+
+      expect(ctx.electronAPI.cancelSwarmProbe).toHaveBeenCalledWith('probe-late');
+      expect(ctx.electronAPI.awaitSwarmProbe).not.toHaveBeenCalled();
+      expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
+    });
+
     test('stop button cancels the pending probe', async () => {
       const ctx = await loadNavigationModule();
       await ctx.mod.initNavigation();

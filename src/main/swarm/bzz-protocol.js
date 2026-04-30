@@ -9,8 +9,8 @@
  *
  * Why this lives here and not as a `webRequest` redirect:
  *
- * Cold Bee nodes produce transient 404/500 responses on first contact with
- * a chunk even when the content is healthy and peers are plentiful (see
+ * Cold Bee nodes produce transient 5xx responses on first contact with a
+ * chunk even when the content is healthy and peers are plentiful (see
  * "Swarm Content Retrieval" in the README for measured reliability). The
  * webRequest session API has no primitive for "retry this request", so a
  * failed sub-resource can't be recovered at the session layer. Moving the
@@ -19,8 +19,14 @@
  * script into the page.
  *
  * Contract:
- *  - GET / HEAD are retried on 404, 500, 502, 503, 504 with bounded
- *    exponential backoff (~3 min total budget).
+ *  - GET / HEAD are retried on 500, 502, 503, 504 with bounded
+ *    exponential backoff (~50 s total backoff budget).
+ *  - 404 is **not** retried. Top-level navigation is gated by the probe
+ *    in `swarm-probe.js`, which only resolves once Bee is warm enough to
+ *    HEAD the manifest. Subresource 404s after that point are almost
+ *    always genuine "asset doesn't exist" cases — e.g. SPAs feature-
+ *    detecting endpoints — and need to fail fast so the page can render
+ *    its own fallback rather than stalling for ~50 s per missing asset.
  *  - Other methods are single-shot: the request body is a consumable
  *    ReadableStream, so we can't replay it. This primarily affects POST,
  *    which bzz sites don't use for reads.
@@ -36,12 +42,25 @@ const log = require('../logger');
 const { getBeeApiUrl } = require('../service-registry');
 
 // Per-attempt retry schedule. First entry is the delay BEFORE the 2nd
-// attempt, etc. Total budget ≈ sum of all values (~3 min).
-const RETRY_DELAYS_MS = [
-  500, 1000, 2000, 3000, 5000, 5000, 10000, 10000, 15000, 15000, 30000, 30000, 30000,
-];
+// attempt, etc. Total backoff budget ≈ sum of all values (~50s). The probe
+// in `swarm-probe.js` already gates the top-level navigation on a longer
+// (~5 min) deadline, so per-subresource budgets can stay short — otherwise
+// a legitimate 404 paints the broken-image placeholder minutes late and
+// `<img onerror>` / `fetch().catch()` for real 404s also lag.
+const RETRY_DELAYS_MS = [500, 1000, 2000, 3000, 5000, 5000, 10000, 10000, 15000];
 
-const RETRYABLE_STATUSES = new Set([404, 500, 502, 503, 504]);
+// Per-attempt deadline. Bee's `Swarm-Chunk-Retrieval-Timeout: 30s` already
+// bounds server-side work, but it doesn't help if Bee accepts the TCP
+// connection and then stalls (crash mid-response, paused worker, debugger
+// breakpoint). This safety net mirrors the per-attempt timeout in
+// swarm-probe.js so the retry loop can always make progress.
+const ATTEMPT_TIMEOUT_MS = 30_000;
+
+// 5xx only — 404 is treated as a definitive "not found" so SPAs that
+// feature-detect missing endpoints render fast. See the file header for
+// rationale (the navigation probe handles the cold-start 404 case
+// upstream of subresource fetches).
+const RETRYABLE_STATUSES = new Set([500, 502, 503, 504]);
 const IDEMPOTENT_METHODS = new Set(['GET', 'HEAD']);
 
 // 64-char or 128-char lowercase/uppercase hex (unencrypted / encrypted refs).
@@ -49,11 +68,15 @@ const BZZ_HASH_RE = /^[a-fA-F0-9]{64}([a-fA-F0-9]{64})?$/;
 
 // Request headers we should not forward to Bee — either Chromium-injected
 // privileged-scheme noise or headers that refer to the bzz:// origin and
-// would confuse the gateway.
+// would confuse the gateway. `cookie` / `authorization` aren't a real
+// security risk against localhost Bee but stripping them keeps the request
+// shape consistent with how we strip Origin / Referer.
 const STRIPPED_REQUEST_HEADERS = new Set([
   'host',
   'origin',
   'referer',
+  'cookie',
+  'authorization',
   // Connection / hop-by-hop
   'connection',
   'keep-alive',
@@ -110,12 +133,35 @@ function sleep(ms, signal) {
   });
 }
 
-async function fetchOnce(gatewayUrl, init, fetchImpl) {
+async function fetchOnce(gatewayUrl, init, fetchImpl, attemptTimeoutMs) {
+  // Per-attempt AbortController, linked to the upstream request signal so
+  // a webview cancellation still aborts the in-flight fetch, but with its
+  // own timeout so a stalled Bee response can't hang the retry loop.
+  const attemptCtl = new AbortController();
+  const upstream = init.signal;
+  const relayAbort = () => attemptCtl.abort();
+  if (upstream) {
+    if (upstream.aborted) attemptCtl.abort();
+    else upstream.addEventListener('abort', relayAbort, { once: true });
+  }
+  const timer = setTimeout(() => attemptCtl.abort(), attemptTimeoutMs);
+
   try {
-    const response = await fetchImpl(gatewayUrl, init);
+    const response = await fetchImpl(gatewayUrl, { ...init, signal: attemptCtl.signal });
     return { response };
   } catch (err) {
+    // If we aborted but the upstream signal is still healthy, it was our
+    // attempt-level timeout — surface it as a transient error so the retry
+    // loop tries again rather than bubbling out the raw AbortError.
+    if (attemptCtl.signal.aborted && !upstream?.aborted) {
+      const e = new Error(`bee fetch timed out after ${attemptTimeoutMs}ms`);
+      e.code = 'ATTEMPT_TIMEOUT';
+      return { error: e };
+    }
     return { error: err };
+  } finally {
+    clearTimeout(timer);
+    if (upstream) upstream.removeEventListener('abort', relayAbort);
   }
 }
 
@@ -124,7 +170,12 @@ function shouldRetry(result) {
   return RETRYABLE_STATUSES.has(result.response.status);
 }
 
-async function fetchWithRetry(gatewayUrl, { method, headers, body, signal }, fetchImpl) {
+async function fetchWithRetry(
+  gatewayUrl,
+  { method, headers, body, signal },
+  fetchImpl,
+  attemptTimeoutMs
+) {
   const idempotent = IDEMPOTENT_METHODS.has(method.toUpperCase());
 
   const attempt = async () => {
@@ -135,7 +186,7 @@ async function fetchWithRetry(gatewayUrl, { method, headers, body, signal }, fet
       init.body = body;
       init.duplex = 'half';
     }
-    return fetchOnce(gatewayUrl, init, fetchImpl);
+    return fetchOnce(gatewayUrl, init, fetchImpl, attemptTimeoutMs);
   };
 
   let result = await attempt();
@@ -159,9 +210,9 @@ async function fetchWithRetry(gatewayUrl, { method, headers, body, signal }, fet
     }
 
     const delay = RETRY_DELAYS_MS[i];
-    log.info(
+    log.debug(
       `[bzz-protocol] retry ${i + 1}/${RETRY_DELAYS_MS.length} in ${delay}ms ` +
-        `(status=${result.response?.status ?? 'error'}) ${gatewayUrl}`
+        `(status=${result.response?.status ?? result.error?.code ?? 'error'}) ${gatewayUrl}`
     );
     await sleep(delay, signal);
     if (signal?.aborted) break;
@@ -174,9 +225,13 @@ async function fetchWithRetry(gatewayUrl, { method, headers, body, signal }, fet
 
 /**
  * Core handler, exported for testability. `fetchImpl` defaults to global
- * fetch but tests can inject a stub.
+ * fetch but tests can inject a stub. `attemptTimeoutMs` is exposed for
+ * tests that need to exercise per-attempt timeout behaviour.
  */
-async function handleBzzRequest(request, { fetchImpl = fetch } = {}) {
+async function handleBzzRequest(
+  request,
+  { fetchImpl = fetch, attemptTimeoutMs = ATTEMPT_TIMEOUT_MS } = {}
+) {
   const gatewayUrl = buildGatewayUrl(request.url);
   if (!gatewayUrl) {
     return new Response(
@@ -199,7 +254,8 @@ async function handleBzzRequest(request, { fetchImpl = fetch } = {}) {
     return await fetchWithRetry(
       gatewayUrl,
       { method, headers, body, signal: request.signal },
-      fetchImpl
+      fetchImpl,
+      attemptTimeoutMs
     );
   } catch (err) {
     const code = err?.cause?.code || err?.code || '';
@@ -249,4 +305,5 @@ module.exports = {
   sanitizeRequestHeaders,
   RETRY_DELAYS_MS,
   RETRYABLE_STATUSES,
+  ATTEMPT_TIMEOUT_MS,
 };
