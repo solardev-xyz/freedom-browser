@@ -11,10 +11,18 @@
  *   ens://myapp.eth/#/path  → myapp.eth       (ENS name, lowercased)
  *   myapp.eth/blog          → myapp.eth        (bare ENS)
  *   bzz://abc123/page       → bzz://abc123     (root ref, path-insensitive)
+ *   bzz://myapp.eth/page    → myapp.eth        (transport-aware ENS, name-keyed)
  *   ipfs://QmABC/docs       → ipfs://QmABC     (root CID, path-insensitive)
+ *   ipfs://myapp.eth/docs   → myapp.eth        (transport-aware ENS, name-keyed)
  *   ipns://host/guide       → ipns://host      (hostname, path-insensitive)
+ *   ipns://myapp.eth/guide  → myapp.eth        (transport-aware ENS, name-keyed)
  *   rad://z123/tree         → rad://z123       (RID, path-insensitive)
  *   https://app.example.com → https://app.example.com
+ *
+ * The ENS-host carve-out for transport URLs keeps permissions stable across
+ * the legacy `ens://` form and the new transport-aware display: a user who
+ * granted a permission to `myapp.eth` via `ens://myapp.eth` still has it
+ * after the address bar starts displaying the same site as `bzz://myapp.eth`.
  */
 
 /**
@@ -42,9 +50,17 @@ function getPermissionKey(displayUrl) {
   }
 
   // dweb protocols: ipfs://CID/path → ipfs://CID
+  // ENS-host carve-out: bzz://name.eth/path → name.eth (same key as the
+  // legacy ens://name.eth form, so permissions don't fork across transport
+  // and legacy displays of the same site).
   const dwebMatch = trimmed.match(/^(ipfs|bzz|ipns):\/\/([^/]+)/i);
   if (dwebMatch) {
-    return `${dwebMatch[1].toLowerCase()}://${dwebMatch[2]}`;
+    const host = dwebMatch[2];
+    const lowerHost = host.toLowerCase();
+    if (lowerHost.endsWith('.eth') || lowerHost.endsWith('.box')) {
+      return lowerHost;
+    }
+    return `${dwebMatch[1].toLowerCase()}://${host}`;
   }
 
   // rad:// protocol

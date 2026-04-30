@@ -73,13 +73,28 @@ export const getInternalPageName = (url) => {
   return null;
 };
 
-// Parse ENS input (ens:// prefix or .eth/.box domain)
+// Parse ENS input. Accepts:
+//   - bare ENS names (vitalik.eth, name.box, with optional path/query/fragment)
+//   - legacy ens:// URLs (kept for bookmark + history compatibility)
+//   - transport-aware ENS URLs (bzz://name.eth/, ipfs://name.eth/, ipns://name.eth/)
+//
+// Transport URLs whose host is NOT an ENS name (e.g. bzz://<hash>, ipfs://<cid>)
+// are returned as null so the caller can fall through to direct content
+// navigation. This is what makes `bzz://meinhard.eth/` work the same way as
+// `ens://meinhard.eth/` while leaving raw-hash navigation untouched.
 export const parseEnsInput = (raw) => {
   let value = (raw || '').trim();
   if (!value) return null;
 
-  if (value.toLowerCase().startsWith('ens://')) {
+  const lower = value.toLowerCase();
+  if (lower.startsWith('ens://')) {
     value = value.slice(6);
+  } else if (lower.startsWith('bzz://')) {
+    value = value.slice(6);
+  } else if (lower.startsWith('ipfs://')) {
+    value = value.slice(7);
+  } else if (lower.startsWith('ipns://')) {
+    value = value.slice(7);
   }
 
   let name = value;
@@ -90,10 +105,10 @@ export const parseEnsInput = (raw) => {
     suffix = match[2] || '';
   }
 
-  const lower = name.toLowerCase();
-  if (!lower.endsWith('.eth') && !lower.endsWith('.box')) {
+  const lowered = name.toLowerCase();
+  if (!lowered.endsWith('.eth') && !lowered.endsWith('.box')) {
     return null;
   }
 
-  return { name: lower, suffix };
+  return { name: lowered, suffix };
 };

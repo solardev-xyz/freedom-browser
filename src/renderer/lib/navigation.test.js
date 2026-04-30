@@ -30,6 +30,11 @@ const createWebview = (initialUrl = 'https://active.example', options = {}) => {
 
 const createTab = (id, url, overrides = {}) => {
   const webview = overrides.webview || createWebview(url, { webContentsId: id + 10 });
+  // Mirror production tabs.js: each webview carries its tab id so async
+  // helpers (`getTabIdForWebview`) can route per-tab UI updates back to
+  // the originating tab even after the active tab changes.
+  webview.dataset = webview.dataset || {};
+  webview.dataset.tabId = String(id);
   const navigationState = {
     currentPageUrl: url,
     pendingNavigationUrl: '',
@@ -184,6 +189,22 @@ const loadNavigationModule = async (options = {}) => {
     deriveBzzBaseFromUrl: jest.fn((url) => (url.includes('/bzz/') ? 'https://gateway.example/bzz/hash/' : null)),
     deriveIpfsBaseFromUrl: jest.fn(() => null),
     deriveRadBaseFromUrl: jest.fn(() => null),
+    applyEnsNamePreservation: jest.fn((url) => url),
+    buildEnsDisplayUri: jest.fn((protocol, name, suffix = '') => {
+      if (!name) return null;
+      if (protocol !== 'bzz' && protocol !== 'ipfs' && protocol !== 'ipns') return null;
+      return `${protocol}://${name}${suffix || ''}`;
+    }),
+    isEnsBackedDisplay: jest.fn((value) => {
+      if (!value || typeof value !== 'string') return false;
+      const trimmed = value.trim();
+      if (!trimmed) return false;
+      const lower = trimmed.toLowerCase();
+      if (lower.startsWith('ens://')) return true;
+      const transportMatch = lower.match(/^(?:bzz|ipfs|ipns):\/\/([^/?#]+)/);
+      const host = transportMatch ? transportMatch[1] : trimmed.split(/[/?#]/)[0].toLowerCase();
+      return host.endsWith('.eth') || host.endsWith('.box');
+    }),
   };
   const pageUrlsMocks = {
     homeUrl,
@@ -580,7 +601,9 @@ describe('navigation', () => {
       await flushMicrotasks();
 
       // Tab spinner is active and stop state is set, but no gateway load yet.
-      expect(ctx.tabsMocks.setTabLoading).toHaveBeenCalledWith(true);
+      // The probe targets the captured tab by id so a tab switch during a
+      // slow Bee warm-up doesn't redirect the spinner to a different tab.
+      expect(ctx.tabsMocks.setTabLoading).toHaveBeenCalledWith(true, ctx.activeRef.tab.id);
       expect(ctx.elements.reloadBtn.dataset.state).toBe('stop');
       expect(ctx.electronAPI.startSwarmProbe).toHaveBeenCalledWith(VALID_HASH);
       expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
@@ -818,9 +841,16 @@ describe('navigation', () => {
     // setWebviewEventHandler is registered. All dispatch tests start here.
     const setupEnsDispatch = async (options = {}) => {
       const ctx = await loadNavigationModule(options);
+      // Mirrors the real parseEnsInput in page-urls.js: accepts bare names,
+      // legacy ens://, and the transport-prefixed forms (bzz://, ipfs://,
+      // ipns://) when the host ends in .eth/.box. Hash/CID hosts return
+      // null so the caller falls through to direct content navigation.
       ctx.pageUrlsMocks.parseEnsInput.mockImplementation((value) => {
-        const m = value.match(/^(?:ens:\/\/)?([^?/]+\.(?:eth|box))(.*)?$/i);
-        return m ? { name: m[1].toLowerCase(), suffix: m[2] || '' } : null;
+        const m = value.match(/^(?:(?:ens|bzz|ipfs|ipns):\/\/)?([^?/]+)(.*)?$/i);
+        if (!m) return null;
+        const host = m[1].toLowerCase();
+        if (!host.endsWith('.eth') && !host.endsWith('.box')) return null;
+        return { name: host, suffix: m[2] || '' };
       });
       await ctx.mod.initNavigation();
       return ctx;
@@ -922,6 +952,313 @@ describe('navigation', () => {
       expect(ctx.state.ensTrustByName.get('vitalik.eth')).toEqual(verifiedTrust);
       expect(loadCalls.find(([u]) => u.includes('ens-conflict.html'))).toBeUndefined();
       expect(loadCalls.find(([u]) => u.includes('ens-unverified.html'))).toBeUndefined();
+    });
+
+    test('protocol icon and address bar update immediately when an ENS-Swarm name is dispatched, before resolution completes', async () => {
+      // Regression on two fronts:
+      //   1. The swarm logo used to only appear after the page finished
+      //      loading because the bzz/ipfs branches never refreshed the
+      //      protocol icon.
+      //   2. The address bar stayed on the previous page's URL (same-tab
+      //      clicks) or empty (new tabs whose tab.url collapsed to
+      //      homeUrl) for the entire ENS resolution roundtrip — which
+      //      reads as the browser stalling.
+      // The ENS branch now refreshes both up front so the user sees the
+      // intended target even while resolveEns is in flight.
+      const ctx = await setupEnsDispatch();
+
+      // resolveEns intentionally never settles in this test.
+      ctx.electronAPI.resolveEns.mockReturnValue(new Promise(() => {}));
+
+      ctx.mod.loadTarget('bzz://meinhard.eth');
+      await flushMicrotasks();
+
+      // Address bar reflects the in-flight target instead of staying on
+      // whatever was there before.
+      expect(ctx.elements.addressInput.value).toBe('bzz://meinhard.eth');
+
+      // Icon was updated even though resolveEns is still pending.
+      expect(ctx.navigationUtilsMocks.resolveProtocolIconType).toHaveBeenCalledWith(
+        expect.objectContaining({ value: 'bzz://meinhard.eth' })
+      );
+      expect(ctx.elements.protocolIcon.getAttribute('data-protocol')).toBe('swarm');
+    });
+
+    test('ENS resolution that settles after a tab switch updates the original tab spinner, not the active tab', async () => {
+      // Regression: pre-fix, `setLoading(false)` defaulted to the active
+      // tab. If the user clicked an ENS link in Tab A and then switched
+      // to Tab B before the resolveEns IPC settled, Tab B's spinner would
+      // be cleared while Tab A's stayed on. After the fix, async
+      // callbacks must target the captured tab via its id.
+      const HASH = 'c'.repeat(64);
+      const tabA = createTab(1, 'https://a.example');
+      const tabB = createTab(2, 'https://b.example');
+      const ctx = await setupEnsDispatch({
+        firstTab: tabA,
+        tabs: [tabA, tabB],
+        activeTab: tabA,
+      });
+
+      // Stash a deferred resolveEns so we can observe state mid-flight.
+      let resolveResolver;
+      ctx.electronAPI.resolveEns.mockReturnValue(
+        new Promise((resolve) => {
+          resolveResolver = resolve;
+        })
+      );
+
+      // Kick off ENS resolution targeting Tab A.
+      ctx.mod.loadTarget('bzz://meinhard.eth', null, tabA.webview);
+      await flushMicrotasks();
+
+      // Spinner went on for Tab A, by id.
+      expect(ctx.tabsMocks.setTabLoading).toHaveBeenCalledWith(true, tabA.id);
+
+      // Simulate the user switching to Tab B mid-resolution.
+      ctx.activeRef.tab = tabB;
+      ctx.tabsMocks.setTabLoading.mockClear();
+
+      resolveResolver({
+        type: 'ok',
+        name: 'meinhard.eth',
+        protocol: 'bzz',
+        decoded: HASH,
+        uri: `bzz://${HASH}`,
+        trust: { level: 'verified', queried: ['a', 'b'], agreed: ['a', 'b'] },
+      });
+      await flushMicrotasks();
+
+      // Spinner update from the .then handler must target Tab A by id —
+      // never Tab B (the active tab) and never the active-tab default.
+      const [[firstArg, secondArg]] = ctx.tabsMocks.setTabLoading.mock.calls;
+      expect(firstArg).toBe(false);
+      expect(secondArg).toBe(tabA.id);
+      expect(ctx.tabsMocks.setTabLoading).not.toHaveBeenCalledWith(false, tabB.id);
+      expect(ctx.tabsMocks.setTabLoading).not.toHaveBeenCalledWith(false, null);
+    });
+
+    test('ENS resolution that settles after a tab switch does not clobber the active tab address bar', async () => {
+      // Regression: pre-fix, the recursive loadTarget call from a settled
+      // ENS resolution wrote `addressInput.value` and refreshed the
+      // protocol icon globally — so if the user clicked an ENS link in
+      // Tab A and then switched to Tab B mid-flight, the resolved URL
+      // (e.g. `ipfs://vitalik.eth`) would appear in Tab B's address bar
+      // once Tab A's resolution finished. After the fix, the resolved
+      // display is stashed on the originating tab's navigationState so
+      // tab-switched picks it up when the user switches back.
+      const tabA = createTab(1, 'https://a.example');
+      const tabB = createTab(2, 'about:blank');
+      const ctx = await setupEnsDispatch({
+        firstTab: tabA,
+        tabs: [tabA, tabB],
+        activeTab: tabA,
+      });
+
+      let resolveResolver;
+      ctx.electronAPI.resolveEns.mockReturnValue(
+        new Promise((resolve) => {
+          resolveResolver = resolve;
+        })
+      );
+
+      ctx.mod.loadTarget('vitalik.eth', null, tabA.webview);
+      await flushMicrotasks();
+
+      // Tab A's bar shows the in-flight name (this is the active tab now).
+      expect(ctx.elements.addressInput.value).toBe('vitalik.eth');
+
+      // Simulate user switching to Tab B and Tab B's address bar showing
+      // its own URL.
+      ctx.activeRef.tab = tabB;
+      ctx.elements.addressInput.value = 'about:blank';
+
+      resolveResolver({
+        type: 'ok',
+        name: 'vitalik.eth',
+        protocol: 'ipfs',
+        uri: 'ipfs://QmVitalik',
+        trust: { level: 'verified', queried: ['a', 'b'], agreed: ['a', 'b'] },
+      });
+      await flushMicrotasks();
+
+      // Tab B's address bar must not have been clobbered.
+      expect(ctx.elements.addressInput.value).toBe('about:blank');
+
+      // Tab A's per-tab snapshot now holds the resolved display value, so
+      // the tab-switched handler shows the right thing on switchback.
+      expect(tabA.navigationState.addressBarSnapshot).toBe('ipfs://vitalik.eth');
+    });
+
+    test('ENS resolution failure on a backgrounded tab does not pop an alert on the active tab', async () => {
+      // Modal alerts on top of unrelated content read as random
+      // interruptions to whatever the user is doing, so failure paths
+      // must check that the originating tab is still in the foreground
+      // before surfacing the dialog. The pushDebug trail is unaffected.
+      const tabA = createTab(1, 'https://a.example');
+      const tabB = createTab(2, 'https://b.example');
+      const ctx = await setupEnsDispatch({
+        firstTab: tabA,
+        tabs: [tabA, tabB],
+        activeTab: tabA,
+      });
+
+      let resolveResolver;
+      ctx.electronAPI.resolveEns.mockReturnValue(
+        new Promise((resolve) => {
+          resolveResolver = resolve;
+        })
+      );
+
+      ctx.mod.loadTarget('vitalik.eth', null, tabA.webview);
+      await flushMicrotasks();
+
+      ctx.activeRef.tab = tabB;
+      global.alert.mockClear();
+
+      resolveResolver({ type: 'fail', reason: 'rpc unreachable' });
+      await flushMicrotasks();
+
+      expect(global.alert).not.toHaveBeenCalled();
+    });
+
+    test('legacy ens:// dispatch shows the input in the address bar during resolution', async () => {
+      // For `ens://vitalik.eth` clicks and bookmarks, the address bar
+      // should show the URL immediately rather than staying blank for the
+      // duration of the resolveEns IPC roundtrip.
+      const ctx = await setupEnsDispatch();
+      ctx.electronAPI.resolveEns.mockReturnValue(new Promise(() => {}));
+
+      ctx.mod.loadTarget('ens://vitalik.eth');
+      await flushMicrotasks();
+
+      expect(ctx.elements.addressInput.value).toBe('ens://vitalik.eth');
+    });
+
+    test('IPFS-backed ENS name shows the ipfs icon after resolution settles', async () => {
+      // Regression: pre-fix, after resolution the address bar held
+      // `ipfs://vitalik.eth` but resolveProtocolIconType's broken
+      // extractEnsName turned that into a bogus key and never fell through
+      // to the ipfs:// branch, so the icon stayed http.
+      const ctx = await setupEnsDispatch();
+
+      // Mirror the production helper's transport-first ordering (the real
+      // implementation lives in navigation-utils.js and is unit-tested
+      // separately).
+      ctx.navigationUtilsMocks.resolveProtocolIconType.mockImplementation(({ value }) => {
+        if (value?.startsWith('bzz://')) return 'swarm';
+        if (value?.startsWith('ipfs://')) return 'ipfs';
+        if (value?.startsWith('ipns://')) return 'ipns';
+        return 'http';
+      });
+
+      ctx.elements.addressInput.value = 'vitalik.eth';
+      ctx.electronAPI.resolveEns.mockResolvedValue({
+        type: 'ok',
+        name: 'vitalik.eth',
+        protocol: 'ipfs',
+        decoded: 'QmFake',
+        uri: 'ipfs://QmFake',
+        trust: { level: 'verified', queried: ['a', 'b'], agreed: ['a', 'b'] },
+      });
+
+      ctx.mod.loadTarget('vitalik.eth');
+      await flushMicrotasks();
+
+      expect(ctx.elements.addressInput.value).toBe('ipfs://vitalik.eth');
+      expect(ctx.elements.protocolIcon.getAttribute('data-protocol')).toBe('ipfs');
+    });
+
+    test('ENS-Swarm name loads bzz://name.eth/ (not the resolved hash) so DevTools shows the ENS name', async () => {
+      // Regression for the DevTools/origin issue: pre-fix, the renderer
+      // resolved ENS and then loaded `bzz://<hash>/`, so Chromium's URL
+      // (and therefore DevTools, window.location, storage origin) was the
+      // hash. Post-fix, we keep the ENS name in the loaded URL and let
+      // the bzz protocol handler resolve at request time.
+      const HASH = 'b'.repeat(64);
+      const ctx = await setupEnsDispatch();
+
+      ctx.electronAPI.resolveEns.mockResolvedValue({
+        type: 'ok',
+        name: 'meinhard.eth',
+        protocol: 'bzz',
+        decoded: HASH,
+        uri: `bzz://${HASH}`,
+        trust: { level: 'verified', queried: ['a', 'b'], agreed: ['a', 'b'] },
+      });
+
+      ctx.mod.loadTarget('bzz://meinhard.eth');
+      await flushMicrotasks();
+
+      // Probe gates on the resolved hash so the cold-Bee retry budget is
+      // applied to actual content, even though Chromium's URL is the ENS
+      // name.
+      expect(ctx.electronAPI.startSwarmProbe).toHaveBeenCalledWith(HASH);
+
+      // Settle the probe successfully and confirm the URL handed to
+      // webview.loadURL is the ENS form, not the gateway URL or hash form.
+      const probeId = ctx.swarmProbeState.startCalls.at(-1)?.id || 'probe-1';
+      const entry = ctx.swarmProbeState.pendingAwaits.find((p) => p.id === probeId);
+      entry.resolve({ success: true, outcome: { ok: true } });
+      ctx.swarmProbeState.pendingAwaits = ctx.swarmProbeState.pendingAwaits.filter(
+        (p) => p !== entry
+      );
+      await flushMicrotasks();
+
+      const loadedUrls = ctx.activeRef.tab.webview.loadURL.mock.calls.map(([u]) => u);
+      expect(loadedUrls).toContain('bzz://meinhard.eth');
+      expect(loadedUrls.some((u) => u === `bzz://${HASH}/` || u === `bzz://${HASH}`)).toBe(false);
+      expect(loadedUrls.some((u) => u.includes('gateway.example'))).toBe(false);
+    });
+
+    test('cross-transport assertion: bzz://name.eth where the contenthash is IPFS errors instead of switching transports', async () => {
+      // Per research/ens_hosts_in_dweb_handlers.md §3, a typed transport
+      // scheme is an assertion. If the user typed `bzz://vitalik.eth/` and
+      // vitalik.eth's contenthash is IPFS, we surface the mismatch rather
+      // than silently transporting via IPFS — that mirrors what the bzz
+      // protocol handler does for subresource fetches (404 with
+      // explanatory body).
+      const ctx = await setupEnsDispatch();
+
+      ctx.electronAPI.resolveEns.mockResolvedValue({
+        type: 'ok',
+        name: 'vitalik.eth',
+        protocol: 'ipfs',
+        decoded: 'QmFakeCid',
+        uri: 'ipfs://QmFakeCid',
+        trust: { level: 'verified', queried: ['a', 'b'], agreed: ['a', 'b'] },
+      });
+
+      ctx.mod.loadTarget('bzz://vitalik.eth');
+      await flushMicrotasks();
+
+      expect(global.alert).toHaveBeenCalledWith(
+        expect.stringMatching(/resolves to ipfs, not bzz/)
+      );
+      expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
+      expect(ctx.electronAPI.startSwarmProbe).not.toHaveBeenCalled();
+    });
+
+    test('bare ENS name without an asserted scheme accepts any transport (no mismatch error)', async () => {
+      // Same setup as the previous test, but the user typed `vitalik.eth`
+      // (no scheme) — that makes no transport assertion, so the renderer
+      // should happily load it as IPFS.
+      const ctx = await setupEnsDispatch();
+
+      ctx.electronAPI.resolveEns.mockResolvedValue({
+        type: 'ok',
+        name: 'vitalik.eth',
+        protocol: 'ipfs',
+        decoded: 'QmFakeCid',
+        uri: 'ipfs://QmFakeCid',
+        trust: { level: 'verified', queried: ['a', 'b'], agreed: ['a', 'b'] },
+      });
+
+      ctx.mod.loadTarget('vitalik.eth');
+      await flushMicrotasks();
+
+      expect(global.alert).not.toHaveBeenCalledWith(
+        expect.stringMatching(/resolves to ipfs, not/)
+      );
     });
 
     test('ipc-message ens:continue-unverified re-dispatches with allow flag', async () => {

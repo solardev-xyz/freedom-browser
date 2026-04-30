@@ -371,6 +371,79 @@ describe('tabs ui behavior', () => {
     expect(debugMocks.pushDebug).toHaveBeenCalledWith('Console level-2: hello (index.js:12)');
   });
 
+  test('keeps spinner on through preventDefault-triggered abort after a custom-protocol click', async () => {
+    // Regression: when the main process intercepts a `bzz://`/`ens://`
+    // (etc.) link click via `will-navigate`+preventDefault and forwards
+    // the URL through `navigate-to-url`, Chromium fires a phantom
+    // `did-fail-load -3` + `did-stop-loading` pair on the source webview
+    // for the cancelled navigation. Without suppression those events
+    // clear `tab.isLoading`, so the user sees no spinner during the
+    // (often slow) ENS lookup that follows the click. The IPC handler
+    // and per-tab handlers cooperate to swallow exactly that one abort
+    // — including suppressing the active-tab onWebviewEvent forwarding,
+    // since the navigation-side handler unconditionally calls
+    // `setLoading(false)` and would otherwise undo the spinner state.
+    jest.useFakeTimers();
+    try {
+      const { mod, electronHandlers } = await loadTabsModule();
+      const onLoadTarget = jest.fn();
+      const onWebviewEvent = jest.fn();
+      mod.setLoadTargetHandler(onLoadTarget);
+      mod.setWebviewEventHandler(onWebviewEvent);
+      await mod.initTabs();
+
+      const activeTab = mod.getActiveTab();
+      const { webview } = activeTab;
+
+      electronHandlers.navigateToUrl('bzz://meinhard.eth');
+      expect(onLoadTarget).toHaveBeenCalledWith('bzz://meinhard.eth');
+      // Simulate the `loadTarget` dispatch flipping the spinner on (the
+      // ENS branch in navigation.js does this synchronously).
+      activeTab.isLoading = true;
+      onWebviewEvent.mockClear();
+
+      webview.dispatch('did-fail-load', {
+        errorCode: -3,
+        errorDescription: 'ERR_ABORTED',
+        validatedURL: 'bzz://meinhard.eth',
+      });
+      webview.dispatch('did-stop-loading');
+
+      expect(activeTab.isLoading).toBe(true);
+      // Phantom abort must NOT reach the navigation-side handler,
+      // otherwise its unconditional `setLoading(false)` would undo the
+      // spinner regardless of the tab-level suppression.
+      expect(onWebviewEvent).not.toHaveBeenCalledWith('did-fail-load', expect.anything());
+      expect(onWebviewEvent).not.toHaveBeenCalledWith('did-stop-loading', expect.anything());
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('manual stop-button abort still clears the spinner', async () => {
+    // Counter-regression: the suppression above must not swallow
+    // legitimate aborts (e.g. user hitting the stop button), which also
+    // arrive as `did-fail-load -3` + `did-stop-loading`. Distinguished
+    // by `tab.pendingAbortUrl` being unset when no will-navigate
+    // intercept is in flight.
+    const { mod } = await loadTabsModule();
+    await mod.initTabs();
+
+    const activeTab = mod.getActiveTab();
+    const { webview } = activeTab;
+
+    activeTab.isLoading = true;
+
+    webview.dispatch('did-fail-load', {
+      errorCode: -3,
+      errorDescription: 'ERR_ABORTED',
+      validatedURL: 'https://stopped.example',
+    });
+    webview.dispatch('did-stop-loading');
+
+    expect(activeTab.isLoading).toBe(false);
+  });
+
   test('closes and reopens tabs and closes the window when the last tab is removed', async () => {
     const firstLoad = await loadTabsModule();
     await firstLoad.mod.initTabs();

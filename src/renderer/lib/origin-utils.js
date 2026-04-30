@@ -12,8 +12,11 @@
  *   ens://myapp.eth/#/path  → myapp.eth       (ENS name, lowercased)
  *   myapp.eth/blog          → myapp.eth        (bare ENS)
  *   bzz://abc123/page       → bzz://abc123     (root ref)
+ *   bzz://myapp.eth/page    → myapp.eth        (transport ENS — name-keyed)
  *   ipfs://QmABC/docs       → ipfs://QmABC     (root CID)
+ *   ipfs://myapp.eth/docs   → myapp.eth        (transport ENS — name-keyed)
  *   ipns://host/guide       → ipns://host      (hostname)
+ *   ipns://myapp.eth/guide  → myapp.eth        (transport ENS — name-keyed)
  *   rad://z123/tree         → rad://z123       (RID)
  *   https://app.example.com → https://app.example.com
  */
@@ -43,9 +46,17 @@ export function getPermissionKey(displayUrl) {
   }
 
   // dweb protocols: ipfs://CID/path → ipfs://CID
+  // ENS-host carve-out: bzz://name.eth/path → name.eth (same key as the
+  // legacy ens://name.eth form, so permissions don't fork across transport
+  // and legacy displays of the same site).
   const dwebMatch = trimmed.match(/^(ipfs|bzz|ipns):\/\/([^/]+)/i);
   if (dwebMatch) {
-    return `${dwebMatch[1].toLowerCase()}://${dwebMatch[2]}`;
+    const host = dwebMatch[2];
+    const lowerHost = host.toLowerCase();
+    if (lowerHost.endsWith('.eth') || lowerHost.endsWith('.box')) {
+      return lowerHost;
+    }
+    return `${dwebMatch[1].toLowerCase()}://${host}`;
   }
 
   // rad:// protocol

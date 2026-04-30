@@ -3,6 +3,7 @@ import { pushDebug } from './debug.js';
 import { getActiveTab, hideTabContextMenu } from './tabs.js';
 import { closeMenus } from './menus.js';
 import { showMenuBackdrop, hideMenuBackdrop } from './menu-backdrop.js';
+import { normalizeLegacyEnsBookmarkUrl } from './url-utils.js';
 
 const electronAPI = window.electronAPI;
 
@@ -332,15 +333,20 @@ export const initBookmarks = () => {
   // Handle click on bookmarks (both bar and overflow menu)
   const handleBookmarkClick = async (event) => {
     try {
-      const target = event.target;
-      if (!(target instanceof HTMLElement)) return;
+      const eventTarget = event.target;
+      if (!(eventTarget instanceof HTMLElement)) return;
 
       // Find the bookmark button (could be clicked on child elements)
-      const bookmarkBtn = target.closest('.bookmark, .bookmarks-overflow-item');
-      const hash = bookmarkBtn?.dataset?.hash;
-      if (hash && onLoadTarget) {
-        addressInput.value = hash;
-        onLoadTarget(hash);
+      const bookmarkBtn = eventTarget.closest('.bookmark, .bookmarks-overflow-item');
+      const storedTarget = bookmarkBtn?.dataset?.hash;
+      if (storedTarget && onLoadTarget) {
+        // Rewrite legacy ens://name.eth bookmarks to bare-name form so they
+        // re-enter the same ENS resolution flow as a typed name and pick up
+        // the new transport-aware display (e.g. bzz://name.eth, ipfs://name.eth).
+        // Non-ENS bookmark targets pass through unchanged.
+        const navigationTarget = normalizeLegacyEnsBookmarkUrl(storedTarget);
+        addressInput.value = navigationTarget;
+        onLoadTarget(navigationTarget);
         hideOverflowMenu();
       }
     } catch (err) {

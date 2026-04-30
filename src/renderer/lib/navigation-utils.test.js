@@ -41,6 +41,40 @@ describe('navigation-utils', () => {
           ensProtocols: new Map(),
         })
       ).toBe('http');
+      expect(
+        resolveProtocolIconType({
+          value: 'vitalik.eth/docs',
+          ensProtocols: new Map([['vitalik.eth', 'ipfs']]),
+        })
+      ).toBe('ipfs');
+    });
+
+    test('transport scheme wins over ens lookup for transport-prefixed display urls', async () => {
+      const { resolveProtocolIconType } = await loadNavigationUtils();
+
+      // After ENS resolution the address bar shows `bzz://name.eth`,
+      // `ipfs://name.eth`, or `ipns://name.eth`. The icon must follow the
+      // transport scheme even when the host is an ENS name (and even when
+      // there's no path / trailing slash to distinguish it).
+      expect(
+        resolveProtocolIconType({
+          value: 'bzz://meinhard.eth',
+          ensProtocols: new Map([['meinhard.eth', 'bzz']]),
+        })
+      ).toBe('swarm');
+      expect(
+        resolveProtocolIconType({
+          value: 'ipfs://vitalik.eth',
+          ensProtocols: new Map([['vitalik.eth', 'ipfs']]),
+        })
+      ).toBe('ipfs');
+      expect(
+        resolveProtocolIconType({
+          value: 'ipns://app.uniswap.eth/swap',
+          ensProtocols: new Map(),
+        })
+      ).toBe('ipns');
+      expect(resolveProtocolIconType({ value: 'bzz://meinhard.eth/path' })).toBe('swarm');
     });
 
     test('hides icons for internal pages and gates radicle on settings', async () => {
@@ -136,6 +170,30 @@ describe('navigation-utils', () => {
       expect(resolveTrustBadge({ value: 'VITALIK.ETH', ensTrustByName }).level).toBe('verified');
       expect(resolveTrustBadge({ value: 'ENS://Vitalik.ETH/x', ensTrustByName }).level).toBe(
         'verified'
+      );
+      expect(
+        resolveTrustBadge({ value: 'vitalik.eth/path?q=1#frag', ensTrustByName }).level
+      ).toBe('verified');
+    });
+
+    test('returns badge for transport-prefixed ENS hosts', async () => {
+      const { resolveTrustBadge } = await loadNavigationUtils();
+      const ensTrustByName = new Map([
+        ['meinhard.eth', verifiedTrust],
+        ['vitalik.eth', conflictTrust],
+      ]);
+
+      expect(resolveTrustBadge({ value: 'bzz://meinhard.eth', ensTrustByName }).level).toBe(
+        'verified'
+      );
+      expect(resolveTrustBadge({ value: 'bzz://meinhard.eth/path', ensTrustByName }).level).toBe(
+        'verified'
+      );
+      expect(resolveTrustBadge({ value: 'ipfs://vitalik.eth', ensTrustByName }).level).toBe(
+        'conflict'
+      );
+      expect(resolveTrustBadge({ value: 'ipns://vitalik.eth/x', ensTrustByName }).level).toBe(
+        'conflict'
       );
     });
 

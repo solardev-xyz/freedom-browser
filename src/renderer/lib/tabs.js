@@ -257,6 +257,19 @@ const createWebview = (tabId, initialUrl) => {
     'did-stop-loading': () => {
       const tab = tabState.tabs.find((t) => t.id === tabId);
       if (tab) {
+        // Paired suppression for the will-navigate intercept (see did-fail-load
+        // below). The aborted nav fires `did-fail-load -3` then
+        // `did-stop-loading`; both describe a phantom load that never had a
+        // real start — they don't represent the real navigation we're about
+        // to perform via `loadTarget`. Swallowing them entirely (including
+        // the active-tab `onWebviewEvent` forwarding) prevents the
+        // navigation-side handler from clearing `isLoading`, resetting the
+        // reload button, or pushing the aborted URL into history mid-ENS-
+        // resolution.
+        if (tab.suppressNextStop) {
+          tab.suppressNextStop = false;
+          return;
+        }
         tab.isLoading = false;
         tab.url = webview.getURL();
         renderTabs();
@@ -268,6 +281,32 @@ const createWebview = (tabId, initialUrl) => {
     'did-fail-load': (event) => {
       const tab = tabState.tabs.find((t) => t.id === tabId);
       if (tab) {
+        // When the main process intercepts a `will-navigate` for a custom
+        // protocol (bzz://, ens://, ipfs://, ipns://, freedom://, rad:,
+        // ethereum:) it calls `event.preventDefault()` on the source
+        // webview. Chromium still emits `did-fail-load` with errorCode
+        // `-3` (ERR_ABORTED) for the cancelled navigation, followed by a
+        // `did-stop-loading`. Without suppression these events clear
+        // `tab.isLoading` while the renderer is still resolving the URL
+        // (e.g. an ENS lookup that takes 100ms–1s+), so the user clicks a
+        // link and sees no spinner at all. The matching IPC handler in
+        // `onNavigateToUrl` sets `tab.pendingAbortUrl` to flag exactly this
+        // case; manual stop-button aborts hit the else-branch and clear
+        // `isLoading` as before.
+        //
+        // We also skip the active-tab `onWebviewEvent` forwarding for the
+        // suppressed event because the navigation-side handler unconditionally
+        // calls `setLoading(false)` and resets the reload button — both
+        // wrong for the phantom abort.
+        if (event.errorCode === -3 && tab.pendingAbortUrl) {
+          tab.pendingAbortUrl = null;
+          if (tab.pendingAbortTimer) {
+            clearTimeout(tab.pendingAbortTimer);
+            tab.pendingAbortTimer = null;
+          }
+          tab.suppressNextStop = true;
+          return;
+        }
         tab.isLoading = false;
       }
       if (tabId === tabState.activeTabId && onWebviewEvent) {
@@ -1094,23 +1133,18 @@ export const initTabs = async () => {
 
       pushDebug(`Opening new tab with URL: ${url}${targetName ? ` (target: ${targetName})` : ''}`);
 
-      // For http/https URLs, load directly without going through homeUrl first
-      // This avoids the brief flash of the home page before navigation
-      const isDirectUrl = url.startsWith('http://') || url.startsWith('https://');
-      const newTab = createTab(isDirectUrl ? url : homeUrl);
+      // Pass the target URL through to createTab (not homeUrl). createTab
+      // already does the right thing for both shapes: direct URLs load
+      // straight into the webview (no home-page flash), and dweb URLs
+      // (ens://, bzz://, ipfs://, ipns://, etc.) keep the webview on
+      // homeUrl while routing through `onLoadTarget` for resolution.
+      // Critically, this also makes `tab.url` reflect the actual target,
+      // so the `tab-switched` handler can derive a meaningful address bar
+      // value immediately instead of leaving it empty until ENS resolves.
+      const newTab = createTab(url);
 
-      // Associate this tab with the target name if specified
       if (targetName && newTab) {
         namedTargets.set(targetName, newTab.id);
-      }
-
-      // For dweb URLs (ipfs://, ipns://, bzz://), use loadTarget for URL resolution
-      if (!isDirectUrl) {
-        setTimeout(() => {
-          if (onLoadTarget) {
-            onLoadTarget(url);
-          }
-        }, 50);
       }
     }
   });
@@ -1118,6 +1152,29 @@ export const initTabs = async () => {
   electronAPI?.onNavigateToUrl?.((url) => {
     if (url && onLoadTarget) {
       pushDebug(`Navigating to URL: ${url}`);
+      // The main process intercepted a will-navigate for a custom protocol
+      // (`bzz://`, `ens://`, `ipfs://`, `ipns://`, `freedom://`, `rad:`,
+      // `ethereum:`) and called `event.preventDefault()`. That prevent
+      // causes Chromium to emit a `did-fail-load -3` + `did-stop-loading`
+      // pair on the source webview, which would clear `tab.isLoading` and
+      // kill the spinner during the slow ENS lookup that follows. We mark
+      // the active tab here so the per-tab handlers in `createWebview` can
+      // swallow exactly that one abort. The 1500ms self-clear is a
+      // safety net: if Chromium ever skips the abort (very rare) the flag
+      // shouldn't outlive the click and erroneously mute a later manual
+      // stop. Active tab is correct because the user just clicked a link
+      // in the foreground.
+      const activeTab = tabState.tabs.find((t) => t.id === tabState.activeTabId);
+      if (activeTab) {
+        activeTab.pendingAbortUrl = url;
+        if (activeTab.pendingAbortTimer) {
+          clearTimeout(activeTab.pendingAbortTimer);
+        }
+        activeTab.pendingAbortTimer = setTimeout(() => {
+          activeTab.pendingAbortUrl = null;
+          activeTab.pendingAbortTimer = null;
+        }, 1500);
+      }
       onLoadTarget(url);
     }
   });

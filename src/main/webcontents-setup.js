@@ -79,13 +79,17 @@ function registerWebContentsHandlers() {
         return { action: 'deny' };
       });
 
-      // Intercept navigation to custom protocols (freedom://, bzz://, ipfs://, ipns://)
+      // Intercept navigation to custom protocols (freedom://, bzz://, ipfs://,
+      // ipns://, rad:, ethereum:, ens://). `ens://` is included so legacy
+      // links inside pages route through the renderer's ENS resolver instead
+      // of failing as an unknown scheme — see research/ens_link_migration.md.
       contents.on('will-navigate', (event, url) => {
         if (
           url.startsWith('freedom://') ||
           url.startsWith('bzz://') ||
           url.startsWith('ipfs://') ||
           url.startsWith('ipns://') ||
+          url.startsWith('ens://') ||
           url.startsWith('rad:') ||
           url.startsWith('ethereum:')
         ) {

@@ -485,6 +485,81 @@
     </div>
 
     <div class="test-section">
+      <h2>ENS Links</h2>
+      <p style="color: #8b949e; font-size: 13px; margin: -8px 0 16px 0">
+        In HTML, ENS links must use a scheme. The legacy <code>ens://</code> form and the
+        transport-prefixed forms (<code>bzz://name.eth</code>, <code>ipfs://name.eth</code>,
+        <code>ipns://name.eth</code>) all resolve via ENS and re-display under the resolved
+        transport — see issue #16. Bare names like <code>&lt;a href="vitalik.eth"&gt;</code> are
+        <strong>not</strong> resolved as ENS: per the URL spec they're relative paths against the
+        page's base URL, so they resolve before our navigation handlers see them. Bare names work
+        only in the address bar, where input is always absolute.
+      </p>
+      <div class="link-grid">
+        <a href="ens://vitalik.eth">
+          <svg
+            class="link-icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <circle cx="12" cy="12" r="10"></circle>
+            <path d="M2 12h20"></path>
+            <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
+          </svg>
+          <span class="link-text">ens://vitalik.eth (legacy)</span>
+          <span class="badge">ens</span>
+        </a>
+        <a href="bzz://meinhard.eth">
+          <svg
+            class="link-icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <circle cx="12" cy="12" r="10"></circle>
+            <path d="M12 2v20"></path>
+            <path d="M2 12h20"></path>
+          </svg>
+          <span class="link-text">bzz://meinhard.eth (Swarm via ENS)</span>
+          <span class="badge">ens+bzz</span>
+        </a>
+        <a href="ipfs://vitalik.eth">
+          <svg
+            class="link-icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
+            <polyline points="2 17 12 22 22 17"></polyline>
+            <polyline points="2 12 12 17 22 12"></polyline>
+          </svg>
+          <span class="link-text">ipfs://vitalik.eth (IPFS via ENS)</span>
+          <span class="badge">ens+ipfs</span>
+        </a>
+        <a href="ipns://app.uniswap.eth">
+          <svg
+            class="link-icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
+            <polyline points="2 17 12 22 22 17"></polyline>
+            <polyline points="2 12 12 17 22 12"></polyline>
+          </svg>
+          <span class="link-text">ipns://app.uniswap.eth (IPNS via ENS)</span>
+          <span class="badge">ens+ipns</span>
+        </a>
+      </div>
+    </div>
+
+    <div class="test-section">
       <h2>Internal Pages</h2>
       <div class="link-grid">
         <a href="freedom://protocol-test">

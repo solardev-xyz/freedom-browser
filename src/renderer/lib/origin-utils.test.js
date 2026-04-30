@@ -44,6 +44,15 @@ const INPUTS = [
   'ipns://docs.ipfs.tech',
   'ipns://docs.ipfs.tech/guide',
 
+  // Transport URLs with ENS hosts (issue #16): both copies must collapse to
+  // the bare ENS name so permissions stay consistent across forms.
+  'bzz://meinhard.eth',
+  'bzz://meinhard.eth/page',
+  'ipfs://vitalik.eth/docs',
+  'ipns://app.eth/guide',
+  'bzz://Meinhard.ETH',
+  'ipfs://myapp.box/path',
+
   // Radicle
   'rad://z3gqcJUoA1n9HaHKufZs5FCSGazv5',
   'rad://z3gqcJUoA1n9HaHKufZs5FCSGazv5/tree',

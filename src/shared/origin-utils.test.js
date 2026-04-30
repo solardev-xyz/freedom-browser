@@ -82,6 +82,18 @@ describe('origin-utils', () => {
       expect(getPermissionKey('IPFS://QmABC/docs')).toBe('ipfs://QmABC');
       expect(getPermissionKey('BZZ://abc123/page')).toBe('bzz://abc123');
     });
+
+    test('transport URLs with ENS hosts collapse to bare ENS name', () => {
+      // After ens_link_migration, the address bar can show bzz://name.eth/,
+      // ipfs://name.eth/, ipns://name.eth/. These must share a permission
+      // key with `ens://name.eth` and the bare `name.eth` form, otherwise
+      // the same dapp would prompt repeatedly across navigation forms.
+      expect(getPermissionKey('bzz://meinhard.eth/page')).toBe('meinhard.eth');
+      expect(getPermissionKey('ipfs://vitalik.eth/docs')).toBe('vitalik.eth');
+      expect(getPermissionKey('ipns://app.eth/guide')).toBe('app.eth');
+      expect(getPermissionKey('bzz://Meinhard.ETH')).toBe('meinhard.eth');
+      expect(getPermissionKey('ipfs://myapp.box/path')).toBe('myapp.box');
+    });
   });
 
   describe('normalizeOrigin', () => {

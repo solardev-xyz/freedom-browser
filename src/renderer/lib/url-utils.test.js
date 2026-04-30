@@ -10,6 +10,9 @@ import {
   deriveIpfsBaseFromUrl,
   formatIpfsUrl,
   applyEnsNamePreservation,
+  buildEnsDisplayUri,
+  isEnsBackedDisplay,
+  normalizeLegacyEnsBookmarkUrl,
   isValidRadicleId,
   parseRadicleInput,
   deriveRadBaseFromUrl,
@@ -612,28 +615,28 @@ describe('url-utils', () => {
     });
 
     describe('Swarm (bzz://) ENS preservation', () => {
-      test('preserves ENS name for known Swarm hash', () => {
+      test('substitutes ENS name into bzz:// host for known Swarm hash', () => {
         const hash = '1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef';
         const ensNames = new Map([[hash, 'mydapp.eth']]);
 
         const result = applyEnsNamePreservation(`bzz://${hash}`, ensNames);
-        expect(result).toBe('ens://mydapp.eth');
+        expect(result).toBe('bzz://mydapp.eth');
       });
 
-      test('preserves ENS name with path for Swarm', () => {
+      test('preserves transport scheme + path for Swarm', () => {
         const hash = '1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef';
         const ensNames = new Map([[hash, 'mydapp.eth']]);
 
         const result = applyEnsNamePreservation(`bzz://${hash}/page.html`, ensNames);
-        expect(result).toBe('ens://mydapp.eth/page.html');
+        expect(result).toBe('bzz://mydapp.eth/page.html');
       });
 
-      test('preserves ENS name with path, query and fragment for Swarm', () => {
+      test('preserves transport scheme + path/query/fragment for Swarm', () => {
         const hash = 'abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890';
         const ensNames = new Map([[hash, 'app.eth']]);
 
         const result = applyEnsNamePreservation(`bzz://${hash}/path?foo=bar#section`, ensNames);
-        expect(result).toBe('ens://app.eth/path?foo=bar#section');
+        expect(result).toBe('bzz://app.eth/path?foo=bar#section');
       });
 
       test('handles case-insensitive Swarm hash lookup', () => {
@@ -643,7 +646,7 @@ describe('url-utils', () => {
 
         // Hash with uppercase should match lowercase key (hash is lowercased in lookup)
         const result = applyEnsNamePreservation(`bzz://${hashUpper}`, ensNames);
-        expect(result).toBe('ens://mysite.eth');
+        expect(result).toBe('bzz://mysite.eth');
       });
 
       test('returns original URL for unknown Swarm hash', () => {
@@ -656,28 +659,28 @@ describe('url-utils', () => {
     });
 
     describe('IPFS ENS preservation', () => {
-      test('preserves ENS name for known IPFS CID', () => {
+      test('substitutes ENS name into ipfs:// host for known IPFS CID', () => {
         const cid = 'QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG';
         const ensNames = new Map([[cid, 'ipfsdapp.eth']]);
 
         const result = applyEnsNamePreservation(`ipfs://${cid}`, ensNames);
-        expect(result).toBe('ens://ipfsdapp.eth');
+        expect(result).toBe('ipfs://ipfsdapp.eth');
       });
 
-      test('preserves ENS name with path for IPFS', () => {
+      test('preserves transport scheme + path for IPFS', () => {
         const cid = 'QmT5NvUtoM5nWFfrQdVrFtvGfKFmG7AHE8P34isapyhCxX';
         const ensNames = new Map([[cid, 'myipfs.eth']]);
 
         const result = applyEnsNamePreservation(`ipfs://${cid}/docs/index.html`, ensNames);
-        expect(result).toBe('ens://myipfs.eth/docs/index.html');
+        expect(result).toBe('ipfs://myipfs.eth/docs/index.html');
       });
 
-      test('preserves ENS name for CIDv1', () => {
+      test('preserves transport scheme for CIDv1', () => {
         const cid = 'bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi';
         const ensNames = new Map([[cid, 'modern.eth']]);
 
         const result = applyEnsNamePreservation(`ipfs://${cid}/app`, ensNames);
-        expect(result).toBe('ens://modern.eth/app');
+        expect(result).toBe('ipfs://modern.eth/app');
       });
 
       test('returns original URL for unknown IPFS CID', () => {
@@ -690,20 +693,20 @@ describe('url-utils', () => {
     });
 
     describe('IPNS ENS preservation', () => {
-      test('preserves ENS name for known IPNS name', () => {
+      test('substitutes ENS name into ipns:// host for known IPNS name', () => {
         const ipnsId = 'k51qzi5uqu5dlvj2baxnqndepeb86cbk3lg7ekjjnof1ock2yxz7p8q1qf2v9o';
         const ensNames = new Map([[ipnsId, 'dynamic.eth']]);
 
         const result = applyEnsNamePreservation(`ipns://${ipnsId}`, ensNames);
-        expect(result).toBe('ens://dynamic.eth');
+        expect(result).toBe('ipns://dynamic.eth');
       });
 
-      test('preserves ENS name with path for IPNS', () => {
+      test('preserves transport scheme + path for IPNS', () => {
         const ipnsId = 'docs.ipfs.tech';
         const ensNames = new Map([[ipnsId, 'ipfsdocs.eth']]);
 
         const result = applyEnsNamePreservation(`ipns://${ipnsId}/install/`, ensNames);
-        expect(result).toBe('ens://ipfsdocs.eth/install/');
+        expect(result).toBe('ipns://ipfsdocs.eth/install/');
       });
 
       test('returns original URL for unknown IPNS name', () => {
@@ -745,9 +748,10 @@ describe('url-utils', () => {
 
     describe('back/forward navigation scenario', () => {
       // This simulates the actual use case: user navigates to ENS name -> hash stored,
-      // then navigates elsewhere, then goes back -> should show ENS name again
+      // then navigates elsewhere, then goes back -> should show ENS name again under
+      // the resolved transport scheme.
 
-      test('simulates full navigation cycle with Swarm', () => {
+      test('full navigation cycle with Swarm preserves bzz:// transport', () => {
         const hash = 'fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321';
         const ensName = 'coolsite.eth';
 
@@ -755,33 +759,27 @@ describe('url-utils', () => {
         // The system stores: knownEnsNames.set(hash, 'coolsite.eth')
         const knownEnsNames = new Map([[hash, ensName]]);
 
-        // Step 2: User navigates to another page
-        // (knownEnsNames still has the mapping)
-
-        // Step 3: User clicks back - browser navigates to bzz://hash
-        // The system should convert this back to ens://coolsite.eth
+        // Step 3: User clicks back — webview reports bzz://hash; preservation
+        // should swap the host for the ENS name while keeping the transport.
         const displayUrl = `bzz://${hash}/subpage`;
         const result = applyEnsNamePreservation(displayUrl, knownEnsNames);
 
-        expect(result).toBe('ens://coolsite.eth/subpage');
+        expect(result).toBe('bzz://coolsite.eth/subpage');
       });
 
-      test('simulates full navigation cycle with IPFS', () => {
+      test('full navigation cycle with IPFS preserves ipfs:// transport', () => {
         const cid = 'QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG';
         const ensName = 'ipfsapp.eth';
 
         const knownEnsNames = new Map([[cid, ensName]]);
 
-        // User goes back to ipfs://CID/page
         const displayUrl = `ipfs://${cid}/page`;
         const result = applyEnsNamePreservation(displayUrl, knownEnsNames);
 
-        expect(result).toBe('ens://ipfsapp.eth/page');
+        expect(result).toBe('ipfs://ipfsapp.eth/page');
       });
 
-      test('simulates navigation to same hash via direct URL (should show hash, not ENS)', () => {
-        // If user directly navigates to bzz://hash (not via ENS), the hash should NOT
-        // be in knownEnsNames, so it should display as hash
+      test('direct hash navigation (no ENS mapping) shows hash unchanged', () => {
         const hash = 'abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890';
         const knownEnsNames = new Map(); // Empty - direct navigation doesn't add mapping
 
@@ -790,6 +788,88 @@ describe('url-utils', () => {
 
         expect(result).toBe(`bzz://${hash}`);
       });
+    });
+  });
+
+  describe('buildEnsDisplayUri', () => {
+    test('builds bzz transport display for Swarm-backed ENS', () => {
+      expect(buildEnsDisplayUri('bzz', 'meinhard.eth')).toBe('bzz://meinhard.eth');
+      expect(buildEnsDisplayUri('bzz', 'meinhard.eth', '/docs?q=1')).toBe(
+        'bzz://meinhard.eth/docs?q=1'
+      );
+    });
+
+    test('builds ipfs transport display for IPFS-backed ENS', () => {
+      expect(buildEnsDisplayUri('ipfs', 'vitalik.eth')).toBe('ipfs://vitalik.eth');
+      expect(buildEnsDisplayUri('ipfs', 'vitalik.eth', '#/swap')).toBe('ipfs://vitalik.eth#/swap');
+    });
+
+    test('builds ipns transport display for IPNS-backed ENS', () => {
+      expect(buildEnsDisplayUri('ipns', 'app.eth', '/index.html')).toBe(
+        'ipns://app.eth/index.html'
+      );
+    });
+
+    test('returns null for unsupported protocols and missing names', () => {
+      expect(buildEnsDisplayUri('http', 'name.eth')).toBeNull();
+      expect(buildEnsDisplayUri('rad', 'name.eth')).toBeNull();
+      expect(buildEnsDisplayUri('bzz', '')).toBeNull();
+      expect(buildEnsDisplayUri('bzz', null)).toBeNull();
+    });
+  });
+
+  describe('isEnsBackedDisplay', () => {
+    test('recognises bare ENS names with .eth or .box', () => {
+      expect(isEnsBackedDisplay('vitalik.eth')).toBe(true);
+      expect(isEnsBackedDisplay('vitalik.eth/docs')).toBe(true);
+      expect(isEnsBackedDisplay('myapp.box')).toBe(true);
+    });
+
+    test('recognises legacy ens:// form', () => {
+      expect(isEnsBackedDisplay('ens://vitalik.eth')).toBe(true);
+      expect(isEnsBackedDisplay('ens://Vitalik.ETH/path')).toBe(true);
+    });
+
+    test('recognises transport ENS forms (bzz/ipfs/ipns)', () => {
+      expect(isEnsBackedDisplay('bzz://meinhard.eth')).toBe(true);
+      expect(isEnsBackedDisplay('ipfs://vitalik.eth/docs')).toBe(true);
+      expect(isEnsBackedDisplay('ipns://app.box/page')).toBe(true);
+    });
+
+    test('rejects raw transport URLs (hash/CID hosts) and other schemes', () => {
+      expect(isEnsBackedDisplay('bzz://abcdef1234')).toBe(false);
+      expect(isEnsBackedDisplay('ipfs://QmHash')).toBe(false);
+      expect(isEnsBackedDisplay('https://example.com')).toBe(false);
+      expect(isEnsBackedDisplay('rad://z123')).toBe(false);
+      expect(isEnsBackedDisplay('')).toBe(false);
+      expect(isEnsBackedDisplay(null)).toBe(false);
+    });
+  });
+
+  describe('normalizeLegacyEnsBookmarkUrl', () => {
+    test('rewrites ens://name.eth to bare-name form', () => {
+      expect(normalizeLegacyEnsBookmarkUrl('ens://vitalik.eth')).toBe('vitalik.eth');
+      expect(normalizeLegacyEnsBookmarkUrl('ens://vitalik.eth/docs')).toBe('vitalik.eth/docs');
+      expect(normalizeLegacyEnsBookmarkUrl('ens://app.eth/#/swap')).toBe('app.eth/#/swap');
+      expect(normalizeLegacyEnsBookmarkUrl('ens://Vitalik.ETH/Path')).toBe('vitalik.eth/Path');
+    });
+
+    test('passes through non-ENS bookmark targets unchanged', () => {
+      expect(normalizeLegacyEnsBookmarkUrl('bzz://abc123')).toBe('bzz://abc123');
+      expect(normalizeLegacyEnsBookmarkUrl('ipfs://QmHash/x')).toBe('ipfs://QmHash/x');
+      expect(normalizeLegacyEnsBookmarkUrl('https://example.com')).toBe('https://example.com');
+      expect(normalizeLegacyEnsBookmarkUrl('vitalik.eth')).toBe('vitalik.eth');
+    });
+
+    test('leaves non-ENS ens:// strings alone (defensive)', () => {
+      // Hypothetical malformed input — host is not an ENS name. Pass through
+      // so the navigation pipeline can reject it via its normal path.
+      expect(normalizeLegacyEnsBookmarkUrl('ens://example.com')).toBe('ens://example.com');
+    });
+
+    test('accepts non-string input without throwing', () => {
+      expect(normalizeLegacyEnsBookmarkUrl(null)).toBeNull();
+      expect(normalizeLegacyEnsBookmarkUrl(undefined)).toBeUndefined();
     });
   });
 

@@ -91,4 +91,35 @@ describe('page-urls', () => {
     expect(mod.parseEnsInput('example.com')).toBeNull();
     expect(mod.parseEnsInput('')).toBeNull();
   });
+
+  test('parses transport-prefixed ens inputs (bzz://, ipfs://, ipns://)', async () => {
+    // Issue #16: bzz://meinhard.eth should resolve via ENS the same way
+    // ens://meinhard.eth or a bare meinhard.eth does. Same applies to
+    // ipfs://name.eth and ipns://name.eth so any DWeb scheme can carry an
+    // ENS host.
+    const mod = await loadModule();
+
+    expect(mod.parseEnsInput('bzz://meinhard.eth')).toEqual({
+      name: 'meinhard.eth',
+      suffix: '',
+    });
+    expect(mod.parseEnsInput('bzz://Meinhard.ETH/path?x=1')).toEqual({
+      name: 'meinhard.eth',
+      suffix: '/path?x=1',
+    });
+    expect(mod.parseEnsInput('ipfs://vitalik.eth/docs')).toEqual({
+      name: 'vitalik.eth',
+      suffix: '/docs',
+    });
+    expect(mod.parseEnsInput('ipns://app.box#fragment')).toEqual({
+      name: 'app.box',
+      suffix: '#fragment',
+    });
+
+    // Transport prefixes with non-ENS hosts must NOT be treated as ENS input;
+    // letting bzz://<hash> through would attempt an ENS lookup against a
+    // Swarm reference.
+    expect(mod.parseEnsInput('bzz://abcdef0123456789')).toBeNull();
+    expect(mod.parseEnsInput('ipfs://QmHash')).toBeNull();
+  });
 });

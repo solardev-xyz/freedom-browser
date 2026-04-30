@@ -40,6 +40,7 @@
 
 const log = require('../logger');
 const { getBeeApiUrl } = require('../service-registry');
+const { resolveEnsContent } = require('../ens-resolver');
 
 // Per-attempt retry schedule. First entry is the delay BEFORE the 2nd
 // attempt, etc. Total backoff budget ≈ sum of all values (~50s). The probe
@@ -65,6 +66,10 @@ const IDEMPOTENT_METHODS = new Set(['GET', 'HEAD']);
 
 // 64-char or 128-char lowercase/uppercase hex (unencrypted / encrypted refs).
 const BZZ_HASH_RE = /^[a-fA-F0-9]{64}([a-fA-F0-9]{64})?$/;
+
+// Hosts ending in .eth or .box are treated as ENS names. Everything else
+// in this protocol handler is a direct Swarm reference.
+const ENS_HOST_RE = /\.(?:eth|box)$/i;
 
 // Request headers we should not forward to Bee — either Chromium-injected
 // privileged-scheme noise or headers that refer to the bzz:// origin and
@@ -101,18 +106,121 @@ function sanitizeRequestHeaders(requestHeaders) {
 }
 
 /**
- * Translate `bzz://<hash>/<path>?<q>#<f>` into the Bee gateway URL.
- * Returns `null` if the hash segment is not a valid 64/128-char hex ref.
+ * Translate `bzz://<host>/<path>?<q>#<f>` into the Bee gateway URL.
+ *
+ * `<host>` is either:
+ *  - a 64- or 128-char hex Swarm ref (synchronous path), OR
+ *  - an ENS name ending in .eth / .box, resolved via the in-process
+ *    `ens-resolver` cache. ENS resolution running here (not just in the
+ *    renderer's address-bar pipeline) is what makes `bzz://name.eth/`
+ *    survive as the URL Chromium loads — so DevTools, `window.location`,
+ *    storage origin, and subresource fetches all see the ENS name rather
+ *    than the resolved hash.
+ *
+ * Returns one of:
+ *  - `{ ok: true, url }`              — usable Bee gateway URL.
+ *  - `{ ok: false, status, message }` — semantic failure (404 mismatch /
+ *    no contenthash, 415 unsupported codec, 502 resolver conflict/error).
+ *  - `null`                           — malformed input. Caller emits 400
+ *    to keep the existing "invalid bzz reference" surface stable.
  */
-function buildGatewayUrl(bzzUrl) {
-  const parsed = new URL(bzzUrl);
-  const hash = parsed.hostname;
-  if (!BZZ_HASH_RE.test(hash)) {
+async function buildGatewayUrl(bzzUrl) {
+  let parsed;
+  try {
+    parsed = new URL(bzzUrl);
+  } catch {
     return null;
   }
-  const beeApiUrl = getBeeApiUrl();
-  // parsed.pathname always starts with '/', parsed.search includes '?' or is ''.
-  return `${beeApiUrl}/bzz/${hash}${parsed.pathname}${parsed.search}`;
+
+  const host = parsed.hostname;
+
+  if (BZZ_HASH_RE.test(host)) {
+    return {
+      ok: true,
+      url: `${getBeeApiUrl()}/bzz/${host}${parsed.pathname}${parsed.search}`,
+    };
+  }
+
+  if (ENS_HOST_RE.test(host)) {
+    return resolveEnsToGatewayUrl(host, parsed);
+  }
+
+  return null;
+}
+
+// Resolve an ENS host to a Bee gateway URL. `parsed` is the original
+// `bzz://name.eth/path?q` URL — we need its pathname/search verbatim.
+//
+// Cross-transport mismatch (e.g. `bzz://swarm.eth/` where swarm.eth's
+// contenthash is IPFS) is treated as the assertion the request literally
+// makes: "I want Swarm content from this name." We surface 404 with an
+// explanatory body rather than auto-redirecting, since a protocol handler
+// can't redirect a subresource and silently switching transports inside
+// the handler hides user intent. The address-bar layer makes the same
+// assertion explicit at the renderer side; both layers stay consistent.
+async function resolveEnsToGatewayUrl(host, parsed) {
+  let result;
+  try {
+    result = await resolveEnsContent(host);
+  } catch (err) {
+    log.warn(`[bzz-protocol] ENS resolver threw for ${host}: ${err.message}`);
+    return { ok: false, status: 502, message: `ENS resolver error: ${err.message}` };
+  }
+
+  if (!result) {
+    return { ok: false, status: 502, message: `ENS resolver returned no result for ${host}` };
+  }
+
+  if (result.type === 'ok') {
+    if (result.protocol !== 'bzz') {
+      return {
+        ok: false,
+        status: 404,
+        message: `ENS name ${host} resolves to ${result.protocol}, not Swarm`,
+      };
+    }
+    return {
+      ok: true,
+      url: `${getBeeApiUrl()}/bzz/${result.decoded}${parsed.pathname}${parsed.search}`,
+    };
+  }
+
+  if (result.type === 'not_found') {
+    return {
+      ok: false,
+      status: 404,
+      message: `ENS name ${host} has no contenthash (${result.reason || 'unknown'})`,
+    };
+  }
+
+  if (result.type === 'unsupported') {
+    return {
+      ok: false,
+      status: 415,
+      message: `ENS name ${host} contenthash format unsupported`,
+    };
+  }
+
+  if (result.type === 'conflict') {
+    return { ok: false, status: 502, message: `ENS providers disagree on ${host}` };
+  }
+
+  // result.type === 'error' or anything we didn't model — degrade to 502.
+  return {
+    ok: false,
+    status: 502,
+    message: `ENS resolution failed for ${host}: ${result.error || result.reason || 'unknown'}`,
+  };
+}
+
+// JSON 4xx/5xx response with the Swarm-shaped body the rest of the handler
+// emits, so error pages and developer console messages don't see schema
+// drift between hex-host and ENS-host failures.
+function jsonErrorResponse(status, message) {
+  return new Response(JSON.stringify({ code: status, message }), {
+    status,
+    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+  });
 }
 
 function sleep(ms, signal) {
@@ -232,19 +340,15 @@ async function handleBzzRequest(
   request,
   { fetchImpl = fetch, attemptTimeoutMs = ATTEMPT_TIMEOUT_MS } = {}
 ) {
-  const gatewayUrl = buildGatewayUrl(request.url);
-  if (!gatewayUrl) {
-    return new Response(
-      JSON.stringify({
-        code: 400,
-        message: 'invalid bzz reference',
-      }),
-      {
-        status: 400,
-        headers: { 'Content-Type': 'application/json; charset=utf-8' },
-      }
-    );
+  const built = await buildGatewayUrl(request.url);
+  if (!built) {
+    return jsonErrorResponse(400, 'invalid bzz reference');
   }
+  if (!built.ok) {
+    log.info(`[bzz-protocol] ${built.status} for ${request.url}: ${built.message}`);
+    return jsonErrorResponse(built.status, built.message);
+  }
+  const gatewayUrl = built.url;
 
   const headers = sanitizeRequestHeaders(request.headers);
   const method = request.method || 'GET';
@@ -264,17 +368,9 @@ async function handleBzzRequest(
       `[bzz-protocol] fetch failed for ${gatewayUrl}: ${err?.message || err}` +
         (code ? ` (${code})` : '')
     );
-    return new Response(
-      JSON.stringify({
-        code: isConnRefused ? 503 : 502,
-        message: isConnRefused
-          ? 'bee gateway unreachable'
-          : 'bee gateway error',
-      }),
-      {
-        status: isConnRefused ? 503 : 502,
-        headers: { 'Content-Type': 'application/json; charset=utf-8' },
-      }
+    return jsonErrorResponse(
+      isConnRefused ? 503 : 502,
+      isConnRefused ? 'bee gateway unreachable' : 'bee gateway error'
     );
   }
 }
