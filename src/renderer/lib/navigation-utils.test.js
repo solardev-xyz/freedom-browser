@@ -213,6 +213,57 @@ describe('navigation-utils', () => {
     });
   });
 
+  describe('extractEnsResolutionMetadata', () => {
+    test('records both CIDv0 and CIDv1 forms for IPFS contenthashes', async () => {
+      const { extractEnsResolutionMetadata } = await loadNavigationUtils();
+
+      const { knownEnsPairs, resolvedProtocol } = extractEnsResolutionMetadata(
+        'ipfs://QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG/',
+        'evmnow.eth'
+      );
+
+      expect(resolvedProtocol).toBe('ipfs');
+      expect(knownEnsPairs).toEqual([
+        ['QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG', 'evmnow.eth'],
+        ['bafybeie5nqv6kd3qnfjupgvz34woh3oksc3iau6abmyajn7qvtf6d2ho34', 'evmnow.eth'],
+      ]);
+    });
+
+    test('records both base58 multihash and base36 CIDv1 for IPNS contenthashes', async () => {
+      const { extractEnsResolutionMetadata } = await loadNavigationUtils();
+
+      // The ENS resolver decodes jalil.eth's IPNS contenthash to this base58
+      // multihash; Kubo's subdomain gateway then redirects to the base36 CIDv1.
+      const { knownEnsPairs, resolvedProtocol } = extractEnsResolutionMetadata(
+        'ipns://12D3KooWAsDaZWCkCEUN3myg49NoCMmrYYivmJVwjg7DVJBvWdaX',
+        'jalil.eth'
+      );
+
+      expect(resolvedProtocol).toBe('ipns');
+      expect(knownEnsPairs).toEqual([
+        ['12D3KooWAsDaZWCkCEUN3myg49NoCMmrYYivmJVwjg7DVJBvWdaX', 'jalil.eth'],
+        ['k51qzi5uqu5dgkkr5wjh0m796f9u3tou74wn2q2u3shgh6yn52ce4hitig3if4', 'jalil.eth'],
+      ]);
+    });
+
+    test('does not crash when the IPNS name is already a base36 CIDv1', async () => {
+      // If someone hand-crafts an ens:// mapping to a CIDv1 IPNS name, we
+      // only record the raw form — we don't try to invert base36 back to
+      // a base58 multihash.
+      const { extractEnsResolutionMetadata } = await loadNavigationUtils();
+
+      const { knownEnsPairs, resolvedProtocol } = extractEnsResolutionMetadata(
+        'ipns://k51qzi5uqu5dgkkr5wjh0m796f9u3tou74wn2q2u3shgh6yn52ce4hitig3if4',
+        'jalil.eth'
+      );
+
+      expect(resolvedProtocol).toBe('ipns');
+      expect(knownEnsPairs).toEqual([
+        ['k51qzi5uqu5dgkkr5wjh0m796f9u3tou74wn2q2u3shgh6yn52ce4hitig3if4', 'jalil.eth'],
+      ]);
+    });
+  });
+
   describe('getRadicleDisplayUrl', () => {
     test('reconstructs rad urls from rad-browser pages', async () => {
       const { getRadicleDisplayUrl } = await loadNavigationUtils();

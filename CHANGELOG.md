@@ -18,6 +18,7 @@ All notable changes to Freedom will be documented in this file.
 - The protocol icon updates to the right transport (Swarm/IPFS/IPNS) as soon as the scheme is known, rather than waiting until the page finishes loading. This also fixes the IPFS icon never showing for ENS names.
 - The tab loading spinner now stays on while ENS resolves a page-link click, instead of being torn down by the phantom abort that follows the custom-protocol intercept.
 - Cross-tab UI contamination during ENS resolution: spinner state, modal alert popups, and the resolved URL all stay scoped to the originating tab. Switching to another tab while a background lookup is in flight no longer drops that tab's spinner, surfaces an unrelated alert, or clobbers the foreground tab's address bar.
+- IPNS-backed ENS sites now keep the ENS name in the address bar after Kubo's subdomain gateway redirects `localhost:8080/ipns/<base58>` to `<base36-CIDv1>.ipns.localhost:8080`. Previously the address bar reverted to `ipns://<hash>` because only the base58 multihash form was registered as an ENS alias; the base36 CIDv1 libp2p-key form is now also registered at resolution time.
 
 ## [0.7.0] - 2026-04-19
 
