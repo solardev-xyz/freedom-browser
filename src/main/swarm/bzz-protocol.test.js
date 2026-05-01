@@ -9,6 +9,14 @@ jest.mock('../logger', () => ({
   debug: jest.fn(),
 }));
 
+// Prefix required by Jest's mock-factory hoisting: the factory runs before
+// regular `const` initialisation, so any captured variable must start with
+// `mock` to survive the static analyser.
+const mockResolveEnsContent = jest.fn();
+jest.mock('../ens-resolver', () => ({
+  resolveEnsContent: (...args) => mockResolveEnsContent(...args),
+}));
+
 const {
   buildGatewayUrl,
   sanitizeRequestHeaders,
@@ -20,30 +28,201 @@ const HASH = 'a'.repeat(64);
 const ENCRYPTED_HASH = 'a'.repeat(128);
 
 describe('buildGatewayUrl', () => {
-  test('converts bzz://<hash>/path to the Bee gateway URL', () => {
-    expect(buildGatewayUrl(`bzz://${HASH}/index.html`)).toBe(
-      `http://127.0.0.1:1633/bzz/${HASH}/index.html`
-    );
+  beforeEach(() => {
+    mockResolveEnsContent.mockReset();
   });
 
-  test('preserves query string and drops fragment (Chromium never sends it)', () => {
-    expect(buildGatewayUrl(`bzz://${HASH}/page?v=1`)).toBe(
-      `http://127.0.0.1:1633/bzz/${HASH}/page?v=1`
-    );
+  test('converts bzz://<hash>/path to the Bee gateway URL', async () => {
+    await expect(buildGatewayUrl(`bzz://${HASH}/index.html`)).resolves.toEqual({
+      ok: true,
+      url: `http://127.0.0.1:1633/bzz/${HASH}/index.html`,
+    });
   });
 
-  test('supports 128-char encrypted refs', () => {
-    expect(buildGatewayUrl(`bzz://${ENCRYPTED_HASH}/`)).toBe(
-      `http://127.0.0.1:1633/bzz/${ENCRYPTED_HASH}/`
-    );
+  test('preserves query string and drops fragment (Chromium never sends it)', async () => {
+    await expect(buildGatewayUrl(`bzz://${HASH}/page?v=1`)).resolves.toEqual({
+      ok: true,
+      url: `http://127.0.0.1:1633/bzz/${HASH}/page?v=1`,
+    });
   });
 
-  test('returns null for non-hex hosts', () => {
-    expect(buildGatewayUrl('bzz://not-a-hash/file')).toBeNull();
+  test('supports 128-char encrypted refs', async () => {
+    await expect(buildGatewayUrl(`bzz://${ENCRYPTED_HASH}/`)).resolves.toEqual({
+      ok: true,
+      url: `http://127.0.0.1:1633/bzz/${ENCRYPTED_HASH}/`,
+    });
   });
 
-  test('returns null for too-short hashes', () => {
-    expect(buildGatewayUrl('bzz://abcdef/file')).toBeNull();
+  test('returns null for non-hex non-ENS hosts', async () => {
+    await expect(buildGatewayUrl('bzz://not-a-hash/file')).resolves.toBeNull();
+    expect(mockResolveEnsContent).not.toHaveBeenCalled();
+  });
+
+  test('returns null for too-short hashes that are not ENS', async () => {
+    await expect(buildGatewayUrl('bzz://abcdef/file')).resolves.toBeNull();
+    expect(mockResolveEnsContent).not.toHaveBeenCalled();
+  });
+
+  test('hex host short-circuits the ENS resolver', async () => {
+    await buildGatewayUrl(`bzz://${HASH}/x`);
+    expect(mockResolveEnsContent).not.toHaveBeenCalled();
+  });
+
+  describe('ENS hosts', () => {
+    test('resolves .eth host via ENS resolver and proxies to the resolved hash', async () => {
+      mockResolveEnsContent.mockResolvedValue({
+        type: 'ok',
+        protocol: 'bzz',
+        decoded: HASH,
+        uri: `bzz://${HASH}`,
+        name: 'meinhard.eth',
+      });
+
+      await expect(buildGatewayUrl('bzz://meinhard.eth/page.html?v=1')).resolves.toEqual({
+        ok: true,
+        url: `http://127.0.0.1:1633/bzz/${HASH}/page.html?v=1`,
+      });
+      expect(mockResolveEnsContent).toHaveBeenCalledWith('meinhard.eth');
+    });
+
+    test('resolves .box host via ENS resolver', async () => {
+      mockResolveEnsContent.mockResolvedValue({
+        type: 'ok',
+        protocol: 'bzz',
+        decoded: HASH,
+        uri: `bzz://${HASH}`,
+      });
+
+      await expect(buildGatewayUrl('bzz://myapp.box/')).resolves.toEqual({
+        ok: true,
+        url: `http://127.0.0.1:1633/bzz/${HASH}/`,
+      });
+    });
+
+    test('returns 404 when ENS contenthash is IPFS, not Swarm', async () => {
+      mockResolveEnsContent.mockResolvedValue({
+        type: 'ok',
+        protocol: 'ipfs',
+        decoded: 'QmFakeCid',
+        uri: 'ipfs://QmFakeCid',
+      });
+
+      const result = await buildGatewayUrl('bzz://vitalik.eth/');
+      expect(result).toEqual({
+        ok: false,
+        status: 404,
+        message: 'ENS name vitalik.eth resolves to ipfs, not Swarm',
+      });
+    });
+
+    test('returns 404 when ENS contenthash is IPNS, not Swarm', async () => {
+      mockResolveEnsContent.mockResolvedValue({
+        type: 'ok',
+        protocol: 'ipns',
+        decoded: 'docs.example.com',
+        uri: 'ipns://docs.example.com',
+      });
+
+      const result = await buildGatewayUrl('bzz://docs.eth/install');
+      expect(result).toEqual({
+        ok: false,
+        status: 404,
+        message: 'ENS name docs.eth resolves to ipns, not Swarm',
+      });
+    });
+
+    test('returns 404 when ENS name has no contenthash record', async () => {
+      mockResolveEnsContent.mockResolvedValue({
+        type: 'not_found',
+        reason: 'NO_RESOLVER',
+      });
+
+      const result = await buildGatewayUrl('bzz://nothing.eth/');
+      expect(result.ok).toBe(false);
+      expect(result.status).toBe(404);
+      expect(result.message).toContain('nothing.eth');
+      expect(result.message).toContain('NO_RESOLVER');
+    });
+
+    test('returns 415 when contenthash format is unsupported', async () => {
+      mockResolveEnsContent.mockResolvedValue({
+        type: 'unsupported',
+        reason: 'UNSUPPORTED_CONTENTHASH_FORMAT',
+        contentHash: '0xdeadbeef',
+      });
+
+      const result = await buildGatewayUrl('bzz://exotic.eth/');
+      expect(result.ok).toBe(false);
+      expect(result.status).toBe(415);
+    });
+
+    test('returns 502 when providers disagree (conflict)', async () => {
+      mockResolveEnsContent.mockResolvedValue({
+        type: 'conflict',
+        groups: [],
+      });
+
+      const result = await buildGatewayUrl('bzz://contested.eth/');
+      expect(result.ok).toBe(false);
+      expect(result.status).toBe(502);
+      expect(result.message).toContain('disagree');
+    });
+
+    test('returns 502 when the resolver throws (RPC unreachable)', async () => {
+      mockResolveEnsContent.mockRejectedValue(new Error('all RPC providers failed'));
+
+      const result = await buildGatewayUrl('bzz://offline.eth/');
+      expect(result.ok).toBe(false);
+      expect(result.status).toBe(502);
+      expect(result.message).toContain('all RPC providers failed');
+    });
+
+    test('returns 502 when the resolver returns an error result', async () => {
+      mockResolveEnsContent.mockResolvedValue({
+        type: 'error',
+        reason: 'RESOLUTION_ERROR',
+        error: 'something broke',
+      });
+
+      const result = await buildGatewayUrl('bzz://broken.eth/');
+      expect(result.ok).toBe(false);
+      expect(result.status).toBe(502);
+    });
+
+    // ENS subdomains are set by the parent domain's owner with no length
+    // constraint — 1–2 char leftmost labels are valid and common (e.g.
+    // `a.foo.eth`, `me.brantly.eth`, `1.poap.eth`). Legacy two-char direct
+    // `.eth` registrations (`me.eth`, `aa.eth`) from the 2017 auction era
+    // are also still valid. The pre-filter must only reject truly empty
+    // labels, not short ones.
+    test.each([
+      ['a.foo.eth', 'bzz://a.foo.eth/'],
+      ['x.app.eth', 'bzz://x.app.eth/'],
+      ['me.brantly.eth', 'bzz://me.brantly.eth/'],
+      ['1.poap.eth', 'bzz://1.poap.eth/'],
+      ['me.eth', 'bzz://me.eth/'],
+      ['aa.eth', 'bzz://aa.eth/'],
+    ])('short-label ENS host %s reaches the resolver', async (name, url) => {
+      mockResolveEnsContent.mockResolvedValue({
+        type: 'ok',
+        protocol: 'bzz',
+        decoded: HASH,
+        uri: `bzz://${HASH}`,
+        name,
+      });
+
+      const result = await buildGatewayUrl(url);
+      expect(result).toEqual({ ok: true, url: `http://127.0.0.1:1633/bzz/${HASH}/` });
+      expect(mockResolveEnsContent).toHaveBeenCalledWith(name);
+    });
+
+    test.each([
+      ['bzz://.eth/'],
+      ['bzz://foo..eth/'],
+    ])('returns null for hosts with empty labels (%s)', async (url) => {
+      await expect(buildGatewayUrl(url)).resolves.toBeNull();
+      expect(mockResolveEnsContent).not.toHaveBeenCalled();
+    });
   });
 });
 
@@ -75,6 +254,10 @@ describe('sanitizeRequestHeaders', () => {
 });
 
 describe('handleBzzRequest', () => {
+  beforeEach(() => {
+    mockResolveEnsContent.mockReset();
+  });
+
   const makeRequest = (url, { method = 'GET', headers = {} } = {}) => ({
     url,
     method,
@@ -87,6 +270,46 @@ describe('handleBzzRequest', () => {
     const fetchImpl = jest.fn();
     const res = await handleBzzRequest(makeRequest('bzz://not-a-hash/'), { fetchImpl });
     expect(res.status).toBe(400);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  test('resolves ENS-host bzz URLs and proxies to the gateway', async () => {
+    mockResolveEnsContent.mockResolvedValue({
+      type: 'ok',
+      protocol: 'bzz',
+      decoded: HASH,
+      uri: `bzz://${HASH}`,
+    });
+    const fetchImpl = jest.fn().mockResolvedValue(new Response('hello', { status: 200 }));
+
+    const res = await handleBzzRequest(makeRequest('bzz://meinhard.eth/index.html'), { fetchImpl });
+    expect(res.status).toBe(200);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl.mock.calls[0][0]).toBe(`http://127.0.0.1:1633/bzz/${HASH}/index.html`);
+  });
+
+  test('returns 404 with explanatory body when ENS host has IPFS contenthash', async () => {
+    mockResolveEnsContent.mockResolvedValue({
+      type: 'ok',
+      protocol: 'ipfs',
+      decoded: 'QmFakeCid',
+    });
+    const fetchImpl = jest.fn();
+
+    const res = await handleBzzRequest(makeRequest('bzz://vitalik.eth/'), { fetchImpl });
+    expect(res.status).toBe(404);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    const body = await res.json();
+    expect(body.code).toBe(404);
+    expect(body.message).toMatch(/resolves to ipfs/);
+  });
+
+  test('returns 502 when the ENS resolver throws (no fetch issued)', async () => {
+    mockResolveEnsContent.mockRejectedValue(new Error('rpc down'));
+    const fetchImpl = jest.fn();
+
+    const res = await handleBzzRequest(makeRequest('bzz://offline.eth/x'), { fetchImpl });
+    expect(res.status).toBe(502);
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 

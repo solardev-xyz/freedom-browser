@@ -1,4 +1,16 @@
+import { isEnsHost } from './origin-utils.js';
+
 export const ensureTrailingSlash = (value = '') => (value.endsWith('/') ? value : `${value}/`);
+
+// Set of transports an ENS contenthash can resolve to that the renderer
+// knows how to dispatch. Anything outside this set is treated as
+// "unsupported transport" — the navigation surface alerts and aborts
+// rather than synthesising a URL we can't load. Single source of truth
+// so adding a new transport (e.g. ipfs5) only touches one place.
+export const SUPPORTED_ENS_TRANSPORTS = ['bzz', 'ipfs', 'ipns'];
+
+export const isSupportedEnsTransport = (protocol) =>
+  typeof protocol === 'string' && SUPPORTED_ENS_TRANSPORTS.includes(protocol);
 
 // decodeURIComponent throws on malformed `%` sequences that show up in
 // user-typed URLs; fall back to the raw value in that case.
@@ -207,9 +219,93 @@ export const formatBzzUrl = (input, bzzRoutePrefix) => {
 };
 
 /**
+ * Build a transport-aware ENS display URI.
+ *
+ * Given a resolved transport ('bzz' | 'ipfs' | 'ipns') and an ENS name + path
+ * suffix, returns a display URL whose host is the ENS name and whose scheme
+ * matches the resolved transport. Used in two places:
+ *
+ *   - When ENS resolution succeeds, navigation derives the address-bar value
+ *     from this helper instead of always emitting `ens://<name>`.
+ *   - View-source on ENS-backed content reuses the same shape with a
+ *     `view-source:` prefix added by the caller.
+ *
+ * The legacy `ens://<name>` form is intentionally NOT produced here — it
+ * stays parseable for compatibility with existing bookmarks, but is no
+ * longer the canonical display.
+ *
+ * @param {'bzz'|'ipfs'|'ipns'} protocol - resolved ENS contenthash transport
+ * @param {string} name - ENS name (already normalized/lowercased upstream)
+ * @param {string} [suffix] - optional path/query/fragment, including any leading '/'
+ * @returns {string|null} display URI, or null when protocol is unsupported
+ */
+export const buildEnsDisplayUri = (protocol, name, suffix = '') => {
+  if (!name) return null;
+  if (!isSupportedEnsTransport(protocol)) return null;
+  return `${protocol}://${name}${suffix || ''}`;
+};
+
+/**
+ * True when `displayUrl` is an ENS-backed display value the address bar
+ * should treat as an ENS resolution. Recognises the bare-name form
+ * (`vitalik.eth/path`), the legacy `ens://` form, and the transport-aware
+ * `bzz://`/`ipfs://`/`ipns://` forms whose host ends in `.eth`/`.box`.
+ *
+ * Used to gate the "clear known ENS mappings on direct navigation" branches
+ * in `loadTarget`, so that transport ENS URLs (post-resolution display) do
+ * not delete the hash→name mapping that the new display relies on.
+ *
+ * Mirrors what `parseEnsInput` accepts, but kept here as a window-free
+ * helper so url-utils doesn't pull in page-urls' module-init `window`
+ * dependencies (homeUrl, internalPages). The test suite asserts both
+ * stay in sync.
+ *
+ * @param {string} displayUrl
+ * @returns {boolean}
+ */
+export const isEnsBackedDisplay = (displayUrl) => {
+  if (!displayUrl) return false;
+  const trimmed = displayUrl.trim();
+  if (!trimmed) return false;
+  const lower = trimmed.toLowerCase();
+  if (lower.startsWith('ens://')) return true;
+  const transportMatch = lower.match(/^(?:bzz|ipfs|ipns):\/\/([^/?#]+)/);
+  if (transportMatch) {
+    return isEnsHost(transportMatch[1]);
+  }
+  return isEnsHost(trimmed.split(/[/?#]/)[0]);
+};
+
+/**
+ * Convert a legacy `ens://name.eth[/path]` bookmark target to the bare-name
+ * form (`name.eth[/path]`) so it enters the same navigation flow as a typed
+ * ENS name. Non-ENS inputs are returned unchanged.
+ *
+ * The migration plan keeps `ens://` parseable for compatibility but moves
+ * the canonical address-bar form to the resolved transport
+ * (`bzz://name.eth`, `ipfs://name.eth`, `ipns://name.eth`). Stored bookmarks
+ * predating that change still carry `ens://`; rewriting them at open time
+ * avoids re-displaying the legacy form after resolution lands.
+ *
+ * @param {string} url
+ * @returns {string} bare-ENS form, or original input if not a legacy ens:// URL
+ */
+export const normalizeLegacyEnsBookmarkUrl = (url) => {
+  if (typeof url !== 'string') return url;
+  const match = url.match(/^ens:\/\/([^/?#]+)(.*)$/i);
+  if (!match) return url;
+  if (!isEnsHost(match[1])) return url;
+  return `${match[1].toLowerCase()}${match[2] || ''}`;
+};
+
+/**
  * Apply ENS name preservation to a display URL.
  * If the URL is a bzz/ipfs/ipns URL with a hash/CID that has a known ENS name,
- * replace it with the ens:// URL format.
+ * substitute the ENS name as the host, preserving the resolved transport
+ * scheme (e.g. `bzz://<hash>/path` → `bzz://<name>/path`). The legacy
+ * `ens://<name>` form is intentionally not produced here — see
+ * `buildEnsDisplayUri` and the ENS link migration notes.
+ *
  * @param {string} displayUrl - Display URL like "bzz://abc123/path" or "ipfs://QmHash/path"
  * @param {Map} knownEnsNames - Map of hash/CID -> ENS name
  * @returns {string} Display URL with ENS name substituted if applicable
@@ -236,7 +332,7 @@ export const applyEnsNamePreservation = (displayUrl, knownEnsNames) => {
     if (name) {
       const prefixLen = bzzMatch[0].length;
       const path = derived.slice(prefixLen);
-      derived = `ens://${name}${path}`;
+      derived = `bzz://${name}${path}`;
     }
   }
 
@@ -248,7 +344,7 @@ export const applyEnsNamePreservation = (displayUrl, knownEnsNames) => {
     if (name) {
       const prefixLen = ipfsMatch[0].length;
       const path = derived.slice(prefixLen);
-      derived = `ens://${name}${path}`;
+      derived = `ipfs://${name}${path}`;
     }
   }
 
@@ -260,7 +356,7 @@ export const applyEnsNamePreservation = (displayUrl, knownEnsNames) => {
     if (name) {
       const prefixLen = ipnsMatch[0].length;
       const path = derived.slice(prefixLen);
-      derived = `ens://${name}${path}`;
+      derived = `ipns://${name}${path}`;
     }
   }
 

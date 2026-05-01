@@ -16,7 +16,7 @@ export const setOnContextMenuOpening = (callback) => {
   onContextMenuOpening = callback;
 };
 
-// Set loading state for a specific tab (or active tab if no tabId)
+// Set loading state for a specific tab (or active tab if no tabId).
 export const setTabLoading = (isLoading, tabId = null) => {
   const tab = tabId
     ? tabState.tabs.find((t) => t.id === tabId)
@@ -175,6 +175,30 @@ export const closeAllDevTools = () => {
 // Get all tabs
 export const getTabs = () => tabState.tabs;
 
+// Get a tab by its numeric id, or null when no match is found.
+export const getTabById = (tabId) => {
+  if (tabId === null || tabId === undefined) return null;
+  return tabState.tabs.find((t) => t.id === tabId) || null;
+};
+
+// Resolve the tab id stored on a webview's `data-tab-id` attribute, or
+// null when the webview is unmanaged or missing the attribute. Centralised
+// so the renderer doesn't sprinkle `Number(webview.dataset.tabId)` across
+// async-tab-routing call sites.
+export const getTabIdForWebview = (webview) => {
+  if (!webview) return null;
+  const raw = webview.dataset?.tabId;
+  if (raw === undefined) return null;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+// True when `tabId` matches the currently active tab. Used by async
+// callbacks that want to gate UI updates (alerts, address bar writes,
+// favicon refresh) on the originating tab still being foregrounded.
+export const isActiveTab = (tabId) =>
+  tabId !== null && tabId !== undefined && tabId === tabState.activeTabId;
+
 /**
  * Get the committed display URL for a specific webview.
  * Always reads from the tab's addressBarSnapshot — the last display URL
@@ -247,6 +271,20 @@ const createWebview = (tabId, initialUrl) => {
     'did-start-loading': () => {
       const tab = tabState.tabs.find((t) => t.id === tabId);
       if (tab) {
+        // A real load is starting — the phantom stop that proactive
+        // suppression guards against has either already fired, been
+        // elided by Chromium, or is interleaved earlier in this same
+        // event-loop tick. Disarm so the paired real did-stop-loading
+        // isn't swallowed. This is what keeps fast-scheme clicks
+        // (freedom://, rad:, ethereum:) from getting a stuck spinner
+        // when their real stop lands inside the 200 ms safety window.
+        if (tab.suppressNextStop) {
+          tab.suppressNextStop = false;
+          if (tab.suppressNextStopTimer) {
+            clearTimeout(tab.suppressNextStopTimer);
+            tab.suppressNextStopTimer = null;
+          }
+        }
         tab.isLoading = true;
         renderTabs();
       }
@@ -257,6 +295,23 @@ const createWebview = (tabId, initialUrl) => {
     'did-stop-loading': () => {
       const tab = tabState.tabs.find((t) => t.id === tabId);
       if (tab) {
+        // Paired suppression for the will-navigate intercept (see did-fail-load
+        // below). The aborted nav fires `did-fail-load -3` then
+        // `did-stop-loading`; both describe a phantom load that never had a
+        // real start — they don't represent the real navigation we're about
+        // to perform via `loadTarget`. Swallowing them entirely (including
+        // the active-tab `onWebviewEvent` forwarding) prevents the
+        // navigation-side handler from clearing `isLoading`, resetting the
+        // reload button, or pushing the aborted URL into history mid-ENS-
+        // resolution.
+        if (tab.suppressNextStop) {
+          tab.suppressNextStop = false;
+          if (tab.suppressNextStopTimer) {
+            clearTimeout(tab.suppressNextStopTimer);
+            tab.suppressNextStopTimer = null;
+          }
+          return;
+        }
         tab.isLoading = false;
         tab.url = webview.getURL();
         renderTabs();
@@ -268,6 +323,36 @@ const createWebview = (tabId, initialUrl) => {
     'did-fail-load': (event) => {
       const tab = tabState.tabs.find((t) => t.id === tabId);
       if (tab) {
+        // When the main process intercepts a `will-navigate` for a custom
+        // protocol (bzz://, ens://, ipfs://, ipns://, freedom://, rad:,
+        // ethereum:) it calls `event.preventDefault()` on the source
+        // webview. Chromium emits `did-fail-load -3` (ERR_ABORTED) +
+        // `did-stop-loading` for the cancelled navigation. We swallow
+        // exactly that pair so the spinner survives the slow resolution
+        // that follows. The aborted URL must match `tab.pendingAbortUrl`
+        // — comparing URLs (rather than gating only on the flag's
+        // presence) prevents an unrelated abort during the suppression
+        // window (Stop button, programmatic abort) from being silently
+        // consumed.
+        //
+        // Active-tab `onWebviewEvent` forwarding is also skipped for the
+        // suppressed event since the navigation-side handler
+        // unconditionally calls `setLoading(false)` and resets the
+        // reload button — both wrong for the phantom abort.
+        const abortedUrl = event.validatedURL || event.url || null;
+        if (
+          event.errorCode === -3 &&
+          tab.pendingAbortUrl &&
+          abortedUrl === tab.pendingAbortUrl
+        ) {
+          tab.pendingAbortUrl = null;
+          if (tab.pendingAbortTimer) {
+            clearTimeout(tab.pendingAbortTimer);
+            tab.pendingAbortTimer = null;
+          }
+          tab.suppressNextStop = true;
+          return;
+        }
         tab.isLoading = false;
       }
       if (tabId === tabState.activeTabId && onWebviewEvent) {
@@ -764,6 +849,18 @@ export const closeTab = (tabId) => {
     tab.webview.closeDevTools();
   }
 
+  // Cancel the phantom-abort safety-net timers if they're still pending —
+  // otherwise they would fire on a detached tab object (writing to a dead
+  // tab and pinning it for up to 1.5s after close).
+  if (tab.pendingAbortTimer) {
+    clearTimeout(tab.pendingAbortTimer);
+    tab.pendingAbortTimer = null;
+  }
+  if (tab.suppressNextStopTimer) {
+    clearTimeout(tab.suppressNextStopTimer);
+    tab.suppressNextStopTimer = null;
+  }
+
   // Remove event listeners before removing webview (prevents memory leak)
   cleanupWebview(tab.webview);
 
@@ -1094,23 +1191,18 @@ export const initTabs = async () => {
 
       pushDebug(`Opening new tab with URL: ${url}${targetName ? ` (target: ${targetName})` : ''}`);
 
-      // For http/https URLs, load directly without going through homeUrl first
-      // This avoids the brief flash of the home page before navigation
-      const isDirectUrl = url.startsWith('http://') || url.startsWith('https://');
-      const newTab = createTab(isDirectUrl ? url : homeUrl);
+      // Pass the target URL through to createTab (not homeUrl). createTab
+      // already does the right thing for both shapes: direct URLs load
+      // straight into the webview (no home-page flash), and dweb URLs
+      // (ens://, bzz://, ipfs://, ipns://, etc.) keep the webview on
+      // homeUrl while routing through `onLoadTarget` for resolution.
+      // Critically, this also makes `tab.url` reflect the actual target,
+      // so the `tab-switched` handler can derive a meaningful address bar
+      // value immediately instead of leaving it empty until ENS resolves.
+      const newTab = createTab(url);
 
-      // Associate this tab with the target name if specified
       if (targetName && newTab) {
         namedTargets.set(targetName, newTab.id);
-      }
-
-      // For dweb URLs (ipfs://, ipns://, bzz://), use loadTarget for URL resolution
-      if (!isDirectUrl) {
-        setTimeout(() => {
-          if (onLoadTarget) {
-            onLoadTarget(url);
-          }
-        }, 50);
       }
     }
   });
@@ -1118,6 +1210,55 @@ export const initTabs = async () => {
   electronAPI?.onNavigateToUrl?.((url) => {
     if (url && onLoadTarget) {
       pushDebug(`Navigating to URL: ${url}`);
+      // The main process intercepted a will-navigate for a custom protocol
+      // (`bzz://`, `ens://`, `ipfs://`, `ipns://`, `freedom://`, `rad:`,
+      // `ethereum:`) and called `event.preventDefault()`. That prevent
+      // causes Chromium to emit a phantom `did-stop-loading` (sometimes
+      // also preceded by `did-fail-load -3`) on the source webview for
+      // the cancelled navigation, which would clear `tab.isLoading` and
+      // kill the spinner during the slow ENS lookup that follows.
+      //
+      // We mark the active tab here so the per-tab handlers in
+      // `createWebview` can swallow exactly that one phantom. Active tab
+      // is correct because the user just clicked a link in the
+      // foreground. `pendingAbortUrl` (1500 ms self-clear) is the primary
+      // matcher used by `did-fail-load` when Chromium emits one.
+      //
+      // We also arm `suppressNextStop` proactively (with its own 200 ms
+      // self-clear) for two reasons exposed by live tracing:
+      //   1. The `<webview>` events and the `navigate-to-url` IPC
+      //      travel on independent channels, so the phantom can land
+      //      *after* this handler runs but *before* `did-fail-load`
+      //      arrives — there is no time for the existing chain
+      //      (did-fail-load → arm `suppressNextStop`) to fire.
+      //   2. Chromium can elide `did-fail-load -3` entirely for an
+      //      intercepted navigation, emitting only `did-start-loading`
+      //      → `did-stop-loading`. Without proactive arming, the
+      //      paired `did-stop-loading` has no entry point that would
+      //      mark it as a phantom.
+      // The 200 ms cap is far shorter than any real `did-stop-loading`
+      // following the ENS resolution + content fetch, so an unconsumed
+      // flag can't swallow a legitimate later stop.
+      const activeTab = tabState.tabs.find((t) => t.id === tabState.activeTabId);
+      if (activeTab) {
+        activeTab.pendingAbortUrl = url;
+        if (activeTab.pendingAbortTimer) {
+          clearTimeout(activeTab.pendingAbortTimer);
+        }
+        activeTab.pendingAbortTimer = setTimeout(() => {
+          activeTab.pendingAbortUrl = null;
+          activeTab.pendingAbortTimer = null;
+        }, 1500);
+
+        activeTab.suppressNextStop = true;
+        if (activeTab.suppressNextStopTimer) {
+          clearTimeout(activeTab.suppressNextStopTimer);
+        }
+        activeTab.suppressNextStopTimer = setTimeout(() => {
+          activeTab.suppressNextStop = false;
+          activeTab.suppressNextStopTimer = null;
+        }, 200);
+      }
       onLoadTarget(url);
     }
   });

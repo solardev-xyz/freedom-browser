@@ -54,6 +54,10 @@ Freedom mitigates this in two layers:
 
 2. **Custom `bzz:` scheme** (`src/main/swarm/bzz-protocol.js`) — `bzz` is registered as a privileged standard scheme, so `bzz://<hash>/` becomes the page origin in Chromium. Every `bzz://` request (top-level, sub-resources, `fetch`, media `Range`, CSS descendants, service workers) routes through a main-process handler that proxies to the local Bee gateway, always sets `Swarm-Chunk-Retrieval-Timeout` + `Swarm-Redundancy-Strategy: 3` + `Swarm-Redundancy-Fallback-Mode: true`, retries transient `5xx` on idempotent methods with bounded exponential backoff (~50 s total) with a 30 s per-attempt deadline, and streams the response back. `404` responses are surfaced immediately so SPAs that feature-detect missing endpoints don't stall — the cold-start case that 404 retries used to absorb is now handled upstream by the navigation probe. Because `bzz://<hash>/` is the origin, same-origin relative paths (`/foo.js`, `url(/bg.png)`) resolve naturally with no URL rewriting.
 
+The handler also accepts ENS-named hosts: `bzz://swarm.eth/...` resolves the contenthash via the in-process ENS resolver (cache hit after address-bar resolution) and proxies the same way. The page's URL/origin stays `bzz://<name>/` rather than the resolved hash, so DevTools, `window.location`, storage, and subresource fetches like `fetch('bzz://swarm.eth/data')` see the ENS name. Cross-transport mismatches (e.g. `bzz://name.eth` whose contenthash is IPFS) return `404` with an explanatory body — the typed scheme is treated as an assertion. The renderer's address-bar pipeline applies the same assertion before navigating, so both layers agree.
+
+> **Origin model.** `bzz://swarm.eth` and `bzz://<resolved-hash>` are different origins from Chromium's perspective — cookies, localStorage, IndexedDB, and service workers are not shared between them. This mirrors HTTPS, where `https://example.com` and `https://192.0.2.1` are also different origins even when they resolve to the same server. Pinning storage to the ENS name keeps state stable across contenthash updates.
+
 ### Migrating Swarm sites to the `bzz://` scheme
 
 Versions of Freedom before this change loaded `bzz://<hash>/path` by rewriting it to the gateway URL `http://127.0.0.1:1633/bzz/<hash>/path` and navigating there. Pages saw `window.location.protocol === 'http:'` and `window.location.pathname === '/bzz/<hash>/path'`.
@@ -189,8 +193,10 @@ The address bar also provides **autocomplete suggestions** from browsing history
 - **Automatic Resolution**: `.eth` and `.box` domains resolve to their Swarm, IPFS, or IPNS content.
 - **CCIP-Read Support**: `.box` domains resolve via offchain CCIP-Read (EIP-3668) through 3dns.xyz.
 - **Protocol Detection**: Automatically detects and routes to Swarm (`bzz://`), IPFS (`ipfs://`), or IPNS (`ipns://`) content.
-- **Address Bar Preservation**: ENS names stay visible in the address bar during navigation.
+- **Transport-Aware Address Bar**: After resolution, the address bar shows the resolved transport with the ENS name as the host — e.g. `vitalik.eth` resolves and displays as `ipfs://vitalik.eth`, a Swarm-backed `mysite.eth` displays as `bzz://mysite.eth`. The legacy `ens://` form is still accepted as input (and stored bookmarks keep working) but is no longer the canonical display.
+- **Typed Scheme Is an Assertion**: Typing `bzz://name.eth`, `ipfs://name.eth`, or `ipns://name.eth` only resolves if the contenthash matches the typed transport. Mismatches surface as a "resolves to X, not Y" message rather than silently switching transports — same rule the `bzz://` protocol handler enforces for subresource fetches. Bare names and the legacy `ens://` form make no assertion and accept any supported transport.
 - **Path Forwarding**: Paths appended to ENS names (e.g., `mysite.eth/docs`) are preserved after resolution.
+- **In-HTML Links**: ENS links inside web pages must carry a scheme — `ens://name.eth`, `bzz://name.eth`, `ipfs://name.eth`, or `ipns://name.eth`. Bare hrefs like `<a href="vitalik.eth">` are relative URLs by HTML/URL-spec rules and resolve against the page's base before any of our handlers see them; bare names are only resolved as ENS in the address bar, where input is always absolute.
 
 ### Tabbed Browsing
 

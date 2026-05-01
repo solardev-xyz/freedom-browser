@@ -48,7 +48,7 @@ describe('navigation-utils extracted helpers', () => {
     });
     expect(mod.extractEnsResolutionMetadata('ipns://docs.example/path', 'name.eth')).toEqual({
       knownEnsPairs: [['docs.example', 'name.eth']],
-      resolvedProtocol: 'ipfs',
+      resolvedProtocol: 'ipns',
     });
     expect(mod.extractEnsResolutionMetadata('https://example.com', 'name.eth')).toEqual({
       knownEnsPairs: [],
@@ -69,7 +69,7 @@ describe('navigation-utils extracted helpers', () => {
         radicleApiPrefix: 'http://127.0.0.1:8780/api/v1/repos/',
         knownEnsNames: new Map([['abcdef', 'name.eth']]),
       })
-    ).toBe('ens://name.eth/path');
+    ).toBe('bzz://name.eth/path');
 
     expect(
       mod.deriveDisplayAddress({
@@ -109,8 +109,43 @@ describe('navigation-utils extracted helpers', () => {
         knownEnsNames: new Map([['abcdef', 'name.eth']]),
       })
     ).toEqual({
-      addressValue: 'view-source:ens://name.eth/docs',
+      addressValue: 'view-source:bzz://name.eth/docs',
       loadUrl: 'view-source:http://127.0.0.1:1633/bzz/abcdef/docs',
+    });
+  });
+
+  test('buildViewSourceNavigation skips gateway rewrite for ENS-host transport URLs', async () => {
+    // bzz://name.eth/path can't be rewritten to a gateway URL here because
+    // the host needs ENS resolution first. The view-source dispatch in
+    // navigation.js calls resolveEns and then re-enters with the resolved
+    // bzz://<hash>/ form. This test guards against the regex matching the
+    // ENS host as if it were a hex Swarm reference.
+    const mod = await loadNavigationUtils();
+
+    expect(
+      mod.buildViewSourceNavigation({
+        value: 'view-source:bzz://meinhard.eth/page',
+        bzzRoutePrefix: 'http://127.0.0.1:1633/bzz/',
+        homeUrlNormalized: 'file:///app/pages/home.html',
+        ipfsRoutePrefix: 'http://127.0.0.1:8080/ipfs/',
+        ipnsRoutePrefix: 'http://127.0.0.1:8080/ipns/',
+      })
+    ).toEqual({
+      addressValue: 'view-source:bzz://meinhard.eth/page',
+      loadUrl: 'view-source:bzz://meinhard.eth/page',
+    });
+
+    expect(
+      mod.buildViewSourceNavigation({
+        value: 'view-source:ipfs://vitalik.eth/docs',
+        bzzRoutePrefix: 'http://127.0.0.1:1633/bzz/',
+        homeUrlNormalized: 'file:///app/pages/home.html',
+        ipfsRoutePrefix: 'http://127.0.0.1:8080/ipfs/',
+        ipnsRoutePrefix: 'http://127.0.0.1:8080/ipns/',
+      })
+    ).toEqual({
+      addressValue: 'view-source:ipfs://vitalik.eth/docs',
+      loadUrl: 'view-source:ipfs://vitalik.eth/docs',
     });
   });
 
@@ -147,7 +182,7 @@ describe('navigation-utils extracted helpers', () => {
         ipnsRoutePrefix: 'http://127.0.0.1:8080/ipns/',
         knownEnsNames: new Map([['abcdef', 'name.eth']]),
       })
-    ).toBe('view-source:ens://name.eth/docs');
+    ).toBe('view-source:bzz://name.eth/docs');
 
     expect(
       mod.deriveSwitchedTabDisplay({

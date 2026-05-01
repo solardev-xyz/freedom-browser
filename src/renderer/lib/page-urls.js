@@ -3,6 +3,8 @@
 // Canonical source of truth: src/shared/internal-pages.json
 // Served to the renderer via sync IPC → preload → window.internalPages
 
+import { isEnsHost } from './origin-utils.js';
+
 const ROUTABLE_PAGES = window.internalPages?.routable || {};
 
 // URLs for pages
@@ -73,13 +75,40 @@ export const getInternalPageName = (url) => {
   return null;
 };
 
-// Parse ENS input (ens:// prefix or .eth/.box domain)
+// Parse ENS input. Accepts:
+//   - bare ENS names (vitalik.eth, name.box, with optional path/query/fragment)
+//   - legacy ens:// URLs (kept for bookmark + history compatibility)
+//   - transport-aware ENS URLs (bzz://name.eth/, ipfs://name.eth/, ipns://name.eth/)
+//
+// Transport URLs whose host is NOT an ENS name (e.g. bzz://<hash>, ipfs://<cid>)
+// are returned as null so the caller can fall through to direct content
+// navigation. This is what makes `bzz://meinhard.eth/` work the same way as
+// `ens://meinhard.eth/` while leaving raw-hash navigation untouched.
+//
+// `assertedTransport` is the scheme the user explicitly typed (`bzz`, `ipfs`,
+// or `ipns`) when present; `null` for bare names and the legacy `ens://`
+// form. Callers gate the cross-transport assertion on this — if the user
+// typed `bzz://name.eth` and the contenthash is IPFS, the assertion fails
+// rather than silently switching transports.
+const ENS_INPUT_PREFIXES = [
+  { prefix: 'ens://', assertedTransport: null },
+  { prefix: 'bzz://', assertedTransport: 'bzz' },
+  { prefix: 'ipfs://', assertedTransport: 'ipfs' },
+  { prefix: 'ipns://', assertedTransport: 'ipns' },
+];
+
 export const parseEnsInput = (raw) => {
   let value = (raw || '').trim();
   if (!value) return null;
 
-  if (value.toLowerCase().startsWith('ens://')) {
-    value = value.slice(6);
+  const lower = value.toLowerCase();
+  let assertedTransport = null;
+  for (const { prefix, assertedTransport: assertion } of ENS_INPUT_PREFIXES) {
+    if (lower.startsWith(prefix)) {
+      value = value.slice(prefix.length);
+      assertedTransport = assertion;
+      break;
+    }
   }
 
   let name = value;
@@ -90,10 +119,9 @@ export const parseEnsInput = (raw) => {
     suffix = match[2] || '';
   }
 
-  const lower = name.toLowerCase();
-  if (!lower.endsWith('.eth') && !lower.endsWith('.box')) {
+  if (!isEnsHost(name)) {
     return null;
   }
 
-  return { name: lower, suffix };
+  return { name: name.toLowerCase(), suffix, assertedTransport };
 };

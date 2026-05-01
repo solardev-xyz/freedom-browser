@@ -24,6 +24,9 @@ import {
   deriveBzzBaseFromUrl,
   deriveIpfsBaseFromUrl,
   deriveRadBaseFromUrl,
+  buildEnsDisplayUri,
+  isEnsBackedDisplay,
+  isSupportedEnsTransport,
 } from './url-utils.js';
 import {
   getActiveWebview,
@@ -34,6 +37,9 @@ import {
   updateTabFavicon,
   setTabLoading,
   getTabs,
+  getTabById,
+  getTabIdForWebview,
+  isActiveTab,
 } from './tabs.js';
 import {
   homeUrl,
@@ -80,9 +86,10 @@ const gatewayUrlToBzzUrl = (gatewayUrl) => {
 // shown in the address bar and on the page. `extras` can include:
 //   - protocol: explicit protocol hint ('swarm' | 'ipfs' | 'ipns')
 //   - retry: URL the in-page "Try Again" button should navigate to. Should
-//     always be a scheme Chromium can load (bzz://, http(s)://, …). If the
-//     display URL is an unregistered scheme like ens://, pass a gateway URL
-//     or a bzz://<hash> URL here so the in-page retry doesn't fail.
+//     always be a scheme Chromium can load (bzz://<hash>, http(s)://, …).
+//     If the display URL is an ENS-backed form (legacy ens:// or transport
+//     ENS like bzz://name.eth) the retry must point at the resolved
+//     transport URL, since the ENS host can't be loaded by Chromium directly.
 const buildErrorPageUrl = (errorCode, targetUrl, extras = {}) => {
   const errorUrl = new URL('pages/error.html', window.location.href);
   errorUrl.searchParams.set('error', errorCode);
@@ -147,10 +154,65 @@ export const setOnHistoryRecorded = (callback) => {
   onHistoryRecorded = callback;
 };
 
-const setLoading = (isLoading) => {
-  setTabLoading(isLoading);
-  updateBookmarkButtonVisibility();
-  updateGithubBridgeIcon();
+// `tabId` lets callers in async paths target the tab that actually owns
+// the in-flight work (e.g. ENS resolution), rather than whatever tab
+// happens to be active when the promise settles. Without this, a slow
+// ENS lookup on Tab A that resolves while the user is viewing Tab B
+// would clear Tab B's spinner and leave Tab A's stuck. The global
+// helpers (`updateBookmarkButtonVisibility`, `updateGithubBridgeIcon`)
+// refresh foreground UI; we only fire them when the affected tab is
+// active (or no tab id was supplied).
+//
+// When `tabId` is null we forward to `setTabLoading` as a single-arg
+// call so the synchronous code paths (did-start-loading,
+// did-stop-loading, tab-switched) keep their pre-existing call shape.
+const setLoading = (isLoading, tabId = null) => {
+  if (tabId === null) {
+    setTabLoading(isLoading);
+  } else {
+    setTabLoading(isLoading, tabId);
+  }
+  if (tabId === null || tabId === getActiveTab()?.id) {
+    updateBookmarkButtonVisibility();
+    updateGithubBridgeIcon();
+  }
+};
+
+// Update the address bar to show the navigation target. When the target
+// tab is the active one (or unknown), this writes through to the visible
+// address input and refreshes the protocol icon — same behaviour as before.
+// When the target is a backgrounded tab (e.g. an ENS click in Tab A whose
+// resolution settled while the user is now on Tab B), we stash the
+// display value on that tab's `navigationState.addressBarSnapshot` so the
+// `tab-switched` handler picks it up when the user switches back. This
+// prevents the resolved URL from clobbering the foreground tab's address
+// bar after a slow ENS resolution settles in the background.
+//
+// `isViewingSourceForTab` writes through to `tab.isViewingSource` (the
+// canonical per-tab record owned by tabs.js' did-navigate handler) so a
+// switchback after a background-tab view-source dispatch picks up the
+// right state.
+//
+// The active-tab branch is gated on a value-change check so repeated
+// no-op calls (every dispatch + every did-navigate on the hot path) don't
+// re-run `updateProtocolIcon`, which walks `state.ensTrustByName` and
+// invokes the trust-badge resolver on every call.
+const setAddressDisplayForTab = (displayValue, tabId, { isViewingSourceForTab = false } = {}) => {
+  if (isActiveTab(tabId) || tabId === null) {
+    if (addressInput.value !== displayValue) {
+      addressInput.value = displayValue;
+      updateProtocolIcon();
+    }
+    return;
+  }
+  const tab = getTabById(tabId);
+  if (!tab) return;
+  if (tab.navigationState) {
+    tab.navigationState.addressBarSnapshot = displayValue;
+  }
+  if (isViewingSourceForTab) {
+    tab.isViewingSource = true;
+  }
 };
 
 const storeEnsResolutionMetadata = (targetUri, ensName, { trackProtocol = true } = {}) => {
@@ -478,16 +540,25 @@ const handleEthereumUri = (value) => {
  * `displayUrl` is the user-facing URL (e.g. `ens://swarm.eth` or
  * `bzz://<hash>`) that appears in the address bar, and is what we want the
  * error page to surface — not the internal Bee gateway URL.
+ *
+ * `target.swarmHash` overrides hash extraction from the gateway URL, and
+ * `target.bzzLoadUrl` overrides the URL passed to `webview.loadURL`. Both
+ * are populated by the ENS-host transport path (`bzz://name.eth/`) so the
+ * probe runs against the resolved hash while Chromium loads the ENS-named
+ * URL — keeping DevTools, `window.location`, and storage origin pinned to
+ * the ENS name. The bzz protocol handler resolves the host on every
+ * request (cache hit after the renderer already resolved upstream).
  */
 const startBzzNavigationWithProbe = (webview, target, navState, displayUrl) => {
   const gatewayUrl = target.targetUrl;
-  const hash = extractBzzHash(gatewayUrl);
+  const hash = target.swarmHash || extractBzzHash(gatewayUrl);
   const errorDisplayUrl = displayUrl || target.displayValue || gatewayUrl;
 
   if (!hash || !electronAPI?.startSwarmProbe) {
     // No hash or no probe support — fall back to the pre-existing behaviour.
-    webview.loadURL(gatewayUrl);
-    pushDebug(`Loading ${target.displayValue} via ${gatewayUrl} (no probe)`);
+    const fallbackLoadUrl = target.bzzLoadUrl || gatewayUrl;
+    webview.loadURL(fallbackLoadUrl);
+    pushDebug(`Loading ${target.displayValue} via ${fallbackLoadUrl} (no probe)`);
     return;
   }
 
@@ -498,10 +569,16 @@ const startBzzNavigationWithProbe = (webview, target, navState, displayUrl) => {
   // bump (stop button, second navigation) invalidates this probe — even
   // before `startSwarmProbe` has resolved and given us a probeId.
   const myVersion = navState.swarmProbeVersion || 0;
+  // Tab id of the navigation we're probing for — pinned so an ENS
+  // resolution that settles after a tab switch updates only the
+  // originating tab's spinner.
+  const probeTabId = getTabIdForWebview(webview);
 
-  setLoading(true);
+  setLoading(true, probeTabId);
   navState.isWebviewLoading = true;
-  reloadBtn.dataset.state = 'stop';
+  if (isActiveTab(probeTabId)) {
+    reloadBtn.dataset.state = 'stop';
+  }
   pushDebug(`[Swarm] Probing ${gatewayUrl} before navigating`);
 
   electronAPI
@@ -541,11 +618,36 @@ const startBzzNavigationWithProbe = (webview, target, navState, displayUrl) => {
       }
       navState.pendingSwarmProbeId = null;
 
-      const errorExtras = { protocol: 'swarm', retry: `bzz://${hash}` };
+      // Retry URL prefers the ENS-named load URL (so the user's "Try Again"
+      // button preserves the ENS host and DevTools/origin stay stable). If
+      // none was supplied, fall back to the hash form, which Chromium can
+      // load directly via the bzz protocol handler.
+      const retryUrl = target.bzzLoadUrl || `bzz://${hash}`;
+      const errorExtras = { protocol: 'swarm', retry: retryUrl };
+
+      // If the probe target was an ENS-named bzz URL (`bzz://name.eth/`)
+      // and the probe failed (404 / await failure / other content
+      // unavailability), invalidate the cached contenthash. Otherwise a
+      // "Try Again" click immediately re-resolves to the same stale
+      // hash and probes the same dead content. `bee_unreachable` and
+      // `aborted` aren't content failures — leave the cache alone.
+      const ensNameForInvalidation = (() => {
+        const match = (target.bzzLoadUrl || '').match(/^bzz:\/\/([^/?#]+)/i);
+        return match && (match[1].toLowerCase().endsWith('.eth') || match[1].toLowerCase().endsWith('.box'))
+          ? match[1].toLowerCase()
+          : null;
+      })();
+      const invalidateOnContentFailure = () => {
+        if (!ensNameForInvalidation || !electronAPI?.invalidateEnsContent) return;
+        electronAPI.invalidateEnsContent(ensNameForInvalidation).catch((err) => {
+          pushDebug(`[Swarm] invalidateEnsContent failed: ${err?.message || err}`);
+        });
+      };
 
       if (!awaitResult || awaitResult.success === false) {
         const message = awaitResult?.error?.message || 'failed to await probe';
         pushDebug(`[Swarm] Probe await failed: ${message}`);
+        invalidateOnContentFailure();
         webview.loadURL(
           buildErrorPageUrl('swarm_content_not_found', errorDisplayUrl, errorExtras)
         );
@@ -558,7 +660,10 @@ const startBzzNavigationWithProbe = (webview, target, navState, displayUrl) => {
         // through the main-process protocol handler (retries, redundancy
         // headers, streaming Range support). See README "Swarm Content
         // Retrieval". The handler ultimately proxies to the same gateway.
-        const bzzUrl = gatewayUrlToBzzUrl(gatewayUrl);
+        // For ENS-host targets we keep the name in the loaded URL so the
+        // protocol handler resolves on every request and the page's origin
+        // is `bzz://<name>` rather than `bzz://<hash>`.
+        const bzzUrl = target.bzzLoadUrl || gatewayUrlToBzzUrl(gatewayUrl);
         pushDebug(`[Swarm] Probe ok — loading ${bzzUrl}`);
         webview.loadURL(bzzUrl);
         return;
@@ -579,6 +684,7 @@ const startBzzNavigationWithProbe = (webview, target, navState, displayUrl) => {
       }
 
       pushDebug(`[Swarm] Probe failed (${outcome.reason}) — showing error page`);
+      invalidateOnContentFailure();
       webview.loadURL(
         buildErrorPageUrl('swarm_content_not_found', errorDisplayUrl, errorExtras)
       );
@@ -590,10 +696,11 @@ const startBzzNavigationWithProbe = (webview, target, navState, displayUrl) => {
       // their actual destination.
       if (navState.swarmProbeVersion !== myVersion) return;
       navState.pendingSwarmProbeId = null;
+      const retryUrl = target.bzzLoadUrl || `bzz://${hash}`;
       webview.loadURL(
         buildErrorPageUrl('swarm_content_not_found', errorDisplayUrl, {
           protocol: 'swarm',
-          retry: `bzz://${hash}`,
+          retry: retryUrl,
         })
       );
     });
@@ -603,9 +710,26 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
   // `options.allowUnverifiedOnce` — skip the unverified-ENS interstitial
   // for this single call. Set by the ens-unverified page's "Continue once"
   // handler. Scope is this single loadTarget invocation.
+  //
+  // `options.bzzLoadUrl` / `options.swarmHash` — set by the ENS resolution
+  // path when an ENS name resolves to Swarm content: the recursive call
+  // into the bzz branch carries the ENS-named load URL plus the resolved
+  // hash separately so Chromium loads `bzz://<name>/` while the navigation
+  // probe still runs against the actual content reference. See
+  // `startBzzNavigationWithProbe` for how the two are split.
   // Use provided webview or fall back to active webview
   const webview = targetWebview || getActiveWebview();
-  const navState = getNavState();
+  // Target tab id and nav state. For the synchronous, top-level call this
+  // resolves to the active tab and matches the previous behaviour. For
+  // recursive calls from the ENS path (which pass `capturedWebview` so the
+  // resolution still wins on the originating tab even if the user switched
+  // away mid-flight) we route nav-state mutations onto the captured tab's
+  // state instead of the foreground tab's. Without this, an ENS resolution
+  // that settles after a tab switch would clobber the foreground tab's
+  // address bar with the resolved URL of a backgrounded tab.
+  const targetTabId = getTabIdForWebview(webview);
+  const navState =
+    getTabById(targetTabId)?.navigationState || getNavState();
   if (!webview) {
     pushDebug('No active webview to load target');
     return;
@@ -627,20 +751,42 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
     const ens = parseEnsInput(innerUrl);
     if (ens && electronAPI?.resolveEns) {
       const capturedWebview = webview;
-      setLoading(true);
-      addressInput.value = `view-source:ens://${ens.name}`;
-      updateProtocolIcon();
+      // Tab id pinned for the duration of this async resolution so a tab
+      // switch can't redirect the spinner to the wrong tab when the
+      // promise settles.
+      const capturedTabId = getTabIdForWebview(capturedWebview);
+      setLoading(true, capturedTabId);
+      // Show the legacy view-source ENS placeholder while resolution is in
+      // flight. Once we know the resolved transport we update the address
+      // bar to the transport-aware form (e.g. `view-source:bzz://name.eth`).
+      // Route through `setAddressDisplayForTab` so a switchback after a
+      // background-tab dispatch restores the resolved value rather than
+      // clobbering the foreground tab.
+      setAddressDisplayForTab(
+        `view-source:ens://${ens.name}${ens.suffix || ''}`,
+        capturedTabId,
+        { isViewingSourceForTab: true }
+      );
       electronAPI
         .resolveEns(ens.name)
         .then((result) => {
-          setLoading(false);
+          setLoading(false, capturedTabId);
           if (!result || result.type !== 'ok') {
-            alert(`ENS resolution failed for ${ens.name}: ${result?.reason || 'no response'}`);
+            if (isActiveTab(capturedTabId)) {
+              alert(`ENS resolution failed for ${ens.name}: ${result?.reason || 'no response'}`);
+            }
             return;
           }
           // Build target URI with path suffix
           const targetUri = applyEnsSuffix(result.uri, ens.suffix);
           storeEnsResolutionMetadata(targetUri, ens.name, { trackProtocol: false });
+
+          const transportDisplay = buildEnsDisplayUri(result.protocol, ens.name, ens.suffix);
+          if (transportDisplay) {
+            setAddressDisplayForTab(`view-source:${transportDisplay}`, capturedTabId, {
+              isViewingSourceForTab: true,
+            });
+          }
 
           const { loadUrl } = buildViewSourceNavigation({
             value: `view-source:${targetUri}`,
@@ -653,14 +799,18 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
           });
 
           if (loadUrl === `view-source:${targetUri}`) {
-            alert(`Unsupported protocol: ${result.protocol}`);
+            if (isActiveTab(capturedTabId)) {
+              alert(`Unsupported protocol: ${result.protocol}`);
+            }
             return;
           }
           capturedWebview.loadURL(loadUrl);
         })
         .catch((err) => {
-          setLoading(false);
-          alert(`ENS resolution error: ${err.message}`);
+          setLoading(false, capturedTabId);
+          if (isActiveTab(capturedTabId)) {
+            alert(`ENS resolution error: ${err.message}`);
+          }
         });
       return;
     }
@@ -674,8 +824,9 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
       radicleApiPrefix: state.radicleApiPrefix,
       knownEnsNames: state.knownEnsNames,
     });
-    addressInput.value = viewSourceNavigation.addressValue;
-    updateProtocolIcon();
+    setAddressDisplayForTab(viewSourceNavigation.addressValue, targetTabId, {
+      isViewingSourceForTab: true,
+    });
     webview.loadURL(viewSourceNavigation.loadUrl);
     return;
   }
@@ -716,14 +867,49 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
   if (ens && electronAPI?.resolveEns) {
     // Capture the webview reference before async operation to prevent loading in wrong tab
     const capturedWebview = webview;
-    setLoading(true);
+    // Capture the tab id too so async callbacks can route per-tab UI
+    // updates (spinner, isLoading state) to the originating tab even
+    // after the user switches away mid-resolution. Without this, a slow
+    // ENS lookup on Tab A that settles while Tab B is active would clear
+    // Tab B's spinner and leave Tab A's stuck.
+    const capturedTabId = getTabIdForWebview(capturedWebview);
+    // `parseEnsInput` already extracted the transport scheme the user
+    // explicitly typed (`bzz`, `ipfs`, `ipns`) — null for bare names and
+    // the legacy `ens://` form. We treat it as an assertion: the ENS
+    // contenthash MUST match. Captured before the async hop so a
+    // follow-up edit to the address bar can't change the assertion under
+    // our feet.
+    const assertedTransport = ens.assertedTransport;
+    setLoading(true, capturedTabId);
+    // Show the user what's being loaded immediately so the address bar
+    // doesn't stall on the previous URL (or stay empty in a new tab) for
+    // the 100ms–1s+ ENS roundtrip. The post-resolution recursive
+    // loadTarget call overwrites this with the canonical transport-aware
+    // display, which is a small flicker but far better than the dead
+    // time. Backgrounded-tab routing and protocol-icon refresh are
+    // handled inside `setAddressDisplayForTab`.
+    setAddressDisplayForTab(displayOverride || value, capturedTabId);
     pushDebug(`Resolving ENS name: ${ens.name}`);
+    // Surface a resolution failure: log the structured trail unconditionally
+    // (so devtools / the in-browser debug console always see it), but only
+    // pop the modal alert if the originating tab is still in the foreground.
+    // Modal alerts on a tab the user has switched away from read as random
+    // interruptions to the unrelated current page.
+    const failEnsResolution = (logMessage, alertMessage) => {
+      pushDebug(logMessage);
+      if (isActiveTab(capturedTabId)) {
+        alert(alertMessage);
+      }
+    };
     electronAPI
       .resolveEns(ens.name)
       .then((result) => {
-        setLoading(false);
+        setLoading(false, capturedTabId);
         if (!result) {
-          alert('ENS resolution failed: no response');
+          failEnsResolution(
+            `ENS resolution failed for ${ens.name}: no response`,
+            'ENS resolution failed: no response'
+          );
           return;
         }
 
@@ -754,15 +940,32 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
 
         if (result.type !== 'ok') {
           const reason = result.reason || 'Unknown error';
-          pushDebug(`ENS resolution failed for ${ens.name}: ${reason}`);
-          alert(`ENS resolution failed for ${ens.name}: ${reason}`);
+          failEnsResolution(
+            `ENS resolution failed for ${ens.name}: ${reason}`,
+            `ENS resolution failed for ${ens.name}: ${reason}`
+          );
           return;
         }
 
-        if (result.protocol !== 'bzz' && result.protocol !== 'ipfs' && result.protocol !== 'ipns') {
-          pushDebug(`ENS content for ${ens.name} uses unsupported protocol ${result.protocol}`);
-          alert(
+        if (!isSupportedEnsTransport(result.protocol)) {
+          failEnsResolution(
+            `ENS content for ${ens.name} uses unsupported protocol ${result.protocol}`,
             `ENS content uses unsupported protocol "${result.protocol}". Supported: Swarm (bzz), IPFS, IPNS.`
+          );
+          return;
+        }
+
+        // Cross-transport assertion: a typed `bzz://name.eth/` must resolve
+        // to a Swarm contenthash, not IPFS/IPNS. Same for ipfs:// and
+        // ipns://. We surface this as an alert + abort rather than silently
+        // switching transports — that mirrors the protocol-handler-side
+        // behaviour (404 with explanatory body), so the user gets a clear
+        // signal to retry with the correct scheme.
+        if (assertedTransport && assertedTransport !== result.protocol) {
+          failEnsResolution(
+            `ENS transport mismatch for ${ens.name}: asserted ${assertedTransport}, got ${result.protocol}`,
+            `ENS name ${ens.name} resolves to ${result.protocol}, not ${assertedTransport}. ` +
+              `Try ${result.protocol}://${ens.name} instead.`
           );
           return;
         }
@@ -787,18 +990,44 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
 
         storeEnsResolutionMetadata(targetUri, ens.name);
 
+        // Build transport-aware display (e.g. `bzz://name.eth/path`,
+        // `ipfs://name.eth/path`) so the address bar reflects the actual
+        // resolution transport. Falls back to the legacy `ens://` form for
+        // unsupported protocols, but the `result.protocol` guard above
+        // already rejects anything but bzz/ipfs/ipns.
+        const transportDisplay =
+          buildEnsDisplayUri(result.protocol, ens.name, ens.suffix)
+          || `ens://${ens.name}${ens.suffix || ''}`;
+
+        // For Swarm-backed ENS we want Chromium to load `bzz://<name>/...`
+        // directly: the bzz protocol handler resolves the ENS host on
+        // every request (cache hit since we just populated the cache via
+        // resolveEns), so DevTools, `window.location`, storage origin, and
+        // subresource fetches all see the ENS name rather than the
+        // resolved hash. The probe still needs the actual hash to gate
+        // navigation on Bee warmth, so we pass it separately.
+        // IPFS/IPNS don't have a custom protocol handler yet, so they
+        // continue to load via the gateway URL (DevTools shows the gateway
+        // URL there — separate from this fix).
+        const innerOptions =
+          result.protocol === 'bzz'
+            ? { bzzLoadUrl: transportDisplay, swarmHash: result.decoded }
+            : {};
+
         // Pass captured webview to ensure we load in the correct tab
-        loadTarget(
-          targetUri,
-          displayOverride || 'ens://' + ens.name + (ens.suffix || ''),
-          capturedWebview
-        );
+        loadTarget(targetUri, displayOverride || transportDisplay, capturedWebview, innerOptions);
       })
       .catch((err) => {
-        setLoading(false);
+        setLoading(false, capturedTabId);
         console.error('ENS resolution error', err);
-        pushDebug(`ENS resolution error for ${ens.name}: ${err.message}`);
-        alert(`ENS resolution error for ${ens.name}: ${err.message}`);
+        // Suppress the modal alert when the originating tab isn't in the
+        // foreground (handled by `failEnsResolution`) — interrupting an
+        // unrelated current page with a stale alert is more confusing
+        // than informative. Console log + debug entry preserve the trail.
+        failEnsResolution(
+          `ENS resolution error for ${ens.name}: ${err.message}`,
+          `ENS resolution error for ${ens.name}: ${err.message}`
+        );
       });
     return;
   }
@@ -819,8 +1048,9 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
     }
     const radicleTarget = formatRadicleUrl(value, state.radicleBase);
     if (radicleTarget) {
-      addressInput.value = displayOverride || radicleTarget.displayValue;
-      pushDebug(`[AddressBar] Loading Radicle target, set to: ${addressInput.value}`);
+      const radicleDisplayValue = displayOverride || radicleTarget.displayValue;
+      setAddressDisplayForTab(radicleDisplayValue, targetTabId);
+      pushDebug(`[AddressBar] Loading Radicle target, set to: ${radicleDisplayValue}`);
       navState.pendingTitleForUrl = radicleTarget.targetUrl;
       navState.pendingNavigationUrl = radicleTarget.targetUrl;
       navState.hasNavigatedDuringCurrentLoad = false;
@@ -837,7 +1067,6 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
       syncRadBase(null);
       syncBzzBase(null);
       syncIpfsBase(null);
-      updateProtocolIcon();
       return;
     }
     // Invalid Radicle ID — show error page
@@ -856,57 +1085,80 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
     return;
   }
 
+  // Shared prefix for the IPFS and bzz dweb branches: clear stale
+  // hash→name mappings on direct navigation, set the address bar, and
+  // populate navState.pending{Title,Navigation}Url. Each branch handles
+  // its own loadURL/probe/syncBase calls afterward — they diverge there
+  // (IPFS goes straight to the gateway; bzz gates on a probe).
+  const commitDwebNavigationPrefix = ({ target, expectedNavUrl, hashKeys }) => {
+    if (!isEnsBackedDisplay(displayOverride)) {
+      for (const key of hashKeys) {
+        if (key) state.knownEnsNames.delete(key);
+      }
+    }
+    const displayValue = displayOverride || target.displayValue;
+    setAddressDisplayForTab(displayValue, targetTabId);
+    navState.pendingTitleForUrl = expectedNavUrl;
+    navState.pendingNavigationUrl = expectedNavUrl;
+    navState.hasNavigatedDuringCurrentLoad = false;
+    return displayValue;
+  };
+
   // Try IPFS (ipfs://, ipns://, or raw CID)
   const ipfsTarget = formatIpfsUrl(value, state.ipfsRoutePrefix);
   if (ipfsTarget) {
-    // Clear ENS mapping if directly navigating (not via ENS resolution)
-    if (!displayOverride?.startsWith('ens://')) {
-      const cidMatch = ipfsTarget.displayValue.match(/^ipfs:\/\/([A-Za-z0-9]+)/);
-      const ipnsMatch = ipfsTarget.displayValue.match(/^ipns:\/\/([A-Za-z0-9.-]+)/);
-      if (cidMatch) state.knownEnsNames.delete(cidMatch[1]);
-      if (ipnsMatch) state.knownEnsNames.delete(ipnsMatch[1]);
-    }
-    addressInput.value = displayOverride || ipfsTarget.displayValue;
-    pushDebug(`[AddressBar] Loading IPFS target, set to: ${addressInput.value}`);
-    navState.pendingTitleForUrl = ipfsTarget.targetUrl;
-    navState.pendingNavigationUrl = ipfsTarget.targetUrl;
-    navState.hasNavigatedDuringCurrentLoad = false;
+    const cidMatch = ipfsTarget.displayValue.match(/^ipfs:\/\/([A-Za-z0-9]+)/);
+    const ipnsMatch = ipfsTarget.displayValue.match(/^ipns:\/\/([A-Za-z0-9.-]+)/);
+    const ipfsDisplayValue = commitDwebNavigationPrefix({
+      target: ipfsTarget,
+      expectedNavUrl: ipfsTarget.targetUrl,
+      hashKeys: [cidMatch?.[1], ipnsMatch?.[1]],
+    });
+    pushDebug(`[AddressBar] Loading IPFS target, set to: ${ipfsDisplayValue}`);
     webview.loadURL(ipfsTarget.targetUrl);
     pushDebug(`Loading ${ipfsTarget.displayValue} via ${ipfsTarget.targetUrl}`);
     syncIpfsBase(ipfsTarget.baseUrl || null);
-    syncBzzBase(null); // Clear bzz base when loading IPFS
-    syncRadBase(null); // Clear rad base when loading IPFS
+    syncBzzBase(null);
+    syncRadBase(null);
     return;
   }
 
   // Try Swarm/bzz
   const target = formatBzzUrl(value, state.bzzRoutePrefix);
   if (target) {
-    // Clear ENS mapping if directly navigating (not via ENS resolution)
-    if (!displayOverride?.startsWith('ens://')) {
-      const hashMatch = target.displayValue.match(/^bzz:\/\/([a-fA-F0-9]+)/);
-      if (hashMatch) state.knownEnsNames.delete(hashMatch[1].toLowerCase());
-    }
-    const displayValue = displayOverride || target.displayValue;
-    addressInput.value = displayValue;
-    pushDebug(`[AddressBar] Loading target, set to: ${addressInput.value}`);
-    navState.pendingTitleForUrl = target.targetUrl;
-    navState.pendingNavigationUrl = target.targetUrl;
-    navState.hasNavigatedDuringCurrentLoad = false;
+    const hashMatch = target.displayValue.match(/^bzz:\/\/([a-fA-F0-9]+)/);
+    // For ENS-host transport URLs we point pendingNavigationUrl at the
+    // ENS-named load URL so the `did-navigate` reconciliation in
+    // webcontents-setup matches: Chromium will report `bzz://<name>/`
+    // after navigation, not the gateway URL.
+    const displayValue = commitDwebNavigationPrefix({
+      target,
+      expectedNavUrl: options.bzzLoadUrl || target.targetUrl,
+      hashKeys: [hashMatch?.[1]?.toLowerCase()],
+    });
+    pushDebug(`[AddressBar] Loading target, set to: ${displayValue}`);
     syncBzzBase(target.baseUrl || null);
-    syncIpfsBase(null); // Clear ipfs base when loading bzz
-    syncRadBase(null); // Clear rad base when loading bzz
+    syncIpfsBase(null);
+    syncRadBase(null);
+
+    // Augment with optional ENS-transport overrides. `swarmHash` lets the
+    // probe target the resolved Swarm reference; `bzzLoadUrl` is what
+    // Chromium actually loads, so the page's URL/origin stays ENS-named.
+    const augmented = options.bzzLoadUrl || options.swarmHash
+      ? { ...target, bzzLoadUrl: options.bzzLoadUrl, swarmHash: options.swarmHash }
+      : target;
 
     // Probe the Bee gateway first so the tab spinner stays active while the
     // node's peer set warms up; only load the webview once the content is
     // actually retrievable (or bail to the error page).
-    startBzzNavigationWithProbe(webview, target, navState, displayValue);
+    startBzzNavigationWithProbe(webview, augmented, navState, displayValue);
     return;
   }
 
   // Try HTTP/HTTPS URLs
   if (value.startsWith('http://') || value.startsWith('https://')) {
-    addressInput.value = displayOverride || value;
+    const httpDisplayValue = displayOverride || value;
+    setAddressDisplayForTab(httpDisplayValue, targetTabId);
     pushDebug(`[AddressBar] Loading HTTP(S) target: ${value}`);
     navState.pendingTitleForUrl = value;
     navState.pendingNavigationUrl = value;
@@ -1026,10 +1278,12 @@ const handleNavigationEvent = (event) => {
     const webviewUrl = webview?.getURL?.() || '';
     const urlIsViewSource = webviewUrl.startsWith('view-source:');
 
-    // Update view-source state (important for back/forward navigation)
+    // Update view-source state (important for back/forward navigation).
+    // The canonical per-tab record lives on tabs.js' tab.isViewingSource
+    // (set from did-navigate); the module-level `isViewingSource` is a
+    // render-loop cache for the active tab.
     if (urlIsViewSource !== isViewingSource) {
       isViewingSource = urlIsViewSource;
-      navState.isViewingSource = urlIsViewSource;
       pushDebug(
         `[Navigation] isViewingSource updated to: ${isViewingSource} (webview URL: ${webviewUrl})`
       );
@@ -1498,12 +1752,14 @@ export const initNavigation = () => {
       }
 
       case 'tab-switched':
-        // Save address bar state to previous tab before switching
+        // Save address bar state to previous tab before switching. The
+        // per-tab view-source record (`prev.isViewingSource`) is owned by
+        // tabs.js' did-navigate handler and is already up to date — we
+        // only persist the address bar snapshot.
         if (previousActiveTabId && previousActiveTabId !== data.tabId) {
           const prevTab = getTabs().find((t) => t.id === previousActiveTabId);
           if (prevTab && prevTab.navigationState) {
             prevTab.navigationState.addressBarSnapshot = addressInput.value;
-            prevTab.navigationState.isViewingSource = isViewingSource;
           }
         }
         previousActiveTabId = data.tabId;
@@ -1514,8 +1770,12 @@ export const initNavigation = () => {
           const isLoading = data.tab.isLoading || false;
           const url = data.tab.url || tabNavState.currentPageUrl || '';
 
-          // Restore view-source state for this tab (check URL for new tabs)
-          isViewingSource = tabNavState.isViewingSource || url.startsWith('view-source:');
+          // Restore view-source state for this tab. tabs.js owns
+          // `tab.isViewingSource` and updates it from did-navigate; fall
+          // back to URL inspection for tabs that haven't navigated yet
+          // (e.g. brand-new view-source tabs whose first dispatch is
+          // still in flight).
+          isViewingSource = data.tab.isViewingSource || url.startsWith('view-source:');
 
           // If tab is loading, prefer addressBarSnapshot (what user typed/was shown)
           // Otherwise derive from the actual URL

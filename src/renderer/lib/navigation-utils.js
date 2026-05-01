@@ -1,22 +1,13 @@
 import { applyEnsNamePreservation, deriveDisplayValue } from './url-utils.js';
-import { getInternalPageName } from './page-urls.js';
+import { getInternalPageName, parseEnsInput } from './page-urls.js';
 import { cidV0ToV1Base32 } from './cid-utils.js';
+import { isEnsHost } from './origin-utils.js';
 
 // Extract the ENS name from an address bar value, or null if the value isn't
-// an ENS resolution input (ens://, .eth, .box). Shared by the protocol icon
-// and trust-shield helpers. Distinct from `parseEnsInput` in `page-urls.js`:
-// the latter is the canonical parser used during navigation (trims, regex,
-// allocates {name, suffix}); this helper is the render-loop fast path that
-// accepts already-lowercased input and returns just the name.
-const extractEnsName = (normalizedValue) => {
-  if (normalizedValue.startsWith('ens://')) {
-    return normalizedValue.slice(6).split('/')[0];
-  }
-  if (normalizedValue.endsWith('.eth') || normalizedValue.endsWith('.box')) {
-    return normalizedValue.split('/')[0];
-  }
-  return null;
-};
+// an ENS resolution input. Thin wrapper around `parseEnsInput` so the
+// render-loop helpers (protocol icon, trust shield) share the single
+// parsing implementation in `page-urls.js`.
+const extractEnsName = (normalizedValue) => parseEnsInput(normalizedValue)?.name ?? null;
 
 // Trust-shield state for the address bar. Returns `null` to hide the shield
 // (non-ENS URLs, or ENS name we haven't resolved this session). Otherwise
@@ -38,26 +29,31 @@ export const resolveProtocolIconType = ({
   currentPageSecure = false,
 } = {}) => {
   const normalizedValue = value.toLowerCase();
-  let protocol = 'http';
 
+  // Transport scheme wins first: the URL itself tells us what protocol the
+  // page uses, regardless of whether the host happens to be an ENS name. This
+  // matters for the post-resolution display forms (`bzz://name.eth`,
+  // `ipfs://name.eth`, `ipns://name.eth`) — the protocol icon should match
+  // the transport even before we've cached an `ensProtocols` entry.
+  if (normalizedValue.startsWith('bzz://')) return 'swarm';
+  if (normalizedValue.startsWith('ipfs://')) return 'ipfs';
+  if (normalizedValue.startsWith('ipns://')) return 'ipns';
+  if (normalizedValue.startsWith('rad://')) {
+    return enableRadicleIntegration ? 'radicle' : 'http';
+  }
+  if (normalizedValue.startsWith('freedom://')) return null;
+
+  // Bare ENS / legacy `ens://` falls back to the cached resolved protocol.
   const ensName = extractEnsName(normalizedValue);
   if (ensName) {
-    protocol = ensProtocols.get(ensName) || 'http';
-  } else if (normalizedValue.startsWith('bzz://')) {
-    protocol = 'swarm';
-  } else if (normalizedValue.startsWith('ipfs://')) {
-    protocol = 'ipfs';
-  } else if (normalizedValue.startsWith('ipns://')) {
-    protocol = 'ipns';
-  } else if (normalizedValue.startsWith('rad://') && enableRadicleIntegration) {
-    protocol = 'radicle';
-  } else if (normalizedValue.startsWith('freedom://')) {
-    protocol = null;
-  } else if (normalizedValue.startsWith('https://') || currentPageSecure) {
-    protocol = 'https';
+    return ensProtocols.get(ensName) || 'http';
   }
 
-  return protocol;
+  if (normalizedValue.startsWith('https://') || currentPageSecure) {
+    return 'https';
+  }
+
+  return 'http';
 };
 
 export const buildRadicleDisabledUrl = (baseHref, inputValue = '') => {
@@ -111,7 +107,7 @@ export const extractEnsResolutionMetadata = (targetUri, ensName) => {
     knownEnsPairs.push([ipfsMatch[1], ensName]);
     // Kubo's subdomain gateway redirects CIDv0 ("Qm...") to CIDv1 base32
     // ("bafybei..."). Store both so the address bar still collapses back to
-    // `ens://name` after the redirect lands.
+    // the ENS name after the redirect lands.
     if (ipfsMatch[1].startsWith('Qm')) {
       const cidV1 = cidV0ToV1Base32(ipfsMatch[1]);
       if (cidV1) knownEnsPairs.push([cidV1, ensName]);
@@ -122,7 +118,10 @@ export const extractEnsResolutionMetadata = (targetUri, ensName) => {
   const ipnsMatch = targetUri.match(/^ipns:\/\/([A-Za-z0-9.-]+)/);
   if (ipnsMatch) {
     knownEnsPairs.push([ipnsMatch[1], ensName]);
-    resolvedProtocol = 'ipfs';
+    // Track IPNS distinctly from IPFS so the protocol icon and transport
+    // display reflect the actual contenthash transport (an IPNS-backed
+    // ENS name was being mis-displayed as `ipfs://name.eth` otherwise).
+    resolvedProtocol = 'ipns';
   }
 
   return {
@@ -152,6 +151,14 @@ export const deriveDisplayAddress = ({
   return applyEnsNamePreservation(display, knownEnsNames);
 };
 
+// ENS-host transport URLs (`bzz://name.eth/...`, `ipfs://name.eth/...`,
+// `ipns://name.eth/...`) cannot be turned into a gateway path here — the
+// host has to be resolved to a CID/hash first via the ENS resolver. The
+// caller (`loadTarget` view-source branch) handles that and passes the
+// already-resolved transport URI back through this function, so we only
+// need to skip ENS hosts in the strict "host is hex/CID/IPNS-id" branches
+// below.
+
 export const buildViewSourceNavigation = ({
   value = '',
   bzzRoutePrefix,
@@ -164,7 +171,7 @@ export const buildViewSourceNavigation = ({
   const innerUrl = value.startsWith('view-source:') ? value.slice(12) : value;
 
   const bzzMatch = innerUrl.match(/^bzz:\/\/([a-fA-F0-9]+)(\/.*)?$/);
-  if (bzzMatch) {
+  if (bzzMatch && !isEnsHost(bzzMatch[1])) {
     const hash = bzzMatch[1];
     const path = bzzMatch[2] || '/';
     return {
@@ -174,7 +181,7 @@ export const buildViewSourceNavigation = ({
   }
 
   const ipfsMatch = innerUrl.match(/^ipfs:\/\/([A-Za-z0-9]+)(\/.*)?$/);
-  if (ipfsMatch) {
+  if (ipfsMatch && !isEnsHost(ipfsMatch[1])) {
     const cid = ipfsMatch[1];
     const path = ipfsMatch[2] || '';
     return {
@@ -184,7 +191,7 @@ export const buildViewSourceNavigation = ({
   }
 
   const ipnsMatch = innerUrl.match(/^ipns:\/\/([A-Za-z0-9.-]+)(\/.*)?$/);
-  if (ipnsMatch) {
+  if (ipnsMatch && !isEnsHost(ipnsMatch[1])) {
     const name = ipnsMatch[1];
     const path = ipnsMatch[2] || '';
     return {

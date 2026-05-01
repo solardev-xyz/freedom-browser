@@ -44,6 +44,32 @@ const INPUTS = [
   'ipns://docs.ipfs.tech',
   'ipns://docs.ipfs.tech/guide',
 
+  // Transport URLs with ENS hosts (issue #16): both copies must collapse to
+  // the bare ENS name so permissions stay consistent across forms.
+  'bzz://meinhard.eth',
+  'bzz://meinhard.eth/page',
+  'ipfs://vitalik.eth/docs',
+  'ipns://app.eth/guide',
+  'bzz://Meinhard.ETH',
+  'ipfs://myapp.box/path',
+
+  // Query / fragment must not fork the permission key per route. Hash-routed
+  // SPAs (#/swap) and share-link queries (?ref=...) collapse to the same
+  // canonical key.
+  'vitalik.eth?ref=share',
+  'vitalik.eth#/swap',
+  'bzz://meinhard.eth?x=1',
+  'bzz://meinhard.eth#/feed',
+  'ipfs://vitalik.eth?utm=1',
+  'ipfs://vitalik.eth#/lp',
+  'ipns://app.eth?ref=foo',
+  'ens://name.eth?x=1',
+  'ens://name.eth#/swap',
+  'rad://z123abc?ref=foo',
+  'rad://z123abc#/tree',
+  'bzz://abc123def?x=1',
+  'ipfs://QmABC#frag',
+
   // Radicle
   'rad://z3gqcJUoA1n9HaHKufZs5FCSGazv5',
   'rad://z3gqcJUoA1n9HaHKufZs5FCSGazv5/tree',
