@@ -68,12 +68,6 @@ const IDEMPOTENT_METHODS = new Set(['GET', 'HEAD']);
 // 64-char or 128-char lowercase/uppercase hex (unencrypted / encrypted refs).
 const BZZ_HASH_RE = /^[a-fA-F0-9]{64}([a-fA-F0-9]{64})?$/;
 
-// Smallest legal ENS label is 3 chars (per ENS app rules); anything shorter
-// is necessarily malformed and the resolver would reject it. Used together
-// with `isEnsHost` to gate cheap pre-checks before paying the resolver
-// round-trip — a single `.eth` or `a.eth` would otherwise consume an RPC.
-const MIN_ENS_LABEL_LENGTH = 3;
-
 // Request headers we should not forward to Bee — either Chromium-injected
 // privileged-scheme noise or headers that refer to the bzz:// origin and
 // would confuse the gateway. `cookie` / `authorization` aren't a real
@@ -144,19 +138,20 @@ async function buildGatewayUrl(bzzUrl) {
     };
   }
 
-  if (isEnsHost(host) && hasMinimumLabel(host)) {
+  if (isEnsHost(host) && !hasEmptyLabel(host)) {
     return resolveEnsToGatewayUrl(host, parsed);
   }
 
   return null;
 }
 
-// Reject hosts whose first label is shorter than the ENS minimum (e.g.
-// `.eth`, `a.eth`). The resolver would reject these too, but pre-filtering
-// avoids a wasted RPC round-trip per malformed request.
-function hasMinimumLabel(host) {
-  const firstLabel = host.split('.')[0];
-  return firstLabel.length >= MIN_ENS_LABEL_LENGTH;
+// Cheap pre-filter for hosts with empty labels (e.g. `.eth`, `foo..eth`).
+// The resolver would reject these too, but catching them here avoids a
+// wasted RPC. Do NOT enforce any minimum label length: legacy two-char
+// `.eth` registrations (`me.eth`) and single-char subdomains
+// (`a.foo.eth`, `1.poap.eth`) are both valid and common.
+function hasEmptyLabel(host) {
+  return host.split('.').some((label) => label.length === 0);
 }
 
 // Resolve an ENS host to a Bee gateway URL. `parsed` is the original

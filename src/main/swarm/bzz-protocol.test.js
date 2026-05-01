@@ -188,6 +188,41 @@ describe('buildGatewayUrl', () => {
       expect(result.ok).toBe(false);
       expect(result.status).toBe(502);
     });
+
+    // ENS subdomains are set by the parent domain's owner with no length
+    // constraint — 1–2 char leftmost labels are valid and common (e.g.
+    // `a.foo.eth`, `me.brantly.eth`, `1.poap.eth`). Legacy two-char direct
+    // `.eth` registrations (`me.eth`, `aa.eth`) from the 2017 auction era
+    // are also still valid. The pre-filter must only reject truly empty
+    // labels, not short ones.
+    test.each([
+      ['a.foo.eth', 'bzz://a.foo.eth/'],
+      ['x.app.eth', 'bzz://x.app.eth/'],
+      ['me.brantly.eth', 'bzz://me.brantly.eth/'],
+      ['1.poap.eth', 'bzz://1.poap.eth/'],
+      ['me.eth', 'bzz://me.eth/'],
+      ['aa.eth', 'bzz://aa.eth/'],
+    ])('short-label ENS host %s reaches the resolver', async (name, url) => {
+      mockResolveEnsContent.mockResolvedValue({
+        type: 'ok',
+        protocol: 'bzz',
+        decoded: HASH,
+        uri: `bzz://${HASH}`,
+        name,
+      });
+
+      const result = await buildGatewayUrl(url);
+      expect(result).toEqual({ ok: true, url: `http://127.0.0.1:1633/bzz/${HASH}/` });
+      expect(mockResolveEnsContent).toHaveBeenCalledWith(name);
+    });
+
+    test.each([
+      ['bzz://.eth/'],
+      ['bzz://foo..eth/'],
+    ])('returns null for hosts with empty labels (%s)', async (url) => {
+      await expect(buildGatewayUrl(url)).resolves.toBeNull();
+      expect(mockResolveEnsContent).not.toHaveBeenCalled();
+    });
   });
 });
 

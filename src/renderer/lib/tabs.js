@@ -271,6 +271,20 @@ const createWebview = (tabId, initialUrl) => {
     'did-start-loading': () => {
       const tab = tabState.tabs.find((t) => t.id === tabId);
       if (tab) {
+        // A real load is starting — the phantom stop that proactive
+        // suppression guards against has either already fired, been
+        // elided by Chromium, or is interleaved earlier in this same
+        // event-loop tick. Disarm so the paired real did-stop-loading
+        // isn't swallowed. This is what keeps fast-scheme clicks
+        // (freedom://, rad:, ethereum:) from getting a stuck spinner
+        // when their real stop lands inside the 200 ms safety window.
+        if (tab.suppressNextStop) {
+          tab.suppressNextStop = false;
+          if (tab.suppressNextStopTimer) {
+            clearTimeout(tab.suppressNextStopTimer);
+            tab.suppressNextStopTimer = null;
+          }
+        }
         tab.isLoading = true;
         renderTabs();
       }

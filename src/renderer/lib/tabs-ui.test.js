@@ -626,6 +626,52 @@ describe('tabs ui behavior', () => {
     }
   });
 
+  test('fast freedom:// navigation clears the spinner inside the suppression window', async () => {
+    // Regression: the proactive `suppressNextStop=true` set by the
+    // navigate-to-url IPC is armed for every intercepted scheme
+    // (freedom://, bzz://, ens://, ipfs://, ipns://, rad:, ethereum:),
+    // but only the async ENS-backed schemes actually need it — slow
+    // resolution keeps the real did-stop-loading well past the 200 ms
+    // safety timer. Fast schemes like `freedom://` load synchronously
+    // (~10–50 ms), so the real did-stop-loading lands inside the
+    // suppression window and would be silently swallowed unless we
+    // disarm on the real did-start-loading. Once a real load starts,
+    // the phantom has either already fired or been elided, so the
+    // next did-stop-loading is the real one.
+    jest.useFakeTimers();
+    try {
+      const { mod, electronHandlers } = await loadTabsModule();
+      const onWebviewEvent = jest.fn();
+      mod.setLoadTargetHandler(jest.fn());
+      mod.setWebviewEventHandler(onWebviewEvent);
+      await mod.initTabs();
+
+      const activeTab = mod.getActiveTab();
+      const { webview } = activeTab;
+
+      electronHandlers.navigateToUrl('freedom://settings');
+      expect(activeTab.suppressNextStop).toBe(true);
+
+      // Real load starts — disarms proactive suppression so the paired
+      // real stop isn't swallowed.
+      webview.dispatch('did-start-loading');
+      expect(activeTab.suppressNextStop).toBe(false);
+      expect(activeTab.suppressNextStopTimer).toBeNull();
+      expect(activeTab.isLoading).toBe(true);
+
+      onWebviewEvent.mockClear();
+      webview.dispatch('did-stop-loading');
+
+      expect(activeTab.isLoading).toBe(false);
+      expect(onWebviewEvent).toHaveBeenCalledWith(
+        'did-stop-loading',
+        expect.objectContaining({ tabId: activeTab.id })
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   test('closes and reopens tabs and closes the window when the last tab is removed', async () => {
     const firstLoad = await loadTabsModule();
     await firstLoad.mod.initTabs();
