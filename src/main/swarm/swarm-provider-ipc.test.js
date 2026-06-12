@@ -1897,4 +1897,87 @@ describe('swarm-provider-ipc', () => {
       expect(mockGetAllFeeds).toHaveBeenCalledWith('specific-origin.eth');
     });
   });
+
+  describe('swarm_apiRequest', () => {
+    function mockBeeResponse({ ok = true, status = 200, statusText = 'OK', contentType = 'application/json', body = '' } = {}) {
+      const buf = Buffer.from(body);
+      const headers = new Map([['content-type', contentType]]);
+      return {
+        ok,
+        status,
+        statusText,
+        headers: {
+          get: (k) => (headers.has(String(k).toLowerCase()) ? headers.get(String(k).toLowerCase()) : null),
+          forEach: (cb) => headers.forEach((v, k) => cb(v, k)),
+        },
+        arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
+      };
+    }
+
+    test('requires a connected origin', async () => {
+      mockGetPermission.mockReturnValue(null);
+      const r = await invokeProvider('swarm_apiRequest', { method: 'GET', path: '/stamps' }, 'app.eth');
+      expect(r.result).toBeUndefined();
+      expect(r.error.code).toBe(4100);
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    test('denies non-allow-listed endpoints (no fund/admin surface)', async () => {
+      mockGetPermission.mockReturnValue({ origin: 'app.eth' });
+      for (const path of ['/wallet', '/chequebook/cashout', '/stake', '/settlements']) {
+        const r = await invokeProvider('swarm_apiRequest', { method: 'GET', path }, 'app.eth');
+        expect(r.error.code).toBe(4100);
+        expect(r.error.data.reason).toBe('endpoint_not_allowed');
+      }
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    test('rejects unsupported HTTP methods and malformed paths', async () => {
+      mockGetPermission.mockReturnValue({ origin: 'app.eth' });
+      expect((await invokeProvider('swarm_apiRequest', { method: 'OPTIONS', path: '/stamps' }, 'app.eth')).error.code).toBe(-32602);
+      expect((await invokeProvider('swarm_apiRequest', { method: 'GET', path: 'stamps' }, 'app.eth')).error.code).toBe(-32602);
+      expect((await invokeProvider('swarm_apiRequest', { method: 'GET', path: '/bzz/../wallet' }, 'app.eth')).error.code).toBe(-32602);
+    });
+
+    test('proxies a GET to the node and returns a utf8 body', async () => {
+      mockGetPermission.mockReturnValue({ origin: 'app.eth' });
+      mockGetBeeApiUrl.mockReturnValue('http://127.0.0.1:1633');
+      global.fetch.mockResolvedValueOnce(mockBeeResponse({ body: '{"stamps":[]}' }));
+
+      const r = await invokeProvider('swarm_apiRequest', { method: 'GET', path: '/stamps' }, 'app.eth');
+
+      expect(global.fetch).toHaveBeenCalledWith('http://127.0.0.1:1633/stamps', expect.objectContaining({ method: 'GET' }));
+      expect(r.result).toMatchObject({ ok: true, status: 200, body: '{"stamps":[]}', bodyEncoding: 'utf8' });
+    });
+
+    test('returns base64 for binary responses', async () => {
+      mockGetPermission.mockReturnValue({ origin: 'app.eth' });
+      mockGetBeeApiUrl.mockReturnValue('http://127.0.0.1:1633');
+      global.fetch.mockResolvedValueOnce(mockBeeResponse({ contentType: 'application/octet-stream', body: 'PNGDATA' }));
+
+      const r = await invokeProvider('swarm_apiRequest', { method: 'GET', path: '/bzz/abc/img.png' }, 'app.eth');
+
+      expect(r.result.bodyEncoding).toBe('base64');
+      expect(Buffer.from(r.result.body, 'base64').toString()).toBe('PNGDATA');
+    });
+
+    test('forwards method + safe headers + body, strips blocked headers', async () => {
+      mockGetPermission.mockReturnValue({ origin: 'app.eth' });
+      mockGetBeeApiUrl.mockReturnValue('http://127.0.0.1:1633');
+      global.fetch.mockResolvedValueOnce(mockBeeResponse({ body: '{"reference":"abc"}' }));
+
+      await invokeProvider('swarm_apiRequest', {
+        method: 'POST',
+        path: '/bzz',
+        headers: { 'swarm-postage-batch-id': 'batch1', host: 'evil.example', 'content-type': 'application/json' },
+        body: 'hello',
+      }, 'app.eth');
+
+      const [, init] = global.fetch.mock.calls[0];
+      expect(init.method).toBe('POST');
+      expect(init.headers['swarm-postage-batch-id']).toBe('batch1');
+      expect(init.headers.host).toBeUndefined();
+      expect(Buffer.from(init.body).toString()).toBe('hello');
+    });
+  });
 });
