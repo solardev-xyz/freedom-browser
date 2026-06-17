@@ -36,6 +36,37 @@ It ships with integrated Swarm, IPFS, and Radicle nodes, enabling direct peer-to
 
 ---
 
+## Development Environment (devenv)
+
+If you have [Nix](https://nixos.org) and [devenv.sh](https://devenv.sh) installed, you can skip the manual Node.js / build-toolchain setup and drop straight into an environment that matches CI (Node 20, npm, and the system dependencies needed for native modules, binary fetches, and headless E2E):
+
+```bash
+devenv shell        # enter the dev shell
+# or, with direnv installed:
+direnv allow        # auto-activate on cd
+```
+
+First-time setup (installs npm deps and downloads the Ant / IPFS / Radicle binaries):
+
+```bash
+devenv run setup
+```
+
+Useful commands (also runnable as plain `npm run …`):
+
+| Command                     | What it does                                                  |
+| --------------------------- | ------------------------------------------------------------- |
+| `devenv run start`          | Launch Freedom (`npm start`).                                 |
+| `devenv run test`           | Jest unit tests.                                              |
+| `devenv run lint`           | ESLint.                                                       |
+| `devenv run format`         | Prettier write.                                               |
+| `devenv run e2e`            | Playwright E2E (headless via `xvfb-run` on Linux).            |
+| `devenv run fetch-binaries` | Re-download Ant, the IPFS native addon, and Radicle binaries. |
+
+The `.envrc` only activates with [direnv](https://direnv.net) installed, so contributors not using devenv are unaffected — the manual Quick Start above remains the canonical path.
+
+---
+
 ## Architecture
 
 Freedom Browser is an Electron application. Protocol logic lives in the main process; the renderer is a modular UI layer that talks to it over IPC (channels defined in `src/shared/ipc-channels.js`). The main process manages node lifecycles (`ant-manager.js`, `ipfs-manager.js`, `radicle-manager.js`), URL rewriting (`request-rewriter.js`), and persistent data (settings, bookmarks, history). A central `service-registry.js` tracks node endpoints, modes, and status, and broadcasts state to all windows — both node managers and the request rewriter read from it.
