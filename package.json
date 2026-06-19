@@ -122,6 +122,11 @@
         }
       ]
     },
+    "deb": {
+      "fpm": [
+        "config/baby.freedom.browser.metainfo.xml=/usr/share/metainfo/baby.freedom.browser.metainfo.xml"
+      ]
+    },
     "win": {
       "target": [
         "nsis",

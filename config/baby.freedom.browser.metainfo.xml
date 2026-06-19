@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>baby.freedom.browser</id>
+  <launchable type="desktop-id">freedom.desktop</launchable>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MPL-2.0</project_license>
+
+  <name>Freedom</name>
+  <summary>A browser for the decentralized web</summary>
+
+  <description>
+    <p>
+      Freedom is a browser for the decentralized web, with Swarm, IPFS, and
+      ENS as first-class protocols. Powered by built-in nodes, it connects you
+      directly to peers, keeping the network strong and user-controlled.
+    </p>
+  </description>
+
+  <developer id="baby.freedom">
+    <name>Freedom Team</name>
+  </developer>
+
+  <url type="homepage">https://freedombrowser.eth.limo/</url>
+  <url type="bugtracker">https://github.com/solardev-xyz/freedom-browser/issues</url>
+
+  <content_rating type="oars-1.1" />
+
+  <screenshots>
+    <screenshot type="default">
+      <caption>The Freedom new-tab page</caption>
+      <image>https://raw.githubusercontent.com/solardev-xyz/freedom-browser/main/assets/screenshots/main-window.png</image>
+    </screenshot>
+  </screenshots>
+</component>
