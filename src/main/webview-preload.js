@@ -649,7 +649,8 @@ try {
               method === 'swarm_updateFeed' ||
               method === 'swarm_writeFeedEntry' ||
               method === 'swarm_writeSingleOwnerChunk' ||
-              method === 'swarm_getSigningIdentity';
+              method === 'swarm_getSigningIdentity' ||
+              method === 'swarm_apiRequest';
             const timeout = longRunning ? 300000 : 60000;
             setTimeout(() => {
               if (pendingRequests.has(id)) {
@@ -677,6 +678,7 @@ try {
         writeSingleOwnerChunk(params) { return this.request({ method: 'swarm_writeSingleOwnerChunk', params: params }); },
         readSingleOwnerChunk(params) { return this.request({ method: 'swarm_readSingleOwnerChunk', params: params }); },
         getSigningIdentity() { return this.request({ method: 'swarm_getSigningIdentity' }); },
+        apiRequest(params) { return this.request({ method: 'swarm_apiRequest', params: params }); },
 
         on(event, handler) { if (eventListeners[event]) eventListeners[event].push(handler); return this; },
         removeListener(event, handler) {

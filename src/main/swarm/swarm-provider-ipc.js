@@ -49,7 +49,28 @@ const LIMITS = {
   maxFileCount: 100,
   maxPathBytes: 100,
   maxChunkPayloadBytes: 4096,
+  maxApiBodyBytes: 50 * 1024 * 1024, // 50 MB — swarm_apiRequest req/resp body cap
+  maxApiHeaders: 30,
+  maxApiHeaderLen: 8192,
 };
+
+// swarm_apiRequest: which Bee HTTP API endpoints a connected dApp may reach
+// through the passthrough. ALLOW-LIST by first path segment — anything not
+// listed is denied. Deliberately EXCLUDES node-wallet / chequebook / staking /
+// network-admin endpoints (they move funds or reconfigure the node and must
+// never be reachable from web content). Covers the data + postage + pss surface
+// a dApp legitimately needs (matches the bee-js client's usage).
+const ALLOWED_API_SEGMENTS = new Set([
+  'health', 'readiness', 'node', 'addresses',
+  'stamps', 'batches',
+  'bzz', 'bytes', 'chunks', 'soc', 'feeds',
+  'tags', 'pins', 'pss', 'stewardship', 'gsoc',
+]);
+const ALLOWED_API_METHODS = new Set(['GET', 'POST', 'PATCH', 'DELETE', 'HEAD']);
+// Request headers we never forward (the node/fetch owns these).
+const BLOCKED_API_HEADERS = new Set(['host', 'content-length', 'connection', 'origin', 'referer', 'cookie']);
+// Response content-types returned as utf8 text (else base64).
+const TEXTUAL_CONTENT_TYPE = /^(application\/(json|.*\+json|xml|javascript|x-www-form-urlencoded)|text\/)/i;
 
 const SPEC_VERSION = '1.0';
 const MAX_U64 = (1n << 64n) - 1n;
@@ -92,6 +113,7 @@ const KNOWN_METHODS = [
   'swarm_writeSingleOwnerChunk',
   'swarm_readSingleOwnerChunk',
   'swarm_getSigningIdentity',
+  'swarm_apiRequest',
 ];
 
 // Tag ownership: tagUid → origin. Session-scoped, not persisted.
@@ -354,6 +376,10 @@ async function executeSwarmMethod(method, params, origin) {
       const result = await handleGetSigningIdentity(normalizedOrigin);
       if (result.result) resetVaultAutoLockTimer();
       return result;
+    }
+
+    if (method === 'swarm_apiRequest') {
+      return handleApiRequest(params, normalizedOrigin);
     }
 
     return { error: ERRORS.INTERNAL_ERROR };
@@ -1464,6 +1490,123 @@ async function checkSwarmPreFlight() {
     log.error('[SwarmProvider] Pre-flight check failed:', err.message);
     return { ok: false, reason: 'node-stopped' };
   }
+}
+
+/**
+ * swarm_apiRequest — permission-gated passthrough to the local Bee HTTP API.
+ *
+ * Lets a connected dApp make an arbitrary Bee API call from the MAIN process
+ * (which isn't subject to browser CORS), so libraries that use plain `fetch`
+ * against the node work without exposing the node API to the open web. The
+ * `path` is allow-listed by first segment (data + postage + pss surface only);
+ * node-wallet / chequebook / staking / admin endpoints are never reachable.
+ *
+ * @param {{ method?: string, path?: string, headers?: object, body?: string,
+ *   bodyEncoding?: 'utf8'|'base64' }} params
+ * @returns {{ result?: { ok, status, statusText, headers, body, bodyEncoding },
+ *   error? }}
+ */
+async function handleApiRequest(params, _origin) {
+  if (!params || typeof params !== 'object') {
+    return invalidParams('params object is required');
+  }
+
+  const httpMethod = String(params.method || 'GET').toUpperCase();
+  if (!ALLOWED_API_METHODS.has(httpMethod)) {
+    return invalidParams(`Unsupported method: ${httpMethod}`, 'unsupported_method', { method: httpMethod });
+  }
+
+  const path = params.path;
+  if (typeof path !== 'string' || !path.startsWith('/')) {
+    return invalidParams('path must be a string starting with "/"', 'invalid_path');
+  }
+  if (path.length > 2048 || path.includes('..')) {
+    return invalidParams('path is malformed', 'invalid_path');
+  }
+  // First path segment (before the next "/" or query/fragment) gates access.
+  const segment = path.slice(1).split(/[/?#]/, 1)[0].toLowerCase();
+  if (!ALLOWED_API_SEGMENTS.has(segment)) {
+    return notAuthorized('endpoint_not_allowed');
+  }
+
+  // Request headers: forward a safe subset.
+  const headers = {};
+  if (params.headers != null) {
+    if (typeof params.headers !== 'object' || Array.isArray(params.headers)) {
+      return invalidParams('headers must be an object', 'invalid_headers');
+    }
+    const entries = Object.entries(params.headers);
+    if (entries.length > LIMITS.maxApiHeaders) {
+      return invalidParams('too many headers', 'too_many_headers');
+    }
+    for (const [k, v] of entries) {
+      const key = String(k).toLowerCase();
+      if (BLOCKED_API_HEADERS.has(key)) continue;
+      const value = String(v);
+      if (key.length > LIMITS.maxApiHeaderLen || value.length > LIMITS.maxApiHeaderLen) {
+        return invalidParams('header too large', 'header_too_large');
+      }
+      headers[key] = value;
+    }
+  }
+
+  // Request body: utf8 string or base64-encoded bytes.
+  let body;
+  if (params.body != null) {
+    if (typeof params.body !== 'string') {
+      return invalidParams('body must be a string', 'invalid_body');
+    }
+    try {
+      body = Buffer.from(params.body, params.bodyEncoding === 'base64' ? 'base64' : 'utf8');
+    } catch {
+      return invalidParams('body could not be decoded', 'invalid_body');
+    }
+    if (body.length > LIMITS.maxApiBodyBytes) {
+      return invalidParams('body exceeds size limit', 'body_too_large');
+    }
+  }
+
+  const beeUrl = getBeeApiUrl();
+  if (!beeUrl) {
+    return { error: ERRORS.NODE_UNAVAILABLE };
+  }
+
+  let res;
+  try {
+    res = await fetch(`${beeUrl}${path}`, {
+      method: httpMethod,
+      headers,
+      body: httpMethod === 'GET' || httpMethod === 'HEAD' ? undefined : body,
+    });
+  } catch (err) {
+    return { error: { ...ERRORS.NODE_UNAVAILABLE, message: `Bee request failed: ${err.message}` } };
+  }
+
+  let buf;
+  try {
+    buf = Buffer.from(await res.arrayBuffer());
+  } catch (err) {
+    return { error: { ...ERRORS.INTERNAL_ERROR, message: `Failed reading response: ${err.message}` } };
+  }
+  if (buf.length > LIMITS.maxApiBodyBytes) {
+    return invalidParams('response exceeds size limit', 'response_too_large');
+  }
+
+  const contentType = res.headers.get('content-type') || '';
+  const textual = TEXTUAL_CONTENT_TYPE.test(contentType);
+  const respHeaders = {};
+  res.headers.forEach((value, key) => { respHeaders[key] = value; });
+
+  return {
+    result: {
+      ok: res.ok,
+      status: res.status,
+      statusText: res.statusText,
+      headers: respHeaders,
+      body: textual ? buf.toString('utf8') : buf.toString('base64'),
+      bodyEncoding: textual ? 'utf8' : 'base64',
+    },
+  };
 }
 
 /**
