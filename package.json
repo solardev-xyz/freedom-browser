@@ -24,6 +24,7 @@
     "test:migration": "jest --runInBand src/main/migrate-user-data.test.js src/main/__tests__/integration/v08-upgrade.test.js src/main/profile-resolver.test.js src/main/profile-paths.test.js src/main/profile-catalog.test.js src/main/identity/__tests__/integration/postage-publisher-continuity.test.js",
     "test:e2e": "playwright test --project=harness",
     "test:e2e:live": "playwright test --project=live",
+    "test:lab:zswap-reads": "FREEDOM_ZSWAP_READ_LAB=1 FREEDOM_LIVE_E2E_DISABLE_DEFAULT_NODES=1 playwright test --project=live test-e2e/live/zswap-read-lab.spec.js",
     "test:e2e:onboarding": "playwright test --project=live test-e2e/live/onboarding-identity.spec.js",
     "test:e2e:tor": "FREEDOM_LIVE_E2E_DISABLE_DEFAULT_NODES=1 playwright test --project=live test-e2e/live/tor-onion.spec.js",
     "lint": "eslint .",
