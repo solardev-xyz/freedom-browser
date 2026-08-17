@@ -109,9 +109,27 @@ function markdownReport(report) {
     `Captured ${report.capture.totalProviderCalls} provider calls; replayed ` +
       `${report.capture.replayedReadCalls} safe read calls (cap: ${report.config.maxCalls}).`,
     '',
-    '| Source | Mode | Success | Match Direct | Elapsed | Throughput | p50 | p95 | Max |',
-    '| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |',
+    '## Default-order quote routing',
+    '',
+    `Quote settled in ${report.capture.quoteElapsedMs} ms using ` +
+      `\`${report.capture.quoteReadOrder.join(' → ')}\`.`,
+    '',
+    '| Method | Selected source | Duration | Result |',
+    '| --- | --- | ---: | --- |',
   ];
+  for (const call of report.capture.routingTrace || []) {
+    lines.push(
+      `| ${call.method} | ${call.source || '—'} | ${call.durationMs} ms | ` +
+      `${call.ok ? 'success' : call.error || 'failed'} |`
+    );
+  }
+  lines.push(
+    '',
+    '## Isolated source replay',
+    '',
+    '| Source | Mode | Success | Match Direct | Elapsed | Throughput | p50 | p95 | Max |',
+    '| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |'
+  );
   for (const row of report.summary) {
     lines.push(
       `| ${row.source} | ${row.mode} | ${row.succeeded}/${row.calls} | ` +
@@ -162,6 +180,50 @@ async function setReadOrder(electronApp, order) {
     const registry = process.mainModule.require(options.registry);
     registry.updateNetwork(1, { access: { readOrder: options.order } });
   }, { registry: modulePaths.registry, order });
+}
+
+async function startRouterTrace(electronApp) {
+  // eslint-disable-next-line no-empty-pattern
+  await electronApp.evaluate(async ({}, routerPath) => {
+    const router = process.mainModule.require(routerPath);
+    if (router.__zswapReadLabTrace) return;
+    const originalRequest = router.request;
+    const records = [];
+    router.__zswapReadLabTrace = { originalRequest, records };
+    router.request = async (...args) => {
+      const startedAt = Date.now();
+      try {
+        const response = await originalRequest(...args);
+        records.push({
+          method: args[1],
+          source: response.source,
+          durationMs: Date.now() - startedAt,
+          ok: true,
+        });
+        return response;
+      } catch (error) {
+        records.push({
+          method: args[1],
+          durationMs: Date.now() - startedAt,
+          ok: false,
+          error: (error?.message || String(error)).replace(/\s+/g, ' ').slice(0, 500),
+        });
+        throw error;
+      }
+    };
+  }, modulePaths.router);
+}
+
+async function stopRouterTrace(electronApp) {
+  // eslint-disable-next-line no-empty-pattern
+  return electronApp.evaluate(async ({}, routerPath) => {
+    const router = process.mainModule.require(routerPath);
+    const trace = router.__zswapReadLabTrace;
+    if (!trace) return [];
+    router.request = trace.originalRequest;
+    delete router.__zswapReadLabTrace;
+    return trace.records;
+  }, modulePaths.router);
 }
 
 async function captureZswapReads(window, electronApp) {
@@ -238,6 +300,7 @@ async function captureZswapReads(window, electronApp) {
   // default policy; this is the user-facing acceptance path for the adaptive
   // fallback behavior exercised by this lab.
   await setReadOrder(electronApp, ORIGINAL_READ_ORDER);
+  await startRouterTrace(electronApp);
   const quoteStartedAt = Date.now();
   const triggered = await evalInActiveWebview(window, `(() => {
     const amount = document.querySelector('#amt');
@@ -269,7 +332,8 @@ async function captureZswapReads(window, electronApp) {
     maxActive: window.__freedomZswapReadLab.maxActive,
     records: window.__freedomZswapReadLab.records
   }))()`);
-  return { ...capture, quoteElapsedMs: Date.now() - quoteStartedAt };
+  const routingTrace = await stopRouterTrace(electronApp);
+  return { ...capture, routingTrace, quoteElapsedMs: Date.now() - quoteStartedAt };
 }
 
 async function replayCorpus(electronApp, corpus, options) {
@@ -495,6 +559,7 @@ test.describe('zSwap read-source lab', () => {
         browserMaxConcurrency: capture.maxActive,
         quoteReadOrder: ORIGINAL_READ_ORDER,
         quoteElapsedMs: capture.quoteElapsedMs,
+        routingTrace: capture.routingTrace,
         methods: safeReads.reduce((counts, call) => {
           counts[call.method] = (counts[call.method] || 0) + 1;
           return counts;
