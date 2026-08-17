@@ -570,13 +570,19 @@ function colibriTrust(chainId) {
   };
 }
 
-async function requestQuorum(chainId, method, params, { includeTrust = false } = {}) {
+async function requestQuorum(
+  chainId,
+  method,
+  params,
+  { includeTrust = false, allowDirectFallback = false } = {}
+) {
   const network = registry.getNetwork(chainId) || {};
   const quorum = network.quorum || {};
   const k = Math.max(1, Number(quorum.k) || 3);
   const m = Math.max(1, Math.min(k, Number(quorum.m) || 2));
   const configuredTimeoutMs = Math.max(500, Number(quorum.timeoutMs) || 5000);
   const timeoutMs = Math.min(configuredTimeoutMs, INTERACTIVE_SOURCE_DEADLINE_MS);
+  const endpointTimeoutMs = allowDirectFallback ? configuredTimeoutMs : timeoutMs;
   const urls = registry.getEndpoints(chainId, 'rpc').slice(0, k);
   if (urls.length < m) throw new SourceUnavailableError(`RPC quorum needs ${m} endpoints`);
 
@@ -584,15 +590,22 @@ async function requestQuorum(chainId, method, params, { includeTrust = false } =
     const controllers = urls.map(() => new AbortController());
     const groups = new Map();
     const fulfilledUrls = [];
+    const directCandidates = [];
     const errors = [];
     let pending = urls.length;
     let finished = false;
+    let verificationImpossible = false;
+    let verificationTimer;
 
     const abortPending = () => controllers.forEach((controller) => controller.abort());
+    const finish = () => {
+      finished = true;
+      clearTimeout(verificationTimer);
+      abortPending();
+    };
     const succeed = (group) => {
       if (finished) return;
-      finished = true;
-      abortPending();
+      finish();
       if (!includeTrust) {
         resolve(group.value);
         return;
@@ -614,32 +627,69 @@ async function requestQuorum(chainId, method, params, { includeTrust = false } =
         },
       });
     };
+    const fail = () => {
+      if (finished) return;
+      finish();
+      const capacityFailures = errors.filter(isCapacityFailure).length;
+      const timedOut = errors.some((error) => failureKind(error) === 'timeout');
+      const error = new SourceUnavailableError(
+        `RPC quorum did not reach ${m} matching responses`,
+        capacityFailures >= m ? 'capacity' : timedOut ? 'timeout' : null
+      );
+      // Direct would accept one endpoint's answer without agreement. Preserve
+      // the highest-priority successful quorum member so the next configured
+      // Direct tier can reuse it rather than issuing the same RPC again.
+      const directFallback = directCandidates.sort((a, b) => a.index - b.index)[0];
+      if (directFallback) {
+        const fallbackKey = stableValue(directFallback.result);
+        error.directFallback = {
+          ...directFallback,
+          agreedUrls: directCandidates
+            .filter((candidate) => stableValue(candidate.result) === fallbackKey)
+            .map((candidate) => candidate.url),
+          dissentedUrls: directCandidates
+            .filter((candidate) => stableValue(candidate.result) !== fallbackKey)
+            .map((candidate) => candidate.url),
+          queriedUrls: urls,
+          quorum: { k: urls.length, m, achieved: false },
+        };
+      }
+      error.directAttemptedUrls = urls;
+      reject(error);
+    };
     const rejectIfImpossible = () => {
       if (finished) return;
       const largestGroup = Math.max(0, ...[...groups.values()].map((group) => group.count));
       if (largestGroup + pending >= m) return;
-      finished = true;
-      abortPending();
-      const capacityFailures = errors.filter(isCapacityFailure).length;
-      const timedOut = errors.some((error) => failureKind(error) === 'timeout');
-      reject(new SourceUnavailableError(
-        `RPC quorum did not reach ${m} matching responses`,
-        capacityFailures >= m ? 'capacity' : timedOut ? 'timeout' : null
-      ));
+      verificationImpossible = true;
+      // If every completed member failed, let an already-running member finish
+      // within Direct's compatibility budget. Its answer cannot restore
+      // quorum, but it can satisfy the Direct tier without a duplicate request.
+      if (!allowDirectFallback || directCandidates.length || pending === 0) fail();
     };
 
+    verificationTimer = setTimeout(() => {
+      if (finished) return;
+      verificationImpossible = true;
+      if (!allowDirectFallback || directCandidates.length || pending === 0) fail();
+    }, timeoutMs);
+
     urls.forEach((url, index) => {
-      requestRpcUrl(url, method, params, timeoutMs, { signal: controllers[index].signal }).then(
+      requestRpcUrl(url, method, params, endpointTimeoutMs, {
+        signal: controllers[index].signal,
+      }).then(
         (value) => {
           if (finished) return;
           pending -= 1;
           fulfilledUrls.push(url);
+          directCandidates.push({ index, url, result: value });
           const key = stableValue(value);
           const group = groups.get(key) || { count: 0, value, urls: [] };
           group.count += 1;
           group.urls.push(url);
           groups.set(key, group);
           if (group.count >= m) succeed(group);
+          else if (verificationImpossible) fail();
           else rejectIfImpossible();
         },
         (error) => {
@@ -653,30 +703,54 @@ async function requestQuorum(chainId, method, params, { includeTrust = false } =
   });
 }
 
-async function requestDirect(chainId, method, params, { includeTrust = false } = {}) {
+function directResponse(chainId, url, result, includeTrust, evidence = null) {
+  if (!includeTrust) return result;
+  const host = endpointHost(url);
+  const userConfigured = isUserConfiguredRpc(chainId, url);
+  const agreed = evidence?.agreedUrls?.map(endpointHost).filter(Boolean) || (host ? [host] : []);
+  const dissented = evidence?.dissentedUrls?.map(endpointHost).filter(Boolean) || [];
+  const queried = evidence?.queriedUrls?.map(endpointHost).filter(Boolean) || (host ? [host] : []);
+  return {
+    result,
+    trust: {
+      level: userConfigured ? 'user-configured' : 'unverified',
+      method: 'direct',
+      block: null,
+      agreed,
+      dissented,
+      queried,
+      quorum: evidence?.quorum || { k: 1, m: 1, achieved: false },
+    },
+  };
+}
+
+async function requestDirect(
+  chainId,
+  method,
+  params,
+  { includeTrust = false, directFallback = null, attemptedUrls = [] } = {}
+) {
   const network = registry.getNetwork(chainId) || {};
   const timeoutMs = Math.max(500, Number(network.quorum?.timeoutMs) || 5000);
   const urls = registry.getEndpoints(chainId, 'rpc');
   if (!urls.length) throw new SourceUnavailableError('No RPC endpoint configured');
+  if (directFallback && urls.includes(directFallback.url) &&
+      Object.prototype.hasOwnProperty.call(directFallback, 'result')) {
+    return directResponse(
+      chainId,
+      directFallback.url,
+      directFallback.result,
+      includeTrust,
+      directFallback
+    );
+  }
+  const attempted = new Set(attemptedUrls);
   let lastError;
   for (const url of urls) {
+    if (attempted.has(url)) continue;
     try {
       const result = await requestRpcUrl(url, method, params, timeoutMs);
-      if (!includeTrust) return result;
-      const host = endpointHost(url);
-      const userConfigured = isUserConfiguredRpc(chainId, url);
-      return {
-        result,
-        trust: {
-          level: userConfigured ? 'user-configured' : 'unverified',
-          method: 'direct',
-          block: null,
-          agreed: host ? [host] : [],
-          dissented: [],
-          queried: host ? [host] : [],
-          quorum: { k: 1, m: 1, achieved: false },
-        },
-      };
+      return directResponse(chainId, url, result, includeTrust);
     } catch (err) {
       lastError = err;
     }
@@ -715,7 +789,13 @@ async function requestSource(
   chainId,
   method,
   params,
-  { includeTrust = false, routeKey = null } = {}
+  {
+    includeTrust = false,
+    routeKey = null,
+    directFallback = null,
+    directAttemptedUrls = [],
+    allowDirectFallback = false,
+  } = {}
 ) {
   if (source === 'myotis') {
     const beforeStatus = includeTrust ? myotis.getStatus?.(chainId) || {} : null;
@@ -728,8 +808,16 @@ async function requestSource(
     const result = await requestColibri(chainId, method, params, routeKey);
     return includeTrust ? { result, trust: colibriTrust(chainId) } : result;
   }
-  if (source === 'quorum') return requestQuorum(chainId, method, params, { includeTrust });
-  if (source === 'direct') return requestDirect(chainId, method, params, { includeTrust });
+  if (source === 'quorum') {
+    return requestQuorum(chainId, method, params, { includeTrust, allowDirectFallback });
+  }
+  if (source === 'direct') {
+    return requestDirect(chainId, method, params, {
+      includeTrust,
+      directFallback,
+      attemptedUrls: directAttemptedUrls,
+    });
+  }
   throw new SourceUnavailableError(`Unknown chain source: ${source}`);
 }
 
@@ -748,7 +836,10 @@ async function request(
     (supportsMyotis ? DEFAULT_READ_ORDER : DEFAULT_NON_MYOTIS_READ_ORDER);
   const failures = [];
   let lastRpcError = null;
-  for (const source of order) {
+  let directFallback = null;
+  let directAttemptedUrls = [];
+  for (let sourceIndex = 0; sourceIndex < order.length; sourceIndex += 1) {
+    const source = order[sourceIndex];
     if (DIRECT_ONLY_METHODS.has(method) && source !== 'direct') continue;
     const routeKey = source === 'colibri' || source === 'quorum'
       ? adaptiveRouteKey(source, chainId, method, params, routingContext)
@@ -761,6 +852,9 @@ async function request(
       const sourceResult = await requestSource(source, Number(chainId), method, params, {
         includeTrust,
         routeKey,
+        directFallback: source === 'direct' ? directFallback : null,
+        directAttemptedUrls: source === 'direct' ? directAttemptedUrls : [],
+        allowDirectFallback: source === 'quorum' && order[sourceIndex + 1] === 'direct',
       });
       recordAdaptiveSuccess(routeKey);
       const result = includeTrust ? sourceResult.result : sourceResult;
@@ -771,6 +865,12 @@ async function request(
         ...(includeTrust && sourceResult.trust ? { trust: sourceResult.trust } : {}),
       };
     } catch (err) {
+      if (source === 'quorum') {
+        if (err.directFallback) directFallback = err.directFallback;
+        if (Array.isArray(err.directAttemptedUrls)) {
+          directAttemptedUrls = err.directAttemptedUrls;
+        }
+      }
       recordAdaptiveFailure(routeKey, err);
       const message = safeErrorMessage(err);
       failures.push(`${source}: ${message}`);

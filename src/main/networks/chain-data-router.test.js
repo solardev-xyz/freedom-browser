@@ -664,7 +664,7 @@ describe('chain-data-router', () => {
     expect(thirdSignal.aborted).toBe(true);
   });
 
-  test('falls through after a two-second quorum deadline and cools down that app route', async () => {
+  test('carries in-flight RPC work past the quorum deadline without restarting it', async () => {
     jest.useFakeTimers({ now: 1_000_000 });
     mockRegistry.getNetwork.mockReturnValue({
       access: { readOrder: ['quorum', 'direct'] },
@@ -674,6 +674,7 @@ describe('chain-data-router', () => {
       'https://a.example',
       'https://b.example',
       'https://c.example',
+      'https://d.example',
     ]);
     global.fetch = jest.fn().mockImplementation((_url, options) => {
       if (global.fetch.mock.calls.length > 3) {
@@ -694,6 +695,12 @@ describe('chain-data-router', () => {
     await jest.advanceTimersByTimeAsync(1999);
     expect(global.fetch).toHaveBeenCalledTimes(3);
     await jest.advanceTimersByTimeAsync(1);
+    // Verification has stopped, but the same three requests stay alive under
+    // Direct's five-second compatibility budget.
+    expect(global.fetch).toHaveBeenCalledTimes(3);
+    await jest.advanceTimersByTimeAsync(2999);
+    expect(global.fetch).toHaveBeenCalledTimes(3);
+    await jest.advanceTimersByTimeAsync(1);
     await expect(first).resolves.toMatchObject({ result: '0xrpc', source: 'direct' });
     expect(global.fetch).toHaveBeenCalledTimes(4);
 
@@ -703,7 +710,96 @@ describe('chain-data-router', () => {
     expect(global.fetch).toHaveBeenCalledTimes(5);
   });
 
-  test('stops an impossible quorum early and remembers its execution ceiling', async () => {
+  test('does not extend quorum past two seconds when another source precedes Direct', async () => {
+    jest.useFakeTimers({ now: 1_000_000 });
+    mockRegistry.getNetwork.mockReturnValue({
+      access: { readOrder: ['quorum', 'colibri', 'direct'] },
+      quorum: { k: 3, m: 2, timeoutMs: 5000 },
+    });
+    mockRegistry.getEndpoints.mockReturnValue([
+      'https://a.example',
+      'https://b.example',
+      'https://c.example',
+    ]);
+    global.fetch = jest.fn().mockImplementation((_url, options) =>
+      new Promise((_resolve, reject) => {
+        options.signal.addEventListener('abort', () => {
+          const error = new Error('aborted');
+          error.name = 'AbortError';
+          reject(error);
+        });
+      }));
+    mockRequestViaColibri.mockResolvedValue('0xverified');
+
+    const response = request(1, 'eth_call', [{ to: '0xabc' }, 'latest']);
+    await jest.advanceTimersByTimeAsync(2000);
+
+    await expect(response).resolves.toMatchObject({
+      result: '0xverified',
+      source: 'colibri',
+    });
+    expect(mockRequestViaColibri).toHaveBeenCalledTimes(1);
+  });
+
+  test('reuses a successful quorum member as Direct when verification becomes impossible', async () => {
+    mockRegistry.getNetwork.mockReturnValue({
+      access: { readOrder: ['quorum', 'direct'] },
+      quorum: { k: 3, m: 2, timeoutMs: 5000 },
+    });
+    mockRegistry.getEndpoints.mockReturnValue([
+      'https://a.example',
+      'https://b.example',
+      'https://c.example',
+    ]);
+    const directCandidate = deferred();
+    global.fetch = jest.fn().mockImplementation((url) => {
+      if (url === 'https://a.example') return directCandidate.promise;
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({ error: { code: -32000, message: 'Out of gas' } }),
+      });
+    });
+    const params = [{ to: '0xabc', data: '0x1234' }, 'latest'];
+    const options = {
+      includeTrust: true,
+      routingContext: { origin: 'https://swap.example' },
+    };
+
+    const first = request(1, 'eth_call', params, options);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(global.fetch).toHaveBeenCalledTimes(3);
+    directCandidate.resolve({ ok: true, json: async () => ({ result: '0x42' }) });
+
+    await expect(first).resolves.toEqual({
+      result: '0x42',
+      source: 'direct',
+      verified: false,
+      trust: {
+        level: 'unverified',
+        method: 'direct',
+        block: null,
+        agreed: ['a.example'],
+        dissented: [],
+        queried: ['a.example', 'b.example', 'c.example'],
+        quorum: { k: 3, m: 2, achieved: false },
+      },
+    });
+    // No fourth request was issued: Direct consumed the response already made
+    // by the quorum tier.
+    expect(global.fetch).toHaveBeenCalledTimes(3);
+
+    global.fetch.mockResolvedValue({ ok: true, json: async () => ({ result: '0xnext' }) });
+    await expect(request(1, 'eth_call', params, options)).resolves.toMatchObject({
+      result: '0xnext',
+      source: 'direct',
+    });
+    // The two deterministic quorum failures demoted quorum for this route, so
+    // the next call performs only one fresh Direct request.
+    expect(global.fetch).toHaveBeenCalledTimes(4);
+  });
+
+  test('does not use a partial quorum response when Direct is absent from the policy', async () => {
     mockRegistry.getNetwork.mockReturnValue({
       access: { readOrder: ['quorum'] },
       quorum: { k: 3, m: 2, timeoutMs: 5000 },
@@ -713,28 +809,20 @@ describe('chain-data-router', () => {
       'https://b.example',
       'https://c.example',
     ]);
-    global.fetch = jest.fn().mockImplementation((_url, options) => {
-      if (global.fetch.mock.calls.length <= 2) {
+    global.fetch = jest.fn().mockImplementation((url) => {
+      if (url === 'https://a.example') {
         return Promise.resolve({
           ok: true,
-          json: async () => ({ error: { code: -32000, message: 'Out of gas' } }),
+          json: async () => ({ result: '0xsingle' }),
         });
       }
-      return new Promise((_resolve, reject) => {
-        options.signal.addEventListener('abort', () => {
-          const error = new Error('aborted');
-          error.name = 'AbortError';
-          reject(error);
-        });
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({ error: { code: -32000, message: 'Out of gas' } }),
       });
     });
-    const params = [{ to: '0xabc', data: '0x1234' }, 'latest'];
-    const options = { routingContext: { origin: 'https://swap.example' } };
 
-    await expect(request(1, 'eth_call', params, options)).rejects.toThrow(
-      'All chain sources failed'
-    );
-    await expect(request(1, 'eth_call', params, options)).rejects.toThrow(
+    await expect(request(1, 'eth_call', [{ to: '0xabc' }, 'latest'])).rejects.toThrow(
       'All chain sources failed'
     );
     expect(global.fetch).toHaveBeenCalledTimes(3);
