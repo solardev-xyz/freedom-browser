@@ -479,8 +479,8 @@ contextBridge.exposeInMainWorld('wallet', {
   // RPC proxy (renderer CSP blocks direct fetch to external endpoints)
   proxyRpc: (rpcUrl, method, params) =>
     ipcRenderer.invoke('wallet:proxy-rpc', { rpcUrl, method, params }),
-  requestChain: (chainId, method, params) =>
-    ipcRenderer.invoke('wallet:chain-request', { chainId, method, params }),
+  requestChain: (chainId, method, params, routingContext) =>
+    ipcRenderer.invoke('wallet:chain-request', { chainId, method, params, routingContext }),
 
   // Safe multisig accounts
   createSafe: (name, ownerIndexes, threshold) =>

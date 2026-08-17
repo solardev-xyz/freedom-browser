@@ -315,7 +315,8 @@ describe('dapp-provider onchain application binding', () => {
     expect(walletMocks.requestChain).toHaveBeenCalledWith(
       1,
       'eth_call',
-      [{ to: '0x1', data: '0x' }, 'latest']
+      [{ to: '0x1', data: '0x' }, 'latest'],
+      { origin: APP_URL.toLowerCase() }
     );
     expect(webview.send).toHaveBeenCalledWith('dapp:provider-response', {
       id: 12,

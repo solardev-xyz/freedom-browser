@@ -220,7 +220,7 @@ async function handleProviderRequest(webview, request) {
       }
     } else if (READ_ONLY_METHODS.includes(method)) {
       // Proxy read-only calls to RPC
-      result = await proxyRpcCall(webview, method, params);
+      result = await proxyRpcCall(webview, method, params, permissionKey);
     } else if (method === 'wallet_switchEthereumChain') {
       // Handle chain switching
       result = await handleSwitchChain(params, permissionKey, webview);
@@ -447,12 +447,12 @@ function webviewContentsId(webview) {
  * Uses the chain's capability-aware source order (Myotis, Colibri,
  * RPC quorum, then direct RPC fallback).
  */
-async function proxyRpcCall(webview, method, params) {
+async function proxyRpcCall(webview, method, params, origin) {
   // Get current chain ID
   const chainIdHex = await getCurrentChainId(webview);
   const chainId = parseInt(chainIdHex, 16);
 
-  const data = await window.wallet.requestChain(chainId, method, params);
+  const data = await window.wallet.requestChain(chainId, method, params, { origin });
   if (!data?.success) {
     let message = data?.error?.message || `All chain sources failed for chain ${chainId}`;
     try {

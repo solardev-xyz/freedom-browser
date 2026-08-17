@@ -453,20 +453,25 @@ function registerWalletIpc() {
 
   // Capability-aware chain request. Myotis and Colibri are attempted before
   // quorum/direct RPC according to the selected chain's access policy.
-  ipcMain.handle('wallet:chain-request', async (_event, { chainId, method, params }) => {
-    try {
-      if (!chainData.isReadMethod(method)) {
-        return { success: false, error: { code: 4200, message: 'Method not supported' } };
+  ipcMain.handle(
+    'wallet:chain-request',
+    async (_event, { chainId, method, params, routingContext }) => {
+      try {
+        if (!chainData.isReadMethod(method)) {
+          return { success: false, error: { code: 4200, message: 'Method not supported' } };
+        }
+        const response = await chainData.request(chainId, method, params || [], {
+          routingContext,
+        });
+        return { success: true, ...response };
+      } catch (err) {
+        return {
+          success: false,
+          error: { code: err.code || -32603, message: err.message, data: err.data },
+        };
       }
-      const response = await chainData.request(chainId, method, params || []);
-      return { success: true, ...response };
-    } catch (err) {
-      return {
-        success: false,
-        error: { code: err.code || -32603, message: err.message, data: err.data },
-      };
     }
-  });
+  );
 
   // Legacy endpoint-specific proxy retained for existing internal callers.
   ipcMain.handle('wallet:proxy-rpc', async (_event, { rpcUrl, method, params }) => {

@@ -16,6 +16,16 @@ const mockMyotis = {
 };
 const mockRequestViaColibri = jest.fn();
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 jest.mock('./network-registry', () => mockRegistry);
 jest.mock('../myotis/myotis-manager', () => mockMyotis);
 jest.mock('../ens/colibri-resolver', () => ({
@@ -23,12 +33,18 @@ jest.mock('../ens/colibri-resolver', () => ({
 }));
 jest.mock('../logger', () => ({ verbose: jest.fn() }));
 
-const { request, getFeeQuote, broadcastRawTransaction } = require('./chain-data-router');
+const {
+  request,
+  getFeeQuote,
+  broadcastRawTransaction,
+  clearAdaptiveRoutingForTest,
+} = require('./chain-data-router');
 const originalFetch = global.fetch;
 
 describe('chain-data-router', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    clearAdaptiveRoutingForTest();
     mockRegistry.getNetwork.mockReturnValue({
       access: {
         readOrder: ['myotis', 'colibri', 'direct'],
@@ -44,6 +60,7 @@ describe('chain-data-router', () => {
   });
 
   afterEach(() => {
+    jest.useRealTimers();
     global.fetch = originalFetch;
   });
 
@@ -475,5 +492,251 @@ describe('chain-data-router', () => {
       source: 'direct',
     });
     expect(mockMyotis.isReady).not.toHaveBeenCalled();
+  });
+
+  test('falls through after two seconds and temporarily bypasses a timed-out Colibri route', async () => {
+    jest.useFakeTimers({ now: 1_000_000 });
+    mockRegistry.getNetwork.mockReturnValue({
+      access: { readOrder: ['colibri', 'direct'] },
+      quorum: { timeoutMs: 5000 },
+    });
+    mockRequestViaColibri.mockReturnValue(new Promise(() => {}));
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ result: '0xrpc' }),
+    });
+    const params = [{ to: '0xabc', data: '0x1234' }, 'latest'];
+    const options = { routingContext: { origin: 'https://swap.example' } };
+
+    const first = request(1, 'eth_call', params, options);
+    await jest.advanceTimersByTimeAsync(2000);
+    await expect(first).resolves.toMatchObject({ result: '0xrpc', source: 'direct' });
+
+    await expect(request(1, 'eth_call', params, options)).resolves.toMatchObject({
+      result: '0xrpc',
+      source: 'direct',
+    });
+    expect(mockRequestViaColibri).toHaveBeenCalledTimes(1);
+  });
+
+  test('escalates Colibri timeout cooldowns from 15 to 30 to 60 seconds and resets on success', async () => {
+    jest.useFakeTimers({ now: 1_000_000 });
+    mockRegistry.getNetwork.mockReturnValue({
+      access: { readOrder: ['colibri', 'direct'] },
+      quorum: { timeoutMs: 5000 },
+    });
+    const hanging = [deferred(), deferred(), deferred()];
+    mockRequestViaColibri.mockImplementation(() => {
+      const call = mockRequestViaColibri.mock.calls.length;
+      return call <= hanging.length ? hanging[call - 1].promise : Promise.resolve('0xverified');
+    });
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ result: '0xrpc' }),
+    });
+    const params = [{ to: '0xabc', data: '0x1234' }, 'latest'];
+    const options = { routingContext: { origin: 'https://swap.example' } };
+
+    const timeOutAttempt = async (attempt) => {
+      const response = request(1, 'eth_call', params, options);
+      await jest.advanceTimersByTimeAsync(2000);
+      await expect(response).resolves.toMatchObject({ source: 'direct' });
+      hanging[attempt].resolve('0xlate');
+      await Promise.resolve();
+    };
+
+    await timeOutAttempt(0);
+    await expect(request(1, 'eth_call', params, options)).resolves.toMatchObject({ source: 'direct' });
+    expect(mockRequestViaColibri).toHaveBeenCalledTimes(1);
+
+    await jest.advanceTimersByTimeAsync(15_000);
+    await timeOutAttempt(1);
+    await jest.advanceTimersByTimeAsync(29_999);
+    await expect(request(1, 'eth_call', params, options)).resolves.toMatchObject({ source: 'direct' });
+    expect(mockRequestViaColibri).toHaveBeenCalledTimes(2);
+
+    await jest.advanceTimersByTimeAsync(1);
+    await timeOutAttempt(2);
+    await jest.advanceTimersByTimeAsync(59_999);
+    await expect(request(1, 'eth_call', params, options)).resolves.toMatchObject({ source: 'direct' });
+    expect(mockRequestViaColibri).toHaveBeenCalledTimes(3);
+
+    await jest.advanceTimersByTimeAsync(1);
+    await expect(request(1, 'eth_call', params, options)).resolves.toMatchObject({
+      result: '0xverified',
+      source: 'colibri',
+    });
+    await expect(request(1, 'eth_call', params, options)).resolves.toMatchObject({
+      source: 'colibri',
+    });
+    expect(mockRequestViaColibri).toHaveBeenCalledTimes(5);
+  });
+
+  test('demotes deterministic Colibri execution limits only for the matching app and target', async () => {
+    mockRegistry.getNetwork.mockReturnValue({
+      access: { readOrder: ['colibri', 'direct'] },
+      quorum: { timeoutMs: 5000 },
+    });
+    mockRequestViaColibri.mockRejectedValue(new Error('prover execution failed: Out of gas'));
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ result: '0xrpc' }),
+    });
+    const firstTarget = [{
+      to: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      data: '0x1234',
+    }, 'latest'];
+    const secondTarget = [{
+      to: '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      data: '0x1234',
+    }, 'latest'];
+    const firstApp = { routingContext: { origin: 'https://swap.example' } };
+    const secondApp = { routingContext: { origin: 'https://other.example' } };
+
+    await expect(request(1, 'eth_call', firstTarget, firstApp)).resolves.toMatchObject({
+      source: 'direct',
+    });
+    await expect(request(1, 'eth_call', firstTarget, firstApp)).resolves.toMatchObject({
+      source: 'direct',
+    });
+    await expect(request(1, 'eth_call', secondTarget, firstApp)).resolves.toMatchObject({
+      source: 'direct',
+    });
+    await expect(request(1, 'eth_call', firstTarget, secondApp)).resolves.toMatchObject({
+      source: 'direct',
+    });
+    expect(mockRequestViaColibri).toHaveBeenCalledTimes(3);
+  });
+
+  test('bounds non-cancellable Colibri work for one route', async () => {
+    jest.useFakeTimers({ now: 1_000_000 });
+    mockRegistry.getNetwork.mockReturnValue({
+      access: { readOrder: ['colibri', 'direct'] },
+      quorum: { timeoutMs: 5000 },
+    });
+    mockRequestViaColibri.mockReturnValue(new Promise(() => {}));
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ result: '0xrpc' }),
+    });
+    const params = [{ to: '0xabc', data: '0x1234' }, 'latest'];
+
+    const first = request(1, 'eth_call', params);
+    const second = request(1, 'eth_call', params);
+    await expect(request(1, 'eth_call', params)).resolves.toMatchObject({ source: 'direct' });
+    expect(mockRequestViaColibri).toHaveBeenCalledTimes(2);
+
+    await jest.advanceTimersByTimeAsync(2000);
+    await expect(first).resolves.toMatchObject({ source: 'direct' });
+    await expect(second).resolves.toMatchObject({ source: 'direct' });
+  });
+
+  test('settles quorum as soon as enough matching endpoints respond', async () => {
+    mockRegistry.getNetwork.mockReturnValue({
+      access: { readOrder: ['quorum'] },
+      quorum: { k: 3, m: 2, timeoutMs: 5000 },
+    });
+    mockRegistry.getEndpoints.mockReturnValue([
+      'https://a.example',
+      'https://b.example',
+      'https://c.example',
+    ]);
+    const responses = [deferred(), deferred()];
+    let thirdSignal;
+    global.fetch = jest.fn().mockImplementation((url, options) => {
+      if (url === 'https://a.example') return responses[0].promise;
+      if (url === 'https://b.example') return responses[1].promise;
+      thirdSignal = options.signal;
+      return new Promise((_resolve, reject) => {
+        options.signal.addEventListener('abort', () => {
+          const error = new Error('aborted');
+          error.name = 'AbortError';
+          reject(error);
+        });
+      });
+    });
+
+    const result = request(1, 'eth_call', [{ to: '0xabc' }, 'latest']);
+    responses[0].resolve({ ok: true, json: async () => ({ result: '0x42' }) });
+    responses[1].resolve({ ok: true, json: async () => ({ result: '0x42' }) });
+
+    await expect(result).resolves.toEqual({ result: '0x42', source: 'quorum', verified: true });
+    expect(thirdSignal.aborted).toBe(true);
+  });
+
+  test('falls through after a two-second quorum deadline and cools down that app route', async () => {
+    jest.useFakeTimers({ now: 1_000_000 });
+    mockRegistry.getNetwork.mockReturnValue({
+      access: { readOrder: ['quorum', 'direct'] },
+      quorum: { k: 3, m: 2, timeoutMs: 5000 },
+    });
+    mockRegistry.getEndpoints.mockReturnValue([
+      'https://a.example',
+      'https://b.example',
+      'https://c.example',
+    ]);
+    global.fetch = jest.fn().mockImplementation((_url, options) => {
+      if (global.fetch.mock.calls.length > 3) {
+        return Promise.resolve({ ok: true, json: async () => ({ result: '0xrpc' }) });
+      }
+      return new Promise((_resolve, reject) => {
+        options.signal.addEventListener('abort', () => {
+          const error = new Error('aborted');
+          error.name = 'AbortError';
+          reject(error);
+        });
+      });
+    });
+    const params = [{ to: '0xabc', data: '0x1234' }, 'latest'];
+    const options = { routingContext: { origin: 'https://swap.example' } };
+
+    const first = request(1, 'eth_call', params, options);
+    await jest.advanceTimersByTimeAsync(1999);
+    expect(global.fetch).toHaveBeenCalledTimes(3);
+    await jest.advanceTimersByTimeAsync(1);
+    await expect(first).resolves.toMatchObject({ result: '0xrpc', source: 'direct' });
+    expect(global.fetch).toHaveBeenCalledTimes(4);
+
+    await expect(request(1, 'eth_call', params, options)).resolves.toMatchObject({
+      source: 'direct',
+    });
+    expect(global.fetch).toHaveBeenCalledTimes(5);
+  });
+
+  test('stops an impossible quorum early and remembers its execution ceiling', async () => {
+    mockRegistry.getNetwork.mockReturnValue({
+      access: { readOrder: ['quorum'] },
+      quorum: { k: 3, m: 2, timeoutMs: 5000 },
+    });
+    mockRegistry.getEndpoints.mockReturnValue([
+      'https://a.example',
+      'https://b.example',
+      'https://c.example',
+    ]);
+    global.fetch = jest.fn().mockImplementation((_url, options) => {
+      if (global.fetch.mock.calls.length <= 2) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ error: { code: -32000, message: 'Out of gas' } }),
+        });
+      }
+      return new Promise((_resolve, reject) => {
+        options.signal.addEventListener('abort', () => {
+          const error = new Error('aborted');
+          error.name = 'AbortError';
+          reject(error);
+        });
+      });
+    });
+    const params = [{ to: '0xabc', data: '0x1234' }, 'latest'];
+    const options = { routingContext: { origin: 'https://swap.example' } };
+
+    await expect(request(1, 'eth_call', params, options)).rejects.toThrow(
+      'All chain sources failed'
+    );
+    await expect(request(1, 'eth_call', params, options)).rejects.toThrow(
+      'All chain sources failed'
+    );
+    expect(global.fetch).toHaveBeenCalledTimes(3);
   });
 });

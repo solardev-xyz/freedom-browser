@@ -39,12 +39,163 @@ READ_METHODS.add('web3_sha3');
 const DEFAULT_READ_ORDER = ['myotis', 'colibri', 'quorum', 'direct'];
 const DEFAULT_NON_MYOTIS_READ_ORDER = ['colibri', 'quorum', 'direct'];
 const DEFAULT_BROADCAST_ORDER = ['myotis', 'direct'];
+const INTERACTIVE_SOURCE_DEADLINE_MS = 2000;
+const SOURCE_TIMEOUT_COOLDOWNS_MS = [15_000, 30_000, 60_000];
+const MAX_COLIBRI_IN_FLIGHT = 8;
+const MAX_COLIBRI_IN_FLIGHT_PER_ROUTE = 2;
+const MAX_ADAPTIVE_SOURCE_ROUTES = 1024;
+
+// These are deliberately process-local. A source that struggles with one
+// app's call shape should not reorder the user's chain policy, affect another
+// app, or stay demoted after Freedom restarts.
+const adaptiveSourceState = new Map();
+const colibriInFlight = new Set();
+const colibriInFlightByRoute = new Map();
 
 class SourceUnavailableError extends Error {
-  constructor(message) {
+  constructor(message, failureKind = null) {
     super(message);
     this.name = 'SourceUnavailableError';
+    this.failureKind = failureKind;
   }
+}
+
+class SourceDeadlineError extends SourceUnavailableError {
+  constructor(source, timeoutMs) {
+    super(`${source} exceeded its ${timeoutMs}ms interactive deadline`, 'timeout');
+    this.name = 'SourceDeadlineError';
+  }
+}
+
+function safeErrorMessage(error) {
+  return (error?.message || String(error))
+    .replace(/0x[0-9a-fA-F]{128,}/g, (hex) =>
+      `${hex.slice(0, 10)}…(${Math.floor((hex.length - 2) / 2)} bytes)`)
+    .replace(/\s+/g, ' ')
+    .slice(0, 500);
+}
+
+function normalizeRoutingOrigin(routingContext) {
+  const origin = routingContext?.origin;
+  if (typeof origin !== 'string') return null;
+  // The renderer supplies its canonical permission key. Do not lowercase it
+  // again here: content-addressed identifiers such as CIDv0 are case-sensitive.
+  const normalized = origin.trim();
+  const hasControlCharacter = [...normalized].some((character) => {
+    const code = character.charCodeAt(0);
+    return code <= 31 || code === 127;
+  });
+  if (!normalized || normalized.length > 2048 || hasControlCharacter) {
+    return null;
+  }
+  return normalized;
+}
+
+function requestTarget(method, params) {
+  let target;
+  if (CALL_OBJECT_METHODS.has(method)) target = params?.[0]?.to;
+  else if (['eth_getBalance', 'eth_getCode', 'eth_getStorageAt',
+    'eth_getTransactionCount'].includes(method)) target = params?.[0];
+  else if (method === 'eth_getLogs') target = params?.[0]?.address;
+  if (Array.isArray(target)) {
+    const addresses = target
+      .filter((address) => typeof address === 'string' && /^0x[0-9a-f]{40}$/i.test(address))
+      .map((address) => address.toLowerCase())
+      .sort();
+    return addresses.length ? addresses.join(',') : '*';
+  }
+  return typeof target === 'string' && /^0x[0-9a-f]{40}$/i.test(target.trim())
+    ? target.trim().toLowerCase()
+    : '*';
+}
+
+function adaptiveRouteKey(source, chainId, method, params, routingContext) {
+  const origin = normalizeRoutingOrigin(routingContext);
+  if (!origin) return null;
+  return JSON.stringify([source, Number(chainId), origin, method, requestTarget(method, params)]);
+}
+
+function isCapacityFailure(error) {
+  if (error?.failureKind === 'capacity') return true;
+  const message = safeErrorMessage(error);
+  return /out of gas|execution (?:gas|resource) limit|exceeds? (?:the )?(?:gas|execution) limit/i
+    .test(message);
+}
+
+function failureKind(error) {
+  if (isCapacityFailure(error)) return 'capacity';
+  if (error?.failureKind === 'timeout' || error?.name === 'AbortError') return 'timeout';
+  return null;
+}
+
+function adaptiveSourceUnavailable(routeKey, now = Date.now()) {
+  if (!routeKey) return false;
+  const state = adaptiveSourceState.get(routeKey);
+  if (!state) return false;
+  return state.sessionBlocked === true || state.openUntil > now;
+}
+
+function recordAdaptiveSuccess(routeKey) {
+  if (!routeKey) return;
+  // A deterministic execution ceiling is a capability boundary for this app
+  // session, not a health fluctuation. A lighter concurrent call succeeding
+  // against the same contract must not erase it.
+  if (adaptiveSourceState.get(routeKey)?.sessionBlocked) return;
+  adaptiveSourceState.delete(routeKey);
+}
+
+function setAdaptiveSourceState(routeKey, state) {
+  if (!adaptiveSourceState.has(routeKey) &&
+      adaptiveSourceState.size >= MAX_ADAPTIVE_SOURCE_ROUTES) {
+    adaptiveSourceState.delete(adaptiveSourceState.keys().next().value);
+  }
+  adaptiveSourceState.set(routeKey, state);
+}
+
+function recordAdaptiveFailure(routeKey, error, now = Date.now()) {
+  if (!routeKey) return;
+  const kind = failureKind(error);
+  if (!kind) return;
+  const previous = adaptiveSourceState.get(routeKey) || {
+    timeoutCount: 0,
+    openUntil: 0,
+    sessionBlocked: false,
+  };
+  if (kind === 'capacity') {
+    setAdaptiveSourceState(routeKey, { ...previous, sessionBlocked: true });
+    return;
+  }
+  const timeoutCount = previous.timeoutCount + 1;
+  const cooldownMs = SOURCE_TIMEOUT_COOLDOWNS_MS[
+    Math.min(timeoutCount - 1, SOURCE_TIMEOUT_COOLDOWNS_MS.length - 1)
+  ];
+  setAdaptiveSourceState(routeKey, {
+    ...previous,
+    timeoutCount,
+    openUntil: now + cooldownMs,
+  });
+}
+
+function withSourceDeadline(promise, source, timeoutMs = INTERACTIVE_SOURCE_DEADLINE_MS) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new SourceDeadlineError(source, timeoutMs)), timeoutMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      }
+    );
+  });
+}
+
+function clearAdaptiveRoutingForTest() {
+  adaptiveSourceState.clear();
+  colibriInFlight.clear();
+  colibriInFlightByRoute.clear();
 }
 
 function isReadMethod(method) {
@@ -291,20 +442,47 @@ async function requestMyotis(chainId, method, params) {
   throw new SourceUnavailableError(`Myotis does not support ${method}`);
 }
 
-async function requestColibri(chainId, method, params) {
+async function requestColibri(chainId, method, params, routeKey = null) {
   if (COLIBRI_UNSUPPORTED.has(method)) {
     throw new SourceUnavailableError(`Colibri does not support ${method}`);
   }
   if (!registry.getEndpoints(chainId, 'prover').length) {
     throw new SourceUnavailableError('No Colibri prover configured');
   }
+  const inFlightKey = routeKey || JSON.stringify([
+    'colibri',
+    Number(chainId),
+    method,
+    requestTarget(method, params),
+  ]);
+  const routeInFlight = colibriInFlightByRoute.get(inFlightKey) || 0;
+  if (colibriInFlight.size >= MAX_COLIBRI_IN_FLIGHT ||
+      routeInFlight >= MAX_COLIBRI_IN_FLIGHT_PER_ROUTE) {
+    throw new SourceUnavailableError('Colibri is already processing this workload');
+  }
   // Keep the WASM-backed verifier lazy; most startup paths do not need it.
   const { requestViaColibri } = require('../ens/colibri-resolver');
-  return requestViaColibri(chainId, method, params);
+  const requestPromise = Promise.resolve().then(() => requestViaColibri(chainId, method, params));
+  colibriInFlight.add(requestPromise);
+  colibriInFlightByRoute.set(inFlightKey, routeInFlight + 1);
+  const release = () => {
+    colibriInFlight.delete(requestPromise);
+    const remaining = (colibriInFlightByRoute.get(inFlightKey) || 1) - 1;
+    if (remaining > 0) colibriInFlightByRoute.set(inFlightKey, remaining);
+    else colibriInFlightByRoute.delete(inFlightKey);
+  };
+  // A timed-out WASM/prover operation cannot currently be cancelled. Keep it
+  // tracked until it really settles so repeated page calls cannot accumulate
+  // unbounded background work.
+  requestPromise.then(release, release);
+  return withSourceDeadline(requestPromise, 'Colibri');
 }
 
-async function requestRpcUrl(url, method, params, timeoutMs) {
+async function requestRpcUrl(url, method, params, timeoutMs, { signal } = {}) {
   const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (signal?.aborted) controller.abort();
+  else signal?.addEventListener?.('abort', abort, { once: true });
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(url, {
@@ -324,6 +502,7 @@ async function requestRpcUrl(url, method, params, timeoutMs) {
     return data.result;
   } finally {
     clearTimeout(timer);
+    signal?.removeEventListener?.('abort', abort);
   }
 }
 
@@ -396,47 +575,82 @@ async function requestQuorum(chainId, method, params, { includeTrust = false } =
   const quorum = network.quorum || {};
   const k = Math.max(1, Number(quorum.k) || 3);
   const m = Math.max(1, Math.min(k, Number(quorum.m) || 2));
-  const timeoutMs = Math.max(500, Number(quorum.timeoutMs) || 5000);
+  const configuredTimeoutMs = Math.max(500, Number(quorum.timeoutMs) || 5000);
+  const timeoutMs = Math.min(configuredTimeoutMs, INTERACTIVE_SOURCE_DEADLINE_MS);
   const urls = registry.getEndpoints(chainId, 'rpc').slice(0, k);
   if (urls.length < m) throw new SourceUnavailableError(`RPC quorum needs ${m} endpoints`);
 
-  const settled = await Promise.allSettled(
-    urls.map((url) => requestRpcUrl(url, method, params, timeoutMs))
-  );
-  const groups = new Map();
-  for (let index = 0; index < settled.length; index += 1) {
-    const entry = settled[index];
-    if (entry.status !== 'fulfilled') continue;
-    const key = stableValue(entry.value);
-    const group = groups.get(key) || { count: 0, value: entry.value, urls: [] };
-    group.count += 1;
-    group.urls.push(urls[index]);
-    groups.set(key, group);
-  }
-  for (const group of groups.values()) {
-    if (group.count < m) continue;
-    if (!includeTrust) return group.value;
-    const agreedUrls = new Set(group.urls);
-    const fulfilledUrls = settled
-      .map((entry, index) => entry.status === 'fulfilled' ? urls[index] : null)
-      .filter(Boolean);
-    return {
-      result: group.value,
-      trust: {
-        level: 'verified',
-        method: 'quorum',
-        block: null,
-        agreed: group.urls.map(endpointHost).filter(Boolean),
-        dissented: fulfilledUrls
-          .filter((url) => !agreedUrls.has(url))
-          .map(endpointHost)
-          .filter(Boolean),
-        queried: urls.map(endpointHost).filter(Boolean),
-        quorum: { k: urls.length, m, achieved: true },
-      },
+  return new Promise((resolve, reject) => {
+    const controllers = urls.map(() => new AbortController());
+    const groups = new Map();
+    const fulfilledUrls = [];
+    const errors = [];
+    let pending = urls.length;
+    let finished = false;
+
+    const abortPending = () => controllers.forEach((controller) => controller.abort());
+    const succeed = (group) => {
+      if (finished) return;
+      finished = true;
+      abortPending();
+      if (!includeTrust) {
+        resolve(group.value);
+        return;
+      }
+      const agreedUrls = new Set(group.urls);
+      resolve({
+        result: group.value,
+        trust: {
+          level: 'verified',
+          method: 'quorum',
+          block: null,
+          agreed: group.urls.map(endpointHost).filter(Boolean),
+          dissented: fulfilledUrls
+            .filter((url) => !agreedUrls.has(url))
+            .map(endpointHost)
+            .filter(Boolean),
+          queried: urls.map(endpointHost).filter(Boolean),
+          quorum: { k: urls.length, m, achieved: true },
+        },
+      });
     };
-  }
-  throw new SourceUnavailableError(`RPC quorum did not reach ${m} matching responses`);
+    const rejectIfImpossible = () => {
+      if (finished) return;
+      const largestGroup = Math.max(0, ...[...groups.values()].map((group) => group.count));
+      if (largestGroup + pending >= m) return;
+      finished = true;
+      abortPending();
+      const capacityFailures = errors.filter(isCapacityFailure).length;
+      const timedOut = errors.some((error) => failureKind(error) === 'timeout');
+      reject(new SourceUnavailableError(
+        `RPC quorum did not reach ${m} matching responses`,
+        capacityFailures >= m ? 'capacity' : timedOut ? 'timeout' : null
+      ));
+    };
+
+    urls.forEach((url, index) => {
+      requestRpcUrl(url, method, params, timeoutMs, { signal: controllers[index].signal }).then(
+        (value) => {
+          if (finished) return;
+          pending -= 1;
+          fulfilledUrls.push(url);
+          const key = stableValue(value);
+          const group = groups.get(key) || { count: 0, value, urls: [] };
+          group.count += 1;
+          group.urls.push(url);
+          groups.set(key, group);
+          if (group.count >= m) succeed(group);
+          else rejectIfImpossible();
+        },
+        (error) => {
+          if (finished) return;
+          pending -= 1;
+          errors.push(error);
+          rejectIfImpossible();
+        }
+      );
+    });
+  });
 }
 
 async function requestDirect(chainId, method, params, { includeTrust = false } = {}) {
@@ -496,7 +710,13 @@ async function requestDirectFeeQuote(chainId) {
   throw lastError || new SourceUnavailableError('All RPC endpoints failed');
 }
 
-async function requestSource(source, chainId, method, params, { includeTrust = false } = {}) {
+async function requestSource(
+  source,
+  chainId,
+  method,
+  params,
+  { includeTrust = false, routeKey = null } = {}
+) {
   if (source === 'myotis') {
     const beforeStatus = includeTrust ? myotis.getStatus?.(chainId) || {} : null;
     const result = await requestMyotis(chainId, method, params);
@@ -505,7 +725,7 @@ async function requestSource(source, chainId, method, params, { includeTrust = f
     return { result, trust: myotisTrust(beforeStatus, afterStatus) };
   }
   if (source === 'colibri') {
-    const result = await requestColibri(chainId, method, params);
+    const result = await requestColibri(chainId, method, params, routeKey);
     return includeTrust ? { result, trust: colibriTrust(chainId) } : result;
   }
   if (source === 'quorum') return requestQuorum(chainId, method, params, { includeTrust });
@@ -513,7 +733,12 @@ async function requestSource(source, chainId, method, params, { includeTrust = f
   throw new SourceUnavailableError(`Unknown chain source: ${source}`);
 }
 
-async function request(chainId, method, rawParams = [], { includeTrust = false } = {}) {
+async function request(
+  chainId,
+  method,
+  rawParams = [],
+  { includeTrust = false, routingContext = null } = {}
+) {
   if (!isReadMethod(method)) throw new Error(`Unsupported read method: ${method}`);
   const network = registry.getNetwork(chainId);
   if (!network) throw new Error(`Unsupported chain ID: ${chainId}`);
@@ -525,10 +750,19 @@ async function request(chainId, method, rawParams = [], { includeTrust = false }
   let lastRpcError = null;
   for (const source of order) {
     if (DIRECT_ONLY_METHODS.has(method) && source !== 'direct') continue;
+    const routeKey = source === 'colibri' || source === 'quorum'
+      ? adaptiveRouteKey(source, chainId, method, params, routingContext)
+      : null;
+    if (adaptiveSourceUnavailable(routeKey)) {
+      failures.push(`${source}: temporarily bypassed for this app workload`);
+      continue;
+    }
     try {
       const sourceResult = await requestSource(source, Number(chainId), method, params, {
         includeTrust,
+        routeKey,
       });
+      recordAdaptiveSuccess(routeKey);
       const result = includeTrust ? sourceResult.result : sourceResult;
       return {
         result,
@@ -537,9 +771,11 @@ async function request(chainId, method, rawParams = [], { includeTrust = false }
         ...(includeTrust && sourceResult.trust ? { trust: sourceResult.trust } : {}),
       };
     } catch (err) {
-      failures.push(`${source}: ${err.message}`);
+      recordAdaptiveFailure(routeKey, err);
+      const message = safeErrorMessage(err);
+      failures.push(`${source}: ${message}`);
       if (!(err instanceof SourceUnavailableError)) lastRpcError = err;
-      log.verbose(`[chain-data] ${chainId} ${method} via ${source} failed: ${err.message}`);
+      log.verbose(`[chain-data] ${chainId} ${method} via ${source} failed: ${message}`);
     }
   }
   if (lastRpcError) throw lastRpcError;
@@ -634,4 +870,5 @@ module.exports = {
   broadcastRawTransaction,
   requestRpcUrl,
   SourceUnavailableError,
+  clearAdaptiveRoutingForTest,
 };
