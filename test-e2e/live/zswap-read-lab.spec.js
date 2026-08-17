@@ -22,6 +22,7 @@ const { test, expect } = require('../live-fixtures');
 const repoRoot = path.resolve(__dirname, '..', '..');
 const ZSWAP_ADDRESS = '0x00000095643cffa7d9fae407a84dfcb6406456c6';
 const ZSWAP_URL = `web3://${ZSWAP_ADDRESS}`;
+const ORIGINAL_READ_ORDER = ['myotis', 'colibri', 'quorum', 'direct'];
 const LAB_ENABLED = process.env.FREEDOM_ZSWAP_READ_LAB === '1';
 const MYOTIS_PLATFORM = { darwin: 'mac', linux: 'linux', win32: 'win' }[process.platform] ||
   process.platform;
@@ -232,6 +233,12 @@ async function captureZswapReads(window, electronApp) {
   })()`);
   expect(installed).toBe(true);
 
+  // The document itself is fetched through Direct to keep source comparison
+  // reproducible. The actual quote must succeed through Freedom's untouched
+  // default policy; this is the user-facing acceptance path for the adaptive
+  // fallback behavior exercised by this lab.
+  await setReadOrder(electronApp, ORIGINAL_READ_ORDER);
+  const quoteStartedAt = Date.now();
   const triggered = await evalInActiveWebview(window, `(() => {
     const amount = document.querySelector('#amt');
     if (!amount) return false;
@@ -255,13 +262,14 @@ async function captureZswapReads(window, electronApp) {
     })
     .toBe(true);
 
-  return evalInActiveWebview(window, `(() => ({
+  const capture = await evalInActiveWebview(window, `(() => ({
     title: document.title,
     output: document.querySelector('#outAmt')?.value || null,
     status: document.querySelector('#stat')?.textContent?.trim() || null,
     maxActive: window.__freedomZswapReadLab.maxActive,
     records: window.__freedomZswapReadLab.records
   }))()`);
+  return { ...capture, quoteElapsedMs: Date.now() - quoteStartedAt };
 }
 
 async function replayCorpus(electronApp, corpus, options) {
@@ -446,7 +454,8 @@ test.describe('zSwap read-source lab', () => {
     });
     runs.push(coldColibri);
     const coldTimedOut = coldColibri.calls.some((call) =>
-      call.error?.message?.startsWith('lab timeout'));
+      /lab timeout|interactive deadline|already processing this workload/i
+        .test(call.error?.message || ''));
     if (!coldTimedOut) {
       runs.push(await replayCorpus(electronApp, safeReads, {
         source: 'colibri',
@@ -484,6 +493,8 @@ test.describe('zSwap read-source lab', () => {
         totalProviderCalls: capture.records.length,
         replayedReadCalls: safeReads.length,
         browserMaxConcurrency: capture.maxActive,
+        quoteReadOrder: ORIGINAL_READ_ORDER,
+        quoteElapsedMs: capture.quoteElapsedMs,
         methods: safeReads.reduce((counts, call) => {
           counts[call.method] = (counts[call.method] || 0) + 1;
           return counts;

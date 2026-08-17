@@ -10,10 +10,13 @@ Run it with:
 npm run test:lab:zswap-reads
 ```
 
-The lab loads zSwap through Direct RPC so document retrieval does not bias the
-source comparison. It then records the dapp's provider calls, filters the trace
-through Freedom's read-method allowlist, and caps the corpus at 40 calls by
-default. Wallet methods and transaction broadcasts are never replayed.
+The lab loads zSwap's document through Direct RPC so retrieval does not bias
+the source comparison. Before triggering a real quote, it restores Freedom's
+original `Myotis → Colibri → quorum → Direct` policy; the quote completing
+is the user-facing adaptive-fallback acceptance check. It then filters the
+captured provider trace through Freedom's read-method allowlist and caps the
+corpus at 40 calls by default. Wallet methods and transaction broadcasts are
+never replayed.
 
 The matrix includes Freedom's production Direct fallback, each of the three
 RPC endpoints participating in quorum, RPC quorum itself, Colibri, and Myotis.
