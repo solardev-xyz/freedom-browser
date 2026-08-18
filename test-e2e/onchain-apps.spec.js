@@ -20,7 +20,19 @@ test('loads a contract-hosted app under its web3 contract-and-chain origin', asy
   harness,
 }) => {
   await harness.setContentFixture(APP_URL, {
-    body: '<!doctype html><title>Onchain fixture</title><h1 id="app">ERC-8244 fixture</h1>',
+    body: `<!doctype html>
+      <script>
+        window.__providerAtParse = {
+          request: typeof window.ethereum?.request,
+          freedom: window.ethereum?.isFreedomBrowser === true
+        };
+        window.__chainAtParse = 'pending';
+        window.ethereum.request({ method: 'eth_chainId' }).then(
+          (chainId) => { window.__chainAtParse = chainId; },
+          (error) => { window.__chainAtParse = 'error:' + (error?.message || error); }
+        );
+      </script>
+      <title>Onchain fixture</title><h1 id="app">ERC-8244 fixture</h1>`,
     headers: {
       [PROVENANCE_HEADER]: encodeOnchainProvenance({
         version: 1,
@@ -95,7 +107,9 @@ test('loads a contract-hosted app under its web3 contract-and-chain origin', asy
                 title: document.title,
                 text: document.getElementById('app')?.textContent || null,
                 protocol: location.protocol,
-                host: location.host
+                host: location.host,
+                providerAtParse: window.__providerAtParse,
+                chainAtParse: window.__chainAtParse
               })`
             );
           } catch {
@@ -109,5 +123,10 @@ test('loads a contract-hosted app under its web3 contract-and-chain origin', asy
       text: 'ERC-8244 fixture',
       protocol: 'web3:',
       host: `${ADDRESS}.eip155-1`,
+      providerAtParse: {
+        request: 'function',
+        freedom: true,
+      },
+      chainAtParse: '0x1',
     });
 });

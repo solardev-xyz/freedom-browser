@@ -133,6 +133,21 @@ describe('webview-preload-ethereum-inject', () => {
       const { dispatchedEvents } = createInstance();
       expect(dispatchedEvents.some((e) => e.type === 'ethereum#initialized')).toBe(true);
     });
+
+    test('a repeated install preserves the provider without duplicating announcements', () => {
+      const { window, dispatchedEvents } = createInstance();
+      const provider = window.ethereum;
+      const before = dispatchedEvents.filter(
+        (event) => event.type === 'eip6963:announceProvider'
+      ).length;
+
+      installProvider(window);
+
+      expect(window.ethereum).toBe(provider);
+      expect(
+        dispatchedEvents.filter((event) => event.type === 'eip6963:announceProvider')
+      ).toHaveLength(before);
+    });
   });
 
   describe('request flow', () => {

@@ -690,23 +690,37 @@ ipcRenderer.on('context-menu-action', (_event, action, data) => {
 // no injection, no bridges. Nothing announces via EIP-6963.
 if (!IS_PRIVATE_WINDOW) {
   try {
-    const script = document.createElement('script');
-    script.textContent = ETHEREUM_INJECT_SOURCE;
-
-    // Inject before any page scripts run
-    const inject = () => {
-      const head = document.head || document.documentElement;
-      head.insertBefore(script, head.firstChild);
-      script.remove();
-    };
-
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', inject, { once: true });
-    } else {
-      inject();
-    }
+    // Preloads finish before Chromium executes the document's inline scripts.
+    // Execute Freedom's trusted provider source synchronously in the page's
+    // main world so an eager dapp may capture `window.ethereum` while parsing.
+    // A DOMContentLoaded <script> was too late: apps that saved the initial
+    // undefined value could never recover even though the provider appeared
+    // later. `new Function` runs only our packaged source fetched over sync
+    // IPC; contract HTML never contributes code to this compilation step.
+    const installProvider = new Function(ETHEREUM_INJECT_SOURCE);
+    contextBridge.executeInMainWorld({ func: installProvider });
   } catch (err) {
-    console.error('[webview-preload] Failed to inject ethereum provider:', err);
+    console.error('[webview-preload] Failed early ethereum provider injection:', err);
+
+    // Defensive compatibility fallback for an Electron/runtime regression.
+    // The provider source is idempotent, so a partially completed early
+    // install will not be replaced or receive duplicate listeners.
+    try {
+      const script = document.createElement('script');
+      script.textContent = ETHEREUM_INJECT_SOURCE;
+      const inject = () => {
+        const head = document.head || document.documentElement;
+        head.insertBefore(script, head.firstChild);
+        script.remove();
+      };
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', inject, { once: true });
+      } else {
+        inject();
+      }
+    } catch (fallbackErr) {
+      console.error('[webview-preload] Failed fallback ethereum provider injection:', fallbackErr);
+    }
   }
 
   // Bridge postMessage from page to IPC

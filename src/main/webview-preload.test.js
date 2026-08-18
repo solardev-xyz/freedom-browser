@@ -32,7 +32,7 @@ const flushTimers = () => new Promise((resolve) => setTimeout(resolve, 0));
 function loadWebviewPreloadModule(options = {}) {
   jest.resetModules();
 
-  const contextBridge = createContextBridgeMock();
+  const contextBridge = options.contextBridge || createContextBridgeMock();
   const ipcRenderer = createIpcRendererMock({
     syncResponses: {
       [IPC.GET_INTERNAL_PAGES]: internalPages,
@@ -62,6 +62,7 @@ function loadWebviewPreloadModule(options = {}) {
       }
     }),
     execCommand: jest.fn(),
+    ...(options.documentOverrides || {}),
   };
   const location = options.location || {
     href: 'file:///app/pages/history.html',
@@ -878,7 +879,7 @@ describe('webview-preload private windows', () => {
   ];
 
   test('private window: no provider bridges, no page-world injection attempts', () => {
-    const { ipcRenderer, document } = loadWebviewPreloadModule({
+    const { contextBridge, ipcRenderer, document } = loadWebviewPreloadModule({
       isPrivateWindow: true,
       location: {
         href: 'https://dapp.example/',
@@ -888,6 +889,7 @@ describe('webview-preload private windows', () => {
     });
 
     expect(ipcRenderer.sendSync).toHaveBeenCalledWith(IPC.PRIVATE_IS_PRIVATE);
+    expect(contextBridge.executeInMainWorld).not.toHaveBeenCalled();
 
     // No provider IPC bridges installed.
     const onChannels = ipcRenderer.on.mock.calls.map(([channel]) => channel);
@@ -913,7 +915,7 @@ describe('webview-preload private windows', () => {
   });
 
   test('normal window: provider bridges are installed as before', () => {
-    const { ipcRenderer } = loadWebviewPreloadModule({
+    const { contextBridge, ipcRenderer, document } = loadWebviewPreloadModule({
       location: {
         href: 'https://dapp.example/',
         protocol: 'https:',
@@ -931,5 +933,45 @@ describe('webview-preload private windows', () => {
     );
     // ethereum, swarm and radicle page→host bridges.
     expect(messageListeners).toHaveLength(3);
+
+    expect(contextBridge.executeInMainWorld).toHaveBeenCalledTimes(1);
+    expect(contextBridge.executeInMainWorld).toHaveBeenCalledWith({
+      func: expect.any(Function),
+    });
+    expect(document.addEventListener.mock.calls.map(([event]) => event)).not.toContain(
+      'DOMContentLoaded'
+    );
+  });
+
+  test('normal window: falls back to DOM injection if early main-world execution fails', () => {
+    const contextBridge = createContextBridgeMock();
+    contextBridge.executeInMainWorld.mockImplementation(() => {
+      throw new Error('early injection unavailable');
+    });
+    const scripts = [];
+    const head = { firstChild: null, insertBefore: jest.fn() };
+
+    const { documentHandlers } = loadWebviewPreloadModule({
+      contextBridge,
+      location: {
+        href: 'https://dapp.example/',
+        protocol: 'https:',
+        pathname: '/',
+      },
+      documentOverrides: {
+        createElement: jest.fn(() => {
+          const script = { remove: jest.fn(), textContent: '' };
+          scripts.push(script);
+          return script;
+        }),
+        head,
+        readyState: 'complete',
+      },
+    });
+
+    expect(documentHandlers.DOMContentLoaded).toBeUndefined();
+    expect(scripts[0].textContent).toBe('/* ethereum inject source stub */');
+    expect(head.insertBefore).toHaveBeenNthCalledWith(1, scripts[0], null);
+    expect(scripts[0].remove).toHaveBeenCalled();
   });
 });

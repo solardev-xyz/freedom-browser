@@ -93,6 +93,7 @@ function createContextBridgeMock() {
 
   return {
     exposedValues,
+    executeInMainWorld: jest.fn(),
     exposeInMainWorld: jest.fn((key, value) => {
       exposedValues[key] = value;
     }),
