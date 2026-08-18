@@ -6,6 +6,8 @@ const { test, expect } = require('./fixtures');
 
 const ADDRESS = '0x00000095643cffa7d9fae407a84dfcb6406456c6';
 const APP_URL = `web3://${ADDRESS}.eip155-1/`;
+const WEIDAO_ADDRESS = '0x00000007988a79d16cf76b5dc4cf54dc3af24936';
+const WEIDAO_URL = `web3://${WEIDAO_ADDRESS}.eip155-1/`;
 const WALLET = {
   index: 0,
   name: 'Lab Wallet',
@@ -13,6 +15,9 @@ const WALLET = {
 };
 const HTML_PATH = process.env.FREEDOM_ZSWAP_HTML || '/private/tmp/zswap-gateway.html';
 const HAS_HTML = fs.existsSync(HTML_PATH);
+const WEIDAO_HTML_PATH =
+  process.env.FREEDOM_WEIDAO_HTML || '/private/tmp/onchain-app-07988.html';
+const HAS_WEIDAO_HTML = fs.existsSync(WEIDAO_HTML_PATH);
 
 test.use({
   seedSettings: {
@@ -200,4 +205,40 @@ test('zSwap connection milestones through the real Freedom read router', async (
   }).not.toBe('Connect Wallet');
   const reloadReadyMs = Date.now() - reloadAt;
   console.log('[zswap-wallet-lab] live reload:', { reloadAddressMs, reloadReadyMs });
+});
+
+test('an eager app captures Freedom wallet injection while parsing', async ({
+  window,
+  electronApp,
+  harness,
+}) => {
+  test.skip(!HAS_WEIDAO_HTML, `WeiDAO HTML corpus not found at ${WEIDAO_HTML_PATH}`);
+  const html = fs.readFileSync(WEIDAO_HTML_PATH, 'utf8');
+  await installWalletAndChainStubs(window, electronApp);
+  await harness.setContentFixture(WEIDAO_URL, {
+    contentType: 'text/html; charset=utf-8',
+    body: html,
+  });
+
+  // Do not let the initial home commit clear an address typed by the test.
+  await expect.poll(() =>
+    window.evaluate(() => document.querySelector('webview:not(.hidden)')?.getURL() || '')
+  ).toContain('/pages/home.html');
+
+  const input = window.locator('[data-test="address-input"]');
+  await input.fill(`web3://${WEIDAO_ADDRESS}`);
+  await input.press('Enter');
+  await expect.poll(() => inWebview(window, 'document.querySelector("#cx")?.textContent'))
+    .toBe('Connect wallet');
+
+  expect(await inWebview(window, 'Boolean(window.ethereum?.request)')).toBe(true);
+  await inWebview(window, `
+    window.__walletLabAlerts = [];
+    window.alert = (message) => window.__walletLabAlerts.push(String(message));
+    document.querySelector('#cx').click();
+    true
+  `);
+
+  await expect(window.locator('#sidebar-dapp-connect')).toBeVisible();
+  expect(await inWebview(window, 'window.__walletLabAlerts')).toEqual([]);
 });
