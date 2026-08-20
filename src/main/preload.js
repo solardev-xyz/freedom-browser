@@ -508,6 +508,11 @@ contextBridge.exposeInMainWorld('remoteSigner', {
   addAccount: (name, address) => ipcRenderer.invoke('wallet:add-remote-wallet', name, address),
 });
 
+contextBridge.exposeInMainWorld('vaughan', {
+  getAccounts: () => ipcRenderer.invoke('vaughan:get-accounts'),
+  addAccount: (name, address) => ipcRenderer.invoke('wallet:add-vaughan-wallet', name, address),
+});
+
 contextBridge.exposeInMainWorld('swarmNode', {
   getStamps: () => ipcRenderer.invoke('swarm:get-stamps'),
   getStorageCost: (sizeGB, durationDays) =>

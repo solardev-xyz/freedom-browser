@@ -5,7 +5,8 @@
  * private keys. The account's `type` (from vault-meta, see
  * identity-manager's WALLET_TYPES) picks the backend: vault-backed
  * mnemonic accounts sign locally with a borrowed key, Ledger accounts
- * sign on the device.
+ * sign on the device, Vaughan accounts sign through the local Vaughan
+ * provider bridge.
  *
  * Input normalization (0x-hex personal messages → raw bytes, JSON-string
  * typed data → object) happens once in the factory, so backends always
@@ -25,6 +26,7 @@ const { withVaultPrivateKey, isValidWalletIndex } = require('./vault-access');
 const { getWalletRecord, isHardwareWalletIndex, WALLET_TYPES } = require('../identity-manager');
 const { createLedgerBackend } = require('./ledger/signer');
 const { createRemoteBackend } = require('./remote/signer');
+const { createVaughanBackend } = require('./vaughan/signer');
 const { withoutDomainType } = require('./signing-utils');
 
 /**
@@ -120,6 +122,8 @@ function getSigner(walletIndex) {
     backend = createLedgerBackend(record);
   } else if (record && record.type === WALLET_TYPES.REMOTE) {
     backend = createRemoteBackend(record);
+  } else if (record && record.type === WALLET_TYPES.VAUGHAN) {
+    backend = createVaughanBackend(record);
   } else {
     backend = createVaultBackend(walletIndex);
   }
