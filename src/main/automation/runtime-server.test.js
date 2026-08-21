@@ -6,6 +6,7 @@ const path = require('path');
 const { once } = require('events');
 const {
   RUNTIME_PROTOCOL_VERSION,
+  cleanupStaleRuntimeEndpoint,
   createRuntimeEndpoint,
   createRuntimeServer,
   inspectRuntimeDiscovery,
@@ -342,6 +343,47 @@ describe('automation runtime server', () => {
     fs.unlinkSync(server.paths.discoveryPath);
     expect(inspectRuntimeDiscovery(profile)).toMatchObject({ state: 'missing' });
   });
+
+  (process.platform === 'win32' ? test.skip : test)(
+    'removes only an owned same-profile socket from stale discovery',
+    () => {
+      const { server, userDataDir } = createFixture();
+      const profile = { id: 'automation', userDataDir };
+      const inspection = {
+        state: 'stale',
+        discovery: { endpoint: server.endpoint },
+      };
+      const lstat = jest.spyOn(fs, 'lstatSync').mockReturnValue({
+        isSocket: () => true,
+        isSymbolicLink: () => false,
+        uid: process.getuid(),
+      });
+      const unlink = jest.spyOn(fs, 'unlinkSync').mockImplementation(() => {});
+      try {
+        expect(
+          cleanupStaleRuntimeEndpoint(profile, inspection, {
+            socketRoot: path.dirname(server.endpoint.path),
+          })
+        ).toBe(true);
+        expect(unlink).toHaveBeenCalledWith(server.endpoint.path);
+
+        expect(
+          cleanupStaleRuntimeEndpoint(
+            profile,
+            {
+              state: 'stale',
+              discovery: { endpoint: { kind: 'unix', path: '/tmp/unrelated.sock' } },
+            },
+            { socketRoot: path.dirname(server.endpoint.path) }
+          )
+        ).toBe(false);
+        expect(unlink).toHaveBeenCalledTimes(1);
+      } finally {
+        lstat.mockRestore();
+        unlink.mockRestore();
+      }
+    }
+  );
 
   (process.platform === 'win32' ? test.skip : test)(
     'refuses to write credentials through a symbolic link',

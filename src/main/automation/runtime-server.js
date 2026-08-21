@@ -161,6 +161,32 @@ function createRuntimeEndpoint(profile, options = {}) {
   return { kind: 'unix', path: socketPath };
 }
 
+function cleanupStaleRuntimeEndpoint(profile, inspection, options = {}) {
+  if (inspection?.state !== 'stale' || inspection.discovery?.endpoint?.kind !== 'unix') {
+    return false;
+  }
+  const socketRoot = path.resolve(options.socketRoot || defaultUnixSocketRoot());
+  const socketPath = path.resolve(inspection.discovery.endpoint.path);
+  const expectedPrefix = `${profileEndpointHash(requireProfile(profile))}-`;
+  if (
+    path.dirname(socketPath) !== socketRoot ||
+    !path.basename(socketPath).startsWith(expectedPrefix) ||
+    !path.basename(socketPath).endsWith('.sock')
+  ) {
+    return false;
+  }
+
+  try {
+    const stat = fs.lstatSync(socketPath);
+    if (!stat.isSocket() || stat.isSymbolicLink()) return false;
+    if (typeof process.getuid === 'function' && stat.uid !== process.getuid()) return false;
+    fs.unlinkSync(socketPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function safeRequestId(value) {
   if (typeof value === 'number' && Number.isSafeInteger(value)) return value;
   if (typeof value === 'string' && value.length > 0 && value.length <= 128) return value;
@@ -413,6 +439,12 @@ function createRuntimeServer(options = {}) {
   async function start() {
     if (state !== 'stopped') throw new Error(`Runtime server cannot start from state: ${state}`);
     ensurePrivateDirectory(runtimePaths.runtimeDir);
+    const previousRuntime = inspectRuntimeDiscovery(profile, {
+      ...(options.isProcessAlive && { isProcessAlive: options.isProcessAlive }),
+    });
+    if (cleanupStaleRuntimeEndpoint(profile, previousRuntime, options)) {
+      logger.info?.('[automation-runtime] Removed stale local control socket');
+    }
     writePrivateFile(runtimePaths.tokenPath, `${token}\n`);
     state = 'starting';
     writeDiscovery(runtimePaths.discoveryPath, discoveryPayload());
@@ -481,6 +513,7 @@ module.exports = {
   RUNTIME_DIR_NAME,
   RUNTIME_PROTOCOL_VERSION,
   TOKEN_FILE_NAME,
+  cleanupStaleRuntimeEndpoint,
   createRuntimeEndpoint,
   createRuntimeServer,
   getRuntimePaths,
