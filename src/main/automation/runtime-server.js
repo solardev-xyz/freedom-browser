@@ -4,13 +4,16 @@ const crypto = require('crypto');
 const fs = require('fs');
 const net = require('net');
 const path = require('path');
+const {
+  DISCOVERY_FILE_NAME,
+  RUNTIME_DIR_NAME,
+  RUNTIME_PROTOCOL_VERSION,
+  TOKEN_FILE_NAME,
+  getRuntimePaths,
+} = require('../../shared/automation-runtime-contract');
 
-const RUNTIME_PROTOCOL_VERSION = 1;
 const MAX_MESSAGE_BYTES = 1024 * 1024;
 const HANDSHAKE_TIMEOUT_MS = 10_000;
-const RUNTIME_DIR_NAME = 'automation-runtime';
-const DISCOVERY_FILE_NAME = 'runtime.json';
-const TOKEN_FILE_NAME = 'token';
 const MAX_DISCOVERY_BYTES = 64 * 1024;
 
 function requireProfile(profile) {
@@ -31,15 +34,6 @@ function ensurePrivateDirectory(dirPath) {
   }
   fs.chmodSync(dirPath, 0o700);
   return dirPath;
-}
-
-function getRuntimePaths(profile) {
-  const runtimeDir = path.join(requireProfile(profile).userDataDir, RUNTIME_DIR_NAME);
-  return {
-    runtimeDir,
-    discoveryPath: path.join(runtimeDir, DISCOVERY_FILE_NAME),
-    tokenPath: path.join(runtimeDir, TOKEN_FILE_NAME),
-  };
 }
 
 function defaultIsProcessAlive(pid) {

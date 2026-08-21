@@ -16,6 +16,9 @@
     "url": "https://github.com/solardev-xyz/freedom-browser/issues"
   },
   "main": "src/main/index.js",
+  "bin": {
+    "freedom": "src/cli/freedom.js"
+  },
   "scripts": {
     "start": "electron .",
     "test": "npm run test:unit",

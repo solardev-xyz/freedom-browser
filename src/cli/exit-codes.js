@@ -1,0 +1,14 @@
+'use strict';
+
+const EXIT_CODES = Object.freeze({
+  SUCCESS: 0,
+  USAGE: 2,
+  RUNTIME_UNAVAILABLE: 10,
+  PROFILE_LOCKED: 11,
+  AUTH_FAILED: 12,
+  PROTOCOL_MISMATCH: 13,
+  COMMAND_FAILED: 20,
+  INTERNAL: 70,
+});
+
+module.exports = { EXIT_CODES };
