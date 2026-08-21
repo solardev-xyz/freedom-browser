@@ -69,10 +69,7 @@ async function withVaultPrivateKey(walletIndex, callback) {
   // untrusted renderer code) would otherwise fall through to derivation
   // at m/44'/60'/<hardware index>'/0/0 — a phantom account.
   const record = getWalletRecord(walletIndex);
-  if (!record && isHardwareWalletIndex(walletIndex)) {
-    throw new Error('Hardware wallet accounts have no vault key; sign via their device signer');
-  }
-  if (record && record.type !== WALLET_TYPES.MNEMONIC) {
+  if (isHardwareWalletIndex(walletIndex) || (record && record.type !== WALLET_TYPES.MNEMONIC)) {
     throw new Error('This account keeps its key on another device; sign via its device signer');
   }
   const identity = await loadIdentityModule();

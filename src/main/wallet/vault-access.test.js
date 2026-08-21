@@ -95,7 +95,7 @@ describe('withVaultPrivateKey', () => {
     // with an address the user has never seen.
     mockGetWalletRecord.mockReturnValue(null);
     await expect(withVaultPrivateKey(1000000, () => 'unreachable'))
-      .rejects.toThrow('Hardware wallet accounts have no vault key');
+      .rejects.toThrow('This account keeps its key on another device');
     expect(mockIdentity.exportPrivateKey).not.toHaveBeenCalled();
     expect(mockIdentity.isUnlocked).not.toHaveBeenCalled();
   });
