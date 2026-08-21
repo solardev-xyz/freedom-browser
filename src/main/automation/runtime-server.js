@@ -183,11 +183,12 @@ function createRuntimeServer(options = {}) {
 
     if (!socketState.authenticated) {
       if (request.method !== 'runtime.handshake') {
+        socketState.closedForRequests = true;
         writeResponse(
           socketState.socket,
-          protocolError(id, 'UNAUTHENTICATED', 'Runtime handshake is required')
+          protocolError(id, 'UNAUTHENTICATED', 'Runtime handshake is required'),
+          () => socketState.socket.end()
         );
-        socketState.socket.end();
         return;
       }
       const params = request.params;
@@ -197,11 +198,12 @@ function createRuntimeServer(options = {}) {
         params.protocolVersion !== RUNTIME_PROTOCOL_VERSION ||
         !tokensEqual(token, params.token)
       ) {
+        socketState.closedForRequests = true;
         writeResponse(
           socketState.socket,
-          protocolError(id, 'UNAUTHENTICATED', 'Runtime authentication failed')
+          protocolError(id, 'UNAUTHENTICATED', 'Runtime authentication failed'),
+          () => socketState.socket.end()
         );
-        socketState.socket.end();
         return;
       }
       socketState.authenticated = true;
@@ -267,53 +269,70 @@ function createRuntimeServer(options = {}) {
     const socketState = {
       socket,
       authenticated: false,
+      closedForRequests: false,
       buffer: '',
-      queue: Promise.resolve(),
       handshakeTimeout: null,
     };
     socketState.handshakeTimeout = setTimeout(() => {
-      writeResponse(socket, protocolError(null, 'UNAUTHENTICATED', 'Runtime handshake timed out'));
-      socket.end();
+      socketState.closedForRequests = true;
+      writeResponse(
+        socket,
+        protocolError(null, 'UNAUTHENTICATED', 'Runtime handshake timed out'),
+        () => socket.end()
+      );
     }, options.handshakeTimeoutMs || HANDSHAKE_TIMEOUT_MS);
 
     socket.on('data', (chunk) => {
+      if (socketState.closedForRequests) return;
       socketState.buffer += chunk;
-      if (Buffer.byteLength(socketState.buffer) > (options.maxMessageBytes || MAX_MESSAGE_BYTES)) {
-        writeResponse(
-          socket,
-          protocolError(null, 'MESSAGE_TOO_LARGE', 'Runtime request is too large')
-        );
-        socket.destroy();
-        return;
-      }
+      const maxMessageBytes = options.maxMessageBytes || MAX_MESSAGE_BYTES;
       let newlineIndex = socketState.buffer.indexOf('\n');
       while (newlineIndex !== -1) {
         const line = socketState.buffer.slice(0, newlineIndex);
         socketState.buffer = socketState.buffer.slice(newlineIndex + 1);
+        if (Buffer.byteLength(line) > maxMessageBytes) {
+          socketState.closedForRequests = true;
+          writeResponse(
+            socket,
+            protocolError(null, 'MESSAGE_TOO_LARGE', 'Runtime request is too large'),
+            () => socket.end()
+          );
+          return;
+        }
         if (line.trim()) {
-          socketState.queue = socketState.queue
-            .then(async () => {
-              let request;
-              try {
-                request = JSON.parse(line);
-              } catch {
-                writeResponse(
-                  socket,
-                  protocolError(null, 'INVALID_JSON', 'Runtime request must be valid JSON')
-                );
-                return;
-              }
-              await handleRequest(socketState, request);
-            })
-            .catch((error) => {
-              logger.error?.('[automation-runtime] Request failed:', error);
-              writeResponse(
-                socket,
-                protocolError(null, 'INTERNAL_ERROR', 'Runtime request failed unexpectedly')
-              );
-            });
+          let request;
+          try {
+            request = JSON.parse(line);
+          } catch {
+            writeResponse(
+              socket,
+              protocolError(null, 'INVALID_JSON', 'Runtime request must be valid JSON')
+            );
+            newlineIndex = socketState.buffer.indexOf('\n');
+            continue;
+          }
+          Promise.resolve(handleRequest(socketState, request)).catch((error) => {
+            logger.error?.('[automation-runtime] Request failed:', error);
+            writeResponse(
+              socket,
+              protocolError(
+                safeRequestId(request?.id),
+                'INTERNAL_ERROR',
+                'Runtime request failed unexpectedly'
+              )
+            );
+          });
+          if (socketState.closedForRequests) return;
         }
         newlineIndex = socketState.buffer.indexOf('\n');
+      }
+      if (Buffer.byteLength(socketState.buffer) > maxMessageBytes) {
+        socketState.closedForRequests = true;
+        writeResponse(
+          socket,
+          protocolError(null, 'MESSAGE_TOO_LARGE', 'Runtime request is too large'),
+          () => socket.end()
+        );
       }
     });
     socket.once('close', () => {

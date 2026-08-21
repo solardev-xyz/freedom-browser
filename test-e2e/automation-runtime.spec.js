@@ -19,8 +19,8 @@ function readJson(filePath) {
 function connectRuntime(endpoint) {
   const socket = net.createConnection(endpoint.path);
   let buffer = '';
-  const queued = [];
-  const waiters = [];
+  const queued = new Map();
+  const waiters = new Map();
   socket.setEncoding('utf8');
   socket.on('data', (chunk) => {
     buffer += chunk;
@@ -30,9 +30,13 @@ function connectRuntime(endpoint) {
       buffer = buffer.slice(newlineIndex + 1);
       if (line) {
         const response = JSON.parse(line);
-        const waiter = waiters.shift();
-        if (waiter) waiter(response);
-        else queued.push(response);
+        const waiter = waiters.get(response.id);
+        if (waiter) {
+          waiters.delete(response.id);
+          waiter(response);
+        } else {
+          queued.set(response.id, response);
+        }
       }
       newlineIndex = buffer.indexOf('\n');
     }
@@ -46,9 +50,15 @@ function connectRuntime(endpoint) {
         socket.once('error', reject);
       }),
     request(payload) {
+      if (waiters.has(payload.id)) throw new Error(`Duplicate in-flight request id: ${payload.id}`);
       const response = new Promise((resolve) => {
-        if (queued.length) resolve(queued.shift());
-        else waiters.push(resolve);
+        if (queued.has(payload.id)) {
+          const responseForId = queued.get(payload.id);
+          queued.delete(payload.id);
+          resolve(responseForId);
+        } else {
+          waiters.set(payload.id, resolve);
+        }
       });
       socket.write(`${JSON.stringify(payload)}\n`);
       return response;

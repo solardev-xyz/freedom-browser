@@ -17,8 +17,8 @@ function tempDir(prefix) {
 function createLineClient(endpoint) {
   const socket = net.createConnection(endpoint.path);
   let buffer = '';
-  const responses = [];
-  const waiters = [];
+  const responses = new Map();
+  const waiters = new Map();
   socket.setEncoding('utf8');
   socket.on('data', (chunk) => {
     buffer += chunk;
@@ -28,9 +28,13 @@ function createLineClient(endpoint) {
       buffer = buffer.slice(newlineIndex + 1);
       if (line) {
         const response = JSON.parse(line);
-        const waiter = waiters.shift();
-        if (waiter) waiter(response);
-        else responses.push(response);
+        const waiter = waiters.get(response.id);
+        if (waiter) {
+          waiters.delete(response.id);
+          waiter(response);
+        } else {
+          responses.set(response.id, response);
+        }
       }
       newlineIndex = buffer.indexOf('\n');
     }
@@ -43,9 +47,15 @@ function createLineClient(endpoint) {
       await once(socket, 'connect');
     },
     request(payload) {
+      if (waiters.has(payload.id)) throw new Error(`Duplicate in-flight request id: ${payload.id}`);
       const response = new Promise((resolve) => {
-        if (responses.length) resolve(responses.shift());
-        else waiters.push(resolve);
+        if (responses.has(payload.id)) {
+          const responseForId = responses.get(payload.id);
+          responses.delete(payload.id);
+          resolve(responseForId);
+        } else {
+          waiters.set(payload.id, resolve);
+        }
       });
       socket.write(`${JSON.stringify(payload)}\n`);
       return response;
@@ -220,6 +230,65 @@ describe('automation runtime server', () => {
       error: { code: 'MESSAGE_TOO_LARGE', message: 'Runtime request is too large' },
     });
 
+    client.close();
+    await server.stop();
+  });
+
+  test('allows control requests to interrupt an in-flight operation on one connection', async () => {
+    let finishNavigation;
+    const navigationPending = new Promise((resolve) => {
+      finishNavigation = resolve;
+    });
+    const { controller, server } = createFixture();
+    controller.execute.mockImplementation(async (operation) => {
+      if (operation === 'browser_navigate') await navigationPending;
+      return {
+        ok: true,
+        runtimeId: 'runtime_test',
+        contextId: 'context_test',
+        result: { operation },
+      };
+    });
+    await server.start();
+    const client = createLineClient(server.endpoint);
+    await client.connected();
+    await client.request({
+      id: 'hello',
+      method: 'runtime.handshake',
+      params: { protocolVersion: RUNTIME_PROTOCOL_VERSION, token: 'a'.repeat(64) },
+    });
+
+    const navigation = client.request({
+      id: 'navigate',
+      method: 'automation.execute',
+      params: { operation: 'browser_navigate', input: { tabId: 'tab_1' } },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    await expect(
+      client.request({
+        id: 'stop',
+        method: 'automation.execute',
+        params: { operation: 'browser_stop_loading', input: { tabId: 'tab_1' } },
+      })
+    ).resolves.toMatchObject({
+      id: 'stop',
+      ok: true,
+      result: { result: { operation: 'browser_stop_loading' } },
+    });
+    await expect(client.request({ id: 'status', method: 'runtime.status' })).resolves.toMatchObject(
+      {
+        id: 'status',
+        ok: true,
+        result: { state: 'ready' },
+      }
+    );
+
+    finishNavigation();
+    await expect(navigation).resolves.toMatchObject({
+      id: 'navigate',
+      ok: true,
+      result: { result: { operation: 'browser_navigate' } },
+    });
     client.close();
     await server.stop();
   });
