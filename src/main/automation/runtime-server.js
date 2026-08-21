@@ -11,6 +11,7 @@ const HANDSHAKE_TIMEOUT_MS = 10_000;
 const RUNTIME_DIR_NAME = 'automation-runtime';
 const DISCOVERY_FILE_NAME = 'runtime.json';
 const TOKEN_FILE_NAME = 'token';
+const MAX_DISCOVERY_BYTES = 64 * 1024;
 
 function requireProfile(profile) {
   if (!profile?.userDataDir || !profile?.id) {
@@ -38,6 +39,71 @@ function getRuntimePaths(profile) {
     runtimeDir,
     discoveryPath: path.join(runtimeDir, DISCOVERY_FILE_NAME),
     tokenPath: path.join(runtimeDir, TOKEN_FILE_NAME),
+  };
+}
+
+function defaultIsProcessAlive(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === 'EPERM';
+  }
+}
+
+function inspectRuntimeDiscovery(profile, options = {}) {
+  const paths = getRuntimePaths(profile);
+  let stat;
+  try {
+    stat = fs.lstatSync(paths.discoveryPath);
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      return { state: 'missing', discoveryPath: paths.discoveryPath };
+    }
+    return { state: 'invalid', discoveryPath: paths.discoveryPath, reason: 'unreadable' };
+  }
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_DISCOVERY_BYTES) {
+    return { state: 'invalid', discoveryPath: paths.discoveryPath, reason: 'unsafe-file' };
+  }
+
+  let discovery;
+  try {
+    discovery = JSON.parse(fs.readFileSync(paths.discoveryPath, 'utf8'));
+  } catch {
+    return { state: 'invalid', discoveryPath: paths.discoveryPath, reason: 'invalid-json' };
+  }
+  const advertisedState = discovery?.state;
+  const validState = ['starting', 'ready', 'stopping', 'stopped', 'failed'].includes(
+    advertisedState
+  );
+  const needsEndpoint = advertisedState === 'starting' || advertisedState === 'ready';
+  const validEndpoint =
+    !needsEndpoint ||
+    ((discovery?.endpoint?.kind === 'unix' || discovery?.endpoint?.kind === 'named-pipe') &&
+      typeof discovery.endpoint.path === 'string' &&
+      discovery.endpoint.path.length > 0 &&
+      discovery.tokenPath === paths.tokenPath);
+  if (
+    discovery?.schemaVersion !== 1 ||
+    discovery?.profile?.id !== profile.id ||
+    !Number.isSafeInteger(discovery?.pid) ||
+    discovery.pid <= 0 ||
+    !validState ||
+    !validEndpoint
+  ) {
+    return { state: 'invalid', discoveryPath: paths.discoveryPath, reason: 'invalid-schema' };
+  }
+
+  const activeState = ['starting', 'ready', 'stopping'].includes(advertisedState);
+  const isProcessAlive = options.isProcessAlive || defaultIsProcessAlive;
+  const processAlive = activeState ? isProcessAlive(discovery.pid) === true : false;
+  return {
+    state: activeState && !processAlive ? 'stale' : advertisedState,
+    advertisedState,
+    processAlive,
+    discoveryPath: paths.discoveryPath,
+    discovery,
   };
 }
 
@@ -410,6 +476,7 @@ function createRuntimeServer(options = {}) {
 module.exports = {
   DISCOVERY_FILE_NAME,
   HANDSHAKE_TIMEOUT_MS,
+  MAX_DISCOVERY_BYTES,
   MAX_MESSAGE_BYTES,
   RUNTIME_DIR_NAME,
   RUNTIME_PROTOCOL_VERSION,
@@ -417,4 +484,5 @@ module.exports = {
   createRuntimeEndpoint,
   createRuntimeServer,
   getRuntimePaths,
+  inspectRuntimeDiscovery,
 };

@@ -1,6 +1,7 @@
 'use strict';
 
 const { test, expect, _electron: electron } = require('@playwright/test');
+const { spawnSync } = require('child_process');
 const fs = require('fs');
 const net = require('net');
 const os = require('os');
@@ -96,6 +97,35 @@ test('headless runtime publishes readiness and serves the automation controller'
       });
     const discovery = readJson(discoveryPath);
     expect(app.windows()).toHaveLength(0);
+
+    const lockedLaunch = spawnSync(require('electron'), ['.', '--runtime'], {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        FREEDOM_TEST_MODE: '1',
+        FREEDOM_TEST_USER_DATA: userDataDir,
+        ELECTRON_DISABLE_SECURITY_WARNINGS: 'true',
+        LANG: 'en_US.UTF-8',
+      },
+      encoding: 'utf8',
+      timeout: 10_000,
+    });
+    expect(lockedLaunch.status).toBe(11);
+    const lockError = lockedLaunch.stderr
+      .split('\n')
+      .map((line) => {
+        try {
+          return JSON.parse(line);
+        } catch {
+          return null;
+        }
+      })
+      .find((entry) => entry?.type === 'freedom.runtime.error');
+    expect(lockError).toMatchObject({
+      error: { code: 'PROFILE_LOCKED' },
+      profile: { id: 'test' },
+      discovery: { state: 'ready', path: discoveryPath },
+    });
 
     const token = fs.readFileSync(discovery.tokenPath, 'utf8').trim();
     expect(token).toMatch(/^[a-f0-9]{64}$/);

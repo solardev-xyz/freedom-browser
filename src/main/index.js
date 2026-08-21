@@ -1,6 +1,25 @@
 // Set app name early, before electron-log initializes (it uses app name for log path)
 const { app, dialog } = require('electron');
 const RUNTIME_MODE = process.argv.includes('--runtime');
+const RUNTIME_EXIT_CODES = Object.freeze({
+  PROFILE_INITIALIZATION_FAILED: 10,
+  PROFILE_LOCKED: 11,
+});
+const {
+  createRuntimeServer,
+  inspectRuntimeDiscovery,
+} = require('./automation/runtime-server');
+
+function reportRuntimeLaunchError(code, message, details = {}) {
+  console.error(
+    JSON.stringify({
+      type: 'freedom.runtime.error',
+      error: { code, message },
+      ...details,
+    })
+  );
+}
+
 const appName = app.isPackaged
   ? process.platform === 'linux'
     ? 'freedom'
@@ -43,15 +62,19 @@ try {
   activeProfile = initializeProfile(app);
 } catch (error) {
   if (RUNTIME_MODE) {
-    console.error(`Freedom runtime could not initialize its profile: ${error?.message || error}`);
+    reportRuntimeLaunchError(
+      'PROFILE_INITIALIZATION_FAILED',
+      `Freedom runtime could not initialize its profile: ${error?.message || error}`
+    );
   } else {
     dialog.showErrorBox(
       'Freedom profile could not open',
       `Freedom could not initialize the selected profile.\n\n${error?.message || error}`
     );
   }
-  app.exit(1);
-  process.exit(1);
+  const exitCode = RUNTIME_MODE ? RUNTIME_EXIT_CODES.PROFILE_INITIALIZATION_FAILED : 1;
+  app.exit(exitCode);
+  process.exit(exitCode);
 }
 const {
   acquireProfileLock,
@@ -67,7 +90,17 @@ try {
   activeProfileLock = acquireProfileLock(activeProfile, { logger: console });
 } catch (error) {
   if (isLockUnavailableError(error)) {
-    if (!RUNTIME_MODE) {
+    if (RUNTIME_MODE) {
+      const discovery = inspectRuntimeDiscovery(activeProfile);
+      reportRuntimeLaunchError('PROFILE_LOCKED', 'The selected Freedom profile is already open', {
+        profile: { id: activeProfile.id, displayName: activeProfile.displayName },
+        discovery: {
+          state: discovery.state,
+          path: discovery.discoveryPath,
+          ...(discovery.advertisedState && { advertisedState: discovery.advertisedState }),
+        },
+      });
+    } else {
       const profileName = activeProfile.displayName || activeProfile.id || 'selected';
       const focusResult = requestProfileFocusSync(activeProfile);
       if (!focusResult.ok) {
@@ -77,8 +110,9 @@ try {
         );
       }
     }
-    app.exit(0);
-    process.exit(0);
+    const exitCode = RUNTIME_MODE ? RUNTIME_EXIT_CODES.PROFILE_LOCKED : 0;
+    app.exit(exitCode);
+    process.exit(exitCode);
   }
   throw error;
 }
@@ -272,7 +306,6 @@ const {
   registerAutomationWebContents,
 } = require('./automation/runtime');
 const { createHiddenPageManager } = require('./automation/hidden-page-manager');
-const { createRuntimeServer } = require('./automation/runtime-server');
 
 let runtimeServer = null;
 let hiddenPageManager = null;

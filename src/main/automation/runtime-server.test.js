@@ -8,6 +8,7 @@ const {
   RUNTIME_PROTOCOL_VERSION,
   createRuntimeEndpoint,
   createRuntimeServer,
+  inspectRuntimeDiscovery,
 } = require('./runtime-server');
 
 function tempDir(prefix) {
@@ -305,6 +306,41 @@ describe('automation runtime server', () => {
     expect(endpoint.kind).toBe('named-pipe');
     expect(endpoint.path.startsWith('\\\\.\\pipe\\freedom-runtime-')).toBe(true);
     expect(endpoint.path.endsWith('-abc123')).toBe(true);
+  });
+
+  test('classifies discovery as live, stale, missing, or invalid', () => {
+    const { server, userDataDir } = createFixture();
+    const profile = { id: 'automation', userDataDir };
+    fs.mkdirSync(server.paths.runtimeDir, { recursive: true });
+    fs.writeFileSync(
+      server.paths.discoveryPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        state: 'ready',
+        pid: 1234,
+        profile: { id: 'automation' },
+        endpoint: server.endpoint,
+        tokenPath: server.paths.tokenPath,
+      })
+    );
+
+    expect(inspectRuntimeDiscovery(profile, { isProcessAlive: () => true })).toMatchObject({
+      state: 'ready',
+      advertisedState: 'ready',
+      processAlive: true,
+    });
+    expect(inspectRuntimeDiscovery(profile, { isProcessAlive: () => false })).toMatchObject({
+      state: 'stale',
+      advertisedState: 'ready',
+      processAlive: false,
+    });
+    fs.writeFileSync(server.paths.discoveryPath, '{not json');
+    expect(inspectRuntimeDiscovery(profile)).toMatchObject({
+      state: 'invalid',
+      reason: 'invalid-json',
+    });
+    fs.unlinkSync(server.paths.discoveryPath);
+    expect(inspectRuntimeDiscovery(profile)).toMatchObject({ state: 'missing' });
   });
 
   (process.platform === 'win32' ? test.skip : test)(
