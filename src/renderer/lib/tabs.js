@@ -627,6 +627,14 @@ const createWebview = (tabId, initialUrl) => {
       }
     },
     'dom-ready': () => {
+      try {
+        const guestWebContentsId = webview.getWebContentsId?.();
+        if (Number.isInteger(guestWebContentsId) && guestWebContentsId > 0) {
+          electronAPI?.bindAutomationTab?.(tabId, guestWebContentsId);
+        }
+      } catch {
+        // The guest may be tearing down between dom-ready and the ID lookup.
+      }
       // Re-apply the tab-level mute flag once the webview is attached and
       // ready. Covers mutes toggled before attach (races right after
       // createTab) — webview methods throw until the guest is live, so

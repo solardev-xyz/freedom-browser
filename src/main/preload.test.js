@@ -215,6 +215,7 @@ describe('preload', () => {
       [exposures.electronAPI, 'newWindow', [], IPC.WINDOW_NEW, []],
       [exposures.electronAPI, 'openUrlInNewWindow', ['https://example.com'], IPC.WINDOW_NEW_WITH_URL, ['https://example.com']],
       [exposures.electronAPI, 'showAbout', [], IPC.APP_SHOW_ABOUT, []],
+      [exposures.electronAPI, 'bindAutomationTab', [7, 41], IPC.AUTOMATION_BIND_TAB, [{ rendererTabId: 7, guestWebContentsId: 41 }]],
       [exposures.electronAPI, 'updateTabMenuState', [{ canGoBack: true }], 'menu:update-tab-state', [{ canGoBack: true }]],
       [exposures.electronAPI, 'setBookmarkBarToggleEnabled', [true], 'menu:set-bookmark-bar-toggle-enabled', [true]],
       [exposures.electronAPI, 'setBookmarkBarChecked', [false], 'menu:set-bookmark-bar-checked', [false]],

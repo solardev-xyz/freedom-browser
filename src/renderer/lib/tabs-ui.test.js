@@ -21,6 +21,7 @@ const createElectronApi = () => {
     handlers,
     api: {
       setWindowTitle: jest.fn(),
+      bindAutomationTab: jest.fn(),
       updateTabMenuState: jest.fn(),
       closeWindow: jest.fn(),
       getWebviewPreloadPath: jest.fn().mockResolvedValue('/tmp/webview-preload.js'),
@@ -57,6 +58,7 @@ const createWebview = (createdWebviews) => {
     removeEventListener(event, handler);
   });
   webview._devToolsOpen = false;
+  webview.getWebContentsId = jest.fn(() => createdWebviews.length + 41);
   webview.getURL = jest.fn(() => webview.src || 'about:blank');
   webview.canGoBack = jest.fn(() => false);
   webview.canGoForward = jest.fn(() => false);
@@ -458,6 +460,10 @@ describe('tabs ui behavior', () => {
     webview.dispatch('did-fail-load', { errorCode: -1 });
     webview.dispatch('did-navigate-in-page', { url: 'https://loaded.example#hash' });
     webview.dispatch('dom-ready');
+    expect(electronAPI.bindAutomationTab).toHaveBeenCalledWith(
+      activeTab.id,
+      webview.getWebContentsId()
+    );
 
     activeTab.favicon = 'data:favicon';
     activeTab.title = 'Old Title';

@@ -5,9 +5,10 @@ const { createAutomationRuntime } = require('./runtime');
 const { OPERATIONS } = require('./contract/operations');
 
 class FakeWebContents extends EventEmitter {
-  constructor(url) {
+  constructor(url, id) {
     super();
     this.url = url;
+    this.id = id;
   }
 
   loadURL = jest.fn(async (url) => {
@@ -47,17 +48,37 @@ describe('automation runtime registration', () => {
       },
     });
     const host = new EventEmitter();
-    const desktop = new FakeWebContents('https://desktop.example/');
-    const hidden = new FakeWebContents('https://hidden.example/');
-    const popup = new FakeWebContents('https://popup.example/');
-    const detach = runtime.attachToHostWebContents(host);
+    const ipcMain = new EventEmitter();
+    const desktop = new FakeWebContents('https://desktop.example/', 11);
+    const hidden = new FakeWebContents('https://hidden.example/', 12);
+    const popup = new FakeWebContents('https://popup.example/', 13);
+    desktop.hostWebContents = host;
+    const detach = runtime.attachToHostWebContents(host, { ipcMain });
 
     host.emit('did-attach-webview', {}, desktop);
+    ipcMain.emit('automation:bind-tab', { sender: host }, null);
+    expect(runtime.automationTabIdForRenderer(host, 7)).toBeNull();
+    ipcMain.emit(
+      'automation:bind-tab',
+      { sender: new EventEmitter() },
+      { rendererTabId: 8, guestWebContentsId: 11 }
+    );
+    expect(runtime.automationTabIdForRenderer(host, 8)).toBeNull();
+    ipcMain.emit(
+      'automation:bind-tab',
+      { sender: host },
+      { rendererTabId: 7, guestWebContentsId: 11 }
+    );
     const hiddenTabId = runtime.registerWebContents(hidden, { kind: 'headless' });
     const duplicateTabId = runtime.registerWebContents(hidden, { kind: 'headless' });
     const listed = await runtime.controller.execute(OPERATIONS.LIST_TABS);
 
     expect(duplicateTabId).toBe(hiddenTabId);
+    expect(runtime.automationTabIdForRenderer(host, 7)).toBe('tab_1');
+    expect(runtime.desktopBindingForAutomationTab('tab_1')).toEqual({
+      hostWebContents: host,
+      rendererTabId: 7,
+    });
     expect(listed.result.tabs).toEqual([
       expect.objectContaining({ tabId: 'tab_1', kind: 'desktop' }),
       expect.objectContaining({ tabId: 'tab_2', kind: 'headless' }),
@@ -70,8 +91,31 @@ describe('automation runtime registration', () => {
     );
 
     detach();
-    host.emit('did-attach-webview', {}, new FakeWebContents('https://ignored.example/'));
+    expect(runtime.automationTabIdForRenderer(host, 7)).toBeNull();
+    host.emit('did-attach-webview', {}, new FakeWebContents('https://ignored.example/', 14));
     const afterDetach = await runtime.controller.execute(OPERATIONS.LIST_TABS);
     expect(afterDetach.result.tabs).toHaveLength(3);
+  });
+
+  test('removes both sides of a desktop binding when the guest is destroyed', () => {
+    const runtime = createAutomationRuntime({
+      controllerOptions: { tabIdFactory: () => 'tab_desktop' },
+    });
+    const host = new EventEmitter();
+    const ipcMain = new EventEmitter();
+    const desktop = new FakeWebContents('https://desktop.example/', 21);
+    desktop.hostWebContents = host;
+    runtime.attachToHostWebContents(host, { ipcMain });
+    host.emit('did-attach-webview', {}, desktop);
+    ipcMain.emit(
+      'automation:bind-tab',
+      { sender: host },
+      { rendererTabId: 9, guestWebContentsId: 21 }
+    );
+
+    desktop.emit('destroyed');
+
+    expect(runtime.automationTabIdForRenderer(host, 9)).toBeNull();
+    expect(runtime.desktopBindingForAutomationTab('tab_desktop')).toBeNull();
   });
 });

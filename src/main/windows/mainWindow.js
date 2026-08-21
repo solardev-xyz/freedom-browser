@@ -1,5 +1,5 @@
 const log = require('../logger');
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { loadSettings } = require('../settings-store');
@@ -75,7 +75,7 @@ function createMainWindow(initialUrl = null, options = {}) {
 
   // Register before loadFile() so a fast renderer cannot attach its first
   // <webview> before the automation runtime starts observing guest creation.
-  const detachAutomation = attachAutomationToHostWebContents(window.webContents);
+  const detachAutomation = attachAutomationToHostWebContents(window.webContents, { ipcMain });
   window.once('closed', detachAutomation);
 
   // Load index.html with optional initial URL / private partition as query

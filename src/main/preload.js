@@ -157,6 +157,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   // Internal
   getWebviewPreloadPath: () => ipcRenderer.invoke('internal:get-webview-preload-path'),
+  bindAutomationTab: (rendererTabId, guestWebContentsId) =>
+    ipcRenderer.send('automation:bind-tab', { rendererTabId, guestWebContentsId }),
   // Context menu
   saveImage: (imageUrl) => ipcRenderer.invoke('context-menu:save-image', imageUrl),
   // Clipboard

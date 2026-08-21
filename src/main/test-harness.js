@@ -36,13 +36,14 @@ const {
   runWithPrivateLogContext,
   redactUrlForLog,
 } = require('./private/private-log-context');
-const { BrowserWindow, ipcMain } = require('electron');
+const { BrowserWindow, ipcMain, webContents } = require('electron');
 const IPC = require('../shared/ipc-channels');
 const { success, failure } = require('./ipc-contract');
 const { updateService, MODE, setStatusMessage } = require('./service-registry');
 const {
   automationController,
   registerAutomationWebContents,
+  automationTabIdForRenderer,
 } = require('./automation/runtime');
 
 const TEST_MODE_ENABLED = process.env.FREEDOM_TEST_MODE === '1';
@@ -518,6 +519,12 @@ function exposeGlobalShim() {
     },
     clearProfileDeleteSims: resetProfileDeleteSims,
     automationExecute: (operation, input) => automationController.execute(operation, input),
+    automationTabForRenderer: (rendererTabId, guestWebContentsId) => {
+      const guestWebContents = webContents.fromId(guestWebContentsId);
+      const hostWebContents = guestWebContents?.hostWebContents;
+      if (!hostWebContents) return null;
+      return automationTabIdForRenderer(hostWebContents, rendererTabId);
+    },
     createHiddenAutomationPage: async (url) => {
       const window = new BrowserWindow({
         show: false,
