@@ -83,7 +83,7 @@ test('headless runtime publishes readiness and serves the automation controller'
         profile: { id: 'test' },
         endpoint: { path: expect.any(String) },
         tokenPath: expect.any(String),
-    });
+      });
     const discovery = readJson(discoveryPath);
     expect(app.windows()).toHaveLength(0);
 
@@ -91,13 +91,12 @@ test('headless runtime publishes readiness and serves the automation controller'
     expect(token).toMatch(/^[a-f0-9]{64}$/);
     client = connectRuntime(discovery.endpoint);
     await client.connected();
-    await expect(
-      client.request({
-        id: 'hello',
-        method: 'runtime.handshake',
-        params: { protocolVersion: 1, token },
-      })
-    ).resolves.toMatchObject({
+    const handshake = await client.request({
+      id: 'hello',
+      method: 'runtime.handshake',
+      params: { protocolVersion: 1, token },
+    });
+    expect(handshake).toMatchObject({
       id: 'hello',
       ok: true,
       result: { state: 'ready', runtimeId: expect.any(String), contextId: expect.any(String) },
@@ -112,6 +111,130 @@ test('headless runtime publishes readiness and serves the automation controller'
       id: 'tabs',
       ok: true,
       result: { ok: true, result: { tabs: [] } },
+    });
+
+    const firstUrl = 'https://runtime.example.test/page';
+    const createdFirst = await client.request({
+      id: 'create-first',
+      method: 'automation.execute',
+      params: { operation: 'browser_create_tab', input: { url: firstUrl } },
+    });
+    expect(createdFirst).toMatchObject({
+      id: 'create-first',
+      ok: true,
+      result: {
+        ok: true,
+        runtimeId: handshake.result.runtimeId,
+        contextId: handshake.result.contextId,
+        result: {
+          tab: {
+            tabId: expect.any(String),
+            kind: 'headless',
+            url: firstUrl,
+            available: true,
+          },
+        },
+      },
+    });
+    const firstTabId = createdFirst.result.result.tab.tabId;
+    await expect.poll(() => app.windows().length).toBe(1);
+
+    await expect(
+      client.request({
+        id: 'snapshot-first',
+        method: 'automation.execute',
+        params: {
+          operation: 'browser_snapshot',
+          input: { tabId: firstTabId },
+        },
+      })
+    ).resolves.toMatchObject({
+      id: 'snapshot-first',
+      ok: true,
+      result: {
+        ok: true,
+        runtimeId: handshake.result.runtimeId,
+        contextId: handshake.result.contextId,
+        tabId: firstTabId,
+        result: {
+          url: firstUrl,
+          title: 'test-harness https stub',
+          text: expect.stringContaining('https:// blocked in test mode'),
+        },
+      },
+    });
+
+    const secondUrl = 'https://runtime.example.test/second';
+    const createdSecond = await client.request({
+      id: 'create-second',
+      method: 'automation.execute',
+      params: { operation: 'browser_create_tab', input: { url: secondUrl } },
+    });
+    const secondTabId = createdSecond.result.result.tab.tabId;
+    expect(secondTabId).not.toBe(firstTabId);
+    expect(createdSecond).toMatchObject({
+      ok: true,
+      result: {
+        ok: true,
+        runtimeId: handshake.result.runtimeId,
+        contextId: handshake.result.contextId,
+        result: { tab: { tabId: secondTabId, kind: 'headless', url: secondUrl } },
+      },
+    });
+    await expect.poll(() => app.windows().length).toBe(2);
+
+    const screenshot = await client.request({
+      id: 'screenshot-second',
+      method: 'automation.execute',
+      params: {
+        operation: 'browser_screenshot',
+        input: { tabId: secondTabId },
+      },
+    });
+    expect(screenshot).toMatchObject({
+      ok: true,
+      result: {
+        ok: true,
+        runtimeId: handshake.result.runtimeId,
+        contextId: handshake.result.contextId,
+        result: { mediaType: 'image/png', base64: expect.any(String) },
+      },
+    });
+    expect(screenshot.result.result.base64.length).toBeGreaterThan(100);
+
+    await expect(
+      client.request({
+        id: 'close-first',
+        method: 'automation.execute',
+        params: { operation: 'browser_close_tab', input: { tabId: firstTabId } },
+      })
+    ).resolves.toMatchObject({
+      id: 'close-first',
+      ok: true,
+      result: {
+        ok: true,
+        runtimeId: handshake.result.runtimeId,
+        contextId: handshake.result.contextId,
+        tabId: firstTabId,
+        result: { closed: true, tabId: firstTabId },
+      },
+    });
+    await expect.poll(() => app.windows().length).toBe(1);
+    await expect(
+      client.request({
+        id: 'remaining-tabs',
+        method: 'automation.execute',
+        params: { operation: 'browser_list_tabs', input: {} },
+      })
+    ).resolves.toMatchObject({
+      id: 'remaining-tabs',
+      ok: true,
+      result: {
+        ok: true,
+        runtimeId: handshake.result.runtimeId,
+        contextId: handshake.result.contextId,
+        result: { tabs: [{ tabId: secondTabId, kind: 'headless', url: secondUrl }] },
+      },
     });
 
     const exit = new Promise((resolve) => app.process().once('exit', resolve));

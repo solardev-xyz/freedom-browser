@@ -4,7 +4,9 @@ const { invalidArgument } = require('./errors');
 
 const OPERATIONS = Object.freeze({
   LIST_TABS: 'browser_list_tabs',
+  CREATE_TAB: 'browser_create_tab',
   GET_TAB: 'browser_get_tab',
+  CLOSE_TAB: 'browser_close_tab',
   NAVIGATE: 'browser_navigate',
   SNAPSHOT: 'browser_snapshot',
   CLICK: 'browser_click',
@@ -17,6 +19,7 @@ const OPERATIONS = Object.freeze({
 const OPERATION_SET = new Set(Object.values(OPERATIONS));
 const TAB_OPERATIONS = new Set([
   OPERATIONS.GET_TAB,
+  OPERATIONS.CLOSE_TAB,
   OPERATIONS.NAVIGATE,
   OPERATIONS.SNAPSHOT,
   OPERATIONS.CLICK,
@@ -84,6 +87,10 @@ function validateOperationInput(operation, rawInput) {
   }
 
   if (operation === OPERATIONS.NAVIGATE) {
+    normalized.url = validateNavigationUrl(input.url);
+  }
+
+  if (operation === OPERATIONS.CREATE_TAB) {
     normalized.url = validateNavigationUrl(input.url);
   }
 

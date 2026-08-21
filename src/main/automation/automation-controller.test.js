@@ -188,4 +188,47 @@ describe('AutomationController', () => {
     expect(listed.result.tabs).toEqual([]);
     expect(controller.unregisterPage(tabId)).toBe(false);
   });
+
+  test('creates and closes pages only through the configured lifecycle', async () => {
+    const { controller } = createController();
+    const adapter = new FakePageAdapter('https://created.example/');
+    const lifecycle = {
+      createPage: jest.fn(async () => controller.registerPage(adapter, { kind: 'headless' })),
+      closePage: jest.fn(async (tabId) => {
+        controller.unregisterPage(tabId);
+        return true;
+      }),
+    };
+    controller.setPageLifecycle(lifecycle);
+
+    const created = await controller.execute(OPERATIONS.CREATE_TAB, {
+      url: 'https://created.example/',
+    });
+    const tabId = created.result.tab.tabId;
+    expect(created).toMatchObject({
+      ok: true,
+      result: {
+        tab: { tabId, kind: 'headless', url: 'https://created.example/', available: true },
+      },
+    });
+    expect(lifecycle.createPage).toHaveBeenCalledWith('https://created.example/');
+
+    await expect(controller.execute(OPERATIONS.CLOSE_TAB, { tabId })).resolves.toMatchObject({
+      ok: true,
+      tabId,
+      result: { closed: true, tabId },
+    });
+    expect(lifecycle.closePage).toHaveBeenCalledWith(tabId);
+    await expect(controller.execute(OPERATIONS.LIST_TABS)).resolves.toMatchObject({
+      result: { tabs: [] },
+    });
+
+    controller.setPageLifecycle(null);
+    await expect(
+      controller.execute(OPERATIONS.CREATE_TAB, { url: 'https://unavailable.example/' })
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: ERROR_CODES.CAPABILITY_UNAVAILABLE },
+    });
+  });
 });

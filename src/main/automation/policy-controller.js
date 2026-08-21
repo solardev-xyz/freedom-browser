@@ -4,7 +4,9 @@ const { OPERATIONS } = require('./contract/operations');
 
 const OPERATION_CLASSES = Object.freeze({
   [OPERATIONS.LIST_TABS]: 'observe',
+  [OPERATIONS.CREATE_TAB]: 'control',
   [OPERATIONS.GET_TAB]: 'observe',
+  [OPERATIONS.CLOSE_TAB]: 'control',
   [OPERATIONS.SNAPSHOT]: 'observe',
   [OPERATIONS.SCREENSHOT]: 'observe',
   [OPERATIONS.WAIT]: 'observe',

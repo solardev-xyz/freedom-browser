@@ -18,6 +18,23 @@ class AutomationController {
     this.runtimeId = options.runtimeId || opaqueId('runtime');
     this.contextId = options.contextId || opaqueId('context');
     this.pages = options.pageRegistry || new PageRegistry(options);
+    this.pageLifecycle = null;
+    if (options.pageLifecycle) this.setPageLifecycle(options.pageLifecycle);
+  }
+
+  setPageLifecycle(pageLifecycle) {
+    if (pageLifecycle === null) {
+      this.pageLifecycle = null;
+      return;
+    }
+    if (
+      !pageLifecycle ||
+      typeof pageLifecycle.createPage !== 'function' ||
+      typeof pageLifecycle.closePage !== 'function'
+    ) {
+      throw new TypeError('Automation page lifecycle requires createPage() and closePage()');
+    }
+    this.pageLifecycle = pageLifecycle;
   }
 
   registerPage(adapter, metadata) {
@@ -64,8 +81,30 @@ class AutomationController {
     switch (operation) {
       case OPERATIONS.LIST_TABS:
         return { tabs: this.pages.list() };
+      case OPERATIONS.CREATE_TAB: {
+        const lifecycle = this.#requirePageLifecycle();
+        const tabId = await lifecycle.createPage(input.url);
+        const created = this.pages.require(tabId);
+        return {
+          tab: {
+            tabId: created.tabId,
+            kind: created.kind,
+            ...created.adapter.getState(),
+          },
+        };
+      }
       case OPERATIONS.GET_TAB:
         return { tab: { tabId: entry.tabId, kind: entry.kind, ...entry.adapter.getState() } };
+      case OPERATIONS.CLOSE_TAB: {
+        const closed = await this.#requirePageLifecycle().closePage(entry.tabId);
+        if (!closed) {
+          throw new AutomationError(
+            ERROR_CODES.CAPABILITY_UNAVAILABLE,
+            'The automation tab cannot be closed by this runtime'
+          );
+        }
+        return { closed: true, tabId: entry.tabId };
+      }
       case OPERATIONS.NAVIGATE:
         return entry.adapter.navigate(input.url);
       case OPERATIONS.SNAPSHOT:
@@ -99,6 +138,16 @@ class AutomationController {
       }),
       result: result ?? {},
     };
+  }
+
+  #requirePageLifecycle() {
+    if (!this.pageLifecycle) {
+      throw new AutomationError(
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        'Automation tab lifecycle is unavailable in this runtime'
+      );
+    }
+    return this.pageLifecycle;
   }
 
   #errorEnvelope(tabId, entry, error) {

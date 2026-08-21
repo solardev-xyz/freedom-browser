@@ -14,6 +14,12 @@ describe('automation operation contract', () => {
     expect(
       validateOperationInput(OPERATIONS.NAVIGATE, { tabId: 'tab_1', url: 'ipfs://bafy/' })
     ).toEqual({ tabId: 'tab_1', url: 'ipfs://bafy/' });
+    expect(
+      validateOperationInput(OPERATIONS.CREATE_TAB, { url: ' https://example.test/ ' })
+    ).toEqual({ url: 'https://example.test/' });
+    expect(validateOperationInput(OPERATIONS.CLOSE_TAB, { tabId: ' tab_1 ' })).toEqual({
+      tabId: 'tab_1',
+    });
   });
 
   test.each([

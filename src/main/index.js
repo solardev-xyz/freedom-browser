@@ -267,10 +267,15 @@ const { initUpdater } = require('./updater');
 const { setupApplicationMenu, updateTabMenuItems } = require('./menu');
 const { registerWebContentsHandlers } = require('./webcontents-setup');
 const { installTestHarness, registerStubProtocols } = require('./test-harness');
-const { automationController } = require('./automation/runtime');
+const {
+  automationController,
+  registerAutomationWebContents,
+} = require('./automation/runtime');
+const { createHiddenPageManager } = require('./automation/hidden-page-manager');
 const { createRuntimeServer } = require('./automation/runtime-server');
 
 let runtimeServer = null;
+let hiddenPageManager = null;
 
 app.commandLine.appendSwitch('disable-features', 'VizDisplayCompositor');
 log.info('[profile] Active profile:', {
@@ -523,6 +528,11 @@ async function bootstrap() {
   }
 
   if (RUNTIME_MODE) {
+    hiddenPageManager = createHiddenPageManager({
+      BrowserWindow,
+      registerWebContents: registerAutomationWebContents,
+    });
+    automationController.setPageLifecycle(hiddenPageManager);
     runtimeServer = createRuntimeServer({
       profile: activeProfile,
       controller: automationController,
@@ -578,6 +588,11 @@ app.on('before-quit', async (event) => {
     log.info('[automation-runtime] Stopping control endpoint...');
     await runtimeServer.stop();
     runtimeServer = null;
+  }
+  if (hiddenPageManager) {
+    hiddenPageManager.closeAll();
+    hiddenPageManager = null;
+    automationController.setPageLifecycle(null);
   }
 
   // Close all DevTools first to prevent crashes during cleanup
