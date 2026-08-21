@@ -110,6 +110,20 @@ describe('AutomationController', () => {
     });
   });
 
+  test('does not echo an unvalidated tab ID into error envelopes', async () => {
+    const { controller } = createController();
+    const failure = await controller.execute(OPERATIONS.SNAPSHOT, {
+      tabId: { secret: 'untrusted metadata' },
+    });
+
+    expect(failure).toMatchObject({
+      ok: false,
+      error: { code: ERROR_CODES.INVALID_ARGUMENT },
+    });
+    expect(failure).not.toHaveProperty('tabId');
+    expect(JSON.stringify(failure)).not.toContain('untrusted metadata');
+  });
+
   test('normalizes and dispatches bounded waits', async () => {
     const { controller } = createController();
     const adapter = new FakePageAdapter();

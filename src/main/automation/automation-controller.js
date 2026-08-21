@@ -55,7 +55,8 @@ class AutomationController {
       const result = await this.#dispatch(operation, input, entry);
       return this.#successEnvelope(entry, result);
     } catch (error) {
-      return this.#errorEnvelope(input?.tabId || rawInput?.tabId, entry, error);
+      const rawTabId = typeof rawInput?.tabId === 'string' ? rawInput.tabId.trim() : '';
+      return this.#errorEnvelope(input?.tabId || rawTabId || undefined, entry, error);
     }
   }
 

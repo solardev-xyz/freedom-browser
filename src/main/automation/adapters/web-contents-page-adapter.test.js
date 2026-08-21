@@ -110,6 +110,7 @@ describe('WebContentsPageAdapter', () => {
     webContents.executeJavaScriptInIsolatedWorld
       .mockResolvedValueOnce(snapshotResult())
       .mockResolvedValueOnce({ ok: true, point: { x: 20, y: 30 } })
+      .mockResolvedValueOnce({ ok: true, point: { x: 20, y: 30 } })
       .mockResolvedValueOnce({ ok: true });
     const adapter = new WebContentsPageAdapter(webContents, {
       referenceIdFactory: () => 'ref_test',
@@ -132,8 +133,25 @@ describe('WebContentsPageAdapter', () => {
       characters: 5,
     });
     expect(webContents.insertText).toHaveBeenCalledWith('hello');
-    const typeCode = webContents.executeJavaScriptInIsolatedWorld.mock.calls[2][1][0].code;
+    const typeCode = webContents.executeJavaScriptInIsolatedWorld.mock.calls[3][1][0].code;
     expect(typeCode).toContain('const inspectReferencedElement');
+  });
+
+  test('revalidates click targets after moving the trusted pointer', async () => {
+    const webContents = new FakeWebContents();
+    webContents.executeJavaScriptInIsolatedWorld
+      .mockResolvedValueOnce(snapshotResult())
+      .mockResolvedValueOnce({ ok: true, point: { x: 20, y: 30 } })
+      .mockResolvedValueOnce({ ok: false, reason: 'not_interactable' });
+    const adapter = new WebContentsPageAdapter(webContents, {
+      referenceIdFactory: () => 'ref_test',
+    });
+    await adapter.snapshot();
+
+    await expect(adapter.click('ref_test_0')).rejects.toMatchObject({
+      code: ERROR_CODES.ELEMENT_NOT_INTERACTABLE,
+    });
+    expect(webContents.sendInputEvent.mock.calls).toEqual([[{ type: 'mouseMove', x: 20, y: 30 }]]);
   });
 
   test('fails closed when navigation makes a reference stale', async () => {
@@ -212,6 +230,25 @@ describe('WebContentsPageAdapter', () => {
     await expect(
       adapter.wait({ condition: 'navigation', sinceNavigationId: 0, timeoutMs: 5 })
     ).rejects.toMatchObject({ code: ERROR_CODES.WAIT_TIMEOUT, retryable: true });
+  });
+
+  test('retries text waits when navigation destroys the execution context', async () => {
+    const webContents = new FakeWebContents();
+    webContents.executeJavaScriptInIsolatedWorld
+      .mockImplementationOnce(async () => {
+        webContents.loading = true;
+        webContents.emit('did-start-navigation', {}, 'https://next.example.test/', false, true);
+        webContents.url = 'https://next.example.test/';
+        webContents.loading = false;
+        webContents.emit('did-navigate', {}, 'https://next.example.test/');
+        throw new Error('Execution context was destroyed');
+      })
+      .mockResolvedValueOnce(true);
+    const adapter = new WebContentsPageAdapter(webContents);
+
+    await expect(
+      adapter.wait({ condition: 'text', text: 'Ready', timeoutMs: 1_000 })
+    ).resolves.toMatchObject({ matched: true, condition: 'text', navigationId: 1 });
   });
 
   test('stop-loading cancels active waits', async () => {

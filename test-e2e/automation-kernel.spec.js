@@ -76,6 +76,9 @@ test('one automation contract drives desktop and hidden Electron pages', async (
       <title>Automation fixture</title>
       <label for="name">Name</label>
       <input id="name" aria-label="Name">
+      <input id="redirect-input" aria-label="Redirected input">
+      <input id="redirect-sink" aria-label="Redirect sink">
+      <p id="redirect-output">Redirect waiting</p>
       <button id="submit">Submit</button>
       <p id="output">Waiting</p>
       <button id="replace-target">Replace target</button>
@@ -87,6 +90,12 @@ test('one automation contract drives desktop and hidden Electron pages', async (
         let inputTrusted = false;
         document.querySelector('#name').addEventListener('input', (event) => {
           inputTrusted = event.isTrusted;
+        });
+        document.querySelector('#redirect-input').addEventListener('focus', () => {
+          document.querySelector('#redirect-sink').focus();
+        });
+        document.querySelector('#redirect-sink').addEventListener('input', () => {
+          document.querySelector('#redirect-output').textContent = 'Unexpected redirected input';
         });
         document.querySelector('#submit').addEventListener('click', (event) => {
           const value = document.querySelector('#name').value;
@@ -165,6 +174,9 @@ test('one automation contract drives desktop and hidden Electron pages', async (
   });
   expect(snapshot.ok).toBe(true);
   const nameRef = snapshot.result.elements.find((element) => element.name === 'Name')?.ref;
+  const redirectedInputRef = snapshot.result.elements.find(
+    (element) => element.name === 'Redirected input'
+  )?.ref;
   const submitRef = snapshot.result.elements.find((element) => element.name === 'Submit')?.ref;
   const replaceRef = snapshot.result.elements.find(
     (element) => element.name === 'Replace target'
@@ -173,9 +185,27 @@ test('one automation contract drives desktop and hidden Electron pages', async (
     (element) => element.name === 'Dynamic target'
   )?.ref;
   expect(nameRef).toBeTruthy();
+  expect(redirectedInputRef).toBeTruthy();
   expect(submitRef).toBeTruthy();
   expect(replaceRef).toBeTruthy();
   expect(dynamicRef).toBeTruthy();
+
+  await expect(
+    executeAutomation(electronApp, 'browser_type', {
+      tabId: desktopTab.tabId,
+      ref: redirectedInputRef,
+      text: 'must-not-land',
+    })
+  ).resolves.toMatchObject({
+    ok: false,
+    error: { code: 'ELEMENT_NOT_INTERACTABLE' },
+  });
+  await expect(
+    executeAutomation(electronApp, 'browser_snapshot', { tabId: desktopTab.tabId })
+  ).resolves.toMatchObject({
+    ok: true,
+    result: { text: expect.stringContaining('Redirect waiting') },
+  });
 
   await expect(
     executeAutomation(electronApp, 'browser_type', {

@@ -215,6 +215,9 @@ function inspectReferencedElement(ref, action) {
   if (!editable) return { ok: false, reason: 'not_interactable' };
   element.scrollIntoView({ block: 'center', inline: 'center' });
   element.focus();
+  if (element.ownerDocument.activeElement !== element) {
+    return { ok: false, reason: 'not_interactable' };
+  }
   return { ok: true, contentEditable: element.isContentEditable };
 }
 
@@ -365,8 +368,21 @@ class WebContentsPageAdapter extends EventEmitter {
     this.webContents.focus?.();
     const pointer = { x: result.point.x, y: result.point.y, button: 'left' };
     this.webContents.sendInputEvent({ type: 'mouseMove', x: pointer.x, y: pointer.y });
-    this.webContents.sendInputEvent({ type: 'mouseDown', ...pointer, clickCount: 1 });
-    this.webContents.sendInputEvent({ type: 'mouseUp', ...pointer, clickCount: 1 });
+    const confirmed = await this.#execute(inspectReferencedElement, [ref, 'click'], true);
+    this.#assertActionResult(confirmed);
+    if (!confirmed.point) {
+      throw new AutomationError(
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        'Trusted pointer input is unavailable for this page'
+      );
+    }
+    const confirmedPointer = {
+      x: confirmed.point.x,
+      y: confirmed.point.y,
+      button: 'left',
+    };
+    this.webContents.sendInputEvent({ type: 'mouseDown', ...confirmedPointer, clickCount: 1 });
+    this.webContents.sendInputEvent({ type: 'mouseUp', ...confirmedPointer, clickCount: 1 });
     return { clicked: true, ref };
   }
 
@@ -530,8 +546,23 @@ class WebContentsPageAdapter extends EventEmitter {
         return this.navigationId > options.sinceNavigationId;
       case 'url':
         return this.webContents.getURL?.() === options.url;
-      case 'text':
-        return (await this.#execute(pageContainsText, [options.text], false)) === true;
+      case 'text': {
+        const navigationId = this.navigationId;
+        try {
+          const matched = await this.#execute(pageContainsText, [options.text], false);
+          return navigationId === this.navigationId && matched === true;
+        } catch (error) {
+          this.#assertAvailable();
+          if (
+            navigationId !== this.navigationId ||
+            this.navigationInProgress ||
+            this.webContents.isLoading?.() === true
+          ) {
+            return false;
+          }
+          throw error;
+        }
+      }
       default:
         return false;
     }
