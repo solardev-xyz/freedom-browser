@@ -1,6 +1,21 @@
 'use strict';
 
 const { AutomationError, ERROR_CODES } = require('./contract/errors');
+const { OPERATIONS, validateOperationInput } = require('./contract/operations');
+
+function secureHiddenWindowOptions(options = {}) {
+  return {
+    ...options,
+    show: false,
+    paintWhenInitiallyHidden: true,
+    webPreferences: {
+      ...options.webPreferences,
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  };
+}
 
 function createHiddenPageManager(options = {}) {
   const BrowserWindow = options.BrowserWindow;
@@ -13,28 +28,51 @@ function createHiddenPageManager(options = {}) {
   }
 
   const windowsByTabId = new Map();
+  const logger = options.logger || console;
+
+  function adoptWindow(window, metadata) {
+    let tabId = null;
+    window.webContents.setWindowOpenHandler(({ url }) => {
+      try {
+        validateOperationInput(OPERATIONS.CREATE_TAB, { url });
+      } catch {
+        logger.warn?.('[automation-runtime] Blocked unsupported popup URL');
+        return { action: 'deny' };
+      }
+
+      return {
+        action: 'allow',
+        overrideBrowserWindowOptions: secureHiddenWindowOptions(),
+        createWindow: (childOptions) => {
+          const childWindow = new BrowserWindow(secureHiddenWindowOptions(childOptions));
+          try {
+            adoptWindow(childWindow, { kind: 'popup', openerTabId: tabId });
+            return childWindow.webContents;
+          } catch (error) {
+            if (!childWindow.isDestroyed?.()) childWindow.destroy();
+            throw error;
+          }
+        },
+      };
+    });
+
+    tabId = registerWebContents(window.webContents, metadata);
+    if (!tabId) {
+      throw new AutomationError(
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        'The hidden page is not eligible for automation'
+      );
+    }
+    windowsByTabId.set(tabId, window);
+    window.once('closed', () => windowsByTabId.delete(tabId));
+    return tabId;
+  }
 
   async function createPage(url) {
-    const window = new BrowserWindow({
-      show: false,
-      paintWhenInitiallyHidden: true,
-      webPreferences: {
-        contextIsolation: true,
-        nodeIntegration: false,
-        sandbox: true,
-      },
-    });
+    const window = new BrowserWindow(secureHiddenWindowOptions());
     let tabId = null;
     try {
-      tabId = registerWebContents(window.webContents, { kind: 'headless' });
-      if (!tabId) {
-        throw new AutomationError(
-          ERROR_CODES.CAPABILITY_UNAVAILABLE,
-          'The hidden page is not eligible for automation'
-        );
-      }
-      windowsByTabId.set(tabId, window);
-      window.once('closed', () => windowsByTabId.delete(tabId));
+      tabId = adoptWindow(window, { kind: 'headless' });
       await window.loadURL(url);
       return tabId;
     } catch (error) {

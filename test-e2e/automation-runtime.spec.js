@@ -164,6 +164,59 @@ test('headless runtime publishes readiness and serves the automation controller'
       },
     });
 
+    const popupUrl = 'https://runtime.example.test/popup';
+    await app.windows()[0].evaluate((url) => {
+      window.open(url, '_blank', 'show=yes,nodeIntegration=yes,contextIsolation=no');
+    }, popupUrl);
+    await expect.poll(() => app.windows().length).toBe(2);
+    await expect
+      .poll(() =>
+        app.evaluate(({ BrowserWindow }) =>
+          BrowserWindow.getAllWindows().map((window) => ({
+            visible: window.isVisible(),
+            preferences: window.webContents.getLastWebPreferences(),
+          }))
+        )
+      )
+      .toEqual([
+        expect.objectContaining({
+          visible: false,
+          preferences: expect.objectContaining({
+            contextIsolation: true,
+            nodeIntegration: false,
+            sandbox: true,
+          }),
+        }),
+        expect.objectContaining({
+          visible: false,
+          preferences: expect.objectContaining({
+            contextIsolation: true,
+            nodeIntegration: false,
+            sandbox: true,
+          }),
+        }),
+      ]);
+
+    const popupTabs = await client.request({
+      id: 'popup-tabs',
+      method: 'automation.execute',
+      params: { operation: 'browser_list_tabs', input: {} },
+    });
+    const popup = popupTabs.result.result.tabs.find((tab) => tab.kind === 'popup');
+    expect(popup).toMatchObject({ tabId: expect.any(String), kind: 'popup', url: popupUrl });
+    await expect(
+      client.request({
+        id: 'close-popup',
+        method: 'automation.execute',
+        params: { operation: 'browser_close_tab', input: { tabId: popup.tabId } },
+      })
+    ).resolves.toMatchObject({
+      id: 'close-popup',
+      ok: true,
+      result: { ok: true, result: { closed: true, tabId: popup.tabId } },
+    });
+    await expect.poll(() => app.windows().length).toBe(1);
+
     const secondUrl = 'https://runtime.example.test/second';
     const createdSecond = await client.request({
       id: 'create-second',

@@ -3,7 +3,14 @@
 const { EventEmitter } = require('events');
 const { createHiddenPageManager } = require('./hidden-page-manager');
 
-class FakeWebContents extends EventEmitter {}
+class FakeWebContents extends EventEmitter {
+  constructor() {
+    super();
+    this.setWindowOpenHandler = jest.fn((handler) => {
+      this.windowOpenHandler = handler;
+    });
+  }
+}
 
 class FakeBrowserWindow extends EventEmitter {
   static instances = [];
@@ -72,6 +79,56 @@ describe('hidden automation page manager', () => {
     await expect(manager.closePage('tab_1')).resolves.toBe(true);
     expect(window.destroyed).toBe(true);
     expect(manager.size()).toBe(0);
+  });
+
+  test('forces supported popups into owned hidden sandboxed windows', async () => {
+    const registrations = [];
+    const manager = createHiddenPageManager({
+      BrowserWindow: FakeBrowserWindow,
+      registerWebContents: (webContents, metadata) => {
+        registrations.push({ webContents, metadata });
+        return `tab_${registrations.length}`;
+      },
+      logger: { warn: jest.fn() },
+    });
+    await manager.createPage('https://example.test/');
+    const opener = FakeBrowserWindow.instances[0];
+
+    expect(opener.webContents.windowOpenHandler({ url: 'file:///tmp/private' })).toEqual({
+      action: 'deny',
+    });
+    const decision = opener.webContents.windowOpenHandler({
+      url: 'https://popup.example.test/',
+    });
+    expect(decision).toMatchObject({
+      action: 'allow',
+      overrideBrowserWindowOptions: {
+        show: false,
+        paintWhenInitiallyHidden: true,
+        webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+      },
+    });
+
+    const popupWebContents = decision.createWindow({
+      show: true,
+      webPreferences: { contextIsolation: false, nodeIntegration: true, sandbox: false },
+    });
+    const popup = FakeBrowserWindow.instances[1];
+    expect(popupWebContents).toBe(popup.webContents);
+    expect(popup.options).toMatchObject({
+      show: false,
+      paintWhenInitiallyHidden: true,
+      webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+    });
+    expect(registrations[1]).toEqual({
+      webContents: popup.webContents,
+      metadata: { kind: 'popup', openerTabId: 'tab_1' },
+    });
+    expect(manager.size()).toBe(2);
+
+    await expect(manager.closePage('tab_2')).resolves.toBe(true);
+    expect(popup.destroyed).toBe(true);
+    expect(manager.size()).toBe(1);
   });
 
   test('destroys failed pages and returns a typed navigation error', async () => {
