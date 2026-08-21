@@ -41,6 +41,7 @@ describe('automation runtime registration', () => {
   test('uses the same controller for desktop guests and direct hidden WebContents', async () => {
     let nextTab = 1;
     const runtime = createAutomationRuntime({
+      isPrivateWebContents: (webContents) => webContents.private === true,
       controllerOptions: {
         runtimeId: 'runtime_test',
         contextId: 'context_test',
@@ -52,6 +53,8 @@ describe('automation runtime registration', () => {
     const desktop = new FakeWebContents('https://desktop.example/', 11);
     const hidden = new FakeWebContents('https://hidden.example/', 12);
     const popup = new FakeWebContents('https://popup.example/', 13);
+    const privatePage = new FakeWebContents('https://private.example/', 15);
+    privatePage.private = true;
     desktop.hostWebContents = host;
     const detach = runtime.attachToHostWebContents(host, { ipcMain });
 
@@ -71,9 +74,11 @@ describe('automation runtime registration', () => {
     );
     const hiddenTabId = runtime.registerWebContents(hidden, { kind: 'headless' });
     const duplicateTabId = runtime.registerWebContents(hidden, { kind: 'headless' });
+    const privateTabId = runtime.registerWebContents(privatePage, { kind: 'desktop' });
     const listed = await runtime.controller.execute(OPERATIONS.LIST_TABS);
 
     expect(duplicateTabId).toBe(hiddenTabId);
+    expect(privateTabId).toBeNull();
     expect(runtime.automationTabIdForRenderer(host, 7)).toBe('tab_1');
     expect(runtime.desktopBindingForAutomationTab('tab_1')).toEqual({
       hostWebContents: host,
@@ -99,6 +104,7 @@ describe('automation runtime registration', () => {
 
   test('removes both sides of a desktop binding when the guest is destroyed', () => {
     const runtime = createAutomationRuntime({
+      isPrivateWebContents: () => false,
       controllerOptions: { tabIdFactory: () => 'tab_desktop' },
     });
     const host = new EventEmitter();
@@ -117,5 +123,23 @@ describe('automation runtime registration', () => {
 
     expect(runtime.automationTabIdForRenderer(host, 9)).toBeNull();
     expect(runtime.desktopBindingForAutomationTab('tab_desktop')).toBeNull();
+  });
+
+  test('fails closed when privacy eligibility cannot be determined', async () => {
+    const runtime = createAutomationRuntime({
+      isPrivateWebContents: () => {
+        throw new Error('privacy registry unavailable');
+      },
+    });
+
+    expect(
+      runtime.registerWebContents(new FakeWebContents('https://unknown.example/', 31), {
+        kind: 'desktop',
+      })
+    ).toBeNull();
+    await expect(runtime.controller.execute(OPERATIONS.LIST_TABS)).resolves.toMatchObject({
+      ok: true,
+      result: { tabs: [] },
+    });
   });
 });

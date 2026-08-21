@@ -5,6 +5,10 @@ const { createInitialAutomationPolicy } = require('./policy-controller');
 const { WebContentsPageAdapter } = require('./adapters/web-contents-page-adapter');
 const IPC = require('../../shared/ipc-channels');
 
+function defaultIsPrivateWebContents(webContents) {
+  return require('../private/private-windows').isPrivateWebContents(webContents);
+}
+
 function createAutomationRuntime(options = {}) {
   const controller =
     options.controller ||
@@ -15,8 +19,16 @@ function createAutomationRuntime(options = {}) {
   const adapters = new WeakMap();
   const desktopBindingsByHost = new WeakMap();
   const desktopBindingsByAutomationTab = new Map();
+  const isPrivateWebContents = options.isPrivateWebContents || defaultIsPrivateWebContents;
 
   function registerWebContents(webContents, metadata = {}) {
+    try {
+      if (isPrivateWebContents(webContents)) return null;
+    } catch {
+      // Privacy classification is an eligibility gate. If it cannot be
+      // evaluated reliably, keep the page outside the automation context.
+      return null;
+    }
     const existing = adapters.get(webContents);
     if (existing) return existing.tabId;
 
@@ -52,7 +64,8 @@ function createAutomationRuntime(options = {}) {
     const bindingsByRendererTab = new Map();
     desktopBindingsByHost.set(hostWebContents, bindingsByRendererTab);
     const onAttached = (_event, guestWebContents) => {
-      registerWebContents(guestWebContents, { kind: 'desktop' });
+      const tabId = registerWebContents(guestWebContents, { kind: 'desktop' });
+      if (!tabId) return;
       if (Number.isInteger(guestWebContents.id)) {
         const guestWebContentsId = guestWebContents.id;
         guestsById.set(guestWebContentsId, guestWebContents);

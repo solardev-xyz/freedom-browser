@@ -16,14 +16,43 @@ describe('automation operation contract', () => {
     ).toEqual({ tabId: 'tab_1', url: 'ipfs://bafy/' });
   });
 
-  test.each(['javascript:alert(1)', 'data:text/html,hello', 'file:///tmp/secret'])(
-    'rejects privileged navigation URL %s',
-    (url) => {
-      expect(() => validateOperationInput(OPERATIONS.NAVIGATE, { tabId: 'tab_1', url })).toThrow(
-        'is not allowed'
-      );
-    }
-  );
+  test.each([
+    'javascript:alert(1)',
+    'data:text/html,hello',
+    'file:///tmp/secret',
+    'freedom://settings',
+    'chrome://settings',
+    'about:blank',
+    'blob:https://example.test/id',
+    'devtools://devtools/bundled/inspector.html',
+    'ftp://example.test/file',
+  ])('rejects privileged navigation URL %s', (url) => {
+    expect(() => validateOperationInput(OPERATIONS.NAVIGATE, { tabId: 'tab_1', url })).toThrow(
+      'is not allowed'
+    );
+  });
+
+  test.each([
+    'http://example.test/',
+    'https://example.test/',
+    'bzz://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/',
+    'ipfs://bafybeiaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/',
+    'ipns://docs.ipfs.tech/',
+  ])('accepts supported navigation URL %s', (url) => {
+    expect(validateOperationInput(OPERATIONS.NAVIGATE, { tabId: 'tab_1', url })).toEqual({
+      tabId: 'tab_1',
+      url,
+    });
+  });
+
+  test('rejects navigation URLs with embedded credentials', () => {
+    expect(() =>
+      validateOperationInput(OPERATIONS.NAVIGATE, {
+        tabId: 'tab_1',
+        url: 'https://user:password@example.test/',
+      })
+    ).toThrow('must not contain embedded credentials');
+  });
 
   test('rejects relative navigation targets and unknown operations', () => {
     expect(() =>

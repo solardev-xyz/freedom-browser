@@ -75,7 +75,12 @@ function createMainWindow(initialUrl = null, options = {}) {
 
   // Register before loadFile() so a fast renderer cannot attach its first
   // <webview> before the automation runtime starts observing guest creation.
-  const detachAutomation = attachAutomationToHostWebContents(window.webContents, { ipcMain });
+  // Private windows are intentionally absent from the default automation
+  // context: their URLs, titles, snapshots, and screenshots must remain
+  // unobservable to normal browser agents.
+  const detachAutomation = privatePartition
+    ? () => {}
+    : attachAutomationToHostWebContents(window.webContents, { ipcMain });
   window.once('closed', detachAutomation);
 
   // Load index.html with optional initial URL / private partition as query

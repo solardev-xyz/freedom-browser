@@ -25,7 +25,7 @@ const TAB_OPERATIONS = new Set([
   OPERATIONS.WAIT,
   OPERATIONS.STOP_LOADING,
 ]);
-const BLOCKED_NAVIGATION_SCHEMES = new Set(['data:', 'file:', 'javascript:']);
+const ALLOWED_NAVIGATION_SCHEMES = new Set(['http:', 'https:', 'bzz:', 'ipfs:', 'ipns:']);
 const WAIT_CONDITIONS = new Set(['load', 'navigation', 'text', 'url']);
 const DEFAULT_WAIT_TIMEOUT_MS = 10_000;
 const MAX_WAIT_TIMEOUT_MS = 30_000;
@@ -55,10 +55,15 @@ function validateNavigationUrl(value) {
   } catch {
     throw invalidArgument('url must be an absolute URL', { field: 'url' });
   }
-  if (BLOCKED_NAVIGATION_SCHEMES.has(parsed.protocol)) {
+  if (!ALLOWED_NAVIGATION_SCHEMES.has(parsed.protocol)) {
     throw invalidArgument(`Navigation to ${parsed.protocol} URLs is not allowed`, {
       field: 'url',
       protocol: parsed.protocol,
+    });
+  }
+  if (parsed.username || parsed.password) {
+    throw invalidArgument('Navigation URLs must not contain embedded credentials', {
+      field: 'url',
     });
   }
   return url;

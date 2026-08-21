@@ -126,6 +126,13 @@ async function closePrivateWindows(electronApp) {
   });
 }
 
+async function automationTabs(electronApp) {
+  const result = await electronApp.evaluate(() =>
+    globalThis.__FREEDOM_TEST_HARNESS__.automationExecute('browser_list_tabs', {})
+  );
+  return result.result.tabs;
+}
+
 // Record every title the NEXT window created is asked to display.
 //
 // Sampling getTitle() after the window exists would be vacuous: the
@@ -233,6 +240,25 @@ test('private window: badge, isolated partition, private start page, no wallet p
   expect(await evalInActiveWebview(window, 'typeof window.ethereum')).toBe('object');
   expect(await evalInActiveWebview(window, 'typeof window.swarm')).toBe('object');
   expect(await evalInActiveWebview(window, 'typeof window.radicle')).toBe('object');
+
+  await closePrivateWindows(electronApp);
+});
+
+test('private tabs are absent from the default automation context', async ({
+  electronApp,
+  window,
+}) => {
+  await expect(window.locator('[data-test="address-input"]')).toBeVisible();
+  const privateUrl = 'https://private-automation.example/secret';
+  const priv = await openPrivateWindow(electronApp);
+  await navigateTo(priv, privateUrl);
+  await waitForStubPage(priv, privateUrl);
+
+  await expect
+    .poll(() => automationTabs(electronApp))
+    .not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ url: expect.stringMatching(privateUrl) })])
+    );
 
   await closePrivateWindows(electronApp);
 });
