@@ -21,7 +21,15 @@ function createAutomationRuntime(options = {}) {
     const tabId = controller.registerPage(adapter, metadata);
     const registration = { adapter, tabId };
     adapters.set(webContents, registration);
+    const onCreatedWindow = (...args) => {
+      const childWindow = args.find((value) => value?.webContents);
+      if (childWindow?.webContents) {
+        registerWebContents(childWindow.webContents, { kind: 'popup', openerTabId: tabId });
+      }
+    };
+    webContents.on?.('did-create-window', onCreatedWindow);
     adapter.once('destroyed', () => {
+      webContents.off?.('did-create-window', onCreatedWindow);
       controller.unregisterPage(tabId);
       adapters.delete(webContents);
     });

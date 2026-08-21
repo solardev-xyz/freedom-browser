@@ -49,6 +49,7 @@ describe('automation runtime registration', () => {
     const host = new EventEmitter();
     const desktop = new FakeWebContents('https://desktop.example/');
     const hidden = new FakeWebContents('https://hidden.example/');
+    const popup = new FakeWebContents('https://popup.example/');
     const detach = runtime.attachToHostWebContents(host);
 
     host.emit('did-attach-webview', {}, desktop);
@@ -62,9 +63,15 @@ describe('automation runtime registration', () => {
       expect.objectContaining({ tabId: 'tab_2', kind: 'headless' }),
     ]);
 
+    hidden.emit('did-create-window', { webContents: popup });
+    const withPopup = await runtime.controller.execute(OPERATIONS.LIST_TABS);
+    expect(withPopup.result.tabs).toEqual(
+      expect.arrayContaining([expect.objectContaining({ tabId: 'tab_3', kind: 'popup' })])
+    );
+
     detach();
     host.emit('did-attach-webview', {}, new FakeWebContents('https://ignored.example/'));
     const afterDetach = await runtime.controller.execute(OPERATIONS.LIST_TABS);
-    expect(afterDetach.result.tabs).toHaveLength(2);
+    expect(afterDetach.result.tabs).toHaveLength(3);
   });
 });

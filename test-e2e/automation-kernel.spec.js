@@ -36,6 +36,11 @@ test('one automation contract drives desktop and hidden Electron pages', async (
       <input id="name" aria-label="Name">
       <button id="submit">Submit</button>
       <p id="output">Waiting</p>
+      <button id="replace-target">Replace target</button>
+      <button id="dynamic-target">Dynamic target</button>
+      <p id="dynamic-output">Dynamic waiting</p>
+      <button id="open-popup">Open popup</button>
+      <iframe id="child-frame" name="automation-child"></iframe>
       <script>
         let inputTrusted = false;
         document.querySelector('#name').addEventListener('input', (event) => {
@@ -49,6 +54,30 @@ test('one automation contract drives desktop and hidden Electron pages', async (
             document.querySelector('#output').textContent += ' Ready';
           }, 150);
         });
+        const wireDynamicTarget = (target) => {
+          target.addEventListener('click', (event) => {
+            document.querySelector('#dynamic-output').textContent =
+              'Dynamic trusted=' + event.isTrusted;
+          });
+        };
+        wireDynamicTarget(document.querySelector('#dynamic-target'));
+        document.querySelector('#replace-target').addEventListener('click', () => {
+          const current = document.querySelector('#dynamic-target');
+          const replacement = current.cloneNode(true);
+          current.replaceWith(replacement);
+          wireDynamicTarget(replacement);
+        });
+        document.querySelector('#open-popup').addEventListener('click', () => {
+          window.open('${NEXT_URL}', '_blank');
+        });
+        document.querySelector('#child-frame').srcdoc =
+          '<button id="frame-run">Run frame</button>' +
+          '<p id="frame-output">Frame waiting</p>' +
+          '<scr' + 'ipt>' +
+          'document.querySelector("#frame-run").addEventListener("click", (event) => {' +
+          'document.querySelector("#frame-output").textContent = "Frame trusted=" + event.isTrusted;' +
+          '});' +
+          '</scr' + 'ipt>';
       </script>`,
   });
   await harness.setContentFixture(NEXT_URL, {
@@ -79,8 +108,16 @@ test('one automation contract drives desktop and hidden Electron pages', async (
   expect(snapshot.ok).toBe(true);
   const nameRef = snapshot.result.elements.find((element) => element.name === 'Name')?.ref;
   const submitRef = snapshot.result.elements.find((element) => element.name === 'Submit')?.ref;
+  const replaceRef = snapshot.result.elements.find(
+    (element) => element.name === 'Replace target'
+  )?.ref;
+  const dynamicRef = snapshot.result.elements.find(
+    (element) => element.name === 'Dynamic target'
+  )?.ref;
   expect(nameRef).toBeTruthy();
   expect(submitRef).toBeTruthy();
+  expect(replaceRef).toBeTruthy();
+  expect(dynamicRef).toBeTruthy();
 
   await expect(
     executeAutomation(electronApp, 'browser_type', {
@@ -111,6 +148,89 @@ test('one automation contract drives desktop and hidden Electron pages', async (
     })
   ).resolves.toMatchObject({ ok: true, result: { matched: true, condition: 'text' } });
 
+  let frameSnapshot;
+  await expect
+    .poll(async () => {
+      frameSnapshot = await executeAutomation(electronApp, 'browser_snapshot', {
+        tabId: desktopTab.tabId,
+      });
+      return frameSnapshot.result.elements.some((element) => element.name === 'Run frame');
+    })
+    .toBe(true);
+  const childFrame = frameSnapshot.result.frames.find((frame) => frame.name === 'automation-child');
+  const frameRef = frameSnapshot.result.elements.find(
+    (element) => element.name === 'Run frame'
+  )?.ref;
+  expect(childFrame).toMatchObject({ parentFrameId: 'frame_main', depth: 1, accessible: true });
+  expect(frameSnapshot.result.elements.find((element) => element.ref === frameRef)?.frameId).toBe(
+    childFrame.frameId
+  );
+  await expect(
+    executeAutomation(electronApp, 'browser_click', { tabId: desktopTab.tabId, ref: frameRef })
+  ).resolves.toMatchObject({ ok: true });
+  await expect(
+    executeAutomation(electronApp, 'browser_wait', {
+      tabId: desktopTab.tabId,
+      condition: 'text',
+      text: 'Frame trusted=true',
+      timeoutMs: 2_000,
+    })
+  ).resolves.toMatchObject({ ok: true });
+
+  await expect(
+    executeAutomation(electronApp, 'browser_click', {
+      tabId: desktopTab.tabId,
+      ref: replaceRef,
+    })
+  ).resolves.toMatchObject({ ok: true });
+  await expect(
+    executeAutomation(electronApp, 'browser_click', {
+      tabId: desktopTab.tabId,
+      ref: dynamicRef,
+    })
+  ).resolves.toMatchObject({ ok: false, error: { code: 'STALE_ELEMENT_REFERENCE' } });
+  const postMutationSnapshot = await executeAutomation(electronApp, 'browser_snapshot', {
+    tabId: desktopTab.tabId,
+  });
+  const replacementRef = postMutationSnapshot.result.elements.find(
+    (element) => element.name === 'Dynamic target'
+  )?.ref;
+  expect(replacementRef).toBeTruthy();
+  expect(replacementRef).not.toBe(dynamicRef);
+  await expect(
+    executeAutomation(electronApp, 'browser_click', {
+      tabId: desktopTab.tabId,
+      ref: replacementRef,
+    })
+  ).resolves.toMatchObject({ ok: true });
+  await expect(
+    executeAutomation(electronApp, 'browser_wait', {
+      tabId: desktopTab.tabId,
+      condition: 'text',
+      text: 'Dynamic trusted=true',
+      timeoutMs: 2_000,
+    })
+  ).resolves.toMatchObject({ ok: true });
+
+  const popupRef = postMutationSnapshot.result.elements.find(
+    (element) => element.name === 'Open popup'
+  )?.ref;
+  const tabCountBeforePopup = (await automationTabs(electronApp)).length;
+  await expect(
+    executeAutomation(electronApp, 'browser_click', {
+      tabId: desktopTab.tabId,
+      ref: popupRef,
+    })
+  ).resolves.toMatchObject({ ok: true });
+  await expect
+    .poll(() => automationTabs(electronApp), { timeout: 5_000 })
+    .toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ url: NEXT_URL, kind: 'desktop', available: true }),
+      ])
+    );
+  expect((await automationTabs(electronApp)).length).toBe(tabCountBeforePopup + 1);
+
   const pendingWait = executeAutomation(electronApp, 'browser_wait', {
     tabId: desktopTab.tabId,
     condition: 'text',
@@ -126,12 +246,12 @@ test('one automation contract drives desktop and hidden Electron pages', async (
     error: { code: 'USER_CANCELLED' },
   });
 
-  await input.click();
-  await input.fill(NEXT_URL);
-  await input.press('Enter');
-  await expect
-    .poll(() => automationTabs(electronApp), { timeout: 5_000 })
-    .toEqual(expect.arrayContaining([expect.objectContaining({ url: NEXT_URL })]));
+  await expect(
+    executeAutomation(electronApp, 'browser_navigate', {
+      tabId: desktopTab.tabId,
+      url: NEXT_URL,
+    })
+  ).resolves.toMatchObject({ ok: true });
   await expect(
     executeAutomation(electronApp, 'browser_click', {
       tabId: desktopTab.tabId,

@@ -50,10 +50,20 @@ function snapshotResult() {
     title: 'Fixture',
     text: 'Submit Name',
     truncated: false,
+    frames: [
+      {
+        frameId: 'frame_main',
+        parentFrameId: null,
+        depth: 0,
+        name: '',
+        url: 'https://example.test/',
+        accessible: true,
+      },
+    ],
     elements: [
       {
-        selector: 'html > body:nth-child(2) > button:nth-child(1)',
-        fingerprint: 'button||button|Submit',
+        ref: 'ref_test_0',
+        frameId: 'frame_main',
         role: 'button',
         name: 'Submit',
         tag: 'button',
@@ -77,7 +87,8 @@ describe('WebContentsPageAdapter', () => {
     const snapshot = await adapter.snapshot();
     expect(snapshot.elements).toEqual([
       {
-        ref: 'ref_test',
+        ref: 'ref_test_0',
+        frameId: 'frame_main',
         role: 'button',
         name: 'Submit',
         tag: 'button',
@@ -105,16 +116,19 @@ describe('WebContentsPageAdapter', () => {
     });
     await adapter.snapshot();
 
-    await expect(adapter.click('ref_test')).resolves.toEqual({ clicked: true, ref: 'ref_test' });
+    await expect(adapter.click('ref_test_0')).resolves.toEqual({
+      clicked: true,
+      ref: 'ref_test_0',
+    });
     expect(webContents.focus).toHaveBeenCalledTimes(1);
     expect(webContents.sendInputEvent.mock.calls).toEqual([
       [{ type: 'mouseMove', x: 20, y: 30 }],
       [{ type: 'mouseDown', x: 20, y: 30, button: 'left', clickCount: 1 }],
       [{ type: 'mouseUp', x: 20, y: 30, button: 'left', clickCount: 1 }],
     ]);
-    await expect(adapter.type('ref_test', 'hello')).resolves.toEqual({
+    await expect(adapter.type('ref_test_0', 'hello')).resolves.toEqual({
       typed: true,
-      ref: 'ref_test',
+      ref: 'ref_test_0',
       characters: 5,
     });
     expect(webContents.insertText).toHaveBeenCalledWith('hello');
@@ -131,12 +145,28 @@ describe('WebContentsPageAdapter', () => {
     await adapter.snapshot();
     await adapter.navigate('https://next.example.test/');
 
-    await expect(adapter.click('ref_test')).rejects.toMatchObject({
+    await expect(adapter.click('ref_test_0')).rejects.toMatchObject({
       code: ERROR_CODES.STALE_ELEMENT_REFERENCE,
       retryable: true,
       suggestedAction: 'Take a new snapshot',
     });
     expect(webContents.executeJavaScriptInIsolatedWorld).toHaveBeenCalledTimes(1);
+  });
+
+  test('invalidates references when a child frame navigates', async () => {
+    const webContents = new FakeWebContents();
+    webContents.executeJavaScriptInIsolatedWorld.mockResolvedValueOnce(snapshotResult());
+    const adapter = new WebContentsPageAdapter(webContents, {
+      referenceIdFactory: () => 'ref_test',
+    });
+    await adapter.snapshot();
+
+    webContents.emit('did-start-navigation', {}, 'https://frame.example.test/', false, false);
+
+    await expect(adapter.click('ref_test_0')).rejects.toMatchObject({
+      code: ERROR_CODES.STALE_ELEMENT_REFERENCE,
+    });
+    expect(adapter.getState()).toMatchObject({ navigationId: 1, loading: false });
   });
 
   test('maps page changes and unavailable elements to typed errors', async () => {
@@ -150,10 +180,10 @@ describe('WebContentsPageAdapter', () => {
     });
     await adapter.snapshot();
 
-    await expect(adapter.click('ref_test')).rejects.toMatchObject({
+    await expect(adapter.click('ref_test_0')).rejects.toMatchObject({
       code: ERROR_CODES.STALE_ELEMENT_REFERENCE,
     });
-    await expect(adapter.click('ref_test')).rejects.toMatchObject({
+    await expect(adapter.click('ref_test_0')).rejects.toMatchObject({
       code: ERROR_CODES.ELEMENT_NOT_INTERACTABLE,
     });
   });
