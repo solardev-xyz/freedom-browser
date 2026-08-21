@@ -222,6 +222,8 @@ const {
   registerDownloadsIpc,
   attachDownloadsManager,
   cancelPartitionDownloads: cancelPrivateDownloads,
+  getActiveDownloadCount,
+  onDownloadActivity,
 } = require('./downloads/downloads-manager');
 const { closeDb: closeDownloadsDb } = require('./downloads/downloads-store');
 const { dropPartition: dropPrivateDownloads } = require('./downloads/private-downloads-store');
@@ -234,24 +236,28 @@ const {
   createAntLifecycle,
   stopAnt,
   startAnt,
+  getStatus: getAntStatus,
   setUseInjectedIdentity: setAntInjectedIdentity,
 } = require('./ant-manager');
 const {
   registerIpfsIpc,
   stopIpfs,
   startIpfs,
+  getStatus: getIpfsStatus,
   setUseInjectedIdentity: setIpfsInjectedIdentity,
 } = require('./ipfs-manager');
 const {
   registerRadicleIpc,
   stopRadicle,
   startRadicle,
+  getCurrentStatus: getRadicleStatus,
   setUseInjectedIdentity: setRadicleInjectedIdentity,
 } = require('./radicle-manager');
 const {
   registerTorIpc,
   stopTor,
   startTor,
+  getStatus: getTorStatus,
   registerOnionRoutingSession,
   unregisterOnionRoutingSession,
 } = require('./tor-manager');
@@ -306,9 +312,22 @@ const {
   registerAutomationWebContents,
 } = require('./automation/runtime');
 const { createHiddenPageManager } = require('./automation/hidden-page-manager');
+const {
+  DEFAULT_RUNTIME_IDLE_TIMEOUT_MS,
+  createRuntimeIdleController,
+} = require('./automation/runtime-idle-controller');
 
 let runtimeServer = null;
 let hiddenPageManager = null;
+let runtimeIdleController = null;
+let unregisterRuntimeDownloadActivity = null;
+const RUNTIME_BUSY_NODE_STATES = new Set(['starting', 'stopping']);
+
+function hasRuntimeNodeTransition() {
+  return [getAntStatus(), getIpfsStatus(), getRadicleStatus(), getTorStatus()].some((entry) =>
+    RUNTIME_BUSY_NODE_STATES.has(entry?.status)
+  );
+}
 
 app.commandLine.appendSwitch('disable-features', 'VizDisplayCompositor');
 log.info('[profile] Active profile:', {
@@ -561,14 +580,37 @@ async function bootstrap() {
   }
 
   if (RUNTIME_MODE) {
+    const idleTimeoutMs = process.argv.includes('--persistent')
+      ? 0
+      : DEFAULT_RUNTIME_IDLE_TIMEOUT_MS;
+    runtimeIdleController = createRuntimeIdleController({
+      timeoutMs: idleTimeoutMs,
+      logger: log,
+      onIdle: () => {
+        log.info('[automation-runtime] Idle timeout reached; shutting down...');
+        app.quit();
+      },
+    });
+    runtimeIdleController.registerProbe(
+      'downloads',
+      () => getActiveDownloadCount() > 0
+    );
+    runtimeIdleController.registerProbe('node-transition', hasRuntimeNodeTransition);
+    unregisterRuntimeDownloadActivity = onDownloadActivity(() =>
+      runtimeIdleController?.touch('download-state-changed')
+    );
+    runtimeIdleController.start();
     hiddenPageManager = createHiddenPageManager({
       BrowserWindow,
       registerWebContents: registerAutomationWebContents,
+      logger: log,
+      onActivity: (reason) => runtimeIdleController?.touch(reason),
     });
     automationController.setPageLifecycle(hiddenPageManager);
     runtimeServer = createRuntimeServer({
       profile: activeProfile,
       controller: automationController,
+      activityTracker: runtimeIdleController,
       appVersion: version,
       logger: log,
       onShutdown: () => app.quit(),
@@ -617,6 +659,9 @@ app.on('before-quit', async (event) => {
   event.preventDefault();
   isQuitting = true;
 
+  runtimeIdleController?.stop();
+  unregisterRuntimeDownloadActivity?.();
+  unregisterRuntimeDownloadActivity = null;
   if (runtimeServer) {
     log.info('[automation-runtime] Stopping control endpoint...');
     await runtimeServer.stop();
@@ -627,6 +672,7 @@ app.on('before-quit', async (event) => {
     hiddenPageManager = null;
     automationController.setPageLifecycle(null);
   }
+  runtimeIdleController = null;
 
   // Close all DevTools first to prevent crashes during cleanup
   log.info('[App] Closing all DevTools...');

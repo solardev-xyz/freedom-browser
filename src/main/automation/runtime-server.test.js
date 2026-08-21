@@ -295,6 +295,48 @@ describe('automation runtime server', () => {
     await server.stop();
   });
 
+  test('tracks authenticated clients and in-flight requests as idle blockers', async () => {
+    const releases = [];
+    let resolveClientReleased;
+    const clientReleased = new Promise((resolve) => {
+      resolveClientReleased = resolve;
+    });
+    const activityTracker = {
+      acquire: jest.fn((source) => {
+        const release = jest.fn(() => {
+          if (source === 'client') resolveClientReleased();
+        });
+        releases.push({ source, release });
+        return release;
+      }),
+      status: jest.fn(() => ({ enabled: true, state: 'blocked' })),
+    };
+    const { server } = createFixture({ activityTracker });
+    await server.start();
+    const client = createLineClient(server.endpoint);
+    await client.connected();
+    await client.request({
+      id: 'hello',
+      method: 'runtime.handshake',
+      params: { protocolVersion: RUNTIME_PROTOCOL_VERSION, token: 'a'.repeat(64) },
+    });
+    await expect(client.request({ id: 'status', method: 'runtime.status' })).resolves.toMatchObject(
+      {
+        result: { idle: { enabled: true, state: 'blocked' } },
+      }
+    );
+
+    expect(activityTracker.acquire).toHaveBeenCalledWith('client');
+    expect(activityTracker.acquire).toHaveBeenCalledWith('request');
+    expect(releases.find((entry) => entry.source === 'request').release).toHaveBeenCalledTimes(1);
+    const closed = once(client.socket, 'close');
+    client.close();
+    await closed;
+    await clientReleased;
+    await server.stop();
+    expect(releases.find((entry) => entry.source === 'client').release).toHaveBeenCalledTimes(1);
+  });
+
   test('uses a profile-derived Windows named pipe without touching the filesystem', () => {
     const profile = {
       id: 'automation',

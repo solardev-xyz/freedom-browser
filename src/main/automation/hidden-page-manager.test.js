@@ -83,6 +83,7 @@ describe('hidden automation page manager', () => {
 
   test('forces supported popups into owned hidden sandboxed windows', async () => {
     const registrations = [];
+    const activity = [];
     const manager = createHiddenPageManager({
       BrowserWindow: FakeBrowserWindow,
       registerWebContents: (webContents, metadata) => {
@@ -90,6 +91,7 @@ describe('hidden automation page manager', () => {
         return `tab_${registrations.length}`;
       },
       logger: { warn: jest.fn() },
+      onActivity: (reason) => activity.push(reason),
     });
     await manager.createPage('https://example.test/');
     const opener = FakeBrowserWindow.instances[0];
@@ -129,6 +131,7 @@ describe('hidden automation page manager', () => {
     await expect(manager.closePage('tab_2')).resolves.toBe(true);
     expect(popup.destroyed).toBe(true);
     expect(manager.size()).toBe(1);
+    expect(activity).toEqual(['headless:created', 'popup:created', 'popup:closed']);
   });
 
   test('destroys failed pages and returns a typed navigation error', async () => {

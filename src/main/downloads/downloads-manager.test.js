@@ -228,6 +228,22 @@ describe('downloads-manager', () => {
     );
   });
 
+  test('reports active download transitions for runtime idle accounting', () => {
+    const mod = loadManager();
+    const activity = [];
+    const unsubscribe = mod.onDownloadActivity((activeCount) => activity.push(activeCount));
+    const item = startDownload({
+      url: 'https://example.com/runtime.bin',
+      filename: 'runtime.bin',
+      totalBytes: 10,
+    });
+    expect(mod.getActiveDownloadCount()).toBe(1);
+    item.emit('done', {}, 'completed');
+    expect(mod.getActiveDownloadCount()).toBe(0);
+    expect(activity).toEqual([1, 0]);
+    expect(unsubscribe()).toBe(true);
+  });
+
   test('sanitizes a hostile suggested filename before choosing the save path', () => {
     loadManager();
 

@@ -206,6 +206,13 @@ function createRuntimeServer(options = {}) {
     throw new TypeError('Runtime server requires an automation controller');
   }
   const controller = options.controller;
+  const activityTracker = options.activityTracker || null;
+  if (
+    activityTracker &&
+    (typeof activityTracker.acquire !== 'function' || typeof activityTracker.status !== 'function')
+  ) {
+    throw new TypeError('Runtime activity tracker requires acquire() and status()');
+  }
   const logger = options.logger || console;
   const appVersion = options.appVersion || '0.0.0';
   const runtimePaths = getRuntimePaths(profile);
@@ -234,6 +241,7 @@ function createRuntimeServer(options = {}) {
     runtimeId: controller.runtimeId,
     contextId: controller.contextId,
     profile: publicProfile,
+    ...(activityTracker && { idle: activityTracker.status() }),
   });
 
   const discoveryPayload = () => ({
@@ -299,6 +307,7 @@ function createRuntimeServer(options = {}) {
         return;
       }
       socketState.authenticated = true;
+      socketState.releaseClientActivity = activityTracker?.acquire('client') || null;
       clearTimeout(socketState.handshakeTimeout);
       writeResponse(socketState.socket, {
         id,
@@ -311,48 +320,53 @@ function createRuntimeServer(options = {}) {
       return;
     }
 
-    if (request.method === 'runtime.handshake') {
-      writeResponse(
-        socketState.socket,
-        protocolError(id, 'INVALID_REQUEST', 'Runtime handshake is already complete')
-      );
-      return;
-    }
-    if (request.method === 'runtime.status') {
-      writeResponse(socketState.socket, { id, ok: true, result: statusPayload() });
-      return;
-    }
-    if (request.method === 'automation.execute') {
-      const params = request.params;
-      if (!params || typeof params !== 'object' || typeof params.operation !== 'string') {
+    const releaseRequestActivity = activityTracker?.acquire('request') || null;
+    try {
+      if (request.method === 'runtime.handshake') {
         writeResponse(
           socketState.socket,
-          protocolError(id, 'INVALID_REQUEST', 'automation.execute requires an operation')
+          protocolError(id, 'INVALID_REQUEST', 'Runtime handshake is already complete')
         );
         return;
       }
-      const result = await controller.execute(params.operation, params.input);
-      writeResponse(socketState.socket, { id, ok: true, result });
-      return;
-    }
-    if (request.method === 'runtime.shutdown') {
-      if (!shutdownRequested) {
-        shutdownRequested = true;
-        const queued = writeResponse(
-          socketState.socket,
-          { id, ok: true, result: { shuttingDown: true } },
-          () => setImmediate(() => options.onShutdown?.())
-        );
-        if (!queued) setImmediate(() => options.onShutdown?.());
-      } else {
-        writeResponse(socketState.socket, { id, ok: true, result: { shuttingDown: true } });
+      if (request.method === 'runtime.status') {
+        writeResponse(socketState.socket, { id, ok: true, result: statusPayload() });
+        return;
       }
-      return;
+      if (request.method === 'automation.execute') {
+        const params = request.params;
+        if (!params || typeof params !== 'object' || typeof params.operation !== 'string') {
+          writeResponse(
+            socketState.socket,
+            protocolError(id, 'INVALID_REQUEST', 'automation.execute requires an operation')
+          );
+          return;
+        }
+        const result = await controller.execute(params.operation, params.input);
+        writeResponse(socketState.socket, { id, ok: true, result });
+        return;
+      }
+      if (request.method === 'runtime.shutdown') {
+        if (!shutdownRequested) {
+          shutdownRequested = true;
+          const queued = writeResponse(
+            socketState.socket,
+            { id, ok: true, result: { shuttingDown: true } },
+            () => setImmediate(() => options.onShutdown?.())
+          );
+          if (!queued) setImmediate(() => options.onShutdown?.());
+        } else {
+          writeResponse(socketState.socket, { id, ok: true, result: { shuttingDown: true } });
+        }
+        return;
+      }
+      writeResponse(
+        socketState.socket,
+        protocolError(id, 'METHOD_NOT_FOUND', 'Unknown runtime method')
+      );
+    } finally {
+      releaseRequestActivity?.();
     }
-    writeResponse(
-      socketState.socket,
-      protocolError(id, 'METHOD_NOT_FOUND', 'Unknown runtime method')
-    );
   };
 
   const handleConnection = (socket) => {
@@ -364,6 +378,7 @@ function createRuntimeServer(options = {}) {
       closedForRequests: false,
       buffer: '',
       handshakeTimeout: null,
+      releaseClientActivity: null,
     };
     socketState.handshakeTimeout = setTimeout(() => {
       socketState.closedForRequests = true;
@@ -427,8 +442,15 @@ function createRuntimeServer(options = {}) {
         );
       }
     });
+    const releaseClientActivity = () => {
+      const release = socketState.releaseClientActivity;
+      socketState.releaseClientActivity = null;
+      release?.();
+    };
+    socket.once('end', releaseClientActivity);
     socket.once('close', () => {
       clearTimeout(socketState.handshakeTimeout);
+      releaseClientActivity();
       sockets.delete(socket);
     });
     socket.on('error', (error) => {

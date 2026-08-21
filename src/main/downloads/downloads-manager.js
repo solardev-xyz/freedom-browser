@@ -37,6 +37,30 @@ const { broadcastToAllWebContents } = require('../lib/broadcast-to-all-webconten
 // Live DownloadItems by store row id — pause/resume/cancel IPC resolves
 // through this map; settled items are removed.
 const activeItems = new Map();
+const downloadActivityListeners = new Set();
+
+function getActiveDownloadCount() {
+  return activeItems.size;
+}
+
+function notifyDownloadActivity() {
+  const activeCount = getActiveDownloadCount();
+  for (const listener of downloadActivityListeners) {
+    try {
+      listener(activeCount);
+    } catch (error) {
+      log.warn('[Downloads] Activity listener failed:', error?.message || error);
+    }
+  }
+}
+
+function onDownloadActivity(listener) {
+  if (typeof listener !== 'function') {
+    throw new TypeError('Download activity listener must be a function');
+  }
+  downloadActivityListeners.add(listener);
+  return () => downloadActivityListeners.delete(listener);
+}
 
 // Per-item bookkeeping for the live items above: the owning private
 // partition (null for normal windows) and the save path the item claimed.
@@ -225,6 +249,7 @@ function handleWillDownload(item, webContents, { privatePartition = null } = {})
   const id = row.id;
   activeItems.set(id, item);
   activeItemMeta.set(id, { privatePartition, reservedPath });
+  notifyDownloadActivity();
 
   const ownerWindow = ownerWindowOf(webContents);
   // PRIVATE MODE GUARD (download logging): the row lives in the in-memory
@@ -275,6 +300,7 @@ function handleWillDownload(item, webContents, { privatePartition = null } = {})
     activeItems.delete(id);
     activeItemMeta.delete(id);
     interruptedItems.delete(id);
+    notifyDownloadActivity();
     if (ownsReservation) releaseSavePath(reservedPath);
 
     // Electron reports 'completed' | 'cancelled' | 'interrupted'; the store
@@ -365,6 +391,7 @@ function cancelPartitionDownloads(partition) {
     }
   }
   if (cancelled > 0) {
+    notifyDownloadActivity();
     log.info(`[Downloads] Cancelled ${cancelled} in-flight private download(s) on ${partition}`);
   }
   return cancelled;
@@ -526,6 +553,8 @@ function registerDownloadsIpc() {
 module.exports = {
   attachDownloadsManager,
   cancelPartitionDownloads,
+  getActiveDownloadCount,
+  onDownloadActivity,
   registerDownloadsIpc,
   sanitizeFilename,
   uniqueSavePath,

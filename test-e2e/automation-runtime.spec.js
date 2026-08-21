@@ -141,7 +141,17 @@ test('headless runtime publishes readiness and serves the automation controller'
     expect(handshake).toMatchObject({
       id: 'hello',
       ok: true,
-      result: { state: 'ready', runtimeId: expect.any(String), contextId: expect.any(String) },
+      result: {
+        state: 'ready',
+        runtimeId: expect.any(String),
+        contextId: expect.any(String),
+        idle: {
+          enabled: true,
+          state: 'blocked',
+          timeoutMs: 15 * 60 * 1000,
+          blockers: [{ source: 'client', count: 1 }],
+        },
+      },
     });
     await expect(
       client.request({

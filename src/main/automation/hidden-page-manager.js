@@ -29,6 +29,15 @@ function createHiddenPageManager(options = {}) {
 
   const windowsByTabId = new Map();
   const logger = options.logger || console;
+  const onActivity = options.onActivity;
+
+  function noteActivity(reason) {
+    try {
+      onActivity?.(reason);
+    } catch (error) {
+      logger.warn?.('[automation-runtime] Page activity listener failed:', error);
+    }
+  }
 
   function adoptWindow(window, metadata) {
     let tabId = null;
@@ -64,7 +73,11 @@ function createHiddenPageManager(options = {}) {
       );
     }
     windowsByTabId.set(tabId, window);
-    window.once('closed', () => windowsByTabId.delete(tabId));
+    window.once('closed', () => {
+      windowsByTabId.delete(tabId);
+      noteActivity(`${metadata.kind || 'page'}:closed`);
+    });
+    noteActivity(`${metadata.kind || 'page'}:created`);
     return tabId;
   }
 

@@ -777,6 +777,10 @@ function registerTorIpc() {
   });
 }
 
+function getStatus() {
+  return { status: currentState, error: lastError };
+}
+
 module.exports = {
   registerTorIpc,
   startTor,
@@ -789,5 +793,6 @@ module.exports = {
   getTorDataPath,
   writeArtiConfig,
   checkBinary,
+  getStatus,
   STATUS,
 };
