@@ -36,10 +36,14 @@ const {
   runWithPrivateLogContext,
   redactUrlForLog,
 } = require('./private/private-log-context');
-const { ipcMain } = require('electron');
+const { BrowserWindow, ipcMain } = require('electron');
 const IPC = require('../shared/ipc-channels');
 const { success, failure } = require('./ipc-contract');
 const { updateService, MODE, setStatusMessage } = require('./service-registry');
+const {
+  automationController,
+  registerAutomationWebContents,
+} = require('./automation/runtime');
 
 const TEST_MODE_ENABLED = process.env.FREEDOM_TEST_MODE === '1';
 
@@ -52,6 +56,7 @@ function isTestMode() {
 const contentFixtures = new Map();
 const ensFixtures = new Map();
 const probeFixtures = new Map();
+const automationWindows = new Map();
 
 // Records profile "open" launches instead of cold-starting a real second
 // Electron instance. See installProfileLaunchRecorder / profile-launcher.js.
@@ -510,6 +515,29 @@ function exposeGlobalShim() {
       );
     },
     clearProfileDeleteSims: resetProfileDeleteSims,
+    automationExecute: (operation, input) => automationController.execute(operation, input),
+    createHiddenAutomationPage: async (url) => {
+      const window = new BrowserWindow({
+        show: false,
+        paintWhenInitiallyHidden: true,
+        webPreferences: {
+          contextIsolation: true,
+          nodeIntegration: false,
+          sandbox: true,
+        },
+      });
+      const tabId = registerAutomationWebContents(window.webContents, { kind: 'headless' });
+      automationWindows.set(tabId, window);
+      window.once('closed', () => automationWindows.delete(tabId));
+      await window.loadURL(url);
+      return tabId;
+    },
+    closeHiddenAutomationPage: (tabId) => {
+      const window = automationWindows.get(tabId);
+      if (!window || window.isDestroyed()) return false;
+      window.close();
+      return true;
+    },
     state: () => ({
       content: [...contentFixtures.keys()],
       ens: [...ensFixtures.keys()],
