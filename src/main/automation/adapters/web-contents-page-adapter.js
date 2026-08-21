@@ -8,6 +8,7 @@ const AUTOMATION_WORLD_ID = 1001;
 const MAX_PAGE_TEXT_LENGTH = 12_000;
 const MAX_SNAPSHOT_ELEMENTS = 250;
 const MAX_RETAINED_REFERENCES = 1_000;
+const WAIT_POLL_INTERVAL_MS = 100;
 
 function defaultReferenceIdFactory() {
   return `ref_${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
@@ -186,9 +187,14 @@ function inspectReferencedElement(selector, expectedFingerprint, action) {
 
   if (action === 'click') {
     element.scrollIntoView({ block: 'center', inline: 'center' });
-    element.focus();
-    element.click();
-    return { ok: true };
+    const rect = element.getBoundingClientRect();
+    const x = Math.round(Math.max(0, Math.min(window.innerWidth - 1, rect.left + rect.width / 2)));
+    const y = Math.round(Math.max(0, Math.min(window.innerHeight - 1, rect.top + rect.height / 2)));
+    const hit = document.elementFromPoint(x, y);
+    if (!hit || (hit !== element && !element.contains(hit))) {
+      return { ok: false, reason: 'not_interactable' };
+    }
+    return { ok: true, point: { x, y } };
   }
 
   const editable =
@@ -218,6 +224,10 @@ function prepareTextInsertion(selector, expectedFingerprint, replace) {
   return { ok: true };
 }
 
+function pageContainsText(text) {
+  return String(document.body?.innerText || '').includes(text);
+}
+
 class WebContentsPageAdapter extends EventEmitter {
   constructor(webContents, options = {}) {
     super();
@@ -231,9 +241,10 @@ class WebContentsPageAdapter extends EventEmitter {
     this.destroyed = false;
     this.referenceIdFactory = options.referenceIdFactory || defaultReferenceIdFactory;
     this.references = new Map();
+    this.activeWaits = new Set();
     this.listeners = {
-      'did-start-navigation': (_event, _url, _isInPlace, isMainFrame) => {
-        if (isMainFrame === false) return;
+      'did-start-navigation': (_event, _url, isInPlace, isMainFrame) => {
+        if (isMainFrame === false || isInPlace === true) return;
         this.navigationInProgress = true;
         this.navigationId += 1;
         this.#pruneReferences();
@@ -249,8 +260,13 @@ class WebContentsPageAdapter extends EventEmitter {
         this.#pruneReferences();
         this.emit('navigation-committed', this.getState());
       },
+      'did-stop-loading': () => {
+        this.navigationInProgress = false;
+        this.emit('navigation-finished', this.getState());
+      },
       destroyed: () => {
         this.destroyed = true;
+        this.#cancelWaits();
         this.references.clear();
         this.emit('destroyed');
       },
@@ -321,6 +337,17 @@ class WebContentsPageAdapter extends EventEmitter {
       true
     );
     this.#assertActionResult(result);
+    if (!result.point || typeof this.webContents.sendInputEvent !== 'function') {
+      throw new AutomationError(
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        'Trusted pointer input is unavailable for this page'
+      );
+    }
+    this.webContents.focus?.();
+    const pointer = { x: result.point.x, y: result.point.y, button: 'left' };
+    this.webContents.sendInputEvent({ type: 'mouseMove', x: pointer.x, y: pointer.y });
+    this.webContents.sendInputEvent({ type: 'mouseDown', ...pointer, clickCount: 1 });
+    this.webContents.sendInputEvent({ type: 'mouseUp', ...pointer, clickCount: 1 });
     return { clicked: true, ref };
   }
 
@@ -359,10 +386,47 @@ class WebContentsPageAdapter extends EventEmitter {
     };
   }
 
+  async wait(options) {
+    this.#assertAvailable();
+    const waitController = new AbortController();
+    this.activeWaits.add(waitController);
+    const deadline = Date.now() + options.timeoutMs;
+    try {
+      while (true) {
+        if (waitController.signal.aborted) throw this.#cancelledWaitError();
+        const matched = await this.#waitConditionMatches(options);
+        if (waitController.signal.aborted) throw this.#cancelledWaitError();
+        if (matched) {
+          return {
+            matched: true,
+            condition: options.condition,
+            url: this.webContents.getURL?.() || '',
+            navigationId: this.navigationId,
+          };
+        }
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) {
+          throw new AutomationError(
+            ERROR_CODES.WAIT_TIMEOUT,
+            `Timed out waiting for page condition: ${options.condition}`,
+            {
+              retryable: true,
+              details: { condition: options.condition, timeoutMs: options.timeoutMs },
+            }
+          );
+        }
+        await this.#waitDelay(Math.min(WAIT_POLL_INTERVAL_MS, remaining), waitController.signal);
+      }
+    } finally {
+      this.activeWaits.delete(waitController);
+    }
+  }
+
   async stopLoading() {
     this.#assertAvailable();
+    const cancelledWaits = this.#cancelWaits();
     this.webContents.stop?.();
-    return { stopped: true };
+    return { stopped: true, cancelledWaits };
   }
 
   dispose() {
@@ -371,6 +435,7 @@ class WebContentsPageAdapter extends EventEmitter {
         this.webContents.off(event, listener);
       }
     }
+    this.#cancelWaits();
     this.references.clear();
   }
 
@@ -439,6 +504,47 @@ class WebContentsPageAdapter extends EventEmitter {
     if (this.destroyed || this.webContents.isDestroyed?.() === true) {
       throw new AutomationError(ERROR_CODES.TAB_NOT_FOUND, 'The automation tab was closed');
     }
+  }
+
+  async #waitConditionMatches(options) {
+    switch (options.condition) {
+      case 'load':
+        return !this.navigationInProgress && this.webContents.isLoading?.() !== true;
+      case 'navigation':
+        return this.navigationId > options.sinceNavigationId;
+      case 'url':
+        return this.webContents.getURL?.() === options.url;
+      case 'text':
+        return (await this.#execute(pageContainsText, [options.text], false)) === true;
+      default:
+        return false;
+    }
+  }
+
+  #waitDelay(delayMs, signal) {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        signal.removeEventListener('abort', onAbort);
+        resolve();
+      }, delayMs);
+      const onAbort = () => {
+        clearTimeout(timer);
+        reject(this.#cancelledWaitError());
+      };
+      signal.addEventListener('abort', onAbort, { once: true });
+    });
+  }
+
+  #cancelWaits() {
+    const count = this.activeWaits.size;
+    for (const waitController of this.activeWaits) waitController.abort();
+    return count;
+  }
+
+  #cancelledWaitError() {
+    return new AutomationError(ERROR_CODES.USER_CANCELLED, 'The page wait was cancelled', {
+      retryable: true,
+    });
   }
 
   #pruneReferences() {

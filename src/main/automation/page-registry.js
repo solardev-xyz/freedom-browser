@@ -10,6 +10,7 @@ const REQUIRED_ADAPTER_METHODS = [
   'click',
   'type',
   'screenshot',
+  'wait',
   'stopLoading',
 ];
 

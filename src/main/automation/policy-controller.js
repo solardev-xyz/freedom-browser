@@ -7,6 +7,7 @@ const OPERATION_CLASSES = Object.freeze({
   [OPERATIONS.GET_TAB]: 'observe',
   [OPERATIONS.SNAPSHOT]: 'observe',
   [OPERATIONS.SCREENSHOT]: 'observe',
+  [OPERATIONS.WAIT]: 'observe',
   [OPERATIONS.NAVIGATE]: 'navigate',
   [OPERATIONS.CLICK]: 'interact',
   [OPERATIONS.TYPE]: 'interact',

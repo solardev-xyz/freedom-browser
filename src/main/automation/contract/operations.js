@@ -10,6 +10,7 @@ const OPERATIONS = Object.freeze({
   CLICK: 'browser_click',
   TYPE: 'browser_type',
   SCREENSHOT: 'browser_screenshot',
+  WAIT: 'browser_wait',
   STOP_LOADING: 'browser_stop_loading',
 });
 
@@ -21,9 +22,13 @@ const TAB_OPERATIONS = new Set([
   OPERATIONS.CLICK,
   OPERATIONS.TYPE,
   OPERATIONS.SCREENSHOT,
+  OPERATIONS.WAIT,
   OPERATIONS.STOP_LOADING,
 ]);
 const BLOCKED_NAVIGATION_SCHEMES = new Set(['data:', 'file:', 'javascript:']);
+const WAIT_CONDITIONS = new Set(['load', 'navigation', 'text', 'url']);
+const DEFAULT_WAIT_TIMEOUT_MS = 10_000;
+const MAX_WAIT_TIMEOUT_MS = 30_000;
 
 function requireObject(input) {
   if (input === undefined) return {};
@@ -86,10 +91,42 @@ function validateOperationInput(operation, rawInput) {
     normalized.replace = input.replace !== false;
   }
 
+  if (operation === OPERATIONS.WAIT) {
+    normalized.condition = requireString(input.condition, 'condition').trim();
+    if (!WAIT_CONDITIONS.has(normalized.condition)) {
+      throw invalidArgument('condition must be one of: load, navigation, text, url', {
+        field: 'condition',
+      });
+    }
+    const timeoutMs = input.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS;
+    if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_WAIT_TIMEOUT_MS) {
+      throw invalidArgument(`timeoutMs must be an integer between 1 and ${MAX_WAIT_TIMEOUT_MS}`, {
+        field: 'timeoutMs',
+      });
+    }
+    normalized.timeoutMs = timeoutMs;
+    if (normalized.condition === 'text') {
+      normalized.text = requireString(input.text, 'text');
+    }
+    if (normalized.condition === 'url') {
+      normalized.url = validateNavigationUrl(input.url);
+    }
+    if (normalized.condition === 'navigation') {
+      if (!Number.isInteger(input.sinceNavigationId) || input.sinceNavigationId < 0) {
+        throw invalidArgument('sinceNavigationId must be a non-negative integer', {
+          field: 'sinceNavigationId',
+        });
+      }
+      normalized.sinceNavigationId = input.sinceNavigationId;
+    }
+  }
+
   return normalized;
 }
 
 module.exports = {
+  DEFAULT_WAIT_TIMEOUT_MS,
+  MAX_WAIT_TIMEOUT_MS,
   OPERATIONS,
   validateOperationInput,
 };

@@ -75,6 +75,8 @@ class AutomationController {
         return entry.adapter.type(input.ref, input.text, { replace: input.replace });
       case OPERATIONS.SCREENSHOT:
         return entry.adapter.screenshot();
+      case OPERATIONS.WAIT:
+        return entry.adapter.wait(input);
       case OPERATIONS.STOP_LOADING:
         return entry.adapter.stopLoading();
       default:

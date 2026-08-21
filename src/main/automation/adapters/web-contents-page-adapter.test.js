@@ -13,6 +13,8 @@ class FakeWebContents extends EventEmitter {
     this.loading = false;
     this.executeJavaScriptInIsolatedWorld = jest.fn();
     this.insertText = jest.fn(async () => {});
+    this.focus = jest.fn();
+    this.sendInputEvent = jest.fn();
     this.capturePage = jest.fn(async () => ({ toPNG: () => Buffer.from('png') }));
     this.stop = jest.fn();
   }
@@ -96,7 +98,7 @@ describe('WebContentsPageAdapter', () => {
     const webContents = new FakeWebContents();
     webContents.executeJavaScriptInIsolatedWorld
       .mockResolvedValueOnce(snapshotResult())
-      .mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce({ ok: true, point: { x: 20, y: 30 } })
       .mockResolvedValueOnce({ ok: true });
     const adapter = new WebContentsPageAdapter(webContents, {
       referenceIdFactory: () => 'ref_test',
@@ -104,6 +106,12 @@ describe('WebContentsPageAdapter', () => {
     await adapter.snapshot();
 
     await expect(adapter.click('ref_test')).resolves.toEqual({ clicked: true, ref: 'ref_test' });
+    expect(webContents.focus).toHaveBeenCalledTimes(1);
+    expect(webContents.sendInputEvent.mock.calls).toEqual([
+      [{ type: 'mouseMove', x: 20, y: 30 }],
+      [{ type: 'mouseDown', x: 20, y: 30, button: 'left', clickCount: 1 }],
+      [{ type: 'mouseUp', x: 20, y: 30, button: 'left', clickCount: 1 }],
+    ]);
     await expect(adapter.type('ref_test', 'hello')).resolves.toEqual({
       typed: true,
       ref: 'ref_test',
@@ -157,7 +165,35 @@ describe('WebContentsPageAdapter', () => {
       mediaType: 'image/png',
       base64: Buffer.from('png').toString('base64'),
     });
-    await expect(adapter.stopLoading()).resolves.toEqual({ stopped: true });
+    await expect(adapter.stopLoading()).resolves.toEqual({ stopped: true, cancelledWaits: 0 });
     expect(webContents.stop).toHaveBeenCalledTimes(1);
+  });
+
+  test('waits for declarative page conditions and reports timeouts', async () => {
+    const webContents = new FakeWebContents();
+    webContents.executeJavaScriptInIsolatedWorld
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+    const adapter = new WebContentsPageAdapter(webContents);
+
+    await expect(
+      adapter.wait({ condition: 'text', text: 'Ready', timeoutMs: 1_000 })
+    ).resolves.toMatchObject({ matched: true, condition: 'text' });
+    await expect(
+      adapter.wait({ condition: 'navigation', sinceNavigationId: 0, timeoutMs: 5 })
+    ).rejects.toMatchObject({ code: ERROR_CODES.WAIT_TIMEOUT, retryable: true });
+  });
+
+  test('stop-loading cancels active waits', async () => {
+    const webContents = new FakeWebContents();
+    const adapter = new WebContentsPageAdapter(webContents);
+    const pending = adapter.wait({
+      condition: 'navigation',
+      sinceNavigationId: 0,
+      timeoutMs: 1_000,
+    });
+
+    await expect(adapter.stopLoading()).resolves.toEqual({ stopped: true, cancelledWaits: 1 });
+    await expect(pending).rejects.toMatchObject({ code: ERROR_CODES.USER_CANCELLED });
   });
 });

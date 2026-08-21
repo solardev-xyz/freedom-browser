@@ -33,4 +33,34 @@ describe('automation operation contract', () => {
       'Unknown automation operation'
     );
   });
+
+  test('validates bounded declarative waits', () => {
+    expect(
+      validateOperationInput(OPERATIONS.WAIT, {
+        tabId: 'tab_1',
+        condition: 'navigation',
+        sinceNavigationId: 4,
+      })
+    ).toEqual({
+      tabId: 'tab_1',
+      condition: 'navigation',
+      sinceNavigationId: 4,
+      timeoutMs: 10_000,
+    });
+    expect(() =>
+      validateOperationInput(OPERATIONS.WAIT, {
+        tabId: 'tab_1',
+        condition: 'script',
+        timeoutMs: 100,
+      })
+    ).toThrow('condition must be one of');
+    expect(() =>
+      validateOperationInput(OPERATIONS.WAIT, {
+        tabId: 'tab_1',
+        condition: 'text',
+        text: 'ready',
+        timeoutMs: 30_001,
+      })
+    ).toThrow('timeoutMs must be an integer');
+  });
 });

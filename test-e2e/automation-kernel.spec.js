@@ -34,14 +34,34 @@ test('one automation contract drives desktop and hidden Electron pages', async (
       <title>Automation fixture</title>
       <label for="name">Name</label>
       <input id="name" aria-label="Name">
-      <button id="submit" onclick="document.querySelector('#output').textContent = document.querySelector('#name').value">Submit</button>
-      <p id="output">Waiting</p>`,
+      <button id="submit">Submit</button>
+      <p id="output">Waiting</p>
+      <script>
+        let inputTrusted = false;
+        document.querySelector('#name').addEventListener('input', (event) => {
+          inputTrusted = event.isTrusted;
+        });
+        document.querySelector('#submit').addEventListener('click', (event) => {
+          const value = document.querySelector('#name').value;
+          document.querySelector('#output').textContent =
+            value + ' clickTrusted=' + event.isTrusted + ' inputTrusted=' + inputTrusted;
+          setTimeout(() => {
+            document.querySelector('#output').textContent += ' Ready';
+          }, 150);
+        });
+      </script>`,
   });
   await harness.setContentFixture(NEXT_URL, {
     body: '<!doctype html><title>Next fixture</title><h1>Next page</h1>',
   });
   await harness.setContentFixture(HIDDEN_URL, {
-    body: '<!doctype html><title>Hidden fixture</title><button onclick="document.body.dataset.clicked = \'yes\'">Run hidden</button>',
+    body: `<!doctype html><title>Hidden fixture</title>
+      <button id="run">Run hidden</button><p id="hidden-output">Waiting</p>
+      <script>
+        document.querySelector('#run').addEventListener('click', (event) => {
+          document.querySelector('#hidden-output').textContent = 'Hidden trusted=' + event.isTrusted;
+        });
+      </script>`,
   });
 
   const input = window.locator('[data-test="address-input"]');
@@ -81,7 +101,30 @@ test('one automation contract drives desktop and hidden Electron pages', async (
         (await executeAutomation(electronApp, 'browser_snapshot', { tabId: desktopTab.tabId }))
           .result.text
     )
-    .toContain('Freedom');
+    .toContain('Freedom clickTrusted=true inputTrusted=true');
+  await expect(
+    executeAutomation(electronApp, 'browser_wait', {
+      tabId: desktopTab.tabId,
+      condition: 'text',
+      text: 'Ready',
+      timeoutMs: 2_000,
+    })
+  ).resolves.toMatchObject({ ok: true, result: { matched: true, condition: 'text' } });
+
+  const pendingWait = executeAutomation(electronApp, 'browser_wait', {
+    tabId: desktopTab.tabId,
+    condition: 'text',
+    text: 'Never appears',
+    timeoutMs: 5_000,
+  });
+  await window.waitForTimeout(100);
+  await expect(
+    executeAutomation(electronApp, 'browser_stop_loading', { tabId: desktopTab.tabId })
+  ).resolves.toMatchObject({ ok: true, result: { stopped: true, cancelledWaits: 1 } });
+  await expect(pendingWait).resolves.toMatchObject({
+    ok: false,
+    error: { code: 'USER_CANCELLED' },
+  });
 
   await input.click();
   await input.fill(NEXT_URL);
@@ -118,6 +161,14 @@ test('one automation contract drives desktop and hidden Electron pages', async (
     expect(hiddenRef).toBeTruthy();
     await expect(
       executeAutomation(electronApp, 'browser_click', { tabId: hiddenTabId, ref: hiddenRef })
+    ).resolves.toMatchObject({ ok: true });
+    await expect(
+      executeAutomation(electronApp, 'browser_wait', {
+        tabId: hiddenTabId,
+        condition: 'text',
+        text: 'Hidden trusted=true',
+        timeoutMs: 2_000,
+      })
     ).resolves.toMatchObject({ ok: true });
     await expect(
       executeAutomation(electronApp, 'browser_screenshot', { tabId: hiddenTabId })

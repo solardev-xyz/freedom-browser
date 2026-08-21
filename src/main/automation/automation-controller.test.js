@@ -24,6 +24,7 @@ class FakePageAdapter extends EventEmitter {
     this.click = jest.fn(async (ref) => ({ clicked: true, ref }));
     this.type = jest.fn(async (ref, text) => ({ typed: true, ref, characters: text.length }));
     this.screenshot = jest.fn(async () => ({ mediaType: 'image/png', base64: 'cG5n' }));
+    this.wait = jest.fn(async ({ condition }) => ({ matched: true, condition }));
     this.stopLoading = jest.fn(async () => ({ stopped: true }));
   }
 
@@ -106,6 +107,29 @@ describe('AutomationController', () => {
     ).resolves.toMatchObject({
       ok: false,
       error: { code: ERROR_CODES.POLICY_DENIED, message: 'Not granted' },
+    });
+  });
+
+  test('normalizes and dispatches bounded waits', async () => {
+    const { controller } = createController();
+    const adapter = new FakePageAdapter();
+    const tabId = controller.registerPage(adapter, { kind: 'desktop' });
+
+    await expect(
+      controller.execute(OPERATIONS.WAIT, {
+        tabId,
+        condition: 'text',
+        text: 'Ready',
+      })
+    ).resolves.toMatchObject({
+      ok: true,
+      result: { matched: true, condition: 'text' },
+    });
+    expect(adapter.wait).toHaveBeenCalledWith({
+      tabId,
+      condition: 'text',
+      text: 'Ready',
+      timeoutMs: 10_000,
     });
   });
 
