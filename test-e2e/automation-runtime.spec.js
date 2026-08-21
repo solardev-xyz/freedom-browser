@@ -8,6 +8,8 @@ const os = require('os');
 const path = require('path');
 
 const repoRoot = path.resolve(__dirname, '..');
+const SAMPLE_BZZ_HASH = 'a'.repeat(64);
+const SAMPLE_IPFS_CID = `bafybeib${'a'.repeat(51)}`;
 
 function readJson(filePath) {
   try {
@@ -152,6 +154,81 @@ test('headless runtime publishes readiness and serves the automation controller'
       ok: true,
       result: { ok: true, result: { tabs: [] } },
     });
+
+    const protocolCases = [
+      {
+        id: 'swarm',
+        url: `bzz://${SAMPLE_BZZ_HASH}/runtime-protocol`,
+        title: 'Swarm runtime fixture',
+      },
+      {
+        id: 'ipfs',
+        url: `ipfs://${SAMPLE_IPFS_CID}/runtime-protocol`,
+        title: 'IPFS runtime fixture',
+      },
+      {
+        id: 'ipns',
+        url: 'ipns://runtime.example.test/runtime-protocol',
+        title: 'IPNS runtime fixture',
+      },
+    ];
+    await app.evaluate((_electron, cases) => {
+      for (const entry of cases) {
+        globalThis.__FREEDOM_TEST_HARNESS__.setContentFixture(entry.url, {
+          body: `<!doctype html><title>${entry.title}</title><h1>${entry.title}</h1>`,
+        });
+      }
+    }, protocolCases);
+    for (const protocolCase of protocolCases) {
+      const created = await client.request({
+        id: `create-${protocolCase.id}`,
+        method: 'automation.execute',
+        params: { operation: 'browser_create_tab', input: { url: protocolCase.url } },
+      });
+      const tabId = created.result.result.tab.tabId;
+      expect(created).toMatchObject({
+        ok: true,
+        result: {
+          ok: true,
+          runtimeId: handshake.result.runtimeId,
+          contextId: handshake.result.contextId,
+          result: {
+            tab: { tabId, kind: 'headless', url: protocolCase.url, available: true },
+          },
+        },
+      });
+      await expect(
+        client.request({
+          id: `snapshot-${protocolCase.id}`,
+          method: 'automation.execute',
+          params: { operation: 'browser_snapshot', input: { tabId } },
+        })
+      ).resolves.toMatchObject({
+        ok: true,
+        result: {
+          ok: true,
+          runtimeId: handshake.result.runtimeId,
+          contextId: handshake.result.contextId,
+          tabId,
+          result: {
+            url: protocolCase.url,
+            title: protocolCase.title,
+            text: protocolCase.title,
+          },
+        },
+      });
+      await expect(
+        client.request({
+          id: `close-${protocolCase.id}`,
+          method: 'automation.execute',
+          params: { operation: 'browser_close_tab', input: { tabId } },
+        })
+      ).resolves.toMatchObject({
+        ok: true,
+        result: { ok: true, result: { closed: true, tabId } },
+      });
+    }
+    await expect.poll(() => app.windows().length).toBe(0);
 
     const firstUrl = 'https://runtime.example.test/page';
     const createdFirst = await client.request({
