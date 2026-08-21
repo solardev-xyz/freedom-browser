@@ -278,6 +278,72 @@ describe('preload', () => {
     }
   });
 
+  test('acknowledges only validated controlled-navigation requests', async () => {
+    const { exposures, ipcRenderer } = loadPreloadModule();
+    const callback = jest.fn(() => true);
+    const cleanup = exposures.electronAPI.onAutomationNavigate(callback);
+    const handler = ipcRenderer.listeners.get(IPC.AUTOMATION_NAVIGATE)[0];
+
+    ipcRenderer.emit(IPC.AUTOMATION_NAVIGATE, {
+      requestId: 'nav_test',
+      rendererTabId: 7,
+      url: 'https://example.test/',
+    });
+    await flushMicrotasks();
+
+    expect(callback).toHaveBeenCalledWith({
+      rendererTabId: 7,
+      url: 'https://example.test/',
+    });
+    expect(ipcRenderer.send).toHaveBeenCalledWith(IPC.AUTOMATION_NAVIGATE_RESULT, {
+      requestId: 'nav_test',
+      ok: true,
+    });
+
+    callback.mockClear();
+    ipcRenderer.emit(IPC.AUTOMATION_NAVIGATE, {
+      requestId: '',
+      rendererTabId: { value: 7 },
+      url: 'https://ignored.test/',
+    });
+    expect(callback).not.toHaveBeenCalled();
+
+    callback.mockImplementationOnce(() => {
+      throw new Error('renderer navigation failed');
+    });
+    ipcRenderer.emit(IPC.AUTOMATION_NAVIGATE, {
+      requestId: 'nav_failed',
+      rendererTabId: 7,
+      url: 'https://failed.example.test/',
+    });
+    await flushMicrotasks();
+    expect(ipcRenderer.send).toHaveBeenCalledWith(IPC.AUTOMATION_NAVIGATE_RESULT, {
+      requestId: 'nav_failed',
+      ok: false,
+    });
+
+    cleanup();
+    expect(ipcRenderer.removeListener).toHaveBeenCalledWith(IPC.AUTOMATION_NAVIGATE, handler);
+  });
+
+  test('routes validated controlled stop requests to the chrome renderer', () => {
+    const { exposures, ipcRenderer } = loadPreloadModule();
+    const callback = jest.fn();
+    const cleanup = exposures.electronAPI.onAutomationStopLoading(callback);
+    const handler = ipcRenderer.listeners.get(IPC.AUTOMATION_STOP_LOADING)[0];
+
+    ipcRenderer.emit(IPC.AUTOMATION_STOP_LOADING, { rendererTabId: 7 });
+    ipcRenderer.emit(IPC.AUTOMATION_STOP_LOADING, { rendererTabId: '7' });
+
+    expect(callback).toHaveBeenCalledTimes(1);
+    expect(callback).toHaveBeenCalledWith({ rendererTabId: 7 });
+    cleanup();
+    expect(ipcRenderer.removeListener).toHaveBeenCalledWith(
+      IPC.AUTOMATION_STOP_LOADING,
+      handler
+    );
+  });
+
   test('status update wrappers subscribe, fetch current state immediately, and clean up', async () => {
     const beeStatus = { status: 'running', error: null };
     const ipfsStatus = { status: 'stopped', error: null };

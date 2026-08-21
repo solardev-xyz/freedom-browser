@@ -3,6 +3,7 @@
 const { EventEmitter } = require('events');
 const { createAutomationRuntime } = require('./runtime');
 const { OPERATIONS } = require('./contract/operations');
+const IPC = require('../../shared/ipc-channels');
 
 class FakeWebContents extends EventEmitter {
   constructor(url, id) {
@@ -123,6 +124,122 @@ describe('automation runtime registration', () => {
 
     expect(runtime.automationTabIdForRenderer(host, 9)).toBeNull();
     expect(runtime.desktopBindingForAutomationTab('tab_desktop')).toBeNull();
+  });
+
+  test('routes bound desktop navigation through its trusted renderer tab', async () => {
+    const runtime = createAutomationRuntime({
+      isPrivateWebContents: () => false,
+      navigationRequestIdFactory: () => 'nav_test',
+      controllerOptions: { tabIdFactory: () => 'tab_desktop' },
+    });
+    const host = new EventEmitter();
+    host.send = jest.fn();
+    const ipcMain = new EventEmitter();
+    const desktop = new FakeWebContents('https://desktop.example/', 41);
+    desktop.hostWebContents = host;
+    runtime.attachToHostWebContents(host, { ipcMain });
+    host.emit('did-attach-webview', {}, desktop);
+    ipcMain.emit(
+      IPC.AUTOMATION_BIND_TAB,
+      { sender: host },
+      { rendererTabId: 12, guestWebContentsId: 41 }
+    );
+
+    const navigation = runtime.controller.execute(OPERATIONS.NAVIGATE, {
+      tabId: 'tab_desktop',
+      url: 'https://next.example/',
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(host.send).toHaveBeenCalledWith(IPC.AUTOMATION_NAVIGATE, {
+      requestId: 'nav_test',
+      rendererTabId: 12,
+      url: 'https://next.example/',
+    });
+    expect(desktop.loadURL).not.toHaveBeenCalled();
+
+    ipcMain.emit(
+      IPC.AUTOMATION_NAVIGATE_RESULT,
+      { sender: new EventEmitter() },
+      { requestId: 'nav_test', ok: true }
+    );
+    desktop.loading = true;
+    desktop.emit('did-start-navigation', {}, 'https://next.example/', false, true);
+    desktop.url = 'https://next.example/';
+    desktop.loading = false;
+    desktop.emit('did-navigate', {}, 'https://next.example/');
+    desktop.emit('did-stop-loading');
+    ipcMain.emit(
+      IPC.AUTOMATION_NAVIGATE_RESULT,
+      { sender: host },
+      { requestId: 'nav_test', ok: true }
+    );
+
+    await expect(navigation).resolves.toMatchObject({
+      ok: true,
+      tabId: 'tab_desktop',
+      result: { url: 'https://next.example/' },
+    });
+  });
+
+  test('fails closed when a desktop tab has not completed renderer binding', async () => {
+    const runtime = createAutomationRuntime({
+      isPrivateWebContents: () => false,
+      controllerOptions: { tabIdFactory: () => 'tab_desktop' },
+    });
+    const host = new EventEmitter();
+    host.send = jest.fn();
+    const desktop = new FakeWebContents('https://desktop.example/', 51);
+    desktop.hostWebContents = host;
+    runtime.attachToHostWebContents(host, { ipcMain: new EventEmitter() });
+    host.emit('did-attach-webview', {}, desktop);
+
+    await expect(
+      runtime.controller.execute(OPERATIONS.NAVIGATE, {
+        tabId: 'tab_desktop',
+        url: 'https://next.example/',
+      })
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'CAPABILITY_UNAVAILABLE', retryable: true },
+    });
+    expect(host.send).not.toHaveBeenCalled();
+  });
+
+  test('cancels pending renderer navigation through the bound desktop tab', async () => {
+    const runtime = createAutomationRuntime({
+      isPrivateWebContents: () => false,
+      navigationRequestIdFactory: () => 'nav_cancel',
+      controllerOptions: { tabIdFactory: () => 'tab_desktop' },
+    });
+    const host = new EventEmitter();
+    host.send = jest.fn();
+    const ipcMain = new EventEmitter();
+    const desktop = new FakeWebContents('bzz://fixture.test/', 61);
+    desktop.hostWebContents = host;
+    runtime.attachToHostWebContents(host, { ipcMain });
+    host.emit('did-attach-webview', {}, desktop);
+    ipcMain.emit(
+      IPC.AUTOMATION_BIND_TAB,
+      { sender: host },
+      { rendererTabId: 14, guestWebContentsId: 61 }
+    );
+
+    const navigation = runtime.controller.execute(OPERATIONS.NAVIGATE, {
+      tabId: 'tab_desktop',
+      url: 'bzz://fixture.test/next',
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    await expect(
+      runtime.controller.execute(OPERATIONS.STOP_LOADING, { tabId: 'tab_desktop' })
+    ).resolves.toMatchObject({ ok: true, result: { stopped: true } });
+    expect(host.send).toHaveBeenLastCalledWith(IPC.AUTOMATION_STOP_LOADING, {
+      rendererTabId: 14,
+    });
+    await expect(navigation).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'USER_CANCELLED', retryable: true },
+    });
   });
 
   test('fails closed when privacy eligibility cannot be determined', async () => {

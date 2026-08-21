@@ -267,6 +267,8 @@ class WebContentsPageAdapter extends EventEmitter {
     this.navigationInProgress = false;
     this.destroyed = false;
     this.referenceIdFactory = options.referenceIdFactory || defaultReferenceIdFactory;
+    this.navigateHandler = options.navigate || null;
+    this.stopLoadingHandler = options.stopLoading || null;
     this.references = new Map();
     this.activeWaits = new Set();
     this.listeners = {
@@ -319,8 +321,13 @@ class WebContentsPageAdapter extends EventEmitter {
   async navigate(url) {
     this.#assertAvailable();
     try {
-      await this.webContents.loadURL(url);
+      if (this.navigateHandler) {
+        await this.navigateHandler(url);
+      } else {
+        await this.webContents.loadURL(url);
+      }
     } catch (error) {
+      if (error instanceof AutomationError) throw error;
       throw new AutomationError(ERROR_CODES.NAVIGATION_FAILED, `Navigation failed: ${url}`, {
         retryable: true,
         cause: error,
@@ -457,7 +464,11 @@ class WebContentsPageAdapter extends EventEmitter {
   async stopLoading() {
     this.#assertAvailable();
     const cancelledWaits = this.#cancelWaits();
-    this.webContents.stop?.();
+    if (this.stopLoadingHandler) {
+      await this.stopLoadingHandler();
+    } else {
+      this.webContents.stop?.();
+    }
     return { stopped: true, cancelledWaits };
   }
 

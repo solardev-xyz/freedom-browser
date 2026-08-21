@@ -159,6 +159,44 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getWebviewPreloadPath: () => ipcRenderer.invoke('internal:get-webview-preload-path'),
   bindAutomationTab: (rendererTabId, guestWebContentsId) =>
     ipcRenderer.send('automation:bind-tab', { rendererTabId, guestWebContentsId }),
+  onAutomationNavigate: (callback) => {
+    const handler = (_event, payload) => {
+      const requestId = typeof payload?.requestId === 'string' ? payload.requestId : '';
+      const rendererTabId = payload?.rendererTabId;
+      const url = payload?.url;
+      if (
+        !requestId ||
+        !Number.isSafeInteger(rendererTabId) ||
+        rendererTabId < 1 ||
+        typeof url !== 'string' ||
+        !url
+      ) {
+        return;
+      }
+      Promise.resolve()
+        .then(() => callback({ rendererTabId, url }))
+        .then((accepted) => {
+          ipcRenderer.send('automation:navigate-result', {
+            requestId,
+            ok: accepted === true,
+          });
+        })
+        .catch(() => {
+          ipcRenderer.send('automation:navigate-result', { requestId, ok: false });
+        });
+    };
+    ipcRenderer.on('automation:navigate', handler);
+    return () => ipcRenderer.removeListener('automation:navigate', handler);
+  },
+  onAutomationStopLoading: (callback) => {
+    const handler = (_event, payload) => {
+      const rendererTabId = payload?.rendererTabId;
+      if (!Number.isSafeInteger(rendererTabId) || rendererTabId < 1) return;
+      callback({ rendererTabId });
+    };
+    ipcRenderer.on('automation:stop-loading', handler);
+    return () => ipcRenderer.removeListener('automation:stop-loading', handler);
+  },
   // Context menu
   saveImage: (imageUrl) => ipcRenderer.invoke('context-menu:save-image', imageUrl),
   // Clipboard

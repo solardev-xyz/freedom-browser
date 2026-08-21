@@ -158,8 +158,14 @@ module.exports = {
   OPEN_URL_IN_NEW_TAB: 'internal:open-url-in-new-tab',
   SIDEBAR_OPEN_PUBLISH_SETUP: 'sidebar:open-publish-setup',
 
-  // Automation (trusted browser chrome renderer → main process only)
+  // Automation IPC is restricted to the trusted browser chrome renderer.
   AUTOMATION_BIND_TAB: 'automation:bind-tab',
+  // Main → trusted browser chrome renderer, with a renderer → main result.
+  // The request targets an already-bound numeric renderer tab; page content
+  // never receives either channel.
+  AUTOMATION_NAVIGATE: 'automation:navigate',
+  AUTOMATION_NAVIGATE_RESULT: 'automation:navigate-result',
+  AUTOMATION_STOP_LOADING: 'automation:stop-loading',
 
   // Favicons
   FAVICON_GET: 'favicon:get',

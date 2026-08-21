@@ -1623,13 +1623,14 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
   pushDebug('Ignoring empty input or invalid URL.');
 };
 
-const stopLoadingAndRestore = () => {
-  const navState = getNavState();
+export const stopPageLoading = (targetWebview = null) => {
+  const webview = targetWebview || getActiveWebview();
+  const targetTabId = getTabIdForWebview(webview);
+  const navState = getTabById(targetTabId)?.navigationState || getNavState();
   if (!navState.isWebviewLoading) {
     return false;
   }
   cancelPendingSwarmProbe(navState);
-  const webview = getActiveWebview();
   if (webview) {
     webview.stop();
   }
@@ -1646,12 +1647,16 @@ const stopLoadingAndRestore = () => {
       state.ipnsRoutePrefix,
       state.radicleApiPrefix
     );
-    addressInput.value = display;
+    setAddressDisplayForTab(display, targetTabId);
     pushDebug(`[AddressBar] Restored to: ${display} (raw: ${targetUrl})`);
   }
-  reloadBtn.dataset.state = 'reload';
+  if (isActiveTab(targetTabId) || targetTabId === null) {
+    reloadBtn.dataset.state = 'reload';
+  }
   return true;
 };
+
+const stopLoadingAndRestore = () => stopPageLoading();
 
 export const loadHomePage = () => {
   const webview = getActiveWebview();

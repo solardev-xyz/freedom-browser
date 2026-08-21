@@ -419,6 +419,19 @@ test('desktop and hidden adapters preserve HTTPS, Swarm, and IPFS behavior', asy
     .poll(() => automationTabs(electronApp), { timeout: 5_000 })
     .toEqual(expect.arrayContaining([expect.objectContaining({ url: PROTOCOL_CASES[0].url })]));
   const desktopTab = await tabForUrl(electronApp, PROTOCOL_CASES[0].url);
+  const desktopRendererTabId = await window.evaluate((url) => {
+    const webview = [...document.querySelectorAll('webview')].find(
+      (candidate) => candidate.getURL?.() === url
+    );
+    return webview?.dataset?.tabId || null;
+  }, PROTOCOL_CASES[0].url);
+  expect(desktopRendererTabId).toBeTruthy();
+
+  await window.locator('[data-test="new-tab-btn"]').click();
+  const foregroundTab = window.locator('[data-test="tab"].active');
+  const foregroundRendererTabId = await foregroundTab.getAttribute('data-tab-id');
+  expect(foregroundRendererTabId).not.toBe(desktopRendererTabId);
+  const foregroundAddress = await addressInput.inputValue();
 
   for (const protocolCase of PROTOCOL_CASES) {
     await exerciseProtocolPage(electronApp, desktopTab.tabId, protocolCase);
@@ -438,4 +451,11 @@ test('desktop and hidden adapters preserve HTTPS, Swarm, and IPFS behavior', asy
       );
     }
   }
+
+  await expect(
+    window.locator(`[data-test="tab"][data-tab-id="${foregroundRendererTabId}"]`)
+  ).toHaveClass(/active/);
+  await expect(addressInput).toHaveValue(foregroundAddress);
+  await window.locator(`[data-test="tab"][data-tab-id="${desktopRendererTabId}"]`).click();
+  await expect(addressInput).toHaveValue(PROTOCOL_CASES.at(-1).url);
 });

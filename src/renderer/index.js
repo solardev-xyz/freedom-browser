@@ -37,12 +37,14 @@ import {
   createTab,
   openOrFocusInternalPage,
   getActiveWebview,
+  getTabById,
 } from './lib/tabs.js';
 import {
   initNavigation,
   loadTarget,
   reloadPage,
   hardReloadPage,
+  stopPageLoading,
   onSettingsChanged,
   setOnHistoryRecorded,
   closeTrustPopover,
@@ -133,6 +135,16 @@ setOnHistoryRecorded(refreshAutocompleteCache);
 setOnOpenHistory(() => loadTarget('freedom://history'));
 setOnNewTab(() => createTab());
 setOnOpenRadicleUrl((url) => loadTarget(url));
+electronAPI.onAutomationNavigate?.(({ rendererTabId, url }) => {
+  const tab = getTabById(rendererTabId);
+  if (!tab?.webview) return false;
+  loadTarget(url, null, tab.webview);
+  return true;
+});
+electronAPI.onAutomationStopLoading?.(({ rendererTabId }) => {
+  const tab = getTabById(rendererTabId);
+  if (tab?.webview) stopPageLoading(tab.webview);
+});
 // When any popover/menu opens, dismiss other transient surfaces so we
 // don't end up with the autocomplete dropdown or the ENS trust popover
 // stacked on top of the nodes/main menu.
