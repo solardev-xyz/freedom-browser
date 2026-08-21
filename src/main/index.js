@@ -1,5 +1,6 @@
 // Set app name early, before electron-log initializes (it uses app name for log path)
 const { app, dialog } = require('electron');
+const RUNTIME_MODE = process.argv.includes('--runtime');
 const appName = app.isPackaged
   ? process.platform === 'linux'
     ? 'freedom'
@@ -41,10 +42,14 @@ let activeProfile = null;
 try {
   activeProfile = initializeProfile(app);
 } catch (error) {
-  dialog.showErrorBox(
-    'Freedom profile could not open',
-    `Freedom could not initialize the selected profile.\n\n${error?.message || error}`
-  );
+  if (RUNTIME_MODE) {
+    console.error(`Freedom runtime could not initialize its profile: ${error?.message || error}`);
+  } else {
+    dialog.showErrorBox(
+      'Freedom profile could not open',
+      `Freedom could not initialize the selected profile.\n\n${error?.message || error}`
+    );
+  }
   app.exit(1);
   process.exit(1);
 }
@@ -62,13 +67,15 @@ try {
   activeProfileLock = acquireProfileLock(activeProfile, { logger: console });
 } catch (error) {
   if (isLockUnavailableError(error)) {
-    const profileName = activeProfile.displayName || activeProfile.id || 'selected';
-    const focusResult = requestProfileFocusSync(activeProfile);
-    if (!focusResult.ok) {
-      dialog.showErrorBox(
-        'Freedom profile is already open',
-        `The "${profileName}" profile is already open, but Freedom could not focus it.\n\nClose that Freedom window or launch a different profile.`
-      );
+    if (!RUNTIME_MODE) {
+      const profileName = activeProfile.displayName || activeProfile.id || 'selected';
+      const focusResult = requestProfileFocusSync(activeProfile);
+      if (!focusResult.ok) {
+        dialog.showErrorBox(
+          'Freedom profile is already open',
+          `The "${profileName}" profile is already open, but Freedom could not focus it.\n\nClose that Freedom window or launch a different profile.`
+        );
+      }
     }
     app.exit(0);
     process.exit(0);
@@ -260,6 +267,10 @@ const { initUpdater } = require('./updater');
 const { setupApplicationMenu, updateTabMenuItems } = require('./menu');
 const { registerWebContentsHandlers } = require('./webcontents-setup');
 const { installTestHarness, registerStubProtocols } = require('./test-harness');
+const { automationController } = require('./automation/runtime');
+const { createRuntimeServer } = require('./automation/runtime-server');
+
+let runtimeServer = null;
 
 app.commandLine.appendSwitch('disable-features', 'VizDisplayCompositor');
 log.info('[profile] Active profile:', {
@@ -414,13 +425,18 @@ async function bootstrap() {
   registerPrivateCleanup((partition) => unregisterOnionRoutingSession(partition));
 
   registerWebContentsHandlers();
-  setupApplicationMenu();
+  if (!RUNTIME_MODE) setupApplicationMenu();
 
   // Profiles are shared across processes (one process per profile). When any
   // process renames / creates / deletes a profile, the registry file changes;
   // pick that up here so this process rebuilds its native Profiles menu and
   // refreshes its renderers, keeping every window's profile list in sync.
-  if (!TEST_MODE && activeProfile?.source === 'catalog' && activeProfile?.appRoot) {
+  if (
+    !RUNTIME_MODE &&
+    !TEST_MODE &&
+    activeProfile?.source === 'catalog' &&
+    activeProfile?.appRoot
+  ) {
     watchProfileRegistry(activeProfile.appRoot, () => {
       setupApplicationMenu();
       broadcastProfileUpdated();
@@ -452,10 +468,15 @@ async function bootstrap() {
   const settings = loadSettings();
   // A profile cold-started from another window's "edit" button (Profiles
   // manager) carries --open-settings; land its first tab on Profile settings.
-  const coldStartUrl = process.argv.includes('--open-settings') ? PROFILE_SETTINGS_DEEPLINK : null;
-  const mainWindow = createMainWindow(coldStartUrl);
+  let mainWindow = null;
+  if (!RUNTIME_MODE) {
+    const coldStartUrl = process.argv.includes('--open-settings')
+      ? PROFILE_SETTINGS_DEEPLINK
+      : null;
+    mainWindow = createMainWindow(coldStartUrl);
+  }
 
-  if (!TEST_MODE) {
+  if (!RUNTIME_MODE && !TEST_MODE) {
     await promptForDefaultExternalCandidates(activeProfile, {
       window: mainWindow,
       enabledProtocols: {
@@ -501,10 +522,24 @@ async function bootstrap() {
     }
   }
 
+  if (RUNTIME_MODE) {
+    runtimeServer = createRuntimeServer({
+      profile: activeProfile,
+      controller: automationController,
+      appVersion: version,
+      logger: log,
+      onShutdown: () => app.quit(),
+    });
+    const discovery = await runtimeServer.start();
+    log.info(
+      `[automation-runtime] Ready (${discovery.endpoint.kind}, protocol v${discovery.protocolVersion})`
+    );
+  }
+
   // Initialize auto-updater (pass menu update callback). Skipped in
   // test mode so specs don't trigger background network checks against
   // freedom.baby.
-  if (!TEST_MODE) {
+  if (!RUNTIME_MODE && !TEST_MODE) {
     initUpdater(mainWindow, setupApplicationMenu, { profile: activeProfile });
     // Schedule Swarm filter-list update checks. No-op until a feed trust
     // anchor is compiled in (WP5); safe to install unconditionally.
@@ -512,6 +547,7 @@ async function bootstrap() {
   }
 
   app.on('activate', () => {
+    if (RUNTIME_MODE) return;
     if (BrowserWindow.getAllWindows().length === 0) {
       createMainWindow();
     }
@@ -522,6 +558,7 @@ app.whenReady().then(bootstrap);
 
 app.on('window-all-closed', () => {
   updateTabMenuItems();
+  if (RUNTIME_MODE) return;
   if (process.platform !== 'darwin') {
     app.quit();
   }
@@ -536,6 +573,12 @@ app.on('before-quit', async (event) => {
 
   event.preventDefault();
   isQuitting = true;
+
+  if (runtimeServer) {
+    log.info('[automation-runtime] Stopping control endpoint...');
+    await runtimeServer.stop();
+    runtimeServer = null;
+  }
 
   // Close all DevTools first to prevent crashes during cleanup
   log.info('[App] Closing all DevTools...');
