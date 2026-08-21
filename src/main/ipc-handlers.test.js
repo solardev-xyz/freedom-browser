@@ -158,6 +158,11 @@ function loadIpcHandlersModule(options = {}) {
     options.validateProfileDeletionForActiveApp || jest.fn(() => true);
   const requestProfileQuitAsync = options.requestProfileQuitAsync || jest.fn(() => ({ ok: true }));
   const isProfileLocked = options.isProfileLocked || jest.fn(() => false);
+  const myotisManager = options.myotisManager || {
+    stopAllMyotis: jest.fn(),
+    refreshMyotisStatus: jest.fn(),
+    NETWORKS: new Map([[1, {}], [100, {}]]),
+  };
 
   const { mod, app, webContents } = loadMainModule(require.resolve('./ipc-handlers'), {
     ipcMain,
@@ -193,8 +198,16 @@ function loadIpcHandlersModule(options = {}) {
       [require.resolve('./profile-lock')]: () => ({
         isProfileLocked,
       }),
+      [require.resolve('./myotis/myotis-manager')]: () => myotisManager,
       ...(options.swarmProbeMock
         ? { [require.resolve('./swarm/swarm-probe')]: () => options.swarmProbeMock }
+        : {}),
+      ...(options.isPrivateWebContents
+        ? {
+            [require.resolve('./private/private-windows')]: () => ({
+              isPrivateWebContents: options.isPrivateWebContents,
+            }),
+          }
         : {}),
     },
   });
@@ -222,6 +235,7 @@ function loadIpcHandlersModule(options = {}) {
     validateProfileDeletionForActiveApp,
     requestProfileQuitAsync,
     isProfileLocked,
+    myotisManager,
     importProfileForActiveApp,
     listProfilesForActiveApp,
     openOrFocusProfile,
@@ -425,6 +439,7 @@ describe('ipc-handlers', () => {
             bee: { mode: 'managed', apiPort: 11635 },
             ipfs: { mode: 'managed', backend: 'freedom-ipfs' },
             radicle: { mode: 'disabled' },
+            tor: { mode: 'managed', socksPort: 19152 },
           },
         },
       },
@@ -441,9 +456,94 @@ describe('ipc-handlers', () => {
       nodes: {
         bee: { mode: 'managed', apiPort: 11635 },
         ipfs: { mode: 'managed', backend: 'freedom-ipfs' },
+        myotis: null,
         radicle: { mode: 'disabled' },
+        tor: { mode: 'managed', socksPort: 19152 },
       },
     });
+  });
+
+  // PRIVATE MODE GUARD (windows): "Open Link in New Window" asked from a
+  // private window must not hand the URL to a normal window — that window
+  // runs on the persistent default session (history, cookies, providers).
+  test('window:new-with-url from a private window opens another private window', () => {
+    const onNewWindow = jest.fn();
+    const onNewPrivateWindow = jest.fn();
+    const ctx = loadIpcHandlersModule({
+      isPrivateWebContents: (wc) => wc?.isPrivate === true,
+    });
+
+    ctx.mod.registerBaseIpcHandlers({ onNewWindow, onNewPrivateWindow });
+
+    ctx.ipcMain.emit(
+      IPC.WINDOW_NEW_WITH_URL,
+      { sender: { isPrivate: true } },
+      'https://example.com/secret'
+    );
+    expect(onNewPrivateWindow).toHaveBeenCalledWith('https://example.com/secret');
+    expect(onNewWindow).not.toHaveBeenCalled();
+
+    // Normal windows keep the normal path.
+    ctx.ipcMain.emit(IPC.WINDOW_NEW_WITH_URL, { sender: {} }, 'https://example.com/public');
+    expect(onNewWindow).toHaveBeenCalledWith('https://example.com/public');
+    expect(onNewPrivateWindow).toHaveBeenCalledTimes(1);
+  });
+
+  test('window:new-with-url from a private window is dropped, never downgraded', () => {
+    const onNewWindow = jest.fn();
+    const ctx = loadIpcHandlersModule({
+      isPrivateWebContents: (wc) => wc?.isPrivate === true,
+    });
+
+    // No private-window factory wired: the request must be dropped rather
+    // than fall back to a normal (persistent-session) window.
+    ctx.mod.registerBaseIpcHandlers({ onNewWindow });
+
+    ctx.ipcMain.emit(
+      IPC.WINDOW_NEW_WITH_URL,
+      { sender: { isPrivate: true } },
+      'https://example.com/secret'
+    );
+    expect(onNewWindow).not.toHaveBeenCalled();
+    expect(ctx.log.warn).toHaveBeenCalledWith(expect.stringContaining('window:new-with-url'));
+  });
+
+  // PRIVATE MODE GUARD (window title): a private page's <title> (and, for
+  // view-source, the full URL the renderer sends as the title) must stay out
+  // of the persistent on-disk log and out of the process-wide title that
+  // later normal windows inherit at ready-to-show.
+  test('window:set-title from a private window neither logs the title nor seeds the shared title', () => {
+    const onSetTitle = jest.fn();
+    const ctx = loadIpcHandlersModule({
+      isPrivateWebContents: (wc) => wc?.isPrivate === true,
+    });
+    const win = createWindowMock();
+
+    ctx.mod.registerBaseIpcHandlers({ onSetTitle });
+
+    ctx.ipcMain.emit(
+      IPC.WINDOW_SET_TITLE,
+      { sender: { isPrivate: true, getOwnerBrowserWindow: () => win } },
+      'SECRET-TITLE-XYZZY'
+    );
+
+    // The window's own native title still updates (as Chrome/Firefox do)...
+    expect(win.setTitle).toHaveBeenCalledWith('SECRET-TITLE-XYZZY - Freedom');
+    // ...but nothing durable or shared records it.
+    expect(onSetTitle).not.toHaveBeenCalled();
+    for (const call of ctx.log.info.mock.calls) {
+      expect(JSON.stringify(call)).not.toContain('SECRET-TITLE-XYZZY');
+    }
+
+    // Normal windows are unchanged.
+    const normalWin = createWindowMock();
+    ctx.ipcMain.emit(
+      IPC.WINDOW_SET_TITLE,
+      { sender: { getOwnerBrowserWindow: () => normalWin } },
+      'Public Title'
+    );
+    expect(onSetTitle).toHaveBeenCalledWith('Public Title - Freedom');
+    expect(ctx.log.info).toHaveBeenCalledWith(expect.stringContaining('Public Title'));
   });
 
   test('lists, creates, and renames profiles through profile IPC', async () => {
@@ -917,7 +1017,9 @@ describe('ipc-handlers', () => {
         nodes: {
           bee: { mode: 'managed', apiPort: 11634 },
           ipfs: { mode: 'managed', backend: 'freedom-ipfs' },
+          myotis: { mode: 'managed', backend: 'myotis-native' },
           radicle: { mode: 'managed', httpPort: 18781, p2pPort: 18777 },
+          tor: { mode: 'managed', socksPort: 19151 },
         },
       },
     };
@@ -948,7 +1050,9 @@ describe('ipc-handlers', () => {
           nodes: {
             bee: { mode: 'external', apiPort: 11634, externalApi: 'http://127.0.0.1:1633' },
             ipfs: { mode: 'managed', backend: 'freedom-ipfs' },
+            myotis: { mode: 'managed', backend: 'myotis-native' },
             radicle: { mode: 'managed', httpPort: 18781, p2pPort: 18777 },
+            tor: { mode: 'managed', socksPort: 19151 },
           },
         },
       })
@@ -967,9 +1071,124 @@ describe('ipc-handlers', () => {
       nodes: {
         bee: { mode: 'external', apiPort: 11634, externalApi: 'http://127.0.0.1:1633' },
         ipfs: { mode: 'managed', backend: 'freedom-ipfs' },
+        myotis: { mode: 'managed', backend: 'myotis-native' },
         radicle: { mode: 'managed', httpPort: 18781, p2pPort: 18777 },
+        tor: { mode: 'managed', socksPort: 19151 },
       },
     });
+  });
+
+  test('supports managed and disabled Myotis profile modes', async () => {
+    const activeProfile = {
+      id: 'work',
+      displayName: 'Work',
+      source: 'catalog',
+      metadata: {
+        nodes: { myotis: { mode: 'managed', backend: 'myotis-native' } },
+      },
+    };
+    const ctx = loadIpcHandlersModule({ activeProfile });
+    ctx.mod.registerBaseIpcHandlers();
+
+    await expect(
+      ctx.invokeProfileMutation(IPC.PROFILE_UPDATE_NODE_CONFIG, {
+        protocol: 'myotis',
+        config: { mode: 'disabled', externalApi: 'http://127.0.0.1:8545' },
+      })
+    ).resolves.toEqual(
+      success({
+        profile: expect.objectContaining({
+          nodes: expect.objectContaining({
+            myotis: { mode: 'disabled', backend: 'myotis-native' },
+          }),
+        }),
+      })
+    );
+    expect(ctx.updateActiveProfileNodeConfig).toHaveBeenCalledWith('myotis', {
+      mode: 'disabled',
+    });
+    expect(ctx.myotisManager.stopAllMyotis).toHaveBeenCalled();
+
+    await ctx.invokeProfileMutation(IPC.PROFILE_UPDATE_NODE_CONFIG, {
+      protocol: 'myotis',
+      config: { mode: 'managed' },
+    });
+    expect(ctx.myotisManager.refreshMyotisStatus.mock.calls).toEqual([[1], [100]]);
+
+    expect(ctx.mod.validateProfileNodeConfigUpdate('myotis', { mode: 'external' })).toEqual({
+      ok: false,
+      response: failure('INVALID_PROFILE_NODE_MODE', 'Unsupported profile node mode', {
+        mode: 'external',
+      }),
+    });
+  });
+
+  test('updates Tor profile node config through SOCKS endpoint validation', async () => {
+    const activeProfile = {
+      id: 'work',
+      displayName: 'Work',
+      source: 'catalog',
+      isDev: false,
+      metadata: {
+        slot: 1,
+        nodes: {
+          tor: { mode: 'managed', socksPort: 19151, externalSocks: null },
+        },
+      },
+    };
+    const ctx = loadIpcHandlersModule({ activeProfile });
+
+    ctx.mod.registerBaseIpcHandlers();
+
+    await expect(
+      ctx.invokeProfileMutation(IPC.PROFILE_UPDATE_NODE_CONFIG, {
+        protocol: 'tor',
+        config: {
+          mode: 'external',
+          externalSocks: 'socks5://127.0.0.1:9150/',
+        },
+      })
+    ).resolves.toEqual(
+      success({
+        profile: {
+          id: 'work',
+          displayName: 'Work',
+          source: 'catalog',
+          isDev: false,
+          slot: 1,
+          nodes: {
+            bee: null,
+            ipfs: null,
+            myotis: null,
+            radicle: null,
+            tor: {
+              mode: 'external',
+              socksPort: 19151,
+              externalSocks: '127.0.0.1:9150',
+            },
+          },
+        },
+      })
+    );
+
+    expect(ctx.updateActiveProfileNodeConfig).toHaveBeenCalledWith('tor', {
+      mode: 'external',
+      externalSocks: '127.0.0.1:9150',
+    });
+
+    await expect(
+      ctx.invokeProfileMutation(IPC.PROFILE_UPDATE_NODE_CONFIG, {
+        protocol: 'tor',
+        config: {
+          mode: 'external',
+          externalSocks: 'http://127.0.0.1:9150',
+        },
+      })
+    ).resolves.toEqual(
+      failure('INVALID_PROFILE_NODE_ENDPOINT', 'Invalid profile node endpoint', {
+        field: 'externalSocks',
+      })
+    );
   });
 
   test('rejects invalid active profile node updates', async () => {
@@ -1189,9 +1408,10 @@ describe('ipc-handlers', () => {
 
     const startResult = await ctx.ipcMain.invoke(IPC.BZZ_START_PROBE, {
       hash: 'a'.repeat(64),
+      path: '/index.html',
     });
     expect(startResult).toEqual(success({ id: 'probe-abc' }));
-    expect(startProbe).toHaveBeenCalledWith('a'.repeat(64));
+    expect(startProbe).toHaveBeenCalledWith('a'.repeat(64), { path: '/index.html' });
 
     const awaitPromise = ctx.ipcMain.invoke(IPC.BZZ_AWAIT_PROBE, { id: 'probe-abc' });
     probeResolve({ ok: true });

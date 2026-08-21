@@ -1,0 +1,129 @@
+/* Download shelf — bottom-right stack of compact download cards.
+   (The update toast owns the bottom-left corner.) */
+.download-shelf {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  z-index: 10000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.download-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 320px;
+  padding: 10px 12px;
+  background: var(--menu-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.download-card-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.download-card-name {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.download-card-status {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+.download-card.failed .download-card-status,
+/* Live but stalled (interrupted mid-transfer, resumable) — warn without
+   claiming the download is over. */
+.download-card.stalled .download-card-status {
+  color: var(--danger);
+}
+
+.download-card-progress {
+  height: 3px;
+  margin-top: 6px;
+  border-radius: 2px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.download-card-progress.hidden {
+  display: none;
+}
+
+.download-card-progress-fill {
+  height: 100%;
+  width: 0;
+  border-radius: 2px;
+  background: var(--accent);
+  transition: width 0.2s ease;
+}
+
+.download-card-progress.indeterminate .download-card-progress-fill {
+  animation: download-indeterminate 1.2s ease-in-out infinite;
+}
+
+@keyframes download-indeterminate {
+  0% {
+    margin-left: -40%;
+    width: 40%;
+  }
+  100% {
+    margin-left: 100%;
+    width: 40%;
+  }
+}
+
+.download-card-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.download-card-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 8px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+
+.download-card-btn:hover {
+  background: var(--toolbar);
+}
+
+.download-card-btn.danger {
+  color: var(--danger);
+}
+
+.download-card-close {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 0 2px;
+  line-height: 1;
+  flex-shrink: 0;
+  transition: color 0.2s;
+}
+
+.download-card-close:hover {
+  color: var(--text);
+}

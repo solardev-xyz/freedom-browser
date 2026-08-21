@@ -1,13 +1,16 @@
 # Sample Ant (antd) Configuration — bee-compatible YAML the antd node parses.
+# Booleans must be unquoted: antd >= 0.5.42 parses the config strictly and
+# rejects string values for boolean keys (matching ant-manager's runtime
+# template, which has always written them unquoted).
 api-addr: 127.0.0.1:1633
-swap-enable: 'false'
-mainnet: 'true'
-full-node: 'false'
+swap-enable: false
+mainnet: true
+full-node: false
 # "null" (the literal Origin value, not YAML null) matches what ant-manager
 # writes at runtime — keep the dev sample as tight as production.
 cors-allowed-origins: 'null'
-skip-postage-snapshot: 'true'
+skip-postage-snapshot: true
 resolver-options: https://ethereum.publicnode.com
 data-dir: DATA_DIR
 password: PASSWORD
-storage-incentives-enable: 'false'
+storage-incentives-enable: false

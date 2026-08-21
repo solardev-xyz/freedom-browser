@@ -27,6 +27,7 @@ jest.mock('../identity-manager', () => ({
   getDerivedKeys: (...args) => mockGetDerivedKeys(...args),
   getPublisherKey: (...args) => mockGetPublisherKey(...args),
   getDerivedWallets: (...args) => mockGetDerivedWallets(...args),
+  WALLET_TYPES: { MNEMONIC: 'mnemonic', LEDGER: 'ledger' },
 }));
 
 const { app } = require('electron');
@@ -49,6 +50,7 @@ const {
   setOriginEntry,
   allocatePublisherKeyIndex,
   getOriginIdentityState,
+  getOriginIdentityStateWithOwners,
   previewAppScopedIdentity,
   createAppScopedIdentity,
   ensureAntWalletIdentity,
@@ -64,6 +66,7 @@ const {
   hasFeedGrant,
   grantFeedAccess,
   revokeFeedAccess,
+  onManifestMutation,
   registerFeedStoreIpc,
   _resetCache,
 } = require('./feed-store');
@@ -250,6 +253,53 @@ describe('feed-store', () => {
     test('ensureEthereumWalletIdentity rejects missing browser wallets', async () => {
       await expect(ensureEthereumWalletIdentity('myapp.eth', 99))
         .rejects.toThrow('Wallet with index 99 does not exist');
+    });
+
+    test('ensureEthereumWalletIdentity rejects hardware wallet accounts', async () => {
+      mockGetDerivedWallets.mockResolvedValue([
+        { index: 0, name: 'Main Wallet', address: '0xWallet000000000000000000000000000000000000', type: 'mnemonic' },
+        { index: 1, name: 'Ledger 1', address: '0xLedger11111111111111111111111111111111111', type: 'ledger' },
+      ]);
+
+      await expect(ensureEthereumWalletIdentity('myapp.eth', 1, { activate: true }))
+        .rejects.toThrow('Hardware wallet accounts cannot be used as a Swarm publisher identity');
+      // Nothing persisted: the origin never gets a broken active identity.
+      expect(getOriginEntry('myapp.eth')).toBeNull();
+    });
+
+    test('hardware wallet accounts are not offered as publisher identities', async () => {
+      mockGetDerivedWallets.mockResolvedValue([
+        { index: 0, name: 'Main Wallet', address: '0xWallet000000000000000000000000000000000000', type: 'mnemonic' },
+        { index: 1, name: 'Ledger 1', address: '0xLedger11111111111111111111111111111111111', type: 'ledger' },
+      ]);
+      setOriginEntry('myapp.eth', { identityMode: 'app-scoped', publisherKeyIndex: 0 });
+
+      const state = await getOriginIdentityStateWithOwners('myapp.eth');
+      const walletIndexes = state.identities
+        .filter((identity) => identity.mode === 'ethereum-wallet')
+        .map((identity) => identity.walletIndex);
+
+      expect(walletIndexes).toEqual([0]);
+    });
+
+    test('an already-stored hardware wallet identity is reported as unavailable', async () => {
+      mockGetDerivedWallets.mockResolvedValue([
+        { index: 0, name: 'Main Wallet', address: '0xWallet000000000000000000000000000000000000', type: 'mnemonic' },
+        { index: 1, name: 'Ledger 1', address: '0xLedger11111111111111111111111111111111111', type: 'mnemonic' },
+      ]);
+      setOriginEntry('myapp.eth', { identityMode: 'app-scoped', publisherKeyIndex: 0 });
+      await ensureEthereumWalletIdentity('myapp.eth', 1, { activate: true });
+
+      // The account later turns out to be (or is replaced by) a Ledger one.
+      mockGetDerivedWallets.mockResolvedValue([
+        { index: 0, name: 'Main Wallet', address: '0xWallet000000000000000000000000000000000000', type: 'mnemonic' },
+        { index: 1, name: 'Ledger 1', address: '0xLedger11111111111111111111111111111111111', type: 'ledger' },
+      ]);
+
+      const state = await getOriginIdentityStateWithOwners('myapp.eth');
+      const stored = state.identities.find((identity) => identity.id === 'ethereum-wallet:1');
+
+      expect(stored).toMatchObject({ unavailable: true });
     });
 
     test('getEthereumWalletIdentityReferences lists active and feed-pinned identities', async () => {
@@ -646,6 +696,64 @@ describe('feed-store', () => {
     });
   });
 
+  // A permission manifest can own the feed grant and the publisher identity
+  // of an origin. When the user changes either by hand, that ownership has to
+  // be detached or the manifest record keeps claiming the flag and re-asserts
+  // it on the next projection.
+  describe('manifest ownership detach', () => {
+    let mutations;
+
+    beforeEach(() => {
+      mutations = [];
+      onManifestMutation((origin, projection) => mutations.push([origin, projection]));
+      setOriginEntry('myapp.eth', { identityMode: 'app-scoped', publisherKeyIndex: 0, feedGranted: true });
+      mutations.length = 0;
+    });
+
+    afterEach(() => {
+      onManifestMutation(null);
+    });
+
+    test('a user revoking feed access detaches manifest ownership of the grant', () => {
+      revokeFeedAccess('myapp.eth');
+      expect(mutations).toEqual([['myapp.eth', 'feedGrant']]);
+    });
+
+    test('a manifest projecting the feed grant reports no user mutation', () => {
+      revokeFeedAccess('myapp.eth', { source: 'manifest' });
+      grantFeedAccess('myapp.eth', { source: 'manifest' });
+      createAppScopedIdentity('myapp.eth', { activate: true, source: 'manifest' });
+      expect(mutations).toEqual([]);
+    });
+
+    test('a user switching the publisher identity detaches manifest ownership of it', () => {
+      createAppScopedIdentity('myapp.eth');
+      expect(mutations).toEqual([['myapp.eth', 'identity']]);
+
+      mutations.length = 0;
+      activateIdentity('myapp.eth', 'app-scoped:0');
+      expect(mutations).toEqual([['myapp.eth', 'identity']]);
+    });
+
+    test('re-activating the identity that is already active detaches nothing', () => {
+      const entry = getOriginEntry('myapp.eth');
+      activateIdentity('myapp.eth', entry.activeIdentityId);
+      expect(mutations).toEqual([]);
+    });
+
+    test('a renderer cannot pass itself off as the manifest over IPC', async () => {
+      registerFeedStoreIpc();
+      await ipcHandlers[IPC.SWARM_CREATE_APP_SCOPED_IDENTITY]({}, 'myapp.eth', { source: 'manifest' });
+      expect(mutations).toEqual([['myapp.eth', 'identity']]);
+    });
+
+    test('an unknown origin never reports a mutation', () => {
+      revokeFeedAccess('nothing-here.eth');
+      grantFeedAccess('nothing-here.eth');
+      expect(mutations).toEqual([]);
+    });
+  });
+
   describe('IPC handlers', () => {
     beforeAll(() => {
       registerFeedStoreIpc();
@@ -668,76 +776,76 @@ describe('feed-store', () => {
       expect(result).toBe(false);
     });
 
-    test('set-feed-identity creates origin entry with app-scoped mode', () => {
+    test('set-feed-identity creates origin entry with app-scoped mode', async () => {
       _resetCache();
-      const result = ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-test.eth', 'app-scoped');
+      const result = await ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-test.eth', 'app-scoped');
       expect(result.identityMode).toBe('app-scoped');
       expect(result.publisherKeyIndex).toEqual(expect.any(Number));
     });
 
-    test('set-feed-identity is idempotent — does not allocate new key index', () => {
+    test('set-feed-identity is idempotent — does not allocate new key index', async () => {
       _resetCache();
-      const first = ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-idem.eth', 'app-scoped');
+      const first = await ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-idem.eth', 'app-scoped');
       const firstIndex = first.publisherKeyIndex;
-      const second = ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-idem.eth', 'app-scoped');
+      const second = await ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-idem.eth', 'app-scoped');
       expect(second.publisherKeyIndex).toBe(firstIndex);
     });
 
-    test('set-feed-identity ignores different mode on re-grant', () => {
+    test('set-feed-identity ignores different mode on re-grant', async () => {
       _resetCache();
-      ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-mode.eth', 'app-scoped');
-      const second = ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-mode.eth', 'bee-wallet');
+      await ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-mode.eth', 'app-scoped');
+      const second = await ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-mode.eth', 'bee-wallet');
       // Should return existing entry, not switch mode
       expect(second.identityMode).toBe('app-scoped');
     });
 
-    test('set-feed-identity rejects invalid identity mode', () => {
+    test('set-feed-identity rejects invalid identity mode', async () => {
       _resetCache();
-      expect(() => ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-bad.eth', 'invalid'))
-        .toThrow('Invalid identity mode');
+      await expect(ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-bad.eth', 'invalid'))
+        .rejects.toThrow('Invalid identity mode');
     });
 
-    test('set-feed-identity rejects ethereum-wallet for a new origin without wallet index setup', () => {
+    test('set-feed-identity rejects ethereum-wallet for a new origin without wallet index setup', async () => {
       _resetCache();
-      expect(() => ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-eth.eth', 'ethereum-wallet'))
-        .toThrow('ensureEthereumWalletIdentity');
+      await expect(ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-eth.eth', 'ethereum-wallet'))
+        .rejects.toThrow('ensureEthereumWalletIdentity');
     });
 
-    test('has-feed-identity returns true after identity set', () => {
+    test('has-feed-identity returns true after identity set', async () => {
       _resetCache();
-      ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-test2.eth', 'bee-wallet');
+      await ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-test2.eth', 'bee-wallet');
       const result = ipcHandlers[IPC.SWARM_HAS_FEED_IDENTITY]({}, 'ipc-test2.eth');
       expect(result).toBe(true);
     });
 
-    test('set-feed-identity also grants feed access', () => {
+    test('set-feed-identity also grants feed access', async () => {
       _resetCache();
-      ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-grant.eth', 'app-scoped');
+      await ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-grant.eth', 'app-scoped');
       expect(hasFeedGrant('ipc-grant.eth')).toBe(true);
     });
 
-    test('revoke-feed-access clears feed grant', () => {
+    test('revoke-feed-access clears feed grant', async () => {
       _resetCache();
-      ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-revoke.eth', 'bee-wallet');
+      await ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-revoke.eth', 'bee-wallet');
       expect(hasFeedGrant('ipc-revoke.eth')).toBe(true);
-      ipcHandlers[IPC.SWARM_REVOKE_FEED_ACCESS]({}, 'ipc-revoke.eth');
+      await ipcHandlers[IPC.SWARM_REVOKE_FEED_ACCESS]({}, 'ipc-revoke.eth');
       expect(hasFeedGrant('ipc-revoke.eth')).toBe(false);
       // Identity preserved
       expect(hasIdentityMode('ipc-revoke.eth')).toBe(true);
     });
 
-    test('set-feed-identity re-grants after revocation without new key', () => {
+    test('set-feed-identity re-grants after revocation without new key', async () => {
       _resetCache();
-      const first = ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-regrant.eth', 'app-scoped');
-      ipcHandlers[IPC.SWARM_REVOKE_FEED_ACCESS]({}, 'ipc-regrant.eth');
-      const second = ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-regrant.eth', 'app-scoped');
+      const first = await ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-regrant.eth', 'app-scoped');
+      await ipcHandlers[IPC.SWARM_REVOKE_FEED_ACCESS]({}, 'ipc-regrant.eth');
+      const second = await ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-regrant.eth', 'app-scoped');
       expect(second.feedGranted).toBe(true);
       expect(second.publisherKeyIndex).toBe(first.publisherKeyIndex);
     });
 
     test('identity management IPC creates, ensures, and activates identities', async () => {
       _resetCache();
-      ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-manage.eth', 'app-scoped');
+      await ipcHandlers[IPC.SWARM_SET_FEED_IDENTITY]({}, 'ipc-manage.eth', 'app-scoped');
 
       const withNewIdentity = await ipcHandlers[IPC.SWARM_CREATE_APP_SCOPED_IDENTITY]({}, 'ipc-manage.eth', {
         label: 'Second identity',

@@ -140,3 +140,68 @@ describe('history', () => {
     await expect(ipcMain.invoke(IPC.HISTORY_CLEAR)).resolves.toBe(0);
   });
 });
+
+// PRIVATE MODE GUARD coverage: history:add from a private window's
+// webContents is rejected in the main process, regardless of what the
+// renderer sends.
+describe('history private-window guard', () => {
+  let userDataDir;
+  let historyModule;
+
+  beforeEach(() => {
+    userDataDir = createTempUserDataDir();
+    historyModule = null;
+  });
+
+  afterEach(() => {
+    if (historyModule?.closeDb) {
+      historyModule.closeDb();
+    }
+    removeTempUserDataDir(userDataDir);
+  });
+
+  const loadWithPrivateMock = () => {
+    const ipcMain = createIpcMainMock();
+    // loadHistoryModule pins its own extraMocks, so go through
+    // loadMainModule directly to also stub the private-window registry.
+    const ctx = loadMainModule(require.resolve('./history'), {
+      userDataDir,
+      ipcMain,
+      extraMocks: {
+        'better-sqlite3': () => FakeBetterSqlite3Database,
+        [require.resolve('./private/private-windows')]: () => ({
+          isPrivateWebContents: (wc) => wc?.isPrivate === true,
+        }),
+      },
+    });
+    historyModule = ctx.mod;
+    ctx.mod.registerHistoryIpc();
+    return { ctx, ipcMain };
+  };
+
+  test('history:add from a private sender writes nothing', () => {
+    const { ipcMain } = loadWithPrivateMock();
+    const handler = ipcMain.handlers.get(IPC.HISTORY_ADD);
+
+    const result = handler(
+      { sender: { isPrivate: true } },
+      { url: 'https://secret.example', title: 'Secret', protocol: 'https' }
+    );
+
+    expect(result).toBeNull();
+    expect(historyModule.getHistoryCount()).toBe(0);
+  });
+
+  test('history:add from a normal sender still records', () => {
+    const { ipcMain } = loadWithPrivateMock();
+    const handler = ipcMain.handlers.get(IPC.HISTORY_ADD);
+
+    const result = handler(
+      { sender: { isPrivate: false } },
+      { url: 'https://public.example', title: 'Public', protocol: 'https' }
+    );
+
+    expect(result).toEqual(expect.objectContaining({ url: 'https://public.example' }));
+    expect(historyModule.getHistoryCount()).toBe(1);
+  });
+});

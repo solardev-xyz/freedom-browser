@@ -37,7 +37,7 @@ describe('buildGatewayUrl', () => {
   test('returns 503 when the Swarm endpoint is not hydrated', async () => {
     getAntApiUrl.mockReturnValue(null);
 
-    await expect(buildGatewayUrl(`bzz://${HASH}/index.html`)).resolves.toEqual({
+    await expect(buildGatewayUrl(`bzz://${HASH}/index.html`)).resolves.toMatchObject({
       ok: false,
       status: 503,
       message: 'Swarm node is not ready',
@@ -152,7 +152,7 @@ describe('buildGatewayUrl', () => {
       });
 
       const result = await buildGatewayUrl('bzz://vitalik.eth/');
-      expect(result).toEqual({
+      expect(result).toMatchObject({
         ok: false,
         status: 404,
         message: 'ENS name vitalik.eth resolves to ipfs, not Swarm',
@@ -169,7 +169,7 @@ describe('buildGatewayUrl', () => {
       });
 
       const result = await buildGatewayUrl('bzz://alice.wei/');
-      expect(result).toEqual({
+      expect(result).toMatchObject({
         ok: false,
         status: 404,
         message: 'WNS name alice.wei resolves to ipfs, not Swarm',
@@ -186,7 +186,7 @@ describe('buildGatewayUrl', () => {
       });
 
       const result = await buildGatewayUrl('bzz://apoorv.gwei/');
-      expect(result).toEqual({
+      expect(result).toMatchObject({
         ok: false,
         status: 404,
         message: 'GNS name apoorv.gwei resolves to ipfs, not Swarm',
@@ -202,7 +202,7 @@ describe('buildGatewayUrl', () => {
       });
 
       const result = await buildGatewayUrl('bzz://docs.eth/install');
-      expect(result).toEqual({
+      expect(result).toMatchObject({
         ok: false,
         status: 404,
         message: 'ENS name docs.eth resolves to ipns, not Swarm',
@@ -549,5 +549,162 @@ describe('handleBzzRequest', () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+});
+
+
+// PRIVATE MODE GUARD (request logging). The handler is registered once per
+// session, so a private window's session gets its own registration — these
+// assert that registration is what decides whether the persistent
+// <userData>/logs/main.log records where the tab went.
+describe('registerBzzProtocol private sessions', () => {
+  const log = require('../logger');
+  const { registerBzzProtocol } = require('./bzz-protocol');
+
+  function fakeSession() {
+    const handlers = new Map();
+    return {
+      handlers,
+      protocol: { handle: (scheme, fn) => handlers.set(scheme, fn) },
+    };
+  }
+
+  function loggedText() {
+    return [log.info, log.warn, log.error]
+      .flatMap((fn) => fn.mock.calls)
+      .map((call) => call.join(' '))
+      .join('\n');
+  }
+
+  const makeRequest = (url) => ({
+    url,
+    method: 'GET',
+    headers: new Headers(),
+    body: null,
+    signal: new AbortController().signal,
+  });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockResolveEnsContent.mockReset();
+    getAntApiUrl.mockReturnValue('http://127.0.0.1:1633');
+  });
+
+  test('a private session redacts the request URL and the resolved name', async () => {
+    mockResolveEnsContent.mockRejectedValue(new Error('rpc down'));
+    const session = fakeSession();
+    registerBzzProtocol(session, { privatePartition: 'private-abcd' });
+
+    await session.handlers.get('bzz')(makeRequest('bzz://secret-site.eth/page.html'));
+
+    const text = loggedText();
+    expect(text).not.toContain('secret-site.eth');
+    expect(text).not.toContain('page.html');
+    // Still says a bzz request failed to resolve — just not which one.
+    expect(text).toContain('resolver threw for <private>');
+    expect(text).toContain('502 for bzz://<private>');
+  });
+
+  // Every resolution failure whose page-facing message names the site. The
+  // request URL is redacted at the log site, so these are the branches that
+  // could still smuggle the destination into main.log via the message.
+  const NAME_BEARING_FAILURES = [
+    ['no contenthash', { type: 'not_found', reason: 'NO_CONTENTHASH' }, 404],
+    ['a non-Swarm contenthash', { type: 'ok', protocol: 'ipfs', decoded: 'QmX' }, 404],
+    ['an unsupported codec', { type: 'unsupported', reason: 'UNSUPPORTED' }, 415],
+    ['disagreeing providers', { type: 'conflict', groups: [] }, 502],
+    [
+      'a resolver error naming the site',
+      { type: 'error', error: 'no provider answered for secret-site.eth' },
+      502,
+    ],
+  ];
+
+  test.each(NAME_BEARING_FAILURES)(
+    'a private session keeps the name out of the log on %s',
+    async (_label, resolution, status) => {
+      mockResolveEnsContent.mockResolvedValue(resolution);
+      const session = fakeSession();
+      registerBzzProtocol(session, { privatePartition: 'private-abcd' });
+
+      const res = await session.handlers.get('bzz')(makeRequest('bzz://secret-site.eth/page.html'));
+
+      expect(res.status).toBe(status);
+      // The page still gets the full explanation — it already knows where
+      // it went; only the persistent log must not.
+      await expect(res.json()).resolves.toMatchObject({ code: status });
+      const text = loggedText();
+      expect(text).not.toContain('secret-site.eth');
+      expect(text).not.toContain('page.html');
+      expect(text).toContain(`${status} for bzz://<private>`);
+    }
+  );
+
+  test.each(NAME_BEARING_FAILURES)(
+    'a normal session keeps the full diagnostic on %s',
+    async (_label, resolution) => {
+      mockResolveEnsContent.mockResolvedValue(resolution);
+      const session = fakeSession();
+      registerBzzProtocol(session);
+
+      await session.handlers.get('bzz')(makeRequest('bzz://public-site.eth/page.html'));
+
+      const text = loggedText();
+      expect(text).toContain('bzz://public-site.eth/page.html');
+      expect(text).toContain('public-site.eth');
+    }
+  );
+
+  test('a normal session keeps the full diagnostic URL', async () => {
+    mockResolveEnsContent.mockRejectedValue(new Error('rpc down'));
+    const session = fakeSession();
+    registerBzzProtocol(session);
+
+    await session.handlers.get('bzz')(makeRequest('bzz://public-site.eth/page.html'));
+
+    expect(loggedText()).toContain('bzz://public-site.eth/page.html');
+  });
+
+  test('a private session redacts a Swarm ref that only the message carries', async () => {
+    getAntApiUrl.mockReturnValue(null);
+    const hash = 'c'.repeat(64);
+    const session = fakeSession();
+    registerBzzProtocol(session, { privatePartition: 'private-abcd' });
+
+    const res = await session.handlers.get('bzz')(makeRequest(`bzz://${hash}/index.html`));
+
+    expect(res.status).toBe(503);
+    const text = loggedText();
+    expect(text).not.toContain(hash);
+    // A failure with nothing browsing-identifying to hide still logs its
+    // reason, so "node not ready" stays diagnosable in a private window.
+    expect(text).toContain('503 for bzz://<private>: Swarm node is not ready');
+  });
+
+  test('the gateway URL is redacted to its origin when the fetch fails', async () => {
+    const { runWithPrivateLogContext } = require('../private/private-log-context');
+    const hash = 'b'.repeat(64);
+    const err = new Error('connect failed');
+    err.code = 'ECONNREFUSED';
+    const fetchImpl = jest.fn().mockRejectedValue(err);
+
+    jest.useFakeTimers();
+    try {
+      const p = runWithPrivateLogContext(true, () =>
+        handleBzzRequest(makeRequest(`bzz://${hash}/index.html`), { fetchImpl })
+      );
+      for (const d of RETRY_DELAYS_MS) {
+        await Promise.resolve();
+        await Promise.resolve();
+        await jest.advanceTimersByTimeAsync(d + 1);
+      }
+      await p;
+    } finally {
+      jest.useRealTimers();
+    }
+
+    const text = loggedText();
+    expect(text).not.toContain(hash);
+    expect(text).toContain('fetch failed for http://127.0.0.1:1633/<private>');
   });
 });

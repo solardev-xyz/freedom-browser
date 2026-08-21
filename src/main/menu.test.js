@@ -1,4 +1,6 @@
+const fs = require('fs');
 const { loadMainModule } = require('../../test/helpers/main-process-test-utils');
+const { SHORTCUTS, getDefaultAccelerator, getAliasAccelerators } = require('../shared/shortcuts');
 
 function loadMenuModule(platform, options = {}) {
   let capturedTemplate = null;
@@ -7,6 +9,12 @@ function loadMenuModule(platform, options = {}) {
     getMenuItemById: jest.fn(),
   };
   const openOrFocusProfile = options.openOrFocusProfile || jest.fn();
+
+  // In-memory settings so menu accelerators resolve overrides without
+  // touching a real settings.json; settingsListeners captures the menu's
+  // rebuild-on-remap subscription.
+  const settings = { shortcutOverrides: options.shortcutOverrides || {} };
+  const settingsListeners = [];
 
   const { mod, dialog } = loadMainModule(require.resolve('./menu'), {
     electronOverrides: {
@@ -41,19 +49,45 @@ function loadMenuModule(platform, options = {}) {
       [require.resolve('./profile-launcher')]: () => ({
         openOrFocusProfile,
       }),
+      [require.resolve('./settings-store')]: () => ({
+        loadSettings: () => settings,
+        onSettingsChanged: (listener) => {
+          settingsListeners.push(listener);
+          return () => {};
+        },
+      }),
     },
   });
 
   const originalPlatform = process.platform;
   Object.defineProperty(process, 'platform', { value: platform });
 
+  // Keep the mocked platform active for the returned emitter too — the
+  // rebuild path resolves accelerators against process.platform.
+  const restorePlatform = () =>
+    Object.defineProperty(process, 'platform', { value: originalPlatform });
+
+  const emitSettingsChanged = (merged, previous) => {
+    settings.shortcutOverrides = merged.shortcutOverrides || {};
+    for (const listener of settingsListeners) listener(merged, previous);
+  };
+
   try {
     mod.setupApplicationMenu();
   } finally {
-    Object.defineProperty(process, 'platform', { value: originalPlatform });
+    if (!options.keepPlatform) restorePlatform();
   }
 
-  return { capturedTemplate, mod, dialog, openOrFocusProfile };
+  return {
+    get capturedTemplate() {
+      return capturedTemplate;
+    },
+    mod,
+    dialog,
+    openOrFocusProfile,
+    emitSettingsChanged,
+    restorePlatform,
+  };
 }
 
 function findTopLabel(template, label) {
@@ -155,6 +189,39 @@ describe('menu', () => {
     }
   });
 
+  test('File menu offers Downloads with the Chromium-standard accelerator', () => {
+    for (const platform of ['darwin', 'win32', 'linux']) {
+      const { capturedTemplate } = loadMenuModule(platform);
+      const file = findTopLabel(capturedTemplate, 'File');
+      const downloads = file?.submenu?.find((item) => item.id === 'downloads');
+
+      expect(downloads).toEqual(
+        expect.objectContaining({
+          label: 'Downloads',
+          accelerator: 'CmdOrCtrl+Shift+J',
+        })
+      );
+    }
+  });
+
+  test('File menu offers New Private Window right after New Window', () => {
+    for (const platform of ['darwin', 'win32', 'linux']) {
+      const { capturedTemplate } = loadMenuModule(platform);
+      const file = findTopLabel(capturedTemplate, 'File');
+      const labels = file.submenu.map((item) => item.label);
+
+      const privateItem = file.submenu.find((item) => item.id === 'new-private-window');
+      expect(privateItem).toEqual(
+        expect.objectContaining({
+          label: 'New Private Window',
+          accelerator: 'CmdOrCtrl+Shift+N',
+        })
+      );
+      expect(typeof privateItem.click).toBe('function');
+      expect(labels.indexOf('New Private Window')).toBe(labels.indexOf('New Window') + 1);
+    }
+  });
+
   test('Profiles menu sits between History and the Window menu on macOS', () => {
     const { capturedTemplate } = loadMenuModule('darwin');
     const labels = capturedTemplate.map((item) => item.label ?? item.role);
@@ -175,6 +242,20 @@ describe('menu', () => {
     expect(findTopLabel(capturedTemplate, 'Edit')).toBeFalsy();
   });
 
+  test('Edit menu carries Find in Page with CmdOrCtrl+F on every platform', () => {
+    for (const platform of ['darwin', 'win32', 'linux']) {
+      const { capturedTemplate } = loadMenuModule(platform);
+      const edit = capturedTemplate.find(
+        (item) => item.label === 'Edit' || item.role === 'editMenu'
+      );
+      const find = edit?.submenu?.find((item) => item.id === 'find-in-page');
+
+      expect(find).toBeTruthy();
+      expect(find.accelerator).toBe('CmdOrCtrl+F');
+      expect(typeof find.click).toBe('function');
+    }
+  });
+
   test('macOS places editMenu immediately after File', () => {
     const { capturedTemplate } = loadMenuModule('darwin');
     const labels = capturedTemplate.map((item) => item.label ?? item.role);
@@ -185,5 +266,98 @@ describe('menu', () => {
     expect(fileIndex).toBeGreaterThanOrEqual(0);
     expect(editIndex).toBe(fileIndex + 1);
     expect(viewIndex).toBeGreaterThan(editIndex);
+  });
+});
+
+describe('menu ↔ shortcut registry', () => {
+  // Collect every explicit accelerator in a built menu template.
+  function collectAccelerators(items, found = []) {
+    for (const item of items || []) {
+      if (item.accelerator !== undefined) {
+        found.push(item.accelerator);
+      }
+      if (Array.isArray(item.submenu)) {
+        collectAccelerators(item.submenu, found);
+      }
+    }
+    return found;
+  }
+
+  test('menu.js carries no accelerator literals — everything resolves through the registry', () => {
+    const source = fs.readFileSync(require.resolve('./menu'), 'utf-8');
+    // Any accelerator assigned from a string (or template/ternary) literal
+    // means a shortcut bypassed src/shared/shortcuts.js. Add the shortcut
+    // to the registry and use acc()/aliasAcc() instead.
+    const literalAccelerator = /accelerator:\s*(['"`]|isMac)/;
+    expect(source).not.toMatch(literalAccelerator);
+    expect(source).toMatch(/require\('\.\.\/shared\/shortcuts'\)/);
+  });
+
+  test('every template accelerator is a registry default or fixed alias', () => {
+    for (const platform of ['darwin', 'win32', 'linux']) {
+      const registryAccelerators = new Set();
+      for (const entry of SHORTCUTS) {
+        registryAccelerators.add(getDefaultAccelerator(entry, platform));
+        for (const alias of getAliasAccelerators(entry, platform)) {
+          registryAccelerators.add(alias);
+        }
+      }
+
+      const { capturedTemplate } = loadMenuModule(platform);
+      const used = collectAccelerators(capturedTemplate);
+      expect(used.length).toBeGreaterThan(0);
+      for (const accelerator of used) {
+        expect(registryAccelerators).toContain(accelerator);
+      }
+    }
+  });
+
+  test('user overrides replace default accelerators in the built menu', () => {
+    const ctx = loadMenuModule('linux', {
+      shortcutOverrides: { 'tab.new': 'Ctrl+Shift+U' },
+    });
+
+    const file = ctx.capturedTemplate.find((item) => item.label === 'File');
+    const newTab = file.submenu.find((item) => item.id === 'new-tab');
+    expect(newTab.accelerator).toBe('Ctrl+Shift+U');
+
+    // Untouched shortcuts keep their registry defaults.
+    const closeTab = file.submenu.find((item) => item.id === 'close-tab');
+    expect(closeTab.accelerator).toBe('CmdOrCtrl+W');
+  });
+
+  test('the menu rebuilds when shortcut overrides change and not otherwise', () => {
+    const ctx = loadMenuModule('linux', { keepPlatform: true });
+    try {
+      const before = ctx.capturedTemplate;
+
+      // Unrelated settings change → no rebuild.
+      ctx.emitSettingsChanged({ theme: 'dark', shortcutOverrides: {} }, { shortcutOverrides: {} });
+      expect(ctx.capturedTemplate).toBe(before);
+
+      // Shortcut remap → rebuild with the new accelerator.
+      ctx.emitSettingsChanged(
+        { shortcutOverrides: { 'tab.new': 'Ctrl+Shift+U' } },
+        { shortcutOverrides: {} }
+      );
+      expect(ctx.capturedTemplate).not.toBe(before);
+      const file = ctx.capturedTemplate.find((item) => item.label === 'File');
+      expect(file.submenu.find((item) => item.id === 'new-tab').accelerator).toBe('Ctrl+Shift+U');
+    } finally {
+      ctx.restorePlatform();
+    }
+  });
+
+  test('menu-context registry entries all surface in the menu template', () => {
+    // Renderer-only shortcuts (context: 'renderer') have no menu item; every
+    // other entry's default accelerator must appear in the built template on
+    // a platform where the entry applies.
+    const { capturedTemplate } = loadMenuModule('linux');
+    const used = new Set(collectAccelerators(capturedTemplate));
+
+    for (const entry of SHORTCUTS) {
+      if (entry.context === 'renderer') continue;
+      expect(used).toContain(getDefaultAccelerator(entry, 'linux'));
+    }
   });
 });

@@ -150,4 +150,22 @@ describe('page-urls', () => {
     expect(mod.parseEnsInput('bzz://abcdef0123456789')).toBeNull();
     expect(mod.parseEnsInput('ipfs://QmHash')).toBeNull();
   });
+
+  test('parses .tez website names without accepting the ENS scheme', async () => {
+    const mod = await loadModule();
+
+    expect(mod.parseEnsInput('Docs.Example.TEZ/guide?q=1')).toEqual({
+      name: 'docs.example.tez',
+      suffix: '/guide?q=1',
+      assertedTransport: null,
+      system: 'tezos',
+    });
+    expect(mod.parseEnsInput('ipfs://docs.example.tez/guide')).toEqual({
+      name: 'docs.example.tez',
+      suffix: '/guide',
+      assertedTransport: 'ipfs',
+      system: 'tezos',
+    });
+    expect(mod.parseEnsInput('ens://docs.example.tez')).toBeNull();
+  });
 });

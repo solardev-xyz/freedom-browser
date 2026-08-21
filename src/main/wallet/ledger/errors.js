@@ -17,6 +17,7 @@ const LEDGER_ERROR_CODES = {
   DISCONNECTED: 'LEDGER_DISCONNECTED',
   BUSY: 'LEDGER_BUSY',
   WRONG_DEVICE: 'LEDGER_WRONG_DEVICE',
+  BLIND_SIGNING_REQUIRED: 'LEDGER_BLIND_SIGNING_REQUIRED',
   UNKNOWN: 'LEDGER_UNKNOWN',
 };
 
@@ -29,6 +30,8 @@ const MESSAGES = {
   [LEDGER_ERROR_CODES.BUSY]: 'Ledger is busy with another request. Finish or dismiss it on the device.',
   [LEDGER_ERROR_CODES.WRONG_DEVICE]:
     'This Ledger does not hold the selected account. Connect the device this account was added from.',
+  [LEDGER_ERROR_CODES.BLIND_SIGNING_REQUIRED]:
+    'Ledger cannot display this contract call. Enable "Blind signing" (called "Contract data" on older app versions) in the Ethereum app settings, then try again.',
   [LEDGER_ERROR_CODES.UNKNOWN]: 'Ledger error. Reconnect the device and try again.',
 };
 
@@ -51,6 +54,11 @@ const STATUS_TO_CODE = {
   0x6982: LEDGER_ERROR_CODES.DEVICE_LOCKED, // security not satisfied (locked mid-session)
   0x6985: LEDGER_ERROR_CODES.USER_REJECTED, // conditions of use not satisfied
   0x5501: LEDGER_ERROR_CODES.USER_REJECTED, // user refused on device
+  // "incorrect data" from the Ethereum app while signing means it refused
+  // to sign data it cannot decode: blind signing is off. Unavoidable here
+  // because we never resolve clear-signing metadata (see signer.js), and
+  // it is the factory default, so it needs its own actionable message.
+  0x6a80: LEDGER_ERROR_CODES.BLIND_SIGNING_REQUIRED,
   0x6511: LEDGER_ERROR_CODES.ETH_APP_NOT_OPEN, // app not started
   0x6d00: LEDGER_ERROR_CODES.ETH_APP_NOT_OPEN, // INS not supported (wrong app)
   0x6e00: LEDGER_ERROR_CODES.ETH_APP_NOT_OPEN, // CLA not supported (wrong app)
@@ -67,6 +75,9 @@ const NAME_TO_CODE = {
   TransportRaceCondition: LEDGER_ERROR_CODES.BUSY,
   TransportInterfaceNotAvailable: LEDGER_ERROR_CODES.BUSY,
   LockedDeviceError: LEDGER_ERROR_CODES.DEVICE_LOCKED,
+  // hw-app-eth rewrites 0x6a80 from the tx-signing path into this named
+  // error (it carries no statusCode of its own).
+  EthAppPleaseEnableContractData: LEDGER_ERROR_CODES.BLIND_SIGNING_REQUIRED,
 };
 
 /**

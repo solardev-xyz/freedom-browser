@@ -94,6 +94,45 @@ describe('getNetwork / getAllNetworks', () => {
     setFiles({ custom: { '777': { chainId: 777, name: 'CustomNet' } } });
     expect(registry.getNetwork(777).verification.primary).toBe('direct');
   });
+
+  test('preserves a primary-only mainnet choice from the previous settings model', () => {
+    setFiles({
+      chains: {
+        ...CHAINS,
+        '1': {
+          ...CHAINS['1'],
+          verification: {
+            primary: 'colibri',
+            order: ['myotis', 'colibri', 'quorum'],
+            preferVerified: true,
+          },
+        },
+      },
+      userConfig: { networks: { '1': { verification: { primary: 'quorum' } } } },
+    });
+
+    expect(registry.getNetwork(1).verification).toMatchObject({
+      primary: 'quorum',
+      order: ['myotis', 'quorum'],
+      preferVerified: false,
+    });
+  });
+
+  test('preserves an explicit verification preference in a primary-only override', () => {
+    setFiles({
+      userConfig: {
+        networks: {
+          '1': { verification: { primary: 'direct', preferVerified: false } },
+        },
+      },
+    });
+
+    expect(registry.getNetwork(1).verification).toMatchObject({
+      primary: 'direct',
+      order: ['myotis', 'direct', 'quorum'],
+      preferVerified: false,
+    });
+  });
 });
 
 describe('getEndpoints — resolution', () => {
@@ -254,6 +293,22 @@ describe('mutation layer', () => {
     expect(written).toBeDefined();
   });
 
+  test('updateNetwork persists ordered name-resolution policy fields', () => {
+    registry.updateNetwork(1, {
+      verification: {
+        primary: 'colibri',
+        order: ['myotis', 'colibri', 'quorum'],
+        preferVerified: true,
+      },
+    });
+
+    expect(registry.getNetwork(1).verification).toMatchObject({
+      primary: 'colibri',
+      order: ['myotis', 'colibri', 'quorum'],
+      preferVerified: true,
+    });
+  });
+
   test('updateNetwork merges a partial quorum patch, keeping the rest', () => {
     registry.updateNetwork(1, { quorum: { k: 7 } });
     expect(registry.getNetwork(1).quorum).toMatchObject({ k: 7, m: 2, timeoutMs: 5000 });
@@ -275,12 +330,48 @@ describe('mutation layer', () => {
   });
 
   test.each([
-    ['http://rpc.example'],
-    ['file:///tmp/rpc.sock'],
+    ['http://localhost:8545'],
+    ['http://localhost.:8545'],
+    ['http://dev.localhost:8545'],
+    ['http://dev.localhost.:8545'],
+    ['http://127.0.0.1:8545'],
+    ['http://127.42.0.1:8545'],
+    ['http://2130706433:8545'],
+    ['http://[::1]:8545'],
+    ['http://[0:0:0:0:0:0:0:1]:8545'],
+    ['http://[::ffff:127.0.0.1]:8545'],
     ['https://localhost:8545'],
     ['https://127.0.0.1:8545'],
+  ])('upsertEndpointSource accepts loopback RPC URL %s', (url) => {
+    const result = registry.upsertEndpointSource('local-rpc', {
+      role: 'rpc', keyed: false, coverage: { '1': url },
+    });
+
+    expect(result.success).toBe(true);
+    expect(registry.getEndpoints(1, 'rpc')).toContain(url);
+  });
+
+  test.each([
+    ['http://rpc.example'],
+    ['file:///tmp/rpc.sock'],
+    ['https://intranet.:8545'],
     ['https://192.168.1.10'],
+    ['https://[fe90::1]:8545'],
+    ['https://[fec0::1]:8545'],
+    ['https://[fec0:0:0:ffff::1]:8545'],
+    ['https://[feff::1]:8545'],
+    ['https://[ff02::1]:8545'],
+    ['https://[::ffff:192.168.1.10]:8545'],
     ['https://rpc.local'],
+    ['https://rpc.local.'],
+    ['http://[::ffff:8.8.8.8]:8545'],
+    ['https://[64:ff9b::a00:1]:8545'],
+    ['https://[64:ff9b::10.0.0.1]:8545'],
+    ['https://[64:ff9b:1::a00:1]:8545'],
+    ['https://[64:ff9b:1:ffff::1]:8545'],
+    ['https://[::10.0.0.1]:8545'],
+    ['https://[2002:a00:1::1]:8545'],
+    ['https://[2001:0:4136:e378:8000:63bf:3fff:fdd2]:8545'],
     ['https://rpc.example/${API_KEY}'],
   ])('upsertEndpointSource rejects unsafe RPC URL %s', (url) => {
     const result = registry.upsertEndpointSource('bad-rpc', {
@@ -289,6 +380,40 @@ describe('mutation layer', () => {
 
     expect(result.success).toBe(false);
     expect(registry.getEndpointSourceList().find((src) => src.id === 'bad-rpc')).toBeUndefined();
+  });
+
+  test.each([
+    ['http://192.168.1.50'],
+    ['ftp://prover.example'],
+    ['https://user:pass@prover.example'],
+    ['http://prover.example'],
+  ])('upsertEndpointSource rejects unsafe prover URL %s', (url) => {
+    // Prover URLs are fetched by the main-process Colibri client, so they get
+    // the same https-or-loopback SSRF validation as rpc URLs.
+    const result = registry.upsertEndpointSource('bad-prover', {
+      role: 'prover', keyed: false, coverage: { '1': url },
+    });
+
+    expect(result.success).toBe(false);
+    expect(registry.getEndpointSourceList().find((src) => src.id === 'bad-prover')).toBeUndefined();
+  });
+
+  test('upsertEndpointSource accepts an https prover URL', () => {
+    const result = registry.upsertEndpointSource('good-prover', {
+      role: 'prover', keyed: false, coverage: { '1': 'https://prover.example/v1' },
+    });
+    expect(result.success).toBe(true);
+    expect(registry.getEndpoints(1, 'prover')).toContain('https://prover.example/v1');
+  });
+
+  test('upsertEndpointSource accepts a NAT64 address embedding a public IPv4', () => {
+    const url = 'https://[64:ff9b::8.8.8.8]:8545';
+    const result = registry.upsertEndpointSource('nat64-rpc', {
+      role: 'rpc', keyed: false, coverage: { '1': url },
+    });
+
+    expect(result.success).toBe(true);
+    expect(registry.getEndpoints(1, 'rpc')).toContain(url);
   });
 
   test('removeEndpointSource hides a builtin source', () => {
@@ -311,6 +436,39 @@ describe('mutation layer', () => {
     expect(registry.getEndpoints(1, 'rpc')).not.toContain('https://eth.public.example');
     registry.restoreEndpointSource('eth-public');
     expect(registry.getEndpoints(1, 'rpc')).toContain('https://eth.public.example');
+  });
+
+  test('resets one chain override without deleting another chain override', () => {
+    setFiles({
+      sources: {
+        ...SOURCES,
+        'colibri-corpus': {
+          role: 'prover',
+          keyed: false,
+          coverage: {
+            '1': 'https://mainnet.prover.example',
+            '100': 'https://gnosis.prover.example',
+          },
+        },
+      },
+      userConfig: {
+        endpointSources: {
+          'colibri-corpus': {
+            role: 'prover',
+            keyed: false,
+            coverage: {
+              '1': 'https://custom-mainnet.example',
+              '100': 'https://custom-gnosis.example',
+            },
+          },
+        },
+      },
+    });
+
+    registry.resetEndpointSourceCoverage('colibri-corpus', 1);
+
+    expect(registry.getEndpoints(1, 'prover')).toEqual(['https://mainnet.prover.example']);
+    expect(registry.getEndpoints(100, 'prover')).toEqual(['https://custom-gnosis.example']);
   });
 });
 
@@ -336,6 +494,18 @@ describe('isChainAvailable / getAvailableChains', () => {
   test('a chain with no usable endpoint is unavailable', () => {
     setFiles({ custom: { '777': { chainId: 777, name: 'CustomNet' } } });
     expect(registry.isChainAvailable(777)).toBe(false);
+  });
+
+  test('a chain with only a Colibri prover remains available for verified reads', () => {
+    setFiles({
+      sources: {
+        'colibri-corpus': {
+          role: 'prover', keyed: false, coverage: { '1': 'https://prover.example' },
+        },
+      },
+    });
+    expect(registry.isChainAvailable(1)).toBe(true);
+    expect(registry.isChainAvailable(100)).toBe(false);
   });
 
   test('getAvailableChains excludes chains with no endpoint', () => {
@@ -380,12 +550,27 @@ describe('addCustomChain', () => {
     expect(registry.getEndpoints(8453, 'rpc')).toEqual(['https://a.example', 'https://b.example']);
   });
 
+  test('accepts loopback http RPC URLs for a custom chain', () => {
+    const result = registry.addCustomChain(
+      { chainId: 31337, name: 'Local Devnet' },
+      ['http://localhost:8545']
+    );
+
+    expect(result.success).toBe(true);
+    expect(registry.getEndpoints(31337, 'rpc')).toEqual(['http://localhost:8545']);
+  });
+
   test.each([
     ['http://base.example'],
     ['file:///tmp/base.sock'],
-    ['https://localhost:8545'],
+    ['https://intranet.:8545'],
     ['https://10.0.0.5'],
+    ['https://[febf::1]:8545'],
+    ['https://[::ffff:10.0.0.5]:8545'],
+    ['https://[64:ff9b::a00:5]:8545'],
+    ['https://[64:ff9b:1::a00:5]:8545'],
     ['https://base.local'],
+    ['https://base.local.'],
     ['https://base.example/${API_KEY}'],
   ])('rejects unsafe imported RPC URL %s', (url) => {
     const result = registry.addCustomChain({ chainId: 8453, name: 'Base' }, [url]);

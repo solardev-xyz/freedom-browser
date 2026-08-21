@@ -6,14 +6,15 @@
  * Dynamically fetches balances for all tokens registered in the chain registry.
  */
 
-const { formatEther, formatUnits, Contract } = require('ethers');
-const { getProvider, withRetry } = require('./provider-manager');
+const { formatEther, formatUnits, Interface } = require('ethers');
+const chainData = require('../networks/chain-data-router');
 const { getTokens } = require('../token-registry');
 const { isChainAvailable } = require('../networks/network-registry');
 const persistentCache = require('./balance-cache');
 
 // ERC-20 ABI (minimal for balance checking)
 const ERC20_ABI = ['function balanceOf(address) view returns (uint256)', 'function decimals() view returns (uint8)', 'function symbol() view returns (string)'];
+const ERC20_INTERFACE = new Interface(ERC20_ABI);
 
 // In-memory balance cache (for fast repeated lookups within session)
 const balanceCache = new Map();
@@ -23,13 +24,9 @@ const CACHE_TTL_MS = 30000; // 30 seconds
  * Get native token balance for an address on a chain
  */
 async function getNativeBalance(address, chainId, tokenInfo) {
-  const provider = getProvider(chainId);
-  if (!provider) {
-    throw new Error(`No provider available for chain ${chainId}`);
-  }
-
   try {
-    const balance = await withRetry(() => provider.getBalance(address));
+    const { result } = await chainData.request(chainId, 'eth_getBalance', [address, 'latest']);
+    const balance = BigInt(result);
 
     return {
       raw: balance.toString(),
@@ -47,17 +44,19 @@ async function getNativeBalance(address, chainId, tokenInfo) {
  * Get ERC-20 token balance for an address
  */
 async function getTokenBalance(address, tokenAddress, chainId, tokenInfo) {
-  const provider = getProvider(chainId);
-  if (!provider) {
-    throw new Error(`No provider available for chain ${chainId}`);
-  }
-
   try {
-    const contract = new Contract(tokenAddress, ERC20_ABI, provider);
-    // Use token info from registry, but verify decimals from chain
-    const [balance, decimals] = await withRetry(() =>
-      Promise.all([contract.balanceOf(address), contract.decimals()])
-    );
+    const [balanceCall, decimalsCall] = await Promise.all([
+      chainData.request(chainId, 'eth_call', [
+        { to: tokenAddress, data: ERC20_INTERFACE.encodeFunctionData('balanceOf', [address]) },
+        'latest',
+      ]),
+      chainData.request(chainId, 'eth_call', [
+        { to: tokenAddress, data: ERC20_INTERFACE.encodeFunctionData('decimals') },
+        'latest',
+      ]),
+    ]);
+    const [balance] = ERC20_INTERFACE.decodeFunctionResult('balanceOf', balanceCall.result);
+    const [decimals] = ERC20_INTERFACE.decodeFunctionResult('decimals', decimalsCall.result);
 
     return {
       raw: balance.toString(),

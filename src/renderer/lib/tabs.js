@@ -5,8 +5,12 @@ import { hideBookmarkContextMenu } from './bookmarks-ui.js';
 import { showMenuBackdrop, hideMenuBackdrop } from './menu-backdrop.js';
 import { setupWebviewContextMenu } from './page-context-menu.js';
 import { homeUrl, getInternalPageName, internalPages } from './page-urls.js';
+import { getPrivatePartition, isPrivateWindow } from './private-mode.js';
 import { setupWebviewProvider, setActiveWebview } from './dapp-provider.js';
 import { setupSwarmProvider } from './swarm-provider.js';
+import { setupRadicleProvider } from './radicle-provider.js';
+import { closeFindBar, notifyFindBarNavigated } from './find-bar.js';
+import { matchesShortcut } from './shortcuts.js';
 import {
   clearLinkStatus,
   clearHoverStatus,
@@ -232,6 +236,12 @@ export const getDisplayUrlForWebview = (webview) => {
   return tab.navigationState?.committedDisplayUrl || '';
 };
 
+export const getNavigationKeyForWebview = (webview) => {
+  const tab = tabState.tabs.find((candidate) => candidate.webview === webview);
+  if (!tab) return '';
+  return `${tab.id}:${tab.navigationState?.committedNavigationSequence || 0}`;
+};
+
 // Create default navigation state for a tab
 const createNavigationState = () => ({
   currentPageUrl: '',
@@ -257,11 +267,89 @@ const createNavigationState = () => ({
   // it so provider permission keys never see unsubmitted drafts or
   // pending destinations.
   committedDisplayUrl: '',
+  committedNavigationSequence: 0,
   cachedWebContentsId: null,
   resolvingWebContentsId: null,
   pendingSwarmProbeId: null,
   swarmProbeVersion: 0,
 });
+
+// --- Tab audio state (indicator + mute) ------------------------------------
+
+/**
+ * Pure reducer for the tab-strip audio indicator.
+ * Muted wins over audible so a muted tab keeps showing the muted-speaker
+ * affordance (and stays unmutable) even while no sound is being produced.
+ *
+ * @param {{isMuted?: boolean, isAudible?: boolean}|null} tab
+ * @returns {'muted'|'audible'|null} indicator to render, or null for none
+ */
+export const getTabAudioState = (tab) => {
+  if (!tab) return null;
+  if (tab.isMuted === true) return 'muted';
+  if (tab.isAudible === true) return 'audible';
+  return null;
+};
+
+// Sample a webview's audibility and update the tab flag. `fallback` is what
+// the triggering media event implies, used when isCurrentlyAudible isn't
+// available (tests, detached webviews) or throws (guest not attached yet).
+const applyTabAudibleState = (tabId, fallback) => {
+  const tab = tabState.tabs.find((t) => t.id === tabId);
+  if (!tab || !tab.webview) return;
+  let audible = fallback === true;
+  try {
+    if (typeof tab.webview.isCurrentlyAudible === 'function') {
+      audible = tab.webview.isCurrentlyAudible() === true;
+    }
+  } catch {
+    audible = fallback === true;
+  }
+  if (tab.isAudible !== audible) {
+    tab.isAudible = audible;
+    renderTabs();
+  }
+};
+
+// One delayed re-sample per media edge (never self-rescheduling) so the
+// indicator converges on the real audible state without a standing poll.
+const AUDIBLE_RECHECK_MS = 1000;
+const scheduleAudibleRecheck = (tabId) => {
+  const tab = tabState.tabs.find((t) => t.id === tabId);
+  if (!tab) return;
+  if (tab.audioStateTimer) {
+    clearTimeout(tab.audioStateTimer);
+  }
+  tab.audioStateTimer = setTimeout(() => {
+    tab.audioStateTimer = null;
+    applyTabAudibleState(tabId, tab.isAudible);
+  }, AUDIBLE_RECHECK_MS);
+};
+
+// Push tab.isMuted down to the webview. Webview methods throw until the
+// guest is attached, so failures are swallowed here and the flag — which
+// lives on the tab, not the webview — is re-applied by the dom-ready
+// handler. Muting is webContents-level, so it survives navigation without
+// any extra bookkeeping.
+const applyMuteToWebview = (tab) => {
+  if (!tab?.webview || typeof tab.webview.setAudioMuted !== 'function') return;
+  try {
+    tab.webview.setAudioMuted(tab.isMuted === true);
+  } catch {
+    // Guest not attached yet — dom-ready re-applies.
+  }
+};
+
+// Toggle mute for a tab: flips the tab flag immediately (indicator updates)
+// and pushes it to the webview, with dom-ready as the fallback apply point.
+export const toggleMuteTab = (tabId) => {
+  const tab = tabState.tabs.find((t) => t.id === tabId);
+  if (!tab) return;
+  tab.isMuted = tab.isMuted !== true;
+  applyMuteToWebview(tab);
+  renderTabs();
+  pushDebug(`${tab.isMuted ? 'Muted' : 'Unmuted'} tab ${tabId}`);
+};
 
 // Get navigation state of the active tab
 export const getActiveTabState = () => {
@@ -278,9 +366,41 @@ export const updateActiveTabTitle = (title) => {
   }
 };
 
+// The friendly URL of the private start page; private windows open new
+// tabs here instead of the home page.
+const PRIVATE_START_URL = 'freedom://private';
+
+// URL every fresh tab in this window starts on.
+const defaultNewTabUrl = () => (isPrivateWindow() ? PRIVATE_START_URL : homeUrl);
+
+// True for both forms the private start page appears as in tab.url —
+// the friendly freedom:// form while resolving and the resolved
+// file://…/pages/private.html form once loaded.
+//
+// The resolved form is a bare suffix match, so it is scoped to private
+// windows: in a NORMAL window a perfectly ordinary web page whose path ends
+// in /pages/private.html (https://example.com/pages/private.html) would
+// otherwise be silently excluded from the Ctrl/Cmd+Shift+T reopen stack.
+// The internal page only ever loads from a file:// URL inside a private
+// window, so the narrower check loses nothing.
+const isPrivateStartUrl = (url) =>
+  url === PRIVATE_START_URL ||
+  (isPrivateWindow() &&
+    typeof url === 'string' &&
+    url.startsWith('file:') &&
+    url.endsWith('/pages/private.html'));
+
 // Create a webview element
 const createWebview = (tabId, initialUrl) => {
   const webview = document.createElement('webview');
+  // PRIVATE MODE GUARD (partition): in a private window every webview runs
+  // on the window's unique non-persisted `private-<uuid>` session. The
+  // partition attribute only takes effect before the first navigation, so
+  // it is stamped here — before `src` is assigned — and never mutated.
+  const privatePartition = getPrivatePartition();
+  if (privatePartition) {
+    webview.setAttribute('partition', privatePartition);
+  }
   webview.setAttribute('allowpopups', '');
   webview.setAttribute('allowfullscreen', '');
   webview.setAttribute(
@@ -424,6 +544,7 @@ const createWebview = (tabId, initialUrl) => {
         // the actual page identity.
         if (tab.navigationState && event.url && event.url !== 'about:blank') {
           tab.navigationState.committedDisplayUrl = webviewUrl;
+          tab.navigationState.committedNavigationSequence += 1;
         }
         // Clear any stale favicon from the previous page when navigating to
         // an internal page — page-favicon-updated will paint one back in if
@@ -445,6 +566,12 @@ const createWebview = (tabId, initialUrl) => {
           tab.favicon = null;
           renderTabs();
         }
+      }
+      // Navigation invalidates find-in-page results for the foreground
+      // tab; the bar stays open with its query so Enter re-searches on
+      // the new page.
+      if (tabId === tabState.activeTabId) {
+        notifyFindBarNavigated();
       }
       if (tabId === tabState.activeTabId && onWebviewEvent) {
         onWebviewEvent('did-navigate', { tabId, event });
@@ -500,9 +627,32 @@ const createWebview = (tabId, initialUrl) => {
       }
     },
     'dom-ready': () => {
+      // Re-apply the tab-level mute flag once the webview is attached and
+      // ready. Covers mutes toggled before attach (races right after
+      // createTab) — webview methods throw until the guest is live, so
+      // this is the reliable apply point.
+      const tab = tabState.tabs.find((t) => t.id === tabId);
+      if (tab?.isMuted) {
+        applyMuteToWebview(tab);
+      }
       if (tabId === tabState.activeTabId && onWebviewEvent) {
         onWebviewEvent('dom-ready', { tabId });
       }
+    },
+    // Audio indicator state. Electron's <webview> emits media-started-playing /
+    // media-paused (there is no per-webview audio-state-changed event — that
+    // one only exists on main-process webContents), so on each media edge we
+    // sample isCurrentlyAudible() where available and fall back to what the
+    // event implies. A single delayed re-sample catches audibility settling
+    // after the event (e.g. a video whose audio track fades in, or another
+    // media element still playing when one pauses).
+    'media-started-playing': () => {
+      applyTabAudibleState(tabId, true);
+      scheduleAudibleRecheck(tabId);
+    },
+    'media-paused': () => {
+      applyTabAudibleState(tabId, false);
+      scheduleAudibleRecheck(tabId);
     },
     'console-message': (event) => {
       if (tabId === tabState.activeTabId) {
@@ -582,6 +732,7 @@ const createWebview = (tabId, initialUrl) => {
   // Set up providers (window.ethereum + window.swarm)
   setupWebviewProvider(webview);
   setupSwarmProvider(webview);
+  setupRadicleProvider(webview);
 
   return webview;
 };
@@ -604,6 +755,12 @@ const isInternalPageUrl = (url) =>
 
 // Loading spinner (same style as address bar)
 const SPINNER_HTML = `<span class="tab-icon-spinner"></span>`;
+
+// Audio indicator icons — speaker (tab is audible) and muted speaker (tab is
+// muted). Both live inside the .tab-audio button; CSS picks one via the
+// tab's data-audio-state attribute.
+const AUDIO_ON_SVG = `<svg class="tab-audio-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" fill="currentColor" stroke="none"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg>`;
+const AUDIO_MUTED_SVG = `<svg class="tab-audio-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" fill="currentColor" stroke="none"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>`;
 
 // Map to track existing tab DOM elements by tab ID
 const tabElements = new Map();
@@ -644,6 +801,18 @@ const createTabElement = (tab) => {
   }
 
   tabEl.appendChild(iconContainer);
+
+  // Audio indicator / mute toggle (hidden unless the tab is audible or
+  // muted — visibility driven by the tab's data-audio-state attribute).
+  const audioBtn = document.createElement('button');
+  audioBtn.className = 'tab-audio';
+  audioBtn.dataset.test = 'tab-audio';
+  audioBtn.innerHTML = AUDIO_ON_SVG + AUDIO_MUTED_SVG;
+  audioBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleMuteTab(tab.id);
+  });
+  tabEl.appendChild(audioBtn);
 
   // Tab title
   const titleEl = document.createElement('span');
@@ -806,6 +975,18 @@ const updateTabElement = (tabEl, tab, isActive, isBeforeActive) => {
     }
   }
 
+  // Update audio indicator (speaker / muted speaker / hidden)
+  const audioState = getTabAudioState(tab);
+  if (audioState) {
+    tabEl.dataset.audioState = audioState;
+  } else {
+    delete tabEl.dataset.audioState;
+  }
+  const audioBtn = tabEl.querySelector('.tab-audio');
+  if (audioBtn) {
+    audioBtn.title = audioState === 'muted' ? 'Unmute tab' : 'Mute tab';
+  }
+
   // Update title
   const titleEl = tabEl.querySelector('.tab-title');
   const newTitle = tab.title || 'New Tab';
@@ -923,16 +1104,21 @@ export const createTab = (url = null) => {
   // a blank entry in the back history; see resolveInternalPageUrl). tab.url keeps
   // the friendly freedom:// form so the address bar and singleton-tab reuse still
   // match on it while the page loads.
-  const resolvedInternalUrl = resolveInternalPageUrl(url);
+  // Empty/null falls back to this window's default new-tab page — the
+  // private start page in private windows, the home page otherwise.
+  const fallbackUrl = defaultNewTabUrl();
+  const resolvedInternalUrl = resolveInternalPageUrl(url || fallbackUrl);
   const isDirect = resolvedInternalUrl != null || isDirectLoadUrl(url);
-  const webviewUrl = resolvedInternalUrl || (isDirect ? url || homeUrl : 'about:blank');
+  const webviewUrl = resolvedInternalUrl || (isDirect ? url || fallbackUrl : 'about:blank');
   const webview = createWebview(tabId, webviewUrl);
 
   const tab = {
     id: tabId,
-    url: url || homeUrl,
+    url: url || fallbackUrl,
     title: 'New Tab',
     isLoading: false,
+    isAudible: false,
+    isMuted: false,
     webview,
     navigationState: createNavigationState(),
   };
@@ -980,9 +1166,12 @@ export const closeTab = (tabId) => {
 
   const tab = tabState.tabs[tabIndex];
 
-  // Save to closed tabs stack for reopening later (skip blank/empty tabs)
+  // Save to closed tabs stack for reopening later (skip blank/empty tabs
+  // and the private start page). The stack itself is per-window renderer
+  // state, so a private window's closed tabs die with the window and can
+  // never be resurrected from a normal window's Cmd/Ctrl+Shift+T.
   const tabUrl = tab.url || tab.navigationState?.currentPageUrl;
-  if (tabUrl && tabUrl !== 'about:blank' && tabUrl !== homeUrl) {
+  if (tabUrl && tabUrl !== 'about:blank' && tabUrl !== homeUrl && !isPrivateStartUrl(tabUrl)) {
     closedTabsStack.push({ url: tabUrl, title: tab.title });
     if (closedTabsStack.length > MAX_CLOSED_TABS) {
       closedTabsStack.shift();
@@ -1004,6 +1193,10 @@ export const closeTab = (tabId) => {
   if (tab.suppressNextStopTimer) {
     clearTimeout(tab.suppressNextStopTimer);
     tab.suppressNextStopTimer = null;
+  }
+  if (tab.audioStateTimer) {
+    clearTimeout(tab.audioStateTimer);
+    tab.audioStateTimer = null;
   }
 
   // Remove event listeners before removing webview (prevents memory leak)
@@ -1158,6 +1351,12 @@ const showContextMenu = (x, y, tabId) => {
     pinBtn.textContent = tab.pinned ? 'Unpin Tab' : 'Pin Tab';
   }
 
+  // Update mute button text
+  const muteBtn = tabContextMenu.querySelector('[data-action="mute"]');
+  if (muteBtn) {
+    muteBtn.textContent = tab.isMuted ? 'Unmute Tab' : 'Mute Tab';
+  }
+
   // Disable "Close Tabs to the Right" if there are no tabs to the right (excluding pinned)
   const tabIndex = tabState.tabs.findIndex((t) => t.id === tabId);
   const tabsToRight = tabState.tabs.slice(tabIndex + 1).filter((t) => !t.pinned);
@@ -1204,6 +1403,9 @@ export const hideTabContextMenu = () => {
 export const switchTab = (tabId, options = {}) => {
   const tab = tabState.tabs.find((t) => t.id === tabId);
   if (!tab) return;
+  // Already foreground — nothing to swap, and running the swap anyway has
+  // real side effects (closing an open find bar, re-hiding webviews).
+  if (tabState.activeTabId === tabId) return;
 
   // Reset the link-hover preview before swapping active tabs:
   // - immediate clear so the previous tab's URL never trails into the new tab
@@ -1218,6 +1420,12 @@ export const switchTab = (tabId, options = {}) => {
   clearLinkStatus({ immediate: true });
   setLinkStatusSide(tab.linkStatusInLeftZone ? 'right' : 'left');
   tabState.activeTabId = tabId;
+
+  // Find state follows the foreground page: close the bar and clear the
+  // outgoing tab's highlights. Called after the activeTabId flip so the
+  // close never returns focus to the (now background) searched webview —
+  // the find module captured that webview when its session started.
+  closeFindBar();
 
   // Hide all webviews, show active one
   for (const t of tabState.tabs) {
@@ -1409,6 +1617,9 @@ export const initTabs = async () => {
         case 'pin':
           togglePinTab(contextMenuTabId);
           break;
+        case 'mute':
+          toggleMuteTab(contextMenuTabId);
+          break;
       }
       hideTabContextMenu();
     });
@@ -1446,12 +1657,12 @@ export const initTabs = async () => {
 
   // New tab button
   newTabBtn?.addEventListener('click', () => {
-    createTab(homeUrl);
+    createTab(defaultNewTabUrl());
   });
 
   // Menu IPC handlers
   electronAPI?.onNewTab?.(() => {
-    createTab(homeUrl);
+    createTab(defaultNewTabUrl());
   });
 
   electronAPI?.onCloseTab?.(() => {
@@ -1582,15 +1793,24 @@ export const initTabs = async () => {
     reopenLastClosedTab();
   });
 
-  // Keyboard shortcuts (fallback for when menu doesn't handle it)
+  // Keyboard shortcuts (fallback for when menu doesn't handle it).
+  // Every binding resolves through the shared shortcut registry — including
+  // fixed aliases (Ctrl+Tab, Ctrl+F4, F12, …) and any user remaps, which
+  // apply live via settings:updated.
   window.addEventListener('keydown', (event) => {
-    // Cmd+T - New tab (exclude Shift to avoid conflict with Cmd+Shift+T)
-    if (event.metaKey && !event.shiftKey && event.key.toLowerCase() === 't') {
+    // New tab
+    if (matchesShortcut(event, 'tab.new')) {
       event.preventDefault();
-      createTab(homeUrl);
+      createTab(defaultNewTabUrl());
     }
-    // Cmd+W - Close tab (skip pinned tabs)
-    if (event.metaKey && event.key.toLowerCase() === 'w') {
+    // New private window (fallback for when the menu accelerator doesn't
+    // handle it — e.g. the frameless/auto-hidden menu bar on Linux)
+    if (matchesShortcut(event, 'window.newPrivate')) {
+      event.preventDefault();
+      electronAPI?.newPrivateWindow?.();
+    }
+    // Close tab (skip pinned tabs)
+    if (matchesShortcut(event, 'tab.close')) {
       event.preventDefault();
       if (tabState.activeTabId) {
         const activeTab = tabState.tabs.find((t) => t.id === tabState.activeTabId);
@@ -1599,16 +1819,13 @@ export const initTabs = async () => {
         }
       }
     }
-    // Cmd+Option+I (Mac) or Ctrl+Shift+I (Win/Linux) - Toggle DevTools
-    if (
-      (event.metaKey && event.altKey && event.key.toLowerCase() === 'i') ||
-      (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 'i')
-    ) {
+    // Toggle DevTools (Cmd/Ctrl+Alt+I, Ctrl+Shift+I, F12)
+    if (matchesShortcut(event, 'devtools.toggle')) {
       event.preventDefault();
       toggleDevTools();
     }
-    // Cmd+L (Mac) or Ctrl+L (Win/Linux) - Focus address bar
-    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'l') {
+    // Focus address bar
+    if (matchesShortcut(event, 'view.focusAddressBar')) {
       event.preventDefault();
       const addressInput = document.getElementById('address-input');
       if (addressInput) {
@@ -1616,60 +1833,35 @@ export const initTabs = async () => {
         addressInput.select();
       }
     }
-    // Ctrl+Tab / Ctrl+PageDown - Next tab (all platforms)
-    // Cmd+Shift+] - Next tab (macOS alternative)
-    if (
-      (event.ctrlKey && event.key === 'Tab' && !event.shiftKey) ||
-      (event.ctrlKey && event.key === 'PageDown' && !event.shiftKey) ||
-      (event.metaKey && event.shiftKey && event.key === ']')
-    ) {
+    // Next tab (Ctrl+PageDown; aliases Ctrl+Tab, Cmd+Shift+])
+    if (matchesShortcut(event, 'tab.next')) {
       event.preventDefault();
       switchToNextTab();
     }
-    // Ctrl+Shift+Tab / Ctrl+PageUp - Previous tab (all platforms)
-    // Cmd+Shift+[ - Previous tab (macOS alternative)
-    if (
-      (event.ctrlKey && event.key === 'Tab' && event.shiftKey) ||
-      (event.ctrlKey && event.key === 'PageUp' && !event.shiftKey) ||
-      (event.metaKey && event.shiftKey && event.key === '[')
-    ) {
+    // Previous tab (Ctrl+PageUp; aliases Ctrl+Shift+Tab, Cmd+Shift+[)
+    if (matchesShortcut(event, 'tab.previous')) {
       event.preventDefault();
       switchToPrevTab();
     }
-    // Ctrl+Shift+PageDown - Move tab right
-    if (event.ctrlKey && event.shiftKey && event.key === 'PageDown') {
+    // Move tab right
+    if (matchesShortcut(event, 'tab.moveRight')) {
       event.preventDefault();
       moveTab('right');
     }
-    // Ctrl+Shift+PageUp - Move tab left
-    if (event.ctrlKey && event.shiftKey && event.key === 'PageUp') {
+    // Move tab left
+    if (matchesShortcut(event, 'tab.moveLeft')) {
       event.preventDefault();
       moveTab('left');
     }
-    // Ctrl+F4 - Close tab (Windows/Linux)
-    if (event.ctrlKey && event.key === 'F4') {
-      event.preventDefault();
-      if (tabState.activeTabId) {
-        const activeTab = tabState.tabs.find((t) => t.id === tabState.activeTabId);
-        if (activeTab && !activeTab.pinned) {
-          closeTab(tabState.activeTabId);
-        }
-      }
-    }
-    // Cmd+Shift+T / Ctrl+Shift+T - Reopen closed tab
-    if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === 't') {
+    // Reopen closed tab
+    if (matchesShortcut(event, 'tab.reopenClosed')) {
       event.preventDefault();
       reopenLastClosedTab();
     }
-    // F11 - Toggle fullscreen
-    if (event.key === 'F11') {
+    // Toggle fullscreen
+    if (matchesShortcut(event, 'view.fullscreen')) {
       event.preventDefault();
       electronAPI?.toggleFullscreen?.();
-    }
-    // F12 - Toggle DevTools
-    if (event.key === 'F12') {
-      event.preventDefault();
-      toggleDevTools();
     }
   });
 
@@ -1689,6 +1881,6 @@ export const initTabs = async () => {
       setTimeout(() => onLoadTarget(initialUrl), 50);
     }
   } else {
-    createTab(homeUrl);
+    createTab(defaultNewTabUrl());
   }
 };

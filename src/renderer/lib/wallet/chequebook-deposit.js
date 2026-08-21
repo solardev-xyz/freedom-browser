@@ -6,6 +6,7 @@
  */
 
 import { walletState, registerScreenHider } from './wallet-state.js';
+import { refuseSubscreenWhileInFlight } from './signature-flight.js';
 import { formatRawTokenBalance } from './wallet-utils.js';
 import { fetchAntJson } from './ant-api.js';
 
@@ -45,6 +46,8 @@ export function initChequebookDeposit() {
 }
 
 export function openChequebookDeposit() {
+  if (refuseSubscreenWhileInFlight('Chequebook deposit screen')) return;
+
   walletState.identityView?.classList.add('hidden');
   depositScreen?.classList.remove('hidden');
 

@@ -8,6 +8,16 @@
 
 const { contextBridge, ipcRenderer } = require('electron');
 
+// PRIVATE MODE GUARD (providers): webviews in private windows never get
+// the wallet providers. `window.ethereum` / `window.swarm` are not
+// injected and the request/response bridges are not installed, so a dApp
+// probing for a wallet sees nothing and EIP-6963's requestProvider gets
+// no announcement (silent). Resolved synchronously, before any page
+// script can run, via the main process (src/main/ipc-handlers.js), which
+// checks this webContents' session/window against the private-window
+// registry (src/main/private/private-windows.js).
+const IS_PRIVATE_WINDOW = ipcRenderer.sendSync('private:is-private') === true;
+
 // The webview preload runs in a sandbox — require() is restricted to a small
 // whitelist (electron, events, timers, url), so we cannot read provider
 // injection sources from disk here. The main process reads them and serves
@@ -245,6 +255,30 @@ contextBridge.exposeInMainWorld('freedomAPI', {
   removeHistory: guardInternal('removeHistory', (id) => ipcRenderer.invoke('history:remove', id)),
   clearHistory: guardInternal('clearHistory', () => ipcRenderer.invoke('history:clear')),
 
+  // Downloads (freedom://downloads page). Open / show-in-folder resolve the
+  // file path in the main process from the stored row id — no path crosses
+  // this boundary.
+  getDownloads: guardInternal('getDownloads', (options) =>
+    ipcRenderer.invoke('downloads:get', options)
+  ),
+  pauseDownload: guardInternal('pauseDownload', (id) => ipcRenderer.invoke('downloads:pause', id)),
+  resumeDownload: guardInternal('resumeDownload', (id) =>
+    ipcRenderer.invoke('downloads:resume', id)
+  ),
+  cancelDownload: guardInternal('cancelDownload', (id) =>
+    ipcRenderer.invoke('downloads:cancel', id)
+  ),
+  openDownloadedFile: guardInternal('openDownloadedFile', (id) =>
+    ipcRenderer.invoke('downloads:open-file', id)
+  ),
+  showDownloadInFolder: guardInternal('showDownloadInFolder', (id) =>
+    ipcRenderer.invoke('downloads:show-in-folder', id)
+  ),
+  removeDownload: guardInternal('removeDownload', (id) =>
+    ipcRenderer.invoke('downloads:remove', id)
+  ),
+  clearDownloads: guardInternal('clearDownloads', () => ipcRenderer.invoke('downloads:clear')),
+
   // Unified payment history (read-only — producers record in main directly).
   getPayments: guardInternal('getPayments', (filters) =>
     ipcRenderer.invoke('payments:get-recent', filters)
@@ -266,6 +300,38 @@ contextBridge.exposeInMainWorld('freedomAPI', {
     ipcRenderer.invoke('settings:save', settings)
   ),
   relaunchApp: guardInternal('relaunchApp', () => ipcRenderer.send('app:relaunch')),
+
+  // Ad blocking (settings page)
+  adblockGetStatus: guardInternal('adblockGetStatus', () =>
+    ipcRenderer.invoke('adblock:get-status')
+  ),
+  adblockGetAllowlist: guardInternal('adblockGetAllowlist', () =>
+    ipcRenderer.invoke('adblock:get-allowlist')
+  ),
+  adblockAddAllowlistHost: guardSettingsPage('adblockAddAllowlistHost', (host) =>
+    ipcRenderer.invoke('adblock:add-allowlist-host', host)
+  ),
+  adblockRemoveAllowlistHost: guardSettingsPage('adblockRemoveAllowlistHost', (host) =>
+    ipcRenderer.invoke('adblock:remove-allowlist-host', host)
+  ),
+  // Keyboard shortcuts (Settings > Shortcuts). Reads are internal-page
+  // wide; anything that changes bindings is settings-only, matching the
+  // profile-write guards. previewShortcutBinding is a pure computation
+  // (validation + conflict lookup for a captured keydown) but only the
+  // settings page has any business calling it.
+  getShortcuts: guardInternal('getShortcuts', () => ipcRenderer.invoke('shortcuts:get-state')),
+  previewShortcutBinding: guardSettingsPage('previewShortcutBinding', (payload) =>
+    ipcRenderer.invoke('shortcuts:preview-binding', payload)
+  ),
+  setShortcutOverride: guardSettingsPage('setShortcutOverride', (payload) =>
+    ipcRenderer.invoke('shortcuts:set-override', payload)
+  ),
+  resetShortcut: guardSettingsPage('resetShortcut', (id) =>
+    ipcRenderer.invoke('shortcuts:reset', { id })
+  ),
+  resetAllShortcuts: guardSettingsPage('resetAllShortcuts', () =>
+    ipcRenderer.invoke('shortcuts:reset', {})
+  ),
 
   // Platform / environment info needed by settings page
   getPlatform: guardInternal('getPlatform', () => ipcRenderer.invoke('window:get-platform')),
@@ -320,6 +386,9 @@ contextBridge.exposeInMainWorld('freedomAPI', {
   restoreEndpointSource: guardInternal('restoreEndpointSource', (id) =>
     ipcRenderer.invoke('networks:restore-source', id)
   ),
+  resetEndpointSourceCoverage: guardInternal('resetEndpointSourceCoverage', (id, chainId) =>
+    ipcRenderer.invoke('networks:reset-source-coverage', id, chainId)
+  ),
   setNetworkApiKey: guardInternal('setNetworkApiKey', (providerId, apiKey) =>
     ipcRenderer.invoke('networks:set-api-key', providerId, apiKey)
   ),
@@ -346,6 +415,11 @@ contextBridge.exposeInMainWorld('freedomAPI', {
   getServiceRegistry: guardInternal('getServiceRegistry', () =>
     ipcRenderer.invoke('service-registry:get')
   ),
+  getMyotisStatus: guardInternal('getMyotisStatus', (chainId) =>
+    chainId == null
+      ? ipcRenderer.invoke('myotis:getStatus')
+      : ipcRenderer.invoke('myotis:getStatus', chainId)
+  ),
 
   // Opens the sidebar publish-setup checklist in the host window.
   openPublishSetup: guardInternal('openPublishSetup', () =>
@@ -354,9 +428,31 @@ contextBridge.exposeInMainWorld('freedomAPI', {
 
   // Auto-unsubscribed on pagehide.
   onSettingsUpdated: guardInternalSubscription('onSettingsUpdated', 'settings:updated'),
+  // freedom://downloads uses this for live progress — the row is already
+  // written when it fires, so the page just re-queries.
+  onDownloadsChanged: guardInternalSubscription('onDownloadsChanged', 'downloads:changed'),
   // freedom://payments uses this for live refresh on settlements (no
   // user-driven event for a server-acknowledged paid request).
   onPaymentRecorded: guardInternalSubscription('onPaymentRecorded', 'payments:tx-recorded'),
+
+  // Site permissions (web permission prompts). Reads are internal-page
+  // wide; revokes are settings-only, matching the profile-write guards.
+  getSitePermissions: guardInternal('getSitePermissions', () =>
+    ipcRenderer.invoke('permissions:get-all')
+  ),
+  revokeSitePermission: guardSettingsPage('revokeSitePermission', (origin, permission) =>
+    ipcRenderer.invoke('permissions:revoke', origin, permission)
+  ),
+  revokeSitePermissionOrigin: guardSettingsPage('revokeSitePermissionOrigin', (origin) =>
+    ipcRenderer.invoke('permissions:revoke-origin', origin)
+  ),
+  revokeAllSitePermissions: guardSettingsPage('revokeAllSitePermissions', () =>
+    ipcRenderer.invoke('permissions:revoke-all')
+  ),
+  onSitePermissionsChanged: guardInternalSubscription(
+    'onSitePermissionsChanged',
+    'permissions:changed'
+  ),
 
   // Bookmarks (read-only for internal pages)
   getBookmarks: guardInternal('getBookmarks', () => ipcRenderer.invoke('bookmarks:get')),
@@ -394,6 +490,9 @@ contextBridge.exposeInMainWorld('freedomAPI', {
   ),
   syncRadicleRepo: guardInternal('syncRadicleRepo', (rid) =>
     ipcRenderer.invoke('radicle:syncRepo', rid)
+  ),
+  getRadicleSeedStatus: guardInternal('getRadicleSeedStatus', (rid) =>
+    ipcRenderer.invoke('radicle:getSeedStatus', rid)
   ),
 
   // Clipboard
@@ -433,8 +532,16 @@ contextBridge.exposeInMainWorld('freedomAPI', {
 // Context Menu Handler (works on all pages)
 // ============================================
 
-// Get context information when right-clicking
-document.addEventListener(
+// Get context information when right-clicking.
+//
+// Registered on window in the capture phase: window is the first node in the
+// capture path and the preload runs before any page script, so no page
+// handler (not even a window-level capture listener calling
+// stopPropagation()) can starve the interceptor. The send is deferred with
+// setTimeout so the defaultPrevented check happens after the full dispatch,
+// honoring only a genuine preventDefault() from the page (standard browser
+// semantics).
+window.addEventListener(
   'contextmenu',
   (event) => {
     const context = {
@@ -505,11 +612,15 @@ document.addEventListener(
       element = element.parentElement;
     }
 
-    // Prevent the default context menu
-    event.preventDefault();
+    // Decide after page handlers have run (setTimeout fires after the
+    // event dispatch completes; a microtask would run between listeners).
+    setTimeout(() => {
+      // The page suppressed the menu with preventDefault() — honor it.
+      if (event.defaultPrevented) return;
 
-    // Send context info to the host renderer
-    ipcRenderer.sendToHost('context-menu', context);
+      // Send context info to the host renderer
+      ipcRenderer.sendToHost('context-menu', context);
+    }, 0);
   },
   true
 );
@@ -544,66 +655,71 @@ ipcRenderer.on('context-menu-action', (_event, action, data) => {
 // Injected into the page realm so dapps see window.ethereum as an own-property
 // of their own window, which many wallet-detection libraries require.
 // The preload realm only bridges messages to/from the host renderer (below).
-try {
-  const script = document.createElement('script');
-  script.textContent = ETHEREUM_INJECT_SOURCE;
+//
+// PRIVATE MODE GUARD (providers): skipped entirely in private windows —
+// no injection, no bridges. Nothing announces via EIP-6963.
+if (!IS_PRIVATE_WINDOW) {
+  try {
+    const script = document.createElement('script');
+    script.textContent = ETHEREUM_INJECT_SOURCE;
 
-  // Inject before any page scripts run
-  const inject = () => {
-    const head = document.head || document.documentElement;
-    head.insertBefore(script, head.firstChild);
-    script.remove();
-  };
+    // Inject before any page scripts run
+    const inject = () => {
+      const head = document.head || document.documentElement;
+      head.insertBefore(script, head.firstChild);
+      script.remove();
+    };
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', inject, { once: true });
-  } else {
-    inject();
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', inject, { once: true });
+    } else {
+      inject();
+    }
+  } catch (err) {
+    console.error('[webview-preload] Failed to inject ethereum provider:', err);
   }
-} catch (err) {
-  console.error('[webview-preload] Failed to inject ethereum provider:', err);
+
+  // Bridge postMessage from page to IPC
+  window.addEventListener('message', (event) => {
+    if (event.source !== window) return;
+    if (event.data.type === 'FREEDOM_ETHEREUM_REQUEST') {
+      const { id, method, params } = event.data;
+      const origin = window.location.origin;
+
+      ipcRenderer.sendToHost('dapp:provider-request', {
+        id,
+        method,
+        params,
+        origin,
+      });
+    }
+  });
+
+  // Bridge IPC responses back to page
+  ipcRenderer.on('dapp:provider-response', (_event, { id, result, error }) => {
+    console.log('[webview-preload] Received provider response:', { id, result, error });
+    window.postMessage(
+      {
+        type: 'FREEDOM_ETHEREUM_RESPONSE',
+        id,
+        result,
+        error,
+      },
+      window.location.origin
+    );
+  });
+
+  ipcRenderer.on('dapp:provider-event', (_event, { event, data }) => {
+    window.postMessage(
+      {
+        type: 'FREEDOM_ETHEREUM_EVENT',
+        event,
+        data,
+      },
+      window.location.origin
+    );
+  });
 }
-
-// Bridge postMessage from page to IPC
-window.addEventListener('message', (event) => {
-  if (event.source !== window) return;
-  if (event.data.type === 'FREEDOM_ETHEREUM_REQUEST') {
-    const { id, method, params } = event.data;
-    const origin = window.location.origin;
-
-    ipcRenderer.sendToHost('dapp:provider-request', {
-      id,
-      method,
-      params,
-      origin,
-    });
-  }
-});
-
-// Bridge IPC responses back to page
-ipcRenderer.on('dapp:provider-response', (_event, { id, result, error }) => {
-  console.log('[webview-preload] Received provider response:', { id, result, error });
-  window.postMessage(
-    {
-      type: 'FREEDOM_ETHEREUM_RESPONSE',
-      id,
-      result,
-      error,
-    },
-    window.location.origin
-  );
-});
-
-ipcRenderer.on('dapp:provider-event', (_event, { event, data }) => {
-  window.postMessage(
-    {
-      type: 'FREEDOM_ETHEREUM_EVENT',
-      event,
-      data,
-    },
-    window.location.origin
-  );
-});
 
 // ============================================
 // Swarm Provider (window.swarm)
@@ -615,7 +731,7 @@ try {
     (function() {
       const pendingRequests = new Map();
       let requestId = 0;
-      const eventListeners = { connect: [], disconnect: [] };
+      const eventListeners = { connect: [], disconnect: [], message: [] };
 
       function emitEvent(event, data) {
         if (eventListeners[event]) {
@@ -633,11 +749,14 @@ try {
             pendingRequests.set(id, { resolve, reject });
             window.postMessage({ type: 'FREEDOM_SWARM_REQUEST', id, method, params: params || {} }, '*');
             const longRunning = method.startsWith('swarm_publish') ||
+              method.startsWith('swarm_send') ||
               method === 'swarm_createFeed' ||
               method === 'swarm_updateFeed' ||
               method === 'swarm_writeFeedEntry' ||
               method === 'swarm_writeSingleOwnerChunk' ||
-              method === 'swarm_getSigningIdentity';
+              method === 'swarm_getSigningIdentity' ||
+              method === 'swarm_getMessagingIdentity' ||
+              method === 'swarm_subscribe';
             const timeout = longRunning ? 300000 : 60000;
             setTimeout(() => {
               if (pendingRequests.has(id)) {
@@ -665,6 +784,11 @@ try {
         writeSingleOwnerChunk(params) { return this.request({ method: 'swarm_writeSingleOwnerChunk', params: params }); },
         readSingleOwnerChunk(params) { return this.request({ method: 'swarm_readSingleOwnerChunk', params: params }); },
         getSigningIdentity() { return this.request({ method: 'swarm_getSigningIdentity' }); },
+        getMessagingIdentity() { return this.request({ method: 'swarm_getMessagingIdentity' }); },
+        subscribe(params) { return this.request({ method: 'swarm_subscribe', params: params }); },
+        unsubscribe(params) { return this.request({ method: 'swarm_unsubscribe', params: params }); },
+        sendPss(params) { return this.request({ method: 'swarm_sendPss', params: params }); },
+        sendGsoc(params) { return this.request({ method: 'swarm_sendGsoc', params: params }); },
 
         on(event, handler) { if (eventListeners[event]) eventListeners[event].push(handler); return this; },
         removeListener(event, handler) {
@@ -710,50 +834,410 @@ try {
     swarmScript.remove();
   };
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', injectSwarm, { once: true });
-  } else {
-    injectSwarm();
+  // PRIVATE MODE GUARD (providers): window.swarm is not injected in
+  // private windows — same policy as window.ethereum above.
+  if (!IS_PRIVATE_WINDOW) {
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', injectSwarm, { once: true });
+    } else {
+      injectSwarm();
+    }
   }
 } catch (err) {
   console.error('[webview-preload] Failed to inject swarm provider:', err);
 }
 
-// Bridge postMessage from page to IPC (Swarm)
-window.addEventListener('message', (event) => {
-  if (event.source !== window) return;
-  if (event.data.type === 'FREEDOM_SWARM_REQUEST') {
-    const { id, method, params } = event.data;
-    ipcRenderer.sendToHost('swarm:provider-request', { id, method, params });
+if (!IS_PRIVATE_WINDOW) {
+  // Bridge postMessage from page to IPC (Swarm)
+  window.addEventListener('message', (event) => {
+    if (event.source !== window) return;
+    if (event.data.type === 'FREEDOM_SWARM_REQUEST') {
+      const { id, method, params } = event.data;
+      ipcRenderer.sendToHost('swarm:provider-request', { id, method, params });
+    }
+  });
+
+  // Bridge IPC responses back to page (Swarm)
+  ipcRenderer.on('swarm:provider-response', (_event, { id, result, error }) => {
+    window.postMessage(
+      {
+        type: 'FREEDOM_SWARM_RESPONSE',
+        id,
+        result,
+        error,
+      },
+      window.location.origin
+    );
+  });
+
+  ipcRenderer.on('swarm:provider-event', (_event, { event, data }) => {
+    window.postMessage(
+      {
+        type: 'FREEDOM_SWARM_EVENT',
+        event,
+        data,
+      },
+      window.location.origin
+    );
+  });
+}
+
+// ============================================
+// Radicle Provider (window.radicle)
+// ============================================
+// Actions-only provider: reads of public repo data are plain
+// fetch('rad:<rid>/…') calls resolved by the main-process rad: protocol
+// handler — no provider involvement. See docs/radicle-provider-api.md.
+
+try {
+  const radicleScript = document.createElement('script');
+  radicleScript.textContent = `
+    (function() {
+      const pendingRequests = new Map();
+      let requestId = 0;
+      const eventListeners = { connect: [], disconnect: [] };
+
+      function emitEvent(event, data) {
+        if (eventListeners[event]) {
+          eventListeners[event].forEach(h => { try { h(data); } catch(e) {} });
+        }
+      }
+
+      window.radicle = {
+        isFreedomBrowser: true,
+
+        async request({ method, params }) {
+          if (!method) throw new Error('method is required');
+          const id = ++requestId;
+          return new Promise((resolve, reject) => {
+            pendingRequests.set(id, { resolve, reject });
+            window.postMessage({ type: 'FREEDOM_RADICLE_REQUEST', id, method, params: params || {} }, '*');
+            // Execution itself is prompt — seed/sync hand the network fetch
+            // to a background tracker (poll radicle_getSeedStatus). But the
+            // methods below can first block on a consent prompt while the
+            // user deliberates; timing those out at 60s rejects the page
+            // promise while the grant and the write still land in main, so
+            // the dApp retries and duplicates the COB. Match the swarm
+            // sibling's 300s budget for anything that can prompt.
+            const canPrompt = method === 'radicle_requestAccess' ||
+              method === 'radicle_seed' ||
+              method === 'radicle_getIdentity' ||
+              method === 'radicle_createIssue' ||
+              method === 'radicle_commentIssue' ||
+              method === 'radicle_editIssueState' ||
+              method === 'radicle_commentPatch';
+            const timeout = canPrompt ? 300000 : 60000;
+            setTimeout(() => {
+              if (pendingRequests.has(id)) {
+                pendingRequests.delete(id);
+                const err = new Error('Request timed out');
+                err.code = -32603;
+                reject(err);
+              }
+            }, timeout);
+          });
+        },
+
+        requestAccess() { return this.request({ method: 'radicle_requestAccess' }); },
+        disconnect() { return this.request({ method: 'radicle_disconnect' }); },
+        getCapabilities() { return this.request({ method: 'radicle_getCapabilities' }); },
+        getNodeStatus() { return this.request({ method: 'radicle_getNodeStatus' }); },
+        listSeededRepos() { return this.request({ method: 'radicle_listSeededRepos' }); },
+        seed(params) { return this.request({ method: 'radicle_seed', params: params }); },
+        unseed(params) { return this.request({ method: 'radicle_unseed', params: params }); },
+        sync(params) { return this.request({ method: 'radicle_sync', params: params }); },
+        getSeedStatus(params) { return this.request({ method: 'radicle_getSeedStatus', params: params }); },
+        getIdentity() { return this.request({ method: 'radicle_getIdentity' }); },
+        createIssue(params) { return this.request({ method: 'radicle_createIssue', params: params }); },
+        commentIssue(params) { return this.request({ method: 'radicle_commentIssue', params: params }); },
+        editIssueState(params) { return this.request({ method: 'radicle_editIssueState', params: params }); },
+        commentPatch(params) { return this.request({ method: 'radicle_commentPatch', params: params }); },
+
+        on(event, handler) { if (eventListeners[event]) eventListeners[event].push(handler); return this; },
+        removeListener(event, handler) {
+          if (eventListeners[event]) {
+            const i = eventListeners[event].indexOf(handler);
+            if (i > -1) eventListeners[event].splice(i, 1);
+          }
+          return this;
+        },
+        addListener(event, handler) { return this.on(event, handler); },
+        removeAllListeners(event) {
+          if (event && eventListeners[event]) eventListeners[event] = [];
+          if (!event) Object.keys(eventListeners).forEach((key) => { eventListeners[key] = []; });
+          return this;
+        },
+      };
+
+      window.addEventListener('message', function(event) {
+        if (event.source !== window) return;
+        if (event.data.type === 'FREEDOM_RADICLE_RESPONSE') {
+          const pending = pendingRequests.get(event.data.id);
+          if (pending) {
+            pendingRequests.delete(event.data.id);
+            if (event.data.error) {
+              const err = new Error(event.data.error.message);
+              err.code = event.data.error.code;
+              err.data = event.data.error.data;
+              pending.reject(err);
+            } else {
+              pending.resolve(event.data.result);
+            }
+          }
+        } else if (event.data.type === 'FREEDOM_RADICLE_EVENT') {
+          emitEvent(event.data.event, event.data.data);
+        }
+      });
+    })();
+  `;
+
+  const injectRadicle = () => {
+    const head = document.head || document.documentElement;
+    head.insertBefore(radicleScript, head.firstChild);
+    radicleScript.remove();
+  };
+
+  // PRIVATE MODE GUARD (providers): window.radicle is not injected in
+  // private windows — same policy as window.ethereum / window.swarm above.
+  if (!IS_PRIVATE_WINDOW) {
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', injectRadicle, { once: true });
+    } else {
+      injectRadicle();
+    }
   }
-});
+} catch (err) {
+  console.error('[webview-preload] Failed to inject radicle provider:', err);
+}
 
-// Bridge IPC responses back to page (Swarm)
-ipcRenderer.on('swarm:provider-response', (_event, { id, result, error }) => {
-  window.postMessage(
-    {
-      type: 'FREEDOM_SWARM_RESPONSE',
-      id,
-      result,
-      error,
-    },
-    window.location.origin
-  );
-});
+if (!IS_PRIVATE_WINDOW) {
+  // Bridge postMessage from page to IPC (Radicle)
+  window.addEventListener('message', (event) => {
+    if (event.source !== window) return;
+    if (event.data.type === 'FREEDOM_RADICLE_REQUEST') {
+      const { id, method, params } = event.data;
+      ipcRenderer.sendToHost('radicle:provider-request', { id, method, params });
+    }
+  });
 
-ipcRenderer.on('swarm:provider-event', (_event, { event, data }) => {
-  window.postMessage(
-    {
-      type: 'FREEDOM_SWARM_EVENT',
-      event,
-      data,
-    },
-    window.location.origin
-  );
-});
+  // Bridge IPC responses back to page (Radicle)
+  ipcRenderer.on('radicle:provider-response', (_event, { id, result, error }) => {
+    window.postMessage(
+      {
+        type: 'FREEDOM_RADICLE_RESPONSE',
+        id,
+        result,
+        error,
+      },
+      window.location.origin
+    );
+  });
+
+  ipcRenderer.on('radicle:provider-event', (_event, { event, data }) => {
+    window.postMessage(
+      {
+        type: 'FREEDOM_RADICLE_EVENT',
+        event,
+        data,
+      },
+      window.location.origin
+    );
+  });
+}
 
 // Note: transient 404/500 recovery for bzz:// sub-resources is handled by the
 // main-process `bzz:` protocol handler in `src/main/swarm/bzz-protocol.js`,
 // not by in-page JavaScript. See README "Swarm Content Retrieval".
 
-console.log('[webview-preload] Loaded (freedomAPI + context menu + ethereum + swarm provider)');
+// ============================================
+// Ad blocking — cosmetic filtering (element hiding)
+// ============================================
+//
+// The filter engine lives in the main process (it can't be required in this
+// sandboxed preload). This thin client extracts DOM features, asks the engine
+// for matching element-hiding CSS over IPC, and injects it as a <style>.
+// Two phases: an initial request for the frame's hostname-specific rules, then
+// generic rules for the classes/ids/hrefs actually present, refreshed as the
+// DOM mutates. Network blocking already removes the requests; this hides the
+// leftover ad containers/placeholders.
+(function setupCosmeticFiltering() {
+  const loc = globalThis.location;
+  // Only real web frames — internal pages and dweb hashes carry no ad markup.
+  if (!loc || (loc.protocol !== 'http:' && loc.protocol !== 'https:')) return;
+  if (isInternalPage()) return;
+
+  const IGNORED_TAGS = new Set(['br', 'head', 'link', 'meta', 'script', 'style', 's']);
+  let active = true;
+  let styleEl = null;
+  let observer = null;
+
+  const stopObserving = () => {
+    if (observer) {
+      observer.disconnect();
+      observer = null;
+    }
+  };
+
+  const injectStyles = (css) => {
+    if (!css) return;
+    if (styleEl === null) {
+      styleEl = document.createElement('style');
+      styleEl.setAttribute('data-freedom-adblock', 'cosmetic');
+    }
+    styleEl.appendChild(document.createTextNode(`${css}\n`));
+    if (!styleEl.isConnected) {
+      const parent = document.head || document.documentElement;
+      if (parent) parent.appendChild(styleEl);
+    }
+  };
+
+  const newFeatures = () => ({ classes: new Set(), ids: new Set(), hrefs: new Set() });
+
+  // Read one element's own class/id/href (mirrors the per-element half of
+  // @ghostery/adblocker-content's extractFeaturesFromDOM, kept self-contained
+  // because sandboxed preloads can't require it).
+  const collectOwn = (el, out) => {
+    if (!el || !el.nodeName || IGNORED_TAGS.has(el.nodeName.toLowerCase())) return;
+    const id = el.getAttribute?.('id');
+    if (id) out.ids.add(id);
+    if (el.classList) for (const cls of el.classList) out.classes.add(cls);
+    const href = el.getAttribute?.('href');
+    if (href) out.hrefs.add(href);
+  };
+
+  // Scan an element and its subtree. Used only for added nodes — an attribute
+  // change touches only its target, so those take collectOwn (no re-walk).
+  const collectSubtree = (root, out) => {
+    if (!root) return;
+    collectOwn(root, out);
+    if (root.querySelectorAll) {
+      for (const el of root.querySelectorAll(
+        '[id]:not(html):not(body),[class]:not(html):not(body),[href]'
+      )) {
+        collectOwn(el, out);
+      }
+    }
+  };
+
+  // Only forward tokens not seen before, so mutation batches stay small and
+  // the engine isn't re-queried for the same selectors. Capped so a page with
+  // pathologically many distinct tokens (esp. hrefs) can't grow these Sets or
+  // the query rate without bound.
+  const KNOWN_MAX = 8192;
+  const knownClasses = new Set();
+  const knownIds = new Set();
+  const knownHrefs = new Set();
+  const pick = (set, known) => {
+    const fresh = [];
+    for (const value of set) {
+      if (known.has(value)) continue;
+      if (known.size >= KNOWN_MAX) break; // cap reached — stop tracking/forwarding
+      known.add(value);
+      fresh.push(value);
+    }
+    return fresh;
+  };
+
+  const requestCosmetics = async (payload) => {
+    if (!active) return;
+    try {
+      const res = await ipcRenderer.invoke('adblock:cosmetic', { url: loc.href, ...payload });
+      if (!res || res.active === false) {
+        // Disabled, allowlisted, or no engine — stop all DOM work for this frame.
+        active = false;
+        stopObserving();
+        return;
+      }
+      injectStyles(res.styles);
+    } catch {
+      // Main process unavailable — leave the page unmodified.
+    }
+  };
+
+  // Forward whatever new tokens `out` holds, if any.
+  const forwardNew = (out) => {
+    const fresh = {
+      classes: pick(out.classes, knownClasses),
+      ids: pick(out.ids, knownIds),
+      hrefs: pick(out.hrefs, knownHrefs),
+    };
+    if (fresh.classes.length || fresh.ids.length || fresh.hrefs.length) {
+      requestCosmetics(fresh);
+    }
+  };
+
+  // Phase 1: hostname-specific rules, before the DOM is populated.
+  requestCosmetics({ initial: true });
+
+  // Phase 2: generic rules for whatever the initial DOM contains, then watch
+  // for dynamically-added nodes / attribute changes.
+  const onReady = () => {
+    if (!active || !document.documentElement) return;
+    const initial = newFeatures();
+    collectSubtree(document.documentElement, initial);
+    forwardNew(initial);
+    if (typeof MutationObserver === 'undefined') return;
+
+    const attrTargets = new Set(); // shallow: only their own attrs changed
+    const addedRoots = new Set(); // deep: scan their subtrees
+    let debounceTimer = null;
+    let maxWaitTimer = null;
+    const pendingCount = () => attrTargets.size + addedRoots.size;
+    const flush = () => {
+      clearTimeout(debounceTimer);
+      clearTimeout(maxWaitTimer);
+      maxWaitTimer = null;
+      if (!active) {
+        attrTargets.clear();
+        addedRoots.clear();
+        return;
+      }
+      if (pendingCount() === 0) return;
+      const out = newFeatures();
+      for (const el of attrTargets) collectOwn(el, out);
+      for (const root of addedRoots) collectSubtree(root, out);
+      attrTargets.clear();
+      addedRoots.clear();
+      forwardNew(out);
+    };
+    observer = new MutationObserver((mutations) => {
+      for (const m of mutations) {
+        if (m.type === 'attributes') {
+          if (m.target) attrTargets.add(m.target);
+        } else {
+          for (const node of m.addedNodes || []) {
+            if (node.nodeType === 1) addedRoots.add(node);
+          }
+        }
+      }
+      if (pendingCount() === 0) return;
+      // Bounded debounce: coalesce bursts, but cap latency and bail out if a
+      // hostile page floods mutations to keep the sets from growing unbounded.
+      if (pendingCount() > 512) {
+        flush();
+        return;
+      }
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(flush, 25);
+      if (maxWaitTimer === null) maxWaitTimer = setTimeout(flush, 1000);
+    });
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['class', 'id', 'href'],
+      childList: true,
+      subtree: true,
+    });
+  };
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', onReady, { once: true });
+  } else {
+    onReady();
+  }
+})();
+
+console.log(
+  IS_PRIVATE_WINDOW
+    ? '[webview-preload] Loaded (freedomAPI + context menu — private window, providers disabled)'
+    : '[webview-preload] Loaded (freedomAPI + context menu + ethereum + swarm + radicle providers)'
+);

@@ -298,9 +298,9 @@ const loadNavigationModule = async (options = {}) => {
     clearBzzBase: jest.fn(),
     setRadBase: jest.fn(),
     clearRadBase: jest.fn(),
-    startSwarmProbe: jest.fn((hash) => {
+    startSwarmProbe: jest.fn((hash, path) => {
       const id = swarmProbeState.nextProbeId;
-      swarmProbeState.startCalls.push({ id, hash });
+      swarmProbeState.startCalls.push({ id, hash, path });
       return Promise.resolve({ success: true, id });
     }),
     awaitSwarmProbe: jest.fn(
@@ -319,6 +319,8 @@ const loadNavigationModule = async (options = {}) => {
     }),
     resolveEns: jest.fn(),
     invalidateEnsContent: jest.fn().mockResolvedValue(true),
+    resolveTezosDomain: jest.fn(),
+    invalidateTezosDomain: jest.fn().mockResolvedValue(true),
   };
 
   const addressInput = createElement('input');
@@ -334,6 +336,7 @@ const loadNavigationModule = async (options = {}) => {
   const trustPopoverTitle = createElement('div');
   const trustPopoverStatus = createElement('div');
   const trustPopoverTrustFields = createElement('div');
+  const trustPopoverContent = createElement('div');
   const trustPopoverContentFields = createElement('div');
   const trustPopoverTooltip = createElement('div');
   const document = createDocument({
@@ -350,6 +353,7 @@ const loadNavigationModule = async (options = {}) => {
       'trust-popover-title': trustPopoverTitle,
       'trust-popover-status': trustPopoverStatus,
       'trust-popover-trust-fields': trustPopoverTrustFields,
+      'trust-popover-content': trustPopoverContent,
       'trust-popover-content-fields': trustPopoverContentFields,
       'trust-popover-tooltip': trustPopoverTooltip,
     },
@@ -366,6 +370,9 @@ const loadNavigationModule = async (options = {}) => {
     return null;
   });
   document.activeElement = null;
+  // navigation.js broadcasts CustomEvents ('navigation-completed',
+  // 'active-tab-changed') for the dApp banner + permission indicator.
+  document.dispatchEvent = jest.fn();
 
   const windowHandlers = {};
   global.window = {
@@ -404,6 +411,11 @@ const loadNavigationModule = async (options = {}) => {
   jest.doMock('./page-urls.js', () => pageUrlsMocks);
   jest.doMock('./ipfs-progress-status.js', () => ipfsProgressMocks);
 
+  // Pin the shortcut matcher to Linux semantics (Ctrl-based combos) so the
+  // keyboard-shortcut assertions below don't depend on the host platform.
+  const shortcuts = await import('./shortcuts.js');
+  shortcuts.configureShortcuts({ platform: 'linux', overrides: {} });
+
   const mod = await import('./navigation.js');
 
   return {
@@ -434,6 +446,7 @@ const loadNavigationModule = async (options = {}) => {
       protocolIcon,
       trustShield,
       trustPopover,
+      trustPopoverContent,
     },
   };
 };
@@ -650,6 +663,78 @@ describe('navigation', () => {
     expect(ctx.debugMocks.pushDebug).toHaveBeenCalledWith('Webview ready.');
   });
 
+  describe('address bar search fallback', () => {
+    test('loads the default provider results page for non-URL input', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      await flushMicrotasks();
+
+      ctx.mod.loadTarget('best pizza near me');
+
+      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(
+        'https://duckduckgo.com/?q=best%20pizza%20near%20me'
+      );
+    });
+
+    test('respects the configured search provider', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      await flushMicrotasks();
+      // A non-default provider — with the DuckDuckGo default this test would
+      // pass even if state.searchProvider were ignored entirely.
+      ctx.state.searchProvider = 'google';
+
+      ctx.mod.loadTarget('weather');
+
+      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(
+        'https://www.google.com/search?q=weather'
+      );
+    });
+
+    test('respects a configured custom search provider', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      await flushMicrotasks();
+      ctx.state.searchProvider = 'custom:searx';
+      ctx.state.customSearchProviders = [
+        {
+          id: 'searx',
+          name: 'SearxNG',
+          searchUrlTemplate: 'https://search.example/?query={searchTerms}',
+        },
+      ];
+
+      ctx.mod.loadTarget('privacy news');
+
+      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(
+        'https://search.example/?query=privacy%20news'
+      );
+    });
+
+    test('still ignores empty input', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      await flushMicrotasks();
+
+      ctx.mod.loadTarget('   ');
+
+      expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
+      expect(ctx.debugMocks.pushDebug).toHaveBeenCalledWith(
+        'Ignoring empty input or invalid URL.'
+      );
+    });
+
+    test('does not turn protocol input into a search', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      await flushMicrotasks();
+
+      ctx.mod.loadTarget('ipfs://bafybeigdyrzt');
+
+      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith('ipfs://bafybeigdyrzt');
+    });
+  });
+
   describe('bzz navigation probe', () => {
     const VALID_HASH = 'a'.repeat(64);
 
@@ -674,7 +759,7 @@ describe('navigation', () => {
       // slow Bee warm-up doesn't redirect the spinner to a different tab.
       expect(ctx.tabsMocks.setTabLoading).toHaveBeenCalledWith(true, ctx.activeRef.tab.id);
       expect(ctx.elements.reloadBtn.dataset.state).toBe('stop');
-      expect(ctx.electronAPI.startSwarmProbe).toHaveBeenCalledWith(VALID_HASH);
+      expect(ctx.electronAPI.startSwarmProbe).toHaveBeenCalledWith(VALID_HASH, '');
       expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
       expect(ctx.activeRef.tab.navigationState.pendingSwarmProbeId).toBe('probe-1');
 
@@ -687,6 +772,27 @@ describe('navigation', () => {
         `bzz://${VALID_HASH}/`
       );
       expect(ctx.activeRef.tab.navigationState.pendingSwarmProbeId).toBeNull();
+    });
+
+    test('probes the in-manifest path so index-less manifests deep-link (#172)', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+
+      ctx.mod.loadTarget(`bzz://${VALID_HASH}/index.html`);
+      await flushMicrotasks();
+
+      // The probe must HEAD the same resource the navigation will load. A
+      // manifest without a root index document 404s on the bare hash even
+      // when /index.html is retrievable, which strands the probe until its
+      // overall timeout.
+      expect(ctx.electronAPI.startSwarmProbe).toHaveBeenCalledWith(VALID_HASH, '/index.html');
+
+      settleAwait(ctx, 'probe-1', { ok: true });
+      await flushMicrotasks();
+
+      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(
+        `bzz://${VALID_HASH}/index.html`
+      );
     });
 
     test('routes to ERR_CONNECTION_REFUSED error page when Bee is unreachable', async () => {
@@ -1180,6 +1286,10 @@ describe('navigation', () => {
         const m = value.match(/^(?:(?:ens|bzz|ipfs|ipns):\/\/)?([^?/]+)(.*)?$/i);
         if (!m) return null;
         const host = m[1].toLowerCase();
+        if (host.endsWith('.tez')) {
+          if (prefixMatch?.[1]?.toLowerCase() === 'ens') return null;
+          return { name: host, suffix: m[2] || '', assertedTransport, system: 'tezos' };
+        }
         if (
           !host.endsWith('.eth') &&
           !host.endsWith('.box') &&
@@ -1290,6 +1400,107 @@ describe('navigation', () => {
       expect(ctx.state.ensTrustByName.get('vitalik.eth')).toEqual(verifiedTrust);
       expect(loadCalls.find(([u]) => u.includes('ens-conflict.html'))).toBeUndefined();
       expect(loadCalls.find(([u]) => u.includes('ens-unverified.html'))).toBeUndefined();
+    });
+
+    test('native .tez resolution keeps the name origin for IPFS content', async () => {
+      const ctx = await setupEnsDispatch();
+      ctx.electronAPI.resolveTezosDomain.mockResolvedValue({
+        type: 'ok',
+        system: 'tezos',
+        protocol: 'ipfs',
+        decoded: 'QmTezosSite',
+        uri: 'ipfs://QmTezosSite/published',
+        basePath: '/published',
+        trust: { level: 'verified', system: 'tezos', agreed: ['a', 'b'] },
+      });
+
+      ctx.mod.loadTarget('docs.example.tez/guide');
+      await flushMicrotasks();
+
+      expect(ctx.electronAPI.resolveTezosDomain).toHaveBeenCalledWith('docs.example.tez');
+      expect(ctx.electronAPI.resolveEns).not.toHaveBeenCalled();
+      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(
+        'ipfs://docs.example.tez/guide'
+      );
+      expect(ctx.elements.addressInput.value).toBe('ipfs://docs.example.tez/guide');
+    });
+
+    test('a self-referential .tez website record cannot loop resolve→navigate forever', async () => {
+      // A domain owner controls the website record: publishing
+      // `ipns://loop.tez` used to make loadTarget re-resolve the same name
+      // on every hop, spinning IPC until the tab was closed.
+      const ctx = await setupEnsDispatch();
+      ctx.electronAPI.resolveTezosDomain.mockResolvedValue({
+        type: 'ok',
+        system: 'tezos',
+        protocol: 'ipns',
+        decoded: 'loop.tez',
+        uri: 'ipns://loop.tez',
+        trust: { level: 'verified', system: 'tezos', agreed: ['a', 'b'] },
+      });
+
+      ctx.mod.loadTarget('loop.tez');
+      for (let i = 0; i < 20; i += 1) await flushMicrotasks();
+
+      expect(ctx.electronAPI.resolveTezosDomain.mock.calls.length).toBeLessThanOrEqual(3);
+      expect(global.alert).toHaveBeenCalledWith(expect.stringContaining('resolves in a loop'));
+    });
+
+    test('Tezos redirect_url takes precedence and ignores the address-bar suffix', async () => {
+      const ctx = await setupEnsDispatch();
+      ctx.electronAPI.resolveTezosDomain.mockResolvedValue({
+        type: 'ok',
+        system: 'tezos',
+        protocol: 'https',
+        uri: 'https://example.com/landing',
+        redirect: true,
+        trust: { level: 'verified', system: 'tezos', agreed: ['a', 'b'] },
+      });
+
+      ctx.mod.loadTarget('docs.example.tez/ignored');
+      await flushMicrotasks();
+
+      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(
+        'https://example.com/landing'
+      );
+    });
+
+    test('Tezos HTTP content appends the requested path to its published base path', async () => {
+      const ctx = await setupEnsDispatch();
+      ctx.electronAPI.resolveTezosDomain.mockResolvedValue({
+        type: 'ok',
+        system: 'tezos',
+        protocol: 'https',
+        uri: 'https://example.com/published/site',
+        redirect: false,
+        trust: { level: 'verified', system: 'tezos', agreed: ['a', 'b'] },
+      });
+
+      ctx.mod.loadTarget('docs.example.tez/guide?q=1#intro');
+      await flushMicrotasks();
+
+      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(
+        'https://example.com/published/site/guide?q=1#intro'
+      );
+    });
+
+    test('Tezos HTTP content keeps the published query when the suffix has none', async () => {
+      const ctx = await setupEnsDispatch();
+      ctx.electronAPI.resolveTezosDomain.mockResolvedValue({
+        type: 'ok',
+        system: 'tezos',
+        protocol: 'https',
+        uri: 'https://example.com/page?v=2',
+        redirect: false,
+        trust: { level: 'verified', system: 'tezos', agreed: ['a', 'b'] },
+      });
+
+      ctx.mod.loadTarget('docs.example.tez/guide');
+      await flushMicrotasks();
+
+      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(
+        'https://example.com/page/guide?v=2'
+      );
     });
 
     test('protocol icon and address bar update immediately when an ENS-Swarm name is dispatched, before resolution completes', async () => {
@@ -1530,7 +1741,7 @@ describe('navigation', () => {
       // Probe gates on the resolved hash so the cold-Bee retry budget is
       // applied to actual content, even though Chromium's URL is the ENS
       // name.
-      expect(ctx.electronAPI.startSwarmProbe).toHaveBeenCalledWith(HASH);
+      expect(ctx.electronAPI.startSwarmProbe).toHaveBeenCalledWith(HASH, '');
 
       // Settle the probe successfully and confirm the URL handed to
       // webview.loadURL is the ENS form, not the gateway URL or hash form.
@@ -1629,6 +1840,39 @@ describe('navigation', () => {
       await flushMicrotasks();
 
       expect(ctx.electronAPI.resolveEns).toHaveBeenCalledWith('retry.eth');
+    });
+
+    test('ipc-message ens:continue-unverified re-dispatches a .tez name without the ens:// prefix', async () => {
+      // `ens://<name>.tez` is rejected by parseEnsInput, so prefixing the
+      // name would make "Continue once" a silent no-op for Tezos names.
+      const ctx = await setupEnsDispatch({ blockUnverifiedEns: true });
+      ctx.electronAPI.resolveTezosDomain.mockResolvedValue({
+        type: 'ok',
+        system: 'tezos',
+        protocol: 'ipfs',
+        decoded: 'QmRetryTez',
+        uri: 'ipfs://QmRetryTez',
+        trust: { level: 'unverified', system: 'tezos', agreed: ['a'] },
+      });
+
+      ctx.mod.loadTarget('retry.tez');
+      await flushMicrotasks();
+      expect(
+        ctx.activeRef.tab.webview.loadURL.mock.calls.find(([u]) => u.includes('ens-unverified.html'))
+      ).toBeDefined();
+
+      ctx.electronAPI.resolveTezosDomain.mockClear();
+      ctx.activeRef.tab.webview.loadURL.mockClear();
+      ctx.tabsMocks.webviewEventHandler('ipc-message', {
+        tabId: ctx.activeRef.tab.id,
+        channel: 'ens:continue-unverified',
+        args: [{ name: 'retry.tez' }],
+      });
+      await flushMicrotasks();
+
+      expect(ctx.electronAPI.resolveTezosDomain).toHaveBeenCalledWith('retry.tez');
+      expect(ctx.electronAPI.resolveEns).not.toHaveBeenCalledWith('retry.tez');
+      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith('ipfs://retry.tez');
     });
 
     test('ipc-message ens:open-settings navigates to freedom://settings', async () => {
@@ -1861,6 +2105,15 @@ describe('navigation', () => {
       expect(ctx.elements.trustPopover.hidden).toBe(false);
       expect(ctx.elements.trustShield.getAttribute('aria-expanded')).toBe('true');
     };
+
+    test('hides the destination section when the resolution has no content rows', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+
+      openPopoverFor(ctx, 'vitalik.eth');
+
+      expect(ctx.elements.trustPopoverContent.hidden).toBe(true);
+    });
 
     test('closes when the address bar moves to a non-ENS URL', async () => {
       const ctx = await loadNavigationModule();

@@ -43,8 +43,16 @@ const SIZE_SAFETY_MARGIN = 1.5;
  * Select the best usable postage batch for an upload of the given size.
  * "Best" = usable, enough remaining space (with 1.5x safety margin),
  * longest TTL. Returns the batch ID hex string, or null if none qualifies.
+ *
+ * With `allowFullMutable`, a usable mutable batch without remaining space
+ * is accepted as a fallback when no batch has room. bee-js reports
+ * remainingSize 0 once a mutable batch's buckets are full, but the node
+ * keeps accepting writes by overwriting the oldest stamp per bucket —
+ * which evicts whatever those stamps protected. That trade-off is only
+ * acceptable for ephemeral traffic (messaging), never for content
+ * publishes, so it is opt-in per call site.
  */
-async function selectBestBatch(estimatedSizeBytes) {
+async function selectBestBatch(estimatedSizeBytes, options = {}) {
   const bee = getBee();
   const batches = await bee.getPostageBatches();
 
@@ -52,6 +60,8 @@ async function selectBestBatch(estimatedSizeBytes) {
 
   let best = null;
   let bestTtl = -1;
+  let fullMutable = null;
+  let fullMutableTtl = -1;
 
   for (const batch of batches) {
     if (!batch.usable) continue;
@@ -60,16 +70,26 @@ async function selectBestBatch(estimatedSizeBytes) {
       ? batch.remainingSize.toBytes()
       : 0;
 
-    if (remaining < requiredBytes) continue;
-
     const ttl = batch.duration && typeof batch.duration.toSeconds === 'function'
       ? batch.duration.toSeconds()
       : 0;
 
-    if (ttl > bestTtl) {
-      best = batch;
-      bestTtl = ttl;
+    if (remaining >= requiredBytes) {
+      if (ttl > bestTtl) {
+        best = batch;
+        bestTtl = ttl;
+      }
+    } else if (options.allowFullMutable && batch.immutableFlag !== true && ttl > fullMutableTtl) {
+      fullMutable = batch;
+      fullMutableTtl = ttl;
     }
+  }
+
+  if (!best && fullMutable) {
+    best = fullMutable;
+    log.warn(
+      `[SwarmService] No batch with remaining capacity; falling back to full mutable batch ${toHex(fullMutable.batchID)} — new stamps overwrite its oldest ones`
+    );
   }
 
   if (!best) return null;

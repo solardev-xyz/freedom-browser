@@ -5,6 +5,7 @@
  */
 
 import { walletState, registerScreenHider } from './wallet-state.js';
+import { refuseSubscreenWhileInFlight } from './signature-flight.js';
 import { selectWallet } from './wallet-selector.js';
 
 // DOM references
@@ -97,6 +98,8 @@ function setupWalletSettingsScreen() {
 }
 
 function openWalletSettings() {
+  if (refuseSubscreenWhileInFlight('Wallet settings screen')) return;
+
   const activeWallet = walletState.derivedWallets.find(w => w.index === walletState.activeWalletIndex);
   if (!activeWallet) {
     console.error('[WalletUI] No active wallet found');

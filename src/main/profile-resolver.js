@@ -28,7 +28,14 @@ const { isProfileLocked } = require('./profile-lock');
 // can point FREEDOM_DEV_HOME (or explicit data-path overrides) at it. This is
 // deliberately weaker than the packaged upgrade path, which adopts existing
 // userData in place and runs the bee->ant migration.
-const LEGACY_DEV_DATA_DIRS = ['identity-data', 'bee-data', 'ant-data', 'ipfs-data', 'radicle-data'];
+const LEGACY_DEV_DATA_DIRS = [
+  'identity-data',
+  'bee-data',
+  'ant-data',
+  'ipfs-data',
+  'radicle-data',
+  'tor-data',
+];
 const LEGACY_DEV_DATA_WARNING_FILE = 'legacy-dev-data-warning.json';
 
 let activeProfile = null;

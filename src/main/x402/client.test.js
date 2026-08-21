@@ -13,6 +13,7 @@ const mockResetVaultAutoLockTimer = jest.fn();
 jest.mock('../identity-manager', () => ({
   loadIdentityModule: jest.fn(async () => mockIdentity),
   getWalletRecord: jest.fn(() => null),
+  isHardwareWalletIndex: (index) => Number.isInteger(index) && index >= 1000000,
   WALLET_TYPES: { MNEMONIC: 'mnemonic', LEDGER: 'ledger' },
 }));
 jest.mock('../vault-timer', () => ({

@@ -10,6 +10,10 @@
  * The transport is opened per operation and closed afterwards: cheap,
  * and it keeps the device usable by other apps (Ledger Live) between
  * our calls.
+ *
+ * Every Eth instance is built with hosted clear-signing DISABLED (see
+ * OFFLINE_LOAD_CONFIG) — same rule as the signer's null transaction
+ * resolution: no user data leaves the machine to sign.
  */
 
 const { mapLedgerError } = require('./errors');
@@ -39,6 +43,26 @@ const PATH_SCHEMES = {
   },
 };
 
+// hw-app-eth resolves clear-signing metadata through Ledger's hosted
+// services by default (crypto-assets-service.api.ledger.com,
+// cdn.live.ledger.com, nft.api.live.ledger.com). Those lookups are not
+// limited to `signTransaction`'s opt-in resolution: `signEIP712Message`
+// posts the chain id, the verifying contract and a schema hash of the
+// typed data to the registry on every EIP-712 signature, from the user's
+// IP, before the device is touched — and it does so while this module
+// holds the exclusive device queue, so a hung request stalls all device
+// access. Nulling every service URL makes the library skip the lookups
+// entirely (each call site is guarded by its URL), keeping signing
+// fully offline. Consequence is the same as the signer's null
+// resolution: contract calls show as raw data on the device.
+const OFFLINE_LOAD_CONFIG = {
+  nftExplorerBaseURL: null,
+  pluginBaseURL: null,
+  extraPlugins: null,
+  cryptoassetsBaseURL: null,
+  calServiceURL: null,
+};
+
 let deviceQueue = Promise.resolve();
 
 /**
@@ -59,7 +83,9 @@ function withEthApp(task) {
       throw mapLedgerError(err);
     }
     try {
-      return await task(new EthApp(transport));
+      // scrambleKey stays at hw-app-eth's default; the third argument is
+      // the load config that keeps clear-signing lookups offline.
+      return await task(new EthApp(transport, undefined, OFFLINE_LOAD_CONFIG));
     } catch (err) {
       throw mapLedgerError(err);
     } finally {
@@ -102,4 +128,4 @@ async function listAccounts({ scheme = 'live', start = 0, count = 5 } = {}) {
   });
 }
 
-module.exports = { withEthApp, listAccounts, PATH_SCHEMES };
+module.exports = { withEthApp, listAccounts, PATH_SCHEMES, OFFLINE_LOAD_CONFIG };

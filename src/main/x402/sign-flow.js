@@ -33,9 +33,37 @@ const { grant: grantPermission } = require('./permissions');
 const { tupleFromAccept } = require('./payment-utils');
 
 /**
+ * Runway an EIP-3009 authorization must still have when we hand it to the
+ * dispatcher. `@x402/evm`'s exact facilitator rejects anything with
+ * `validBefore < now + 6`, so a payload with less than that left is dead on
+ * arrival however valid the signature is. We gate on the *client's* clock at
+ * sign-completion, but the facilitator re-checks the same rule on *its* clock
+ * seconds later — after the mainFrame re-navigation, the server round-trip and
+ * the server→facilitator verify hop — so matching the bare 6 leaves no margin
+ * for transit or clock skew and can still be refused server-side (the exact
+ * burned-charge case this gate exists to prevent). Keep comfortably above it;
+ * a false positive only re-shows the same "try again" card.
+ */
+const MIN_AUTHORIZATION_RUNWAY_SECONDS = 20;
+
+/**
+ * Seconds left on the signed authorization, or `null` when the payload has
+ * no `validBefore` to check (non-EIP-3009 scheme, or a test double).
+ *
+ * Both the V1 and V2 exact schemes nest the authorization the same way:
+ * `{ payload: { authorization: { validBefore } } }`.
+ */
+function authorizationRunwaySeconds(payload) {
+  const validBefore = Number(payload?.payload?.authorization?.validBefore);
+  if (!Number.isFinite(validBefore)) return null;
+  return validBefore - Math.floor(Date.now() / 1000);
+}
+
+/**
  * Sign the currently-detected payment for `webContentsId` and queue a
  * retry of the original URL. Throws on any failure (vault locked, URL
- * unparseable, client error). Caller decides how to surface the error.
+ * unparseable, client error, an authorization that expired while it was
+ * being confirmed). Caller decides how to surface the error.
  *
  * `opts.detection` lets the caller pass an explicit snapshot of the
  * detection to sign — used by the auto-pay path so a second 402 firing
@@ -99,6 +127,37 @@ async function signAndQueueRetry(webContentsId, opts = {}) {
     ...detected.requirements,
     accepts: [selectedAccept],
   });
+
+  // The SDK stamps `validBefore = now + maxTimeoutSeconds` BEFORE it asks the
+  // signer for a signature, and on a hardware wallet that call blocks for as
+  // long as the user takes to review the EIP-712 payload on the device. A
+  // confirmation slower than the server's window (often ~60s) therefore
+  // produces a perfectly valid signature over an already-expired
+  // authorization. Dispatching it burns the charge: the facilitator refuses
+  // it, the server re-402s, the loop guard in intercept.js declines to
+  // re-sign, and a `failed` row lands in payment history after the user
+  // physically confirmed on the device.
+  //
+  // Widening the window instead (inflating `maxTimeoutSeconds` on the accept
+  // we sign) is NOT an option: for x402 v2 the client echoes the selected
+  // requirements back as `payload.accepted`, and @x402/core's server does a
+  // deep-equal against its own advertised accepts — a padded window would be
+  // rejected as a non-matching requirement.
+  //
+  // So bail before anything is stashed or navigated. The detection is still
+  // in the map and no pending payment is armed, which means the caller's
+  // error surfaces on the approval card with Pay live again — a second
+  // device prompt, but no reload and no bogus failure row.
+  const runway = authorizationRunwaySeconds(payload);
+  if (runway !== null && runway < MIN_AUTHORIZATION_RUNWAY_SECONDS) {
+    log.warn(
+      `[x402:sign] authorization expired during signing (${runway}s of runway left); ` +
+      `not dispatching a payment the facilitator will refuse`
+    );
+    throw new Error(
+      'Payment authorization expired while it was being confirmed. Please try again.'
+    );
+  }
 
   const headerValue = Buffer.from(JSON.stringify(payload)).toString('base64');
   const headerName = outgoingHeaderForVersion(detected.requirements.x402Version);

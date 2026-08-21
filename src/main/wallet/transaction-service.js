@@ -6,8 +6,8 @@
  * never touches key material.
  */
 
-const { parseUnits, formatUnits, Interface } = require('ethers');
-const { getProvider, withRetry } = require('./provider-manager');
+const { parseUnits, formatUnits, Interface, Transaction } = require('ethers');
+const chainData = require('../networks/chain-data-router');
 const { getTxExplorerUrl } = require('./chains');
 const { REMOTE_ERROR_CODES, createRemoteError } = require('./remote/errors');
 
@@ -27,11 +27,6 @@ const ERC20_INTERFACE = new Interface([
  * @returns {Promise<{gasLimit: string, error?: string}>}
  */
 async function estimateGas({ from, to, value, data, chainId }) {
-  const provider = getProvider(chainId);
-  if (!provider) {
-    throw new Error(`No provider available for chain ${chainId}`);
-  }
-
   try {
     const tx = {
       from,
@@ -43,7 +38,8 @@ async function estimateGas({ from, to, value, data, chainId }) {
       tx.data = data;
     }
 
-    const gasLimit = await withRetry(() => provider.estimateGas(tx), 2, chainId);
+    const { result } = await chainData.request(chainId, 'eth_estimateGas', [tx]);
+    const gasLimit = BigInt(result);
 
     // Add 20% buffer for safety
     const bufferedGas = (gasLimit * 120n) / 100n;
@@ -64,41 +60,17 @@ async function estimateGas({ from, to, value, data, chainId }) {
  * @returns {Promise<Object>} Gas price data
  */
 async function getGasPrices(chainId) {
-  const provider = getProvider(chainId);
-  if (!provider) {
-    throw new Error(`No provider available for chain ${chainId}`);
-  }
-
   try {
-    const [feeData, block] = await withRetry(
-      () => Promise.all([provider.getFeeData(), provider.getBlock('latest')]),
-      2,
-      chainId
-    );
-
-    // For EIP-1559 chains (Ethereum, Gnosis)
-    if (feeData.maxFeePerGas && feeData.maxPriorityFeePerGas) {
-      const baseFee = block?.baseFeePerGas || feeData.gasPrice || 0n;
-
-      // Market: 2x base fee + priority fee (covers 2 blocks of full blocks)
-      const marketMaxFee = baseFee * 2n + feeData.maxPriorityFeePerGas;
-
-      return {
-        type: 'eip1559',
-        baseFee: baseFee.toString(),
-        maxPriorityFeePerGas: feeData.maxPriorityFeePerGas.toString(),
-        maxFeePerGas: marketMaxFee.toString(),
-        // For display: estimated fee per gas
-        effectiveGasPrice: ((baseFee + feeData.maxPriorityFeePerGas)).toString(),
-      };
-    }
-
-    // Legacy gas price (fallback)
-    return {
-      type: 'legacy',
-      gasPrice: (feeData.gasPrice || 0n).toString(),
-      effectiveGasPrice: (feeData.gasPrice || 0n).toString(),
-    };
+    const quote = await chainData.getFeeQuote(chainId);
+    console.log('[TransactionService] Fee quote:', {
+      chainId,
+      type: quote.type,
+      source: quote.source,
+      maxFeePerGas: quote.maxFeePerGas,
+      maxPriorityFeePerGas: quote.maxPriorityFeePerGas,
+      gasPrice: quote.gasPrice,
+    });
+    return quote;
   } catch (err) {
     console.error('[TransactionService] Failed to get gas prices:', err);
     throw new Error(`Failed to get gas prices: ${err.message}`, { cause: err });
@@ -182,7 +154,10 @@ function buildTransaction({
   }
 
   // EIP-1559 or legacy
-  if (maxFeePerGas && maxPriorityFeePerGas) {
+  if (maxFeePerGas != null && maxPriorityFeePerGas != null) {
+    if (BigInt(maxPriorityFeePerGas) > BigInt(maxFeePerGas)) {
+      throw new Error('Invalid transaction fees: priority fee exceeds maximum fee');
+    }
     tx.maxFeePerGas = maxFeePerGas;
     tx.maxPriorityFeePerGas = maxPriorityFeePerGas;
     tx.type = 2; // EIP-1559
@@ -201,10 +176,10 @@ function buildTransaction({
  * after the device's, so "not visible yet" is not an error — only a
  * visible mismatch is.
  */
-async function verifyDeviceBroadcastFrom(provider, hash, expectedFrom, chainId) {
+async function verifyDeviceBroadcastFrom(hash, expectedFrom, chainId) {
   let tx;
   try {
-    tx = await withRetry(() => provider.getTransaction(hash), 2, chainId);
+    ({ result: tx } = await chainData.request(chainId, 'eth_getTransactionByHash', [hash]));
   } catch (err) {
     console.warn('[TransactionService] Device-broadcast lookup failed:', err.message);
     return;
@@ -219,11 +194,53 @@ async function verifyDeviceBroadcastFrom(provider, hash, expectedFrom, chainId) 
 }
 
 /**
+ * Fill in fee parameters the caller didn't supply.
+ *
+ * ethers' Wallet.sendTransaction used to populate missing fees from the
+ * network before signing. Now that signing and broadcasting are separate
+ * steps nothing does, so an unpriced tx would be signed with
+ * maxFeePerGas = 0 and rejected by every node as underpriced — on a
+ * hardware wallet, only after the user confirmed it on-device. Populate
+ * (or refuse) here, before the signer is ever asked to sign.
+ *
+ * @param {Object} params
+ * @returns {Promise<{maxFeePerGas?: string, maxPriorityFeePerGas?: string, gasPrice?: string}>}
+ */
+async function resolveFeeParams({ maxFeePerGas, maxPriorityFeePerGas, gasPrice, chainId }) {
+  if ((maxFeePerGas && maxPriorityFeePerGas) || gasPrice) {
+    return { maxFeePerGas, maxPriorityFeePerGas, gasPrice };
+  }
+
+  const fees = await getGasPrices(chainId);
+
+  if (fees.type === 'eip1559' && isPositiveFee(fees.maxFeePerGas) && isPositiveFee(fees.maxPriorityFeePerGas)) {
+    return { maxFeePerGas: fees.maxFeePerGas, maxPriorityFeePerGas: fees.maxPriorityFeePerGas };
+  }
+  if (isPositiveFee(fees.gasPrice)) {
+    return { gasPrice: fees.gasPrice };
+  }
+
+  throw new Error('Unable to determine a gas price for this transaction. Please try again.');
+}
+
+function isPositiveFee(value) {
+  try {
+    return value !== undefined && value !== null && BigInt(value) > 0n;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Sign and broadcast a transaction.
  *
  * Signing and broadcasting are separate steps so the signer can be
  * anything implementing the signer interface (vault key, hardware
  * device) — the provider only ever sees the serialized signed tx.
+ *
+ * Fee parameters are optional: when the caller supplies none they are
+ * fetched from the network (see resolveFeeParams) rather than signed as
+ * zero.
  *
  * @param {Object} params - Transaction parameters
  * @param {string} params.to - Recipient (or token contract for ERC-20)
@@ -240,10 +257,11 @@ async function verifyDeviceBroadcastFrom(provider, hash, expectedFrom, chainId) 
 async function signAndSendTransaction(params, signer) {
   const { to, value, data, gasLimit, maxFeePerGas, maxPriorityFeePerGas, gasPrice, chainId } = params;
 
-  const provider = getProvider(chainId);
-  if (!provider) {
-    throw new Error(`No provider available for chain ${chainId}`);
-  }
+  // Phone wallets populate fees and broadcast through their own RPC. All
+  // raw-signing backends need complete fee data before device approval.
+  const fees = typeof signer.sendTransaction === 'function'
+    ? null
+    : await resolveFeeParams({ maxFeePerGas, maxPriorityFeePerGas, gasPrice, chainId });
 
   try {
     const from = await signer.getAddress();
@@ -255,7 +273,7 @@ async function signAndSendTransaction(params, signer) {
     // user confirms on the device, so only the intent fields go over.
     if (typeof signer.sendTransaction === 'function') {
       const hash = await signer.sendTransaction({ to, value, data, chainId });
-      await verifyDeviceBroadcastFrom(provider, hash, from, chainId);
+      await verifyDeviceBroadcastFrom(hash, from, chainId);
       console.log('[TransactionService] Transaction broadcast by signer:', hash);
       return {
         hash,
@@ -268,7 +286,11 @@ async function signAndSendTransaction(params, signer) {
     }
 
     // Get nonce
-    const nonce = await withRetry(() => provider.getTransactionCount(from, 'pending'), 2, chainId);
+    const nonceResponse = await chainData.request(chainId, 'eth_getTransactionCount', [
+      from,
+      'pending',
+    ]);
+    const nonce = Number(BigInt(nonceResponse.result));
 
     // Build transaction
     const tx = buildTransaction({
@@ -276,9 +298,9 @@ async function signAndSendTransaction(params, signer) {
       value,
       data,
       gasLimit,
-      maxFeePerGas,
-      maxPriorityFeePerGas,
-      gasPrice,
+      maxFeePerGas: fees.maxFeePerGas,
+      maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
+      gasPrice: fees.gasPrice,
       nonce,
       chainId,
     });
@@ -289,21 +311,33 @@ async function signAndSendTransaction(params, signer) {
       gasLimit: tx.gasLimit,
       chainId: tx.chainId,
       nonce: tx.nonce,
+      nonceSource: nonceResponse.source,
     });
 
-    const signedTx = await signer.signTransaction(tx);
-    const txResponse = await provider.broadcastTransaction(signedTx);
+    const signedTransaction = await signer.signTransaction(tx);
+    const parsedTransaction = Transaction.from(signedTransaction);
+    const broadcast = await chainData.broadcastRawTransaction(chainId, signedTransaction);
+    if (
+      parsedTransaction.hash &&
+      String(broadcast.result).toLowerCase() !== parsedTransaction.hash.toLowerCase()
+    ) {
+      throw new Error(
+        `Transaction may have been broadcast as ${parsedTransaction.hash}, ` +
+        `but the broadcaster returned ${broadcast.result}`
+      );
+    }
 
-    console.log('[TransactionService] Transaction sent:', txResponse.hash);
+    console.log('[TransactionService] Transaction sent:', broadcast.result);
 
     return {
-      hash: txResponse.hash,
-      nonce: txResponse.nonce,
-      from: txResponse.from,
-      to: txResponse.to,
-      value: txResponse.value?.toString(),
+      hash: broadcast.result,
+      nonce: parsedTransaction.nonce,
+      from: parsedTransaction.from || from,
+      to: parsedTransaction.to,
+      value: parsedTransaction.value?.toString(),
       chainId,
-      explorerUrl: getTxExplorerUrl(chainId, txResponse.hash),
+      broadcastSource: broadcast.source,
+      explorerUrl: getTxExplorerUrl(chainId, broadcast.result),
     };
   } catch (err) {
     console.error('[TransactionService] Transaction failed:', err);
@@ -316,22 +350,44 @@ async function signAndSendTransaction(params, signer) {
     }
 
     // Parse common error messages
-    if (err.message.includes('insufficient funds')) {
+    const message = String(err?.message || '');
+    const normalizedMessage = message.toLowerCase();
+    if (normalizedMessage.includes('insufficient funds')) {
       throw new Error('Insufficient funds for transaction', { cause: err });
     }
-    if (err.message.includes('nonce')) {
+    if (
+      [
+        'nonce too low',
+        'nonce too high',
+        'invalid nonce',
+        'nonce has already been used',
+        'replacement transaction underpriced',
+      ].some((pattern) => normalizedMessage.includes(pattern))
+    ) {
       throw new Error('Transaction nonce error. Please try again.', { cause: err });
     }
-    if (err.message.includes('gas')) {
+    if (
+      normalizedMessage.includes('priority fee') ||
+      normalizedMessage.includes('priorityfee') ||
+      normalizedMessage.includes('maxfeepergas') ||
+      normalizedMessage.includes('maxpriorityfeepergas') ||
+      normalizedMessage.includes('fee cap') ||
+      normalizedMessage.includes('base fee')
+    ) {
+      throw new Error('Transaction fee data is invalid. Please refresh and try again.', {
+        cause: err,
+      });
+    }
+    if (normalizedMessage.includes('gas')) {
       throw new Error('Gas estimation error. The transaction may fail.', { cause: err });
     }
     // Server errors (rate limiting, blocked, etc.)
     if (
       err.code === 'SERVER_ERROR' ||
-      err.message.includes('SERVER_ERROR') ||
-      err.message.includes('403') ||
-      err.message.includes('429') ||
-      err.message.includes('invalid numeric value')
+      message.includes('SERVER_ERROR') ||
+      message.includes('403') ||
+      message.includes('429') ||
+      normalizedMessage.includes('invalid numeric value')
     ) {
       throw new Error('RPC provider temporarily unavailable. Please try again.', { cause: err });
     }
@@ -347,13 +403,8 @@ async function signAndSendTransaction(params, signer) {
  * @returns {Promise<Object>} Transaction status
  */
 async function getTransactionStatus(txHash, chainId) {
-  const provider = getProvider(chainId);
-  if (!provider) {
-    throw new Error(`No provider available for chain ${chainId}`);
-  }
-
   try {
-    const receipt = await withRetry(() => provider.getTransactionReceipt(txHash), 2, chainId);
+    const { result: receipt } = await chainData.request(chainId, 'eth_getTransactionReceipt', [txHash]);
 
     if (!receipt) {
       return {
@@ -363,11 +414,13 @@ async function getTransactionStatus(txHash, chainId) {
     }
 
     return {
-      status: receipt.status === 1 ? 'confirmed' : 'failed',
+      status: BigInt(receipt.status || 0) === 1n ? 'confirmed' : 'failed',
       hash: txHash,
-      blockNumber: receipt.blockNumber,
-      gasUsed: receipt.gasUsed?.toString(),
-      effectiveGasPrice: receipt.gasPrice?.toString(),
+      blockNumber: receipt.blockNumber ? Number(BigInt(receipt.blockNumber)) : null,
+      gasUsed: receipt.gasUsed ? BigInt(receipt.gasUsed).toString() : null,
+      effectiveGasPrice: receipt.effectiveGasPrice
+        ? BigInt(receipt.effectiveGasPrice).toString()
+        : null,
       explorerUrl: getTxExplorerUrl(chainId, txHash),
     };
   } catch (err) {
@@ -388,22 +441,26 @@ async function getTransactionStatus(txHash, chainId) {
  * @returns {Promise<Object>} Transaction receipt
  */
 async function waitForTransaction(txHash, chainId, confirmations = 1) {
-  const provider = getProvider(chainId);
-  if (!provider) {
-    throw new Error(`No provider available for chain ${chainId}`);
-  }
-
   try {
-    const receipt = await provider.waitForTransaction(txHash, confirmations, 60000); // 60s timeout
-
-    return {
-      status: receipt.status === 1 ? 'confirmed' : 'failed',
-      hash: txHash,
-      blockNumber: receipt.blockNumber,
-      gasUsed: receipt.gasUsed?.toString(),
-      effectiveGasPrice: receipt.gasPrice?.toString(),
-      explorerUrl: getTxExplorerUrl(chainId, txHash),
-    };
+    const deadline = Date.now() + 60000;
+    while (Date.now() < deadline) {
+      const status = await getTransactionStatus(txHash, chainId);
+      if (status.status === 'failed') return status;
+      if (status.status === 'confirmed') {
+        if (confirmations <= 1) return status;
+        try {
+          const { result: head } = await chainData.request(chainId, 'eth_blockNumber');
+          if (Number(BigInt(head)) - status.blockNumber + 1 >= confirmations) return status;
+        } catch (err) {
+          // Receipt confirmation is already known. A transient head lookup
+          // must not turn that into a false timeout; keep polling until the
+          // requested confirmation depth can be established.
+          console.warn('[TransactionService] Confirmation head lookup failed:', err.message);
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+    throw new Error('Timed out waiting for transaction confirmation');
   } catch (err) {
     console.error('[TransactionService] Wait for transaction failed:', err);
     throw new Error(`Transaction confirmation timeout: ${err.message}`, { cause: err });

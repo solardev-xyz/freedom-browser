@@ -1,0 +1,13 @@
+name: Install Linux native dependencies
+description: Install system libraries required to build Ledger USB dependencies on Linux
+
+runs:
+  using: composite
+  steps:
+    - name: Install native USB build dependencies
+      shell: bash
+      run: |
+        # Refresh the image's package index first; cached entries can point to
+        # package builds that Ubuntu mirrors have already rotated out.
+        sudo apt-get update
+        sudo apt-get install -y libudev-dev libusb-1.0-0-dev

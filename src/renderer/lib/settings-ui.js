@@ -5,7 +5,12 @@ import { pushDebug } from './debug.js';
 
 const electronAPI = window.electronAPI;
 
-let previous = { theme: 'system', antNodeMode: 'ultraLight', enableRadicleIntegration: false };
+let previous = {
+  theme: 'system',
+  antNodeMode: 'ultraLight',
+  enableRadicleIntegration: false,
+  enableTorIntegration: false,
+};
 
 const systemPrefersDark = () => window.matchMedia('(prefers-color-scheme: dark)').matches;
 
@@ -24,6 +29,7 @@ export const initTheme = async () => {
     theme: settings?.theme || 'system',
     antNodeMode: settings?.antNodeMode === 'light' ? 'light' : 'ultraLight',
     enableRadicleIntegration: settings?.enableRadicleIntegration === true,
+    enableTorIntegration: settings?.enableTorIntegration === true,
   };
   applyTheme(previous.theme);
 
@@ -75,6 +81,7 @@ export const initSettingsEffects = (onSettingsChanged) => {
       theme: next.theme || 'system',
       antNodeMode: next.antNodeMode === 'light' ? 'light' : 'ultraLight',
       enableRadicleIntegration: next.enableRadicleIntegration === true,
+      enableTorIntegration: next.enableTorIntegration === true,
     };
 
     if (prev.theme !== previous.theme) {
@@ -83,6 +90,10 @@ export const initSettingsEffects = (onSettingsChanged) => {
 
     if (prev.enableRadicleIntegration && !previous.enableRadicleIntegration) {
       window.radicle?.stop?.().catch(() => {});
+    }
+
+    if (prev.enableTorIntegration && !previous.enableTorIntegration) {
+      window.tor?.stop?.().catch(() => {});
     }
 
     pushDebug('Settings updated');

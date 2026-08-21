@@ -3,6 +3,13 @@ jest.mock('electron', () => ({
   app: { getPath: (...args) => mockGetPath(...args) },
 }));
 
+const mockLogInfo = jest.fn();
+const mockLogWarn = jest.fn();
+jest.mock('../logger', () => ({
+  info: (...args) => mockLogInfo(...args),
+  warn: (...args) => mockLogWarn(...args),
+}));
+
 const mockMkdirSync = jest.fn();
 const mockReadFileSync = jest.fn();
 const mockWriteFileSync = jest.fn();
@@ -25,6 +32,7 @@ jest.mock('@corpus-core/colibri-stateless', () => {
       mockColibriCtor(config);
       this.config = config;
       this.destroy = jest.fn();
+      this.request = jest.fn().mockResolvedValue('0x2a');
       mockClientInstances.push(this);
     }
     static register_storage(storage) { return mockRegisterStorage(storage); }
@@ -68,6 +76,7 @@ jest.mock('../ens-resolver', () => ({
 const {
   resolveViaColibri,
   resolveReverseViaColibri,
+  requestViaColibri,
   clearColibriClientForTest,
 } = require('./colibri-resolver');
 
@@ -226,6 +235,75 @@ describe('resolveViaColibri', () => {
     const err = new Error('proof verification failed');
     mockUniversalResolverCall.mockRejectedValue(err);
     await expect(resolveViaColibri('a.eth', '0x')).rejects.toBe(err);
+    expect(mockColibriCtor).toHaveBeenCalledTimes(1);
+  });
+
+  test('rebuilds once and retries a CALL_EXCEPTION without revert data', async () => {
+    const err = Object.assign(new Error('full ethers message with 0x' + 'ab'.repeat(200)), {
+      code: 'CALL_EXCEPTION',
+      shortMessage: 'missing revert data',
+      info: { error: { code: -32603, message: 'prover returned no response' } },
+    });
+    const recovered = { resolvedData: '0xfeed', resolverAddress: '0x1234' };
+    mockUniversalResolverCall
+      .mockRejectedValueOnce(err)
+      .mockResolvedValueOnce(recovered);
+
+    await expect(resolveViaColibri('retry.eth', '0x')).resolves.toEqual(recovered);
+
+    expect(mockUniversalResolverCall).toHaveBeenCalledTimes(2);
+    expect(mockColibriCtor).toHaveBeenCalledTimes(2);
+    expect(mockClientInstances[0].destroy).toHaveBeenCalledTimes(1);
+    expect(mockLogWarn).toHaveBeenCalledWith(
+      '[colibri] chain 1 request failed; rebuilding client and retrying once ' +
+      'error="missing revert data" code=CALL_EXCEPTION rpcCode=-32603 ' +
+      'rpcMessage="prover returned no response" revert=none'
+    );
+  });
+
+  test('bounds a retryable failure to one rebuild', async () => {
+    const err = Object.assign(new Error('request timed out'), { code: 'TIMEOUT' });
+    mockUniversalResolverCall.mockRejectedValue(err);
+
+    await expect(resolveViaColibri('still-down.eth', '0x')).rejects.toBe(err);
+
+    expect(mockUniversalResolverCall).toHaveBeenCalledTimes(2);
+    expect(mockColibriCtor).toHaveBeenCalledTimes(2);
+  });
+
+  test('does not destroy a failed shared client while a sibling request still uses it', async () => {
+    let rejectFirst;
+    let resolveSibling;
+    mockUniversalResolverCall
+      .mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectFirst = reject; }))
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveSibling = resolve; }))
+      .mockResolvedValueOnce({ resolvedData: '0xrecovered' });
+
+    const first = resolveViaColibri('first.eth', '0x');
+    const sibling = resolveViaColibri('sibling.eth', '0x');
+    while (mockUniversalResolverCall.mock.calls.length < 2) await Promise.resolve();
+    const sharedClient = mockClientInstances[0];
+
+    rejectFirst(Object.assign(new Error('network unavailable'), { code: 'NETWORK_ERROR' }));
+    await expect(first).resolves.toEqual({ resolvedData: '0xrecovered' });
+    expect(sharedClient.destroy).not.toHaveBeenCalled();
+
+    resolveSibling({ resolvedData: '0xsibling' });
+    await expect(sibling).resolves.toEqual({ resolvedData: '0xsibling' });
+    expect(sharedClient.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  test('does not retry an EVM revert carrying verified revert data', async () => {
+    const err = Object.assign(new Error('execution reverted'), {
+      code: 'CALL_EXCEPTION',
+      data: '0xdeadbeef',
+    });
+    mockUniversalResolverCall.mockRejectedValue(err);
+
+    await expect(resolveViaColibri('reverted.eth', '0x')).rejects.toBe(err);
+
+    expect(mockUniversalResolverCall).toHaveBeenCalledTimes(1);
+    expect(mockColibriCtor).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -253,6 +331,39 @@ describe('resolveReverseViaColibri', () => {
     const err = Object.assign(new Error('ReverseAddressMismatch'), { data: '0xef9c03ce' });
     mockUniversalResolverReverse.mockRejectedValue(err);
     await expect(resolveReverseViaColibri(ADDR_BYTES)).rejects.toBe(err);
+  });
+});
+
+describe('requestViaColibri', () => {
+  test('creates and reuses an independent Gnosis client', async () => {
+    mockLoadSettings.mockReturnValue({ ...DEFAULTS });
+    await expect(
+      requestViaColibri(100, 'eth_getBalance', ['0xabc', 'latest'])
+    ).resolves.toBe('0x2a');
+    const gnosisClient = mockClientInstances[0];
+    expect(mockColibriCtor).toHaveBeenCalledWith(expect.objectContaining({ chainId: 100 }));
+    expect(gnosisClient.request).toHaveBeenCalledWith({
+      method: 'eth_getBalance',
+      params: ['0xabc', 'latest'],
+    });
+
+    await requestViaColibri(1, 'eth_blockNumber');
+    expect(mockColibriCtor).toHaveBeenCalledTimes(2);
+  });
+
+  test('rebuilds the affected chain client once after a network failure', async () => {
+    await requestViaColibri(100, 'eth_blockNumber');
+    const firstClient = mockClientInstances[0];
+    firstClient.request
+      .mockRejectedValueOnce(Object.assign(new Error('network unavailable'), {
+        code: 'NETWORK_ERROR',
+      }));
+
+    await expect(requestViaColibri(100, 'eth_blockNumber')).resolves.toBe('0x2a');
+
+    expect(firstClient.destroy).toHaveBeenCalledTimes(1);
+    expect(mockColibriCtor).toHaveBeenCalledTimes(2);
+    expect(mockClientInstances[1].request).toHaveBeenCalledTimes(1);
   });
 });
 

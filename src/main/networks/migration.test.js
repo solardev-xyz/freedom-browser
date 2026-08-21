@@ -57,7 +57,13 @@ describe('migrateLegacyConfig — the 11-case matrix', () => {
 
   test('4. quorum-era + custom RPC → direct strategy + a migrated endpoint source', () => {
     const result = run({ enableEnsCustomRpc: true, ensRpcUrl: 'http://localhost:8545' });
-    expect(result.networks['1']).toEqual({ verification: { primary: 'direct' } });
+    expect(result.networks['1']).toEqual({
+      verification: {
+        primary: 'direct',
+        order: ['myotis', 'direct', 'quorum'],
+        preferVerified: false,
+      },
+    });
     expect(result.endpointSources['migrated-eth-custom']).toEqual({
       role: 'rpc',
       keyed: false,
@@ -96,10 +102,18 @@ describe('migrateLegacyConfig — the 11-case matrix', () => {
 
   test('9. kolibri-era dev settings are tolerated and mapped', () => {
     expect(run({ ensResolutionMethod: 'quorum' }).networks['1']).toEqual({
-      verification: { primary: 'quorum' },
+      verification: {
+        primary: 'quorum',
+        order: ['myotis', 'quorum'],
+        preferVerified: false,
+      },
     });
     expect(run({ ensResolutionMethod: 'custom-rpc' }).networks['1']).toEqual({
-      verification: { primary: 'direct' },
+      verification: {
+        primary: 'direct',
+        order: ['myotis', 'direct', 'quorum'],
+        preferVerified: false,
+      },
     });
     // 'colibri' equals the builtin default → no override emitted
     expect(run({ ensResolutionMethod: 'colibri' })).toEqual(EMPTY);

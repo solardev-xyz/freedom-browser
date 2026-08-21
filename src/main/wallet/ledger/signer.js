@@ -11,10 +11,13 @@
  * then asks for an on-device confirmation. Errors surface with stable
  * LEDGER_* codes (see ./errors.js) — user rejection included.
  *
- * Transactions are signed WITHOUT @ledgerhq's hosted clear-signing
- * resolution: resolving token/plugin metadata posts the full transaction
- * contents to Ledger's registry before signing, which violates this
- * project's rule against routing user data through hosted services.
+ * Transactions and typed data are signed WITHOUT @ledgerhq's hosted
+ * clear-signing resolution: resolving token/plugin/EIP-712 metadata posts
+ * the transaction contents (or the typed-data schema hash, chain id and
+ * verifying contract) to Ledger's registry before signing, which violates
+ * this project's rule against routing user data through hosted services.
+ * `signTransaction` passes a null resolution; the typed-data path is
+ * covered by the offline load config the transport builds Eth with.
  * Consequence: plain ETH transfers display normally on the device, but
  * contract calls (e.g. ERC-20 transfers) show as raw data and may
  * require "blind signing" to be enabled in the device's Ethereum app.

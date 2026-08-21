@@ -287,8 +287,18 @@ describe('page-context-menu', () => {
       openDevTools: jest.fn(),
       send: jest.fn(),
     };
-    const { mod, pageContextMenu, pageGroup, selectionGroup, linkGroup, imageGroup, backBtn, forwardBtn, backdrop, pushDebug } =
-      await loadPageContextMenuModule({ activeWebview });
+    const {
+      mod,
+      pageContextMenu,
+      pageGroup,
+      selectionGroup,
+      linkGroup,
+      imageGroup,
+      backBtn,
+      forwardBtn,
+      backdrop,
+      pushDebug,
+    } = await loadPageContextMenuModule({ activeWebview });
 
     await mod.initPageContextMenu();
 
@@ -438,6 +448,7 @@ describe('page-context-menu', () => {
     mod.showPageContextMenu(20, 30, { imageSrc: 'https://example.com/image.png' });
     await triggerMenuAction(pageContextMenu, 'save-image');
     expect(consoleErrorSpy).toHaveBeenCalledWith('Failed to save image:', 'disk full');
+    expect(pushDebug).toHaveBeenCalledWith('Failed to save image: disk full');
 
     electronAPI.copyImageFromUrl.mockResolvedValueOnce({
       success: true,
@@ -452,6 +463,7 @@ describe('page-context-menu', () => {
     mod.showPageContextMenu(20, 30, { imageSrc: 'https://example.com/image.png' });
     await triggerMenuAction(pageContextMenu, 'copy-image');
     expect(consoleErrorSpy).toHaveBeenCalledWith('Failed to copy image:', 'copy failed');
+    expect(pushDebug).toHaveBeenCalledWith('Failed to copy image: copy failed');
 
     urlUtils.applyEnsNamePreservation.mockReturnValueOnce('');
     mod.showPageContextMenu(20, 30, { imageSrc: 'https://example.com/image.png' });

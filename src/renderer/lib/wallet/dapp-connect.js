@@ -5,6 +5,7 @@
  */
 
 import { walletState, registerScreenHider, hideAllSubscreens } from './wallet-state.js';
+import { isSignatureInFlight, signatureInFlightError } from './signature-flight.js';
 import { escapeHtml, isSafeAccount, isSafeDeployed } from './wallet-utils.js';
 import { open as openSidebarPanel, isVisible as isSidebarVisible } from '../sidebar.js';
 import { getActiveWebview, emitAccountsChanged, getPermissionKey } from '../dapp-provider.js';
@@ -215,8 +216,18 @@ function selectDappConnectWallet(index) {
 
 /**
  * Show dApp connect screen
+ *
+ * A permissionless request like eth_requestAccounts must not paint over a
+ * live device confirmation with a fresh Connect/Reject pair — see
+ * signature-flight.js. Refuse the newcomer; the dApp can retry once the
+ * device is done.
  */
 export function showDappConnect(displayUrl, permissionKey, resolve, reject, webview) {
+  if (isSignatureInFlight()) {
+    reject(signatureInFlightError());
+    return;
+  }
+
   dappConnectPending = { permissionKey, resolve, reject, webview };
 
   if (dappConnectSite) {

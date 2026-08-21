@@ -193,6 +193,152 @@
         opacity: 0.55;
       }
 
+      .resolver-list {
+        display: flex;
+        flex-direction: column;
+      }
+
+      .resolver-method {
+        display: grid;
+        grid-template-columns: 24px 28px minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 12px;
+        padding: 16px 18px;
+        border-bottom: 1px solid var(--border);
+        transition:
+          opacity 0.12s,
+          box-shadow 0.12s,
+          background 0.12s;
+      }
+
+      .resolver-method.disabled {
+        opacity: 0.58;
+      }
+
+      .resolver-method.dragging {
+        opacity: 0.35;
+      }
+
+      .resolver-method.drop-before {
+        box-shadow: inset 0 2px var(--accent);
+        background: var(--accent-muted);
+      }
+
+      .resolver-method.drop-after {
+        box-shadow: inset 0 -2px var(--accent);
+        background: var(--accent-muted);
+      }
+
+      .resolver-drag-handle {
+        width: 24px;
+        height: 32px;
+        padding: 0;
+        border: 0;
+        background: transparent;
+        color: var(--text-subtle);
+        font: inherit;
+        font-size: 17px;
+        line-height: 1;
+        cursor: grab;
+      }
+
+      .resolver-drag-handle:hover:not(:disabled),
+      .resolver-drag-handle:focus-visible {
+        color: var(--text);
+      }
+
+      .resolver-drag-handle:active {
+        cursor: grabbing;
+      }
+
+      .resolver-drag-handle:disabled {
+        cursor: default;
+        opacity: 0.25;
+      }
+
+      .resolver-rank {
+        display: grid;
+        place-items: center;
+        width: 24px;
+        height: 24px;
+        border-radius: 50%;
+        background: var(--bg-elev);
+        color: var(--text-muted);
+        font-size: 12px;
+        font-weight: 600;
+      }
+
+      .resolver-method.disabled .resolver-rank {
+        background: transparent;
+        border: 1px dashed var(--border-strong);
+      }
+
+      .resolver-title-line {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+
+      .resolver-badge {
+        display: inline-flex;
+        align-items: center;
+        min-height: 20px;
+        padding: 2px 7px;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        color: var(--text-muted);
+        font-size: 11px;
+        line-height: 1.2;
+      }
+
+      .resolver-badge.ready,
+      .resolver-badge.verified {
+        border-color: rgba(63, 185, 80, 0.45);
+        color: var(--success);
+      }
+
+      .resolver-badge.warning {
+        border-color: rgba(210, 153, 34, 0.5);
+        color: var(--warn);
+      }
+
+      .resolver-controls {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .resolver-config {
+        padding: 14px 18px 14px 94px;
+        border-bottom: 1px solid var(--border);
+        background: rgba(22, 27, 34, 0.6);
+      }
+
+      .resolver-config-line {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+      }
+
+      .resolver-quorum-fields {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--text-muted);
+        font-size: 13px;
+        white-space: nowrap;
+      }
+
+      .resolver-quorum-fields select {
+        min-width: 62px;
+      }
+
+      .resolver-status {
+        margin-top: 10px;
+        padding: 0 18px;
+      }
+
       /* Select */
       select {
         appearance: none;
@@ -536,6 +682,97 @@
         border-color: var(--danger);
       }
 
+      .search-provider-actions {
+      /* Shortcuts */
+      .shortcut-toolbar {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 12px;
+      }
+
+      .shortcut-toolbar input {
+        flex: 1;
+        font-family: inherit;
+      }
+
+      .shortcut-category {
+        margin: 20px 0 8px 0;
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.4px;
+        text-transform: uppercase;
+        color: var(--text-muted);
+      }
+
+      .shortcut-category:first-child {
+        margin-top: 0;
+      }
+
+      .shortcut-kbd {
+        display: inline-block;
+        padding: 3px 8px;
+        background: var(--bg-elev);
+        border: 1px solid var(--border);
+        border-bottom-width: 2px;
+        border-radius: 6px;
+        color: var(--text);
+        font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+        font-size: 12px;
+        line-height: 1.4;
+        white-space: nowrap;
+      }
+
+      .shortcut-controls {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .shortcut-binding {
+        padding: 5px 8px;
+      }
+
+      .shortcut-binding.recording {
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+
+      .shortcut-locked {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--text-subtle);
+        font-size: 12px;
+      }
+
+      .shortcut-note {
+        margin: 6px 0 0 0;
+        font-size: 12px;
+        color: var(--warn);
+      }
+
+      .row.shortcut-conflict {
+        justify-content: space-between;
+        background: rgba(210, 153, 34, 0.08);
+        font-size: 13px;
+      }
+
+      .shortcut-conflict-actions {
+        display: flex;
+        flex-shrink: 0;
+        gap: 8px;
+      }
+
+      .search-provider-form[hidden] {
+        display: none;
+      }
+
+      .search-provider-fields {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+
       /* Light theme */
       @media (prefers-color-scheme: light) {
         :root {
@@ -622,6 +859,22 @@
             </svg>
             Appearance
           </button>
+          <button type="button" class="nav-item" data-target="search">
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <circle cx="11" cy="11" r="8"></circle>
+              <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+            </svg>
+            Search
+          </button>
           <button type="button" class="nav-item" data-target="profile">
             <svg
               width="16"
@@ -669,6 +922,43 @@
               <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
             </svg>
             Startup
+          </button>
+          <button type="button" class="nav-item" data-target="downloads">
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+              <polyline points="7 10 12 15 17 10"></polyline>
+              <line x1="12" y1="15" x2="12" y2="3"></line>
+            </svg>
+            Downloads
+          </button>
+          <button type="button" class="nav-item" data-target="shortcuts">
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <rect x="2" y="6" width="20" height="12" rx="2"></rect>
+              <line x1="6" y1="10" x2="6" y2="10"></line>
+              <line x1="10" y1="10" x2="10" y2="10"></line>
+              <line x1="14" y1="10" x2="14" y2="10"></line>
+              <line x1="18" y1="10" x2="18" y2="10"></line>
+              <line x1="7" y1="14" x2="17" y2="14"></line>
+            </svg>
+            Shortcuts
           </button>
           <button type="button" class="nav-item" data-target="chains">
             <svg
@@ -719,6 +1009,37 @@
               <polygon points="4 14 12 22 20 14 12 18 4 14"></polygon>
             </svg>
             Name Resolution
+          </button>
+          <button type="button" class="nav-item" data-target="adblock">
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+            </svg>
+            Ad Blocking
+          </button>
+          <button type="button" class="nav-item" data-target="permissions">
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M12 2 L4 6 L4 12 C4 17 7.5 21 12 22 C16.5 21 20 17 20 12 L20 6 Z"></path>
+              <path d="m9 12 2 2 4-4"></path>
+            </svg>
+            Site Permissions
           </button>
           <button type="button" class="nav-item" data-target="experimental" id="nav-experimental">
             <svg
@@ -795,6 +1116,74 @@
           </div>
         </section>
 
+        <!-- Search -->
+        <section class="section" id="search">
+          <h2 class="section-title">Search</h2>
+          <div class="card">
+            <div class="row">
+              <div class="row-body">
+                <p class="row-label">Search engine</p>
+                <p class="row-help">Used when the address bar input is not a URL, hash, or name.</p>
+              </div>
+              <div class="row-control">
+                <!-- Values mirror SEARCH_PROVIDERS in renderer/lib/search-utils.js -->
+                <select id="search-provider">
+                  <optgroup label="Built-in">
+                    <option value="google">Google</option>
+                    <option value="duckduckgo">DuckDuckGo</option>
+                    <option value="bing">Bing</option>
+                    <option value="brave">Brave Search</option>
+                    <option value="ecosia">Ecosia</option>
+                    <option value="startpage">Startpage</option>
+                  </optgroup>
+                  <optgroup
+                    id="custom-search-provider-options"
+                    label="Your search engines"
+                    hidden
+                  ></optgroup>
+                </select>
+              </div>
+            </div>
+          </div>
+          <div class="card" style="margin-top: 12px">
+            <div id="custom-search-provider-list"></div>
+            <div class="rpc-block" style="border-top: none">
+              <button type="button" class="btn" id="add-search-provider">
+                + Add a search engine
+              </button>
+            </div>
+            <div class="rpc-block search-provider-form" id="search-provider-form" hidden>
+              <div class="search-provider-fields">
+                <input
+                  type="text"
+                  class="rpc-input"
+                  id="custom-search-provider-name"
+                  maxlength="64"
+                  placeholder="Search engine name"
+                  spellcheck="false"
+                />
+                <input
+                  type="text"
+                  class="rpc-input"
+                  id="custom-search-provider-template"
+                  maxlength="2048"
+                  placeholder="https://search.example/?q={searchTerms}"
+                  spellcheck="false"
+                />
+              </div>
+              <p class="rpc-hint">
+                Put <code>{searchTerms}</code> where the encoded query belongs. HTTPS is required
+                except for localhost.
+              </p>
+              <div style="margin-top: 12px">
+                <button type="button" class="btn" id="save-search-provider">Save</button>
+                <button type="button" class="btn" id="cancel-search-provider">Cancel</button>
+              </div>
+            </div>
+          </div>
+          <p id="search-provider-status" class="rpc-status"></p>
+        </section>
+
         <!-- Profile (current profile identity) -->
         <section class="section" id="profile">
           <h2 class="section-title">Profile</h2>
@@ -860,7 +1249,82 @@
                 </label>
               </div>
             </div>
+            <div class="row" id="myotis-launch-row">
+              <div class="row-body">
+                <p class="row-label">Start Ethereum light client (Myotis)</p>
+                <p class="row-help" id="myotis-launch-help">
+                  Experimental: a fully peer-to-peer Ethereum node — name resolution
+                  verified against the chain itself, no RPC provider involved.
+                  Takes effect on next launch.
+                </p>
+              </div>
+              <div class="row-control">
+                <label class="toggle">
+                  <input type="checkbox" id="start-myotis-at-launch" />
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
+            <div class="row" id="myotis-gnosis-launch-row">
+              <div class="row-body">
+                <p class="row-label">Start Gnosis light client (Myotis)</p>
+                <p class="row-help" id="myotis-gnosis-launch-help">
+                  Starts the independent Gnosis P2P client for verified wallet,
+                  transaction, and dapp reads. Takes effect on next launch.
+                </p>
+              </div>
+              <div class="row-control">
+                <label class="toggle">
+                  <input type="checkbox" id="start-myotis-gnosis-at-launch" />
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
           </div>
+        </section>
+
+        <!-- Downloads -->
+        <section class="section" id="downloads">
+          <h2 class="section-title">Downloads</h2>
+          <div class="card">
+            <div class="row">
+              <div class="row-body">
+                <p class="row-label">Ask where to save each file</p>
+                <p class="row-help">
+                  When off, files are saved to your Downloads folder automatically.
+                </p>
+              </div>
+              <div class="row-control">
+                <label class="toggle">
+                  <input type="checkbox" id="ask-where-to-save" />
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Shortcuts -->
+        <section class="section" id="shortcuts">
+          <h2 class="section-title">Shortcuts</h2>
+          <p class="row-help" style="margin-bottom: 16px">
+            Click a binding, press the new key combination, done — changes apply immediately. Press
+            Esc while recording to cancel.
+          </p>
+          <div class="shortcut-toolbar">
+            <input
+              type="search"
+              id="shortcut-search"
+              class="rpc-input"
+              placeholder="Search shortcuts"
+              spellcheck="false"
+            />
+            <button type="button" class="btn" id="shortcuts-restore-defaults">
+              Restore defaults
+            </button>
+          </div>
+          <div id="shortcuts-view"></div>
+          <p id="shortcuts-status" class="rpc-status"></p>
         </section>
 
         <!-- Chains -->
@@ -879,62 +1343,166 @@
         <section class="section" id="ens">
           <h2 class="section-title">Ethereum Name Resolution</h2>
           <p class="row-help" style="margin-bottom: 16px">
-            How Freedom resolves <code>.eth</code>, <code>.box</code>, <code>.wei</code>,
-            and <code>.gwei</code> names. These records live on Ethereum — manage RPC
-            endpoints under <a href="#chains">Chains settings</a>.
+            How Freedom resolves <code>.eth</code>, <code>.box</code>, <code>.wei</code>, and
+            <code>.gwei</code> names. These records live on Ethereum — manage RPC endpoints under
+            <a href="#chains">Chains settings</a>.
           </p>
-          <div class="card">
+          <h3 class="row-label" style="margin: 0 0 8px 0">Resolution order</h3>
+          <p class="row-help" style="margin: 0 0 12px 0">
+            Freedom tries enabled methods from top to bottom. Drag the handle to change priority;
+            with the handle focused, the arrow keys work too.
+          </p>
+          <div class="card" id="ens-method-card">
+            <div id="ens-method-list" class="resolver-list"></div>
+            <p id="ens-policy-status" class="rpc-status resolver-status"></p>
             <div class="row">
               <div class="row-body">
-                <p class="row-label">Verification method</p>
-                <p class="row-help" id="ens-lens-help">Loading…</p>
-              </div>
-              <div class="row-control">
-                <select id="ens-lens-method">
-                  <option value="colibri">Colibri (cryptographic verification)</option>
-                  <option value="quorum">Public-RPC quorum</option>
-                  <option value="direct">Direct RPC first (public-quorum fallback)</option>
-                </select>
-              </div>
-            </div>
-            <div class="row" id="ens-prover-row">
-              <div class="row-body">
-                <p class="row-label">Colibri prover</p>
+                <p class="row-label">Prefer verified answers</p>
                 <p class="row-help">
-                  Endpoint that produces the verification proofs. Leave empty for the corpus.core
-                  default.
-                </p>
-              </div>
-              <div class="row-control" style="flex: 1; max-width: 300px">
-                <input
-                  type="text"
-                  id="ens-prover-url"
-                  class="rpc-input"
-                  placeholder="https://mainnet1.colibri-proof.tech"
-                  spellcheck="false"
-                />
-              </div>
-            </div>
-            <div class="row">
-              <div class="row-body">
-                <p class="row-label">Block unverified name navigation</p>
-                <p class="row-help">
-                  Show a warning page before navigating to a name that resolved without
-                  verification (for example, when only one RPC answered). Turn off to navigate
-                  straight through with only the amber shield indicator.
+                  Keep an unverified answer as a fallback while later enabled methods try to
+                  produce a verified result.
                 </p>
               </div>
               <div class="row-control">
                 <label class="toggle">
-                  <input type="checkbox" id="block-unverified-ens" />
+                  <input type="checkbox" id="ens-prefer-verified" />
                   <span class="slider"></span>
                 </label>
               </div>
             </div>
           </div>
+
+          <h3 class="row-label" style="margin: 22px 0 8px 0">Safety</h3>
+          <div class="card">
+            <div class="row">
+              <div class="row-body">
+                <p class="row-label">When only an unverified answer is available</p>
+                <p class="row-help">
+                  Unverified answers always keep the amber shield indicator.
+                </p>
+              </div>
+              <div class="row-control">
+                <select id="unverified-ens-action">
+                  <option value="ask">Ask before opening</option>
+                  <option value="open">Open directly</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Site Permissions -->
+        <section class="section" id="permissions">
+          <h2 class="section-title">Site Permissions</h2>
+          <div id="permissions-view"></div>
         </section>
 
         <!-- Experimental -->
+        <!-- Ad Blocking -->
+        <section class="section" id="adblock">
+          <h2 class="section-title">Ad Blocking</h2>
+          <div class="card">
+            <div class="row">
+              <div class="row-body">
+                <p class="row-label">Enable ad blocking</p>
+                <p class="row-help" id="adblock-status">Loading…</p>
+              </div>
+              <div class="row-control">
+                <label class="toggle">
+                  <input type="checkbox" id="adblock-enabled" />
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
+            <div class="row sub" id="adblock-ads-row">
+              <div class="row-body">
+                <p class="row-label">Block ads</p>
+                <p class="row-help" id="adblock-ads-help">EasyList</p>
+              </div>
+              <div class="row-control">
+                <label class="toggle">
+                  <input type="checkbox" id="adblock-ads" />
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
+            <div class="row sub" id="adblock-privacy-row">
+              <div class="row-body">
+                <p class="row-label">Block trackers</p>
+                <p class="row-help" id="adblock-privacy-help">EasyPrivacy</p>
+              </div>
+              <div class="row-control">
+                <label class="toggle">
+                  <input type="checkbox" id="adblock-privacy" />
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
+            <div class="row sub" id="adblock-cookies-row">
+              <div class="row-body">
+                <p class="row-label">Block cookie banners</p>
+                <p class="row-help" id="adblock-cookies-help">Fanboy Cookiemonster</p>
+              </div>
+              <div class="row-control">
+                <label class="toggle">
+                  <input type="checkbox" id="adblock-cookies" />
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
+            <div class="row sub" id="adblock-annoyances-row">
+              <div class="row-body">
+                <p class="row-label">Block other annoyances</p>
+                <p class="row-help" id="adblock-annoyances-help">Fanboy Annoyances</p>
+              </div>
+              <div class="row-control">
+                <label class="toggle">
+                  <input type="checkbox" id="adblock-annoyances" />
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
+            <div class="row sub" id="adblock-autoupdate-row">
+              <div class="row-body">
+                <p class="row-label">Keep filter lists up to date</p>
+                <p class="row-help">Pulls refreshed lists from Swarm automatically.</p>
+              </div>
+              <div class="row-control">
+                <label class="toggle">
+                  <input type="checkbox" id="adblock-autoupdate" />
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
+          </div>
+          <div class="card" style="margin-top: 12px">
+            <div class="row">
+              <div class="row-body">
+                <p class="row-label">Allowlisted sites</p>
+                <p class="row-help">
+                  Ad blocking is turned off on these sites, including their subdomains. Changes
+                  apply to pages loaded afterwards — reload open tabs.
+                </p>
+              </div>
+              <div class="row-control">
+                <input
+                  type="text"
+                  id="adblock-allowlist-input"
+                  class="rpc-input"
+                  spellcheck="false"
+                  placeholder="example.com"
+                />
+                <button type="button" class="btn" id="adblock-allowlist-add">Add</button>
+              </div>
+            </div>
+            <div id="adblock-allowlist-list"></div>
+          </div>
+          <p class="row-help" style="margin-top: 16px">
+            Filter lists © The EasyList authors (https://easylist.to/), redistributed under CC
+            BY-SA.
+          </p>
+        </section>
+
         <section class="section" id="experimental">
           <h2 class="section-title">Experimental</h2>
           <div class="card">
@@ -997,6 +1565,29 @@
                 </label>
               </div>
             </div>
+            <div class="row" data-tor>
+              <div class="row-body">
+                <p class="row-label">Enable Tor (.onion access) <span style="color: var(--text-muted); font-weight: 400">(Beta)</span></p>
+                <p class="row-help">Routes only <code>.onion</code> addresses through the bundled Tor (Arti) client. Clearnet traffic stays direct.</p>
+              </div>
+              <div class="row-control">
+                <label class="toggle">
+                  <input type="checkbox" id="enable-tor-integration" />
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
+            <div class="row sub" id="start-tor-row" data-tor>
+              <div class="row-body">
+                <p class="row-label">Start Tor when Freedom opens</p>
+              </div>
+              <div class="row-control">
+                <label class="toggle">
+                  <input type="checkbox" id="start-tor-at-launch" />
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
           </div>
         </section>
 
@@ -1026,16 +1617,49 @@
 
       const fields = {
         themeMode: $('theme-mode'),
+        searchProvider: $('search-provider'),
         tabsInTitlebar: $('tabs-in-titlebar'),
         startAnt: $('start-ant-at-launch'),
         startIpfs: $('start-ipfs-at-launch'),
-        blockUnverifiedEns: $('block-unverified-ens'),
+        startMyotis: $('start-myotis-at-launch'),
+        startMyotisGnosis: $('start-myotis-gnosis-at-launch'),
+        unverifiedEnsAction: $('unverified-ens-action'),
+        askWhereToSave: $('ask-where-to-save'),
         enableRadicle: $('enable-radicle-integration'),
         startRadicleRow: $('start-radicle-row'),
         startRadicle: $('start-radicle-at-launch'),
+        enableTor: $('enable-tor-integration'),
+        startTorRow: $('start-tor-row'),
+        startTor: $('start-tor-at-launch'),
         enableIdentity: $('enable-identity-wallet'),
         showIpfsProgressStatus: $('show-ipfs-progress-status'),
         autoUpdate: $('auto-update'),
+        adblockEnabled: $('adblock-enabled'),
+        adblockAds: $('adblock-ads'),
+        adblockPrivacy: $('adblock-privacy'),
+        adblockCookies: $('adblock-cookies'),
+        adblockAnnoyances: $('adblock-annoyances'),
+        adblockAutoUpdate: $('adblock-autoupdate'),
+      };
+
+      // id ties together the manifest category, the #adblock-<id>-row
+      // element, and the status field; field is the checkbox input.
+      const ADBLOCK_CATEGORIES = [
+        { id: 'ads', field: fields.adblockAds },
+        { id: 'privacy', field: fields.adblockPrivacy },
+        { id: 'cookies', field: fields.adblockCookies },
+        { id: 'annoyances', field: fields.adblockAnnoyances },
+      ];
+      const searchFields = {
+        customOptions: $('custom-search-provider-options'),
+        customList: $('custom-search-provider-list'),
+        addButton: $('add-search-provider'),
+        form: $('search-provider-form'),
+        name: $('custom-search-provider-name'),
+        template: $('custom-search-provider-template'),
+        saveButton: $('save-search-provider'),
+        cancelButton: $('cancel-search-provider'),
+        status: $('search-provider-status'),
       };
 
       const swarmModeHelp = $('swarm-mode-help');
@@ -1071,6 +1695,235 @@
           /[&<>"]/g,
           (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]
         );
+
+      const DEFAULT_SEARCH_PROVIDER = 'duckduckgo';
+      const SEARCH_TERMS_PLACEHOLDER = '{searchTerms}';
+      const LOOPBACK_SEARCH_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
+      let customSearchProviders = [];
+      let editingSearchProviderId = null;
+      let searchProviderFormDirty = false;
+      // Keep in sync with CUSTOM_SEARCH_PROVIDER_LIMIT in src/main/settings-store.js —
+      // main silently drops anything past it, so the form must refuse first.
+      const CUSTOM_SEARCH_PROVIDER_LIMIT = 50;
+
+      // Latest cross-window provider list. cachedSettings is refreshed by every
+      // settings broadcast even while this form is dirty (applySearchSettings
+      // skips only the re-render), so writes rebase on it rather than on this
+      // window's render snapshot — otherwise a save here would resurrect
+      // entries another settings window removed meanwhile.
+      const latestCustomSearchProviders = () =>
+        (Array.isArray(cachedSettings?.customSearchProviders)
+          ? cachedSettings.customSearchProviders
+          : customSearchProviders
+        ).map((provider) => ({ ...provider }));
+
+      const setSearchProviderStatus = (message, kind) => {
+        searchFields.status.textContent = message || '';
+        searchFields.status.className = 'rpc-status' + (kind ? ' ' + kind : '');
+      };
+
+      const normalizeSearchTemplateInput = (value) => {
+        const trimmed = typeof value === 'string' ? value.trim() : '';
+        if (!trimmed || trimmed.length > 2048) return null;
+        const openSearchCount = trimmed.split(SEARCH_TERMS_PLACEHOLDER).length - 1;
+        const percentCount = trimmed.split('%s').length - 1;
+        if (openSearchCount + percentCount !== 1) return null;
+        const normalized =
+          percentCount === 1 ? trimmed.replace('%s', SEARCH_TERMS_PLACEHOLDER) : trimmed;
+
+        try {
+          const parsed = new URL(normalized.replace(SEARCH_TERMS_PLACEHOLDER, 'test'));
+          const secure = parsed.protocol === 'https:';
+          const loopbackHttp =
+            parsed.protocol === 'http:' && LOOPBACK_SEARCH_HOSTS.has(parsed.hostname);
+          if ((!secure && !loopbackHttp) || parsed.username || parsed.password) return null;
+        } catch {
+          return null;
+        }
+
+        return normalized;
+      };
+
+      const renderSearchProviderOptions = (selectedId) => {
+        searchFields.customOptions.innerHTML = customSearchProviders
+          .map(
+            (provider) =>
+              `<option value="custom:${esc(provider.id)}">${esc(provider.name)}</option>`
+          )
+          .join('');
+        searchFields.customOptions.hidden = customSearchProviders.length === 0;
+
+        const available = [...fields.searchProvider.options].some(
+          (option) => option.value === selectedId
+        );
+        fields.searchProvider.value = available ? selectedId : DEFAULT_SEARCH_PROVIDER;
+      };
+
+      const renderCustomSearchProviders = () => {
+        searchFields.customList.innerHTML = customSearchProviders.length
+          ? customSearchProviders
+              .map(
+                (provider) => `
+                  <div class="row">
+                    <div class="row-body">
+                      <p class="row-label">${esc(provider.name)}</p>
+                      <p class="row-help" style="overflow-wrap: anywhere">
+                        ${esc(provider.searchUrlTemplate)}
+                      </p>
+                    </div>
+                    <div class="search-provider-actions">
+                      <button type="button" class="btn" data-search-action="edit" data-id="${esc(provider.id)}">Edit</button>
+                      <button type="button" class="btn danger" data-search-action="remove" data-id="${esc(provider.id)}">Remove</button>
+                    </div>
+                  </div>`
+              )
+              .join('')
+          : '<div class="profile-node-empty">No custom search engines yet.</div>';
+      };
+
+      const applySearchSettings = (settings) => {
+        if (!settings || searchProviderFormDirty) return;
+        customSearchProviders = Array.isArray(settings.customSearchProviders)
+          ? settings.customSearchProviders.map((provider) => ({ ...provider }))
+          : [];
+        renderSearchProviderOptions(settings.searchProvider || DEFAULT_SEARCH_PROVIDER);
+        renderCustomSearchProviders();
+      };
+
+      const closeSearchProviderForm = () => {
+        editingSearchProviderId = null;
+        searchProviderFormDirty = false;
+        searchFields.name.value = '';
+        searchFields.template.value = '';
+        searchFields.form.hidden = true;
+      };
+
+      const openSearchProviderForm = (provider = null) => {
+        editingSearchProviderId = provider?.id || null;
+        searchProviderFormDirty = false;
+        searchFields.name.value = provider?.name || '';
+        searchFields.template.value = provider?.searchUrlTemplate || '';
+        searchFields.form.hidden = false;
+        searchFields.name.focus();
+      };
+
+      searchFields.addButton.addEventListener('click', () => {
+        setSearchProviderStatus('', null);
+        openSearchProviderForm();
+      });
+
+      searchFields.cancelButton.addEventListener('click', closeSearchProviderForm);
+      for (const input of [searchFields.name, searchFields.template]) {
+        input.addEventListener('input', () => {
+          searchProviderFormDirty = true;
+        });
+      }
+
+      searchFields.saveButton.addEventListener('click', async () => {
+        const name = searchFields.name.value.trim();
+        const searchUrlTemplate = normalizeSearchTemplateInput(searchFields.template.value);
+        if (!name) {
+          setSearchProviderStatus('Enter a search engine name.', 'error');
+          return;
+        }
+        if (!searchUrlTemplate) {
+          setSearchProviderStatus(
+            'Enter a valid HTTPS search URL with one {searchTerms} placeholder.',
+            'error'
+          );
+          return;
+        }
+
+        const baseProviders = latestCustomSearchProviders();
+        if (!editingSearchProviderId && baseProviders.length >= CUSTOM_SEARCH_PROVIDER_LIMIT) {
+          setSearchProviderStatus(
+            `Limit of ${CUSTOM_SEARCH_PROVIDER_LIMIT} custom search engines reached. Remove one first.`,
+            'error'
+          );
+          return;
+        }
+        const id = editingSearchProviderId || crypto.randomUUID();
+        const nextProvider = { id, name, searchUrlTemplate };
+        const nextProviders = editingSearchProviderId
+          ? baseProviders.some((provider) => provider.id === editingSearchProviderId)
+            ? baseProviders.map((provider) =>
+                provider.id === editingSearchProviderId ? nextProvider : provider
+              )
+            : [...baseProviders, nextProvider]
+          : [...baseProviders, nextProvider];
+        const selectedProvider = editingSearchProviderId
+          ? fields.searchProvider.value
+          : `custom:${id}`;
+
+        searchFields.saveButton.disabled = true;
+        const ok = await freedomAPI.saveSettings({
+          searchProvider: selectedProvider,
+          customSearchProviders: nextProviders,
+        });
+        searchFields.saveButton.disabled = false;
+        if (!ok) {
+          setSearchProviderStatus('The search engine could not be saved.', 'error');
+          return;
+        }
+
+        customSearchProviders = nextProviders;
+        renderSearchProviderOptions(selectedProvider);
+        renderCustomSearchProviders();
+        closeSearchProviderForm();
+        setSearchProviderStatus('Search engine saved.', 'success');
+      });
+
+      searchFields.customList.addEventListener('click', async (event) => {
+        const button = event.target.closest('[data-search-action]');
+        if (!button) return;
+        const provider = customSearchProviders.find(
+          (candidate) => candidate.id === button.dataset.id
+        );
+        if (!provider) return;
+
+        if (button.dataset.searchAction === 'edit') {
+          setSearchProviderStatus('', null);
+          openSearchProviderForm(provider);
+          return;
+        }
+
+        if (button.dataset.searchAction !== 'remove') return;
+        if (!confirm(`Remove ${provider.name}?`)) return;
+
+        const nextProviders = latestCustomSearchProviders().filter(
+          (candidate) => candidate.id !== provider.id
+        );
+        const removedProviderId = `custom:${provider.id}`;
+        const selectedProvider =
+          fields.searchProvider.value === removedProviderId
+            ? DEFAULT_SEARCH_PROVIDER
+            : fields.searchProvider.value;
+        const ok = await freedomAPI.saveSettings({
+          searchProvider: selectedProvider,
+          customSearchProviders: nextProviders,
+        });
+        if (!ok) {
+          setSearchProviderStatus('The search engine could not be removed.', 'error');
+          return;
+        }
+
+        customSearchProviders = nextProviders;
+        renderSearchProviderOptions(selectedProvider);
+        renderCustomSearchProviders();
+        if (editingSearchProviderId === provider.id) closeSearchProviderForm();
+        setSearchProviderStatus('Search engine removed.', 'success');
+      });
+
+      fields.searchProvider.addEventListener('change', async () => {
+        const selectedProvider = fields.searchProvider.value || DEFAULT_SEARCH_PROVIDER;
+        const ok = await freedomAPI.saveSettings({ searchProvider: selectedProvider });
+        if (!ok) {
+          renderSearchProviderOptions(cachedSettings?.searchProvider || DEFAULT_SEARCH_PROVIDER);
+          setSearchProviderStatus('The default search engine could not be changed.', 'error');
+          return;
+        }
+        setSearchProviderStatus('Default search engine updated.', 'success');
+      });
 
       // Each sidebar entry maps to one section; the active section is driven
       // by location.hash so the URL is the source of truth and the outer
@@ -1141,17 +1994,78 @@
         external: 'Use external node',
         disabled: 'Disabled',
       };
-      const EDITABLE_NODE_MODES = {
-        bee: ['managed', 'external', 'disabled'],
-        ipfs: ['managed', 'disabled'],
-        radicle: ['managed', 'external', 'disabled'],
-      };
 
-      const SERVICE_LABELS = {
-        bee: 'Swarm',
-        ipfs: 'IPFS',
-        radicle: 'Radicle',
+      const PROFILE_NODE_SERVICES = [
+        {
+          protocol: 'bee',
+          label: 'Swarm',
+          modes: ['managed', 'external', 'disabled'],
+          externalFields: [
+            { key: 'externalApi', label: 'API', placeholder: 'http://127.0.0.1:1633' },
+          ],
+          endpointLines: (config, service) => [
+            config?.externalApi || service?.api || (config?.apiPort ? `http://127.0.0.1:${config.apiPort}` : null),
+          ].filter(Boolean),
+        },
+        {
+          protocol: 'ipfs',
+          label: 'IPFS',
+          modes: ['managed', 'disabled'],
+          endpointLines: () => ['Embedded freedom-ipfs native node'],
+        },
+        {
+          protocol: 'myotis',
+          label: 'Myotis',
+          modes: ['managed', 'disabled'],
+          endpointLines: () => ['Embedded Myotis clients for Ethereum and Gnosis'],
+        },
+        {
+          protocol: 'radicle',
+          label: 'Radicle',
+          modes: ['managed', 'external', 'disabled'],
+          settingKey: 'enableRadicleIntegration',
+          hideOnWindows: true,
+          externalFields: [
+            { key: 'externalHttp', label: 'HTTP', placeholder: 'http://127.0.0.1:8780' },
+          ],
+          endpointLines: (config, service) => [
+            config?.externalHttp || service?.api || (config?.httpPort ? `http://127.0.0.1:${config.httpPort}` : null),
+          ].filter(Boolean),
+        },
+        {
+          protocol: 'tor',
+          label: 'Tor',
+          modes: ['managed', 'external', 'disabled'],
+          settingKey: 'enableTorIntegration',
+          hideOnWindows: true,
+          externalFields: [
+            { key: 'externalSocks', label: 'SOCKS5', placeholder: '127.0.0.1:9150' },
+          ],
+          endpointLines: (config, service) => [
+            config?.externalSocks
+              ? `SOCKS5 ${config.externalSocks}`
+              : service?.socks
+                ? `SOCKS5 ${service.socks}`
+                : config?.socksPort
+                  ? `SOCKS5 127.0.0.1:${config.socksPort}`
+                  : null,
+          ].filter(Boolean),
+        },
+      ];
+
+      const SERVICE_DEFINITIONS = Object.fromEntries(
+        PROFILE_NODE_SERVICES.map((definition) => [definition.protocol, definition])
+      );
+      const SERVICE_LABELS = Object.fromEntries(
+        PROFILE_NODE_SERVICES.map((definition) => [definition.protocol, definition.label])
+      );
+      const isProfileServiceVisible = (definition, settings) => {
+        if (definition.hideOnWindows && isWindows) return false;
+        if (definition.settingKey && settings?.[definition.settingKey] !== true) return false;
+        return true;
       };
+      const visibleProfileServices = (settings) =>
+        PROFILE_NODE_SERVICES.filter((definition) => isProfileServiceVisible(definition, settings));
 
       const statusLabel = (service) => {
         const mode = service?.mode || 'none';
@@ -1162,45 +2076,26 @@
         return mode.charAt(0).toUpperCase() + mode.slice(1);
       };
 
-      const endpointLines = (protocol, config, service) => {
+      const endpointLines = (definition, config, service) => {
         if (config?.mode === 'disabled') return [];
-        if (protocol === 'bee') {
-          return [
-            config?.externalApi ||
-              service?.api ||
-              (config?.apiPort ? `http://127.0.0.1:${config.apiPort}` : null),
-          ].filter(Boolean);
-        }
-        if (protocol === 'ipfs') {
-          return ['Embedded freedom-ipfs native node'];
-        }
-        return [
-          config?.externalHttp ||
-            service?.api ||
-            (config?.httpPort ? `http://127.0.0.1:${config.httpPort}` : null),
-        ].filter(Boolean);
+        return definition.endpointLines?.(config, service) || [];
       };
 
-      const externalFields = (protocol, config) => {
-        if (protocol === 'bee') {
-          return [{ key: 'externalApi', label: 'API', value: config?.externalApi }];
-        }
-        if (protocol === 'ipfs') {
-          return [];
-        }
-        return [{ key: 'externalHttp', label: 'HTTP', value: config?.externalHttp }];
-      };
+      const externalFields = (definition, config) =>
+        (definition.externalFields || []).map((field) => ({
+          ...field,
+          value: config?.[field.key],
+        }));
 
       const renderModeOptions = (protocol, mode) =>
-        (EDITABLE_NODE_MODES[protocol] || EDITABLE_NODE_MODES.bee)
-          .map(
-            (value) =>
-              `<option value="${value}"${mode === value ? ' selected' : ''}>${NODE_MODE_LABELS[value]}</option>`
-          )
-          .join('');
+        (SERVICE_DEFINITIONS[protocol]?.modes || ['managed', 'disabled']).map(
+          (value) =>
+            `<option value="${value}"${mode === value ? ' selected' : ''}>${NODE_MODE_LABELS[value]}</option>`
+        ).join('');
 
       const renderExternalEditor = (protocol, config, mode) => {
-        const fields = externalFields(protocol, config).map(
+        const definition = SERVICE_DEFINITIONS[protocol];
+        const fields = externalFields(definition, config).map(
           (field) => `
             <div class="profile-node-field">
               <label for="profile-${protocol}-${field.key}">${esc(field.label)}</label>
@@ -1210,7 +2105,7 @@
                 data-endpoint-field="${field.key}"
                 type="text"
                 value="${esc(field.value || '')}"
-                placeholder="http://127.0.0.1:${protocol === 'bee' ? '1633' : '8780'}"
+                placeholder="${esc(field.placeholder || '')}"
                 spellcheck="false"
               />
             </div>`
@@ -1240,14 +2135,14 @@
           ?.toggleAttribute('hidden', mode !== 'external');
       };
 
-      const renderProfileNodes = (profile, registry) => {
+      const renderProfileNodes = (profile, registry, settings) => {
         const nodes = profile?.nodes || {};
-        const services = ['bee', 'ipfs', 'radicle'];
-        const rows = services.map((protocol) => {
+        const rows = visibleProfileServices(settings).map((definition) => {
+          const protocol = definition.protocol;
           const config = nodes[protocol] || {};
           const service = registry?.[protocol] || {};
           const mode = config.mode || 'managed';
-          const lines = endpointLines(protocol, config, service);
+          const lines = endpointLines(definition, config, service);
           const details = lines.length
             ? lines.map((line) => `<div class="profile-node-detail">${esc(line)}</div>`).join('')
             : '<div class="profile-node-detail">No endpoint</div>';
@@ -1286,9 +2181,10 @@
         }
 
         try {
-          const [profile, registry] = await Promise.all([
+          const [profile, registry, settings] = await Promise.all([
             freedomAPI.getActiveProfile?.(),
             freedomAPI.getServiceRegistry().catch(() => null),
+            freedomAPI.getSettings?.().catch(() => null),
           ]);
           activeProfileId = profile?.id || null;
           const label = profile?.displayName || profile?.id || '';
@@ -1296,7 +2192,7 @@
             profileFields.nameInput.value = label;
             savedProfileName = label;
           }
-          renderProfileNodes(profile, registry);
+          renderProfileNodes(profile, registry, settings);
         } catch {
           profileFields.nodesCard.innerHTML =
             '<div class="profile-node-empty">Profile data unavailable</div>';
@@ -1421,12 +2317,23 @@
         tabsInTitlebar: fields.tabsInTitlebar.checked,
         startAntAtLaunch: fields.startAnt.checked,
         startIpfsAtLaunch: fields.startIpfs.checked,
+        startMyotisAtLaunch: fields.startMyotis.checked,
+        startMyotisGnosisAtLaunch: fields.startMyotisGnosis.checked,
+        askWhereToSave: fields.askWhereToSave.checked,
         enableRadicleIntegration: isWindows ? false : fields.enableRadicle.checked,
         startRadicleAtLaunch: isWindows ? false : fields.startRadicle.checked,
+        enableTorIntegration: isWindows ? false : fields.enableTor.checked,
+        startTorAtLaunch: isWindows ? false : fields.startTor.checked,
         enableIdentityWallet: fields.enableIdentity.checked,
         showIpfsProgressStatus: fields.showIpfsProgressStatus.checked,
         autoUpdate: fields.autoUpdate.checked,
-        blockUnverifiedEns: fields.blockUnverifiedEns.checked,
+        blockUnverifiedEns: fields.unverifiedEnsAction.value !== 'open',
+        adblockEnabled: fields.adblockEnabled.checked,
+        adblockAds: fields.adblockAds.checked,
+        adblockPrivacy: fields.adblockPrivacy.checked,
+        adblockCookies: fields.adblockCookies.checked,
+        adblockAnnoyances: fields.adblockAnnoyances.checked,
+        adblockAutoUpdate: fields.adblockAutoUpdate.checked,
       });
 
       const applyFormState = (settings) => {
@@ -1435,13 +2342,111 @@
         fields.tabsInTitlebar.checked = settings.tabsInTitlebar === true;
         fields.startAnt.checked = settings.startAntAtLaunch !== false;
         fields.startIpfs.checked = settings.startIpfsAtLaunch !== false;
+        fields.startMyotis.checked = settings.startMyotisAtLaunch === true;
+        fields.startMyotisGnosis.checked = settings.startMyotisGnosisAtLaunch === true;
+        fields.askWhereToSave.checked = settings.askWhereToSave === true;
         fields.enableRadicle.checked = settings.enableRadicleIntegration === true;
         fields.startRadicle.checked = settings.startRadicleAtLaunch === true;
+        fields.enableTor.checked = settings.enableTorIntegration === true;
+        fields.startTor.checked = settings.startTorAtLaunch === true;
         fields.enableIdentity.checked = settings.enableIdentityWallet === true;
         fields.showIpfsProgressStatus.checked = settings.showIpfsProgressStatus === true;
         fields.autoUpdate.checked = settings.autoUpdate !== false;
-        fields.blockUnverifiedEns.checked = settings.blockUnverifiedEns !== false;
+        fields.unverifiedEnsAction.value = settings.blockUnverifiedEns === false ? 'open' : 'ask';
+        fields.adblockEnabled.checked = settings.adblockEnabled !== false;
+        fields.adblockAds.checked = settings.adblockAds !== false;
+        fields.adblockPrivacy.checked = settings.adblockPrivacy !== false;
+        fields.adblockCookies.checked = settings.adblockCookies === true;
+        fields.adblockAnnoyances.checked = settings.adblockAnnoyances === true;
+        fields.adblockAutoUpdate.checked = settings.adblockAutoUpdate !== false;
         setFieldEnabled(fields.enableRadicle, fields.startRadicleRow, fields.startRadicle);
+        setFieldEnabled(fields.enableTor, fields.startTorRow, fields.startTor);
+        applyAdblockGating();
+      };
+
+      const applyAdblockGating = () => {
+        for (const { id, field } of ADBLOCK_CATEGORIES) {
+          setFieldEnabled(fields.adblockEnabled, $(`adblock-${id}-row`), field);
+        }
+        setFieldEnabled(
+          fields.adblockEnabled,
+          $('adblock-autoupdate-row'),
+          fields.adblockAutoUpdate
+        );
+      };
+
+      // Rule counts / list version come from the main-process engine, not
+      // settings. The engine rebuilds asynchronously after a toggle, so
+      // refresh once more shortly after a save.
+      const renderAdblockStatus = async () => {
+        try {
+          const status = await freedomAPI.adblockGetStatus();
+          $('adblock-status').textContent = status.engineReady
+            ? `Filter lists ${status.listsVersion} · engine active`
+            : status.listsVersion
+              ? `Filter lists ${status.listsVersion} · engine preparing…`
+              : 'No filter lists bundled — blocking is inactive.';
+          for (const { id } of ADBLOCK_CATEGORIES) {
+            const meta = status.categories?.[id];
+            if (meta?.ruleCount) {
+              $(`adblock-${id}-help`).textContent =
+                `${meta.title} · ${meta.ruleCount.toLocaleString()} rules`;
+            }
+          }
+        } catch {
+          $('adblock-status').textContent = 'Status unavailable.';
+        }
+      };
+      let adblockStatusTimer = null;
+      const refreshAdblockStatusSoon = () => {
+        clearTimeout(adblockStatusTimer);
+        adblockStatusTimer = setTimeout(renderAdblockStatus, 1500);
+      };
+
+      const renderAdblockAllowlist = async () => {
+        const list = $('adblock-allowlist-list');
+        let hosts = [];
+        try {
+          hosts = await freedomAPI.adblockGetAllowlist();
+        } catch {
+          return;
+        }
+        list.textContent = '';
+        for (const host of hosts) {
+          const row = document.createElement('div');
+          row.className = 'row';
+          const body = document.createElement('div');
+          body.className = 'row-body';
+          const label = document.createElement('p');
+          label.className = 'row-label';
+          label.textContent = host;
+          body.appendChild(label);
+          const control = document.createElement('div');
+          control.className = 'row-control';
+          const removeBtn = document.createElement('button');
+          removeBtn.type = 'button';
+          removeBtn.className = 'btn danger';
+          removeBtn.textContent = 'Remove';
+          removeBtn.addEventListener('click', async () => {
+            await freedomAPI.adblockRemoveAllowlistHost(host).catch(() => {});
+            renderAdblockAllowlist();
+          });
+          control.appendChild(removeBtn);
+          row.appendChild(body);
+          row.appendChild(control);
+          list.appendChild(row);
+        }
+      };
+
+      const addAllowlistHostFromInput = async () => {
+        const input = $('adblock-allowlist-input');
+        const host = input.value.trim();
+        if (!host) return;
+        const ok = await freedomAPI.adblockAddAllowlistHost(host).catch(() => false);
+        if (ok) {
+          input.value = '';
+          renderAdblockAllowlist();
+        }
       };
 
       let cachedSettings = null;
@@ -1542,15 +2547,42 @@
       $('tabs-titlebar-restart').addEventListener('click', () => freedomAPI.relaunchApp());
       fields.startAnt.addEventListener('change', save);
       fields.startIpfs.addEventListener('change', save);
+      fields.startMyotis.addEventListener('change', save);
+      fields.startMyotisGnosis.addEventListener('change', save);
+      fields.askWhereToSave.addEventListener('change', save);
       fields.enableRadicle.addEventListener('change', () => {
         setFieldEnabled(fields.enableRadicle, fields.startRadicleRow, fields.startRadicle);
         save();
       });
       fields.startRadicle.addEventListener('change', save);
+      fields.enableTor.addEventListener('change', () => {
+        setFieldEnabled(fields.enableTor, fields.startTorRow, fields.startTor);
+        // Mirror Radicle: enabling the integration only reveals the controls —
+        // it does not start Tor. Starting is via the node-status menu toggle or
+        // "Start Tor when Freedom opens". Disabling stops it (settings-ui.js).
+        save();
+      });
+      fields.startTor.addEventListener('change', save);
       fields.enableIdentity.addEventListener('change', save);
       fields.showIpfsProgressStatus.addEventListener('change', save);
       fields.autoUpdate.addEventListener('change', save);
-      fields.blockUnverifiedEns.addEventListener('change', save);
+      fields.unverifiedEnsAction.addEventListener('change', save);
+      fields.adblockEnabled.addEventListener('change', () => {
+        applyAdblockGating();
+        save();
+        refreshAdblockStatusSoon();
+      });
+      for (const { field } of ADBLOCK_CATEGORIES) {
+        field.addEventListener('change', () => {
+          save();
+          refreshAdblockStatusSoon();
+        });
+      }
+      fields.adblockAutoUpdate.addEventListener('change', save);
+      $('adblock-allowlist-add').addEventListener('click', addAllowlistHostFromInput);
+      $('adblock-allowlist-input').addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') addAllowlistHostFromInput();
+      });
 
       const formStateMatches = (settings) => {
         const form = currentFormState();
@@ -1565,6 +2597,7 @@
       freedomAPI.onSettingsUpdated?.((settings) => {
         if (!settings) return;
         cachedSettings = settings;
+        applySearchSettings(settings);
         if (!formStateMatches(settings)) {
           applyFormState(settings);
         }
@@ -1576,10 +2609,14 @@
           const platform = await freedomAPI.getPlatform();
           isWindows = platform === 'win32';
           if (isWindows) {
-            // No official Radicle binaries for Windows yet.
+            // No official Radicle binaries for Windows yet; Arti is bundled
+            // for macOS/Linux only (built host-only from crates.io).
             document
-              .querySelectorAll('[data-radicle]')
+              .querySelectorAll('[data-radicle], [data-tor]')
               .forEach((el) => (el.style.display = 'none'));
+            if (resolveSection(location.hash) === 'profiles') {
+              refreshProfileSection(true);
+            }
           }
           if (platform !== 'linux') {
             // Frameless titlebar is a Linux-only option.
@@ -1598,11 +2635,292 @@
           ]);
           cachedSettings = settings;
           cachedRegistry = registry;
+          applySearchSettings(settings);
           applyFormState(settings);
           renderSwarmModeRow(settings, registry);
         } catch {
           console.error('[settings] failed to load settings');
         }
+
+        renderAdblockStatus();
+        renderAdblockAllowlist();
+      })();
+
+      // ── Shortcuts settings page ─────────────────────────────────────
+      // Render-only controller: the registry state, validation, conflict
+      // detection, and persistence all live in the main process behind
+      // freedomAPI.getShortcuts / previewShortcutBinding /
+      // setShortcutOverride / resetShortcut(s). This page captures
+      // keydowns in recording mode and paints whatever main answers.
+      (() => {
+        const view = $('shortcuts-view');
+        const searchInput = $('shortcut-search');
+        const restoreBtn = $('shortcuts-restore-defaults');
+        const statusEl = $('shortcuts-status');
+        if (!view) return;
+
+        let entries = [];
+        let query = '';
+        let recordingId = null; // shortcut currently capturing a new combo
+        let conflictState = null; // { id, accelerator, formatted, conflict }
+        let rowNotice = null; // { id, message } transient validation notice
+        let recordingHandler = null;
+
+        const REASON_MESSAGES = {
+          reserved: 'That combination is reserved and cannot be assigned.',
+          'needs-modifier':
+            'Combine that key with Ctrl, Alt or Cmd. Only function keys work on their own.',
+          invalid: 'That key cannot be used as a shortcut.',
+          'not-editable': 'This shortcut cannot be changed.',
+          conflict: 'That combination is already in use.',
+          'save-failed': 'Could not save the shortcut. Try again.',
+        };
+
+        const setStatus = (message, kind) => {
+          if (!statusEl) return;
+          statusEl.textContent = message || '';
+          statusEl.className = 'rpc-status' + (kind ? ' ' + kind : '');
+        };
+
+        const matchesQuery = (entry) => {
+          const q = query.trim().toLowerCase();
+          if (!q) return true;
+          return [entry.description, entry.category, entry.formatted, entry.accelerator]
+            .concat(entry.aliases)
+            .join(' ')
+            .toLowerCase()
+            .includes(q);
+        };
+
+        const kbd = (text) => `<kbd class="shortcut-kbd">${esc(text)}</kbd>`;
+
+        const renderConflict = (state) => {
+          const { conflict } = state;
+          const message = conflict.fixed
+            ? `${esc(state.formatted)} is already used by “${esc(conflict.description)}” and cannot be reassigned. Pick a different combination.`
+            : `${esc(state.formatted)} is already used by “${esc(conflict.description)}”. Swap the bindings so “${esc(conflict.description)}” becomes ${kbd(conflict.swapFormatted)}?`;
+          return `
+            <div class="row shortcut-conflict" data-shortcut-id="${esc(state.id)}">
+              <div class="row-body"><p class="row-label">${message}</p></div>
+              <span class="shortcut-conflict-actions">
+                ${conflict.fixed ? '' : '<button type="button" class="btn" data-action="swap">Swap</button>'}
+                <button type="button" class="btn" data-action="cancel-conflict">Cancel</button>
+              </span>
+            </div>`;
+        };
+
+        const renderRow = (entry) => {
+          const isRecording = recordingId === entry.id;
+          const notice = rowNotice?.id === entry.id ? rowNotice.message : null;
+          const aliasLine = entry.aliases.length
+            ? `<p class="row-help">Also ${entry.aliases.map(kbd).join(' ')}</p>`
+            : '';
+          const warnLine =
+            isRecording && entry.warnOnEdit
+              ? '<p class="shortcut-note">Heads up: this is a common close gesture across apps — remapping it changes deep muscle memory.</p>'
+              : '';
+          const control = !entry.editable
+            ? `<span class="shortcut-locked">${kbd(entry.formatted)} Locked</span>`
+            : `<button type="button" class="btn shortcut-binding${isRecording ? ' recording' : ''}" data-action="record">
+                 ${isRecording ? 'Press new shortcut… (Esc cancels)' : kbd(entry.formatted)}
+               </button>`;
+          const resetBtn =
+            entry.editable && entry.isOverridden && !isRecording
+              ? `<button type="button" class="btn" data-action="reset" title="Reset to ${esc(entry.defaultFormatted)}">Reset</button>`
+              : '';
+          const conflictRow =
+            conflictState && conflictState.id === entry.id ? renderConflict(conflictState) : '';
+          return `
+            <div class="row" data-shortcut-id="${esc(entry.id)}">
+              <div class="row-body">
+                <p class="row-label">${esc(entry.description)}</p>
+                ${aliasLine}
+                ${warnLine}
+                ${notice ? `<p class="shortcut-note">${esc(notice)}</p>` : ''}
+              </div>
+              <div class="row-control shortcut-controls">${resetBtn}${control}</div>
+            </div>
+            ${conflictRow}`;
+        };
+
+        const render = () => {
+          const visible = entries.filter(matchesQuery);
+          if (!visible.length) {
+            view.innerHTML =
+              '<div class="card"><div class="profile-node-empty">No shortcuts match your search.</div></div>';
+            return;
+          }
+          const categories = [];
+          for (const entry of visible) {
+            if (!categories.includes(entry.category)) categories.push(entry.category);
+          }
+          view.innerHTML = categories
+            .map(
+              (category) => `
+                <h3 class="shortcut-category">${esc(category)}</h3>
+                <div class="card">
+                  ${visible
+                    .filter((entry) => entry.category === category)
+                    .map(renderRow)
+                    .join('')}
+                </div>`
+            )
+            .join('');
+        };
+
+        const load = async () => {
+          try {
+            const state = await freedomAPI.getShortcuts();
+            entries = (state?.entries || []).filter((entry) => !entry.hidden);
+          } catch {
+            entries = [];
+            setStatus('Could not load shortcuts.', 'error');
+          }
+          render();
+        };
+
+        const stopRecording = () => {
+          if (recordingHandler) {
+            window.removeEventListener('keydown', recordingHandler, true);
+            recordingHandler = null;
+          }
+          recordingId = null;
+        };
+
+        const applyBinding = async (id, accelerator, swapWithConflict = false) => {
+          let result;
+          try {
+            result = await freedomAPI.setShortcutOverride({ id, accelerator, swapWithConflict });
+          } catch {
+            result = { ok: false, reason: 'save-failed' };
+          }
+          if (!result?.ok) {
+            rowNotice = { id, message: REASON_MESSAGES[result?.reason] || REASON_MESSAGES.invalid };
+          } else {
+            setStatus('Shortcut updated.', 'success');
+          }
+          await load();
+        };
+
+        const startRecording = (id) => {
+          const entry = entries.find((item) => item.id === id);
+          if (!entry?.editable || recordingId === id) return;
+          stopRecording();
+          conflictState = null;
+          rowNotice = null;
+          setStatus('');
+          recordingId = id;
+          render();
+
+          recordingHandler = async (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (event.key === 'Escape') {
+              stopRecording();
+              render();
+              return;
+            }
+            const captured = {
+              key: event.key,
+              code: event.code,
+              ctrlKey: event.ctrlKey,
+              altKey: event.altKey,
+              shiftKey: event.shiftKey,
+              metaKey: event.metaKey,
+            };
+            let preview;
+            try {
+              preview = await freedomAPI.previewShortcutBinding({ id, event: captured });
+            } catch {
+              preview = { ok: false, reason: 'invalid' };
+            }
+            // Only modifiers held so far — keep listening.
+            if (!preview.ok && preview.reason === 'incomplete') return;
+
+            stopRecording();
+            if (!preview.ok) {
+              rowNotice = {
+                id,
+                message: REASON_MESSAGES[preview.reason] || REASON_MESSAGES.invalid,
+              };
+              render();
+              return;
+            }
+            if (preview.conflict) {
+              conflictState = {
+                id,
+                accelerator: preview.accelerator,
+                formatted: preview.formatted,
+                conflict: preview.conflict,
+              };
+              render();
+              return;
+            }
+            await applyBinding(id, preview.accelerator);
+          };
+          window.addEventListener('keydown', recordingHandler, true);
+        };
+
+        view.addEventListener('click', async (event) => {
+          const button = event.target.closest('[data-action]');
+          if (!button) return;
+          const id = event.target.closest('[data-shortcut-id]')?.dataset.shortcutId;
+          if (!id) return;
+
+          switch (button.dataset.action) {
+            case 'record':
+              startRecording(id);
+              break;
+            case 'reset': {
+              stopRecording();
+              conflictState = null;
+              rowNotice = null;
+              const result = await freedomAPI.resetShortcut(id).catch(() => null);
+              setStatus(
+                result?.ok ? 'Shortcut reset to default.' : 'Could not reset.',
+                result?.ok ? 'success' : 'error'
+              );
+              await load();
+              break;
+            }
+            case 'swap': {
+              const pending = conflictState;
+              conflictState = null;
+              if (pending) await applyBinding(pending.id, pending.accelerator, true);
+              break;
+            }
+            case 'cancel-conflict':
+              conflictState = null;
+              render();
+              break;
+          }
+        });
+
+        searchInput?.addEventListener('input', () => {
+          query = searchInput.value || '';
+          render();
+        });
+
+        restoreBtn?.addEventListener('click', async () => {
+          stopRecording();
+          conflictState = null;
+          rowNotice = null;
+          const result = await freedomAPI.resetAllShortcuts().catch(() => null);
+          setStatus(
+            result?.ok ? 'All shortcuts restored to defaults.' : 'Could not restore defaults.',
+            result?.ok ? 'success' : 'error'
+          );
+          await load();
+        });
+
+        // Keep a second open settings tab (or a remap made elsewhere) in
+        // sync — but never clobber an in-progress recording or conflict
+        // prompt.
+        freedomAPI.onSettingsUpdated?.(() => {
+          if (!recordingId && !conflictState) load();
+        });
+
+        load();
       })();
 
       // ── Chains settings page ────────────────────────────────────────
@@ -1625,7 +2943,9 @@
           );
 
         let config = { networks: {}, sources: [] };
+        let myotisStatuses = {};
         let endpointForm = null; // null | { mode, id, url } — chain is the open detail; role is always rpc
+        let endpointSaveInFlight = false; // guards against a double-click adding two 'user-<Date.now()>' sources
         let addState = null; // null | { mode: 'search'|'manual', results, picked } — the add-chain flow
 
         const setStatus = (msg, kind) => {
@@ -1726,31 +3046,36 @@
           <div class="card" id="chain-search-results" style="margin-top: 12px">${searchResultsHtml()}</div>
           ${cardButton('Enter a chain manually', 'add-manual')}`;
 
-        const manualHtml = () => `
-          <div class="card">
-            <div class="rpc-block" style="border-top: none">
-              <p class="row-help" style="margin: 0 0 8px">
-                For a chain not in the catalogue — your own devnet or a private network.
-              </p>
-              <div class="rpc-row" style="margin-bottom: 8px">
-                <input type="text" class="rpc-input" id="man-chainid" placeholder="Chain ID (e.g. 8453)" spellcheck="false" />
+        const manualHtml = () => {
+          const f = addState.manual || {};
+          const decimals = f.decimalsRaw ?? '18';
+          return `
+            <div class="card">
+              <div class="rpc-block" style="border-top: none">
+                <p class="row-help" style="margin: 0 0 8px">
+                  For a chain not in the catalogue — your own devnet or a private network.
+                </p>
+                <div class="rpc-row" style="margin-bottom: 8px">
+                  <input type="text" class="rpc-input" id="man-chainid" placeholder="Chain ID (e.g. 8453)" spellcheck="false" value="${esc(f.chainId || '')}" />
+                </div>
+                <div class="rpc-row" style="margin-bottom: 8px">
+                  <input type="text" class="rpc-input" id="man-name" placeholder="Chain name" spellcheck="false" value="${esc(f.name || '')}" />
+                </div>
+                <div class="rpc-row" style="margin-bottom: 8px">
+                  <input type="text" class="rpc-input" id="man-symbol" placeholder="Currency symbol (e.g. ETH)" spellcheck="false" value="${esc(f.symbol || '')}" />
+                </div>
+                <div class="rpc-row" style="margin-bottom: 8px">
+                  <input type="number" class="rpc-input" id="man-decimals" placeholder="Currency decimals (e.g. 18)" value="${esc(decimals)}" min="0" step="1" />
+                </div>
+                <div class="rpc-row" style="margin-bottom: 8px">
+                  <input type="text" class="rpc-input" id="man-rpc" placeholder="RPC URL (https://… or http://localhost:8545)" spellcheck="false" value="${esc(f.rpc || '')}" />
+                </div>
+                ${addState.error ? `<p class="rpc-status error" style="margin-bottom: 8px">${esc(addState.error)}</p>` : ''}
+                <button type="button" class="btn" data-action="submit-manual">Add chain</button>
+                <button type="button" class="btn" data-action="add-search" style="margin-left: 8px">Back to search</button>
               </div>
-              <div class="rpc-row" style="margin-bottom: 8px">
-                <input type="text" class="rpc-input" id="man-name" placeholder="Chain name" spellcheck="false" />
-              </div>
-              <div class="rpc-row" style="margin-bottom: 8px">
-                <input type="text" class="rpc-input" id="man-symbol" placeholder="Currency symbol (e.g. ETH)" spellcheck="false" />
-              </div>
-              <div class="rpc-row" style="margin-bottom: 8px">
-                <input type="number" class="rpc-input" id="man-decimals" placeholder="Currency decimals (e.g. 18)" value="18" min="0" step="1" />
-              </div>
-              <div class="rpc-row" style="margin-bottom: 8px">
-                <input type="text" class="rpc-input" id="man-rpc" placeholder="RPC URL (https://…)" spellcheck="false" />
-              </div>
-              <button type="button" class="btn" data-action="submit-manual">Add chain</button>
-              <button type="button" class="btn" data-action="add-search" style="margin-left: 8px">Back to search</button>
-            </div>
-          </div>`;
+            </div>`;
+        };
 
         const renderAddConfirm = () => {
           const c = addState.picked;
@@ -1774,6 +3099,7 @@
             <h2 class="section-title">${esc(c.name)}</h2>
             <p class="row-help" style="margin-bottom: 16px">Review and confirm.</p>
             <div class="card">${rowsHtml}</div>
+            ${addState.error ? `<p class="rpc-status error" style="margin: 8px 0 0">${esc(addState.error)}</p>` : ''}
             ${cardButton('Add chain', 'confirm-add')}`;
         };
 
@@ -1839,19 +3165,90 @@
               <div class="rpc-block" style="border-top: none">
                 <p class="row-label" style="margin-bottom: 8px">${f.mode === 'edit' ? 'Edit endpoint' : 'Add endpoint'}</p>
                 <div class="rpc-row" style="margin-bottom: 8px">
-                  <input type="text" class="rpc-input" id="ep-url" placeholder="https://..." spellcheck="false" value="${esc(f.url)}" />
+                  <input type="text" class="rpc-input" id="ep-url" placeholder="https://... or http://localhost:8545" spellcheck="false" value="${esc(f.url)}" />
                 </div>
+                ${f.error ? `<p class="rpc-status error" style="margin-bottom: 8px">${esc(f.error)}</p>` : ''}
                 <button type="button" class="btn" data-action="save-endpoint">Save</button>
                 <button type="button" class="btn" data-action="cancel-endpoint" style="margin-left: 8px">Cancel</button>
               </div>
             </div>`;
         };
 
-        // --- detail: one chain's RPC endpoints -----------------------
-        // Three priority tiers, each its own section: your own RPCs, then
-        // keyed commercial providers, then builtin public RPCs — the
-        // order getEndpoints resolves them in. Verification strategy is
-        // not shown — only ENS (mainnet) consumes it, via the ENS lens.
+        const accessMeta = {
+          myotis: {
+            label: 'Myotis P2P light client',
+            help: 'Verified locally against the chain; no RPC endpoint involved.',
+          },
+          colibri: {
+            label: 'Colibri cryptographic verification',
+            help: 'Verifies prover responses against the chain consensus.',
+          },
+          quorum: {
+            label: 'RPC quorum',
+            help: 'Requires matching responses from independently configured RPC endpoints.',
+          },
+          direct: {
+            label: 'Direct RPC',
+            help: 'Compatibility fallback using the first working configured endpoint.',
+          },
+        };
+
+        const sourceStatus = (source, cid) => {
+          if (source === 'myotis') {
+            if (cid !== '1' && cid !== '100') return 'Unsupported';
+            const status = myotisStatuses[cid];
+            if (!status) return 'Status unknown';
+            if (status.state === 'ready') return 'Ready';
+            if (status.state === 'syncing') return 'Syncing';
+            if (status.state === 'off') return 'Off';
+            if (status.state === 'disabled') return 'Profile disabled';
+            return 'Unavailable';
+          }
+          if (source === 'colibri') {
+            return config.sources.some(
+              (entry) => entry.role === 'prover' && entry.coverage?.[cid] && !entry.removed
+            )
+              ? 'Available'
+              : 'No prover';
+          }
+          const count = config.sources.filter(
+            (entry) =>
+              entry.role === 'rpc' &&
+              entry.coverage?.[cid] &&
+              !entry.removed &&
+              (!entry.keyed || entry.hasKey)
+          ).length;
+          if (source === 'quorum') {
+            const quorum = config.networks[cid]?.quorum || { k: 3, m: 2 };
+            return `${quorum.m || 2} of ${quorum.k || 3} · ${count} available`;
+          }
+          return count ? `${count} available` : 'No endpoint';
+        };
+
+        const accessRows = (cid, kind, order) =>
+          order
+            .map((source, index) => {
+              const meta = accessMeta[source];
+              if (!meta) return '';
+              return `<div class="resolver-method" draggable="true" tabindex="0"
+                    data-access-kind="${kind}" data-access-source="${source}">
+                  <span class="resolver-drag-handle" title="Drag to reorder" aria-hidden="true">⠿</span>
+                  <span class="resolver-rank">${index + 1}</span>
+                  <div class="row-body">
+                    <div class="resolver-title-line">
+                      <p class="row-label">${meta.label}</p>
+                      <span class="resolver-badge">${esc(sourceStatus(source, cid))}</span>
+                    </div>
+                    <p class="row-help">${meta.help}</p>
+                  </div>
+                </div>`;
+            })
+            .join('');
+
+        // --- detail: one chain's access policy + endpoints ------------
+        // Verified/local sources are ordered first; RPC inventory remains
+        // grouped into the same custom/commercial/public priority tiers that
+        // network-registry resolves for quorum and direct fallbacks.
         const renderDetail = (cid) => {
           const isCustom = config.networks[cid]?.builtin === false;
           const rpcs = config.sources.filter(
@@ -1864,6 +3261,30 @@
           // primary = the first usable endpoint walking the tier order.
           const usable = (s) => !s.removed && (s.keyed ? !!s.hasKey : true);
           const primary = [...mine, ...commercial, ...publicRpcs].find(usable);
+          const supportsVerifiedSources = cid === '1' || cid === '100';
+          const defaultReadOrder = supportsVerifiedSources
+            ? ['myotis', 'colibri', 'quorum', 'direct']
+            : ['colibri', 'quorum', 'direct'];
+          const defaultBroadcastOrder = supportsVerifiedSources
+            ? ['myotis', 'direct']
+            : ['direct'];
+          const readOrder = config.networks[cid]?.access?.readOrder || defaultReadOrder;
+          const broadcastOrder =
+            config.networks[cid]?.access?.broadcastOrder || defaultBroadcastOrder;
+          const proverSource = config.sources.find(
+            (entry) => entry.role === 'prover' && entry.coverage?.[cid] && !entry.removed
+          );
+          const proverConfig = supportsVerifiedSources
+            ? `<div class="card" style="margin-top: 12px">
+                <div class="rpc-block" style="border-top: none">
+                  <p class="row-label" style="margin-bottom: 8px">Colibri prover endpoint</p>
+                  <input class="rpc-input" data-chain-prover="${esc(cid)}"
+                    data-source-id="${esc(proverSource?.id || 'colibri-corpus')}"
+                    value="${esc(proverSource?.coverage?.[cid] || '')}"
+                    placeholder="https://…" spellcheck="false" />
+                </div>
+              </div>`
+            : '';
 
           const section = (title, help, list, emptyHint) => `
             <h2 class="section-title" style="margin-top: 20px">${title}</h2>
@@ -1880,10 +3301,19 @@
             <p class="row-help" style="margin-bottom: 16px">chain ${esc(cid)}${isCustom ? ' · custom chain' : ''}</p>
 
             <p class="row-help" style="margin-bottom: 4px">
-              Freedom reaches this chain through these endpoints — for
-              wallet balances, transactions, and dapp requests. They are
-              tried in priority order; the first working one is primary.
+              Freedom routes wallet, transaction, and compatible dapp requests
+              through the sources below. Unsupported methods automatically continue
+              to the next source.
             </p>
+
+            <h2 class="section-title" style="margin-top: 20px">Read and verification order</h2>
+            <p class="row-help" style="margin-bottom: 12px">Drag sources into priority order.</p>
+            <div class="card">${accessRows(cid, 'read', readOrder)}</div>
+            ${proverConfig}
+
+            <h2 class="section-title" style="margin-top: 20px">Transaction broadcast</h2>
+            <p class="row-help" style="margin-bottom: 12px">Signed transactions use P2P first, with RPC as the compatibility fallback.</p>
+            <div class="card">${accessRows(cid, 'broadcast', broadcastOrder)}</div>
 
             ${section('Your RPCs', 'Endpoints you added — tried first.', mine, 'No custom RPCs yet.')}
             ${cardButton('+ Add a custom RPC', 'add-endpoint')}
@@ -1926,12 +3356,17 @@
 
         const reload = async () => {
           try {
-            const res = await freedomAPI.getNetworkConfig();
+            const [res, ethereumMyotis, gnosisMyotis] = await Promise.all([
+              freedomAPI.getNetworkConfig(),
+              freedomAPI.getMyotisStatus(1).catch(() => null),
+              freedomAPI.getMyotisStatus(100).catch(() => null),
+            ]);
             if (!res || !res.success) {
               setStatus('Failed to load network configuration', 'error');
               return;
             }
             config = { networks: res.networks || {}, sources: res.sources || [] };
+            myotisStatuses = { 1: ethereumMyotis, 100: gnosisMyotis };
             render();
           } catch {
             setStatus('Failed to load network configuration', 'error');
@@ -1957,6 +3392,34 @@
         // the search input keeps focus while the user types.
         let searchTimer = null;
         let searchSeq = 0;
+        let draggedAccess = null;
+
+        const reorderAccess = async (kind, source, target, direction = 0) => {
+          const cid = openChainId();
+          if (!cid) return;
+          const network = config.networks[cid] || {};
+          const key = kind === 'broadcast' ? 'broadcastOrder' : 'readOrder';
+          const supportsVerifiedSources = cid === '1' || cid === '100';
+          const fallback = kind === 'broadcast'
+            ? (supportsVerifiedSources ? ['myotis', 'direct'] : ['direct'])
+            : (supportsVerifiedSources
+                ? ['myotis', 'colibri', 'quorum', 'direct']
+                : ['colibri', 'quorum', 'direct']);
+          const order = [...(network.access?.[key] || fallback)];
+          const from = order.indexOf(source);
+          let to = target ? order.indexOf(target) : from + direction;
+          if (from < 0 || to < 0 || to >= order.length || from === to) return;
+          order.splice(from, 1);
+          order.splice(to, 0, source);
+          // Send only the changed key: main merges `access` one level deep,
+          // and `network.access` here is the builtin+override merged view —
+          // spreading it would freeze builtin defaults (e.g. broadcastOrder)
+          // into the user config, so a future app update to a builtin order
+          // would be silently ignored for this user.
+          await mutate(() => freedomAPI.updateNetwork(cid, {
+            access: { [key]: order },
+          }));
+        };
         const runChainSearch = async (query) => {
           const seq = ++searchSeq;
           try {
@@ -1973,11 +3436,13 @@
         };
 
         // Persist a new chain (+ its RPC endpoints), then open its detail.
-        const submitAddChain = async (def, rpcUrls) => {
+        const submitAddChain = async (def, rpcUrls, onError) => {
           try {
             const res = await freedomAPI.addChain(def, rpcUrls);
             if (res && res.success === false) {
-              setStatus(res.error || 'Could not add chain', 'error');
+              const message = res.error || 'Could not add chain';
+              if (onError) onError(message);
+              else setStatus(message, 'error');
               return;
             }
             setStatus('', '');
@@ -1985,7 +3450,9 @@
             await reload();
             location.hash = 'chains/' + def.chainId;
           } catch (err) {
-            setStatus(err?.message || 'Could not add chain', 'error');
+            const message = err?.message || 'Could not add chain';
+            if (onError) onError(message);
+            else setStatus(message, 'error');
           }
         };
 
@@ -2002,6 +3469,68 @@
           const id = el.dataset.id;
           mutate(() =>
             el.checked ? freedomAPI.restoreEndpointSource(id) : freedomAPI.removeEndpointSource(id)
+          );
+        });
+
+        section.addEventListener('focusout', async (e) => {
+          const input = e.target.closest('[data-chain-prover]');
+          if (!input) return;
+          const cid = input.dataset.chainProver;
+          const url = input.value.trim();
+          const id = input.dataset.sourceId || 'colibri-corpus';
+          const current = config.sources.find((source) => source.id === id);
+          if (current?.coverage?.[cid] === url) return;
+          if (!url) {
+            await mutate(() => freedomAPI.resetEndpointSourceCoverage(id, cid));
+            return;
+          }
+          await mutate(() => freedomAPI.upsertEndpointSource(id, {
+            role: 'prover',
+            keyed: false,
+            name: current?.name || 'Colibri (corpus.core)',
+            coverage: { ...(current?.coverage || {}), [cid]: url },
+          }));
+        });
+
+        section.addEventListener('dragstart', (e) => {
+          const row = e.target.closest('[data-access-source]');
+          if (!row) return;
+          draggedAccess = { kind: row.dataset.accessKind, source: row.dataset.accessSource };
+          row.classList.add('dragging');
+          e.dataTransfer?.setData('text/plain', row.dataset.accessSource);
+          if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+        });
+
+        section.addEventListener('dragover', (e) => {
+          const row = e.target.closest('[data-access-source]');
+          if (!row || !draggedAccess || row.dataset.accessKind !== draggedAccess.kind) return;
+          e.preventDefault();
+          if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+        });
+
+        section.addEventListener('drop', async (e) => {
+          const row = e.target.closest('[data-access-source]');
+          if (!row || !draggedAccess || row.dataset.accessKind !== draggedAccess.kind) return;
+          e.preventDefault();
+          const { kind, source } = draggedAccess;
+          draggedAccess = null;
+          await reorderAccess(kind, source, row.dataset.accessSource);
+        });
+
+        section.addEventListener('dragend', () => {
+          draggedAccess = null;
+          section.querySelectorAll('.dragging').forEach((row) => row.classList.remove('dragging'));
+        });
+
+        section.addEventListener('keydown', async (e) => {
+          const row = e.target.closest('[data-access-source]');
+          if (!row || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown')) return;
+          e.preventDefault();
+          await reorderAccess(
+            row.dataset.accessKind,
+            row.dataset.accessSource,
+            null,
+            e.key === 'ArrowUp' ? -1 : 1
           );
         });
 
@@ -2037,8 +3566,16 @@
           } else if (action === 'save-endpoint') {
             const url = ($('ep-url')?.value || '').trim();
             const cid = openChainId();
+            // Keep the form open on failure and show the error next to the input
+            // (a global status bar at the page bottom is easy to miss).
+            const failForm = (error) => {
+              endpointForm = { ...endpointForm, url, error };
+              setStatus('', '');
+              render();
+              $('ep-url')?.focus();
+            };
             if (!url) {
-              setStatus('Enter an endpoint URL', 'error');
+              failForm('Enter an endpoint URL');
               return;
             }
             if (!cid) {
@@ -2046,18 +3583,35 @@
               render();
               return;
             }
+            // Ignore a second Save while the first upsert is still in flight:
+            // in add mode each click mints a distinct 'user-<Date.now()>' id,
+            // so a double-click would persist two duplicate sources (which also
+            // lets one server satisfy the quorum tier twice).
+            if (endpointSaveInFlight) return;
             const sourceId =
               endpointForm?.mode === 'edit' && endpointForm.id
                 ? endpointForm.id
                 : 'user-' + Date.now();
-            endpointForm = null;
-            await mutate(() =>
-              freedomAPI.upsertEndpointSource(sourceId, {
+            endpointSaveInFlight = true;
+            try {
+              const res = await freedomAPI.upsertEndpointSource(sourceId, {
                 role: 'rpc',
                 keyed: false,
                 coverage: { [cid]: url },
-              })
-            );
+              });
+              if (res && res.success === false) {
+                failForm(res.error || 'Could not save endpoint');
+                return;
+              }
+            } catch (err) {
+              failForm(err?.message || 'Could not save endpoint');
+              return;
+            } finally {
+              endpointSaveInFlight = false;
+            }
+            endpointForm = null;
+            setStatus('', '');
+            await reload();
           } else if (action === 'delete-source') {
             await mutate(() => freedomAPI.removeEndpointSource(id));
           } else if (action === 'open-rpc-page') {
@@ -2089,12 +3643,15 @@
           } else if (action === 'add-manual') {
             if (addState) {
               addState.mode = 'manual';
+              addState.error = null;
+              addState.manual = addState.manual || { decimalsRaw: '18' };
               render();
             }
           } else if (action === 'add-search') {
             if (addState) {
               addState.mode = 'search';
               addState.results = null;
+              addState.error = null;
               render();
               runChainSearch('');
             }
@@ -2105,6 +3662,7 @@
           } else if (action === 'add-back') {
             if (addState) {
               addState.picked = null;
+              addState.error = null;
               render();
               runChainSearch($('chain-search-input')?.value || '');
             }
@@ -2127,6 +3685,11 @@
           } else if (action === 'confirm-add') {
             const c = addState?.picked;
             if (!c) return;
+            const failConfirm = (error) => {
+              if (!addState) { setStatus(error, 'error'); return; }
+              addState.error = error;
+              render();
+            };
             await submitAddChain(
               {
                 chainId: c.chainId,
@@ -2135,7 +3698,8 @@
                 nativeCurrency: c.nativeCurrency || null,
                 blockExplorer: c.explorerUrl || '',
               },
-              c.rpcUrls || []
+              c.rpcUrls || [],
+              failConfirm
             );
           } else if (action === 'submit-manual') {
             const chainId = ($('man-chainid')?.value || '').trim();
@@ -2144,12 +3708,20 @@
             const decimalsRaw = ($('man-decimals')?.value || '').trim();
             const rpc = ($('man-rpc')?.value || '').trim();
             const decimals = decimalsRaw === '' ? 18 : Number(decimalsRaw);
-            if (!chainId || !name || !symbol || !rpc) {
-              setStatus('Chain ID, name, currency symbol and RPC URL are required', 'error');
-              return;
-            }
+            const manual = { chainId, name, symbol, decimalsRaw, rpc };
+            const failManual = (error, focusId = 'man-rpc') => {
+              if (!addState) { setStatus(error, 'error'); return; }
+              addState.manual = manual;
+              addState.error = error;
+              render();
+              $(focusId)?.focus();
+            };
+            if (!chainId) { failManual('Chain ID is required', 'man-chainid'); return; }
+            if (!name) { failManual('Chain name is required', 'man-name'); return; }
+            if (!symbol) { failManual('Currency symbol is required', 'man-symbol'); return; }
+            if (!rpc) { failManual('RPC URL is required'); return; }
             if (!Number.isInteger(decimals) || decimals < 0) {
-              setStatus('Currency decimals must be a non-negative whole number', 'error');
+              failManual('Currency decimals must be a non-negative whole number', 'man-decimals');
               return;
             }
             await submitAddChain(
@@ -2160,7 +3732,8 @@
                 nativeCurrency: { name: symbol, symbol, decimals },
                 blockExplorer: '',
               },
-              [rpc]
+              [rpc],
+              failManual
             );
           }
         });
@@ -2180,94 +3753,525 @@
         reload();
       })();
 
-      // ── Name Resolution lens ────────────────────────────────────────
-      // A focused view of the Ethereum (chain 1) network for the #ens
-      // section: the verification strategy and, for Colibri, the prover.
-      // RPC endpoints live under Chains settings.
+      // ── Ordered Ethereum name-resolution policy ─────────────────────
+      // The policy belongs to Ethereum's existing network configuration.
+      // This controller only renders/mutates that policy; resolver execution
+      // remains in the main process and node lifecycle remains under Nodes.
       (() => {
-        const methodSelect = $('ens-lens-method');
-        const helpEl = $('ens-lens-help');
-        const proverRow = $('ens-prover-row');
-        const proverInput = $('ens-prover-url');
-        if (!methodSelect || !helpEl) return;
+        const list = $('ens-method-list');
+        const preferVerified = $('ens-prefer-verified');
+        const policyStatus = $('ens-policy-status');
+        if (!list || !preferVerified) return;
 
-        const HELP = {
-          colibri:
-            'Each answer is cryptographically verified against the Ethereum sync committee via the Colibri prover. If the prover fails, Freedom falls back to the public-RPC quorum.',
-          quorum:
-            'Several public RPCs are queried in parallel; only answers they agree on are trusted.',
-          direct:
-            'Uses the first trusted endpoint, then falls back to the public-RPC quorum if that endpoint fails.',
+        const METHODS = [
+          {
+            id: 'myotis',
+            label: 'Myotis light client',
+            help: 'Local P2P resolution. ENS prefers finalized state; newer ENS records and WNS/GNS use a cryptographically verified optimistic beacon head.',
+            link: '#nodes',
+            linkLabel: 'Node settings →',
+          },
+          {
+            id: 'colibri',
+            label: 'Colibri',
+            help: 'A remote prover produces the witness; Freedom verifies the cryptographic proof locally.',
+          },
+          {
+            id: 'quorum',
+            label: 'RPC quorum',
+            help: 'Multiple independent RPC endpoints must return byte-identical answers at one anchored block.',
+            link: '#chains/1',
+            linkLabel: 'Manage endpoints →',
+          },
+          {
+            id: 'direct',
+            label: 'Direct RPC',
+            help: 'Uses one configured endpoint. This is not cryptographic verification and is disabled by default.',
+            link: '#chains/1',
+            linkLabel: 'Configure →',
+          },
+        ];
+        const METHOD_IDS = new Set(METHODS.map((method) => method.id));
+
+        let config = { networks: {}, sources: [] };
+        let enabledOrder = ['myotis', 'colibri', 'quorum'];
+        let currentQuorum = { k: 3, m: 2 };
+        let currentProverUrl = '';
+        let proverId = 'colibri-corpus';
+        let myotisStatus = null;
+        let myotisGnosisStatus = null;
+        let policySave = Promise.resolve();
+        let quorumSave = Promise.resolve();
+        let draggedMethod = null;
+        let dropPlacement = null;
+        let policyLoaded = false;
+
+        preferVerified.disabled = true;
+
+        const setPolicyStatus = (message, kind = '') => {
+          policyStatus.textContent = message || '';
+          policyStatus.className = `rpc-status resolver-status${kind ? ` ${kind}` : ''}`;
         };
 
-        let proverId = 'colibri-corpus'; // prover endpoint-source id for chain 1
-        let currentProverUrl = ''; // '' means the builtin default is in use
+        const legacyOrder = (primary) => [
+          'myotis',
+          ...(primary === 'direct' ? ['direct', 'quorum'] : []),
+          ...(primary === 'quorum' ? ['quorum'] : []),
+          ...(!primary || primary === 'colibri' ? ['colibri', 'quorum'] : []),
+        ];
 
-        const showProverRow = (method) => {
-          if (proverRow) proverRow.style.display = method === 'colibri' ? '' : 'none';
+        const activeSources = (role) =>
+          (config.sources || []).filter(
+            (source) =>
+              source.role === role &&
+              source.coverage?.['1'] &&
+              !source.removed &&
+              (!source.keyed || source.hasKey)
+          );
+
+        const setBadge = (method, text, kind = '') => {
+          const badge = list.querySelector(`[data-method-status="${method}"]`);
+          if (!badge) return;
+          badge.textContent = text;
+          badge.className = `resolver-badge${kind ? ` ${kind}` : ''}`;
+        };
+
+        const updateMethodStatuses = () => {
+          const rpcSources = activeSources('rpc');
+          const customRpc = rpcSources.find(
+            (source) => source.builtin === false && source.keyed === false
+          );
+
+          if (!myotisStatus) {
+            setBadge('myotis', 'Status unknown', 'warning');
+          } else if (myotisStatus.state === 'unavailable') {
+            setBadge('myotis', 'Unavailable');
+          } else if (myotisStatus.state === 'disabled') {
+            setBadge('myotis', 'Profile disabled', 'warning');
+          } else if (myotisStatus.state === 'off') {
+            setBadge('myotis', 'Off');
+          } else if (myotisStatus.state === 'error') {
+            setBadge('myotis', 'Error', 'warning');
+          } else if (myotisStatus.state === 'ready') {
+            setBadge('myotis', 'Ready', 'ready');
+          } else {
+            setBadge('myotis', 'Syncing…', 'warning');
+          }
+
+          const hasProver = activeSources('prover').length > 0;
+          setBadge('colibri', hasProver ? 'Verified' : 'No prover', hasProver ? 'verified' : 'warning');
+          setBadge(
+            'quorum',
+            `${currentQuorum.m} of ${currentQuorum.k}`,
+            rpcSources.length >= currentQuorum.k ? 'verified' : 'warning'
+          );
+          setBadge(
+            'direct',
+            customRpc ? 'User endpoint' : rpcSources.length ? 'Public endpoint' : 'No endpoint',
+            'warning'
+          );
+        };
+
+        const numberOptions = (min, max, selected) =>
+          Array.from({ length: max - min + 1 }, (_, offset) => min + offset)
+            .map(
+              (value) =>
+                `<option value="${value}"${value === selected ? ' selected' : ''}>${value}</option>`
+            )
+            .join('');
+
+        const render = () => {
+          const visibleOrder = [
+            ...enabledOrder,
+            ...METHODS.map((method) => method.id).filter((id) => !enabledOrder.includes(id)),
+          ];
+          list.innerHTML = visibleOrder
+            .map((id) => {
+              const method = METHODS.find((entry) => entry.id === id);
+              const enabled = enabledOrder.includes(id);
+              const index = enabledOrder.indexOf(id);
+              const link = method.link
+                ? `<a class="row-help" href="${method.link}">${method.linkLabel}</a>`
+                : '';
+              let configRow = '';
+              if (id === 'colibri' && enabled) {
+                configRow = `<div class="resolver-config" data-method-config="colibri">
+                      <div class="resolver-config-line">
+                        <div class="row-body">
+                          <p class="row-label">Prover endpoint</p>
+                          <p class="row-help">Leave empty to use the corpus.core default.</p>
+                        </div>
+                        <input type="text" id="ens-prover-url" class="rpc-input"
+                          placeholder="https://mainnet1.colibri-proof.tech" spellcheck="false" />
+                      </div>
+                    </div>`;
+              } else if (id === 'quorum' && enabled) {
+                configRow = `<div class="resolver-config" data-method-config="quorum">
+                      <div class="resolver-config-line">
+                        <div class="row-body">
+                          <p class="row-label">Agreement threshold</p>
+                          <p class="row-help">Require matching responses from independently configured RPC providers. ${activeSources('rpc').length} currently available.</p>
+                        </div>
+                        <div class="resolver-quorum-fields">
+                          Require
+                          <select data-quorum-field="m" aria-label="Required matching RPC answers">
+                            ${numberOptions(2, currentQuorum.k, currentQuorum.m)}
+                          </select>
+                          out of
+                          <select data-quorum-field="k" aria-label="RPC providers queried">
+                            ${numberOptions(3, 9, currentQuorum.k)}
+                          </select>
+                        </div>
+                      </div>
+                    </div>`;
+              }
+              return `
+                <div class="resolver-method${enabled ? '' : ' disabled'}" data-method="${id}">
+                  <button class="resolver-drag-handle" type="button"
+                    data-drag-handle="${id}" draggable="${enabled}"
+                    aria-label="Reorder ${method.label}. Drag, or use the up and down arrow keys."
+                    title="Drag to reorder" ${enabled ? '' : 'disabled'}>
+                    <span aria-hidden="true">⠿</span>
+                  </button>
+                  <span class="resolver-rank">${enabled ? index + 1 : '–'}</span>
+                  <div class="row-body">
+                    <div class="resolver-title-line">
+                      <p class="row-label">${method.label}</p>
+                      <span class="resolver-badge" data-method-status="${id}">Loading…</span>
+                    </div>
+                    <p class="row-help">${method.help}</p>
+                    ${link}
+                  </div>
+                  <div class="resolver-controls">
+                    <label class="toggle" aria-label="Enable ${method.label}">
+                      <input type="checkbox" data-method-enabled="${id}" ${enabled ? 'checked' : ''} />
+                      <span class="slider"></span>
+                    </label>
+                  </div>
+                </div>
+                ${configRow}`;
+            })
+            .join('');
+
+          const proverInput = $('ens-prover-url');
+          if (proverInput) proverInput.value = currentProverUrl;
+          updateMethodStatuses();
+        };
+
+        const persistPolicy = () => {
+          if (!policyLoaded || !config.networks?.['1']) {
+            return Promise.reject(new Error('Resolution policy is not loaded yet'));
+          }
+          const primary = enabledOrder.find((method) => method !== 'myotis') || 'quorum';
+          const verification = {
+            primary,
+            order: [...enabledOrder],
+            preferVerified: preferVerified.checked,
+          };
+          // Preserve interaction order when several controls are changed in
+          // quick succession. IPC responses are not guaranteed to complete in
+          // the same order the renderer dispatched them.
+          policySave = policySave.catch(() => {}).then(async () => {
+            const result = await freedomAPI.updateNetwork('1', { verification });
+            if (result?.success === false) throw new Error(result.error || 'Policy was not saved');
+            config.networks['1'].verification = verification;
+            setPolicyStatus('Resolution policy saved.', 'success');
+          });
+          return policySave;
+        };
+
+        const persistQuorum = () => {
+          if (!policyLoaded || !config.networks?.['1']) {
+            return Promise.reject(new Error('Resolution policy is not loaded yet'));
+          }
+          const quorum = { ...currentQuorum };
+          quorumSave = quorumSave.catch(() => {}).then(async () => {
+            const result = await freedomAPI.updateNetwork('1', { quorum });
+            if (result?.success === false) throw new Error(result.error || 'Quorum was not saved');
+            config.networks['1'].quorum = {
+              ...(config.networks['1'].quorum || {}),
+              ...quorum,
+            };
+            setPolicyStatus('RPC quorum saved.', 'success');
+          });
+          return quorumSave;
+        };
+
+        const clearDragState = () => {
+          list
+            .querySelectorAll('.dragging, .drop-before, .drop-after')
+            .forEach((row) => row.classList.remove('dragging', 'drop-before', 'drop-after'));
+          draggedMethod = null;
+          dropPlacement = null;
+        };
+
+        const reorderMethod = async (id, targetIndex) => {
+          const currentIndex = enabledOrder.indexOf(id);
+          if (
+            currentIndex < 0 ||
+            targetIndex < 0 ||
+            targetIndex >= enabledOrder.length ||
+            currentIndex === targetIndex
+          ) {
+            clearDragState();
+            return;
+          }
+          enabledOrder.splice(currentIndex, 1);
+          enabledOrder.splice(targetIndex, 0, id);
+          const restoreHandleFocus = document.activeElement?.dataset?.dragHandle === id;
+          clearDragState();
+          render();
+          if (restoreHandleFocus) {
+            list.querySelector(`[data-drag-handle="${id}"]`)?.focus();
+          }
+          try {
+            await persistPolicy();
+          } catch (err) {
+            setPolicyStatus(err?.message || 'Failed to reorder methods.', 'error');
+            refresh();
+          }
         };
 
         const refresh = async () => {
           try {
             const res = await freedomAPI.getNetworkConfig();
-            if (!res || !res.success) return;
-            const primary = res.networks?.['1']?.verification?.primary || 'colibri';
-            methodSelect.value = primary;
-            helpEl.textContent = HELP[primary] || '';
-            showProverRow(primary);
+            if (!res || !res.success) throw new Error('Network configuration unavailable');
+            config = { networks: res.networks || {}, sources: res.sources || [] };
+            if (!config.networks['1']) throw new Error('Ethereum network configuration unavailable');
+            const verification = config.networks?.['1']?.verification || {};
+            const configured = Array.isArray(verification.order)
+              ? verification.order.filter(
+                  (method, index, all) =>
+                    METHOD_IDS.has(method) && all.indexOf(method) === index
+                )
+              : [];
+            enabledOrder = configured.length
+              ? configured
+              : legacyOrder(verification.primary || 'colibri');
+            preferVerified.checked = verification.preferVerified !== false;
+            const quorum = config.networks?.['1']?.quorum || {};
+            const k = Math.max(3, Math.min(Number(quorum.k) || 3, 9));
+            const m = Math.max(2, Math.min(Number(quorum.m) || 2, k));
+            currentQuorum = { k, m };
 
-            const prover = (res.sources || []).find(
-              (s) => s.role === 'prover' && s.coverage && s.coverage['1']
+            const prover = (config.sources || []).find(
+              (source) =>
+                source.role === 'prover' && source.coverage?.['1'] && !source.removed
             );
             proverId = prover?.id || 'colibri-corpus';
-            // A user override has builtin:false; the pristine builtin is
-            // left as an empty field (the placeholder shows the default).
             currentProverUrl = prover && prover.builtin === false ? prover.coverage['1'] : '';
-            if (proverInput) proverInput.value = currentProverUrl;
-          } catch {
-            helpEl.textContent = 'Could not load ENS network configuration.';
+            policyLoaded = true;
+            preferVerified.disabled = false;
+            setPolicyStatus('');
+            render();
+          } catch (err) {
+            policyLoaded = false;
+            preferVerified.disabled = true;
+            setPolicyStatus(err?.message || 'Could not load resolution policy.', 'error');
           }
         };
 
-        methodSelect.addEventListener('change', async () => {
-          const primary = methodSelect.value;
-          helpEl.textContent = HELP[primary] || '';
-          showProverRow(primary);
+        list.addEventListener('keydown', (event) => {
+          const handle = event.target.closest?.('[data-drag-handle]');
+          if (!handle || (event.key !== 'ArrowUp' && event.key !== 'ArrowDown')) return;
+          event.preventDefault();
+          const id = handle.dataset.dragHandle;
+          const currentIndex = enabledOrder.indexOf(id);
+          const targetIndex = currentIndex + (event.key === 'ArrowUp' ? -1 : 1);
+          reorderMethod(id, targetIndex);
+        });
+
+        list.addEventListener('dragstart', (event) => {
+          const handle = event.target.closest?.('[data-drag-handle]');
+          const id = handle?.dataset.dragHandle;
+          if (!id || !enabledOrder.includes(id)) {
+            event.preventDefault();
+            return;
+          }
+          draggedMethod = id;
+          event.dataTransfer.effectAllowed = 'move';
+          event.dataTransfer.setData('text/plain', id);
+          handle.closest('[data-method]')?.classList.add('dragging');
+        });
+
+        list.addEventListener('dragover', (event) => {
+          if (!draggedMethod) return;
+          const row = event.target.closest?.('[data-method]');
+          const targetId = row?.dataset.method;
+          if (!row || targetId === draggedMethod || !enabledOrder.includes(targetId)) return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = 'move';
+          list
+            .querySelectorAll('.drop-before, .drop-after')
+            .forEach((candidate) => candidate.classList.remove('drop-before', 'drop-after'));
+          const bounds = row.getBoundingClientRect();
+          const after = event.clientY >= bounds.top + bounds.height / 2;
+          row.classList.add(after ? 'drop-after' : 'drop-before');
+          dropPlacement = { targetId, after };
+        });
+
+        list.addEventListener('drop', (event) => {
+          if (!draggedMethod || !dropPlacement) {
+            clearDragState();
+            return;
+          }
+          event.preventDefault();
+          const id = draggedMethod;
+          const currentIndex = enabledOrder.indexOf(id);
+          const targetIndex = enabledOrder.indexOf(dropPlacement.targetId);
+          let insertionIndex = targetIndex + (dropPlacement.after ? 1 : 0);
+          if (currentIndex < insertionIndex) insertionIndex -= 1;
+          reorderMethod(id, insertionIndex);
+        });
+
+        list.addEventListener('dragend', clearDragState);
+
+        list.addEventListener('change', async (event) => {
+          const quorumField = event.target.closest?.('[data-quorum-field]');
+          if (quorumField) {
+            const kInput = list.querySelector('[data-quorum-field="k"]');
+            const mInput = list.querySelector('[data-quorum-field="m"]');
+            const k = Math.max(3, Math.min(Number(kInput?.value) || 3, 9));
+            const m = Math.max(2, Math.min(Number(mInput?.value) || 2, k));
+            currentQuorum = { k, m };
+            render();
+            try {
+              await persistQuorum();
+            } catch (err) {
+              setPolicyStatus(err?.message || 'Failed to update the RPC quorum.', 'error');
+              refresh();
+            }
+            return;
+          }
+
+          const toggle = event.target.closest?.('[data-method-enabled]');
+          if (!toggle) return;
+          const id = toggle.dataset.methodEnabled;
+          if (toggle.checked) {
+            if (!enabledOrder.includes(id)) enabledOrder.push(id);
+          } else if (enabledOrder.length === 1) {
+            toggle.checked = true;
+            setPolicyStatus('At least one resolution method must remain enabled.', 'error');
+            return;
+          } else {
+            enabledOrder = enabledOrder.filter((method) => method !== id);
+          }
+          render();
           try {
-            await freedomAPI.updateNetwork('1', { verification: { primary } });
-          } catch {
-            helpEl.textContent = 'Failed to update the ENS verification method.';
+            await persistPolicy();
+          } catch (err) {
+            setPolicyStatus(err?.message || 'Failed to update methods.', 'error');
+            refresh();
           }
         });
 
-        // Blur, not input — avoid persisting a half-typed URL. A non-empty
-        // value overrides the prover; clearing it reverts to the builtin.
-        proverInput?.addEventListener('blur', async () => {
-          const url = proverInput.value.trim();
+        list.addEventListener('focusout', async (event) => {
+          if (event.target.id !== 'ens-prover-url') return;
+          const url = event.target.value.trim();
           if (url === currentProverUrl) return;
           try {
-            if (url) {
-              await freedomAPI.upsertEndpointSource(proverId, {
-                role: 'prover',
-                keyed: false,
-                coverage: { 1: url },
-              });
-            } else {
-              await freedomAPI.removeEndpointSource(proverId);
-            }
-          } catch {
-            /* surfaced on the refresh below */
+            const proverSource = config.sources.find((source) => source.id === proverId);
+            const result = url
+              ? await freedomAPI.upsertEndpointSource(proverId, {
+                  role: 'prover',
+                  keyed: false,
+                  // Include `name` so an override built here collapses back to
+                  // the builtin (via resetEndpointSourceCoverage's structural
+                  // equality) when the URL is cleared — the builtin
+                  // colibri-corpus carries a name, so omitting it here pins the
+                  // override in the user layer forever. Matches the Chains-page
+                  // upsert.
+                  name: proverSource?.name || 'Colibri (corpus.core)',
+                  coverage: {
+                    ...(proverSource?.coverage || {}),
+                    1: url,
+                  },
+                })
+              : await freedomAPI.resetEndpointSourceCoverage(proverId, 1);
+            if (result?.success === false) throw new Error(result.error || 'Prover was not saved');
+            await refresh();
+          } catch (err) {
+            setPolicyStatus(err?.message || 'Failed to update the Colibri prover.', 'error');
           }
-          refresh();
         });
 
-        // Re-sync on navigation into this section — values may have been
-        // changed from the Chains page in the same session.
+        preferVerified.addEventListener('change', async () => {
+          try {
+            await persistPolicy();
+          } catch (err) {
+            setPolicyStatus(err?.message || 'Failed to update verification preference.', 'error');
+            refresh();
+          }
+        });
+
+        const launchRow = $('myotis-launch-row');
+        const launchToggle = $('start-myotis-at-launch');
+        const launchHelp = $('myotis-launch-help');
+        const defaultLaunchHelp = launchHelp?.textContent || '';
+        const gnosisLaunchRow = $('myotis-gnosis-launch-row');
+        const gnosisLaunchToggle = $('start-myotis-gnosis-at-launch');
+        const gnosisLaunchHelp = $('myotis-gnosis-launch-help');
+        const defaultGnosisLaunchHelp = gnosisLaunchHelp?.textContent || '';
+
+        const updateMyotis = async () => {
+          try {
+            [myotisStatus, myotisGnosisStatus] = await Promise.all([
+              freedomAPI.getMyotisStatus(1),
+              freedomAPI.getMyotisStatus(100),
+            ]);
+          } catch {
+            myotisStatus = null;
+            myotisGnosisStatus = null;
+          }
+          if (launchRow && launchToggle) {
+            const supported = myotisStatus?.supported !== false;
+            const available = myotisStatus ? Boolean(myotisStatus.available) : true;
+            const disabled = myotisStatus?.state === 'disabled';
+            launchRow.hidden = !supported;
+            launchToggle.disabled = Boolean(myotisStatus) && supported && (!available || disabled);
+            if (launchHelp) {
+              launchHelp.textContent = !myotisStatus
+                ? 'Myotis status could not be read. The startup preference can still be saved.'
+                : disabled
+                  ? 'Disabled for this profile under Settings → Nodes.'
+                  : supported && !available
+                    ? 'Addon not installed — run "npm run myotis:download" and restart.'
+                    : defaultLaunchHelp;
+            }
+          }
+          if (gnosisLaunchRow && gnosisLaunchToggle) {
+            const supported = myotisGnosisStatus?.supported !== false;
+            const available = myotisGnosisStatus
+              ? Boolean(myotisGnosisStatus.available)
+              : true;
+            const disabled = myotisGnosisStatus?.state === 'disabled';
+            gnosisLaunchRow.hidden = !supported;
+            gnosisLaunchToggle.disabled =
+              Boolean(myotisGnosisStatus) && supported && (!available || disabled);
+            if (gnosisLaunchHelp) {
+              gnosisLaunchHelp.textContent = !myotisGnosisStatus
+                ? 'Myotis status could not be read. The startup preference can still be saved.'
+                : disabled
+                  ? 'Disabled for this profile under Settings → Nodes.'
+                  : supported && !available
+                    ? 'Addon not installed — run "npm run myotis:download" and restart.'
+                    : defaultGnosisLaunchHelp;
+            }
+          }
+          updateMethodStatuses();
+        };
+
         window.addEventListener('hashchange', () => {
           if (location.hash.replace(/^#/, '').toLowerCase() === 'ens') refresh();
         });
+        freedomAPI.onSettingsUpdated?.((settings) => {
+          if (settings?.networkConfigUpdated) refresh();
+        });
 
         refresh();
+        updateMyotis();
+        const myotisTimer = setInterval(updateMyotis, 5000);
+        window.addEventListener('beforeunload', () => clearInterval(myotisTimer));
       })();
 
       // ── RPC Providers page ──────────────────────────────────────────
@@ -2437,6 +4441,145 @@
         window.addEventListener('hashchange', () => {
           if (resolveSection(location.hash) !== 'rpc') return;
           keyFor = null;
+          reload();
+        });
+
+        reload();
+      })();
+
+      // Controller for the #permissions section: stored per-site
+      // permission decisions (permissions.json) grouped by origin, with
+      // per-permission revoke, per-site revoke, and revoke-all. Session-only
+      // (unremembered) decisions live in main-process memory and are not
+      // listed here — they expire with the app anyway.
+      (() => {
+        const view = $('permissions-view');
+        if (!view) return;
+
+        const PERMISSION_LABELS = {
+          camera: 'Camera',
+          microphone: 'Microphone',
+          notifications: 'Notifications',
+          'clipboard-read': 'Clipboard reading',
+          geolocation: 'Location',
+          midi: 'MIDI devices',
+        };
+        const label = (key) => PERMISSION_LABELS[key] || key;
+
+        const render = (all) => {
+          const origins = Object.keys(all || {}).sort();
+
+          const intro = `
+            <div class="card" style="margin-bottom: 16px">
+              <div class="row">
+                <div class="row-body">
+                  <p class="row-label">Decisions you asked Freedom to remember</p>
+                  <p class="row-help">
+                    When a site asks to use your camera, microphone, notifications,
+                    clipboard, location, or MIDI devices, Freedom prompts you.
+                    Remembered answers are listed here. Everything else is denied
+                    by default.
+                  </p>
+                </div>
+                <div class="row-control">
+                  <button class="btn danger" data-action="revoke-all" ${
+                    origins.length === 0 ? 'disabled' : ''
+                  }>
+                    Remove all
+                  </button>
+                </div>
+              </div>
+            </div>`;
+
+          if (origins.length === 0) {
+            view.innerHTML =
+              intro +
+              `<div class="card"><div class="row"><div class="row-body">
+                 <p class="row-label">No stored site permissions</p>
+                 <p class="row-help">Allow or Block a site's request with
+                 “Remember for this site” checked and the decision appears here.</p>
+               </div></div></div>`;
+            return;
+          }
+
+          const cards = origins
+            .map((origin) => {
+              const rows = Object.entries(all[origin] || {})
+                .sort(([a], [b]) => a.localeCompare(b))
+                .map(
+                  ([permission, decision]) => `
+                    <div class="row sub">
+                      <div class="row-body">
+                        <p class="row-label">${esc(label(permission))}</p>
+                        <p class="row-help" ${
+                          decision === 'deny' ? 'style="color: var(--danger)"' : ''
+                        }>${decision === 'allow' ? 'Allowed' : 'Blocked'}</p>
+                      </div>
+                      <div class="row-control">
+                        <button class="btn" data-action="revoke"
+                          data-origin="${esc(origin)}"
+                          data-permission="${esc(permission)}">Remove</button>
+                      </div>
+                    </div>`
+                )
+                .join('');
+              return `
+                <div class="card" style="margin-bottom: 12px">
+                  <div class="row">
+                    <div class="row-body">
+                      <p class="row-label" style="word-break: break-all">${esc(origin)}</p>
+                    </div>
+                    <div class="row-control">
+                      <button class="btn" data-action="revoke-origin"
+                        data-origin="${esc(origin)}">Remove site</button>
+                    </div>
+                  </div>
+                  ${rows}
+                </div>`;
+            })
+            .join('');
+
+          view.innerHTML = intro + cards;
+        };
+
+        const reload = async () => {
+          try {
+            render(await freedomAPI.getSitePermissions());
+          } catch (err) {
+            view.innerHTML = `<div class="card"><div class="row"><div class="row-body">
+              <p class="row-label">Could not load site permissions</p>
+              <p class="row-help">${esc(err?.message || String(err))}</p>
+            </div></div></div>`;
+          }
+        };
+
+        view.addEventListener('click', async (e) => {
+          const btn = e.target.closest('button[data-action]');
+          if (!btn) return;
+          const { action, origin, permission } = btn.dataset;
+          try {
+            if (action === 'revoke') {
+              await freedomAPI.revokeSitePermission(origin, permission);
+            } else if (action === 'revoke-origin') {
+              await freedomAPI.revokeSitePermissionOrigin(origin);
+            } else if (action === 'revoke-all') {
+              await freedomAPI.revokeAllSitePermissions();
+            }
+          } catch (err) {
+            console.error('[settings] site-permission revoke failed:', err);
+          }
+          reload();
+        });
+
+        // Live refresh when decisions change elsewhere (prompt answers,
+        // the address-bar indicator's quick revoke).
+        freedomAPI.onSitePermissionsChanged?.(() => {
+          reload();
+        });
+
+        // Re-sync on navigation into this section.
+        window.addEventListener('hashchange', () => {
+          if (resolveSection(location.hash) !== 'permissions') return;
           reload();
         });
 

@@ -1,0 +1,218 @@
+/* Site permission prompt + address-bar indicator.
+   Chrome / popover styling mirrors the trust popover (toolbar.css) and the
+   nodes / hamburger menus so all address-bar surfaces feel like one system.
+   Colors come from variables.css tokens, so light theme applies for free. */
+
+/* Prompt panel, anchored under the address bar (left edge, like Chrome's
+   permission bubbles). Lives inside .address-wrapper (position: relative). */
+.permission-prompt {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 6px;
+  width: 320px;
+  max-width: calc(100vw - 24px);
+  background: var(--menu-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  z-index: 10000;
+  padding: 14px 16px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.permission-prompt[hidden] {
+  display: none !important;
+}
+
+.permission-prompt-text {
+  font-size: 14px;
+  color: var(--text);
+  word-break: break-word;
+  margin-bottom: 12px;
+}
+
+/* The requesting origin is the load-bearing part of the sentence. */
+#permission-prompt-origin {
+  font-weight: 600;
+}
+
+/* Caveat line (e.g. geolocation reliability, macOS privacy setting). */
+.permission-prompt-note {
+  font-size: 12px;
+  color: var(--warning-fg);
+  margin-bottom: 12px;
+  word-break: break-word;
+}
+
+.permission-prompt-note.hidden {
+  display: none;
+}
+
+.permission-prompt-remember {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 14px;
+  cursor: default;
+  user-select: none;
+}
+
+.permission-prompt-remember.hidden {
+  display: none;
+}
+
+.permission-prompt-remember input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.permission-prompt-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.permission-btn {
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+  cursor: default;
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.permission-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.permission-btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg);
+  font-weight: 600;
+}
+
+.permission-btn.primary:hover {
+  opacity: 0.9;
+  background: var(--accent);
+}
+
+/* Light theme: neutral button hover needs a dark tint, not a light one. */
+[data-theme='light'] .permission-btn:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+[data-theme='light'] .permission-btn.primary,
+[data-theme='light'] .permission-btn.primary:hover {
+  background: var(--accent);
+  color: #ffffff;
+}
+
+/* Address-bar indicator: shown when the current site holds recorded
+   permission decisions. Sits left of the bookmark button; shifts over
+   when the GitHub-bridge button is also visible. */
+.permission-indicator {
+  right: 36px;
+}
+
+.address-wrapper:has(.github-bridge-btn:not(.hidden)) .permission-indicator {
+  right: 66px;
+}
+
+/* Indicator popover: the current site's grants with quick revoke.
+   Mirrors .trust-popover chrome, right-aligned under the indicator. */
+.permission-popover {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 6px;
+  width: 280px;
+  max-width: calc(100vw - 24px);
+  background: var(--menu-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  z-index: 10000;
+  padding: 14px 16px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.permission-popover[hidden] {
+  display: none !important;
+}
+
+.permission-popover-title {
+  font-size: 14px;
+  color: var(--text);
+  word-break: break-all;
+  margin-bottom: 12px;
+}
+
+.permission-popover-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.permission-popover-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.permission-popover-row-label {
+  min-width: 0;
+  flex: 1;
+}
+
+.permission-popover-row-name {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.permission-popover-row-status {
+  font-size: 11px;
+  color: var(--muted);
+  opacity: 0.8;
+}
+
+.permission-popover-row-status.blocked {
+  color: var(--danger);
+  opacity: 1;
+}
+
+.permission-popover-revoke {
+  flex-shrink: 0;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: default;
+  transition:
+    color 0.15s ease,
+    border-color 0.15s ease,
+    background-color 0.15s ease;
+}
+
+.permission-popover-revoke:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+[data-theme='light'] .permission-popover-revoke:hover {
+  background: rgba(0, 0, 0, 0.06);
+}

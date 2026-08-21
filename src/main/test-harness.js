@@ -32,6 +32,10 @@
 'use strict';
 
 const log = require('./logger');
+const {
+  runWithPrivateLogContext,
+  redactUrlForLog,
+} = require('./private/private-log-context');
 const { ipcMain } = require('electron');
 const IPC = require('../shared/ipc-channels');
 const { success, failure } = require('./ipc-contract');
@@ -121,7 +125,7 @@ function makeProtocolHandler(scheme) {
   return async (request) => {
     const fixture = pickContentFixture(request.url);
     if (!fixture) {
-      log.info(`[test-harness] ${scheme}: 404 (no fixture) for ${request.url}`);
+      log.info(`[test-harness] ${scheme}: 404 (no fixture) for ${redactUrlForLog(request.url)}`);
       return notFoundResponse(request.url);
     }
     return buildResponse(fixture);
@@ -130,7 +134,7 @@ function makeProtocolHandler(scheme) {
 
 function makeHttpStubHandler(scheme) {
   return async (request) => {
-    log.info(`[test-harness] stubbed ${scheme}: ${request.url}`);
+    log.info(`[test-harness] stubbed ${scheme}: ${redactUrlForLog(request.url)}`);
     const body =
       `<!doctype html>` +
       `<title>test-harness ${scheme} stub</title>` +
@@ -143,17 +147,26 @@ function makeHttpStubHandler(scheme) {
   };
 }
 
-function registerStubProtocols(targetSession) {
+function registerStubProtocols(targetSession, { privatePartition = null } = {}) {
   if (!targetSession?.protocol?.handle) {
     log.warn('[test-harness] session.protocol.handle unavailable — skipping protocol stubs');
     return;
   }
+  // PRIVATE MODE GUARD (request logging): the stubs stand in for the real
+  // bzz/ipfs/ipns (and http/https) handlers on private sessions too, so they
+  // redact request URLs exactly as those do — otherwise the e2e assertion
+  // that a private navigation leaves no trace in main.log would be testing
+  // the harness instead of the app.
+  const isPrivate = !!privatePartition;
   // bzz/ipfs/ipns: harness owns these outright (custom standard schemes
   // we register in production too — see src/main/swarm/bzz-protocol.js
   // etc.). Specs drive content via setContentFixture().
   for (const scheme of ['bzz', 'ipfs', 'ipns']) {
     try {
-      targetSession.protocol.handle(scheme, makeProtocolHandler(scheme));
+      const handler = makeProtocolHandler(scheme);
+      targetSession.protocol.handle(scheme, (request) =>
+        runWithPrivateLogContext(isPrivate, () => handler(request))
+      );
       log.info(`[test-harness] registered stub ${scheme}: handler`);
     } catch (err) {
       log.error(`[test-harness] failed to register stub ${scheme}: handler`, err);
@@ -172,7 +185,10 @@ function registerStubProtocols(targetSession) {
   // app default session — i.e. this same one we're attaching to.
   for (const scheme of ['http', 'https']) {
     try {
-      targetSession.protocol.handle(scheme, makeHttpStubHandler(scheme));
+      const handler = makeHttpStubHandler(scheme);
+      targetSession.protocol.handle(scheme, (request) =>
+        runWithPrivateLogContext(isPrivate, () => handler(request))
+      );
       log.info(`[test-harness] registered stub ${scheme}: handler (owns scheme)`);
     } catch (err) {
       log.error(`[test-harness] failed to register stub ${scheme}: handler`, err);
@@ -212,6 +228,23 @@ function overrideEnsIpc() {
   });
 
   replaceHandler(IPC.ENS_INVALIDATE_CONTENT, async () => true);
+
+  // Tezos Domains shares the ENS fixture map — `.tez` and `.eth` names can
+  // never collide — so a spec drives both name systems through
+  // `setEnsFixture`. Without this override a harness spec that navigates to
+  // a `.tez` name would reach out to the real public Tezos RPCs.
+  replaceHandler(IPC.TEZOS_DOMAINS_RESOLVE, async (_event, payload = {}) => {
+    const name = (payload?.name || '').trim().toLowerCase();
+    if (!name) {
+      return { type: 'not_found', reason: 'EMPTY', system: 'tezos' };
+    }
+    if (ensFixtures.has(name)) {
+      return ensFixtures.get(name);
+    }
+    return { type: 'not_found', reason: 'NO_FIXTURE', system: 'tezos' };
+  });
+
+  replaceHandler(IPC.TEZOS_DOMAINS_INVALIDATE, async () => ({ ok: true }));
 }
 
 function overrideProbeIpc() {
@@ -246,7 +279,7 @@ function overrideProbeIpc() {
   });
 }
 
-// Bee / IPFS / Radicle managers are still loaded so their `getStatus`
+// Bee / IPFS / Myotis / Radicle managers are still loaded so their `getStatus`
 // handlers respond, but we replace start/stop with no-ops so a stray
 // click in a spec can't spawn the real binaries against the test
 // `userData` directory. The fake status is also tracked in-memory so
@@ -258,6 +291,18 @@ function overrideProbeIpc() {
 // — the renderer destructures these fields directly
 // (`src/renderer/lib/bee-ui.js`, `src/renderer/lib/ipfs-ui.js`).
 const stubNodeStatus = { ant: 'running', ipfs: 'running', radicle: 'running' };
+const stubMyotisStatuses = new Map([
+  [1, {
+    supported: true, available: true, version: '0.1.7', chainId: 1,
+    network: 'mainnet', displayName: 'Ethereum', running: true, state: 'ready',
+    beaconState: 'SYNCED', peerCount: 2, snapPeers: 1, finalizedBlockNumber: 25684159,
+  }],
+  [100, {
+    supported: true, available: true, version: '0.1.7', chainId: 100,
+    network: 'gnosis', displayName: 'Gnosis', running: false, state: 'off',
+    beaconState: 'STARTING', peerCount: 0, snapPeers: 0, finalizedBlockNumber: 0,
+  }],
+]);
 
 function overrideNodeIpc() {
   const setStatus = (service, status) => {
@@ -289,6 +334,28 @@ function overrideNodeIpc() {
   replaceHandler(IPC.IPFS_GET_STATUS, async () => ({
     status: stubNodeStatus.ipfs,
     error: null,
+  }));
+
+  const stubMyotisStatus = (chainId) => {
+    const status = stubMyotisStatuses.get(Number(chainId));
+    if (!status) throw new Error(`Unsupported Myotis chain ID: ${chainId}`);
+    return status;
+  };
+
+  replaceHandler(IPC.MYOTIS_START, async (_event, chainId = 1) => {
+    log.info('[test-harness] ignored myotis:start (test mode)');
+    const status = stubMyotisStatus(chainId);
+    Object.assign(status, { running: true, state: 'ready' });
+    return { ...status };
+  });
+  replaceHandler(IPC.MYOTIS_STOP, async (_event, chainId = 1) => {
+    log.info('[test-harness] ignored myotis:stop (test mode)');
+    const status = stubMyotisStatus(chainId);
+    Object.assign(status, { running: false, state: 'off' });
+    return { ...status };
+  });
+  replaceHandler(IPC.MYOTIS_GET_STATUS, async (_event, chainId = 1) => ({
+    ...stubMyotisStatus(chainId),
   }));
 
   replaceHandler(IPC.RADICLE_START, async () => {
@@ -475,4 +542,10 @@ function installTestHarness({ defaultSession }) {
 module.exports = {
   isTestMode,
   installTestHarness,
+  // Exposed so private-window sessions (created after startup) get the same
+  // fixture-driven protocol stubs as the default session in test mode. The
+  // fixture maps are shared module state, so per-session registration is all
+  // that's needed. No-op guard lives in the caller (only invoked when
+  // isTestMode()).
+  registerStubProtocols,
 };

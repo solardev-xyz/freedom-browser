@@ -218,7 +218,13 @@ describe('v0.8.0 upgrade path (end-to-end, in place)', () => {
     const networkConfig = JSON.parse(
       fs.readFileSync(path.join(userDataDir, 'network-config.json'), 'utf-8')
     );
-    expect(networkConfig.networks['1']).toEqual({ verification: { primary: 'direct' } });
+    expect(networkConfig.networks['1']).toEqual({
+      verification: {
+        primary: 'direct',
+        order: ['myotis', 'direct', 'quorum'],
+        preferVerified: false,
+      },
+    });
     expect(networkConfig.endpointSources['migrated-eth-custom']).toEqual({
       role: 'rpc',
       keyed: false,

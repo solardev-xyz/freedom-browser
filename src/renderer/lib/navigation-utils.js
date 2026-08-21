@@ -1,6 +1,6 @@
 import { applyEnsNamePreservation, deriveDisplayValue } from './url-utils.js';
 import { getInternalPageName, parseEnsInput } from './page-urls.js';
-import { isEnsHost } from './origin-utils.js';
+import { isDwebNameHost } from './origin-utils.js';
 
 // Extract the Ethereum name from an address bar value, or null if the value isn't
 // a supported name-resolution input. Thin wrapper around `parseEnsInput` so the
@@ -35,6 +35,7 @@ export const TRUST_STATUS_SENTENCE = {
 };
 
 const nameSystemLabel = (trust = {}) => {
+  if (trust.system === 'tezos') return 'Tezos Domains';
   if (trust.system === 'wns') return 'WNS';
   if (trust.system === 'gns') return 'GNS';
   return 'ENS';
@@ -136,25 +137,53 @@ export const buildTrustRows = ({
 } = {}) => {
   const method = trust.method;
   const isColibri = level === 'verified' && method === 'colibri';
+  const isMyotis = method === 'myotis';
   const statusKey = isColibri ? 'verified-colibri' : level;
   const status = getTrustStatusSentence(statusKey, trust);
 
   const agreed = Array.isArray(trust.agreed) ? trust.agreed : [];
   const queried = Array.isArray(trust.queried) ? trust.queried : [];
   const dissented = Array.isArray(trust.dissented) ? trust.dissented : [];
-  const blockNumber = trust.block?.number;
+  const blockNumber =
+    trust.block && typeof trust.block === 'object' ? trust.block.number : trust.block;
 
   const trustRows = [];
+  const pushBlockRow = () => {
+    if (blockNumber === undefined || blockNumber === null || blockNumber === '') return;
+    const num = String(blockNumber);
+    trustRows.push({ label: 'Block', display: num, copy: num });
+  };
 
-  // Colibri results carry single-source agreed/queried (the prover host) by
-  // design — the cryptographic verification *replaces* the M-of-K heuristic,
-  // it doesn't run alongside it. Surface method/proof/server details instead
-  // of the degenerate quorum row.
+  // Every cryptographically verified method starts with the same summary
+  // shape: who verified the answer, what evidence backs it, and the pinned
+  // block when available. Method-specific source details follow afterward.
+  // Myotis verifies locally against beacon-anchored state, so there is no
+  // server row to show.
+  if (isMyotis) {
+    trustRows.push({
+      label: 'Verified by',
+      display: 'Myotis light client',
+      copy: '',
+    });
+    trustRows.push({
+      label: 'Evidence',
+      display: trust.finality === 'optimistic'
+        ? 'Optimistic beacon proof (not finalized)'
+        : 'Beacon-finalized proof',
+      copy: '',
+    });
+    pushBlockRow();
+    return { status, trustRows, contentRows: buildContentRows({ uri, proto }) };
+  }
+
   if (isColibri) {
-    trustRows.push({ label: 'Method', display: 'Colibri', copy: '' });
-    if (trust.proof) {
-      trustRows.push({ label: 'Proof', display: trust.proof, copy: '' });
-    }
+    trustRows.push({ label: 'Verified by', display: 'Colibri', copy: '' });
+    trustRows.push({
+      label: 'Evidence',
+      display: trust.proof || 'Cryptographic proof',
+      copy: '',
+    });
+    pushBlockRow();
     if (trust.prover) {
       trustRows.push({
         label: 'Server',
@@ -166,23 +195,45 @@ export const buildTrustRows = ({
     return { status, trustRows, contentRows: buildContentRows({ uri, proto }) };
   }
 
-  // Quorum summary is meaningful only when more than one RPC was queried;
-  // otherwise "1 of 1" is degenerate and just adds noise on the
-  // user-configured / unverified rows.
-  if (queried.length > 1) {
+  // RPC-backed methods use the same summary fields while keeping the status
+  // honest: configured and single-source answers were resolved, not
+  // independently verified. Individual endpoints remain visible below the
+  // summary for auditability and copy-to-clipboard.
+  if (level === 'verified') {
+    const rpcNoun = queried.length === 1 ? 'public RPC' : 'public RPCs';
     trustRows.push({
-      label: 'RPC Quorum',
-      display: `${agreed.length}/${queried.length}`,
+      label: 'Verified by',
+      display: queried.length
+        ? `${agreed.length} of ${queried.length} ${rpcNoun}`
+        : 'Public RPC quorum',
       copy: '',
     });
+    trustRows.push({ label: 'Evidence', display: 'Matching RPC responses', copy: '' });
+  } else if (level === 'user-configured') {
+    trustRows.push({ label: 'Resolved by', display: 'Your configured RPC', copy: '' });
+    trustRows.push({ label: 'Evidence', display: 'Trusted endpoint response', copy: '' });
+  } else if (level === 'unverified') {
+    trustRows.push({ label: 'Resolved by', display: 'A single public RPC', copy: '' });
+    trustRows.push({
+      label: 'Evidence',
+      display: 'Single response (not independently verified)',
+      copy: '',
+    });
+  } else if (level === 'conflict') {
+    const rpcNoun = queried.length === 1 ? 'public RPC' : 'public RPCs';
+    trustRows.push({
+      label: 'Checked by',
+      display: `${queried.length} ${rpcNoun}`,
+      copy: '',
+    });
+    trustRows.push({ label: 'Evidence', display: 'Conflicting RPC responses', copy: '' });
   }
 
+  pushBlockRow();
+
   if (level === 'user-configured' && agreed.length > 0) {
-    // For user-configured the single RPC is the user's own choice, so
-    // we label it "Your RPC:" rather than "RPC 1:" — it conveys why
-    // there's only one and that no quorum check ran.
     trustRows.push({
-      label: 'Your RPC',
+      label: 'Server',
       display: agreed[0],
       copy: agreed[0],
       autoFit: agreed[0],
@@ -216,11 +267,6 @@ export const buildTrustRows = ({
         autoFit: host,
       });
     });
-  }
-
-  if (blockNumber !== undefined && blockNumber !== null && blockNumber !== '') {
-    const num = String(blockNumber);
-    trustRows.push({ label: 'Block', display: num, copy: num });
   }
 
   return { status, trustRows, contentRows: buildContentRows({ uri, proto }) };
@@ -372,7 +418,7 @@ export const buildViewSourceNavigation = ({
   const innerUrl = value.startsWith('view-source:') ? value.slice(12) : value;
 
   const bzzMatch = innerUrl.match(/^bzz:\/\/([a-fA-F0-9]+)(\/.*)?$/);
-  if (bzzMatch && !isEnsHost(bzzMatch[1])) {
+  if (bzzMatch && !isDwebNameHost(bzzMatch[1])) {
     const hash = bzzMatch[1];
     const path = bzzMatch[2] || '/';
     return {
@@ -382,7 +428,7 @@ export const buildViewSourceNavigation = ({
   }
 
   const ipfsMatch = innerUrl.match(/^ipfs:\/\/([A-Za-z0-9]+)(\/.*)?$/);
-  if (ipfsMatch && !isEnsHost(ipfsMatch[1])) {
+  if (ipfsMatch && !isDwebNameHost(ipfsMatch[1])) {
     const cid = ipfsMatch[1];
     const path = ipfsMatch[2] || '';
     return {
@@ -392,7 +438,7 @@ export const buildViewSourceNavigation = ({
   }
 
   const ipnsMatch = innerUrl.match(/^ipns:\/\/([A-Za-z0-9.-]+)(\/.*)?$/);
-  if (ipnsMatch && !isEnsHost(ipnsMatch[1])) {
+  if (ipnsMatch && !isDwebNameHost(ipnsMatch[1])) {
     const name = ipnsMatch[1];
     const path = ipnsMatch[2] || '';
     return {

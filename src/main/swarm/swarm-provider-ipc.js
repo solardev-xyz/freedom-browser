@@ -15,16 +15,25 @@
  *   (b) The renderer derives origin from the per-webview display URL
  *       (via getDisplayUrlForWebview), not from the page's window.location
  *       which is http://127.0.0.1:port for all dweb pages.
- *   (c) webContents.getURL() cannot be used because dweb pages resolve
- *       through the request-rewriter — the internal URL doesn't carry
- *       the dweb protocol identity (bzz://, ens://, ipfs://).
+ *   (c) The renderer-supplied origin is the *authority* for grant checks;
+ *       webContents.getURL() is used only as an independent cross-check that
+ *       the subscribing/receiving document still belongs to that origin (see
+ *       the delivery guard and the subscribe post-await re-check below). This
+ *       works because bzz://, ipfs:// and ipns:// are served by custom
+ *       protocol handlers that preserve the dweb URL — getURL() carries the
+ *       dweb identity, so normalizeOrigin(getURL()) matches the renderer key.
+ *       NOTE: those two guards depend on that invariant. If a future transport
+ *       reintroduces gateway-URL loading (http://127.0.0.1:port) for a dweb
+ *       scheme, getURL() would stop carrying the identity and the guards would
+ *       fail *closed* for it (messaging blocked, not leaked) — update them here
+ *       rather than assuming this comment still holds.
  *   The renderer is the only process that can map webview → tab → display URL.
  */
 
-const { ipcMain } = require('electron');
+const { ipcMain, webContents } = require('electron');
 const IPC = require('../../shared/ipc-channels');
 const { normalizeOrigin } = require('../../shared/origin-utils');
-const { getPermission } = require('./swarm-permissions');
+const { getPermission, hasMessagingGrant, onRevoke } = require('./swarm-permissions');
 const { publishData, publishFilesFromContent, getUploadStatus } = require('./publish-service');
 const { createFeed, updateFeed, writeFeedPayload, readFeedPayload, buildTopicString } = require('./feed-service');
 const { Topic } = require('@ethersphere/bee-js');
@@ -38,6 +47,8 @@ const {
   getSignerAddress,
 } = require('./chunk-service');
 const { addEntry, updateEntry } = require('./publish-history');
+const messagingService = require('./messaging-service');
+const subscriptionRegistry = require('./subscription-registry');
 const { getAntApiUrl } = require('../service-registry');
 const { getDerivedKeys, getPublisherKey, getUserWalletKey } = require('../identity-manager');
 const { resetVaultAutoLockTimer } = require('../vault-timer');
@@ -49,6 +60,15 @@ const LIMITS = {
   maxFileCount: 100,
   maxPathBytes: 100,
   maxChunkPayloadBytes: 4096,
+  // Messaging extension — maxMessageBytes/maxTargetDepth mirror the Ant
+  // node's own enforcement (see messaging-service.js). minTargetDepth is
+  // the SWIP storability floor (2 bytes); defaultTargetDepth is the L=16
+  // interop convention we emit as `pssTarget`.
+  maxMessageBytes: messagingService.MAX_MESSAGE_BYTES,
+  maxTargetDepth: messagingService.MAX_TARGET_DEPTH,
+  defaultTargetDepth: messagingService.DEFAULT_TARGET_DEPTH,
+  minTargetDepth: messagingService.DEFAULT_TARGET_DEPTH,
+  maxSubscriptions: 32,
 };
 
 const SPEC_VERSION = '1.0';
@@ -92,6 +112,11 @@ const KNOWN_METHODS = [
   'swarm_writeSingleOwnerChunk',
   'swarm_readSingleOwnerChunk',
   'swarm_getSigningIdentity',
+  'swarm_getMessagingIdentity',
+  'swarm_subscribe',
+  'swarm_unsubscribe',
+  'swarm_sendPss',
+  'swarm_sendGsoc',
 ];
 
 // Tag ownership: tagUid → origin. Session-scoped, not persisted.
@@ -188,32 +213,33 @@ function normalizePayloadParam(data) {
   return normalizeBytes(data);
 }
 
-function validateChunkPayload(data) {
+/**
+ * Shared bounded-payload validation for chunk and message writes.
+ * Returns { payload } on success or an invalidParams result to return as-is.
+ * Empty payloads are rejected by default (bee refuses empty chunks/SOCs);
+ * PSS opts out via allowEmpty — its trojan framing carries an explicit
+ * length, so a zero-byte message is well-formed (spec: pings/signals).
+ */
+function validateBoundedPayload(data, maxBytes, label, options = {}) {
   const payload = normalizePayloadParam(data);
   if (!payload) {
-    return {
-      error: invalidParams('data must be a string, Uint8Array, or ArrayBuffer').error,
-      payload: null,
-    };
+    return invalidParams('data must be a string, Uint8Array, or ArrayBuffer');
   }
-  if (payload.length === 0) {
-    // Bee rejects empty chunks; fail before prompting or spending postage.
-    return {
-      error: invalidParams('data must not be empty', 'invalid_params').error,
-      payload: null,
-    };
+  if (payload.length === 0 && !options.allowEmpty) {
+    return invalidParams('data must not be empty', options.emptyReason || 'invalid_params');
   }
-  if (payload.length > LIMITS.maxChunkPayloadBytes) {
-    return {
-      error: invalidParams(
-        `Payload exceeds maximum chunk size of ${LIMITS.maxChunkPayloadBytes} bytes`,
-        'payload_too_large',
-        { limit: LIMITS.maxChunkPayloadBytes, actual: payload.length }
-      ).error,
-      payload: null,
-    };
+  if (payload.length > maxBytes) {
+    return invalidParams(
+      `Payload exceeds maximum ${label} size of ${maxBytes} bytes`,
+      'payload_too_large',
+      { limit: maxBytes, actual: payload.length }
+    );
   }
-  return { payload, error: null };
+  return { payload };
+}
+
+function validateChunkPayload(data) {
+  return validateBoundedPayload(data, LIMITS.maxChunkPayloadBytes, 'chunk');
 }
 
 function getReadBudget(origin) {
@@ -247,9 +273,12 @@ function consumePermissionFreeReadBudget(origin, { requests = 0, bytes = 0 } = {
  * @param {string} method
  * @param {*} params
  * @param {string} origin - Normalized origin from renderer
+ * @param {{ webContentsId?: number }} [meta] - Renderer-supplied routing info
+ *   (trusted like origin — the renderer is Freedom's own code). Only
+ *   swarm_subscribe uses it, to target message delivery at the webview.
  * @returns {{ result?, error? }}
  */
-async function executeSwarmMethod(method, params, origin) {
+async function executeSwarmMethod(method, params, origin, meta) {
   try {
     if (!method || typeof method !== 'string') {
       return { error: { ...ERRORS.INVALID_PARAMS, message: 'Method is required' } };
@@ -356,6 +385,28 @@ async function executeSwarmMethod(method, params, origin) {
       return result;
     }
 
+    // Messaging extension — no vault-timer reset: PSS/GSOC use node/mined
+    // keys, never vault-derived signing keys.
+    if (method === 'swarm_getMessagingIdentity') {
+      return handleGetMessagingIdentity(normalizedOrigin);
+    }
+
+    if (method === 'swarm_sendPss') {
+      return handleSendPss(params, normalizedOrigin);
+    }
+
+    if (method === 'swarm_sendGsoc') {
+      return handleSendGsoc(params, normalizedOrigin);
+    }
+
+    if (method === 'swarm_subscribe') {
+      return handleSubscribe(params, normalizedOrigin, meta);
+    }
+
+    if (method === 'swarm_unsubscribe') {
+      return handleUnsubscribe(params, normalizedOrigin);
+    }
+
     return { error: ERRORS.INTERNAL_ERROR };
   } catch (err) {
     log.error('[SwarmProvider] executeSwarmMethod failed:', err.message);
@@ -383,6 +434,7 @@ async function handleGetCapabilities(origin) {
       canPublish: isConnected && preFlight.ok,
       reason: !isConnected ? 'not-connected' : (preFlight.ok ? null : preFlight.reason),
       publisherIdentityModes: ['app-scoped', 'bee-wallet', 'ethereum-wallet'],
+      features: ['messaging'],
       extensions: {
         ethereumWalletPublisherIdentity: true,
         publisherSigning: true,
@@ -393,6 +445,9 @@ async function handleGetCapabilities(origin) {
         maxFileCount: LIMITS.maxFileCount,
         maxPathBytes: LIMITS.maxPathBytes,
         maxChunkPayloadBytes: LIMITS.maxChunkPayloadBytes,
+        maxMessageBytes: LIMITS.maxMessageBytes,
+        maxTargetDepth: LIMITS.maxTargetDepth,
+        maxSubscriptions: LIMITS.maxSubscriptions,
       },
     },
   };
@@ -1400,6 +1455,466 @@ function handleListFeeds(origin) {
   return { result };
 }
 
+// ---------------------------------------------------------------------------
+// Messaging extension (PSS/GSOC) — see the messaging SWIP
+// ---------------------------------------------------------------------------
+
+function messagingNotGranted() {
+  return notAuthorized('messaging_not_granted');
+}
+
+/**
+ * Validate a messaging topic string (PSS topic or GSOC room topic).
+ * Topics are hashed before hitting the wire, so the only constraints are
+ * sanity ones: non-empty, bounded, no control characters.
+ */
+function validateMessagingTopic(topic) {
+  if (typeof topic !== 'string' || topic.length === 0) {
+    return invalidParams('topic must be a non-empty string', 'invalid_topic');
+  }
+  if (Buffer.byteLength(topic, 'utf-8') > 256) {
+    return invalidParams('topic exceeds 256 UTF-8 bytes', 'invalid_topic');
+  }
+  for (let i = 0; i < topic.length; i++) {
+    if (topic.charCodeAt(i) < 32) {
+      return invalidParams('topic must not contain control characters', 'invalid_topic');
+    }
+  }
+  return null;
+}
+
+/**
+ * Handle swarm_getMessagingIdentity: disclose the PSS public key peers
+ * encrypt to and the truncated routing target they send toward.
+ *
+ * The full node overlay MUST NOT cross the page boundary — it is
+ * node-global (identical for every origin), so it would be a cross-origin
+ * correlation handle and disclose the node's exact network position. Only
+ * the first defaultTargetDepth (2) bytes leave as `pssTarget` — the L=16
+ * routing convention, and enough neighborhood prefix to route. The PSS key itself
+ * is the node key (the Ant lurker decrypts with it), i.e. bee-wallet mode:
+ * origins that need unlinkable messaging identities must wait for
+ * app-scoped PSS keys (node support required).
+ */
+async function handleGetMessagingIdentity(origin) {
+  if (!hasMessagingGrant(origin)) {
+    return messagingNotGranted();
+  }
+
+  const reachable = await checkBeeReachable();
+  if (!reachable.ok) {
+    return { error: { ...ERRORS.NODE_UNAVAILABLE, message: `Node not available: ${reachable.reason}`, data: { reason: reachable.reason } } };
+  }
+
+  try {
+    const identity = await messagingService.getMessagingIdentity();
+    return {
+      result: {
+        pssPublicKey: identity.pssPublicKey,
+        pssTarget: identity.overlay.slice(0, LIMITS.defaultTargetDepth * 2),
+        identityMode: 'bee-wallet',
+      },
+    };
+  } catch (err) {
+    log.error(`[SwarmProvider] getMessagingIdentity failed for ${origin}:`, err.message);
+    return { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
+  }
+}
+
+/**
+ * Handle swarm_sendPss: encrypted point-to-point message.
+ */
+async function handleSendPss(params, origin) {
+  if (!params || typeof params !== 'object') {
+    return invalidParams('params is required');
+  }
+
+  const optionsError = validateEmptyOptions(params.options);
+  if (optionsError) return optionsError;
+
+  const topicError = validateMessagingTopic(params.topic);
+  if (topicError) return topicError;
+
+  const recipient = normalizeAddress(params.recipient);
+  if (!/^0[23][0-9a-fA-F]{64}$/.test(recipient)) {
+    return invalidParams(
+      'recipient must be a 66-character hex compressed secp256k1 public key',
+      'invalid_recipient'
+    );
+  }
+
+  const { targets } = params;
+  const targetByteLen = typeof targets === 'string' ? targets.length / 2 : NaN;
+  const targetBytesValid =
+    typeof targets === 'string' &&
+    /^([0-9a-fA-F]{2})+$/.test(targets) &&
+    targetByteLen >= LIMITS.minTargetDepth &&
+    targetByteLen <= LIMITS.maxTargetDepth;
+  if (!targetBytesValid) {
+    // Floor is the storability depth (a 1-byte target is too shallow to
+    // be retained by any storer); cap is the mining-cost ceiling.
+    return invalidParams(
+      `targets must be hex encoding ${LIMITS.minTargetDepth}-${LIMITS.maxTargetDepth} whole bytes`,
+      'invalid_target'
+    );
+  }
+
+  const { payload, error } = validateBoundedPayload(params.data, LIMITS.maxMessageBytes, 'message', {
+    allowEmpty: true,
+  });
+  if (error) return { error };
+
+  if (!hasMessagingGrant(origin)) {
+    return messagingNotGranted();
+  }
+
+  const preFlight = await checkSwarmPreFlight();
+  if (!preFlight.ok) {
+    return { error: { ...ERRORS.NODE_UNAVAILABLE, message: `Node not available: ${preFlight.reason}`, data: { reason: preFlight.reason } } };
+  }
+
+  try {
+    await messagingService.sendPss({
+      topic: params.topic,
+      targets: targets.toLowerCase(),
+      recipient,
+      data: payload,
+    });
+    return { result: { sent: true } };
+  } catch (err) {
+    log.error(`[SwarmProvider] sendPss failed for ${origin}:`, err.message);
+    return { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
+  }
+}
+
+/**
+ * Handle swarm_sendGsoc: topic broadcast.
+ *
+ * Raw-address sends are rejected: a GSOC write is a signed SOC, and the
+ * signing key is derived by mining from the topic — an address alone
+ * carries no key, so there is nothing to sign with. Cross-provider
+ * senders must share the topic (or use the feed/SOC layer).
+ */
+async function handleSendGsoc(params, origin) {
+  if (!params || typeof params !== 'object') {
+    return invalidParams('params is required');
+  }
+
+  const optionsError = validateEmptyOptions(params.options);
+  if (optionsError) return optionsError;
+
+  if (params.address !== undefined && params.address !== null) {
+    return invalidParams(
+      'Sending to a raw GSOC address is not supported: the signing key derives from the topic. Provide topic instead.',
+      'invalid_address'
+    );
+  }
+
+  const topicError = validateMessagingTopic(params.topic);
+  if (topicError) return topicError;
+
+  // A GSOC update is a SOC; bee's chunk layer rejects an empty SOC
+  // payload, so an empty broadcast is inexpressible (spec: invalid_payload).
+  const { payload, error } = validateBoundedPayload(params.data, LIMITS.maxMessageBytes, 'message', {
+    emptyReason: 'invalid_payload',
+  });
+  if (error) return { error };
+
+  if (!hasMessagingGrant(origin)) {
+    return messagingNotGranted();
+  }
+
+  const preFlight = await checkSwarmPreFlight();
+  if (!preFlight.ok) {
+    return { error: { ...ERRORS.NODE_UNAVAILABLE, message: `Node not available: ${preFlight.reason}`, data: { reason: preFlight.reason } } };
+  }
+
+  try {
+    const result = await messagingService.sendGsoc({ topic: params.topic, data: payload });
+    return { result: { sent: true, address: result.address } };
+  } catch (err) {
+    log.error(`[SwarmProvider] sendGsoc failed for ${origin}:`, err.message);
+    return { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
+  }
+}
+
+// webContents ids that already have teardown listeners attached. A
+// webview keeps its webContents across navigations, so subscriptions are
+// torn down both on 'destroyed' (tab close) and 'did-navigate' (main-frame
+// navigation away — the page that subscribed is gone either way).
+// Deliberately not 'did-navigate-in-page': a hash route or pushState
+// leaves the same document, with the same grant and the same live
+// listeners, so tearing down there would break messaging on a page that
+// is very much still there.
+const teardownAttached = new Set();
+
+// Per-webContents navigation counter. A webview keeps its webContents across
+// navigations, so a same-origin *cross-document* navigation during the
+// subscribe awaits (grant prompt + reachability probe) fires did-navigate but
+// leaves the origin re-check happy (chat.eth → chat.eth) — binding the new
+// document a subscription it never asked for. Snapshot this at request entry
+// and compare after the awaits: a cross-document navigation bumps it (in-page
+// hash/pushState does not fire did-navigate, so a live page's own routing is
+// unaffected). Listener attached once per webContents, cleared on destroy.
+const navEpochs = new Map();
+const navEpochAttached = new Set();
+
+function navEpoch(webContentsId) {
+  if (!navEpochAttached.has(webContentsId)) {
+    const contents = webContents.fromId(webContentsId);
+    if (contents && !contents.isDestroyed()) {
+      navEpochAttached.add(webContentsId);
+      contents.on('did-navigate', () => {
+        navEpochs.set(webContentsId, (navEpochs.get(webContentsId) || 0) + 1);
+      });
+      contents.once('destroyed', () => {
+        navEpochAttached.delete(webContentsId);
+        navEpochs.delete(webContentsId);
+      });
+    }
+  }
+  return navEpochs.get(webContentsId) || 0;
+}
+
+function attachWebContentsTeardown(webContentsId) {
+  if (teardownAttached.has(webContentsId)) return;
+  const contents = webContents.fromId(webContentsId);
+  if (!contents || contents.isDestroyed()) {
+    subscriptionRegistry.cancelByWebContents(webContentsId);
+    return;
+  }
+  teardownAttached.add(webContentsId);
+  contents.on('did-navigate', () => {
+    subscriptionRegistry.cancelByWebContents(webContentsId);
+  });
+  contents.once('destroyed', () => {
+    teardownAttached.delete(webContentsId);
+    subscriptionRegistry.cancelByWebContents(webContentsId);
+  });
+}
+
+function deliverSubscriptionMessage(subscription, payload) {
+  const contents = webContents.fromId(subscription.webContentsId);
+  if (!contents || contents.isDestroyed()) return;
+  // A webview keeps its webContents across navigations, so the page on
+  // screen may no longer belong to the origin that subscribed. Delivering
+  // here would hand another origin's page the messages of a subscription
+  // it never asked for (and has no grant for). The did-navigate teardown
+  // below normally wins this race; this check is what makes it safe when
+  // a message and a commit land in the same tick.
+  //
+  // The comparison is on the permission key, not the exact URL: an
+  // in-page navigation (hash route, pushState) fires no did-navigate and
+  // leaves the very same document — and the same grant — in place, so
+  // keying on the URL would kill a live page's messaging on its first
+  // route change.
+  const currentOrigin = normalizeOrigin(contents.getURL());
+  if (currentOrigin !== subscription.origin) {
+    // Only the subscriptions whose origin is gone: a subscription the
+    // origin now loaded already opened on this webview is still valid.
+    subscriptionRegistry.cancelStaleByWebContents(subscription.webContentsId, currentOrigin);
+    return;
+  }
+  // The webview preload bridges this channel to the page (the preload
+  // itself keeps the literal string — sandboxed preloads cannot require
+  // shared modules).
+  contents.send(IPC.SWARM_PROVIDER_EVENT, {
+    event: 'message',
+    data: {
+      type: 'swarm_subscription',
+      subscription: subscription.id,
+      result: {
+        kind: subscription.kind,
+        key: subscription.key,
+        data: payload.toString('base64'),
+        encoding: 'base64',
+        receivedAt: Date.now(),
+      },
+    },
+  });
+}
+
+/**
+ * Handle swarm_subscribe: open a long-lived GSOC/PSS subscription.
+ */
+async function handleSubscribe(params, origin, meta) {
+  if (!params || typeof params !== 'object') {
+    return invalidParams('params is required');
+  }
+
+  const optionsError = validateEmptyOptions(params.options);
+  if (optionsError) return optionsError;
+
+  const { kind } = params;
+  if (kind !== 'gsoc' && kind !== 'pss') {
+    return invalidParams('kind must be "gsoc" or "pss"', 'invalid_kind');
+  }
+
+  const hasTopic = params.topic !== undefined && params.topic !== null;
+  const hasAddress = params.address !== undefined && params.address !== null;
+
+  let key;
+  if (kind === 'gsoc') {
+    if (hasTopic === hasAddress) {
+      return invalidParams('Provide either topic or address, not both', 'invalid_params');
+    }
+    if (hasAddress) {
+      const addressError = validateHexString(params.address, 32, 'invalid_address', 'address');
+      if (addressError) return addressError;
+      key = params.address.toLowerCase();
+    }
+  } else {
+    if (hasAddress) {
+      return invalidParams('address is only valid for gsoc subscriptions', 'invalid_params');
+    }
+    if (!hasTopic) {
+      return invalidParams('topic is required', 'invalid_topic');
+    }
+  }
+
+  if (hasTopic) {
+    const topicError = validateMessagingTopic(params.topic);
+    if (topicError) return topicError;
+  }
+
+  const webContentsId = meta?.webContentsId;
+  if (!Number.isInteger(webContentsId) || webContentsId <= 0) {
+    return invalidParams('subscribe requires a webContents target', 'invalid_params');
+  }
+
+  // Snapshot before the user-paced grant prompt and the reachability probe, so
+  // a cross-document navigation during either is detected below even when it
+  // stays on the same origin (which the origin re-check alone cannot catch).
+  const entryNavEpoch = navEpoch(webContentsId);
+
+  if (!hasMessagingGrant(origin)) {
+    return messagingNotGranted();
+  }
+
+  const reachable = await checkBeeReachable();
+  if (!reachable.ok) {
+    return { error: { ...ERRORS.NODE_UNAVAILABLE, message: `Node not available: ${reachable.reason}`, data: { reason: reachable.reason } } };
+  }
+
+  if (!key) {
+    // Topic-derived key: GSOC mines the room address, PSS hashes the topic.
+    try {
+      key = kind === 'gsoc'
+        ? messagingService.deriveGsoc(params.topic).address
+        : messagingService.resolvePssTopicHex(params.topic);
+    } catch (err) {
+      log.error(`[SwarmProvider] subscribe derivation failed for ${origin}:`, err.message);
+      return { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
+    }
+  }
+
+  const contents = webContents.fromId(webContentsId);
+  if (!contents || contents.isDestroyed()) {
+    return invalidParams('subscribe requires a live webContents target', 'invalid_params');
+  }
+
+  // Everything above this line can take arbitrarily long — the messaging
+  // grant prompt is user-paced and the reachability probe is a network
+  // round-trip — and a webview keeps its webContents across navigations.
+  // If the user navigated the tab elsewhere while we waited, the registry
+  // entry we are about to create would bind `origin`'s subscription to a
+  // webContents now hosting someone else, and the delivery check would
+  // then happily validate it: every message for this topic would land in
+  // the other site. did-navigate cannot save us here — it fired before
+  // any entry existed. Re-check the live page instead.
+  // Two shapes of "navigated away during the awaits": a different origin now
+  // holds the webContents (origin check), or a same-origin cross-document
+  // navigation replaced the subscribing document (epoch check — did-navigate
+  // fired with no entry yet to cancel). Either way the requesting document is
+  // gone; binding now would hand its slot to a page that never subscribed.
+  if (normalizeOrigin(contents.getURL()) !== origin || navEpoch(webContentsId) !== entryNavEpoch) {
+    log.warn(`[SwarmProvider] subscribe target navigated away from ${origin}: ${kind}:${key}`);
+    return {
+      error: {
+        ...ERRORS.NODE_UNAVAILABLE,
+        message: 'Page navigated away before the subscription was established',
+        data: { reason: 'subscription_cancelled' },
+      },
+    };
+  }
+
+  // Teardown must be armed *before* the registry can hold a slot on this
+  // page's behalf: establishment can take seconds (or, against a node
+  // that stopped answering, never settle), and the page can navigate away
+  // or be closed in the meantime. Attaching only on success leaked the
+  // subscription — and its share of the per-origin cap — forever.
+  attachWebContentsTeardown(webContentsId);
+
+  try {
+    const { subscriptionId } = await subscriptionRegistry.subscribe({
+      origin,
+      webContentsId,
+      kind,
+      key,
+    });
+    log.info(`[SwarmProvider] subscribe succeeded for ${origin}: ${kind}:${key}`);
+    return { result: { subscriptionId, kind, key } };
+  } catch (err) {
+    if (err.reason === 'establish_timeout' || err.reason === 'subscription_cancelled' || err.reason === 'cancelled') {
+      // Never established within the window, or torn down while we waited
+      // (navigation, tab close, grant revoke). Retryable, like any other
+      // node-availability failure — the slot has already been released.
+      log.warn(`[SwarmProvider] subscribe did not establish for ${origin} (${err.reason}): ${kind}:${key}`);
+      return {
+        error: {
+          ...ERRORS.NODE_UNAVAILABLE,
+          message: err.message,
+          data: { reason: err.reason },
+        },
+      };
+    }
+    if (err.reason === 'too_many_subscriptions') {
+      return invalidParams(err.message, 'too_many_subscriptions', {
+        limit: LIMITS.maxSubscriptions,
+      });
+    }
+    if (err.reason === 'node_subscription_limit') {
+      // Node-wide pipeline pool exhausted (possibly by other origins) —
+      // per spec this is a retryable 4900, NOT a parameter error: the
+      // calling dApp did nothing wrong and capacity frees as other
+      // subscriptions close.
+      return {
+        error: {
+          ...ERRORS.NODE_UNAVAILABLE,
+          message: `Node subscription capacity exhausted: ${err.message}`,
+          data: { reason: 'node_subscription_limit' },
+        },
+      };
+    }
+    log.error(`[SwarmProvider] subscribe failed for ${origin}:`, err.message);
+    return { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
+  }
+}
+
+/**
+ * Handle swarm_unsubscribe: close a subscription (origin-scoped).
+ */
+function handleUnsubscribe(params, origin) {
+  if (!params || typeof params !== 'object') {
+    return invalidParams('params is required');
+  }
+
+  const { subscriptionId } = params;
+  if (typeof subscriptionId !== 'string' || subscriptionId.length === 0) {
+    return invalidParams('subscriptionId is required', 'invalid_params');
+  }
+
+  try {
+    subscriptionRegistry.unsubscribe(origin, subscriptionId);
+    return { result: { unsubscribed: true } };
+  } catch (err) {
+    if (err.reason === 'subscription_not_found') {
+      return invalidParams(err.message, 'subscription_not_found');
+    }
+    return { error: { ...ERRORS.INTERNAL_ERROR, message: err.message } };
+  }
+}
+
 /**
  * Read-only pre-flight: is the Bee HTTP API reachable?
  * Intentionally separate from checkSwarmPreFlight — reads don't need
@@ -1470,9 +1985,18 @@ async function checkSwarmPreFlight() {
  * Register the swarm:provider-execute IPC handler.
  */
 function registerSwarmProviderIpc() {
+  subscriptionRegistry.configure({
+    openSocket: messagingService.openSubscriptionSocket,
+    deliver: deliverSubscriptionMessage,
+    maxSubscriptionsPerOrigin: LIMITS.maxSubscriptions,
+  });
+
+  // Live messaging subscriptions must not outlive the origin's grant.
+  onRevoke((origin) => subscriptionRegistry.cancelByOrigin(origin));
+
   ipcMain.handle(IPC.SWARM_PROVIDER_EXECUTE, async (_event, args) => {
-    const { method, params, origin } = args || {};
-    return executeSwarmMethod(method, params, origin);
+    const { method, params, origin, meta } = args || {};
+    return executeSwarmMethod(method, params, origin, meta);
   });
 
   log.info('[SwarmProvider] IPC handler registered');

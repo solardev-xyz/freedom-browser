@@ -27,6 +27,7 @@ function loadPreloadModule(options = {}) {
       invokeResponses: {
         [IPC.ANT_GET_STATUS]: { status: 'running', error: null },
         [IPC.IPFS_GET_STATUS]: { status: 'stopped', error: null },
+        [IPC.MYOTIS_GET_STATUS]: { state: 'off', running: false, available: true },
         [IPC.RADICLE_GET_STATUS]: { status: 'error', error: 'offline' },
         ...(options.invokeResponses || {}),
       },
@@ -83,14 +84,16 @@ describe('preload', () => {
       beeApiEnv: 'http://127.0.0.1:1700',
     });
 
-    expect(contextBridge.exposeInMainWorld).toHaveBeenCalledTimes(22);
+    expect(contextBridge.exposeInMainWorld).toHaveBeenCalledTimes(28);
     expect(Object.keys(exposures)).toEqual([
       'nodeConfig',
       'internalPages',
       'electronAPI',
       'ant',
+      'myotis',
       'ipfs',
       'radicle',
+      'tor',
       'githubBridge',
       'serviceRegistry',
       'identity',
@@ -103,9 +106,13 @@ describe('preload', () => {
       'payments',
       'tokens',
       'rpcManager',
+      'sitePermissions',
       'dappPermissions',
       'swarmPermissions',
+      'swarmManifest',
       'swarmProvider',
+      'radiclePermissions',
+      'radicleProvider',
       'swarmFeedStore',
     ]);
     expect(ipcRenderer.sendSync).toHaveBeenCalledWith(IPC.GET_INTERNAL_PAGES);
@@ -118,7 +125,7 @@ describe('preload', () => {
     const invokeCases = [
       [exposures.electronAPI, 'setBzzBase', [11, 'http://127.0.0.1:1633/bzz/hash/'], IPC.BZZ_SET_BASE, [{ webContentsId: 11, baseUrl: 'http://127.0.0.1:1633/bzz/hash/' }]],
       [exposures.electronAPI, 'clearBzzBase', [11], IPC.BZZ_CLEAR_BASE, [{ webContentsId: 11 }]],
-      [exposures.electronAPI, 'startSwarmProbe', ['a'.repeat(64)], IPC.BZZ_START_PROBE, [{ hash: 'a'.repeat(64) }]],
+      [exposures.electronAPI, 'startSwarmProbe', ['a'.repeat(64), '/index.html'], IPC.BZZ_START_PROBE, [{ hash: 'a'.repeat(64), path: '/index.html' }]],
       [exposures.electronAPI, 'awaitSwarmProbe', ['probe-1'], IPC.BZZ_AWAIT_PROBE, [{ id: 'probe-1' }]],
       [exposures.electronAPI, 'cancelSwarmProbe', ['probe-1'], IPC.BZZ_CANCEL_PROBE, [{ id: 'probe-1' }]],
       [exposures.electronAPI, 'setRadBase', [31, 'http://127.0.0.1:8780/api/v1/repos/rid/'], IPC.RAD_SET_BASE, [{ webContentsId: 31, baseUrl: 'http://127.0.0.1:8780/api/v1/repos/rid/' }]],
@@ -154,6 +161,9 @@ describe('preload', () => {
       [exposures.ant, 'stop', [], IPC.ANT_STOP, []],
       [exposures.ant, 'getStatus', [], IPC.ANT_GET_STATUS, []],
       [exposures.ant, 'checkBinary', [], IPC.ANT_CHECK_BINARY, []],
+      [exposures.myotis, 'start', [], IPC.MYOTIS_START, []],
+      [exposures.myotis, 'stop', [], IPC.MYOTIS_STOP, []],
+      [exposures.myotis, 'getStatus', [], IPC.MYOTIS_GET_STATUS, []],
       [exposures.ipfs, 'start', [], IPC.IPFS_START, []],
       [exposures.ipfs, 'stop', [], IPC.IPFS_STOP, []],
       [exposures.ipfs, 'getStatus', [], IPC.IPFS_GET_STATUS, []],
@@ -163,14 +173,29 @@ describe('preload', () => {
       [exposures.radicle, 'getStatus', [], IPC.RADICLE_GET_STATUS, []],
       [exposures.radicle, 'checkBinary', [], IPC.RADICLE_CHECK_BINARY, []],
       [exposures.radicle, 'getConnections', [], IPC.RADICLE_GET_CONNECTIONS, []],
+      [exposures.tor, 'start', [], IPC.TOR_START, []],
+      [exposures.tor, 'stop', [], IPC.TOR_STOP, []],
+      [exposures.tor, 'getStatus', [], IPC.TOR_GET_STATUS, []],
+      [exposures.tor, 'checkBinary', [], IPC.TOR_CHECK_BINARY, []],
+      [exposures.tor, 'getVersion', [], IPC.TOR_GET_VERSION, []],
       [exposures.githubBridge, 'import', ['https://github.com/openai/project'], IPC.GITHUB_BRIDGE_IMPORT, ['https://github.com/openai/project']],
       [exposures.githubBridge, 'checkGit', [], IPC.GITHUB_BRIDGE_CHECK_GIT, []],
       [exposures.githubBridge, 'checkPrerequisites', [], IPC.GITHUB_BRIDGE_CHECK_PREREQUISITES, []],
       [exposures.githubBridge, 'validateUrl', ['https://github.com/openai/project'], IPC.GITHUB_BRIDGE_VALIDATE_URL, ['https://github.com/openai/project']],
       [exposures.githubBridge, 'checkExisting', ['https://github.com/openai/project'], IPC.GITHUB_BRIDGE_CHECK_EXISTING, ['https://github.com/openai/project']],
       [exposures.serviceRegistry, 'getRegistry', [], IPC.SERVICE_REGISTRY_GET, []],
+      [exposures.swarmPermissions, 'revokeMessaging', ['origin.eth'], IPC.SWARM_REVOKE_MESSAGING, ['origin.eth']],
+      [exposures.swarmManifest, 'check', [{ origin: 'origin.eth', committedUrl: 'bzz://origin.eth/' }], IPC.SWARM_MANIFEST_CHECK, [{ origin: 'origin.eth', committedUrl: 'bzz://origin.eth/' }]],
+      [exposures.swarmManifest, 'decide', ['token', 'allow'], IPC.SWARM_MANIFEST_DECIDE, [{ token: 'token', outcome: 'allow' }]],
+      [exposures.swarmManifest, 'get', ['origin.eth'], IPC.SWARM_MANIFEST_GET, ['origin.eth']],
+      [exposures.swarmManifest, 'useIndividual', ['origin.eth', 'feeds'], IPC.SWARM_MANIFEST_USE_INDIVIDUAL, [{ origin: 'origin.eth', capability: 'feeds' }]],
+      [exposures.swarmManifest, 'disconnect', ['origin.eth'], IPC.SWARM_MANIFEST_DISCONNECT, ['origin.eth']],
       [exposures.swarmFeedStore, 'previewAppScopedIdentity', ['origin.eth', { label: 'Draft' }], IPC.SWARM_PREVIEW_APP_SCOPED_IDENTITY, ['origin.eth', { label: 'Draft' }]],
       [exposures.swarmFeedStore, 'ensureEthereumWalletIdentity', ['origin.eth', 2, { activate: true }], IPC.SWARM_ENSURE_ETHEREUM_WALLET_IDENTITY, ['origin.eth', 2, { activate: true }]],
+      [exposures.sitePermissions, 'respondToPrompt', [{ id: 1, decision: 'allow', remember: true }], IPC.PERMISSIONS_PROMPT_RESPONSE, [{ id: 1, decision: 'allow', remember: true }]],
+      [exposures.sitePermissions, 'getForOrigin', ['https://example.com'], IPC.PERMISSIONS_GET_FOR_ORIGIN, ['https://example.com']],
+      [exposures.sitePermissions, 'revoke', ['https://example.com', 'camera'], IPC.PERMISSIONS_REVOKE, ['https://example.com', 'camera']],
+      [exposures.sitePermissions, 'revokeOrigin', ['https://example.com'], IPC.PERMISSIONS_REVOKE_ORIGIN, ['https://example.com']],
       [exposures.payments, 'getRecent', [{ limit: 10 }], IPC.PAYMENTS_GET_RECENT, [{ limit: 10 }]],
       [exposures.payments, 'getById', [7], IPC.PAYMENTS_GET_BY_ID, [7]],
       [exposures.payments, 'getCount', [{ kind: 'x402' }], IPC.PAYMENTS_GET_COUNT, [{ kind: 'x402' }]],
@@ -230,8 +255,13 @@ describe('preload', () => {
       [exposures.electronAPI, 'onMoveTabLeft', 'tab:move-left', [], []],
       [exposures.electronAPI, 'onMoveTabRight', 'tab:move-right', [], []],
       [exposures.electronAPI, 'onReopenClosedTab', 'tab:reopen-closed', [], []],
+      [exposures.electronAPI, 'onOpenFindBar', IPC.FIND_IN_PAGE_OPEN, [], []],
       [exposures.electronAPI, 'onToggleBookmarkBar', IPC.BOOKMARKS_TOGGLE_BAR, [], []],
       [exposures.electronAPI, 'onUpdateNotification', 'show-update-notification', [{ version: '1.2.3' }], [{ version: '1.2.3' }]],
+      [exposures.sitePermissions, 'onPromptRequest', IPC.PERMISSIONS_PROMPT_REQUEST, [{ id: 1, origin: 'https://example.com', keys: ['camera'], guestId: 7 }], [{ id: 1, origin: 'https://example.com', keys: ['camera'], guestId: 7 }]],
+      [exposures.sitePermissions, 'onPromptCancel', IPC.PERMISSIONS_PROMPT_CANCEL, [{ id: 1 }], [{ id: 1 }]],
+      [exposures.sitePermissions, 'onOsDenied', IPC.PERMISSIONS_OS_DENIED, [{ origin: 'https://example.com', permissions: ['camera'] }], [{ origin: 'https://example.com', permissions: ['camera'] }]],
+      [exposures.sitePermissions, 'onChanged', IPC.PERMISSIONS_CHANGED, [{}], [{}]],
       [exposures.githubBridge, 'onProgress', IPC.GITHUB_BRIDGE_PROGRESS, [{ step: 'cloning' }], [{ step: 'cloning' }]],
       [exposures.serviceRegistry, 'onUpdate', IPC.SERVICE_REGISTRY_UPDATE, [{ ant: { mode: 'bundled' } }], [{ ant: { mode: 'bundled' } }]],
     ];
@@ -252,19 +282,25 @@ describe('preload', () => {
   test('status update wrappers subscribe, fetch current state immediately, and clean up', async () => {
     const beeStatus = { status: 'running', error: null };
     const ipfsStatus = { status: 'stopped', error: null };
+    const myotisStatus = { state: 'off', running: false, available: true };
     const radicleStatus = { status: 'error', error: 'offline' };
+    const torStatus = { status: 'stopped', error: null };
     const { exposures, ipcRenderer } = loadPreloadModule({
       invokeResponses: {
         [IPC.ANT_GET_STATUS]: beeStatus,
         [IPC.IPFS_GET_STATUS]: ipfsStatus,
+        [IPC.MYOTIS_GET_STATUS]: myotisStatus,
         [IPC.RADICLE_GET_STATUS]: radicleStatus,
+        [IPC.TOR_GET_STATUS]: torStatus,
       },
     });
 
     const statusCases = [
       [exposures.ant, IPC.ANT_STATUS_UPDATE, IPC.ANT_GET_STATUS, beeStatus, { status: 'starting', error: null }],
       [exposures.ipfs, IPC.IPFS_STATUS_UPDATE, IPC.IPFS_GET_STATUS, ipfsStatus, { status: 'running', error: null }],
+      [exposures.myotis, IPC.MYOTIS_STATUS_UPDATE, IPC.MYOTIS_GET_STATUS, myotisStatus, { state: 'ready', running: true }],
       [exposures.radicle, IPC.RADICLE_STATUS_UPDATE, IPC.RADICLE_GET_STATUS, radicleStatus, { status: 'running', error: null }],
+      [exposures.tor, IPC.TOR_STATUS_UPDATE, IPC.TOR_GET_STATUS, torStatus, { status: 'running', error: null }],
     ];
 
     for (const [target, updateChannel, getStatusChannel, initialStatus, pushedStatus] of statusCases) {
@@ -297,5 +333,17 @@ describe('preload', () => {
       antApi: null,
       openlvSignaling: null,
     });
+  });
+
+  test('contains an eager Myotis status failure inside the preload bridge', async () => {
+    const { exposures, ipcRenderer } = loadPreloadModule();
+    const callback = jest.fn();
+    ipcRenderer.invoke.mockRejectedValueOnce(new Error('window closed'));
+
+    const cleanup = exposures.myotis.onStatusUpdate(callback);
+    await flushMicrotasks();
+
+    expect(callback).not.toHaveBeenCalled();
+    cleanup();
   });
 });

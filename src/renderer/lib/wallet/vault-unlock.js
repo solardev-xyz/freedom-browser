@@ -10,6 +10,7 @@
  */
 
 import { walletState, registerScreenHider, hideAllSubscreens } from './wallet-state.js';
+import { isSignatureInFlight, signatureInFlightError } from './signature-flight.js';
 import { open as openSidebarPanel } from '../sidebar.js';
 
 let screen;
@@ -75,6 +76,14 @@ export function initVaultUnlock() {
  */
 export function showVaultUnlock(permissionKey) {
   return new Promise((resolve, reject) => {
+    // A live device confirmation owns the sidebar — an auto-approved
+    // action's unlock prompt must not paint over it (see
+    // signature-flight.js). The caller retries once the device is done.
+    if (isSignatureInFlight()) {
+      reject(signatureInFlightError());
+      return;
+    }
+
     if (pending) {
       pending.reject({ code: 4001, message: 'Superseded by new unlock request' });
     }

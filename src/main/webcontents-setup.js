@@ -2,6 +2,8 @@ const log = require('./logger');
 const { BrowserWindow, app } = require('electron');
 const { activeBzzBases, activeRadBases } = require('./state');
 const { cleanupWebContents: cleanupX402WebContents } = require('./x402/intercept');
+const { cleanupAdblockWebContents } = require('./adblock/service');
+const { isPrivateWebContents } = require('./private/private-windows');
 
 const sanitizeUrlForLog = (rawUrl) => {
   if (!rawUrl || typeof rawUrl !== 'string') return 'unknown';
@@ -32,12 +34,87 @@ const sanitizeUrlForLog = (rawUrl) => {
   }
 };
 
+// PRIVATE MODE GUARD (navigation logging): `log.info` lands in the persistent
+// <userData>/logs/main.log, which outlives the private window and the app.
+// Even the sanitised form leaks where a private tab went (an http origin, or
+// the whole `rad:`/`ethereum:` URI, which has no origin to strip back to), so
+// private-window navigations log nothing beyond the fact that one happened.
+// Fails closed for the same reason ownerWindowOf does: if privacy cannot be
+// determined, redact. It also keeps the throw out of the will-navigate /
+// setWindowOpenHandler callbacks, where it would escape unhandled.
+const isPrivateSender = (contents) => {
+  try {
+    return isPrivateWebContents(contents);
+  } catch {
+    return true;
+  }
+};
+
+const navUrlForLog = (contents, rawUrl) =>
+  isPrivateSender(contents) ? '<private>' : sanitizeUrlForLog(rawUrl);
+
+// Resolve the BrowserWindow that hosts a webview's contents. Webviews carry
+// their chrome renderer as hostWebContents; routing through it (instead of
+// picking an arbitrary window) keeps tab-open requests in the window the
+// user clicked in — load-bearing for private windows, where a link opened
+// from a private page must never materialise as a tab in a normal window
+// (and vice versa). Returns null when no window can be resolved safely —
+// callers must treat that as "drop the action".
+function ownerWindowOf(contents) {
+  try {
+    const host = contents.hostWebContents || contents;
+    const win = BrowserWindow.fromWebContents(host);
+    if (win && !win.isDestroyed()) return win;
+  } catch {
+    // contents may be tearing down
+  }
+
+  // PRIVATE MODE GUARD (cross-privacy routing): the fallback below picks an
+  // *arbitrary* other window, which for a private sender can hand the private
+  // page's URL to a normal window on the default persistent session — a
+  // history row, persistent cookies and injected providers for a link the
+  // user opened privately. There is no safe arbitrary window for a private
+  // action, so an unresolvable private owner drops the action instead. The
+  // check fails closed: if privacy cannot be determined we assume private.
+  if (isPrivateSender(contents)) return null;
+
+  // Fallback: previous behaviour (any other window) so a race during window
+  // teardown degrades to the old routing instead of dropping the action.
+  //
+  // Every dereference below is guarded: a window that is mid-teardown stays
+  // in getAllWindows() while its webContents is ALREADY destroyed, so a bare
+  // `win.webContents.id` throws `Object has been destroyed` synchronously
+  // inside the setWindowOpenHandler / will-navigate callback and escapes as
+  // an unhandled main-process exception. (Same hazard bc5fbaa fixed in the
+  // e2e sweeps; this is the product-code sibling.)
+  try {
+    const senderId = contents?.id;
+    return (
+      BrowserWindow.getAllWindows().find((win) => {
+        try {
+          if (!win || win.isDestroyed?.()) return false;
+          const wc = win.webContents;
+          if (!wc || wc.isDestroyed?.()) return false;
+          return wc.id !== senderId;
+        } catch {
+          // This window went away between the guard and the read.
+          return false;
+        }
+      }) || null
+    );
+  } catch {
+    // getAllWindows() itself failed (app shutting down) — drop the action.
+    return null;
+  }
+}
+
 function registerWebContentsHandlers() {
   app.on('web-contents-created', (_event, contents) => {
     contents.once('destroyed', () => {
       activeBzzBases.delete(contents.id);
       activeRadBases.delete(contents.id);
       cleanupX402WebContents(contents.id);
+      cleanupAdblockWebContents(contents.id);
     });
 
     const id = contents.id;
@@ -65,12 +142,10 @@ function registerWebContentsHandlers() {
 
       contents.setWindowOpenHandler(({ url, frameName }) => {
         log.info(
-          `${tag} intercepted new window request: ${sanitizeUrlForLog(url)} (target: ${frameName || 'none'})`
+          `${tag} intercepted new window request: ${navUrlForLog(contents, url)} (target: ${frameName || 'none'})`
         );
-        // Send message to the parent BrowserWindow to open URL in new tab
-        const parentWindow = BrowserWindow.getAllWindows().find((win) => {
-          return win.webContents.id !== contents.id;
-        });
+        // Send message to the owning BrowserWindow to open URL in new tab
+        const parentWindow = ownerWindowOf(contents);
         if (parentWindow) {
           // Pass targetName for named link targets (e.g. target="mywindow")
           // Skip special targets (_blank, _self, _parent, _top) - they should use default behavior
@@ -95,12 +170,10 @@ function registerWebContentsHandlers() {
           url.startsWith('rad:') ||
           url.startsWith('ethereum:')
         ) {
-          log.info(`${tag} intercepted custom protocol navigation: ${sanitizeUrlForLog(url)}`);
+          log.info(`${tag} intercepted custom protocol navigation: ${navUrlForLog(contents, url)}`);
           event.preventDefault();
-          // Send to parent window to handle via the browser's navigation system
-          const parentWindow = BrowserWindow.getAllWindows().find((win) => {
-            return win.webContents.id !== contents.id;
-          });
+          // Send to the owning window to handle via the browser's navigation system
+          const parentWindow = ownerWindowOf(contents);
           if (parentWindow) {
             parentWindow.webContents.send('navigate-to-url', url);
           }

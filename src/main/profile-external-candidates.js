@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const { ipcMain } = require('electron');
 const IPC = require('../shared/ipc-channels');
 const { updateActiveProfileNodeConfig } = require('./profile-resolver');
+const { probeSocks5Endpoint } = require('./socks-probe');
 
 const EXTERNAL_CANDIDATE_PROMPT_KEY = 'externalCandidatePrompt';
 
@@ -37,6 +38,20 @@ const DEFAULT_EXTERNAL_NODE_CANDIDATES = {
       },
     ],
   },
+  tor: {
+    label: 'Tor',
+    endpoints: ['SOCKS5 127.0.0.1:9150'],
+    externalConfig: {
+      mode: 'external',
+      externalSocks: '127.0.0.1:9150',
+    },
+    probes: [
+      {
+        type: 'socks5',
+        endpoint: '127.0.0.1:9150',
+      },
+    ],
+  },
 };
 
 function getHttpClient(url) {
@@ -45,6 +60,10 @@ function getHttpClient(url) {
 
 function probeEndpoint(probe, options = {}) {
   const timeoutMs = options.timeoutMs ?? 1000;
+  if (probe.type === 'socks5') {
+    return probeSocks5Endpoint(probe.endpoint, { timeoutMs });
+  }
+
   return new Promise((resolve) => {
     const parsed = new URL(probe.url);
     const requestOptions = {
@@ -177,6 +196,15 @@ function managedChoicesFor(candidates) {
   return Object.fromEntries(candidates.map((candidate) => [candidate.protocol, 'managed']));
 }
 
+function singleEnabledProtocol(protocol, definitions = DEFAULT_EXTERNAL_NODE_CANDIDATES) {
+  return Object.fromEntries(
+    Object.keys(definitions).map((candidateProtocol) => [
+      candidateProtocol,
+      candidateProtocol === protocol,
+    ])
+  );
+}
+
 function waitForWindowLoad(window) {
   if (!window || window.isDestroyed?.()) {
     return Promise.resolve(false);
@@ -300,6 +328,15 @@ async function promptForDefaultExternalCandidates(profile, options = {}) {
   return decisions;
 }
 
+function promptForDefaultExternalCandidateProtocol(profile, protocol, options = {}) {
+  const definitions = options.candidates || DEFAULT_EXTERNAL_NODE_CANDIDATES;
+  if (!definitions[protocol]) return Promise.resolve([]);
+  return promptForDefaultExternalCandidates(profile, {
+    ...options,
+    enabledProtocols: singleEnabledProtocol(protocol, definitions),
+  });
+}
+
 module.exports = {
   DEFAULT_EXTERNAL_NODE_CANDIDATES,
   EXTERNAL_CANDIDATE_PROMPT_KEY,
@@ -308,6 +345,7 @@ module.exports = {
   detectDefaultExternalCandidates,
   probeEndpoint,
   presentExternalCandidatesInWindow,
+  promptForDefaultExternalCandidateProtocol,
   promptForDefaultExternalCandidates,
   shouldPromptForProtocol,
 };

@@ -3,6 +3,7 @@ const { app, ipcMain } = require('electron');
 const path = require('path');
 const Database = require('better-sqlite3');
 const IPC = require('../shared/ipc-channels');
+const { isPrivateWebContents } = require('./private/private-windows');
 
 // Database instance (singleton)
 let db = null;
@@ -225,7 +226,15 @@ function registerHistoryIpc() {
   });
 
   // Add history entry
-  ipcMain.handle(IPC.HISTORY_ADD, (_event, entry) => {
+  ipcMain.handle(IPC.HISTORY_ADD, (event, entry) => {
+    // PRIVATE MODE GUARD (history): navigations in private windows are
+    // never recorded. The private window's renderer already skips the
+    // call (src/renderer/lib/navigation.js); this is the main-process
+    // belt-and-braces so no code path can write private history.
+    if (isPrivateWebContents(event?.sender)) {
+      log.info('[History] Ignoring history:add from private window');
+      return null;
+    }
     if (!entry?.url) {
       log.warn('[History] Attempted to add entry without URL');
       return null;

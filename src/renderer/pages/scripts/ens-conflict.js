@@ -40,9 +40,13 @@ function preview(hex) {
 
 const groupsEl = document.getElementById('groups-el');
 for (const g of groups) {
+  // `value` is the already-human-readable answer (Tezos website records are
+  // URIs, not contenthash bytes); `resolvedData` is the ENS raw-bytes form.
   const valueText = g.reason
     ? `(${g.reason}) — no content hash returned`
-    : preview(g.resolvedData);
+    : g.value
+      ? String(g.value)
+      : preview(g.resolvedData);
 
   const groupDiv = document.createElement('div');
   groupDiv.className = 'group';

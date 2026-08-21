@@ -1,11 +1,18 @@
 /**
  * Swarm Content Probe
  *
- * Polls the Bee HTTP gateway with HEAD /bzz/<hash> until the content is
- * retrievable (200), the Bee node is detected as unreachable, or an overall
- * timeout elapses. Used to gate webview navigation to `bzz://` URLs so the
- * user sees the tab spinner instead of Bee's raw 404 JSON body while the
- * node is still connecting to peers.
+ * Polls the Bee HTTP gateway with HEAD /bzz/<hash><path> until the content
+ * is retrievable (200), the Bee node is detected as unreachable, or an
+ * overall timeout elapses. Used to gate webview navigation to `bzz://` URLs
+ * so the user sees the tab spinner instead of Bee's raw 404 JSON body while
+ * the node is still connecting to peers.
+ *
+ * The probe must target the same path the navigation will load, not just
+ * the bare hash: a manifest without a root index document 404s on
+ * `/bzz/<hash>` permanently even when `/bzz/<hash>/index.html` is
+ * instantly retrievable, and the probe cannot tell that 404 apart from a
+ * still-warming node — it would poll until the overall timeout and strand
+ * the user on the error page (#172).
  *
  * Each probe gets a unique id and an AbortController; callers can cancel via
  * cancelProbe(id). Resolves with one of:
@@ -63,8 +70,29 @@ function isAbortError(err) {
   return err && (err.name === 'AbortError' || err.code === 'ABORT_ERR');
 }
 
+// A double-dot path segment in any of the forms WHATWG URL normalizes:
+// `..`, `.%2e`, `%2e.`, `%2e%2e` (case-insensitive).
+const DOUBLE_DOT_SEGMENT_RE = /^(\.|%2e){2}$/i;
+
+// Normalize the optional probe path so the HEAD target mirrors the resource
+// the navigation will load. Only origin-relative paths are accepted; the
+// query/fragment are dropped (the gateway's manifest lookup ignores them)
+// and anything malformed degrades to the bare-hash probe. Double-dot
+// segments are rejected too: fetch normalizes them before sending, so a
+// `..` could aim the probe at Bee API endpoints outside /bzz/*. The segment
+// split treats `\` as a separator because WHATWG URL parsing does the same
+// for http URLs — `/..\..\health` normalizes to `/health`.
+function normalizeProbePath(path) {
+  if (typeof path !== 'string' || !path.startsWith('/')) return '';
+  const clean = path.split(/[?#]/, 1)[0];
+  if (clean.split(/[/\\]/).some((segment) => DOUBLE_DOT_SEGMENT_RE.test(segment))) return '';
+  return clean;
+}
+
 /**
- * Start probing for the availability of a `bzz://<hash>` resource.
+ * Start probing for the availability of a `bzz://<hash><path>` resource.
+ * `opts.path` is the origin-relative path within the manifest (e.g.
+ * `/index.html`); omit or pass '' to probe the manifest root.
  * Returns `{ id, promise }`. The promise resolves with the outcome.
  * Cancel with cancelProbe(id).
  */
@@ -75,6 +103,8 @@ function startProbe(hash, opts = {}) {
   const fetchImpl = opts.fetchImpl || fetch;
   const now = opts.now || Date.now;
   const sleep = opts.sleep || createAbortableSleep;
+
+  const probePath = normalizeProbePath(opts.path);
 
   const id = opts.id || crypto.randomUUID();
   const controller = new AbortController();
@@ -115,7 +145,7 @@ function startProbe(hash, opts = {}) {
         let response = null;
         let fetchError = null;
         try {
-          response = await fetchImpl(`${beeUrl}/bzz/${hash}`, {
+          response = await fetchImpl(`${beeUrl}/bzz/${hash}${probePath}`, {
             method: 'HEAD',
             signal: attemptCtl.signal,
           });

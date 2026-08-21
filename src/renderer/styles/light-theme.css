@@ -24,6 +24,10 @@
   background: rgba(0, 0, 0, 0.1);
 }
 
+[data-theme='light'] .tab-audio:hover {
+  background: rgba(0, 0, 0, 0.1);
+}
+
 [data-theme='light'] .icon-btn:hover,
 [data-theme='light'] .menu-button:hover,
 [data-theme='light'] .menu-button[aria-expanded='true'] {
@@ -124,7 +128,8 @@
 
 [data-theme='light'] .bee-toggle-knob,
 [data-theme='light'] .ipfs-toggle-knob,
-[data-theme='light'] .radicle-toggle-knob {
+[data-theme='light'] .radicle-toggle-knob,
+[data-theme='light'] .tor-toggle-knob {
   background: #ffffff;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
 }

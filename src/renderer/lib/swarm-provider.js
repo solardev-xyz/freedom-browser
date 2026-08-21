@@ -11,8 +11,8 @@
  */
 
 import { getPermissionKey } from './dapp-provider.js';
-import { getDisplayUrlForWebview } from './tabs.js';
-import { showSwarmConnect, updateSwarmConnectionBanner, showSwarmPublishApproval, showSwarmFeedApproval, showVaultUnlock } from './wallet-ui.js';
+import { getDisplayUrlForWebview, getNavigationKeyForWebview } from './tabs.js';
+import { showSwarmConnect, updateSwarmConnectionBanner, showSwarmPublishApproval, showSwarmFeedApproval, showSwarmMessagingApproval, showVaultUnlock, showPermissionManifest } from './wallet-ui.js';
 
 const ERRORS = {
   USER_REJECTED: { code: 4001, message: 'User rejected the request' },
@@ -23,6 +23,15 @@ const ERRORS = {
 
 // Feature flag state (same pattern as dapp-provider.js)
 let identityWalletEnabled = false;
+const manifestChecks = new WeakMap();
+const PUBLIC_METHODS = new Set([
+  'swarm_getCapabilities',
+  'swarm_readFeedEntry',
+  'swarm_readChunk',
+  'swarm_readSingleOwnerChunk',
+  'swarm_listFeeds',
+  'swarm_unsubscribe',
+]);
 
 window.electronAPI?.getSettings?.().then((settings) => {
   identityWalletEnabled = settings?.enableIdentityWallet === true;
@@ -64,6 +73,10 @@ async function handleSwarmRequest(webview, request) {
   try {
     let result;
 
+    if (!PUBLIC_METHODS.has(method)) {
+      await ensureManifestFresh(webview, displayUrl, permissionKey, method === 'swarm_requestAccess');
+    }
+
     if (method === 'swarm_requestAccess') {
       result = await handleRequestAccess(webview, displayUrl, permissionKey);
     } else if (method === 'swarm_getCapabilities') {
@@ -100,6 +113,14 @@ async function handleSwarmRequest(webview, request) {
       method === 'swarm_getSigningIdentity'
     ) {
       result = await handleFeedSigningRequest(method, params, permissionKey, 'signing');
+    } else if (
+      method === 'swarm_getMessagingIdentity' ||
+      method === 'swarm_subscribe' ||
+      method === 'swarm_unsubscribe' ||
+      method === 'swarm_sendPss' ||
+      method === 'swarm_sendGsoc'
+    ) {
+      result = await handleMessagingRequest(method, params, permissionKey, webview);
     } else {
       // All other methods: check permission, forward to main
       result = await executeWithPermission(method, params, permissionKey);
@@ -113,6 +134,88 @@ async function handleSwarmRequest(webview, request) {
       data: error.data,
     });
   }
+}
+
+async function ensureManifestFresh(webview, committedUrl, permissionKey, eager) {
+  if (!window.swarmManifest?.check || !permissionKey) return;
+  const navigationKey = getNavigationKeyForWebview(webview);
+  let navigationCache = manifestChecks.get(webview);
+  if (!navigationCache || navigationCache.key !== navigationKey) {
+    navigationCache = { key: navigationKey, origins: new Map() };
+    manifestChecks.set(webview, navigationCache);
+  }
+  let cached = navigationCache.origins.get(permissionKey);
+  if (!cached || (eager && !cached.eager)) {
+    cached = {
+      eager,
+      promise: performManifestRefresh({ permissionKey, committedUrl, navigationKey, eager }),
+    };
+    navigationCache.origins.set(permissionKey, cached);
+  }
+
+  try {
+    await cached.promise;
+  } catch (err) {
+    if (err?.code !== ERRORS.USER_REJECTED.code && navigationCache.origins.get(permissionKey) === cached) {
+      navigationCache.origins.delete(permissionKey);
+    }
+    throw err;
+  }
+}
+
+async function performManifestRefresh({ permissionKey, committedUrl, navigationKey, eager }) {
+  const result = await window.swarmManifest.check({
+    origin: permissionKey,
+    committedUrl,
+    navigationKey,
+    eager,
+  });
+  if (result.kind === 'unresolved') {
+    throw { ...ERRORS.DISCONNECTED, message: 'Could not refresh this app’s permission manifest' };
+  }
+  if (result.kind !== 'consent') return;
+
+  const outcome = await showPermissionManifest(result.model, result.token);
+  const decision = await window.swarmManifest.decide(result.token, outcome);
+  if (!decision.allowed) throw ERRORS.USER_REJECTED;
+}
+
+/**
+ * Messaging methods (PSS/GSOC). The messaging tier is granted once per
+ * origin via the messaging prompt; sends additionally require per-send
+ * approval unless the origin has messaging auto-approve. Unsubscribe is
+ * teardown and never prompts.
+ */
+async function handleMessagingRequest(method, params, permissionKey, webview) {
+  await requirePermission(permissionKey);
+
+  const isSend = method === 'swarm_sendPss' || method === 'swarm_sendGsoc';
+
+  if (method !== 'swarm_unsubscribe') {
+    const [hasGrant, autoApproved] = await Promise.all([
+      window.swarmPermissions.hasMessagingGrant(permissionKey),
+      isSend ? window.swarmPermissions.getAutoApprove(permissionKey, 'messaging') : false,
+    ]);
+    if (!hasGrant) {
+      await new Promise((resolve, reject) => {
+        showSwarmMessagingApproval(permissionKey, params, resolve, reject, { method, grantMode: true });
+      });
+      await window.swarmPermissions.grantMessaging(permissionKey);
+    } else if (isSend && !autoApproved) {
+      await new Promise((resolve, reject) => {
+        showSwarmMessagingApproval(permissionKey, params, resolve, reject, { method, grantMode: false });
+      });
+    }
+  }
+
+  // Subscriptions push messages back to the page: main needs to know
+  // which webview to deliver to, and only the renderer can map the
+  // request to its webContents.
+  const meta = method === 'swarm_subscribe'
+    ? { webContentsId: webview.getWebContentsId() }
+    : undefined;
+
+  return executeWithPermission(method, params, permissionKey, meta);
 }
 
 async function handleFeedSigningRequest(method, params, permissionKey, autoApproveType) {
@@ -166,11 +269,13 @@ async function requirePermissionAndReturn(permissionKey) {
 
 /**
  * Check permission, update lastUsed, forward to main, unwrap result.
+ * @param {Object} [meta] - Renderer-only routing info passed to main
+ *   (e.g. the subscribing webview's webContentsId).
  */
-async function executeWithPermission(method, params, permissionKey) {
+async function executeWithPermission(method, params, permissionKey, meta) {
   await requirePermission(permissionKey);
   await window.swarmPermissions.updateLastUsed(permissionKey);
-  const response = await window.swarmProvider.execute(method, params, permissionKey);
+  const response = await window.swarmProvider.execute(method, params, permissionKey, meta);
   if (response.error) throw response.error;
   return response.result;
 }

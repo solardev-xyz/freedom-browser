@@ -259,6 +259,7 @@ async function loadDappX402(options = {}) {
   const approvalResultHandlers = [];
   const balancesUpdatedHandlers = [];
   const hideAllSubscreens = jest.fn();
+  const screenHiders = [];
   const openSidebarPanel = jest.fn();
   const updatePermissionSubscreen = jest.fn();
   const refreshBalances = jest.fn().mockResolvedValue(undefined);
@@ -320,7 +321,7 @@ async function loadDappX402(options = {}) {
       identityView,
       registeredChains: { 8453: { name: 'Base' } },
     },
-    registerScreenHider: jest.fn(),
+    registerScreenHider: jest.fn((fn) => screenHiders.push(fn)),
     hideAllSubscreens,
   }));
   jest.doMock('../sidebar.js', () => ({
@@ -348,6 +349,7 @@ async function loadDappX402(options = {}) {
     balancesUpdatedHandlers,
     identityView,
     hideAllSubscreens,
+    screenHiders,
     openSidebarPanel,
   };
 }
@@ -440,5 +442,320 @@ describe('dapp-x402 approval card lifecycle', () => {
     expect(ctx.elements['x402-approval-reject'].disabled).toBe(false);
     expect(ctx.elements['x402-approval-error'].textContent).toBe('Payment settlement failed.');
     expect(ctx.elements['x402-approval-error'].classList.contains('hidden')).toBe(false);
+  });
+
+  // The card's own screen hider force-cancels the payment (x402:reject /
+  // x402:cancel + card teardown). Firing it mid-signature would cancel the
+  // detection in main while the device is still showing the payment the
+  // user is confirming — so it must exempt an in-flight signature. The
+  // global lock (signature-flight.js) stops hideAllSubscreens() from
+  // reaching the hider at all; this covers a direct hider call.
+  test('a screen hider fired mid-payment leaves the card and the detection alone', async () => {
+    const ctx = await loadDappX402({ approveResult: { success: true, pending: true } });
+    // After loadDappX402's resetModules, so this is the same lock instance
+    // the module under test holds.
+    const flight = await import('./signature-flight.js');
+
+    await ctx.approvalNeededHandlers[0]({
+      webContentsId: 7,
+      detectionId: 'event-det',
+      url: 'https://pay.example/article',
+      resourceType: 'image',
+    });
+    await ctx.elements['x402-approval-approve'].fire('click');
+    expect(ctx.elements['x402-approval-approve'].textContent).toMatch(/^Signing/);
+    // The payment owns the sidebar for the whole flight.
+    expect(flight.isSignatureInFlight()).toBe(true);
+
+    ctx.screenHiders.forEach((hide) => hide());
+
+    expect(ctx.electronAPI.x402Reject).not.toHaveBeenCalled();
+    expect(ctx.electronAPI.x402Cancel).not.toHaveBeenCalled();
+    expect(ctx.elements['sidebar-x402-approval'].classList.contains('hidden')).toBe(false);
+    expect(ctx.elements['x402-approval-approve'].textContent).toMatch(/^Signing/);
+    expect(ctx.elements['x402-approval-reject'].disabled).toBe(true);
+    expect(ctx.elements['x402-approval-back'].disabled).toBe(true);
+
+    // Settling the payment releases the sidebar for the next surface.
+    ctx.approvalResultHandlers[0]({ detectionId: 'det-1', success: true });
+    expect(flight.isSignatureInFlight()).toBe(false);
+  });
+
+  // The paying tab is chrome the lock deliberately doesn't cover, so it
+  // can be closed while the device prompt is up. Main then reports the
+  // request as cancelled — the card must tear itself down and hand the
+  // sidebar back, otherwise the lock is held for the rest of the session
+  // and every other surface (dApp requests, send, unlock) stays refused.
+  test('a cancelled result tears the card down and releases the sidebar', async () => {
+    const ctx = await loadDappX402({ approveResult: { success: true, pending: true } });
+    const flight = await import('./signature-flight.js');
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await ctx.approvalNeededHandlers[0]({
+      webContentsId: 7,
+      detectionId: 'event-det',
+      url: 'https://pay.example/article',
+      resourceType: 'image',
+    });
+    await ctx.elements['x402-approval-approve'].fire('click');
+    expect(flight.isSignatureInFlight()).toBe(true);
+
+    ctx.approvalResultHandlers[0]({
+      detectionId: 'det-1',
+      success: false,
+      cancelled: true,
+      error: 'The tab that requested this payment was closed.',
+    });
+
+    expect(flight.isSignatureInFlight()).toBe(false);
+    expect(ctx.elements['sidebar-x402-approval'].classList.contains('hidden')).toBe(true);
+    expect(ctx.identityView.classList.contains('hidden')).toBe(false);
+    expect(ctx.elements['x402-approval-approve'].textContent).toBe('Pay');
+    expect(ctx.elements['x402-approval-approve'].disabled).toBe(false);
+    // No teardown IPC: the detection died with the tab, and x402:reject
+    // would be aimed at a dead id.
+    expect(ctx.electronAPI.x402Reject).not.toHaveBeenCalled();
+    expect(ctx.electronAPI.x402Cancel).not.toHaveBeenCalled();
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining('The tab that requested this payment was closed.')
+    );
+  });
+
+  // A cancelled event for some other tab's card must not touch this one.
+  test('a cancelled result for a different detection is ignored', async () => {
+    const ctx = await loadDappX402({ approveResult: { success: true, pending: true } });
+    const flight = await import('./signature-flight.js');
+
+    await ctx.approvalNeededHandlers[0]({
+      webContentsId: 7,
+      detectionId: 'event-det',
+      url: 'https://pay.example/article',
+      resourceType: 'image',
+    });
+    await ctx.elements['x402-approval-approve'].fire('click');
+
+    ctx.approvalResultHandlers[0]({ detectionId: 'other-det', success: false, cancelled: true });
+
+    expect(flight.isSignatureInFlight()).toBe(true);
+    expect(ctx.elements['sidebar-x402-approval'].classList.contains('hidden')).toBe(false);
+    expect(ctx.elements['x402-approval-approve'].textContent).toMatch(/^Signing/);
+
+    // Clean up the lock so it can't bleed into another test.
+    ctx.approvalResultHandlers[0]({ detectionId: 'det-1', success: true });
+  });
+
+  // The chooser radios stay live DOM while the authorization sits on the
+  // device. Flipping one re-rendered the card, which re-derived Pay as
+  // enabled — a second click then started a second, concurrent device
+  // signature for a different accept, and whichever settled first
+  // released the lock the other one was still holding.
+  test('a chooser flip mid-signature cannot re-arm Pay or start a second signature', async () => {
+    let releaseApprove;
+    const approveGate = new Promise((resolve) => {
+      releaseApprove = resolve;
+    });
+    const ctx = await loadDappX402({
+      details: {
+        success: true,
+        detectionId: 'det-1',
+        url: 'https://pay.example/article',
+        accepts: [
+          createAccept(),
+          createAccept({
+            balanceKey: '8453:0xDAI',
+            asset: { symbol: 'DAI', decimals: 18 },
+          }),
+        ],
+        initialSelectionIndex: 0,
+      },
+    });
+    const flight = await import('./signature-flight.js');
+    ctx.electronAPI.x402Approve.mockReturnValue(approveGate);
+
+    await ctx.approvalNeededHandlers[0]({
+      webContentsId: 7,
+      detectionId: 'event-det',
+      url: 'https://pay.example/article',
+      resourceType: 'mainFrame',
+    });
+    await flushMicrotasks();
+    expect(ctx.elements['x402-approval-chooser'].classList.contains('hidden')).toBe(false);
+
+    const paying = ctx.elements['x402-approval-approve'].fire('click');
+    await flushMicrotasks();
+    expect(flight.isSignatureInFlight()).toBe(true);
+    expect(ctx.elements['x402-approval-approve'].textContent).toMatch(/^Signing/);
+
+    const radio = new FakeInputElement();
+    radio.name = 'x402-chooser';
+    radio.value = '1';
+    await ctx.elements['x402-approval-chooser-options'].fire('change', { target: radio });
+
+    expect(ctx.elements['x402-approval-approve'].disabled).toBe(true);
+    expect(ctx.elements['x402-approval-approve'].textContent).toMatch(/^Signing/);
+    expect(ctx.elements['x402-approval-reject'].disabled).toBe(true);
+    expect(ctx.elements['x402-approval-back'].disabled).toBe(true);
+    // The rows are repainted from the pinned selection, so the radio can't
+    // show an accept the device isn't holding.
+    const rows = ctx.elements['x402-approval-chooser-options'].children;
+    expect(rows).toHaveLength(2);
+    expect(rows[0].innerHTML).toMatch(/value="0" checked/);
+    expect(rows[1].innerHTML).not.toMatch(/checked/);
+
+    // Even a click that gets through anyway (the button is shared DOM)
+    // must not reach the device a second time.
+    await ctx.elements['x402-approval-approve'].fire('click');
+    expect(ctx.electronAPI.x402Approve).toHaveBeenCalledTimes(1);
+    expect(ctx.electronAPI.x402Approve).toHaveBeenCalledWith(
+      expect.objectContaining({ selectedAcceptIndex: 0 })
+    );
+
+    releaseApprove({ success: true });
+    await paying;
+    expect(flight.isSignatureInFlight()).toBe(false);
+  });
+
+  // The paying tab can die mid-signature, which tears the card down and
+  // frees the sidebar for the next 402 — but the first card's approve()
+  // is still parked on the device. Its continuation must settle only
+  // itself, never the card that took the sidebar over.
+  test('a stale approve failure cannot release or repaint the card that replaced it', async () => {
+    const ctx = await loadDappX402();
+    const flight = await import('./signature-flight.js');
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+    let failFirstApprove;
+    ctx.electronAPI.x402Approve.mockImplementationOnce(
+      () => new Promise((_, reject) => { failFirstApprove = reject; })
+    );
+
+    // Card A pays; the device prompt is live.
+    await ctx.approvalNeededHandlers[0]({
+      webContentsId: 7,
+      detectionId: 'event-det',
+      url: 'https://pay.example/a',
+      resourceType: 'mainFrame',
+    });
+    await flushMicrotasks();
+    const payingA = ctx.elements['x402-approval-approve'].fire('click');
+    await flushMicrotasks();
+    expect(flight.isSignatureInFlight()).toBe(true);
+
+    // Its tab dies: main reports the request as cancelled, the card goes.
+    ctx.approvalResultHandlers[0]({
+      detectionId: 'det-1',
+      success: false,
+      cancelled: true,
+      error: 'The tab that requested this payment was closed.',
+    });
+    expect(flight.isSignatureInFlight()).toBe(false);
+
+    // Card B takes the sidebar and starts its own device confirmation.
+    ctx.electronAPI.x402GetDetails.mockResolvedValue({
+      success: true,
+      detectionId: 'det-2',
+      url: 'https://pay.example/b',
+      accepts: [createAccept()],
+      initialSelectionIndex: 0,
+    });
+    ctx.electronAPI.x402Approve.mockResolvedValue({ success: true, pending: true });
+    await ctx.approvalNeededHandlers[0]({
+      webContentsId: 9,
+      detectionId: 'det-2',
+      url: 'https://pay.example/b',
+      resourceType: 'image',
+    });
+    await flushMicrotasks();
+    await ctx.elements['x402-approval-approve'].fire('click');
+    expect(flight.isSignatureInFlight()).toBe(true);
+
+    // The user finally clears card A's prompt on the device.
+    failFirstApprove(new Error('Request rejected on the Ledger device.'));
+    await payingA;
+    await flushMicrotasks();
+
+    expect(flight.isSignatureInFlight()).toBe(true);
+    expect(ctx.elements['sidebar-x402-approval'].classList.contains('hidden')).toBe(false);
+    expect(ctx.elements['x402-approval-approve'].textContent).toMatch(/^Signing/);
+    expect(ctx.elements['x402-approval-approve'].disabled).toBe(true);
+    expect(ctx.elements['x402-approval-error'].classList.contains('hidden')).toBe(true);
+
+    // Card B settles normally afterwards.
+    ctx.approvalResultHandlers[0]({ detectionId: 'det-2', success: true });
+    expect(flight.isSignatureInFlight()).toBe(false);
+  });
+
+  // Same staleness, opposite outcome: card A's payment succeeds after its
+  // card is gone. Closing the screen here would hide card B while its own
+  // signature is still live in main.
+  test('a stale approve success cannot tear down the card that replaced it', async () => {
+    const ctx = await loadDappX402();
+    const flight = await import('./signature-flight.js');
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+    let settleFirstApprove;
+    ctx.electronAPI.x402Approve.mockImplementationOnce(
+      () => new Promise((resolve) => { settleFirstApprove = resolve; })
+    );
+
+    await ctx.approvalNeededHandlers[0]({
+      webContentsId: 7,
+      detectionId: 'event-det',
+      url: 'https://pay.example/a',
+      resourceType: 'mainFrame',
+    });
+    await flushMicrotasks();
+    const payingA = ctx.elements['x402-approval-approve'].fire('click');
+    await flushMicrotasks();
+
+    ctx.approvalResultHandlers[0]({ detectionId: 'det-1', success: false, cancelled: true });
+
+    ctx.electronAPI.x402GetDetails.mockResolvedValue({
+      success: true,
+      detectionId: 'det-2',
+      url: 'https://pay.example/b',
+      accepts: [createAccept()],
+      initialSelectionIndex: 0,
+    });
+    ctx.electronAPI.x402Approve.mockResolvedValue({ success: true, pending: true });
+    await ctx.approvalNeededHandlers[0]({
+      webContentsId: 9,
+      detectionId: 'det-2',
+      url: 'https://pay.example/b',
+      resourceType: 'image',
+    });
+    await flushMicrotasks();
+    await ctx.elements['x402-approval-approve'].fire('click');
+
+    settleFirstApprove({ success: true });
+    await payingA;
+    await flushMicrotasks();
+
+    expect(flight.isSignatureInFlight()).toBe(true);
+    expect(ctx.elements['sidebar-x402-approval'].classList.contains('hidden')).toBe(false);
+    expect(ctx.elements['x402-approval-approve'].textContent).toMatch(/^Signing/);
+
+    ctx.approvalResultHandlers[0]({ detectionId: 'det-2', success: true });
+    expect(flight.isSignatureInFlight()).toBe(false);
+  });
+
+  // Once idle again the hider keeps its original meaning: an unanswered
+  // card being replaced by another screen is a cancel.
+  test('a screen hider fired on an unsigned card still cancels the payment', async () => {
+    const ctx = await loadDappX402();
+
+    await ctx.approvalNeededHandlers[0]({
+      webContentsId: 7,
+      detectionId: 'event-det',
+      url: 'https://pay.example/article',
+      resourceType: 'mainFrame',
+    });
+    await flushMicrotasks();
+
+    ctx.screenHiders.forEach((hide) => hide());
+    await flushMicrotasks();
+
+    expect(ctx.electronAPI.x402Cancel).toHaveBeenCalledWith({ webContentsId: 7 });
+    expect(ctx.elements['sidebar-x402-approval'].classList.contains('hidden')).toBe(true);
   });
 });

@@ -41,6 +41,10 @@ const {
   updateLastUsed,
   getAutoApprove,
   setAutoApprove,
+  grantMessaging,
+  revokeMessaging,
+  hasMessagingGrant,
+  onRevoke,
   registerSwarmPermissionsIpc,
   _resetCache,
 } = require('./swarm-permissions');
@@ -61,7 +65,7 @@ describe('swarm-permissions', () => {
         origin: 'myapp.eth',
         connectedAt: expect.any(Number),
         lastUsed: expect.any(Number),
-        autoApprove: { publish: false, feeds: false, signing: false },
+        autoApprove: { publish: false, feeds: false, signing: false, messaging: false },
       });
     });
 
@@ -74,6 +78,59 @@ describe('swarm-permissions', () => {
       expect(setAutoApprove('myapp.eth', 'signing', true)).toBe(true);
       expect(getAutoApprove('myapp.eth', 'feeds')).toBe(false);
       expect(getAutoApprove('myapp.eth', 'signing')).toBe(true);
+    });
+
+    test('messaging grant requires connection and persists on the entry', () => {
+      expect(grantMessaging('myapp.eth')).toBe(false);
+      expect(hasMessagingGrant('myapp.eth')).toBe(false);
+
+      grantPermission('myapp.eth');
+      expect(hasMessagingGrant('myapp.eth')).toBe(false);
+
+      expect(grantMessaging('myapp.eth')).toBe(true);
+      expect(hasMessagingGrant('myapp.eth')).toBe(true);
+      expect(getPermission('myapp.eth').messaging.grantedAt).toEqual(expect.any(Number));
+
+      revokePermission('myapp.eth');
+      expect(hasMessagingGrant('myapp.eth')).toBe(false);
+    });
+
+    test('revocation notifies the registered revoke listener', () => {
+      const listener = jest.fn();
+      const secondListener = jest.fn();
+      onRevoke(listener);
+      onRevoke(secondListener);
+      grantPermission('myapp.eth');
+
+      revokePermission('myapp.eth');
+      expect(listener).toHaveBeenCalledWith('myapp.eth');
+      expect(secondListener).toHaveBeenCalledWith('myapp.eth');
+
+      listener.mockClear();
+      revokePermission('myapp.eth');
+      expect(listener).not.toHaveBeenCalled();
+      onRevoke(null);
+    });
+
+    test('messaging revocation cancels live resources without dropping the base grant', () => {
+      const listener = jest.fn();
+      onRevoke(listener);
+      grantPermission('myapp.eth');
+      grantMessaging('myapp.eth');
+
+      expect(revokeMessaging('myapp.eth')).toBe(true);
+      expect(listener).toHaveBeenCalledWith('myapp.eth');
+      expect(getPermission('myapp.eth')).not.toBeNull();
+      expect(hasMessagingGrant('myapp.eth')).toBe(false);
+      onRevoke(null);
+    });
+
+    test('supports messaging auto-approve as a distinct type', () => {
+      grantPermission('myapp.eth');
+      expect(getAutoApprove('myapp.eth', 'messaging')).toBe(false);
+      expect(setAutoApprove('myapp.eth', 'messaging', true)).toBe(true);
+      expect(getAutoApprove('myapp.eth', 'messaging')).toBe(true);
+      expect(getAutoApprove('myapp.eth', 'publish')).toBe(false);
     });
 
     test('getPermission returns entry after grant', () => {

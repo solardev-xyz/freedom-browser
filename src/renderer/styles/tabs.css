@@ -231,6 +231,79 @@
   opacity: 1;
 }
 
+/* Audio indicator / mute toggle — hidden unless the tab is audible or muted
+   (data-audio-state set by tabs.js). Clicking toggles mute. */
+.tab-audio {
+  display: none;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  cursor: default;
+}
+
+.tab[data-audio-state] .tab-audio {
+  display: flex;
+}
+
+.tab-audio:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.tab-audio svg {
+  width: 12px;
+  height: 12px;
+  display: none;
+}
+
+.tab[data-audio-state='audible'] .tab-audio .tab-audio-on {
+  display: block;
+}
+
+.tab[data-audio-state='muted'] .tab-audio .tab-audio-muted {
+  display: block;
+}
+
+.tab[data-audio-state='muted'] .tab-audio {
+  color: var(--muted);
+}
+
+/* Hide the audio button (like the close button) when tabs get very narrow —
+   except pinned tabs, which fall through to the badge overlay below */
+@container (max-width: 80px) {
+  .tab:not(.pinned) .tab-audio {
+    display: none !important;
+  }
+}
+
+/* Pinned tabs have no room in the row for the inline button — overlay it on
+   the icon's corner as a small badge instead, so an audible or muted pinned
+   tab still shows (and can toggle) its state. */
+.tab.pinned[data-audio-state] .tab-audio {
+  position: absolute;
+  right: 5px;
+  bottom: 2px;
+  width: 13px;
+  height: 13px;
+  background: var(--bg);
+  box-shadow: 0 0 0 1px var(--border);
+}
+
+.tab.pinned .tab-audio svg {
+  width: 9px;
+  height: 9px;
+}
+
+.tab.pinned[data-audio-state] .tab-audio:hover {
+  background: var(--border);
+}
+
 .tab-title {
   flex: 1;
   overflow: hidden;

@@ -290,3 +290,63 @@ describe.each([
     expect(after).toHaveBeenCalledTimes(1);
   });
 });
+
+// Private windows attach the dispatcher with an exclude predicate so the
+// x402 payment-interception handlers never observe private traffic (see
+// src/main/index.js — PRIVATE MODE GUARD (x402)).
+describe('attachWebRequestDispatcher exclude option', () => {
+  test('excluded handlers are not attached for this session', async () => {
+    const seen = [];
+    registerWebRequestHandler('onBeforeSendHeaders', 'x402-capture', (details) => {
+      seen.push(['x402-capture', details.id]);
+      return null;
+    });
+    registerWebRequestHandler('onBeforeSendHeaders', 'rewriter', (details) => {
+      seen.push(['rewriter', details.id]);
+      return null;
+    });
+    registerWebRequestHandler('onHeadersReceived', 'x402-detect', (details) => {
+      seen.push(['x402-detect', details.id]);
+      return null;
+    });
+
+    const session = makeSessionMock();
+    attachWebRequestDispatcher(session, {
+      exclude: (name) => name.startsWith('x402-'),
+    });
+
+    // onHeadersReceived only had x402 handlers — nothing left to attach.
+    expect(session.webRequest.onHeadersReceived).not.toHaveBeenCalled();
+    expect(session.webRequest.onBeforeSendHeaders).toHaveBeenCalledTimes(1);
+
+    const listener = session.webRequest.onBeforeSendHeaders.mock.calls[0][0];
+    const callback = jest.fn();
+    await listener({ id: 7, requestHeaders: {} }, callback);
+
+    expect(seen).toEqual([['rewriter', 7]]);
+    expect(callback).toHaveBeenCalledTimes(1);
+  });
+
+  test('a session attached without exclude still runs every handler', async () => {
+    const seen = [];
+    registerWebRequestHandler('onBeforeSendHeaders', 'x402-capture', (details) => {
+      seen.push(['x402-capture', details.id]);
+      return null;
+    });
+    registerWebRequestHandler('onBeforeSendHeaders', 'rewriter', (details) => {
+      seen.push(['rewriter', details.id]);
+      return null;
+    });
+
+    const session = makeSessionMock();
+    attachWebRequestDispatcher(session);
+
+    const listener = session.webRequest.onBeforeSendHeaders.mock.calls[0][0];
+    await listener({ id: 3, requestHeaders: {} }, jest.fn());
+
+    expect(seen).toEqual([
+      ['x402-capture', 3],
+      ['rewriter', 3],
+    ]);
+  });
+});

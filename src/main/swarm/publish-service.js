@@ -12,6 +12,7 @@ const path = require('path');
 const { ipcMain, dialog, BrowserWindow } = require('electron');
 const { getBee, selectBestBatch, toHex } = require('./swarm-service');
 const { addEntry, updateEntry } = require('./publish-history');
+const { isPrivateWebContents } = require('../private/private-windows');
 const { createProfileTempDir } = require('../profile-paths');
 const log = require('electron-log');
 
@@ -229,7 +230,18 @@ async function getUploadStatus(tagUid) {
  * pages at all.
  */
 function registerPublishIpc() {
-  ipcMain.handle('swarm:publish-data', async (_event, data) => {
+  // PRIVATE MODE GUARD (publish history): publishing is unavailable from
+  // private windows — every publish writes a publish-history row (and mints
+  // durable network state tied to the profile identity), which contradicts
+  // the private-window promise of leaving no local trace.
+  const PRIVATE_PUBLISH_ERROR = {
+    success: false,
+    error: 'Publishing is unavailable in private windows',
+  };
+  const isPrivateSender = (event) => isPrivateWebContents(event?.sender);
+
+  ipcMain.handle('swarm:publish-data', async (event, data) => {
+    if (isPrivateSender(event)) return PRIVATE_PUBLISH_ERROR;
     if (!data && data !== '') {
       return { success: false, error: 'Data is required' };
     }
@@ -250,7 +262,8 @@ function registerPublishIpc() {
     }
   });
 
-  ipcMain.handle('swarm:publish-file', async (_event, filePath) => {
+  ipcMain.handle('swarm:publish-file', async (event, filePath) => {
+    if (isPrivateSender(event)) return PRIVATE_PUBLISH_ERROR;
     if (!filePath || typeof filePath !== 'string') {
       return { success: false, error: 'File path is required' };
     }
@@ -275,7 +288,8 @@ function registerPublishIpc() {
     }
   });
 
-  ipcMain.handle('swarm:publish-directory', async (_event, dirPath) => {
+  ipcMain.handle('swarm:publish-directory', async (event, dirPath) => {
+    if (isPrivateSender(event)) return PRIVATE_PUBLISH_ERROR;
     if (!dirPath || typeof dirPath !== 'string') {
       return { success: false, error: 'Directory path is required' };
     }

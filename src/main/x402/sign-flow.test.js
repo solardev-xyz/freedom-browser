@@ -164,3 +164,87 @@ describe('signAndQueueRetry — selectedAccept resolution', () => {
     );
   });
 });
+
+// The SDK stamps validBefore before it asks the signer to sign, so a slow
+// on-device confirmation can outlive the authorization. Anything the
+// facilitator would refuse (`validBefore < now + 6`) must not be dispatched.
+describe('signAndQueueRetry — authorization freshness', () => {
+  const nowSeconds = () => Math.floor(Date.now() / 1000);
+
+  function payloadValidUntil(validBefore) {
+    return {
+      x402Version: 2,
+      payload: { authorization: { validBefore: String(validBefore) }, signature: '0xsig' },
+    };
+  }
+
+  function detection() {
+    return {
+      url: 'https://api.example/article',
+      requirements: requirementsWith(baseAccept),
+      resourceType: 'mainFrame',
+    };
+  }
+
+  test('rejects — and stashes nothing — when the device confirmation outlived validBefore', async () => {
+    mockClient.createPaymentPayload.mockResolvedValue(payloadValidUntil(nowSeconds() - 5));
+
+    await expect(signAndQueueRetry(7, { detection: detection() }))
+      .rejects.toThrow(/expired while it was being confirmed/i);
+
+    // No signature armed for the injector, no re-navigation: the doomed
+    // retry that would trip the loop guard never goes out.
+    expect(consumePending(7, 'https://api.example/article')).toBeNull();
+    expect(mockLoadURL).not.toHaveBeenCalled();
+  });
+
+  test('rejects inside the facilitator skew window even though validBefore is future', async () => {
+    mockClient.createPaymentPayload.mockResolvedValue(payloadValidUntil(nowSeconds() + 2));
+
+    await expect(signAndQueueRetry(7, { detection: detection() }))
+      .rejects.toThrow(/expired while it was being confirmed/i);
+  });
+
+  test('keeps the detection so the user can retry from the same card', async () => {
+    // Seed through the real detector — there is no public setter for the
+    // detected-payments map, and this is the entry point production uses.
+    const requirements = {
+      x402Version: 2,
+      resource: { url: 'https://api.example/article' },
+      accepts: [{
+        scheme: 'exact',
+        network: 'eip155:8453',
+        amount: '10000',
+        asset: BASE_USDC,
+        payTo: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C',
+        maxTimeoutSeconds: 60,
+        extra: { name: 'USD Coin', version: '2' },
+      }],
+    };
+    intercept.detectPaymentRequiredHandler({
+      webContentsId: 7,
+      url: 'https://api.example/article',
+      statusLine: 'HTTP/1.1 402 Payment Required',
+      responseHeaders: {
+        'PAYMENT-REQUIRED': [Buffer.from(JSON.stringify(requirements)).toString('base64')],
+      },
+    });
+    expect(intercept.getDetectedPayment(7)).toBeTruthy();
+
+    mockClient.createPaymentPayload.mockResolvedValue(payloadValidUntil(nowSeconds() - 1));
+
+    await expect(signAndQueueRetry(7)).rejects.toThrow(/expired while it was being confirmed/i);
+
+    expect(intercept.getDetectedPayment(7)).toBeTruthy();
+  });
+
+  test('dispatches normally when the authorization still has runway', async () => {
+    mockClient.createPaymentPayload.mockResolvedValue(payloadValidUntil(nowSeconds() + 60));
+
+    await signAndQueueRetry(7, { detection: detection() });
+
+    expect(consumePending(7, 'https://api.example/article')?.requestHeaders['PAYMENT-SIGNATURE'])
+      .toBeDefined();
+    expect(mockLoadURL).toHaveBeenCalledWith('https://api.example/article');
+  });
+});

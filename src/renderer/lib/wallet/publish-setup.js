@@ -7,6 +7,7 @@
 
 import { state } from '../state.js';
 import { walletState, registerScreenHider } from './wallet-state.js';
+import { refuseSubscreenWhileInFlight } from './signature-flight.js';
 import { isChequebookDeployed } from './wallet-utils.js';
 import { normalizeSwarmMode } from './swarm-readiness.js';
 import { fetchAntJson } from './ant-api.js';
@@ -77,6 +78,8 @@ export function initPublishSetup() {
 }
 
 export function openPublishSetup() {
+  if (refuseSubscreenWhileInFlight('Publish setup screen')) return;
+
   walletState.identityView?.classList.add('hidden');
   publishSetupScreen?.classList.remove('hidden');
 

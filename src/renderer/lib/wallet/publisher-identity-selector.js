@@ -142,6 +142,13 @@ function buildIdentityItem(identity, isActive, handlers) {
   item.type = 'button';
   item.className = 'wallet-selector-item publisher-identity-selector-item';
   if (isActive) item.classList.add('active');
+  // Main flags identities whose backing account can't sign feeds (deleted
+  // wallet, hardware account). Selecting one would only fail later, so the
+  // row is shown greyed out and inert instead of silently breaking feeds.
+  if (identity.unavailable) {
+    item.classList.add('unavailable');
+    item.disabled = true;
+  }
 
   item.innerHTML = `
     <div class="wallet-selector-item-info">
@@ -149,6 +156,7 @@ function buildIdentityItem(identity, isActive, handlers) {
       <div class="wallet-selector-item-address-row">
         <span class="publisher-identity-mode">${escapeHtml(identityModeLabel(identity))}</span>
         <code class="wallet-selector-item-address" title="${escapeHtml(identity.owner || '')}">${escapeHtml(truncateAddress(identity.owner))}</code>
+        ${identity.unavailable ? '<span class="publisher-identity-unavailable">Can’t sign feeds</span>' : ''}
       </div>
     </div>
     <div class="wallet-selector-item-actions">
@@ -161,6 +169,7 @@ function buildIdentityItem(identity, isActive, handlers) {
   `;
 
   item.addEventListener('click', () => {
+    if (identity.unavailable) return;
     closePublisherIdentityDropdowns();
     handlers.onSelect?.(identity);
   });

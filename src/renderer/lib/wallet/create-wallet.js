@@ -5,6 +5,7 @@
  */
 
 import { walletState, registerScreenHider } from './wallet-state.js';
+import { refuseSubscreenWhileInFlight } from './signature-flight.js';
 import { loadDerivedWallets, updateWalletSelectorDisplay } from './wallet-selector.js';
 import { refreshBalances } from './balance-display.js';
 
@@ -69,6 +70,8 @@ function setupCreateWalletSubscreen() {
 }
 
 export async function openCreateWallet() {
+  if (refuseSubscreenWhileInFlight('Create wallet screen')) return;
+
   walletState.identityView?.classList.add('hidden');
   createWalletScreen?.classList.remove('hidden');
 

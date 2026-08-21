@@ -10,7 +10,9 @@ permissions:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Feature-branch supersession is useful, but main's long native network
+  # proof must be allowed to finish even if another merge lands meanwhile.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   test:
@@ -131,6 +133,211 @@ jobs:
           FREEDOM_IPFS_NATIVE_SMOKE_LIVE: '0'
           FREEDOM_IPFS_NATIVE_SMOKE_ISSUE_102: '1'
 
+  # Load every native Myotis addon target that release packaging requires.
+  # The live network proof below remains one representative architecture per
+  # shipped OS; this fast matrix closes the packaging gap for Intel macOS and
+  # ARM64 Linux without multiplying the expensive cold-sync workload.
+  myotis-addon-load:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: darwin-arm64
+            addon: myotis-bin/mac-arm64/myotis-node.node
+          - os: macos-15-intel
+            target: darwin-x64
+            addon: myotis-bin/mac-x64/myotis-node.node
+          - os: ubuntu-latest
+            target: linux-x64
+            addon: myotis-bin/linux-x64/myotis-node.node
+          - os: ubuntu-24.04-arm
+            target: linux-arm64
+            addon: myotis-bin/linux-arm64/myotis-node.node
+          - os: windows-latest
+            target: win32-x64
+            addon: myotis-bin/win-x64/myotis-node.node
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Download this runner's Myotis addon
+        run: npm run myotis:download
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          MYOTIS_DOWNLOAD_TARGET: ${{ matrix.target }}
+
+      - name: Load addon and verify ABI
+        run: node -e "const addon=require('./'+process.env.MYOTIS_ADDON); const abi=addon.init(); if(abi!==22) throw new Error('Expected ABI 22, got '+abi); console.log(process.platform+'-'+process.arch+' ABI '+abi);"
+        env:
+          MYOTIS_ADDON: ${{ matrix.addon }}
+
+  # Real Myotis release-addon + Freedom resolver E2E on every operating
+  # system we ship. One production-app launch cold-syncs over libp2p/devp2p,
+  # proves direct verified Ethereum + Gnosis reads, then exercises ENS plus
+  # WNS/GNS through Freedom's Myotis resolver tier. Avoid a raw-smoke launch
+  # followed by an immediate app restart: persisted peer backoff can leave the
+  # second client temporarily unable to reacquire a usable snap peer even
+  # though the first launch just served verified reads.
+  #
+  # Cold sync can take 30-40 minutes. Cache restore/save are split so a timed
+  # out first attempt still preserves its cleanly-stopped partial sync; a
+  # re-run continues from that snapshot instead of starting from zero.
+  myotis-native-e2e:
+    # A feature branch with an open PR otherwise launches this 30-40 minute
+    # live-network matrix twice (push + pull_request), doubling cost and exposure
+    # to transient peer selection. Keep PR/manual gates and post-merge coverage on main.
+    if: github.event_name != 'push' || github.ref == 'refs/heads/main'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: darwin-arm64
+            addon: myotis-bin/mac-arm64/myotis-node.node
+          - os: ubuntu-latest
+            target: linux-x64
+            addon: myotis-bin/linux-x64/myotis-node.node
+          - os: windows-latest
+            target: win32-x64
+            addon: myotis-bin/win-x64/myotis-node.node
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 190
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install Linux native USB build dependency
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/install-linux-native-deps
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright system dependencies
+        if: runner.os == 'Linux'
+        run: npx playwright install-deps
+
+      - name: Download Myotis release addons
+        run: npm run myotis:download
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          MYOTIS_DOWNLOAD_TARGET: ${{ matrix.target }}
+
+      - name: Assert native-addon target
+        run: node -e "const actual=process.platform+'-'+process.arch; const expected=process.env.EXPECTED_TARGET; if(actual!==expected) throw new Error('expected '+expected+', got '+actual); console.log(actual);"
+        env:
+          EXPECTED_TARGET: ${{ matrix.target }}
+
+      - name: Restore Myotis sync snapshot
+        id: myotis-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/myotis-data
+          key: myotis-${{ hashFiles('scripts/fetch-myotis.js') }}-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            myotis-${{ hashFiles('scripts/fetch-myotis.js') }}-${{ matrix.target }}-
+
+      - name: Download IPFS native addon
+        run: npm run ipfs:download
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Run Freedom Myotis resolver E2E
+        shell: bash
+        env:
+          MYOTIS_DATA_DIR: ${{ runner.temp }}/myotis-data
+          MYOTIS_NODE_PATH: ${{ github.workspace }}/${{ matrix.addon }}
+          MYOTIS_E2E_READY_TIMEOUT_MIN: '75'
+          FREEDOM_TEST_HIDE_WINDOW: '1'
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            xvfb-run -a npm run test:e2e:live -- test-e2e/live/myotis-ens.spec.js
+          else
+            npm run test:e2e:live -- test-e2e/live/myotis-ens.spec.js
+          fi
+
+      - name: Save Myotis sync snapshot
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/myotis-data
+          key: myotis-${{ hashFiles('scripts/fetch-myotis.js') }}-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Upload Playwright traces and screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: myotis-native-e2e-${{ matrix.target }}-traces
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # Settings navigation, persistence, and chain policy are shipped control
+  # surfaces. Exercise their real renderer/webview integration so malformed
+  # sidebar markup, broken transitions, and Myotis policy regressions cannot
+  # pass unit-only CI.
+  e2e-settings:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install Linux native USB build dependency
+        uses: ./.github/actions/install-linux-native-deps
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright system dependencies
+        run: npx playwright install-deps
+
+      - name: Download adblock filter lists
+        run: npm run adblock:download
+
+      - name: Run settings E2E
+        run: xvfb-run -a npm run test:e2e -- test-e2e/settings.spec.js test-e2e/settings-adblock.spec.js
+
+      - name: Upload Playwright traces and screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-settings-traces
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
   # Onboarding wizard must create node identities while a real Swarm node (now
   # antd) is running. Drives the full password wizard end-to-end against a real
   # antd spawn across all three desktop platforms — the cross-platform proof
@@ -158,7 +365,7 @@ jobs:
 
       - name: Install Linux native USB build dependency
         if: runner.os == 'Linux'
-        run: sudo apt-get install -y libudev-dev
+        uses: ./.github/actions/install-linux-native-deps
 
       - name: Install dependencies
         run: npm ci
@@ -228,7 +435,7 @@ jobs:
 
       - name: Install Linux native USB build dependency
         if: runner.os == 'Linux'
-        run: sudo apt-get install -y libudev-dev
+        uses: ./.github/actions/install-linux-native-deps
 
       - name: Install dependencies
         run: npm ci
@@ -282,7 +489,7 @@ jobs:
 
       - name: Install Linux native USB build dependency
         if: runner.os == 'Linux'
-        run: sudo apt-get install -y libudev-dev
+        uses: ./.github/actions/install-linux-native-deps
 
       - name: Install dependencies
         run: npm ci
@@ -334,7 +541,7 @@ jobs:
 
       - name: Install Linux native USB build dependency
         if: runner.os == 'Linux'
-        run: sudo apt-get install -y libudev-dev
+        uses: ./.github/actions/install-linux-native-deps
 
       - name: Install dependencies
         run: npm ci

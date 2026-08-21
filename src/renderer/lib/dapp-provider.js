@@ -422,52 +422,36 @@ function webviewContentsId(webview) {
 
 /**
  * Proxy an RPC call to the main process
- * Tries multiple RPC endpoints with fallback on failure
+ * Uses the chain's capability-aware source order (Myotis, Colibri,
+ * RPC quorum, then direct RPC fallback).
  */
 async function proxyRpcCall(method, params) {
   // Get current chain ID
   const chainIdHex = await getCurrentChainId();
   const chainId = parseInt(chainIdHex, 16);
 
-  // Get effective RPC URLs (includes provider URLs if configured)
-  const urlsResult = await window.rpcManager.getEffectiveUrls(chainId);
-  const rpcUrls = urlsResult.success ? urlsResult.urls : [];
-
-  if (rpcUrls.length === 0) {
-    // No RPC URLs available - give helpful error message
-    const chainsResult = await window.networks.getChains();
-    const chains = chainsResult.success ? chainsResult.chains : {};
-    const chain = chains[chainId];
-    const chainName = chain?.name || `Chain ${chainId}`;
+  const data = await window.wallet.requestChain(chainId, method, params);
+  if (!data?.success) {
+    let message = data?.error?.message || `All chain sources failed for chain ${chainId}`;
+    try {
+      const availability = await window.networks.isChainAvailable(chainId);
+      if (availability?.available === false) {
+        const chainsResult = await window.networks.getChains();
+        const chainName = chainsResult?.success
+          ? chainsResult.chains?.[chainId]?.name
+          : null;
+        message = `${chainName || `Chain ${chainId}`} requires an RPC provider. Please configure one in Settings.`;
+      }
+    } catch {
+      // Preserve the original router error if availability lookup also fails.
+    }
     throw {
-      ...ERRORS.INTERNAL_ERROR,
-      message: `${chainName} requires an RPC provider. Please configure Alchemy, Infura, or DRPC in Settings.`,
+      code: data?.error?.code || ERRORS.INTERNAL_ERROR.code,
+      message,
+      data: data?.error?.data,
     };
   }
-
-  // Try each RPC URL until one succeeds (via main process to avoid renderer CSP)
-  let lastError = null;
-  for (const rpcUrl of rpcUrls) {
-    try {
-      const data = await window.wallet.proxyRpc(rpcUrl, method, params);
-
-      if (!data.success) {
-        // RPC returned an error - try next endpoint
-        console.warn(`[DappProvider] RPC error from ${rpcUrl}:`, data.error?.message);
-        lastError = { code: data.error?.code, message: data.error?.message };
-        continue;
-      }
-
-      return data.result;
-    } catch (err) {
-      // IPC/network error - try next endpoint
-      console.warn(`[DappProvider] RPC proxy failed for ${rpcUrl}:`, err.message);
-      lastError = { ...ERRORS.INTERNAL_ERROR, message: err.message };
-    }
-  }
-
-  // All endpoints failed
-  throw lastError || { ...ERRORS.INTERNAL_ERROR, message: `All RPC endpoints failed for chain ${chainId}` };
+  return data.result;
 }
 
 /**

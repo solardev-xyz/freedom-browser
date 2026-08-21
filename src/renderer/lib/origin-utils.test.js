@@ -58,6 +58,8 @@ const INPUTS = [
   'ipfs://myapp.box/path',
   'ipfs://alice.wei/path',
   'ipfs://apoorv.gwei/path',
+  'docs.example.tez/guide',
+  'ipfs://docs.example.tez/guide',
 
   // Query / fragment must not fork the permission key per route. Hash-routed
   // SPAs (#/swap) and share-link queries (?ref=...) collapse to the same

@@ -1,6 +1,7 @@
 const log = require('./logger');
 const { BrowserWindow, Menu, app, dialog, ipcMain } = require('electron');
 const { isMainBrowserWindow, getMainWindows, createMainWindow } = require('./windows/mainWindow');
+const { createPrivateWindow } = require('./private/private-windows');
 const {
   checkForUpdates,
   getInstallRelaunchMode,
@@ -10,6 +11,35 @@ const {
 const { getActiveProfile, listProfilesForActiveApp } = require('./profile-resolver');
 const { openOrFocusProfile } = require('./profile-launcher');
 const IPC = require('../shared/ipc-channels');
+const { getEffectiveAccelerator, getAliasAccelerators } = require('../shared/shortcuts');
+const { loadSettings, onSettingsChanged } = require('./settings-store');
+
+// Every menu accelerator comes from the shared shortcut registry
+// (src/shared/shortcuts.js) — menu.test.js rejects accelerator literals in
+// this file so new shortcuts land in the registry first. `acc` resolves the
+// per-profile override (Settings > Shortcuts) over the registry default;
+// aliases are fixed and never remapped.
+const currentOverrides = () => {
+  try {
+    return loadSettings()?.shortcutOverrides || {};
+  } catch {
+    return {};
+  }
+};
+const acc = (id, platform = process.platform) =>
+  getEffectiveAccelerator(id, currentOverrides(), platform);
+const aliasAcc = (id, index, platform = process.platform) =>
+  getAliasAccelerators(id, platform)[index];
+
+// Rebuild the application menu when the user remaps shortcuts so the new
+// accelerators take effect without a restart.
+onSettingsChanged((merged, previous) => {
+  const before = JSON.stringify(previous?.shortcutOverrides || {});
+  const after = JSON.stringify(merged?.shortcutOverrides || {});
+  if (before !== after) {
+    setupApplicationMenu();
+  }
+});
 
 // Helper to get the best target window for tab operations
 // Only returns main browser windows we created (not DevTools or other system windows)
@@ -153,7 +183,7 @@ function buildFileSubmenu(isMac) {
     {
       id: 'new-tab',
       label: 'New Tab',
-      accelerator: 'CmdOrCtrl+T',
+      accelerator: acc('tab.new'),
       click: () => {
         const win = getTargetWindow();
         if (win) {
@@ -164,7 +194,7 @@ function buildFileSubmenu(isMac) {
     {
       id: 'close-tab',
       label: 'Close Tab',
-      accelerator: 'CmdOrCtrl+W',
+      accelerator: acc('tab.close'),
       click: () => {
         const mainWindows = getMainWindows();
         const focusedMainWindow = mainWindows.find((win) => win.isFocused());
@@ -181,7 +211,8 @@ function buildFileSubmenu(isMac) {
   if (!isMac) {
     submenu.push({
       label: 'Close Tab',
-      accelerator: 'Ctrl+F4',
+      // Fixed Ctrl+F4 alias from the registry (win/linux only).
+      accelerator: aliasAcc('tab.close', 0),
       click: () => {
         const win = getTargetWindow();
         if (win) {
@@ -195,7 +226,7 @@ function buildFileSubmenu(isMac) {
     {
       id: 'reopen-closed-tab',
       label: 'Reopen Closed Tab',
-      accelerator: 'CmdOrCtrl+Shift+T',
+      accelerator: acc('tab.reopenClosed'),
       click: () => {
         const win = getTargetWindow();
         if (win) {
@@ -205,11 +236,34 @@ function buildFileSubmenu(isMac) {
     },
     { type: 'separator' },
     {
+      id: 'downloads',
+      label: 'Downloads',
+      accelerator: acc('downloads.show'),
+      click: () => {
+        const win = getTargetWindow();
+        if (win) {
+          // Singleton internal page: the renderer focuses an existing
+          // freedom://downloads tab instead of opening a duplicate.
+          win.webContents.send('tab:new-with-url', 'freedom://downloads');
+        }
+      },
+    },
+    { type: 'separator' },
+    {
       label: 'New Window',
-      accelerator: 'CmdOrCtrl+N',
+      accelerator: acc('window.new'),
       click: () => {
         log.info('[menu] New Window clicked');
         createMainWindow();
+      },
+    },
+    {
+      id: 'new-private-window',
+      label: 'New Private Window',
+      accelerator: acc('window.newPrivate'),
+      click: () => {
+        log.info('[menu] New Private Window clicked');
+        createPrivateWindow();
       },
     },
     { type: 'separator' },
@@ -228,7 +282,7 @@ function buildViewSubmenu({ isFullScreen: fullScreen, showAppDevtools }) {
     {
       id: 'reload',
       label: 'Reload This Page',
-      accelerator: 'CmdOrCtrl+R',
+      accelerator: acc('page.reload'),
       click: () => {
         const win = getTargetWindow();
         if (win) {
@@ -238,7 +292,7 @@ function buildViewSubmenu({ isFullScreen: fullScreen, showAppDevtools }) {
     },
     {
       label: 'Force Reload This Page',
-      accelerator: 'CmdOrCtrl+Shift+R',
+      accelerator: acc('page.hardReload'),
       visible: false,
       click: () => {
         const win = getTargetWindow();
@@ -250,7 +304,7 @@ function buildViewSubmenu({ isFullScreen: fullScreen, showAppDevtools }) {
     { type: 'separator' },
     {
       label: 'Focus Address Bar',
-      accelerator: 'CmdOrCtrl+L',
+      accelerator: acc('view.focusAddressBar'),
       click: () => {
         const win = getTargetWindow();
         if (win) {
@@ -263,7 +317,7 @@ function buildViewSubmenu({ isFullScreen: fullScreen, showAppDevtools }) {
     {
       id: 'fullscreen',
       label: fullScreen ? 'Exit Full Screen' : 'Enter Full Screen',
-      accelerator: 'F11',
+      accelerator: acc('view.fullscreen'),
       click: () => {
         const win = getTargetWindow();
         if (win) {
@@ -275,7 +329,7 @@ function buildViewSubmenu({ isFullScreen: fullScreen, showAppDevtools }) {
     {
       id: 'next-tab',
       label: 'Next Tab',
-      accelerator: 'Ctrl+PageDown',
+      accelerator: acc('tab.next'),
       click: () => {
         const win = getTargetWindow();
         if (win) {
@@ -286,7 +340,7 @@ function buildViewSubmenu({ isFullScreen: fullScreen, showAppDevtools }) {
     {
       id: 'prev-tab',
       label: 'Previous Tab',
-      accelerator: 'Ctrl+PageUp',
+      accelerator: acc('tab.previous'),
       click: () => {
         const win = getTargetWindow();
         if (win) {
@@ -297,7 +351,7 @@ function buildViewSubmenu({ isFullScreen: fullScreen, showAppDevtools }) {
     {
       id: 'move-tab-right',
       label: 'Move Tab Right',
-      accelerator: 'Ctrl+Shift+PageDown',
+      accelerator: acc('tab.moveRight'),
       click: () => {
         const win = getTargetWindow();
         if (win) {
@@ -308,7 +362,7 @@ function buildViewSubmenu({ isFullScreen: fullScreen, showAppDevtools }) {
     {
       id: 'move-tab-left',
       label: 'Move Tab Left',
-      accelerator: 'Ctrl+Shift+PageUp',
+      accelerator: acc('tab.moveLeft'),
       click: () => {
         const win = getTargetWindow();
         if (win) {
@@ -322,7 +376,7 @@ function buildViewSubmenu({ isFullScreen: fullScreen, showAppDevtools }) {
       label: 'Always Show Bookmarks Bar',
       type: 'checkbox',
       checked: false,
-      accelerator: 'CmdOrCtrl+Shift+B',
+      accelerator: acc('view.toggleBookmarksBar'),
       click: () => {
         const win = getTargetWindow();
         if (win) {
@@ -334,7 +388,7 @@ function buildViewSubmenu({ isFullScreen: fullScreen, showAppDevtools }) {
     {
       id: 'toggle-devtools',
       label: 'Developer Tools',
-      accelerator: 'CmdOrCtrl+Alt+I',
+      accelerator: acc('devtools.toggle'),
       click: () => {
         const win = getTargetWindow();
         if (win) {
@@ -348,7 +402,7 @@ function buildViewSubmenu({ isFullScreen: fullScreen, showAppDevtools }) {
     submenu.push({
       id: 'toggle-app-devtools',
       label: 'App Developer Tools',
-      accelerator: 'CmdOrCtrl+Shift+Alt+I',
+      accelerator: acc('devtools.toggleApp'),
       click: () => {
         const win = getTargetWindow();
         if (win) {
@@ -361,11 +415,11 @@ function buildViewSubmenu({ isFullScreen: fullScreen, showAppDevtools }) {
   return submenu;
 }
 
-function buildHistorySubmenu(isMac) {
+function buildHistorySubmenu() {
   return [
     {
       label: 'Show All History',
-      accelerator: isMac ? 'Cmd+Y' : 'Ctrl+H',
+      accelerator: acc('history.showAll'),
       click: () => {
         const win = getTargetWindow();
         if (win) {
@@ -376,9 +430,50 @@ function buildHistorySubmenu(isMac) {
   ];
 }
 
+// Find in Page needs a custom click handler (main → renderer IPC), so it
+// can't come from a role. The renderer's find-bar module listens on the
+// other end and drives the active webview's findInPage().
+function buildFindMenuItem() {
+  return {
+    id: 'find-in-page',
+    label: 'Find in Page...',
+    accelerator: acc('page.findInPage'),
+    click: () => {
+      const win = getTargetWindow();
+      if (win) {
+        win.webContents.send(IPC.FIND_IN_PAGE_OPEN);
+      }
+    },
+  };
+}
+
 function buildEditMenuEntry(isMac) {
   if (isMac) {
-    return { role: 'editMenu' };
+    // Keep the `editMenu` role (native label + placement semantics) but
+    // spell out its submenu so Find in Page can be appended — a bare role
+    // entry can't carry extra items. The listed roles mirror the role's
+    // default macOS submenu.
+    return {
+      role: 'editMenu',
+      submenu: [
+        { role: 'undo' },
+        { role: 'redo' },
+        { type: 'separator' },
+        { role: 'cut' },
+        { role: 'copy' },
+        { role: 'paste' },
+        { role: 'pasteAndMatchStyle' },
+        { role: 'delete' },
+        { role: 'selectAll' },
+        { type: 'separator' },
+        buildFindMenuItem(),
+        { type: 'separator' },
+        {
+          label: 'Speech',
+          submenu: [{ role: 'startSpeaking' }, { role: 'stopSpeaking' }],
+        },
+      ],
+    };
   }
 
   return {
@@ -393,6 +488,8 @@ function buildEditMenuEntry(isMac) {
       { role: 'delete' },
       { type: 'separator' },
       { role: 'selectAll' },
+      { type: 'separator' },
+      buildFindMenuItem(),
     ],
   };
 }
@@ -410,7 +507,7 @@ function buildSharedMenuEntries(ctx) {
         showAppDevtools: !isPackaged,
       }),
     },
-    { label: 'History', submenu: buildHistorySubmenu(isMac) },
+    { label: 'History', submenu: buildHistorySubmenu() },
     { label: 'Profiles', submenu: buildProfilesSubmenu() },
   ];
 }
@@ -490,10 +587,30 @@ function setupApplicationMenu() {
   closeTabMenuItem = menu.getMenuItemById('close-tab');
   toggleBookmarkBarMenuItem = menu.getMenuItemById('toggle-bookmark-bar');
   updateTabMenuItems();
+  // Restore renderer-pushed state the rebuild just reset.
+  if (lastTabState) applyTabState(lastTabState);
+  if (toggleBookmarkBarMenuItem && lastBookmarkBarEnabled !== null) {
+    toggleBookmarkBarMenuItem.enabled = lastBookmarkBarEnabled;
+  }
+  if (toggleBookmarkBarMenuItem && lastBookmarkBarChecked !== null) {
+    toggleBookmarkBarMenuItem.checked = lastBookmarkBarChecked;
+  }
 }
+
+// Last renderer-pushed dynamic state, re-applied after any menu rebuild
+// (shortcut remap, fullscreen label flip) — rebuilt items otherwise reset
+// to template defaults until the renderer's next push.
+let lastTabState = null;
+let lastBookmarkBarEnabled = null;
+let lastBookmarkBarChecked = null;
 
 // Receive tab state updates from the renderer and apply to menu items immediately
 ipcMain.on('menu:update-tab-state', (_event, state) => {
+  lastTabState = state;
+  applyTabState(state);
+});
+
+function applyTabState(state) {
   const menu = Menu.getApplicationMenu();
   if (!menu) return;
 
@@ -513,7 +630,7 @@ ipcMain.on('menu:update-tab-state', (_event, state) => {
   setEnabled('move-tab-left', hasMultipleTabs && activeIndex > 0);
   setEnabled('reopen-closed-tab', hasClosedTabs);
   setEnabled('toggle-devtools', hasTabs);
-});
+}
 
 // Track fullscreen state changes from any window to update menu label
 app.on('browser-window-created', (_event, win) => {
@@ -523,6 +640,7 @@ app.on('browser-window-created', (_event, win) => {
 
 // Allow renderer to enable/disable the bookmark bar toggle menu item
 ipcMain.on('menu:set-bookmark-bar-toggle-enabled', (_event, enabled) => {
+  lastBookmarkBarEnabled = enabled;
   if (toggleBookmarkBarMenuItem) {
     toggleBookmarkBarMenuItem.enabled = enabled;
   }
@@ -530,6 +648,7 @@ ipcMain.on('menu:set-bookmark-bar-toggle-enabled', (_event, enabled) => {
 
 // Allow renderer to update the bookmark bar checked state
 ipcMain.on('menu:set-bookmark-bar-checked', (_event, checked) => {
+  lastBookmarkBarChecked = checked;
   if (toggleBookmarkBarMenuItem) {
     toggleBookmarkBarMenuItem.checked = checked;
   }

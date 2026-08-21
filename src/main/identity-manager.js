@@ -820,6 +820,53 @@ function extraRecordFields(record) {
 }
 
 /**
+ * Hardware accounts are allocated from a disjoint, never-reused slice of
+ * the wallet index space, starting here.
+ *
+ * A wallet's `index` is two things at once: the account id every
+ * persisted reference stores (dApp permissions, Swarm publisher
+ * identities, `activeWalletIndex`) and — for mnemonic accounts — the
+ * BIP-44 account index its key is derived at. Letting hardware accounts
+ * take ids from that same pool breaks both roles: the mnemonic account
+ * at the squatted derivation index can never be re-created (the hardware
+ * guards block derivation at that index), stranding any funds it holds,
+ * and every persisted reference to that index silently rebinds to a
+ * different address and signing backend.
+ *
+ * @see nextHardwareWalletIndex
+ */
+const HARDWARE_INDEX_BASE = 1000000;
+
+function isHardwareWalletIndex(index) {
+  return Number.isInteger(index) && index >= HARDWARE_INDEX_BASE;
+}
+
+/**
+ * Allocate the index for a new hardware account: monotonic and never
+ * reused, so deleting a Ledger does not hand its index — and with it
+ * every dApp permission and publisher identity pinned to that index — to
+ * the next device account that gets added.
+ *
+ * The counter lives in vault-meta; the on-disk wallet list is used as a
+ * high-water mark so a missing or stale counter can never produce a
+ * collision.
+ *
+ * @param {Object} meta - Parsed vault-meta
+ * @param {Array<Object>} wallets - Current wallet list
+ * @returns {number}
+ */
+function nextHardwareWalletIndex(meta, wallets) {
+  const counter = Number.isInteger(meta.nextHardwareWalletIndex)
+    ? meta.nextHardwareWalletIndex
+    : HARDWARE_INDEX_BASE;
+  const highWater = wallets.reduce(
+    (max, wallet) => (isHardwareWalletIndex(wallet.index) ? Math.max(max, wallet.index + 1) : max),
+    HARDWARE_INDEX_BASE
+  );
+  return Math.max(counter, highWater);
+}
+
+/**
  * The wallet list stored in vault-meta, with the implicit pre-multi-wallet
  * default (just the main wallet) when `derivedWallets` was never written.
  *
@@ -971,7 +1018,7 @@ async function addDeviceWallet(type, name, address, extra = {}) {
     throw new Error(`This account is already in your wallet list as "${duplicate.name}"`);
   }
 
-  const newIndex = wallets.reduce((max, w) => Math.max(max, w.index), -1) + 1;
+  const newIndex = nextHardwareWalletIndex(meta, wallets);
   const sameTypeCount = wallets.filter((w) => w.type === type).length;
   const newWallet = {
     index: newIndex,
@@ -985,6 +1032,7 @@ async function addDeviceWallet(type, name, address, extra = {}) {
   saveVaultMeta({
     ...meta,
     derivedWallets: wallets,
+    nextHardwareWalletIndex: newIndex + 1,
   });
 
   return { ...newWallet };
@@ -1143,9 +1191,21 @@ async function createDerivedWallet(name) {
   // Get current wallets
   const wallets = getWalletList(meta);
 
-  // Find next available index (use account index, starting from max + 1)
-  const maxIndex = wallets.reduce((max, w) => Math.max(max, w.index), -1);
-  const newIndex = maxIndex + 1;
+  // Find next available index (use account index, starting from max + 1).
+  // Only mnemonic accounts constrain it — this index *is* the BIP-44
+  // account index the key is derived at, and hardware accounts live in
+  // their own range (see HARDWARE_INDEX_BASE). The taken-index skip is a
+  // safety net for vault-meta written before that split, where a Ledger
+  // may still sit on a low index.
+  const taken = new Set(wallets.map((w) => w.index));
+  const maxIndex = wallets.reduce(
+    (max, w) => (isHardwareWalletIndex(w.index) ? max : Math.max(max, w.index)),
+    -1
+  );
+  let newIndex = maxIndex + 1;
+  while (taken.has(newIndex)) {
+    newIndex += 1;
+  }
 
   // Derive the new wallet
   const derived = identity.deriveUserWallet(mnemonic, newIndex);
@@ -1276,6 +1336,15 @@ async function deleteDerivedWallet(index) {
     derivedWallets: wallets,
     activeWalletIndex: activeIndex,
   });
+
+  // A dApp permission is a standing authorisation to sign with this one
+  // account (plus any auto-approve rules on top). It cannot outlive the
+  // account: the stored index would dangle, and for a hardware account it
+  // would dangle into an index that has no signer at all.
+  // Lazy require: dapp-permissions pulls in electron's `app` for its
+  // storage path, which identity-manager must not need at load time.
+  const { revokePermissionsForWalletIndex } = require('./wallet/dapp-permissions');
+  revokePermissionsForWalletIndex(index);
 }
 
 /**
@@ -1460,8 +1529,11 @@ function registerIdentityIpc() {
       if (!password) {
         return { success: false, error: 'Password is required to export private key' };
       }
+      // Same two-part guard as withVaultPrivateKey: the index range alone
+      // is decisive, so a deleted device account (no record) cannot export
+      // a phantom mnemonic key derived at its index.
       const record = getWalletRecord(accountIndex);
-      if (record && record.type !== WALLET_TYPES.MNEMONIC) {
+      if (isHardwareWalletIndex(accountIndex) || (record && record.type !== WALLET_TYPES.MNEMONIC)) {
         return {
           success: false,
           error: 'This account has no exportable private key — the key never leaves its device',
@@ -1627,6 +1699,8 @@ module.exports = {
 
   // Multi-wallet operations
   WALLET_TYPES,
+  HARDWARE_INDEX_BASE,
+  isHardwareWalletIndex,
   getWalletRecord,
   getDerivedWallets,
   getActiveWalletIndex,

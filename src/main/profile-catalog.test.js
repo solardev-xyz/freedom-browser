@@ -159,6 +159,10 @@ describe('profile catalog', () => {
     const result = ensureProfile(appRoot, 'default', { defaultProfileDir: profileDir });
 
     expect(result.metadata.nodes.bee.p2pPort).toBe(12633);
+    expect(result.metadata.nodes.myotis).toEqual({
+      mode: 'managed',
+      backend: 'myotis-native',
+    });
 
     const catalog = JSON.parse(
       fs.readFileSync(path.join(appRoot, 'profile-registry.json'), 'utf-8')
@@ -168,6 +172,22 @@ describe('profile catalog', () => {
     );
     expect(catalog.profiles[0].nodes.bee.p2pPort).toBe(12633);
     expect(metadata.nodes.bee.p2pPort).toBe(12633);
+    expect(catalog.profiles[0].nodes.myotis).toEqual({
+      mode: 'managed',
+      backend: 'myotis-native',
+    });
+    expect(metadata.nodes.myotis).toEqual({
+      mode: 'managed',
+      backend: 'myotis-native',
+    });
+    expect(catalog.profiles[0].nodes.tor).toMatchObject({
+      mode: 'managed',
+      socksPort: 19150,
+    });
+    expect(metadata.nodes.tor).toMatchObject({
+      mode: 'managed',
+      socksPort: 19150,
+    });
   });
 
   test('adopts an existing profile directory with metadata instead of assigning a fresh slot', () => {
@@ -213,6 +233,10 @@ describe('profile catalog', () => {
       apiPort: 11640,
       p2pPort: 12640,
       externalApi: 'http://127.0.0.1:1633',
+    });
+    expect(result.metadata.nodes.tor).toMatchObject({
+      mode: 'managed',
+      socksPort: 19157,
     });
 
     const catalog = JSON.parse(

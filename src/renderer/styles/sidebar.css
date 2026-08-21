@@ -93,8 +93,15 @@
   transition: color 0.15s ease, border-color 0.15s ease;
 }
 
-.sidebar-tab:hover {
+.sidebar-tab:hover:not(:disabled) {
   color: var(--text);
+}
+
+/* A device confirmation owns the sidebar until it is answered, so the
+   header chrome that would tear it down goes dead with it. */
+.sidebar-tab:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .sidebar-tab.active {
@@ -212,9 +219,14 @@
   transition: background-color 0.15s ease, color 0.15s ease;
 }
 
-.sidebar-close:hover {
+.sidebar-close:hover:not(:disabled) {
   background-color: rgba(255, 255, 255, 0.1);
   color: var(--text);
+}
+
+.sidebar-close:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .sidebar-close svg {
@@ -281,9 +293,14 @@
   transition: background-color 0.2s ease, color 0.2s ease;
 }
 
-.wallet-toggle-btn:hover,
+.wallet-toggle-btn:hover:not(:disabled),
 .wallet-toggle-btn[aria-expanded='true'] {
   background-color: rgba(255, 255, 255, 0.1);
+}
+
+.wallet-toggle-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .wallet-toggle-btn svg {
@@ -474,7 +491,8 @@
   transition: opacity 0.15s ease, background-color 0.15s ease, color 0.15s ease;
 }
 
-.node-identity-row:hover .node-copy-btn {
+.node-identity-row:hover .node-copy-btn,
+.node-info-row:hover .node-copy-btn {
   opacity: 1;
 }
 
@@ -627,11 +645,11 @@
   background-color: var(--toolbar);
 }
 
-[data-theme="light"] .sidebar-close:hover {
+[data-theme="light"] .sidebar-close:hover:not(:disabled) {
   background-color: rgba(0, 0, 0, 0.05);
 }
 
-[data-theme="light"] .wallet-toggle-btn:hover,
+[data-theme="light"] .wallet-toggle-btn:hover:not(:disabled),
 [data-theme="light"] .wallet-toggle-btn[aria-expanded='true'] {
   background-color: rgba(0, 0, 0, 0.1);
 }
@@ -714,8 +732,13 @@
   transition: background-color 0.15s ease;
 }
 
-.subscreen-back-btn:hover {
+.subscreen-back-btn:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.05);
+}
+
+.subscreen-back-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .subscreen-back-btn svg {
@@ -3156,6 +3179,38 @@
   margin-top: 24px;
 }
 
+.swarm-manifest-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 16px 0;
+}
+
+.swarm-manifest-row {
+  padding: 12px;
+  border: 1px solid var(--sidebar-border, rgba(127, 127, 127, 0.25));
+  border-radius: 8px;
+}
+
+.swarm-manifest-row-title {
+  font-weight: 600;
+}
+
+.swarm-manifest-row-detail,
+.swarm-manifest-description,
+.swarm-manifest-choice-note {
+  margin-top: 4px;
+  color: var(--sidebar-text-secondary, #8b8b8b);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.swarm-manifest-actions {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+}
+
 .swarm-connect-reject-btn,
 .swarm-connect-approve-btn {
   flex: 1;
@@ -3529,6 +3584,16 @@
 .publisher-identity-mode {
   font-size: 11px;
   color: var(--muted);
+}
+
+.publisher-identity-unavailable {
+  font-size: 11px;
+  color: var(--danger);
+}
+
+.publisher-identity-selector-item.unavailable {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .publisher-identity-create-actions {
@@ -6126,8 +6191,15 @@
   transition: background-color 0.15s;
 }
 
-.dapp-tx-reject-btn:hover {
+.dapp-tx-reject-btn:hover:not(:disabled) {
   background: var(--toolbar-hover);
+}
+
+/* Disabled while a signature is in flight (see dapp-tx.js): the request
+   can no longer be recalled, so the way out has to read as unavailable. */
+.dapp-tx-reject-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .dapp-tx-approve-btn {
@@ -6165,7 +6237,7 @@
   background: rgba(0, 0, 0, 0.03);
 }
 
-[data-theme="light"] .dapp-tx-reject-btn:hover {
+[data-theme="light"] .dapp-tx-reject-btn:hover:not(:disabled) {
   background: rgba(0, 0, 0, 0.06);
 }
 
@@ -6361,8 +6433,13 @@
   transition: background-color 0.15s;
 }
 
-.dapp-sign-reject-btn:hover {
+.dapp-sign-reject-btn:hover:not(:disabled) {
   background: var(--toolbar-hover);
+}
+
+.dapp-sign-reject-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .dapp-sign-approve-btn {
@@ -6404,7 +6481,7 @@
   background: rgba(0, 0, 0, 0.03);
 }
 
-[data-theme="light"] .dapp-sign-reject-btn:hover {
+[data-theme="light"] .dapp-sign-reject-btn:hover:not(:disabled) {
   background: rgba(0, 0, 0, 0.06);
 }
 

@@ -5,6 +5,7 @@
  */
 
 import { walletState, registerScreenHider } from './wallet-state.js';
+import { refuseSubscreenWhileInFlight } from './signature-flight.js';
 
 // DOM references
 let receiveScreen;
@@ -42,6 +43,8 @@ function setupReceiveScreen() {
 }
 
 export async function openReceive() {
+  if (refuseSubscreenWhileInFlight('Receive screen')) return;
+
   if (!walletState.fullAddresses.wallet) {
     console.error('[WalletUI] No wallet address available');
     return;

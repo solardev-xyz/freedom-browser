@@ -103,6 +103,13 @@ function registerNetworkConfigIpc() {
     return { success: true };
   });
 
+  ipcMain.handle('networks:reset-source-coverage', (_event, id, chainId) => {
+    const result = registry.resetEndpointSourceCoverage(id, chainId);
+    if (result?.success === false) return result;
+    refreshDownstream();
+    return { success: true };
+  });
+
   // API keys for keyed providers. rpc-manager clears wallet providers;
   // refreshDownstream also drops ENS caches so trust state follows the
   // effective endpoint list immediately.

@@ -151,28 +151,43 @@ function makeNotificationListener(eventHandlers, eventName) {
  * Idempotent across registration churn in tests but should be called
  * exactly once per session at startup, after every consumer has registered.
  *
+ * `options.exclude` filters registered handlers by name — a predicate
+ * `(name) => boolean` returning true drops that handler from this session's
+ * chain. Private windows use this to attach the request rewriter without
+ * the x402 payment interception (see src/main/index.js).
+ *
  * @param {Electron.Session} session
+ * @param {{ exclude?: (name: string) => boolean }} [options]
  */
-function attachWebRequestDispatcher(session) {
-  if (handlers.onBeforeRequest.length > 0) {
-    session.webRequest.onBeforeRequest(makeOnBeforeRequestListener(handlers.onBeforeRequest));
+function attachWebRequestDispatcher(session, options = {}) {
+  const exclude = typeof options.exclude === 'function' ? options.exclude : null;
+  const select = (event) =>
+    exclude ? handlers[event].filter((entry) => !exclude(entry.name)) : handlers[event];
+
+  const onBeforeRequest = select('onBeforeRequest');
+  if (onBeforeRequest.length > 0) {
+    session.webRequest.onBeforeRequest(makeOnBeforeRequestListener(onBeforeRequest));
   }
-  if (handlers.onBeforeSendHeaders.length > 0) {
+  const onBeforeSendHeaders = select('onBeforeSendHeaders');
+  if (onBeforeSendHeaders.length > 0) {
     session.webRequest.onBeforeSendHeaders(
-      makeHeaderChainListener(handlers.onBeforeSendHeaders, 'onBeforeSendHeaders', 'requestHeaders')
+      makeHeaderChainListener(onBeforeSendHeaders, 'onBeforeSendHeaders', 'requestHeaders')
     );
   }
-  if (handlers.onHeadersReceived.length > 0) {
+  const onHeadersReceived = select('onHeadersReceived');
+  if (onHeadersReceived.length > 0) {
     session.webRequest.onHeadersReceived(
-      makeHeaderChainListener(handlers.onHeadersReceived, 'onHeadersReceived', 'responseHeaders')
+      makeHeaderChainListener(onHeadersReceived, 'onHeadersReceived', 'responseHeaders')
     );
   }
-  if (handlers.onCompleted.length > 0) {
-    session.webRequest.onCompleted(makeNotificationListener(handlers.onCompleted, 'onCompleted'));
+  const onCompleted = select('onCompleted');
+  if (onCompleted.length > 0) {
+    session.webRequest.onCompleted(makeNotificationListener(onCompleted, 'onCompleted'));
   }
-  if (handlers.onErrorOccurred.length > 0) {
+  const onErrorOccurred = select('onErrorOccurred');
+  if (onErrorOccurred.length > 0) {
     session.webRequest.onErrorOccurred(
-      makeNotificationListener(handlers.onErrorOccurred, 'onErrorOccurred')
+      makeNotificationListener(onErrorOccurred, 'onErrorOccurred')
     );
   }
 }

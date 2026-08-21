@@ -1,0 +1,101 @@
+/* In-page find bar (Cmd/Ctrl+F) — overlays the top-right of the webview area */
+
+.find-bar {
+  position: absolute;
+  top: 0;
+  right: 12px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 8px;
+  background: var(--menu-bg);
+  border: 1px solid var(--border);
+  border-top: none;
+  border-bottom-left-radius: 8px;
+  border-bottom-right-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+.find-bar[hidden] {
+  display: none !important;
+}
+
+[data-theme='light'] .find-bar {
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+}
+
+.find-bar-input {
+  width: 200px;
+  height: 28px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  padding: 4px 10px;
+  font-size: 13px;
+}
+
+.find-bar-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+[data-theme='light'] .find-bar-input {
+  background: #f1f3f4;
+}
+
+/* Zero matches: subtle error tint, kept on the border so the query text
+   stays readable while typing continues. */
+.find-bar-input.find-bar-input--no-matches {
+  border-color: var(--danger);
+}
+
+.find-bar-count {
+  min-width: 40px;
+  padding: 0 6px;
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.find-bar-divider {
+  width: 1px;
+  height: 20px;
+  background: var(--border);
+  margin: 0 4px;
+}
+
+.find-bar-btn {
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  cursor: default;
+}
+
+.find-bar-btn svg {
+  width: 14px;
+  height: 14px;
+  pointer-events: none;
+}
+
+.find-bar-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+[data-theme='light'] .find-bar-btn:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.find-bar-btn:disabled {
+  opacity: 0.3;
+}

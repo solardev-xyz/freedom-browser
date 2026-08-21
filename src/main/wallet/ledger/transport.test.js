@@ -2,6 +2,7 @@ const mockGetAddress = jest.fn();
 const mockClose = jest.fn(async () => {});
 const mockOpen = jest.fn();
 const mockList = jest.fn();
+const mockEthConstructed = jest.fn();
 
 jest.mock('@ledgerhq/hw-transport-node-hid', () => ({
   default: {
@@ -11,8 +12,9 @@ jest.mock('@ledgerhq/hw-transport-node-hid', () => ({
 }));
 jest.mock('@ledgerhq/hw-app-eth', () => ({
   default: class MockEth {
-    constructor(transport) {
+    constructor(transport, scrambleKey, loadConfig) {
       this.transport = transport;
+      mockEthConstructed({ scrambleKey, loadConfig });
     }
     getAddress(...args) {
       return mockGetAddress(...args);
@@ -20,7 +22,7 @@ jest.mock('@ledgerhq/hw-app-eth', () => ({
   },
 }));
 
-const { listAccounts, withEthApp } = require('./transport');
+const { listAccounts, withEthApp, OFFLINE_LOAD_CONFIG } = require('./transport');
 const { LEDGER_ERROR_CODES } = require('./errors');
 
 beforeEach(() => {
@@ -28,6 +30,7 @@ beforeEach(() => {
   mockList.mockReset();
   mockGetAddress.mockReset();
   mockClose.mockClear();
+  mockEthConstructed.mockClear();
 });
 
 describe('listAccounts', () => {
@@ -74,6 +77,33 @@ describe('listAccounts', () => {
     await expect(listAccounts()).rejects.toMatchObject({
       code: LEDGER_ERROR_CODES.DEVICE_NOT_FOUND,
     });
+  });
+});
+
+describe('hosted clear-signing services', () => {
+  test('every Eth app is built with the offline load config', async () => {
+    mockGetAddress.mockResolvedValue({ address: '0xok' });
+
+    await withEthApp((eth) => eth.getAddress('x', false));
+
+    expect(mockEthConstructed).toHaveBeenCalledTimes(1);
+    expect(mockEthConstructed.mock.calls[0][0].loadConfig).toBe(OFFLINE_LOAD_CONFIG);
+    // scrambleKey stays at hw-app-eth's own default.
+    expect(mockEthConstructed.mock.calls[0][0].scrambleKey).toBeUndefined();
+  });
+
+  test('the offline config nulls every service URL the installed hw-app-eth would call', () => {
+    // Resolved against the library's own defaults: a URL we forget to
+    // null (or one a future version adds) falls back to Ledger's hosted
+    // endpoint and would leak signing metadata off the machine.
+    const { getLoadConfig } = require('@ledgerhq/hw-app-eth/lib/services/ledger/loadConfig');
+    const resolved = getLoadConfig(OFFLINE_LOAD_CONFIG);
+
+    const urlKeys = Object.keys(resolved).filter((key) => /URL$/.test(key));
+    expect(urlKeys.length).toBeGreaterThan(0);
+    for (const key of urlKeys) {
+      expect(resolved[key]).toBeNull();
+    }
   });
 });
 

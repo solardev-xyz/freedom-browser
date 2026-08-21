@@ -25,7 +25,14 @@ function getIconPath() {
   return iconPath;
 }
 
-function createMainWindow(initialUrl = null) {
+function createMainWindow(initialUrl = null, options = {}) {
+  // Private windows carry their non-persisted partition name; it reaches
+  // the renderer as a query parameter (same channel as initialUrl) so
+  // tabs.js can stamp it on every webview before first load.
+  const privatePartition =
+    typeof options.privatePartition === 'string' && options.privatePartition
+      ? options.privatePartition
+      : null;
   const isMac = process.platform === 'darwin';
   const isLinux = process.platform === 'linux';
   // Linux only: tab strip doubles as the titlebar when the user opts in.
@@ -65,10 +72,14 @@ function createMainWindow(initialUrl = null) {
     },
   });
 
-  // Load index.html with optional initial URL as query parameter
+  // Load index.html with optional initial URL / private partition as query
+  // parameters
   const indexPath = path.join(__dirname, '..', '..', 'renderer', 'index.html');
-  if (initialUrl) {
-    window.loadFile(indexPath, { query: { initialUrl } });
+  const query = {};
+  if (initialUrl) query.initialUrl = initialUrl;
+  if (privatePartition) query.privatePartition = privatePartition;
+  if (Object.keys(query).length > 0) {
+    window.loadFile(indexPath, { query });
   } else {
     window.loadFile(indexPath);
   }
@@ -76,8 +87,17 @@ function createMainWindow(initialUrl = null) {
   // Track this window
   mainWindows.add(window);
 
+  // PRIVATE MODE GUARD (window title): `currentWindowTitle` is the shared
+  // last-seen title, and private senders deliberately never seed it. Private
+  // windows must not CONSUME it either — otherwise a fresh private window's
+  // native title (taskbar / window switcher) advertises whatever page the
+  // user last had focused in a NORMAL window, e.g. "mybank - Freedom", until
+  // its own renderer sends the first window:set-title. Wrong page attributed
+  // to the wrong window, in the most visible chrome there is.
+  const titleForThisWindow = () => (privatePartition ? 'Freedom' : currentWindowTitle);
+
   window.on('ready-to-show', () => {
-    window.setTitle(currentWindowTitle);
+    window.setTitle(titleForThisWindow());
 
     // Linux cold start: a freshly-spawned profile process has no valid
     // startup-activation token, so Mutter denies focus to the new window and
@@ -93,7 +113,7 @@ function createMainWindow(initialUrl = null) {
 
   window.on('page-title-updated', (event) => {
     event.preventDefault();
-    window.setTitle(currentWindowTitle);
+    window.setTitle(titleForThisWindow());
   });
 
   window.on('closed', () => {

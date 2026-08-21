@@ -46,6 +46,16 @@ function isEnsHost(host) {
   );
 }
 
+function isTezosDomainHost(host) {
+  if (!host || typeof host !== 'string') return false;
+  const lower = host.toLowerCase();
+  return lower.endsWith('.tez') && lower.split('.').every((label) => label.length > 0);
+}
+
+function isDwebNameHost(host) {
+  return isEnsHost(host) || isTezosDomainHost(host);
+}
+
 /**
  * Extract the permission key from a display URL.
  * Returns the root content identity, never including paths.
@@ -63,7 +73,7 @@ function getPermissionKey(displayUrl) {
   // Split on /, ?, and # so that hash-routed SPAs (`name.eth#/swap`) and
   // share-link queries (`name.eth?ref=...`) collapse to the same key as
   // the canonical bare name.
-  if (/^[a-z0-9-]+\.(eth|box|wei|gwei)/i.test(trimmed)) {
+  if (/^[^/?#\s]+\.(eth|box|wei|gwei|tez)(?:[/?#]|$)/i.test(trimmed)) {
     return trimmed.split(/[/?#]/, 1)[0].toLowerCase();
   }
 
@@ -81,7 +91,7 @@ function getPermissionKey(displayUrl) {
   const dwebMatch = trimmed.match(/^(ipfs|bzz|ipns):\/\/([^/?#]+)/i);
   if (dwebMatch) {
     const host = dwebMatch[2];
-    if (isEnsHost(host)) {
+    if (isDwebNameHost(host)) {
       return host.toLowerCase();
     }
     return `${dwebMatch[1].toLowerCase()}://${host}`;
@@ -116,4 +126,4 @@ function normalizeOrigin(origin) {
   return getPermissionKey(origin) || '';
 }
 
-module.exports = { getPermissionKey, isEnsHost, normalizeOrigin };
+module.exports = { getPermissionKey, isDwebNameHost, isEnsHost, isTezosDomainHost, normalizeOrigin };

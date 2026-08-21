@@ -41,6 +41,7 @@ jest.mock('./permissions', () => ({
   tryConsume: (...args) => mockTryConsume(...args),
 }));
 
+const { webContents } = require('electron');
 const { VAULT_LOCKED_MESSAGE } = require('../wallet/vault-errors');
 const {
   X402_HEADERS,
@@ -67,6 +68,7 @@ const {
   settlePendingApproval,
   abortPendingApproval,
   clearAllPendingApprovals,
+  clearAllHostSenders,
   cleanupWebContents,
 } = require('./intercept');
 
@@ -87,6 +89,10 @@ beforeEach(() => {
   clearAllPendingUnlockResume();
   clearAllPendingUnlockWaits();
   clearAllPendingApprovals();
+  clearAllHostSenders();
+  webContents.fromId.mockReset().mockImplementation(() => ({
+    hostWebContents: { send: mockHostSend },
+  }));
   mockRegister.mockClear();
   mockAppendReceipt.mockReset();
   mockHostSend.mockClear();
@@ -647,6 +653,89 @@ describe('approval-card subresource path (await user decision, then 307)', () =>
       detectionId: 'req-1001',
       success: true,
     });
+  });
+
+  // The sidebar's signature-flight lock is released ONLY by
+  // x402:approval-result. Addressing that event through the paying tab's
+  // webContents (the old sendToHost) meant closing the tab while the
+  // device prompt was up dropped it — leaking the lock and bricking the
+  // whole sidebar until restart. The host is bound at detection time and
+  // outlives the tab, so the settle always lands.
+  test('delivers approval-result after the paying tab is destroyed mid-signature', async () => {
+    let settleSign;
+    mockSignAndQueueRetry.mockReset().mockImplementation(
+      () => new Promise((resolve) => { settleSign = resolve; })
+    );
+
+    const handlerPromise = detectPaymentRequiredHandler(detail());
+    await Promise.resolve();
+    settlePendingApproval('req-1001', { approved: true });
+    await flushRetryMicrotasks();
+    // Signature is on the device: nothing left to abort in main.
+    expect(hasPendingApproval('req-1001')).toBe(false);
+
+    // User closes the paying tab. The guest webContents is gone, so the
+    // tab can no longer be used to find the sidebar's window.
+    cleanupWebContents(7);
+    webContents.fromId.mockReturnValue(undefined);
+    mockHostSend.mockClear();
+
+    settleSign();
+    await handlerPromise;
+
+    expect(mockHostSend).toHaveBeenCalledWith('x402:approval-result', {
+      detectionId: 'req-1001',
+      success: true,
+    });
+  });
+
+  test('destroying the paying tab cancels its card so a held signature lock is released', async () => {
+    let settleSign;
+    mockSignAndQueueRetry.mockReset().mockImplementation(
+      () => new Promise((resolve) => { settleSign = resolve; })
+    );
+
+    const handlerPromise = detectPaymentRequiredHandler(detail());
+    await Promise.resolve();
+    settlePendingApproval('req-1001', { approved: true });
+    await flushRetryMicrotasks();
+    mockHostSend.mockClear();
+
+    cleanupWebContents(7);
+
+    // `cancelled` tells the card to tear down rather than offer a retry
+    // against a detection nothing can settle — and that teardown is what
+    // releases the sidebar, without waiting on the device.
+    expect(mockHostSend).toHaveBeenCalledWith('x402:approval-result', {
+      detectionId: 'req-1001',
+      success: false,
+      cancelled: true,
+      error: 'The tab that requested this payment was closed.',
+    });
+
+    settleSign();
+    await handlerPromise;
+  });
+
+  test('destroying the tab while the user is still deciding cancels the card too', async () => {
+    const handlerPromise = detectPaymentRequiredHandler(detail());
+    await Promise.resolve();
+    expect(hasPendingApproval('req-1001')).toBe(true);
+    mockHostSend.mockClear();
+
+    cleanupWebContents(7);
+
+    expect(mockHostSend).toHaveBeenCalledWith('x402:approval-result', expect.objectContaining({
+      detectionId: 'req-1001',
+      cancelled: true,
+    }));
+    expect(hasPendingApproval('req-1001')).toBe(false);
+    await expect(handlerPromise).resolves.toBeNull();
+  });
+
+  test('a tab with no x402 card in play sends nothing on destroy', () => {
+    cleanupWebContents(99);
+    expect(mockHostSend).not.toHaveBeenCalled();
   });
 
   test('manual approval preserves captured Range requestShape for the signed retry key', async () => {

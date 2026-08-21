@@ -22,6 +22,12 @@ module.exports = {
   IPFS_STATUS_UPDATE: 'ipfs:statusUpdate',
   IPFS_CHECK_BINARY: 'ipfs:checkBinary',
 
+  // Myotis P2P Ethereum light client (experimental)
+  MYOTIS_START: 'myotis:start',
+  MYOTIS_STOP: 'myotis:stop',
+  MYOTIS_GET_STATUS: 'myotis:getStatus',
+  MYOTIS_STATUS_UPDATE: 'myotis:statusUpdate',
+
   // Radicle node management
   RADICLE_START: 'radicle:start',
   RADICLE_STOP: 'radicle:stop',
@@ -32,6 +38,15 @@ module.exports = {
   RADICLE_GET_CONNECTIONS: 'radicle:getConnections',
   RADICLE_GET_REPO_PAYLOAD: 'radicle:getRepoPayload',
   RADICLE_SYNC_REPO: 'radicle:syncRepo',
+  RADICLE_GET_SEED_STATUS: 'radicle:getSeedStatus',
+
+  // Tor (Arti) node management — routes .onion traffic via a local SOCKS proxy
+  TOR_START: 'tor:start',
+  TOR_STOP: 'tor:stop',
+  TOR_GET_STATUS: 'tor:getStatus',
+  TOR_STATUS_UPDATE: 'tor:statusUpdate',
+  TOR_CHECK_BINARY: 'tor:checkBinary',
+  TOR_GET_VERSION: 'tor:getVersion',
 
   // ENS resolution
   ENS_RESOLVE: 'ens:resolve',
@@ -39,10 +54,29 @@ module.exports = {
   ENS_RESOLVE_REVERSE: 'ens:resolve-reverse',
   ENS_INVALIDATE_CONTENT: 'ens:invalidate-content',
 
+  // Tezos Domains website resolution
+  TEZOS_DOMAINS_RESOLVE: 'tezos-domains:resolve',
+  TEZOS_DOMAINS_INVALIDATE: 'tezos-domains:invalidate',
+
   // Settings
   SETTINGS_GET: 'settings:get',
   SETTINGS_SAVE: 'settings:save',
   SETTINGS_UPDATED: 'settings:updated',
+
+  // Ad blocking
+  ADBLOCK_GET_STATUS: 'adblock:get-status',
+  ADBLOCK_GET_ALLOWLIST: 'adblock:get-allowlist',
+  ADBLOCK_ADD_ALLOWLIST_HOST: 'adblock:add-allowlist-host',
+  ADBLOCK_REMOVE_ALLOWLIST_HOST: 'adblock:remove-allowlist-host',
+  ADBLOCK_COSMETIC: 'adblock:cosmetic',
+  // Keyboard shortcuts (Settings > Shortcuts page ↔ main). State/preview
+  // are reads; set/reset persist overrides into the settings store, whose
+  // SETTINGS_UPDATED broadcast then rebuilds the menu and refreshes the
+  // renderer keydown matcher.
+  SHORTCUTS_GET_STATE: 'shortcuts:get-state',
+  SHORTCUTS_PREVIEW_BINDING: 'shortcuts:preview-binding',
+  SHORTCUTS_SET_OVERRIDE: 'shortcuts:set-override',
+  SHORTCUTS_RESET: 'shortcuts:reset',
 
   // Bzz routing (Swarm)
   BZZ_SET_BASE: 'bzz:set-base',
@@ -63,6 +97,11 @@ module.exports = {
   WINDOW_MAXIMIZE: 'window:maximize',
   WINDOW_TOGGLE_FULLSCREEN: 'window:toggle-fullscreen',
   WINDOW_NEW: 'window:new',
+  // Private windows (ephemeral, non-persisted partition per window)
+  WINDOW_NEW_PRIVATE: 'window:new-private',
+  // Sync (sendSync) — webview preloads ask whether they run inside a
+  // private window before injecting the wallet providers.
+  PRIVATE_IS_PRIVATE: 'private:is-private',
   WINDOW_GET_PLATFORM: 'window:get-platform',
   WINDOW_GET_BUTTON_LAYOUT: 'window:get-button-layout',
 
@@ -94,6 +133,24 @@ module.exports = {
   HISTORY_REMOVE: 'history:remove',
   HISTORY_CLEAR: 'history:clear',
 
+  // Downloads
+  DOWNLOADS_GET: 'downloads:get',
+  DOWNLOADS_PAUSE: 'downloads:pause',
+  DOWNLOADS_RESUME: 'downloads:resume',
+  DOWNLOADS_CANCEL: 'downloads:cancel',
+  DOWNLOADS_OPEN_FILE: 'downloads:open-file',
+  DOWNLOADS_SHOW_IN_FOLDER: 'downloads:show-in-folder',
+  DOWNLOADS_REMOVE: 'downloads:remove',
+  DOWNLOADS_CLEAR: 'downloads:clear',
+  // Main→renderer, sent to the download's owning window only — drives the
+  // shelf card in that window's chrome (a download started in window A must
+  // not pop a card in window B).
+  DOWNLOADS_UPDATED: 'downloads:updated',
+  // Main→renderer broadcast to all webContents on every item mutation.
+  // The freedom://downloads page subscribes; the row is already written
+  // by the time it fires, so receivers just re-query.
+  DOWNLOADS_CHANGED: 'downloads:changed',
+
   // Internal
   GET_WEBVIEW_PRELOAD_PATH: 'internal:get-webview-preload-path',
   GET_INTERNAL_PAGES: 'internal:get-pages',
@@ -116,6 +173,9 @@ module.exports = {
 
   // Window with URL
   WINDOW_NEW_WITH_URL: 'window:new-with-url',
+
+  // Find in page (main → renderer: Edit menu / accelerator opens the bar)
+  FIND_IN_PAGE_OPEN: 'find:open',
 
   // Tab navigation
   TAB_NEXT: 'tab:next',
@@ -210,6 +270,28 @@ module.exports = {
   // the time it fires, so receivers just re-query.
   PAYMENTS_TX_RECORDED: 'payments:tx-recorded',
 
+  // Site Permissions (web permission prompts: camera, mic, notifications, …)
+  // Prompt round-trip: main asks the requesting window's renderer to show
+  // the anchored prompt (main→renderer), the renderer answers with the
+  // user's decision (renderer→main).
+  PERMISSIONS_PROMPT_REQUEST: 'permissions:prompt-request',
+  PERMISSIONS_PROMPT_RESPONSE: 'permissions:prompt-response',
+  // Main withdraws a previously sent prompt (main→renderer): the
+  // requesting document navigated away or its webContents was destroyed,
+  // so the request was invalidated (denied once) on the main side.
+  PERMISSIONS_PROMPT_CANCEL: 'permissions:prompt-cancel',
+  // macOS only: the user allowed a site's camera/mic but the OS-level
+  // privacy setting blocks Freedom itself (main→renderer notice).
+  PERMISSIONS_OS_DENIED: 'permissions:os-denied',
+  PERMISSIONS_GET_ALL: 'permissions:get-all',
+  PERMISSIONS_GET_FOR_ORIGIN: 'permissions:get-for-origin',
+  PERMISSIONS_REVOKE: 'permissions:revoke',
+  PERMISSIONS_REVOKE_ORIGIN: 'permissions:revoke-origin',
+  PERMISSIONS_REVOKE_ALL: 'permissions:revoke-all',
+  // Main→renderer broadcast after any decision is recorded or revoked, so
+  // the address-bar indicator and the settings page can re-query.
+  PERMISSIONS_CHANGED: 'permissions:changed',
+
   // dApp Permissions
   DAPP_GET_PERMISSION: 'dapp:get-permission',
   DAPP_GRANT_PERMISSION: 'dapp:grant-permission',
@@ -235,9 +317,20 @@ module.exports = {
   SWARM_UPDATE_LAST_USED: 'swarm:update-last-used',
   SWARM_GET_AUTO_APPROVE: 'swarm:get-auto-approve',
   SWARM_SET_AUTO_APPROVE: 'swarm:set-auto-approve',
+  SWARM_GRANT_MESSAGING: 'swarm:grant-messaging',
+  SWARM_REVOKE_MESSAGING: 'swarm:revoke-messaging',
+  SWARM_HAS_MESSAGING_GRANT: 'swarm:has-messaging-grant',
+
+  // Swarm permission manifests
+  SWARM_MANIFEST_CHECK: 'swarm:manifest-check',
+  SWARM_MANIFEST_DECIDE: 'swarm:manifest-decide',
+  SWARM_MANIFEST_GET: 'swarm:manifest-get',
+  SWARM_MANIFEST_USE_INDIVIDUAL: 'swarm:manifest-use-individual',
+  SWARM_MANIFEST_DISCONNECT: 'swarm:manifest-disconnect',
 
   // Swarm Provider (main-process authority)
   SWARM_PROVIDER_EXECUTE: 'swarm:provider-execute',
+  SWARM_PROVIDER_EVENT: 'swarm:provider-event',
 
   // Swarm Feed Store
   SWARM_GET_ALL_ORIGINS: 'swarm:get-all-origins',
@@ -252,4 +345,22 @@ module.exports = {
   SWARM_ENSURE_ETHEREUM_WALLET_IDENTITY: 'swarm:ensure-ethereum-wallet-identity',
   SWARM_ACTIVATE_FEED_IDENTITY: 'swarm:activate-feed-identity',
   SWARM_REVOKE_FEED_ACCESS: 'swarm:revoke-feed-access',
+
+  // Radicle Provider Permissions
+  RADICLE_GET_PERMISSION: 'radicle:get-permission',
+  RADICLE_GRANT_PERMISSION: 'radicle:grant-permission',
+  RADICLE_REVOKE_PERMISSION: 'radicle:revoke-permission',
+  RADICLE_GET_ALL_PERMISSIONS: 'radicle:get-all-permissions',
+  RADICLE_UPDATE_LAST_USED: 'radicle:update-last-used',
+  RADICLE_HAS_SIGNING_GRANT: 'radicle:has-signing-grant',
+  RADICLE_GRANT_SIGNING: 'radicle:grant-signing',
+  RADICLE_GET_AUTO_APPROVE: 'radicle:get-auto-approve',
+  RADICLE_SET_AUTO_APPROVE: 'radicle:set-auto-approve',
+
+  // Radicle Provider (main-process authority)
+  RADICLE_PROVIDER_EXECUTE: 'radicle:provider-execute',
+
+  // Radicle node alias (chrome UI: sidebar Nodes tab)
+  RADICLE_GET_ALIAS: 'radicle:get-alias',
+  RADICLE_SET_ALIAS: 'radicle:set-alias',
 };

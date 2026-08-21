@@ -423,6 +423,9 @@ function setPendingApproval(detectionId, ctx) {
       webContentsId: ctx.webContentsId,
       url: ctx.url,
       requirements: ctx.requirements,
+      // Bound while the webview is alive so the TTL message still reaches
+      // the sidebar if the tab has gone in the meantime.
+      notifyHost: ctx.notifyHost ?? hostSenderFor(ctx.webContentsId),
       timer,
     });
   });
@@ -467,7 +470,7 @@ function expirePendingApproval(detectionId) {
   }
   const reason = new Error('approval expired');
   entry.reject(reason);
-  sendToHost(entry.webContentsId, 'x402:approval-result', {
+  entry.notifyHost('x402:approval-result', {
     detectionId,
     success: false,
     error: 'Approval expired. Reload the resource to retry.',
@@ -537,7 +540,39 @@ function finalizeAwaitingResponsesForWebContents(webContentsId, cleanupReason) {
   }
 }
 
+/**
+ * Tell the sidebar that every approval card bound to this tab is dead.
+ *
+ * Aborting the pending-approval entries is not enough: a card whose Pay
+ * click already went through has NO entry left (the IPC settled it) and
+ * is sitting on an open-ended device confirmation, holding the sidebar's
+ * signature-flight lock. That lock is released only by an
+ * `x402:approval-result`, so if the tab dies mid-signature the sidebar
+ * stays locked for the rest of the session. `cancelled` tells the card
+ * the request itself is gone — tear down rather than offer a retry
+ * against a detection nothing can settle.
+ */
+function notifyApprovalCardsCancelled(webContentsId, error) {
+  const detectionIds = new Set();
+  const detected = detectedPayments.get(webContentsId);
+  if (detected?.detectionId) detectionIds.add(detected.detectionId);
+  for (const [detectionId, entry] of pendingApprovals) {
+    if (entry.webContentsId === webContentsId) detectionIds.add(detectionId);
+  }
+  if (detectionIds.size === 0) return;
+  const notify = hostSenderFor(webContentsId);
+  for (const detectionId of detectionIds) {
+    notify('x402:approval-result', {
+      detectionId,
+      success: false,
+      cancelled: true,
+      error,
+    });
+  }
+}
+
 function cleanupWebContents(webContentsId) {
+  notifyApprovalCardsCancelled(webContentsId, 'The tab that requested this payment was closed.');
   detectedPayments.delete(webContentsId);
   pendingUnlockResume.delete(webContentsId);
   // Abort any in-flight awaits for this tab — without this the detector
@@ -552,6 +587,11 @@ function cleanupWebContents(webContentsId) {
   }
   finalizeAwaitingResponsesForWebContents(webContentsId, 'tab destroyed');
   deleteByWebContents(requestContext, webContentsId);
+  // Last event for this tab has gone out — drop the host binding so the
+  // map doesn't grow one entry per tab over the session. A signature
+  // still on the device keeps its own reference to the bound sender, so
+  // its result event survives this.
+  hostSenders.delete(webContentsId);
 }
 
 // === Header parsing ======================================================
@@ -641,14 +681,53 @@ function isStatus2xx(statusLine) {
 // owns the sidebar). The webview that hit the 402 is a child of the
 // host webContents; sending to host puts the event in front of the
 // wallet sidebar UI.
+//
+// The host is resolved THROUGH the webview, so once the tab is closed
+// `webContents.fromId()` returns nothing and every later event for that
+// tab is dropped — including `x402:approval-result`, the sidebar's only
+// release for a signature already sitting on the device. The shell that
+// owns the card outlives its tabs, so we remember the host we resolved
+// while the webview was alive and fall back to it once the live lookup
+// fails. Remembered hosts are dropped in `cleanupWebContents`, after the
+// tab's last event has gone out; a sender bound earlier (the detector's,
+// for a signature still on the device) keeps its own reference.
+const hostSenders = new Map();
+
+function resolveHost(webviewWebContentsId) {
+  return webContents.fromId(webviewWebContentsId)?.hostWebContents ?? null;
+}
+
+/**
+ * Bind a sender for one webview. Call it while the webview is still alive
+ * (the detector does, at detection time) and the events it fires later
+ * survive the tab being closed.
+ */
+function hostSenderFor(webviewWebContentsId) {
+  let remembered = resolveHost(webviewWebContentsId) ?? hostSenders.get(webviewWebContentsId);
+  if (remembered) hostSenders.set(webviewWebContentsId, remembered);
+  return (channel, payload) => {
+    // Live lookup wins — the remembered host is only a fallback for a
+    // webview that has since gone away.
+    const live = resolveHost(webviewWebContentsId);
+    if (live) {
+      remembered = live;
+      hostSenders.set(webviewWebContentsId, live);
+    }
+    const host = live ?? remembered;
+    if (!host || host.isDestroyed?.()) {
+      log.warn(`[x402] no host webContents for ${webviewWebContentsId}; ${channel} dropped`);
+      return;
+    }
+    host.send(channel, payload);
+  };
+}
+
 function sendToHost(webviewWebContentsId, channel, payload) {
-  const wc = webContents.fromId(webviewWebContentsId);
-  const host = wc?.hostWebContents;
-  if (!host) {
-    log.warn(`[x402] no host webContents for ${webviewWebContentsId}; ${channel} dropped`);
-    return;
-  }
-  host.send(channel, payload);
+  hostSenderFor(webviewWebContentsId)(channel, payload);
+}
+
+function clearAllHostSenders() {
+  hostSenders.clear();
 }
 
 // === Dispatcher handlers =================================================
@@ -891,10 +970,16 @@ async function detectPaymentRequiredHandler(details) {
     ...detectedPayments.get(details.webContentsId),
     detectionId,
   });
+  // Bind the sidebar's host once, here, while the webview is certainly
+  // alive: the sign below is an open-ended device confirmation and the
+  // card holds the sidebar's signature lock until its result event
+  // arrives, so that event must not be addressed through a tab the user
+  // can close in the meantime.
+  const notifyHost = hostSenderFor(details.webContentsId);
   // Event payload includes `resourceType` so the renderer can pick the
   // right teardown IPC (subresource → x402:reject; mainFrame → x402:cancel
   // which also goBacks the webview).
-  sendToHost(details.webContentsId, 'x402:approval-needed', {
+  notifyHost('x402:approval-needed', {
     webContentsId: details.webContentsId,
     detectionId,
     url: details.url,
@@ -924,6 +1009,7 @@ async function detectPaymentRequiredHandler(details) {
         webContentsId: details.webContentsId,
         url: details.url,
         requirements,
+        notifyHost,
       });
     } catch (err) {
       if (err?.message && /aborted|cancelled/i.test(err.message)) {
@@ -956,7 +1042,7 @@ async function detectPaymentRequiredHandler(details) {
         grant: decision.grant,
       });
       log.info(`[x402:approval] subresource ${sanitizeUrlForLog(details.url)} signed; returning 307`);
-      sendToHost(details.webContentsId, 'x402:approval-result', {
+      notifyHost('x402:approval-result', {
         detectionId,
         success: true,
       });
@@ -977,7 +1063,7 @@ async function detectPaymentRequiredHandler(details) {
           `${err.message}\n  stack: ${err.stack}`
         );
       }
-      sendToHost(details.webContentsId, 'x402:approval-result', {
+      notifyHost('x402:approval-result', {
         detectionId,
         success: false,
         error: err.message,
@@ -1185,5 +1271,6 @@ module.exports = {
   abortPendingApproval,
   abortPendingApprovalsForTab,
   clearAllPendingApprovals,
+  clearAllHostSenders,
   cleanupWebContents,
 };

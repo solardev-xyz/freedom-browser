@@ -322,3 +322,95 @@
     opacity: 1;
   }
 }
+
+/* Tor (.onion) section — mirrors the Radicle section styling */
+.tor-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+}
+
+.tor-toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  width: 100%;
+  justify-content: space-between;
+}
+
+.tor-toggle-switch {
+  width: 36px;
+  height: 18px;
+  border-radius: 9px;
+  background: var(--border);
+  position: relative;
+  transition: background 0.2s ease;
+  flex-shrink: 0;
+}
+
+.tor-toggle-knob {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--text);
+  transition: transform 0.2s ease;
+  position: absolute;
+  top: 2px;
+  left: 2px;
+}
+
+.tor-toggle-switch.running {
+  background: #4caf50;
+}
+
+.tor-toggle-switch.starting {
+  background: #ffcc00;
+}
+
+.tor-toggle-switch.running .tor-toggle-knob {
+  transform: translateX(18px);
+}
+
+.tor-info {
+  padding: 8px 14px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+  opacity: 0.8;
+}
+
+/*
+ * Unlike the Radicle/IPFS info panels (which gate the whole block on a
+ * `.visible` class toggled while the menu is open + polling), the Tor block is
+ * always shown when the section is enabled; its individual rows self-manage
+ * visibility (status via .node-status-row, exit rows via .hidden, version
+ * always). So there is intentionally no `.tor-info:not(.visible)` hide rule.
+ */
+
+.tor-info-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.tor-info-label {
+  color: var(--muted);
+}
+
+.tor-toggle:hover {
+  background: transparent;
+}
+
+.tor-toggle.disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.tor-toggle.disabled .tor-toggle-switch {
+  background: var(--border);
+}

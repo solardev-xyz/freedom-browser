@@ -31,9 +31,24 @@ const {
 
 const TEST_MNEMONIC =
   'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
-const TEST_PORT = 11633; // Non-standard port so a dev's running node can't interfere
-const TEST_P2P_PORT = 12633; // Keep the P2P bind off the ecosystem default too.
 const TEST_PASSWORD = 'bee-era-keystore-password';
+
+// OS-assigned free ports instead of fixed "non-standard" ones: the readiness
+// probe polls /health on 127.0.0.1, so ANY process already on the chosen port
+// makes the test assert against the wrong node. (The installed Freedom app's
+// port-fallback once landed its node exactly on the previously hardcoded
+// 11633 — instant false "ready", baffling failures.)
+function getFreePort() {
+  const net = require('net');
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address();
+      server.close(() => resolve(port));
+    });
+  });
+}
 
 function getAntBinaryPath() {
   const arch = process.arch;
@@ -145,6 +160,8 @@ describe('bee-data → ant-data migration (real antd)', () => {
   const antBinary = getAntBinaryPath();
   let userDataDir;
   let antProcess;
+  let apiPort;
+  let p2pPort;
 
   beforeAll(() => {
     if (!antBinary) {
@@ -152,9 +169,11 @@ describe('bee-data → ant-data migration (real antd)', () => {
     }
   });
 
-  beforeEach(() => {
+  beforeEach(async () => {
     userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ant-migration-test-'));
     delete process.env.FREEDOM_ANT_DATA;
+    apiPort = await getFreePort();
+    p2pPort = await getFreePort();
   });
 
   afterEach(async () => {
@@ -219,8 +238,8 @@ describe('bee-data → ant-data migration (real antd)', () => {
       //    every start — the password must have survived the migration.
       const { configPath, password } = rewriteConfigLikeEnsureConfig(
         antDataDir,
-        TEST_PORT,
-        TEST_P2P_PORT
+        apiPort,
+        p2pPort
       );
       expect(password).toBe(TEST_PASSWORD);
 
@@ -236,10 +255,10 @@ describe('bee-data → ant-data migration (real antd)', () => {
         }
       });
 
-      await waitForAntReady(TEST_PORT, 60000);
+      await waitForAntReady(apiPort, 60000);
 
       // 6. The node must report the injected wallet, not a self-generated one.
-      const addresses = await getAntAddresses(TEST_PORT);
+      const addresses = await getAntAddresses(apiPort);
       console.log(`[Test] Expected: ${expectedAddress}`);
       console.log(`[Test] Got:      ${addresses.ethereum}`);
       expect(addresses.ethereum.toLowerCase()).toBe(expectedAddress.toLowerCase());
@@ -264,15 +283,15 @@ describe('bee-data → ant-data migration (real antd)', () => {
       fs.mkdirSync(antDataDir, { recursive: true });
       const configPath = writeUltraLightConfig(
         antDataDir,
-        TEST_PORT,
-        TEST_P2P_PORT,
+        apiPort,
+        p2pPort,
         'fresh-start-password'
       );
 
       antProcess = spawn(antBinary, [`--config=${configPath}`], {
         stdio: ['ignore', 'pipe', 'pipe'],
       });
-      await waitForAntReady(TEST_PORT, 60000);
+      await waitForAntReady(apiPort, 60000);
 
       expect(fs.existsSync(path.join(antDataDir, 'keys', 'swarm.key'))).toBe(false);
       // The self-generated identity must take antd's native shape instead.

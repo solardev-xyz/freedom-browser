@@ -287,3 +287,38 @@ describe('publish-service', () => {
     });
   });
 });
+
+// PRIVATE MODE GUARD coverage: publishing (and therefore publish-history
+// writing) is rejected for private-window senders. jest.mock is hoisted,
+// so this stub is in place before publish-service is required above.
+jest.mock('../private/private-windows', () => ({
+  isPrivateWebContents: (wc) => wc?.isPrivate === true,
+}));
+
+describe('private-window publish guard', () => {
+  const PRIVATE_EVENT = { sender: { isPrivate: true } };
+  const publishHistory = require('./publish-history');
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  test.each([
+    ['swarm:publish-data', 'hello world'],
+    ['swarm:publish-file', '/tmp/some-file.txt'],
+    ['swarm:publish-directory', '/tmp/some-dir'],
+  ])('%s rejects private senders without touching history or the node', async (channel, arg) => {
+    const handler = ipcHandlers[channel];
+    const result = await handler(PRIVATE_EVENT, arg);
+
+    expect(result).toEqual({
+      success: false,
+      error: 'Publishing is unavailable in private windows',
+    });
+    expect(publishHistory.addEntry).not.toHaveBeenCalled();
+    expect(publishHistory.updateEntry).not.toHaveBeenCalled();
+    expect(mockUploadData).not.toHaveBeenCalled();
+    expect(mockUploadFile).not.toHaveBeenCalled();
+    expect(mockUploadFilesFromDirectory).not.toHaveBeenCalled();
+  });
+});

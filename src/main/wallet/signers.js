@@ -22,7 +22,7 @@
 const { Wallet, computeAddress } = require('ethers');
 
 const { withVaultPrivateKey, isValidWalletIndex } = require('./vault-access');
-const { getWalletRecord, WALLET_TYPES } = require('../identity-manager');
+const { getWalletRecord, isHardwareWalletIndex, WALLET_TYPES } = require('../identity-manager');
 const { createLedgerBackend } = require('./ledger/signer');
 const { createRemoteBackend } = require('./remote/signer');
 const { normalizeMessage, normalizeTypedData, withoutDomainType } = require('./signing-utils');
@@ -91,9 +91,17 @@ function getSigner(walletIndex) {
     throw new Error('Invalid wallet index');
   }
 
-  // Unknown indexes fall through to the vault backend, which fails with
-  // its own vault-derivation errors — the pre-hardware-wallet behaviour.
+  // Unknown mnemonic-range indexes fall through to the vault backend,
+  // which fails with its own vault-derivation errors — the
+  // pre-hardware-wallet behaviour. An unknown index in the *hardware*
+  // range is different: it is a stale reference to a device account that
+  // was deleted (dApp permission, publisher identity, an index replayed
+  // by a dApp), and the vault backend would happily derive a mnemonic key
+  // there. Fail loudly instead.
   const record = getWalletRecord(walletIndex);
+  if (!record && isHardwareWalletIndex(walletIndex)) {
+    throw new Error('Hardware wallet account no longer exists; reconnect the device');
+  }
   if (record && record.type === WALLET_TYPES.SAFE) {
     // A Safe is a smart-contract account whose owners are other wallet
     // records — it has no key of its own. Execution goes through the

@@ -30,6 +30,9 @@ const mockCreateRemoteBackend = jest.fn(() => mockRemoteBackend);
 jest.mock('../identity-manager', () => ({
   loadIdentityModule: jest.fn(async () => mockIdentity),
   getWalletRecord: (...args) => mockGetWalletRecord(...args),
+  // Mirrors identity-manager's HARDWARE_INDEX_BASE (inlined: jest.mock
+  // factories may not close over out-of-scope constants).
+  isHardwareWalletIndex: (index) => Number.isInteger(index) && index >= 1000000,
   WALLET_TYPES: { MNEMONIC: 'mnemonic', LEDGER: 'ledger', REMOTE: 'remote', SAFE: 'safe' },
 }));
 jest.mock('../vault-timer', () => ({
@@ -198,6 +201,13 @@ describe('getSigner (ledger-backed dispatch)', () => {
     expect(getSigner(2).sendTransaction).toBeUndefined();
     mockGetWalletRecord.mockReturnValue({ index: 0, name: 'Main Wallet', type: 'mnemonic' });
     expect(getSigner(0).sendTransaction).toBeUndefined();
+  });
+
+  test('a deleted hardware account fails loudly instead of falling through to the vault', () => {
+    mockGetWalletRecord.mockReturnValue(null);
+    expect(() => getSigner(1000000)).toThrow('Hardware wallet account no longer exists');
+    expect(mockIdentity.exportPrivateKey).not.toHaveBeenCalled();
+    expect(mockCreateLedgerBackend).not.toHaveBeenCalled();
   });
 });
 

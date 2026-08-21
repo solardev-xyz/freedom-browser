@@ -21,6 +21,13 @@ export const state = {
       statusMessage: null,
       tempMessage: null,
     },
+    myotis: {
+      api: null,
+      gateway: null,
+      mode: 'none',
+      statusMessage: null,
+      tempMessage: null,
+    },
     ant: {
       api: null,
       gateway: null,
@@ -31,6 +38,12 @@ export const state = {
     radicle: {
       api: null,
       gateway: null,
+      mode: 'none',
+      statusMessage: null,
+      tempMessage: null,
+    },
+    tor: {
+      socks: null,
       mode: 'none',
       statusMessage: null,
       tempMessage: null,
@@ -117,9 +130,19 @@ export const state = {
   // Navigation state for Radicle
   currentRadBase: null,
 
+  // Tor (.onion) state
+  currentTorStatus: 'stopped',
+  suppressTorRunningStatus: false,
+
   // Feature flags
   enableRadicleIntegration: false,
+  enableTorIntegration: false,
   blockUnverifiedEns: true, // When true, unverified ENS resolutions route through an interstitial
+
+  // Address-bar search provider id, synced from settings. buildSearchUrl in
+  // search-utils.js owns the fallback: null or unknown ids map to the default.
+  searchProvider: null,
+  customSearchProviders: [],
 };
 
 const buildServiceUrl = (base, endpoint, serviceName) => {
@@ -161,8 +184,26 @@ export const setRadicleIntegrationEnabled = (enabled) => {
   state.enableRadicleIntegration = enabled === true;
 };
 
+export const setTorIntegrationEnabled = (enabled) => {
+  state.enableTorIntegration = enabled === true;
+};
+
 export const setBlockUnverifiedEns = (enabled) => {
   state.blockUnverifiedEns = enabled !== false;
+};
+
+export const setSearchProvider = (providerId, customProviders = []) => {
+  state.searchProvider = providerId ?? null;
+  state.customSearchProviders = Array.isArray(customProviders) ? customProviders : [];
+};
+
+// Sync renderer feature flags from a settings payload. Passing null (settings
+// unavailable) resets every flag to its default.
+export const applySettingsToState = (settings) => {
+  setRadicleIntegrationEnabled(settings?.enableRadicleIntegration === true);
+  setTorIntegrationEnabled(settings?.enableTorIntegration === true);
+  setBlockUnverifiedEns(settings?.blockUnverifiedEns !== false);
+  setSearchProvider(settings?.searchProvider, settings?.customSearchProviders);
 };
 
 // Get display message for a service (temp message takes priority)

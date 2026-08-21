@@ -18,6 +18,19 @@ Electron
   https://github.com/electron/electron
   Chromium licenses: see LICENSES.chromium.html in app bundle
 
+@ghostery/adblocker (ad-blocking filter engine)
+  License: MPL-2.0
+  Copyright (c) Ghostery GmbH
+  https://github.com/ghostery/adblocker
+
+Ad-blocking filter lists (bundled data, not code)
+  EasyList and EasyPrivacy
+    License: GPLv3+ or CC BY-SA 3.0+ (redistributed under CC BY-SA)
+    Copyright (c) The EasyList authors (https://easylist.to/)
+  Fanboy Cookiemonster and Fanboy Annoyances
+    License: GPLv3+ or CC BY-SA 3.0+ (redistributed under CC BY-SA)
+    Copyright (c) The EasyList authors (https://easylist.to/)
+
 npm dependencies
   See package.json for full list.
-  All use permissive licenses (MIT, ISC, BSD, Apache-2.0).
+  All use permissive licenses (MIT, ISC, BSD, Apache-2.0, MPL-2.0).

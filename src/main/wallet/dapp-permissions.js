@@ -125,6 +125,44 @@ function revokePermission(origin) {
 }
 
 /**
+ * Revoke every permission bound to a wallet index.
+ *
+ * Called when an account is deleted: a permission is a standing
+ * authorisation to sign with one specific account, so it cannot outlive
+ * that account. Left behind, the stored `walletIndex` becomes a dangling
+ * reference — for a deleted hardware account it points at an index with
+ * no device and no vault key, for a deleted mnemonic account at an
+ * account the user believes is gone. Either way the origin keeps its
+ * auto-approve rules and would sign against an account the user can no
+ * longer see. Origins must reconnect and pick a live account.
+ *
+ * @param {number} walletIndex
+ * @returns {string[]} Origins whose permission was revoked
+ */
+function revokePermissionsForWalletIndex(walletIndex) {
+  const permissions = loadPermissions();
+  const revoked = Object.keys(permissions).filter(
+    (origin) => permissions[origin]?.walletIndex === walletIndex
+  );
+
+  if (revoked.length === 0) {
+    return [];
+  }
+
+  for (const origin of revoked) {
+    delete permissions[origin];
+  }
+  permissionsCache = permissions;
+  savePermissions();
+
+  console.log(
+    `[DAppPermissions] Revoked ${revoked.length} permission(s) for deleted wallet ${walletIndex}:`,
+    revoked.join(', ')
+  );
+  return revoked;
+}
+
+/**
  * Get all granted permissions
  * @returns {Object[]} Array of permission objects
  */
@@ -366,6 +404,7 @@ module.exports = {
   getPermission,
   grantPermission,
   revokePermission,
+  revokePermissionsForWalletIndex,
   getAllPermissions,
   updateLastUsed,
   updateWalletIndex,

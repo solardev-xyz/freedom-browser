@@ -1,4 +1,5 @@
 const ipcHandlers = {};
+const mockWebContentsFromId = jest.fn();
 jest.mock('electron', () => ({
   ipcMain: {
     handle: (channel, handler) => {
@@ -6,16 +7,56 @@ jest.mock('electron', () => ({
     },
     removeHandler: () => {},
   },
+  webContents: {
+    fromId: mockWebContentsFromId,
+  },
 }));
 
 jest.mock('electron-log', () => ({
   info: jest.fn(),
+  warn: jest.fn(),
   error: jest.fn(),
 }));
 
 const mockGetPermission = jest.fn();
+const mockHasMessagingGrant = jest.fn();
+const mockOnRevoke = jest.fn();
 jest.mock('./swarm-permissions', () => ({
   getPermission: mockGetPermission,
+  hasMessagingGrant: mockHasMessagingGrant,
+  onRevoke: mockOnRevoke,
+}));
+
+const mockGetMessagingIdentity = jest.fn();
+const mockDeriveGsoc = jest.fn();
+const mockResolvePssTopicHex = jest.fn();
+const mockSendPss = jest.fn();
+const mockSendGsoc = jest.fn();
+const mockOpenSubscriptionSocket = jest.fn();
+jest.mock('./messaging-service', () => ({
+  getMessagingIdentity: mockGetMessagingIdentity,
+  deriveGsoc: mockDeriveGsoc,
+  resolvePssTopicHex: mockResolvePssTopicHex,
+  sendPss: mockSendPss,
+  sendGsoc: mockSendGsoc,
+  openSubscriptionSocket: mockOpenSubscriptionSocket,
+  MAX_MESSAGE_BYTES: 4000,
+  MAX_TARGET_DEPTH: 3,
+  DEFAULT_TARGET_DEPTH: 2,
+}));
+
+const mockRegistrySubscribe = jest.fn();
+const mockRegistryUnsubscribe = jest.fn();
+const mockRegistryConfigure = jest.fn();
+const mockRegistryCancelByWebContents = jest.fn();
+const mockRegistryCancelStaleByWebContents = jest.fn();
+jest.mock('./subscription-registry', () => ({
+  configure: mockRegistryConfigure,
+  subscribe: mockRegistrySubscribe,
+  unsubscribe: mockRegistryUnsubscribe,
+  cancelByWebContents: mockRegistryCancelByWebContents,
+  cancelStaleByWebContents: mockRegistryCancelStaleByWebContents,
+  cancelByOrigin: jest.fn(),
 }));
 
 const mockGetBeeApiUrl = jest.fn();
@@ -115,9 +156,9 @@ const {
 
 registerSwarmProviderIpc();
 
-async function invokeProvider(method, params, origin) {
+async function invokeProvider(method, params, origin, meta) {
   const handler = ipcHandlers['swarm:provider-execute'];
-  return handler({}, { method, params, origin });
+  return handler({}, { method, params, origin, meta });
 }
 
   function mockV2FeedCapability(origin, activeIdentityId = 'app-scoped:2') {
@@ -148,6 +189,22 @@ async function invokeProvider(method, params, origin) {
     publisherKeyIndex: activeIdentity.publisherKeyIndex,
     feeds: {},
   });
+}
+
+// The live URL of the subscribing document (a bzz:// page keyed to
+// ORIGIN below). A webview keeps its webContents across navigations, so
+// its permission key is what tells main whether the origin that
+// subscribed is still the origin on screen.
+const PAGE_URL = 'bzz://myapp.eth/#/lobby';
+
+function fakeWebContents(url = PAGE_URL) {
+  return {
+    isDestroyed: () => false,
+    getURL: () => url,
+    on: jest.fn(),
+    once: jest.fn(),
+    send: jest.fn(),
+  };
 }
 
 describe('swarm-provider-ipc', () => {
@@ -217,6 +274,7 @@ describe('swarm-provider-ipc', () => {
         canPublish: true,
         reason: null,
         publisherIdentityModes: ['app-scoped', 'bee-wallet', 'ethereum-wallet'],
+        features: ['messaging'],
         extensions: {
           ethereumWalletPublisherIdentity: true,
           publisherSigning: true,
@@ -227,6 +285,9 @@ describe('swarm-provider-ipc', () => {
           maxFileCount: LIMITS.maxFileCount,
           maxPathBytes: LIMITS.maxPathBytes,
           maxChunkPayloadBytes: LIMITS.maxChunkPayloadBytes,
+          maxMessageBytes: LIMITS.maxMessageBytes,
+          maxTargetDepth: LIMITS.maxTargetDepth,
+          maxSubscriptions: LIMITS.maxSubscriptions,
         },
       });
     });
@@ -287,6 +348,9 @@ describe('swarm-provider-ipc', () => {
         maxFileCount: LIMITS.maxFileCount,
         maxPathBytes: LIMITS.maxPathBytes,
         maxChunkPayloadBytes: LIMITS.maxChunkPayloadBytes,
+        maxMessageBytes: LIMITS.maxMessageBytes,
+        maxTargetDepth: LIMITS.maxTargetDepth,
+        maxSubscriptions: LIMITS.maxSubscriptions,
       });
       expect(result.result.specVersion).toBe('1.0');
     });
@@ -1895,6 +1959,544 @@ describe('swarm-provider-ipc', () => {
       mockGetAllFeeds.mockReturnValue({});
       await invokeProvider('swarm_listFeeds', {}, 'specific-origin.eth');
       expect(mockGetAllFeeds).toHaveBeenCalledWith('specific-origin.eth');
+    });
+  });
+
+  describe('messaging extension', () => {
+    const ORIGIN = 'myapp.eth';
+    const GSOC_ADDRESS = 'ab'.repeat(32);
+    const PSS_TOPIC_HEX = 'cd'.repeat(32);
+    const RECIPIENT = '02' + 'ef'.repeat(32);
+    const META = { webContentsId: 7 };
+
+    function mockConnected() {
+      mockGetPermission.mockReturnValue({
+        origin: ORIGIN,
+        connectedAt: 1,
+        lastUsed: 1,
+        autoApprove: { publish: false, feeds: false, signing: false, messaging: false },
+      });
+    }
+
+    function mockMessagingGranted() {
+      mockConnected();
+      mockHasMessagingGrant.mockReturnValue(true);
+    }
+
+    function mockReachable() {
+      mockGetBeeApiUrl.mockReturnValue('http://127.0.0.1:1633');
+      global.fetch.mockResolvedValueOnce({ ok: true, json: async () => ({ beeMode: 'light' }) });
+    }
+
+    function mockSendPreFlightOk() {
+      mockGetBeeApiUrl.mockReturnValue('http://127.0.0.1:1633');
+      global.fetch
+        .mockResolvedValueOnce({ ok: true, json: async () => ({ beeMode: 'light' }) })
+        .mockResolvedValueOnce({ ok: true, json: async () => ({ status: 'ready' }) })
+        .mockResolvedValueOnce({ ok: true, json: async () => ({ stamps: [{ usable: true }] }) });
+    }
+
+    describe('capabilities', () => {
+      test('advertise the messaging feature and limits', async () => {
+        mockGetBeeApiUrl.mockReturnValue(null);
+        const result = await invokeProvider('swarm_getCapabilities', {}, ORIGIN);
+        expect(result.result.features).toContain('messaging');
+        expect(result.result.limits.maxMessageBytes).toBe(4000);
+        expect(result.result.limits.maxTargetDepth).toBe(3);
+        expect(result.result.limits.maxSubscriptions).toBe(32);
+      });
+    });
+
+    describe('swarm_getMessagingIdentity', () => {
+      test('requires connection permission', async () => {
+        mockGetPermission.mockReturnValue(null);
+        const result = await invokeProvider('swarm_getMessagingIdentity', {}, ORIGIN);
+        expect(result.error.code).toBe(4100);
+        expect(result.error.data.reason).toBe('not_connected');
+      });
+
+      test('requires the messaging grant', async () => {
+        mockConnected();
+        mockHasMessagingGrant.mockReturnValue(false);
+        const result = await invokeProvider('swarm_getMessagingIdentity', {}, ORIGIN);
+        expect(result.error.code).toBe(4100);
+        expect(result.error.data.reason).toBe('messaging_not_granted');
+      });
+
+      test('returns the compressed key and a truncated pssTarget, never the overlay', async () => {
+        mockMessagingGranted();
+        mockReachable();
+        mockGetMessagingIdentity.mockResolvedValue({
+          pssPublicKey: RECIPIENT,
+          overlay: 'ff'.repeat(32),
+        });
+
+        const result = await invokeProvider('swarm_getMessagingIdentity', {}, ORIGIN);
+        expect(result.result.pssPublicKey).toBe(RECIPIENT);
+        expect(result.result.pssTarget).toBe('ffff'); // 2 bytes (L=16 convention), not 32
+        expect(result.result.identityMode).toBe('bee-wallet');
+        expect(JSON.stringify(result.result)).not.toContain('ff'.repeat(32));
+      });
+    });
+
+    describe('swarm_sendPss', () => {
+      const validParams = { topic: 'dm:alice', recipient: RECIPIENT, targets: 'aabb', data: 'hi' };
+
+      test('rejects an invalid recipient', async () => {
+        const result = await invokeProvider('swarm_sendPss', { ...validParams, recipient: 'zz' }, ORIGIN);
+        expect(result.error.data.reason).toBe('invalid_recipient');
+      });
+
+      test('requires targets (2-3 whole bytes of hex)', async () => {
+        // undefined/empty, odd hex, 1-byte (below the storability floor),
+        // and 4-byte (over the mining cap) are all invalid_target.
+        for (const targets of [undefined, '', 'a', 'aa', 'aabbccdd']) {
+          const result = await invokeProvider('swarm_sendPss', { ...validParams, targets }, ORIGIN);
+          expect(result.error.data.reason).toBe('invalid_target');
+        }
+      });
+
+      test('accepts 2-byte and 3-byte targets', async () => {
+        mockMessagingGranted();
+        mockSendPss.mockResolvedValue();
+        for (const targets of ['aabb', 'aabbcc']) {
+          mockSendPreFlightOk(); // preflight fetches are one-shot per send
+          const result = await invokeProvider('swarm_sendPss', { ...validParams, targets }, ORIGIN);
+          expect(result.result).toEqual({ sent: true });
+        }
+      });
+
+      test('rejects an oversize payload with payload_too_large', async () => {
+        const result = await invokeProvider(
+          'swarm_sendPss',
+          { ...validParams, data: 'x'.repeat(4001) },
+          ORIGIN
+        );
+        expect(result.error.code).toBe(-32602);
+        expect(result.error.data.reason).toBe('payload_too_large');
+      });
+
+      test('requires the messaging grant', async () => {
+        mockConnected();
+        mockHasMessagingGrant.mockReturnValue(false);
+        const result = await invokeProvider('swarm_sendPss', validParams, ORIGIN);
+        expect(result.error.data.reason).toBe('messaging_not_granted');
+      });
+
+      test('sends with normalized targets and recipient', async () => {
+        mockMessagingGranted();
+        mockSendPreFlightOk();
+        mockSendPss.mockResolvedValue();
+
+        const result = await invokeProvider(
+          'swarm_sendPss',
+          { ...validParams, targets: 'AABB', recipient: `0x${RECIPIENT}` },
+          ORIGIN
+        );
+        expect(result.result).toEqual({ sent: true });
+        expect(mockSendPss).toHaveBeenCalledWith({
+          topic: 'dm:alice',
+          targets: 'aabb',
+          recipient: RECIPIENT,
+          data: expect.any(Buffer),
+        });
+      });
+
+      test('accepts an empty payload (trojan framing carries a length)', async () => {
+        mockMessagingGranted();
+        mockSendPreFlightOk();
+        mockSendPss.mockResolvedValue();
+
+        const result = await invokeProvider('swarm_sendPss', { ...validParams, data: '' }, ORIGIN);
+        expect(result.result).toEqual({ sent: true });
+        expect(mockSendPss.mock.calls[0][0].data).toHaveLength(0);
+      });
+    });
+
+    describe('swarm_sendGsoc', () => {
+      test('rejects raw-address sends (no key to sign with)', async () => {
+        const result = await invokeProvider('swarm_sendGsoc', { address: GSOC_ADDRESS, data: 'x' }, ORIGIN);
+        expect(result.error.data.reason).toBe('invalid_address');
+      });
+
+      test('rejects a missing topic', async () => {
+        const result = await invokeProvider('swarm_sendGsoc', { data: 'x' }, ORIGIN);
+        expect(result.error.data.reason).toBe('invalid_topic');
+      });
+
+      test('rejects an empty payload with invalid_payload (empty SOC is inexpressible)', async () => {
+        const result = await invokeProvider('swarm_sendGsoc', { topic: 't', data: '' }, ORIGIN);
+        expect(result.error.code).toBe(-32602);
+        expect(result.error.data.reason).toBe('invalid_payload');
+      });
+
+      test('sends and returns the derived address', async () => {
+        mockMessagingGranted();
+        mockSendPreFlightOk();
+        mockSendGsoc.mockResolvedValue({ address: GSOC_ADDRESS });
+
+        const result = await invokeProvider('swarm_sendGsoc', { topic: 'room:doc', data: 'hello' }, ORIGIN);
+        expect(result.result).toEqual({ sent: true, address: GSOC_ADDRESS });
+        expect(mockSendGsoc).toHaveBeenCalledWith({ topic: 'room:doc', data: expect.any(Buffer) });
+      });
+    });
+
+    describe('swarm_subscribe', () => {
+      test('rejects an invalid kind', async () => {
+        const result = await invokeProvider('swarm_subscribe', { kind: 'feed', topic: 't' }, ORIGIN, META);
+        expect(result.error.data.reason).toBe('invalid_kind');
+      });
+
+      test('gsoc requires exactly one of topic or address', async () => {
+        let result = await invokeProvider('swarm_subscribe', { kind: 'gsoc' }, ORIGIN, META);
+        expect(result.error.code).toBe(-32602);
+        result = await invokeProvider(
+          'swarm_subscribe',
+          { kind: 'gsoc', topic: 't', address: GSOC_ADDRESS },
+          ORIGIN,
+          META
+        );
+        expect(result.error.code).toBe(-32602);
+      });
+
+      test('pss rejects an address param', async () => {
+        const result = await invokeProvider(
+          'swarm_subscribe',
+          { kind: 'pss', address: GSOC_ADDRESS },
+          ORIGIN,
+          META
+        );
+        expect(result.error.code).toBe(-32602);
+      });
+
+      test('requires the messaging grant', async () => {
+        mockConnected();
+        mockHasMessagingGrant.mockReturnValue(false);
+        const result = await invokeProvider('swarm_subscribe', { kind: 'gsoc', topic: 't' }, ORIGIN, META);
+        expect(result.error.data.reason).toBe('messaging_not_granted');
+      });
+
+      test('gsoc topic subscribe derives the address and registers with the webContents target', async () => {
+        mockMessagingGranted();
+        mockReachable();
+        mockDeriveGsoc.mockReturnValue({ address: GSOC_ADDRESS });
+        mockRegistrySubscribe.mockResolvedValue({ subscriptionId: 'sub-1' });
+        mockWebContentsFromId.mockReturnValue(fakeWebContents());
+
+        const result = await invokeProvider('swarm_subscribe', { kind: 'gsoc', topic: 'room:doc' }, ORIGIN, META);
+        expect(result.result).toEqual({ subscriptionId: 'sub-1', kind: 'gsoc', key: GSOC_ADDRESS });
+        expect(mockRegistrySubscribe).toHaveBeenCalledWith({
+          origin: ORIGIN,
+          webContentsId: 7,
+          kind: 'gsoc',
+          key: GSOC_ADDRESS,
+        });
+      });
+
+      test('pss subscribe resolves the hashed topic as key', async () => {
+        mockMessagingGranted();
+        mockReachable();
+        mockResolvePssTopicHex.mockReturnValue(PSS_TOPIC_HEX);
+        mockRegistrySubscribe.mockResolvedValue({ subscriptionId: 'sub-2' });
+        mockWebContentsFromId.mockReturnValue(fakeWebContents());
+
+        const result = await invokeProvider('swarm_subscribe', { kind: 'pss', topic: 'dm:alice' }, ORIGIN, META);
+        expect(result.result).toEqual({ subscriptionId: 'sub-2', kind: 'pss', key: PSS_TOPIC_HEX });
+      });
+
+      test('maps registry cap and node slot refusals to distinct errors', async () => {
+        mockMessagingGranted();
+        mockReachable();
+        mockDeriveGsoc.mockReturnValue({ address: GSOC_ADDRESS });
+        mockWebContentsFromId.mockReturnValue(fakeWebContents());
+        const capError = new Error('cap');
+        capError.reason = 'too_many_subscriptions';
+        mockRegistrySubscribe.mockRejectedValueOnce(capError);
+
+        let result = await invokeProvider('swarm_subscribe', { kind: 'gsoc', topic: 't' }, ORIGIN, META);
+        expect(result.error.code).toBe(-32602);
+        expect(result.error.data.reason).toBe('too_many_subscriptions');
+
+        mockReachable();
+        const slotError = new Error('no lurker slot available');
+        slotError.reason = 'node_subscription_limit';
+        mockRegistrySubscribe.mockRejectedValueOnce(slotError);
+
+        // Node-wide capacity exhaustion is a retryable 4900, per spec —
+        // distinct from the per-origin -32602 cap above.
+        result = await invokeProvider('swarm_subscribe', { kind: 'gsoc', topic: 't' }, ORIGIN, META);
+        expect(result.error.code).toBe(4900);
+        expect(result.error.data.reason).toBe('node_subscription_limit');
+      });
+
+      test('arms teardown before establishment settles', async () => {
+        mockMessagingGranted();
+        mockReachable();
+        mockDeriveGsoc.mockReturnValue({ address: GSOC_ADDRESS });
+
+        // Establishment that never settles — a node that stopped answering
+        // while its socket reconnects forever.
+        mockRegistrySubscribe.mockReturnValue(new Promise(() => {}));
+        const listeners = {};
+        mockWebContentsFromId.mockReturnValue({
+          isDestroyed: () => false,
+          getURL: () => PAGE_URL,
+          on: (event, handler) => { listeners[event] = handler; },
+          once: (event, handler) => { listeners[event] = handler; },
+        });
+
+        invokeProvider('swarm_subscribe', { kind: 'gsoc', topic: 't' }, ORIGIN, { webContentsId: 77 });
+        await new Promise((resolve) => setImmediate(resolve));
+
+        // Navigating away or closing the tab must tear the pending
+        // subscription down even though subscribe() has not returned.
+        expect(typeof listeners['did-navigate']).toBe('function');
+        listeners['did-navigate']();
+        expect(mockRegistryCancelByWebContents).toHaveBeenCalledWith(77);
+        mockRegistrySubscribe.mockReset();
+      });
+
+      test('maps a stuck or cancelled establishment to a retryable 4900', async () => {
+        mockMessagingGranted();
+        mockReachable();
+        mockDeriveGsoc.mockReturnValue({ address: GSOC_ADDRESS });
+        mockWebContentsFromId.mockReturnValue(fakeWebContents());
+
+        const timeout = new Error('Subscription did not establish within 30000ms');
+        timeout.reason = 'establish_timeout';
+        mockRegistrySubscribe.mockRejectedValueOnce(timeout);
+        let result = await invokeProvider('swarm_subscribe', { kind: 'gsoc', topic: 't' }, ORIGIN, META);
+        expect(result.error.code).toBe(4900);
+        expect(result.error.data.reason).toBe('establish_timeout');
+
+        mockReachable();
+        const cancelled = new Error('Subscription was cancelled before it was established');
+        cancelled.reason = 'subscription_cancelled';
+        mockRegistrySubscribe.mockRejectedValueOnce(cancelled);
+        result = await invokeProvider('swarm_subscribe', { kind: 'gsoc', topic: 't' }, ORIGIN, META);
+        expect(result.error.code).toBe(4900);
+        expect(result.error.data.reason).toBe('subscription_cancelled');
+      });
+
+      test('refuses to bind the subscription when the page navigated while we waited', async () => {
+        mockMessagingGranted();
+        mockDeriveGsoc.mockReturnValue({ address: GSOC_ADDRESS });
+        mockGetBeeApiUrl.mockReturnValue('http://127.0.0.1:1633');
+
+        // The grant prompt and the reachability probe are user-paced: the
+        // tab can land on another site before subscribe() resumes. The
+        // webview reports the new page from then on.
+        let currentUrl = PAGE_URL;
+        global.fetch.mockImplementationOnce(async () => {
+          currentUrl = 'bzz://evil.eth/index.html';
+          return { ok: true, json: async () => ({ beeMode: 'light' }) };
+        });
+        mockWebContentsFromId.mockReturnValue({
+          isDestroyed: () => false,
+          getURL: () => currentUrl,
+          on: jest.fn(),
+          once: jest.fn(),
+          send: jest.fn(),
+        });
+
+        const result = await invokeProvider('swarm_subscribe', { kind: 'gsoc', topic: 't' }, ORIGIN, META);
+
+        // Retryable 4900, same as any other teardown-while-establishing —
+        // and crucially no registry entry aimed at the new page.
+        expect(result.error.code).toBe(4900);
+        expect(result.error.data.reason).toBe('subscription_cancelled');
+        expect(mockRegistrySubscribe).not.toHaveBeenCalled();
+      });
+
+      test('refuses a same-origin cross-document navigation during the awaits', async () => {
+        mockMessagingGranted();
+        mockReachable();
+
+        // The URL stays on the same origin the whole time (myapp.eth), so the
+        // origin re-check passes — but a cross-document navigation fires
+        // did-navigate mid-await, replacing the subscribing document. The
+        // navigation-epoch snapshot must catch it. Fire the navigation from
+        // the (post-reachability, pre-re-check) key-derivation step so the
+        // epoch is bumped inside the await window without depending on mock
+        // ordering. Use a webContents id no other test uses: the epoch
+        // listener attaches once per id and that state is module-level, so a
+        // shared id would already be wired to an earlier test's mock.
+        const wcId = 90901;
+        const listeners = {};
+        mockWebContentsFromId.mockReturnValue({
+          isDestroyed: () => false,
+          getURL: () => PAGE_URL, // same origin throughout
+          on: (event, handler) => { listeners[event] = handler; },
+          once: (event, handler) => { listeners[event] = handler; },
+          send: jest.fn(),
+        });
+        // Reset first: clearAllMocks() does not drain queued *Once implementations,
+        // so an unconsumed mockReturnValueOnce from an earlier test would win here.
+        mockDeriveGsoc.mockReset();
+        mockDeriveGsoc.mockImplementation(() => {
+          listeners['did-navigate']?.(); // cross-document nav while we waited
+          return { address: GSOC_ADDRESS };
+        });
+
+        const result = await invokeProvider('swarm_subscribe', { kind: 'gsoc', topic: 't' }, ORIGIN, { webContentsId: wcId });
+
+        expect(result.error.code).toBe(4900);
+        expect(result.error.data.reason).toBe('subscription_cancelled');
+        expect(mockRegistrySubscribe).not.toHaveBeenCalled();
+      });
+
+      test('rejects a webContents that is already gone', async () => {
+        mockMessagingGranted();
+        mockReachable();
+        mockDeriveGsoc.mockReturnValue({ address: GSOC_ADDRESS });
+        mockWebContentsFromId.mockReturnValue(null);
+
+        const result = await invokeProvider('swarm_subscribe', { kind: 'gsoc', topic: 't' }, ORIGIN, META);
+        expect(result.error.code).toBe(-32602);
+        expect(mockRegistrySubscribe).not.toHaveBeenCalled();
+      });
+
+      test('requires a webContents target from the renderer', async () => {
+        mockMessagingGranted();
+        const result = await invokeProvider('swarm_subscribe', { kind: 'gsoc', topic: 't' }, ORIGIN, undefined);
+        expect(result.error.code).toBe(-32602);
+      });
+    });
+
+    describe('swarm_unsubscribe', () => {
+      test('returns unsubscribed on success', async () => {
+        mockConnected();
+        mockRegistryUnsubscribe.mockReturnValue(undefined);
+        const result = await invokeProvider('swarm_unsubscribe', { subscriptionId: 'sub-1' }, ORIGIN);
+        expect(result.result).toEqual({ unsubscribed: true });
+        expect(mockRegistryUnsubscribe).toHaveBeenCalledWith(ORIGIN, 'sub-1');
+      });
+
+      test('maps unknown ids to subscription_not_found', async () => {
+        mockConnected();
+        const err = new Error('missing');
+        err.reason = 'subscription_not_found';
+        mockRegistryUnsubscribe.mockImplementation(() => {
+          throw err;
+        });
+        const result = await invokeProvider('swarm_unsubscribe', { subscriptionId: 'nope' }, ORIGIN);
+        expect(result.error.code).toBe(-32602);
+        expect(result.error.data.reason).toBe('subscription_not_found');
+      });
+    });
+
+    describe('subscription message delivery', () => {
+      // beforeEach clears mock call records, so re-register to capture the
+      // configure arguments (idempotent — the electron mock just overwrites).
+      test('registry is configured with a deliverer that targets the subscribing webContents', () => {
+        registerSwarmProviderIpc();
+        const { deliver, openSocket, maxSubscriptionsPerOrigin } = mockRegistryConfigure.mock.calls[0][0];
+        expect(openSocket).toBe(mockOpenSubscriptionSocket);
+        expect(maxSubscriptionsPerOrigin).toBe(32);
+
+        const send = jest.fn();
+        mockWebContentsFromId.mockReturnValue({ isDestroyed: () => false, getURL: () => PAGE_URL, send });
+
+        const subscription = { id: 'sub-1', origin: ORIGIN, webContentsId: 7, kind: 'gsoc', key: GSOC_ADDRESS };
+        deliver(subscription, Buffer.from('hello'));
+
+        expect(mockWebContentsFromId).toHaveBeenCalledWith(7);
+        expect(send).toHaveBeenCalledWith('swarm:provider-event', {
+          event: 'message',
+          data: {
+            type: 'swarm_subscription',
+            subscription: 'sub-1',
+            result: {
+              kind: 'gsoc',
+              key: GSOC_ADDRESS,
+              data: Buffer.from('hello').toString('base64'),
+              encoding: 'base64',
+              receivedAt: expect.any(Number),
+            },
+          },
+        });
+      });
+
+      test('delivery is dropped (and torn down) once another origin has navigated in', () => {
+        registerSwarmProviderIpc();
+        const { deliver } = mockRegistryConfigure.mock.calls[0][0];
+
+        const send = jest.fn();
+        // Same webContents, different origin: the user navigated to
+        // another site while the subscription was still live.
+        mockWebContentsFromId.mockReturnValue({
+          isDestroyed: () => false,
+          getURL: () => 'bzz://evil.eth/index.html',
+          send,
+        });
+
+        deliver(
+          { id: 'sub-1', origin: ORIGIN, webContentsId: 7, kind: 'gsoc', key: GSOC_ADDRESS },
+          Buffer.from('secret')
+        );
+
+        expect(send).not.toHaveBeenCalled();
+        // Only the origins that are gone — a subscription the page now on
+        // screen already opened on this webview stays live.
+        expect(mockRegistryCancelStaleByWebContents).toHaveBeenCalledWith(7, 'evil.eth');
+        expect(mockRegistryCancelByWebContents).not.toHaveBeenCalled();
+      });
+
+      test('delivery survives an in-page navigation (hash route / pushState)', () => {
+        registerSwarmProviderIpc();
+        const { deliver } = mockRegistryConfigure.mock.calls[0][0];
+
+        const send = jest.fn();
+        // A hash-routed SPA moving from #/lobby to #/room/42: no
+        // did-navigate, same document, same grant — messaging must keep
+        // working (and nothing may be torn down).
+        mockWebContentsFromId.mockReturnValue({
+          isDestroyed: () => false,
+          getURL: () => 'bzz://myapp.eth/#/room/42',
+          send,
+        });
+
+        deliver(
+          { id: 'sub-1', origin: ORIGIN, webContentsId: 7, kind: 'pss', key: PSS_TOPIC_HEX },
+          Buffer.from('hello')
+        );
+
+        expect(send).toHaveBeenCalledTimes(1);
+        expect(mockRegistryCancelStaleByWebContents).not.toHaveBeenCalled();
+        expect(mockRegistryCancelByWebContents).not.toHaveBeenCalled();
+      });
+
+      test('delivery is dropped for destroyed webContents', () => {
+        registerSwarmProviderIpc();
+        const { deliver } = mockRegistryConfigure.mock.calls[0][0];
+        mockWebContentsFromId.mockReturnValue(null);
+        expect(() => deliver({ id: 's', webContentsId: 9, kind: 'pss', key: PSS_TOPIC_HEX }, Buffer.from('x'))).not.toThrow();
+      });
+    });
+
+    describe('subscription teardown wiring', () => {
+      test('navigation and destroy listeners cancel the webContents subscriptions', async () => {
+        mockMessagingGranted();
+        mockReachable();
+        mockDeriveGsoc.mockReturnValue({ address: GSOC_ADDRESS });
+        mockRegistrySubscribe.mockResolvedValue({ subscriptionId: 'sub-1' });
+
+        const listeners = {};
+        mockWebContentsFromId.mockReturnValue({
+          isDestroyed: () => false,
+          getURL: () => PAGE_URL,
+          on: (event, handler) => { listeners[event] = handler; },
+          once: (event, handler) => { listeners[event] = handler; },
+        });
+
+        await invokeProvider('swarm_subscribe', { kind: 'gsoc', topic: 't' }, ORIGIN, { webContentsId: 42 });
+
+        listeners['did-navigate']();
+        expect(mockRegistryCancelByWebContents).toHaveBeenCalledWith(42);
+
+        listeners['destroyed']();
+        expect(mockRegistryCancelByWebContents).toHaveBeenCalledTimes(2);
+      });
     });
   });
 });

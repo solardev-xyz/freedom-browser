@@ -31,6 +31,7 @@ const {
   getPermission,
   grantPermission,
   revokePermission,
+  revokePermissionsForWalletIndex,
   getAllPermissions,
   _resetCache,
 } = require('./dapp-permissions');
@@ -157,5 +158,36 @@ describe('dapp-permissions — basic CRUD round-trip', () => {
     const removed = revokePermission('vitalik.eth');
     expect(removed).toBe(true);
     expect(getPermission('ens://vitalik.eth')).toBeNull();
+  });
+});
+
+describe('dapp-permissions — revoke by wallet index', () => {
+  const LEDGER_INDEX = 1000000;
+
+  test('drops every origin bound to the deleted account and keeps the rest', () => {
+    grantPermission('https://swap.example', LEDGER_INDEX, 8453);
+    grantPermission('vitalik.eth', LEDGER_INDEX, 1);
+    grantPermission('https://other.example', 0, 1);
+
+    const revoked = revokePermissionsForWalletIndex(LEDGER_INDEX);
+
+    expect(revoked.sort()).toEqual(['https://swap.example', 'vitalik.eth']);
+    expect(getPermission('https://swap.example')).toBeNull();
+    expect(getPermission('vitalik.eth')).toBeNull();
+    expect(getPermission('https://other.example')).not.toBeNull();
+  });
+
+  test('persists the removal to disk, so a stale index cannot survive a restart', () => {
+    grantPermission('https://swap.example', LEDGER_INDEX, 8453);
+    revokePermissionsForWalletIndex(LEDGER_INDEX);
+
+    _resetCache();
+    expect(getPermission('https://swap.example')).toBeNull();
+  });
+
+  test('is a no-op when no origin uses the index', () => {
+    grantPermission('https://other.example', 0, 1);
+    expect(revokePermissionsForWalletIndex(7)).toEqual([]);
+    expect(getPermission('https://other.example')).not.toBeNull();
   });
 });

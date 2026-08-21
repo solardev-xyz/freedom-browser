@@ -5,6 +5,7 @@
  */
 
 import { walletState, registerScreenHider } from './wallet-state.js';
+import { refuseSubscreenWhileInFlight } from './signature-flight.js';
 
 // DOM references
 let exportMnemonicScreen;
@@ -70,6 +71,8 @@ function setupExportMnemonicListeners() {
 }
 
 async function openExportMnemonic() {
+  if (refuseSubscreenWhileInFlight('Recovery phrase screen')) return;
+
   walletState.identityView?.classList.add('hidden');
   exportMnemonicScreen?.classList.remove('hidden');
 

@@ -1,0 +1,693 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:;"
+    />
+    <title>Downloads</title>
+    <style>
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+      body {
+        font-family:
+          'IBM Plex Sans',
+          -apple-system,
+          BlinkMacSystemFont,
+          sans-serif;
+        background: linear-gradient(135deg, #0d1117 0%, #161b22 50%, #21262d 100%);
+        color: #c9d1d9;
+        padding: 48px;
+        box-sizing: border-box;
+        min-height: 100vh;
+      }
+      h1 {
+        font-size: 28px;
+        margin-bottom: 8px;
+        color: #58a6ff;
+        font-weight: 600;
+        letter-spacing: -0.5px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      .subtitle {
+        color: #8b949e;
+        margin-bottom: 24px;
+        font-size: 14px;
+      }
+      .toolbar {
+        display: flex;
+        gap: 12px;
+        margin-bottom: 24px;
+        align-items: center;
+      }
+      .search-input {
+        flex: 1;
+        max-width: 400px;
+        padding: 10px 16px;
+        background: #21262d;
+        border: 1px solid #30363d;
+        border-radius: 8px;
+        color: #c9d1d9;
+        font-size: 14px;
+        font-family: inherit;
+        outline: none;
+        transition: border-color 0.15s;
+      }
+      .search-input:focus {
+        border-color: #58a6ff;
+      }
+      .search-input::placeholder {
+        color: #6e7681;
+      }
+      .toolbar-right {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        margin-left: auto;
+      }
+      .btn {
+        padding: 10px 16px;
+        background: #21262d;
+        border: 1px solid #30363d;
+        border-radius: 8px;
+        color: #c9d1d9;
+        font-size: 14px;
+        font-family: inherit;
+        cursor: pointer;
+        transition: all 0.15s ease;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .btn:hover {
+        background: #30363d;
+        border-color: #484f58;
+      }
+      .btn.danger {
+        color: #f85149;
+      }
+      .btn.danger:hover {
+        border-color: #f85149;
+        background: #f8514915;
+      }
+      .download-list {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .download-item {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        padding: 14px 16px;
+        background: rgba(22, 27, 34, 0.6);
+        border: 1px solid transparent;
+        border-radius: 8px;
+        transition: all 0.15s ease;
+      }
+      .download-item:hover {
+        background: #21262d;
+        border-color: #30363d;
+      }
+      .file-icon {
+        width: 32px;
+        height: 32px;
+        flex-shrink: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 6px;
+        background: #388bfd33;
+        color: #58a6ff;
+      }
+      .download-item.state-cancelled .file-icon,
+      .download-item.state-interrupted .file-icon {
+        background: #6e768133;
+        color: #8b949e;
+      }
+      .download-content {
+        flex: 1;
+        min-width: 0;
+      }
+      .download-name {
+        font-size: 14px;
+        color: #f0f6fc;
+        margin-bottom: 4px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      /* Entries from private windows: shown while the window lives, purged
+         with it. */
+      .private-badge {
+        display: inline-block;
+        margin-left: 8px;
+        padding: 1px 8px;
+        border-radius: 999px;
+        background: #3a2f52;
+        border: 1px solid #55447a;
+        color: #cfc4ea;
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        vertical-align: 2px;
+      }
+      .download-url {
+        font-size: 12px;
+        color: #58a6ff;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .download-status {
+        font-size: 12px;
+        color: #8b949e;
+        margin-top: 4px;
+      }
+      .download-status.error {
+        color: #f85149;
+      }
+      .progress-bar {
+        height: 4px;
+        margin-top: 8px;
+        border-radius: 2px;
+        background: #30363d;
+        overflow: hidden;
+      }
+      .progress-fill {
+        height: 100%;
+        border-radius: 2px;
+        background: #58a6ff;
+        transition: width 0.2s ease;
+      }
+      .download-meta {
+        flex-shrink: 0;
+        color: #6e7681;
+        font-size: 12px;
+        min-width: 100px;
+        text-align: right;
+      }
+      .download-actions {
+        display: flex;
+        gap: 6px;
+        flex-shrink: 0;
+      }
+      .action-btn {
+        padding: 6px 10px;
+        background: transparent;
+        border: 1px solid #30363d;
+        border-radius: 6px;
+        color: #58a6ff;
+        font-size: 12px;
+        font-weight: 600;
+        font-family: inherit;
+        cursor: pointer;
+        white-space: nowrap;
+        transition: all 0.15s;
+      }
+      .action-btn:hover {
+        background: #21262d;
+        border-color: #484f58;
+      }
+      .action-btn.danger {
+        color: #f85149;
+      }
+      .action-btn.danger:hover {
+        border-color: #f85149;
+        background: #f8514915;
+      }
+      .remove-btn {
+        opacity: 0;
+        padding: 6px;
+        background: transparent;
+        border: none;
+        border-radius: 4px;
+        color: #6e7681;
+        cursor: pointer;
+        transition: all 0.15s;
+      }
+      .download-item:hover .remove-btn {
+        opacity: 1;
+      }
+      .remove-btn:hover {
+        color: #f85149;
+        background: #f8514915;
+      }
+      .empty-state {
+        text-align: center;
+        padding: 64px;
+        color: #6e7681;
+      }
+      .empty-state svg {
+        width: 64px;
+        height: 64px;
+        margin-bottom: 16px;
+        opacity: 0.5;
+      }
+      .empty-state p {
+        margin: 0;
+        font-size: 14px;
+      }
+      .loading {
+        text-align: center;
+        padding: 64px;
+        color: #6e7681;
+      }
+
+      /* Light theme */
+      @media (prefers-color-scheme: light) {
+        body {
+          background: linear-gradient(135deg, #ffffff 0%, #f6f8fa 50%, #f0f2f5 100%);
+          color: #24292f;
+        }
+        h1 {
+          color: #0969da;
+        }
+        .subtitle {
+          color: #57606a;
+        }
+        .search-input {
+          background: #ffffff;
+          border-color: #d0d7de;
+          color: #24292f;
+        }
+        .search-input:focus {
+          border-color: #0969da;
+        }
+        .search-input::placeholder {
+          color: #8c959f;
+        }
+        .btn {
+          background: #ffffff;
+          border-color: #d0d7de;
+          color: #24292f;
+        }
+        .btn:hover {
+          background: #f6f8fa;
+          border-color: #8c959f;
+        }
+        .btn.danger {
+          color: #cf222e;
+        }
+        .btn.danger:hover {
+          border-color: #cf222e;
+          background: #ffebe9;
+        }
+        .download-item {
+          background: rgba(255, 255, 255, 0.8);
+        }
+        .download-item:hover {
+          background: #ffffff;
+          border-color: #d0d7de;
+        }
+        .download-name {
+          color: #24292f;
+        }
+        .download-url {
+          color: #0969da;
+        }
+        .download-status {
+          color: #57606a;
+        }
+        .download-status.error {
+          color: #cf222e;
+        }
+        .progress-bar {
+          background: #d0d7de;
+        }
+        .progress-fill {
+          background: #0969da;
+        }
+        .download-meta {
+          color: #57606a;
+        }
+        .action-btn {
+          border-color: #d0d7de;
+          color: #0969da;
+        }
+        .action-btn:hover {
+          background: #f6f8fa;
+          border-color: #8c959f;
+        }
+        .action-btn.danger {
+          color: #cf222e;
+        }
+        .action-btn.danger:hover {
+          border-color: #cf222e;
+          background: #ffebe9;
+        }
+        .remove-btn {
+          color: #57606a;
+        }
+        .remove-btn:hover {
+          color: #cf222e;
+          background: #ffebe9;
+        }
+        .empty-state {
+          color: #57606a;
+        }
+        .loading {
+          color: #57606a;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <h1>
+      <svg
+        width="28"
+        height="28"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+        <polyline points="7 10 12 15 17 10"></polyline>
+        <line x1="12" y1="15" x2="12" y2="3"></line>
+      </svg>
+      Downloads
+    </h1>
+    <p class="subtitle" id="stats">Loading...</p>
+
+    <div class="toolbar">
+      <input
+        type="text"
+        class="search-input"
+        id="search-input"
+        placeholder="Search downloads..."
+        autofocus
+      />
+      <div class="toolbar-right">
+        <button class="btn danger" id="clear-btn">
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <polyline points="3 6 5 6 21 6"></polyline>
+            <path
+              d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"
+            ></path>
+          </svg>
+          Clear All
+        </button>
+      </div>
+    </div>
+
+    <div id="downloads-container">
+      <div class="loading">Loading downloads...</div>
+    </div>
+
+    <script>
+      // freedomAPI is exposed globally by webview-preload.js via contextBridge
+
+      const container = document.getElementById('downloads-container');
+      const searchInput = document.getElementById('search-input');
+      const clearBtn = document.getElementById('clear-btn');
+      const statsEl = document.getElementById('stats');
+
+      let allDownloads = [];
+
+      // Escape HTML to prevent XSS (filenames and URLs are remote-controlled)
+      function escapeHtml(str) {
+        if (!str) return '';
+        const div = document.createElement('div');
+        div.textContent = str;
+        return div.innerHTML;
+      }
+
+      function formatBytes(bytes) {
+        const value = Number(bytes);
+        if (!Number.isFinite(value) || value < 0) return '0 B';
+        if (value < 1024) return `${Math.round(value)} B`;
+        const units = ['KB', 'MB', 'GB', 'TB'];
+        let scaled = value / 1024;
+        let unitIndex = 0;
+        while (scaled >= 1024 && unitIndex < units.length - 1) {
+          scaled /= 1024;
+          unitIndex++;
+        }
+        return `${scaled.toFixed(1)} ${units[unitIndex]}`;
+      }
+
+      function formatTime(timestamp) {
+        if (!timestamp) return '';
+        const date = new Date(timestamp);
+        const now = new Date();
+        if (date.toDateString() === now.toDateString()) {
+          return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+        }
+        if (date.getFullYear() === now.getFullYear()) {
+          return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
+        }
+        return date.toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' });
+      }
+
+      // Transient per-row action failures (e.g. Open on a since-deleted
+      // file). Rendered into the row's status line — a direct DOM poke would
+      // be wiped by the next downloads:changed re-render, so the error lives
+      // here and expires after a few seconds.
+      const actionErrors = new Map();
+      const ACTION_ERROR_MS = 5000;
+      function showActionError(id, message) {
+        actionErrors.set(id, message);
+        applyFilter();
+        setTimeout(() => {
+          if (actionErrors.get(id) === message) {
+            actionErrors.delete(id);
+            applyFilter();
+          }
+        }, ACTION_ERROR_MS);
+      }
+
+      function statusText(entry) {
+        const received = formatBytes(entry.received_bytes || 0);
+        const total = entry.total_bytes > 0 ? formatBytes(entry.total_bytes) : null;
+        switch (entry.state) {
+          case 'completed':
+            return formatBytes(entry.received_bytes || entry.total_bytes || 0);
+          case 'cancelled':
+            return 'Cancelled';
+          case 'interrupted':
+            return 'Failed — download interrupted';
+          default:
+            // A live item can be stalled two ways: paused by the user, or
+            // interrupted mid-transfer (connection dropped) but not yet given
+            // up on by Chromium.
+            if (entry.is_interrupted) {
+              return total ? `Interrupted — ${received} of ${total}` : `Interrupted — ${received}`;
+            }
+            if (entry.is_paused) {
+              return total ? `Paused — ${received} of ${total}` : `Paused — ${received}`;
+            }
+            return total ? `${received} of ${total}` : received;
+        }
+      }
+
+      function renderActions(entry) {
+        if (entry.state === 'in_progress') {
+          // Pause only makes sense while bytes are moving; a paused or
+          // interrupted item offers Resume when Chromium says it can.
+          const stalled = entry.is_paused || entry.is_interrupted;
+          let pauseResume = `<button class="action-btn" data-action="pause" data-id="${entry.id}">Pause</button>`;
+          if (stalled) {
+            pauseResume = entry.can_resume
+              ? `<button class="action-btn" data-action="resume" data-id="${entry.id}">Resume</button>`
+              : '';
+          }
+          return `
+            ${pauseResume}
+            <button class="action-btn danger" data-action="cancel" data-id="${entry.id}">Cancel</button>
+          `;
+        }
+        if (entry.state === 'completed') {
+          return `
+            <button class="action-btn" data-action="open" data-id="${entry.id}">Open</button>
+            <button class="action-btn" data-action="show" data-id="${entry.id}">Show in folder</button>
+          `;
+        }
+        return '';
+      }
+
+      function renderEntry(entry) {
+        const inProgress = entry.state === 'in_progress';
+        const percent =
+          entry.total_bytes > 0
+            ? Math.min(100, Math.round((entry.received_bytes / entry.total_bytes) * 100))
+            : null;
+        const actionError = actionErrors.get(entry.id);
+        const failed =
+          Boolean(actionError) ||
+          entry.state === 'interrupted' ||
+          (inProgress && entry.is_interrupted);
+        const removeBtn = inProgress
+          ? ''
+          : `
+            <button class="remove-btn" data-action="remove" data-id="${entry.id}" title="Remove from list">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="18" y1="6" x2="6" y2="18"></line>
+                <line x1="6" y1="6" x2="18" y2="18"></line>
+              </svg>
+            </button>
+          `;
+
+        return `
+          <div class="download-item state-${entry.state}" data-id="${entry.id}">
+            <div class="file-icon">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path>
+                <polyline points="13 2 13 9 20 9"></polyline>
+              </svg>
+            </div>
+            <div class="download-content">
+              <div class="download-name">${escapeHtml(entry.filename)}${
+                entry.is_private ? '<span class="private-badge" data-test="download-private-badge">Private</span>' : ''
+              }</div>
+              <div class="download-url">${escapeHtml(entry.url)}</div>
+              <div class="download-status${failed ? ' error' : ''}">${escapeHtml(actionError || statusText(entry))}</div>
+              ${
+                inProgress && percent !== null
+                  ? `<div class="progress-bar"><div class="progress-fill" style="width: ${percent}%"></div></div>`
+                  : ''
+              }
+            </div>
+            <div class="download-meta">${formatTime(entry.end_time || entry.start_time)}</div>
+            <div class="download-actions">${renderActions(entry)}</div>
+            ${removeBtn}
+          </div>
+        `;
+      }
+
+      function renderDownloads(entries) {
+        if (!entries || entries.length === 0) {
+          container.innerHTML = `
+            <div class="empty-state">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="7 10 12 15 17 10"></polyline>
+                <line x1="12" y1="15" x2="12" y2="3"></line>
+              </svg>
+              <p>No downloads yet</p>
+            </div>
+          `;
+          return;
+        }
+
+        container.innerHTML = `
+          <div class="download-list">
+            ${entries.map(renderEntry).join('')}
+          </div>
+        `;
+      }
+
+      // Single delegated handler survives re-renders (live progress
+      // re-renders the list on every downloads:changed broadcast).
+      container.addEventListener('click', async (e) => {
+        const btn = e.target.closest('[data-action]');
+        if (!btn) return;
+        const id = parseInt(btn.dataset.id, 10);
+        if (!id) return;
+
+        switch (btn.dataset.action) {
+          case 'pause':
+            await freedomAPI.pauseDownload?.(id);
+            break;
+          case 'resume':
+            await freedomAPI.resumeDownload?.(id);
+            break;
+          case 'cancel':
+            await freedomAPI.cancelDownload?.(id);
+            break;
+          case 'open': {
+            const res = await freedomAPI.openDownloadedFile?.(id);
+            if (res && res.success === false) {
+              showActionError(id, res.error || 'Could not open file');
+              return;
+            }
+            break;
+          }
+          case 'show': {
+            const res = await freedomAPI.showDownloadInFolder?.(id);
+            if (res && res.success === false) {
+              showActionError(id, res.error || 'Could not show file in folder');
+              return;
+            }
+            break;
+          }
+          case 'remove':
+            await freedomAPI.removeDownload?.(id);
+            break;
+        }
+        loadDownloads();
+      });
+
+      function applyFilter() {
+        const q = searchInput.value.trim().toLowerCase();
+        if (!q) {
+          renderDownloads(allDownloads);
+          return;
+        }
+        const filtered = allDownloads.filter(
+          (entry) =>
+            (entry.filename && entry.filename.toLowerCase().includes(q)) ||
+            (entry.url && entry.url.toLowerCase().includes(q))
+        );
+        renderDownloads(filtered);
+      }
+
+      async function loadDownloads() {
+        try {
+          if (!freedomAPI?.getDownloads) {
+            container.innerHTML =
+              '<div class="empty-state"><p>Downloads API not available</p></div>';
+            return;
+          }
+
+          allDownloads = await freedomAPI.getDownloads();
+          const active = allDownloads.filter((entry) => entry.state === 'in_progress').length;
+          statsEl.textContent = active
+            ? `${allDownloads.length} downloads — ${active} in progress`
+            : `${allDownloads.length} downloads`;
+          applyFilter();
+        } catch (err) {
+          console.error('Failed to load downloads:', err);
+          container.innerHTML = '<div class="empty-state"><p>Failed to load downloads</p></div>';
+        }
+      }
+
+      async function clearAllDownloads() {
+        if (!confirm('Clear all downloads from the list? Downloaded files are kept.')) return;
+        try {
+          if (freedomAPI?.clearDownloads) {
+            await freedomAPI.clearDownloads();
+            loadDownloads();
+          }
+        } catch (err) {
+          console.error('Failed to clear downloads:', err);
+        }
+      }
+
+      searchInput.addEventListener('input', applyFilter);
+      clearBtn.addEventListener('click', clearAllDownloads);
+
+      // Live refresh — main broadcasts on every row mutation, so in-flight
+      // items progress in place. Auto-unsubscribed on pagehide by preload.
+      freedomAPI.onDownloadsChanged?.(() => loadDownloads());
+
+      // Initial load
+      loadDownloads();
+    </script>
+  </body>
+</html>

@@ -49,6 +49,44 @@ const createProfileViaApi = async (window, displayName) => {
   return result.profile;
 };
 
+test('node config: Myotis is embedded per profile and can be disabled', async ({ window }) => {
+  const active = await window.evaluate(() => window.electronAPI.getActiveProfile());
+  expect(active.nodes.myotis).toEqual({ mode: 'managed', backend: 'myotis-native' });
+
+  const created = await createProfileViaApi(window, 'QA Myotis');
+  expect(created.nodes.myotis).toEqual({ mode: 'managed', backend: 'myotis-native' });
+
+  await window.evaluate(() => document.getElementById('settings-btn')?.click());
+  await expect
+    .poll(() => settingsEval(window, `typeof window.freedomAPI?.updateProfileNodeConfig`))
+    .toBe('function');
+  const result = await settingsEval(
+    window,
+    `window.freedomAPI.updateProfileNodeConfig('myotis', { mode: 'disabled' })`
+  );
+  expect(result?.success).toBe(true);
+  expect(result.profile.nodes.myotis).toEqual({
+    mode: 'disabled',
+    backend: 'myotis-native',
+  });
+
+  const updated = await window.evaluate(() => window.electronAPI.getActiveProfile());
+  expect(updated.nodes.myotis).toEqual({ mode: 'disabled', backend: 'myotis-native' });
+});
+
+const settingsEval = (window, script) =>
+  window.evaluate(async (s) => {
+    const webview = [...document.querySelectorAll('webview')].find((candidate) => {
+      try {
+        return /settings/.test(candidate.getURL() || '');
+      } catch {
+        return false;
+      }
+    });
+    if (!webview || typeof webview.executeJavaScript !== 'function') return null;
+    return webview.executeJavaScript(s);
+  }, script);
+
 // Run JS inside the profiles manager page (it loads in a <webview>; the chrome
 // can only reach it via executeJavaScript). `script` must be an expression; a
 // returned promise is awaited by Electron before resolving.

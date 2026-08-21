@@ -8,6 +8,7 @@
  */
 
 import { walletState, registerScreenHider } from './wallet-state.js';
+import { refuseSubscreenWhileInFlight } from './signature-flight.js';
 import { formatRawTokenBalance, formatBytes } from './wallet-utils.js';
 import { fetchAntJson } from './ant-api.js';
 
@@ -83,6 +84,8 @@ export function initStampManager() {
 }
 
 export function openStampManager() {
+  if (refuseSubscreenWhileInFlight('Stamp manager screen')) return;
+
   walletState.identityView?.classList.add('hidden');
   stampManagerScreen?.classList.remove('hidden');
   isOpen = true;

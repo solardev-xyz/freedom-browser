@@ -4,7 +4,8 @@
     "keyed": false,
     "name": "Colibri (corpus.core)",
     "coverage": {
-      "1": "https://mainnet1.colibri-proof.tech"
+      "1": "https://mainnet1.colibri-proof.tech",
+      "100": "https://gnosis.colibri-proof.tech"
     }
   },
 

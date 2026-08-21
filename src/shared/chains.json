@@ -9,7 +9,13 @@
     "logo": "ethereum.png",
     "builtin": true,
     "verification": {
-      "primary": "colibri"
+      "primary": "colibri",
+      "order": ["myotis", "colibri", "quorum"],
+      "preferVerified": true
+    },
+    "access": {
+      "readOrder": ["myotis", "colibri", "quorum", "direct"],
+      "broadcastOrder": ["myotis", "direct"]
     },
     "quorum": {
       "k": 3,
@@ -30,7 +36,13 @@
     "logo": "gnosis.png",
     "builtin": true,
     "verification": {
-      "primary": "quorum"
+      "primary": "quorum",
+      "order": ["myotis", "colibri", "quorum"],
+      "preferVerified": true
+    },
+    "access": {
+      "readOrder": ["myotis", "colibri", "quorum", "direct"],
+      "broadcastOrder": ["myotis", "direct"]
     },
     "quorum": {
       "k": 3,
@@ -51,6 +63,10 @@
     "builtin": true,
     "verification": {
       "primary": "quorum"
+    },
+    "access": {
+      "readOrder": ["quorum", "direct"],
+      "broadcastOrder": ["direct"]
     },
     "quorum": {
       "k": 3,

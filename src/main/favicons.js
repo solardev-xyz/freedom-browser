@@ -9,6 +9,7 @@ const log = require('./logger');
 const { ipcMain, net } = require('electron');
 const { getDb } = require('./history');
 const IPC = require('../shared/ipc-channels');
+const { isPrivateWebContents } = require('./private/private-windows');
 
 // Prepared statements (lazily initialized)
 let statements = null;
@@ -344,8 +345,20 @@ async function getFavicon(url) {
  * Register IPC handlers
  */
 function registerFaviconsIpc() {
+  // PRIVATE MODE GUARD (favicons): private windows never write to the
+  // favicon cache. Reads of already-cached icons are fine (they reveal
+  // nothing about private browsing); fetch-and-cache is what would leave
+  // a trace, so fetching from a private sender degrades to a cache read.
+  // The private window's renderer already skips the fetch calls
+  // (src/renderer/lib/navigation.js); this is the main-process
+  // belt-and-braces.
+  const isPrivateSender = (event) => isPrivateWebContents(event?.sender);
+
   // Get favicon (returns cached or fetches)
-  ipcMain.handle(IPC.FAVICON_GET, async (_event, url) => {
+  ipcMain.handle(IPC.FAVICON_GET, async (event, url) => {
+    if (isPrivateSender(event)) {
+      return getCachedFavicon(url);
+    }
     return await getFavicon(url);
   });
 
@@ -355,12 +368,20 @@ function registerFaviconsIpc() {
   });
 
   // Fetch and cache favicon (called after page load)
-  ipcMain.handle(IPC.FAVICON_FETCH, async (_event, url) => {
+  ipcMain.handle(IPC.FAVICON_FETCH, async (event, url) => {
+    if (isPrivateSender(event)) {
+      log.info('[Favicons] Ignoring favicon:fetch from private window');
+      return getCachedFavicon(url);
+    }
     return await fetchFavicon(url);
   });
 
   // Fetch favicon with custom cache key (for bzz://, ipfs:// URLs)
-  ipcMain.handle(IPC.FAVICON_FETCH_WITH_KEY, async (_event, fetchUrl, cacheKey) => {
+  ipcMain.handle(IPC.FAVICON_FETCH_WITH_KEY, async (event, fetchUrl, cacheKey) => {
+    if (isPrivateSender(event)) {
+      log.info('[Favicons] Ignoring favicon:fetch-with-key from private window');
+      return getCachedFavicon(cacheKey || fetchUrl);
+    }
     return await fetchFavicon(fetchUrl, cacheKey);
   });
 

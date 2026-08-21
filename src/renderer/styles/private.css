@@ -1,0 +1,73 @@
+/* Private-window chrome.
+ *
+ * `body.private-window` is set by the renderer entry point when the window
+ * was opened with a `privatePartition` query parameter (see
+ * src/renderer/lib/private-mode.js). Private windows keep a dark, plum-
+ * tinted chrome in BOTH themes — the redefined tokens below out-specify
+ * the :root / [data-theme='light'] values from variables.css for
+ * everything inside body, so the same private palette applies whether the
+ * profile theme is dark or light (page content is unaffected; it lives in
+ * webviews). This mirrors how Chromium keeps incognito chrome dark in
+ * light mode: the distinct chrome IS the mode indicator.
+ */
+
+body.private-window {
+  color-scheme: dark;
+  --bg: #221b2e;
+  --toolbar: #352b47;
+  --border: #4c3f66;
+  --text: #d5cfe3;
+  --muted: #a89fc0;
+  --menu-bg: #241d31;
+  --modal-bg: #241d31;
+  --accent: #b39ddb;
+}
+
+/* light-theme.css hardcodes #ffffff on the active tab (and its connecting
+   corner curves) instead of routing through --toolbar, so in a light-theme
+   private window the active tab rendered white against the plum toolbar.
+   Re-route it back through the private --toolbar; these selectors out-specify
+   `[data-theme='light'] .tab.active` (0,3,0) via the extra `.private-window`
+   class (0,3,1), so the private palette wins in both themes. */
+body.private-window .tab.active {
+  background-color: var(--toolbar);
+}
+
+body.private-window .tab.active::before,
+body.private-window .tab.active::after {
+  background-color: var(--toolbar);
+}
+
+body.private-window .tab.active .tab-corner {
+  color: var(--toolbar);
+}
+
+/* "Private" label next to the navigation buttons, always visible in
+   private windows (hidden attribute removed by index.js). */
+.private-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 6px 0 4px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: #4c3f66;
+  border: 1px solid #64548a;
+  color: #e2dcf2;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  user-select: none;
+  white-space: nowrap;
+  -webkit-app-region: no-drag;
+}
+
+.private-badge[hidden] {
+  display: none;
+}
+
+.private-badge svg {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+}

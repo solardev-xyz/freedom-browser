@@ -10,8 +10,13 @@
 @import './styles/window-controls.css';
 @import './styles/autocomplete.css';
 @import './styles/update-toast.css';
+@import './styles/downloads-shelf.css';
 @import './styles/github-bridge.css';
 @import './styles/sidebar.css';
 @import './styles/link-status.css';
+@import './styles/permissions.css';
+@import './styles/find-bar.css';
 @import './styles/onboarding.css';
 @import './styles/light-theme.css';
+/* Last: private-window tokens must out-cascade the theme files. */
+@import './styles/private.css';

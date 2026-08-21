@@ -1,4 +1,4 @@
-import { isEnsHost } from './origin-utils.js';
+import { isDwebNameHost, isEnsHost } from './origin-utils.js';
 import { cidV0ToV1Base32, cidV1B58btcToBase32, ipnsMhToCidV1Base36 } from './cid-utils.js';
 
 export const ensureTrailingSlash = (value = '') => (value.endsWith('/') ? value : `${value}/`);
@@ -211,7 +211,15 @@ export const formatBzzUrl = (input, bzzRoutePrefix) => {
 
     // Check if it looks like a regular domain (e.g., "spiegel.de", "example.com/path")
     if (looksLikeDomain(raw)) {
-      const urlWithProtocol = `https://${raw}`;
+      // Tor onion services default to http:// — the .onion address itself
+      // provides end-to-end encryption, and most are http-only, so defaulting
+      // to https would break them. Routing through Tor is handled at the
+      // session layer (see src/main/tor-proxy.js); the address bar just needs
+      // to produce a loadable http(s) URL.
+      const hostPart = raw.split(/[/?#]/)[0].toLowerCase();
+      // Allow an optional :port so e.g. `abc.onion:8080` is still detected.
+      const scheme = /\.onion(:\d+)?$/.test(hostPart) ? 'http' : 'https';
+      const urlWithProtocol = `${scheme}://${raw}`;
       return {
         targetUrl: urlWithProtocol,
         displayValue: urlWithProtocol,
@@ -292,9 +300,9 @@ export const isEnsBackedDisplay = (displayUrl) => {
   if (lower.startsWith('ens://')) return true;
   const transportMatch = lower.match(/^(?:bzz|ipfs|ipns):\/\/([^/?#]+)/);
   if (transportMatch) {
-    return isEnsHost(transportMatch[1]);
+    return isDwebNameHost(transportMatch[1]);
   }
-  return isEnsHost(trimmed.split(/[/?#]/)[0]);
+  return isDwebNameHost(trimmed.split(/[/?#]/)[0]);
 };
 
 /**

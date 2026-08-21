@@ -226,6 +226,7 @@ const handleAction = async (action) => {
         if (result?.success) {
           pushDebug(`Image saved to: ${result.filePath}`);
         } else if (result?.error) {
+          pushDebug(`Failed to save image: ${result.error}`);
           console.error('Failed to save image:', result.error);
         }
       }
@@ -237,6 +238,7 @@ const handleAction = async (action) => {
         if (result?.success) {
           pushDebug('Copied image to clipboard');
         } else if (result?.error) {
+          pushDebug(`Failed to copy image: ${result.error}`);
           console.error('Failed to copy image:', result.error);
         }
       }

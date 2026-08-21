@@ -27,6 +27,7 @@
 const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { isHostNativeBinary } = require('./native-binary-arch');
 
 const args = process.argv.slice(2);
 
@@ -117,5 +118,67 @@ const cmd = useDotenv
   ? `dotenv -- electron-builder ${builderArgs.join(' ')}`
   : `electron-builder ${builderArgs.join(' ')}`;
 
+// 5. Protect the host-built better-sqlite3 binary during cross-platform builds.
+// electron-builder rebuilds native deps in node_modules for the TARGET platform,
+// which replaces the host binary (e.g. with a Windows DLL after `--win`) and
+// silently breaks history/favicons in local dev until a manual rebuild.
+const BS3_BINARY = path.join(
+  __dirname,
+  '..',
+  'node_modules',
+  'better-sqlite3',
+  'build',
+  'Release',
+  'better_sqlite3.node'
+);
+
+// isHostNativeBinary (see ./native-binary-arch.js) parses the real CPU
+// architecture from the binary headers — not just the file format — so a
+// same-platform cross-arch build (e.g. `--mac --x64` on an arm64 mac) is
+// also detected and restored.
+
+const hostPlatform = { darwin: 'mac', win32: 'win', linux: 'linux' }[process.platform];
+const crossBuild = platform !== hostPlatform || archs.some((a) => a !== process.arch);
+
+let bs3Snapshot = null;
+if (crossBuild && fs.existsSync(BS3_BINARY)) {
+  const current = fs.readFileSync(BS3_BINARY);
+  if (isHostNativeBinary(current)) {
+    bs3Snapshot = current;
+  }
+}
+
+function restoreHostNativeDeps() {
+  if (!crossBuild) return;
+  const afterBuild = fs.existsSync(BS3_BINARY) ? fs.readFileSync(BS3_BINARY) : null;
+  if (isHostNativeBinary(afterBuild)) return;
+  if (bs3Snapshot) {
+    // try/catch so a failed write-back (e.g. build/Release wiped by a failed
+    // cross-build) can't mask the original build error thrown past the finally.
+    try {
+      fs.writeFileSync(BS3_BINARY, bs3Snapshot);
+      console.log('\n→ Restored host better-sqlite3 binary (was replaced by cross-build)\n');
+      return;
+    } catch (err) {
+      console.error(`Warning: could not write back the snapshotted binary (${err.message})`);
+    }
+  }
+  console.log('\n→ Rebuilding native deps for the host platform\n');
+  try {
+    // Same command as our postinstall; electron-builder is a declared devDependency.
+    execSync('npx electron-builder install-app-deps', { stdio: 'inherit' });
+  } catch {
+    console.error(
+      '\nERROR: could not restore host better-sqlite3 binary after cross-build. ' +
+        'Local dev is broken until you run `npx electron-builder install-app-deps`.\n'
+    );
+    process.exitCode = 1;
+  }
+}
+
 console.log(`\n→ Running: ${cmd}\n`);
-execSync(cmd, { stdio: 'inherit', env });
+try {
+  execSync(cmd, { stdio: 'inherit', env });
+} finally {
+  restoreHostNativeDeps();
+}

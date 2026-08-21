@@ -29,6 +29,7 @@ import {
   isEnsBackedDisplay,
   isSupportedEnsTransport,
 } from './url-utils.js';
+import { buildSearchUrl } from './search-utils.js';
 import {
   getActiveWebview,
   getActiveTab,
@@ -54,15 +55,28 @@ import {
   parseEnsInput,
   buildInternalPageUrl,
 } from './page-urls.js';
+import { isTezosDomainHost } from './origin-utils.js';
+import {
+  shouldRecordHistory,
+  shouldCacheFavicons,
+  shouldLearnAutocomplete,
+} from './private-mode.js';
 import { parseEthereumUri } from './ethereum-uri.js';
 import { openSendFlow } from './wallet-ui.js';
 import { walletState } from './wallet/wallet-state.js';
 import { formatWeiToDecimal } from './wallet/send.js';
 import { startIpfsProgressStatus, stopIpfsProgressStatus } from './ipfs-progress-status.js';
 import { TOOLTIP_HOVER_DELAY_MS } from './hover-tooltip.js';
+import { matchesShortcut } from './shortcuts.js';
 
 // Helper to get active tab's navigation state (with fallback to empty object)
 const getNavState = () => getActiveTabState() || {};
+
+// Maximum number of name-resolution hops a single navigation may take before
+// loadTarget gives up. One hop is the normal case (name → content URI); a
+// second is slack for a legitimate redirect. Anything beyond that is a
+// resolve→navigate loop, not a real site.
+const MAX_NAME_RESOLUTION_DEPTH = 3;
 
 const isIpfsProgressUrl = (value) => {
   const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
@@ -71,9 +85,46 @@ const isIpfsProgressUrl = (value) => {
 
 const nameSystemLabelForName = (name = '') => {
   const lower = String(name).toLowerCase();
+  if (lower.endsWith('.tez')) return 'Tezos Domains';
   if (lower.endsWith('.wei')) return 'WNS';
   if (lower.endsWith('.gwei')) return 'GNS';
   return 'ENS';
+};
+
+const resolverForNameInput = (input) =>
+  input?.system === 'tezos' ? electronAPI?.resolveTezosDomain : electronAPI?.resolveEns;
+
+const appendPublishedWebsiteSuffix = (targetUri, suffix = '') => {
+  if (!suffix) return targetUri;
+  try {
+    const target = new URL(targetUri);
+    const requested = new URL(suffix, 'https://name.invalid/');
+    if (suffix.startsWith('/')) {
+      const basePath = target.pathname === '/' ? '' : target.pathname.replace(/\/$/, '');
+      target.pathname = `${basePath}${requested.pathname}`;
+    }
+    // Only override query/fragment the suffix actually carries, so a
+    // published content URL like `…/page?v=2` keeps its query when the
+    // address bar appends a bare path.
+    if (requested.search) target.search = requested.search;
+    if (requested.hash) target.hash = requested.hash;
+    return target.toString();
+  } catch {
+    return `${targetUri.replace(/\/+$/, '')}${suffix}`;
+  }
+};
+
+const invalidateContentName = (input) => {
+  if (!input?.name) return;
+  if (input.system === 'tezos') {
+    electronAPI?.invalidateTezosDomain?.(input.name).catch((err) => {
+      pushDebug(`[Tezos Domains] cache invalidation failed: ${err?.message || err}`);
+    });
+    return;
+  }
+  electronAPI?.invalidateEnsContent?.(input.name).catch((err) => {
+    pushDebug(`[ENS] invalidateEnsContent failed: ${err?.message || err}`);
+  });
 };
 
 // Experimental opt-in (Settings → Experimental, default off). Mirrors the
@@ -95,26 +146,50 @@ const shouldShowIpfsProgress = ({ data = {}, tab = null, navState = null } = {})
   return candidates.some(isIpfsProgressUrl);
 };
 
+// The 64- or 128-char hex Swarm reference (unencrypted / encrypted). Single
+// source for the gateway-URL helpers below so the patterns can't drift.
+const BZZ_REF_SOURCE = '[a-fA-F0-9]{64}(?:[a-fA-F0-9]{64})?';
+// `/bzz/<ref>` appearing anywhere in a gateway URL string — deliberately
+// unanchored so gateways mounted under a path prefix still match.
+const BZZ_REF_ANYWHERE_RE = new RegExp(`/bzz/(${BZZ_REF_SOURCE})`);
+// A gateway URL pathname of exactly `/bzz/<ref><in-manifest path>`.
+const BZZ_GATEWAY_PATHNAME_RE = new RegExp(`^/bzz/(${BZZ_REF_SOURCE})(/.*)?$`);
+
 // Extract the bzz reference (64- or 128-char hex) from a Bee gateway URL.
 const extractBzzHash = (gatewayUrl) => {
-  const match = /\/bzz\/([a-fA-F0-9]{64}(?:[a-fA-F0-9]{64})?)/.exec(gatewayUrl || '');
+  const match = BZZ_REF_ANYWHERE_RE.exec(gatewayUrl || '');
   return match ? match[1] : null;
 };
+
+// Parse a Bee gateway URL whose pathname is `/bzz/<ref><path>` into its
+// reference, in-manifest path ('' at the manifest root), query, and
+// fragment. Returns null when the URL doesn't have that shape.
+const parseBzzGatewayUrl = (gatewayUrl) => {
+  try {
+    const parsed = new URL(gatewayUrl || '');
+    const match = BZZ_GATEWAY_PATHNAME_RE.exec(parsed.pathname);
+    if (!match) return null;
+    return { hash: match[1], path: match[2] || '', search: parsed.search, fragment: parsed.hash };
+  } catch {
+    return null;
+  }
+};
+
+// Extract the in-manifest path (sans query/fragment) that follows the bzz
+// reference in a Bee gateway URL, e.g. `<bee-api>/bzz/<hash>/index.html?q`
+// → `/index.html`. Returns '' when the URL targets the manifest root. The
+// probe must HEAD the exact resource the navigation will load: a manifest
+// with no root index document 404s on the bare hash forever, which the
+// probe can't tell apart from a still-warming node (see swarm-probe.js).
+const extractBzzPath = (gatewayUrl) => parseBzzGatewayUrl(gatewayUrl)?.path || '';
 
 // Convert a Bee gateway URL (<bee-api>/bzz/<hash>/path?q#h) into
 // the `bzz://<hash>/path?q#h` form that Chromium routes through the custom
 // protocol handler. Falls back to the gateway URL if the shape doesn't match.
 const gatewayUrlToBzzUrl = (gatewayUrl) => {
-  try {
-    const parsed = new URL(gatewayUrl);
-    const match = /^\/bzz\/([a-fA-F0-9]{64}(?:[a-fA-F0-9]{64})?)(\/.*)?$/.exec(parsed.pathname);
-    if (!match) return gatewayUrl;
-    const [, hash, tail] = match;
-    const path = tail || '/';
-    return `bzz://${hash}${path}${parsed.search}${parsed.hash}`;
-  } catch {
-    return gatewayUrl;
-  }
+  const parsed = parseBzzGatewayUrl(gatewayUrl);
+  if (!parsed) return gatewayUrl;
+  return `bzz://${parsed.hash}${parsed.path || '/'}${parsed.search}${parsed.fragment}`;
 };
 
 // Build a file:// URL for error.html. `targetUrl` is the user-facing URL
@@ -426,6 +501,7 @@ const toggleTrustPopover = () => {
   const title = document.getElementById('trust-popover-title');
   const statusEl = document.getElementById('trust-popover-status');
   const trustFieldsEl = document.getElementById('trust-popover-trust-fields');
+  const contentEl = document.getElementById('trust-popover-content');
   const contentFieldsEl = document.getElementById('trust-popover-content-fields');
 
   if (title) title.textContent = name;
@@ -565,6 +641,7 @@ const toggleTrustPopover = () => {
   if (contentFieldsEl) {
     contentFieldsEl.replaceChildren(...contentRows.map(buildRow));
   }
+  if (contentEl) contentEl.hidden = contentRows.length === 0;
 
   // Record the identity of what's now rendered before we flip the
   // popover open — `setTrustPopoverOpen(true)` doesn't clear it, only
@@ -791,6 +868,11 @@ const handleEthereumUri = (value) => {
 const startBzzNavigationWithProbe = (webview, target, navState, displayUrl) => {
   const gatewayUrl = target.targetUrl;
   const hash = target.swarmHash || extractBzzHash(gatewayUrl);
+  // Probe the same in-manifest path the navigation will load. The gateway
+  // URL carries the full path in both the direct-hash and ENS-host cases
+  // (the ENS resolution feeds `bzz://<hash><suffix>` back through
+  // formatBzzUrl), so extracting it here covers both.
+  const probePath = extractBzzPath(gatewayUrl);
   const errorDisplayUrl = displayUrl || target.displayValue || gatewayUrl;
 
   if (!hash || !electronAPI?.startSwarmProbe) {
@@ -821,7 +903,7 @@ const startBzzNavigationWithProbe = (webview, target, navState, displayUrl) => {
   pushDebug(`[Swarm] Probing ${gatewayUrl} before navigating`);
 
   electronAPI
-    .startSwarmProbe(hash)
+    .startSwarmProbe(hash, probePath)
     .then((startResult) => {
       if (!startResult || startResult.success === false) {
         const message = startResult?.error?.message || 'failed to start probe';
@@ -988,7 +1070,8 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
     // If inner URL is a dweb URL, we need to resolve it first
     // Check for ENS
     const ens = parseEnsInput(innerUrl);
-    if (ens && electronAPI?.resolveEns) {
+    const resolveName = resolverForNameInput(ens);
+    if (ens && resolveName) {
       const systemLabel = nameSystemLabelForName(ens.name);
       const capturedWebview = webview;
       // Tab id pinned for the duration of this async resolution so a tab
@@ -1003,12 +1086,11 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
       // background-tab dispatch restores the resolved value rather than
       // clobbering the foreground tab.
       setAddressDisplayForTab(
-        `view-source:ens://${ens.name}${ens.suffix || ''}`,
+        `view-source:${ens.system === 'tezos' ? '' : 'ens://'}${ens.name}${ens.suffix || ''}`,
         capturedTabId,
         { isViewingSourceForTab: true }
       );
-      electronAPI
-        .resolveEns(ens.name)
+      resolveName(ens.name)
         .then((result) => {
           setLoading(false, capturedTabId);
           if (!result || result.type !== 'ok') {
@@ -1104,8 +1186,23 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
 
   // Try Ethereum names first (legacy ens:// plus supported name suffixes)
   const ens = parseEnsInput(value);
-  if (ens && electronAPI?.resolveEns) {
+  const resolveName = resolverForNameInput(ens);
+  if (ens && resolveName) {
     const systemLabel = nameSystemLabelForName(ens.name);
+    // Defence in depth against a resolve→navigate loop. A name record is
+    // attacker-controlled: if it points back at another dweb name (e.g. a
+    // .tez whose website record is `ipns://self.tez`) the recursive
+    // loadTarget below re-enters this branch and never terminates. The
+    // resolvers reject name-hosted records at the source; this bounds the
+    // renderer regardless of what a resolver hands back.
+    const resolutionDepth = options.nameResolutionDepth || 0;
+    if (resolutionDepth >= MAX_NAME_RESOLUTION_DEPTH) {
+      pushDebug(
+        `${systemLabel} resolution loop detected for ${ens.name} (depth ${resolutionDepth}) — aborting`
+      );
+      alert(`${systemLabel} name ${ens.name} resolves in a loop. Navigation aborted.`);
+      return;
+    }
     // Capture the webview reference before async operation to prevent loading in wrong tab
     const capturedWebview = webview;
     // Capture the tab id too so async callbacks can route per-tab UI
@@ -1142,8 +1239,7 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
         alert(alertMessage);
       }
     };
-    electronAPI
-      .resolveEns(ens.name)
+    resolveName(ens.name)
       .then((result) => {
         setLoading(false, capturedTabId);
         if (!result) {
@@ -1185,6 +1281,36 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
             `${systemLabel} resolution failed for ${ens.name}: ${reason}`,
             `${systemLabel} resolution failed for ${ens.name}: ${reason}`
           );
+          return;
+        }
+
+        const isExternalTezosWebsite =
+          ens.system === 'tezos' && (result.protocol === 'http' || result.protocol === 'https');
+        if (isExternalTezosWebsite) {
+          if (assertedTransport) {
+            failEnsResolution(
+              `${systemLabel} transport mismatch for ${ens.name}: asserted ${assertedTransport}, got ${result.protocol}`,
+              `${systemLabel} name ${ens.name} resolves to ${result.protocol}, not ${assertedTransport}.`
+            );
+            return;
+          }
+          const targetUri = result.redirect
+            ? result.uri
+            : appendPublishedWebsiteSuffix(result.uri, ens.suffix);
+          if (
+            result.trust?.level === 'unverified'
+            && state.blockUnverifiedEns
+            && !options.allowUnverifiedOnce
+          ) {
+            capturedWebview.loadURL(
+              buildInternalPageUrl('ens-unverified.html', { name: ens.name, uri: targetUri })
+            );
+            return;
+          }
+          pushDebug(`${systemLabel} resolved: ${ens.name} -> ${targetUri}`);
+          loadTarget(targetUri, displayOverride || targetUri, capturedWebview, {
+            nameResolutionDepth: resolutionDepth + 1,
+          });
           return;
         }
 
@@ -1248,11 +1374,12 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
         // rather than the resolved CID/hash. For Swarm the probe still
         // needs the actual hash to gate navigation on Bee warmth, so we
         // pass it separately as `swarmHash`.
-        let innerOptions = {};
+        const innerOptions = { nameResolutionDepth: resolutionDepth + 1 };
         if (result.protocol === 'bzz') {
-          innerOptions = { bzzLoadUrl: transportDisplay, swarmHash: result.decoded };
+          innerOptions.bzzLoadUrl = transportDisplay;
+          innerOptions.swarmHash = result.decoded;
         } else if (result.protocol === 'ipfs' || result.protocol === 'ipns') {
-          innerOptions = { ipfsLoadUrl: transportDisplay };
+          innerOptions.ipfsLoadUrl = transportDisplay;
         }
 
         // Pass captured webview to ensure we load in the correct tab
@@ -1482,6 +1609,17 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
     return;
   }
 
+  // Fall back to web search: every protocol matcher above (view-source,
+  // freedom://, ENS, rad, ipfs/ipns, bzz/hash/domain, http) has rejected the
+  // input, so treat it as a query for the user's search provider. The
+  // recursive call routes the built https URL through the HTTP branch.
+  const searchUrl = buildSearchUrl(value, state.searchProvider, state.customSearchProviders);
+  if (searchUrl) {
+    pushDebug(`[AddressBar] Searching for input via ${searchUrl}`);
+    loadTarget(searchUrl, null, webview);
+    return;
+  }
+
   pushDebug('Ignoring empty input or invalid URL.');
 };
 
@@ -1545,14 +1683,6 @@ export const loadHomePage = () => {
 // re-resolves rather than returning the cached result. Fire-and-forget IPC —
 // the subsequent `loadTarget` call kicks off a fresh `resolveEns` that misses
 // the now-empty cache.
-const invalidateEnsContentForHardReload = (ensName) => {
-  if (!ensName || !electronAPI?.invalidateEnsContent) return;
-  pushDebug(`Hard reload: invalidating ENS contenthash cache for ${ensName}`);
-  electronAPI.invalidateEnsContent(ensName).catch((err) => {
-    pushDebug(`[ENS] invalidateEnsContent failed: ${err?.message || err}`);
-  });
-};
-
 // Shared error-page retry logic used by both reload variants and the reload button
 const retryErrorPageOrReload = (webview, hard) => {
   const current = webview.getURL();
@@ -1563,7 +1693,7 @@ const retryErrorPageOrReload = (webview, hard) => {
     // rather than returning the cached contenthash from the failed attempt.
     if (hard) {
       const errorEns = parseEnsInput(originalUrl);
-      if (errorEns) invalidateEnsContentForHardReload(errorEns.name);
+      if (errorEns) invalidateContentName(errorEns);
     }
     pushDebug(`Retrying original URL from error page: ${originalUrl}`);
     loadTarget(originalUrl);
@@ -1597,8 +1727,8 @@ const retryErrorPageOrReload = (webview, hard) => {
   const committedDisplay = (navState.committedDisplayUrl || '').trim();
   const ensInput = committedDisplay ? parseEnsInput(committedDisplay) : null;
   if (ensInput) {
-    if (hard) invalidateEnsContentForHardReload(ensInput.name);
-    pushDebug(`${hard ? 'Hard reload' : 'Reload'} re-resolving ENS: ${committedDisplay}`);
+    if (hard) invalidateContentName(ensInput);
+    pushDebug(`${hard ? 'Hard reload' : 'Reload'} re-resolving ${nameSystemLabelForName(ensInput.name)}: ${committedDisplay}`);
     loadTarget(committedDisplay);
     return;
   }
@@ -2043,9 +2173,18 @@ export const initNavigation = () => {
 
           // Update favicon for current tab (always, not just when recording history)
           // Skip internal pages and view-source pages (view-source should use default globe icon)
+          // PRIVATE MODE GUARD (favicons): private windows never fetch-and-
+          // cache favicons — shouldCacheFavicons() gates the whole block,
+          // including the cached-icon read at the end of it. So a private
+          // tab shows the default globe after load even when the icon is
+          // already cached, and only picks it up on tab switch (which has
+          // its own ungated updateTabFavicon call). That is deliberate: the
+          // read is harmless, but keeping the guard as one all-or-nothing
+          // block is what makes it auditable. Failing toward privacy.
           if (
             activeTab &&
             displayUrl &&
+            shouldCacheFavicons() &&
             !displayUrl.startsWith('freedom://') &&
             !displayUrl.startsWith('view-source:')
           ) {
@@ -2068,7 +2207,13 @@ export const initNavigation = () => {
           }
 
           // Record history (only once per URL)
-          if (isHistoryRecordable(displayUrl, internalUrl) && displayUrl !== lastRecordedUrl) {
+          // PRIVATE MODE GUARD (history): navigations in private windows
+          // are never recorded (main-process twin: src/main/history.js).
+          if (
+            shouldRecordHistory() &&
+            isHistoryRecordable(displayUrl, internalUrl) &&
+            displayUrl !== lastRecordedUrl
+          ) {
             const title = activeTab?.title || '';
             const protocol = detectProtocol(displayUrl);
 
@@ -2080,8 +2225,13 @@ export const initNavigation = () => {
               })
               .then(() => {
                 pushDebug(`[History] Recorded: ${displayUrl}`);
-                // Notify autocomplete to refresh cache
-                onHistoryRecorded?.();
+                // PRIVATE MODE GUARD (autocomplete): the suggestion cache
+                // only learns from non-private navigation. Unreachable in
+                // private windows (no history write) — kept explicit so the
+                // learning path is guarded even if the write path changes.
+                if (shouldLearnAutocomplete()) {
+                  onHistoryRecorded?.();
+                }
               })
               .catch((err) => {
                 console.error('[History] Failed to record:', err);
@@ -2170,7 +2320,11 @@ export const initNavigation = () => {
           const name = data.args?.[0]?.name;
           if (name) {
             pushDebug(`ENS continue-unverified requested for ${name}`);
-            loadTarget('ens://' + name, null, webview, { allowUnverifiedOnce: true });
+            // `ens://` is the legacy Ethereum-name form; parseEnsInput
+            // deliberately rejects `ens://<name>.tez`, so Tezos names have to
+            // go back through loadTarget bare or the continue is a no-op.
+            const target = isTezosDomainHost(name) ? name : 'ens://' + name;
+            loadTarget(target, null, webview, { allowUnverifiedOnce: true });
           }
         } else if (data.channel === 'ens:open-settings') {
           loadTarget('freedom://settings', null, webview);
@@ -2297,6 +2451,9 @@ export const initNavigation = () => {
         updateBookmarkButtonVisibility();
         updateGithubBridgeIcon();
         updateProtocolIcon();
+        // Notify other modules that the active tab changed (permission
+        // prompt dismissal + address-bar permission indicator refresh).
+        document.dispatchEvent(new CustomEvent('active-tab-changed'));
         break;
     }
   });
@@ -2306,27 +2463,17 @@ export const initNavigation = () => {
     toggleBookmarkBar();
   });
 
-  // Keyboard shortcuts
+  // Keyboard shortcuts — resolved through the shared shortcut registry so
+  // user remaps apply live. (Escape stays hardcoded: it's contextual
+  // stop-loading behavior, not a remappable shortcut.)
   window.addEventListener('keydown', (event) => {
-    // Cmd+Shift+R / Ctrl+Shift+R - Hard Reload (check first, before soft reload)
-    if (
-      (event.metaKey || event.ctrlKey) &&
-      event.shiftKey &&
-      event.key &&
-      event.key.toLowerCase() === 'r' &&
-      !event.altKey
-    ) {
+    // Hard reload (check first, before soft reload)
+    if (matchesShortcut(event, 'page.hardReload')) {
       event.preventDefault();
       hardReloadPage();
     }
-    // Cmd+R / Ctrl+R - Reload (soft, uses cache)
-    else if (
-      (event.metaKey || event.ctrlKey) &&
-      !event.shiftKey &&
-      event.key &&
-      event.key.toLowerCase() === 'r' &&
-      !event.altKey
-    ) {
+    // Reload (soft, uses cache)
+    else if (matchesShortcut(event, 'page.reload')) {
       event.preventDefault();
       reloadPage();
     } else if (event.key === 'Escape') {

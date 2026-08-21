@@ -227,7 +227,7 @@ describe('navigation-utils', () => {
     // copy / ordering regression in this security-relevant surface is
     // caught here rather than at review time.
 
-    test('verified with full quorum: lists quorum, all RPCs, block, network, hash', async () => {
+    test('verified with full quorum: lists shared summary, block, RPCs, network, hash', async () => {
       const { buildTrustRows } = await loadNavigationUtils();
 
       const result = buildTrustRows({
@@ -242,7 +242,9 @@ describe('navigation-utils', () => {
 
       expect(result.status).toBe('ENS resolution verified');
       expect(result.trustRows).toEqual([
-        { label: 'RPC Quorum', display: '3/3', copy: '' },
+        { label: 'Verified by', display: '3 of 3 public RPCs', copy: '' },
+        { label: 'Evidence', display: 'Matching RPC responses', copy: '' },
+        { label: 'Block', display: '25030249', copy: '25030249' },
         {
           label: 'RPC 1',
           display: 'ethereum.publicnode.com',
@@ -261,7 +263,6 @@ describe('navigation-utils', () => {
           copy: 'cloudflare-eth.com',
           autoFit: 'cloudflare-eth.com',
         },
-        { label: 'Block', display: '25030249', copy: '25030249' },
       ]);
       expect(result.contentRows).toEqual([
         { label: 'Network', display: 'IPFS', copy: '' },
@@ -292,14 +293,15 @@ describe('navigation-utils', () => {
 
       expect(result.status).toBe('ENS resolution verified');
       expect(result.trustRows.map((r) => r.label)).toEqual([
-        'RPC Quorum',
+        'Verified by',
+        'Evidence',
+        'Block',
         'RPC 1',
         'RPC 2',
-        'Block',
       ]);
       expect(result.trustRows[0]).toEqual({
-        label: 'RPC Quorum',
-        display: '2/3',
+        label: 'Verified by',
+        display: '2 of 3 public RPCs',
         copy: '',
       });
     });
@@ -338,7 +340,7 @@ describe('navigation-utils', () => {
       expect(result.status).toBe('GNS resolution verified');
     });
 
-    test('user-configured: skips quorum and labels the single RPC "Your RPC"', async () => {
+    test('user-configured: uses the shared resolution summary and identifies its server', async () => {
       const { buildTrustRows } = await loadNavigationUtils();
 
       const result = buildTrustRows({
@@ -352,17 +354,26 @@ describe('navigation-utils', () => {
       });
 
       expect(result.status).toBe('Resolved with your configured RPC');
-      // No "RPC Quorum: 1/1" — degenerate single-RPC case is suppressed.
-      expect(result.trustRows.map((r) => r.label)).toEqual(['Your RPC', 'Block']);
+      expect(result.trustRows.map((r) => r.label)).toEqual([
+        'Resolved by',
+        'Evidence',
+        'Block',
+        'Server',
+      ]);
       expect(result.trustRows[0]).toEqual({
-        label: 'Your RPC',
+        label: 'Resolved by',
+        display: 'Your configured RPC',
+        copy: '',
+      });
+      expect(result.trustRows[3]).toEqual({
+        label: 'Server',
         display: 'rpc.mycompany.com',
         copy: 'rpc.mycompany.com',
         autoFit: 'rpc.mycompany.com',
       });
     });
 
-    test('unverified: omits quorum row when only one RPC was queried', async () => {
+    test('unverified: explains the single-source evidence without claiming verification', async () => {
       const { buildTrustRows } = await loadNavigationUtils();
 
       const result = buildTrustRows({
@@ -376,7 +387,12 @@ describe('navigation-utils', () => {
       });
 
       expect(result.status).toBe('ENS resolution not verified');
-      expect(result.trustRows.map((r) => r.label)).toEqual(['RPC 1', 'Block']);
+      expect(result.trustRows.map((r) => r.label)).toEqual([
+        'Resolved by',
+        'Evidence',
+        'Block',
+        'RPC 1',
+      ]);
     });
 
     test('conflict with one dissenter: uses singular "Dissenting RPC" label', async () => {
@@ -395,10 +411,11 @@ describe('navigation-utils', () => {
 
       expect(result.status).toBe('Verification failed: RPCs disagree');
       expect(result.trustRows.map((r) => r.label)).toEqual([
-        'RPC Quorum',
+        'Checked by',
+        'Evidence',
+        'Block',
         'RPC 1',
         'Dissenting RPC',
-        'Block',
       ]);
     });
 
@@ -416,13 +433,67 @@ describe('navigation-utils', () => {
       });
 
       expect(result.trustRows.map((r) => r.label)).toEqual([
-        'RPC Quorum',
+        'Checked by',
+        'Evidence',
         'Dissenting RPC 1',
         'Dissenting RPC 2',
       ]);
     });
 
-    test('colibri-verified: shows neutral status with method/proof/server rows', async () => {
+    test('myotis-verified: uses the shared verification summary without a server row', async () => {
+      const { buildTrustRows } = await loadNavigationUtils();
+
+      const result = buildTrustRows({
+        level: 'verified',
+        trust: {
+          method: 'myotis',
+          finality: 'finalized',
+          proof: 'P2P light client (beacon-finalized, sync-committee proof)',
+          block: 25633314,
+          agreed: ['myotis-p2p'],
+          queried: ['myotis-p2p'],
+        },
+        uri: 'ipfs://QmPSYsfe8CVrBMrbh3q8qjzQYnAmDX8H4xkERzvFBaYkMS',
+      });
+
+      expect(result.status).toBe('ENS resolution verified');
+      expect(result.trustRows).toEqual([
+        { label: 'Verified by', display: 'Myotis light client', copy: '' },
+        { label: 'Evidence', display: 'Beacon-finalized proof', copy: '' },
+        { label: 'Block', display: '25633314', copy: '25633314' },
+      ]);
+      expect(result.contentRows[0]).toEqual({ label: 'Network', display: 'IPFS', copy: '' });
+    });
+
+    test('myotis optimistic: shows verified evidence while disclosing non-finality', async () => {
+      const { buildTrustRows } = await loadNavigationUtils();
+
+      const result = buildTrustRows({
+        level: 'verified',
+        trust: {
+          method: 'myotis',
+          finality: 'optimistic',
+          proof: 'P2P light client (optimistic beacon root — attested, not finalized)',
+          block: 25633315,
+          agreed: ['myotis-p2p'],
+          queried: ['myotis-p2p'],
+        },
+        uri: 'bzz://abc123',
+      });
+
+      expect(result.status).toBe('ENS resolution verified');
+      expect(result.trustRows).toEqual([
+        { label: 'Verified by', display: 'Myotis light client', copy: '' },
+        {
+          label: 'Evidence',
+          display: 'Optimistic beacon proof (not finalized)',
+          copy: '',
+        },
+        { label: 'Block', display: '25633315', copy: '25633315' },
+      ]);
+    });
+
+    test('colibri-verified: uses the shared verification summary and identifies its server', async () => {
       const { buildTrustRows } = await loadNavigationUtils();
 
       const result = buildTrustRows({
@@ -438,10 +509,9 @@ describe('navigation-utils', () => {
       });
 
       expect(result.status).toBe('ENS resolution verified');
-      // No RPC Quorum / per-RPC rows — the prover is not a quorum member.
       expect(result.trustRows).toEqual([
-        { label: 'Method', display: 'Colibri', copy: '' },
-        { label: 'Proof', display: 'ZK sync-committee proof', copy: '' },
+        { label: 'Verified by', display: 'Colibri', copy: '' },
+        { label: 'Evidence', display: 'ZK sync-committee proof', copy: '' },
         {
           label: 'Server',
           display: 'mainnet1.colibri-proof.tech',
@@ -461,7 +531,7 @@ describe('navigation-utils', () => {
       ]);
     });
 
-    test('colibri-verified without prover field: still uses neutral status and method row', async () => {
+    test('colibri-verified without prover or proof still uses the shared summary', async () => {
       const { buildTrustRows } = await loadNavigationUtils();
 
       const result = buildTrustRows({
@@ -471,7 +541,10 @@ describe('navigation-utils', () => {
       });
 
       expect(result.status).toBe('ENS resolution verified');
-      expect(result.trustRows).toEqual([{ label: 'Method', display: 'Colibri', copy: '' }]);
+      expect(result.trustRows).toEqual([
+        { label: 'Verified by', display: 'Colibri', copy: '' },
+        { label: 'Evidence', display: 'Cryptographic proof', copy: '' },
+      ]);
     });
 
     test('returns null status for an unknown trust level', async () => {
@@ -573,7 +646,11 @@ describe('navigation-utils', () => {
         uri: 'ipfs://QmHash',
       });
 
-      expect(result.trustRows.map((r) => r.label)).toEqual(['RPC 1']);
+      expect(result.trustRows.map((r) => r.label)).toEqual([
+        'Verified by',
+        'Evidence',
+        'RPC 1',
+      ]);
     });
 
     test('tolerates missing arrays and missing arguments', async () => {

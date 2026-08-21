@@ -28,7 +28,13 @@ const path = require('path');
 const fs = require('fs');
 const IPC = require('../../shared/ipc-channels');
 const { normalizeOrigin } = require('../../shared/origin-utils');
-const { getDerivedKeys, getPublisherKey, getDerivedWallets } = require('../identity-manager');
+const { withOriginLock } = require('./origin-mutation-lock');
+const {
+  getDerivedKeys,
+  getPublisherKey,
+  getDerivedWallets,
+  WALLET_TYPES,
+} = require('../identity-manager');
 const log = require('electron-log');
 
 const FEEDS_FILE = 'swarm-feeds.json';
@@ -41,12 +47,42 @@ const ETHEREUM_WALLET_ID_PREFIX = 'ethereum-wallet';
 
 let feedsCache = null;
 
+// Manifest-ownership hook, mirroring swarm-permissions.js. A permission
+// manifest can own the feed grant and the publisher identity of an origin;
+// when the *user* changes either by hand, that ownership has to be detached
+// or the manifest record keeps claiming the flag (Settings still reads
+// "feeds · allowed by manifest") and a later projection silently re-asserts
+// it. Manifest-sourced calls pass `{ source: 'manifest' }` and notify
+// nothing — they are the projection, not a user mutation.
+let manifestMutationListener = null;
+
+function onManifestMutation(listener) {
+  manifestMutationListener = listener;
+}
+
+function notifyManifestMutation(origin, projectionKey) {
+  manifestMutationListener?.(normalizeOrigin(origin), projectionKey);
+}
+
 class PreserveFeedStoreError extends Error {
   constructor(message, backupSuffix = 'unsupported') {
     super(message);
     this.preserveOriginal = true;
     this.backupSuffix = backupSuffix;
   }
+}
+
+/**
+ * Swarm feed/SOC signing needs a raw private key (see
+ * swarm-provider-ipc.js resolveSignerKey), which hardware accounts can
+ * never hand out — the device signs, it does not export. Such wallets are
+ * therefore not usable as publisher identities and must never be offered
+ * or persisted as one.
+ * @param {{type?: string}} wallet
+ * @returns {boolean}
+ */
+function isSwarmSignableWallet(wallet) {
+  return !!wallet && (wallet.type || WALLET_TYPES.MNEMONIC) === WALLET_TYPES.MNEMONIC;
 }
 
 function getFeedsPath() {
@@ -365,6 +401,8 @@ function saveFeeds() {
     fs.renameSync(tempPath, filePath);
   } catch (err) {
     log.error('[FeedStore] Failed to save feeds:', err.message);
+    feedsCache = null;
+    throw err;
   }
 }
 
@@ -527,7 +565,10 @@ async function enrichIdentityOwner(identity, options = {}) {
       label: wallet?.name || identity.label || getIdentityLabel('ethereum-wallet', null, identity.walletIndex),
       owner: wallet?.address || null,
       stored,
-      unavailable: !wallet,
+      // Hardware-backed accounts can't sign feeds; flag them so an entry
+      // persisted before this guard existed renders as unusable instead of
+      // failing with an opaque error on every feed write.
+      unavailable: !wallet || !isSwarmSignableWallet(wallet),
     };
   }
 
@@ -566,7 +607,7 @@ async function getOriginIdentityStateWithOwners(origin) {
 
   const knownIds = new Set(identities.map((identity) => identity.id));
   const wallets = await getDerivedWallets();
-  for (const wallet of wallets) {
+  for (const wallet of wallets.filter(isSwarmSignableWallet)) {
     const walletIdentity = createIdentity(
       'ethereum-wallet',
       null,
@@ -597,10 +638,22 @@ async function previewAppScopedIdentity(origin, options = {}) {
   };
 }
 
+// A manifest can own an origin's publisher identity (the `feeds`/`signing`
+// capabilities project it). Any user-driven change of the *active* identity
+// makes that ownership claim untrue, so it is reported like the other user
+// mutations. Only an actual switch counts — re-ensuring the identity that is
+// already active changes nothing to detach.
+function notifyIdentityChange(key, previousActiveId, source) {
+  if (source === 'manifest') return;
+  if (loadFeeds().origins[key]?.activeIdentityId === previousActiveId) return;
+  notifyManifestMutation(key, 'identity');
+}
+
 function createAppScopedIdentity(origin, options = {}) {
   const store = loadFeeds();
   const key = normalizeOrigin(origin);
   const entry = store.origins[key] || createOriginShell();
+  const previousActiveId = entry.activeIdentityId;
   const publisherKeyIndex = allocatePublisherKeyIndexInStore(store);
   const identity = createIdentity('app-scoped', publisherKeyIndex, Date.now(), options.label);
 
@@ -619,6 +672,7 @@ function createAppScopedIdentity(origin, options = {}) {
   store.origins[key] = entry;
   saveFeeds();
   log.info(`[FeedStore] Created app-scoped identity ${identity.id} for ${key}`);
+  notifyIdentityChange(key, previousActiveId, options.source);
   return getOriginEntry(origin);
 }
 
@@ -626,6 +680,7 @@ function ensureAntWalletIdentity(origin, options = {}) {
   const store = loadFeeds();
   const key = normalizeOrigin(origin);
   const entry = store.origins[key] || createOriginShell();
+  const previousActiveId = entry.activeIdentityId;
   const existing = entry.identities?.[BEE_WALLET_IDENTITY_ID];
   const identity = existing || createIdentity('bee-wallet', null, Date.now(), options.label);
 
@@ -644,6 +699,7 @@ function ensureAntWalletIdentity(origin, options = {}) {
   store.origins[key] = entry;
   saveFeeds();
   log.info(`[FeedStore] Ensured Ant wallet identity for ${key}`);
+  notifyIdentityChange(key, previousActiveId, options.source);
   return getOriginEntry(origin);
 }
 
@@ -656,10 +712,17 @@ async function ensureEthereumWalletIdentity(origin, walletIndex, options = {}) {
   if (!wallet) {
     throw new Error(`Wallet with index ${walletIndex} does not exist`);
   }
+  if (!isSwarmSignableWallet(wallet)) {
+    throw new Error(
+      'Hardware wallet accounts cannot be used as a Swarm publisher identity. '
+      + 'Choose an app-scoped identity or a wallet account held in this browser.'
+    );
+  }
 
   const store = loadFeeds();
   const key = normalizeOrigin(origin);
   const entry = store.origins[key] || createOriginShell();
+  const previousActiveId = entry.activeIdentityId;
   const identityId = getIdentityId('ethereum-wallet', null, walletIndex);
   const existing = entry.identities?.[identityId];
   const identity = existing || createIdentity('ethereum-wallet', null, Date.now(), wallet.name, walletIndex);
@@ -682,10 +745,11 @@ async function ensureEthereumWalletIdentity(origin, walletIndex, options = {}) {
   store.origins[key] = entry;
   saveFeeds();
   log.info(`[FeedStore] Ensured Ethereum wallet identity ${identity.id} for ${key}`);
+  notifyIdentityChange(key, previousActiveId, options.source);
   return getOriginEntry(origin);
 }
 
-function activateIdentity(origin, identityId) {
+function activateIdentity(origin, identityId, { source = 'user' } = {}) {
   const store = loadFeeds();
   const key = normalizeOrigin(origin);
   const entry = store.origins[key];
@@ -696,10 +760,12 @@ function activateIdentity(origin, identityId) {
     throw new Error(`Publisher identity not found: ${identityId}`);
   }
 
+  const previousActiveId = entry.activeIdentityId;
   entry.activeIdentityId = identityId;
   entry.identities[identityId].lastUsedAt = Date.now();
   saveFeeds();
   log.info(`[FeedStore] Activated identity ${identityId} for ${key}`);
+  notifyIdentityChange(key, previousActiveId, source);
   return getOriginEntry(origin);
 }
 
@@ -886,26 +952,30 @@ function hasFeedGrant(origin) {
 /**
  * Grant feed access for an origin. Called after the feed approval prompt.
  * @param {string} origin
+ * @param {{source?: string}} [options]
  */
-function grantFeedAccess(origin) {
+function grantFeedAccess(origin, { source = 'user' } = {}) {
   const store = loadFeeds();
   const key = normalizeOrigin(origin);
   if (!store.origins[key]) return;
   store.origins[key].feedGranted = true;
   saveFeeds();
+  if (source === 'user') notifyManifestMutation(key, 'feedGrant');
 }
 
 /**
  * Revoke feed access for an origin. Called on disconnect.
  * Identity metadata (identityMode, publisherKeyIndex, feeds) is preserved.
  * @param {string} origin
+ * @param {{source?: string}} [options]
  */
-function revokeFeedAccess(origin) {
+function revokeFeedAccess(origin, { source = 'user' } = {}) {
   const store = loadFeeds();
   const key = normalizeOrigin(origin);
   if (!store.origins[key]) return;
   store.origins[key].feedGranted = false;
   saveFeeds();
+  if (source === 'user') notifyManifestMutation(key, 'feedGrant');
 }
 
 /**
@@ -937,52 +1007,67 @@ function registerFeedStoreIpc() {
     return previewAppScopedIdentity(origin, options);
   });
 
+  // Everything arriving over IPC is a user action by definition: `source` is
+  // forced here so a renderer cannot pass `{ source: 'manifest' }` and mutate
+  // an origin's identity without detaching the manifest's claim on it.
   ipcMain.handle(IPC.SWARM_CREATE_APP_SCOPED_IDENTITY, async (_event, origin, options = {}) => {
-    createAppScopedIdentity(origin, options);
-    return getOriginIdentityStateWithOwners(origin);
+    return withOriginLock(origin, async () => {
+      createAppScopedIdentity(origin, { ...options, source: 'user' });
+      return getOriginIdentityStateWithOwners(origin);
+    });
   });
 
   ipcMain.handle(IPC.SWARM_ENSURE_ANT_WALLET_IDENTITY, async (_event, origin, options = {}) => {
-    ensureAntWalletIdentity(origin, options);
-    return getOriginIdentityStateWithOwners(origin);
+    return withOriginLock(origin, async () => {
+      ensureAntWalletIdentity(origin, { ...options, source: 'user' });
+      return getOriginIdentityStateWithOwners(origin);
+    });
   });
 
   ipcMain.handle(IPC.SWARM_ENSURE_ETHEREUM_WALLET_IDENTITY, async (_event, origin, walletIndex, options = {}) => {
-    await ensureEthereumWalletIdentity(origin, walletIndex, options);
-    return getOriginIdentityStateWithOwners(origin);
+    return withOriginLock(origin, async () => {
+      await ensureEthereumWalletIdentity(origin, walletIndex, { ...options, source: 'user' });
+      return getOriginIdentityStateWithOwners(origin);
+    });
   });
 
   ipcMain.handle(IPC.SWARM_ACTIVATE_FEED_IDENTITY, async (_event, origin, identityId) => {
-    activateIdentity(origin, identityId);
-    return getOriginIdentityStateWithOwners(origin);
+    return withOriginLock(origin, async () => {
+      activateIdentity(origin, identityId);
+      return getOriginIdentityStateWithOwners(origin);
+    });
   });
 
   // Idempotent for identity: if the origin already has an identity mode set,
   // return the existing entry without allocating a new key index.
   // Always grants feed access (feedGranted = true).
   ipcMain.handle(IPC.SWARM_SET_FEED_IDENTITY, (_event, origin, identityMode) => {
-    if (!VALID_IDENTITY_MODES.includes(identityMode)) {
-      throw new Error(`Invalid identity mode: ${identityMode}. Must be one of: ${VALID_IDENTITY_MODES.join(', ')}`);
-    }
-
-    const existing = getOriginEntry(origin);
-    if (identityMode === 'ethereum-wallet' && !existing?.activeIdentityId) {
-      throw new Error('Use ensureEthereumWalletIdentity(origin, walletIndex) before setting ethereum-wallet feed identity');
-    }
-    if (existing && existing.activeIdentityId) {
-      // Identity already set — just re-grant feed access
-      if (!existing.feedGranted) {
-        grantFeedAccess(origin);
+    return withOriginLock(origin, () => {
+      if (!VALID_IDENTITY_MODES.includes(identityMode)) {
+        throw new Error(`Invalid identity mode: ${identityMode}. Must be one of: ${VALID_IDENTITY_MODES.join(', ')}`);
       }
-      return getOriginEntry(origin);
-    }
 
-    return setOriginEntry(origin, { identityMode, feedGranted: true });
+      const existing = getOriginEntry(origin);
+      if (identityMode === 'ethereum-wallet' && !existing?.activeIdentityId) {
+        throw new Error('Use ensureEthereumWalletIdentity(origin, walletIndex) before setting ethereum-wallet feed identity');
+      }
+      if (existing && existing.activeIdentityId) {
+        // Identity already set — just re-grant feed access
+        if (!existing.feedGranted) {
+          grantFeedAccess(origin);
+        }
+        return getOriginEntry(origin);
+      }
+
+      return setOriginEntry(origin, { identityMode, feedGranted: true });
+    });
   });
 
   ipcMain.handle(IPC.SWARM_REVOKE_FEED_ACCESS, (_event, origin) => {
-    revokeFeedAccess(origin);
-    return true;
+    return withOriginLock(origin, () => {
+      revokeFeedAccess(origin);
+      return true;
+    });
   });
 
   log.info('[FeedStore] IPC handlers registered');
@@ -1013,6 +1098,7 @@ module.exports = {
   hasFeedGrant,
   grantFeedAccess,
   revokeFeedAccess,
+  onManifestMutation,
   registerFeedStoreIpc,
   VALID_IDENTITY_MODES,
   _resetCache,

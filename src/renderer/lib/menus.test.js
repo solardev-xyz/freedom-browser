@@ -81,6 +81,10 @@ const loadMenusModule = async ({ platform = 'darwin', webview } = {}) => {
     startIpfsInfoPolling: jest.fn(),
     stopIpfsInfoPolling: jest.fn(),
   };
+  const myotisUiMocks = {
+    startMyotisInfoPolling: jest.fn(),
+    stopMyotisInfoPolling: jest.fn(),
+  };
   const radicleUiMocks = {
     startRadicleInfoPolling: jest.fn(),
     stopRadicleInfoPolling: jest.fn(),
@@ -132,6 +136,7 @@ const loadMenusModule = async ({ platform = 'darwin', webview } = {}) => {
   jest.doMock('./menu-backdrop.js', () => backdropMocks);
   jest.doMock('./ant-ui.js', () => beeUiMocks);
   jest.doMock('./ipfs-ui.js', () => ipfsUiMocks);
+  jest.doMock('./myotis-ui.js', () => myotisUiMocks);
   jest.doMock('./radicle-ui.js', () => radicleUiMocks);
 
   const menus = await import('./menus.js');
@@ -174,6 +179,7 @@ const loadMenusModule = async ({ platform = 'darwin', webview } = {}) => {
       backdropMocks,
       beeUiMocks,
       ipfsUiMocks,
+      myotisUiMocks,
       radicleUiMocks,
     },
   };
@@ -281,6 +287,7 @@ describe('menus', () => {
     expect(elements.beeMenuDropdown.classList.toggle).toHaveBeenCalledWith('open', true);
     expect(mocks.beeUiMocks.startAntInfoPolling).toHaveBeenCalled();
     expect(mocks.ipfsUiMocks.startIpfsInfoPolling).toHaveBeenCalled();
+    expect(mocks.myotisUiMocks.startMyotisInfoPolling).toHaveBeenCalled();
     expect(mocks.radicleUiMocks.startRadicleInfoPolling).toHaveBeenCalled();
     expect(mocks.backdropMocks.showMenuBackdrop).toHaveBeenCalled();
 
@@ -289,6 +296,7 @@ describe('menus', () => {
     expect(state.antMenuOpen).toBe(false);
     expect(mocks.beeUiMocks.stopAntInfoPolling).toHaveBeenCalled();
     expect(mocks.ipfsUiMocks.stopIpfsInfoPolling).toHaveBeenCalled();
+    expect(mocks.myotisUiMocks.stopMyotisInfoPolling).toHaveBeenCalled();
     expect(mocks.radicleUiMocks.stopRadicleInfoPolling).toHaveBeenCalled();
     expect(elements.beePeersCount.textContent).toBe('0');
     expect(elements.beeNetworkPeers.textContent).toBe('0');

@@ -178,15 +178,15 @@
 
 /* Trust details popover, anchored below the address bar when the shield
    is clicked. Populated by navigation.js from state.ensTrustByName.
-   Width / chrome match the nodes (.bee-dropdown) and hamburger
-   (.menu-dropdown) menus so all three feel like the same surface. */
+   Wider than the nodes and hamburger menus so verification evidence and
+   endpoint names remain readable without sacrificing the shared chrome. */
 .trust-popover {
   position: absolute;
   top: 100%;
   left: 0;
   margin-top: 6px;
-  width: 240px;
-  max-width: calc(100vw - 24px);
+  box-sizing: border-box;
+  width: min(420px, calc(100vw - 24px));
   background: var(--menu-bg);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -256,6 +256,17 @@
   /* Slightly dimmed so the status sentence above stays the strongest
      signal under the title. Mirrors .bee-info's 0.8 in the nodes menu. */
   opacity: 0.8;
+}
+
+.trust-popover-content {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.trust-popover-section-title {
+  font-size: 12px;
+  color: var(--text);
 }
 
 /* Each field row is split into a label span and a value span. The

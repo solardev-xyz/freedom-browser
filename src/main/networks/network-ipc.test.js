@@ -17,6 +17,7 @@ function loadNetworkIpc(options = {}) {
     upsertEndpointSource: jest.fn(() => ({ success: true })),
     removeEndpointSource: jest.fn(),
     restoreEndpointSource: jest.fn(),
+    resetEndpointSourceCoverage: jest.fn(() => ({ success: true })),
     addCustomChain: jest.fn(() => ({ success: true, chainId: '777' })),
     removeCustomChain: jest.fn(() => ({ success: true })),
     ...(options.registry || {}),
@@ -129,5 +130,17 @@ describe('network-ipc', () => {
     expect(ctx.providerManager.clearProviderCache).not.toHaveBeenCalled();
     expect(ctx.ensResolver.invalidateCachedProvider).not.toHaveBeenCalled();
     expect(ctx.send).not.toHaveBeenCalled();
+  });
+
+  test('reset-source-coverage refreshes downstream consumers', async () => {
+    const ctx = loadNetworkIpc();
+
+    await expect(
+      ctx.ipcMain.invoke('networks:reset-source-coverage', 'colibri-corpus', 1)
+    ).resolves.toEqual({ success: true });
+
+    expect(ctx.registry.resetEndpointSourceCoverage).toHaveBeenCalledWith('colibri-corpus', 1);
+    expect(ctx.providerManager.clearProviderCache).toHaveBeenCalled();
+    expect(ctx.ensResolver.invalidateCachedProvider).toHaveBeenCalled();
   });
 });

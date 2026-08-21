@@ -1,5 +1,5 @@
 /**
- * Service Registry - Central tracking of IPFS and Swarm node state
+ * Service Registry - Central tracking of node state
  *
  * This module provides a port-agnostic way for Freedom to access nodes.
  * All URL rewriting resolves through this registry.
@@ -27,6 +27,14 @@ const registry = {
     tempMessage: null,
     tempMessageTimeout: null,
   },
+  myotis: {
+    api: null,
+    gateway: null,
+    mode: MODE.NONE,
+    statusMessage: null,
+    tempMessage: null,
+    tempMessageTimeout: null,
+  },
   ant: {
     api: null, // e.g., 'http://127.0.0.1:11633'
     gateway: null, // Same as api for Ant/Bee-compatible HTTP
@@ -43,7 +51,35 @@ const registry = {
     tempMessage: null,
     tempMessageTimeout: null,
   },
+  tor: {
+    socks: null,      // e.g., '127.0.0.1:9150' (Arti SOCKS5 proxy)
+    mode: MODE.NONE,
+    statusMessage: null,
+    tempMessage: null,
+    tempMessageTimeout: null,
+  },
 };
+
+function createEmptyServiceState(service) {
+  if (service === 'tor') {
+    return {
+      socks: null,
+      mode: MODE.NONE,
+      statusMessage: null,
+      tempMessage: null,
+      tempMessageTimeout: null,
+    };
+  }
+
+  return {
+    api: null,
+    gateway: null,
+    mode: MODE.NONE,
+    statusMessage: null,
+    tempMessage: null,
+    tempMessageTimeout: null,
+  };
+}
 
 // Default ports
 const DEFAULTS = {
@@ -56,6 +92,10 @@ const DEFAULTS = {
   radicle: {
     httpPort: 8780,   // radicle-httpd port (avoids 8080 conflicts)
     p2pPort: 8776,    // radicle-node P2P port
+    fallbackRange: 10,
+  },
+  tor: {
+    socksPort: 19150, // Freedom-managed Arti SOCKS5 proxy; 9150 is treated as external
     fallbackRange: 10,
   },
 };
@@ -73,8 +113,10 @@ function getService(service) {
 function getRegistry() {
   return {
     ipfs: { ...registry.ipfs },
+    myotis: { ...registry.myotis },
     ant: { ...registry.ant },
     radicle: { ...registry.radicle },
+    tor: { ...registry.tor },
   };
 }
 
@@ -169,14 +211,7 @@ function clearService(service) {
     clearTimeout(registry[service].tempMessageTimeout);
   }
 
-  registry[service] = {
-    api: null,
-    gateway: null,
-    mode: MODE.NONE,
-    statusMessage: null,
-    tempMessage: null,
-    tempMessageTimeout: null,
-  };
+  registry[service] = createEmptyServiceState(service);
 
   broadcastRegistryUpdate();
 }
@@ -242,6 +277,13 @@ function getRadicleApiUrl() {
 }
 
 /**
+ * Get the Arti SOCKS proxy host:port (or default)
+ */
+function getTorSocksUrl() {
+  return registry.tor.socks || `127.0.0.1:${DEFAULTS.tor.socksPort}`;
+}
+
+/**
  * Register IPC handlers for service registry
  */
 function registerServiceRegistryIpc() {
@@ -267,6 +309,7 @@ module.exports = {
   getAntApiUrl,
   getAntGatewayUrl,
   getRadicleApiUrl,
+  getTorSocksUrl,
   broadcastRegistryUpdate,
   registerServiceRegistryIpc,
 };

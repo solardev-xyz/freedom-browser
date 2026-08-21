@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'unsafe-inline'; img-src 'self';"
+    />
+    <title>Private Browsing</title>
+    <style>
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        padding: 48px;
+        box-sizing: border-box;
+        /* Private windows keep dark styling in both OS themes — matches the
+           window chrome and signals the distinct mode at a glance. */
+        background: #241d31;
+        color: #c9c3d6;
+      }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        background: #3a2f52;
+        color: #cfc4ea;
+        border: 1px solid #55447a;
+        border-radius: 999px;
+        padding: 6px 14px;
+        font-size: 13px;
+        font-weight: 600;
+        letter-spacing: 0.03em;
+        margin-bottom: 24px;
+      }
+      h1 {
+        font-size: 28px;
+        margin: 0 0 12px;
+        color: #e6e1f0;
+      }
+      p.lead {
+        max-width: 640px;
+        line-height: 1.6;
+        margin: 0 0 32px;
+      }
+      .columns {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 24px;
+        max-width: 900px;
+      }
+      .card {
+        flex: 1 1 320px;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid #453a5e;
+        border-radius: 10px;
+        padding: 20px 24px;
+      }
+      .card h2 {
+        font-size: 15px;
+        margin: 0 0 12px;
+        color: #b9aede;
+      }
+      .card ul {
+        margin: 0;
+        padding-left: 18px;
+        line-height: 1.7;
+        font-size: 14px;
+      }
+      .card li {
+        margin-bottom: 6px;
+      }
+      .wallet-note {
+        max-width: 900px;
+        margin-top: 24px;
+        padding: 14px 18px;
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid #453a5e;
+        font-size: 14px;
+        line-height: 1.6;
+      }
+      .wallet-note strong {
+        color: #e6e1f0;
+      }
+    </style>
+  </head>
+  <body>
+    <span class="badge" data-test="private-page-badge">Private window</span>
+    <h1>You&rsquo;re browsing privately</h1>
+    <p class="lead">
+      Tabs in this window leave no trace in this profile: nothing you visit here is saved to
+      history, cookies and site data vanish when you close the window, and the address bar
+      won&rsquo;t learn from what you type.
+    </p>
+    <div class="columns">
+      <div class="card">
+        <h2>What this window protects</h2>
+        <ul>
+          <li>No browsing or search history is saved on this device</li>
+          <li>Cookies, logins, and site data are discarded when the window closes</li>
+          <li>Downloads disappear from the downloads list (files you saved stay on disk)</li>
+          <li>Site permissions you grant here last only until the window closes</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h2>What it does not protect</h2>
+        <ul>
+          <li>Websites you sign in to still know it&rsquo;s you</li>
+          <li>Your network provider, employer, or school can still see your traffic</li>
+          <li>Swarm, IPFS, and Radicle peers still see the requests your nodes make</li>
+          <li>Your IP address is still visible to every site and peer you connect to</li>
+        </ul>
+      </div>
+    </div>
+    <p class="wallet-note" data-test="private-wallet-note">
+      <strong>Wallet is disabled in private windows.</strong> Your identity and wallet are
+      persistent by design, so dApps opened here can&rsquo;t see <code>window.ethereum</code>,
+      <code>window.swarm</code>, or <code>window.radicle</code>, and pay-per-request (x402) content
+      won&rsquo;t unlock. Use a normal window for anything that needs your wallet or identity.
+    </p>
+  </body>
+</html>

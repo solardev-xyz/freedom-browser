@@ -1,4 +1,5 @@
 const log = require('electron-log');
+const path = require('path');
 
 // Detect environment safely (app.isPackaged is unavailable in test runners)
 let isPackaged = false;
@@ -16,6 +17,15 @@ if (isTestEnv) {
   log.transports.file.level = false;
   log.transports.console.level = process.env.DEBUG ? 'verbose' : false;
 } else {
+  // Keep E2E logs alongside the fixture's other per-run data. Electron's
+  // default logs path is independent of userData (for example,
+  // ~/Library/Logs/Freedom Dev on macOS), so redirect the file transport
+  // explicitly before its first write.
+  if (process.env.FREEDOM_TEST_USER_DATA) {
+    log.transports.file.resolvePathFn = () =>
+      path.join(process.env.FREEDOM_TEST_USER_DATA, 'logs', 'main.log');
+  }
+
   // File transport captures everything for post-mortem debugging
   log.transports.file.level = 'info';
 

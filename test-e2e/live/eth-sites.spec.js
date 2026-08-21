@@ -9,8 +9,9 @@
 //      shaped element exists in the active <webview>.
 //   5. Navigate to `vitalik.eth` (IPFS-hosted blog), assert an <h1>
 //      mentioning "Vitalik" exists in the active <webview>.
-//   6. Navigate to `wns.wei` (WNS-hosted site), assert it resolves through a
-//      supported name transport and the rendered page contains WNS/Wei content.
+//   6. Navigate to `meinhard.wei` (WNS name, Swarm-hosted), assert the WNS
+//      contract path dispatches to bzz:// and the same site as meinhard.eth
+//      renders.
 //   7. Navigate to `apoorv.gwei` (GNS-hosted site), assert it resolves through
 //      a supported name transport and renders the live portfolio content.
 
@@ -64,21 +65,6 @@ const VITALIK_H1_SNIFFER = `
       if (/vitalik/i.test(h.textContent || '')) return true;
     }
     return false;
-  })()
-`;
-
-const WNS_WEI_PAGE_SNIFFER = `
-  (() => {
-    const hostOk = window.location.hostname === 'wns.wei' || window.location.hostname === 'zfi.wei.is';
-    if (!hostOk) return false;
-    const protocolOk = ['bzz:', 'ipfs:', 'ipns:', 'https:'].includes(window.location.protocol);
-    if (!protocolOk) return false;
-    const text = (document.body?.innerText || document.body?.textContent || '').trim();
-    if (!text) return false;
-    if (/invalid|not found|has no contenthash|resolver error|resolution failed/i.test(text)) {
-      return false;
-    }
-    return /\\b(wns|wei name|wei names|wei name service)\\b/i.test(text);
   })()
 `;
 
@@ -238,16 +224,20 @@ test.describe('live cold-start sites', () => {
       'Waiting for an <h1> mentioning "Vitalik" on vitalik.eth'
     );
 
-    // (6) wns.wei — WNS-backed page. The exact transport is owned by the live
-    // WNS contenthash, so assert any supported name transport first. The site
-    // currently redirects from its IPFS-hosted entrypoint to zfi.wei.is; after
-    // that, verify the guest webview rendered WNS/Wei content rather than a
-    // resolver/protocol error.
-    await navigateToAnyNameTransport(window, 'wns.wei');
+    // (6) meinhard.wei — WNS name whose contenthash is the same Swarm
+    // reference as meinhard.eth, so it must dispatch to bzz:// and render
+    // the site step (4) already proved retrievable. This pins the WNS
+    // contract path (suffix detection → mainnet contenthash() call →
+    // decode → transport dispatch) without depending on third-party IPFS
+    // pinning: the previous target, wns.wei, is pinned only at Pinata and
+    // advertised via IPNI alone, which a DHT-only node can never retrieve
+    // (see freedom-browser#174 / freedom-ipfs#18). Revert to an
+    // IPFS-hosted .wei site once delegated routing ships.
+    await navigateTo(window, 'meinhard.wei', 'bzz');
     await waitForWebviewCondition(
       window,
-      WNS_WEI_PAGE_SNIFFER,
-      'Waiting for WNS/Wei content on wns.wei'
+      PLAY_BUTTON_SNIFFER,
+      'Waiting for a play-button-shaped element on meinhard.wei'
     );
 
     // (7) apoorv.gwei — GNS-backed page. The live GNS contenthash currently

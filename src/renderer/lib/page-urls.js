@@ -3,7 +3,7 @@
 // Canonical source of truth: src/shared/internal-pages.json
 // Served to the renderer via sync IPC → preload → window.internalPages
 
-import { isEnsHost } from './origin-utils.js';
+import { isEnsHost, isTezosDomainHost } from './origin-utils.js';
 
 const ROUTABLE_PAGES = window.internalPages?.routable || {};
 
@@ -104,10 +104,12 @@ export const parseEnsInput = (raw) => {
 
   const lower = value.toLowerCase();
   let assertedTransport = null;
+  let legacyEnsScheme = false;
   for (const { prefix, assertedTransport: assertion } of ENS_INPUT_PREFIXES) {
     if (lower.startsWith(prefix)) {
       value = value.slice(prefix.length);
       assertedTransport = assertion;
+      legacyEnsScheme = prefix === 'ens://';
       break;
     }
   }
@@ -120,9 +122,15 @@ export const parseEnsInput = (raw) => {
     suffix = match[2] || '';
   }
 
-  if (!isEnsHost(name)) {
+  const isTezos = isTezosDomainHost(name);
+  if ((!isEnsHost(name) && !isTezos) || (legacyEnsScheme && isTezos)) {
     return null;
   }
 
-  return { name: name.toLowerCase(), suffix, assertedTransport };
+  return {
+    name: name.toLowerCase(),
+    suffix,
+    assertedTransport,
+    ...(isTezos ? { system: 'tezos' } : {}),
+  };
 };

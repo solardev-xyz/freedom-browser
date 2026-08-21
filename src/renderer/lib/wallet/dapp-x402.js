@@ -20,6 +20,11 @@
  */
 
 import { walletState, registerScreenHider, hideAllSubscreens } from './wallet-state.js';
+import {
+  isSignatureInFlight,
+  beginSignatureFlight,
+  endSignatureFlight,
+} from './signature-flight.js';
 import { open as openSidebarPanel, isVisible as isSidebarVisible } from '../sidebar.js';
 import {
   escapeHtml,
@@ -135,6 +140,13 @@ export function initDappX402() {
   bannerDisconnectBtn = document.getElementById('x402-connection-disconnect');
 
   registerScreenHider(() => {
+    // An in-flight payment signature owns the card: the device prompt it
+    // produced cannot be recalled, so cancelling here would tear down the
+    // detection in main (x402:cancel navigates the paywall away) while the
+    // user is still confirming the very payment on the device.
+    // hideAllSubscreens() already refuses to run while a signature is in
+    // flight; this is the second line of defence for a direct hider call.
+    if (pending?.signing) return;
     if (pending) {
       reject().catch((err) => console.error('[x402] hide reject failed:', err));
     } else {
@@ -265,6 +277,14 @@ function wireChooser() {
     if (!(target instanceof HTMLInputElement) || target.name !== 'x402-chooser') return;
     const index = Number(target.value);
     if (!Number.isInteger(index) || index < 0) return;
+    if (pending.signing) {
+      // Frozen: the selected accept is already on the device and cannot be
+      // swapped. Repaint the rows so the radio snaps back to the payment
+      // actually being confirmed — accepting the click would also
+      // re-render the card and re-enable Pay under the live prompt.
+      showChooser(pending.accepts || [], pending.selectedAcceptIndex);
+      return;
+    }
     if (pending.selectedAcceptIndex === index) return;
     pending.selectedAcceptIndex = index;
     renderCard();
@@ -316,6 +336,20 @@ function wireButtons() {
 }
 
 async function showApproval({ webContentsId, detectionId, url, resourceType }) {
+  // The sidebar is a single shared surface and an in-flight signature owns
+  // it: the device prompt it produced cannot be recalled, so a second 402
+  // must not overwrite `pending` and re-enable Pay/Reject/Back underneath
+  // it — the user would be cancelling (or paying) the newcomer while the
+  // device still shows the first payment, and the first payment's own
+  // result would land on the wrong card. The lock is global (see
+  // signature-flight.js), so a dapp-tx/dapp-sign confirmation blocks the
+  // card too. Leave the detection with main; it is re-offered the next
+  // time the page asks.
+  if (isSignatureInFlight()) {
+    console.warn('[x402] approval-needed ignored: a signature is already in flight');
+    return;
+  }
+
   // Re-fetch the canonical details via IPC so the sidebar trusts main's
   // view (asset allowlist, autoPay state, per-accept balances).
   // detectionId routes to the specific 402 we got the event for, immune
@@ -324,6 +358,14 @@ async function showApproval({ webContentsId, detectionId, url, resourceType }) {
   const details = await window.electronAPI.x402GetDetails({ webContentsId, detectionId });
   if (!details?.success) {
     console.warn('[x402] approval-needed event for an unknown tab:', details?.error);
+    return;
+  }
+
+  // Re-checked after the await: the user may have hit Pay on the card
+  // that is currently up (or confirmed on another surface) while the
+  // details round-trip was in flight.
+  if (isSignatureInFlight()) {
+    console.warn('[x402] approval-needed ignored: a signature is already in flight');
     return;
   }
 
@@ -438,6 +480,11 @@ function renderCard() {
     approveBtn.disabled = false;
     hideError();
   }
+
+  // A live device prompt outranks every re-derived button state above:
+  // the signature cannot be recalled, so nothing may hand the user a
+  // second Pay (or a Reject/Back that tears the card down) underneath it.
+  if (pending.signing) lockCardForFlight();
 
   // Over-cap warning for the SELECTED entry's autoPay state.
   if (entry?.autoPay?.kind === 'over-cap') {
@@ -754,24 +801,32 @@ async function handlePasswordUnlock() {
 }
 
 async function approve() {
-  if (!pending) return;
-  pending.signing = true;
-  approveBtn.disabled = true;
-  rejectBtn.disabled = true;
-  approveBtn.textContent = signingButtonLabel(walletState.activeWalletIndex);
+  // Re-entrance guard, same shape as dapp-tx/dapp-sign: a second click
+  // (the chooser's `change` handler re-renders the card, which re-enables
+  // Pay) would start a second, concurrent device signature and let
+  // whichever finishes first settle the other one's flight.
+  if (!pending || pending.signing) return;
+
+  const request = pending;
+  request.signing = true;
+  // Claim the sidebar for the whole flight: no other approval surface may
+  // repaint over the card or tear it down (which would cancel the
+  // detection in main) while the device confirmation is live.
+  beginSignatureFlight(request);
+  lockCardForFlight();
   hideError();
 
   const grant = buildGrantPayloadFromInputs();
   let result;
   try {
     result = await window.electronAPI.x402Approve({
-      webContentsId: pending.webContentsId,
-      detectionId: pending.detectionId,
+      webContentsId: request.webContentsId,
+      detectionId: request.detectionId,
       grant,
-      selectedAcceptIndex: pending.selectedAcceptIndex,
+      selectedAcceptIndex: request.selectedAcceptIndex,
     });
   } catch (err) {
-    restoreCardWithError(err?.message || 'Payment approval failed.');
+    restoreCardWithError(request, err?.message || 'Payment approval failed.');
     return;
   }
 
@@ -780,12 +835,41 @@ async function approve() {
     // and handleApprovalResult finalises it. mainFrame path returns
     // success without pending — close immediately.
     if (result.pending) return;
+    // The card this call belongs to may already be gone (the paying tab
+    // died mid-signature and main sent `cancelled`, tearing it down) and
+    // replaced by a newer request. Settle only our own flight then —
+    // closing here would hide a live card that isn't ours.
+    if (pending !== request) {
+      settleFlight(request);
+      return;
+    }
     closeAndReset();
     updateX402ConnectionBanner().catch(() => {});
     return;
   }
 
-  restoreCardWithError(result?.error);
+  restoreCardWithError(request, result?.error);
+}
+
+// The card's controls while a device confirmation is live: no way in and
+// no way out, because the prompt on the device cannot be recalled. Also
+// re-applied by renderCard, which otherwise re-enables Pay underneath an
+// in-flight signature (chooser flips, unlock re-checks, balance updates).
+function lockCardForFlight() {
+  approveBtn.disabled = true;
+  rejectBtn.disabled = true;
+  if (backBtn) backBtn.disabled = true;
+  approveBtn.textContent = signingButtonLabel(walletState.activeWalletIndex);
+}
+
+// Settle a request's claim on the sidebar. Identity-scoped: a stale
+// continuation (its card already torn down and replaced) clears its own
+// flag and releases only a lock it still holds — endSignatureFlight is a
+// no-op for a token that no longer owns it.
+function settleFlight(request) {
+  if (!request) return;
+  request.signing = false;
+  endSignatureFlight(request);
 }
 
 // Restore the approval card to its clickable state and show an error.
@@ -794,11 +878,19 @@ async function approve() {
 // handleApprovalResult). The locked-vault re-check is the non-obvious
 // behaviour worth centralising — without it the unlock UI won't re-
 // appear when the vault auto-locked between render and click.
-function restoreCardWithError(error) {
-  if (pending) pending.signing = false;
+// `request` is the card the failure belongs to: a continuation whose card
+// was already torn down (cancelled paying tab) must not repaint — or
+// unlock — the card that replaced it, nor release its signature lock.
+function restoreCardWithError(request, error) {
+  settleFlight(request);
+  if (request && pending !== request) {
+    console.warn('[x402] ignoring result for a card that is no longer shown:', error);
+    return;
+  }
   approveBtn.textContent = 'Pay';
   approveBtn.disabled = false;
   rejectBtn.disabled = false;
+  if (backBtn) backBtn.disabled = false;
   showError(error || 'Payment failed.');
   if (/locked/i.test(error || '')) {
     checkUnlockState();
@@ -808,14 +900,23 @@ function restoreCardWithError(error) {
 // Finalises the subresource "Signing..." state when the detector's
 // async sign completes. detectionId-match guards against a stale event
 // for a previously-rendered card.
-function handleApprovalResult({ detectionId, success, error }) {
+function handleApprovalResult({ detectionId, success, error, cancelled }) {
   if (!pending || pending.detectionId !== detectionId) return;
   if (success) {
     closeAndReset();
     updateX402ConnectionBanner().catch(() => {});
     return;
   }
-  restoreCardWithError(error);
+  if (cancelled) {
+    // The request itself is gone (main sends this when the paying tab is
+    // destroyed). There is nothing left to retry, so tear the card down —
+    // which is also what releases the sidebar if the user had already
+    // sent the authorization to the device.
+    console.warn(`[x402] approval cancelled: ${error || 'request is gone'}`);
+    closeAndReset();
+    return;
+  }
+  restoreCardWithError(pending, error);
 }
 
 async function reject() {
@@ -847,11 +948,15 @@ async function reject() {
 function closeAndReset() {
   screen?.classList.add('hidden');
   walletState.identityView?.classList.remove('hidden');
+  // The card is gone, so whatever signature it owned is settled — release
+  // the sidebar (no-op unless this card holds the lock).
+  endSignatureFlight(pending);
   pending = null;
   resetGrantEditor();
   approveBtn.textContent = 'Pay';
   approveBtn.disabled = false;
   rejectBtn.disabled = false;
+  if (backBtn) backBtn.disabled = false;
   hideError();
   hideUnlockError();
   if (passwordInput) passwordInput.value = '';

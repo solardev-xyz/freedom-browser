@@ -21,6 +21,7 @@ describe('mapLedgerError', () => {
     [0x6511, LEDGER_ERROR_CODES.ETH_APP_NOT_OPEN],
     [0x6d00, LEDGER_ERROR_CODES.ETH_APP_NOT_OPEN],
     [0x6e00, LEDGER_ERROR_CODES.ETH_APP_NOT_OPEN],
+    [0x6a80, LEDGER_ERROR_CODES.BLIND_SIGNING_REQUIRED],
   ])('maps APDU status 0x%s to a stable code', (statusCode, expected) => {
     const mapped = mapLedgerError(statusError(statusCode));
     expect(mapped.code).toBe(expected);
@@ -35,6 +36,27 @@ describe('mapLedgerError', () => {
     ['LockedDeviceError', LEDGER_ERROR_CODES.DEVICE_LOCKED],
   ])('maps named transport error %s', (name, expected) => {
     expect(mapLedgerError(namedError(name)).code).toBe(expected);
+  });
+
+  // Signing without hosted clear-signing resolution means a factory-
+  // default device (blind signing off) refuses every contract call —
+  // the instruction has to name the setting, not "reconnect the device".
+  test('blind-signing refusals tell the user which setting to enable', () => {
+    const mapped = mapLedgerError(statusError(0x6a80));
+    expect(mapped.code).toBe(LEDGER_ERROR_CODES.BLIND_SIGNING_REQUIRED);
+    expect(mapped.message).toMatch(/blind signing/i);
+    expect(mapped.message).not.toMatch(/reconnect/i);
+  });
+
+  test('maps the blind-signing error class hw-app-eth actually throws', () => {
+    // The tx-signing path rewrites 0x6a80 into this named error, which
+    // carries no statusCode of its own.
+    const { EthAppPleaseEnableContractData } = require('@ledgerhq/hw-app-eth/lib/errors');
+    const err = new EthAppPleaseEnableContractData(
+      'Please enable Blind signing or Contract data in the Ethereum app Settings'
+    );
+    expect(err.statusCode).toBeUndefined();
+    expect(mapLedgerError(err).code).toBe(LEDGER_ERROR_CODES.BLIND_SIGNING_REQUIRED);
   });
 
   test('maps node-hid "cannot open device" message', () => {

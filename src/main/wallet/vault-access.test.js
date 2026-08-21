@@ -8,6 +8,9 @@ const mockGetWalletRecord = jest.fn();
 jest.mock('../identity-manager', () => ({
   loadIdentityModule: jest.fn(async () => mockIdentity),
   getWalletRecord: (...args) => mockGetWalletRecord(...args),
+  // Mirrors identity-manager's HARDWARE_INDEX_BASE (inlined: jest.mock
+  // factories may not close over out-of-scope constants).
+  isHardwareWalletIndex: (index) => Number.isInteger(index) && index >= 1000000,
   WALLET_TYPES: { MNEMONIC: 'mnemonic', LEDGER: 'ledger' },
 }));
 jest.mock('../vault-timer', () => ({
@@ -82,6 +85,19 @@ describe('withVaultPrivateKey', () => {
     await expect(withVaultPrivateKey(3, () => 'unreachable'))
       .rejects.toThrow('This account keeps its key on another device');
     expect(mockIdentity.exportPrivateKey).not.toHaveBeenCalled();
+  });
+
+  test('refuses to derive a vault key for a deleted hardware account', async () => {
+    // Deleting a Ledger removes its record, so the record-type guard above
+    // no longer fires. The index range must be decisive on its own —
+    // otherwise a stale reference (dApp permission, publisher identity)
+    // derives a phantom mnemonic key at m/44'/60'/1000000'/0/0 and signs
+    // with an address the user has never seen.
+    mockGetWalletRecord.mockReturnValue(null);
+    await expect(withVaultPrivateKey(1000000, () => 'unreachable'))
+      .rejects.toThrow('Hardware wallet accounts have no vault key');
+    expect(mockIdentity.exportPrivateKey).not.toHaveBeenCalled();
+    expect(mockIdentity.isUnlocked).not.toHaveBeenCalled();
   });
 
   test.each([

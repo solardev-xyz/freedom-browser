@@ -6,6 +6,7 @@
  */
 
 import { walletState, hideAllSubscreens, registerScreenHider } from './wallet-state.js';
+import { isSignatureInFlight } from './signature-flight.js';
 import { open as openSidebarPanel } from '../sidebar.js';
 import { updateConnectionBanner, disconnectDapp } from './dapp-connect.js';
 import { updateSwarmConnectionBanner, disconnectSwarmApp } from './swarm-connect.js';
@@ -36,6 +37,9 @@ let swarmPermsSite;
 let swarmPermsPublishToggle;
 let swarmPermsFeedsToggle;
 let swarmPermsSigningToggle;
+let swarmPermsMessagingToggle;
+let swarmPermsManifestSection;
+let swarmPermsManifestList;
 let swarmPermsIdentitySelector;
 let swarmPermsIdentityNote;
 let swarmPermsDisconnect;
@@ -81,6 +85,9 @@ export function initPermissionManage() {
   swarmPermsPublishToggle = document.getElementById('swarm-perms-publish-toggle');
   swarmPermsFeedsToggle = document.getElementById('swarm-perms-feeds-toggle');
   swarmPermsSigningToggle = document.getElementById('swarm-perms-signing-toggle');
+  swarmPermsMessagingToggle = document.getElementById('swarm-perms-messaging-toggle');
+  swarmPermsManifestSection = document.getElementById('swarm-perms-manifest-section');
+  swarmPermsManifestList = document.getElementById('swarm-perms-manifest-list');
   swarmPermsIdentitySelector = document.getElementById('swarm-perms-identity-selector');
   swarmPermsIdentityNote = document.getElementById('swarm-perms-identity-note');
   swarmPermsDisconnect = document.getElementById('swarm-perms-disconnect');
@@ -106,6 +113,12 @@ export function initPermissionManage() {
       updateSwarmConnectionBanner(swarmPermsKey);
     }
   });
+  swarmPermsMessagingToggle?.addEventListener('change', async () => {
+    if (!swarmPermsKey) return;
+    if (swarmPermsMessagingToggle.checked) await window.swarmPermissions.grantMessaging(swarmPermsKey);
+    else await window.swarmPermissions.revokeMessaging(swarmPermsKey);
+    updateSwarmConnectionBanner(swarmPermsKey);
+  });
 
   // x402 permission screen
   x402PermsScreen = document.getElementById('sidebar-x402-permissions');
@@ -120,10 +133,26 @@ export function initPermissionManage() {
   registerScreenHider(() => closeX402Perms());
 }
 
+/**
+ * These management subscreens are opened from the connection banners, but
+ * the banners live in the identity view that an approval screen hides — so
+ * this is belt-and-braces against any future entry point: while a device
+ * confirmation is live it owns the sidebar (see signature-flight.js) and
+ * nothing may repaint over it.
+ */
+function signatureInFlightBlocks(what) {
+  if (!isSignatureInFlight()) return false;
+  console.warn(`[PermissionManage] ${what} not opened: a signature is already in flight`);
+  return true;
+}
+
 export async function showDappPermissions(permissionKey) {
+  if (signatureInFlightBlocks('dapp permissions')) return;
+
   const permission = await window.dappPermissions.getPermission(permissionKey);
   if (!permission) return;
 
+  if (signatureInFlightBlocks('dapp permissions')) return;
   hideAllSubscreens();
   dappPermsKey = permissionKey;
   if (dappPermsSite) dappPermsSite.textContent = permissionKey;
@@ -203,6 +232,8 @@ async function handleDappDisconnect() {
 }
 
 export async function showSwarmPermissions(permissionKey, options = {}) {
+  if (signatureInFlightBlocks('swarm permissions')) return;
+
   const permission = await window.swarmPermissions.getPermission(permissionKey);
   if (!permission) return;
 
@@ -211,6 +242,7 @@ export async function showSwarmPermissions(permissionKey, options = {}) {
     return;
   }
 
+  if (signatureInFlightBlocks('swarm permissions')) return;
   hideAllSubscreens();
   swarmPermsKey = permissionKey;
   if (swarmPermsSite) swarmPermsSite.textContent = permissionKey;
@@ -224,6 +256,10 @@ export async function showSwarmPermissions(permissionKey, options = {}) {
   if (swarmPermsSigningToggle) {
     swarmPermsSigningToggle.checked = permission.autoApprove?.signing === true;
   }
+  if (swarmPermsMessagingToggle) {
+    swarmPermsMessagingToggle.checked = await window.swarmPermissions.hasMessagingGrant(permissionKey);
+  }
+  await renderManifestGrant(permissionKey);
   await refreshSwarmIdentitySection();
 
   walletState.identityView?.classList.add('hidden');
@@ -233,6 +269,53 @@ export async function showSwarmPermissions(permissionKey, options = {}) {
   if (options.focusIdentity) {
     document.getElementById('swarm-perms-identity-section')?.scrollIntoView({ block: 'nearest' });
   }
+}
+
+async function renderManifestGrant(origin) {
+  if (!swarmPermsManifestSection || !swarmPermsManifestList) return;
+  const record = await window.swarmManifest?.get?.(origin);
+  const entries = Object.entries(record?.acknowledged || {});
+  swarmPermsManifestSection.classList.toggle('hidden', entries.length === 0);
+  swarmPermsManifestList.innerHTML = '';
+  for (const [capability, decision] of entries) {
+    const row = document.createElement('div');
+    row.className = 'perms-toggle-row';
+    const label = document.createElement('span');
+    label.className = 'perms-label';
+    label.textContent = `${capability} · ${decision.decision === 'managed' ? 'allowed by manifest' : 'individual approvals'}`;
+    row.appendChild(label);
+    if (decision.decision === 'managed') {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'perms-tx-remove';
+      button.textContent = 'Ask each time';
+      button.addEventListener('click', async () => {
+        await window.swarmManifest.useIndividual(origin, capability);
+        await refreshSwarmPermissionControls(origin);
+        await renderManifestGrant(origin);
+      });
+      row.appendChild(button);
+    }
+    swarmPermsManifestList.appendChild(row);
+  }
+  const latestReceipt = record?.receipts?.at?.(-1);
+  if (latestReceipt) {
+    const receipt = document.createElement('div');
+    receipt.className = 'perms-empty';
+    receipt.textContent = `Last batch decision: ${latestReceipt.outcome} · ${new Date(latestReceipt.decidedAt).toLocaleString()}`;
+    swarmPermsManifestList.appendChild(receipt);
+  }
+}
+
+async function refreshSwarmPermissionControls(origin) {
+  const permission = await window.swarmPermissions.getPermission(origin);
+  if (swarmPermsPublishToggle) swarmPermsPublishToggle.checked = permission?.autoApprove?.publish === true;
+  if (swarmPermsFeedsToggle) swarmPermsFeedsToggle.checked = permission?.autoApprove?.feeds === true;
+  if (swarmPermsSigningToggle) swarmPermsSigningToggle.checked = permission?.autoApprove?.signing === true;
+  if (swarmPermsMessagingToggle) {
+    swarmPermsMessagingToggle.checked = await window.swarmPermissions.hasMessagingGrant(origin);
+  }
+  updateSwarmConnectionBanner(origin);
 }
 
 export function closeSwarmPerms() {
@@ -341,6 +424,8 @@ async function createSwarmAppScopedIdentity() {
 }
 
 export async function showX402Permissions(originKey) {
+  if (signatureInFlightBlocks('x402 permissions')) return;
+
   hideAllSubscreens();
 
   x402PermsKey = originKey;

@@ -6,6 +6,7 @@
  */
 
 import { walletState, registerScreenHider } from './wallet-state.js';
+import { refuseSubscreenWhileInFlight } from './signature-flight.js';
 import { escapeHtml } from './wallet-utils.js';
 import { showVaultUnlock } from './vault-unlock.js';
 import { showPublisherIdentityCreate } from './publisher-identity-create.js';
@@ -60,6 +61,8 @@ export function initPublisherIdentities() {
 }
 
 export async function openPublisherIdentities() {
+  if (refuseSubscreenWhileInFlight('Publisher identities screen')) return;
+
   await reloadEntries();
   if (filterInput) filterInput.value = '';
   showPublisherIdentityList();
