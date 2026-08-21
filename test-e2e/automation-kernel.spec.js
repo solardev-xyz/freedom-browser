@@ -1,10 +1,15 @@
 'use strict';
 
-const { test, expect, SAMPLE_BZZ_HASH } = require('./fixtures');
+const { test, expect, SAMPLE_BZZ_HASH, SAMPLE_IPFS_CID } = require('./fixtures');
 
 const PAGE_URL = `bzz://${SAMPLE_BZZ_HASH}/automation`;
 const NEXT_URL = `bzz://${SAMPLE_BZZ_HASH}/next`;
 const HIDDEN_URL = `bzz://${SAMPLE_BZZ_HASH}/hidden`;
+const PROTOCOL_CASES = [
+  { label: 'HTTPS', url: 'https://automation.example.test/protocol' },
+  { label: 'Swarm', url: `bzz://${SAMPLE_BZZ_HASH}/protocol` },
+  { label: 'IPFS', url: `ipfs://${SAMPLE_IPFS_CID}/protocol` },
+];
 
 function executeAutomation(electronApp, operation, input = {}) {
   return electronApp.evaluate(
@@ -22,6 +27,43 @@ async function tabForUrl(electronApp, url) {
 async function automationTabs(electronApp) {
   const result = await executeAutomation(electronApp, 'browser_list_tabs');
   return result.result.tabs;
+}
+
+function protocolFixture(label) {
+  return {
+    body: `<!doctype html>
+      <title>${label} automation fixture</title>
+      <button id="run">Run ${label}</button>
+      <p id="result">Waiting</p>
+      <script>
+        document.querySelector('#run').addEventListener('click', (event) => {
+          document.querySelector('#result').textContent =
+            '${label} trusted=' + event.isTrusted;
+        });
+      </script>`,
+  };
+}
+
+async function exerciseProtocolPage(electronApp, tabId, protocolCase) {
+  const { label, url } = protocolCase;
+  await expect(
+    executeAutomation(electronApp, 'browser_navigate', { tabId, url })
+  ).resolves.toMatchObject({ ok: true, result: { url } });
+  const snapshot = await executeAutomation(electronApp, 'browser_snapshot', { tabId });
+  expect(snapshot).toMatchObject({ ok: true, result: { title: `${label} automation fixture` } });
+  const runRef = snapshot.result.elements.find((element) => element.name === `Run ${label}`)?.ref;
+  expect(runRef).toBeTruthy();
+  await expect(
+    executeAutomation(electronApp, 'browser_click', { tabId, ref: runRef })
+  ).resolves.toMatchObject({ ok: true });
+  await expect(
+    executeAutomation(electronApp, 'browser_wait', {
+      tabId,
+      condition: 'text',
+      text: `${label} trusted=true`,
+      timeoutMs: 2_000,
+    })
+  ).resolves.toMatchObject({ ok: true });
 }
 
 test('one automation contract drives desktop and hidden Electron pages', async ({
@@ -238,13 +280,20 @@ test('one automation contract drives desktop and hidden Electron pages', async (
     timeoutMs: 5_000,
   });
   await window.waitForTimeout(100);
-  await expect(
-    executeAutomation(electronApp, 'browser_stop_loading', { tabId: desktopTab.tabId })
-  ).resolves.toMatchObject({ ok: true, result: { stopped: true, cancelledWaits: 1 } });
-  await expect(pendingWait).resolves.toMatchObject({
+  const cancellationStartedAt = Date.now();
+  const stopResult = await executeAutomation(electronApp, 'browser_stop_loading', {
+    tabId: desktopTab.tabId,
+  });
+  expect(stopResult).toMatchObject({
+    ok: true,
+    result: { stopped: true, cancelledWaits: 1 },
+  });
+  const pendingResult = await pendingWait;
+  expect(pendingResult).toMatchObject({
     ok: false,
     error: { code: 'USER_CANCELLED' },
   });
+  expect(Date.now() - cancellationStartedAt).toBeLessThan(1_000);
 
   await expect(
     executeAutomation(electronApp, 'browser_navigate', {
@@ -302,5 +351,45 @@ test('one automation contract drives desktop and hidden Electron pages', async (
         globalThis.__FREEDOM_TEST_HARNESS__.closeHiddenAutomationPage(tabId),
       hiddenTabId
     );
+  }
+});
+
+test('desktop and hidden adapters preserve HTTPS, Swarm, and IPFS behavior', async ({
+  electronApp,
+  window,
+  harness,
+}) => {
+  await expect(window.locator('[data-test="address-input"]')).toBeVisible();
+  for (const protocolCase of PROTOCOL_CASES) {
+    await harness.setContentFixture(protocolCase.url, protocolFixture(protocolCase.label));
+  }
+
+  const addressInput = window.locator('[data-test="address-input"]');
+  await addressInput.click();
+  await addressInput.fill(PROTOCOL_CASES[0].url);
+  await addressInput.press('Enter');
+  await expect(addressInput).toHaveValue(PROTOCOL_CASES[0].url);
+  await expect
+    .poll(() => automationTabs(electronApp), { timeout: 5_000 })
+    .toEqual(expect.arrayContaining([expect.objectContaining({ url: PROTOCOL_CASES[0].url })]));
+  const desktopTab = await tabForUrl(electronApp, PROTOCOL_CASES[0].url);
+
+  for (const protocolCase of PROTOCOL_CASES) {
+    await exerciseProtocolPage(electronApp, desktopTab.tabId, protocolCase);
+
+    const hiddenTabId = await electronApp.evaluate(
+      async ({ ipcMain: _ipcMain }, url) =>
+        globalThis.__FREEDOM_TEST_HARNESS__.createHiddenAutomationPage(url),
+      protocolCase.url
+    );
+    try {
+      await exerciseProtocolPage(electronApp, hiddenTabId, protocolCase);
+    } finally {
+      await electronApp.evaluate(
+        ({ ipcMain: _ipcMain }, tabId) =>
+          globalThis.__FREEDOM_TEST_HARNESS__.closeHiddenAutomationPage(tabId),
+        hiddenTabId
+      );
+    }
   }
 });

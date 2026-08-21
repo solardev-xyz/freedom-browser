@@ -140,6 +140,8 @@ function makeProtocolHandler(scheme) {
 function makeHttpStubHandler(scheme) {
   return async (request) => {
     log.info(`[test-harness] stubbed ${scheme}: ${redactUrlForLog(request.url)}`);
+    const fixture = pickContentFixture(request.url);
+    if (fixture) return buildResponse(fixture);
     const body =
       `<!doctype html>` +
       `<title>test-harness ${scheme} stub</title>` +
