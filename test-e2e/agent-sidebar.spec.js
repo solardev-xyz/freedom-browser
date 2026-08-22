@@ -1,5 +1,27 @@
 const { test, expect } = require('./fixtures');
 
+test('Agent, wallet, and menu actions remain on the address-bar row', async ({ window }) => {
+  const geometry = await window.evaluate(() => {
+    const rect = (selector) => {
+      const { top, bottom, height } = document.querySelector(selector).getBoundingClientRect();
+      return { top, bottom, center: top + height / 2 };
+    };
+    return {
+      toolbar: rect('.toolbar'),
+      address: rect('[data-test="address-input"]'),
+      agent: rect('[data-test="agent-toggle-btn"]'),
+      wallet: rect('#wallet-toggle-btn'),
+      menu: rect('#menu-button'),
+    };
+  });
+
+  expect(Math.abs(geometry.agent.center - geometry.address.center)).toBeLessThanOrEqual(1);
+  expect(Math.abs(geometry.wallet.center - geometry.address.center)).toBeLessThanOrEqual(1);
+  expect(Math.abs(geometry.menu.center - geometry.address.center)).toBeLessThanOrEqual(1);
+  expect(geometry.menu.top).toBeGreaterThanOrEqual(geometry.toolbar.top);
+  expect(geometry.menu.bottom).toBeLessThanOrEqual(geometry.toolbar.bottom);
+});
+
 test('Agent sidebar configures hosted and local models and reports the run lifecycle', async ({
   window,
 }) => {
