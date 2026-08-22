@@ -41,6 +41,13 @@ function providerName(providerId) {
   return PROVIDER_NAMES[providerId] || providerId || 'Model';
 }
 
+function providerPrivacyMessage(providerId) {
+  if (providerId === 'ollama') {
+    return 'Model requests stay on this device and are sent only to your local Ollama server.';
+  }
+  return `Your task and page content the agent reads may be sent to ${providerName(providerId)}. Avoid using Agent on pages containing sensitive information.`;
+}
+
 function setPanelOpen(nextOpen) {
   panelOpen = nextOpen;
   elements.panel.classList.toggle('collapsed', !panelOpen);
@@ -70,6 +77,7 @@ function togglePanel() {
 function renderProviderFields() {
   const providerId = elements.provider.value;
   const isOllama = providerId === 'ollama';
+  elements.providerPrivacy.textContent = providerPrivacyMessage(providerId);
   elements.hostedFields.classList.toggle('hidden', isOllama);
   elements.ollamaFields.classList.toggle('hidden', !isOllama);
   if (!isOllama) renderModelOptions(providerId);
@@ -341,6 +349,7 @@ export function initAgentUi(options = {}) {
     close: byId('agent-sidebar-close'),
     provider: byId('agent-provider-select'),
     providerStatus: byId('agent-provider-status'),
+    providerPrivacy: byId('agent-provider-privacy'),
     hostedFields: byId('agent-hosted-fields'),
     ollamaFields: byId('agent-ollama-fields'),
     model: byId('agent-model-select'),
@@ -387,4 +396,4 @@ export function initAgentUi(options = {}) {
   restoreRunState();
 }
 
-export { formatOperation, handleAgentEvent, responseMessage };
+export { formatOperation, handleAgentEvent, providerPrivacyMessage, responseMessage };

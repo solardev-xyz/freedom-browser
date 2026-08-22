@@ -260,6 +260,17 @@
   color: #ff8b8b;
 }
 
+.agent-privacy-note {
+  padding: 9px 10px;
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border-left: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  border-radius: 6px;
+}
+
 .agent-transcript,
 .agent-activity {
   padding-top: 14px;

@@ -12,6 +12,8 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
   await expect(window.locator('#agent-provider-status')).toHaveText('Not configured');
 
   await window.locator('#agent-provider-select').selectOption('freepi');
+  await expect(window.locator('#agent-provider-privacy')).toContainText('sent to Free Pi');
+  await expect(window.locator('#agent-provider-privacy')).toContainText('sensitive information');
   await expect(window.locator('#agent-model-select')).toHaveValue('deepseek/deepseek-v4-flash');
   await window.locator('#agent-api-key').fill('test-only-not-a-credential');
   await window.locator('#agent-provider-save').click();
@@ -23,6 +25,9 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
   await expect(window.locator('#agent-provider-status')).toHaveText('Not configured');
 
   await window.locator('#agent-provider-select').selectOption('ollama');
+  await expect(window.locator('#agent-provider-privacy')).toHaveText(
+    'Model requests stay on this device and are sent only to your local Ollama server.'
+  );
   await expect(window.locator('#agent-hosted-fields')).toHaveClass(/hidden/);
   await expect(window.locator('#agent-ollama-fields')).not.toHaveClass(/hidden/);
   await window.locator('#agent-ollama-model').fill('freedom-e2e-no-server');

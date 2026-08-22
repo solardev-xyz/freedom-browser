@@ -12,6 +12,7 @@ function createAgentElements() {
     'agent-sidebar-close',
     'agent-provider-select',
     'agent-provider-status',
+    'agent-provider-privacy',
     'agent-hosted-fields',
     'agent-ollama-fields',
     'agent-model-select',
@@ -182,6 +183,14 @@ describe('Agent UI', () => {
   test('formats tool operations for a compact activity timeline', async () => {
     const ctx = await loadAgentUi();
     expect(ctx.mod.formatOperation('browser_get_page_text')).toBe('get page text');
+    expect(ctx.mod.providerPrivacyMessage('freepi')).toContain('sent to Free Pi');
+    expect(ctx.elements['agent-provider-privacy'].textContent).toContain('sent to OpenAI');
+
+    ctx.elements['agent-provider-select'].value = 'ollama';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    expect(ctx.elements['agent-provider-privacy'].textContent).toBe(
+      'Model requests stay on this device and are sent only to your local Ollama server.'
+    );
     expect(ctx.mod.responseMessage({}, 'Fallback')).toBe('Fallback');
   });
 
