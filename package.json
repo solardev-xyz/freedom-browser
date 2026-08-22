@@ -28,6 +28,7 @@
     "test:e2e": "playwright test --project=harness",
     "test:e2e:agent:codex": "playwright test --project=live test-e2e/live/agent-codex-*.spec.js",
     "test:e2e:agent:freepi": "dotenv -e .env.agent-tests.local -- playwright test --project=harness test-e2e/agent-free-pi-live.spec.js",
+    "test:e2e:agent:ollama": "dotenv -e .env.agent-tests.local -- playwright test --project=harness test-e2e/agent-ollama-live.spec.js",
     "test:e2e:live": "playwright test --project=live",
     "test:e2e:onboarding": "playwright test --project=live test-e2e/live/onboarding-identity.spec.js",
     "test:e2e:tor": "FREEDOM_LIVE_E2E_DISABLE_DEFAULT_NODES=1 playwright test --project=live test-e2e/live/tor-onion.spec.js",
