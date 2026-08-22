@@ -198,7 +198,9 @@ function registerFreedomAgentIpc(options = {}) {
       let resolved;
       try {
         resolved = await resolveModel();
-      } catch {
+      } catch (error) {
+        const errorCode = typeof error?.code === 'string' ? error.code : 'UNKNOWN';
+        console.error('[agent] Model resolution failed:', errorCode);
         return errorEnvelope(
           AGENT_IPC_ERROR_CODES.MODEL_UNAVAILABLE,
           'No configured agent model is available'

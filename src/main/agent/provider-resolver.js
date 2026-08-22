@@ -155,7 +155,7 @@ class AgentProviderResolver {
       throw new AgentProviderError('AGENT_PROVIDER_INVALID', 'Provider API key is invalid');
     }
     const runtime = await this.#createRuntime();
-    registerFreePi(runtime);
+    if (providerId === 'freepi') registerFreePi(runtime);
     if (!runtime.getModel(providerId, modelId)) {
       throw new AgentProviderError('AGENT_MODEL_INVALID', 'Selected model is not available');
     }
@@ -220,7 +220,7 @@ class AgentProviderResolver {
       throw new AgentProviderError('AGENT_MODEL_UNAVAILABLE', 'No agent model is configured');
     }
     const runtime = await this.#createRuntime();
-    registerFreePi(runtime);
+    if (selection.providerId === 'freepi') registerFreePi(runtime);
     if (selection.kind === 'hosted') {
       await runtime.setRuntimeApiKey(selection.providerId, selection.apiKey);
     } else if (selection.kind === 'ollama') {
@@ -244,10 +244,17 @@ class AgentProviderResolver {
       await runtime.setRuntimeApiKey('ollama', 'ollama');
     } else if (selection.kind === 'subscription') {
       const credential = await this.credentials.read(selection.providerId);
-      if (!credential || !runtime.hasConfiguredAuth(selection.providerId)) {
+      if (!credential) {
         throw new AgentProviderError(
           'AGENT_CREDENTIAL_UNAVAILABLE',
           'The saved provider credential is unavailable'
+        );
+      }
+      await runtime.refresh({ allowNetwork: false, providers: [selection.providerId] });
+      if (!runtime.hasConfiguredAuth(selection.providerId)) {
+        throw new AgentProviderError(
+          'AGENT_PROVIDER_AUTH_UNAVAILABLE',
+          'The model provider did not accept the saved credential'
         );
       }
     }

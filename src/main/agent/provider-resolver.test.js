@@ -9,6 +9,7 @@ const {
 } = require('./provider-resolver');
 
 function createRuntime() {
+  let configuredSubscription = false;
   const models = new Map([
     ['anthropic/model-a', { provider: 'anthropic', id: 'model-a', name: 'Model A' }],
     ['openai/model-b', { provider: 'openai', id: 'model-b', name: 'Model B' }],
@@ -24,7 +25,13 @@ function createRuntime() {
     ),
     getModel: jest.fn((providerId, modelId) => models.get(`${providerId}/${modelId}`)),
     setRuntimeApiKey: jest.fn(async () => {}),
-    hasConfiguredAuth: jest.fn(() => true),
+    refresh: jest.fn(async ({ providers }) => {
+      if (providers?.includes('openai-codex')) configuredSubscription = true;
+      return { aborted: false, errors: new Map() };
+    }),
+    hasConfiguredAuth: jest.fn((providerId) =>
+      providerId === 'openai-codex' ? configuredSubscription : true
+    ),
     login: jest.fn(async () => ({
       type: 'oauth',
       access: 'access-secret',
@@ -209,9 +216,14 @@ describe('AgentProviderResolver', () => {
       providerId: 'openai-codex',
       modelId: 'codex-model',
     });
+    expect(ctx.runtime.refresh).toHaveBeenCalledWith({
+      allowNetwork: false,
+      providers: ['openai-codex'],
+    });
     expect(resolved.model).toMatchObject({ provider: 'openai-codex', id: 'codex-model' });
     expect(resolved.thinkingLevel).toBe('medium');
     expect(ctx.runtime.setRuntimeApiKey).not.toHaveBeenCalled();
+    expect(ctx.runtime.registerProvider).not.toHaveBeenCalled();
   });
 
   test('refuses subscription login before OAuth when secure storage is unavailable', async () => {
@@ -225,6 +237,23 @@ describe('AgentProviderResolver', () => {
       )
     ).rejects.toMatchObject({ code: 'AGENT_SECURE_STORAGE_UNAVAILABLE' });
     expect(ctx.runtime.login).not.toHaveBeenCalled();
+  });
+
+  test('fails closed when Pi does not accept the stored subscription credential', async () => {
+    const ctx = createResolver({
+      kind: 'subscription',
+      providerId: 'openai-codex',
+      modelId: 'codex-model',
+    });
+    ctx.runtime.hasConfiguredAuth.mockReturnValue(false);
+
+    await expect(ctx.resolver.resolveModel()).rejects.toMatchObject({
+      code: 'AGENT_PROVIDER_AUTH_UNAVAILABLE',
+    });
+    expect(ctx.runtime.refresh).toHaveBeenCalledWith({
+      allowNetwork: false,
+      providers: ['openai-codex'],
+    });
   });
 
   test.each([
