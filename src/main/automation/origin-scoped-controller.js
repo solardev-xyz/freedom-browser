@@ -135,6 +135,7 @@ class OriginScopedAutomationController {
     const state = await this.#readState(input.tabId);
     if (!state.ok) return state;
     if (operation === OPERATIONS.GET_TAB) {
+      if (!this.#acceptCurrentOrigin(state)) return this.#originDenied(state);
       this.activeTabId = input.tabId;
       if (this.resumeObservation === 'get_tab') this.resumeObservation = 'snapshot';
       return state;
@@ -229,7 +230,17 @@ class OriginScopedAutomationController {
         }
         return state;
       }
-      if (!this.#acceptCurrentOrigin(state)) return this.#originDenied(state);
+      if (!this.#acceptCurrentOrigin(state)) {
+        tabs.push({
+          tabId,
+          kind: state.result.tab?.kind || 'unknown',
+          url: '',
+          title: 'Unavailable task tab',
+          available: false,
+          unavailableReason: 'outside_supported_workspace',
+        });
+        continue;
+      }
       tabs.push(state.result.tab);
     }
     return {

@@ -178,6 +178,100 @@ describe('automation runtime registration', () => {
     await expect(close).resolves.toMatchObject({ ok: true, result: { closed: true } });
   });
 
+  test('waits for a routed dweb tab to leave about:blank before completing creation', async () => {
+    let nextTab = 1;
+    const runtime = createAutomationRuntime({
+      isPrivateWebContents: () => false,
+      controllerOptions: { tabIdFactory: () => `tab_${nextTab++}` },
+    });
+    runtime.controller.setPageLifecycle({
+      createPage: runtime.createDesktopPage,
+      closePage: runtime.closeDesktopPage,
+      focusPage: runtime.focusDesktopPage,
+    });
+    const host = new EventEmitter();
+    host.send = jest.fn();
+    const ipcMain = new EventEmitter();
+    const opener = new FakeWebContents('https://desktop.example/', 31);
+    opener.hostWebContents = host;
+    runtime.attachToHostWebContents(host, { ipcMain });
+    host.emit('did-attach-webview', {}, opener);
+    ipcMain.emit(
+      IPC.AUTOMATION_BIND_TAB,
+      { sender: host },
+      { rendererTabId: 10, guestWebContentsId: 31 }
+    );
+
+    const targetUrl = 'ipfs://bafybeirouted/source';
+    const creation = runtime.controller.execute(OPERATIONS.CREATE_TAB, {
+      url: targetUrl,
+      openerTabId: 'tab_1',
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    const createRequest = host.send.mock.calls.find(
+      ([channel]) => channel === IPC.AUTOMATION_CREATE_TAB
+    )[1];
+    ipcMain.emit(
+      IPC.AUTOMATION_CREATE_TAB_RESULT,
+      { sender: host },
+      { requestId: createRequest.requestId, ok: true, rendererTabId: 11 }
+    );
+    const created = new FakeWebContents('about:blank', 32);
+    created.hostWebContents = host;
+    host.emit('did-attach-webview', {}, created);
+    ipcMain.emit(
+      IPC.AUTOMATION_BIND_TAB,
+      { sender: host },
+      { rendererTabId: 11, guestWebContentsId: 32 }
+    );
+    let completed = false;
+    void creation.then(() => {
+      completed = true;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(completed).toBe(false);
+
+    created.url = targetUrl;
+    created.emit('did-navigate', {}, targetUrl);
+
+    await expect(creation).resolves.toMatchObject({
+      ok: true,
+      result: { tab: { tabId: 'tab_2', url: targetUrl } },
+    });
+  });
+
+  test('desktop lifecycle refuses to close a bound tab it did not create', async () => {
+    const runtime = createAutomationRuntime({
+      isPrivateWebContents: () => false,
+      controllerOptions: { tabIdFactory: () => 'tab_desktop' },
+    });
+    runtime.controller.setPageLifecycle({
+      createPage: runtime.createDesktopPage,
+      closePage: runtime.closeDesktopPage,
+      focusPage: runtime.focusDesktopPage,
+    });
+    const host = new EventEmitter();
+    host.send = jest.fn();
+    const ipcMain = new EventEmitter();
+    const desktop = new FakeWebContents('https://desktop.example/', 33);
+    desktop.hostWebContents = host;
+    runtime.attachToHostWebContents(host, { ipcMain });
+    host.emit('did-attach-webview', {}, desktop);
+    ipcMain.emit(
+      IPC.AUTOMATION_BIND_TAB,
+      { sender: host },
+      { rendererTabId: 12, guestWebContentsId: 33 }
+    );
+
+    await expect(
+      runtime.controller.execute(OPERATIONS.CLOSE_TAB, { tabId: 'tab_desktop' })
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'CAPABILITY_UNAVAILABLE' },
+    });
+    expect(host.send).not.toHaveBeenCalledWith(IPC.AUTOMATION_CLOSE_TAB, expect.anything());
+  });
+
   test('removes both sides of a desktop binding when the guest is destroyed', () => {
     const runtime = createAutomationRuntime({
       isPrivateWebContents: () => false,

@@ -149,6 +149,9 @@ function createController(initialUrl = 'https://trusted.example/start') {
     redirectCreatedTabTo: (nextUrl) => {
       createdRedirectUrl = nextUrl;
     },
+    setCreatedUrl: (nextUrl) => {
+      createdUrl = nextUrl;
+    },
   };
 }
 
@@ -395,6 +398,41 @@ describe('OriginScopedAutomationController', () => {
         ],
       },
     });
+  });
+
+  test('redacts an owned tab outside the supported workspace while retaining close authority', async () => {
+    const controller = createController();
+    const scoped = await createOriginScopedAutomationController({
+      controller,
+      tabId: 'tab_assigned',
+    });
+    await scoped.execute(OPERATIONS.CREATE_TAB, {
+      tabId: 'tab_assigned',
+      url: 'https://trusted.example/comparison',
+    });
+    controller.setCreatedUrl('file:///private/secret.html');
+
+    await expect(scoped.execute(OPERATIONS.LIST_TABS, {})).resolves.toMatchObject({
+      ok: true,
+      result: {
+        tabs: [
+          { url: 'https://trusted.example/start' },
+          {
+            tabId: 'tab_created',
+            url: '',
+            title: 'Unavailable task tab',
+            available: false,
+            unavailableReason: 'outside_supported_workspace',
+          },
+        ],
+      },
+    });
+    await expect(
+      scoped.execute(OPERATIONS.GET_TAB, { tabId: 'tab_created' })
+    ).resolves.toMatchObject({ ok: false, error: { code: ERROR_CODES.POLICY_DENIED } });
+    await expect(
+      scoped.execute(OPERATIONS.CLOSE_TAB, { tabId: 'tab_created' })
+    ).resolves.toMatchObject({ ok: true });
   });
 
   test('retains observation and stop-loading authority after an origin change', async () => {

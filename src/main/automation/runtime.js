@@ -28,6 +28,7 @@ function createAutomationRuntime(options = {}) {
   const adapters = new WeakMap();
   const desktopBindingsByHost = new WeakMap();
   const desktopBindingsByAutomationTab = new Map();
+  const desktopLifecycleCreatedTabs = new Set();
   const tabLifecycleListeners = new Set();
   const isPrivateWebContents = options.isPrivateWebContents || defaultIsPrivateWebContents;
   const navigationRequestIdFactory =
@@ -113,6 +114,7 @@ function createAutomationRuntime(options = {}) {
         desktopBinding.bindingsByRendererTab.delete(desktopBinding.rendererTabId);
       }
       desktopBindingsByAutomationTab.delete(tabId);
+      desktopLifecycleCreatedTabs.delete(tabId);
       controller.unregisterPage(tabId);
       adapters.delete(webContents);
       emitTabLifecycle({ type: 'tab_closed', tabId, kind: metadata.kind || 'unknown' });
@@ -261,6 +263,7 @@ function createAutomationRuntime(options = {}) {
     const settleTabControlRequest = (request, result, error = null) => {
       if (!pendingTabControlRequests.delete(request.requestId)) return;
       clearTimeout(request.timeout);
+      request.cleanup();
       if (error) request.reject(error);
       else request.resolve(result);
     };
@@ -277,13 +280,14 @@ function createAutomationRuntime(options = {}) {
           rendererTabId: null,
           resolve,
           reject,
+          cleanup: () => {},
           timeout: setTimeout(() => {
             settleTabControlRequest(
               request,
               null,
               tabControlError(`Timed out waiting for desktop tab ${type}`)
             );
-          }, desktopTabControlTimeoutMs),
+          }, type === 'creation' ? desktopNavigationTimeoutMs : desktopTabControlTimeoutMs),
         };
         pendingTabControlRequests.set(requestId, request);
         try {
@@ -303,7 +307,40 @@ function createAutomationRuntime(options = {}) {
     const completeCreatedTabWhenBound = (request) => {
       if (!request.rendererTabId) return;
       const createdTabId = bindingsByRendererTab.get(request.rendererTabId);
-      if (createdTabId) settleTabControlRequest(request, createdTabId);
+      const binding = createdTabId && desktopBindingsByAutomationTab.get(createdTabId);
+      if (!binding) return;
+      const committedUrl = () => {
+        try {
+          return binding.guestWebContents.getURL?.() || '';
+        } catch {
+          return '';
+        }
+      };
+      const isCommittedTarget = (url) => Boolean(url && url !== 'about:blank');
+      if (isCommittedTarget(committedUrl())) {
+        settleTabControlRequest(request, createdTabId);
+        return;
+      }
+      if (request.waitingForCreatedNavigation) return;
+      request.waitingForCreatedNavigation = true;
+      const onCommitted = (_event, url) => {
+        if (!isCommittedTarget(url || committedUrl())) return;
+        settleTabControlRequest(request, createdTabId);
+      };
+      const onDestroyed = () => {
+        settleTabControlRequest(
+          request,
+          null,
+          new AutomationError(ERROR_CODES.TAB_NOT_FOUND, 'The created desktop tab was closed')
+        );
+      };
+      request.cleanup = () => {
+        binding.guestWebContents.off?.('did-navigate', onCommitted);
+        binding.guestWebContents.off?.('destroyed', onDestroyed);
+      };
+      binding.guestWebContents.on?.('did-navigate', onCommitted);
+      binding.guestWebContents.on?.('destroyed', onDestroyed);
+      if (isCommittedTarget(committedUrl())) settleTabControlRequest(request, createdTabId);
     };
     const onAttached = (_event, guestWebContents) => {
       const tabId = registerWebContents(guestWebContents, { kind: 'desktop' });
@@ -341,6 +378,7 @@ function createAutomationRuntime(options = {}) {
       bindingsByRendererTab.set(rendererTabId, registration.tabId);
       desktopBindingsByAutomationTab.set(registration.tabId, {
         hostWebContents,
+        guestWebContents,
         rendererTabId,
         bindingsByRendererTab,
         requestNavigation: (url) => requestNavigation(guestWebContents, rendererTabId, url),
@@ -455,12 +493,24 @@ function createAutomationRuntime(options = {}) {
         'A bound desktop opener tab is required to create a visible tab'
       );
     }
-    return binding.createPage(url);
+    const createdTabId = await binding.createPage(url);
+    if (!desktopBindingsByAutomationTab.has(createdTabId)) {
+      throw new AutomationError(ERROR_CODES.TAB_NOT_FOUND, 'The created desktop tab was closed');
+    }
+    desktopLifecycleCreatedTabs.add(createdTabId);
+    return createdTabId;
   }
 
   async function closeDesktopPage(tabId) {
+    if (!desktopLifecycleCreatedTabs.has(tabId)) return false;
     const binding = desktopBindingsByAutomationTab.get(tabId);
-    return binding ? binding.closePage() : false;
+    if (!binding) {
+      desktopLifecycleCreatedTabs.delete(tabId);
+      return false;
+    }
+    const closed = await binding.closePage();
+    if (closed) desktopLifecycleCreatedTabs.delete(tabId);
+    return closed;
   }
 
   async function focusDesktopPage(tabId) {

@@ -19,6 +19,27 @@ const CROSS_ORIGIN_LINK_PAGE_URL = 'https://agent-evaluation.test/untrusted-link
 const SWARM_FACT_URL = `bzz://${SAMPLE_BZZ_HASH}/agent-fact`;
 const IPFS_FACT_URL = `ipfs://${SAMPLE_IPFS_CID}/agent-fact`;
 const IPNS_FACT_URL = 'ipns://agent-evaluation.test/agent-fact';
+const DWEB_CREATE_START_URL = 'https://agent-evaluation.test/dweb-create-start';
+const DWEB_CREATE_CASES = Object.freeze([
+  {
+    label: 'Swarm',
+    marker: 'DWEB_CREATE_SWARM_TASK',
+    url: SWARM_FACT_URL,
+    fact: 'SWARM-ARTIFACT-17',
+  },
+  {
+    label: 'IPFS',
+    marker: 'DWEB_CREATE_IPFS_TASK',
+    url: IPFS_FACT_URL,
+    fact: 'IPFS-ARTIFACT-23',
+  },
+  {
+    label: 'IPNS',
+    marker: 'DWEB_CREATE_IPNS_TASK',
+    url: IPNS_FACT_URL,
+    fact: 'IPNS-ARTIFACT-31',
+  },
+]);
 const INJECTION_PAGE_URL = 'https://agent-evaluation.test/untrusted-message';
 const SCROLL_PAGE_URL = 'https://agent-evaluation.test/scroll';
 const FRAME_PAGE_URL = 'https://agent-evaluation.test/frame';
@@ -641,6 +662,21 @@ async function handleCompletion(request, response) {
     } else {
       const fact = snapshotText(messages).match(/Artifact code:\s*([A-Z0-9-]+)/)?.[1] || '';
       emitFinal(response, `The artifact code is ${fact}.`);
+    }
+    return;
+  }
+
+  const dwebCreateCase = DWEB_CREATE_CASES.find((candidate) =>
+    hasUserMarker(messages, candidate.marker)
+  );
+  if (dwebCreateCase) {
+    if (toolResults.length === 0) {
+      emitToolCall(response, 1, 'browser_create_tab', { url: dwebCreateCase.url });
+    } else if (toolResults.length === 1) {
+      emitToolCall(response, 2, 'browser_snapshot', {});
+    } else {
+      const fact = snapshotText(messages).match(/Artifact code:\s*([A-Z0-9-]+)/)?.[1] || '';
+      emitFinal(response, `The created tab artifact code is ${fact}.`);
     }
     return;
   }
@@ -1295,6 +1331,40 @@ for (const protocolCase of [
     );
     await expect(window.locator('.agent-tool-state')).toHaveText(['✓']);
     expect(operations).toEqual(['browser_snapshot']);
+  });
+}
+
+for (const protocolCase of DWEB_CREATE_CASES) {
+  test(`Pi creates and adopts a ${protocolCase.label} task tab after routed navigation`, async ({
+    window,
+    harness,
+  }) => {
+    requestCount = 0;
+    operations.length = 0;
+    await harness.setContentFixture(protocolCase.url, {
+      body: `<!doctype html>
+        <title>${protocolCase.label} created artifact</title>
+        <main><h1>${protocolCase.label} created artifact</h1><p>Artifact code: ${protocolCase.fact}</p></main>`,
+    });
+    await prepareAgentFixture(
+      window,
+      harness,
+      DWEB_CREATE_START_URL,
+      '<!doctype html><title>Dweb task start</title><main><h1>Dweb task start</h1></main>'
+    );
+
+    await window
+      .locator('#agent-prompt')
+      .fill(`${protocolCase.marker}: open the decentralized source in a new tab and report its artifact code.`);
+    await window.locator('#agent-run').click();
+
+    await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 15_000 });
+    await expect(window.locator('#agent-output')).toHaveText(
+      `The created tab artifact code is ${protocolCase.fact}.`
+    );
+    await expect(window.locator('[data-test="tab"]')).toHaveCount(2);
+    await expect(window.locator('.agent-tool-state')).toHaveText(['✓', '✓']);
+    expect(operations).toEqual(['browser_create_tab', 'browser_snapshot']);
   });
 }
 
