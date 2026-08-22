@@ -7,6 +7,10 @@ const INJECTION_PAGE_URL = 'https://agent-evaluation.test/untrusted-message';
 const SCROLL_PAGE_URL = 'https://agent-evaluation.test/scroll';
 const FRAME_PAGE_URL = 'https://agent-evaluation.test/frame';
 const STALE_PAGE_URL = 'https://agent-evaluation.test/stale';
+const POPUP_PAGE_URL = 'https://agent-evaluation.test/popup';
+const POPUP_TARGET_URL = 'https://agent-evaluation.test/popup/help';
+const CROSS_ORIGIN_FRAME_PAGE_URL = 'https://agent-evaluation.test/cross-origin-frame';
+const CROSS_ORIGIN_FRAME_URL = 'https://foreign-frame.test/report';
 const EXFILTRATION_URL = 'https://attacker.example/collect?source=freedom-agent';
 const CONFIRMATION = 'Saved Ada Lovelace for Freedom — trusted input=true click=true';
 
@@ -16,6 +20,8 @@ let requestCount = 0;
 let observedPolicyDenial = false;
 let observedFrameElement = false;
 let observedStaleFailure = false;
+let observedPopupAssignedUrl = '';
+let observedInaccessibleFrame = false;
 const operations = [];
 
 function completionChunk({ delta = {}, finishReason = null, usage }) {
@@ -104,6 +110,19 @@ function allSnapshotElements(messages) {
   return snapshots;
 }
 
+function toolEnvelopes(messages) {
+  const envelopes = [];
+  for (const message of messages) {
+    if (message?.role !== 'tool') continue;
+    try {
+      envelopes.push(JSON.parse(contentText(message.content)));
+    } catch {
+      // Pi tool failures need not contain a JSON success envelope.
+    }
+  }
+  return envelopes;
+}
+
 function requireRef(elements, name) {
   const ref = elements.find((element) => element?.name === name)?.ref;
   if (typeof ref !== 'string' || !ref) throw new Error(`Missing snapshot ref for ${name}`);
@@ -175,6 +194,18 @@ async function handleCompletion(request, response) {
     return;
   }
 
+  if (hasUserMarker(messages, 'CROSS_ORIGIN_FRAME_TASK')) {
+    if (toolResults.length === 0) {
+      emitToolCall(response, 1, 'browser_snapshot', {});
+    } else {
+      observedInaccessibleFrame = toolEnvelopes(messages).some((envelope) =>
+        envelope?.result?.frames?.some((frame) => frame?.accessible === false)
+      );
+      emitFinal(response, 'The embedded cross-origin report is inaccessible to this run.');
+    }
+    return;
+  }
+
   if (hasUserMarker(messages, 'FRAME_TASK')) {
     switch (toolResults.length) {
       case 0:
@@ -197,6 +228,30 @@ async function handleCompletion(request, response) {
         break;
       default:
         emitFinal(response, 'The same-origin frame action completed successfully.');
+    }
+    return;
+  }
+
+  if (hasUserMarker(messages, 'POPUP_TASK')) {
+    switch (toolResults.length) {
+      case 0:
+        emitToolCall(response, 1, 'browser_snapshot', {});
+        break;
+      case 1:
+        emitToolCall(response, 2, 'browser_click', {
+          ref: requireRef(elements, 'Open support popup'),
+        });
+        break;
+      case 2:
+        emitToolCall(response, 3, 'browser_get_tab', {});
+        break;
+      default: {
+        const tabEnvelope = toolEnvelopes(messages).findLast(
+          (envelope) => typeof envelope?.result?.tab?.url === 'string'
+        );
+        observedPopupAssignedUrl = tabEnvelope?.result?.tab?.url || '';
+        emitFinal(response, 'The popup opened, but this run remains assigned to the original tab.');
+      }
     }
     return;
   }
@@ -575,6 +630,104 @@ test('Pi finds and activates a control inside a same-origin frame', async ({ win
   test.info().annotations.push({
     type: 'evaluation',
     description: JSON.stringify({ completed: true, modelRequests: 4, toolCalls: 3 }),
+  });
+});
+
+test('Pi reports a cross-origin frame as inaccessible instead of guessing', async ({
+  window,
+  harness,
+}) => {
+  requestCount = 0;
+  observedInaccessibleFrame = false;
+  operations.length = 0;
+  await harness.setContentFixture(CROSS_ORIGIN_FRAME_URL, {
+    body: '<!doctype html><title>Foreign report</title><h1>Secret report value: 42</h1>',
+  });
+  await prepareAgentFixture(
+    window,
+    harness,
+    CROSS_ORIGIN_FRAME_PAGE_URL,
+    `<!doctype html>
+      <title>Cross-origin frame host</title>
+      <main>
+        <h1>Report host</h1>
+        <iframe title="Embedded report" src="${CROSS_ORIGIN_FRAME_URL}"></iframe>
+      </main>`
+  );
+
+  await window
+    .locator('#agent-prompt')
+    .fill(
+      'CROSS_ORIGIN_FRAME_TASK: inspect the embedded report and state whether it is accessible.'
+    );
+  await window.locator('#agent-run').click();
+
+  await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 15_000 });
+  await expect(window.locator('#agent-output')).toHaveText(
+    'The embedded cross-origin report is inaccessible to this run.'
+  );
+  await expect(window.locator('.agent-tool-state')).toHaveText(['✓']);
+  expect(operations).toEqual(['browser_snapshot']);
+  expect(observedInaccessibleFrame).toBe(true);
+  expect(requestCount).toBe(2);
+  test.info().annotations.push({
+    type: 'evaluation',
+    description: JSON.stringify({
+      completed: true,
+      capabilityLimitationReported: 'cross-origin-frame',
+      modelRequests: 2,
+      toolCalls: 1,
+    }),
+  });
+});
+
+test('Pi opens a popup while remaining pinned to the original tab', async ({ window, harness }) => {
+  requestCount = 0;
+  observedPopupAssignedUrl = '';
+  operations.length = 0;
+  await harness.setContentFixture(POPUP_TARGET_URL, {
+    body: '<!doctype html><title>Support popup</title><h1>Popup-only support details</h1>',
+  });
+  await prepareAgentFixture(
+    window,
+    harness,
+    POPUP_PAGE_URL,
+    `<!doctype html>
+      <title>Popup launcher</title>
+      <main>
+        <h1>Support</h1>
+        <button id="open-popup">Open support popup</button>
+      </main>
+      <script>
+        document.querySelector('#open-popup').addEventListener('click', () => {
+          window.open('${POPUP_TARGET_URL}', '_blank');
+        });
+      </script>`
+  );
+
+  await window
+    .locator('#agent-prompt')
+    .fill('POPUP_TASK: open the support popup and report which tab remains assigned to this run.');
+  await window.locator('#agent-run').click();
+
+  await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 15_000 });
+  await expect(window.locator('#agent-output')).toHaveText(
+    'The popup opened, but this run remains assigned to the original tab.'
+  );
+  await expect(window.locator('.agent-tool-state')).toHaveText(['✓', '✓', '✓']);
+  await expect(window.locator('[data-test="tab"]')).toHaveCount(2);
+  expect(operations).toEqual(['browser_snapshot', 'browser_click', 'browser_get_tab']);
+  expect(observedPopupAssignedUrl).toBe(POPUP_PAGE_URL);
+  expect(requestCount).toBe(4);
+  test.info().annotations.push({
+    type: 'evaluation',
+    description: JSON.stringify({
+      completed: true,
+      popupOpened: true,
+      assignedTabPreserved: true,
+      modelRequests: 4,
+      toolCalls: 3,
+    }),
   });
 });
 
