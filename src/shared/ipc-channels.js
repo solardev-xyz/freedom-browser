@@ -167,6 +167,12 @@ module.exports = {
   AUTOMATION_NAVIGATE_RESULT: 'automation:navigate-result',
   AUTOMATION_STOP_LOADING: 'automation:stop-loading',
 
+  // Embedded agent IPC is available only through the trusted chrome preload.
+  AGENT_START: 'agent:start',
+  AGENT_STOP: 'agent:stop',
+  AGENT_GET_STATE: 'agent:get-state',
+  AGENT_EVENT: 'agent:event',
+
   // Favicons
   FAVICON_GET: 'favicon:get',
   FAVICON_GET_CACHED: 'favicon:get-cached',

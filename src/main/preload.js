@@ -159,6 +159,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getWebviewPreloadPath: () => ipcRenderer.invoke('internal:get-webview-preload-path'),
   bindAutomationTab: (rendererTabId, guestWebContentsId) =>
     ipcRenderer.send('automation:bind-tab', { rendererTabId, guestWebContentsId }),
+  startAgent: (rendererTabId, prompt) =>
+    ipcRenderer.invoke('agent:start', { rendererTabId, prompt }),
+  stopAgent: (runId) => ipcRenderer.invoke('agent:stop', { runId }),
+  getAgentState: () => ipcRenderer.invoke('agent:get-state'),
+  onAgentEvent: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('agent:event', handler);
+    return () => ipcRenderer.removeListener('agent:event', handler);
+  },
   onAutomationNavigate: (callback) => {
     const handler = (_event, payload) => {
       const requestId = typeof payload?.requestId === 'string' ? payload.requestId : '';
