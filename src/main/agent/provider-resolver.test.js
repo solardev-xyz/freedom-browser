@@ -51,11 +51,24 @@ function createResolver(selection = null) {
   const runtime = createRuntime();
   const store = {
     isEncryptionAvailable: jest.fn(() => true),
-    getPublicStatus: jest.fn(() => ({ configured: Boolean(selection) })),
+    getPublicStatus: jest.fn(() => ({
+      configured: Boolean(selection),
+      connections: selection
+        ? [
+            {
+              kind: selection.kind,
+              providerId: selection.providerId,
+              modelId: selection.modelId,
+            },
+          ]
+        : [],
+    })),
     getSelection: jest.fn(() => selection),
     saveHosted: jest.fn(),
     saveOllama: jest.fn(),
     saveSubscription: jest.fn(),
+    select: jest.fn(),
+    remove: jest.fn(),
     createCredentialStore: jest.fn(() => ({
       read: jest.fn(async (providerId) =>
         providerId === 'openai-codex'
@@ -224,6 +237,40 @@ describe('AgentProviderResolver', () => {
     expect(resolved.thinkingLevel).toBe('medium');
     expect(ctx.runtime.setRuntimeApiKey).not.toHaveBeenCalled();
     expect(ctx.runtime.registerProvider).not.toHaveBeenCalled();
+  });
+
+  test('selects only models exposed by a configured provider connection', async () => {
+    const ctx = createResolver({
+      kind: 'hosted',
+      providerId: 'openai',
+      modelId: 'model-b',
+      apiKey: 'sk-secret',
+    });
+
+    await expect(
+      ctx.resolver.selectModel({ providerId: 'openai', modelId: 'model-b' })
+    ).resolves.toMatchObject({ configured: true });
+    expect(ctx.store.select).toHaveBeenCalledWith('openai', 'model-b');
+    await expect(
+      ctx.resolver.selectModel({ providerId: 'openai', modelId: 'missing' })
+    ).rejects.toMatchObject({ code: 'AGENT_MODEL_INVALID' });
+    await expect(
+      ctx.resolver.selectModel({ providerId: 'anthropic', modelId: 'model-a' })
+    ).rejects.toMatchObject({ code: 'AGENT_MODEL_INVALID' });
+  });
+
+  test('removes a provider connection without clearing the full store', () => {
+    const ctx = createResolver({
+      kind: 'hosted',
+      providerId: 'openai',
+      modelId: 'model-b',
+      apiKey: 'sk-secret',
+    });
+
+    ctx.resolver.removeProvider({ providerId: 'openai' });
+
+    expect(ctx.store.remove).toHaveBeenCalledWith('openai');
+    expect(ctx.store.clear).not.toHaveBeenCalled();
   });
 
   test('refuses subscription login before OAuth when secure storage is unavailable', async () => {

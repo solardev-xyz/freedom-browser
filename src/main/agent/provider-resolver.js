@@ -209,6 +209,32 @@ class AgentProviderResolver {
     return this.getStatus();
   }
 
+  async selectModel(input = {}) {
+    const providerId = requireIdentifier(input.providerId, 'providerId');
+    const modelId = requireIdentifier(input.modelId, 'modelId');
+    const connection = this.getStatus().connections.find(
+      (candidate) => candidate.providerId === providerId
+    );
+    if (!connection) {
+      throw new AgentProviderError('AGENT_MODEL_INVALID', 'Selected model is not configured');
+    }
+    if (providerId !== 'ollama') {
+      const runtime = await this.#createRuntime();
+      if (providerId === 'freepi') registerFreePi(runtime);
+      if (!runtime.getModel(providerId, modelId)) {
+        throw new AgentProviderError('AGENT_MODEL_INVALID', 'Selected model is not available');
+      }
+    }
+    this.store.select(providerId, modelId);
+    return this.getStatus();
+  }
+
+  removeProvider(input = {}) {
+    const providerId = requireIdentifier(input.providerId, 'providerId');
+    this.store.remove(providerId);
+    return this.getStatus();
+  }
+
   clear() {
     this.store.clear();
     return this.getStatus();

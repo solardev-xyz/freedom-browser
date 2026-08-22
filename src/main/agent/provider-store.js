@@ -4,7 +4,8 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
-const PROVIDER_STORE_VERSION = 2;
+const PROVIDER_STORE_VERSION = 3;
+const SINGLE_SELECTION_PROVIDER_STORE_VERSION = 2;
 const LEGACY_PROVIDER_STORE_VERSION = 1;
 const PROVIDER_STORE_FILE = 'provider.json';
 const MAX_PROVIDER_STORE_BYTES = 256 * 1024;
@@ -75,6 +76,57 @@ function isStoredSelection(selection) {
   return selection.kind === 'ollama' && typeof selection.baseUrl === 'string';
 }
 
+function isStoredConnection(connection, providerId) {
+  if (
+    !connection ||
+    typeof connection !== 'object' ||
+    Array.isArray(connection) ||
+    connection.providerId !== providerId ||
+    typeof connection.modelId !== 'string' ||
+    !connection.modelId
+  ) {
+    return false;
+  }
+  if (connection.kind === 'hosted') {
+    return (
+      typeof connection.encryptedApiKey === 'string' &&
+      connection.encryptedApiKey.length > 0 &&
+      connection.encryptedApiKey.length <= 128 * 1024
+    );
+  }
+  if (connection.kind === 'subscription') return providerId === 'openai-codex';
+  return (
+    connection.kind === 'ollama' &&
+    providerId === 'ollama' &&
+    typeof connection.baseUrl === 'string' &&
+    Array.isArray(connection.modelIds) &&
+    connection.modelIds.length > 0 &&
+    connection.modelIds.length <= 128 &&
+    connection.modelIds.every(
+      (modelId, index) =>
+        typeof modelId === 'string' &&
+        Boolean(modelId) &&
+        connection.modelIds.indexOf(modelId) === index
+    ) &&
+    connection.modelIds.includes(connection.modelId)
+  );
+}
+
+function isStoredConnectionMap(connections) {
+  if (!connections || typeof connections !== 'object' || Array.isArray(connections)) return false;
+  return Object.entries(connections).every(([providerId, connection]) =>
+    isStoredConnection(connection, providerId)
+  );
+}
+
+function connectionFromSelection(selection) {
+  if (!selection) return null;
+  return {
+    ...selection,
+    ...(selection.kind === 'ollama' && { modelIds: [selection.modelId] }),
+  };
+}
+
 function isStoredCredentialMap(credentials) {
   if (!credentials || typeof credentials !== 'object' || Array.isArray(credentials)) return false;
   return Object.entries(credentials).every(
@@ -123,23 +175,37 @@ class AgentProviderStore {
 
   getPublicStatus() {
     const payload = this.#read();
-    const selection = payload.selection;
+    const connection = payload.connections[payload.activeProviderId];
     return {
       secureStorageAvailable: this.isEncryptionAvailable(),
-      configured: Boolean(selection),
-      ...(selection && {
-        kind: selection.kind,
-        providerId: selection.providerId,
-        modelId: selection.modelId,
-        ...(selection.kind === 'ollama' && { baseUrl: selection.baseUrl }),
+      configured: Boolean(connection),
+      connections: Object.values(payload.connections).map((candidate) => ({
+        kind: candidate.kind,
+        providerId: candidate.providerId,
+        modelId: candidate.modelId,
+        ...(candidate.kind === 'ollama' && {
+          baseUrl: candidate.baseUrl,
+          modelIds: [...candidate.modelIds],
+        }),
+      })),
+      ...(connection && {
+        kind: connection.kind,
+        providerId: connection.providerId,
+        modelId: connection.modelId,
+        ...(connection.kind === 'ollama' && { baseUrl: connection.baseUrl }),
       }),
     };
   }
 
   getSelection() {
-    const selection = this.#read().selection;
-    if (!selection) return null;
-    if (selection.kind === 'ollama' || selection.kind === 'subscription') return { ...selection };
+    const payload = this.#read();
+    const connection = payload.connections[payload.activeProviderId];
+    if (!connection) return null;
+    if (connection.kind === 'ollama') {
+      const { modelIds: _modelIds, ...selection } = connection;
+      return { ...selection };
+    }
+    if (connection.kind === 'subscription') return { ...connection };
     if (!this.isEncryptionAvailable()) {
       throw new AgentProviderStoreError(
         'AGENT_SECURE_STORAGE_UNAVAILABLE',
@@ -148,7 +214,7 @@ class AgentProviderStore {
     }
     let apiKey;
     try {
-      apiKey = this.safeStorage.decryptString(Buffer.from(selection.encryptedApiKey, 'base64'));
+      apiKey = this.safeStorage.decryptString(Buffer.from(connection.encryptedApiKey, 'base64'));
     } catch {
       throw new AgentProviderStoreError(
         'AGENT_CREDENTIAL_UNAVAILABLE',
@@ -161,7 +227,12 @@ class AgentProviderStore {
         'The saved provider credential is empty'
       );
     }
-    return { kind: 'hosted', providerId: selection.providerId, modelId: selection.modelId, apiKey };
+    return {
+      kind: 'hosted',
+      providerId: connection.providerId,
+      modelId: connection.modelId,
+      apiKey,
+    };
   }
 
   saveHosted({ providerId, modelId, apiKey }) {
@@ -172,16 +243,31 @@ class AgentProviderStore {
       );
     }
     const encryptedApiKey = this.safeStorage.encryptString(apiKey).toString('base64');
+    const payload = this.#read();
     this.#write({
-      selection: { kind: 'hosted', providerId, modelId, encryptedApiKey },
-      credentials: {},
+      connections: {
+        ...payload.connections,
+        [providerId]: { kind: 'hosted', providerId, modelId, encryptedApiKey },
+      },
+      activeProviderId: providerId,
+      credentials: payload.credentials,
     });
   }
 
   saveOllama({ modelId, baseUrl }) {
+    const payload = this.#read();
+    const previous = payload.connections.ollama;
+    const modelIds =
+      previous?.kind === 'ollama' && previous.baseUrl === baseUrl
+        ? [...new Set([...previous.modelIds, modelId])]
+        : [modelId];
     this.#write({
-      selection: { kind: 'ollama', providerId: 'ollama', modelId, baseUrl },
-      credentials: {},
+      connections: {
+        ...payload.connections,
+        ollama: { kind: 'ollama', providerId: 'ollama', modelId, modelIds, baseUrl },
+      },
+      activeProviderId: 'ollama',
+      credentials: payload.credentials,
     });
   }
 
@@ -194,9 +280,46 @@ class AgentProviderStore {
     }
     const payload = this.#read();
     this.#write({
-      selection: { kind: 'subscription', providerId, modelId },
+      connections: {
+        ...payload.connections,
+        [providerId]: { kind: 'subscription', providerId, modelId },
+      },
+      activeProviderId: providerId,
       credentials: payload.credentials,
     });
+  }
+
+  select(providerId, modelId) {
+    const payload = this.#read();
+    const connection = payload.connections[providerId];
+    if (!connection || (connection.kind === 'ollama' && !connection.modelIds.includes(modelId))) {
+      throw new AgentProviderStoreError(
+        'AGENT_MODEL_INVALID',
+        'Selected agent model is not configured'
+      );
+    }
+    this.#write({
+      connections: {
+        ...payload.connections,
+        [providerId]: { ...connection, modelId },
+      },
+      activeProviderId: providerId,
+      credentials: payload.credentials,
+    });
+  }
+
+  remove(providerId) {
+    const payload = this.#read();
+    if (!payload.connections[providerId]) return;
+    const connections = { ...payload.connections };
+    const credentials = { ...payload.credentials };
+    delete connections[providerId];
+    delete credentials[providerId];
+    const activeProviderId =
+      payload.activeProviderId === providerId
+        ? Object.keys(connections)[0] || null
+        : payload.activeProviderId;
+    this.#write({ connections, activeProviderId, credentials });
   }
 
   createCredentialStore() {
@@ -204,11 +327,13 @@ class AgentProviderStore {
   }
 
   clear() {
-    this.#write({ selection: null, credentials: {} });
+    this.#write({ connections: {}, activeProviderId: null, credentials: {} });
   }
 
   #read() {
-    if (!fs.existsSync(this.filePath)) return { selection: null, credentials: {} };
+    if (!fs.existsSync(this.filePath)) {
+      return { connections: {}, activeProviderId: null, credentials: {} };
+    }
     assertRegularFile(this.filePath);
     let payload;
     try {
@@ -219,23 +344,48 @@ class AgentProviderStore {
         'Agent provider storage could not be read'
       );
     }
-    const isLegacy = payload?.version === LEGACY_PROVIDER_STORE_VERSION;
-    if (
-      (!isLegacy && payload?.version !== PROVIDER_STORE_VERSION) ||
-      payload?.profileId !== this.binding.profileId ||
-      payload?.userDataDirHash !== this.binding.userDataDirHash ||
-      !isStoredSelection(payload.selection) ||
-      (!isLegacy && !isStoredCredentialMap(payload.credentials))
-    ) {
+    const isSingleSelection = [
+      LEGACY_PROVIDER_STORE_VERSION,
+      SINGLE_SELECTION_PROVIDER_STORE_VERSION,
+    ].includes(payload?.version);
+    const validBinding =
+      payload?.profileId === this.binding.profileId &&
+      payload?.userDataDirHash === this.binding.userDataDirHash;
+    const validCurrent =
+      payload?.version === PROVIDER_STORE_VERSION &&
+      isStoredConnectionMap(payload.connections) &&
+      (payload.activeProviderId === null ||
+        (typeof payload.activeProviderId === 'string' &&
+          Boolean(payload.connections[payload.activeProviderId]))) &&
+      isStoredCredentialMap(payload.credentials);
+    const validSingleSelection =
+      isSingleSelection &&
+      isStoredSelection(payload.selection) &&
+      (payload.version === LEGACY_PROVIDER_STORE_VERSION ||
+        isStoredCredentialMap(payload.credentials));
+    if (!validBinding || (!validCurrent && !validSingleSelection)) {
       throw new AgentProviderStoreError(
         'AGENT_PROVIDER_STORE_INVALID',
         'Agent provider storage does not belong to this profile'
       );
     }
-    return { ...payload, credentials: isLegacy ? {} : payload.credentials };
+    if (validCurrent) {
+      return {
+        connections: payload.connections,
+        activeProviderId: payload.activeProviderId,
+        credentials: payload.credentials,
+      };
+    }
+    const connection = connectionFromSelection(payload.selection);
+    return {
+      connections: connection ? { [connection.providerId]: connection } : {},
+      activeProviderId: connection?.providerId || null,
+      credentials:
+        payload.version === LEGACY_PROVIDER_STORE_VERSION ? {} : payload.credentials,
+    };
   }
 
-  #write({ selection, credentials }) {
+  #write({ connections, activeProviderId, credentials }) {
     fs.mkdirSync(this.dataDir, { recursive: true, mode: 0o700 });
     assertRegularFile(this.filePath);
     const payload = Buffer.from(
@@ -243,7 +393,8 @@ class AgentProviderStore {
         {
           version: PROVIDER_STORE_VERSION,
           ...this.binding,
-          selection,
+          connections,
+          activeProviderId,
           credentials,
           updatedAt: new Date().toISOString(),
         },
@@ -321,7 +472,8 @@ class AgentProviderStore {
     }
     const payload = this.#read();
     this.#write({
-      selection: payload.selection,
+      connections: payload.connections,
+      activeProviderId: payload.activeProviderId,
       credentials: {
         ...payload.credentials,
         [providerId]: this.safeStorage.encryptString(serialized).toString('base64'),
@@ -332,12 +484,15 @@ class AgentProviderStore {
   #deleteOAuthCredential(providerId) {
     const payload = this.#read();
     const credentials = { ...payload.credentials };
+    const connections = { ...payload.connections };
     delete credentials[providerId];
+    if (connections[providerId]?.kind === 'subscription') delete connections[providerId];
     this.#write({
-      selection:
-        payload.selection?.kind === 'subscription' && payload.selection.providerId === providerId
-          ? null
-          : payload.selection,
+      connections,
+      activeProviderId:
+        payload.activeProviderId === providerId
+          ? Object.keys(connections)[0] || null
+          : payload.activeProviderId,
       credentials,
     });
   }

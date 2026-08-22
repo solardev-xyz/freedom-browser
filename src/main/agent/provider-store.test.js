@@ -41,6 +41,13 @@ describe('AgentProviderStore', () => {
     expect(store.getPublicStatus()).toEqual({
       secureStorageAvailable: true,
       configured: true,
+      connections: [
+        {
+          kind: 'hosted',
+          providerId: 'anthropic',
+          modelId: 'claude-test',
+        },
+      ],
       kind: 'hosted',
       providerId: 'anthropic',
       modelId: 'claude-test',
@@ -197,6 +204,9 @@ describe('AgentProviderStore', () => {
     const filePath = path.join(dataDir, 'provider.json');
     const legacy = JSON.parse(fs.readFileSync(filePath, 'utf8'));
     legacy.version = 1;
+    legacy.selection = legacy.connections.openai;
+    delete legacy.connections;
+    delete legacy.activeProviderId;
     delete legacy.credentials;
     fs.writeFileSync(filePath, JSON.stringify(legacy), { mode: 0o600 });
 
@@ -207,8 +217,41 @@ describe('AgentProviderStore', () => {
     });
     store.saveOllama({ modelId: 'qwen:7b', baseUrl: 'http://127.0.0.1:11434/v1' });
     expect(JSON.parse(fs.readFileSync(filePath, 'utf8'))).toMatchObject({
-      version: 2,
+      version: 3,
       credentials: {},
+    });
+  });
+
+  test('keeps multiple provider connections and switches the active model', () => {
+    const { store } = createStore();
+
+    store.saveHosted({ providerId: 'openai', modelId: 'gpt-test', apiKey: 'sk-openai' });
+    store.saveHosted({
+      providerId: 'anthropic',
+      modelId: 'claude-test',
+      apiKey: 'sk-anthropic',
+    });
+
+    expect(store.getPublicStatus()).toMatchObject({
+      providerId: 'anthropic',
+      modelId: 'claude-test',
+      connections: [
+        { providerId: 'openai', modelId: 'gpt-test' },
+        { providerId: 'anthropic', modelId: 'claude-test' },
+      ],
+    });
+    store.select('openai', 'gpt-next');
+    expect(store.getSelection()).toMatchObject({
+      providerId: 'openai',
+      modelId: 'gpt-next',
+      apiKey: 'sk-openai',
+    });
+
+    store.remove('openai');
+    expect(store.getPublicStatus()).toMatchObject({
+      providerId: 'anthropic',
+      modelId: 'claude-test',
+      connections: [{ providerId: 'anthropic' }],
     });
   });
 

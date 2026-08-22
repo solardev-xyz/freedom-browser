@@ -158,6 +158,8 @@ describe('preload', () => {
       [exposures.electronAPI, 'configureOllamaAgentProvider', ['qwen:7b', 'http://127.0.0.1:11434/v1'], IPC.AGENT_PROVIDER_CONFIGURE_OLLAMA, [{ modelId: 'qwen:7b', baseUrl: 'http://127.0.0.1:11434/v1' }]],
       [exposures.electronAPI, 'loginSubscriptionAgentProvider', ['openai-codex', 'codex-model'], IPC.AGENT_PROVIDER_LOGIN_SUBSCRIPTION, [{ providerId: 'openai-codex', modelId: 'codex-model' }]],
       [exposures.electronAPI, 'cancelAgentProviderLogin', [], IPC.AGENT_PROVIDER_CANCEL_LOGIN, []],
+      [exposures.electronAPI, 'selectAgentModel', ['openai', 'gpt-test'], IPC.AGENT_PROVIDER_SELECT_MODEL, [{ providerId: 'openai', modelId: 'gpt-test' }]],
+      [exposures.electronAPI, 'removeAgentProvider', ['openai'], IPC.AGENT_PROVIDER_REMOVE, [{ providerId: 'openai' }]],
       [exposures.electronAPI, 'clearAgentProvider', [], IPC.AGENT_PROVIDER_CLEAR, []],
       [exposures.electronAPI, 'saveImage', ['https://example.com/image.png'], IPC.CONTEXT_MENU_SAVE_IMAGE, ['https://example.com/image.png']],
       [exposures.electronAPI, 'copyText', ['hello'], 'clipboard:copy-text', ['hello']],

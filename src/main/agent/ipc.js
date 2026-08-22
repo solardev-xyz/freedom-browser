@@ -126,6 +126,8 @@ function registerFreedomAgentIpc(options = {}) {
     typeof providerResolver.configureHosted !== 'function' ||
     typeof providerResolver.configureOllama !== 'function' ||
     typeof providerResolver.loginSubscription !== 'function' ||
+    typeof providerResolver.selectModel !== 'function' ||
+    typeof providerResolver.removeProvider !== 'function' ||
     typeof providerResolver.clear !== 'function'
   ) {
     throw new TypeError('Freedom agent IPC requires a provider resolver');
@@ -463,6 +465,14 @@ function registerFreedomAgentIpc(options = {}) {
       providerLogin.controller.abort();
       return { cancelled: true };
     });
+  const handleSelectModel = (event, payload) =>
+    handleProviderMutation(event, async () => ({
+      status: await providerResolver.selectModel(payload),
+    }));
+  const handleRemoveProvider = (event, payload) =>
+    handleProviderMutation(event, () => ({
+      status: providerResolver.removeProvider(payload),
+    }));
   const handleClearProvider = (event) =>
     handleProviderMutation(event, () => {
       if (providerLogin) {
@@ -486,6 +496,8 @@ function registerFreedomAgentIpc(options = {}) {
   ipcMain.handle(IPC.AGENT_PROVIDER_CONFIGURE_OLLAMA, handleConfigureOllama);
   ipcMain.handle(IPC.AGENT_PROVIDER_LOGIN_SUBSCRIPTION, handleLoginSubscription);
   ipcMain.handle(IPC.AGENT_PROVIDER_CANCEL_LOGIN, handleCancelProviderLogin);
+  ipcMain.handle(IPC.AGENT_PROVIDER_SELECT_MODEL, handleSelectModel);
+  ipcMain.handle(IPC.AGENT_PROVIDER_REMOVE, handleRemoveProvider);
   ipcMain.handle(IPC.AGENT_PROVIDER_CLEAR, handleClearProvider);
 
   return async () => {
@@ -501,6 +513,8 @@ function registerFreedomAgentIpc(options = {}) {
     ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_CONFIGURE_OLLAMA);
     ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_LOGIN_SUBSCRIPTION);
     ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_CANCEL_LOGIN);
+    ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_SELECT_MODEL);
+    ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_REMOVE);
     ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_CLEAR);
     unsubscribe();
     if (providerLogin) {

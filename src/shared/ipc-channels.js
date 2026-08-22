@@ -182,6 +182,8 @@ module.exports = {
   AGENT_PROVIDER_LOGIN_SUBSCRIPTION: 'agent:provider:login-subscription',
   AGENT_PROVIDER_CANCEL_LOGIN: 'agent:provider:cancel-login',
   AGENT_PROVIDER_AUTH_EVENT: 'agent:provider:auth-event',
+  AGENT_PROVIDER_SELECT_MODEL: 'agent:provider:select-model',
+  AGENT_PROVIDER_REMOVE: 'agent:provider:remove',
   AGENT_PROVIDER_CLEAR: 'agent:provider:clear',
 
   // Favicons

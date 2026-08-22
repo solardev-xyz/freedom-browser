@@ -66,6 +66,12 @@ function register(overrides = {}) {
       providerId: 'openai-codex',
       modelId: 'codex-model',
     })),
+    selectModel: jest.fn(async () => ({
+      configured: true,
+      providerId: 'openai',
+      modelId: 'gpt-test',
+    })),
+    removeProvider: jest.fn(() => ({ configured: false, connections: [] })),
     clear: jest.fn(() => ({ configured: false })),
   };
   const openExternal = jest.fn(async () => {});
@@ -313,6 +319,31 @@ describe('Freedom agent IPC', () => {
       status: { configured: true, providerId: 'openai' },
     });
     expect(JSON.stringify(response)).not.toContain('sk-secret');
+  });
+
+  test('selects and removes configured models only through trusted chrome', async () => {
+    const ctx = register();
+    const select = ctx.ipcMain.handlers.get(IPC.AGENT_PROVIDER_SELECT_MODEL);
+    const remove = ctx.ipcMain.handlers.get(IPC.AGENT_PROVIDER_REMOVE);
+
+    await expect(
+      select(
+        { sender: ctx.otherSender },
+        { providerId: 'openai', modelId: 'gpt-test' }
+      )
+    ).resolves.toMatchObject({ ok: false, error: { code: AGENT_IPC_ERROR_CODES.NOT_OWNER } });
+    await expect(
+      select({ sender: ctx.sender }, { providerId: 'openai', modelId: 'gpt-test' })
+    ).resolves.toMatchObject({ ok: true, status: { modelId: 'gpt-test' } });
+    await expect(
+      remove({ sender: ctx.sender }, { providerId: 'openai' })
+    ).resolves.toMatchObject({ ok: true, status: { configured: false } });
+
+    expect(ctx.providerResolver.selectModel).toHaveBeenCalledWith({
+      providerId: 'openai',
+      modelId: 'gpt-test',
+    });
+    expect(ctx.providerResolver.removeProvider).toHaveBeenCalledWith({ providerId: 'openai' });
   });
 
   test('fails provider trust checks closed without exposing classifier errors', async () => {
