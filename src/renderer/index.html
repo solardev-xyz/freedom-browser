@@ -1306,14 +1306,14 @@
                       <span aria-hidden="true">⌄</span>
                     </button>
                     <button
-                      id="agent-scope-button"
+                      id="agent-approval-mode-button"
                       class="agent-composer-chip"
                       type="button"
                       aria-haspopup="dialog"
                       aria-expanded="false"
-                      aria-controls="agent-scope-popover"
+                      aria-controls="agent-approval-mode-popover"
                     >
-                      <span id="agent-active-scope-label">This site</span>
+                      <span id="agent-active-approval-mode-label">Ask every action</span>
                       <span aria-hidden="true">⌄</span>
                     </button>
                   </div>
@@ -1348,40 +1348,54 @@
               </div>
 
               <div
-                id="agent-scope-popover"
-                class="agent-popover agent-scope-popover"
+                id="agent-approval-mode-popover"
+                class="agent-popover agent-approval-mode-popover"
                 role="dialog"
                 hidden
               >
-                <div class="agent-scope-options" role="group" aria-label="Agent task scope">
+                <div
+                  class="agent-approval-mode-options"
+                  role="group"
+                  aria-label="Agent approval mode"
+                >
                   <button
-                    id="agent-scope-site"
-                    class="agent-scope-option active"
+                    id="agent-approval-mode-every"
+                    class="agent-approval-mode-option active"
                     type="button"
                     aria-pressed="true"
                   >
                     <span>
-                      <strong>This site</strong>
-                      <small>Read and interact within the starting site</small>
+                      <strong>Ask before every interaction</strong>
+                      <small>Review clicks, typing, selections, and key presses</small>
                     </span>
-                    <span class="agent-scope-check" aria-hidden="true">✓</span>
+                    <span class="agent-approval-mode-check" aria-hidden="true">✓</span>
                   </button>
                   <button
-                    id="agent-scope-research"
-                    class="agent-scope-option"
+                    id="agent-approval-mode-sensitive"
+                    class="agent-approval-mode-option"
+                    type="button"
+                    disabled
+                    aria-disabled="true"
+                  >
+                    <span>
+                      <strong>Ask for sensitive actions</strong>
+                      <small>Work normally and review consequential actions</small>
+                    </span>
+                    <span class="agent-approval-mode-badge">Coming soon</span>
+                  </button>
+                  <button
+                    id="agent-approval-mode-allow"
+                    class="agent-approval-mode-option"
                     type="button"
                     aria-pressed="false"
                   >
                     <span>
-                      <strong>Research web</strong>
-                      <small>Open and read across sites; no page interaction</small>
+                      <strong>Allow website interactions</strong>
+                      <small>Let Agent interact with websites without asking</small>
                     </span>
-                    <span class="agent-scope-check" aria-hidden="true"></span>
+                    <span class="agent-approval-mode-check" aria-hidden="true"></span>
                   </button>
                 </div>
-                <p id="agent-scope-note">
-                  Cross-site navigation is blocked. Form submission asks for approval.
-                </p>
               </div>
             </div>
           </div>

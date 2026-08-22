@@ -114,23 +114,27 @@ describe('Freedom agent IPC', () => {
     expect(ctx.service.start).toHaveBeenCalledWith({
       prompt: 'Summarize this page',
       tabId: 'tab_bound',
-      navigationScope: 'site',
+      approvalMode: 'every_interaction',
       model: { id: 'model_test' },
       modelRuntime: { kind: 'runtime' },
       thinkingLevel: 'low',
     });
   });
 
-  test('forwards an explicitly selected research navigation scope', async () => {
+  test('forwards an explicitly selected website interaction approval mode', async () => {
     const ctx = register();
 
     await ctx.ipcMain.handlers.get(IPC.AGENT_START)(
       { sender: ctx.sender },
-      { rendererTabId: 7, prompt: 'Compare sources', navigationScope: 'research' }
+      {
+        rendererTabId: 7,
+        prompt: 'Complete this task',
+        approvalMode: 'allow_website_interactions',
+      }
     );
 
     expect(ctx.service.start).toHaveBeenCalledWith(
-      expect.objectContaining({ navigationScope: 'research' })
+      expect.objectContaining({ approvalMode: 'allow_website_interactions' })
     );
   });
 
@@ -526,7 +530,7 @@ describe('Freedom agent IPC', () => {
     await expect(
       start(
         { sender: ctx.sender },
-        { rendererTabId: 7, prompt: 'Task', navigationScope: 'unrestricted' }
+        { rendererTabId: 7, prompt: 'Task', approvalMode: 'sensitive_actions' }
       )
     ).resolves.toMatchObject({
       ok: false,

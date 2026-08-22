@@ -554,7 +554,14 @@ class WebContentsPageAdapter extends EventEmitter {
   async inspectAction(ref, { operation = 'browser_click', key = '' } = {}) {
     this.#assertAvailable();
     this.#requireReference(ref);
-    const action = operation === 'browser_press' ? 'press' : 'click';
+    const action =
+      operation === 'browser_press'
+        ? 'press'
+        : operation === 'browser_type'
+          ? 'type'
+          : operation === 'browser_select'
+            ? 'select'
+            : 'click';
     if (action === 'press') {
       const prepared = await this.#execute(inspectReferencedElement, [ref, action], true);
       this.#assertActionResult(prepared);

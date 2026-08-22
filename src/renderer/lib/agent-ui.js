@@ -10,10 +10,13 @@ const PROVIDER_NAMES = Object.freeze({
   freepi: 'Free Pi',
   ollama: 'Ollama',
 });
-const NAVIGATION_SCOPES = Object.freeze({ SITE: 'site', RESEARCH: 'research' });
-const NAVIGATION_SCOPE_LABELS = Object.freeze({
-  [NAVIGATION_SCOPES.SITE]: 'This site',
-  [NAVIGATION_SCOPES.RESEARCH]: 'Research web',
+const APPROVAL_MODES = Object.freeze({
+  EVERY_INTERACTION: 'every_interaction',
+  ALLOW_WEBSITE_INTERACTIONS: 'allow_website_interactions',
+});
+const APPROVAL_MODE_LABELS = Object.freeze({
+  [APPROVAL_MODES.EVERY_INTERACTION]: 'Ask every action',
+  [APPROVAL_MODES.ALLOW_WEBSITE_INTERACTIONS]: 'Allow website actions',
 });
 
 let elements = {};
@@ -31,7 +34,7 @@ let takeoverRequestedRunId = null;
 let pendingApproval = null;
 let panelOpen = false;
 let agentView = 'loading';
-let navigationScope = NAVIGATION_SCOPES.SITE;
+let approvalMode = APPROVAL_MODES.EVERY_INTERACTION;
 let agentEventUnsubscribe = null;
 let providerAuthEventUnsubscribe = null;
 const toolRows = new Map();
@@ -123,25 +126,26 @@ function configuredModels() {
 
 function closeComposerPopovers() {
   elements.modelMenu.hidden = true;
-  elements.scopePopover.hidden = true;
+  elements.approvalModePopover.hidden = true;
   elements.modelMenuButton.setAttribute('aria-expanded', 'false');
-  elements.scopeButton.setAttribute('aria-expanded', 'false');
+  elements.approvalModeButton.setAttribute('aria-expanded', 'false');
 }
 
-function setNavigationScope(nextScope) {
-  if (!Object.hasOwn(NAVIGATION_SCOPE_LABELS, nextScope) || currentRunStatus !== 'idle') return;
-  navigationScope = nextScope;
-  elements.activeScopeLabel.textContent = NAVIGATION_SCOPE_LABELS[nextScope];
-  const research = nextScope === NAVIGATION_SCOPES.RESEARCH;
-  elements.scopeSite.classList.toggle('active', !research);
-  elements.scopeSite.setAttribute('aria-pressed', String(!research));
-  elements.scopeSite.querySelector('.agent-scope-check').textContent = research ? '' : '✓';
-  elements.scopeResearch.classList.toggle('active', research);
-  elements.scopeResearch.setAttribute('aria-pressed', String(research));
-  elements.scopeResearch.querySelector('.agent-scope-check').textContent = research ? '✓' : '';
-  elements.scopeNote.textContent = research
-    ? 'Pages across sites may be sent to your selected model. This scope cannot click, type, select, or press keys.'
-    : 'Cross-site navigation is blocked. Form submission asks for approval.';
+function setApprovalMode(nextMode) {
+  if (!Object.hasOwn(APPROVAL_MODE_LABELS, nextMode) || currentRunStatus !== 'idle') return;
+  approvalMode = nextMode;
+  elements.activeApprovalModeLabel.textContent = APPROVAL_MODE_LABELS[nextMode];
+  const askEvery = nextMode === APPROVAL_MODES.EVERY_INTERACTION;
+  elements.approvalModeEvery.classList.toggle('active', askEvery);
+  elements.approvalModeEvery.setAttribute('aria-pressed', String(askEvery));
+  elements.approvalModeEvery.querySelector('.agent-approval-mode-check').textContent = askEvery
+    ? '✓'
+    : '';
+  elements.approvalModeAllow.classList.toggle('active', !askEvery);
+  elements.approvalModeAllow.setAttribute('aria-pressed', String(!askEvery));
+  elements.approvalModeAllow.querySelector('.agent-approval-mode-check').textContent = askEvery
+    ? ''
+    : '✓';
   closeComposerPopovers();
 }
 
@@ -532,7 +536,7 @@ function setRunState(status, label) {
   elements.stop.disabled = !active || !currentRunId;
   elements.prompt.disabled = active;
   elements.modelMenuButton.disabled = active;
-  elements.scopeButton.disabled = active;
+  elements.approvalModeButton.disabled = active;
   elements.runStatus.textContent = label;
   elements.runStatus.classList.toggle('active', active);
 }
@@ -564,8 +568,17 @@ function clearApproval() {
 function renderApproval(request) {
   if (!request || typeof request.approvalId !== 'string') return;
   pendingApproval = request;
-  const label = typeof request.label === 'string' && request.label ? request.label : 'Submit form';
-  elements.approvalAction.textContent = `Submit this form using “${label}”?`;
+  const label = typeof request.label === 'string' && request.label ? request.label : 'this element';
+  const interactionCopy = {
+    browser_click: `Let Agent click “${label}”?`,
+    browser_type: `Let Agent type in “${label}”?`,
+    browser_select: `Let Agent change “${label}”?`,
+    browser_press: `Let Agent press a key on “${label}”?`,
+  };
+  elements.approvalAction.textContent =
+    request.action === 'form_submission'
+      ? `Submit this form using “${label}”?`
+      : interactionCopy[request.operation] || `Let Agent interact with “${label}”?`;
   elements.approvalOrigin.textContent = request.origin
     ? `Site: ${request.origin}`
     : 'Site origin unavailable';
@@ -724,7 +737,7 @@ async function startRun() {
   setAgentControlledTab(tab.id);
   setRunState('starting', 'Starting');
   try {
-    const response = await window.electronAPI.startAgent(tab.id, prompt, navigationScope);
+    const response = await window.electronAPI.startAgent(tab.id, prompt, approvalMode);
     if (!response?.ok) {
       currentRunId = null;
       setAgentControlledTab(null);
@@ -894,12 +907,12 @@ export function initAgentUi(options = {}) {
     modelMenu: byId('agent-model-menu'),
     modelMenuList: byId('agent-model-menu-list'),
     manageProviders: byId('agent-manage-providers'),
-    scopeButton: byId('agent-scope-button'),
-    activeScopeLabel: byId('agent-active-scope-label'),
-    scopePopover: byId('agent-scope-popover'),
-    scopeSite: byId('agent-scope-site'),
-    scopeResearch: byId('agent-scope-research'),
-    scopeNote: byId('agent-scope-note'),
+    approvalModeButton: byId('agent-approval-mode-button'),
+    activeApprovalModeLabel: byId('agent-active-approval-mode-label'),
+    approvalModePopover: byId('agent-approval-mode-popover'),
+    approvalModeEvery: byId('agent-approval-mode-every'),
+    approvalModeSensitive: byId('agent-approval-mode-sensitive'),
+    approvalModeAllow: byId('agent-approval-mode-allow'),
   };
   if (Object.values(elements).some((element) => !element)) return;
   getActiveTab = typeof options.getActiveTab === 'function' ? options.getActiveTab : () => null;
@@ -935,15 +948,17 @@ export function initAgentUi(options = {}) {
     elements.modelMenu.hidden = !opening;
     elements.modelMenuButton.setAttribute('aria-expanded', String(opening));
   });
-  elements.scopeButton.addEventListener('click', () => {
-    const opening = elements.scopePopover.hidden;
+  elements.approvalModeButton.addEventListener('click', () => {
+    const opening = elements.approvalModePopover.hidden;
     closeComposerPopovers();
-    elements.scopePopover.hidden = !opening;
-    elements.scopeButton.setAttribute('aria-expanded', String(opening));
+    elements.approvalModePopover.hidden = !opening;
+    elements.approvalModeButton.setAttribute('aria-expanded', String(opening));
   });
-  elements.scopeSite.addEventListener('click', () => setNavigationScope(NAVIGATION_SCOPES.SITE));
-  elements.scopeResearch.addEventListener('click', () =>
-    setNavigationScope(NAVIGATION_SCOPES.RESEARCH)
+  elements.approvalModeEvery.addEventListener('click', () =>
+    setApprovalMode(APPROVAL_MODES.EVERY_INTERACTION)
+  );
+  elements.approvalModeAllow.addEventListener('click', () =>
+    setApprovalMode(APPROVAL_MODES.ALLOW_WEBSITE_INTERACTIONS)
   );
   elements.manageProviders.addEventListener('click', showProviderSetup);
   document.addEventListener('click', (event) => {
@@ -955,9 +970,9 @@ export function initAgentUi(options = {}) {
       closeComposerPopovers();
     }
     if (
-      !elements.scopePopover.hidden &&
-      !elements.scopePopover.contains(event.target) &&
-      !elements.scopeButton.contains(event.target)
+      !elements.approvalModePopover.hidden &&
+      !elements.approvalModePopover.contains(event.target) &&
+      !elements.approvalModeButton.contains(event.target)
     ) {
       closeComposerPopovers();
     }

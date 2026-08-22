@@ -86,14 +86,14 @@ describe('FreedomAgentService', () => {
     expect(dependencies.createControllerScope).toHaveBeenCalledWith({
       controller: dependencies.controller,
       tabId: 'tab_assigned',
-      navigationScope: 'site',
+      navigationScope: 'workspace',
+      approvalMode: 'every_interaction',
       requestApproval: expect.any(Function),
     });
     expect(dependencies.createTools).toHaveBeenCalledWith({
       sdk: { kind: 'sdk' },
       controller: expect.objectContaining({ execute: dependencies.controller.execute }),
       tabId: 'tab_assigned',
-      navigationScope: 'site',
       onToolOutcome: expect.any(Function),
     });
     expect(dependencies.createSession).toHaveBeenCalledWith({
@@ -102,6 +102,7 @@ describe('FreedomAgentService', () => {
       modelRuntime: { kind: 'model-runtime' },
       thinkingLevel: 'low',
       customTools: [{ name: 'browser_snapshot' }],
+      systemPrompt: expect.stringContaining('requires user approval before every page interaction'),
     });
     expect(fake.session.prompt).toHaveBeenCalledWith('Summarize this page', {
       expandPromptTemplates: false,
@@ -136,7 +137,7 @@ describe('FreedomAgentService', () => {
         runId: 'run_test',
         type: 'run_started',
         tabId: 'tab_assigned',
-        navigationScope: 'site',
+        approvalMode: 'every_interaction',
       },
       {
         version: AGENT_EVENT_VERSION,
@@ -175,23 +176,20 @@ describe('FreedomAgentService', () => {
     expect(service.getState()).toEqual({ status: 'idle' });
   });
 
-  test('builds research runs with a read-only cross-site policy prompt', async () => {
+  test('builds allow-interaction runs without the every-interaction policy prompt', async () => {
     const fake = createFakeSession();
     const { service, dependencies } = createService(fake);
 
-    await service.start(startOptions({ navigationScope: 'research' }));
+    await service.start(startOptions({ approvalMode: 'allow_website_interactions' }));
 
     expect(dependencies.createControllerScope).toHaveBeenCalledWith({
       controller: dependencies.controller,
       tabId: 'tab_assigned',
-      navigationScope: 'research',
+      navigationScope: 'workspace',
+      approvalMode: 'allow_website_interactions',
       requestApproval: expect.any(Function),
     });
-    expect(dependencies.createSession).toHaveBeenCalledWith(
-      expect.objectContaining({
-        systemPrompt: expect.stringMatching(/read-only web research scope[\s\S]*must not click/),
-      })
-    );
+    expect(dependencies.createSession.mock.calls[0][0]).not.toHaveProperty('systemPrompt');
 
     fake.prompt.resolve();
     await service.waitForIdle();
@@ -579,7 +577,7 @@ describe('FreedomAgentService', () => {
       service.start(startOptions({ prompt: 'x'.repeat(MAX_AGENT_PROMPT_LENGTH + 1) }))
     ).rejects.toMatchObject({ code: AGENT_ERROR_CODES.INVALID_ARGUMENT });
     await expect(
-      service.start(startOptions({ navigationScope: 'unrestricted' }))
+      service.start(startOptions({ approvalMode: 'sensitive_actions' }))
     ).rejects.toMatchObject({ code: AGENT_ERROR_CODES.INVALID_ARGUMENT });
     expect(dependencies.loadSdk).not.toHaveBeenCalled();
   });

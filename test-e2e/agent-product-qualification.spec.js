@@ -263,13 +263,13 @@ async function handleCompletion(request, response) {
     if (resumed) {
       switch (toolResults.length) {
         case 3:
-          emitToolCall(response, 4, 'browser_get_tab', {});
+          emitToolCall(response, 3, 'browser_get_tab', {});
           break;
         case 4:
-          emitToolCall(response, 5, 'browser_snapshot', {});
+          emitToolCall(response, 4, 'browser_snapshot', {});
           break;
         case 5:
-          emitToolCall(response, 6, 'browser_press', {
+          emitToolCall(response, 5, 'browser_press', {
             ref: requireRef(elements, 'Contact email'),
             key: 'Enter',
           });
@@ -309,7 +309,12 @@ async function handleCompletion(request, response) {
         emitToolCall(response, 3, 'browser_snapshot', {});
         break;
       case 3:
-        emitToolCall(response, 4, 'browser_list_tabs', {});
+        emitToolCall(response, 4, 'browser_click', {
+          ref: requireRef(elements, 'Mark source reviewed'),
+        });
+        break;
+      case 4:
+        emitToolCall(response, 5, 'browser_list_tabs', {});
         break;
       default: {
         const envelopes = toolEnvelopes(messages);
@@ -445,18 +450,24 @@ async function openFixture(window, harness, url, body) {
     .toBe(url);
 }
 
-async function configureFixtureProvider(window) {
+async function selectApprovalMode(window, mode) {
+  await window.locator('#agent-approval-mode-button').click();
+  await window.locator(`#agent-approval-mode-${mode}`).click();
+}
+
+async function configureFixtureProvider(window, approvalMode = 'allow') {
   await window.locator('[data-test="agent-toggle-btn"]').click();
   await window.locator('#agent-provider-select').selectOption('ollama');
   await window.locator('#agent-ollama-model').fill(MODEL_ID);
   await window.locator('#agent-ollama-url').fill(`${baseUrl}/v1`);
   await window.locator('#agent-provider-save').click();
   await expect(window.locator('#agent-provider-status')).toContainText(`Ollama · ${MODEL_ID}`);
+  await selectApprovalMode(window, approvalMode);
 }
 
-async function prepareTask(window, harness, url, body) {
+async function prepareTask(window, harness, url, body, approvalMode = 'allow') {
   await openFixture(window, harness, url, body);
-  await configureFixtureProvider(window);
+  await configureFixtureProvider(window, approvalMode);
 }
 
 async function runTask(window, prompt) {
@@ -659,7 +670,8 @@ test('baseline: Pause, human edit, Resume, and fresh approval preserve collabora
           'Submitted ' + document.querySelector('#email').value +
           ' — trusted click=' + event.isTrusted;
       });
-    </script>`
+    </script>`,
+    'every'
   );
 
   await window
@@ -667,6 +679,9 @@ test('baseline: Pause, human edit, Resume, and fresh approval preserve collabora
     .fill('PRODUCT_COLLABORATIVE_COMMIT: draft and submit this partner application.');
   await window.locator('#agent-run').click();
   await expect(window.locator('#agent-approval')).toBeVisible();
+  await expect(window.locator('#agent-approval-action')).toContainText('Contact email');
+  await window.locator('#agent-approval-approve').click();
+  await expect(window.locator('#agent-approval-action')).toContainText('Submit application');
   await window.locator('#agent-pause').click();
   await expect(window.locator('#agent-run-status')).toHaveText('Paused', { timeout: 5_000 });
   await expect(window.locator('#agent-approval')).toBeHidden();
@@ -707,15 +722,19 @@ test('baseline: Pause, human edit, Resume, and fresh approval preserve collabora
   ]);
 });
 
-test('baseline: explicit read-only research scope compares sources across origins', async ({
+test('baseline: cross-site workspace reads and interacts across origins', async ({
   window,
   harness,
 }) => {
   await harness.setContentFixture(URLS.crossOriginTarget, {
     body: `<!doctype html><title>Independent report</title><main>
       <h1>Independent report</h1><p>Independent finding: verified external evidence</p>
-      <button id="publish">Publish finding</button>
-    </main>`,
+      <button id="review">Mark source reviewed</button><p id="status">Not reviewed</p>
+    </main><script>
+      document.querySelector('#review').addEventListener('click', (event) => {
+        document.querySelector('#status').textContent = 'Reviewed — trusted=' + event.isTrusted;
+      });
+    </script>`,
   });
   await prepareTask(
     window,
@@ -726,29 +745,27 @@ test('baseline: explicit read-only research scope compares sources across origin
       <a href="${URLS.crossOriginTarget}">Independent source</a>
     </main>`
   );
-  await window.locator('#agent-scope-button').click();
-  await window.locator('#agent-scope-research').click();
-  await expect(window.locator('#agent-active-scope-label')).toHaveText('Research web');
-
   await runTask(
     window,
-    'PRODUCT_CROSS_ORIGIN_RESEARCH: compare the primary finding with the linked independent source and cite both.'
+    'PRODUCT_CROSS_ORIGIN_RESEARCH: compare the primary finding with the linked independent source, mark the independent source reviewed, and cite both.'
   );
   const result = await recordQualification(
     window,
-    'cross-origin-read-only-research',
+    'cross-origin-workspace',
     CLASSIFICATION.PASS,
     {
       finalUrl: await currentUrl(window),
       policyDenied: observedPolicyDenial,
       taskTabCount: observedTaskTabCount,
+      reviewStatus: await guestValue(window, 'document.querySelector("#status").textContent'),
     }
   );
 
   expect(result.policyDenied).toBe(false);
   expect(result.taskTabCount).toBe(2);
+  expect(result.reviewStatus).toBe('Reviewed — trusted=true');
   expect(result.finalUrl).toBe(URLS.crossOriginTarget);
-  expect(result.toolStates).toEqual(['✓', '✓', '✓', '✓']);
+  expect(result.toolStates).toEqual(['✓', '✓', '✓', '✓', '✓']);
   expect(result.assistantOutput).toContain('local evidence');
   expect(result.assistantOutput).toContain('verified external evidence');
   expect(result.assistantOutput).toContain(URLS.crossOriginStart);
@@ -757,6 +774,7 @@ test('baseline: explicit read-only research scope compares sources across origin
     'browser_snapshot',
     'browser_create_tab',
     'browser_snapshot',
+    'browser_click',
     'browser_list_tabs',
   ]);
 });

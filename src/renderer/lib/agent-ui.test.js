@@ -58,12 +58,12 @@ function createAgentElements() {
     'agent-model-menu',
     'agent-model-menu-list',
     'agent-manage-providers',
-    'agent-scope-button',
-    'agent-active-scope-label',
-    'agent-scope-popover',
-    'agent-scope-site',
-    'agent-scope-research',
-    'agent-scope-note',
+    'agent-approval-mode-button',
+    'agent-active-approval-mode-label',
+    'agent-approval-mode-popover',
+    'agent-approval-mode-every',
+    'agent-approval-mode-sensitive',
+    'agent-approval-mode-allow',
   ];
   const elements = Object.fromEntries(ids.map((id) => [id, createElement('div')]));
   elements['agent-toggle-btn'] = createElement('button');
@@ -102,19 +102,22 @@ function createAgentElements() {
   elements['agent-model-menu'] = createElement('div');
   elements['agent-model-menu'].hidden = true;
   elements['agent-manage-providers'] = createElement('button');
-  elements['agent-scope-button'] = createElement('button');
-  elements['agent-active-scope-label'] = createElement('span', { textContent: 'This site' });
-  elements['agent-scope-popover'] = createElement('div');
-  elements['agent-scope-popover'].hidden = true;
-  elements['agent-scope-site'] = createElement('button', { classes: ['active'] });
-  elements['agent-scope-site'].appendChild(createElement('span'));
-  elements['agent-scope-site'].appendChild(
-    createElement('span', { classes: ['agent-scope-check'], textContent: '✓' })
+  elements['agent-approval-mode-button'] = createElement('button');
+  elements['agent-active-approval-mode-label'] = createElement('span', {
+    textContent: 'Ask every action',
+  });
+  elements['agent-approval-mode-popover'] = createElement('div');
+  elements['agent-approval-mode-popover'].hidden = true;
+  elements['agent-approval-mode-every'] = createElement('button', { classes: ['active'] });
+  elements['agent-approval-mode-every'].appendChild(createElement('span'));
+  elements['agent-approval-mode-every'].appendChild(
+    createElement('span', { classes: ['agent-approval-mode-check'], textContent: '✓' })
   );
-  elements['agent-scope-research'] = createElement('button');
-  elements['agent-scope-research'].appendChild(createElement('span'));
-  elements['agent-scope-research'].appendChild(
-    createElement('span', { classes: ['agent-scope-check'] })
+  elements['agent-approval-mode-sensitive'] = createElement('button', { disabled: true });
+  elements['agent-approval-mode-allow'] = createElement('button');
+  elements['agent-approval-mode-allow'].appendChild(createElement('span'));
+  elements['agent-approval-mode-allow'].appendChild(
+    createElement('span', { classes: ['agent-approval-mode-check'] })
   );
   return elements;
 }
@@ -253,16 +256,22 @@ describe('Agent UI', () => {
     ctx.elements['agent-prompt'].dispatch('keydown', submit);
     await flush();
     expect(submit.preventDefault).toHaveBeenCalledTimes(1);
-    expect(ctx.electronAPI.startAgent).toHaveBeenCalledWith(7, 'Summarize this page', 'site');
+    expect(ctx.electronAPI.startAgent).toHaveBeenCalledWith(
+      7,
+      'Summarize this page',
+      'every_interaction'
+    );
   });
 
-  test('starts an explicitly selected read-only web research task', async () => {
+  test('selects website interaction approval behavior while sensitive actions remain a stub', async () => {
     const ctx = await loadAgentUi();
-    ctx.elements['agent-scope-research'].dispatch('click');
+    ctx.elements['agent-approval-mode-allow'].dispatch('click');
 
-    expect(ctx.elements['agent-active-scope-label'].textContent).toBe('Research web');
-    expect(ctx.elements['agent-scope-research'].getAttribute('aria-pressed')).toBe('true');
-    expect(ctx.elements['agent-scope-note'].textContent).toContain('cannot click, type');
+    expect(ctx.elements['agent-active-approval-mode-label'].textContent).toBe(
+      'Allow website actions'
+    );
+    expect(ctx.elements['agent-approval-mode-allow'].getAttribute('aria-pressed')).toBe('true');
+    expect(ctx.elements['agent-approval-mode-sensitive'].disabled).toBe(true);
 
     ctx.elements['agent-prompt'].value = 'Compare these sources';
     ctx.elements['agent-run'].dispatch('click');
@@ -271,9 +280,9 @@ describe('Agent UI', () => {
     expect(ctx.electronAPI.startAgent).toHaveBeenCalledWith(
       7,
       'Compare these sources',
-      'research'
+      'allow_website_interactions'
     );
-    expect(ctx.elements['agent-scope-button'].disabled).toBe(true);
+    expect(ctx.elements['agent-approval-mode-button'].disabled).toBe(true);
   });
 
   test('disconnects a provider through the management view and returns to setup', async () => {
@@ -321,7 +330,11 @@ describe('Agent UI', () => {
     ctx.elements['agent-prompt'].value = 'Summarize this page';
     ctx.elements['agent-run'].dispatch('click');
     await flush();
-    expect(ctx.electronAPI.startAgent).toHaveBeenCalledWith(7, 'Summarize this page', 'site');
+    expect(ctx.electronAPI.startAgent).toHaveBeenCalledWith(
+      7,
+      'Summarize this page',
+      'every_interaction'
+    );
 
     ctx.emit({ type: 'run_started', runId: 'run_test' });
     ctx.emit({

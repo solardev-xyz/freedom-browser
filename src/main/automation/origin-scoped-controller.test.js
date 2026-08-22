@@ -1,12 +1,23 @@
 'use strict';
 
+const { AGENT_APPROVAL_MODES } = require('../../shared/agent-approval-modes');
 const { AGENT_NAVIGATION_SCOPES } = require('../../shared/agent-navigation-scopes');
 const { OPERATIONS } = require('./contract/operations');
 const { ERROR_CODES } = require('./contract/errors');
 const {
-  createOriginScopedAutomationController,
+  createOriginScopedAutomationController: createScopeBoundary,
   originScopeForUrl,
 } = require('./origin-scoped-controller');
+
+function createOriginScopedAutomationController(options) {
+  return createScopeBoundary({
+    navigationScope: AGENT_NAVIGATION_SCOPES.WORKSPACE,
+    approvalMode: options.requestApproval
+      ? AGENT_APPROVAL_MODES.EVERY_INTERACTION
+      : AGENT_APPROVAL_MODES.ALLOW_WEBSITE_INTERACTIONS,
+    ...options,
+  });
+}
 
 function createController(initialUrl = 'https://trusted.example/start') {
   let url = initialUrl;
@@ -167,7 +178,7 @@ describe('OriginScopedAutomationController', () => {
     ).resolves.toMatchObject({ ok: true, result: { url: 'https://trusted.example/next' } });
   });
 
-  test('denies cross-origin navigation before it reaches the page adapter', async () => {
+  test('allows cross-origin navigation inside the task-owned workspace', async () => {
     const controller = createController();
     const scoped = await createOriginScopedAutomationController({
       controller,
@@ -179,20 +190,18 @@ describe('OriginScopedAutomationController', () => {
       url: 'https://attacker.example/collect',
     });
 
-    expect(result).toMatchObject({
-      ok: false,
+    expect(result).toMatchObject({ ok: true, tabId: 'tab_assigned' });
+    expect(controller.execute).toHaveBeenCalledWith(OPERATIONS.NAVIGATE, {
       tabId: 'tab_assigned',
-      error: { code: ERROR_CODES.POLICY_DENIED, retryable: false },
+      url: 'https://attacker.example/collect',
     });
-    expect(controller.execute).not.toHaveBeenCalledWith(OPERATIONS.NAVIGATE, expect.anything());
   });
 
-  test('allows supported cross-origin navigation and task tabs in research scope', async () => {
+  test('allows supported cross-origin navigation and task tabs in workspace scope', async () => {
     const controller = createController();
     const scoped = await createOriginScopedAutomationController({
       controller,
       tabId: 'tab_assigned',
-      navigationScope: AGENT_NAVIGATION_SCOPES.RESEARCH,
     });
 
     await expect(
@@ -225,12 +234,13 @@ describe('OriginScopedAutomationController', () => {
     [OPERATIONS.TYPE, { ref: 'ref_field', text: 'sensitive' }],
     [OPERATIONS.SELECT, { ref: 'ref_select', value: 'one' }],
     [OPERATIONS.PRESS, { ref: 'ref_field', key: 'Enter' }],
-  ])('denies %s page interaction in research scope', async (operation, input) => {
+  ])('requires approval before %s in every-interaction mode', async (operation, input) => {
     const controller = createController();
+    const requestApproval = jest.fn(async () => 'declined');
     const scoped = await createOriginScopedAutomationController({
       controller,
       tabId: 'tab_assigned',
-      navigationScope: AGENT_NAVIGATION_SCOPES.RESEARCH,
+      requestApproval,
     });
 
     await expect(
@@ -238,12 +248,18 @@ describe('OriginScopedAutomationController', () => {
     ).resolves.toMatchObject({
       ok: false,
       error: {
-        code: ERROR_CODES.POLICY_DENIED,
-        message: expect.stringContaining('read-only'),
+        code: ERROR_CODES.USER_CANCELLED,
+        message: expect.stringContaining('declined'),
       },
     });
     expect(controller.execute).not.toHaveBeenCalledWith(operation, expect.anything());
-    expect(controller.inspectAction).not.toHaveBeenCalled();
+    expect(controller.inspectAction).toHaveBeenCalledWith(operation, {
+      tabId: 'tab_assigned',
+      ...input,
+    });
+    expect(requestApproval).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'browser_interaction', operation })
+    );
   });
 
   test('rejects an unknown navigation scope when creating the policy boundary', async () => {
@@ -258,7 +274,19 @@ describe('OriginScopedAutomationController', () => {
     ).rejects.toThrow('valid navigation scope');
   });
 
-  test('denies a declarative cross-origin click target before dispatching input', async () => {
+  test('rejects the unimplemented sensitive-actions approval mode', async () => {
+    const controller = createController();
+
+    await expect(
+      createOriginScopedAutomationController({
+        controller,
+        tabId: 'tab_assigned',
+        approvalMode: AGENT_APPROVAL_MODES.SENSITIVE_ACTIONS,
+      })
+    ).rejects.toThrow('supported approval mode');
+  });
+
+  test('allows a declarative cross-origin click target in the cross-site workspace', async () => {
     const controller = createController();
     const scoped = await createOriginScopedAutomationController({
       controller,
@@ -270,11 +298,12 @@ describe('OriginScopedAutomationController', () => {
         tabId: 'tab_assigned',
         ref: 'ref_cross_origin',
       })
-    ).resolves.toMatchObject({
-      ok: false,
-      error: { code: ERROR_CODES.POLICY_DENIED, retryable: false },
+    ).resolves.toMatchObject({ ok: true });
+    expect(controller.execute).toHaveBeenCalledWith(OPERATIONS.CLICK, {
+      tabId: 'tab_assigned',
+      ref: 'ref_cross_origin',
     });
-    expect(controller.execute).not.toHaveBeenCalledWith(OPERATIONS.CLICK, expect.anything());
+    expect(controller.inspectAction).not.toHaveBeenCalled();
   });
 
   test('denies foreign tabs while listing only tabs owned by the task', async () => {
@@ -296,7 +325,7 @@ describe('OriginScopedAutomationController', () => {
     });
   });
 
-  test('creates, focuses, lists, and closes only same-origin task-owned tabs', async () => {
+  test('creates, focuses, lists, and closes task-owned tabs across sites', async () => {
     const controller = createController();
     const scoped = await createOriginScopedAutomationController({
       controller,
@@ -335,13 +364,13 @@ describe('OriginScopedAutomationController', () => {
         tabId: 'tab_assigned',
         url: 'https://foreign.example/comparison',
       })
-    ).resolves.toMatchObject({ error: { code: ERROR_CODES.POLICY_DENIED } });
+    ).resolves.toMatchObject({ ok: true, result: { activeTabId: 'tab_created' } });
     await expect(
       scoped.execute(OPERATIONS.CLOSE_TAB, { tabId: 'tab_assigned' })
     ).resolves.toMatchObject({ error: { code: ERROR_CODES.POLICY_DENIED } });
   });
 
-  test('closes a created tab that redirects outside the task origin before adopting it', async () => {
+  test('adopts a created tab that redirects to another supported website', async () => {
     const controller = createController();
     controller.redirectCreatedTabTo('https://foreign.example/redirected');
     const scoped = await createOriginScopedAutomationController({
@@ -354,16 +383,21 @@ describe('OriginScopedAutomationController', () => {
         tabId: 'tab_assigned',
         url: 'https://trusted.example/comparison',
       })
-    ).resolves.toMatchObject({ error: { code: ERROR_CODES.POLICY_DENIED } });
-    expect(controller.execute).toHaveBeenCalledWith(OPERATIONS.CLOSE_TAB, {
+    ).resolves.toMatchObject({ ok: true, result: { activeTabId: 'tab_created' } });
+    expect(controller.execute).not.toHaveBeenCalledWith(OPERATIONS.CLOSE_TAB, {
       tabId: 'tab_created',
     });
     await expect(scoped.execute(OPERATIONS.LIST_TABS, {})).resolves.toMatchObject({
-      result: { tabs: [{ url: 'https://trusted.example/start' }] },
+      result: {
+        tabs: [
+          { url: 'https://trusted.example/start' },
+          { url: 'https://foreign.example/redirected' },
+        ],
+      },
     });
   });
 
-  test('retains stop-loading authority after an unexpected origin change', async () => {
+  test('retains observation and stop-loading authority after an origin change', async () => {
     const controller = createController();
     const scoped = await createOriginScopedAutomationController({
       controller,
@@ -376,7 +410,7 @@ describe('OriginScopedAutomationController', () => {
 
     await expect(
       scoped.execute(OPERATIONS.SNAPSHOT, { tabId: 'tab_assigned' })
-    ).resolves.toMatchObject({ error: { code: ERROR_CODES.POLICY_DENIED } });
+    ).resolves.toMatchObject({ ok: true });
     await expect(
       scoped.execute(OPERATIONS.STOP_LOADING, { tabId: 'tab_assigned' })
     ).resolves.toMatchObject({ ok: true });
@@ -416,7 +450,7 @@ describe('OriginScopedAutomationController', () => {
     ).resolves.toMatchObject({ ok: true });
   });
 
-  test('refuses to prepare resume after a cross-origin human navigation', async () => {
+  test('prepares resume after a cross-origin human navigation inside the workspace', async () => {
     const controller = createController();
     const scoped = await createOriginScopedAutomationController({
       controller,
@@ -424,13 +458,10 @@ describe('OriginScopedAutomationController', () => {
     });
     controller.setUrl('https://other.example/changed-by-user');
 
-    await expect(scoped.prepareResume()).resolves.toMatchObject({
-      ok: false,
-      error: { code: ERROR_CODES.POLICY_DENIED },
-    });
+    await expect(scoped.prepareResume()).resolves.toEqual({ ok: true });
   });
 
-  test('lets a browser-owned start page establish the first supported origin', async () => {
+  test('lets a browser-owned start page navigate across supported origins', async () => {
     const controller = createController('freedom://newtab/');
     const scoped = await createOriginScopedAutomationController({
       controller,
@@ -448,7 +479,7 @@ describe('OriginScopedAutomationController', () => {
         tabId: 'tab_assigned',
         url: 'ipfs://bafybeisecond/page',
       })
-    ).resolves.toMatchObject({ error: { code: ERROR_CODES.POLICY_DENIED } });
+    ).resolves.toMatchObject({ ok: true });
   });
 
   test('does not lock a browser-owned start page to a failed first navigation', async () => {
@@ -582,7 +613,7 @@ describe('OriginScopedAutomationController', () => {
     });
   });
 
-  test('denies an approved form whose target becomes cross-origin during approval', async () => {
+  test('invalidates approval when a form target changes across origins', async () => {
     const controller = createController();
     const requestApproval = jest.fn(async () => {
       controller.setSubmitAction({
@@ -602,7 +633,7 @@ describe('OriginScopedAutomationController', () => {
       scoped.execute(OPERATIONS.CLICK, { tabId: 'tab_assigned', ref: 'ref_submit' })
     ).resolves.toMatchObject({
       ok: false,
-      error: { code: ERROR_CODES.POLICY_DENIED, retryable: false },
+      error: { code: ERROR_CODES.STALE_ELEMENT_REFERENCE, retryable: true },
     });
     expect(controller.inspectAction).toHaveBeenCalledTimes(2);
     expect(controller.execute).not.toHaveBeenCalledWith(OPERATIONS.CLICK, expect.anything());
@@ -633,11 +664,12 @@ describe('OriginScopedAutomationController', () => {
     expect(controller.execute).not.toHaveBeenCalledWith(OPERATIONS.CLICK, expect.anything());
   });
 
-  test('fails closed when no form-submission approval channel is available', async () => {
+  test('fails closed when every-interaction mode has no approval channel', async () => {
     const controller = createController();
     const scoped = await createOriginScopedAutomationController({
       controller,
       tabId: 'tab_assigned',
+      approvalMode: AGENT_APPROVAL_MODES.EVERY_INTERACTION,
     });
     await scoped.execute(OPERATIONS.SNAPSHOT, { tabId: 'tab_assigned' });
 
@@ -647,5 +679,18 @@ describe('OriginScopedAutomationController', () => {
       ok: false,
       error: { code: ERROR_CODES.APPROVAL_REQUIRED, retryable: false },
     });
+  });
+
+  test('dispatches form submission without approval in allow-interactions mode', async () => {
+    const controller = createController();
+    const scoped = await createOriginScopedAutomationController({
+      controller,
+      tabId: 'tab_assigned',
+    });
+
+    await expect(
+      scoped.execute(OPERATIONS.CLICK, { tabId: 'tab_assigned', ref: 'ref_submit' })
+    ).resolves.toMatchObject({ ok: true });
+    expect(controller.inspectAction).not.toHaveBeenCalled();
   });
 });

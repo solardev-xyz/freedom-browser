@@ -1,9 +1,10 @@
 'use strict';
 
 const {
-  AGENT_NAVIGATION_SCOPES,
-  normalizeAgentNavigationScope,
-} = require('../../shared/agent-navigation-scopes');
+  AGENT_APPROVAL_MODES,
+  normalizeAgentApprovalMode,
+} = require('../../shared/agent-approval-modes');
+const { normalizeAgentNavigationScope } = require('../../shared/agent-navigation-scopes');
 const { OPERATIONS } = require('./contract/operations');
 const { ERROR_CODES } = require('./contract/errors');
 
@@ -75,16 +76,16 @@ function sameActionDescriptor(left, right) {
 }
 
 class OriginScopedAutomationController {
-  constructor({ controller, tabId, initialState, navigationScope, requestApproval }) {
+  constructor({ controller, tabId, initialState, approvalMode, requestApproval }) {
     this.controller = controller;
     this.tabId = tabId;
     this.activeTabId = tabId;
     this.ownedTabs = new Map([[tabId, { created: false }]]);
-    this.scopeOrigin = originScopeForUrl(initialState?.result?.tab?.url);
-    this.navigationScope = navigationScope;
+    this.workspaceEstablished = Boolean(originScopeForUrl(initialState?.result?.tab?.url));
+    this.approvalMode = approvalMode;
     this.lastState = initialState;
     this.requestApproval = requestApproval;
-    this.declinedCommitActions = new Set();
+    this.declinedActions = new Set();
     this.resumeObservation = null;
   }
 
@@ -180,18 +181,7 @@ class OriginScopedAutomationController {
       return this.#originDenied(state);
     }
 
-    if (
-      this.navigationScope === AGENT_NAVIGATION_SCOPES.RESEARCH &&
-      PAGE_INTERACTION_OPERATIONS.has(operation)
-    ) {
-      return errorEnvelope(
-        state,
-        ERROR_CODES.POLICY_DENIED,
-        'Research web scope is read-only and cannot interact with page elements'
-      );
-    }
-
-    if (operation === OPERATIONS.CLICK || operation === OPERATIONS.PRESS) {
+    if (PAGE_INTERACTION_OPERATIONS.has(operation)) {
       const approval = await this.#authorizeAction(operation, input, state);
       if (approval) return approval;
     }
@@ -281,107 +271,85 @@ class OriginScopedAutomationController {
 
   #acceptCurrentOrigin(state) {
     const currentOrigin = originScopeForUrl(state?.result?.tab?.url);
-    if (this.navigationScope === AGENT_NAVIGATION_SCOPES.RESEARCH) {
-      if (currentOrigin) {
-        if (!this.scopeOrigin) this.scopeOrigin = currentOrigin;
-        return true;
-      }
-      return !this.scopeOrigin;
-    }
-    if (!this.scopeOrigin) {
-      if (currentOrigin) this.scopeOrigin = currentOrigin;
+    if (currentOrigin) {
+      this.workspaceEstablished = true;
       return true;
     }
-    return currentOrigin === this.scopeOrigin;
+    return !this.workspaceEstablished;
   }
 
   #acceptRequestedOrigin(url) {
-    const requestedOrigin = originScopeForUrl(url);
-    if (!requestedOrigin) return false;
-    if (this.navigationScope === AGENT_NAVIGATION_SCOPES.RESEARCH) return true;
-    // A browser-owned start page establishes its scope only after navigation
-    // succeeds; a failed first attempt must not poison the rest of the run.
-    if (!this.scopeOrigin) return true;
-    return requestedOrigin === this.scopeOrigin;
+    return Boolean(originScopeForUrl(url));
   }
 
   #originDenied(state) {
-    const message =
-      this.navigationScope === AGENT_NAVIGATION_SCOPES.RESEARCH
-        ? 'Research web scope can only read supported web and distributed-web pages'
-        : "The embedded agent is restricted to the controlled tab's starting site";
     return errorEnvelope(
       state,
       ERROR_CODES.POLICY_DENIED,
-      message
+      'The task workspace can only use supported web and distributed-web pages'
     );
   }
 
   async #authorizeAction(operation, input, state) {
-    const inspected = await this.controller.inspectAction(operation, {
-      tabId: input.tabId,
-      ref: input.ref,
-      ...(input.key && { key: input.key }),
-    });
+    if (this.approvalMode === AGENT_APPROVAL_MODES.ALLOW_WEBSITE_INTERACTIONS) return null;
+    const inspected = await this.controller.inspectAction(operation, input);
     if (!inspected?.ok) return inspected;
     const element = actionDescriptor(inspected.result);
-    if (element?.navigationTarget && !this.#acceptRequestedOrigin(element.navigationTarget)) {
-      return this.#originDenied(state);
-    }
-    if (element?.effect !== 'form_submission') return null;
     const actionKey = JSON.stringify([
       operation,
       input.tabId,
+      input.ref,
       input.key || '',
+      input.value || '',
+      input.text || '',
+      input.replace !== false,
       element.effect,
       element.label,
       element.navigationTarget,
     ]);
-    if (this.declinedCommitActions.has(actionKey)) {
-      return errorEnvelope(state, ERROR_CODES.USER_CANCELLED, 'The user declined form submission');
+    if (this.declinedActions.has(actionKey)) {
+      return errorEnvelope(
+        state,
+        ERROR_CODES.USER_CANCELLED,
+        'The user declined this website interaction'
+      );
     }
     if (typeof this.requestApproval !== 'function') {
       return errorEnvelope(
         state,
         ERROR_CODES.APPROVAL_REQUIRED,
-        'Form submission requires user approval'
+        'This website interaction requires user approval'
       );
     }
     const decision = await this.requestApproval({
-      action: 'form_submission',
+      action: element.effect === 'form_submission' ? 'form_submission' : 'browser_interaction',
       operation,
-      origin: this.scopeOrigin || '',
+      origin: originScopeForUrl(state?.result?.tab?.url) || '',
       label: element.label,
     });
     if (decision === 'withdrawn') {
-      return errorEnvelope(state, ERROR_CODES.USER_CANCELLED, 'Form approval was withdrawn');
+      return errorEnvelope(state, ERROR_CODES.USER_CANCELLED, 'Interaction approval was withdrawn');
     }
     if (decision !== 'approved' && decision !== true) {
-      this.declinedCommitActions.add(actionKey);
-      return errorEnvelope(state, ERROR_CODES.USER_CANCELLED, 'The user declined form submission');
+      this.declinedActions.add(actionKey);
+      return errorEnvelope(
+        state,
+        ERROR_CODES.USER_CANCELLED,
+        'The user declined this website interaction'
+      );
     }
 
     const currentState = await this.#readState(input.tabId);
     if (!currentState.ok) return currentState;
     if (!this.#acceptCurrentOrigin(currentState)) return this.#originDenied(currentState);
-    const reinspected = await this.controller.inspectAction(operation, {
-      tabId: input.tabId,
-      ref: input.ref,
-      ...(input.key && { key: input.key }),
-    });
+    const reinspected = await this.controller.inspectAction(operation, input);
     if (!reinspected?.ok) return reinspected;
     const currentElement = actionDescriptor(reinspected.result);
-    if (
-      currentElement.navigationTarget &&
-      !this.#acceptRequestedOrigin(currentElement.navigationTarget)
-    ) {
-      return this.#originDenied(currentState);
-    }
     if (!sameActionDescriptor(element, currentElement)) {
       return errorEnvelope(
         currentState,
         ERROR_CODES.STALE_ELEMENT_REFERENCE,
-        'The approved form action changed before it could be submitted',
+        'The approved website interaction changed before it could run',
         { retryable: true }
       );
     }
@@ -406,6 +374,10 @@ async function createOriginScopedAutomationController(options = {}) {
   if (!navigationScope) {
     throw new TypeError('Origin-scoped automation requires a valid navigation scope');
   }
+  const approvalMode = normalizeAgentApprovalMode(options.approvalMode);
+  if (!approvalMode) {
+    throw new TypeError('Origin-scoped automation requires a supported approval mode');
+  }
   const initialState = await options.controller.execute(OPERATIONS.GET_TAB, {
     tabId: options.tabId,
   });
@@ -416,7 +388,7 @@ async function createOriginScopedAutomationController(options = {}) {
     controller: options.controller,
     tabId: options.tabId,
     initialState,
-    navigationScope,
+    approvalMode,
     requestApproval: options.requestApproval,
   });
 }

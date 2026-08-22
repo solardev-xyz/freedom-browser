@@ -2,8 +2,11 @@
 
 const crypto = require('crypto');
 const {
+  AGENT_APPROVAL_MODES,
+  normalizeAgentApprovalMode,
+} = require('../../shared/agent-approval-modes');
+const {
   AGENT_NAVIGATION_SCOPES,
-  normalizeAgentNavigationScope,
 } = require('../../shared/agent-navigation-scopes');
 const { ERROR_CODES } = require('../automation/contract/errors');
 const {
@@ -32,9 +35,9 @@ const AGENT_ERROR_CODES = Object.freeze({
 });
 const AUTOMATION_ERROR_CODE_SET = new Set(Object.values(ERROR_CODES));
 const RESUME_PROMPT = `The user resumed this task after potentially changing the page. Treat the current page as authoritative. Do not reuse earlier element references or assumptions. Get the current tab state and take a fresh snapshot before acting. Preserve user changes unless they conflict with the task.`;
-const RESEARCH_SCOPE_SYSTEM_PROMPT = `${DEFAULT_FREEDOM_AGENT_SYSTEM_PROMPT}
+const EVERY_INTERACTION_SYSTEM_PROMPT = `${DEFAULT_FREEDOM_AGENT_SYSTEM_PROMPT}
 
-This run has read-only web research scope. You may navigate task-owned tabs across supported sites and read their contents. You must not click, type, select options, press keys, submit forms, or otherwise interact with page elements.`;
+This run requires user approval before every page interaction. Reading pages, navigating, and managing task-owned tabs do not require approval. Click, type, select, and press tools pause until the user approves or declines the exact interaction.`;
 
 class FreedomAgentError extends Error {
   constructor(code, message) {
@@ -97,14 +100,14 @@ function validateStartOptions(options) {
       'Agent run requires a selected model and model runtime'
     );
   }
-  const navigationScope = normalizeAgentNavigationScope(options.navigationScope);
-  if (!navigationScope) {
+  const approvalMode = normalizeAgentApprovalMode(options.approvalMode);
+  if (!approvalMode) {
     throw new FreedomAgentError(
       AGENT_ERROR_CODES.INVALID_ARGUMENT,
-      'Agent run requires a valid navigation scope'
+      'Agent run requires a supported approval mode'
     );
   }
-  return { prompt: options.prompt.trim(), tabId: options.tabId, navigationScope };
+  return { prompt: options.prompt.trim(), tabId: options.tabId, approvalMode };
 }
 
 function normalizePiEvent(event, toolOutcome) {
@@ -152,7 +155,8 @@ function terminalError(code, message) {
 
 function normalizeApprovalRequest(request) {
   return Object.freeze({
-    action: request?.action === 'form_submission' ? 'form_submission' : 'browser_action',
+    action:
+      request?.action === 'form_submission' ? 'form_submission' : 'browser_interaction',
     operation: typeof request?.operation === 'string' ? request.operation.slice(0, 80) : '',
     origin: typeof request?.origin === 'string' ? request.origin.slice(0, 512) : '',
     label: typeof request?.label === 'string' ? request.label.slice(0, 160) : '',
@@ -225,12 +229,12 @@ class FreedomAgentService {
       );
     }
 
-    const { prompt, tabId, navigationScope } = validateStartOptions(options);
+    const { prompt, tabId, approvalMode } = validateStartOptions(options);
     const completion = createDeferred();
     const run = {
       runId: this.runIdFactory(),
       tabId,
-      navigationScope,
+      approvalMode,
       status: 'starting',
       completion,
       session: null,
@@ -246,14 +250,15 @@ class FreedomAgentService {
       finished: false,
     };
     this.activeRun = run;
-    this.#emit(run, { type: 'run_started', tabId, navigationScope });
+    this.#emit(run, { type: 'run_started', tabId, approvalMode });
 
     try {
       const sdk = await this.loadSdk();
       const scopedController = await this.createControllerScope({
         controller: this.controller,
         tabId,
-        navigationScope,
+        navigationScope: AGENT_NAVIGATION_SCOPES.WORKSPACE,
+        approvalMode,
         requestApproval: (request) => this.#requestApproval(run, request),
       });
       if (
@@ -268,7 +273,6 @@ class FreedomAgentService {
         sdk,
         controller: scopedController,
         tabId,
-        navigationScope,
         onToolOutcome: (outcome) => this.#handleToolOutcome(run, outcome),
       });
       const created = await this.createSession({
@@ -277,8 +281,8 @@ class FreedomAgentService {
         modelRuntime: options.modelRuntime,
         thinkingLevel: options.thinkingLevel,
         customTools,
-        ...(navigationScope === AGENT_NAVIGATION_SCOPES.RESEARCH && {
-          systemPrompt: RESEARCH_SCOPE_SYSTEM_PROMPT,
+        ...(approvalMode === AGENT_APPROVAL_MODES.EVERY_INTERACTION && {
+          systemPrompt: EVERY_INTERACTION_SYSTEM_PROMPT,
         }),
       });
       const session = created?.session;
@@ -373,13 +377,9 @@ class FreedomAgentService {
     if (this.activeRun !== run || run.finished || run.status !== 'paused') return false;
     if (!readiness?.ok) {
       if (readiness?.error?.code === ERROR_CODES.POLICY_DENIED) {
-        const message =
-          run.navigationScope === AGENT_NAVIGATION_SCOPES.RESEARCH
-            ? 'The controlled tab left the supported web research scope. Start a new task to continue.'
-            : 'The controlled tab left the task\'s starting site. Start a new task to continue there.';
         throw new FreedomAgentError(
           AGENT_ERROR_CODES.RESUME_SCOPE_CHANGED,
-          message
+          'The controlled tab left the supported task workspace. Start a new task to continue.'
         );
       }
       throw new FreedomAgentError(

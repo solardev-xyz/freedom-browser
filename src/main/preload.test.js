@@ -150,9 +150,15 @@ describe('preload', () => {
       [
         exposures.electronAPI,
         'startAgent',
-        [7, 'Summarize', 'research'],
+        [7, 'Summarize', 'allow_website_interactions'],
         IPC.AGENT_START,
-        [{ rendererTabId: 7, prompt: 'Summarize', navigationScope: 'research' }],
+        [
+          {
+            rendererTabId: 7,
+            prompt: 'Summarize',
+            approvalMode: 'allow_website_interactions',
+          },
+        ],
       ],
       [exposures.electronAPI, 'pauseAgent', ['run_test'], IPC.AGENT_PAUSE, [{ runId: 'run_test' }]],
       [exposures.electronAPI, 'resumeAgent', ['run_test'], IPC.AGENT_RESUME, [{ runId: 'run_test' }]],

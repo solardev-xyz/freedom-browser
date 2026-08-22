@@ -135,6 +135,32 @@ describe('AutomationController', () => {
     expect(authorize).not.toHaveBeenCalled();
   });
 
+  test('inspects type and select targets without dispatching them', async () => {
+    const { controller } = createController();
+    const adapter = new FakePageAdapter();
+    const tabId = controller.registerPage(adapter, { kind: 'desktop' });
+
+    await expect(
+      controller.inspectAction(OPERATIONS.TYPE, { tabId, ref: 'ref_field', text: 'draft' })
+    ).resolves.toMatchObject({ ok: true });
+    await expect(
+      controller.inspectAction(OPERATIONS.SELECT, {
+        tabId,
+        ref: 'ref_region',
+        value: 'eu-west',
+      })
+    ).resolves.toMatchObject({ ok: true });
+
+    expect(adapter.inspectAction).toHaveBeenNthCalledWith(1, 'ref_field', {
+      operation: OPERATIONS.TYPE,
+    });
+    expect(adapter.inspectAction).toHaveBeenNthCalledWith(2, 'ref_region', {
+      operation: OPERATIONS.SELECT,
+    });
+    expect(adapter.type).not.toHaveBeenCalled();
+    expect(adapter.select).not.toHaveBeenCalled();
+  });
+
   test('dispatches semantic select and bounded key operations', async () => {
     const { controller } = createController();
     const adapter = new FakePageAdapter();

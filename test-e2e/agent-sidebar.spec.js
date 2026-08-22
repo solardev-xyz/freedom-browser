@@ -49,9 +49,16 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
   await expect(window.locator('#agent-workspace-view')).toBeVisible();
   await expect(window.locator('#agent-setup-view')).toBeHidden();
   await expect(window.locator('#agent-active-model-label')).toHaveText('DeepSeek V4 Flash');
-  await window.locator('#agent-scope-button').click();
-  await expect(window.locator('#agent-scope-popover')).toBeVisible();
-  await expect(window.locator('#agent-scope-note')).toContainText('Cross-site navigation is blocked');
+  await window.locator('#agent-approval-mode-button').click();
+  await expect(window.locator('#agent-approval-mode-popover')).toBeVisible();
+  await expect(window.locator('#agent-approval-mode-every')).toContainText(
+    'Ask before every interaction'
+  );
+  await expect(window.locator('#agent-approval-mode-sensitive')).toBeDisabled();
+  await expect(window.locator('#agent-approval-mode-sensitive')).toContainText('Coming soon');
+  await expect(window.locator('#agent-approval-mode-allow')).toContainText(
+    'Allow website interactions'
+  );
 
   await window.locator('#agent-model-menu-button').click();
   await expect(window.locator('#agent-model-menu')).toBeVisible();

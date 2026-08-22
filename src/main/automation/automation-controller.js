@@ -90,7 +90,9 @@ class AutomationController {
     let entry;
     try {
       input = validateOperationInput(operation, rawInput);
-      if (operation !== OPERATIONS.CLICK && operation !== OPERATIONS.PRESS) {
+      if (
+        ![OPERATIONS.CLICK, OPERATIONS.TYPE, OPERATIONS.SELECT, OPERATIONS.PRESS].includes(operation)
+      ) {
         throw new AutomationError(
           ERROR_CODES.CAPABILITY_UNAVAILABLE,
           `Automation action inspection is not implemented: ${operation}`

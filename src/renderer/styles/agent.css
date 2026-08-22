@@ -648,16 +648,16 @@
   color: var(--muted);
 }
 
-.agent-scope-popover {
+.agent-approval-mode-popover {
   padding: 7px;
 }
 
-.agent-scope-options {
+.agent-approval-mode-options {
   display: grid;
   gap: 2px;
 }
 
-.agent-scope-option {
+.agent-approval-mode-option {
   display: flex;
   width: 100%;
   align-items: center;
@@ -671,36 +671,44 @@
   border-radius: 7px;
 }
 
-.agent-scope-option:hover,
-.agent-scope-option.active {
+.agent-approval-mode-option:hover,
+.agent-approval-mode-option.active {
   background: rgba(255, 255, 255, 0.08);
 }
 
-.agent-scope-option strong {
+.agent-approval-mode-option strong {
   display: block;
   color: var(--text);
   font-size: 11px;
 }
 
-.agent-scope-option small {
+.agent-approval-mode-option small {
   display: block;
   margin-top: 2px;
   color: var(--muted);
   font-size: 10px;
 }
 
-.agent-scope-check {
+.agent-approval-mode-check {
   color: var(--accent);
   font-size: 11px;
 }
 
-.agent-scope-popover > p {
-  padding: 8px 8px 2px;
-  margin: 5px 0 0;
+.agent-approval-mode-option:disabled {
+  cursor: default;
+  opacity: 0.48;
+}
+
+.agent-approval-mode-badge {
+  flex: 0 0 auto;
+  padding: 2px 5px;
   color: var(--muted);
-  font-size: 10px;
-  line-height: 1.4;
-  border-top: 1px solid var(--border);
+  font-size: 8px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border: 1px solid var(--border);
+  border-radius: 5px;
 }
 
 .agent-approval {

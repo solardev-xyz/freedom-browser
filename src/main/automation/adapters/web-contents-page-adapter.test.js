@@ -192,6 +192,27 @@ describe('WebContentsPageAdapter', () => {
     expect(webContents.sendInputEvent).not.toHaveBeenCalled();
   });
 
+  test('describes type and select targets without dispatching their actions', async () => {
+    const webContents = new FakeWebContents();
+    webContents.executeJavaScriptInIsolatedWorld
+      .mockResolvedValueOnce(snapshotResult())
+      .mockResolvedValueOnce({ ok: true, label: 'Contact email' })
+      .mockResolvedValueOnce({ ok: true, label: 'Deployment region' });
+    const adapter = new WebContentsPageAdapter(webContents, {
+      referenceIdFactory: () => 'ref_test',
+    });
+    await adapter.snapshot();
+
+    await expect(
+      adapter.inspectAction('ref_test_0', { operation: 'browser_type' })
+    ).resolves.toEqual({ label: 'Contact email' });
+    await expect(
+      adapter.inspectAction('ref_test_0', { operation: 'browser_select' })
+    ).resolves.toEqual({ label: 'Deployment region' });
+    expect(webContents.insertText).not.toHaveBeenCalled();
+    expect(webContents.sendInputEvent).not.toHaveBeenCalled();
+  });
+
   test('selects a snapshot option and presses bounded keys through trusted input', async () => {
     const webContents = new FakeWebContents();
     webContents.executeJavaScriptInIsolatedWorld
