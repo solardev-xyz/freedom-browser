@@ -10,6 +10,11 @@ const PROVIDER_NAMES = Object.freeze({
   freepi: 'Free Pi',
   ollama: 'Ollama',
 });
+const NAVIGATION_SCOPES = Object.freeze({ SITE: 'site', RESEARCH: 'research' });
+const NAVIGATION_SCOPE_LABELS = Object.freeze({
+  [NAVIGATION_SCOPES.SITE]: 'This site',
+  [NAVIGATION_SCOPES.RESEARCH]: 'Research web',
+});
 
 let elements = {};
 let getActiveTab = () => null;
@@ -26,6 +31,7 @@ let takeoverRequestedRunId = null;
 let pendingApproval = null;
 let panelOpen = false;
 let agentView = 'loading';
+let navigationScope = NAVIGATION_SCOPES.SITE;
 let agentEventUnsubscribe = null;
 let providerAuthEventUnsubscribe = null;
 const toolRows = new Map();
@@ -120,6 +126,23 @@ function closeComposerPopovers() {
   elements.scopePopover.hidden = true;
   elements.modelMenuButton.setAttribute('aria-expanded', 'false');
   elements.scopeButton.setAttribute('aria-expanded', 'false');
+}
+
+function setNavigationScope(nextScope) {
+  if (!Object.hasOwn(NAVIGATION_SCOPE_LABELS, nextScope) || currentRunStatus !== 'idle') return;
+  navigationScope = nextScope;
+  elements.activeScopeLabel.textContent = NAVIGATION_SCOPE_LABELS[nextScope];
+  const research = nextScope === NAVIGATION_SCOPES.RESEARCH;
+  elements.scopeSite.classList.toggle('active', !research);
+  elements.scopeSite.setAttribute('aria-pressed', String(!research));
+  elements.scopeSite.querySelector('.agent-scope-check').textContent = research ? '' : '✓';
+  elements.scopeResearch.classList.toggle('active', research);
+  elements.scopeResearch.setAttribute('aria-pressed', String(research));
+  elements.scopeResearch.querySelector('.agent-scope-check').textContent = research ? '✓' : '';
+  elements.scopeNote.textContent = research
+    ? 'Pages across sites may be sent to your selected model. This scope cannot click, type, select, or press keys.'
+    : 'Cross-site navigation is blocked. Form submission asks for approval.';
+  closeComposerPopovers();
 }
 
 function setAgentView(nextView) {
@@ -509,6 +532,7 @@ function setRunState(status, label) {
   elements.stop.disabled = !active || !currentRunId;
   elements.prompt.disabled = active;
   elements.modelMenuButton.disabled = active;
+  elements.scopeButton.disabled = active;
   elements.runStatus.textContent = label;
   elements.runStatus.classList.toggle('active', active);
 }
@@ -700,7 +724,7 @@ async function startRun() {
   setAgentControlledTab(tab.id);
   setRunState('starting', 'Starting');
   try {
-    const response = await window.electronAPI.startAgent(tab.id, prompt);
+    const response = await window.electronAPI.startAgent(tab.id, prompt, navigationScope);
     if (!response?.ok) {
       currentRunId = null;
       setAgentControlledTab(null);
@@ -871,7 +895,11 @@ export function initAgentUi(options = {}) {
     modelMenuList: byId('agent-model-menu-list'),
     manageProviders: byId('agent-manage-providers'),
     scopeButton: byId('agent-scope-button'),
+    activeScopeLabel: byId('agent-active-scope-label'),
     scopePopover: byId('agent-scope-popover'),
+    scopeSite: byId('agent-scope-site'),
+    scopeResearch: byId('agent-scope-research'),
+    scopeNote: byId('agent-scope-note'),
   };
   if (Object.values(elements).some((element) => !element)) return;
   getActiveTab = typeof options.getActiveTab === 'function' ? options.getActiveTab : () => null;
@@ -913,6 +941,10 @@ export function initAgentUi(options = {}) {
     elements.scopePopover.hidden = !opening;
     elements.scopeButton.setAttribute('aria-expanded', String(opening));
   });
+  elements.scopeSite.addEventListener('click', () => setNavigationScope(NAVIGATION_SCOPES.SITE));
+  elements.scopeResearch.addEventListener('click', () =>
+    setNavigationScope(NAVIGATION_SCOPES.RESEARCH)
+  );
   elements.manageProviders.addEventListener('click', showProviderSetup);
   document.addEventListener('click', (event) => {
     if (

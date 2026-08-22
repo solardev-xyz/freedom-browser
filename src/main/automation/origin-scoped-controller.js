@@ -1,5 +1,9 @@
 'use strict';
 
+const {
+  AGENT_NAVIGATION_SCOPES,
+  normalizeAgentNavigationScope,
+} = require('../../shared/agent-navigation-scopes');
 const { OPERATIONS } = require('./contract/operations');
 const { ERROR_CODES } = require('./contract/errors');
 
@@ -19,6 +23,12 @@ const ORIGIN_SCOPED_OPERATIONS = new Set([
   OPERATIONS.STOP_LOADING,
 ]);
 const SCOPED_SCHEMES = new Set(['http:', 'https:', 'bzz:', 'ipfs:', 'ipns:']);
+const PAGE_INTERACTION_OPERATIONS = new Set([
+  OPERATIONS.CLICK,
+  OPERATIONS.TYPE,
+  OPERATIONS.SELECT,
+  OPERATIONS.PRESS,
+]);
 
 function originScopeForUrl(value) {
   if (typeof value !== 'string') return null;
@@ -65,12 +75,13 @@ function sameActionDescriptor(left, right) {
 }
 
 class OriginScopedAutomationController {
-  constructor({ controller, tabId, initialState, requestApproval }) {
+  constructor({ controller, tabId, initialState, navigationScope, requestApproval }) {
     this.controller = controller;
     this.tabId = tabId;
     this.activeTabId = tabId;
     this.ownedTabs = new Map([[tabId, { created: false }]]);
     this.scopeOrigin = originScopeForUrl(initialState?.result?.tab?.url);
+    this.navigationScope = navigationScope;
     this.lastState = initialState;
     this.requestApproval = requestApproval;
     this.declinedCommitActions = new Set();
@@ -169,6 +180,17 @@ class OriginScopedAutomationController {
       return this.#originDenied(state);
     }
 
+    if (
+      this.navigationScope === AGENT_NAVIGATION_SCOPES.RESEARCH &&
+      PAGE_INTERACTION_OPERATIONS.has(operation)
+    ) {
+      return errorEnvelope(
+        state,
+        ERROR_CODES.POLICY_DENIED,
+        'Research web scope is read-only and cannot interact with page elements'
+      );
+    }
+
     if (operation === OPERATIONS.CLICK || operation === OPERATIONS.PRESS) {
       const approval = await this.#authorizeAction(operation, input, state);
       if (approval) return approval;
@@ -259,6 +281,13 @@ class OriginScopedAutomationController {
 
   #acceptCurrentOrigin(state) {
     const currentOrigin = originScopeForUrl(state?.result?.tab?.url);
+    if (this.navigationScope === AGENT_NAVIGATION_SCOPES.RESEARCH) {
+      if (currentOrigin) {
+        if (!this.scopeOrigin) this.scopeOrigin = currentOrigin;
+        return true;
+      }
+      return !this.scopeOrigin;
+    }
     if (!this.scopeOrigin) {
       if (currentOrigin) this.scopeOrigin = currentOrigin;
       return true;
@@ -269,6 +298,7 @@ class OriginScopedAutomationController {
   #acceptRequestedOrigin(url) {
     const requestedOrigin = originScopeForUrl(url);
     if (!requestedOrigin) return false;
+    if (this.navigationScope === AGENT_NAVIGATION_SCOPES.RESEARCH) return true;
     // A browser-owned start page establishes its scope only after navigation
     // succeeds; a failed first attempt must not poison the rest of the run.
     if (!this.scopeOrigin) return true;
@@ -276,10 +306,14 @@ class OriginScopedAutomationController {
   }
 
   #originDenied(state) {
+    const message =
+      this.navigationScope === AGENT_NAVIGATION_SCOPES.RESEARCH
+        ? 'Research web scope can only read supported web and distributed-web pages'
+        : "The embedded agent is restricted to the controlled tab's starting site";
     return errorEnvelope(
       state,
       ERROR_CODES.POLICY_DENIED,
-      "The embedded agent is restricted to the controlled tab's starting site"
+      message
     );
   }
 
@@ -368,6 +402,10 @@ async function createOriginScopedAutomationController(options = {}) {
   if (options.tabId !== options.tabId.trim()) {
     throw new TypeError('Origin-scoped automation tabId cannot contain surrounding whitespace');
   }
+  const navigationScope = normalizeAgentNavigationScope(options.navigationScope);
+  if (!navigationScope) {
+    throw new TypeError('Origin-scoped automation requires a valid navigation scope');
+  }
   const initialState = await options.controller.execute(OPERATIONS.GET_TAB, {
     tabId: options.tabId,
   });
@@ -378,6 +416,7 @@ async function createOriginScopedAutomationController(options = {}) {
     controller: options.controller,
     tabId: options.tabId,
     initialState,
+    navigationScope,
     requestApproval: options.requestApproval,
   });
 }

@@ -84,6 +84,22 @@ describe('Pi browser tool adapter', () => {
     );
   });
 
+  test('describes the research tool set without promising unavailable interaction authority', async () => {
+    const tools = await createFreedomBrowserTools({
+      sdk: createSdk(),
+      controller: { execute: jest.fn() },
+      tabId: 'tab_assigned',
+      navigationScope: 'research',
+    });
+
+    expect(tools.find((tool) => tool.name === OPERATIONS.CREATE_TAB)?.description).toContain(
+      'supported web or distributed-web URL'
+    );
+    expect(tools.find((tool) => tool.name === OPERATIONS.CLICK)?.description).toContain(
+      'Unavailable in read-only web research scope'
+    );
+  });
+
   test('targets newly created and explicitly focused task tabs without exposing tab IDs broadly', async () => {
     const controller = {
       execute: jest.fn(async (operation, input) => {

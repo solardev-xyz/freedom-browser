@@ -114,10 +114,24 @@ describe('Freedom agent IPC', () => {
     expect(ctx.service.start).toHaveBeenCalledWith({
       prompt: 'Summarize this page',
       tabId: 'tab_bound',
+      navigationScope: 'site',
       model: { id: 'model_test' },
       modelRuntime: { kind: 'runtime' },
       thinkingLevel: 'low',
     });
+  });
+
+  test('forwards an explicitly selected research navigation scope', async () => {
+    const ctx = register();
+
+    await ctx.ipcMain.handlers.get(IPC.AGENT_START)(
+      { sender: ctx.sender },
+      { rendererTabId: 7, prompt: 'Compare sources', navigationScope: 'research' }
+    );
+
+    expect(ctx.service.start).toHaveBeenCalledWith(
+      expect.objectContaining({ navigationScope: 'research' })
+    );
   });
 
   test('rejects untrusted chrome before resolving its tab', async () => {
@@ -506,6 +520,15 @@ describe('Freedom agent IPC', () => {
     const start = ctx.ipcMain.handlers.get(IPC.AGENT_START);
 
     await expect(start({ sender: ctx.sender }, null)).resolves.toMatchObject({
+      ok: false,
+      error: { code: AGENT_ERROR_CODES.INVALID_ARGUMENT },
+    });
+    await expect(
+      start(
+        { sender: ctx.sender },
+        { rendererTabId: 7, prompt: 'Task', navigationScope: 'unrestricted' }
+      )
+    ).resolves.toMatchObject({
       ok: false,
       error: { code: AGENT_ERROR_CODES.INVALID_ARGUMENT },
     });

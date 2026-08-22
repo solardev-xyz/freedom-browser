@@ -1,5 +1,6 @@
 'use strict';
 
+const { AGENT_NAVIGATION_SCOPES } = require('../../shared/agent-navigation-scopes');
 const { OPERATIONS } = require('./contract/operations');
 const { ERROR_CODES } = require('./contract/errors');
 const {
@@ -184,6 +185,77 @@ describe('OriginScopedAutomationController', () => {
       error: { code: ERROR_CODES.POLICY_DENIED, retryable: false },
     });
     expect(controller.execute).not.toHaveBeenCalledWith(OPERATIONS.NAVIGATE, expect.anything());
+  });
+
+  test('allows supported cross-origin navigation and task tabs in research scope', async () => {
+    const controller = createController();
+    const scoped = await createOriginScopedAutomationController({
+      controller,
+      tabId: 'tab_assigned',
+      navigationScope: AGENT_NAVIGATION_SCOPES.RESEARCH,
+    });
+
+    await expect(
+      scoped.execute(OPERATIONS.NAVIGATE, {
+        tabId: 'tab_assigned',
+        url: 'https://independent.example/report',
+      })
+    ).resolves.toMatchObject({ ok: true });
+    await expect(
+      scoped.execute(OPERATIONS.CREATE_TAB, {
+        tabId: 'tab_assigned',
+        url: 'ipfs://bafybeiresearch/source',
+      })
+    ).resolves.toMatchObject({
+      ok: true,
+      result: { activeTabId: 'tab_created', tab: { tabId: 'tab_created' } },
+    });
+    await expect(scoped.execute(OPERATIONS.LIST_TABS, {})).resolves.toMatchObject({
+      result: {
+        tabs: [
+          { url: 'https://independent.example/report' },
+          { url: 'ipfs://bafybeiresearch/source' },
+        ],
+      },
+    });
+  });
+
+  test.each([
+    [OPERATIONS.CLICK, { ref: 'ref_button' }],
+    [OPERATIONS.TYPE, { ref: 'ref_field', text: 'sensitive' }],
+    [OPERATIONS.SELECT, { ref: 'ref_select', value: 'one' }],
+    [OPERATIONS.PRESS, { ref: 'ref_field', key: 'Enter' }],
+  ])('denies %s page interaction in research scope', async (operation, input) => {
+    const controller = createController();
+    const scoped = await createOriginScopedAutomationController({
+      controller,
+      tabId: 'tab_assigned',
+      navigationScope: AGENT_NAVIGATION_SCOPES.RESEARCH,
+    });
+
+    await expect(
+      scoped.execute(operation, { tabId: 'tab_assigned', ...input })
+    ).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: ERROR_CODES.POLICY_DENIED,
+        message: expect.stringContaining('read-only'),
+      },
+    });
+    expect(controller.execute).not.toHaveBeenCalledWith(operation, expect.anything());
+    expect(controller.inspectAction).not.toHaveBeenCalled();
+  });
+
+  test('rejects an unknown navigation scope when creating the policy boundary', async () => {
+    const controller = createController();
+
+    await expect(
+      createOriginScopedAutomationController({
+        controller,
+        tabId: 'tab_assigned',
+        navigationScope: 'unrestricted',
+      })
+    ).rejects.toThrow('valid navigation scope');
   });
 
   test('denies a declarative cross-origin click target before dispatching input', async () => {

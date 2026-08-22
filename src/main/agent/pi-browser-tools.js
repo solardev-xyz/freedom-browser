@@ -174,6 +174,12 @@ const TOOL_SPECS = Object.freeze([
 ]);
 
 const TOOL_SPEC_BY_NAME = new Map(TOOL_SPECS.map((spec) => [spec.operation, spec]));
+const PAGE_INTERACTION_TOOL_NAMES = new Set([
+  OPERATIONS.CLICK,
+  OPERATIONS.TYPE,
+  OPERATIONS.SELECT,
+  OPERATIONS.PRESS,
+]);
 
 class FreedomBrowserToolError extends Error {
   constructor(operation, error) {
@@ -298,7 +304,12 @@ async function createFreedomBrowserTools(options = {}) {
     sdk.defineTool({
       name: spec.operation,
       label: spec.label,
-      description: spec.description,
+      description:
+        options.navigationScope === 'research' && spec.operation === OPERATIONS.CREATE_TAB
+          ? 'Create a visible task-owned tab at a supported web or distributed-web URL and make it the active Agent tab.'
+          : options.navigationScope === 'research' && PAGE_INTERACTION_TOOL_NAMES.has(spec.operation)
+            ? `${spec.description} Unavailable in read-only web research scope.`
+            : spec.description,
       parameters: spec.parameters,
       executionMode: 'sequential',
       execute: async (toolCallId, params, signal) => {

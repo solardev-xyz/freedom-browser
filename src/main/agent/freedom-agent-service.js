@@ -1,13 +1,20 @@
 'use strict';
 
 const crypto = require('crypto');
+const {
+  AGENT_NAVIGATION_SCOPES,
+  normalizeAgentNavigationScope,
+} = require('../../shared/agent-navigation-scopes');
 const { ERROR_CODES } = require('../automation/contract/errors');
 const {
   createOriginScopedAutomationController,
 } = require('../automation/origin-scoped-controller');
 const { createFreedomBrowserTools } = require('./pi-browser-tools');
 const { loadPiSdk } = require('./pi-sdk');
-const { createIsolatedPiSession } = require('./pi-session-factory');
+const {
+  createIsolatedPiSession,
+  DEFAULT_FREEDOM_AGENT_SYSTEM_PROMPT,
+} = require('./pi-session-factory');
 
 const AGENT_EVENT_VERSION = 1;
 const MAX_AGENT_PROMPT_LENGTH = 32_000;
@@ -25,6 +32,9 @@ const AGENT_ERROR_CODES = Object.freeze({
 });
 const AUTOMATION_ERROR_CODE_SET = new Set(Object.values(ERROR_CODES));
 const RESUME_PROMPT = `The user resumed this task after potentially changing the page. Treat the current page as authoritative. Do not reuse earlier element references or assumptions. Get the current tab state and take a fresh snapshot before acting. Preserve user changes unless they conflict with the task.`;
+const RESEARCH_SCOPE_SYSTEM_PROMPT = `${DEFAULT_FREEDOM_AGENT_SYSTEM_PROMPT}
+
+This run has read-only web research scope. You may navigate task-owned tabs across supported sites and read their contents. You must not click, type, select options, press keys, submit forms, or otherwise interact with page elements.`;
 
 class FreedomAgentError extends Error {
   constructor(code, message) {
@@ -87,7 +97,14 @@ function validateStartOptions(options) {
       'Agent run requires a selected model and model runtime'
     );
   }
-  return { prompt: options.prompt.trim(), tabId: options.tabId };
+  const navigationScope = normalizeAgentNavigationScope(options.navigationScope);
+  if (!navigationScope) {
+    throw new FreedomAgentError(
+      AGENT_ERROR_CODES.INVALID_ARGUMENT,
+      'Agent run requires a valid navigation scope'
+    );
+  }
+  return { prompt: options.prompt.trim(), tabId: options.tabId, navigationScope };
 }
 
 function normalizePiEvent(event, toolOutcome) {
@@ -208,11 +225,12 @@ class FreedomAgentService {
       );
     }
 
-    const { prompt, tabId } = validateStartOptions(options);
+    const { prompt, tabId, navigationScope } = validateStartOptions(options);
     const completion = createDeferred();
     const run = {
       runId: this.runIdFactory(),
       tabId,
+      navigationScope,
       status: 'starting',
       completion,
       session: null,
@@ -228,13 +246,14 @@ class FreedomAgentService {
       finished: false,
     };
     this.activeRun = run;
-    this.#emit(run, { type: 'run_started', tabId });
+    this.#emit(run, { type: 'run_started', tabId, navigationScope });
 
     try {
       const sdk = await this.loadSdk();
       const scopedController = await this.createControllerScope({
         controller: this.controller,
         tabId,
+        navigationScope,
         requestApproval: (request) => this.#requestApproval(run, request),
       });
       if (
@@ -249,6 +268,7 @@ class FreedomAgentService {
         sdk,
         controller: scopedController,
         tabId,
+        navigationScope,
         onToolOutcome: (outcome) => this.#handleToolOutcome(run, outcome),
       });
       const created = await this.createSession({
@@ -257,6 +277,9 @@ class FreedomAgentService {
         modelRuntime: options.modelRuntime,
         thinkingLevel: options.thinkingLevel,
         customTools,
+        ...(navigationScope === AGENT_NAVIGATION_SCOPES.RESEARCH && {
+          systemPrompt: RESEARCH_SCOPE_SYSTEM_PROMPT,
+        }),
       });
       const session = created?.session;
       if (
@@ -350,9 +373,13 @@ class FreedomAgentService {
     if (this.activeRun !== run || run.finished || run.status !== 'paused') return false;
     if (!readiness?.ok) {
       if (readiness?.error?.code === ERROR_CODES.POLICY_DENIED) {
+        const message =
+          run.navigationScope === AGENT_NAVIGATION_SCOPES.RESEARCH
+            ? 'The controlled tab left the supported web research scope. Start a new task to continue.'
+            : 'The controlled tab left the task\'s starting site. Start a new task to continue there.';
         throw new FreedomAgentError(
           AGENT_ERROR_CODES.RESUME_SCOPE_CHANGED,
-          'The controlled tab left the task\'s starting site. Start a new task to continue there.'
+          message
         );
       }
       throw new FreedomAgentError(

@@ -1313,7 +1313,8 @@
                       aria-expanded="false"
                       aria-controls="agent-scope-popover"
                     >
-                      This site
+                      <span id="agent-active-scope-label">This site</span>
+                      <span aria-hidden="true">⌄</span>
                     </button>
                   </div>
                   <button
@@ -1352,10 +1353,34 @@
                 role="dialog"
                 hidden
               >
-                <strong>This tab and site</strong>
+                <div class="agent-scope-options" role="group" aria-label="Agent task scope">
+                  <button
+                    id="agent-scope-site"
+                    class="agent-scope-option active"
+                    type="button"
+                    aria-pressed="true"
+                  >
+                    <span>
+                      <strong>This site</strong>
+                      <small>Read and interact within the starting site</small>
+                    </span>
+                    <span class="agent-scope-check" aria-hidden="true">✓</span>
+                  </button>
+                  <button
+                    id="agent-scope-research"
+                    class="agent-scope-option"
+                    type="button"
+                    aria-pressed="false"
+                  >
+                    <span>
+                      <strong>Research web</strong>
+                      <small>Open and read across sites; no page interaction</small>
+                    </span>
+                    <span class="agent-scope-check" aria-hidden="true"></span>
+                  </button>
+                </div>
                 <p id="agent-scope-note">
-                  Agent can read and interact with this tab. Cross-site navigation is blocked, and
-                  form submission asks for approval.
+                  Cross-site navigation is blocked. Form submission asks for approval.
                 </p>
               </div>
             </div>

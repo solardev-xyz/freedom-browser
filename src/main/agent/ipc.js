@@ -1,6 +1,7 @@
 'use strict';
 
 const IPC = require('../../shared/ipc-channels');
+const { normalizeAgentNavigationScope } = require('../../shared/agent-navigation-scopes');
 const { AGENT_ERROR_CODES, FreedomAgentError } = require('./freedom-agent-service');
 
 const AGENT_IPC_ERROR_CODES = Object.freeze({
@@ -85,7 +86,14 @@ function validateStartPayload(payload) {
       'Agent prompt must be a non-empty string'
     );
   }
-  return { rendererTabId: payload.rendererTabId, prompt: payload.prompt };
+  const navigationScope = normalizeAgentNavigationScope(payload.navigationScope);
+  if (!navigationScope) {
+    throw new FreedomAgentError(
+      AGENT_ERROR_CODES.INVALID_ARGUMENT,
+      'Agent input requires a valid navigation scope'
+    );
+  }
+  return { rendererTabId: payload.rendererTabId, prompt: payload.prompt, navigationScope };
 }
 
 function registerFreedomAgentIpc(options = {}) {
@@ -191,7 +199,7 @@ function registerFreedomAgentIpc(options = {}) {
           'The sender is not trusted browser chrome'
         );
       }
-      const { rendererTabId, prompt } = validateStartPayload(rawPayload);
+      const { rendererTabId, prompt, navigationScope } = validateStartPayload(rawPayload);
       const tabId = automationTabIdForRenderer(event?.sender, rendererTabId);
       if (!tabId) {
         return errorEnvelope(
@@ -240,6 +248,7 @@ function registerFreedomAgentIpc(options = {}) {
         started = await service.start({
           prompt,
           tabId,
+          navigationScope,
           model: resolved.model,
           modelRuntime: resolved.modelRuntime,
           thinkingLevel: resolved.thinkingLevel,

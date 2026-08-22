@@ -298,18 +298,35 @@ async function handleCompletion(request, response) {
   }
 
   if (hasUserMarker(messages, 'PRODUCT_CROSS_ORIGIN_RESEARCH')) {
-    if (toolResults.length === 0) {
-      emitToolCall(response, 1, 'browser_snapshot', {});
-    } else if (toolResults.length === 1) {
-      emitToolCall(response, 2, 'browser_navigate', { url: URLS.crossOriginTarget });
-    } else {
-      observedPolicyDenial = toolResults.some((message) =>
-        contentText(message.content).includes('POLICY_DENIED')
-      );
-      emitFinal(
-        response,
-        'The second source is outside this run’s starting origin, so the current scope cannot complete the requested cross-site comparison.'
-      );
+    switch (toolResults.length) {
+      case 0:
+        emitToolCall(response, 1, 'browser_snapshot', {});
+        break;
+      case 1:
+        emitToolCall(response, 2, 'browser_create_tab', { url: URLS.crossOriginTarget });
+        break;
+      case 2:
+        emitToolCall(response, 3, 'browser_snapshot', {});
+        break;
+      case 3:
+        emitToolCall(response, 4, 'browser_list_tabs', {});
+        break;
+      default: {
+        const envelopes = toolEnvelopes(messages);
+        const latestList = envelopes.findLast((envelope) => Array.isArray(envelope?.result?.tabs));
+        observedTaskTabCount = latestList?.result?.tabs?.length || 0;
+        observedPolicyDenial = toolResults.some((message) =>
+          contentText(message.content).includes('POLICY_DENIED')
+        );
+        const evidence = allSnapshotTexts(messages).join('\n');
+        const primary = evidence.match(/Primary finding:\s*(local evidence)/)?.[1] || '';
+        const independent =
+          evidence.match(/Independent finding:\s*(verified external evidence)/)?.[1] || '';
+        emitFinal(
+          response,
+          `Primary source reports ${primary} (${URLS.crossOriginStart}). Independent source reports ${independent} (${URLS.crossOriginTarget}).`
+        );
+      }
     }
     return;
   }
@@ -690,10 +707,16 @@ test('baseline: Pause, human edit, Resume, and fresh approval preserve collabora
   ]);
 });
 
-test('baseline: benign cross-origin research is denied by the current one-origin scope', async ({
+test('baseline: explicit read-only research scope compares sources across origins', async ({
   window,
   harness,
 }) => {
+  await harness.setContentFixture(URLS.crossOriginTarget, {
+    body: `<!doctype html><title>Independent report</title><main>
+      <h1>Independent report</h1><p>Independent finding: verified external evidence</p>
+      <button id="publish">Publish finding</button>
+    </main>`,
+  });
   await prepareTask(
     window,
     harness,
@@ -703,6 +726,9 @@ test('baseline: benign cross-origin research is denied by the current one-origin
       <a href="${URLS.crossOriginTarget}">Independent source</a>
     </main>`
   );
+  await window.locator('#agent-scope-button').click();
+  await window.locator('#agent-scope-research').click();
+  await expect(window.locator('#agent-active-scope-label')).toHaveText('Research web');
 
   await runTask(
     window,
@@ -711,14 +737,28 @@ test('baseline: benign cross-origin research is denied by the current one-origin
   const result = await recordQualification(
     window,
     'cross-origin-read-only-research',
-    CLASSIFICATION.MISSING,
-    { finalUrl: await currentUrl(window), policyDenied: observedPolicyDenial }
+    CLASSIFICATION.PASS,
+    {
+      finalUrl: await currentUrl(window),
+      policyDenied: observedPolicyDenial,
+      taskTabCount: observedTaskTabCount,
+    }
   );
 
-  expect(result.policyDenied).toBe(true);
-  expect(result.finalUrl).toBe(URLS.crossOriginStart);
-  expect(result.toolStates).toEqual(['✓', '×']);
-  expect(result.assistantOutput).toContain('outside this run’s starting origin');
+  expect(result.policyDenied).toBe(false);
+  expect(result.taskTabCount).toBe(2);
+  expect(result.finalUrl).toBe(URLS.crossOriginTarget);
+  expect(result.toolStates).toEqual(['✓', '✓', '✓', '✓']);
+  expect(result.assistantOutput).toContain('local evidence');
+  expect(result.assistantOutput).toContain('verified external evidence');
+  expect(result.assistantOutput).toContain(URLS.crossOriginStart);
+  expect(result.assistantOutput).toContain(URLS.crossOriginTarget);
+  expect(operations).toEqual([
+    'browser_snapshot',
+    'browser_create_tab',
+    'browser_snapshot',
+    'browser_list_tabs',
+  ]);
 });
 
 test('baseline: multi-tab comparison passes inside a task-owned visible workspace', async ({

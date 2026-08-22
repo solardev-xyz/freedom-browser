@@ -59,7 +59,11 @@ function createAgentElements() {
     'agent-model-menu-list',
     'agent-manage-providers',
     'agent-scope-button',
+    'agent-active-scope-label',
     'agent-scope-popover',
+    'agent-scope-site',
+    'agent-scope-research',
+    'agent-scope-note',
   ];
   const elements = Object.fromEntries(ids.map((id) => [id, createElement('div')]));
   elements['agent-toggle-btn'] = createElement('button');
@@ -99,8 +103,19 @@ function createAgentElements() {
   elements['agent-model-menu'].hidden = true;
   elements['agent-manage-providers'] = createElement('button');
   elements['agent-scope-button'] = createElement('button');
+  elements['agent-active-scope-label'] = createElement('span', { textContent: 'This site' });
   elements['agent-scope-popover'] = createElement('div');
   elements['agent-scope-popover'].hidden = true;
+  elements['agent-scope-site'] = createElement('button', { classes: ['active'] });
+  elements['agent-scope-site'].appendChild(createElement('span'));
+  elements['agent-scope-site'].appendChild(
+    createElement('span', { classes: ['agent-scope-check'], textContent: '✓' })
+  );
+  elements['agent-scope-research'] = createElement('button');
+  elements['agent-scope-research'].appendChild(createElement('span'));
+  elements['agent-scope-research'].appendChild(
+    createElement('span', { classes: ['agent-scope-check'] })
+  );
   return elements;
 }
 
@@ -238,7 +253,27 @@ describe('Agent UI', () => {
     ctx.elements['agent-prompt'].dispatch('keydown', submit);
     await flush();
     expect(submit.preventDefault).toHaveBeenCalledTimes(1);
-    expect(ctx.electronAPI.startAgent).toHaveBeenCalledWith(7, 'Summarize this page');
+    expect(ctx.electronAPI.startAgent).toHaveBeenCalledWith(7, 'Summarize this page', 'site');
+  });
+
+  test('starts an explicitly selected read-only web research task', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-scope-research'].dispatch('click');
+
+    expect(ctx.elements['agent-active-scope-label'].textContent).toBe('Research web');
+    expect(ctx.elements['agent-scope-research'].getAttribute('aria-pressed')).toBe('true');
+    expect(ctx.elements['agent-scope-note'].textContent).toContain('cannot click, type');
+
+    ctx.elements['agent-prompt'].value = 'Compare these sources';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+
+    expect(ctx.electronAPI.startAgent).toHaveBeenCalledWith(
+      7,
+      'Compare these sources',
+      'research'
+    );
+    expect(ctx.elements['agent-scope-button'].disabled).toBe(true);
   });
 
   test('disconnects a provider through the management view and returns to setup', async () => {
@@ -286,7 +321,7 @@ describe('Agent UI', () => {
     ctx.elements['agent-prompt'].value = 'Summarize this page';
     ctx.elements['agent-run'].dispatch('click');
     await flush();
-    expect(ctx.electronAPI.startAgent).toHaveBeenCalledWith(7, 'Summarize this page');
+    expect(ctx.electronAPI.startAgent).toHaveBeenCalledWith(7, 'Summarize this page', 'site');
 
     ctx.emit({ type: 'run_started', runId: 'run_test' });
     ctx.emit({

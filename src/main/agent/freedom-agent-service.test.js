@@ -86,12 +86,14 @@ describe('FreedomAgentService', () => {
     expect(dependencies.createControllerScope).toHaveBeenCalledWith({
       controller: dependencies.controller,
       tabId: 'tab_assigned',
+      navigationScope: 'site',
       requestApproval: expect.any(Function),
     });
     expect(dependencies.createTools).toHaveBeenCalledWith({
       sdk: { kind: 'sdk' },
       controller: expect.objectContaining({ execute: dependencies.controller.execute }),
       tabId: 'tab_assigned',
+      navigationScope: 'site',
       onToolOutcome: expect.any(Function),
     });
     expect(dependencies.createSession).toHaveBeenCalledWith({
@@ -134,6 +136,7 @@ describe('FreedomAgentService', () => {
         runId: 'run_test',
         type: 'run_started',
         tabId: 'tab_assigned',
+        navigationScope: 'site',
       },
       {
         version: AGENT_EVENT_VERSION,
@@ -170,6 +173,28 @@ describe('FreedomAgentService', () => {
     expect(fake.unsubscribe).toHaveBeenCalledTimes(1);
     expect(fake.session.dispose).toHaveBeenCalledTimes(1);
     expect(service.getState()).toEqual({ status: 'idle' });
+  });
+
+  test('builds research runs with a read-only cross-site policy prompt', async () => {
+    const fake = createFakeSession();
+    const { service, dependencies } = createService(fake);
+
+    await service.start(startOptions({ navigationScope: 'research' }));
+
+    expect(dependencies.createControllerScope).toHaveBeenCalledWith({
+      controller: dependencies.controller,
+      tabId: 'tab_assigned',
+      navigationScope: 'research',
+      requestApproval: expect.any(Function),
+    });
+    expect(dependencies.createSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        systemPrompt: expect.stringMatching(/read-only web research scope[\s\S]*must not click/),
+      })
+    );
+
+    fake.prompt.resolve();
+    await service.waitForIdle();
   });
 
   test('pauses a run for a bounded approval and accepts only its exact decision', async () => {
@@ -552,6 +577,9 @@ describe('FreedomAgentService', () => {
     });
     await expect(
       service.start(startOptions({ prompt: 'x'.repeat(MAX_AGENT_PROMPT_LENGTH + 1) }))
+    ).rejects.toMatchObject({ code: AGENT_ERROR_CODES.INVALID_ARGUMENT });
+    await expect(
+      service.start(startOptions({ navigationScope: 'unrestricted' }))
     ).rejects.toMatchObject({ code: AGENT_ERROR_CODES.INVALID_ARGUMENT });
     expect(dependencies.loadSdk).not.toHaveBeenCalled();
   });
