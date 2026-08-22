@@ -14,13 +14,19 @@ function createAgentElements() {
     'agent-provider-status',
     'agent-provider-privacy',
     'agent-hosted-fields',
+    'agent-api-key-field',
+    'agent-subscription-fields',
     'agent-ollama-fields',
     'agent-model-select',
     'agent-api-key',
     'agent-ollama-model',
     'agent-ollama-url',
     'agent-provider-save',
+    'agent-provider-login',
+    'agent-provider-cancel-login',
     'agent-provider-clear',
+    'agent-auth-code',
+    'agent-auth-user-code',
     'agent-provider-message',
     'agent-prompt',
     'agent-run',
@@ -44,7 +50,10 @@ function createAgentElements() {
     value: 'http://127.0.0.1:11434/v1',
   });
   elements['agent-provider-save'] = createElement('button');
+  elements['agent-provider-login'] = createElement('button');
+  elements['agent-provider-cancel-login'] = createElement('button');
   elements['agent-provider-clear'] = createElement('button');
+  elements['agent-auth-code'].hidden = true;
   elements['agent-prompt'] = createElement('textarea');
   elements['agent-run'] = createElement('button');
   elements['agent-stop'] = createElement('button', { disabled: true });
@@ -59,6 +68,7 @@ async function loadAgentUi(options = {}) {
   const document = createDocument({ elementsById: elements });
   document.dispatchEvent = jest.fn();
   let eventHandler = null;
+  let providerAuthEventHandler = null;
   const electronAPI = {
     getAgentProviderStatus: jest.fn().mockResolvedValue({
       ok: true,
@@ -70,7 +80,14 @@ async function loadAgentUi(options = {}) {
         {
           providerId: 'openai',
           name: 'OpenAI',
+          authType: 'api_key',
           models: [{ id: 'gpt-4.1-mini', name: 'GPT 4.1 mini' }],
+        },
+        {
+          providerId: 'openai-codex',
+          name: 'ChatGPT (Codex)',
+          authType: 'subscription',
+          models: [{ id: 'codex-model', name: 'Codex Model' }],
         },
       ],
     }),
@@ -79,12 +96,18 @@ async function loadAgentUi(options = {}) {
       status: { configured: true, providerId: 'openai', modelId: 'gpt-4.1-mini' },
     }),
     configureOllamaAgentProvider: jest.fn(),
+    loginSubscriptionAgentProvider: jest.fn(),
+    cancelAgentProviderLogin: jest.fn().mockResolvedValue({ ok: true, cancelled: true }),
     clearAgentProvider: jest.fn(),
     getAgentState: jest.fn().mockResolvedValue({ ok: true, state: { status: 'idle' } }),
     startAgent: jest.fn().mockResolvedValue({ ok: true, runId: 'run_test' }),
     stopAgent: jest.fn().mockResolvedValue({ ok: true, stopped: true }),
     onAgentEvent: jest.fn((handler) => {
       eventHandler = handler;
+      return jest.fn();
+    }),
+    onAgentProviderAuthEvent: jest.fn((handler) => {
+      providerAuthEventHandler = handler;
       return jest.fn();
     }),
     ...options.electronAPI,
@@ -118,6 +141,7 @@ async function loadAgentUi(options = {}) {
     sidebar,
     setAgentControlledTab,
     emit: (event) => eventHandler(event),
+    emitProviderAuth: (event) => providerAuthEventHandler(event),
   };
 }
 
@@ -202,6 +226,57 @@ describe('Agent UI', () => {
     expect(ctx.setAgentControlledTab).toHaveBeenLastCalledWith(null);
   });
 
+  test('connects a ChatGPT subscription without exposing OAuth credentials', async () => {
+    let resolveLogin;
+    const loginPromise = new Promise((resolve) => {
+      resolveLogin = resolve;
+    });
+    const ctx = await loadAgentUi({
+      electronAPI: { loginSubscriptionAgentProvider: jest.fn(() => loginPromise) },
+    });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-provider-select'].value = 'openai-codex';
+    ctx.elements['agent-provider-select'].dispatch('change');
+    ctx.elements['agent-model-select'].value = 'codex-model';
+
+    expect(ctx.elements['agent-api-key-field'].classList.contains('hidden')).toBe(true);
+    expect(ctx.elements['agent-provider-save'].hidden).toBe(true);
+    expect(ctx.elements['agent-provider-login'].hidden).toBe(false);
+    ctx.elements['agent-provider-login'].dispatch('click');
+    await flush();
+
+    expect(ctx.electronAPI.loginSubscriptionAgentProvider).toHaveBeenCalledWith(
+      'openai-codex',
+      'codex-model'
+    );
+    ctx.emitProviderAuth({
+      type: 'device_code',
+      providerId: 'openai-codex',
+      userCode: 'ABCD-1234',
+      verificationUri: 'https://auth.openai.com/codex/device',
+    });
+    expect(ctx.elements['agent-auth-user-code'].textContent).toBe('ABCD-1234');
+    expect(ctx.elements['agent-auth-code'].hidden).toBe(false);
+    expect(ctx.elements['agent-provider-message'].textContent).toContain('OpenAI page');
+
+    resolveLogin({
+      ok: true,
+      status: {
+        configured: true,
+        kind: 'subscription',
+        providerId: 'openai-codex',
+        modelId: 'codex-model',
+      },
+    });
+    await flush();
+    expect(ctx.elements['agent-provider-status'].textContent).toBe('ChatGPT (Codex) · codex-model');
+    expect(ctx.elements['agent-provider-message'].textContent).toBe(
+      'ChatGPT connected for this profile'
+    );
+    expect(ctx.elements['agent-provider-login'].hidden).toBe(true);
+  });
+
   test('never initializes provider or run IPC in a private window', async () => {
     const ctx = await loadAgentUi({ isPrivate: true });
 
@@ -209,6 +284,7 @@ describe('Agent UI', () => {
     expect(ctx.electronAPI.getAgentProviderStatus).not.toHaveBeenCalled();
     expect(ctx.electronAPI.getAgentProviderCatalog).not.toHaveBeenCalled();
     expect(ctx.electronAPI.onAgentEvent).not.toHaveBeenCalled();
+    expect(ctx.electronAPI.onAgentProviderAuthEvent).not.toHaveBeenCalled();
   });
 
   test('formats tool operations for a compact activity timeline', async () => {

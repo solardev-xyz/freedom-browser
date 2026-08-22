@@ -34,6 +34,7 @@ describe('Freedom agent runtime', () => {
       controller: {},
       automationTabIdForRenderer: jest.fn(),
       isTrustedSender: jest.fn(),
+      openExternal: jest.fn(),
     };
 
     const runtime = createFreedomAgentRuntime(options);
@@ -56,6 +57,7 @@ describe('Freedom agent runtime', () => {
       resolveModel: expect.any(Function),
       automationTabIdForRenderer: options.automationTabIdForRenderer,
       isTrustedSender: options.isTrustedSender,
+      openExternal: options.openExternal,
     });
 
     const resolveModel = registerFreedomAgentIpc.mock.calls[0][0].resolveModel;

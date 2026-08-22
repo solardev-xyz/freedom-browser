@@ -9,6 +9,9 @@ const HOSTED_PROVIDERS = Object.freeze({
   openrouter: 'OpenRouter',
   freepi: 'Free Pi',
 });
+const SUBSCRIPTION_PROVIDERS = Object.freeze({
+  'openai-codex': 'ChatGPT (Codex)',
+});
 const FREE_PI_BASE_URL = 'https://sponsored-api-pilot-production.up.railway.app/api/v1';
 const FREE_PI_MODEL_ID = 'deepseek/deepseek-v4-flash';
 const OLLAMA_DEFAULT_BASE_URL = 'http://127.0.0.1:11434/v1';
@@ -100,6 +103,10 @@ class AgentProviderResolver {
     this.store = options.store;
     this.dataDir = path.resolve(options.dataDir);
     this.loadSdk = options.loadSdk || loadPiSdk;
+    if (typeof this.store.createCredentialStore !== 'function') {
+      throw new TypeError('AgentProviderResolver requires an app-owned credential store');
+    }
+    this.credentials = this.store.createCredentialStore();
   }
 
   getStatus() {
@@ -109,9 +116,22 @@ class AgentProviderResolver {
   async getCatalog() {
     const runtime = await this.#createRuntime();
     registerFreePi(runtime);
-    return Object.entries(HOSTED_PROVIDERS).map(([providerId, name]) => ({
+    const catalogProviders = [
+      ...Object.entries(HOSTED_PROVIDERS).map(([providerId, name]) => ({
+        providerId,
+        name,
+        authType: 'api_key',
+      })),
+      ...Object.entries(SUBSCRIPTION_PROVIDERS).map(([providerId, name]) => ({
+        providerId,
+        name,
+        authType: 'subscription',
+      })),
+    ];
+    return catalogProviders.map(({ providerId, name, authType }) => ({
       providerId,
       name,
+      authType,
       models: runtime.getModels(providerId).map((model) => ({
         id: model.id,
         name: model.name,
@@ -150,6 +170,45 @@ class AgentProviderResolver {
     return this.getStatus();
   }
 
+  async loginSubscription(input = {}, interaction) {
+    const providerId = requireIdentifier(input.providerId, 'providerId');
+    const modelId = requireIdentifier(input.modelId, 'modelId');
+    if (!Object.hasOwn(SUBSCRIPTION_PROVIDERS, providerId)) {
+      throw new AgentProviderError(
+        'AGENT_PROVIDER_INVALID',
+        'Subscription provider is not supported'
+      );
+    }
+    if (this.store.isEncryptionAvailable() !== true) {
+      throw new AgentProviderError(
+        'AGENT_SECURE_STORAGE_UNAVAILABLE',
+        'Secure credential storage is unavailable'
+      );
+    }
+    if (
+      !interaction ||
+      typeof interaction.prompt !== 'function' ||
+      typeof interaction.notify !== 'function'
+    ) {
+      throw new AgentProviderError(
+        'AGENT_PROVIDER_INVALID',
+        'Provider login interaction is invalid'
+      );
+    }
+    const runtime = await this.#createRuntime();
+    if (!runtime.getModel(providerId, modelId)) {
+      throw new AgentProviderError('AGENT_MODEL_INVALID', 'Selected model is not available');
+    }
+    await runtime.login(providerId, 'oauth', interaction);
+    try {
+      this.store.saveSubscription({ providerId, modelId });
+    } catch (error) {
+      await runtime.logout(providerId).catch(() => {});
+      throw error;
+    }
+    return this.getStatus();
+  }
+
   clear() {
     this.store.clear();
     return this.getStatus();
@@ -183,18 +242,30 @@ class AgentProviderResolver {
         ],
       });
       await runtime.setRuntimeApiKey('ollama', 'ollama');
+    } else if (selection.kind === 'subscription') {
+      const credential = await this.credentials.read(selection.providerId);
+      if (!credential || !runtime.hasConfiguredAuth(selection.providerId)) {
+        throw new AgentProviderError(
+          'AGENT_CREDENTIAL_UNAVAILABLE',
+          'The saved provider credential is unavailable'
+        );
+      }
     }
     const model = runtime.getModel(selection.providerId, selection.modelId);
     if (!model) {
       throw new AgentProviderError('AGENT_MODEL_UNAVAILABLE', 'Configured agent model is unavailable');
     }
-    return { model, modelRuntime: runtime, thinkingLevel: 'off' };
+    return {
+      model,
+      modelRuntime: runtime,
+      thinkingLevel: selection.kind === 'subscription' ? 'medium' : 'off',
+    };
   }
 
   async #createRuntime() {
     const sdk = await this.loadSdk();
     return sdk.ModelRuntime.create({
-      authPath: path.join(this.dataDir, 'pi-auth-disabled.json'),
+      credentials: this.credentials,
       modelsPath: null,
       modelsStorePath: path.join(this.dataDir, 'pi-model-cache.json'),
       allowModelNetwork: false,
@@ -207,6 +278,7 @@ module.exports = {
   FREE_PI_BASE_URL,
   FREE_PI_MODEL_ID,
   HOSTED_PROVIDERS,
+  SUBSCRIPTION_PROVIDERS,
   OLLAMA_DEFAULT_BASE_URL,
   AgentProviderError,
   AgentProviderResolver,

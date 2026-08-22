@@ -5,6 +5,7 @@ import { isSignatureInFlight, onSignatureFlightChange } from './wallet/signature
 const PROVIDER_NAMES = Object.freeze({
   anthropic: 'Anthropic',
   openai: 'OpenAI',
+  'openai-codex': 'ChatGPT (Codex)',
   openrouter: 'OpenRouter',
   freepi: 'Free Pi',
   ollama: 'Ollama',
@@ -16,11 +17,13 @@ let setAgentControlledTab = () => {};
 let providerCatalog = [];
 let providerCatalogPromise = null;
 let providerStatus = null;
+let providerLoginPending = false;
 let currentRunId = null;
 let lastFinishedRunId = null;
 let takeoverRequestedRunId = null;
 let panelOpen = false;
 let agentEventUnsubscribe = null;
+let providerAuthEventUnsubscribe = null;
 const toolRows = new Map();
 
 function byId(id) {
@@ -47,7 +50,17 @@ function providerPrivacyMessage(providerId) {
   if (providerId === 'ollama') {
     return 'Model requests stay on this device and are sent only to your local Ollama server.';
   }
+  if (providerId === 'openai-codex') {
+    return 'Your task and page content the agent reads may be sent to OpenAI through your ChatGPT subscription. Avoid using Agent on pages containing sensitive information.';
+  }
   return `Your task and page content the agent reads may be sent to ${providerName(providerId)}. Avoid using Agent on pages containing sensitive information.`;
+}
+
+function providerAuthType(providerId) {
+  return (
+    providerCatalog.find((candidate) => candidate.providerId === providerId)?.authType ||
+    (providerId === 'openai-codex' ? 'subscription' : 'api_key')
+  );
 }
 
 function setPanelOpen(nextOpen) {
@@ -79,9 +92,22 @@ function togglePanel() {
 function renderProviderFields() {
   const providerId = elements.provider.value;
   const isOllama = providerId === 'ollama';
+  const isSubscription = providerAuthType(providerId) === 'subscription';
+  const isConnectedSubscription =
+    providerStatus?.configured === true &&
+    providerStatus.kind === 'subscription' &&
+    providerStatus.providerId === providerId;
   elements.providerPrivacy.textContent = providerPrivacyMessage(providerId);
   elements.hostedFields.classList.toggle('hidden', isOllama);
   elements.ollamaFields.classList.toggle('hidden', !isOllama);
+  elements.apiKeyField.classList.toggle('hidden', isSubscription);
+  elements.subscriptionFields.classList.toggle('hidden', !isSubscription);
+  elements.saveProvider.hidden = isSubscription;
+  elements.loginProvider.hidden =
+    !isSubscription || isConnectedSubscription || providerLoginPending;
+  elements.cancelProviderLogin.hidden = !isSubscription || !providerLoginPending;
+  elements.provider.disabled = providerLoginPending;
+  elements.model.disabled = providerLoginPending;
   if (!isOllama) renderModelOptions(providerId);
 }
 
@@ -98,6 +124,8 @@ function renderModelOptions(providerId) {
   elements.model.replaceChildren(...options);
   if (options.some((option) => option.value === selectedModel)) {
     elements.model.value = selectedModel;
+  } else if (options[0]) {
+    elements.model.value = options[0].value;
   }
 }
 
@@ -186,6 +214,65 @@ async function saveProvider() {
     setMessage(elements.providerMessage, 'Could not save model', true);
   } finally {
     elements.saveProvider.disabled = false;
+  }
+}
+
+function handleProviderAuthEvent(event) {
+  if (
+    !providerLoginPending ||
+    event?.type !== 'device_code' ||
+    event.providerId !== 'openai-codex' ||
+    typeof event.userCode !== 'string'
+  ) {
+    return;
+  }
+  elements.authUserCode.textContent = event.userCode;
+  elements.authCode.hidden = false;
+  setMessage(elements.providerMessage, 'Finish signing in on the OpenAI page');
+}
+
+async function loginSubscriptionProvider() {
+  const providerId = elements.provider.value;
+  const modelId = elements.model.value;
+  if (providerAuthType(providerId) !== 'subscription' || !modelId) {
+    setMessage(elements.providerMessage, 'Choose a subscription model first', true);
+    return;
+  }
+  providerLoginPending = true;
+  elements.authCode.hidden = true;
+  elements.authUserCode.textContent = '';
+  setMessage(elements.providerMessage, 'Starting ChatGPT sign-in…');
+  renderProviderFields();
+  try {
+    const response = await window.electronAPI.loginSubscriptionAgentProvider(providerId, modelId);
+    if (!response?.ok) {
+      setMessage(
+        elements.providerMessage,
+        responseMessage(response, 'Could not sign in with ChatGPT'),
+        response?.error?.code !== 'AGENT_PROVIDER_AUTH_CANCELLED'
+      );
+      return;
+    }
+    renderProviderStatus(response.status);
+    setMessage(elements.providerMessage, 'ChatGPT connected for this profile');
+  } catch {
+    setMessage(elements.providerMessage, 'Could not sign in with ChatGPT', true);
+  } finally {
+    providerLoginPending = false;
+    renderProviderFields();
+  }
+}
+
+async function cancelProviderLogin() {
+  if (!providerLoginPending) return;
+  elements.cancelProviderLogin.disabled = true;
+  setMessage(elements.providerMessage, 'Cancelling sign-in…');
+  try {
+    await window.electronAPI.cancelAgentProviderLogin();
+  } catch {
+    setMessage(elements.providerMessage, 'Could not cancel sign-in', true);
+  } finally {
+    elements.cancelProviderLogin.disabled = false;
   }
 }
 
@@ -375,13 +462,19 @@ export function initAgentUi(options = {}) {
     providerStatus: byId('agent-provider-status'),
     providerPrivacy: byId('agent-provider-privacy'),
     hostedFields: byId('agent-hosted-fields'),
+    apiKeyField: byId('agent-api-key-field'),
+    subscriptionFields: byId('agent-subscription-fields'),
     ollamaFields: byId('agent-ollama-fields'),
     model: byId('agent-model-select'),
     apiKey: byId('agent-api-key'),
     ollamaModel: byId('agent-ollama-model'),
     ollamaUrl: byId('agent-ollama-url'),
     saveProvider: byId('agent-provider-save'),
+    loginProvider: byId('agent-provider-login'),
+    cancelProviderLogin: byId('agent-provider-cancel-login'),
     clearProvider: byId('agent-provider-clear'),
+    authCode: byId('agent-auth-code'),
+    authUserCode: byId('agent-auth-user-code'),
     providerMessage: byId('agent-provider-message'),
     prompt: byId('agent-prompt'),
     run: byId('agent-run'),
@@ -406,6 +499,8 @@ export function initAgentUi(options = {}) {
   elements.close.addEventListener('click', closePanel);
   elements.provider.addEventListener('change', renderProviderFields);
   elements.saveProvider.addEventListener('click', saveProvider);
+  elements.loginProvider.addEventListener('click', loginSubscriptionProvider);
+  elements.cancelProviderLogin.addEventListener('click', cancelProviderLogin);
   elements.clearProvider.addEventListener('click', clearProvider);
   elements.run.addEventListener('click', startRun);
   elements.stop.addEventListener('click', stopRun);
@@ -416,6 +511,9 @@ export function initAgentUi(options = {}) {
   });
   agentEventUnsubscribe?.();
   agentEventUnsubscribe = window.electronAPI.onAgentEvent(handleAgentEvent);
+  providerAuthEventUnsubscribe?.();
+  providerAuthEventUnsubscribe =
+    window.electronAPI.onAgentProviderAuthEvent(handleProviderAuthEvent);
   setPanelOpen(false);
   renderProviderFields();
   refreshProvider();

@@ -1108,6 +1108,7 @@
                 <span>Provider</span>
                 <select id="agent-provider-select">
                   <option value="openai">OpenAI</option>
+                  <option value="openai-codex">ChatGPT (Codex)</option>
                   <option value="anthropic">Anthropic</option>
                   <option value="openrouter">OpenRouter</option>
                   <option value="freepi">Free Pi</option>
@@ -1125,7 +1126,7 @@
                   <span>Model</span>
                   <select id="agent-model-select"></select>
                 </label>
-                <label class="agent-field">
+                <label id="agent-api-key-field" class="agent-field">
                   <span>API key</span>
                   <input
                     id="agent-api-key"
@@ -1135,6 +1136,24 @@
                     placeholder="Stored encrypted on this device"
                   />
                 </label>
+              </div>
+
+              <div id="agent-subscription-fields" class="hidden">
+                <p class="agent-subscription-note">
+                  Experimental · Uses a ChatGPT Plus or Pro subscription through Pi.
+                </p>
+                <div id="agent-auth-code" class="agent-auth-code" hidden>
+                  <span>Enter this code in the OpenAI page</span>
+                  <strong id="agent-auth-user-code"></strong>
+                </div>
+                <div class="agent-config-actions">
+                  <button id="agent-provider-login" class="agent-button secondary" type="button">
+                    Continue with ChatGPT
+                  </button>
+                  <button id="agent-provider-cancel-login" class="agent-text-button" type="button" hidden>
+                    Cancel sign-in
+                  </button>
+                </div>
               </div>
 
               <div id="agent-ollama-fields" class="hidden">

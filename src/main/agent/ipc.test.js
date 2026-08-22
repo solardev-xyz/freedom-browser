@@ -3,7 +3,12 @@
 const { EventEmitter } = require('events');
 const IPC = require('../../shared/ipc-channels');
 const { AGENT_ERROR_CODES, FreedomAgentError } = require('./freedom-agent-service');
-const { AGENT_IPC_ERROR_CODES, registerFreedomAgentIpc } = require('./ipc');
+const {
+  AGENT_IPC_ERROR_CODES,
+  OPENAI_DEVICE_VERIFICATION_URL,
+  normalizeSubscriptionAuthEvent,
+  registerFreedomAgentIpc,
+} = require('./ipc');
 
 function createIpcMain() {
   const handlers = new Map();
@@ -53,8 +58,14 @@ function register(overrides = {}) {
     getCatalog: jest.fn(async () => [{ providerId: 'openai', models: [] }]),
     configureHosted: jest.fn(async () => ({ configured: true, providerId: 'openai' })),
     configureOllama: jest.fn(() => ({ configured: true, providerId: 'ollama' })),
+    loginSubscription: jest.fn(async () => ({
+      configured: true,
+      providerId: 'openai-codex',
+      modelId: 'codex-model',
+    })),
     clear: jest.fn(() => ({ configured: false })),
   };
+  const openExternal = jest.fn(async () => {});
   const isTrustedSender = jest.fn((candidate) => candidate === sender);
   const dispose = registerFreedomAgentIpc({
     ipcMain,
@@ -63,6 +74,7 @@ function register(overrides = {}) {
     resolveModel,
     providerResolver,
     isTrustedSender,
+    openExternal,
     ...overrides,
   });
   return {
@@ -74,6 +86,7 @@ function register(overrides = {}) {
     resolveModel,
     providerResolver,
     isTrustedSender,
+    openExternal,
     dispose,
   };
 }
@@ -235,6 +248,92 @@ describe('Freedom agent IPC', () => {
       },
     });
     expect(ctx.providerResolver.getStatus).not.toHaveBeenCalled();
+  });
+
+  test('runs subscription login with a fixed device-code flow and normalized events', async () => {
+    const ctx = register();
+    ctx.providerResolver.loginSubscription.mockImplementation(async (_input, interaction) => {
+      await expect(
+        interaction.prompt({
+          type: 'select',
+          options: [
+            { id: 'browser', label: 'Browser' },
+            { id: 'device_code', label: 'Device code' },
+          ],
+        })
+      ).resolves.toBe('device_code');
+      interaction.notify({
+        type: 'device_code',
+        userCode: 'ABCD-1234',
+        verificationUri: OPENAI_DEVICE_VERIFICATION_URL,
+        expiresInSeconds: 900,
+      });
+      interaction.notify({ type: 'progress', message: 'secret provider message' });
+      return { configured: true, providerId: 'openai-codex', modelId: 'codex-model' };
+    });
+    const login = ctx.ipcMain.handlers.get(IPC.AGENT_PROVIDER_LOGIN_SUBSCRIPTION);
+
+    await expect(
+      login({ sender: ctx.sender }, { providerId: 'openai-codex', modelId: 'codex-model' })
+    ).resolves.toEqual({
+      ok: true,
+      status: { configured: true, providerId: 'openai-codex', modelId: 'codex-model' },
+    });
+
+    expect(ctx.sender.send).toHaveBeenCalledWith(IPC.AGENT_PROVIDER_AUTH_EVENT, {
+      type: 'device_code',
+      providerId: 'openai-codex',
+      userCode: 'ABCD-1234',
+      verificationUri: OPENAI_DEVICE_VERIFICATION_URL,
+    });
+    expect(ctx.openExternal).toHaveBeenCalledWith(OPENAI_DEVICE_VERIFICATION_URL);
+    expect(JSON.stringify(ctx.sender.send.mock.calls)).not.toContain('secret provider message');
+  });
+
+  test('cancels only the owning subscription login', async () => {
+    const ctx = register();
+    ctx.providerResolver.loginSubscription.mockImplementation(
+      (_input, interaction) =>
+        new Promise((_resolve, reject) => {
+          interaction.signal.addEventListener('abort', () => reject(interaction.signal.reason), {
+            once: true,
+          });
+        })
+    );
+    const login = ctx.ipcMain.handlers.get(IPC.AGENT_PROVIDER_LOGIN_SUBSCRIPTION);
+    const cancel = ctx.ipcMain.handlers.get(IPC.AGENT_PROVIDER_CANCEL_LOGIN);
+    const pending = login(
+      { sender: ctx.sender },
+      { providerId: 'openai-codex', modelId: 'codex-model' }
+    );
+    await Promise.resolve();
+
+    await expect(cancel({ sender: ctx.otherSender })).resolves.toMatchObject({
+      ok: false,
+      error: { code: AGENT_IPC_ERROR_CODES.NOT_OWNER },
+    });
+    await expect(cancel({ sender: ctx.sender })).resolves.toEqual({ ok: true, cancelled: true });
+    await expect(pending).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'AGENT_PROVIDER_AUTH_CANCELLED' },
+    });
+  });
+
+  test('rejects spoofed subscription auth events', () => {
+    expect(
+      normalizeSubscriptionAuthEvent({
+        type: 'device_code',
+        userCode: 'ABCD-1234',
+        verificationUri: 'https://evil.example/device',
+      })
+    ).toBeNull();
+    expect(
+      normalizeSubscriptionAuthEvent({
+        type: 'device_code',
+        userCode: '<script>',
+        verificationUri: OPENAI_DEVICE_VERIFICATION_URL,
+      })
+    ).toBeNull();
   });
 
   test('stops the run when its chrome renderer is destroyed', async () => {

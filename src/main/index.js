@@ -169,7 +169,7 @@ process.on('unhandledRejection', (reason, _promise) => {
 
 const { registerShutdownSignalHandlers } = require('./shutdown-signals');
 const unregisterShutdownSignalHandlers = registerShutdownSignalHandlers({ app, logger: log });
-const { BrowserWindow, ipcMain, protocol, safeStorage, session } = require('electron');
+const { BrowserWindow, ipcMain, protocol, safeStorage, session, shell } = require('electron');
 const { registerBaseIpcHandlers, broadcastProfileUpdated } = require('./ipc-handlers');
 const { watchProfileRegistry } = require('./profile-registry-watcher');
 const { installRequestRewriter } = require('./request-rewriter');
@@ -416,6 +416,7 @@ async function bootstrap() {
       isTrustedSender: (sender) =>
         !isPrivateWebContents(sender) &&
         getMainWindows().some((window) => window.webContents === sender),
+      openExternal: (url) => shell.openExternal(url),
     });
   }
 

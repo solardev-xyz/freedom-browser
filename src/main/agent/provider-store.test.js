@@ -77,6 +77,100 @@ describe('AgentProviderStore', () => {
     });
   });
 
+  test('stores and refreshes a Pi OAuth credential as profile-bound ciphertext', async () => {
+    const { dataDir, store } = createStore();
+    const credentials = store.createCredentialStore();
+    const initial = {
+      type: 'oauth',
+      access: 'access-secret',
+      refresh: 'refresh-secret',
+      expires: Date.now() + 60_000,
+      accountId: 'account-test',
+    };
+
+    await credentials.modify('openai-codex', async () => initial);
+    store.saveSubscription({ providerId: 'openai-codex', modelId: 'gpt-codex-test' });
+
+    expect(await credentials.read('openai-codex')).toEqual(initial);
+    expect(await credentials.list()).toEqual([{ providerId: 'openai-codex', type: 'oauth' }]);
+    expect(store.getSelection()).toEqual({
+      kind: 'subscription',
+      providerId: 'openai-codex',
+      modelId: 'gpt-codex-test',
+    });
+    const persistedBeforeRefresh = fs.readFileSync(path.join(dataDir, 'provider.json'), 'utf8');
+    expect(persistedBeforeRefresh).not.toContain('access-secret');
+    expect(persistedBeforeRefresh).not.toContain('refresh-secret');
+
+    await credentials.modify('openai-codex', async (current) => ({
+      ...current,
+      access: 'refreshed-access-secret',
+      expires: Date.now() + 120_000,
+    }));
+    expect(await credentials.read('openai-codex')).toMatchObject({
+      access: 'refreshed-access-secret',
+      refresh: 'refresh-secret',
+    });
+    expect(fs.readFileSync(path.join(dataDir, 'provider.json'), 'utf8')).not.toContain(
+      'refreshed-access-secret'
+    );
+  });
+
+  test('removes subscription selection when Pi logs out', async () => {
+    const { store } = createStore();
+    const credentials = store.createCredentialStore();
+    await credentials.modify('openai-codex', async () => ({
+      type: 'oauth',
+      access: 'access',
+      refresh: 'refresh',
+      expires: Date.now() + 60_000,
+    }));
+    store.saveSubscription({ providerId: 'openai-codex', modelId: 'gpt-codex-test' });
+
+    await credentials.delete('openai-codex');
+
+    expect(await credentials.read('openai-codex')).toBeUndefined();
+    expect(store.getPublicStatus()).toMatchObject({ configured: false });
+  });
+
+  test('does not resurrect a credential cleared during token refresh', async () => {
+    const { store } = createStore();
+    const credentials = store.createCredentialStore();
+    await credentials.modify('openai-codex', async () => ({
+      type: 'oauth',
+      access: 'access',
+      refresh: 'refresh',
+      expires: Date.now() + 60_000,
+    }));
+    store.saveSubscription({ providerId: 'openai-codex', modelId: 'gpt-codex-test' });
+    let finishRefresh;
+    let markRefreshStarted;
+    const refreshStarted = new Promise((resolve) => {
+      markRefreshStarted = resolve;
+    });
+    const refreshPending = credentials.modify(
+      'openai-codex',
+      (current) =>
+        new Promise((resolve) => {
+          markRefreshStarted();
+          finishRefresh = () =>
+            resolve({
+              ...current,
+              access: 'refreshed-access',
+              expires: Date.now() + 120_000,
+            });
+        })
+    );
+    await refreshStarted;
+
+    store.clear();
+    finishRefresh();
+
+    await expect(refreshPending).rejects.toMatchObject({ code: 'AGENT_CREDENTIAL_UNAVAILABLE' });
+    expect(await credentials.read('openai-codex')).toBeUndefined();
+    expect(store.getPublicStatus()).toMatchObject({ configured: false });
+  });
+
   test('refuses hosted credentials when OS encryption is unavailable', () => {
     const { store } = createStore({ safeStorage: createSafeStorage(false) });
     expect(() =>
@@ -95,6 +189,27 @@ describe('AgentProviderStore', () => {
       safeStorage,
     });
     expect(() => copied.getSelection()).toThrow('does not belong to this profile');
+  });
+
+  test('reads version-one provider records and upgrades them on the next write', () => {
+    const { dataDir, store } = createStore();
+    store.saveHosted({ providerId: 'openai', modelId: 'gpt-test', apiKey: 'sk-secret' });
+    const filePath = path.join(dataDir, 'provider.json');
+    const legacy = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    legacy.version = 1;
+    delete legacy.credentials;
+    fs.writeFileSync(filePath, JSON.stringify(legacy), { mode: 0o600 });
+
+    expect(store.getSelection()).toMatchObject({
+      kind: 'hosted',
+      providerId: 'openai',
+      apiKey: 'sk-secret',
+    });
+    store.saveOllama({ modelId: 'qwen:7b', baseUrl: 'http://127.0.0.1:11434/v1' });
+    expect(JSON.parse(fs.readFileSync(filePath, 'utf8'))).toMatchObject({
+      version: 2,
+      credentials: {},
+    });
   });
 
   test('clears credential material without deleting the bound store', () => {

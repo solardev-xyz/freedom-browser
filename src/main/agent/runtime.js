@@ -24,6 +24,7 @@ function createFreedomAgentRuntime(options = {}) {
     resolveModel: () => providerResolver.resolveModel(),
     automationTabIdForRenderer: options.automationTabIdForRenderer,
     isTrustedSender: options.isTrustedSender,
+    openExternal: options.openExternal,
   });
 
   return {

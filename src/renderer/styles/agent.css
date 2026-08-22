@@ -271,6 +271,33 @@
   border-radius: 6px;
 }
 
+.agent-subscription-note {
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.agent-auth-code {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 10px;
+  margin-bottom: 10px;
+  color: var(--muted);
+  font-size: 11px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+
+.agent-auth-code strong {
+  color: var(--text);
+  font-size: 17px;
+  letter-spacing: 0.08em;
+  user-select: text;
+}
+
 .agent-transcript,
 .agent-activity {
   padding-top: 14px;

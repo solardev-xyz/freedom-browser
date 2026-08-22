@@ -13,6 +13,10 @@ function createRuntime() {
     ['anthropic/model-a', { provider: 'anthropic', id: 'model-a', name: 'Model A' }],
     ['openai/model-b', { provider: 'openai', id: 'model-b', name: 'Model B' }],
     ['openrouter/model-c', { provider: 'openrouter', id: 'model-c', name: 'Model C' }],
+    [
+      'openai-codex/codex-model',
+      { provider: 'openai-codex', id: 'codex-model', name: 'Codex Model', reasoning: true },
+    ],
   ]);
   return {
     getModels: jest.fn((providerId) =>
@@ -20,6 +24,14 @@ function createRuntime() {
     ),
     getModel: jest.fn((providerId, modelId) => models.get(`${providerId}/${modelId}`)),
     setRuntimeApiKey: jest.fn(async () => {}),
+    hasConfiguredAuth: jest.fn(() => true),
+    login: jest.fn(async () => ({
+      type: 'oauth',
+      access: 'access-secret',
+      refresh: 'refresh-secret',
+      expires: Date.now() + 60_000,
+    })),
+    logout: jest.fn(async () => {}),
     registerProvider: jest.fn((providerId, config) => {
       for (const model of config.models) {
         models.set(`${providerId}/${model.id}`, { provider: providerId, ...model });
@@ -31,10 +43,27 @@ function createRuntime() {
 function createResolver(selection = null) {
   const runtime = createRuntime();
   const store = {
+    isEncryptionAvailable: jest.fn(() => true),
     getPublicStatus: jest.fn(() => ({ configured: Boolean(selection) })),
     getSelection: jest.fn(() => selection),
     saveHosted: jest.fn(),
     saveOllama: jest.fn(),
+    saveSubscription: jest.fn(),
+    createCredentialStore: jest.fn(() => ({
+      read: jest.fn(async (providerId) =>
+        providerId === 'openai-codex'
+          ? {
+              type: 'oauth',
+              access: 'access-secret',
+              refresh: 'refresh-secret',
+              expires: Date.now() + 60_000,
+            }
+          : undefined
+      ),
+      list: jest.fn(),
+      modify: jest.fn(),
+      delete: jest.fn(),
+    })),
     clear: jest.fn(),
   };
   const sdk = { ModelRuntime: { create: jest.fn(async () => runtime) } };
@@ -157,6 +186,47 @@ describe('AgentProviderResolver', () => {
     expect(resolved.model).toMatchObject({ provider: 'ollama', id: 'qwen2.5:7b' });
   });
 
+  test('logs in and resolves ChatGPT subscription models through Pi OAuth', async () => {
+    const ctx = createResolver({
+      kind: 'subscription',
+      providerId: 'openai-codex',
+      modelId: 'codex-model',
+    });
+    const interaction = {
+      signal: new AbortController().signal,
+      prompt: jest.fn(),
+      notify: jest.fn(),
+    };
+
+    await ctx.resolver.loginSubscription(
+      { providerId: 'openai-codex', modelId: 'codex-model' },
+      interaction
+    );
+    const resolved = await ctx.resolver.resolveModel();
+
+    expect(ctx.runtime.login).toHaveBeenCalledWith('openai-codex', 'oauth', interaction);
+    expect(ctx.store.saveSubscription).toHaveBeenCalledWith({
+      providerId: 'openai-codex',
+      modelId: 'codex-model',
+    });
+    expect(resolved.model).toMatchObject({ provider: 'openai-codex', id: 'codex-model' });
+    expect(resolved.thinkingLevel).toBe('medium');
+    expect(ctx.runtime.setRuntimeApiKey).not.toHaveBeenCalled();
+  });
+
+  test('refuses subscription login before OAuth when secure storage is unavailable', async () => {
+    const ctx = createResolver();
+    ctx.store.isEncryptionAvailable.mockReturnValue(false);
+
+    await expect(
+      ctx.resolver.loginSubscription(
+        { providerId: 'openai-codex', modelId: 'codex-model' },
+        { prompt: jest.fn(), notify: jest.fn() }
+      )
+    ).rejects.toMatchObject({ code: 'AGENT_SECURE_STORAGE_UNAVAILABLE' });
+    expect(ctx.runtime.login).not.toHaveBeenCalled();
+  });
+
   test.each([
     'https://127.0.0.1:11434/v1',
     'http://192.168.1.5:11434/v1',
@@ -181,21 +251,25 @@ describe('AgentProviderResolver', () => {
       {
         providerId: 'anthropic',
         name: 'Anthropic',
+        authType: 'api_key',
         models: [{ id: 'model-a', name: 'Model A', reasoning: false }],
       },
       {
         providerId: 'openai',
         name: 'OpenAI',
+        authType: 'api_key',
         models: [{ id: 'model-b', name: 'Model B', reasoning: false }],
       },
       {
         providerId: 'openrouter',
         name: 'OpenRouter',
+        authType: 'api_key',
         models: [{ id: 'model-c', name: 'Model C', reasoning: false }],
       },
       {
         providerId: 'freepi',
         name: 'Free Pi',
+        authType: 'api_key',
         models: [
           {
             id: FREE_PI_MODEL_ID,
@@ -204,8 +278,20 @@ describe('AgentProviderResolver', () => {
           },
         ],
       },
+      {
+        providerId: 'openai-codex',
+        name: 'ChatGPT (Codex)',
+        authType: 'subscription',
+        models: [
+          {
+            id: 'codex-model',
+            name: 'Codex Model',
+            reasoning: true,
+          },
+        ],
+      },
     ]);
-    expect(JSON.stringify(await ctx.resolver.getCatalog())).not.toContain('key');
+    expect(JSON.stringify(await ctx.resolver.getCatalog())).not.toContain('sk-secret');
   });
 
   test('fails when no model is configured', async () => {

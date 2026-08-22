@@ -24,6 +24,16 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
   await window.locator('#agent-provider-clear').click();
   await expect(window.locator('#agent-provider-status')).toHaveText('Not configured');
 
+  await window.locator('#agent-provider-select').selectOption('openai-codex');
+  await expect(window.locator('#agent-provider-privacy')).toContainText(
+    'through your ChatGPT subscription'
+  );
+  await expect(window.locator('#agent-subscription-fields')).not.toHaveClass(/hidden/);
+  await expect(window.locator('#agent-api-key-field')).toHaveClass(/hidden/);
+  await expect(window.locator('#agent-provider-save')).toBeHidden();
+  await expect(window.locator('#agent-provider-login')).toHaveText('Continue with ChatGPT');
+  await expect(window.locator('#agent-model-select')).not.toHaveValue('');
+
   await window.locator('#agent-provider-select').selectOption('ollama');
   await expect(window.locator('#agent-provider-privacy')).toHaveText(
     'Model requests stay on this device and are sent only to your local Ollama server.'

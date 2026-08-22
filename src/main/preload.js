@@ -169,7 +169,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('agent:provider:configure-hosted', { providerId, modelId, apiKey }),
   configureOllamaAgentProvider: (modelId, baseUrl) =>
     ipcRenderer.invoke('agent:provider:configure-ollama', { modelId, baseUrl }),
+  loginSubscriptionAgentProvider: (providerId, modelId) =>
+    ipcRenderer.invoke('agent:provider:login-subscription', { providerId, modelId }),
+  cancelAgentProviderLogin: () => ipcRenderer.invoke('agent:provider:cancel-login'),
   clearAgentProvider: () => ipcRenderer.invoke('agent:provider:clear'),
+  onAgentProviderAuthEvent: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('agent:provider:auth-event', handler);
+    return () => ipcRenderer.removeListener('agent:provider:auth-event', handler);
+  },
   onAgentEvent: (callback) => {
     const handler = (_event, payload) => callback(payload);
     ipcRenderer.on('agent:event', handler);

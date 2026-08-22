@@ -9,6 +9,7 @@ const AGENT_IPC_ERROR_CODES = Object.freeze({
   NOT_OWNER: 'AGENT_NOT_OWNER',
   INTERNAL_ERROR: 'AGENT_INTERNAL_ERROR',
 });
+const OPENAI_DEVICE_VERIFICATION_URL = 'https://auth.openai.com/codex/device';
 const SAFE_PROVIDER_ERROR_MESSAGES = Object.freeze({
   AGENT_SECURE_STORAGE_UNAVAILABLE: 'Secure credential storage is unavailable',
   AGENT_CREDENTIAL_UNAVAILABLE: 'The saved provider credential is unavailable',
@@ -17,7 +18,34 @@ const SAFE_PROVIDER_ERROR_MESSAGES = Object.freeze({
   AGENT_PROVIDER_INVALID: 'Agent provider configuration is invalid',
   AGENT_MODEL_INVALID: 'Selected agent model is invalid',
   AGENT_MODEL_UNAVAILABLE: 'No configured agent model is available',
+  AGENT_PROVIDER_AUTH_BUSY: 'A provider sign-in is already in progress',
+  AGENT_PROVIDER_AUTH_CANCELLED: 'Provider sign-in was cancelled',
+  AGENT_PROVIDER_AUTH_UNSUPPORTED: 'The provider sign-in flow is unsupported',
 });
+
+function providerError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+function normalizeSubscriptionAuthEvent(event) {
+  if (event?.type !== 'device_code') return null;
+  if (
+    typeof event.userCode !== 'string' ||
+    event.userCode !== event.userCode.trim() ||
+    !/^[A-Za-z0-9._-]{4,64}$/.test(event.userCode) ||
+    event.verificationUri !== OPENAI_DEVICE_VERIFICATION_URL
+  ) {
+    return null;
+  }
+  return {
+    type: 'device_code',
+    providerId: 'openai-codex',
+    userCode: event.userCode,
+    verificationUri: OPENAI_DEVICE_VERIFICATION_URL,
+  };
+}
 
 function errorEnvelope(code, message) {
   return { ok: false, error: { code, message } };
@@ -68,6 +96,7 @@ function registerFreedomAgentIpc(options = {}) {
     resolveModel,
     providerResolver,
     isTrustedSender,
+    openExternal,
   } = options;
   if (!ipcMain || typeof ipcMain.handle !== 'function') {
     throw new TypeError('Freedom agent IPC requires ipcMain');
@@ -93,6 +122,7 @@ function registerFreedomAgentIpc(options = {}) {
     typeof providerResolver.getCatalog !== 'function' ||
     typeof providerResolver.configureHosted !== 'function' ||
     typeof providerResolver.configureOllama !== 'function' ||
+    typeof providerResolver.loginSubscription !== 'function' ||
     typeof providerResolver.clear !== 'function'
   ) {
     throw new TypeError('Freedom agent IPC requires a provider resolver');
@@ -100,9 +130,14 @@ function registerFreedomAgentIpc(options = {}) {
   if (typeof isTrustedSender !== 'function') {
     throw new TypeError('Freedom agent IPC requires a trusted chrome sender check');
   }
+  if (typeof openExternal !== 'function') {
+    throw new TypeError('Freedom agent IPC requires an external URL opener');
+  }
 
   let owner = null;
   let startPending = false;
+  let providerLogin = null;
+  let providerMutationPending = false;
 
   const detachOwner = () => {
     if (!owner) return;
@@ -279,14 +314,98 @@ function registerFreedomAgentIpc(options = {}) {
     handleProviderRequest(event, () => ({ status: providerResolver.getStatus() }));
   const handleProviderCatalog = (event) =>
     handleProviderRequest(event, async () => ({ catalog: await providerResolver.getCatalog() }));
+  const handleProviderMutation = (event, action) =>
+    handleProviderRequest(event, async () => {
+      if (providerMutationPending) {
+        throw providerError(
+          'AGENT_PROVIDER_AUTH_BUSY',
+          'A provider sign-in is already in progress'
+        );
+      }
+      providerMutationPending = true;
+      try {
+        return await action();
+      } finally {
+        providerMutationPending = false;
+      }
+    });
   const handleConfigureHosted = (event, payload) =>
-    handleProviderRequest(event, async () => ({
+    handleProviderMutation(event, async () => ({
       status: await providerResolver.configureHosted(payload),
     }));
   const handleConfigureOllama = (event, payload) =>
-    handleProviderRequest(event, () => ({ status: providerResolver.configureOllama(payload) }));
+    handleProviderMutation(event, () => ({ status: providerResolver.configureOllama(payload) }));
+  const handleLoginSubscription = (event, payload) =>
+    handleProviderMutation(event, async () => {
+      if (providerLogin) {
+        throw providerError(
+          'AGENT_PROVIDER_AUTH_BUSY',
+          'A provider sign-in is already in progress'
+        );
+      }
+      const controller = new AbortController();
+      const pending = {
+        sender: event.sender,
+        controller,
+        onDestroyed: () => controller.abort(),
+      };
+      providerLogin = pending;
+      event.sender.once?.('destroyed', pending.onDestroyed);
+      try {
+        const status = await providerResolver.loginSubscription(payload, {
+          signal: controller.signal,
+          prompt: async (prompt) => {
+            if (
+              prompt?.type === 'select' &&
+              prompt.options?.some((option) => option?.id === 'device_code')
+            ) {
+              return 'device_code';
+            }
+            throw providerError(
+              'AGENT_PROVIDER_AUTH_UNSUPPORTED',
+              'The provider sign-in flow is unsupported'
+            );
+          },
+          notify: (authEvent) => {
+            const normalized = normalizeSubscriptionAuthEvent(authEvent);
+            if (!normalized || controller.signal.aborted) return;
+            try {
+              pending.sender.send(IPC.AGENT_PROVIDER_AUTH_EVENT, normalized);
+              Promise.resolve(openExternal(normalized.verificationUri)).catch(() => {});
+            } catch {
+              controller.abort();
+            }
+          },
+        });
+        return { status };
+      } catch (error) {
+        if (controller.signal.aborted) {
+          throw providerError('AGENT_PROVIDER_AUTH_CANCELLED', 'Provider sign-in was cancelled');
+        }
+        throw error;
+      } finally {
+        pending.sender.off?.('destroyed', pending.onDestroyed);
+        if (providerLogin === pending) providerLogin = null;
+      }
+    });
+  const handleCancelProviderLogin = (event) =>
+    handleProviderRequest(event, () => {
+      if (!providerLogin || providerLogin.sender !== event?.sender) {
+        throw providerError('AGENT_PROVIDER_AUTH_CANCELLED', 'Provider sign-in was cancelled');
+      }
+      providerLogin.controller.abort();
+      return { cancelled: true };
+    });
   const handleClearProvider = (event) =>
-    handleProviderRequest(event, () => ({ status: providerResolver.clear() }));
+    handleProviderMutation(event, () => {
+      if (providerLogin) {
+        throw providerError(
+          'AGENT_PROVIDER_AUTH_BUSY',
+          'A provider sign-in is already in progress'
+        );
+      }
+      return { status: providerResolver.clear() };
+    });
 
   ipcMain.handle(IPC.AGENT_START, handleStart);
   ipcMain.handle(IPC.AGENT_STOP, handleStop);
@@ -295,6 +414,8 @@ function registerFreedomAgentIpc(options = {}) {
   ipcMain.handle(IPC.AGENT_PROVIDER_GET_CATALOG, handleProviderCatalog);
   ipcMain.handle(IPC.AGENT_PROVIDER_CONFIGURE_HOSTED, handleConfigureHosted);
   ipcMain.handle(IPC.AGENT_PROVIDER_CONFIGURE_OLLAMA, handleConfigureOllama);
+  ipcMain.handle(IPC.AGENT_PROVIDER_LOGIN_SUBSCRIPTION, handleLoginSubscription);
+  ipcMain.handle(IPC.AGENT_PROVIDER_CANCEL_LOGIN, handleCancelProviderLogin);
   ipcMain.handle(IPC.AGENT_PROVIDER_CLEAR, handleClearProvider);
 
   return async () => {
@@ -305,8 +426,15 @@ function registerFreedomAgentIpc(options = {}) {
     ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_GET_CATALOG);
     ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_CONFIGURE_HOSTED);
     ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_CONFIGURE_OLLAMA);
+    ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_LOGIN_SUBSCRIPTION);
+    ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_CANCEL_LOGIN);
     ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_CLEAR);
     unsubscribe();
+    if (providerLogin) {
+      providerLogin.controller.abort();
+      providerLogin.sender.off?.('destroyed', providerLogin.onDestroyed);
+      providerLogin = null;
+    }
     if (owner) {
       const runId = owner.runId;
       detachOwner();
@@ -317,6 +445,8 @@ function registerFreedomAgentIpc(options = {}) {
 
 module.exports = {
   AGENT_IPC_ERROR_CODES,
+  OPENAI_DEVICE_VERIFICATION_URL,
+  normalizeSubscriptionAuthEvent,
   registerFreedomAgentIpc,
   safeProviderError,
   safeServiceError,
