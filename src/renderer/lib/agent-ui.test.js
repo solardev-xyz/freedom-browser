@@ -37,6 +37,7 @@ function createAgentElements() {
     'agent-provider-message',
     'agent-prompt',
     'agent-run',
+    'agent-new-chat',
     'agent-pause',
     'agent-resume',
     'agent-stop',
@@ -49,9 +50,6 @@ function createAgentElements() {
     'agent-approval-decline',
     'agent-approval-message',
     'agent-transcript',
-    'agent-output',
-    'agent-activity',
-    'agent-tool-list',
     'agent-empty-state',
     'agent-model-menu-button',
     'agent-active-model-label',
@@ -86,6 +84,8 @@ function createAgentElements() {
   elements['agent-auth-code'].hidden = true;
   elements['agent-prompt'] = createElement('textarea');
   elements['agent-run'] = createElement('button');
+  elements['agent-new-chat'] = createElement('button');
+  elements['agent-new-chat'].hidden = true;
   elements['agent-pause'] = createElement('button', { disabled: true });
   elements['agent-pause'].hidden = true;
   elements['agent-resume'] = createElement('button', { disabled: true });
@@ -97,7 +97,6 @@ function createAgentElements() {
   elements['agent-approval-approve'] = createElement('button');
   elements['agent-approval-decline'] = createElement('button');
   elements['agent-transcript'].hidden = true;
-  elements['agent-activity'].hidden = true;
   elements['agent-model-menu-button'] = createElement('button');
   elements['agent-model-menu'] = createElement('div');
   elements['agent-model-menu'].hidden = true;
@@ -138,9 +137,7 @@ async function loadAgentUi(options = {}) {
         kind: 'hosted',
         providerId: 'openai',
         modelId: 'gpt-4.1-mini',
-        connections: [
-          { kind: 'hosted', providerId: 'openai', modelId: 'gpt-4.1-mini' },
-        ],
+        connections: [{ kind: 'hosted', providerId: 'openai', modelId: 'gpt-4.1-mini' }],
       },
     }),
     getAgentProviderCatalog: jest.fn().mockResolvedValue({
@@ -170,7 +167,12 @@ async function loadAgentUi(options = {}) {
     selectAgentModel: jest.fn(),
     removeAgentProvider: jest.fn(),
     getAgentState: jest.fn().mockResolvedValue({ ok: true, state: { status: 'idle' } }),
-    startAgent: jest.fn().mockResolvedValue({ ok: true, runId: 'run_test' }),
+    startAgent: jest.fn().mockResolvedValue({
+      ok: true,
+      runId: 'run_test',
+      conversationId: 'conversation_test',
+    }),
+    clearAgentConversation: jest.fn().mockResolvedValue({ ok: true, cleared: true }),
     pauseAgent: jest.fn().mockResolvedValue({ ok: true, paused: true }),
     resumeAgent: jest.fn().mockResolvedValue({ ok: true, resumed: true }),
     stopAgent: jest.fn().mockResolvedValue({ ok: true, stopped: true }),
@@ -186,7 +188,11 @@ async function loadAgentUi(options = {}) {
     ...options.electronAPI,
   };
   global.document = document;
-  global.window = { electronAPI, confirm: jest.fn(() => true) };
+  global.window = {
+    electronAPI,
+    confirm: jest.fn(() => true),
+    ...(options.windowGlobals || {}),
+  };
   global.CustomEvent = class {
     constructor(type) {
       this.type = type;
@@ -357,13 +363,263 @@ describe('Agent UI', () => {
     });
     ctx.emit({ type: 'run_finished', runId: 'run_test', status: 'completed' });
 
-    expect(ctx.elements['agent-output'].textContent).toBe('<img src=x onerror=alert(1)>Summary');
-    expect(ctx.elements['agent-output'].children).toHaveLength(0);
-    expect(ctx.elements['agent-tool-list'].children[0].children[0].textContent).toBe('✓');
+    const output = ctx.elements['agent-transcript'].querySelector('.agent-output');
+    const toolList = ctx.elements['agent-transcript'].querySelector('.agent-tool-list');
+    expect(output.textContent).toBe('<img src=x onerror=alert(1)>Summary');
+    expect(output.children).toHaveLength(0);
+    expect(toolList.children[0].children[0].textContent).toBe('✓');
     expect(ctx.elements['agent-run-status'].textContent).toBe('Complete');
-    expect(ctx.elements['agent-run'].disabled).toBe(false);
+    expect(ctx.elements['agent-run'].disabled).toBe(true);
     expect(ctx.setAgentControlledTab).toHaveBeenNthCalledWith(1, 7);
     expect(ctx.setAgentControlledTab).toHaveBeenLastCalledWith(null);
+  });
+
+  test('keeps follow-up prompts in one chat and collapses completed activity', async () => {
+    const startAgent = jest
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        runId: 'run_first',
+        conversationId: 'conversation_test',
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        runId: 'run_followup',
+        conversationId: 'conversation_test',
+      });
+    const ctx = await loadAgentUi({ electronAPI: { startAgent } });
+
+    ctx.elements['agent-prompt'].value = 'Find the account settings';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({
+      type: 'run_started',
+      conversationId: 'conversation_test',
+      runId: 'run_first',
+      userText: 'Find the account settings',
+    });
+    ctx.emit({
+      type: 'context_compaction_started',
+      conversationId: 'conversation_test',
+      runId: 'run_first',
+    });
+    expect(ctx.elements['agent-run-message'].textContent).toBe(
+      'Making room for more conversation…'
+    );
+    ctx.emit({
+      type: 'context_compaction_finished',
+      conversationId: 'conversation_test',
+      runId: 'run_first',
+      status: 'succeeded',
+    });
+    expect(ctx.elements['agent-run-message'].textContent).toBe(
+      'Conversation compacted. Continuing…'
+    );
+    ctx.emit({
+      type: 'tool_started',
+      conversationId: 'conversation_test',
+      runId: 'run_first',
+      toolCallId: 'tool_first',
+      operation: 'browser_click',
+    });
+    ctx.emit({
+      type: 'tool_finished',
+      conversationId: 'conversation_test',
+      runId: 'run_first',
+      toolCallId: 'tool_first',
+      operation: 'browser_click',
+      status: 'succeeded',
+    });
+    ctx.emit({
+      type: 'run_finished',
+      conversationId: 'conversation_test',
+      runId: 'run_first',
+      status: 'completed',
+      durationMs: 72_000,
+      actionCount: 1,
+    });
+
+    const firstTurn = ctx.elements['agent-transcript'].children[0];
+    const firstActivity = firstTurn.querySelector('.agent-turn-activity');
+    expect(firstTurn.querySelector('.agent-user-message').textContent).toBe(
+      'Find the account settings'
+    );
+    expect(firstActivity.open).toBe(false);
+    expect(firstActivity.children[0].textContent).toBe('Worked for 1m 12s · 1 action');
+    expect(ctx.elements['agent-model-menu-button'].disabled).toBe(true);
+    expect(ctx.elements['agent-approval-mode-button'].disabled).toBe(true);
+    expect(ctx.elements['agent-new-chat'].hidden).toBe(false);
+
+    ctx.elements['agent-prompt'].value = 'Now enable notifications';
+    ctx.elements['agent-prompt'].dispatch('input');
+    expect(ctx.elements['agent-run'].disabled).toBe(false);
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({
+      type: 'run_started',
+      conversationId: 'conversation_test',
+      runId: 'run_followup',
+      userText: 'Now enable notifications',
+    });
+
+    expect(startAgent).toHaveBeenNthCalledWith(
+      2,
+      7,
+      'Now enable notifications',
+      'every_interaction'
+    );
+    expect(ctx.elements['agent-transcript'].children).toHaveLength(2);
+    expect(
+      ctx.elements['agent-transcript'].children[1].querySelector('.agent-user-message').textContent
+    ).toBe('Now enable notifications');
+  });
+
+  test('starts a fresh chat only after clearing the idle conversation', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'First task';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({
+      type: 'run_started',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      userText: 'First task',
+    });
+    ctx.emit({
+      type: 'run_finished',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      status: 'completed',
+    });
+
+    ctx.elements['agent-new-chat'].dispatch('click');
+    await flush();
+
+    expect(ctx.electronAPI.clearAgentConversation).toHaveBeenCalledTimes(1);
+    expect(ctx.elements['agent-transcript'].children).toHaveLength(0);
+    expect(ctx.elements['agent-transcript'].hidden).toBe(true);
+    expect(ctx.elements['agent-empty-state'].hidden).toBe(false);
+    expect(ctx.elements['agent-new-chat'].hidden).toBe(true);
+    expect(ctx.elements['agent-model-menu-button'].disabled).toBe(false);
+    expect(ctx.elements['agent-approval-mode-button'].disabled).toBe(false);
+  });
+
+  test('restores an idle in-memory conversation when the sidebar UI reloads', async () => {
+    const ctx = await loadAgentUi({
+      electronAPI: {
+        getAgentState: jest.fn().mockResolvedValue({
+          ok: true,
+          state: {
+            status: 'ready',
+            conversationId: 'conversation_restored',
+            rendererTabId: 7,
+            approvalMode: 'allow_website_interactions',
+            transcript: [
+              {
+                runId: 'run_restored',
+                userText: 'What is on this page?',
+                assistantText: 'A settings page.',
+                status: 'completed',
+                durationMs: 2_000,
+                activity: [],
+              },
+            ],
+          },
+        }),
+      },
+    });
+
+    expect(ctx.elements['agent-run-status'].textContent).toBe('Ready');
+    expect(ctx.elements['agent-transcript'].children).toHaveLength(1);
+    expect(ctx.elements['agent-transcript'].querySelector('.agent-user-message').textContent).toBe(
+      'What is on this page?'
+    );
+    expect(ctx.elements['agent-active-approval-mode-label'].textContent).toBe(
+      'Allow website actions'
+    );
+    expect(ctx.elements['agent-model-menu-button'].disabled).toBe(true);
+    expect(ctx.elements['agent-new-chat'].hidden).toBe(false);
+  });
+
+  test('sanitizes completed assistant Markdown with a restricted element allowlist', async () => {
+    const sanitize = jest.fn(() => '<p>Safe response</p>');
+    const ctx = await loadAgentUi({
+      windowGlobals: {
+        marked: { parse: jest.fn(() => '<img src=x onerror=alert(1)><p>Safe response</p>') },
+        DOMPurify: { sanitize },
+      },
+    });
+    ctx.elements['agent-prompt'].value = 'Summarize';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({
+      type: 'run_started',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      userText: 'Summarize',
+    });
+    ctx.emit({
+      type: 'assistant_text_delta',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      text: '<img src=x onerror=alert(1)>Safe response',
+    });
+    ctx.emit({
+      type: 'run_finished',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      status: 'completed',
+    });
+
+    expect(sanitize).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ ALLOWED_ATTR: [] })
+    );
+    const allowedTags = sanitize.mock.calls[0][1].ALLOWED_TAGS;
+    expect(allowedTags).not.toContain('img');
+    expect(allowedTags).not.toContain('a');
+    expect(ctx.elements['agent-transcript'].querySelector('.agent-output').innerHTML).toBe(
+      '<p>Safe response</p>'
+    );
+  });
+
+  test('falls back to text when completed assistant Markdown cannot be rendered', async () => {
+    const ctx = await loadAgentUi({
+      windowGlobals: {
+        marked: { parse: jest.fn(() => '<p>Response</p>') },
+        DOMPurify: {
+          sanitize: jest.fn(() => {
+            throw new Error('sanitizer failed');
+          }),
+        },
+      },
+    });
+    ctx.elements['agent-prompt'].value = 'Summarize';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({
+      type: 'run_started',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      userText: 'Summarize',
+    });
+    ctx.emit({
+      type: 'assistant_text_delta',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      text: '<unsafe>Response',
+    });
+    ctx.emit({
+      type: 'run_finished',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      status: 'completed',
+    });
+
+    expect(ctx.elements['agent-run-status'].textContent).toBe('Complete');
+    expect(ctx.elements['agent-transcript'].querySelector('.agent-output').textContent).toBe(
+      '<unsafe>Response'
+    );
   });
 
   test('keeps the assigned tab marked until the user takes over', async () => {
@@ -428,7 +684,7 @@ describe('Agent UI', () => {
           ok: false,
           error: {
             code: 'AGENT_RESUME_SCOPE_CHANGED',
-            message: 'The controlled tab left the task\'s starting site.',
+            message: "The controlled tab left the task's starting site.",
           },
         }),
       },
@@ -526,7 +782,7 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-run-message'].textContent).toBe(
       'The controlled browser tab was closed'
     );
-    expect(ctx.elements['agent-run'].disabled).toBe(false);
+    expect(ctx.elements['agent-run'].disabled).toBe(true);
     expect(ctx.elements['agent-stop'].disabled).toBe(true);
     expect(ctx.setAgentControlledTab).toHaveBeenLastCalledWith(null);
   });
@@ -624,7 +880,7 @@ describe('Agent UI', () => {
     await flush();
 
     expect(ctx.elements['agent-run-status'].textContent).toBe('Complete');
-    expect(ctx.elements['agent-run'].disabled).toBe(false);
+    expect(ctx.elements['agent-run'].disabled).toBe(true);
     expect(ctx.elements['agent-stop'].disabled).toBe(true);
   });
 });

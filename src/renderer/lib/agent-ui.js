@@ -27,6 +27,10 @@ let providerCatalogPromise = null;
 let providerStatus = null;
 let providerReady = false;
 let providerLoginPending = false;
+let currentConversationId = null;
+let conversationRendererTabId = null;
+let conversationUnavailable = false;
+let pendingPromptText = '';
 let currentRunId = null;
 let currentRunStatus = 'idle';
 let lastFinishedRunId = null;
@@ -38,6 +42,7 @@ let approvalMode = APPROVAL_MODES.EVERY_INTERACTION;
 let agentEventUnsubscribe = null;
 let providerAuthEventUnsubscribe = null;
 const toolRows = new Map();
+const turnViews = new Map();
 
 function byId(id) {
   return document.getElementById(id);
@@ -132,7 +137,13 @@ function closeComposerPopovers() {
 }
 
 function setApprovalMode(nextMode) {
-  if (!Object.hasOwn(APPROVAL_MODE_LABELS, nextMode) || currentRunStatus !== 'idle') return;
+  if (
+    !Object.hasOwn(APPROVAL_MODE_LABELS, nextMode) ||
+    currentRunStatus !== 'idle' ||
+    currentConversationId
+  ) {
+    return;
+  }
   approvalMode = nextMode;
   elements.activeApprovalModeLabel.textContent = APPROVAL_MODE_LABELS[nextMode];
   const askEvery = nextMode === APPROVAL_MODES.EVERY_INTERACTION;
@@ -391,7 +402,7 @@ async function loadProviderCatalog() {
 }
 
 async function selectModel(providerId, modelId) {
-  if (currentRunStatus !== 'idle') return;
+  if (currentRunStatus !== 'idle' || currentConversationId) return;
   elements.modelMenuButton.disabled = true;
   try {
     const response = await window.electronAPI.selectAgentModel(providerId, modelId);
@@ -404,7 +415,8 @@ async function selectModel(providerId, modelId) {
   } catch {
     setMessage(elements.runMessage, 'Could not select model', true);
   } finally {
-    elements.modelMenuButton.disabled = currentRunStatus !== 'idle';
+    elements.modelMenuButton.disabled =
+      currentRunStatus !== 'idle' || Boolean(currentConversationId);
   }
 }
 
@@ -527,34 +539,166 @@ async function cancelProviderLogin() {
 function setRunState(status, label) {
   const active = status !== 'idle';
   currentRunStatus = status;
-  elements.run.disabled = active || !elements.prompt.value.trim() || !providerStatus?.configured;
+  elements.run.disabled =
+    active ||
+    conversationUnavailable ||
+    !elements.prompt.value.trim() ||
+    !providerStatus?.configured;
   elements.pause.hidden = status !== 'running';
   elements.pause.disabled = status !== 'running';
   elements.resume.hidden = status !== 'paused';
   elements.resume.disabled = status !== 'paused';
   elements.stop.hidden = !active;
   elements.stop.disabled = !active || !currentRunId;
-  elements.prompt.disabled = active;
-  elements.modelMenuButton.disabled = active;
-  elements.approvalModeButton.disabled = active;
+  elements.prompt.disabled = active || conversationUnavailable;
+  elements.modelMenuButton.disabled = active || Boolean(currentConversationId);
+  elements.approvalModeButton.disabled = active || Boolean(currentConversationId);
+  elements.newChat.hidden = !currentConversationId;
+  elements.newChat.disabled = active;
   elements.runStatus.textContent = label;
   elements.runStatus.classList.toggle('active', active);
 }
 
 function updateSendAvailability() {
   elements.run.disabled =
-    currentRunStatus !== 'idle' || !elements.prompt.value.trim() || !providerStatus?.configured;
+    currentRunStatus !== 'idle' ||
+    conversationUnavailable ||
+    !elements.prompt.value.trim() ||
+    !providerStatus?.configured;
 }
 
-function resetRunOutput() {
+function resetConversationUi() {
   toolRows.clear();
-  elements.toolList.replaceChildren();
-  elements.output.textContent = '';
+  turnViews.clear();
+  elements.transcript.replaceChildren();
   elements.transcript.hidden = true;
-  elements.activity.hidden = true;
-  elements.emptyState.hidden = true;
+  elements.emptyState.hidden = false;
   clearApproval();
   setMessage(elements.runMessage);
+}
+
+function createTurnView(turn) {
+  for (const previous of turnViews.values()) {
+    previous.output.removeAttribute('id');
+    previous.toolList.removeAttribute('id');
+  }
+
+  const section = document.createElement('section');
+  section.className = 'agent-turn';
+  section.dataset.runId = turn.runId;
+
+  const userRow = document.createElement('div');
+  userRow.className = 'agent-message-row user';
+  const userMessage = document.createElement('div');
+  userMessage.className = 'agent-user-message';
+  userMessage.textContent = turn.userText || '';
+  userRow.appendChild(userMessage);
+
+  const assistantRow = document.createElement('div');
+  assistantRow.className = 'agent-message-row assistant';
+  const output = document.createElement('div');
+  output.id = 'agent-output';
+  output.className = 'agent-output';
+  output.textContent = turn.assistantText || '';
+  assistantRow.appendChild(output);
+
+  const activity = document.createElement('details');
+  activity.className = 'agent-turn-activity';
+  activity.open = true;
+  activity.hidden = true;
+  const activitySummary = document.createElement('summary');
+  activitySummary.textContent = 'Working…';
+  const toolList = document.createElement('ol');
+  toolList.id = 'agent-tool-list';
+  toolList.className = 'agent-tool-list';
+  activity.appendChild(activitySummary);
+  activity.appendChild(toolList);
+
+  section.appendChild(userRow);
+  section.appendChild(assistantRow);
+  section.appendChild(activity);
+  elements.transcript.appendChild(section);
+  elements.transcript.hidden = false;
+  elements.emptyState.hidden = true;
+
+  const view = {
+    section,
+    output,
+    activity,
+    activitySummary,
+    toolList,
+    assistantText: turn.assistantText || '',
+    actionCount: 0,
+  };
+  turnViews.set(turn.runId, view);
+  section.scrollIntoView?.({ block: 'end' });
+  return view;
+}
+
+function turnView(runId) {
+  return turnViews.get(runId) || null;
+}
+
+function formatDuration(durationMs) {
+  const seconds = Math.max(1, Math.round((Number(durationMs) || 0) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  return remainder ? `${minutes}m ${remainder}s` : `${minutes}m`;
+}
+
+function renderAssistantMarkdown(view) {
+  if (!view?.assistantText || !window.marked?.parse || !window.DOMPurify?.sanitize) return;
+  try {
+    const rendered = window.marked.parse(view.assistantText, { gfm: true, breaks: true });
+    if (typeof rendered !== 'string') return;
+    view.output.innerHTML = window.DOMPurify.sanitize(rendered, {
+      ALLOWED_TAGS: [
+        'p',
+        'br',
+        'strong',
+        'em',
+        'del',
+        'code',
+        'pre',
+        'blockquote',
+        'ul',
+        'ol',
+        'li',
+        'h1',
+        'h2',
+        'h3',
+        'h4',
+        'h5',
+        'h6',
+        'hr',
+      ],
+      ALLOWED_ATTR: [],
+    });
+    view.output.classList.add('rendered-markdown');
+  } catch {
+    view.output.textContent = view.assistantText;
+    view.output.classList.remove('rendered-markdown');
+  }
+}
+
+function restoreTranscript(transcript = []) {
+  resetConversationUi();
+  for (const turn of transcript) {
+    if (!turn || typeof turn.runId !== 'string') continue;
+    const view = createTurnView(turn);
+    for (const item of Array.isArray(turn.activity) ? turn.activity : []) {
+      addToolRow({ ...item, runId: turn.runId });
+      if (item.status !== 'running') finishToolRow({ ...item, runId: turn.runId });
+    }
+    if (
+      turn.status &&
+      !['starting', 'running', 'pausing', 'paused', 'resuming'].includes(turn.status)
+    ) {
+      finishTurnView(turn.runId, turn);
+    }
+    if (view.assistantText && turn.status === 'completed') renderAssistantMarkdown(view);
+  }
 }
 
 function clearApproval() {
@@ -624,6 +768,8 @@ function formatOperation(operation) {
 }
 
 function addToolRow(event) {
+  const view = turnView(event.runId);
+  if (!view || typeof event.toolCallId !== 'string') return;
   const row = document.createElement('li');
   row.className = 'agent-tool-item';
   const state = document.createElement('span');
@@ -633,24 +779,78 @@ function addToolRow(event) {
   label.textContent = formatOperation(event.operation);
   row.appendChild(state);
   row.appendChild(label);
-  elements.toolList.appendChild(row);
-  elements.activity.hidden = false;
-  toolRows.set(event.toolCallId, { row, state });
+  view.toolList.appendChild(row);
+  view.activity.hidden = false;
+  view.activity.open = true;
+  view.actionCount += 1;
+  toolRows.set(`${event.runId}:${event.toolCallId}`, { row, state });
 }
 
 function finishToolRow(event) {
-  const record = toolRows.get(event.toolCallId);
+  const record = toolRows.get(`${event.runId}:${event.toolCallId}`);
   if (!record) return;
   record.state.textContent = event.status === 'failed' ? '×' : '✓';
   record.row.classList.toggle('failed', event.status === 'failed');
 }
 
+function finishTurnView(runId, event = {}) {
+  const view = turnView(runId);
+  if (!view) return;
+  const actionCount = Number.isSafeInteger(event.actionCount)
+    ? event.actionCount
+    : view.actionCount;
+  if (actionCount > 0) {
+    view.activity.hidden = false;
+    view.activity.open = false;
+    view.activitySummary.textContent = `Worked for ${formatDuration(event.durationMs)} · ${actionCount} ${actionCount === 1 ? 'action' : 'actions'}`;
+  } else {
+    view.activity.hidden = true;
+  }
+  if (event.status === 'completed') renderAssistantMarkdown(view);
+}
+
+function applyConversationCleared() {
+  currentConversationId = null;
+  conversationRendererTabId = null;
+  conversationUnavailable = false;
+  pendingPromptText = '';
+  currentRunId = null;
+  lastFinishedRunId = null;
+  takeoverRequestedRunId = null;
+  setAgentControlledTab(null);
+  resetConversationUi();
+  setRunState('idle', 'Idle');
+}
+
 function handleAgentEvent(event) {
+  if (event?.type === 'conversation_cleared') {
+    if (!currentConversationId || event.conversationId === currentConversationId) {
+      applyConversationCleared();
+    }
+    return;
+  }
   if (!event || typeof event.runId !== 'string') return;
+  if (
+    currentConversationId &&
+    typeof event.conversationId === 'string' &&
+    event.conversationId !== currentConversationId
+  ) {
+    return;
+  }
   if (currentRunId && currentRunId !== event.runId) return;
   if (event.type === 'run_started') {
+    currentConversationId =
+      typeof event.conversationId === 'string' ? event.conversationId : currentConversationId;
     currentRunId = event.runId;
     lastFinishedRunId = null;
+    if (!turnView(event.runId)) {
+      createTurnView({
+        runId: event.runId,
+        userText: typeof event.userText === 'string' ? event.userText : pendingPromptText,
+        assistantText: '',
+      });
+    }
+    pendingPromptText = '';
     setRunState('running', 'Running');
     elements.emptyState.hidden = true;
     setMessage(
@@ -661,8 +861,11 @@ function handleAgentEvent(event) {
   }
   if (!currentRunId) return;
   if (event.type === 'assistant_text_delta' && typeof event.text === 'string') {
-    elements.output.textContent += event.text;
-    elements.transcript.hidden = false;
+    const view = turnView(event.runId);
+    if (!view) return;
+    view.assistantText += event.text;
+    view.output.textContent = view.assistantText;
+    view.section.scrollIntoView?.({ block: 'end' });
     elements.emptyState.hidden = true;
   } else if (event.type === 'tool_started') {
     addToolRow(event);
@@ -671,6 +874,16 @@ function handleAgentEvent(event) {
     finishToolRow(event);
   } else if (event.type === 'run_retrying') {
     setMessage(elements.runMessage, `Provider retry ${event.attempt} of ${event.maxAttempts}…`);
+  } else if (event.type === 'context_compaction_started') {
+    setMessage(elements.runMessage, 'Making room for more conversation…');
+  } else if (event.type === 'context_compaction_finished') {
+    setMessage(
+      elements.runMessage,
+      event.status === 'failed'
+        ? 'Could not compact the conversation; continuing with available context.'
+        : 'Conversation compacted. Continuing…',
+      event.status === 'failed'
+    );
   } else if (event.type === 'approval_requested') {
     renderApproval(event);
     setRunState('running', 'Approval needed');
@@ -697,6 +910,7 @@ function handleAgentEvent(event) {
     const status = event.status || 'finished';
     const wasTakeover = status === 'cancelled' && takeoverRequestedRunId === event.runId;
     const wasTabClosed = event.error?.code === 'AGENT_TAB_CLOSED';
+    if (wasTabClosed) conversationUnavailable = true;
     setRunState(
       'idle',
       wasTakeover
@@ -714,6 +928,7 @@ function handleAgentEvent(event) {
     } else {
       setMessage(elements.runMessage);
     }
+    finishTurnView(event.runId, event);
     lastFinishedRunId = event.runId;
     currentRunId = null;
     takeoverRequestedRunId = null;
@@ -729,31 +944,72 @@ async function startRun() {
     setMessage(elements.runMessage, 'Describe what you want the agent to do', true);
     return;
   }
-  if (!Number.isSafeInteger(tab?.id) || tab.id < 1) {
+  const rendererTabId = currentConversationId ? conversationRendererTabId : tab?.id;
+  if (!Number.isSafeInteger(rendererTabId) || rendererTabId < 1) {
     setMessage(elements.runMessage, 'The current tab is not ready for the agent', true);
     return;
   }
-  resetRunOutput();
-  setAgentControlledTab(tab.id);
+  pendingPromptText = prompt;
+  elements.prompt.value = '';
+  if (!currentConversationId) conversationRendererTabId = rendererTabId;
+  setAgentControlledTab(conversationRendererTabId);
   setRunState('starting', 'Starting');
+  setMessage(elements.runMessage);
   try {
-    const response = await window.electronAPI.startAgent(tab.id, prompt, approvalMode);
+    const response = await window.electronAPI.startAgent(rendererTabId, prompt, approvalMode);
     if (!response?.ok) {
       currentRunId = null;
-      setAgentControlledTab(null);
+      if (!currentConversationId) {
+        conversationRendererTabId = null;
+        setAgentControlledTab(null);
+      }
+      if (!elements.prompt.value) elements.prompt.value = pendingPromptText;
+      pendingPromptText = '';
       setRunState('idle', 'Idle');
       setMessage(elements.runMessage, responseMessage(response, 'Could not start the agent'), true);
       return;
     }
+    currentConversationId = response.conversationId || currentConversationId;
+    pendingPromptText = '';
     if (lastFinishedRunId !== response.runId) {
       currentRunId = response.runId;
       setRunState('running', 'Running');
+    } else {
+      setRunState('idle', elements.runStatus.textContent || 'Complete');
     }
   } catch {
     currentRunId = null;
-    setAgentControlledTab(null);
+    if (!currentConversationId) {
+      conversationRendererTabId = null;
+      setAgentControlledTab(null);
+    }
+    if (!elements.prompt.value) elements.prompt.value = pendingPromptText;
+    pendingPromptText = '';
     setRunState('idle', 'Idle');
     setMessage(elements.runMessage, 'Could not start the agent', true);
+  }
+}
+
+async function clearConversation() {
+  if (!currentConversationId || currentRunStatus !== 'idle') return;
+  elements.newChat.disabled = true;
+  setMessage(elements.runMessage, 'Starting a new chat…');
+  try {
+    const response = await window.electronAPI.clearAgentConversation();
+    if (!response?.ok) {
+      setMessage(
+        elements.runMessage,
+        responseMessage(response, 'Could not start a new chat'),
+        true
+      );
+      elements.newChat.disabled = false;
+      return;
+    }
+    applyConversationCleared();
+    elements.prompt.focus();
+  } catch {
+    setMessage(elements.runMessage, 'Could not start a new chat', true);
+    elements.newChat.disabled = false;
   }
 }
 
@@ -826,13 +1082,23 @@ async function stopRun() {
 async function restoreRunState() {
   try {
     const response = await window.electronAPI.getAgentState();
-    if (response?.ok && response.state?.status !== 'idle' && response.state?.runId) {
-      currentRunId = response.state.runId;
-      if (Number.isSafeInteger(response.state.rendererTabId)) {
-        setAgentControlledTab(response.state.rendererTabId);
-      }
-      const restoredStatus = ['paused', 'pausing', 'resuming'].includes(response.state.status)
-        ? response.state.status
+    const state = response?.ok ? response.state : null;
+    if (!state?.conversationId) return;
+    if (Object.hasOwn(APPROVAL_MODE_LABELS, state.approvalMode)) {
+      setApprovalMode(state.approvalMode);
+    }
+    currentConversationId = state.conversationId;
+    conversationRendererTabId = Number.isSafeInteger(state.rendererTabId)
+      ? state.rendererTabId
+      : null;
+    conversationUnavailable = state.status === 'unavailable';
+    restoreTranscript(Array.isArray(state.transcript) ? state.transcript : []);
+
+    if (state.runId && !['ready', 'unavailable'].includes(state.status)) {
+      currentRunId = state.runId;
+      if (conversationRendererTabId) setAgentControlledTab(conversationRendererTabId);
+      const restoredStatus = ['paused', 'pausing', 'resuming'].includes(state.status)
+        ? state.status
         : 'running';
       const restoredLabel =
         restoredStatus === 'paused'
@@ -844,9 +1110,18 @@ async function restoreRunState() {
               : 'Running';
       setRunState(restoredStatus, restoredLabel);
       setMessage(elements.runMessage, 'This run began before the panel was loaded');
-      if (response.state.pendingApproval) {
-        renderApproval(response.state.pendingApproval);
+      if (state.pendingApproval) {
+        renderApproval(state.pendingApproval);
         setRunState('running', 'Approval needed');
+      }
+    } else {
+      setRunState('idle', conversationUnavailable ? 'Tab closed' : 'Ready');
+      if (conversationUnavailable) {
+        setMessage(
+          elements.runMessage,
+          "This chat's browser workspace is no longer available. Start a new chat to continue.",
+          true
+        );
       }
     }
   } catch {
@@ -886,6 +1161,7 @@ export function initAgentUi(options = {}) {
     providerMessage: byId('agent-provider-message'),
     prompt: byId('agent-prompt'),
     run: byId('agent-run'),
+    newChat: byId('agent-new-chat'),
     pause: byId('agent-pause'),
     resume: byId('agent-resume'),
     stop: byId('agent-stop'),
@@ -898,9 +1174,6 @@ export function initAgentUi(options = {}) {
     approvalDecline: byId('agent-approval-decline'),
     approvalMessage: byId('agent-approval-message'),
     transcript: byId('agent-transcript'),
-    output: byId('agent-output'),
-    activity: byId('agent-activity'),
-    toolList: byId('agent-tool-list'),
     emptyState: byId('agent-empty-state'),
     modelMenuButton: byId('agent-model-menu-button'),
     activeModelLabel: byId('agent-active-model-label'),
@@ -931,6 +1204,7 @@ export function initAgentUi(options = {}) {
   elements.loginProvider.addEventListener('click', loginSubscriptionProvider);
   elements.cancelProviderLogin.addEventListener('click', cancelProviderLogin);
   elements.run.addEventListener('click', startRun);
+  elements.newChat.addEventListener('click', clearConversation);
   elements.prompt.addEventListener('input', updateSendAvailability);
   elements.prompt.addEventListener('keydown', (event) => {
     if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;

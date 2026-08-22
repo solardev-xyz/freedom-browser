@@ -322,10 +322,7 @@ class FreedomAgentService {
     };
     this.activeRun = run;
     let conversation = existingConversation;
-    if (conversation) {
-      conversation.activeRun = run;
-      conversation.turns.push(run);
-    }
+    if (conversation) conversation.activeRun = run;
     this.#emit(run, { type: 'run_started', tabId, approvalMode, userText: prompt });
 
     try {
@@ -403,7 +400,7 @@ class FreedomAgentService {
           );
         }
       }
-      if (!existingConversation) conversation.turns.push(run);
+      conversation.turns.push(run);
 
       if (run.failure) {
         await this.#finish(run, 'failed', run.failure);

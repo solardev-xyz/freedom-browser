@@ -1231,6 +1231,9 @@
               <div class="agent-run-header">
                 <span id="agent-run-status" class="agent-badge">Idle</span>
                 <div class="agent-lifecycle-actions">
+                  <button id="agent-new-chat" class="agent-text-button" type="button" hidden>
+                    New chat
+                  </button>
                   <button id="agent-pause" class="agent-text-button" type="button" disabled hidden>
                     Pause
                   </button>
@@ -1271,14 +1274,7 @@
                 <p id="agent-approval-message" class="agent-message" aria-live="polite"></p>
               </div>
 
-              <div id="agent-transcript" class="agent-transcript" hidden>
-                <h4>Response</h4>
-                <div id="agent-output" class="agent-output"></div>
-              </div>
-              <div id="agent-activity" class="agent-activity" hidden>
-                <h4>Activity</h4>
-                <ol id="agent-tool-list"></ol>
-              </div>
+              <div id="agent-transcript" class="agent-transcript" aria-live="polite" hidden></div>
             </div>
 
             <div class="agent-composer-wrap">
@@ -1289,7 +1285,7 @@
                     id="agent-prompt"
                     rows="3"
                     maxlength="32000"
-                    placeholder="Give this tab a task…"
+                    placeholder="Message Agent…"
                   ></textarea>
                 </label>
                 <div class="agent-composer-footer">
@@ -4666,6 +4662,8 @@
       </div>
     </dialog>
 
+    <script src="./vendor/marked.min.js"></script>
+    <script src="./vendor/purify.min.js"></script>
     <script type="module" src="./index.js"></script>
   </body>
 </html>

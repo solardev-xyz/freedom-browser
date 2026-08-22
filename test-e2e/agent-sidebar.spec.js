@@ -120,7 +120,18 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
   await expect(window.locator('#agent-run-message')).toHaveText(
     'The model provider request failed'
   );
-  await expect(window.locator('#agent-run')).toBeEnabled();
+  await expect(window.locator('.agent-user-message')).toHaveText('Summarize this page');
+  await expect(window.locator('#agent-prompt')).toBeEnabled();
+  await expect(window.locator('#agent-run')).toBeDisabled();
   await expect(window.locator('#agent-stop')).toBeDisabled();
+  await expect(window.locator('#agent-new-chat')).toBeEnabled();
+  await expect(window.locator('#agent-model-menu-button')).toBeDisabled();
+  await expect(window.locator('#agent-approval-mode-button')).toBeDisabled();
   await expect(window.locator('[data-test="tab"].active')).not.toHaveClass(/agent-controlled/);
+
+  await window.locator('#agent-new-chat').click();
+  await expect(window.locator('#agent-empty-state')).toBeVisible();
+  await expect(window.locator('#agent-transcript')).toBeHidden();
+  await expect(window.locator('#agent-model-menu-button')).toBeEnabled();
+  await expect(window.locator('#agent-approval-mode-button')).toBeEnabled();
 });

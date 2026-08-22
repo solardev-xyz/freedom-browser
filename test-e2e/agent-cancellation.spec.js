@@ -126,6 +126,27 @@ async function handleCompletion(request, response) {
     return;
   }
 
+  if (prompt.includes('FOLLOWUP_CONTEXT')) {
+    const retainedUser = (body.messages || []).some(
+      (message) =>
+        message?.role === 'user' && JSON.stringify(message.content).includes('FIRST_CONTEXT')
+    );
+    const retainedAssistant = (body.messages || []).some(
+      (message) => message?.role === 'assistant' && JSON.stringify(message.content).includes('READY')
+    );
+    writeSse(
+      response,
+      completionChunk({
+        delta: {
+          role: 'assistant',
+          content: retainedUser && retainedAssistant ? 'CONTEXT_RETAINED' : 'CONTEXT_MISSING',
+        },
+      })
+    );
+    finishSse(response);
+    return;
+  }
+
   writeSse(response, completionChunk({ delta: { role: 'assistant', content: 'READY' } }));
   finishSse(response);
 }
@@ -174,11 +195,14 @@ async function takeOverAndExpectReusable(window) {
   await expect(window.locator('#agent-run-status')).toHaveText('Taken over', { timeout: 3_000 });
   expect(Date.now() - startedAt).toBeLessThan(3_000);
   await expect(window.locator('#agent-run-message')).toHaveText('You took control of the tab');
-  await expect(window.locator('#agent-run')).toBeEnabled();
+  await expect(window.locator('#agent-prompt')).toBeEnabled();
+  await expect(window.locator('#agent-run')).toBeDisabled();
   await expect(window.locator('#agent-stop')).toBeDisabled();
+  await expect(window.locator('#agent-new-chat')).toBeEnabled();
   await expect(window.locator('[data-test="tab"].active')).not.toHaveClass(/agent-controlled/);
 
   await window.locator('#agent-prompt').fill('AFTER_CANCEL');
+  await expect(window.locator('#agent-run')).toBeEnabled();
   await window.locator('#agent-run').click();
   await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 5_000 });
   await expect(window.locator('#agent-output')).toHaveText('READY');
@@ -193,6 +217,33 @@ test('Take over cancels a streaming provider request', async ({ window }) => {
 
   await takeOverAndExpectReusable(window);
   await expect.poll(() => streamingResponseClosed).toBe(true);
+});
+
+test('follow-up prompts retain Pi context and the visible chat across sidebar reopen', async ({
+  window,
+}) => {
+  await configureFixtureProvider(window);
+  await window.locator('#agent-prompt').fill('FIRST_CONTEXT');
+  await window.locator('#agent-run').click();
+  await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 5_000 });
+  await expect(window.locator('#agent-output')).toHaveText('READY');
+
+  await window.locator('#agent-sidebar-close').click();
+  await window.locator('[data-test="agent-toggle-btn"]').click();
+  await expect(window.locator('.agent-user-message')).toHaveText(['FIRST_CONTEXT']);
+  await expect(window.locator('.agent-output')).toHaveText(['READY']);
+  await expect(window.locator('#agent-model-menu-button')).toBeDisabled();
+  await expect(window.locator('#agent-approval-mode-button')).toBeDisabled();
+
+  await window.locator('#agent-prompt').fill('FOLLOWUP_CONTEXT');
+  await window.locator('#agent-run').click();
+  await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 5_000 });
+  await expect(window.locator('#agent-output')).toHaveText('CONTEXT_RETAINED');
+  await expect(window.locator('.agent-user-message')).toHaveText([
+    'FIRST_CONTEXT',
+    'FOLLOWUP_CONTEXT',
+  ]);
+  await expect(window.locator('.agent-output')).toHaveText(['READY', 'CONTEXT_RETAINED']);
 });
 
 test('Pause preserves the Pi session and resume re-observes the page', async ({ window }) => {
@@ -249,11 +300,15 @@ test('closing the controlled tab immediately aborts the active run', async ({ wi
   await expect(window.locator('#agent-run-message')).toHaveText(
     'The controlled browser tab was closed'
   );
-  await expect(window.locator('#agent-run')).toBeEnabled();
+  await expect(window.locator('#agent-prompt')).toBeDisabled();
+  await expect(window.locator('#agent-run')).toBeDisabled();
   await expect(window.locator('#agent-stop')).toBeDisabled();
+  await expect(window.locator('#agent-new-chat')).toBeEnabled();
   await expect.poll(() => streamingResponseClosed).toBe(true);
 
+  await window.locator('#agent-new-chat').click();
   await window.locator('webview:not(.hidden)').waitFor({ state: 'attached' });
+  await expect(window.locator('#agent-prompt')).toBeEnabled();
   await window.locator('#agent-prompt').fill('AFTER_TAB_CLOSE');
   await window.locator('#agent-run').click();
   await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 5_000 });
