@@ -2,6 +2,9 @@
 
 const crypto = require('crypto');
 const { ERROR_CODES } = require('../automation/contract/errors');
+const {
+  createOriginScopedAutomationController,
+} = require('../automation/origin-scoped-controller');
 const { createFreedomBrowserTools } = require('./pi-browser-tools');
 const { loadPiSdk } = require('./pi-sdk');
 const { createIsolatedPiSession } = require('./pi-session-factory');
@@ -43,7 +46,10 @@ function createDeferred() {
 
 function validateStartOptions(options) {
   if (!options || typeof options !== 'object' || Array.isArray(options)) {
-    throw new FreedomAgentError(AGENT_ERROR_CODES.INVALID_ARGUMENT, 'Agent run options are required');
+    throw new FreedomAgentError(
+      AGENT_ERROR_CODES.INVALID_ARGUMENT,
+      'Agent run options are required'
+    );
   }
   if (typeof options.prompt !== 'string' || !options.prompt.trim()) {
     throw new FreedomAgentError(
@@ -128,6 +134,8 @@ class FreedomAgentService {
     }
     this.controller = options.controller;
     this.loadSdk = options.loadSdk || loadPiSdk;
+    this.createControllerScope =
+      options.createControllerScope || createOriginScopedAutomationController;
     this.createTools = options.createTools || createFreedomBrowserTools;
     this.createSession = options.createSession || createIsolatedPiSession;
     this.runIdFactory = options.runIdFactory || opaqueRunId;
@@ -140,11 +148,11 @@ class FreedomAgentService {
       if (typeof options.subscribeTabLifecycle !== 'function') {
         throw new TypeError('FreedomAgentService requires a tab lifecycle subscriber');
       }
-      const unsubscribe = options.subscribeTabLifecycle((event) =>
-        this.#handleTabLifecycle(event)
-      );
+      const unsubscribe = options.subscribeTabLifecycle((event) => this.#handleTabLifecycle(event));
       if (typeof unsubscribe !== 'function') {
-        throw new TypeError('Automation tab lifecycle subscription must return an unsubscribe function');
+        throw new TypeError(
+          'Automation tab lifecycle subscription must return an unsubscribe function'
+        );
       }
       this.unsubscribeTabLifecycle = unsubscribe;
     }
@@ -202,9 +210,13 @@ class FreedomAgentService {
 
     try {
       const sdk = await this.loadSdk();
+      const scopedController = await this.createControllerScope({
+        controller: this.controller,
+        tabId,
+      });
       const customTools = await this.createTools({
         sdk,
-        controller: this.controller,
+        controller: scopedController,
         tabId,
         onToolOutcome: (outcome) => this.#handleToolOutcome(run, outcome),
       });

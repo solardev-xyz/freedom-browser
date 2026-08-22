@@ -45,6 +45,7 @@ function createService(fakeSession, overrides = {}) {
   const dependencies = {
     controller: { execute: jest.fn() },
     loadSdk: jest.fn(async () => ({ kind: 'sdk' })),
+    createControllerScope: jest.fn(async ({ controller }) => controller),
     createTools: jest.fn(async () => [{ name: 'browser_snapshot' }]),
     createSession: jest.fn(async () => ({ session: fakeSession.session })),
     runIdFactory: jest.fn(() => 'run_test'),
@@ -72,6 +73,10 @@ describe('FreedomAgentService', () => {
 
     await expect(service.start(startOptions({ thinkingLevel: 'low' }))).resolves.toEqual({
       runId: 'run_test',
+    });
+    expect(dependencies.createControllerScope).toHaveBeenCalledWith({
+      controller: dependencies.controller,
+      tabId: 'tab_assigned',
     });
     expect(dependencies.createTools).toHaveBeenCalledWith({
       sdk: { kind: 'sdk' },
@@ -204,9 +209,7 @@ describe('FreedomAgentService', () => {
       toolCallId: 'call_1',
       toolName: 'browser_snapshot',
       result: {
-        content: [
-          { type: 'text', text: 'Pi may render this however it wants' },
-        ],
+        content: [{ type: 'text', text: 'Pi may render this however it wants' }],
       },
       isError: true,
     });
