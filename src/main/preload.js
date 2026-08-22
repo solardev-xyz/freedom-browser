@@ -163,6 +163,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('agent:start', { rendererTabId, prompt }),
   stopAgent: (runId) => ipcRenderer.invoke('agent:stop', { runId }),
   getAgentState: () => ipcRenderer.invoke('agent:get-state'),
+  getAgentProviderStatus: () => ipcRenderer.invoke('agent:provider:get-status'),
+  getAgentProviderCatalog: () => ipcRenderer.invoke('agent:provider:get-catalog'),
+  configureHostedAgentProvider: (providerId, modelId, apiKey) =>
+    ipcRenderer.invoke('agent:provider:configure-hosted', { providerId, modelId, apiKey }),
+  configureOllamaAgentProvider: (modelId, baseUrl) =>
+    ipcRenderer.invoke('agent:provider:configure-ollama', { modelId, baseUrl }),
+  clearAgentProvider: () => ipcRenderer.invoke('agent:provider:clear'),
   onAgentEvent: (callback) => {
     const handler = (_event, payload) => callback(payload);
     ipcRenderer.on('agent:event', handler);

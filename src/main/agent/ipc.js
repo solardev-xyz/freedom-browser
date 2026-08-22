@@ -9,6 +9,15 @@ const AGENT_IPC_ERROR_CODES = Object.freeze({
   NOT_OWNER: 'AGENT_NOT_OWNER',
   INTERNAL_ERROR: 'AGENT_INTERNAL_ERROR',
 });
+const SAFE_PROVIDER_ERROR_MESSAGES = Object.freeze({
+  AGENT_SECURE_STORAGE_UNAVAILABLE: 'Secure credential storage is unavailable',
+  AGENT_CREDENTIAL_UNAVAILABLE: 'The saved provider credential is unavailable',
+  AGENT_PROVIDER_STORE_UNSAFE: 'Agent provider storage is unsafe',
+  AGENT_PROVIDER_STORE_INVALID: 'Agent provider storage is invalid',
+  AGENT_PROVIDER_INVALID: 'Agent provider configuration is invalid',
+  AGENT_MODEL_INVALID: 'Selected agent model is invalid',
+  AGENT_MODEL_UNAVAILABLE: 'No configured agent model is available',
+});
 
 function errorEnvelope(code, message) {
   return { ok: false, error: { code, message } };
@@ -20,6 +29,16 @@ function safeServiceError(error) {
     AGENT_IPC_ERROR_CODES.INTERNAL_ERROR,
     'The embedded agent request failed unexpectedly'
   );
+}
+
+function safeProviderError(error) {
+  const message = SAFE_PROVIDER_ERROR_MESSAGES[error?.code];
+  return message
+    ? errorEnvelope(error.code, message)
+    : errorEnvelope(
+        AGENT_IPC_ERROR_CODES.INTERNAL_ERROR,
+        'The embedded agent request failed unexpectedly'
+      );
 }
 
 function validateStartPayload(payload) {
@@ -42,7 +61,14 @@ function validateStartPayload(payload) {
 }
 
 function registerFreedomAgentIpc(options = {}) {
-  const { ipcMain, service, automationTabIdForRenderer, resolveModel } = options;
+  const {
+    ipcMain,
+    service,
+    automationTabIdForRenderer,
+    resolveModel,
+    providerResolver,
+    isTrustedSender,
+  } = options;
   if (!ipcMain || typeof ipcMain.handle !== 'function') {
     throw new TypeError('Freedom agent IPC requires ipcMain');
   }
@@ -60,6 +86,19 @@ function registerFreedomAgentIpc(options = {}) {
   }
   if (typeof resolveModel !== 'function') {
     throw new TypeError('Freedom agent IPC requires a main-process model resolver');
+  }
+  if (
+    !providerResolver ||
+    typeof providerResolver.getStatus !== 'function' ||
+    typeof providerResolver.getCatalog !== 'function' ||
+    typeof providerResolver.configureHosted !== 'function' ||
+    typeof providerResolver.configureOllama !== 'function' ||
+    typeof providerResolver.clear !== 'function'
+  ) {
+    throw new TypeError('Freedom agent IPC requires a provider resolver');
+  }
+  if (typeof isTrustedSender !== 'function') {
+    throw new TypeError('Freedom agent IPC requires a trusted chrome sender check');
   }
 
   let owner = null;
@@ -106,6 +145,12 @@ function registerFreedomAgentIpc(options = {}) {
     }
     startPending = true;
     try {
+      if (!isTrustedSender(event?.sender)) {
+        return errorEnvelope(
+          AGENT_IPC_ERROR_CODES.NOT_OWNER,
+          'The sender is not trusted browser chrome'
+        );
+      }
       const { rendererTabId, prompt } = validateStartPayload(rawPayload);
       const tabId = automationTabIdForRenderer(event?.sender, rendererTabId);
       if (!tabId) {
@@ -203,14 +248,60 @@ function registerFreedomAgentIpc(options = {}) {
     return { ok: true, state: service.getState() };
   };
 
+  const handleProviderRequest = async (event, action) => {
+    let trusted;
+    try {
+      trusted = isTrustedSender(event?.sender);
+    } catch {
+      return errorEnvelope(
+        AGENT_IPC_ERROR_CODES.NOT_OWNER,
+        'The sender is not trusted browser chrome'
+      );
+    }
+    if (!trusted) {
+      return errorEnvelope(
+        AGENT_IPC_ERROR_CODES.NOT_OWNER,
+        'The sender is not trusted browser chrome'
+      );
+    }
+    try {
+      return { ok: true, ...(await action()) };
+    } catch (error) {
+      return safeProviderError(error);
+    }
+  };
+
+  const handleProviderStatus = (event) =>
+    handleProviderRequest(event, () => ({ status: providerResolver.getStatus() }));
+  const handleProviderCatalog = (event) =>
+    handleProviderRequest(event, async () => ({ catalog: await providerResolver.getCatalog() }));
+  const handleConfigureHosted = (event, payload) =>
+    handleProviderRequest(event, async () => ({
+      status: await providerResolver.configureHosted(payload),
+    }));
+  const handleConfigureOllama = (event, payload) =>
+    handleProviderRequest(event, () => ({ status: providerResolver.configureOllama(payload) }));
+  const handleClearProvider = (event) =>
+    handleProviderRequest(event, () => ({ status: providerResolver.clear() }));
+
   ipcMain.handle(IPC.AGENT_START, handleStart);
   ipcMain.handle(IPC.AGENT_STOP, handleStop);
   ipcMain.handle(IPC.AGENT_GET_STATE, handleGetState);
+  ipcMain.handle(IPC.AGENT_PROVIDER_GET_STATUS, handleProviderStatus);
+  ipcMain.handle(IPC.AGENT_PROVIDER_GET_CATALOG, handleProviderCatalog);
+  ipcMain.handle(IPC.AGENT_PROVIDER_CONFIGURE_HOSTED, handleConfigureHosted);
+  ipcMain.handle(IPC.AGENT_PROVIDER_CONFIGURE_OLLAMA, handleConfigureOllama);
+  ipcMain.handle(IPC.AGENT_PROVIDER_CLEAR, handleClearProvider);
 
   return async () => {
     ipcMain.removeHandler?.(IPC.AGENT_START);
     ipcMain.removeHandler?.(IPC.AGENT_STOP);
     ipcMain.removeHandler?.(IPC.AGENT_GET_STATE);
+    ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_GET_STATUS);
+    ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_GET_CATALOG);
+    ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_CONFIGURE_HOSTED);
+    ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_CONFIGURE_OLLAMA);
+    ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_CLEAR);
     unsubscribe();
     if (owner) {
       const runId = owner.runId;
@@ -223,6 +314,7 @@ function registerFreedomAgentIpc(options = {}) {
 module.exports = {
   AGENT_IPC_ERROR_CODES,
   registerFreedomAgentIpc,
+  safeProviderError,
   safeServiceError,
   validateStartPayload,
 };

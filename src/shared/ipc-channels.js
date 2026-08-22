@@ -172,6 +172,11 @@ module.exports = {
   AGENT_STOP: 'agent:stop',
   AGENT_GET_STATE: 'agent:get-state',
   AGENT_EVENT: 'agent:event',
+  AGENT_PROVIDER_GET_STATUS: 'agent:provider:get-status',
+  AGENT_PROVIDER_GET_CATALOG: 'agent:provider:get-catalog',
+  AGENT_PROVIDER_CONFIGURE_HOSTED: 'agent:provider:configure-hosted',
+  AGENT_PROVIDER_CONFIGURE_OLLAMA: 'agent:provider:configure-ollama',
+  AGENT_PROVIDER_CLEAR: 'agent:provider:clear',
 
   // Favicons
   FAVICON_GET: 'favicon:get',

@@ -48,11 +48,21 @@ function register(overrides = {}) {
     modelRuntime: { kind: 'runtime' },
     thinkingLevel: 'low',
   }));
+  const providerResolver = {
+    getStatus: jest.fn(() => ({ configured: false, secureStorageAvailable: true })),
+    getCatalog: jest.fn(async () => [{ providerId: 'openai', models: [] }]),
+    configureHosted: jest.fn(async () => ({ configured: true, providerId: 'openai' })),
+    configureOllama: jest.fn(() => ({ configured: true, providerId: 'ollama' })),
+    clear: jest.fn(() => ({ configured: false })),
+  };
+  const isTrustedSender = jest.fn((candidate) => candidate === sender);
   const dispose = registerFreedomAgentIpc({
     ipcMain,
     service,
     automationTabIdForRenderer,
     resolveModel,
+    providerResolver,
+    isTrustedSender,
     ...overrides,
   });
   return {
@@ -62,6 +72,8 @@ function register(overrides = {}) {
     otherSender,
     automationTabIdForRenderer,
     resolveModel,
+    providerResolver,
+    isTrustedSender,
     dispose,
   };
 }
@@ -86,12 +98,30 @@ describe('Freedom agent IPC', () => {
     });
   });
 
-  test('rejects another window and an unbound tab', async () => {
+  test('rejects untrusted chrome before resolving its tab', async () => {
     const ctx = register();
     const start = ctx.ipcMain.handlers.get(IPC.AGENT_START);
 
     await expect(
       start({ sender: ctx.otherSender }, { rendererTabId: 7, prompt: 'Task' })
+    ).resolves.toEqual({
+      ok: false,
+      error: {
+        code: AGENT_IPC_ERROR_CODES.NOT_OWNER,
+        message: 'The sender is not trusted browser chrome',
+      },
+    });
+    expect(ctx.automationTabIdForRenderer).not.toHaveBeenCalled();
+    expect(ctx.resolveModel).not.toHaveBeenCalled();
+    expect(ctx.service.start).not.toHaveBeenCalled();
+  });
+
+  test('rejects a trusted chrome sender when its tab is not bound', async () => {
+    const ctx = register({ automationTabIdForRenderer: jest.fn(() => null) });
+    const start = ctx.ipcMain.handlers.get(IPC.AGENT_START);
+
+    await expect(
+      start({ sender: ctx.sender }, { rendererTabId: 7, prompt: 'Task' })
     ).resolves.toEqual({
       ok: false,
       error: {
@@ -146,6 +176,43 @@ describe('Freedom agent IPC', () => {
       stopped: true,
     });
     expect(ctx.service.stop).toHaveBeenCalledTimes(1);
+  });
+
+  test('configures providers only for trusted chrome and never returns a key', async () => {
+    const ctx = register();
+    const configure = ctx.ipcMain.handlers.get(IPC.AGENT_PROVIDER_CONFIGURE_HOSTED);
+    const input = { providerId: 'openai', modelId: 'model', apiKey: 'sk-secret' };
+
+    await expect(configure({ sender: ctx.otherSender }, input)).resolves.toMatchObject({
+      ok: false,
+      error: { code: AGENT_IPC_ERROR_CODES.NOT_OWNER },
+    });
+    const response = await configure({ sender: ctx.sender }, input);
+
+    expect(ctx.providerResolver.configureHosted).toHaveBeenCalledWith(input);
+    expect(response).toEqual({
+      ok: true,
+      status: { configured: true, providerId: 'openai' },
+    });
+    expect(JSON.stringify(response)).not.toContain('sk-secret');
+  });
+
+  test('fails provider trust checks closed without exposing classifier errors', async () => {
+    const ctx = register({
+      isTrustedSender: jest.fn(() => {
+        throw new Error('private-window-internal');
+      }),
+    });
+    const getStatus = ctx.ipcMain.handlers.get(IPC.AGENT_PROVIDER_GET_STATUS);
+
+    await expect(getStatus({ sender: ctx.sender })).resolves.toEqual({
+      ok: false,
+      error: {
+        code: AGENT_IPC_ERROR_CODES.NOT_OWNER,
+        message: 'The sender is not trusted browser chrome',
+      },
+    });
+    expect(ctx.providerResolver.getStatus).not.toHaveBeenCalled();
   });
 
   test('stops the run when its chrome renderer is destroyed', async () => {

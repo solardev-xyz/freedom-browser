@@ -169,7 +169,7 @@ process.on('unhandledRejection', (reason, _promise) => {
 
 const { registerShutdownSignalHandlers } = require('./shutdown-signals');
 const unregisterShutdownSignalHandlers = registerShutdownSignalHandlers({ app, logger: log });
-const { BrowserWindow, protocol, session } = require('electron');
+const { BrowserWindow, ipcMain, protocol, safeStorage, session } = require('electron');
 const { registerBaseIpcHandlers, broadcastProfileUpdated } = require('./ipc-handlers');
 const { watchProfileRegistry } = require('./profile-registry-watcher');
 const { installRequestRewriter } = require('./request-rewriter');
@@ -299,6 +299,7 @@ const {
 focusCurrentProfileWindow = focusOrCreateMainWindow;
 const {
   createPrivateWindow,
+  isPrivateWebContents,
   setPrivateSessionConfigurator,
   registerPrivateCleanup,
 } = require('./private/private-windows');
@@ -308,8 +309,11 @@ const { registerWebContentsHandlers } = require('./webcontents-setup');
 const { installTestHarness, registerStubProtocols } = require('./test-harness');
 const {
   automationController,
+  automationTabIdForRenderer,
   registerAutomationWebContents,
 } = require('./automation/runtime');
+const { createFreedomAgentRuntime } = require('./agent/runtime');
+const { getAgentDataDir } = require('./profile-paths');
 const { createHiddenPageManager } = require('./automation/hidden-page-manager');
 const {
   DEFAULT_RUNTIME_IDLE_TIMEOUT_MS,
@@ -320,6 +324,7 @@ let runtimeServer = null;
 let hiddenPageManager = null;
 let runtimeIdleController = null;
 let unregisterRuntimeDownloadActivity = null;
+let agentRuntime = null;
 const RUNTIME_BUSY_NODE_STATES = new Set(['starting', 'stopping']);
 
 function hasRuntimeNodeTransition() {
@@ -399,6 +404,20 @@ async function bootstrap() {
   registerRadicleProviderIpc();
   registerFeedStoreIpc();
   registerPermissionManifestIpc();
+
+  if (!RUNTIME_MODE) {
+    agentRuntime = createFreedomAgentRuntime({
+      ipcMain,
+      safeStorage,
+      profile: activeProfile,
+      dataDir: getAgentDataDir(),
+      controller: automationController,
+      automationTabIdForRenderer,
+      isTrustedSender: (sender) =>
+        !isPrivateWebContents(sender) &&
+        getMainWindows().some((window) => window.webContents === sender),
+    });
+  }
 
   // Resolve any pending broadcast txs that didn't get a final receipt
   // before the previous run exited. Fire-and-forget — the wallet stack
@@ -672,6 +691,11 @@ app.on('before-quit', async (event) => {
     automationController.setPageLifecycle(null);
   }
   runtimeIdleController = null;
+
+  if (agentRuntime) {
+    await agentRuntime.dispose();
+    agentRuntime = null;
+  }
 
   // Close all DevTools first to prevent crashes during cleanup
   log.info('[App] Closing all DevTools...');
