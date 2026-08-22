@@ -6,6 +6,7 @@ const PROVIDER_NAMES = Object.freeze({
   anthropic: 'Anthropic',
   openai: 'OpenAI',
   openrouter: 'OpenRouter',
+  freepi: 'Free Pi',
   ollama: 'Ollama',
 });
 

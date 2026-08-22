@@ -1,6 +1,8 @@
 'use strict';
 
 const {
+  FREE_PI_BASE_URL,
+  FREE_PI_MODEL_ID,
   OLLAMA_DEFAULT_BASE_URL,
   AgentProviderResolver,
   normalizeOllamaBaseUrl,
@@ -73,6 +75,53 @@ describe('AgentProviderResolver', () => {
     expect(resolved.thinkingLevel).toBe('off');
   });
 
+  test('registers and resolves Free Pi through its fixed hosted endpoint', async () => {
+    const ctx = createResolver({
+      kind: 'hosted',
+      providerId: 'freepi',
+      modelId: FREE_PI_MODEL_ID,
+      apiKey: 'test-key',
+    });
+
+    await ctx.resolver.configureHosted({
+      providerId: 'freepi',
+      modelId: FREE_PI_MODEL_ID,
+      apiKey: 'new-test-key',
+    });
+    const resolved = await ctx.resolver.resolveModel();
+
+    expect(ctx.runtime.registerProvider).toHaveBeenCalledWith(
+      'freepi',
+      expect.objectContaining({
+        name: 'Free Pi',
+        baseUrl: FREE_PI_BASE_URL,
+        api: 'openai-completions',
+        models: [
+          expect.objectContaining({
+            id: FREE_PI_MODEL_ID,
+            compat: expect.objectContaining({
+              supportsDeveloperRole: false,
+              supportsReasoningEffort: false,
+              maxTokensField: 'max_tokens',
+            }),
+          }),
+        ],
+      })
+    );
+    const freePiConfig = ctx.runtime.registerProvider.mock.calls.find(
+      ([providerId]) => providerId === 'freepi'
+    )[1];
+    expect(freePiConfig).not.toHaveProperty('apiKey');
+    expect(JSON.stringify(freePiConfig)).not.toContain('test-key');
+    expect(ctx.store.saveHosted).toHaveBeenCalledWith({
+      providerId: 'freepi',
+      modelId: FREE_PI_MODEL_ID,
+      apiKey: 'new-test-key',
+    });
+    expect(ctx.runtime.setRuntimeApiKey).toHaveBeenCalledWith('freepi', 'test-key');
+    expect(resolved.model).toMatchObject({ provider: 'freepi', id: FREE_PI_MODEL_ID });
+  });
+
   test('rejects unsupported providers, unknown models, and malformed keys', async () => {
     const ctx = createResolver();
     await expect(
@@ -143,6 +192,17 @@ describe('AgentProviderResolver', () => {
         providerId: 'openrouter',
         name: 'OpenRouter',
         models: [{ id: 'model-c', name: 'Model C', reasoning: false }],
+      },
+      {
+        providerId: 'freepi',
+        name: 'Free Pi',
+        models: [
+          {
+            id: FREE_PI_MODEL_ID,
+            name: 'DeepSeek V4 Flash',
+            reasoning: false,
+          },
+        ],
       },
     ]);
     expect(JSON.stringify(await ctx.resolver.getCatalog())).not.toContain('key');

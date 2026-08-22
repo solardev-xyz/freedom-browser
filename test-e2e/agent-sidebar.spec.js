@@ -1,12 +1,25 @@
 const { test, expect } = require('./fixtures');
 
-test('Agent sidebar configures a local model and reports the run lifecycle', async ({ window }) => {
+test('Agent sidebar configures hosted and local models and reports the run lifecycle', async ({
+  window,
+}) => {
   const toggle = window.locator('[data-test="agent-toggle-btn"]');
   const panel = window.locator('#agent-sidebar');
 
   await expect(toggle).toBeVisible();
   await toggle.click();
   await expect(panel).not.toHaveClass(/collapsed/);
+  await expect(window.locator('#agent-provider-status')).toHaveText('Not configured');
+
+  await window.locator('#agent-provider-select').selectOption('freepi');
+  await expect(window.locator('#agent-model-select')).toHaveValue('deepseek/deepseek-v4-flash');
+  await window.locator('#agent-api-key').fill('test-only-not-a-credential');
+  await window.locator('#agent-provider-save').click();
+  await expect(window.locator('#agent-provider-status')).toContainText(
+    'Free Pi · deepseek/deepseek-v4-flash'
+  );
+  await expect(window.locator('#agent-api-key')).toHaveValue('');
+  await window.locator('#agent-provider-clear').click();
   await expect(window.locator('#agent-provider-status')).toHaveText('Not configured');
 
   await window.locator('#agent-provider-select').selectOption('ollama');

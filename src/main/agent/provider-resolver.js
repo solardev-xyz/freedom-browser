@@ -7,9 +7,38 @@ const HOSTED_PROVIDERS = Object.freeze({
   anthropic: 'Anthropic',
   openai: 'OpenAI',
   openrouter: 'OpenRouter',
+  freepi: 'Free Pi',
 });
+const FREE_PI_BASE_URL = 'https://sponsored-api-pilot-production.up.railway.app/api/v1';
+const FREE_PI_MODEL_ID = 'deepseek/deepseek-v4-flash';
 const OLLAMA_DEFAULT_BASE_URL = 'http://127.0.0.1:11434/v1';
 const ZERO_COST = Object.freeze({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+
+function registerFreePi(runtime) {
+  runtime.registerProvider('freepi', {
+    name: HOSTED_PROVIDERS.freepi,
+    baseUrl: FREE_PI_BASE_URL,
+    api: 'openai-completions',
+    models: [
+      {
+        id: FREE_PI_MODEL_ID,
+        name: 'DeepSeek V4 Flash',
+        reasoning: false,
+        input: ['text'],
+        cost: ZERO_COST,
+        contextWindow: 128_000,
+        maxTokens: 8_192,
+        compat: {
+          supportsStore: false,
+          supportsDeveloperRole: false,
+          supportsReasoningEffort: false,
+          supportsUsageInStreaming: false,
+          maxTokensField: 'max_tokens',
+        },
+      },
+    ],
+  });
+}
 
 class AgentProviderError extends Error {
   constructor(code, message) {
@@ -79,6 +108,7 @@ class AgentProviderResolver {
 
   async getCatalog() {
     const runtime = await this.#createRuntime();
+    registerFreePi(runtime);
     return Object.entries(HOSTED_PROVIDERS).map(([providerId, name]) => ({
       providerId,
       name,
@@ -105,6 +135,7 @@ class AgentProviderResolver {
       throw new AgentProviderError('AGENT_PROVIDER_INVALID', 'Provider API key is invalid');
     }
     const runtime = await this.#createRuntime();
+    registerFreePi(runtime);
     if (!runtime.getModel(providerId, modelId)) {
       throw new AgentProviderError('AGENT_MODEL_INVALID', 'Selected model is not available');
     }
@@ -130,6 +161,7 @@ class AgentProviderResolver {
       throw new AgentProviderError('AGENT_MODEL_UNAVAILABLE', 'No agent model is configured');
     }
     const runtime = await this.#createRuntime();
+    registerFreePi(runtime);
     if (selection.kind === 'hosted') {
       await runtime.setRuntimeApiKey(selection.providerId, selection.apiKey);
     } else if (selection.kind === 'ollama') {
@@ -172,6 +204,8 @@ class AgentProviderResolver {
 }
 
 module.exports = {
+  FREE_PI_BASE_URL,
+  FREE_PI_MODEL_ID,
   HOSTED_PROVIDERS,
   OLLAMA_DEFAULT_BASE_URL,
   AgentProviderError,
