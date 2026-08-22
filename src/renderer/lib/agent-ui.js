@@ -19,6 +19,7 @@ let providerCatalogPromise = null;
 let providerStatus = null;
 let providerLoginPending = false;
 let currentRunId = null;
+let currentRunStatus = 'idle';
 let lastFinishedRunId = null;
 let takeoverRequestedRunId = null;
 let pendingApproval = null;
@@ -298,9 +299,15 @@ async function clearProvider() {
   }
 }
 
-function setRunActive(active, label) {
+function setRunState(status, label) {
+  const active = status !== 'idle';
+  currentRunStatus = status;
   elements.run.disabled = active;
-  elements.stop.disabled = !active;
+  elements.pause.hidden = status !== 'running';
+  elements.pause.disabled = status !== 'running';
+  elements.resume.hidden = status !== 'paused';
+  elements.resume.disabled = status !== 'paused';
+  elements.stop.disabled = !active || !currentRunId;
   elements.prompt.disabled = active;
   elements.runStatus.textContent = label;
   elements.runStatus.classList.toggle('active', active);
@@ -401,7 +408,7 @@ function handleAgentEvent(event) {
   if (event.type === 'run_started') {
     currentRunId = event.runId;
     lastFinishedRunId = null;
-    setRunActive(true, 'Running');
+    setRunState('running', 'Running');
     setMessage(
       elements.runMessage,
       'Agent stays attached to this tab if you switch tabs. Choose Take over to stop it.'
@@ -420,19 +427,32 @@ function handleAgentEvent(event) {
     setMessage(elements.runMessage, `Provider retry ${event.attempt} of ${event.maxAttempts}…`);
   } else if (event.type === 'approval_requested') {
     renderApproval(event);
-    setRunActive(true, 'Approval needed');
+    setRunState('running', 'Approval needed');
   } else if (
     event.type === 'approval_resolved' &&
     pendingApproval?.approvalId === event.approvalId
   ) {
     clearApproval();
-    setRunActive(true, 'Running');
+    setRunState('running', 'Running');
+  } else if (event.type === 'run_pausing') {
+    setRunState('pausing', 'Pausing');
+    setMessage(elements.runMessage, 'Pausing after the current browser operation settles…');
+  } else if (event.type === 'run_paused') {
+    clearApproval();
+    setRunState('paused', 'Paused');
+    setMessage(elements.runMessage, 'You can change the page, then resume this task.');
+  } else if (event.type === 'run_resuming') {
+    setRunState('resuming', 'Resuming');
+    setMessage(elements.runMessage, 'Checking the page before the agent continues…');
+  } else if (event.type === 'run_resumed') {
+    setRunState('running', 'Running');
+    setMessage(elements.runMessage, 'Agent is re-reading the current page before acting.');
   } else if (event.type === 'run_finished') {
     const status = event.status || 'finished';
     const wasTakeover = status === 'cancelled' && takeoverRequestedRunId === event.runId;
     const wasTabClosed = event.error?.code === 'AGENT_TAB_CLOSED';
-    setRunActive(
-      false,
+    setRunState(
+      'idle',
       wasTakeover
         ? 'Taken over'
         : wasTabClosed
@@ -469,43 +489,86 @@ async function startRun() {
   }
   resetRunOutput();
   setAgentControlledTab(tab.id);
-  setRunActive(true, 'Starting');
+  setRunState('starting', 'Starting');
   try {
     const response = await window.electronAPI.startAgent(tab.id, prompt);
     if (!response?.ok) {
       currentRunId = null;
       setAgentControlledTab(null);
-      setRunActive(false, 'Idle');
+      setRunState('idle', 'Idle');
       setMessage(elements.runMessage, responseMessage(response, 'Could not start the agent'), true);
       return;
     }
     if (lastFinishedRunId !== response.runId) {
       currentRunId = response.runId;
-      setRunActive(true, 'Running');
+      setRunState('running', 'Running');
     }
   } catch {
     currentRunId = null;
     setAgentControlledTab(null);
-    setRunActive(false, 'Idle');
+    setRunState('idle', 'Idle');
     setMessage(elements.runMessage, 'Could not start the agent', true);
+  }
+}
+
+async function pauseRun() {
+  if (!currentRunId || currentRunStatus !== 'running') return;
+  const runId = currentRunId;
+  setRunState('pausing', 'Pausing');
+  setMessage(elements.runMessage, 'Pausing…');
+  try {
+    const response = await window.electronAPI.pauseAgent(runId);
+    if ((!response?.ok || response.paused !== true) && currentRunId === runId) {
+      setRunState('running', 'Running');
+      setMessage(elements.runMessage, responseMessage(response, 'Could not pause the agent'), true);
+    }
+  } catch {
+    if (currentRunId !== runId) return;
+    setRunState('running', 'Running');
+    setMessage(elements.runMessage, 'Could not pause the agent', true);
+  }
+}
+
+async function resumeRun() {
+  if (!currentRunId || currentRunStatus !== 'paused') return;
+  const runId = currentRunId;
+  setRunState('resuming', 'Resuming');
+  setMessage(elements.runMessage, 'Checking the page before the agent continues…');
+  try {
+    const response = await window.electronAPI.resumeAgent(runId);
+    if ((!response?.ok || response.resumed !== true) && currentRunId === runId) {
+      setRunState('paused', 'Paused');
+      setMessage(elements.runMessage, responseMessage(response, 'Could not resume the agent'), true);
+    }
+  } catch {
+    if (currentRunId !== runId) return;
+    setRunState('paused', 'Paused');
+    setMessage(elements.runMessage, 'Could not resume the agent', true);
   }
 }
 
 async function stopRun() {
   if (!currentRunId) return;
+  const previousStatus = currentRunStatus;
   takeoverRequestedRunId = currentRunId;
-  elements.stop.disabled = true;
+  setRunState('stopping', 'Taking over');
   setMessage(elements.runMessage, 'Taking over…');
   try {
     const response = await window.electronAPI.stopAgent(currentRunId);
     if (!response?.ok) {
       takeoverRequestedRunId = null;
-      elements.stop.disabled = false;
+      setRunState(
+        previousStatus === 'paused' ? 'paused' : 'running',
+        previousStatus === 'paused' ? 'Paused' : 'Running'
+      );
       setMessage(elements.runMessage, responseMessage(response, 'Could not stop the agent'), true);
     }
   } catch {
     takeoverRequestedRunId = null;
-    elements.stop.disabled = false;
+    setRunState(
+      previousStatus === 'paused' ? 'paused' : 'running',
+      previousStatus === 'paused' ? 'Paused' : 'Running'
+    );
     setMessage(elements.runMessage, 'Could not stop the agent', true);
   }
 }
@@ -518,11 +581,22 @@ async function restoreRunState() {
       if (Number.isSafeInteger(response.state.rendererTabId)) {
         setAgentControlledTab(response.state.rendererTabId);
       }
-      setRunActive(true, 'Running');
+      const restoredStatus = ['paused', 'pausing', 'resuming'].includes(response.state.status)
+        ? response.state.status
+        : 'running';
+      const restoredLabel =
+        restoredStatus === 'paused'
+          ? 'Paused'
+          : restoredStatus === 'pausing'
+            ? 'Pausing'
+            : restoredStatus === 'resuming'
+              ? 'Resuming'
+              : 'Running';
+      setRunState(restoredStatus, restoredLabel);
       setMessage(elements.runMessage, 'This run began before the panel was loaded');
       if (response.state.pendingApproval) {
         renderApproval(response.state.pendingApproval);
-        setRunActive(true, 'Approval needed');
+        setRunState('running', 'Approval needed');
       }
     }
   } catch {
@@ -555,6 +629,8 @@ export function initAgentUi(options = {}) {
     providerMessage: byId('agent-provider-message'),
     prompt: byId('agent-prompt'),
     run: byId('agent-run'),
+    pause: byId('agent-pause'),
+    resume: byId('agent-resume'),
     stop: byId('agent-stop'),
     runStatus: byId('agent-run-status'),
     runMessage: byId('agent-run-message'),
@@ -586,6 +662,8 @@ export function initAgentUi(options = {}) {
   elements.cancelProviderLogin.addEventListener('click', cancelProviderLogin);
   elements.clearProvider.addEventListener('click', clearProvider);
   elements.run.addEventListener('click', startRun);
+  elements.pause.addEventListener('click', pauseRun);
+  elements.resume.addEventListener('click', resumeRun);
   elements.stop.addEventListener('click', stopRun);
   elements.approvalApprove.addEventListener('click', () => decideApproval(true));
   elements.approvalDecline.addEventListener('click', () => decideApproval(false));

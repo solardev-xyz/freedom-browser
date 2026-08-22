@@ -89,6 +89,10 @@ function createController(initialUrl = 'https://trusted.example/start') {
   return {
     execute,
     inspectAction,
+    setUrl: (nextUrl) => {
+      url = nextUrl;
+      navigationId += 1;
+    },
     failNextNavigation: () => {
       failNextNavigation = true;
     },
@@ -194,6 +198,51 @@ describe('OriginScopedAutomationController', () => {
     ).resolves.toMatchObject({ ok: true });
     expect(controller.execute).toHaveBeenCalledWith(OPERATIONS.STOP_LOADING, {
       tabId: 'tab_assigned',
+    });
+  });
+
+  test('requires a fresh tab read and snapshot before acting after resume', async () => {
+    const controller = createController();
+    const scoped = await createOriginScopedAutomationController({
+      controller,
+      tabId: 'tab_assigned',
+    });
+
+    await expect(scoped.prepareResume()).resolves.toEqual({ ok: true });
+    await expect(
+      scoped.execute(OPERATIONS.CLICK, { tabId: 'tab_assigned', ref: 'ref_button' })
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: ERROR_CODES.POLICY_DENIED },
+    });
+    await expect(
+      scoped.execute(OPERATIONS.SNAPSHOT, { tabId: 'tab_assigned' })
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: ERROR_CODES.POLICY_DENIED },
+    });
+    await expect(
+      scoped.execute(OPERATIONS.GET_TAB, { tabId: 'tab_assigned' })
+    ).resolves.toMatchObject({ ok: true });
+    await expect(
+      scoped.execute(OPERATIONS.SNAPSHOT, { tabId: 'tab_assigned' })
+    ).resolves.toMatchObject({ ok: true });
+    await expect(
+      scoped.execute(OPERATIONS.CLICK, { tabId: 'tab_assigned', ref: 'ref_button' })
+    ).resolves.toMatchObject({ ok: true });
+  });
+
+  test('refuses to prepare resume after a cross-origin human navigation', async () => {
+    const controller = createController();
+    const scoped = await createOriginScopedAutomationController({
+      controller,
+      tabId: 'tab_assigned',
+    });
+    controller.setUrl('https://other.example/changed-by-user');
+
+    await expect(scoped.prepareResume()).resolves.toMatchObject({
+      ok: false,
+      error: { code: ERROR_CODES.POLICY_DENIED },
     });
   });
 

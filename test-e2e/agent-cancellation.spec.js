@@ -63,9 +63,17 @@ function userPrompt(body) {
   return typeof message?.content === 'string' ? message.content : JSON.stringify(message?.content);
 }
 
+function lastToolCallId(body) {
+  const message = [...(body.messages || [])]
+    .reverse()
+    .find((candidate) => candidate?.role === 'tool');
+  return typeof message?.tool_call_id === 'string' ? message.tool_call_id : '';
+}
+
 async function handleCompletion(request, response) {
   const body = await readJsonBody(request);
   const prompt = userPrompt(body);
+  const toolCallId = lastToolCallId(body);
   response.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
@@ -99,6 +107,22 @@ async function handleCompletion(request, response) {
       )
     );
     finishSse(response, 'tool_calls');
+    return;
+  }
+
+  if (prompt.includes('The user resumed this task')) {
+    if (!toolCallId) {
+      writeSse(response, toolCallChunk('browser_get_tab', '{}'));
+      finishSse(response, 'tool_calls');
+      return;
+    }
+    if (toolCallId === 'call_browser_get_tab') {
+      writeSse(response, toolCallChunk('browser_snapshot', '{}'));
+      finishSse(response, 'tool_calls');
+      return;
+    }
+    writeSse(response, completionChunk({ delta: { role: 'assistant', content: 'RESUMED' } }));
+    finishSse(response);
     return;
   }
 
@@ -169,6 +193,42 @@ test('Take over cancels a streaming provider request', async ({ window }) => {
 
   await takeOverAndExpectReusable(window);
   await expect.poll(() => streamingResponseClosed).toBe(true);
+});
+
+test('Pause preserves the Pi session and resume re-observes the page', async ({ window }) => {
+  streamingResponseClosed = false;
+  await configureFixtureProvider(window);
+  await window.locator('#agent-prompt').fill('STREAM_CANCEL');
+  await window.locator('#agent-run').click();
+  await expect(window.locator('#agent-output')).toHaveText('Streaming fixture started');
+
+  await window.locator('#agent-pause').click();
+  await expect(window.locator('#agent-run-status')).toHaveText('Paused', { timeout: 3_000 });
+  await expect(window.locator('#agent-resume')).toBeVisible();
+  await expect(window.locator('#agent-stop')).toBeEnabled();
+  await expect(window.locator('[data-test="tab"].active')).toHaveClass(/agent-controlled/);
+  await expect.poll(() => streamingResponseClosed).toBe(true);
+
+  await window.locator('#agent-resume').click();
+  await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 5_000 });
+  await expect(window.locator('#agent-output')).toContainText('RESUMED');
+  await expect(window.locator('.agent-tool-item')).toContainText(['get tab', 'snapshot']);
+  await expect(window.locator('[data-test="tab"].active')).not.toHaveClass(/agent-controlled/);
+});
+
+test('Pause cancels an active browser wait and the same run can resume', async ({ window }) => {
+  await configureFixtureProvider(window);
+  await window.locator('#agent-prompt').fill('WAIT_CANCEL');
+  await window.locator('#agent-run').click();
+  await expect(window.locator('.agent-tool-item')).toContainText('wait');
+
+  await window.locator('#agent-pause').click();
+  await expect(window.locator('#agent-run-status')).toHaveText('Paused', { timeout: 3_000 });
+  await expect(window.locator('[data-test="tab"].active')).toHaveClass(/agent-controlled/);
+
+  await window.locator('#agent-resume').click();
+  await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 5_000 });
+  await expect(window.locator('#agent-output')).toContainText('RESUMED');
 });
 
 test('closing the controlled tab immediately aborts the active run', async ({ window }) => {

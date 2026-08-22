@@ -22,6 +22,7 @@ function createDeferred() {
 
 function createFakeSession() {
   const prompt = createDeferred();
+  const prompts = [];
   let listener;
   const unsubscribe = jest.fn();
   const session = {
@@ -29,13 +30,18 @@ function createFakeSession() {
       listener = nextListener;
       return unsubscribe;
     }),
-    prompt: jest.fn(() => prompt.promise),
-    abort: jest.fn(async () => prompt.resolve()),
+    prompt: jest.fn(() => {
+      const turn = prompts.length === 0 ? prompt : createDeferred();
+      prompts.push(turn);
+      return turn.promise;
+    }),
+    abort: jest.fn(async () => prompts.at(-1)?.resolve()),
     dispose: jest.fn(),
   };
   return {
     session,
     prompt,
+    prompts,
     unsubscribe,
     emit: (event) => listener?.(event),
   };
@@ -45,7 +51,10 @@ function createService(fakeSession, overrides = {}) {
   const dependencies = {
     controller: { execute: jest.fn() },
     loadSdk: jest.fn(async () => ({ kind: 'sdk' })),
-    createControllerScope: jest.fn(async ({ controller }) => controller),
+    createControllerScope: jest.fn(async ({ controller }) => ({
+      ...controller,
+      prepareResume: jest.fn(async () => ({ ok: true })),
+    })),
     createTools: jest.fn(async () => [{ name: 'browser_snapshot' }]),
     createSession: jest.fn(async () => ({ session: fakeSession.session })),
     runIdFactory: jest.fn(() => 'run_test'),
@@ -81,7 +90,7 @@ describe('FreedomAgentService', () => {
     });
     expect(dependencies.createTools).toHaveBeenCalledWith({
       sdk: { kind: 'sdk' },
-      controller: dependencies.controller,
+      controller: expect.objectContaining({ execute: dependencies.controller.execute }),
       tabId: 'tab_assigned',
       onToolOutcome: expect.any(Function),
     });
@@ -217,6 +226,87 @@ describe('FreedomAgentService', () => {
     await service.waitForIdle();
   });
 
+  test('pauses and resumes the same Pi session with a mandatory recovery prompt', async () => {
+    const fake = createFakeSession();
+    const { service, dependencies } = createService(fake);
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+    const scopedController = dependencies.createTools.mock.calls[0][0].controller;
+    const requestApproval = dependencies.createControllerScope.mock.calls[0][0].requestApproval;
+    const approvalDecision = requestApproval({ action: 'form_submission' });
+
+    await expect(service.pause('run_other')).resolves.toBe(false);
+    await expect(service.pause('run_test')).resolves.toBe(true);
+
+    await expect(approvalDecision).resolves.toBe(false);
+    expect(events.map((event) => event.type)).toContain('run_pausing');
+    expect(events.at(-1)).toMatchObject({ type: 'run_paused' });
+    expect(events.find((event) => event.type === 'approval_resolved')).toMatchObject({
+      decision: 'withdrawn',
+    });
+    expect(service.getState()).toMatchObject({ status: 'paused', runId: 'run_test' });
+    expect(fake.session.dispose).not.toHaveBeenCalled();
+
+    await expect(service.resume('run_test')).resolves.toBe(true);
+
+    expect(scopedController.prepareResume).toHaveBeenCalledTimes(1);
+    expect(fake.session.prompt).toHaveBeenCalledTimes(2);
+    expect(fake.session.prompt.mock.calls[1][0]).toContain(
+      'Treat the current page as authoritative'
+    );
+    expect(events.slice(-2).map((event) => event.type)).toEqual([
+      'run_resuming',
+      'run_resumed',
+    ]);
+    expect(service.getState()).toMatchObject({ status: 'running' });
+
+    fake.prompts[1].resolve();
+    await service.waitForIdle();
+    expect(events.at(-1)).toMatchObject({ type: 'run_finished', status: 'completed' });
+    expect(fake.session.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  test('refuses resume after the controlled tab leaves its starting site', async () => {
+    const fake = createFakeSession();
+    const prepareResume = jest.fn(async () => ({
+      ok: false,
+      error: { code: ERROR_CODES.POLICY_DENIED },
+    }));
+    const { service } = createService(fake, {
+      createControllerScope: jest.fn(async ({ controller }) => ({
+        ...controller,
+        prepareResume,
+      })),
+    });
+    await service.start(startOptions());
+    await service.pause('run_test');
+
+    await expect(service.resume('run_test')).rejects.toMatchObject({
+      code: AGENT_ERROR_CODES.RESUME_SCOPE_CHANGED,
+    });
+    expect(service.getState()).toMatchObject({ status: 'paused' });
+    expect(fake.session.prompt).toHaveBeenCalledTimes(1);
+
+    await service.stop('run_test');
+    await service.waitForIdle();
+  });
+
+  test('take over remains terminal while paused', async () => {
+    const fake = createFakeSession();
+    const { service } = createService(fake);
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+    await service.pause('run_test');
+
+    await expect(service.stop('run_test')).resolves.toBe(true);
+    await service.waitForIdle();
+
+    expect(events.at(-1)).toMatchObject({ type: 'run_finished', status: 'cancelled' });
+    expect(fake.session.dispose).toHaveBeenCalledTimes(1);
+  });
+
   test('enforces single-run ownership', async () => {
     const fake = createFakeSession();
     const { service } = createService(fake);
@@ -322,6 +412,31 @@ describe('FreedomAgentService', () => {
 
     await service.dispose();
     expect(unsubscribeTabLifecycle).toHaveBeenCalledTimes(1);
+  });
+
+  test('closing the controlled tab is terminal while the run is paused', async () => {
+    const fake = createFakeSession();
+    let lifecycleListener;
+    const { service } = createService(fake, {
+      subscribeTabLifecycle: (listener) => {
+        lifecycleListener = listener;
+        return jest.fn();
+      },
+    });
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+    await service.pause('run_test');
+
+    lifecycleListener({ type: 'tab_closed', tabId: 'tab_assigned', kind: 'desktop' });
+    await service.waitForIdle();
+
+    expect(events.at(-1)).toMatchObject({
+      type: 'run_finished',
+      status: 'failed',
+      error: { code: AGENT_ERROR_CODES.TAB_CLOSED },
+    });
+    expect(fake.session.dispose).toHaveBeenCalledTimes(1);
   });
 
   test('redacts provider failures from terminal events', async () => {

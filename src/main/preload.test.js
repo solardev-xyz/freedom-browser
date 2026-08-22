@@ -148,6 +148,8 @@ describe('preload', () => {
       [exposures.electronAPI, 'clearHistory', [], IPC.HISTORY_CLEAR, []],
       [exposures.electronAPI, 'getWebviewPreloadPath', [], IPC.GET_WEBVIEW_PRELOAD_PATH, []],
       [exposures.electronAPI, 'startAgent', [7, 'Summarize'], IPC.AGENT_START, [{ rendererTabId: 7, prompt: 'Summarize' }]],
+      [exposures.electronAPI, 'pauseAgent', ['run_test'], IPC.AGENT_PAUSE, [{ runId: 'run_test' }]],
+      [exposures.electronAPI, 'resumeAgent', ['run_test'], IPC.AGENT_RESUME, [{ runId: 'run_test' }]],
       [exposures.electronAPI, 'stopAgent', ['run_1'], IPC.AGENT_STOP, [{ runId: 'run_1' }]],
       [exposures.electronAPI, 'getAgentState', [], IPC.AGENT_GET_STATE, []],
       [exposures.electronAPI, 'getAgentProviderStatus', [], IPC.AGENT_PROVIDER_GET_STATUS, []],

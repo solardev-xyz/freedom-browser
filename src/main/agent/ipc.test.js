@@ -30,6 +30,8 @@ function createService(options = {}) {
   let listener;
   return {
     start: options.start || jest.fn(async () => ({ runId: 'run_test' })),
+    pause: options.pause || jest.fn(async () => true),
+    resume: options.resume || jest.fn(async () => true),
     stop: options.stop || jest.fn(async () => true),
     decideApproval: options.decideApproval || jest.fn(async () => true),
     getState: jest.fn(() => ({ status: 'running', runId: 'run_test', tabId: 'tab_bound' })),
@@ -190,6 +192,55 @@ describe('Freedom agent IPC', () => {
       stopped: true,
     });
     expect(ctx.service.stop).toHaveBeenCalledTimes(1);
+  });
+
+  test('routes pause and resume only for the owning sender and exact run', async () => {
+    const ctx = register();
+    const start = ctx.ipcMain.handlers.get(IPC.AGENT_START);
+    const pause = ctx.ipcMain.handlers.get(IPC.AGENT_PAUSE);
+    const resume = ctx.ipcMain.handlers.get(IPC.AGENT_RESUME);
+    await start({ sender: ctx.sender }, { rendererTabId: 7, prompt: 'Task' });
+
+    await expect(
+      pause({ sender: ctx.otherSender }, { runId: 'run_test' })
+    ).resolves.toMatchObject({ ok: false, error: { code: AGENT_IPC_ERROR_CODES.NOT_OWNER } });
+    await expect(
+      resume({ sender: ctx.sender }, { runId: 'run_stale' })
+    ).resolves.toMatchObject({ ok: false, error: { code: AGENT_IPC_ERROR_CODES.NOT_OWNER } });
+    await expect(pause({ sender: ctx.sender }, { runId: 'run_test' })).resolves.toEqual({
+      ok: true,
+      paused: true,
+    });
+    await expect(resume({ sender: ctx.sender }, { runId: 'run_test' })).resolves.toEqual({
+      ok: true,
+      resumed: true,
+    });
+    expect(ctx.service.pause).toHaveBeenCalledWith('run_test');
+    expect(ctx.service.resume).toHaveBeenCalledWith('run_test');
+  });
+
+  test('returns a safe service error when resume refuses the changed page scope', async () => {
+    const service = createService({
+      resume: jest.fn(async () => {
+        throw new FreedomAgentError(
+          AGENT_ERROR_CODES.RESUME_SCOPE_CHANGED,
+          'The controlled tab left the task\'s starting site. Start a new task to continue there.'
+        );
+      }),
+    });
+    const ctx = register({ service });
+    await ctx.ipcMain.handlers
+      .get(IPC.AGENT_START)({ sender: ctx.sender }, { rendererTabId: 7, prompt: 'Task' });
+
+    await expect(
+      ctx.ipcMain.handlers.get(IPC.AGENT_RESUME)(
+        { sender: ctx.sender },
+        { runId: 'run_test' }
+      )
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: AGENT_ERROR_CODES.RESUME_SCOPE_CHANGED },
+    });
   });
 
   test('routes approval decisions only from the owning chrome and exact run', async () => {

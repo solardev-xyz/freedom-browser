@@ -49,6 +49,15 @@ class OriginScopedAutomationController {
     this.lastState = initialState;
     this.requestApproval = requestApproval;
     this.declinedCommitActions = new Set();
+    this.resumeObservation = null;
+  }
+
+  async prepareResume() {
+    const state = await this.#readState();
+    if (!state.ok) return state;
+    if (!this.#acceptCurrentOrigin(state)) return this.#originDenied(state);
+    this.resumeObservation = 'get_tab';
+    return { ok: true };
   }
 
   async execute(operation, input = {}) {
@@ -69,13 +78,26 @@ class OriginScopedAutomationController {
 
     const state = await this.#readState();
     if (!state.ok) return state;
-    if (operation === OPERATIONS.GET_TAB) return state;
+    if (operation === OPERATIONS.GET_TAB) {
+      if (this.resumeObservation === 'get_tab') this.resumeObservation = 'snapshot';
+      return state;
+    }
     // Cancellation authority must survive an unexpected redirect so Freedom
     // can still stop page activity before refusing further observation/action.
     if (operation === OPERATIONS.STOP_LOADING) {
       return this.controller.execute(operation, input);
     }
     if (!this.#acceptCurrentOrigin(state)) return this.#originDenied(state);
+
+    if (this.resumeObservation) {
+      if (operation !== OPERATIONS.SNAPSHOT || this.resumeObservation !== 'snapshot') {
+        return errorEnvelope(
+          state,
+          ERROR_CODES.POLICY_DENIED,
+          'After resume, get the current tab and take a fresh snapshot before acting'
+        );
+      }
+    }
 
     const requestedUrl =
       operation === OPERATIONS.NAVIGATE ||
@@ -92,6 +114,9 @@ class OriginScopedAutomationController {
     }
 
     const result = await this.controller.execute(operation, input);
+    if (result?.ok && operation === OPERATIONS.SNAPSHOT) {
+      this.resumeObservation = null;
+    }
     if (result?.ok && operation === OPERATIONS.NAVIGATE) {
       const navigatedState = await this.#readState();
       if (!navigatedState.ok) return navigatedState;

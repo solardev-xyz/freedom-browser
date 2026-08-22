@@ -30,6 +30,8 @@ function createAgentElements() {
     'agent-provider-message',
     'agent-prompt',
     'agent-run',
+    'agent-pause',
+    'agent-resume',
     'agent-stop',
     'agent-run-status',
     'agent-run-message',
@@ -62,6 +64,10 @@ function createAgentElements() {
   elements['agent-auth-code'].hidden = true;
   elements['agent-prompt'] = createElement('textarea');
   elements['agent-run'] = createElement('button');
+  elements['agent-pause'] = createElement('button', { disabled: true });
+  elements['agent-pause'].hidden = true;
+  elements['agent-resume'] = createElement('button', { disabled: true });
+  elements['agent-resume'].hidden = true;
   elements['agent-stop'] = createElement('button', { disabled: true });
   elements['agent-approval'] = createElement('div');
   elements['agent-approval'].hidden = true;
@@ -111,6 +117,8 @@ async function loadAgentUi(options = {}) {
     clearAgentProvider: jest.fn(),
     getAgentState: jest.fn().mockResolvedValue({ ok: true, state: { status: 'idle' } }),
     startAgent: jest.fn().mockResolvedValue({ ok: true, runId: 'run_test' }),
+    pauseAgent: jest.fn().mockResolvedValue({ ok: true, paused: true }),
+    resumeAgent: jest.fn().mockResolvedValue({ ok: true, resumed: true }),
     stopAgent: jest.fn().mockResolvedValue({ ok: true, stopped: true }),
     decideAgentApproval: jest.fn().mockResolvedValue({ ok: true, decided: true }),
     onAgentEvent: jest.fn((handler) => {
@@ -235,6 +243,84 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-run-status'].textContent).toBe('Taken over');
     expect(ctx.elements['agent-run-message'].textContent).toBe('You took control of the tab');
     expect(ctx.setAgentControlledTab).toHaveBeenLastCalledWith(null);
+  });
+
+  test('keeps the run attached while paused and resumes it explicitly', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Complete the task';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+
+    ctx.elements['agent-pause'].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.pauseAgent).toHaveBeenCalledWith('run_test');
+
+    ctx.emit({ type: 'run_pausing', runId: 'run_test' });
+    ctx.emit({ type: 'run_paused', runId: 'run_test' });
+    expect(ctx.elements['agent-run-status'].textContent).toBe('Paused');
+    expect(ctx.elements['agent-pause'].hidden).toBe(true);
+    expect(ctx.elements['agent-resume'].hidden).toBe(false);
+    expect(ctx.elements['agent-stop'].disabled).toBe(false);
+    expect(ctx.setAgentControlledTab).toHaveBeenLastCalledWith(7);
+
+    ctx.elements['agent-resume'].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.resumeAgent).toHaveBeenCalledWith('run_test');
+    ctx.emit({ type: 'run_resuming', runId: 'run_test' });
+    ctx.emit({ type: 'run_resumed', runId: 'run_test' });
+
+    expect(ctx.elements['agent-run-status'].textContent).toBe('Running');
+    expect(ctx.elements['agent-pause'].hidden).toBe(false);
+    expect(ctx.elements['agent-pause'].disabled).toBe(false);
+    expect(ctx.elements['agent-resume'].hidden).toBe(true);
+    expect(ctx.elements['agent-run-message'].textContent).toContain('re-reading');
+    expect(ctx.setAgentControlledTab).toHaveBeenLastCalledWith(7);
+
+    ctx.emit({ type: 'run_finished', runId: 'run_test', status: 'completed' });
+  });
+
+  test('withdraws approval UI on pause and reports a refused resume without detaching', async () => {
+    const ctx = await loadAgentUi({
+      electronAPI: {
+        resumeAgent: jest.fn().mockResolvedValue({
+          ok: false,
+          error: {
+            code: 'AGENT_RESUME_SCOPE_CHANGED',
+            message: 'The controlled tab left the task\'s starting site.',
+          },
+        }),
+      },
+    });
+    ctx.elements['agent-prompt'].value = 'Submit the form';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'approval_requested',
+      runId: 'run_test',
+      approvalId: 'approval_test',
+      action: 'form_submission',
+    });
+    ctx.emit({
+      type: 'approval_resolved',
+      runId: 'run_test',
+      approvalId: 'approval_test',
+      decision: 'withdrawn',
+    });
+    ctx.emit({ type: 'run_pausing', runId: 'run_test' });
+    ctx.emit({ type: 'run_paused', runId: 'run_test' });
+
+    expect(ctx.elements['agent-approval'].hidden).toBe(true);
+    ctx.elements['agent-resume'].dispatch('click');
+    await flush();
+
+    expect(ctx.elements['agent-run-status'].textContent).toBe('Paused');
+    expect(ctx.elements['agent-run-message'].textContent).toContain('left the task');
+    expect(ctx.elements['agent-run-message'].classList.contains('error')).toBe(true);
+    expect(ctx.setAgentControlledTab).toHaveBeenLastCalledWith(7);
+
+    ctx.emit({ type: 'run_finished', runId: 'run_test', status: 'cancelled' });
   });
 
   test('renders form approval details as text and sends a one-shot decision', async () => {

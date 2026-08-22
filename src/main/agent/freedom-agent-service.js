@@ -18,11 +18,13 @@ const AGENT_ERROR_CODES = Object.freeze({
   SESSION_START_FAILED: 'SESSION_START_FAILED',
   PROVIDER_ERROR: 'PROVIDER_ERROR',
   MODEL_OUTPUT_LIMIT: 'MODEL_OUTPUT_LIMIT',
+  RESUME_SCOPE_CHANGED: 'AGENT_RESUME_SCOPE_CHANGED',
   TAB_CLOSED: 'AGENT_TAB_CLOSED',
   TAB_UNAVAILABLE: 'TAB_UNAVAILABLE',
   RUN_FAILED: 'RUN_FAILED',
 });
 const AUTOMATION_ERROR_CODE_SET = new Set(Object.values(ERROR_CODES));
+const RESUME_PROMPT = `The user resumed this task after potentially changing the page. Treat the current page as authoritative. Do not reuse earlier element references or assumptions. Get the current tab state and take a fresh snapshot before acting. Preserve user changes unless they conflict with the task.`;
 
 class FreedomAgentError extends Error {
   constructor(code, message) {
@@ -214,8 +216,11 @@ class FreedomAgentService {
       status: 'starting',
       completion,
       session: null,
+      scopedController: null,
       unsubscribe: null,
       stopRequested: false,
+      pauseRequested: false,
+      resumePending: false,
       failure: null,
       lastAssistant: null,
       toolOutcomes: new Map(),
@@ -232,6 +237,14 @@ class FreedomAgentService {
         tabId,
         requestApproval: (request) => this.#requestApproval(run, request),
       });
+      if (
+        !scopedController ||
+        typeof scopedController.execute !== 'function' ||
+        typeof scopedController.prepareResume !== 'function'
+      ) {
+        throw new TypeError('Agent controller scope does not support safe resume');
+      }
+      run.scopedController = scopedController;
       const customTools = await this.createTools({
         sdk,
         controller: scopedController,
@@ -268,7 +281,7 @@ class FreedomAgentService {
       }
 
       run.status = 'running';
-      run.execution = this.#executeRun(run, prompt);
+      this.#launchTurn(run, prompt);
       return { runId: run.runId };
     } catch {
       const error =
@@ -286,7 +299,8 @@ class FreedomAgentService {
     const run = this.activeRun;
     if (!run || (runId !== undefined && run.runId !== runId)) return false;
     run.stopRequested = true;
-    this.#resolveApproval(run, false);
+    this.#resolveApproval(run, 'declined');
+    const execution = run.execution;
     if (run.session) {
       try {
         await run.session.abort();
@@ -294,6 +308,64 @@ class FreedomAgentService {
         // The run loop owns terminal-state reporting and cleanup.
       }
     }
+    if (execution) await execution;
+    if (!run.finished) await this.#finish(run, 'cancelled');
+    return true;
+  }
+
+  async pause(runId) {
+    const run = this.activeRun;
+    if (!run || run.runId !== runId || run.status !== 'running' || !run.execution) return false;
+    run.pauseRequested = true;
+    run.status = 'pausing';
+    this.#resolveApproval(run, 'withdrawn');
+    this.#emit(run, { type: 'run_pausing' });
+    try {
+      await run.session.abort();
+    } catch {
+      // The active turn converts provider failures to a terminal run result.
+    }
+    await run.execution;
+    return !run.finished && run.status === 'paused';
+  }
+
+  async resume(runId) {
+    const run = this.activeRun;
+    if (
+      !run ||
+      run.runId !== runId ||
+      run.status !== 'paused' ||
+      run.execution ||
+      run.resumePending
+    ) {
+      return false;
+    }
+    run.resumePending = true;
+    let readiness;
+    try {
+      readiness = await run.scopedController.prepareResume();
+    } finally {
+      run.resumePending = false;
+    }
+    if (this.activeRun !== run || run.finished || run.status !== 'paused') return false;
+    if (!readiness?.ok) {
+      if (readiness?.error?.code === ERROR_CODES.POLICY_DENIED) {
+        throw new FreedomAgentError(
+          AGENT_ERROR_CODES.RESUME_SCOPE_CHANGED,
+          'The controlled tab left the task\'s starting site. Start a new task to continue there.'
+        );
+      }
+      throw new FreedomAgentError(
+        AGENT_ERROR_CODES.TAB_UNAVAILABLE,
+        'The assigned browser tab is no longer available'
+      );
+    }
+    run.status = 'resuming';
+    run.lastAssistant = null;
+    this.#emit(run, { type: 'run_resuming' });
+    run.status = 'running';
+    this.#emit(run, { type: 'run_resumed' });
+    this.#launchTurn(run, RESUME_PROMPT);
     return true;
   }
 
@@ -308,7 +380,7 @@ class FreedomAgentService {
     ) {
       return false;
     }
-    this.#resolveApproval(run, approved);
+    this.#resolveApproval(run, approved ? 'approved' : 'declined');
     return true;
   }
 
@@ -336,7 +408,20 @@ class FreedomAgentService {
     this.listeners.clear();
   }
 
-  async #executeRun(run, prompt) {
+  #launchTurn(run, prompt) {
+    const execution = this.#executeTurn(run, prompt);
+    run.execution = execution;
+    void execution.then(
+      () => {
+        if (run.execution === execution) run.execution = null;
+      },
+      () => {
+        if (run.execution === execution) run.execution = null;
+      }
+    );
+  }
+
+  async #executeTurn(run, prompt) {
     let status = 'completed';
     let error;
     try {
@@ -346,6 +431,8 @@ class FreedomAgentService {
       });
       if (run.stopRequested) {
         status = 'cancelled';
+      } else if (run.pauseRequested) {
+        status = 'paused';
       } else if (run.failure) {
         status = 'failed';
         error = run.failure;
@@ -368,6 +455,8 @@ class FreedomAgentService {
     } catch {
       if (run.stopRequested) {
         status = 'cancelled';
+      } else if (run.pauseRequested) {
+        status = 'paused';
       } else {
         status = 'failed';
         error = terminalError(
@@ -379,6 +468,12 @@ class FreedomAgentService {
     if (run.failure) {
       status = 'failed';
       error = run.failure;
+    }
+    if (status === 'paused') {
+      run.pauseRequested = false;
+      run.status = 'paused';
+      this.#emit(run, { type: 'run_paused' });
+      return;
     }
     await this.#finish(run, status, error);
   }
@@ -422,7 +517,13 @@ class FreedomAgentService {
         AGENT_ERROR_CODES.TAB_UNAVAILABLE,
         'The assigned browser tab is no longer available'
       );
-      Promise.resolve(run.session?.abort()).catch(() => {});
+      const execution = run.execution;
+      void Promise.resolve(run.session?.abort())
+        .catch(() => {})
+        .then(async () => {
+          if (execution) await execution;
+          if (!run.finished) await this.#finish(run, 'failed', run.failure);
+        });
     }
   }
 
@@ -442,12 +543,25 @@ class FreedomAgentService {
       'The controlled browser tab was closed'
     );
     run.stopRequested = true;
-    this.#resolveApproval(run, false);
-    Promise.resolve(run.session?.abort()).catch(() => {});
+    this.#resolveApproval(run, 'declined');
+    const execution = run.execution;
+    void Promise.resolve(run.session?.abort())
+      .catch(() => {})
+      .then(async () => {
+        if (execution) await execution;
+        if (!run.finished) await this.#finish(run, 'failed', run.failure);
+      });
   }
 
   async #requestApproval(run, request) {
-    if (run.finished || run.stopRequested || this.activeRun !== run || run.pendingApproval) {
+    if (
+      run.finished ||
+      run.stopRequested ||
+      run.pauseRequested ||
+      run.status !== 'running' ||
+      this.activeRun !== run ||
+      run.pendingApproval
+    ) {
       return false;
     }
     const decision = createDeferred();
@@ -460,21 +574,21 @@ class FreedomAgentService {
     return decision.promise;
   }
 
-  #resolveApproval(run, approved) {
+  #resolveApproval(run, decision) {
     const pending = run.pendingApproval;
     if (!pending) return;
     run.pendingApproval = null;
-    pending.decision.resolve(approved === true);
+    pending.decision.resolve(decision === 'approved');
     this.#emit(run, {
       type: 'approval_resolved',
       approvalId: pending.publicRequest.approvalId,
-      decision: approved === true ? 'approved' : 'declined',
+      decision,
     });
   }
 
   async #finish(run, status, error) {
     if (run.finished) return;
-    this.#resolveApproval(run, false);
+    this.#resolveApproval(run, 'declined');
     run.finished = true;
     run.status = status;
     if (run.unsubscribe) {
