@@ -1074,9 +1074,30 @@
       <aside id="agent-sidebar" class="agent-sidebar collapsed" aria-label="Freedom Agent">
         <div class="agent-sidebar-inner">
           <div class="agent-sidebar-header">
-            <div>
-              <h2>Agent</h2>
-              <p>Give this tab a task</p>
+            <div class="agent-sidebar-title-row">
+              <button
+                type="button"
+                class="agent-icon-btn"
+                id="agent-sidebar-back"
+                aria-label="Back to Agent"
+                hidden
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="m15 18-6-6 6-6" />
+                </svg>
+              </button>
+              <div>
+                <h2 id="agent-sidebar-title">Agent</h2>
+                <p id="agent-sidebar-subtitle">Give this tab a task</p>
+              </div>
             </div>
             <button
               type="button"
@@ -1097,10 +1118,24 @@
             </button>
           </div>
 
-          <div class="agent-sidebar-content">
-            <section class="agent-card" aria-labelledby="agent-model-heading">
+          <div id="agent-loading-view" class="agent-view agent-loading-view">
+            <p>Loading Agent…</p>
+          </div>
+
+          <div id="agent-setup-view" class="agent-view agent-setup-view" hidden>
+            <div class="agent-setup-intro">
+              <h3>Connect a model</h3>
+              <p>Choose a model provider to start using Agent in this browser profile.</p>
+            </div>
+
+            <div id="agent-connected-providers" class="agent-connected-providers" hidden>
+              <div class="agent-section-label">Connected providers</div>
+              <div id="agent-connected-provider-list" class="agent-connected-provider-list"></div>
+            </div>
+
+            <section class="agent-setup-form" aria-labelledby="agent-provider-form-heading">
               <div class="agent-card-heading">
-                <h3 id="agent-model-heading">Model</h3>
+                <h3 id="agent-provider-form-heading">Choose a provider</h3>
                 <span id="agent-provider-status" class="agent-badge">Not configured</span>
               </div>
 
@@ -1117,8 +1152,8 @@
               </label>
 
               <p id="agent-provider-privacy" class="agent-privacy-note" role="note">
-                Your task and page content the agent reads may be sent to OpenAI. Avoid using
-                Agent on pages containing sensitive information.
+                Your task and page content the agent reads may be sent to OpenAI. Avoid using Agent
+                on pages containing sensitive information.
               </p>
 
               <div id="agent-hosted-fields">
@@ -1150,7 +1185,12 @@
                   <button id="agent-provider-login" class="agent-button secondary" type="button">
                     Continue with ChatGPT
                   </button>
-                  <button id="agent-provider-cancel-login" class="agent-text-button" type="button" hidden>
+                  <button
+                    id="agent-provider-cancel-login"
+                    class="agent-text-button"
+                    type="button"
+                    hidden
+                  >
                     Cancel sign-in
                   </button>
                 </div>
@@ -1179,45 +1219,42 @@
 
               <div class="agent-config-actions">
                 <button id="agent-provider-save" class="agent-button secondary" type="button">
-                  Save model
-                </button>
-                <button id="agent-provider-clear" class="agent-text-button" type="button" hidden>
-                  Clear
+                  Connect provider
                 </button>
               </div>
               <p id="agent-provider-message" class="agent-message" aria-live="polite"></p>
             </section>
+          </div>
 
-            <section class="agent-card agent-task-card" aria-labelledby="agent-task-heading">
-              <div class="agent-card-heading">
-                <h3 id="agent-task-heading">Task</h3>
+          <div id="agent-workspace-view" class="agent-view agent-workspace-view" hidden>
+            <div class="agent-workspace-scroll">
+              <div class="agent-run-header">
                 <span id="agent-run-status" class="agent-badge">Idle</span>
-              </div>
-              <p id="agent-scope-note" class="agent-privacy-note" role="note">
-                Agent is limited to this tab and its current site. Cross-site navigation is blocked.
-              </p>
-              <label class="agent-field">
-                <span class="sr-only">Task for the agent</span>
-                <textarea
-                  id="agent-prompt"
-                  rows="4"
-                  maxlength="32000"
-                  placeholder="Research this topic, fill in this form, or complete another task in the current tab…"
-                ></textarea>
-              </label>
-              <div class="agent-run-actions">
-                <button id="agent-run" class="agent-button primary" type="button">Run</button>
-                <button id="agent-pause" class="agent-button" type="button" disabled hidden>
-                  Pause
-                </button>
-                <button id="agent-resume" class="agent-button primary" type="button" hidden>
-                  Resume
-                </button>
-                <button id="agent-stop" class="agent-button danger" type="button" disabled>
-                  Take over
-                </button>
+                <div class="agent-lifecycle-actions">
+                  <button id="agent-pause" class="agent-text-button" type="button" disabled hidden>
+                    Pause
+                  </button>
+                  <button id="agent-resume" class="agent-text-button" type="button" hidden>
+                    Resume
+                  </button>
+                  <button
+                    id="agent-stop"
+                    class="agent-text-button danger"
+                    type="button"
+                    disabled
+                    hidden
+                  >
+                    Take over
+                  </button>
+                </div>
               </div>
               <p id="agent-run-message" class="agent-message" aria-live="polite"></p>
+
+              <div id="agent-empty-state" class="agent-empty-state">
+                <div class="agent-empty-state-icon" aria-hidden="true">✦</div>
+                <h3>What should I do?</h3>
+                <p>Ask Agent to research, fill in a form, or complete another task in this tab.</p>
+              </div>
 
               <div id="agent-approval" class="agent-approval" role="alert" hidden>
                 <h4>Approval needed</h4>
@@ -1242,7 +1279,89 @@
                 <h4>Activity</h4>
                 <ol id="agent-tool-list"></ol>
               </div>
-            </section>
+            </div>
+
+            <div class="agent-composer-wrap">
+              <div class="agent-composer">
+                <label class="agent-composer-input">
+                  <span class="sr-only">Task for the agent</span>
+                  <textarea
+                    id="agent-prompt"
+                    rows="3"
+                    maxlength="32000"
+                    placeholder="Give this tab a task…"
+                  ></textarea>
+                </label>
+                <div class="agent-composer-footer">
+                  <div class="agent-composer-tools">
+                    <button
+                      id="agent-model-menu-button"
+                      class="agent-composer-chip"
+                      type="button"
+                      aria-haspopup="menu"
+                      aria-expanded="false"
+                      aria-controls="agent-model-menu"
+                    >
+                      <span id="agent-active-model-label">Choose model</span>
+                      <span aria-hidden="true">⌄</span>
+                    </button>
+                    <button
+                      id="agent-scope-button"
+                      class="agent-composer-chip"
+                      type="button"
+                      aria-haspopup="dialog"
+                      aria-expanded="false"
+                      aria-controls="agent-scope-popover"
+                    >
+                      This site
+                    </button>
+                  </div>
+                  <button
+                    id="agent-run"
+                    class="agent-send-button"
+                    type="button"
+                    aria-label="Run task"
+                  >
+                    <svg
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path d="m12 19V5" />
+                      <path d="m5 12 7-7 7 7" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+
+              <div id="agent-model-menu" class="agent-popover agent-model-menu" role="menu" hidden>
+                <div id="agent-model-menu-list"></div>
+                <div class="agent-popover-divider"></div>
+                <button id="agent-add-provider" class="agent-popover-action" type="button">
+                  Add model or provider…
+                </button>
+                <button id="agent-manage-providers" class="agent-popover-action" type="button">
+                  Manage models…
+                </button>
+              </div>
+
+              <div
+                id="agent-scope-popover"
+                class="agent-popover agent-scope-popover"
+                role="dialog"
+                hidden
+              >
+                <strong>This tab and site</strong>
+                <p id="agent-scope-note">
+                  Agent can read and interact with this tab. Cross-site navigation is blocked, and
+                  form submission asks for approval.
+                </p>
+              </div>
+            </div>
           </div>
         </div>
       </aside>

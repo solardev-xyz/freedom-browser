@@ -17,6 +17,7 @@ let setAgentControlledTab = () => {};
 let providerCatalog = [];
 let providerCatalogPromise = null;
 let providerStatus = null;
+let providerReady = false;
 let providerLoginPending = false;
 let currentRunId = null;
 let currentRunStatus = 'idle';
@@ -24,6 +25,7 @@ let lastFinishedRunId = null;
 let takeoverRequestedRunId = null;
 let pendingApproval = null;
 let panelOpen = false;
+let agentView = 'loading';
 let agentEventUnsubscribe = null;
 let providerAuthEventUnsubscribe = null;
 const toolRows = new Map();
@@ -65,6 +67,89 @@ function providerAuthType(providerId) {
   );
 }
 
+function providerConnections() {
+  if (Array.isArray(providerStatus?.connections)) return providerStatus.connections;
+  if (!providerStatus?.configured) return [];
+  return [
+    {
+      kind: providerStatus.kind,
+      providerId: providerStatus.providerId,
+      modelId: providerStatus.modelId,
+      ...(providerStatus.kind === 'ollama' && {
+        baseUrl: providerStatus.baseUrl,
+        modelIds: [providerStatus.modelId],
+      }),
+    },
+  ];
+}
+
+function providerConnection(providerId) {
+  return providerConnections().find((connection) => connection.providerId === providerId);
+}
+
+function catalogModel(providerId, modelId) {
+  return providerCatalog
+    .find((provider) => provider.providerId === providerId)
+    ?.models?.find((model) => model.id === modelId);
+}
+
+function modelName(providerId, modelId) {
+  return catalogModel(providerId, modelId)?.name || modelId || 'Model';
+}
+
+function configuredModels() {
+  return providerConnections().flatMap((connection) => {
+    const models =
+      connection.kind === 'ollama'
+        ? (connection.modelIds || [connection.modelId]).map((modelId) => ({
+            id: modelId,
+            name: modelId,
+          }))
+        : providerCatalog.find((provider) => provider.providerId === connection.providerId)
+            ?.models || [{ id: connection.modelId, name: connection.modelId }];
+    return models.map((model) => ({
+      providerId: connection.providerId,
+      modelId: model.id,
+      name: model.name || model.id,
+    }));
+  });
+}
+
+function closeComposerPopovers() {
+  elements.modelMenu.hidden = true;
+  elements.scopePopover.hidden = true;
+  elements.modelMenuButton.setAttribute('aria-expanded', 'false');
+  elements.scopeButton.setAttribute('aria-expanded', 'false');
+}
+
+function setAgentView(nextView) {
+  agentView = nextView;
+  elements.loadingView.hidden = nextView !== 'loading';
+  elements.setupView.hidden = nextView !== 'setup';
+  elements.workspaceView.hidden = nextView !== 'workspace';
+  const setup = nextView === 'setup';
+  const canReturn = setup && providerStatus?.configured === true;
+  elements.back.hidden = !canReturn;
+  elements.title.textContent = setup ? (canReturn ? 'Models' : 'Set up Agent') : 'Agent';
+  elements.subtitle.textContent = setup
+    ? canReturn
+      ? 'Add or manage providers'
+      : 'Connect a model to continue'
+    : 'Give this tab a task';
+  closeComposerPopovers();
+}
+
+function showPrimaryView() {
+  if (!providerReady) setAgentView('loading');
+  else setAgentView(providerStatus?.configured ? 'workspace' : 'setup');
+}
+
+function showProviderSetup() {
+  setAgentView('setup');
+  renderConnectedProviders();
+  elements.provider.focus();
+}
+
 function setPanelOpen(nextOpen) {
   panelOpen = nextOpen;
   elements.panel.classList.toggle('collapsed', !panelOpen);
@@ -82,7 +167,11 @@ function openPanel() {
     if (isWalletSidebarVisible()) return;
   }
   setPanelOpen(true);
-  loadProviderCatalog();
+  showPrimaryView();
+  loadProviderCatalog().then(() => {
+    renderConnectedProviders();
+    renderModelMenu();
+  });
   document.dispatchEvent(new CustomEvent('agent-sidebar-opened'));
 }
 
@@ -95,10 +184,8 @@ function renderProviderFields() {
   const providerId = elements.provider.value;
   const isOllama = providerId === 'ollama';
   const isSubscription = providerAuthType(providerId) === 'subscription';
-  const isConnectedSubscription =
-    providerStatus?.configured === true &&
-    providerStatus.kind === 'subscription' &&
-    providerStatus.providerId === providerId;
+  const connection = providerConnection(providerId);
+  const isConnectedSubscription = connection?.kind === 'subscription';
   elements.providerPrivacy.textContent = providerPrivacyMessage(providerId);
   elements.hostedFields.classList.toggle('hidden', isOllama);
   elements.ollamaFields.classList.toggle('hidden', !isOllama);
@@ -131,6 +218,84 @@ function renderModelOptions(providerId) {
   }
 }
 
+function renderConnectedProviders() {
+  const connections = providerConnections();
+  elements.connectedProviders.hidden = connections.length === 0;
+  const rows = connections.map((connection) => {
+    const row = document.createElement('div');
+    row.className = 'agent-connected-provider';
+    const copy = document.createElement('div');
+    copy.className = 'agent-connected-provider-copy';
+    const name = document.createElement('strong');
+    name.textContent = providerName(connection.providerId);
+    const model = document.createElement('span');
+    const count =
+      connection.kind === 'ollama' ? (connection.modelIds || [connection.modelId]).length : null;
+    model.textContent =
+      count && count > 1
+        ? `${count} local models`
+        : modelName(connection.providerId, connection.modelId);
+    copy.appendChild(name);
+    copy.appendChild(model);
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'agent-provider-remove';
+    remove.textContent = 'Disconnect';
+    remove.addEventListener('click', () => removeProviderConnection(connection.providerId));
+    row.appendChild(copy);
+    row.appendChild(remove);
+    return row;
+  });
+  elements.connectedProviderList.replaceChildren(...rows);
+}
+
+function renderModelMenu() {
+  const models = configuredModels();
+  const groups = new Map();
+  for (const model of models) {
+    if (!groups.has(model.providerId)) groups.set(model.providerId, []);
+    groups.get(model.providerId).push(model);
+  }
+  const content = [];
+  for (const [providerId, providerModels] of groups) {
+    const label = document.createElement('div');
+    label.className = 'agent-model-group-label';
+    label.textContent = providerName(providerId);
+    content.push(label);
+    for (const model of providerModels) {
+      const option = document.createElement('button');
+      option.type = 'button';
+      option.className = 'agent-model-option';
+      option.setAttribute('role', 'menuitemradio');
+      const active =
+        providerStatus?.providerId === model.providerId &&
+        providerStatus?.modelId === model.modelId;
+      option.classList.toggle('active', active);
+      option.setAttribute('aria-checked', String(active));
+      const name = document.createElement('span');
+      name.textContent = model.name;
+      const check = document.createElement('span');
+      check.textContent = active ? '✓' : '';
+      option.appendChild(name);
+      option.appendChild(check);
+      option.addEventListener('click', () => selectModel(model.providerId, model.modelId));
+      content.push(option);
+    }
+  }
+  elements.modelMenuList.replaceChildren(...content);
+}
+
+function renderActiveModel() {
+  const configured = providerStatus?.configured === true;
+  elements.activeModelLabel.textContent = configured
+    ? modelName(providerStatus.providerId, providerStatus.modelId)
+    : 'Choose model';
+  elements.modelMenuButton.title = configured
+    ? `${providerName(providerStatus.providerId)} · ${providerStatus.modelId}`
+    : '';
+  renderModelMenu();
+}
+
 function renderProviderStatus(status) {
   providerStatus = status;
   const configured = status?.configured === true;
@@ -138,7 +303,6 @@ function renderProviderStatus(status) {
     ? `${providerName(status.providerId)} · ${status.modelId}`
     : 'Not configured';
   elements.providerStatus.classList.toggle('active', configured);
-  elements.clearProvider.hidden = !configured;
   if (configured && Object.hasOwn(PROVIDER_NAMES, status.providerId)) {
     elements.provider.value = status.providerId;
     if (status.providerId === 'ollama') {
@@ -147,6 +311,10 @@ function renderProviderStatus(status) {
     }
   }
   renderProviderFields();
+  renderConnectedProviders();
+  renderActiveModel();
+  updateSendAvailability();
+  if (agentView === 'loading') showPrimaryView();
 }
 
 async function refreshProvider() {
@@ -158,11 +326,18 @@ async function refreshProvider() {
         responseMessage(response, 'Could not load the agent model'),
         true
       );
+      providerReady = true;
+      providerStatus = { configured: false, connections: [] };
+      showPrimaryView();
       return;
     }
+    providerReady = true;
     renderProviderStatus(response.status);
   } catch {
+    providerReady = true;
+    providerStatus = { configured: false, connections: [] };
     setMessage(elements.providerMessage, 'Could not load the agent model', true);
+    showPrimaryView();
   }
 }
 
@@ -175,6 +350,8 @@ async function loadProviderCatalog() {
       if (!response?.ok || !Array.isArray(response.catalog)) return providerCatalog;
       providerCatalog = response.catalog;
       renderProviderFields();
+      renderConnectedProviders();
+      renderActiveModel();
       return providerCatalog;
     } catch {
       // A saved Ollama model remains usable even if the hosted catalog cannot load.
@@ -184,6 +361,44 @@ async function loadProviderCatalog() {
     }
   })();
   return providerCatalogPromise;
+}
+
+async function selectModel(providerId, modelId) {
+  if (currentRunStatus !== 'idle') return;
+  elements.modelMenuButton.disabled = true;
+  try {
+    const response = await window.electronAPI.selectAgentModel(providerId, modelId);
+    if (!response?.ok) {
+      setMessage(elements.runMessage, responseMessage(response, 'Could not select model'), true);
+      return;
+    }
+    renderProviderStatus(response.status);
+    closeComposerPopovers();
+  } catch {
+    setMessage(elements.runMessage, 'Could not select model', true);
+  } finally {
+    elements.modelMenuButton.disabled = currentRunStatus !== 'idle';
+  }
+}
+
+async function removeProviderConnection(providerId) {
+  const label = providerName(providerId);
+  if (!window.confirm(`Disconnect ${label} from Agent?`)) return;
+  try {
+    const response = await window.electronAPI.removeAgentProvider(providerId);
+    if (!response?.ok) {
+      setMessage(
+        elements.providerMessage,
+        responseMessage(response, `Could not disconnect ${label}`),
+        true
+      );
+      return;
+    }
+    renderProviderStatus(response.status);
+    if (!response.status?.configured) setAgentView('setup');
+  } catch {
+    setMessage(elements.providerMessage, `Could not disconnect ${label}`, true);
+  }
 }
 
 async function saveProvider() {
@@ -211,6 +426,8 @@ async function saveProvider() {
     }
     renderProviderStatus(response.status);
     setMessage(elements.providerMessage, 'Model saved for this profile');
+    setAgentView('workspace');
+    elements.prompt.focus();
   } catch {
     elements.apiKey.value = '';
     setMessage(elements.providerMessage, 'Could not save model', true);
@@ -257,6 +474,8 @@ async function loginSubscriptionProvider() {
     }
     renderProviderStatus(response.status);
     setMessage(elements.providerMessage, 'ChatGPT connected for this profile');
+    setAgentView('workspace');
+    elements.prompt.focus();
   } catch {
     setMessage(elements.providerMessage, 'Could not sign in with ChatGPT', true);
   } finally {
@@ -278,39 +497,25 @@ async function cancelProviderLogin() {
   }
 }
 
-async function clearProvider() {
-  elements.clearProvider.disabled = true;
-  try {
-    const response = await window.electronAPI.clearAgentProvider();
-    if (!response?.ok) {
-      setMessage(
-        elements.providerMessage,
-        responseMessage(response, 'Could not clear model'),
-        true
-      );
-      return;
-    }
-    renderProviderStatus(response.status);
-    setMessage(elements.providerMessage, 'Saved model cleared');
-  } catch {
-    setMessage(elements.providerMessage, 'Could not clear model', true);
-  } finally {
-    elements.clearProvider.disabled = false;
-  }
-}
-
 function setRunState(status, label) {
   const active = status !== 'idle';
   currentRunStatus = status;
-  elements.run.disabled = active;
+  elements.run.disabled = active || !elements.prompt.value.trim() || !providerStatus?.configured;
   elements.pause.hidden = status !== 'running';
   elements.pause.disabled = status !== 'running';
   elements.resume.hidden = status !== 'paused';
   elements.resume.disabled = status !== 'paused';
+  elements.stop.hidden = !active;
   elements.stop.disabled = !active || !currentRunId;
   elements.prompt.disabled = active;
+  elements.modelMenuButton.disabled = active;
   elements.runStatus.textContent = label;
   elements.runStatus.classList.toggle('active', active);
+}
+
+function updateSendAvailability() {
+  elements.run.disabled =
+    currentRunStatus !== 'idle' || !elements.prompt.value.trim() || !providerStatus?.configured;
 }
 
 function resetRunOutput() {
@@ -319,6 +524,7 @@ function resetRunOutput() {
   elements.output.textContent = '';
   elements.transcript.hidden = true;
   elements.activity.hidden = true;
+  elements.emptyState.hidden = true;
   clearApproval();
   setMessage(elements.runMessage);
 }
@@ -409,6 +615,7 @@ function handleAgentEvent(event) {
     currentRunId = event.runId;
     lastFinishedRunId = null;
     setRunState('running', 'Running');
+    elements.emptyState.hidden = true;
     setMessage(
       elements.runMessage,
       'Agent stays attached to this tab if you switch tabs. Choose Take over to stop it.'
@@ -419,8 +626,10 @@ function handleAgentEvent(event) {
   if (event.type === 'assistant_text_delta' && typeof event.text === 'string') {
     elements.output.textContent += event.text;
     elements.transcript.hidden = false;
+    elements.emptyState.hidden = true;
   } else if (event.type === 'tool_started') {
     addToolRow(event);
+    elements.emptyState.hidden = true;
   } else if (event.type === 'tool_finished') {
     finishToolRow(event);
   } else if (event.type === 'run_retrying') {
@@ -538,7 +747,11 @@ async function resumeRun() {
     const response = await window.electronAPI.resumeAgent(runId);
     if ((!response?.ok || response.resumed !== true) && currentRunId === runId) {
       setRunState('paused', 'Paused');
-      setMessage(elements.runMessage, responseMessage(response, 'Could not resume the agent'), true);
+      setMessage(
+        elements.runMessage,
+        responseMessage(response, 'Could not resume the agent'),
+        true
+      );
     }
   } catch {
     if (currentRunId !== runId) return;
@@ -609,6 +822,14 @@ export function initAgentUi(options = {}) {
     toggle: byId('agent-toggle-btn'),
     panel: byId('agent-sidebar'),
     close: byId('agent-sidebar-close'),
+    back: byId('agent-sidebar-back'),
+    title: byId('agent-sidebar-title'),
+    subtitle: byId('agent-sidebar-subtitle'),
+    loadingView: byId('agent-loading-view'),
+    setupView: byId('agent-setup-view'),
+    workspaceView: byId('agent-workspace-view'),
+    connectedProviders: byId('agent-connected-providers'),
+    connectedProviderList: byId('agent-connected-provider-list'),
     provider: byId('agent-provider-select'),
     providerStatus: byId('agent-provider-status'),
     providerPrivacy: byId('agent-provider-privacy'),
@@ -623,7 +844,6 @@ export function initAgentUi(options = {}) {
     saveProvider: byId('agent-provider-save'),
     loginProvider: byId('agent-provider-login'),
     cancelProviderLogin: byId('agent-provider-cancel-login'),
-    clearProvider: byId('agent-provider-clear'),
     authCode: byId('agent-auth-code'),
     authUserCode: byId('agent-auth-user-code'),
     providerMessage: byId('agent-provider-message'),
@@ -644,6 +864,15 @@ export function initAgentUi(options = {}) {
     output: byId('agent-output'),
     activity: byId('agent-activity'),
     toolList: byId('agent-tool-list'),
+    emptyState: byId('agent-empty-state'),
+    modelMenuButton: byId('agent-model-menu-button'),
+    activeModelLabel: byId('agent-active-model-label'),
+    modelMenu: byId('agent-model-menu'),
+    modelMenuList: byId('agent-model-menu-list'),
+    addProvider: byId('agent-add-provider'),
+    manageProviders: byId('agent-manage-providers'),
+    scopeButton: byId('agent-scope-button'),
+    scopePopover: byId('agent-scope-popover'),
   };
   if (Object.values(elements).some((element) => !element)) return;
   getActiveTab = typeof options.getActiveTab === 'function' ? options.getActiveTab : () => null;
@@ -656,17 +885,56 @@ export function initAgentUi(options = {}) {
 
   elements.toggle.addEventListener('click', togglePanel);
   elements.close.addEventListener('click', closePanel);
+  elements.back.addEventListener('click', () => setAgentView('workspace'));
   elements.provider.addEventListener('change', renderProviderFields);
   elements.saveProvider.addEventListener('click', saveProvider);
   elements.loginProvider.addEventListener('click', loginSubscriptionProvider);
   elements.cancelProviderLogin.addEventListener('click', cancelProviderLogin);
-  elements.clearProvider.addEventListener('click', clearProvider);
   elements.run.addEventListener('click', startRun);
+  elements.prompt.addEventListener('input', updateSendAvailability);
+  elements.prompt.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
+    event.preventDefault();
+    if (!elements.run.disabled) startRun();
+  });
   elements.pause.addEventListener('click', pauseRun);
   elements.resume.addEventListener('click', resumeRun);
   elements.stop.addEventListener('click', stopRun);
   elements.approvalApprove.addEventListener('click', () => decideApproval(true));
   elements.approvalDecline.addEventListener('click', () => decideApproval(false));
+  elements.modelMenuButton.addEventListener('click', () => {
+    const opening = elements.modelMenu.hidden;
+    closeComposerPopovers();
+    elements.modelMenu.hidden = !opening;
+    elements.modelMenuButton.setAttribute('aria-expanded', String(opening));
+  });
+  elements.scopeButton.addEventListener('click', () => {
+    const opening = elements.scopePopover.hidden;
+    closeComposerPopovers();
+    elements.scopePopover.hidden = !opening;
+    elements.scopeButton.setAttribute('aria-expanded', String(opening));
+  });
+  elements.addProvider.addEventListener('click', showProviderSetup);
+  elements.manageProviders.addEventListener('click', showProviderSetup);
+  document.addEventListener('click', (event) => {
+    if (
+      !elements.modelMenu.hidden &&
+      !elements.modelMenu.contains(event.target) &&
+      !elements.modelMenuButton.contains(event.target)
+    ) {
+      closeComposerPopovers();
+    }
+    if (
+      !elements.scopePopover.hidden &&
+      !elements.scopePopover.contains(event.target) &&
+      !elements.scopeButton.contains(event.target)
+    ) {
+      closeComposerPopovers();
+    }
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') closeComposerPopovers();
+  });
   document.addEventListener('sidebar-opened', closePanel);
   onSignatureFlightChange((inFlight) => {
     elements.toggle.disabled = inFlight;
@@ -678,7 +946,9 @@ export function initAgentUi(options = {}) {
   providerAuthEventUnsubscribe =
     window.electronAPI.onAgentProviderAuthEvent(handleProviderAuthEvent);
   setPanelOpen(false);
+  setAgentView('loading');
   renderProviderFields();
+  updateSendAvailability();
   refreshProvider();
   restoreRunState();
 }

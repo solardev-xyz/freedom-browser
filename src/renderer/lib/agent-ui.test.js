@@ -10,6 +10,14 @@ function createAgentElements() {
     'agent-toggle-btn',
     'agent-sidebar',
     'agent-sidebar-close',
+    'agent-sidebar-back',
+    'agent-sidebar-title',
+    'agent-sidebar-subtitle',
+    'agent-loading-view',
+    'agent-setup-view',
+    'agent-workspace-view',
+    'agent-connected-providers',
+    'agent-connected-provider-list',
     'agent-provider-select',
     'agent-provider-status',
     'agent-provider-privacy',
@@ -24,7 +32,6 @@ function createAgentElements() {
     'agent-provider-save',
     'agent-provider-login',
     'agent-provider-cancel-login',
-    'agent-provider-clear',
     'agent-auth-code',
     'agent-auth-user-code',
     'agent-provider-message',
@@ -45,11 +52,24 @@ function createAgentElements() {
     'agent-output',
     'agent-activity',
     'agent-tool-list',
+    'agent-empty-state',
+    'agent-model-menu-button',
+    'agent-active-model-label',
+    'agent-model-menu',
+    'agent-model-menu-list',
+    'agent-add-provider',
+    'agent-manage-providers',
+    'agent-scope-button',
+    'agent-scope-popover',
   ];
   const elements = Object.fromEntries(ids.map((id) => [id, createElement('div')]));
   elements['agent-toggle-btn'] = createElement('button');
   elements['agent-sidebar'] = createElement('aside', { classes: ['collapsed'] });
   elements['agent-sidebar-close'] = createElement('button');
+  elements['agent-sidebar-back'] = createElement('button');
+  elements['agent-setup-view'].hidden = true;
+  elements['agent-workspace-view'].hidden = true;
+  elements['agent-connected-providers'].hidden = true;
   elements['agent-provider-select'] = createElement('select', { value: 'openai' });
   elements['agent-model-select'] = createElement('select');
   elements['agent-api-key'] = createElement('input');
@@ -60,7 +80,6 @@ function createAgentElements() {
   elements['agent-provider-save'] = createElement('button');
   elements['agent-provider-login'] = createElement('button');
   elements['agent-provider-cancel-login'] = createElement('button');
-  elements['agent-provider-clear'] = createElement('button');
   elements['agent-auth-code'].hidden = true;
   elements['agent-prompt'] = createElement('textarea');
   elements['agent-run'] = createElement('button');
@@ -69,12 +88,21 @@ function createAgentElements() {
   elements['agent-resume'] = createElement('button', { disabled: true });
   elements['agent-resume'].hidden = true;
   elements['agent-stop'] = createElement('button', { disabled: true });
+  elements['agent-stop'].hidden = true;
   elements['agent-approval'] = createElement('div');
   elements['agent-approval'].hidden = true;
   elements['agent-approval-approve'] = createElement('button');
   elements['agent-approval-decline'] = createElement('button');
   elements['agent-transcript'].hidden = true;
   elements['agent-activity'].hidden = true;
+  elements['agent-model-menu-button'] = createElement('button');
+  elements['agent-model-menu'] = createElement('div');
+  elements['agent-model-menu'].hidden = true;
+  elements['agent-add-provider'] = createElement('button');
+  elements['agent-manage-providers'] = createElement('button');
+  elements['agent-scope-button'] = createElement('button');
+  elements['agent-scope-popover'] = createElement('div');
+  elements['agent-scope-popover'].hidden = true;
   return elements;
 }
 
@@ -88,7 +116,16 @@ async function loadAgentUi(options = {}) {
   const electronAPI = {
     getAgentProviderStatus: jest.fn().mockResolvedValue({
       ok: true,
-      status: { configured: false, secureStorageAvailable: true },
+      status: {
+        configured: true,
+        secureStorageAvailable: true,
+        kind: 'hosted',
+        providerId: 'openai',
+        modelId: 'gpt-4.1-mini',
+        connections: [
+          { kind: 'hosted', providerId: 'openai', modelId: 'gpt-4.1-mini' },
+        ],
+      },
     }),
     getAgentProviderCatalog: jest.fn().mockResolvedValue({
       ok: true,
@@ -114,7 +151,8 @@ async function loadAgentUi(options = {}) {
     configureOllamaAgentProvider: jest.fn(),
     loginSubscriptionAgentProvider: jest.fn(),
     cancelAgentProviderLogin: jest.fn().mockResolvedValue({ ok: true, cancelled: true }),
-    clearAgentProvider: jest.fn(),
+    selectAgentModel: jest.fn(),
+    removeAgentProvider: jest.fn(),
     getAgentState: jest.fn().mockResolvedValue({ ok: true, state: { status: 'idle' } }),
     startAgent: jest.fn().mockResolvedValue({ ok: true, runId: 'run_test' }),
     pauseAgent: jest.fn().mockResolvedValue({ ok: true, paused: true }),
@@ -132,7 +170,7 @@ async function loadAgentUi(options = {}) {
     ...options.electronAPI,
   };
   global.document = document;
-  global.window = { electronAPI };
+  global.window = { electronAPI, confirm: jest.fn(() => true) };
   global.CustomEvent = class {
     constructor(type) {
       this.type = type;
@@ -169,6 +207,63 @@ describe('Agent UI', () => {
     delete global.document;
     delete global.window;
     delete global.CustomEvent;
+  });
+
+  test('shows provider setup when no model is connected', async () => {
+    const ctx = await loadAgentUi({
+      electronAPI: {
+        getAgentProviderStatus: jest.fn().mockResolvedValue({
+          ok: true,
+          status: { configured: false, secureStorageAvailable: true, connections: [] },
+        }),
+      },
+    });
+
+    expect(ctx.elements['agent-setup-view'].hidden).toBe(false);
+    expect(ctx.elements['agent-workspace-view'].hidden).toBe(true);
+    expect(ctx.elements['agent-sidebar-title'].textContent).toBe('Set up Agent');
+    expect(ctx.elements['agent-run'].disabled).toBe(true);
+  });
+
+  test('submits a configured task with Enter while Shift+Enter remains multiline', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Summarize this page';
+    ctx.elements['agent-prompt'].dispatch('input');
+    expect(ctx.elements['agent-run'].disabled).toBe(false);
+
+    const multiline = { key: 'Enter', shiftKey: true, preventDefault: jest.fn() };
+    ctx.elements['agent-prompt'].dispatch('keydown', multiline);
+    expect(multiline.preventDefault).not.toHaveBeenCalled();
+    expect(ctx.electronAPI.startAgent).not.toHaveBeenCalled();
+
+    const submit = { key: 'Enter', shiftKey: false, preventDefault: jest.fn() };
+    ctx.elements['agent-prompt'].dispatch('keydown', submit);
+    await flush();
+    expect(submit.preventDefault).toHaveBeenCalledTimes(1);
+    expect(ctx.electronAPI.startAgent).toHaveBeenCalledWith(7, 'Summarize this page');
+  });
+
+  test('disconnects a provider through the management view and returns to setup', async () => {
+    const ctx = await loadAgentUi({
+      electronAPI: {
+        removeAgentProvider: jest.fn().mockResolvedValue({
+          ok: true,
+          status: { configured: false, secureStorageAvailable: true, connections: [] },
+        }),
+      },
+    });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-manage-providers'].dispatch('click');
+
+    const disconnect = ctx.elements['agent-connected-provider-list'].children[0].children[1];
+    disconnect.dispatch('click');
+    await flush();
+
+    expect(global.window.confirm).toHaveBeenCalledWith('Disconnect OpenAI from Agent?');
+    expect(ctx.electronAPI.removeAgentProvider).toHaveBeenCalledWith('openai');
+    expect(ctx.elements['agent-setup-view'].hidden).toBe(false);
+    expect(ctx.elements['agent-sidebar-back'].hidden).toBe(true);
   });
 
   test('saves credentials without retaining the key and renders structured run events as text', async () => {
