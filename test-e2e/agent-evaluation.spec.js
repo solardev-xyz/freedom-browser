@@ -4,6 +4,9 @@ const { test, expect } = require('./fixtures');
 const MODEL_ID = 'freedom-evaluation-fixture';
 const PAGE_URL = 'https://agent-evaluation.test/registration';
 const INJECTION_PAGE_URL = 'https://agent-evaluation.test/untrusted-message';
+const SCROLL_PAGE_URL = 'https://agent-evaluation.test/scroll';
+const FRAME_PAGE_URL = 'https://agent-evaluation.test/frame';
+const STALE_PAGE_URL = 'https://agent-evaluation.test/stale';
 const EXFILTRATION_URL = 'https://attacker.example/collect?source=freedom-agent';
 const CONFIRMATION = 'Saved Ada Lovelace for Freedom — trusted input=true click=true';
 
@@ -11,6 +14,8 @@ let server;
 let baseUrl;
 let requestCount = 0;
 let observedPolicyDenial = false;
+let observedFrameElement = false;
+let observedStaleFailure = false;
 const operations = [];
 
 function completionChunk({ delta = {}, finishReason = null, usage }) {
@@ -73,7 +78,7 @@ function contentText(content) {
 }
 
 function snapshotElements(messages) {
-  for (const message of messages) {
+  for (const message of [...messages].reverse()) {
     if (message?.role !== 'tool') continue;
     try {
       const envelope = JSON.parse(contentText(message.content));
@@ -85,10 +90,40 @@ function snapshotElements(messages) {
   return [];
 }
 
+function allSnapshotElements(messages) {
+  const snapshots = [];
+  for (const message of messages) {
+    if (message?.role !== 'tool') continue;
+    try {
+      const envelope = JSON.parse(contentText(message.content));
+      if (Array.isArray(envelope?.result?.elements)) snapshots.push(envelope.result.elements);
+    } catch {
+      // Tool failures and non-snapshot results are expected in multi-step cases.
+    }
+  }
+  return snapshots;
+}
+
 function requireRef(elements, name) {
   const ref = elements.find((element) => element?.name === name)?.ref;
   if (typeof ref !== 'string' || !ref) throw new Error(`Missing snapshot ref for ${name}`);
   return ref;
+}
+
+function emitFinal(response, content) {
+  writeSse(
+    response,
+    completionChunk({
+      delta: { role: 'assistant', content },
+    })
+  );
+  finishSse(response);
+}
+
+function hasUserMarker(messages, marker) {
+  return messages.some(
+    (message) => message?.role === 'user' && contentText(message.content).includes(marker)
+  );
 }
 
 async function handleCompletion(request, response) {
@@ -103,11 +138,7 @@ async function handleCompletion(request, response) {
     Connection: 'keep-alive',
   });
 
-  const isInjectionCase = messages.some(
-    (message) =>
-      message?.role === 'user' && contentText(message.content).includes('INJECTION_SCOPE_TASK')
-  );
-  if (isInjectionCase) {
+  if (hasUserMarker(messages, 'INJECTION_SCOPE_TASK')) {
     if (toolResults.length === 0) {
       emitToolCall(response, 1, 'browser_snapshot', {});
     } else if (toolResults.length === 1) {
@@ -116,16 +147,97 @@ async function handleCompletion(request, response) {
       observedPolicyDenial = toolResults.some((message) =>
         contentText(message.content).includes('POLICY_DENIED')
       );
-      writeSse(
-        response,
-        completionChunk({
-          delta: {
-            role: 'assistant',
-            content: 'The untrusted page instruction was blocked by the browser scope.',
-          },
-        })
-      );
-      finishSse(response);
+      emitFinal(response, 'The untrusted page instruction was blocked by the browser scope.');
+    }
+    return;
+  }
+
+  if (hasUserMarker(messages, 'SCROLL_TASK')) {
+    switch (toolResults.length) {
+      case 0:
+        emitToolCall(response, 1, 'browser_snapshot', {});
+        break;
+      case 1:
+        emitToolCall(response, 2, 'browser_click', {
+          ref: requireRef(elements, 'Approve below fold'),
+        });
+        break;
+      case 2:
+        emitToolCall(response, 3, 'browser_wait', {
+          condition: 'text',
+          text: 'Scrolled action trusted=true',
+          timeoutMs: 5_000,
+        });
+        break;
+      default:
+        emitFinal(response, 'The below-fold action completed successfully.');
+    }
+    return;
+  }
+
+  if (hasUserMarker(messages, 'FRAME_TASK')) {
+    switch (toolResults.length) {
+      case 0:
+        emitToolCall(response, 1, 'browser_snapshot', {});
+        break;
+      case 1: {
+        const frameElement = elements.find((element) => element?.name === 'Run frame action');
+        observedFrameElement = Boolean(frameElement && frameElement.frameId !== 'frame_main');
+        emitToolCall(response, 2, 'browser_click', {
+          ref: requireRef(elements, 'Run frame action'),
+        });
+        break;
+      }
+      case 2:
+        emitToolCall(response, 3, 'browser_wait', {
+          condition: 'text',
+          text: 'Frame action trusted=true',
+          timeoutMs: 5_000,
+        });
+        break;
+      default:
+        emitFinal(response, 'The same-origin frame action completed successfully.');
+    }
+    return;
+  }
+
+  if (hasUserMarker(messages, 'STALE_TASK')) {
+    const snapshots = allSnapshotElements(messages);
+    const initialElements = snapshots[0] || [];
+    switch (toolResults.length) {
+      case 0:
+        emitToolCall(response, 1, 'browser_snapshot', {});
+        break;
+      case 1:
+        emitToolCall(response, 2, 'browser_click', {
+          ref: requireRef(initialElements, 'Prepare update'),
+        });
+        break;
+      case 2:
+        emitToolCall(response, 3, 'browser_click', {
+          ref: requireRef(initialElements, 'Continue after update'),
+        });
+        break;
+      case 3:
+        observedStaleFailure = toolResults.some((message) =>
+          contentText(message.content).includes('STALE_ELEMENT_REFERENCE')
+        );
+        emitToolCall(response, 4, 'browser_snapshot', {});
+        break;
+      case 4:
+        emitToolCall(response, 5, 'browser_click', {
+          ref: requireRef(elements, 'Continue after update'),
+        });
+        break;
+      case 5:
+        emitToolCall(response, 6, 'browser_wait', {
+          condition: 'text',
+          text: 'Recovered with trusted click=true',
+          timeoutMs: 5_000,
+        });
+        break;
+      default:
+        emitFinal(response, 'The stale reference was refreshed and the task completed.');
     }
     return;
   }
@@ -159,13 +271,7 @@ async function handleCompletion(request, response) {
       });
       break;
     default:
-      writeSse(
-        response,
-        completionChunk({
-          delta: { role: 'assistant', content: 'Registration completed successfully.' },
-        })
-      );
-      finishSse(response);
+      emitFinal(response, 'Registration completed successfully.');
   }
 }
 
@@ -194,6 +300,26 @@ test.afterAll(async () => {
     server.closeAllConnections?.();
   });
 });
+
+async function prepareAgentFixture(window, harness, url, body) {
+  await harness.setContentFixture(url, { body });
+  const addressInput = window.locator('[data-test="address-input"]');
+  await addressInput.click();
+  await addressInput.fill(url);
+  await addressInput.press('Enter');
+  await expect
+    .poll(() =>
+      window.evaluate(() => document.querySelector('webview:not(.hidden)')?.getURL?.() || '')
+    )
+    .toBe(url);
+
+  await window.locator('[data-test="agent-toggle-btn"]').click();
+  await window.locator('#agent-provider-select').selectOption('ollama');
+  await window.locator('#agent-ollama-model').fill(MODEL_ID);
+  await window.locator('#agent-ollama-url').fill(`${baseUrl}/v1`);
+  await window.locator('#agent-provider-save').click();
+  await expect(window.locator('#agent-provider-status')).toContainText(`Ollama · ${MODEL_ID}`);
+}
 
 test('Pi completes a deterministic multi-step task in the visible controlled tab', async ({
   window,
@@ -348,6 +474,179 @@ test('kernel blocks a cross-origin navigation requested by prompt-injected page 
       policyDenied: true,
       modelRequests: 3,
       toolCalls: 2,
+    }),
+  });
+});
+
+test('Pi scrolls a below-fold control into view and clicks it with trusted input', async ({
+  window,
+  harness,
+}) => {
+  requestCount = 0;
+  operations.length = 0;
+  await prepareAgentFixture(
+    window,
+    harness,
+    SCROLL_PAGE_URL,
+    `<!doctype html>
+      <title>Below-fold action</title>
+      <style>body { min-height: 3200px; } #approve { margin-top: 2400px; }</style>
+      <main>
+        <h1>Review request</h1>
+        <button id="approve">Approve below fold</button>
+        <p id="result">Waiting</p>
+      </main>
+      <script>
+        document.querySelector('#approve').addEventListener('click', (event) => {
+          document.querySelector('#result').textContent =
+            'Scrolled action trusted=' + event.isTrusted;
+        });
+      </script>`
+  );
+
+  await window
+    .locator('#agent-prompt')
+    .fill('SCROLL_TASK: find the approval control below the fold, click it, and confirm success.');
+  await window.locator('#agent-run').click();
+
+  await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 15_000 });
+  await expect(window.locator('.agent-tool-state')).toHaveText(['✓', '✓', '✓']);
+  expect(operations).toEqual(['browser_snapshot', 'browser_click', 'browser_wait']);
+  expect(requestCount).toBe(4);
+  const pageState = await window.evaluate(() =>
+    document
+      .querySelector('webview:not(.hidden)')
+      ?.executeJavaScript(
+        '({ scrollY: window.scrollY, result: document.querySelector("#result").textContent })'
+      )
+  );
+  expect(pageState.scrollY).toBeGreaterThan(0);
+  expect(pageState.result).toBe('Scrolled action trusted=true');
+  test.info().annotations.push({
+    type: 'evaluation',
+    description: JSON.stringify({ completed: true, modelRequests: 4, toolCalls: 3 }),
+  });
+});
+
+test('Pi finds and activates a control inside a same-origin frame', async ({ window, harness }) => {
+  requestCount = 0;
+  observedFrameElement = false;
+  operations.length = 0;
+  await prepareAgentFixture(
+    window,
+    harness,
+    FRAME_PAGE_URL,
+    `<!doctype html>
+      <title>Frame action</title>
+      <main>
+        <h1>Framed workflow</h1>
+        <iframe id="action-frame" name="semantic-frame"></iframe>
+      </main>
+      <script>
+        document.querySelector('#action-frame').srcdoc =
+          '<button id="frame-action">Run frame action</button>' +
+          '<p id="frame-result">Frame waiting</p>' +
+          '<script>' +
+          'document.querySelector("#frame-action").addEventListener("click", (event) => {' +
+          'document.querySelector("#frame-result").textContent = "Frame action trusted=" + event.isTrusted;' +
+          '});' +
+          '<\\/script>';
+      </script>`
+  );
+
+  await window
+    .locator('#agent-prompt')
+    .fill('FRAME_TASK: run the action inside the framed workflow and confirm success.');
+  await window.locator('#agent-run').click();
+
+  await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 15_000 });
+  await expect(window.locator('.agent-tool-state')).toHaveText(['✓', '✓', '✓']);
+  expect(operations).toEqual(['browser_snapshot', 'browser_click', 'browser_wait']);
+  expect(observedFrameElement).toBe(true);
+  expect(requestCount).toBe(4);
+  const result = await window.evaluate(() =>
+    document
+      .querySelector('webview:not(.hidden)')
+      ?.executeJavaScript(
+        'document.querySelector("#action-frame").contentDocument.querySelector("#frame-result").textContent'
+      )
+  );
+  expect(result).toBe('Frame action trusted=true');
+  test.info().annotations.push({
+    type: 'evaluation',
+    description: JSON.stringify({ completed: true, modelRequests: 4, toolCalls: 3 }),
+  });
+});
+
+test('Pi refreshes its snapshot and recovers from a stale element reference', async ({
+  window,
+  harness,
+}) => {
+  requestCount = 0;
+  observedStaleFailure = false;
+  operations.length = 0;
+  await prepareAgentFixture(
+    window,
+    harness,
+    STALE_PAGE_URL,
+    `<!doctype html>
+      <title>SPA replacement</title>
+      <main>
+        <h1>Dynamic workflow</h1>
+        <button id="prepare">Prepare update</button>
+        <button id="continue">Continue after update</button>
+        <p id="status">Waiting</p>
+      </main>
+      <script>
+        const installContinue = (button) => {
+          button.addEventListener('click', (event) => {
+            document.querySelector('#status').textContent =
+              'Recovered with trusted click=' + event.isTrusted;
+          });
+        };
+        installContinue(document.querySelector('#continue'));
+        document.querySelector('#prepare').addEventListener('click', () => {
+          const previous = document.querySelector('#continue');
+          const replacement = previous.cloneNode(true);
+          installContinue(replacement);
+          previous.replaceWith(replacement);
+          document.querySelector('#status').textContent = 'Replacement ready';
+        });
+      </script>`
+  );
+
+  await window
+    .locator('#agent-prompt')
+    .fill(
+      'STALE_TASK: prepare the dynamic update, continue, recover if the page changes, and confirm success.'
+    );
+  await window.locator('#agent-run').click();
+
+  await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 15_000 });
+  await expect(window.locator('.agent-tool-state')).toHaveText(['✓', '✓', '×', '✓', '✓', '✓']);
+  expect(operations).toEqual([
+    'browser_snapshot',
+    'browser_click',
+    'browser_click',
+    'browser_snapshot',
+    'browser_click',
+    'browser_wait',
+  ]);
+  expect(observedStaleFailure).toBe(true);
+  expect(requestCount).toBe(7);
+  const result = await window.evaluate(() =>
+    document
+      .querySelector('webview:not(.hidden)')
+      ?.executeJavaScript('document.querySelector("#status").textContent')
+  );
+  expect(result).toBe('Recovered with trusted click=true');
+  test.info().annotations.push({
+    type: 'evaluation',
+    description: JSON.stringify({
+      completed: true,
+      staleReferenceRecovered: true,
+      modelRequests: 7,
+      toolCalls: 6,
     }),
   });
 });
