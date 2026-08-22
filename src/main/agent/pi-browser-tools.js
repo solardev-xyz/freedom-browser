@@ -186,6 +186,15 @@ async function executeBrowserTool(controller, tabId, spec, params, signal) {
   };
 }
 
+function notifyToolOutcome(listener, outcome) {
+  if (typeof listener !== 'function') return;
+  try {
+    listener(Object.freeze(outcome));
+  } catch {
+    // Agent lifecycle and policy enforcement cannot depend on an observer.
+  }
+}
+
 async function createFreedomBrowserTools(options = {}) {
   if (!options.controller || typeof options.controller.execute !== 'function') {
     throw new TypeError('Freedom browser tools require an automation controller');
@@ -205,8 +214,32 @@ async function createFreedomBrowserTools(options = {}) {
       description: spec.description,
       parameters: spec.parameters,
       executionMode: 'sequential',
-      execute: (_toolCallId, params, signal) =>
-        executeBrowserTool(options.controller, options.tabId, spec, params, signal),
+      execute: async (toolCallId, params, signal) => {
+        try {
+          const result = await executeBrowserTool(
+            options.controller,
+            options.tabId,
+            spec,
+            params,
+            signal
+          );
+          notifyToolOutcome(options.onToolOutcome, {
+            toolCallId,
+            operation: spec.operation,
+            status: 'succeeded',
+          });
+          return result;
+        } catch (error) {
+          notifyToolOutcome(options.onToolOutcome, {
+            toolCallId,
+            operation: spec.operation,
+            status: 'failed',
+            errorCode:
+              error instanceof FreedomBrowserToolError ? error.code : ERROR_CODES.INTERNAL_ERROR,
+          });
+          throw error;
+        }
+      },
     })
   );
 }
@@ -217,4 +250,5 @@ module.exports = {
   TOOL_SPEC_BY_NAME,
   createFreedomBrowserTools,
   executeBrowserTool,
+  notifyToolOutcome,
 };

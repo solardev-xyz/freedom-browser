@@ -95,6 +95,35 @@ describe('Pi browser tool adapter', () => {
     });
   });
 
+  test('reports structured outcomes independently of Pi error rendering', async () => {
+    const onToolOutcome = jest.fn();
+    const controller = {
+      execute: jest.fn(async () => ({
+        ok: false,
+        error: {
+          code: ERROR_CODES.TAB_NOT_FOUND,
+          message: 'Rendered wording can change',
+          retryable: false,
+        },
+      })),
+    };
+    const tools = await createFreedomBrowserTools({
+      sdk: createSdk(),
+      controller,
+      tabId: 'tab_assigned',
+      onToolOutcome,
+    });
+    const snapshot = tools.find((tool) => tool.name === OPERATIONS.SNAPSHOT);
+
+    await expect(snapshot.execute('call_structured', {})).rejects.toThrow();
+    expect(onToolOutcome).toHaveBeenCalledWith({
+      toolCallId: 'call_structured',
+      operation: OPERATIONS.SNAPSHOT,
+      status: 'failed',
+      errorCode: ERROR_CODES.TAB_NOT_FOUND,
+    });
+  });
+
   test('retains the canonical controller policy boundary', async () => {
     const authorize = jest.fn(async () => ({ allowed: true }));
     const controller = new AutomationController({

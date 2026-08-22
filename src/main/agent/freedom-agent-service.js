@@ -18,7 +18,6 @@ const AGENT_ERROR_CODES = Object.freeze({
   TAB_UNAVAILABLE: 'TAB_UNAVAILABLE',
   RUN_FAILED: 'RUN_FAILED',
 });
-
 const AUTOMATION_ERROR_CODE_SET = new Set(Object.values(ERROR_CODES));
 
 class FreedomAgentError extends Error {
@@ -78,14 +77,7 @@ function validateStartOptions(options) {
   return { prompt: options.prompt.trim(), tabId: options.tabId };
 }
 
-function extractToolErrorCode(result) {
-  const text = result?.content?.find((item) => item?.type === 'text')?.text;
-  if (typeof text !== 'string') return undefined;
-  const match = /^\[([A-Z_]+)\]/.exec(text);
-  return match && AUTOMATION_ERROR_CODE_SET.has(match[1]) ? match[1] : undefined;
-}
-
-function normalizePiEvent(event) {
+function normalizePiEvent(event, toolOutcome) {
   if (!event || typeof event !== 'object') return null;
 
   if (
@@ -103,7 +95,8 @@ function normalizePiEvent(event) {
     };
   }
   if (event.type === 'tool_execution_end') {
-    const errorCode = event.isError ? extractToolErrorCode(event.result) : undefined;
+    const errorCode =
+      event.isError && toolOutcome?.status === 'failed' ? toolOutcome.errorCode : undefined;
     return {
       type: 'tool_finished',
       toolCallId: String(event.toolCallId),
@@ -187,6 +180,7 @@ class FreedomAgentService {
       stopRequested: false,
       failure: null,
       lastAssistant: null,
+      toolOutcomes: new Map(),
       finished: false,
     };
     this.activeRun = run;
@@ -194,7 +188,12 @@ class FreedomAgentService {
 
     try {
       const sdk = await this.loadSdk();
-      const customTools = await this.createTools({ sdk, controller: this.controller, tabId });
+      const customTools = await this.createTools({
+        sdk,
+        controller: this.controller,
+        tabId,
+        onToolOutcome: (outcome) => this.#handleToolOutcome(run, outcome),
+      });
       const created = await this.createSession({
         sdk,
         model: options.model,
@@ -318,14 +317,33 @@ class FreedomAgentService {
       };
     }
 
-    const normalized = normalizePiEvent(event);
+    const toolCallId = event?.type === 'tool_execution_end' ? String(event.toolCallId) : null;
+    const toolOutcome = toolCallId ? run.toolOutcomes.get(toolCallId) : undefined;
+    const normalized = normalizePiEvent(event, toolOutcome);
+    if (toolCallId) run.toolOutcomes.delete(toolCallId);
     if (normalized) this.#emit(run, normalized);
+  }
 
+  #handleToolOutcome(run, outcome) {
     if (
-      normalized?.type === 'tool_finished' &&
-      normalized.errorCode === ERROR_CODES.TAB_NOT_FOUND &&
-      !run.failure
+      run.finished ||
+      this.activeRun !== run ||
+      !outcome ||
+      typeof outcome.toolCallId !== 'string' ||
+      !outcome.toolCallId
     ) {
+      return;
+    }
+    const normalized = Object.freeze({
+      toolCallId: outcome.toolCallId,
+      operation: typeof outcome.operation === 'string' ? outcome.operation : '',
+      status: outcome.status === 'failed' ? 'failed' : 'succeeded',
+      ...(AUTOMATION_ERROR_CODE_SET.has(outcome.errorCode) && {
+        errorCode: outcome.errorCode,
+      }),
+    });
+    run.toolOutcomes.set(normalized.toolCallId, normalized);
+    if (normalized.errorCode === ERROR_CODES.TAB_NOT_FOUND && !run.failure) {
       run.failure = terminalError(
         AGENT_ERROR_CODES.TAB_UNAVAILABLE,
         'The assigned browser tab is no longer available'
@@ -386,7 +404,6 @@ module.exports = {
   MAX_AGENT_PROMPT_LENGTH,
   FreedomAgentError,
   FreedomAgentService,
-  extractToolErrorCode,
   normalizePiEvent,
   validateStartOptions,
 };

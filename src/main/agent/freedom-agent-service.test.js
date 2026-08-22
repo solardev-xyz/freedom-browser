@@ -7,7 +7,6 @@ const {
   MAX_AGENT_PROMPT_LENGTH,
   FreedomAgentError,
   FreedomAgentService,
-  extractToolErrorCode,
   normalizePiEvent,
 } = require('./freedom-agent-service');
 
@@ -78,6 +77,7 @@ describe('FreedomAgentService', () => {
       sdk: { kind: 'sdk' },
       controller: dependencies.controller,
       tabId: 'tab_assigned',
+      onToolOutcome: expect.any(Function),
     });
     expect(dependencies.createSession).toHaveBeenCalledWith({
       sdk: { kind: 'sdk' },
@@ -188,18 +188,24 @@ describe('FreedomAgentService', () => {
 
   test('fails closed when the assigned tab disappears', async () => {
     const fake = createFakeSession();
-    const { service } = createService(fake);
+    const { service, dependencies } = createService(fake);
     const events = [];
     service.subscribe((event) => events.push(event));
     await service.start(startOptions());
 
+    dependencies.createTools.mock.calls[0][0].onToolOutcome({
+      toolCallId: 'call_1',
+      operation: 'browser_snapshot',
+      status: 'failed',
+      errorCode: ERROR_CODES.TAB_NOT_FOUND,
+    });
     fake.emit({
       type: 'tool_execution_end',
       toolCallId: 'call_1',
       toolName: 'browser_snapshot',
       result: {
         content: [
-          { type: 'text', text: `[${ERROR_CODES.TAB_NOT_FOUND}] Automation tab not found` },
+          { type: 'text', text: 'Pi may render this however it wants' },
         ],
       },
       isError: true,
@@ -336,13 +342,17 @@ describe('FreedomAgentService', () => {
     ).toEqual({ type: 'run_retrying', attempt: 1, maxAttempts: 2, delayMs: 500 });
     expect(normalizePiEvent({ type: 'message_end', message: { secret: true } })).toBeNull();
     expect(
-      extractToolErrorCode({
-        content: [{ type: 'text', text: `[${ERROR_CODES.POLICY_DENIED}] Not granted` }],
-      })
-    ).toBe(ERROR_CODES.POLICY_DENIED);
-    expect(
-      extractToolErrorCode({ content: [{ type: 'text', text: '[PROVIDER_KEY] secret' }] })
-    ).toBeUndefined();
+      normalizePiEvent(
+        {
+          type: 'tool_execution_end',
+          toolCallId: 'call_1',
+          toolName: 'browser_snapshot',
+          result: { content: [{ type: 'text', text: 'unstructured wording' }] },
+          isError: true,
+        },
+        { status: 'failed', errorCode: ERROR_CODES.POLICY_DENIED }
+      )
+    ).toMatchObject({ status: 'failed', errorCode: ERROR_CODES.POLICY_DENIED });
   });
 
   test('isolates subscriber failures', async () => {
