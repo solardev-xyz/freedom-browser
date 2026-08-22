@@ -4,6 +4,9 @@ const OLLAMA_MODEL = process.env.FREEDOM_OLLAMA_TEST_MODEL?.trim();
 const OLLAMA_BASE_URL = 'http://127.0.0.1:11434/v1';
 const EVALUATION_ORIGIN = 'https://agent-evaluation.test';
 const FORM_PAGE_URL = `${EVALUATION_ORIGIN}/ollama-registration`;
+const RESEARCH_START_URL = `${EVALUATION_ORIGIN}/ollama-research/start`;
+const RESEARCH_NORTHSTAR_URL = `${EVALUATION_ORIGIN}/ollama-research/northstar`;
+const RESEARCH_MERIDIAN_URL = `${EVALUATION_ORIGIN}/ollama-research/meridian`;
 const CONFIRMATION = 'Saved Ada Lovelace for Freedom — trusted input=true click=true';
 
 test.skip(
@@ -148,6 +151,57 @@ test('Ollama extracts an exact fact from the current page', async ({ window, har
   expect(evaluation.assistantOutput).toContain('FREEDOM-ALPHA-27');
   expect(evaluation.operations.some((operation) => operation.toLowerCase().startsWith('snapshot')))
     .toBe(true);
+});
+
+test('Ollama researches multiple same-origin pages with attributable evidence', async ({
+  window,
+  harness,
+}) => {
+  test.setTimeout(5 * 60_000);
+  await harness.setContentFixture(RESEARCH_NORTHSTAR_URL, {
+    body: `<!doctype html>
+      <title>Northstar catalog</title>
+      <main><h1>Northstar catalog</h1><p>Northstar monthly price: 12 credits</p></main>`,
+  });
+  await harness.setContentFixture(RESEARCH_MERIDIAN_URL, {
+    body: `<!doctype html>
+      <title>Meridian catalog</title>
+      <main><h1>Meridian catalog</h1><p>Meridian monthly price: 18 credits</p></main>`,
+  });
+  await openFixture(
+    window,
+    harness,
+    RESEARCH_START_URL,
+    `<!doctype html>
+      <title>Plan comparison</title>
+      <main>
+        <h1>Compare plans</h1>
+        <a href="${RESEARCH_NORTHSTAR_URL}">Northstar source</a>
+        <a href="${RESEARCH_MERIDIAN_URL}">Meridian source</a>
+      </main>`
+  );
+  await configureOllama(window);
+
+  const startedAt = await runTask(
+    window,
+    'Visit both linked plan sources. Report each exact monthly price with its source URL, then state the exact price difference. Do not omit either source.'
+  );
+  const currentUrl = await window.evaluate(
+    () => document.querySelector('webview:not(.hidden)')?.getURL?.() || ''
+  );
+  const evaluation = await collectEvaluation(window, 'same-origin-research', startedAt, {
+    currentUrl,
+  });
+
+  expect(evaluation.runStatus).toBe('Complete');
+  expect(evaluation.assistantOutput).toContain('12');
+  expect(evaluation.assistantOutput).toContain('18');
+  expect(evaluation.assistantOutput).toContain('6');
+  expect(evaluation.assistantOutput).toContain(RESEARCH_NORTHSTAR_URL);
+  expect(evaluation.assistantOutput).toContain(RESEARCH_MERIDIAN_URL);
+  expect(evaluation.operations.filter((operation) => /snapshot/i.test(operation)).length).toBeGreaterThanOrEqual(2);
+  expect(evaluation.operations.filter((operation) => /navigate|click/i.test(operation)).length).toBeGreaterThanOrEqual(2);
+  expect(evaluation.toolStates.at(-1)).toBe('✓');
 });
 
 test('Ollama independently completes the deterministic visible form task', async ({
