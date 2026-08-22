@@ -84,6 +84,38 @@ describe('AgentProviderStore', () => {
     });
   });
 
+  test('bounds Ollama model history without invalidating other provider credentials', async () => {
+    const { store } = createStore();
+    const credentials = store.createCredentialStore();
+    const oauth = {
+      type: 'oauth',
+      access: 'access-secret',
+      refresh: 'refresh-secret',
+      expires: Date.now() + 60_000,
+    };
+    await credentials.modify('openai-codex', async () => oauth);
+    store.saveSubscription({ providerId: 'openai-codex', modelId: 'gpt-codex-test' });
+
+    for (let index = 0; index < 129; index += 1) {
+      store.saveOllama({
+        modelId: `local-model-${index}`,
+        baseUrl: 'http://127.0.0.1:11434/v1',
+      });
+    }
+
+    const ollama = store
+      .getPublicStatus()
+      .connections.find((connection) => connection.providerId === 'ollama');
+    expect(ollama.modelIds).toHaveLength(128);
+    expect(ollama.modelIds).not.toContain('local-model-0');
+    expect(ollama.modelIds.at(-1)).toBe('local-model-128');
+    expect(store.getSelection()).toMatchObject({
+      providerId: 'ollama',
+      modelId: 'local-model-128',
+    });
+    expect(await credentials.read('openai-codex')).toEqual(oauth);
+  });
+
   test('stores and refreshes a Pi OAuth credential as profile-bound ciphertext', async () => {
     const { dataDir, store } = createStore();
     const credentials = store.createCredentialStore();

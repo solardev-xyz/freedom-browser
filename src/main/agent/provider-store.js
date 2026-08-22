@@ -9,6 +9,7 @@ const SINGLE_SELECTION_PROVIDER_STORE_VERSION = 2;
 const LEGACY_PROVIDER_STORE_VERSION = 1;
 const PROVIDER_STORE_FILE = 'provider.json';
 const MAX_PROVIDER_STORE_BYTES = 256 * 1024;
+const MAX_STORED_OLLAMA_MODELS = 128;
 
 class AgentProviderStoreError extends Error {
   constructor(code, message) {
@@ -101,7 +102,7 @@ function isStoredConnection(connection, providerId) {
     typeof connection.baseUrl === 'string' &&
     Array.isArray(connection.modelIds) &&
     connection.modelIds.length > 0 &&
-    connection.modelIds.length <= 128 &&
+    connection.modelIds.length <= MAX_STORED_OLLAMA_MODELS &&
     connection.modelIds.every(
       (modelId, index) =>
         typeof modelId === 'string' &&
@@ -259,7 +260,9 @@ class AgentProviderStore {
     const previous = payload.connections.ollama;
     const modelIds =
       previous?.kind === 'ollama' && previous.baseUrl === baseUrl
-        ? [...new Set([...previous.modelIds, modelId])]
+        ? [...previous.modelIds.filter((candidate) => candidate !== modelId), modelId].slice(
+            -MAX_STORED_OLLAMA_MODELS
+          )
         : [modelId];
     this.#write({
       connections: {
