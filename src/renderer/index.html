@@ -808,6 +808,29 @@
         </div>
       </div>
       <button
+        id="agent-toggle-btn"
+        class="agent-toggle-btn"
+        type="button"
+        aria-label="Open Agent"
+        aria-controls="agent-sidebar"
+        aria-expanded="false"
+        data-test="agent-toggle-btn"
+      >
+        <svg
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <path d="m12 3 1.2 3.8L17 8l-3.8 1.2L12 13l-1.2-3.8L7 8l3.8-1.2L12 3Z" />
+          <path d="m18.5 13 .8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8.8-2.2Z" />
+          <path d="m5.5 13 .7 2.3 2.3.7-2.3.7L5.5 19l-.7-2.3-2.3-.7 2.3-.7.7-2.3Z" />
+        </svg>
+      </button>
+      <button
         id="wallet-toggle-btn"
         class="wallet-toggle-btn"
         type="button"
@@ -1048,6 +1071,132 @@
           </div>
         </div>
       </main>
+      <aside id="agent-sidebar" class="agent-sidebar collapsed" aria-label="Freedom Agent">
+        <div class="agent-sidebar-inner">
+          <div class="agent-sidebar-header">
+            <div>
+              <h2>Agent</h2>
+              <p>Give this tab a task</p>
+            </div>
+            <button
+              type="button"
+              class="agent-icon-btn"
+              id="agent-sidebar-close"
+              aria-label="Close Agent"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                aria-hidden="true"
+              >
+                <path d="M18 6 6 18M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+
+          <div class="agent-sidebar-content">
+            <section class="agent-card" aria-labelledby="agent-model-heading">
+              <div class="agent-card-heading">
+                <h3 id="agent-model-heading">Model</h3>
+                <span id="agent-provider-status" class="agent-badge">Not configured</span>
+              </div>
+
+              <label class="agent-field">
+                <span>Provider</span>
+                <select id="agent-provider-select">
+                  <option value="openai">OpenAI</option>
+                  <option value="anthropic">Anthropic</option>
+                  <option value="openrouter">OpenRouter</option>
+                  <option value="ollama">Ollama (local)</option>
+                </select>
+              </label>
+
+              <div id="agent-hosted-fields">
+                <label class="agent-field">
+                  <span>Model</span>
+                  <select id="agent-model-select"></select>
+                </label>
+                <label class="agent-field">
+                  <span>API key</span>
+                  <input
+                    id="agent-api-key"
+                    type="password"
+                    autocomplete="off"
+                    spellcheck="false"
+                    placeholder="Stored encrypted on this device"
+                  />
+                </label>
+              </div>
+
+              <div id="agent-ollama-fields" class="hidden">
+                <label class="agent-field">
+                  <span>Model</span>
+                  <input
+                    id="agent-ollama-model"
+                    type="text"
+                    spellcheck="false"
+                    placeholder="qwen2.5:7b"
+                  />
+                </label>
+                <label class="agent-field">
+                  <span>Local URL</span>
+                  <input
+                    id="agent-ollama-url"
+                    type="url"
+                    spellcheck="false"
+                    value="http://127.0.0.1:11434/v1"
+                  />
+                </label>
+              </div>
+
+              <div class="agent-config-actions">
+                <button id="agent-provider-save" class="agent-button secondary" type="button">
+                  Save model
+                </button>
+                <button id="agent-provider-clear" class="agent-text-button" type="button" hidden>
+                  Clear
+                </button>
+              </div>
+              <p id="agent-provider-message" class="agent-message" aria-live="polite"></p>
+            </section>
+
+            <section class="agent-card agent-task-card" aria-labelledby="agent-task-heading">
+              <div class="agent-card-heading">
+                <h3 id="agent-task-heading">Task</h3>
+                <span id="agent-run-status" class="agent-badge">Idle</span>
+              </div>
+              <label class="agent-field">
+                <span class="sr-only">Task for the agent</span>
+                <textarea
+                  id="agent-prompt"
+                  rows="4"
+                  maxlength="32000"
+                  placeholder="Research this topic, fill in this form, or complete another task in the current tab…"
+                ></textarea>
+              </label>
+              <div class="agent-run-actions">
+                <button id="agent-run" class="agent-button primary" type="button">Run</button>
+                <button id="agent-stop" class="agent-button danger" type="button" disabled>
+                  Stop
+                </button>
+              </div>
+              <p id="agent-run-message" class="agent-message" aria-live="polite"></p>
+
+              <div id="agent-transcript" class="agent-transcript" hidden>
+                <h4>Response</h4>
+                <div id="agent-output" class="agent-output"></div>
+              </div>
+              <div id="agent-activity" class="agent-activity" hidden>
+                <h4>Activity</h4>
+                <ol id="agent-tool-list"></ol>
+              </div>
+            </section>
+          </div>
+        </div>
+      </aside>
       <aside id="sidebar" class="sidebar collapsed">
         <div class="sidebar-inner">
           <div class="sidebar-header">

@@ -1,0 +1,325 @@
+.agent-toggle-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  margin: 0 1px;
+  background: transparent;
+  border: 0;
+  border-radius: 50%;
+  color: var(--text);
+  cursor: default;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.agent-toggle-btn:hover:not(:disabled),
+.agent-toggle-btn[aria-expanded='true'] {
+  color: var(--accent);
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.agent-toggle-btn:disabled {
+  opacity: 0.5;
+}
+
+.agent-toggle-btn svg {
+  width: 18px;
+  height: 18px;
+}
+
+.private-window .agent-toggle-btn {
+  display: none;
+}
+
+.agent-sidebar {
+  display: flex;
+  flex-direction: column;
+  width: 360px;
+  flex-shrink: 0;
+  overflow: hidden;
+  background: var(--toolbar);
+  border-left: 1px solid var(--border);
+  transition:
+    width 0.2s ease,
+    border-width 0.2s ease;
+}
+
+.agent-sidebar.collapsed {
+  width: 0;
+  border-left-width: 0;
+}
+
+.agent-sidebar-inner {
+  display: flex;
+  flex-direction: column;
+  width: 360px;
+  height: 100%;
+}
+
+.agent-sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.agent-sidebar-header h2,
+.agent-sidebar-header p,
+.agent-card h3,
+.agent-card h4,
+.agent-message {
+  margin: 0;
+}
+
+.agent-sidebar-header h2 {
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.agent-sidebar-header p {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.agent-icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+}
+
+.agent-icon-btn:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.agent-icon-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+.agent-sidebar-content {
+  flex: 1;
+  min-height: 0;
+  padding: 14px;
+  overflow: auto;
+}
+
+.agent-card {
+  padding: 14px;
+  margin-bottom: 12px;
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.agent-card-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.agent-card h3 {
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.agent-card h4 {
+  margin-bottom: 7px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.agent-badge {
+  max-width: 190px;
+  padding: 3px 7px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.agent-badge.active {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+}
+
+.agent-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.agent-field input,
+.agent-field select,
+.agent-field textarea {
+  width: 100%;
+  padding: 9px 10px;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  outline: none;
+}
+
+.agent-field textarea {
+  min-height: 92px;
+  line-height: 1.45;
+  resize: vertical;
+}
+
+.agent-field input:focus,
+.agent-field select:focus,
+.agent-field textarea:focus {
+  border-color: var(--accent);
+}
+
+.agent-config-actions,
+.agent-run-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.agent-run-actions .agent-button {
+  flex: 1;
+}
+
+.agent-button,
+.agent-text-button {
+  min-height: 32px;
+  padding: 7px 11px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 7px;
+}
+
+.agent-button {
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+}
+
+.agent-button.primary {
+  color: white;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.agent-button.danger:not(:disabled) {
+  color: #ff8b8b;
+  border-color: rgba(255, 95, 95, 0.45);
+}
+
+.agent-button:disabled,
+.agent-text-button:disabled {
+  opacity: 0.5;
+}
+
+.agent-text-button {
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+}
+
+.agent-message {
+  min-height: 16px;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.agent-message.error {
+  color: #ff8b8b;
+}
+
+.agent-transcript,
+.agent-activity {
+  padding-top: 14px;
+  margin-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.agent-output {
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.agent-activity ol {
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.agent-tool-item {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 5px 0;
+  color: var(--muted);
+  font-size: 11px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+}
+
+.agent-tool-state {
+  width: 14px;
+  color: var(--accent);
+  text-align: center;
+}
+
+.agent-tool-item.failed .agent-tool-state {
+  color: #ff8b8b;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (max-width: 760px) {
+  .agent-sidebar,
+  .agent-sidebar-inner {
+    width: 320px;
+  }
+
+  .agent-sidebar.collapsed {
+    width: 0;
+  }
+}

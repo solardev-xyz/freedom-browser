@@ -37,6 +37,7 @@ import {
   createTab,
   openOrFocusInternalPage,
   getActiveWebview,
+  getActiveTab,
   getTabById,
 } from './lib/tabs.js';
 import {
@@ -69,6 +70,7 @@ import {
 import { pushDebug } from './lib/debug.js';
 import { initOnboarding } from './lib/onboarding.js';
 import { initSidebar } from './lib/sidebar.js';
+import { initAgentUi } from './lib/agent-ui.js';
 import { initRadicleConsent } from './lib/radicle-consent.js';
 import { initRadicleAlias } from './lib/radicle-alias.js';
 import { initWalletUi, openPublishSetupFlow } from './lib/wallet-ui.js';
@@ -765,6 +767,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   initLinkStatus();
   initFindBar({ getActiveWebview }); // In-page find bar (Cmd/Ctrl+F)
   initTabs(); // Creates first tab and starts loading home page
+  initAgentUi({ getActiveTab }); // Embedded Pi agent panel
   initAutocomplete(); // Address bar autocomplete
   initPageContextMenu(); // Page context menu for webviews
   initChromeInputContextMenu({ onOpening: onAnyMenuOpening }); // Address bar edit menu
