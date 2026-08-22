@@ -13,6 +13,8 @@ const OPERATION_CLASSES = Object.freeze({
   [OPERATIONS.NAVIGATE]: 'navigate',
   [OPERATIONS.CLICK]: 'interact',
   [OPERATIONS.TYPE]: 'interact',
+  [OPERATIONS.SELECT]: 'interact',
+  [OPERATIONS.PRESS]: 'interact',
   [OPERATIONS.STOP_LOADING]: 'control',
 });
 

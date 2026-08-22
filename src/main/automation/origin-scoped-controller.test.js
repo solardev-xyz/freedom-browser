@@ -322,6 +322,40 @@ describe('OriginScopedAutomationController', () => {
     });
   });
 
+  test('requires the same approval when Enter would submit a form', async () => {
+    const controller = createController();
+    const requestApproval = jest.fn(async () => 'approved');
+    const scoped = await createOriginScopedAutomationController({
+      controller,
+      tabId: 'tab_assigned',
+      requestApproval,
+    });
+
+    await expect(
+      scoped.execute(OPERATIONS.PRESS, {
+        tabId: 'tab_assigned',
+        ref: 'ref_submit',
+        key: 'Enter',
+      })
+    ).resolves.toMatchObject({ ok: true });
+    expect(requestApproval).toHaveBeenCalledWith({
+      action: 'form_submission',
+      operation: OPERATIONS.PRESS,
+      origin: 'https://trusted.example',
+      label: 'Submit registration',
+    });
+    expect(controller.execute).toHaveBeenCalledWith(OPERATIONS.PRESS, {
+      tabId: 'tab_assigned',
+      ref: 'ref_submit',
+      key: 'Enter',
+    });
+    expect(controller.inspectAction).toHaveBeenCalledWith(OPERATIONS.PRESS, {
+      tabId: 'tab_assigned',
+      ref: 'ref_submit',
+      key: 'Enter',
+    });
+  });
+
   test('does not dispatch a form submission after the user declines', async () => {
     const controller = createController();
     const requestApproval = jest.fn(async () => 'declined');

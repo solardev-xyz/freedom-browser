@@ -31,6 +31,8 @@ const EXPECTED_TOOL_NAMES = Object.freeze([
   'browser_navigate',
   'browser_click',
   'browser_type',
+  'browser_select',
+  'browser_press',
   'browser_wait',
   'browser_stop_loading',
 ]);
@@ -200,13 +202,53 @@ async function handleCompletion(request, response) {
   }
 
   if (hasUserMarker(messages, 'PRODUCT_RICH_FORM')) {
-    if (toolResults.length === 0) {
-      emitToolCall(response, 1, 'browser_snapshot', {});
-    } else {
-      emitFinal(
-        response,
-        'I can inspect the preferences form, but this tool set has no semantic select or keyboard operation, so I cannot safely complete the requested controls.'
-      );
+    switch (toolResults.length) {
+      case 0:
+        emitToolCall(response, 1, 'browser_snapshot', {});
+        break;
+      case 1:
+        if (
+          !elements
+            .find((element) => element.name === 'Deployment region')
+            ?.options?.some((option) => option.value === 'eu-west' && option.label === 'EU West')
+        ) {
+          throw new Error('The semantic snapshot did not expose the requested select option');
+        }
+        emitToolCall(response, 2, 'browser_select', {
+          ref: requireRef(elements, 'Deployment region'),
+          value: 'eu-west',
+        });
+        break;
+      case 2:
+        emitToolCall(response, 3, 'browser_type', {
+          ref: requireRef(elements, 'Environment'),
+          text: 'Prod',
+        });
+        break;
+      case 3:
+        emitToolCall(response, 4, 'browser_press', {
+          ref: requireRef(elements, 'Environment'),
+          key: 'ArrowDown',
+        });
+        break;
+      case 4:
+        emitToolCall(response, 5, 'browser_press', {
+          ref: requireRef(elements, 'Environment'),
+          key: 'Enter',
+        });
+        break;
+      case 5:
+        emitToolCall(response, 6, 'browser_click', {
+          ref: requireRef(elements, 'Include audit logs'),
+        });
+        break;
+      case 6:
+        emitToolCall(response, 7, 'browser_click', {
+          ref: requireRef(elements, 'Save preferences'),
+        });
+        break;
+      default:
+        emitFinal(response, 'EU West Production preferences were saved with audit logs enabled.');
     }
     return;
   }
@@ -222,8 +264,9 @@ async function handleCompletion(request, response) {
           emitToolCall(response, 5, 'browser_snapshot', {});
           break;
         case 5:
-          emitToolCall(response, 6, 'browser_click', {
-            ref: requireRef(elements, 'Submit application'),
+          emitToolCall(response, 6, 'browser_press', {
+            ref: requireRef(elements, 'Contact email'),
+            key: 'Enter',
           });
           break;
         default:
@@ -444,7 +487,7 @@ test('baseline: same-origin multi-page research passes with attributable evidenc
   ]);
 });
 
-test('baseline: rich form is blocked by missing select and keyboard capabilities', async ({
+test('baseline: rich form passes with semantic select and bounded keyboard capabilities', async ({
   window,
   harness,
 }) => {
@@ -461,29 +504,72 @@ test('baseline: rich form is blocked by missing select and keyboard capabilities
         <option value="us-east">US East</option>
       </select>
       <label for="environment">Environment</label>
-      <input id="environment" aria-label="Environment" list="environments">
-      <datalist id="environments"><option value="Production"></datalist>
-      <label><input id="audit" type="checkbox"> Include audit logs</label>
+      <input id="environment" aria-label="Environment" aria-autocomplete="list">
+      <label><input id="audit" type="checkbox" aria-label="Include audit logs"> Include audit logs</label>
       <button id="save">Save preferences</button>
       <p id="status">Preferences unchanged</p>
-    </main>`
+    </main>
+    <script>
+      window.__controlEvidence = { selectTrusted: false, typeTrusted: false, keysTrusted: [] };
+      const region = document.querySelector('#region');
+      const environment = document.querySelector('#environment');
+      region.addEventListener('change', (event) => {
+        window.__controlEvidence.selectTrusted = event.isTrusted;
+      });
+      environment.addEventListener('input', (event) => {
+        window.__controlEvidence.typeTrusted = event.isTrusted;
+      });
+      environment.addEventListener('keydown', (event) => {
+        window.__controlEvidence.keysTrusted.push(event.key + '=' + event.isTrusted);
+        if (event.key === 'ArrowDown') environment.dataset.suggestion = 'Production';
+        if (event.key === 'Enter' && environment.dataset.suggestion) {
+          event.preventDefault();
+          environment.value = environment.dataset.suggestion;
+        }
+      });
+      document.querySelector('#save').addEventListener('click', (event) => {
+        const audit = document.querySelector('#audit');
+        document.querySelector('#status').textContent =
+          'Saved ' + region.value + ' / ' + environment.value +
+          ' / audit=' + audit.checked + ' / trusted click=' + event.isTrusted;
+      });
+    </script>`
   );
 
   await runTask(
     window,
     'PRODUCT_RICH_FORM: choose EU West, select the Production autocomplete option using the keyboard, include audit logs, and save the preferences.'
   );
-  const result = await recordQualification(window, 'rich-form', CLASSIFICATION.MISSING, {
+  const result = await recordQualification(window, 'rich-form', CLASSIFICATION.PASS, {
     region: await guestValue(window, 'document.querySelector("#region").value'),
     environment: await guestValue(window, 'document.querySelector("#environment").value'),
     auditEnabled: await guestValue(window, 'document.querySelector("#audit").checked'),
+    status: await guestValue(window, 'document.querySelector("#status").textContent'),
+    evidence: await guestValue(window, 'window.__controlEvidence'),
   });
 
-  expect(result.assistantOutput).toContain('no semantic select or keyboard operation');
+  expect(result.assistantOutput).toContain('EU West Production preferences were saved');
   expect(result.advertisedTools).toEqual([...EXPECTED_TOOL_NAMES].sort());
-  expect(result.advertisedTools).not.toContain('browser_select');
-  expect(result.advertisedTools).not.toContain('browser_press');
-  expect(result).toMatchObject({ region: '', environment: '', auditEnabled: false });
+  expect(result).toMatchObject({
+    region: 'eu-west',
+    environment: 'Production',
+    auditEnabled: true,
+    status: 'Saved eu-west / Production / audit=true / trusted click=true',
+    evidence: {
+      selectTrusted: false,
+      typeTrusted: true,
+      keysTrusted: ['ArrowDown=true', 'Enter=true'],
+    },
+  });
+  expect(operations).toEqual([
+    'browser_snapshot',
+    'browser_select',
+    'browser_type',
+    'browser_press',
+    'browser_press',
+    'browser_click',
+    'browser_click',
+  ]);
 });
 
 test('baseline: Pause, human edit, Resume, and fresh approval preserve collaboration', async ({
@@ -554,7 +640,7 @@ test('baseline: Pause, human edit, Resume, and fresh approval preserve collabora
     'browser_click',
     'browser_get_tab',
     'browser_snapshot',
-    'browser_click',
+    'browser_press',
   ]);
 });
 

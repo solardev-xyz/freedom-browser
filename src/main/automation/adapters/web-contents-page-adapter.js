@@ -8,7 +8,15 @@ const AUTOMATION_WORLD_ID = 1001;
 const MAX_PAGE_TEXT_LENGTH = 12_000;
 const MAX_SNAPSHOT_ELEMENTS = 250;
 const MAX_RETAINED_REFERENCES = 1_000;
+const MAX_SELECT_OPTIONS = 100;
 const WAIT_POLL_INTERVAL_MS = 100;
+const ELECTRON_KEY_CODES = Object.freeze({
+  ArrowUp: 'Up',
+  ArrowDown: 'Down',
+  ArrowLeft: 'Left',
+  ArrowRight: 'Right',
+});
+const CHARACTER_KEYS = new Set(['Enter', 'Space']);
 
 function defaultReferenceIdFactory() {
   return `ref_${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
@@ -22,7 +30,13 @@ function buildInvocation(fn, args, dependencies = []) {
   return declarations ? `(() => {${declarations}return ${invocation};})()` : invocation;
 }
 
-function collectPageSnapshot(maxTextLength, maxElements, maxRetainedReferences, snapshotToken) {
+function collectPageSnapshot(
+  maxTextLength,
+  maxElements,
+  maxRetainedReferences,
+  maxSelectOptions,
+  snapshotToken
+) {
   const stateKey = '__FREEDOM_AUTOMATION_ELEMENT_REFERENCES__';
   const state = globalThis[stateKey] || { refs: new Map() };
   globalThis[stateKey] = state;
@@ -132,6 +146,18 @@ function collectPageSnapshot(maxTextLength, maxElements, maxRetainedReferences, 
           element.matches('input:not([readonly]),textarea:not([readonly])') ||
           element.isContentEditable,
         ...(submitsForm && { effect: 'form_submission' }),
+        ...(tag === 'select' && {
+          value: element.value,
+          options: Array.from(element.options)
+            .slice(0, maxSelectOptions)
+            .map((option) => ({
+              value: option.value,
+              label: normalize(option.label || option.textContent),
+              disabled: option.disabled,
+              selected: option.selected,
+            })),
+          ...(element.options.length > maxSelectOptions && { optionsTruncated: true }),
+        }),
       });
     }
 
@@ -219,7 +245,7 @@ function inspectReferencedElement(ref, action) {
 
   const editable =
     element.matches('input:not([readonly]),textarea:not([readonly])') || element.isContentEditable;
-  if (!editable) return { ok: false, reason: 'not_interactable' };
+  if (action !== 'press' && !editable) return { ok: false, reason: 'not_interactable' };
   element.scrollIntoView({ block: 'center', inline: 'center' });
   element.focus();
   if (element.ownerDocument.activeElement !== element) {
@@ -228,7 +254,7 @@ function inspectReferencedElement(ref, action) {
   return { ok: true, contentEditable: element.isContentEditable };
 }
 
-function describeReferencedElement(ref) {
+function describeReferencedElement(ref, action, key) {
   const state = globalThis.__FREEDOM_AUTOMATION_ELEMENT_REFERENCES__;
   const reference = state?.refs?.get(ref);
   if (!reference) return { ok: false, reason: 'changed' };
@@ -265,18 +291,86 @@ function describeReferencedElement(ref) {
     Boolean(element.form) &&
     ((tag === 'button' && (!inputType || inputType === 'submit')) ||
       (tag === 'input' && ['submit', 'image'].includes(inputType)));
+  const activatesElement =
+    action === 'click' || (action === 'press' && ['Enter', 'Space'].includes(key));
+  const implicitlySubmitsForm =
+    action === 'press' &&
+    key === 'Enter' &&
+    Boolean(element.form) &&
+    tag === 'input' &&
+    ![
+      'button',
+      'checkbox',
+      'color',
+      'file',
+      'hidden',
+      'image',
+      'radio',
+      'range',
+      'reset',
+      'submit',
+    ].includes(inputType);
+  const formSubmission = (submitsForm && activatesElement) || implicitlySubmitsForm;
+  let actionLabel = label;
   let navigationTarget = '';
-  if (tag === 'a' && element.hasAttribute('href')) {
+  if (tag === 'a' && element.hasAttribute('href') && activatesElement) {
     navigationTarget = element.href;
-  } else if (submitsForm) {
-    navigationTarget = element.hasAttribute('formaction') ? element.formAction : element.form.action;
+  } else if (formSubmission) {
+    const defaultSubmitter = implicitlySubmitsForm
+      ? Array.from(element.form.elements).find((candidate) => {
+          const candidateTag = candidate.tagName?.toLowerCase();
+          const candidateType = normalize(candidate.getAttribute?.('type')).toLowerCase();
+          return (
+            !candidate.disabled &&
+            ((candidateTag === 'button' && (!candidateType || candidateType === 'submit')) ||
+              (candidateTag === 'input' && ['submit', 'image'].includes(candidateType)))
+          );
+        })
+      : element;
+    if (implicitlySubmitsForm && defaultSubmitter) {
+      actionLabel = normalize(
+        defaultSubmitter.getAttribute('aria-label') ||
+          defaultSubmitter.getAttribute('title') ||
+          defaultSubmitter.innerText ||
+          defaultSubmitter.value ||
+          label
+      );
+    }
+    navigationTarget = defaultSubmitter?.hasAttribute('formaction')
+      ? defaultSubmitter.formAction
+      : element.form.action;
   }
   return {
     ok: true,
-    label,
-    ...(submitsForm && { effect: 'form_submission' }),
+    label: actionLabel,
+    ...(formSubmission && { effect: 'form_submission' }),
     ...(navigationTarget && { navigationTarget }),
   };
+}
+
+function selectOptionByValue(ref, value) {
+  const inspected = inspectReferencedElement(ref, 'press');
+  if (!inspected.ok) return inspected;
+  const { element, frameWindow } =
+    globalThis.__FREEDOM_AUTOMATION_ELEMENT_REFERENCES__.refs.get(ref);
+  if (element.tagName.toLowerCase() !== 'select' || element.multiple || element.size > 1) {
+    return { ok: false, reason: 'unsupported_select' };
+  }
+  const option = Array.from(element.options).find(
+    (candidate) => candidate.value === value && !candidate.disabled
+  );
+  if (!option) return { ok: false, reason: 'option_unavailable' };
+  const valueSetter = Object.getOwnPropertyDescriptor(
+    frameWindow.HTMLSelectElement.prototype,
+    'value'
+  )?.set;
+  if (typeof valueSetter !== 'function') return { ok: false, reason: 'unsupported_select' };
+  valueSetter.call(element, value);
+  element.dispatchEvent(new frameWindow.Event('input', { bubbles: true }));
+  element.dispatchEvent(new frameWindow.Event('change', { bubbles: true }));
+  return element.value === value
+    ? { ok: true, trusted: false }
+    : { ok: false, reason: 'selection_not_applied' };
 }
 
 function prepareTextInsertion(ref, replace) {
@@ -400,7 +494,13 @@ class WebContentsPageAdapter extends EventEmitter {
     const snapshotToken = this.referenceIdFactory();
     const snapshot = await this.#execute(
       collectPageSnapshot,
-      [MAX_PAGE_TEXT_LENGTH, MAX_SNAPSHOT_ELEMENTS, MAX_RETAINED_REFERENCES, snapshotToken],
+      [
+        MAX_PAGE_TEXT_LENGTH,
+        MAX_SNAPSHOT_ELEMENTS,
+        MAX_RETAINED_REFERENCES,
+        MAX_SELECT_OPTIONS,
+        snapshotToken,
+      ],
       false
     );
     if (!snapshot || !Array.isArray(snapshot.elements)) {
@@ -451,10 +551,15 @@ class WebContentsPageAdapter extends EventEmitter {
     return { clicked: true, ref };
   }
 
-  async inspectAction(ref) {
+  async inspectAction(ref, { operation = 'browser_click', key = '' } = {}) {
     this.#assertAvailable();
     this.#requireReference(ref);
-    const result = await this.#execute(describeReferencedElement, [ref], false);
+    const action = operation === 'browser_press' ? 'press' : 'click';
+    if (action === 'press') {
+      const prepared = await this.#execute(inspectReferencedElement, [ref, action], true);
+      this.#assertActionResult(prepared);
+    }
+    const result = await this.#execute(describeReferencedElement, [ref, action, key], false);
     this.#assertActionResult(result);
     return {
       label: typeof result.label === 'string' ? result.label : '',
@@ -479,6 +584,27 @@ class WebContentsPageAdapter extends EventEmitter {
     }
     await this.webContents.insertText(text);
     return { typed: true, ref, characters: text.length };
+  }
+
+  async select(ref, value) {
+    this.#assertAvailable();
+    this.#requireReference(ref);
+    const result = await this.#execute(selectOptionByValue, [ref, value], true, [
+      inspectReferencedElement,
+    ]);
+    this.#assertSelectResult(result);
+    return { selected: true, ref, value, trusted: result.trusted === true };
+  }
+
+  async press(ref, key) {
+    this.#assertAvailable();
+    this.#requireReference(ref);
+    const prepared = await this.#execute(inspectReferencedElement, [ref, 'press'], true);
+    this.#assertActionResult(prepared);
+    this.#requireTrustedKeyInput();
+    this.webContents.focus?.();
+    this.#sendKey(key);
+    return { pressed: true, ref, key };
   }
 
   async screenshot() {
@@ -612,6 +738,49 @@ class WebContentsPageAdapter extends EventEmitter {
         suggestedAction: 'Take a new snapshot',
       }
     );
+  }
+
+  #assertSelectResult(result) {
+    if (result?.ok) return;
+    if (result?.reason === 'unsupported_select') {
+      throw new AutomationError(
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        'Only single-select controls are supported'
+      );
+    }
+    if (result?.reason === 'option_unavailable') {
+      throw new AutomationError(
+        ERROR_CODES.ELEMENT_NOT_FOUND,
+        'The requested select option is unavailable',
+        { retryable: true, suggestedAction: 'Take a new snapshot' }
+      );
+    }
+    if (result?.reason === 'selection_not_applied') {
+      throw new AutomationError(
+        ERROR_CODES.ELEMENT_NOT_INTERACTABLE,
+        'The requested select option could not be applied',
+        { retryable: true, suggestedAction: 'Take a new snapshot' }
+      );
+    }
+    this.#assertActionResult(result);
+  }
+
+  #requireTrustedKeyInput() {
+    if (typeof this.webContents.sendInputEvent !== 'function') {
+      throw new AutomationError(
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        'Trusted keyboard input is unavailable for this page'
+      );
+    }
+  }
+
+  #sendKey(key) {
+    const keyCode = ELECTRON_KEY_CODES[key] || key;
+    this.webContents.sendInputEvent({ type: 'keyDown', keyCode });
+    if (CHARACTER_KEYS.has(key)) {
+      this.webContents.sendInputEvent({ type: 'char', keyCode });
+    }
+    this.webContents.sendInputEvent({ type: 'keyUp', keyCode });
   }
 
   #assertAvailable() {

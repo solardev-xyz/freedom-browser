@@ -20,6 +20,20 @@ describe('automation operation contract', () => {
     expect(validateOperationInput(OPERATIONS.CLOSE_TAB, { tabId: ' tab_1 ' })).toEqual({
       tabId: 'tab_1',
     });
+    expect(
+      validateOperationInput(OPERATIONS.SELECT, {
+        tabId: ' tab_1 ',
+        ref: ' ref_region ',
+        value: '',
+      })
+    ).toEqual({ tabId: 'tab_1', ref: 'ref_region', value: '' });
+    expect(
+      validateOperationInput(OPERATIONS.PRESS, {
+        tabId: ' tab_1 ',
+        ref: ' ref_environment ',
+        key: ' ArrowDown ',
+      })
+    ).toEqual({ tabId: 'tab_1', ref: 'ref_environment', key: 'ArrowDown' });
   });
 
   test.each([
@@ -97,5 +111,15 @@ describe('automation operation contract', () => {
         timeoutMs: 30_001,
       })
     ).toThrow('timeoutMs must be an integer');
+  });
+
+  test('rejects arbitrary keyboard input', () => {
+    expect(() =>
+      validateOperationInput(OPERATIONS.PRESS, {
+        tabId: 'tab_1',
+        ref: 'ref_1',
+        key: 'Meta+R',
+      })
+    ).toThrow('key must be one of');
   });
 });

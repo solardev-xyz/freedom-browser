@@ -9,6 +9,8 @@ const ORIGIN_SCOPED_OPERATIONS = new Set([
   OPERATIONS.NAVIGATE,
   OPERATIONS.CLICK,
   OPERATIONS.TYPE,
+  OPERATIONS.SELECT,
+  OPERATIONS.PRESS,
   OPERATIONS.WAIT,
   OPERATIONS.STOP_LOADING,
 ]);
@@ -125,8 +127,8 @@ class OriginScopedAutomationController {
       return this.#originDenied(state);
     }
 
-    if (operation === OPERATIONS.CLICK) {
-      const approval = await this.#authorizeClick(input.ref, state);
+    if (operation === OPERATIONS.CLICK || operation === OPERATIONS.PRESS) {
+      const approval = await this.#authorizeAction(operation, input, state);
       if (approval) return approval;
     }
 
@@ -176,10 +178,11 @@ class OriginScopedAutomationController {
     );
   }
 
-  async #authorizeClick(ref, state) {
-    const inspected = await this.controller.inspectAction(OPERATIONS.CLICK, {
+  async #authorizeAction(operation, input, state) {
+    const inspected = await this.controller.inspectAction(operation, {
       tabId: this.tabId,
-      ref,
+      ref: input.ref,
+      ...(input.key && { key: input.key }),
     });
     if (!inspected?.ok) return inspected;
     const element = actionDescriptor(inspected.result);
@@ -188,6 +191,8 @@ class OriginScopedAutomationController {
     }
     if (element?.effect !== 'form_submission') return null;
     const actionKey = JSON.stringify([
+      operation,
+      input.key || '',
       element.effect,
       element.label,
       element.navigationTarget,
@@ -204,7 +209,7 @@ class OriginScopedAutomationController {
     }
     const decision = await this.requestApproval({
       action: 'form_submission',
-      operation: OPERATIONS.CLICK,
+      operation,
       origin: this.scopeOrigin || '',
       label: element.label,
     });
@@ -219,9 +224,10 @@ class OriginScopedAutomationController {
     const currentState = await this.#readState();
     if (!currentState.ok) return currentState;
     if (!this.#acceptCurrentOrigin(currentState)) return this.#originDenied(currentState);
-    const reinspected = await this.controller.inspectAction(OPERATIONS.CLICK, {
+    const reinspected = await this.controller.inspectAction(operation, {
       tabId: this.tabId,
-      ref,
+      ref: input.ref,
+      ...(input.key && { key: input.key }),
     });
     if (!reinspected?.ok) return reinspected;
     const currentElement = actionDescriptor(reinspected.result);

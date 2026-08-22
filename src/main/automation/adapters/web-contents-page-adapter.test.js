@@ -164,6 +164,63 @@ describe('WebContentsPageAdapter', () => {
     expect(webContents.executeJavaScriptInIsolatedWorld.mock.calls[1][2]).toBe(false);
   });
 
+  test('focuses a press target before inspecting its live action semantics', async () => {
+    const webContents = new FakeWebContents();
+    webContents.executeJavaScriptInIsolatedWorld
+      .mockResolvedValueOnce(snapshotResult())
+      .mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce({
+        ok: true,
+        effect: 'form_submission',
+        label: 'Submit registration',
+        navigationTarget: 'https://example.test/submit',
+      });
+    const adapter = new WebContentsPageAdapter(webContents, {
+      referenceIdFactory: () => 'ref_test',
+    });
+    await adapter.snapshot();
+
+    await expect(
+      adapter.inspectAction('ref_test_0', { operation: 'browser_press', key: 'Enter' })
+    ).resolves.toEqual({
+      effect: 'form_submission',
+      label: 'Submit registration',
+      navigationTarget: 'https://example.test/submit',
+    });
+    expect(webContents.executeJavaScriptInIsolatedWorld.mock.calls[1][2]).toBe(true);
+    expect(webContents.executeJavaScriptInIsolatedWorld.mock.calls[2][2]).toBe(false);
+    expect(webContents.sendInputEvent).not.toHaveBeenCalled();
+  });
+
+  test('selects a snapshot option and presses bounded keys through trusted input', async () => {
+    const webContents = new FakeWebContents();
+    webContents.executeJavaScriptInIsolatedWorld
+      .mockResolvedValueOnce(snapshotResult())
+      .mockResolvedValueOnce({ ok: true, trusted: false })
+      .mockResolvedValueOnce({ ok: true });
+    const adapter = new WebContentsPageAdapter(webContents, {
+      referenceIdFactory: () => 'ref_test',
+    });
+    await adapter.snapshot();
+
+    await expect(adapter.select('ref_test_0', 'eu-west')).resolves.toEqual({
+      selected: true,
+      ref: 'ref_test_0',
+      value: 'eu-west',
+      trusted: false,
+    });
+    await expect(adapter.press('ref_test_0', 'Enter')).resolves.toEqual({
+      pressed: true,
+      ref: 'ref_test_0',
+      key: 'Enter',
+    });
+    expect(webContents.sendInputEvent.mock.calls).toEqual([
+      [{ type: 'keyDown', keyCode: 'Enter' }],
+      [{ type: 'char', keyCode: 'Enter' }],
+      [{ type: 'keyUp', keyCode: 'Enter' }],
+    ]);
+  });
+
   test('revalidates click targets after moving the trusted pointer', async () => {
     const webContents = new FakeWebContents();
     webContents.executeJavaScriptInIsolatedWorld

@@ -82,7 +82,7 @@ class AutomationController {
     let entry;
     try {
       input = validateOperationInput(operation, rawInput);
-      if (operation !== OPERATIONS.CLICK) {
+      if (operation !== OPERATIONS.CLICK && operation !== OPERATIONS.PRESS) {
         throw new AutomationError(
           ERROR_CODES.CAPABILITY_UNAVAILABLE,
           `Automation action inspection is not implemented: ${operation}`
@@ -95,7 +95,10 @@ class AutomationController {
           'Automation action inspection is unavailable for this page'
         );
       }
-      const result = await entry.adapter.inspectAction(input.ref);
+      const result = await entry.adapter.inspectAction(input.ref, {
+        operation,
+        ...(input.key && { key: input.key }),
+      });
       return this.#successEnvelope(entry, result);
     } catch (error) {
       const rawTabId = typeof rawInput?.tabId === 'string' ? rawInput.tabId.trim() : '';
@@ -139,6 +142,10 @@ class AutomationController {
         return entry.adapter.click(input.ref);
       case OPERATIONS.TYPE:
         return entry.adapter.type(input.ref, input.text, { replace: input.replace });
+      case OPERATIONS.SELECT:
+        return entry.adapter.select(input.ref, input.value);
+      case OPERATIONS.PRESS:
+        return entry.adapter.press(input.ref, input.key);
       case OPERATIONS.SCREENSHOT:
         return entry.adapter.screenshot();
       case OPERATIONS.WAIT:

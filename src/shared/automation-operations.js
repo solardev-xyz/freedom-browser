@@ -9,6 +9,8 @@ const OPERATIONS = Object.freeze({
   SNAPSHOT: 'browser_snapshot',
   CLICK: 'browser_click',
   TYPE: 'browser_type',
+  SELECT: 'browser_select',
+  PRESS: 'browser_press',
   SCREENSHOT: 'browser_screenshot',
   WAIT: 'browser_wait',
   STOP_LOADING: 'browser_stop_loading',

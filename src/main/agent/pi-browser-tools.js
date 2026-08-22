@@ -1,6 +1,10 @@
 'use strict';
 
-const { OPERATIONS, MAX_WAIT_TIMEOUT_MS } = require('../automation/contract/operations');
+const {
+  OPERATIONS,
+  MAX_WAIT_TIMEOUT_MS,
+  PRESS_KEYS,
+} = require('../automation/contract/operations');
 const { ERROR_CODES } = require('../automation/contract/errors');
 const { loadPiSdk, validatePiSdk } = require('./pi-sdk');
 
@@ -62,6 +66,36 @@ const TOOL_SPECS = Object.freeze([
         replace: { type: 'boolean' },
       },
       required: ['ref', 'text'],
+      additionalProperties: false,
+    },
+  },
+  {
+    operation: OPERATIONS.SELECT,
+    label: 'Select option',
+    description:
+      'Select an enabled option in a single-select control using its value from the latest page snapshot.',
+    parameters: {
+      type: 'object',
+      properties: {
+        ref: { type: 'string', minLength: 1 },
+        value: { type: 'string' },
+      },
+      required: ['ref', 'value'],
+      additionalProperties: false,
+    },
+  },
+  {
+    operation: OPERATIONS.PRESS,
+    label: 'Press key',
+    description:
+      'Focus an element from the latest page snapshot and press one supported named key.',
+    parameters: {
+      type: 'object',
+      properties: {
+        ref: { type: 'string', minLength: 1 },
+        key: { type: 'string', enum: PRESS_KEYS },
+      },
+      required: ['ref', 'key'],
       additionalProperties: false,
     },
   },

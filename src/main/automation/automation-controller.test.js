@@ -27,6 +27,8 @@ class FakePageAdapter extends EventEmitter {
     }));
     this.click = jest.fn(async (ref) => ({ clicked: true, ref }));
     this.type = jest.fn(async (ref, text) => ({ typed: true, ref, characters: text.length }));
+    this.select = jest.fn(async (ref, value) => ({ selected: true, ref, value }));
+    this.press = jest.fn(async (ref, key) => ({ pressed: true, ref, key }));
     this.screenshot = jest.fn(async () => ({ mediaType: 'image/png', base64: 'cG5n' }));
     this.wait = jest.fn(async ({ condition }) => ({ matched: true, condition }));
     this.stopLoading = jest.fn(async () => ({ stopped: true }));
@@ -126,9 +128,36 @@ describe('AutomationController', () => {
       tabId,
       result: { effect: 'form_submission', label: 'Submit registration' },
     });
-    expect(adapter.inspectAction).toHaveBeenCalledWith('ref_submit');
+    expect(adapter.inspectAction).toHaveBeenCalledWith('ref_submit', {
+      operation: OPERATIONS.CLICK,
+    });
     expect(adapter.click).not.toHaveBeenCalled();
     expect(authorize).not.toHaveBeenCalled();
+  });
+
+  test('dispatches semantic select and bounded key operations', async () => {
+    const { controller } = createController();
+    const adapter = new FakePageAdapter();
+    const tabId = controller.registerPage(adapter, { kind: 'desktop' });
+
+    await expect(
+      controller.execute(OPERATIONS.SELECT, { tabId, ref: 'ref_region', value: 'eu-west' })
+    ).resolves.toMatchObject({
+      ok: true,
+      result: { selected: true, ref: 'ref_region', value: 'eu-west' },
+    });
+    await expect(
+      controller.execute(OPERATIONS.PRESS, {
+        tabId,
+        ref: 'ref_environment',
+        key: 'ArrowDown',
+      })
+    ).resolves.toMatchObject({
+      ok: true,
+      result: { pressed: true, ref: 'ref_environment', key: 'ArrowDown' },
+    });
+    expect(adapter.select).toHaveBeenCalledWith('ref_region', 'eu-west');
+    expect(adapter.press).toHaveBeenCalledWith('ref_environment', 'ArrowDown');
   });
 
   test('does not echo an unvalidated tab ID into error envelopes', async () => {

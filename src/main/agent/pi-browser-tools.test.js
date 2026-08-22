@@ -45,6 +45,8 @@ describe('Pi browser tool adapter', () => {
       OPERATIONS.NAVIGATE,
       OPERATIONS.CLICK,
       OPERATIONS.TYPE,
+      OPERATIONS.SELECT,
+      OPERATIONS.PRESS,
       OPERATIONS.WAIT,
       OPERATIONS.STOP_LOADING,
     ]);
@@ -71,6 +73,9 @@ describe('Pi browser tool adapter', () => {
       },
       required: ['condition'],
     });
+    expect(TOOL_SPEC_BY_NAME.get(OPERATIONS.PRESS).parameters.properties.key.enum).toContain(
+      'Enter'
+    );
   });
 
   test('routes tool execution through the controller with the pinned tab', async () => {

@@ -15,12 +15,31 @@ const TAB_OPERATIONS = new Set([
   OPERATIONS.SNAPSHOT,
   OPERATIONS.CLICK,
   OPERATIONS.TYPE,
+  OPERATIONS.SELECT,
+  OPERATIONS.PRESS,
   OPERATIONS.SCREENSHOT,
   OPERATIONS.WAIT,
   OPERATIONS.STOP_LOADING,
 ]);
 const ALLOWED_NAVIGATION_SCHEMES = new Set(['http:', 'https:', 'bzz:', 'ipfs:', 'ipns:']);
 const WAIT_CONDITIONS = new Set(['load', 'navigation', 'text', 'url']);
+const PRESS_KEYS = Object.freeze([
+  'Enter',
+  'Tab',
+  'Escape',
+  'ArrowUp',
+  'ArrowDown',
+  'ArrowLeft',
+  'ArrowRight',
+  'Home',
+  'End',
+  'PageUp',
+  'PageDown',
+  'Backspace',
+  'Delete',
+  'Space',
+]);
+const PRESS_KEY_SET = new Set(PRESS_KEYS);
 
 function requireObject(input) {
   if (input === undefined) return {};
@@ -83,13 +102,29 @@ function validateOperationInput(operation, rawInput) {
     normalized.url = validateNavigationUrl(input.url);
   }
 
-  if (operation === OPERATIONS.CLICK || operation === OPERATIONS.TYPE) {
+  if (
+    operation === OPERATIONS.CLICK ||
+    operation === OPERATIONS.TYPE ||
+    operation === OPERATIONS.SELECT ||
+    operation === OPERATIONS.PRESS
+  ) {
     normalized.ref = requireString(input.ref, 'ref').trim();
   }
 
   if (operation === OPERATIONS.TYPE) {
     normalized.text = requireString(input.text, 'text', { allowEmpty: true });
     normalized.replace = input.replace !== false;
+  }
+
+  if (operation === OPERATIONS.SELECT) {
+    normalized.value = requireString(input.value, 'value', { allowEmpty: true });
+  }
+
+  if (operation === OPERATIONS.PRESS) {
+    normalized.key = requireString(input.key, 'key').trim();
+    if (!PRESS_KEY_SET.has(normalized.key)) {
+      throw invalidArgument(`key must be one of: ${PRESS_KEYS.join(', ')}`, { field: 'key' });
+    }
   }
 
   if (operation === OPERATIONS.WAIT) {
@@ -129,5 +164,6 @@ module.exports = {
   DEFAULT_WAIT_TIMEOUT_MS,
   MAX_WAIT_TIMEOUT_MS,
   OPERATIONS,
+  PRESS_KEYS,
   validateOperationInput,
 };
