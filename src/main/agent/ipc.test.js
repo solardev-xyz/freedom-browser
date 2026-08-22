@@ -29,17 +29,26 @@ function createSender() {
 function createService(options = {}) {
   let listener;
   return {
-    start: options.start || jest.fn(async () => ({ runId: 'run_test' })),
+    start:
+      options.start ||
+      jest.fn(async () => ({ runId: 'run_test', conversationId: 'conversation_test' })),
     pause: options.pause || jest.fn(async () => true),
     resume: options.resume || jest.fn(async () => true),
     stop: options.stop || jest.fn(async () => true),
+    clearConversation: options.clearConversation || jest.fn(async () => true),
     decideApproval: options.decideApproval || jest.fn(async () => true),
-    getState: jest.fn(() => ({ status: 'running', runId: 'run_test', tabId: 'tab_bound' })),
+    getState: jest.fn(() => ({
+      status: 'running',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      tabId: 'tab_bound',
+      transcript: [],
+    })),
     subscribe: jest.fn((nextListener) => {
       listener = nextListener;
       return jest.fn();
     }),
-    emit: (event) => listener(event),
+    emit: (event) => listener({ conversationId: 'conversation_test', ...event }),
   };
 }
 
@@ -107,7 +116,11 @@ describe('Freedom agent IPC', () => {
 
     await expect(
       start({ sender: ctx.sender }, { rendererTabId: 7, prompt: 'Summarize this page' })
-    ).resolves.toEqual({ ok: true, runId: 'run_test' });
+    ).resolves.toEqual({
+      ok: true,
+      runId: 'run_test',
+      conversationId: 'conversation_test',
+    });
 
     expect(ctx.automationTabIdForRenderer).toHaveBeenCalledWith(ctx.sender, 7);
     expect(ctx.resolveModel).toHaveBeenCalledWith();
@@ -136,6 +149,61 @@ describe('Freedom agent IPC', () => {
     expect(ctx.service.start).toHaveBeenCalledWith(
       expect.objectContaining({ approvalMode: 'allow_website_interactions' })
     );
+  });
+
+  test('continues an idle conversation without resolving a new tab or model', async () => {
+    const service = createService();
+    service.start
+      .mockResolvedValueOnce({ runId: 'run_first', conversationId: 'conversation_test' })
+      .mockResolvedValueOnce({ runId: 'run_followup', conversationId: 'conversation_test' });
+    const ctx = register({ service });
+    const start = ctx.ipcMain.handlers.get(IPC.AGENT_START);
+
+    await start({ sender: ctx.sender }, { rendererTabId: 7, prompt: 'Find the settings' });
+    service.emit({
+      type: 'run_finished',
+      runId: 'run_first',
+      sequence: 1,
+      status: 'completed',
+    });
+    await expect(
+      start({ sender: ctx.sender }, { rendererTabId: 999, prompt: 'Now turn it on' })
+    ).resolves.toEqual({
+      ok: true,
+      runId: 'run_followup',
+      conversationId: 'conversation_test',
+    });
+
+    expect(ctx.automationTabIdForRenderer).toHaveBeenCalledTimes(1);
+    expect(ctx.resolveModel).toHaveBeenCalledTimes(1);
+    expect(service.start).toHaveBeenNthCalledWith(2, {
+      prompt: 'Now turn it on',
+      approvalMode: 'every_interaction',
+    });
+  });
+
+  test('clears only an idle conversation owned by the requesting chrome', async () => {
+    const ctx = register();
+    const start = ctx.ipcMain.handlers.get(IPC.AGENT_START);
+    const clear = ctx.ipcMain.handlers.get(IPC.AGENT_CLEAR_CONVERSATION);
+    await start({ sender: ctx.sender }, { rendererTabId: 7, prompt: 'Task' });
+
+    await expect(clear({ sender: ctx.sender })).resolves.toMatchObject({
+      ok: false,
+      error: { code: AGENT_ERROR_CODES.BUSY },
+    });
+    ctx.service.emit({
+      type: 'run_finished',
+      runId: 'run_test',
+      sequence: 1,
+      status: 'completed',
+    });
+    await expect(clear({ sender: ctx.otherSender })).resolves.toMatchObject({
+      ok: false,
+      error: { code: AGENT_IPC_ERROR_CODES.NOT_OWNER },
+    });
+    await expect(clear({ sender: ctx.sender })).resolves.toEqual({ ok: true, cleared: true });
+    expect(ctx.service.clearConversation).toHaveBeenCalledTimes(1);
   });
 
   test('rejects untrusted chrome before resolving its tab', async () => {
@@ -178,7 +246,7 @@ describe('Freedom agent IPC', () => {
     service.start.mockImplementation(async () => {
       service.emit({ type: 'run_started', runId: 'run_test', sequence: 1 });
       service.emit({ type: 'assistant_text_delta', runId: 'run_test', sequence: 2, text: 'Hi' });
-      return { runId: 'run_test' };
+      return { runId: 'run_test', conversationId: 'conversation_test' };
     });
     const ctx = register({ service });
     const start = ctx.ipcMain.handlers.get(IPC.AGENT_START);
@@ -187,12 +255,35 @@ describe('Freedom agent IPC', () => {
     service.emit({ type: 'run_finished', runId: 'run_test', sequence: 3, status: 'completed' });
 
     expect(ctx.sender.send.mock.calls).toEqual([
-      [IPC.AGENT_EVENT, { type: 'run_started', runId: 'run_test', sequence: 1 }],
       [
         IPC.AGENT_EVENT,
-        { type: 'assistant_text_delta', runId: 'run_test', sequence: 2, text: 'Hi' },
+        {
+          type: 'run_started',
+          conversationId: 'conversation_test',
+          runId: 'run_test',
+          sequence: 1,
+        },
       ],
-      [IPC.AGENT_EVENT, { type: 'run_finished', runId: 'run_test', sequence: 3, status: 'completed' }],
+      [
+        IPC.AGENT_EVENT,
+        {
+          type: 'assistant_text_delta',
+          conversationId: 'conversation_test',
+          runId: 'run_test',
+          sequence: 2,
+          text: 'Hi',
+        },
+      ],
+      [
+        IPC.AGENT_EVENT,
+        {
+          type: 'run_finished',
+          conversationId: 'conversation_test',
+          runId: 'run_test',
+          sequence: 3,
+          status: 'completed',
+        },
+      ],
     ]);
     expect(ctx.otherSender.send).not.toHaveBeenCalled();
   });
@@ -309,8 +400,10 @@ describe('Freedom agent IPC', () => {
       ok: true,
       state: {
         status: 'running',
+        conversationId: 'conversation_test',
         runId: 'run_test',
         tabId: 'tab_bound',
+        transcript: [],
         rendererTabId: 7,
       },
     });
@@ -468,15 +561,40 @@ describe('Freedom agent IPC', () => {
     ).toBeNull();
   });
 
-  test('stops the run when its chrome renderer is destroyed', async () => {
+  test('stops the run and clears its conversation when its chrome renderer is destroyed', async () => {
     const ctx = register();
     const start = ctx.ipcMain.handlers.get(IPC.AGENT_START);
     await start({ sender: ctx.sender }, { rendererTabId: 7, prompt: 'Task' });
 
     ctx.sender.emit('destroyed');
-    await Promise.resolve();
+    await new Promise((resolve) => setImmediate(resolve));
 
     expect(ctx.service.stop).toHaveBeenCalledWith('run_test');
+    expect(ctx.service.clearConversation).toHaveBeenCalledTimes(1);
+  });
+
+  test('stops a run that finishes starting after its chrome renderer is destroyed', async () => {
+    let resolveStart;
+    const service = createService({
+      start: jest.fn(
+        () =>
+          new Promise((resolve) => {
+            resolveStart = resolve;
+          })
+      ),
+    });
+    const ctx = register({ service });
+    const pending = ctx.ipcMain.handlers
+      .get(IPC.AGENT_START)({ sender: ctx.sender }, { rendererTabId: 7, prompt: 'Task' });
+    await Promise.resolve();
+
+    ctx.sender.emit('destroyed');
+    resolveStart({ runId: 'run_late', conversationId: 'conversation_test' });
+    await pending;
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(service.stop).toHaveBeenCalledWith('run_late');
+    expect(service.clearConversation).toHaveBeenCalledTimes(1);
   });
 
   test('redacts model resolver and unexpected service failures', async () => {
@@ -550,5 +668,6 @@ describe('Freedom agent IPC', () => {
 
     expect(ctx.ipcMain.handlers.size).toBe(0);
     expect(ctx.service.stop).toHaveBeenCalledWith('run_test');
+    expect(ctx.service.clearConversation).toHaveBeenCalledTimes(1);
   });
 });

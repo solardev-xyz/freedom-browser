@@ -51,6 +51,10 @@ function opaqueRunId() {
   return `run_${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
 }
 
+function opaqueConversationId() {
+  return `conversation_${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
+}
+
 function opaqueApprovalId() {
   return `approval_${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
 }
@@ -63,7 +67,7 @@ function createDeferred() {
   return { promise, resolve };
 }
 
-function validateStartOptions(options) {
+function validatePromptOptions(options) {
   if (!options || typeof options !== 'object' || Array.isArray(options)) {
     throw new FreedomAgentError(
       AGENT_ERROR_CODES.INVALID_ARGUMENT,
@@ -82,6 +86,18 @@ function validateStartOptions(options) {
       `Agent prompt cannot exceed ${MAX_AGENT_PROMPT_LENGTH} characters`
     );
   }
+  const approvalMode = normalizeAgentApprovalMode(options.approvalMode);
+  if (!approvalMode) {
+    throw new FreedomAgentError(
+      AGENT_ERROR_CODES.INVALID_ARGUMENT,
+      'Agent run requires a supported approval mode'
+    );
+  }
+  return { prompt: options.prompt.trim(), approvalMode };
+}
+
+function validateStartOptions(options) {
+  const promptOptions = validatePromptOptions(options);
   if (typeof options.tabId !== 'string' || !options.tabId.trim()) {
     throw new FreedomAgentError(
       AGENT_ERROR_CODES.INVALID_ARGUMENT,
@@ -100,14 +116,7 @@ function validateStartOptions(options) {
       'Agent run requires a selected model and model runtime'
     );
   }
-  const approvalMode = normalizeAgentApprovalMode(options.approvalMode);
-  if (!approvalMode) {
-    throw new FreedomAgentError(
-      AGENT_ERROR_CODES.INVALID_ARGUMENT,
-      'Agent run requires a supported approval mode'
-    );
-  }
-  return { prompt: options.prompt.trim(), tabId: options.tabId, approvalMode };
+  return { ...promptOptions, tabId: options.tabId };
 }
 
 function normalizePiEvent(event, toolOutcome) {
@@ -146,6 +155,19 @@ function normalizePiEvent(event, toolOutcome) {
       delayMs: event.delayMs,
     };
   }
+  if (event.type === 'compaction_start') {
+    return {
+      type: 'context_compaction_started',
+      reason: ['threshold', 'overflow'].includes(event.reason) ? event.reason : 'manual',
+    };
+  }
+  if (event.type === 'compaction_end') {
+    return {
+      type: 'context_compaction_finished',
+      reason: ['threshold', 'overflow'].includes(event.reason) ? event.reason : 'manual',
+      status: event.aborted || event.errorMessage ? 'failed' : 'succeeded',
+    };
+  }
   return null;
 }
 
@@ -175,7 +197,10 @@ class FreedomAgentService {
     this.createTools = options.createTools || createFreedomBrowserTools;
     this.createSession = options.createSession || createIsolatedPiSession;
     this.runIdFactory = options.runIdFactory || opaqueRunId;
+    this.conversationIdFactory = options.conversationIdFactory || opaqueConversationId;
+    this.now = options.now || Date.now;
     this.listeners = new Set();
+    this.conversation = null;
     this.activeRun = null;
     this.disposed = false;
     this.sequence = 0;
@@ -204,11 +229,34 @@ class FreedomAgentService {
 
   getState() {
     if (this.disposed) return { status: 'disposed' };
-    if (!this.activeRun) return { status: 'idle' };
+    const conversation = this.conversation;
+    if (!conversation) return { status: 'idle' };
+    const transcript = conversation.turns.map((turn) => ({
+      runId: turn.runId,
+      userText: turn.userText,
+      assistantText: turn.assistantText,
+      status: turn.status,
+      startedAt: turn.startedAt,
+      ...(Number.isFinite(turn.durationMs) && { durationMs: turn.durationMs }),
+      activity: turn.activity.map((item) => ({ ...item })),
+      ...(turn.error && { error: turn.error }),
+    }));
+    if (!this.activeRun) {
+      return {
+        status: conversation.workspaceUnavailable ? 'unavailable' : 'ready',
+        conversationId: conversation.conversationId,
+        tabId: conversation.tabId,
+        approvalMode: conversation.approvalMode,
+        transcript,
+      };
+    }
     return {
       status: this.activeRun.status,
+      conversationId: conversation.conversationId,
       runId: this.activeRun.runId,
       tabId: this.activeRun.tabId,
+      approvalMode: conversation.approvalMode,
+      transcript,
       ...(this.activeRun.pendingApproval && {
         pendingApproval: this.activeRun.pendingApproval.publicRequest,
       }),
@@ -229,17 +277,40 @@ class FreedomAgentService {
       );
     }
 
-    const { prompt, tabId, approvalMode } = validateStartOptions(options);
+    const existingConversation = this.conversation;
+    const validated = existingConversation
+      ? validatePromptOptions(options)
+      : validateStartOptions(options);
+    const { prompt, approvalMode } = validated;
+    if (existingConversation?.workspaceUnavailable) {
+      throw new FreedomAgentError(
+        AGENT_ERROR_CODES.TAB_UNAVAILABLE,
+        'This conversation\'s browser workspace is no longer available'
+      );
+    }
+    if (existingConversation && approvalMode !== existingConversation.approvalMode) {
+      throw new FreedomAgentError(
+        AGENT_ERROR_CODES.INVALID_ARGUMENT,
+        'Start a new conversation to change the interaction approval setting'
+      );
+    }
+    const tabId = existingConversation?.tabId || validated.tabId;
     const completion = createDeferred();
     const run = {
       runId: this.runIdFactory(),
+      conversationId:
+        existingConversation?.conversationId || this.conversationIdFactory(),
       tabId,
       approvalMode,
       status: 'starting',
+      userText: prompt,
+      assistantText: '',
+      activity: [],
+      startedAt: this.now(),
+      durationMs: null,
       completion,
-      session: null,
-      scopedController: null,
-      unsubscribe: null,
+      session: existingConversation?.session || null,
+      scopedController: existingConversation?.scopedController || null,
       stopRequested: false,
       pauseRequested: false,
       resumePending: false,
@@ -250,53 +321,89 @@ class FreedomAgentService {
       finished: false,
     };
     this.activeRun = run;
-    this.#emit(run, { type: 'run_started', tabId, approvalMode });
+    let conversation = existingConversation;
+    if (conversation) {
+      conversation.activeRun = run;
+      conversation.turns.push(run);
+    }
+    this.#emit(run, { type: 'run_started', tabId, approvalMode, userText: prompt });
 
     try {
-      const sdk = await this.loadSdk();
-      const scopedController = await this.createControllerScope({
-        controller: this.controller,
-        tabId,
-        navigationScope: AGENT_NAVIGATION_SCOPES.WORKSPACE,
-        approvalMode,
-        requestApproval: (request) => this.#requestApproval(run, request),
-      });
-      if (
-        !scopedController ||
-        typeof scopedController.execute !== 'function' ||
-        typeof scopedController.prepareResume !== 'function'
-      ) {
-        throw new TypeError('Agent controller scope does not support safe resume');
+      if (!conversation) {
+        const sdk = await this.loadSdk();
+        const scopedController = await this.createControllerScope({
+          controller: this.controller,
+          tabId,
+          navigationScope: AGENT_NAVIGATION_SCOPES.WORKSPACE,
+          approvalMode,
+          requestApproval: (request) =>
+            this.activeRun ? this.#requestApproval(this.activeRun, request) : 'declined',
+        });
+        if (
+          !scopedController ||
+          typeof scopedController.execute !== 'function' ||
+          typeof scopedController.prepareResume !== 'function'
+        ) {
+          throw new TypeError('Agent controller scope does not support safe resume');
+        }
+        run.scopedController = scopedController;
+        const customTools = await this.createTools({
+          sdk,
+          controller: scopedController,
+          tabId,
+          onToolOutcome: (outcome) => {
+            if (this.activeRun) this.#handleToolOutcome(this.activeRun, outcome);
+          },
+        });
+        const created = await this.createSession({
+          sdk,
+          model: options.model,
+          modelRuntime: options.modelRuntime,
+          thinkingLevel: options.thinkingLevel,
+          customTools,
+          ...(approvalMode === AGENT_APPROVAL_MODES.EVERY_INTERACTION && {
+            systemPrompt: EVERY_INTERACTION_SYSTEM_PROMPT,
+          }),
+        });
+        const session = created?.session;
+        if (
+          !session ||
+          typeof session.subscribe !== 'function' ||
+          typeof session.prompt !== 'function' ||
+          typeof session.abort !== 'function' ||
+          typeof session.dispose !== 'function'
+        ) {
+          throw new TypeError('Pi session factory returned an invalid session');
+        }
+        conversation = {
+          conversationId: run.conversationId,
+          tabId,
+          approvalMode,
+          session,
+          scopedController,
+          unsubscribe: null,
+          turns: [],
+          activeRun: run,
+          workspaceUnavailable: false,
+        };
+        this.conversation = conversation;
+        run.session = session;
+        conversation.unsubscribe = session.subscribe((event) =>
+          this.#handlePiEvent(conversation, event)
+        );
+      } else {
+        const readiness = await conversation.scopedController.prepareResume();
+        if (!readiness?.ok) {
+          conversation.workspaceUnavailable = true;
+          throw new FreedomAgentError(
+            readiness?.error?.code === ERROR_CODES.POLICY_DENIED
+              ? AGENT_ERROR_CODES.RESUME_SCOPE_CHANGED
+              : AGENT_ERROR_CODES.TAB_UNAVAILABLE,
+            'This conversation\'s browser workspace is no longer available'
+          );
+        }
       }
-      run.scopedController = scopedController;
-      const customTools = await this.createTools({
-        sdk,
-        controller: scopedController,
-        tabId,
-        onToolOutcome: (outcome) => this.#handleToolOutcome(run, outcome),
-      });
-      const created = await this.createSession({
-        sdk,
-        model: options.model,
-        modelRuntime: options.modelRuntime,
-        thinkingLevel: options.thinkingLevel,
-        customTools,
-        ...(approvalMode === AGENT_APPROVAL_MODES.EVERY_INTERACTION && {
-          systemPrompt: EVERY_INTERACTION_SYSTEM_PROMPT,
-        }),
-      });
-      const session = created?.session;
-      if (
-        !session ||
-        typeof session.subscribe !== 'function' ||
-        typeof session.prompt !== 'function' ||
-        typeof session.abort !== 'function' ||
-        typeof session.dispose !== 'function'
-      ) {
-        throw new TypeError('Pi session factory returned an invalid session');
-      }
-      run.session = session;
-      run.unsubscribe = session.subscribe((event) => this.#handlePiEvent(run, event));
+      if (!existingConversation) conversation.turns.push(run);
 
       if (run.failure) {
         await this.#finish(run, 'failed', run.failure);
@@ -309,15 +416,22 @@ class FreedomAgentService {
 
       run.status = 'running';
       this.#launchTurn(run, prompt);
-      return { runId: run.runId };
-    } catch {
+      return { runId: run.runId, conversationId: run.conversationId };
+    } catch (cause) {
       const error =
         run.failure ||
-        terminalError(
-          AGENT_ERROR_CODES.SESSION_START_FAILED,
-          'The agent session could not be started'
-        );
+        (cause instanceof FreedomAgentError
+          ? terminalError(cause.code, cause.message)
+          : terminalError(
+              AGENT_ERROR_CODES.SESSION_START_FAILED,
+              'The agent session could not be started'
+            ));
       await this.#finish(run, 'failed', error);
+      if (!existingConversation && this.conversation?.conversationId === run.conversationId) {
+        const failedConversation = this.conversation;
+        this.conversation = null;
+        this.#disposeConversation(failedConversation);
+      }
       throw new FreedomAgentError(error.code, error.message);
     }
   }
@@ -416,6 +530,20 @@ class FreedomAgentService {
     if (run) await run.completion.promise;
   }
 
+  async clearConversation() {
+    if (this.disposed) return false;
+    if (this.activeRun) return false;
+    const conversation = this.conversation;
+    if (!conversation) return true;
+    this.conversation = null;
+    this.#disposeConversation(conversation);
+    this.#broadcast({
+      type: 'conversation_cleared',
+      conversationId: conversation.conversationId,
+    });
+    return true;
+  }
+
   async dispose() {
     if (this.disposed) return;
     this.disposed = true;
@@ -432,6 +560,9 @@ class FreedomAgentService {
       await this.stop(run.runId);
       await run.completion.promise;
     }
+    const conversation = this.conversation;
+    this.conversation = null;
+    if (conversation) this.#disposeConversation(conversation);
     this.listeners.clear();
   }
 
@@ -505,8 +636,16 @@ class FreedomAgentService {
     await this.#finish(run, status, error);
   }
 
-  #handlePiEvent(run, event) {
-    if (run.finished || this.activeRun !== run) return;
+  #handlePiEvent(conversation, event) {
+    const run = this.activeRun;
+    if (
+      !run ||
+      run.finished ||
+      this.conversation !== conversation ||
+      conversation.activeRun !== run
+    ) {
+      return;
+    }
     if (event?.type === 'message_end' && event.message?.role === 'assistant') {
       run.lastAssistant = {
         stopReason: event.message.stopReason,
@@ -517,7 +656,25 @@ class FreedomAgentService {
     const toolOutcome = toolCallId ? run.toolOutcomes.get(toolCallId) : undefined;
     const normalized = normalizePiEvent(event, toolOutcome);
     if (toolCallId) run.toolOutcomes.delete(toolCallId);
-    if (normalized) this.#emit(run, normalized);
+    if (!normalized) return;
+    if (normalized.type === 'assistant_text_delta') {
+      run.assistantText += normalized.text;
+    } else if (normalized.type === 'tool_started') {
+      run.activity.push({
+        toolCallId: normalized.toolCallId,
+        operation: normalized.operation,
+        status: 'running',
+      });
+    } else if (normalized.type === 'tool_finished') {
+      const item = run.activity.find(
+        (candidate) => candidate.toolCallId === normalized.toolCallId
+      );
+      if (item) {
+        item.status = normalized.status;
+        if (normalized.errorCode) item.errorCode = normalized.errorCode;
+      }
+    }
+    this.#emit(run, normalized);
   }
 
   #handleToolOutcome(run, outcome) {
@@ -560,12 +717,20 @@ class FreedomAgentService {
 
   #handleTabLifecycle(event) {
     const run = this.activeRun;
-    if (run?.scopedController?.handleTabLifecycle) {
+    const conversation = this.conversation;
+    if (conversation?.scopedController?.handleTabLifecycle) {
       try {
-        run.scopedController.handleTabLifecycle(event);
+        conversation.scopedController.handleTabLifecycle(event);
       } catch {
         // The task scope must not break terminal starting-tab handling.
       }
+    }
+    if (
+      conversation &&
+      event?.type === 'tab_closed' &&
+      event.tabId === conversation.tabId
+    ) {
+      conversation.workspaceUnavailable = true;
     }
     if (
       !run ||
@@ -629,36 +794,33 @@ class FreedomAgentService {
     this.#resolveApproval(run, 'declined');
     run.finished = true;
     run.status = status;
-    if (run.unsubscribe) {
-      try {
-        run.unsubscribe();
-      } catch {
-        // Session disposal below remains authoritative.
-      }
-      run.unsubscribe = null;
-    }
-    if (run.session) {
-      try {
-        run.session.dispose();
-      } catch {
-        // Cleanup failures are not exposed across the service boundary.
-      }
-      run.session = null;
-    }
+    run.durationMs = Math.max(0, this.now() - run.startedAt);
+    run.error = error;
     if (this.activeRun === run) this.activeRun = null;
+    if (this.conversation?.activeRun === run) this.conversation.activeRun = null;
     this.#emit(run, {
       type: 'run_finished',
       status,
+      durationMs: run.durationMs,
+      actionCount: run.activity.length,
+      failedActionCount: run.activity.filter((item) => item.status === 'failed').length,
       ...(error && { error }),
     });
     run.completion.resolve({ status, error });
   }
 
   #emit(run, event) {
+    this.#broadcast({
+      conversationId: run.conversationId,
+      runId: run.runId,
+      ...event,
+    });
+  }
+
+  #broadcast(event) {
     const normalized = Object.freeze({
       version: AGENT_EVENT_VERSION,
       sequence: ++this.sequence,
-      runId: run.runId,
       ...event,
     });
     for (const listener of this.listeners) {
@@ -669,6 +831,23 @@ class FreedomAgentService {
       }
     }
   }
+
+  #disposeConversation(conversation) {
+    if (conversation.unsubscribe) {
+      try {
+        conversation.unsubscribe();
+      } catch {
+        // Session disposal below remains authoritative.
+      }
+      conversation.unsubscribe = null;
+    }
+    try {
+      conversation.session?.dispose();
+    } catch {
+      // Cleanup failures are not exposed across the service boundary.
+    }
+    conversation.session = null;
+  }
 }
 
 module.exports = {
@@ -678,5 +857,6 @@ module.exports = {
   FreedomAgentError,
   FreedomAgentService,
   normalizePiEvent,
+  validatePromptOptions,
   validateStartOptions,
 };

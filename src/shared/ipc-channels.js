@@ -180,6 +180,7 @@ module.exports = {
   AGENT_STOP: 'agent:stop',
   AGENT_APPROVAL_DECIDE: 'agent:approval:decide',
   AGENT_GET_STATE: 'agent:get-state',
+  AGENT_CLEAR_CONVERSATION: 'agent:clear-conversation',
   AGENT_EVENT: 'agent:event',
   AGENT_PROVIDER_GET_STATUS: 'agent:provider:get-status',
   AGENT_PROVIDER_GET_CATALOG: 'agent:provider:get-catalog',

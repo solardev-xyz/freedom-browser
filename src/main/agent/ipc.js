@@ -115,6 +115,7 @@ function registerFreedomAgentIpc(options = {}) {
     typeof service.pause !== 'function' ||
     typeof service.resume !== 'function' ||
     typeof service.stop !== 'function' ||
+    typeof service.clearConversation !== 'function' ||
     typeof service.decideApproval !== 'function' ||
     typeof service.subscribe !== 'function' ||
     typeof service.getState !== 'function'
@@ -158,37 +159,58 @@ function registerFreedomAgentIpc(options = {}) {
     owner = null;
   };
 
-  const stopOwnedRun = () => {
+  const disposeOwnedConversation = (owned) => {
+    void Promise.resolve(owned.runId ? service.stop(owned.runId) : true)
+      .catch(() => false)
+      .then(() => service.clearConversation())
+      .catch(() => {})
+      .finally(() => {
+        if (owner === owned) detachOwner();
+      });
+  };
+
+  const stopOwnedConversation = () => {
     if (!owner || owner.stopping) return;
     owner.stopping = true;
-    Promise.resolve(service.stop(owner.runId || undefined)).catch(() => {});
+    const owned = owner;
+    if (owned.starting && !owned.runId) return;
+    disposeOwnedConversation(owned);
   };
 
   const sendEvent = (event) => {
-    if (!owner || (owner.runId && owner.runId !== event.runId)) return;
-    if (!owner.runId) {
+    if (
+      !owner ||
+      (owner.conversationId && owner.conversationId !== event.conversationId) ||
+      (owner.runId && event.runId && owner.runId !== event.runId)
+    ) {
+      return;
+    }
+    if (owner.starting) {
       owner.buffer.push(event);
       return;
     }
     try {
       if (owner.sender.isDestroyed?.()) {
-        stopOwnedRun();
-        if (event.type === 'run_finished') detachOwner();
+        stopOwnedConversation();
         return;
       }
       owner.sender.send(IPC.AGENT_EVENT, event);
     } catch {
-      stopOwnedRun();
-      if (event.type === 'run_finished') detachOwner();
+      stopOwnedConversation();
       return;
     }
-    if (event.type === 'run_finished') detachOwner();
+    if (event.type === 'run_finished' && owner.runId === event.runId) {
+      owner.runId = null;
+      if (!owner.sender.isDestroyed?.()) owner.stopping = false;
+    } else if (event.type === 'conversation_cleared') {
+      detachOwner();
+    }
   };
 
   const unsubscribe = service.subscribe(sendEvent);
 
   const handleStart = async (event, rawPayload) => {
-    if (owner || startPending) {
+    if (startPending || owner?.runId) {
       return errorEnvelope(AGENT_ERROR_CODES.BUSY, 'Freedom agent already has an active run');
     }
     startPending = true;
@@ -200,29 +222,11 @@ function registerFreedomAgentIpc(options = {}) {
         );
       }
       const { rendererTabId, prompt, approvalMode } = validateStartPayload(rawPayload);
-      const tabId = automationTabIdForRenderer(event?.sender, rendererTabId);
-      if (!tabId) {
+      const continuing = Boolean(owner);
+      if (continuing && owner.sender !== event?.sender) {
         return errorEnvelope(
-          AGENT_IPC_ERROR_CODES.TAB_NOT_BOUND,
-          'The selected browser tab is not ready for the agent'
-        );
-      }
-
-      let resolved;
-      try {
-        resolved = await resolveModel();
-      } catch (error) {
-        const errorCode = typeof error?.code === 'string' ? error.code : 'UNKNOWN';
-        console.error('[agent] Model resolution failed:', errorCode);
-        return errorEnvelope(
-          AGENT_IPC_ERROR_CODES.MODEL_UNAVAILABLE,
-          'No configured agent model is available'
-        );
-      }
-      if (!resolved?.model || !resolved?.modelRuntime) {
-        return errorEnvelope(
-          AGENT_IPC_ERROR_CODES.MODEL_UNAVAILABLE,
-          'No configured agent model is available'
+          AGENT_IPC_ERROR_CODES.NOT_OWNER,
+          'The sender does not own the current agent conversation'
         );
       }
       if (!event?.sender || event.sender.isDestroyed?.()) {
@@ -232,29 +236,66 @@ function registerFreedomAgentIpc(options = {}) {
         );
       }
 
-      const pendingOwner = {
-        sender: event.sender,
-        rendererTabId,
-        runId: null,
-        buffer: [],
-        stopping: false,
-        onDestroyed: () => stopOwnedRun(),
-      };
-      owner = pendingOwner;
-      event.sender.once?.('destroyed', pendingOwner.onDestroyed);
+      let pendingOwner = owner;
+      let tabId;
+      let resolved;
+      if (!continuing) {
+        tabId = automationTabIdForRenderer(event?.sender, rendererTabId);
+        if (!tabId) {
+          return errorEnvelope(
+            AGENT_IPC_ERROR_CODES.TAB_NOT_BOUND,
+            'The selected browser tab is not ready for the agent'
+          );
+        }
+        try {
+          resolved = await resolveModel();
+        } catch (error) {
+          const errorCode = typeof error?.code === 'string' ? error.code : 'UNKNOWN';
+          console.error('[agent] Model resolution failed:', errorCode);
+          return errorEnvelope(
+            AGENT_IPC_ERROR_CODES.MODEL_UNAVAILABLE,
+            'No configured agent model is available'
+          );
+        }
+        if (!resolved?.model || !resolved?.modelRuntime) {
+          return errorEnvelope(
+            AGENT_IPC_ERROR_CODES.MODEL_UNAVAILABLE,
+            'No configured agent model is available'
+          );
+        }
+        pendingOwner = {
+          sender: event.sender,
+          rendererTabId,
+          conversationId: null,
+          runId: null,
+          buffer: [],
+          starting: true,
+          stopping: false,
+          onDestroyed: () => stopOwnedConversation(),
+        };
+        owner = pendingOwner;
+        event.sender.once?.('destroyed', pendingOwner.onDestroyed);
+      } else {
+        pendingOwner.starting = true;
+        pendingOwner.buffer = [];
+      }
 
       let started;
       try {
         started = await service.start({
           prompt,
-          tabId,
           approvalMode,
-          model: resolved.model,
-          modelRuntime: resolved.modelRuntime,
-          thinkingLevel: resolved.thinkingLevel,
+          ...(!continuing && {
+            tabId,
+            model: resolved.model,
+            modelRuntime: resolved.modelRuntime,
+            thinkingLevel: resolved.thinkingLevel,
+          }),
         });
       } catch (error) {
-        if (owner === pendingOwner) detachOwner();
+        pendingOwner.starting = false;
+        pendingOwner.buffer = [];
+        if (!continuing && owner === pendingOwner) detachOwner();
         return safeServiceError(error);
       }
 
@@ -264,15 +305,21 @@ function registerFreedomAgentIpc(options = {}) {
           'The embedded agent request failed unexpectedly'
         );
       }
+      pendingOwner.conversationId = started.conversationId;
       pendingOwner.runId = started.runId;
+      pendingOwner.starting = false;
       if (pendingOwner.stopping || pendingOwner.sender.isDestroyed?.()) {
         pendingOwner.stopping = true;
-        Promise.resolve(service.stop(started.runId)).catch(() => {});
+        disposeOwnedConversation(pendingOwner);
       }
       const buffered = pendingOwner.buffer;
       pendingOwner.buffer = [];
       for (const bufferedEvent of buffered) sendEvent(bufferedEvent);
-      return { ok: true, runId: started.runId };
+      return {
+        ok: true,
+        runId: started.runId,
+        conversationId: started.conversationId,
+      };
     } catch (error) {
       return safeServiceError(error);
     } finally {
@@ -363,6 +410,25 @@ function registerFreedomAgentIpc(options = {}) {
       ok: true,
       state: { ...service.getState(), rendererTabId: owner.rendererTabId },
     };
+  };
+
+  const handleClearConversation = async (event) => {
+    if (!owner || owner.sender !== event?.sender) {
+      return errorEnvelope(
+        AGENT_IPC_ERROR_CODES.NOT_OWNER,
+        'The sender does not own the current agent conversation'
+      );
+    }
+    if (owner.runId || owner.starting) {
+      return errorEnvelope(
+        AGENT_ERROR_CODES.BUSY,
+        'Take over the active turn before starting a new conversation'
+      );
+    }
+    const cleared = await service.clearConversation();
+    return cleared
+      ? { ok: true, cleared: true }
+      : errorEnvelope(AGENT_ERROR_CODES.BUSY, 'The agent conversation is still active');
   };
 
   const handleProviderRequest = async (event, action) => {
@@ -499,6 +565,7 @@ function registerFreedomAgentIpc(options = {}) {
   ipcMain.handle(IPC.AGENT_STOP, handleStop);
   ipcMain.handle(IPC.AGENT_APPROVAL_DECIDE, handleApprovalDecision);
   ipcMain.handle(IPC.AGENT_GET_STATE, handleGetState);
+  ipcMain.handle(IPC.AGENT_CLEAR_CONVERSATION, handleClearConversation);
   ipcMain.handle(IPC.AGENT_PROVIDER_GET_STATUS, handleProviderStatus);
   ipcMain.handle(IPC.AGENT_PROVIDER_GET_CATALOG, handleProviderCatalog);
   ipcMain.handle(IPC.AGENT_PROVIDER_CONFIGURE_HOSTED, handleConfigureHosted);
@@ -516,6 +583,7 @@ function registerFreedomAgentIpc(options = {}) {
     ipcMain.removeHandler?.(IPC.AGENT_STOP);
     ipcMain.removeHandler?.(IPC.AGENT_APPROVAL_DECIDE);
     ipcMain.removeHandler?.(IPC.AGENT_GET_STATE);
+    ipcMain.removeHandler?.(IPC.AGENT_CLEAR_CONVERSATION);
     ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_GET_STATUS);
     ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_GET_CATALOG);
     ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_CONFIGURE_HOSTED);
@@ -535,6 +603,7 @@ function registerFreedomAgentIpc(options = {}) {
       const runId = owner.runId;
       detachOwner();
       if (runId) await service.stop(runId);
+      await service.clearConversation();
     }
   };
 }

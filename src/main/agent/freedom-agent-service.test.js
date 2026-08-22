@@ -58,6 +58,8 @@ function createService(fakeSession, overrides = {}) {
     createTools: jest.fn(async () => [{ name: 'browser_snapshot' }]),
     createSession: jest.fn(async () => ({ session: fakeSession.session })),
     runIdFactory: jest.fn(() => 'run_test'),
+    conversationIdFactory: jest.fn(() => 'conversation_test'),
+    now: jest.fn(() => 1_000),
     ...overrides,
   };
   return { service: new FreedomAgentService(dependencies), dependencies };
@@ -82,6 +84,7 @@ describe('FreedomAgentService', () => {
 
     await expect(service.start(startOptions({ thinkingLevel: 'low' }))).resolves.toEqual({
       runId: 'run_test',
+      conversationId: 'conversation_test',
     });
     expect(dependencies.createControllerScope).toHaveBeenCalledWith({
       controller: dependencies.controller,
@@ -134,14 +137,17 @@ describe('FreedomAgentService', () => {
       {
         version: AGENT_EVENT_VERSION,
         sequence: 1,
+        conversationId: 'conversation_test',
         runId: 'run_test',
         type: 'run_started',
         tabId: 'tab_assigned',
         approvalMode: 'every_interaction',
+        userText: 'Summarize this page',
       },
       {
         version: AGENT_EVENT_VERSION,
         sequence: 2,
+        conversationId: 'conversation_test',
         runId: 'run_test',
         type: 'assistant_text_delta',
         text: 'Summary',
@@ -149,6 +155,7 @@ describe('FreedomAgentService', () => {
       {
         version: AGENT_EVENT_VERSION,
         sequence: 3,
+        conversationId: 'conversation_test',
         runId: 'run_test',
         type: 'tool_started',
         toolCallId: 'call_1',
@@ -157,6 +164,7 @@ describe('FreedomAgentService', () => {
       {
         version: AGENT_EVENT_VERSION,
         sequence: 4,
+        conversationId: 'conversation_test',
         runId: 'run_test',
         type: 'tool_finished',
         toolCallId: 'call_1',
@@ -166,14 +174,30 @@ describe('FreedomAgentService', () => {
       {
         version: AGENT_EVENT_VERSION,
         sequence: 5,
+        conversationId: 'conversation_test',
         runId: 'run_test',
         type: 'run_finished',
         status: 'completed',
+        durationMs: 0,
+        actionCount: 1,
+        failedActionCount: 0,
       },
     ]);
-    expect(fake.unsubscribe).toHaveBeenCalledTimes(1);
-    expect(fake.session.dispose).toHaveBeenCalledTimes(1);
-    expect(service.getState()).toEqual({ status: 'idle' });
+    expect(fake.unsubscribe).not.toHaveBeenCalled();
+    expect(fake.session.dispose).not.toHaveBeenCalled();
+    expect(service.getState()).toMatchObject({
+      status: 'ready',
+      conversationId: 'conversation_test',
+      transcript: [
+        {
+          runId: 'run_test',
+          userText: 'Summarize this page',
+          assistantText: 'Summary',
+          status: 'completed',
+          durationMs: 0,
+        },
+      ],
+    });
   });
 
   test('builds allow-interaction runs without the every-interaction policy prompt', async () => {
@@ -193,6 +217,89 @@ describe('FreedomAgentService', () => {
 
     fake.prompt.resolve();
     await service.waitForIdle();
+  });
+
+  test('reuses one Pi session and task workspace across conversational turns', async () => {
+    const fake = createFakeSession();
+    const runIdFactory = jest
+      .fn()
+      .mockReturnValueOnce('run_first')
+      .mockReturnValueOnce('run_follow_up');
+    const { service, dependencies } = createService(fake, { runIdFactory });
+
+    await service.start(startOptions({ prompt: 'Find the project name' }));
+    fake.emit({
+      type: 'message_update',
+      assistantMessageEvent: { type: 'text_delta', delta: 'The project is Freedom.' },
+    });
+    fake.prompt.resolve();
+    await service.waitForIdle();
+
+    const scopedController = dependencies.createTools.mock.calls[0][0].controller;
+    await expect(
+      service.start(
+        startOptions({ prompt: 'Now put that project name into the form' })
+      )
+    ).resolves.toEqual({
+      runId: 'run_follow_up',
+      conversationId: 'conversation_test',
+    });
+
+    expect(dependencies.loadSdk).toHaveBeenCalledTimes(1);
+    expect(dependencies.createSession).toHaveBeenCalledTimes(1);
+    expect(dependencies.createControllerScope).toHaveBeenCalledTimes(1);
+    expect(scopedController.prepareResume).toHaveBeenCalledTimes(1);
+    expect(fake.session.prompt).toHaveBeenNthCalledWith(2, 'Now put that project name into the form', {
+      expandPromptTemplates: false,
+      source: 'interactive',
+    });
+
+    fake.emit({
+      type: 'message_update',
+      assistantMessageEvent: { type: 'text_delta', delta: 'Done.' },
+    });
+    fake.prompts[1].resolve();
+    await service.waitForIdle();
+
+    expect(service.getState()).toMatchObject({
+      status: 'ready',
+      conversationId: 'conversation_test',
+      transcript: [
+        {
+          runId: 'run_first',
+          userText: 'Find the project name',
+          assistantText: 'The project is Freedom.',
+          status: 'completed',
+        },
+        {
+          runId: 'run_follow_up',
+          userText: 'Now put that project name into the form',
+          assistantText: 'Done.',
+          status: 'completed',
+        },
+      ],
+    });
+    expect(fake.session.dispose).not.toHaveBeenCalled();
+  });
+
+  test('clears an idle conversation and disposes its in-memory Pi session', async () => {
+    const fake = createFakeSession();
+    const { service } = createService(fake);
+    const events = [];
+    service.subscribe((event) => events.push(event));
+
+    await service.start(startOptions());
+    await expect(service.clearConversation()).resolves.toBe(false);
+    fake.prompt.resolve();
+    await service.waitForIdle();
+
+    await expect(service.clearConversation()).resolves.toBe(true);
+    expect(fake.session.dispose).toHaveBeenCalledTimes(1);
+    expect(service.getState()).toEqual({ status: 'idle' });
+    expect(events.at(-1)).toMatchObject({
+      type: 'conversation_cleared',
+      conversationId: 'conversation_test',
+    });
   });
 
   test('pauses a run for a bounded approval and accepts only its exact decision', async () => {
@@ -287,7 +394,7 @@ describe('FreedomAgentService', () => {
     fake.prompts[1].resolve();
     await service.waitForIdle();
     expect(events.at(-1)).toMatchObject({ type: 'run_finished', status: 'completed' });
-    expect(fake.session.dispose).toHaveBeenCalledTimes(1);
+    expect(fake.session.dispose).not.toHaveBeenCalled();
   });
 
   test('refuses resume after the controlled tab leaves its starting site', async () => {
@@ -327,7 +434,7 @@ describe('FreedomAgentService', () => {
     await service.waitForIdle();
 
     expect(events.at(-1)).toMatchObject({ type: 'run_finished', status: 'cancelled' });
-    expect(fake.session.dispose).toHaveBeenCalledTimes(1);
+    expect(fake.session.dispose).not.toHaveBeenCalled();
   });
 
   test('enforces single-run ownership', async () => {
@@ -389,9 +496,10 @@ describe('FreedomAgentService', () => {
       status: 'failed',
       errorCode: ERROR_CODES.TAB_NOT_FOUND,
     });
-    expect(events.at(-1)).toEqual({
+    expect(events.at(-1)).toMatchObject({
       version: AGENT_EVENT_VERSION,
       sequence: 3,
+      conversationId: 'conversation_test',
       runId: 'run_test',
       type: 'run_finished',
       status: 'failed',
@@ -439,9 +547,10 @@ describe('FreedomAgentService', () => {
     await service.waitForIdle();
 
     expect(fake.session.abort).toHaveBeenCalledTimes(1);
-    expect(events.at(-1)).toEqual({
+    expect(events.at(-1)).toMatchObject({
       version: AGENT_EVENT_VERSION,
       sequence: 2,
+      conversationId: 'conversation_test',
       runId: 'run_test',
       type: 'run_finished',
       status: 'failed',
@@ -477,7 +586,7 @@ describe('FreedomAgentService', () => {
       status: 'failed',
       error: { code: AGENT_ERROR_CODES.TAB_CLOSED },
     });
-    expect(fake.session.dispose).toHaveBeenCalledTimes(1);
+    expect(fake.session.dispose).not.toHaveBeenCalled();
   });
 
   test('redacts provider failures from terminal events', async () => {
@@ -593,6 +702,22 @@ describe('FreedomAgentService', () => {
       })
     ).toEqual({ type: 'run_retrying', attempt: 1, maxAttempts: 2, delayMs: 500 });
     expect(normalizePiEvent({ type: 'message_end', message: { secret: true } })).toBeNull();
+    expect(normalizePiEvent({ type: 'compaction_start', reason: 'threshold' })).toEqual({
+      type: 'context_compaction_started',
+      reason: 'threshold',
+    });
+    expect(
+      normalizePiEvent({
+        type: 'compaction_end',
+        reason: 'threshold',
+        aborted: false,
+        result: { summary: 'private summary content' },
+      })
+    ).toEqual({
+      type: 'context_compaction_finished',
+      reason: 'threshold',
+      status: 'succeeded',
+    });
     expect(
       normalizePiEvent(
         {
