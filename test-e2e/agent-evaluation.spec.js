@@ -387,11 +387,13 @@ test('Pi completes a deterministic multi-step task in the visible controlled tab
       <title>Agent evaluation registration</title>
       <main>
         <h1>Registration</h1>
-        <label for="full-name">Full name</label>
-        <input id="full-name" aria-label="Full name">
-        <label for="project">Project</label>
-        <input id="project" aria-label="Project">
-        <button id="submit">Submit registration</button>
+        <form id="registration">
+          <label for="full-name">Full name</label>
+          <input id="full-name" aria-label="Full name">
+          <label for="project">Project</label>
+          <input id="project" aria-label="Project">
+          <button id="submit" type="submit">Submit registration</button>
+        </form>
         <p id="confirmation">Not submitted</p>
       </main>
       <script>
@@ -404,6 +406,7 @@ test('Pi completes a deterministic multi-step task in the visible controlled tab
           projectTrusted = event.isTrusted;
         });
         document.querySelector('#submit').addEventListener('click', (event) => {
+          event.preventDefault();
           const fullName = document.querySelector('#full-name').value;
           const project = document.querySelector('#project').value;
           document.querySelector('#confirmation').textContent =
@@ -438,6 +441,13 @@ test('Pi completes a deterministic multi-step task in the visible controlled tab
       'EVALUATION_TASK: register Ada Lovelace for the Freedom project, submit the form, and confirm success.'
     );
   await window.locator('#agent-run').click();
+
+  await expect(window.locator('#agent-approval')).toBeVisible();
+  await expect(window.locator('#agent-approval-action')).toContainText('Submit registration');
+  await expect(window.locator('#agent-approval-origin')).toContainText(
+    'https://agent-evaluation.test'
+  );
+  await window.locator('#agent-approval-approve').click();
 
   await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 15_000 });
   const durationMs = Date.now() - startedAt;

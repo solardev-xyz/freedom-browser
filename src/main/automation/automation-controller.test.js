@@ -21,6 +21,10 @@ class FakePageAdapter extends EventEmitter {
       return { url: nextUrl };
     });
     this.snapshot = jest.fn(async () => ({ text: 'Fixture page', elements: [] }));
+    this.inspectAction = jest.fn(async () => ({
+      effect: 'form_submission',
+      label: 'Submit registration',
+    }));
     this.click = jest.fn(async (ref) => ({ clicked: true, ref }));
     this.type = jest.fn(async (ref, text) => ({ typed: true, ref, characters: text.length }));
     this.screenshot = jest.fn(async () => ({ mediaType: 'image/png', base64: 'cG5n' }));
@@ -108,6 +112,23 @@ describe('AutomationController', () => {
       ok: false,
       error: { code: ERROR_CODES.POLICY_DENIED, message: 'Not granted' },
     });
+  });
+
+  test('inspects a referenced click target without dispatching it', async () => {
+    const { controller, authorize } = createController();
+    const adapter = new FakePageAdapter();
+    const tabId = controller.registerPage(adapter, { kind: 'desktop' });
+
+    await expect(
+      controller.inspectAction(OPERATIONS.CLICK, { tabId, ref: 'ref_submit' })
+    ).resolves.toMatchObject({
+      ok: true,
+      tabId,
+      result: { effect: 'form_submission', label: 'Submit registration' },
+    });
+    expect(adapter.inspectAction).toHaveBeenCalledWith('ref_submit');
+    expect(adapter.click).not.toHaveBeenCalled();
+    expect(authorize).not.toHaveBeenCalled();
   });
 
   test('does not echo an unvalidated tab ID into error envelopes', async () => {

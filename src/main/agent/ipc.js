@@ -105,6 +105,7 @@ function registerFreedomAgentIpc(options = {}) {
     !service ||
     typeof service.start !== 'function' ||
     typeof service.stop !== 'function' ||
+    typeof service.decideApproval !== 'function' ||
     typeof service.subscribe !== 'function' ||
     typeof service.getState !== 'function'
   ) {
@@ -281,6 +282,34 @@ function registerFreedomAgentIpc(options = {}) {
     return { ok: true, stopped: await service.stop(owner.runId) };
   };
 
+  const handleApprovalDecision = async (event, payload = {}) => {
+    if (
+      !owner ||
+      owner.sender !== event?.sender ||
+      typeof payload?.runId !== 'string' ||
+      payload.runId !== owner.runId ||
+      typeof payload.approvalId !== 'string' ||
+      !payload.approvalId ||
+      typeof payload.approved !== 'boolean'
+    ) {
+      return errorEnvelope(
+        AGENT_IPC_ERROR_CODES.NOT_OWNER,
+        'The sender does not own that agent approval'
+      );
+    }
+    const decided = await service.decideApproval(
+      owner.runId,
+      payload.approvalId,
+      payload.approved
+    );
+    return decided
+      ? { ok: true, decided: true }
+      : errorEnvelope(
+          AGENT_IPC_ERROR_CODES.NOT_OWNER,
+          'The sender does not own that agent approval'
+        );
+  };
+
   const handleGetState = (event) => {
     if (!owner || owner.sender !== event?.sender) return { ok: true, state: { status: 'idle' } };
     return {
@@ -411,6 +440,7 @@ function registerFreedomAgentIpc(options = {}) {
 
   ipcMain.handle(IPC.AGENT_START, handleStart);
   ipcMain.handle(IPC.AGENT_STOP, handleStop);
+  ipcMain.handle(IPC.AGENT_APPROVAL_DECIDE, handleApprovalDecision);
   ipcMain.handle(IPC.AGENT_GET_STATE, handleGetState);
   ipcMain.handle(IPC.AGENT_PROVIDER_GET_STATUS, handleProviderStatus);
   ipcMain.handle(IPC.AGENT_PROVIDER_GET_CATALOG, handleProviderCatalog);
@@ -423,6 +453,7 @@ function registerFreedomAgentIpc(options = {}) {
   return async () => {
     ipcMain.removeHandler?.(IPC.AGENT_START);
     ipcMain.removeHandler?.(IPC.AGENT_STOP);
+    ipcMain.removeHandler?.(IPC.AGENT_APPROVAL_DECIDE);
     ipcMain.removeHandler?.(IPC.AGENT_GET_STATE);
     ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_GET_STATUS);
     ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_GET_CATALOG);

@@ -298,6 +298,35 @@
   user-select: text;
 }
 
+.agent-approval {
+  padding: 11px;
+  margin-top: 12px;
+  background: color-mix(in srgb, #d69e2e 12%, var(--bg));
+  border: 1px solid color-mix(in srgb, #d69e2e 55%, var(--border));
+  border-radius: 7px;
+}
+
+.agent-approval h4,
+.agent-approval p {
+  margin: 0 0 8px;
+}
+
+.agent-approval p {
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.agent-approval .agent-approval-origin {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.agent-approval .agent-message {
+  margin: 8px 0 0;
+}
+
 .agent-transcript,
 .agent-activity {
   padding-top: 14px;

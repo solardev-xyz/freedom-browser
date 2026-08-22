@@ -21,6 +21,7 @@ let providerLoginPending = false;
 let currentRunId = null;
 let lastFinishedRunId = null;
 let takeoverRequestedRunId = null;
+let pendingApproval = null;
 let panelOpen = false;
 let agentEventUnsubscribe = null;
 let providerAuthEventUnsubscribe = null;
@@ -311,7 +312,59 @@ function resetRunOutput() {
   elements.output.textContent = '';
   elements.transcript.hidden = true;
   elements.activity.hidden = true;
+  clearApproval();
   setMessage(elements.runMessage);
+}
+
+function clearApproval() {
+  pendingApproval = null;
+  elements.approval.hidden = true;
+  elements.approvalApprove.disabled = false;
+  elements.approvalDecline.disabled = false;
+  setMessage(elements.approvalMessage);
+}
+
+function renderApproval(request) {
+  if (!request || typeof request.approvalId !== 'string') return;
+  pendingApproval = request;
+  const label = typeof request.label === 'string' && request.label ? request.label : 'Submit form';
+  elements.approvalAction.textContent = `Submit this form using “${label}”?`;
+  elements.approvalOrigin.textContent = request.origin
+    ? `Site: ${request.origin}`
+    : 'Site origin unavailable';
+  elements.approvalApprove.disabled = false;
+  elements.approvalDecline.disabled = false;
+  setMessage(elements.approvalMessage, 'The agent is paused until you decide.');
+  elements.approval.hidden = false;
+}
+
+async function decideApproval(approved) {
+  const request = pendingApproval;
+  if (!request || !currentRunId) return;
+  elements.approvalApprove.disabled = true;
+  elements.approvalDecline.disabled = true;
+  setMessage(elements.approvalMessage, approved ? 'Approving…' : 'Declining…');
+  try {
+    const response = await window.electronAPI.decideAgentApproval(
+      currentRunId,
+      request.approvalId,
+      approved
+    );
+    if (!response?.ok && pendingApproval === request) {
+      elements.approvalApprove.disabled = false;
+      elements.approvalDecline.disabled = false;
+      setMessage(
+        elements.approvalMessage,
+        responseMessage(response, 'Could not record the decision'),
+        true
+      );
+    }
+  } catch {
+    if (pendingApproval !== request) return;
+    elements.approvalApprove.disabled = false;
+    elements.approvalDecline.disabled = false;
+    setMessage(elements.approvalMessage, 'Could not record the decision', true);
+  }
 }
 
 function formatOperation(operation) {
@@ -365,6 +418,15 @@ function handleAgentEvent(event) {
     finishToolRow(event);
   } else if (event.type === 'run_retrying') {
     setMessage(elements.runMessage, `Provider retry ${event.attempt} of ${event.maxAttempts}…`);
+  } else if (event.type === 'approval_requested') {
+    renderApproval(event);
+    setRunActive(true, 'Approval needed');
+  } else if (
+    event.type === 'approval_resolved' &&
+    pendingApproval?.approvalId === event.approvalId
+  ) {
+    clearApproval();
+    setRunActive(true, 'Running');
   } else if (event.type === 'run_finished') {
     const status = event.status || 'finished';
     const wasTakeover = status === 'cancelled' && takeoverRequestedRunId === event.runId;
@@ -389,6 +451,7 @@ function handleAgentEvent(event) {
     lastFinishedRunId = event.runId;
     currentRunId = null;
     takeoverRequestedRunId = null;
+    clearApproval();
     setAgentControlledTab(null);
   }
 }
@@ -457,6 +520,10 @@ async function restoreRunState() {
       }
       setRunActive(true, 'Running');
       setMessage(elements.runMessage, 'This run began before the panel was loaded');
+      if (response.state.pendingApproval) {
+        renderApproval(response.state.pendingApproval);
+        setRunActive(true, 'Approval needed');
+      }
     }
   } catch {
     // Idle is the safe renderer default when lifecycle state cannot be restored.
@@ -491,6 +558,12 @@ export function initAgentUi(options = {}) {
     stop: byId('agent-stop'),
     runStatus: byId('agent-run-status'),
     runMessage: byId('agent-run-message'),
+    approval: byId('agent-approval'),
+    approvalAction: byId('agent-approval-action'),
+    approvalOrigin: byId('agent-approval-origin'),
+    approvalApprove: byId('agent-approval-approve'),
+    approvalDecline: byId('agent-approval-decline'),
+    approvalMessage: byId('agent-approval-message'),
     transcript: byId('agent-transcript'),
     output: byId('agent-output'),
     activity: byId('agent-activity'),
@@ -514,6 +587,8 @@ export function initAgentUi(options = {}) {
   elements.clearProvider.addEventListener('click', clearProvider);
   elements.run.addEventListener('click', startRun);
   elements.stop.addEventListener('click', stopRun);
+  elements.approvalApprove.addEventListener('click', () => decideApproval(true));
+  elements.approvalDecline.addEventListener('click', () => decideApproval(false));
   document.addEventListener('sidebar-opened', closePanel);
   onSignatureFlightChange((inFlight) => {
     elements.toggle.disabled = inFlight;

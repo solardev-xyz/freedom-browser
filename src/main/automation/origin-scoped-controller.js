@@ -26,7 +26,7 @@ function originScopeForUrl(value) {
   }
 }
 
-function policyDeniedEnvelope(state, message) {
+function errorEnvelope(state, code, message) {
   return {
     ok: false,
     ...(state?.runtimeId && { runtimeId: state.runtimeId }),
@@ -34,7 +34,7 @@ function policyDeniedEnvelope(state, message) {
     ...(state?.tabId && { tabId: state.tabId }),
     ...(Number.isInteger(state?.navigationId) && { navigationId: state.navigationId }),
     error: {
-      code: ERROR_CODES.POLICY_DENIED,
+      code,
       message,
       retryable: false,
     },
@@ -42,23 +42,27 @@ function policyDeniedEnvelope(state, message) {
 }
 
 class OriginScopedAutomationController {
-  constructor({ controller, tabId, initialState }) {
+  constructor({ controller, tabId, initialState, requestApproval }) {
     this.controller = controller;
     this.tabId = tabId;
     this.scopeOrigin = originScopeForUrl(initialState?.result?.tab?.url);
     this.lastState = initialState;
+    this.requestApproval = requestApproval;
+    this.declinedCommitActions = new Set();
   }
 
   async execute(operation, input = {}) {
     if (!ORIGIN_SCOPED_OPERATIONS.has(operation)) {
-      return policyDeniedEnvelope(
+      return errorEnvelope(
         this.lastState,
+        ERROR_CODES.POLICY_DENIED,
         'This operation is outside the embedded agent capability scope'
       );
     }
     if (!input || typeof input !== 'object' || Array.isArray(input) || input.tabId !== this.tabId) {
-      return policyDeniedEnvelope(
+      return errorEnvelope(
         this.lastState,
+        ERROR_CODES.POLICY_DENIED,
         'The embedded agent is restricted to its assigned browser tab'
       );
     }
@@ -80,6 +84,11 @@ class OriginScopedAutomationController {
         : null;
     if (requestedUrl && !this.#acceptRequestedOrigin(requestedUrl)) {
       return this.#originDenied(state);
+    }
+
+    if (operation === OPERATIONS.CLICK) {
+      const approval = await this.#authorizeClick(input.ref, state);
+      if (approval) return approval;
     }
 
     const result = await this.controller.execute(operation, input);
@@ -118,16 +127,50 @@ class OriginScopedAutomationController {
   }
 
   #originDenied(state) {
-    return policyDeniedEnvelope(
+    return errorEnvelope(
       state,
+      ERROR_CODES.POLICY_DENIED,
       "The embedded agent is restricted to the controlled tab's starting site"
     );
+  }
+
+  async #authorizeClick(ref, state) {
+    const inspected = await this.controller.inspectAction(OPERATIONS.CLICK, {
+      tabId: this.tabId,
+      ref,
+    });
+    if (!inspected?.ok) return inspected;
+    const element = inspected.result;
+    if (element?.effect !== 'form_submission') return null;
+    const actionKey = `${element.effect}\u0000${element.label || ''}`;
+    if (this.declinedCommitActions.has(actionKey)) {
+      return errorEnvelope(state, ERROR_CODES.USER_CANCELLED, 'The user declined form submission');
+    }
+    if (typeof this.requestApproval !== 'function') {
+      return errorEnvelope(
+        state,
+        ERROR_CODES.APPROVAL_REQUIRED,
+        'Form submission requires user approval'
+      );
+    }
+    const approved = await this.requestApproval({
+      action: 'form_submission',
+      operation: OPERATIONS.CLICK,
+      origin: this.scopeOrigin || '',
+      label: typeof element.label === 'string' ? element.label : '',
+    });
+    if (approved === true) return null;
+    this.declinedCommitActions.add(actionKey);
+    return errorEnvelope(state, ERROR_CODES.USER_CANCELLED, 'The user declined form submission');
   }
 }
 
 async function createOriginScopedAutomationController(options = {}) {
   if (!options.controller || typeof options.controller.execute !== 'function') {
     throw new TypeError('Origin-scoped automation requires a controller');
+  }
+  if (typeof options.controller.inspectAction !== 'function') {
+    throw new TypeError('Origin-scoped automation requires action inspection');
   }
   if (typeof options.tabId !== 'string' || !options.tabId.trim()) {
     throw new TypeError('Origin-scoped automation requires a tabId');
@@ -145,6 +188,7 @@ async function createOriginScopedAutomationController(options = {}) {
     controller: options.controller,
     tabId: options.tabId,
     initialState,
+    requestApproval: options.requestApproval,
   });
 }
 

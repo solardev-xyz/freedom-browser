@@ -36,6 +36,10 @@ function opaqueRunId() {
   return `run_${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
 }
 
+function opaqueApprovalId() {
+  return `approval_${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
+}
+
 function createDeferred() {
   let resolve;
   const promise = new Promise((resolvePromise) => {
@@ -127,6 +131,15 @@ function terminalError(code, message) {
   return Object.freeze({ code, message });
 }
 
+function normalizeApprovalRequest(request) {
+  return Object.freeze({
+    action: request?.action === 'form_submission' ? 'form_submission' : 'browser_action',
+    operation: typeof request?.operation === 'string' ? request.operation.slice(0, 80) : '',
+    origin: typeof request?.origin === 'string' ? request.origin.slice(0, 512) : '',
+    label: typeof request?.label === 'string' ? request.label.slice(0, 160) : '',
+  });
+}
+
 class FreedomAgentService {
   constructor(options = {}) {
     if (!options.controller || typeof options.controller.execute !== 'function') {
@@ -173,6 +186,9 @@ class FreedomAgentService {
       status: this.activeRun.status,
       runId: this.activeRun.runId,
       tabId: this.activeRun.tabId,
+      ...(this.activeRun.pendingApproval && {
+        pendingApproval: this.activeRun.pendingApproval.publicRequest,
+      }),
     };
   }
 
@@ -203,6 +219,7 @@ class FreedomAgentService {
       failure: null,
       lastAssistant: null,
       toolOutcomes: new Map(),
+      pendingApproval: null,
       finished: false,
     };
     this.activeRun = run;
@@ -213,6 +230,7 @@ class FreedomAgentService {
       const scopedController = await this.createControllerScope({
         controller: this.controller,
         tabId,
+        requestApproval: (request) => this.#requestApproval(run, request),
       });
       const customTools = await this.createTools({
         sdk,
@@ -268,6 +286,7 @@ class FreedomAgentService {
     const run = this.activeRun;
     if (!run || (runId !== undefined && run.runId !== runId)) return false;
     run.stopRequested = true;
+    this.#resolveApproval(run, false);
     if (run.session) {
       try {
         await run.session.abort();
@@ -275,6 +294,21 @@ class FreedomAgentService {
         // The run loop owns terminal-state reporting and cleanup.
       }
     }
+    return true;
+  }
+
+  async decideApproval(runId, approvalId, approved) {
+    const run = this.activeRun;
+    if (
+      !run ||
+      run.runId !== runId ||
+      typeof approvalId !== 'string' ||
+      run.pendingApproval?.publicRequest.approvalId !== approvalId ||
+      typeof approved !== 'boolean'
+    ) {
+      return false;
+    }
+    this.#resolveApproval(run, approved);
     return true;
   }
 
@@ -408,11 +442,39 @@ class FreedomAgentService {
       'The controlled browser tab was closed'
     );
     run.stopRequested = true;
+    this.#resolveApproval(run, false);
     Promise.resolve(run.session?.abort()).catch(() => {});
+  }
+
+  async #requestApproval(run, request) {
+    if (run.finished || run.stopRequested || this.activeRun !== run || run.pendingApproval) {
+      return false;
+    }
+    const decision = createDeferred();
+    const publicRequest = Object.freeze({
+      approvalId: opaqueApprovalId(),
+      ...normalizeApprovalRequest(request),
+    });
+    run.pendingApproval = { decision, publicRequest };
+    this.#emit(run, { type: 'approval_requested', ...publicRequest });
+    return decision.promise;
+  }
+
+  #resolveApproval(run, approved) {
+    const pending = run.pendingApproval;
+    if (!pending) return;
+    run.pendingApproval = null;
+    pending.decision.resolve(approved === true);
+    this.#emit(run, {
+      type: 'approval_resolved',
+      approvalId: pending.publicRequest.approvalId,
+      decision: approved === true ? 'approved' : 'declined',
+    });
   }
 
   async #finish(run, status, error) {
     if (run.finished) return;
+    this.#resolveApproval(run, false);
     run.finished = true;
     run.status = status;
     if (run.unsubscribe) {

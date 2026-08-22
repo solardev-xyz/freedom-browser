@@ -77,6 +77,7 @@ describe('FreedomAgentService', () => {
     expect(dependencies.createControllerScope).toHaveBeenCalledWith({
       controller: dependencies.controller,
       tabId: 'tab_assigned',
+      requestApproval: expect.any(Function),
     });
     expect(dependencies.createTools).toHaveBeenCalledWith({
       sdk: { kind: 'sdk' },
@@ -160,6 +161,60 @@ describe('FreedomAgentService', () => {
     expect(fake.unsubscribe).toHaveBeenCalledTimes(1);
     expect(fake.session.dispose).toHaveBeenCalledTimes(1);
     expect(service.getState()).toEqual({ status: 'idle' });
+  });
+
+  test('pauses a run for a bounded approval and accepts only its exact decision', async () => {
+    const fake = createFakeSession();
+    const { service, dependencies } = createService(fake);
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+
+    const requestApproval = dependencies.createControllerScope.mock.calls[0][0].requestApproval;
+    const decision = requestApproval({
+      action: 'form_submission',
+      operation: 'browser_click',
+      origin: 'https://trusted.example',
+      label: 'Submit registration',
+    });
+    const approval = events.at(-1);
+
+    expect(approval).toMatchObject({
+      type: 'approval_requested',
+      action: 'form_submission',
+      operation: 'browser_click',
+      origin: 'https://trusted.example',
+      label: 'Submit registration',
+    });
+    expect(service.getState()).toMatchObject({
+      pendingApproval: { approvalId: approval.approvalId },
+    });
+    await expect(service.decideApproval('run_other', approval.approvalId, true)).resolves.toBe(
+      false
+    );
+    await expect(service.decideApproval('run_test', approval.approvalId, true)).resolves.toBe(true);
+    await expect(decision).resolves.toBe(true);
+    expect(events.at(-1)).toMatchObject({
+      type: 'approval_resolved',
+      approvalId: approval.approvalId,
+      decision: 'approved',
+    });
+
+    await service.stop('run_test');
+    await service.waitForIdle();
+  });
+
+  test('declines a pending approval when the user takes over', async () => {
+    const fake = createFakeSession();
+    const { service, dependencies } = createService(fake);
+    await service.start(startOptions());
+    const requestApproval = dependencies.createControllerScope.mock.calls[0][0].requestApproval;
+    const decision = requestApproval({ action: 'form_submission' });
+
+    await service.stop('run_test');
+
+    await expect(decision).resolves.toBe(false);
+    await service.waitForIdle();
   });
 
   test('enforces single-run ownership', async () => {

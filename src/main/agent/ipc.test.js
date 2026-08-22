@@ -31,6 +31,7 @@ function createService(options = {}) {
   return {
     start: options.start || jest.fn(async () => ({ runId: 'run_test' })),
     stop: options.stop || jest.fn(async () => true),
+    decideApproval: options.decideApproval || jest.fn(async () => true),
     getState: jest.fn(() => ({ status: 'running', runId: 'run_test', tabId: 'tab_bound' })),
     subscribe: jest.fn((nextListener) => {
       listener = nextListener;
@@ -189,6 +190,37 @@ describe('Freedom agent IPC', () => {
       stopped: true,
     });
     expect(ctx.service.stop).toHaveBeenCalledTimes(1);
+  });
+
+  test('routes approval decisions only from the owning chrome and exact run', async () => {
+    const ctx = register();
+    const start = ctx.ipcMain.handlers.get(IPC.AGENT_START);
+    const decide = ctx.ipcMain.handlers.get(IPC.AGENT_APPROVAL_DECIDE);
+    await start({ sender: ctx.sender }, { rendererTabId: 7, prompt: 'Task' });
+
+    await expect(
+      decide(
+        { sender: ctx.otherSender },
+        { runId: 'run_test', approvalId: 'approval_test', approved: true }
+      )
+    ).resolves.toMatchObject({ ok: false, error: { code: AGENT_IPC_ERROR_CODES.NOT_OWNER } });
+    await expect(
+      decide(
+        { sender: ctx.sender },
+        { runId: 'run_other', approvalId: 'approval_test', approved: true }
+      )
+    ).resolves.toMatchObject({ ok: false, error: { code: AGENT_IPC_ERROR_CODES.NOT_OWNER } });
+    await expect(
+      decide(
+        { sender: ctx.sender },
+        { runId: 'run_test', approvalId: 'approval_test', approved: true }
+      )
+    ).resolves.toEqual({ ok: true, decided: true });
+    expect(ctx.service.decideApproval).toHaveBeenCalledWith(
+      'run_test',
+      'approval_test',
+      true
+    );
   });
 
   test('reports the controlled renderer tab only to the owning chrome', async () => {

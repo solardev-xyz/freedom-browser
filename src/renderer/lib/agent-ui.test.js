@@ -33,6 +33,12 @@ function createAgentElements() {
     'agent-stop',
     'agent-run-status',
     'agent-run-message',
+    'agent-approval',
+    'agent-approval-action',
+    'agent-approval-origin',
+    'agent-approval-approve',
+    'agent-approval-decline',
+    'agent-approval-message',
     'agent-transcript',
     'agent-output',
     'agent-activity',
@@ -57,6 +63,10 @@ function createAgentElements() {
   elements['agent-prompt'] = createElement('textarea');
   elements['agent-run'] = createElement('button');
   elements['agent-stop'] = createElement('button', { disabled: true });
+  elements['agent-approval'] = createElement('div');
+  elements['agent-approval'].hidden = true;
+  elements['agent-approval-approve'] = createElement('button');
+  elements['agent-approval-decline'] = createElement('button');
   elements['agent-transcript'].hidden = true;
   elements['agent-activity'].hidden = true;
   return elements;
@@ -102,6 +112,7 @@ async function loadAgentUi(options = {}) {
     getAgentState: jest.fn().mockResolvedValue({ ok: true, state: { status: 'idle' } }),
     startAgent: jest.fn().mockResolvedValue({ ok: true, runId: 'run_test' }),
     stopAgent: jest.fn().mockResolvedValue({ ok: true, stopped: true }),
+    decideAgentApproval: jest.fn().mockResolvedValue({ ok: true, decided: true }),
     onAgentEvent: jest.fn((handler) => {
       eventHandler = handler;
       return jest.fn();
@@ -224,6 +235,47 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-run-status'].textContent).toBe('Taken over');
     expect(ctx.elements['agent-run-message'].textContent).toBe('You took control of the tab');
     expect(ctx.setAgentControlledTab).toHaveBeenLastCalledWith(null);
+  });
+
+  test('renders form approval details as text and sends a one-shot decision', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Submit the form';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'approval_requested',
+      runId: 'run_test',
+      approvalId: 'approval_test',
+      action: 'form_submission',
+      origin: 'https://trusted.example',
+      label: '<img src=x onerror=alert(1)>',
+    });
+
+    expect(ctx.elements['agent-approval'].hidden).toBe(false);
+    expect(ctx.elements['agent-run-status'].textContent).toBe('Approval needed');
+    expect(ctx.elements['agent-approval-action'].textContent).toContain(
+      '<img src=x onerror=alert(1)>'
+    );
+    expect(ctx.elements['agent-approval-action'].children).toHaveLength(0);
+    expect(ctx.elements['agent-approval-origin'].textContent).toContain('https://trusted.example');
+
+    ctx.elements['agent-approval-approve'].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.decideAgentApproval).toHaveBeenCalledWith(
+      'run_test',
+      'approval_test',
+      true
+    );
+
+    ctx.emit({
+      type: 'approval_resolved',
+      runId: 'run_test',
+      approvalId: 'approval_test',
+      decision: 'approved',
+    });
+    expect(ctx.elements['agent-approval'].hidden).toBe(true);
+    expect(ctx.elements['agent-run-status'].textContent).toBe('Running');
   });
 
   test('reports controlled-tab closure as a distinct terminal state', async () => {

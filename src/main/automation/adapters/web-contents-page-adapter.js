@@ -113,18 +113,25 @@ function collectPageSnapshot(maxTextLength, maxElements, maxRetainedReferences, 
       const role = element.getAttribute('role') || implicitRole(element);
       const name = accessibleName(element);
       const ref = `${snapshotToken}_${String(elements.length)}`;
+      const tag = element.tagName.toLowerCase();
+      const inputType = normalize(element.getAttribute('type')).toLowerCase();
+      const submitsForm =
+        Boolean(element.form) &&
+        ((tag === 'button' && (!inputType || inputType === 'submit')) ||
+          (tag === 'input' && ['submit', 'image'].includes(inputType)));
       state.refs.set(ref, { element, frameWindow });
       elements.push({
         ref,
         frameId,
         role,
         name,
-        tag: element.tagName.toLowerCase(),
+        tag,
         disabled: element.matches(':disabled') || element.getAttribute('aria-disabled') === 'true',
         focused: element === frameDocument.activeElement,
         editable:
           element.matches('input:not([readonly]),textarea:not([readonly])') ||
           element.isContentEditable,
+        ...(submitsForm && { effect: 'form_submission' }),
       });
     }
 
@@ -219,6 +226,46 @@ function inspectReferencedElement(ref, action) {
     return { ok: false, reason: 'not_interactable' };
   }
   return { ok: true, contentEditable: element.isContentEditable };
+}
+
+function describeReferencedElement(ref) {
+  const state = globalThis.__FREEDOM_AUTOMATION_ELEMENT_REFERENCES__;
+  const reference = state?.refs?.get(ref);
+  if (!reference) return { ok: false, reason: 'changed' };
+  const { element, frameWindow } = reference;
+  try {
+    if (!element.isConnected || element.ownerDocument !== frameWindow.document) {
+      return { ok: false, reason: 'changed' };
+    }
+  } catch {
+    return { ok: false, reason: 'changed' };
+  }
+
+  const normalize = (value) =>
+    String(value || '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  const labelledBy = element.getAttribute('aria-labelledby');
+  const labelledByText = labelledBy
+    ? labelledBy
+        .split(/\s+/)
+        .map((id) => element.ownerDocument.getElementById(id)?.textContent || '')
+        .join(' ')
+    : '';
+  const label = normalize(
+    labelledByText ||
+      element.getAttribute('aria-label') ||
+      element.getAttribute('title') ||
+      element.innerText ||
+      element.value
+  );
+  const tag = element.tagName.toLowerCase();
+  const inputType = normalize(element.getAttribute('type')).toLowerCase();
+  const submitsForm =
+    Boolean(element.form) &&
+    ((tag === 'button' && (!inputType || inputType === 'submit')) ||
+      (tag === 'input' && ['submit', 'image'].includes(inputType)));
+  return { ok: true, label, ...(submitsForm && { effect: 'form_submission' }) };
 }
 
 function prepareTextInsertion(ref, replace) {
@@ -391,6 +438,17 @@ class WebContentsPageAdapter extends EventEmitter {
     this.webContents.sendInputEvent({ type: 'mouseDown', ...confirmedPointer, clickCount: 1 });
     this.webContents.sendInputEvent({ type: 'mouseUp', ...confirmedPointer, clickCount: 1 });
     return { clicked: true, ref };
+  }
+
+  async inspectAction(ref) {
+    this.#assertAvailable();
+    this.#requireReference(ref);
+    const result = await this.#execute(describeReferencedElement, [ref], false);
+    this.#assertActionResult(result);
+    return {
+      label: typeof result.label === 'string' ? result.label : '',
+      ...(result.effect === 'form_submission' && { effect: result.effect }),
+    };
   }
 
   async type(ref, text, { replace = true } = {}) {

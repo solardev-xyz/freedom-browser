@@ -33,11 +33,13 @@ async function prepareEvaluationPage(window, harness) {
       <title>Agent evaluation registration</title>
       <main>
         <h1>Registration</h1>
-        <label for="full-name">Full name</label>
-        <input id="full-name" aria-label="Full name">
-        <label for="project">Project</label>
-        <input id="project" aria-label="Project">
-        <button id="submit">Submit registration</button>
+        <form id="registration">
+          <label for="full-name">Full name</label>
+          <input id="full-name" aria-label="Full name">
+          <label for="project">Project</label>
+          <input id="project" aria-label="Project">
+          <button id="submit" type="submit">Submit registration</button>
+        </form>
         <p id="confirmation">Not submitted</p>
       </main>
       <script>
@@ -50,6 +52,7 @@ async function prepareEvaluationPage(window, harness) {
           projectTrusted = event.isTrusted;
         });
         document.querySelector('#submit').addEventListener('click', (event) => {
+          event.preventDefault();
           const fullName = document.querySelector('#full-name').value;
           const project = document.querySelector('#project').value;
           document.querySelector('#confirmation').textContent =
@@ -70,10 +73,14 @@ async function configureOllama(window) {
   await expect(window.locator('#agent-provider-status')).toContainText(`Ollama · ${OLLAMA_MODEL}`);
 }
 
-async function runTask(window, prompt) {
+async function runTask(window, prompt, { approveFormSubmission = false } = {}) {
   const startedAt = Date.now();
   await window.locator('#agent-prompt').fill(prompt);
   await window.locator('#agent-run').click();
+  if (approveFormSubmission) {
+    await expect(window.locator('#agent-approval')).toBeVisible({ timeout: 4 * 60_000 });
+    await window.locator('#agent-approval-approve').click();
+  }
   await expect
     .poll(async () => (await window.locator('#agent-run-status').textContent())?.trim() || '', {
       timeout: 4 * 60_000,
@@ -153,7 +160,8 @@ test('Ollama independently completes the deterministic visible form task', async
 
   const startedAt = await runTask(
     window,
-    'Complete this form on the current page. Enter exactly "Ada Lovelace" in Full name and exactly "Freedom" in Project. Submit the registration, wait until the page confirms it was saved, then report the exact confirmation.'
+    'Complete this form on the current page. Enter exactly "Ada Lovelace" in Full name and exactly "Freedom" in Project. Submit the registration, wait until the page confirms it was saved, then report the exact confirmation.',
+    { approveFormSubmission: true }
   );
 
   const pageConfirmation = await guestText(

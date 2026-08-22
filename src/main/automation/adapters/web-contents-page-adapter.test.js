@@ -70,6 +70,7 @@ function snapshotResult() {
         disabled: false,
         focused: false,
         editable: false,
+        effect: 'form_submission',
       },
     ],
   };
@@ -95,6 +96,7 @@ describe('WebContentsPageAdapter', () => {
         disabled: false,
         focused: false,
         editable: false,
+        effect: 'form_submission',
       },
     ]);
     expect(JSON.stringify(snapshot)).not.toMatch(/selector|fingerprint|webContents/);
@@ -135,6 +137,29 @@ describe('WebContentsPageAdapter', () => {
     expect(webContents.insertText).toHaveBeenCalledWith('hello');
     const typeCode = webContents.executeJavaScriptInIsolatedWorld.mock.calls[3][1][0].code;
     expect(typeCode).toContain('const inspectReferencedElement');
+  });
+
+  test('revalidates native form-submission semantics without dispatching input', async () => {
+    const webContents = new FakeWebContents();
+    webContents.executeJavaScriptInIsolatedWorld
+      .mockResolvedValueOnce(snapshotResult())
+      .mockResolvedValueOnce({
+        ok: true,
+        effect: 'form_submission',
+        label: 'Submit registration',
+      });
+    const adapter = new WebContentsPageAdapter(webContents, {
+      referenceIdFactory: () => 'ref_test',
+    });
+    await adapter.snapshot();
+
+    await expect(adapter.inspectAction('ref_test_0')).resolves.toEqual({
+      effect: 'form_submission',
+      label: 'Submit registration',
+    });
+    expect(webContents.sendInputEvent).not.toHaveBeenCalled();
+    expect(webContents.insertText).not.toHaveBeenCalled();
+    expect(webContents.executeJavaScriptInIsolatedWorld.mock.calls[1][2]).toBe(false);
   });
 
   test('revalidates click targets after moving the trusted pointer', async () => {

@@ -162,6 +162,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   startAgent: (rendererTabId, prompt) =>
     ipcRenderer.invoke('agent:start', { rendererTabId, prompt }),
   stopAgent: (runId) => ipcRenderer.invoke('agent:stop', { runId }),
+  decideAgentApproval: (runId, approvalId, approved) =>
+    ipcRenderer.invoke('agent:approval:decide', { runId, approvalId, approved }),
   getAgentState: () => ipcRenderer.invoke('agent:get-state'),
   getAgentProviderStatus: () => ipcRenderer.invoke('agent:provider:get-status'),
   getAgentProviderCatalog: () => ipcRenderer.invoke('agent:provider:get-catalog'),

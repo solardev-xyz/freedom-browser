@@ -77,6 +77,32 @@ class AutomationController {
     }
   }
 
+  async inspectAction(operation, rawInput = {}) {
+    let input;
+    let entry;
+    try {
+      input = validateOperationInput(operation, rawInput);
+      if (operation !== OPERATIONS.CLICK) {
+        throw new AutomationError(
+          ERROR_CODES.CAPABILITY_UNAVAILABLE,
+          `Automation action inspection is not implemented: ${operation}`
+        );
+      }
+      entry = this.pages.require(input.tabId);
+      if (typeof entry.adapter.inspectAction !== 'function') {
+        throw new AutomationError(
+          ERROR_CODES.CAPABILITY_UNAVAILABLE,
+          'Automation action inspection is unavailable for this page'
+        );
+      }
+      const result = await entry.adapter.inspectAction(input.ref);
+      return this.#successEnvelope(entry, result);
+    } catch (error) {
+      const rawTabId = typeof rawInput?.tabId === 'string' ? rawInput.tabId.trim() : '';
+      return this.#errorEnvelope(input?.tabId || rawTabId || undefined, entry, error);
+    }
+  }
+
   async #dispatch(operation, input, entry) {
     switch (operation) {
       case OPERATIONS.LIST_TABS:

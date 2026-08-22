@@ -1213,6 +1213,21 @@
               </div>
               <p id="agent-run-message" class="agent-message" aria-live="polite"></p>
 
+              <div id="agent-approval" class="agent-approval" role="alert" hidden>
+                <h4>Approval needed</h4>
+                <p id="agent-approval-action"></p>
+                <p id="agent-approval-origin" class="agent-approval-origin"></p>
+                <div class="agent-run-actions">
+                  <button id="agent-approval-approve" class="agent-button primary" type="button">
+                    Approve once
+                  </button>
+                  <button id="agent-approval-decline" class="agent-button" type="button">
+                    Decline
+                  </button>
+                </div>
+                <p id="agent-approval-message" class="agent-message" aria-live="polite"></p>
+              </div>
+
               <div id="agent-transcript" class="agent-transcript" hidden>
                 <h4>Response</h4>
                 <div id="agent-output" class="agent-output"></div>
