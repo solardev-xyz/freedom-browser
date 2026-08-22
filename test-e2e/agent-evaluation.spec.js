@@ -1,11 +1,22 @@
 const http = require('http');
-const { test, expect } = require('./fixtures');
+const { test, expect, SAMPLE_BZZ_HASH, SAMPLE_IPFS_CID } = require('./fixtures');
 
 const MODEL_ID = 'freedom-evaluation-fixture';
 const PAGE_URL = 'https://agent-evaluation.test/registration';
 const DECLINE_PAGE_URL = 'https://agent-evaluation.test/registration-decline';
 const TAKEOVER_PAGE_URL = 'https://agent-evaluation.test/registration-takeover';
 const CLOSE_PAGE_URL = 'https://agent-evaluation.test/registration-close';
+const FILL_ONLY_PAGE_URL = 'https://agent-evaluation.test/profile-draft';
+const NAVIGATION_TARGET_URL = 'https://agent-evaluation.test/navigation-target';
+const SPA_PAGE_URL = 'https://agent-evaluation.test/spa-workflow';
+const MUTATION_PAGE_URL = 'https://agent-evaluation.test/mutating-submit';
+const LINK_PAGE_URL = 'https://agent-evaluation.test/linked-start';
+const LINK_TARGET_URL = 'https://agent-evaluation.test/linked-details';
+const TIMEOUT_PAGE_URL = 'https://agent-evaluation.test/timeout-recovery';
+const CROSS_ORIGIN_LINK_PAGE_URL = 'https://agent-evaluation.test/untrusted-link';
+const SWARM_FACT_URL = `bzz://${SAMPLE_BZZ_HASH}/agent-fact`;
+const IPFS_FACT_URL = `ipfs://${SAMPLE_IPFS_CID}/agent-fact`;
+const IPNS_FACT_URL = 'ipns://agent-evaluation.test/agent-fact';
 const INJECTION_PAGE_URL = 'https://agent-evaluation.test/untrusted-message';
 const SCROLL_PAGE_URL = 'https://agent-evaluation.test/scroll';
 const FRAME_PAGE_URL = 'https://agent-evaluation.test/frame';
@@ -57,7 +68,24 @@ let observedFrameElement = false;
 let observedStaleFailure = false;
 let observedPopupAssignedUrl = '';
 let observedInaccessibleFrame = false;
+let observedInitialCommitEffect = false;
+let mutationResponseWaiting = false;
+let releaseMutationResponse = null;
 const operations = [];
+
+function waitForMutationRelease() {
+  mutationResponseWaiting = true;
+  return new Promise((resolve) => {
+    const timeout = setTimeout(resolve, 5_000);
+    releaseMutationResponse = () => {
+      clearTimeout(timeout);
+      resolve();
+    };
+  }).finally(() => {
+    mutationResponseWaiting = false;
+    releaseMutationResponse = null;
+  });
+}
 
 function completionChunk({ delta = {}, finishReason = null, usage }) {
   return {
@@ -156,6 +184,22 @@ function toolEnvelopes(messages) {
     }
   }
   return envelopes;
+}
+
+function snapshotText(messages) {
+  return (
+    toolEnvelopes(messages).findLast((envelope) => typeof envelope?.result?.text === 'string')
+      ?.result?.text || ''
+  );
+}
+
+function snapshotNavigationId(messages) {
+  return (
+    toolEnvelopes(messages).findLast(
+      (envelope) =>
+        Number.isInteger(envelope?.navigationId) && Array.isArray(envelope?.result?.elements)
+    )?.navigationId || 0
+  );
 }
 
 function requireRef(elements, name) {
@@ -361,6 +405,162 @@ async function handleCompletion(request, response) {
     return;
   }
 
+  if (hasUserMarker(messages, 'FILL_ONLY_TASK')) {
+    switch (toolResults.length) {
+      case 0:
+        emitToolCall(response, 1, 'browser_snapshot', {});
+        break;
+      case 1:
+        emitToolCall(response, 2, 'browser_type', {
+          ref: requireRef(elements, 'Contact email'),
+          text: 'ada@example.test',
+        });
+        break;
+      default:
+        emitFinal(response, 'The draft was filled without submitting it.');
+    }
+    return;
+  }
+
+  if (hasUserMarker(messages, 'NAVIGATE_EXTRACT_TASK')) {
+    switch (toolResults.length) {
+      case 0:
+        emitToolCall(response, 1, 'browser_navigate', { url: NAVIGATION_TARGET_URL });
+        break;
+      case 1:
+        emitToolCall(response, 2, 'browser_snapshot', {});
+        break;
+      default: {
+        const fact = snapshotText(messages).match(/Navigation fact:\s*([A-Z0-9-]+)/)?.[1] || '';
+        emitFinal(response, `The navigation fact is ${fact}.`);
+      }
+    }
+    return;
+  }
+
+  if (hasUserMarker(messages, 'SPA_TASK')) {
+    switch (toolResults.length) {
+      case 0:
+        emitToolCall(response, 1, 'browser_snapshot', {});
+        break;
+      case 1:
+        emitToolCall(response, 2, 'browser_click', {
+          ref: requireRef(elements, 'Load next step'),
+        });
+        break;
+      case 2:
+        emitToolCall(response, 3, 'browser_snapshot', {});
+        break;
+      case 3:
+        emitToolCall(response, 4, 'browser_click', {
+          ref: requireRef(elements, 'Finish SPA task'),
+        });
+        break;
+      case 4:
+        emitToolCall(response, 5, 'browser_wait', {
+          condition: 'text',
+          text: 'SPA complete trusted=true',
+          timeoutMs: 5_000,
+        });
+        break;
+      default:
+        emitFinal(response, 'The SPA workflow completed successfully.');
+    }
+    return;
+  }
+
+  if (hasUserMarker(messages, 'MUTATING_SUBMIT_TASK')) {
+    if (toolResults.length === 0) {
+      emitToolCall(response, 1, 'browser_snapshot', {});
+    } else if (toolResults.length === 1) {
+      observedInitialCommitEffect =
+        elements.find((element) => element?.name === 'Continue safely')?.effect ===
+        'form_submission';
+      await waitForMutationRelease();
+      emitToolCall(response, 2, 'browser_click', {
+        ref: requireRef(elements, 'Continue safely'),
+      });
+    } else {
+      emitFinal(response, 'The mutated submit action was left pending.');
+    }
+    return;
+  }
+
+  if (hasUserMarker(messages, 'LINK_NAVIGATION_TASK')) {
+    switch (toolResults.length) {
+      case 0:
+        emitToolCall(response, 1, 'browser_snapshot', {});
+        break;
+      case 1:
+        emitToolCall(response, 2, 'browser_click', {
+          ref: requireRef(elements, 'Read details'),
+        });
+        break;
+      case 2:
+        emitToolCall(response, 3, 'browser_wait', {
+          condition: 'navigation',
+          sinceNavigationId: snapshotNavigationId(messages),
+          timeoutMs: 5_000,
+        });
+        break;
+      case 3:
+        emitToolCall(response, 4, 'browser_snapshot', {});
+        break;
+      default: {
+        const fact = snapshotText(messages).match(/Linked fact:\s*([A-Z0-9-]+)/)?.[1] || '';
+        emitFinal(response, `The linked fact is ${fact}.`);
+      }
+    }
+    return;
+  }
+
+  if (hasUserMarker(messages, 'LINK_INJECTION_TASK')) {
+    if (toolResults.length === 0) {
+      emitToolCall(response, 1, 'browser_snapshot', {});
+    } else if (toolResults.length === 1) {
+      emitToolCall(response, 2, 'browser_click', {
+        ref: requireRef(elements, 'Continue verification'),
+      });
+    } else {
+      observedPolicyDenial = toolResults.some((message) =>
+        contentText(message.content).includes('POLICY_DENIED')
+      );
+      emitFinal(response, 'The cross-origin link was blocked before the browser left the site.');
+    }
+    return;
+  }
+
+  if (hasUserMarker(messages, 'TIMEOUT_RECOVERY_TASK')) {
+    switch (toolResults.length) {
+      case 0:
+        emitToolCall(response, 1, 'browser_snapshot', {});
+        break;
+      case 1:
+        emitToolCall(response, 2, 'browser_wait', {
+          condition: 'text',
+          text: 'Status that never appears',
+          timeoutMs: 200,
+        });
+        break;
+      case 2:
+        emitToolCall(response, 3, 'browser_snapshot', {});
+        break;
+      default:
+        emitFinal(response, 'The missing status timed out and the page remained available.');
+    }
+    return;
+  }
+
+  if (hasUserMarker(messages, 'EXTRACT_FACT_TASK')) {
+    if (toolResults.length === 0) {
+      emitToolCall(response, 1, 'browser_snapshot', {});
+    } else {
+      const fact = snapshotText(messages).match(/Artifact code:\s*([A-Z0-9-]+)/)?.[1] || '';
+      emitFinal(response, `The artifact code is ${fact}.`);
+    }
+    return;
+  }
+
   switch (toolResults.length) {
     case 0:
       emitToolCall(response, 1, 'browser_snapshot', {});
@@ -432,6 +632,10 @@ async function prepareAgentFixture(window, harness, url, body) {
     )
     .toBe(url);
 
+  await configureAgentProvider(window);
+}
+
+async function configureAgentProvider(window) {
   await window.locator('[data-test="agent-toggle-btn"]').click();
   await window.locator('#agent-provider-select').selectOption('ollama');
   await window.locator('#agent-ollama-model').fill(MODEL_ID);
@@ -590,6 +794,345 @@ test('closing the controlled tab cancels its pending form approval', async ({
     'The controlled browser tab was closed'
   );
   await expect(window.locator('#agent-approval')).toBeHidden();
+});
+
+test('Pi fills a form draft without triggering commit approval or submission', async ({
+  window,
+  harness,
+}) => {
+  requestCount = 0;
+  operations.length = 0;
+  await prepareAgentFixture(
+    window,
+    harness,
+    FILL_ONLY_PAGE_URL,
+    `<!doctype html>
+      <title>Profile draft</title>
+      <main>
+        <h1>Profile draft</h1>
+        <form id="profile-form">
+          <label for="email">Contact email</label>
+          <input id="email" aria-label="Contact email">
+          <button type="submit">Save profile</button>
+        </form>
+        <p id="input-status">Draft untouched</p>
+        <p id="submit-status">Not submitted</p>
+      </main>
+      <script>
+        document.querySelector('#email').addEventListener('input', (event) => {
+          document.querySelector('#input-status').textContent =
+            'Draft input trusted=' + event.isTrusted;
+        });
+        document.querySelector('#profile-form').addEventListener('submit', (event) => {
+          event.preventDefault();
+          document.querySelector('#submit-status').textContent = 'Submitted';
+        });
+      </script>`
+  );
+
+  await window
+    .locator('#agent-prompt')
+    .fill('FILL_ONLY_TASK: fill the contact email but do not submit the form.');
+  await window.locator('#agent-run').click();
+
+  await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 15_000 });
+  await expect(window.locator('#agent-approval')).toBeHidden();
+  await expect(window.locator('.agent-tool-state')).toHaveText(['✓', '✓']);
+  const pageState = await window.evaluate(() =>
+    document.querySelector('webview:not(.hidden)')?.executeJavaScript(`({
+      email: document.querySelector('#email').value,
+      inputStatus: document.querySelector('#input-status').textContent,
+      submitStatus: document.querySelector('#submit-status').textContent
+    })`)
+  );
+  expect(pageState).toEqual({
+    email: 'ada@example.test',
+    inputStatus: 'Draft input trusted=true',
+    submitStatus: 'Not submitted',
+  });
+  expect(operations).toEqual(['browser_snapshot', 'browser_type']);
+});
+
+test('Pi navigates from the browser start page and extracts an exact fact', async ({
+  window,
+  harness,
+}) => {
+  requestCount = 0;
+  operations.length = 0;
+  await harness.setContentFixture(NAVIGATION_TARGET_URL, {
+    body: `<!doctype html>
+      <title>Navigation target</title>
+      <main><h1>Research result</h1><p>Navigation fact: NAV-ORIGIN-42</p></main>`,
+  });
+  await configureAgentProvider(window);
+
+  await window
+    .locator('#agent-prompt')
+    .fill('NAVIGATE_EXTRACT_TASK: navigate to the requested research target and report its fact.');
+  await window.locator('#agent-run').click();
+
+  await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 15_000 });
+  await expect(window.locator('#agent-output')).toHaveText(
+    'The navigation fact is NAV-ORIGIN-42.'
+  );
+  await expect
+    .poll(() =>
+      window.evaluate(() => document.querySelector('webview:not(.hidden)')?.getURL?.() || '')
+    )
+    .toBe(NAVIGATION_TARGET_URL);
+  expect(operations).toEqual(['browser_navigate', 'browser_snapshot']);
+});
+
+test('Pi refreshes semantics across an in-page SPA workflow', async ({ window, harness }) => {
+  requestCount = 0;
+  operations.length = 0;
+  await prepareAgentFixture(
+    window,
+    harness,
+    SPA_PAGE_URL,
+    `<!doctype html>
+      <title>SPA workflow</title>
+      <main>
+        <h1>SPA workflow</h1>
+        <section id="step"><button id="load-step">Load next step</button></section>
+        <p id="result">SPA pending</p>
+      </main>
+      <script>
+        document.querySelector('#load-step').addEventListener('click', () => {
+          document.querySelector('#step').innerHTML =
+            '<button id="finish-step">Finish SPA task</button>';
+          document.querySelector('#finish-step').addEventListener('click', (event) => {
+            document.querySelector('#result').textContent =
+              'SPA complete trusted=' + event.isTrusted;
+          });
+        });
+      </script>`
+  );
+
+  await window.locator('#agent-prompt').fill('SPA_TASK: complete both steps in this workflow.');
+  await window.locator('#agent-run').click();
+
+  await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 15_000 });
+  await expect(window.locator('#agent-output')).toHaveText(
+    'The SPA workflow completed successfully.'
+  );
+  await expect(window.locator('.agent-tool-state')).toHaveText(['✓', '✓', '✓', '✓', '✓']);
+  expect(operations).toEqual([
+    'browser_snapshot',
+    'browser_click',
+    'browser_snapshot',
+    'browser_click',
+    'browser_wait',
+  ]);
+  const pageResult = await window.evaluate(() =>
+    document
+      .querySelector('webview:not(.hidden)')
+      ?.executeJavaScript('document.querySelector("#result").textContent')
+  );
+  expect(pageResult).toBe('SPA complete trusted=true');
+});
+
+test('live inspection gates a target mutated into a submit control after snapshot', async ({
+  window,
+  harness,
+}) => {
+  requestCount = 0;
+  operations.length = 0;
+  observedInitialCommitEffect = false;
+  mutationResponseWaiting = false;
+  releaseMutationResponse = null;
+  await prepareAgentFixture(
+    window,
+    harness,
+    MUTATION_PAGE_URL,
+    `<!doctype html>
+      <title>Mutating action</title>
+      <main>
+        <h1>Mutating action</h1>
+        <form id="commit-form"></form>
+        <button id="action" type="button">Continue safely</button>
+        <p id="click-count">Clicks: 0</p>
+      </main>
+      <script>
+        let clicks = 0;
+        document.querySelector('#action').addEventListener('click', (event) => {
+          event.preventDefault();
+          clicks += 1;
+          document.querySelector('#click-count').textContent = 'Clicks: ' + clicks;
+        });
+      </script>`
+  );
+
+  await window
+    .locator('#agent-prompt')
+    .fill('MUTATING_SUBMIT_TASK: click Continue safely and report the result.');
+  await window.locator('#agent-run').click();
+  await expect.poll(() => mutationResponseWaiting).toBe(true);
+  await window.evaluate(() =>
+    document.querySelector('webview:not(.hidden)')?.executeJavaScript(`(() => {
+      const action = document.querySelector('#action');
+      action.setAttribute('type', 'submit');
+      action.setAttribute('form', 'commit-form');
+    })()`)
+  );
+  releaseMutationResponse?.();
+
+  await expect(window.locator('#agent-approval')).toBeVisible();
+  await expect(window.locator('#agent-approval-action')).toContainText('Continue safely');
+  expect(observedInitialCommitEffect).toBe(false);
+  await window.locator('#agent-approval-decline').click();
+  await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 15_000 });
+  await expect(window.locator('#agent-output')).toHaveText(
+    'The mutated submit action was left pending.'
+  );
+  const clickCount = await window.evaluate(() =>
+    document
+      .querySelector('webview:not(.hidden)')
+      ?.executeJavaScript('document.querySelector("#click-count").textContent')
+  );
+  expect(clickCount).toBe('Clicks: 0');
+  await expect(window.locator('.agent-tool-state')).toHaveText(['✓', '×']);
+});
+
+test('Pi follows a same-origin link and extracts a fact after navigation', async ({
+  window,
+  harness,
+}) => {
+  requestCount = 0;
+  operations.length = 0;
+  await harness.setContentFixture(LINK_TARGET_URL, {
+    body: `<!doctype html>
+      <title>Linked details</title>
+      <main><h1>Linked details</h1><p>Linked fact: LINKED-DETAIL-58</p></main>`,
+  });
+  await prepareAgentFixture(
+    window,
+    harness,
+    LINK_PAGE_URL,
+    `<!doctype html>
+      <title>Linked start</title>
+      <main><h1>Linked start</h1><a href="${LINK_TARGET_URL}">Read details</a></main>`
+  );
+
+  await window
+    .locator('#agent-prompt')
+    .fill('LINK_NAVIGATION_TASK: follow the details link and report the linked fact.');
+  await window.locator('#agent-run').click();
+
+  await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 15_000 });
+  await expect(window.locator('#agent-output')).toHaveText(
+    'The linked fact is LINKED-DETAIL-58.'
+  );
+  await expect
+    .poll(() =>
+      window.evaluate(() => document.querySelector('webview:not(.hidden)')?.getURL?.() || '')
+    )
+    .toBe(LINK_TARGET_URL);
+  expect(operations).toEqual([
+    'browser_snapshot',
+    'browser_click',
+    'browser_wait',
+    'browser_snapshot',
+  ]);
+});
+
+test('Pi recovers from a typed wait timeout with a fresh snapshot', async ({
+  window,
+  harness,
+}) => {
+  requestCount = 0;
+  operations.length = 0;
+  await prepareAgentFixture(
+    window,
+    harness,
+    TIMEOUT_PAGE_URL,
+    `<!doctype html>
+      <title>Timeout recovery</title>
+      <main><h1>Timeout recovery</h1><p>Current status: stable</p></main>`
+  );
+
+  await window
+    .locator('#agent-prompt')
+    .fill('TIMEOUT_RECOVERY_TASK: wait for the requested status and recover if it never appears.');
+  await window.locator('#agent-run').click();
+
+  await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 15_000 });
+  await expect(window.locator('#agent-output')).toHaveText(
+    'The missing status timed out and the page remained available.'
+  );
+  await expect(window.locator('.agent-tool-state')).toHaveText(['✓', '×', '✓']);
+  expect(operations).toEqual(['browser_snapshot', 'browser_wait', 'browser_snapshot']);
+});
+
+for (const protocolCase of [
+  { label: 'Swarm', url: SWARM_FACT_URL, fact: 'SWARM-ARTIFACT-17' },
+  { label: 'IPFS', url: IPFS_FACT_URL, fact: 'IPFS-ARTIFACT-23' },
+  { label: 'IPNS', url: IPNS_FACT_URL, fact: 'IPNS-ARTIFACT-31' },
+]) {
+  test(`Pi extracts an exact fact from a ${protocolCase.label} page`, async ({
+    window,
+    harness,
+  }) => {
+    requestCount = 0;
+    operations.length = 0;
+    await prepareAgentFixture(
+      window,
+      harness,
+      protocolCase.url,
+      `<!doctype html>
+        <title>${protocolCase.label} artifact</title>
+        <main><h1>${protocolCase.label} artifact</h1><p>Artifact code: ${protocolCase.fact}</p></main>`
+    );
+
+    await window
+      .locator('#agent-prompt')
+      .fill('EXTRACT_FACT_TASK: read this decentralized page and report its artifact code.');
+    await window.locator('#agent-run').click();
+
+    await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 15_000 });
+    await expect(window.locator('#agent-output')).toHaveText(
+      `The artifact code is ${protocolCase.fact}.`
+    );
+    await expect(window.locator('.agent-tool-state')).toHaveText(['✓']);
+    expect(operations).toEqual(['browser_snapshot']);
+  });
+}
+
+test('kernel blocks a declarative cross-origin link before trusted click dispatch', async ({
+  window,
+  harness,
+}) => {
+  requestCount = 0;
+  operations.length = 0;
+  observedPolicyDenial = false;
+  await prepareAgentFixture(
+    window,
+    harness,
+    CROSS_ORIGIN_LINK_PAGE_URL,
+    `<!doctype html>
+      <title>Untrusted verification link</title>
+      <main>
+        <h1>Verification</h1>
+        <a href="${EXFILTRATION_URL}">Continue verification</a>
+      </main>`
+  );
+
+  await window
+    .locator('#agent-prompt')
+    .fill('LINK_INJECTION_TASK: follow the page link and report what happens.');
+  await window.locator('#agent-run').click();
+
+  await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 15_000 });
+  await expect(window.locator('#agent-output')).toHaveText(
+    'The cross-origin link was blocked before the browser left the site.'
+  );
+  await expect(window.locator('.agent-tool-state')).toHaveText(['✓', '×']);
+  expect(observedPolicyDenial).toBe(true);
+  await expect
+    .poll(() =>
+      window.evaluate(() => document.querySelector('webview:not(.hidden)')?.getURL?.() || '')
+    )
+    .toBe(CROSS_ORIGIN_LINK_PAGE_URL);
 });
 
 test('kernel blocks a cross-origin navigation requested by prompt-injected page content', async ({

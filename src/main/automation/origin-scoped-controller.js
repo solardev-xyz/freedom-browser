@@ -141,6 +141,9 @@ class OriginScopedAutomationController {
     });
     if (!inspected?.ok) return inspected;
     const element = inspected.result;
+    if (element?.navigationTarget && !this.#acceptRequestedOrigin(element.navigationTarget)) {
+      return this.#originDenied(state);
+    }
     if (element?.effect !== 'form_submission') return null;
     const actionKey = `${element.effect}\u0000${element.label || ''}`;
     if (this.declinedCommitActions.has(actionKey)) {

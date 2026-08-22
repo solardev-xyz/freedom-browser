@@ -265,7 +265,18 @@ function describeReferencedElement(ref) {
     Boolean(element.form) &&
     ((tag === 'button' && (!inputType || inputType === 'submit')) ||
       (tag === 'input' && ['submit', 'image'].includes(inputType)));
-  return { ok: true, label, ...(submitsForm && { effect: 'form_submission' }) };
+  let navigationTarget = '';
+  if (tag === 'a' && element.hasAttribute('href')) {
+    navigationTarget = element.href;
+  } else if (submitsForm) {
+    navigationTarget = element.hasAttribute('formaction') ? element.formAction : element.form.action;
+  }
+  return {
+    ok: true,
+    label,
+    ...(submitsForm && { effect: 'form_submission' }),
+    ...(navigationTarget && { navigationTarget }),
+  };
 }
 
 function prepareTextInsertion(ref, replace) {
@@ -448,6 +459,8 @@ class WebContentsPageAdapter extends EventEmitter {
     return {
       label: typeof result.label === 'string' ? result.label : '',
       ...(result.effect === 'form_submission' && { effect: result.effect }),
+      ...(typeof result.navigationTarget === 'string' &&
+        result.navigationTarget && { navigationTarget: result.navigationTarget }),
     };
   }
 

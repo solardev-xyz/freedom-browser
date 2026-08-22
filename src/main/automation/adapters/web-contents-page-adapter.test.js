@@ -147,6 +147,7 @@ describe('WebContentsPageAdapter', () => {
         ok: true,
         effect: 'form_submission',
         label: 'Submit registration',
+        navigationTarget: 'https://example.test/submit',
       });
     const adapter = new WebContentsPageAdapter(webContents, {
       referenceIdFactory: () => 'ref_test',
@@ -156,6 +157,7 @@ describe('WebContentsPageAdapter', () => {
     await expect(adapter.inspectAction('ref_test_0')).resolves.toEqual({
       effect: 'form_submission',
       label: 'Submit registration',
+      navigationTarget: 'https://example.test/submit',
     });
     expect(webContents.sendInputEvent).not.toHaveBeenCalled();
     expect(webContents.insertText).not.toHaveBeenCalled();

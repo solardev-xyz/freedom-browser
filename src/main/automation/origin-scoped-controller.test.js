@@ -82,7 +82,9 @@ function createController(initialUrl = 'https://trusted.example/start') {
     result:
       input.ref === 'ref_submit'
         ? { effect: 'form_submission', label: 'Submit registration' }
-        : { label: 'Ordinary action' },
+        : input.ref === 'ref_cross_origin'
+          ? { label: 'Leave site', navigationTarget: 'https://attacker.example/collect' }
+          : { label: 'Ordinary action' },
   }));
   return {
     execute,
@@ -137,6 +139,25 @@ describe('OriginScopedAutomationController', () => {
       error: { code: ERROR_CODES.POLICY_DENIED, retryable: false },
     });
     expect(controller.execute).not.toHaveBeenCalledWith(OPERATIONS.NAVIGATE, expect.anything());
+  });
+
+  test('denies a declarative cross-origin click target before dispatching input', async () => {
+    const controller = createController();
+    const scoped = await createOriginScopedAutomationController({
+      controller,
+      tabId: 'tab_assigned',
+    });
+
+    await expect(
+      scoped.execute(OPERATIONS.CLICK, {
+        tabId: 'tab_assigned',
+        ref: 'ref_cross_origin',
+      })
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: ERROR_CODES.POLICY_DENIED, retryable: false },
+    });
+    expect(controller.execute).not.toHaveBeenCalledWith(OPERATIONS.CLICK, expect.anything());
   });
 
   test('denies foreign tabs and operations outside the run manifest', async () => {
