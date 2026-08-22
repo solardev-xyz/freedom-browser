@@ -6,6 +6,8 @@ const PAGE_URL = 'https://agent-evaluation.test/registration';
 const DECLINE_PAGE_URL = 'https://agent-evaluation.test/registration-decline';
 const TAKEOVER_PAGE_URL = 'https://agent-evaluation.test/registration-takeover';
 const CLOSE_PAGE_URL = 'https://agent-evaluation.test/registration-close';
+const PAUSE_APPROVAL_PAGE_URL = 'https://agent-evaluation.test/registration-pause';
+const APPROVAL_MUTATION_PAGE_URL = 'https://agent-evaluation.test/registration-mutated-approval';
 const FILL_ONLY_PAGE_URL = 'https://agent-evaluation.test/profile-draft';
 const NAVIGATION_TARGET_URL = 'https://agent-evaluation.test/navigation-target';
 const SPA_PAGE_URL = 'https://agent-evaluation.test/spa-workflow';
@@ -224,6 +226,11 @@ function hasUserMarker(messages, marker) {
   );
 }
 
+function latestUserText(messages) {
+  const message = [...messages].reverse().find((candidate) => candidate?.role === 'user');
+  return contentText(message?.content);
+}
+
 async function handleCompletion(request, response) {
   const body = await readJsonBody(request);
   requestCount += 1;
@@ -401,6 +408,81 @@ async function handleCompletion(request, response) {
         break;
       default:
         emitFinal(response, 'Submission remained pending after the user declined.');
+    }
+    return;
+  }
+
+  if (hasUserMarker(messages, 'PAUSE_APPROVAL_TASK')) {
+    const resumed = latestUserText(messages).includes('The user resumed this task');
+    if (resumed) {
+      switch (toolResults.length) {
+        case 4:
+          emitToolCall(response, 5, 'browser_get_tab', {});
+          break;
+        case 5:
+          emitToolCall(response, 6, 'browser_snapshot', {});
+          break;
+        case 6:
+          emitToolCall(response, 7, 'browser_click', {
+            ref: requireRef(elements, 'Submit registration'),
+          });
+          break;
+        default:
+          emitFinal(response, 'The resumed registration completed after fresh approval.');
+      }
+      return;
+    }
+    switch (toolResults.length) {
+      case 0:
+        emitToolCall(response, 1, 'browser_snapshot', {});
+        break;
+      case 1:
+        emitToolCall(response, 2, 'browser_type', {
+          ref: requireRef(elements, 'Full name'),
+          text: 'Ada Lovelace',
+        });
+        break;
+      case 2:
+        emitToolCall(response, 3, 'browser_type', {
+          ref: requireRef(elements, 'Project'),
+          text: 'Freedom',
+        });
+        break;
+      default:
+        emitToolCall(response, 4, 'browser_click', {
+          ref: requireRef(elements, 'Submit registration'),
+        });
+    }
+    return;
+  }
+
+  if (hasUserMarker(messages, 'APPROVAL_MUTATION_TASK')) {
+    switch (toolResults.length) {
+      case 0:
+        emitToolCall(response, 1, 'browser_snapshot', {});
+        break;
+      case 1:
+        emitToolCall(response, 2, 'browser_type', {
+          ref: requireRef(elements, 'Full name'),
+          text: 'Ada Lovelace',
+        });
+        break;
+      case 2:
+        emitToolCall(response, 3, 'browser_type', {
+          ref: requireRef(elements, 'Project'),
+          text: 'Freedom',
+        });
+        break;
+      case 3:
+        emitToolCall(response, 4, 'browser_click', {
+          ref: requireRef(elements, 'Submit registration'),
+        });
+        break;
+      default:
+        observedPolicyDenial = toolResults.some((message) =>
+          contentText(message.content).includes('POLICY_DENIED')
+        );
+        emitFinal(response, 'The changed form destination was blocked before submission.');
     }
     return;
   }
@@ -747,6 +829,93 @@ test('declining a form commit blocks repeated model attempts for the run', async
       ?.executeJavaScript('document.querySelector("#confirmation").textContent')
   );
   expect(pageConfirmation).toBe('Not submitted');
+});
+
+test('pausing a pending approval allows a fresh approval after resume', async ({
+  window,
+  harness,
+}) => {
+  requestCount = 0;
+  operations.length = 0;
+  await prepareAgentFixture(window, harness, PAUSE_APPROVAL_PAGE_URL, REGISTRATION_BODY);
+
+  await window
+    .locator('#agent-prompt')
+    .fill('PAUSE_APPROVAL_TASK: complete this form and submit it.');
+  await window.locator('#agent-run').click();
+  await expect(window.locator('#agent-approval')).toBeVisible();
+
+  await window.locator('#agent-pause').click();
+  await expect(window.locator('#agent-run-status')).toHaveText('Paused', { timeout: 5_000 });
+  await expect(window.locator('#agent-approval')).toBeHidden();
+  await expect(window.locator('#agent-resume')).toBeVisible();
+
+  await window.locator('#agent-resume').click();
+  await expect(window.locator('#agent-approval')).toBeVisible({ timeout: 10_000 });
+  await expect(window.locator('#agent-approval-action')).toContainText('Submit registration');
+  await window.locator('#agent-approval-approve').click();
+
+  await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 15_000 });
+  await expect(window.locator('#agent-output')).toHaveText(
+    'The resumed registration completed after fresh approval.'
+  );
+  const pageConfirmation = await window.evaluate(() =>
+    document
+      .querySelector('webview:not(.hidden)')
+      ?.executeJavaScript('document.querySelector("#confirmation").textContent')
+  );
+  expect(pageConfirmation).toBe(CONFIRMATION);
+  expect(operations).toEqual([
+    'browser_snapshot',
+    'browser_type',
+    'browser_type',
+    'browser_click',
+    'browser_get_tab',
+    'browser_snapshot',
+    'browser_click',
+  ]);
+});
+
+test('approval is invalidated when the form destination changes before dispatch', async ({
+  window,
+  harness,
+}) => {
+  requestCount = 0;
+  operations.length = 0;
+  observedPolicyDenial = false;
+  await prepareAgentFixture(window, harness, APPROVAL_MUTATION_PAGE_URL, REGISTRATION_BODY);
+
+  await window
+    .locator('#agent-prompt')
+    .fill('APPROVAL_MUTATION_TASK: complete this form and submit it.');
+  await window.locator('#agent-run').click();
+  await expect(window.locator('#agent-approval')).toBeVisible();
+  await window.evaluate(
+    (destination) =>
+      document.querySelector('webview:not(.hidden)')?.executeJavaScript(`(() => {
+        const submit = document.querySelector('#submit');
+        submit.setAttribute('formaction', ${JSON.stringify(destination)});
+      })()`),
+    EXFILTRATION_URL
+  );
+  await window.locator('#agent-approval-approve').click();
+
+  await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 15_000 });
+  await expect(window.locator('#agent-output')).toHaveText(
+    'The changed form destination was blocked before submission.'
+  );
+  expect(observedPolicyDenial).toBe(true);
+  const pageConfirmation = await window.evaluate(() =>
+    document
+      .querySelector('webview:not(.hidden)')
+      ?.executeJavaScript('document.querySelector("#confirmation").textContent')
+  );
+  expect(pageConfirmation).toBe('Not submitted');
+  const pageUrl = await window.evaluate(
+    () => document.querySelector('webview:not(.hidden)')?.getURL?.() || ''
+  );
+  expect(pageUrl).toBe(APPROVAL_MUTATION_PAGE_URL);
+  await expect(window.locator('.agent-tool-state')).toHaveText(['✓', '✓', '✓', '×']);
 });
 
 test('Take over cancels a run while form approval is pending', async ({ window, harness }) => {

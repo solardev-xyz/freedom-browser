@@ -11,6 +11,11 @@ function createController(initialUrl = 'https://trusted.example/start') {
   let url = initialUrl;
   let navigationId = 1;
   let failNextNavigation = false;
+  let submitAction = {
+    effect: 'form_submission',
+    label: 'Submit registration',
+    navigationTarget: 'https://trusted.example/submit',
+  };
   const execute = jest.fn(async (operation, input) => {
     if (operation === OPERATIONS.GET_TAB) {
       return {
@@ -81,7 +86,7 @@ function createController(initialUrl = 'https://trusted.example/start') {
     navigationId,
     result:
       input.ref === 'ref_submit'
-        ? { effect: 'form_submission', label: 'Submit registration' }
+        ? submitAction
         : input.ref === 'ref_cross_origin'
           ? { label: 'Leave site', navigationTarget: 'https://attacker.example/collect' }
           : { label: 'Ordinary action' },
@@ -92,6 +97,9 @@ function createController(initialUrl = 'https://trusted.example/start') {
     setUrl: (nextUrl) => {
       url = nextUrl;
       navigationId += 1;
+    },
+    setSubmitAction: (nextAction) => {
+      submitAction = nextAction;
     },
     failNextNavigation: () => {
       failNextNavigation = true;
@@ -291,7 +299,7 @@ describe('OriginScopedAutomationController', () => {
 
   test('pauses native form submission for one-shot user approval', async () => {
     const controller = createController();
-    const requestApproval = jest.fn(async () => true);
+    const requestApproval = jest.fn(async () => 'approved');
     const scoped = await createOriginScopedAutomationController({
       controller,
       tabId: 'tab_assigned',
@@ -316,7 +324,7 @@ describe('OriginScopedAutomationController', () => {
 
   test('does not dispatch a form submission after the user declines', async () => {
     const controller = createController();
-    const requestApproval = jest.fn(async () => false);
+    const requestApproval = jest.fn(async () => 'declined');
     const scoped = await createOriginScopedAutomationController({
       controller,
       tabId: 'tab_assigned',
@@ -333,6 +341,86 @@ describe('OriginScopedAutomationController', () => {
     expect(controller.execute).not.toHaveBeenCalledWith(OPERATIONS.CLICK, expect.anything());
     await scoped.execute(OPERATIONS.CLICK, { tabId: 'tab_assigned', ref: 'ref_submit' });
     expect(requestApproval).toHaveBeenCalledTimes(1);
+  });
+
+  test('does not make a withdrawn approval sticky across a later attempt', async () => {
+    const controller = createController();
+    const requestApproval = jest
+      .fn()
+      .mockResolvedValueOnce('withdrawn')
+      .mockResolvedValueOnce('approved');
+    const scoped = await createOriginScopedAutomationController({
+      controller,
+      tabId: 'tab_assigned',
+      requestApproval,
+    });
+
+    await expect(
+      scoped.execute(OPERATIONS.CLICK, { tabId: 'tab_assigned', ref: 'ref_submit' })
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: ERROR_CODES.USER_CANCELLED, retryable: false },
+    });
+    await expect(
+      scoped.execute(OPERATIONS.CLICK, { tabId: 'tab_assigned', ref: 'ref_submit' })
+    ).resolves.toMatchObject({ ok: true });
+
+    expect(requestApproval).toHaveBeenCalledTimes(2);
+    expect(controller.execute).toHaveBeenCalledWith(OPERATIONS.CLICK, {
+      tabId: 'tab_assigned',
+      ref: 'ref_submit',
+    });
+  });
+
+  test('denies an approved form whose target becomes cross-origin during approval', async () => {
+    const controller = createController();
+    const requestApproval = jest.fn(async () => {
+      controller.setSubmitAction({
+        effect: 'form_submission',
+        label: 'Submit registration',
+        navigationTarget: 'https://attacker.example/collect',
+      });
+      return 'approved';
+    });
+    const scoped = await createOriginScopedAutomationController({
+      controller,
+      tabId: 'tab_assigned',
+      requestApproval,
+    });
+
+    await expect(
+      scoped.execute(OPERATIONS.CLICK, { tabId: 'tab_assigned', ref: 'ref_submit' })
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: ERROR_CODES.POLICY_DENIED, retryable: false },
+    });
+    expect(controller.inspectAction).toHaveBeenCalledTimes(2);
+    expect(controller.execute).not.toHaveBeenCalledWith(OPERATIONS.CLICK, expect.anything());
+  });
+
+  test('invalidates approval when the action descriptor changes during approval', async () => {
+    const controller = createController();
+    const requestApproval = jest.fn(async () => {
+      controller.setSubmitAction({
+        effect: 'form_submission',
+        label: 'Publish registration',
+        navigationTarget: 'https://trusted.example/submit',
+      });
+      return 'approved';
+    });
+    const scoped = await createOriginScopedAutomationController({
+      controller,
+      tabId: 'tab_assigned',
+      requestApproval,
+    });
+
+    await expect(
+      scoped.execute(OPERATIONS.CLICK, { tabId: 'tab_assigned', ref: 'ref_submit' })
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: ERROR_CODES.STALE_ELEMENT_REFERENCE, retryable: true },
+    });
+    expect(controller.execute).not.toHaveBeenCalledWith(OPERATIONS.CLICK, expect.anything());
   });
 
   test('fails closed when no form-submission approval channel is available', async () => {

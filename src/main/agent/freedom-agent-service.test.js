@@ -202,7 +202,7 @@ describe('FreedomAgentService', () => {
       false
     );
     await expect(service.decideApproval('run_test', approval.approvalId, true)).resolves.toBe(true);
-    await expect(decision).resolves.toBe(true);
+    await expect(decision).resolves.toBe('approved');
     expect(events.at(-1)).toMatchObject({
       type: 'approval_resolved',
       approvalId: approval.approvalId,
@@ -222,7 +222,7 @@ describe('FreedomAgentService', () => {
 
     await service.stop('run_test');
 
-    await expect(decision).resolves.toBe(false);
+    await expect(decision).resolves.toBe('declined');
     await service.waitForIdle();
   });
 
@@ -239,7 +239,7 @@ describe('FreedomAgentService', () => {
     await expect(service.pause('run_other')).resolves.toBe(false);
     await expect(service.pause('run_test')).resolves.toBe(true);
 
-    await expect(approvalDecision).resolves.toBe(false);
+    await expect(approvalDecision).resolves.toBe('withdrawn');
     expect(events.map((event) => event.type)).toContain('run_pausing');
     expect(events.at(-1)).toMatchObject({ type: 'run_paused' });
     expect(events.find((event) => event.type === 'approval_resolved')).toMatchObject({

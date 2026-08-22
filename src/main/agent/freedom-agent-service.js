@@ -562,7 +562,7 @@ class FreedomAgentService {
       this.activeRun !== run ||
       run.pendingApproval
     ) {
-      return false;
+      return 'declined';
     }
     const decision = createDeferred();
     const publicRequest = Object.freeze({
@@ -578,7 +578,7 @@ class FreedomAgentService {
     const pending = run.pendingApproval;
     if (!pending) return;
     run.pendingApproval = null;
-    pending.decision.resolve(decision === 'approved');
+    pending.decision.resolve(decision);
     this.#emit(run, {
       type: 'approval_resolved',
       approvalId: pending.publicRequest.approvalId,

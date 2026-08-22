@@ -26,7 +26,7 @@ function originScopeForUrl(value) {
   }
 }
 
-function errorEnvelope(state, code, message) {
+function errorEnvelope(state, code, message, options = {}) {
   return {
     ok: false,
     ...(state?.runtimeId && { runtimeId: state.runtimeId }),
@@ -36,9 +36,26 @@ function errorEnvelope(state, code, message) {
     error: {
       code,
       message,
-      retryable: false,
+      retryable: options.retryable === true,
     },
   };
+}
+
+function actionDescriptor(element) {
+  return Object.freeze({
+    effect: element?.effect === 'form_submission' ? element.effect : '',
+    label: typeof element?.label === 'string' ? element.label : '',
+    navigationTarget:
+      typeof element?.navigationTarget === 'string' ? element.navigationTarget : '',
+  });
+}
+
+function sameActionDescriptor(left, right) {
+  return (
+    left.effect === right.effect &&
+    left.label === right.label &&
+    left.navigationTarget === right.navigationTarget
+  );
 }
 
 class OriginScopedAutomationController {
@@ -165,12 +182,16 @@ class OriginScopedAutomationController {
       ref,
     });
     if (!inspected?.ok) return inspected;
-    const element = inspected.result;
+    const element = actionDescriptor(inspected.result);
     if (element?.navigationTarget && !this.#acceptRequestedOrigin(element.navigationTarget)) {
       return this.#originDenied(state);
     }
     if (element?.effect !== 'form_submission') return null;
-    const actionKey = `${element.effect}\u0000${element.label || ''}`;
+    const actionKey = JSON.stringify([
+      element.effect,
+      element.label,
+      element.navigationTarget,
+    ]);
     if (this.declinedCommitActions.has(actionKey)) {
       return errorEnvelope(state, ERROR_CODES.USER_CANCELLED, 'The user declined form submission');
     }
@@ -181,15 +202,44 @@ class OriginScopedAutomationController {
         'Form submission requires user approval'
       );
     }
-    const approved = await this.requestApproval({
+    const decision = await this.requestApproval({
       action: 'form_submission',
       operation: OPERATIONS.CLICK,
       origin: this.scopeOrigin || '',
-      label: typeof element.label === 'string' ? element.label : '',
+      label: element.label,
     });
-    if (approved === true) return null;
-    this.declinedCommitActions.add(actionKey);
-    return errorEnvelope(state, ERROR_CODES.USER_CANCELLED, 'The user declined form submission');
+    if (decision === 'withdrawn') {
+      return errorEnvelope(state, ERROR_CODES.USER_CANCELLED, 'Form approval was withdrawn');
+    }
+    if (decision !== 'approved' && decision !== true) {
+      this.declinedCommitActions.add(actionKey);
+      return errorEnvelope(state, ERROR_CODES.USER_CANCELLED, 'The user declined form submission');
+    }
+
+    const currentState = await this.#readState();
+    if (!currentState.ok) return currentState;
+    if (!this.#acceptCurrentOrigin(currentState)) return this.#originDenied(currentState);
+    const reinspected = await this.controller.inspectAction(OPERATIONS.CLICK, {
+      tabId: this.tabId,
+      ref,
+    });
+    if (!reinspected?.ok) return reinspected;
+    const currentElement = actionDescriptor(reinspected.result);
+    if (
+      currentElement.navigationTarget &&
+      !this.#acceptRequestedOrigin(currentElement.navigationTarget)
+    ) {
+      return this.#originDenied(currentState);
+    }
+    if (!sameActionDescriptor(element, currentElement)) {
+      return errorEnvelope(
+        currentState,
+        ERROR_CODES.STALE_ELEMENT_REFERENCE,
+        'The approved form action changed before it could be submitted',
+        { retryable: true }
+      );
+    }
+    return null;
   }
 }
 
