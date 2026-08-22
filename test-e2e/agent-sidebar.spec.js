@@ -10,6 +10,9 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
   await toggle.click();
   await expect(panel).not.toHaveClass(/collapsed/);
   await expect(window.locator('#agent-provider-status')).toHaveText('Not configured');
+  await expect(window.locator('#agent-scope-note')).toHaveText(
+    'Agent is limited to this tab and its current site. Cross-site navigation is blocked.'
+  );
 
   await window.locator('#agent-provider-select').selectOption('freepi');
   await expect(window.locator('#agent-provider-privacy')).toContainText('sent to Free Pi');
