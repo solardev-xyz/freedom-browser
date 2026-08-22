@@ -227,6 +227,7 @@
   "dependencies": {
     "@adraffy/ens-normalize": "^1.11.1",
     "@corpus-core/colibri-stateless": "^2.0.1",
+    "@earendil-works/pi-coding-agent": "0.84.2",
     "@ensdomains/content-hash": "^3.0.0",
     "@ethersphere/bee-js": "^12.2.1",
     "@ghostery/adblocker": "^2.18.1",
