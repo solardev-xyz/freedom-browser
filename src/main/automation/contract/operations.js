@@ -10,6 +10,7 @@ const {
 const OPERATION_SET = new Set(Object.values(OPERATIONS));
 const TAB_OPERATIONS = new Set([
   OPERATIONS.GET_TAB,
+  OPERATIONS.FOCUS_TAB,
   OPERATIONS.CLOSE_TAB,
   OPERATIONS.NAVIGATE,
   OPERATIONS.SNAPSHOT,
@@ -100,6 +101,9 @@ function validateOperationInput(operation, rawInput) {
 
   if (operation === OPERATIONS.CREATE_TAB) {
     normalized.url = validateNavigationUrl(input.url);
+    if (input.openerTabId !== undefined) {
+      normalized.openerTabId = requireString(input.openerTabId, 'openerTabId').trim();
+    }
   }
 
   if (

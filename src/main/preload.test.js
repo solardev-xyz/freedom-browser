@@ -360,6 +360,51 @@ describe('preload', () => {
     );
   });
 
+  test('acknowledges validated controlled tab lifecycle requests', async () => {
+    const { exposures, ipcRenderer } = loadPreloadModule();
+    const create = jest.fn(() => 12);
+    const close = jest.fn(() => true);
+    const focus = jest.fn(() => true);
+    const cleanups = [
+      exposures.electronAPI.onAutomationCreateTab(create),
+      exposures.electronAPI.onAutomationCloseTab(close),
+      exposures.electronAPI.onAutomationFocusTab(focus),
+    ];
+
+    ipcRenderer.emit(IPC.AUTOMATION_CREATE_TAB, {
+      requestId: 'create_test',
+      url: 'https://example.test/research',
+    });
+    ipcRenderer.emit(IPC.AUTOMATION_CLOSE_TAB, {
+      requestId: 'close_test',
+      rendererTabId: 12,
+    });
+    ipcRenderer.emit(IPC.AUTOMATION_FOCUS_TAB, {
+      requestId: 'focus_test',
+      rendererTabId: 7,
+    });
+    await flushMicrotasks();
+
+    expect(create).toHaveBeenCalledWith({ url: 'https://example.test/research' });
+    expect(close).toHaveBeenCalledWith({ rendererTabId: 12 });
+    expect(focus).toHaveBeenCalledWith({ rendererTabId: 7 });
+    expect(ipcRenderer.send).toHaveBeenCalledWith(IPC.AUTOMATION_CREATE_TAB_RESULT, {
+      requestId: 'create_test',
+      ok: true,
+      rendererTabId: 12,
+    });
+    expect(ipcRenderer.send).toHaveBeenCalledWith(IPC.AUTOMATION_CLOSE_TAB_RESULT, {
+      requestId: 'close_test',
+      ok: true,
+    });
+    expect(ipcRenderer.send).toHaveBeenCalledWith(IPC.AUTOMATION_FOCUS_TAB_RESULT, {
+      requestId: 'focus_test',
+      ok: true,
+    });
+
+    for (const cleanup of cleanups) cleanup();
+  });
+
   test('status update wrappers subscribe, fetch current state immediately, and clean up', async () => {
     const beeStatus = { status: 'running', error: null };
     const ipfsStatus = { status: 'stopped', error: null };

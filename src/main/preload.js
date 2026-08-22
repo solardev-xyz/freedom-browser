@@ -229,6 +229,68 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('automation:stop-loading', handler);
     return () => ipcRenderer.removeListener('automation:stop-loading', handler);
   },
+  onAutomationCreateTab: (callback) => {
+    const handler = (_event, payload) => {
+      const requestId = typeof payload?.requestId === 'string' ? payload.requestId : '';
+      const url = payload?.url;
+      if (!requestId || typeof url !== 'string' || !url) return;
+      Promise.resolve()
+        .then(() => callback({ url }))
+        .then((rendererTabId) => {
+          const ok = Number.isSafeInteger(rendererTabId) && rendererTabId > 0;
+          ipcRenderer.send('automation:create-tab-result', {
+            requestId,
+            ok,
+            ...(ok && { rendererTabId }),
+          });
+        })
+        .catch(() => {
+          ipcRenderer.send('automation:create-tab-result', { requestId, ok: false });
+        });
+    };
+    ipcRenderer.on('automation:create-tab', handler);
+    return () => ipcRenderer.removeListener('automation:create-tab', handler);
+  },
+  onAutomationCloseTab: (callback) => {
+    const handler = (_event, payload) => {
+      const requestId = typeof payload?.requestId === 'string' ? payload.requestId : '';
+      const rendererTabId = payload?.rendererTabId;
+      if (!requestId || !Number.isSafeInteger(rendererTabId) || rendererTabId < 1) return;
+      Promise.resolve()
+        .then(() => callback({ rendererTabId }))
+        .then((closed) => {
+          ipcRenderer.send('automation:close-tab-result', {
+            requestId,
+            ok: closed === true,
+          });
+        })
+        .catch(() => {
+          ipcRenderer.send('automation:close-tab-result', { requestId, ok: false });
+        });
+    };
+    ipcRenderer.on('automation:close-tab', handler);
+    return () => ipcRenderer.removeListener('automation:close-tab', handler);
+  },
+  onAutomationFocusTab: (callback) => {
+    const handler = (_event, payload) => {
+      const requestId = typeof payload?.requestId === 'string' ? payload.requestId : '';
+      const rendererTabId = payload?.rendererTabId;
+      if (!requestId || !Number.isSafeInteger(rendererTabId) || rendererTabId < 1) return;
+      Promise.resolve()
+        .then(() => callback({ rendererTabId }))
+        .then((focused) => {
+          ipcRenderer.send('automation:focus-tab-result', {
+            requestId,
+            ok: focused === true,
+          });
+        })
+        .catch(() => {
+          ipcRenderer.send('automation:focus-tab-result', { requestId, ok: false });
+        });
+    };
+    ipcRenderer.on('automation:focus-tab', handler);
+    return () => ipcRenderer.removeListener('automation:focus-tab', handler);
+  },
   // Context menu
   saveImage: (imageUrl) => ipcRenderer.invoke('context-menu:save-image', imageUrl),
   // Clipboard

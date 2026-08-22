@@ -4,6 +4,7 @@ const OPERATIONS = Object.freeze({
   LIST_TABS: 'browser_list_tabs',
   CREATE_TAB: 'browser_create_tab',
   GET_TAB: 'browser_get_tab',
+  FOCUS_TAB: 'browser_focus_tab',
   CLOSE_TAB: 'browser_close_tab',
   NAVIGATE: 'browser_navigate',
   SNAPSHOT: 'browser_snapshot',

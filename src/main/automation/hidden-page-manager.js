@@ -107,6 +107,13 @@ function createHiddenPageManager(options = {}) {
     return true;
   }
 
+  async function focusPage(tabId) {
+    const window = windowsByTabId.get(tabId);
+    if (!window || window.isDestroyed?.()) return false;
+    window.webContents.focus?.();
+    return true;
+  }
+
   function closeAll() {
     const count = windowsByTabId.size;
     for (const window of windowsByTabId.values()) {
@@ -119,6 +126,7 @@ function createHiddenPageManager(options = {}) {
   return {
     createPage,
     closePage,
+    focusPage,
     closeAll,
     size: () => windowsByTabId.size,
   };

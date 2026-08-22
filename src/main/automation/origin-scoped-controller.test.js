@@ -16,8 +16,23 @@ function createController(initialUrl = 'https://trusted.example/start') {
     label: 'Submit registration',
     navigationTarget: 'https://trusted.example/submit',
   };
+  let createdUrl = '';
+  let createdClosed = false;
+  let createdRedirectUrl = '';
   const execute = jest.fn(async (operation, input) => {
     if (operation === OPERATIONS.GET_TAB) {
+      if (input.tabId === 'tab_created' && createdUrl && !createdClosed) {
+        return {
+          ok: true,
+          runtimeId: 'runtime_test',
+          contextId: 'context_test',
+          tabId: 'tab_created',
+          navigationId: 1,
+          result: {
+            tab: { tabId: 'tab_created', url: createdUrl, navigationId: 1, available: true },
+          },
+        };
+      }
       return {
         ok: true,
         runtimeId: 'runtime_test',
@@ -26,6 +41,21 @@ function createController(initialUrl = 'https://trusted.example/start') {
         navigationId,
         result: { tab: { url, navigationId, available: true } },
       };
+    }
+    if (operation === OPERATIONS.CREATE_TAB) {
+      createdUrl = createdRedirectUrl || input.url;
+      createdClosed = false;
+      return {
+        ok: true,
+        runtimeId: 'runtime_test',
+        contextId: 'context_test',
+        result: {
+          tab: { tabId: 'tab_created', url: createdUrl, navigationId: 1, available: true },
+        },
+      };
+    }
+    if (operation === OPERATIONS.CLOSE_TAB && input.tabId === 'tab_created') {
+      createdClosed = true;
     }
     if (operation === OPERATIONS.NAVIGATE) {
       if (failNextNavigation) {
@@ -104,6 +134,9 @@ function createController(initialUrl = 'https://trusted.example/start') {
     failNextNavigation: () => {
       failNextNavigation = true;
     },
+    redirectCreatedTabTo: (nextUrl) => {
+      createdRedirectUrl = nextUrl;
+    },
   };
 }
 
@@ -172,7 +205,7 @@ describe('OriginScopedAutomationController', () => {
     expect(controller.execute).not.toHaveBeenCalledWith(OPERATIONS.CLICK, expect.anything());
   });
 
-  test('denies foreign tabs and operations outside the run manifest', async () => {
+  test('denies foreign tabs while listing only tabs owned by the task', async () => {
     const controller = createController();
     const scoped = await createOriginScopedAutomationController({
       controller,
@@ -183,7 +216,78 @@ describe('OriginScopedAutomationController', () => {
       scoped.execute(OPERATIONS.SNAPSHOT, { tabId: 'tab_other' })
     ).resolves.toMatchObject({ error: { code: ERROR_CODES.POLICY_DENIED } });
     await expect(scoped.execute(OPERATIONS.LIST_TABS, {})).resolves.toMatchObject({
-      error: { code: ERROR_CODES.POLICY_DENIED },
+      ok: true,
+      result: {
+        activeTabId: 'tab_assigned',
+        tabs: [{ url: 'https://trusted.example/start' }],
+      },
+    });
+  });
+
+  test('creates, focuses, lists, and closes only same-origin task-owned tabs', async () => {
+    const controller = createController();
+    const scoped = await createOriginScopedAutomationController({
+      controller,
+      tabId: 'tab_assigned',
+    });
+
+    const created = await scoped.execute(OPERATIONS.CREATE_TAB, {
+      tabId: 'tab_assigned',
+      url: 'https://trusted.example/comparison',
+    });
+    expect(created).toMatchObject({
+      ok: true,
+      result: { activeTabId: 'tab_created', tab: { tabId: 'tab_created' } },
+    });
+    await expect(scoped.execute(OPERATIONS.LIST_TABS, {})).resolves.toMatchObject({
+      ok: true,
+      result: {
+        activeTabId: 'tab_created',
+        tabs: [{ url: 'https://trusted.example/start' }, { tabId: 'tab_created' }],
+      },
+    });
+    await expect(
+      scoped.execute(OPERATIONS.FOCUS_TAB, { tabId: 'tab_assigned' })
+    ).resolves.toMatchObject({ ok: true });
+    await expect(
+      scoped.execute(OPERATIONS.CLOSE_TAB, { tabId: 'tab_created' })
+    ).resolves.toMatchObject({
+      ok: true,
+      result: { activeTabId: 'tab_assigned' },
+    });
+    await expect(scoped.execute(OPERATIONS.LIST_TABS, {})).resolves.toMatchObject({
+      result: { activeTabId: 'tab_assigned', tabs: [{ url: 'https://trusted.example/start' }] },
+    });
+    await expect(
+      scoped.execute(OPERATIONS.CREATE_TAB, {
+        tabId: 'tab_assigned',
+        url: 'https://foreign.example/comparison',
+      })
+    ).resolves.toMatchObject({ error: { code: ERROR_CODES.POLICY_DENIED } });
+    await expect(
+      scoped.execute(OPERATIONS.CLOSE_TAB, { tabId: 'tab_assigned' })
+    ).resolves.toMatchObject({ error: { code: ERROR_CODES.POLICY_DENIED } });
+  });
+
+  test('closes a created tab that redirects outside the task origin before adopting it', async () => {
+    const controller = createController();
+    controller.redirectCreatedTabTo('https://foreign.example/redirected');
+    const scoped = await createOriginScopedAutomationController({
+      controller,
+      tabId: 'tab_assigned',
+    });
+
+    await expect(
+      scoped.execute(OPERATIONS.CREATE_TAB, {
+        tabId: 'tab_assigned',
+        url: 'https://trusted.example/comparison',
+      })
+    ).resolves.toMatchObject({ error: { code: ERROR_CODES.POLICY_DENIED } });
+    expect(controller.execute).toHaveBeenCalledWith(OPERATIONS.CLOSE_TAB, {
+      tabId: 'tab_created',
+    });
+    await expect(scoped.execute(OPERATIONS.LIST_TABS, {})).resolves.toMatchObject({
+      result: { tabs: [{ url: 'https://trusted.example/start' }] },
     });
   });
 

@@ -51,13 +51,21 @@ class AutomationController {
     try {
       input = validateOperationInput(operation, rawInput);
       if (input.tabId) entry = this.pages.require(input.tabId);
+      const policyEntry =
+        entry || (input.openerTabId ? this.pages.require(input.openerTabId) : undefined);
 
       const decision = await this.policyController.authorize({
         operation,
         input,
         runtimeId: this.runtimeId,
         contextId: this.contextId,
-        tab: entry ? { tabId: entry.tabId, kind: entry.kind, ...entry.adapter.getState() } : null,
+        tab: policyEntry
+          ? {
+              tabId: policyEntry.tabId,
+              kind: policyEntry.kind,
+              ...policyEntry.adapter.getState(),
+            }
+          : null,
       });
       if (!decision?.allowed) {
         const code = decision?.approvalRequired
@@ -112,7 +120,9 @@ class AutomationController {
         return { tabs: this.pages.list() };
       case OPERATIONS.CREATE_TAB: {
         const lifecycle = this.#requirePageLifecycle();
-        const tabId = await lifecycle.createPage(input.url);
+        const tabId = await lifecycle.createPage(input.url, {
+          openerTabId: input.openerTabId || null,
+        });
         const created = this.pages.require(tabId);
         return {
           tab: {
@@ -124,6 +134,23 @@ class AutomationController {
       }
       case OPERATIONS.GET_TAB:
         return { tab: { tabId: entry.tabId, kind: entry.kind, ...entry.adapter.getState() } };
+      case OPERATIONS.FOCUS_TAB: {
+        const lifecycle = this.#requirePageLifecycle();
+        if (typeof lifecycle.focusPage !== 'function') {
+          throw new AutomationError(
+            ERROR_CODES.CAPABILITY_UNAVAILABLE,
+            'The automation tab cannot be focused by this runtime'
+          );
+        }
+        const focused = await lifecycle.focusPage(entry.tabId);
+        if (!focused) {
+          throw new AutomationError(
+            ERROR_CODES.CAPABILITY_UNAVAILABLE,
+            'The automation tab cannot be focused by this runtime'
+          );
+        }
+        return { focused: true, tabId: entry.tabId };
+      }
       case OPERATIONS.CLOSE_TAB: {
         const closed = await this.#requirePageLifecycle().closePage(entry.tabId);
         if (!closed) {

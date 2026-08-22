@@ -8,6 +8,7 @@ const { AutomationError, ERROR_CODES } = require('./contract/errors');
 const IPC = require('../../shared/ipc-channels');
 
 const DEFAULT_DESKTOP_NAVIGATION_TIMEOUT_MS = 330_000;
+const DEFAULT_DESKTOP_TAB_CONTROL_TIMEOUT_MS = 10_000;
 
 function defaultNavigationRequestIdFactory() {
   return `nav_${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
@@ -33,6 +34,8 @@ function createAutomationRuntime(options = {}) {
     options.navigationRequestIdFactory || defaultNavigationRequestIdFactory;
   const desktopNavigationTimeoutMs =
     options.desktopNavigationTimeoutMs || DEFAULT_DESKTOP_NAVIGATION_TIMEOUT_MS;
+  const desktopTabControlTimeoutMs =
+    options.desktopTabControlTimeoutMs || DEFAULT_DESKTOP_TAB_CONTROL_TIMEOUT_MS;
 
   function emitTabLifecycle(event) {
     const normalized = Object.freeze({ ...event });
@@ -124,6 +127,7 @@ function createAutomationRuntime(options = {}) {
     const guestsById = new Map();
     const bindingsByRendererTab = new Map();
     const pendingNavigationRequests = new Map();
+    const pendingTabControlRequests = new Map();
     desktopBindingsByHost.set(hostWebContents, bindingsByRendererTab);
 
     const settleNavigationRequest = (request, error = null) => {
@@ -254,6 +258,53 @@ function createAutomationRuntime(options = {}) {
         );
       }
     };
+    const settleTabControlRequest = (request, result, error = null) => {
+      if (!pendingTabControlRequests.delete(request.requestId)) return;
+      clearTimeout(request.timeout);
+      if (error) request.reject(error);
+      else request.resolve(result);
+    };
+    const tabControlError = (message) =>
+      new AutomationError(ERROR_CODES.CAPABILITY_UNAVAILABLE, message, {
+        retryable: true,
+      });
+    const requestTabControl = (channel, type, payload = {}) =>
+      new Promise((resolve, reject) => {
+        const requestId = navigationRequestIdFactory();
+        const request = {
+          requestId,
+          type,
+          rendererTabId: null,
+          resolve,
+          reject,
+          timeout: setTimeout(() => {
+            settleTabControlRequest(
+              request,
+              null,
+              tabControlError(`Timed out waiting for desktop tab ${type}`)
+            );
+          }, desktopTabControlTimeoutMs),
+        };
+        pendingTabControlRequests.set(requestId, request);
+        try {
+          hostWebContents.send(channel, { requestId, ...payload });
+        } catch (error) {
+          settleTabControlRequest(
+            request,
+            null,
+            new AutomationError(
+              ERROR_CODES.CAPABILITY_UNAVAILABLE,
+              `The browser chrome could not receive desktop tab ${type}`,
+              { retryable: true, cause: error }
+            )
+          );
+        }
+      });
+    const completeCreatedTabWhenBound = (request) => {
+      if (!request.rendererTabId) return;
+      const createdTabId = bindingsByRendererTab.get(request.rendererTabId);
+      if (createdTabId) settleTabControlRequest(request, createdTabId);
+    };
     const onAttached = (_event, guestWebContents) => {
       const tabId = registerWebContents(guestWebContents, { kind: 'desktop' });
       if (!tabId) return;
@@ -294,7 +345,18 @@ function createAutomationRuntime(options = {}) {
         bindingsByRendererTab,
         requestNavigation: (url) => requestNavigation(guestWebContents, rendererTabId, url),
         stopLoading: () => stopNavigation(guestWebContents, rendererTabId),
+        createPage: (url) =>
+          requestTabControl(IPC.AUTOMATION_CREATE_TAB, 'creation', { url }),
+        closePage: () =>
+          requestTabControl(IPC.AUTOMATION_CLOSE_TAB, 'closure', { rendererTabId }),
+        focusPage: () =>
+          requestTabControl(IPC.AUTOMATION_FOCUS_TAB, 'focus', { rendererTabId }),
       });
+      for (const request of pendingTabControlRequests.values()) {
+        if (request.type === 'creation' && request.rendererTabId === rendererTabId) {
+          completeCreatedTabWhenBound(request);
+        }
+      }
     };
     const onNavigationResult = (event, payload = {}) => {
       if (event?.sender !== hostWebContents) return;
@@ -303,13 +365,58 @@ function createAutomationRuntime(options = {}) {
       if (!request || typeof payload.ok !== 'boolean') return;
       request.acknowledge(payload.ok);
     };
+    const onCreateTabResult = (event, payload = {}) => {
+      if (event?.sender !== hostWebContents) return;
+      const request = pendingTabControlRequests.get(payload?.requestId);
+      if (!request || request.type !== 'creation' || typeof payload.ok !== 'boolean') return;
+      if (!payload.ok || !Number.isSafeInteger(payload.rendererTabId) || payload.rendererTabId < 1) {
+        settleTabControlRequest(
+          request,
+          null,
+          tabControlError('The browser chrome rejected desktop tab creation')
+        );
+        return;
+      }
+      request.rendererTabId = payload.rendererTabId;
+      completeCreatedTabWhenBound(request);
+    };
+    const handleBooleanTabResult = (event, payload, type, failureMessage) => {
+      if (event?.sender !== hostWebContents) return;
+      const request = pendingTabControlRequests.get(payload?.requestId);
+      if (!request || request.type !== type || typeof payload.ok !== 'boolean') return;
+      if (!payload.ok) {
+        settleTabControlRequest(request, null, tabControlError(failureMessage));
+        return;
+      }
+      settleTabControlRequest(request, true);
+    };
+    const onCloseTabResult = (event, payload = {}) =>
+      handleBooleanTabResult(
+        event,
+        payload,
+        'closure',
+        'The browser chrome rejected desktop tab closure'
+      );
+    const onFocusTabResult = (event, payload = {}) =>
+      handleBooleanTabResult(
+        event,
+        payload,
+        'focus',
+        'The browser chrome rejected desktop tab focus'
+      );
     hostWebContents.on('did-attach-webview', onAttached);
     ipcMain?.on?.(IPC.AUTOMATION_BIND_TAB, onBindTab);
     ipcMain?.on?.(IPC.AUTOMATION_NAVIGATE_RESULT, onNavigationResult);
+    ipcMain?.on?.(IPC.AUTOMATION_CREATE_TAB_RESULT, onCreateTabResult);
+    ipcMain?.on?.(IPC.AUTOMATION_CLOSE_TAB_RESULT, onCloseTabResult);
+    ipcMain?.on?.(IPC.AUTOMATION_FOCUS_TAB_RESULT, onFocusTabResult);
     return () => {
       hostWebContents.off?.('did-attach-webview', onAttached);
       ipcMain?.off?.(IPC.AUTOMATION_BIND_TAB, onBindTab);
       ipcMain?.off?.(IPC.AUTOMATION_NAVIGATE_RESULT, onNavigationResult);
+      ipcMain?.off?.(IPC.AUTOMATION_CREATE_TAB_RESULT, onCreateTabResult);
+      ipcMain?.off?.(IPC.AUTOMATION_CLOSE_TAB_RESULT, onCloseTabResult);
+      ipcMain?.off?.(IPC.AUTOMATION_FOCUS_TAB_RESULT, onFocusTabResult);
       for (const request of [...pendingNavigationRequests.values()]) {
         settleNavigationRequest(
           request,
@@ -318,6 +425,13 @@ function createAutomationRuntime(options = {}) {
       }
       for (const automationTabId of bindingsByRendererTab.values()) {
         desktopBindingsByAutomationTab.delete(automationTabId);
+      }
+      for (const request of [...pendingTabControlRequests.values()]) {
+        settleTabControlRequest(
+          request,
+          null,
+          new AutomationError(ERROR_CODES.TAB_NOT_FOUND, 'The browser window was closed')
+        );
       }
       desktopBindingsByHost.delete(hostWebContents);
     };
@@ -333,12 +447,36 @@ function createAutomationRuntime(options = {}) {
     return { hostWebContents: binding.hostWebContents, rendererTabId: binding.rendererTabId };
   }
 
+  async function createDesktopPage(url, { openerTabId } = {}) {
+    const binding = desktopBindingsByAutomationTab.get(openerTabId);
+    if (!binding) {
+      throw new AutomationError(
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        'A bound desktop opener tab is required to create a visible tab'
+      );
+    }
+    return binding.createPage(url);
+  }
+
+  async function closeDesktopPage(tabId) {
+    const binding = desktopBindingsByAutomationTab.get(tabId);
+    return binding ? binding.closePage() : false;
+  }
+
+  async function focusDesktopPage(tabId) {
+    const binding = desktopBindingsByAutomationTab.get(tabId);
+    return binding ? binding.focusPage() : false;
+  }
+
   return {
     controller,
     registerWebContents,
     attachToHostWebContents,
     automationTabIdForRenderer,
     desktopBindingForAutomationTab,
+    createDesktopPage,
+    closeDesktopPage,
+    focusDesktopPage,
     subscribeTabLifecycle,
   };
 }
@@ -352,5 +490,8 @@ module.exports = {
   attachAutomationToHostWebContents: defaultRuntime.attachToHostWebContents,
   automationTabIdForRenderer: defaultRuntime.automationTabIdForRenderer,
   desktopBindingForAutomationTab: defaultRuntime.desktopBindingForAutomationTab,
+  createDesktopAutomationPage: defaultRuntime.createDesktopPage,
+  closeDesktopAutomationPage: defaultRuntime.closeDesktopPage,
+  focusDesktopAutomationPage: defaultRuntime.focusDesktopPage,
   subscribeAutomationTabLifecycle: defaultRuntime.subscribeTabLifecycle,
 };

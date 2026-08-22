@@ -512,7 +512,11 @@ class FreedomAgentService {
       }),
     });
     run.toolOutcomes.set(normalized.toolCallId, normalized);
-    if (normalized.errorCode === ERROR_CODES.TAB_NOT_FOUND && !run.failure) {
+    if (
+      normalized.errorCode === ERROR_CODES.TAB_NOT_FOUND &&
+      (outcome.tabId === undefined || outcome.tabId === run.tabId) &&
+      !run.failure
+    ) {
       run.failure = terminalError(
         AGENT_ERROR_CODES.TAB_UNAVAILABLE,
         'The assigned browser tab is no longer available'
@@ -529,6 +533,13 @@ class FreedomAgentService {
 
   #handleTabLifecycle(event) {
     const run = this.activeRun;
+    if (run?.scopedController?.handleTabLifecycle) {
+      try {
+        run.scopedController.handleTabLifecycle(event);
+      } catch {
+        // The task scope must not break terminal starting-tab handling.
+      }
+    }
     if (
       !run ||
       run.finished ||

@@ -248,6 +248,7 @@ describe('AutomationController', () => {
         controller.unregisterPage(tabId);
         return true;
       }),
+      focusPage: jest.fn(async () => true),
     };
     controller.setPageLifecycle(lifecycle);
 
@@ -261,7 +262,14 @@ describe('AutomationController', () => {
         tab: { tabId, kind: 'headless', url: 'https://created.example/', available: true },
       },
     });
-    expect(lifecycle.createPage).toHaveBeenCalledWith('https://created.example/');
+    expect(lifecycle.createPage).toHaveBeenCalledWith('https://created.example/', {
+      openerTabId: null,
+    });
+    await expect(controller.execute(OPERATIONS.FOCUS_TAB, { tabId })).resolves.toMatchObject({
+      ok: true,
+      result: { focused: true, tabId },
+    });
+    expect(lifecycle.focusPage).toHaveBeenCalledWith(tabId);
 
     await expect(controller.execute(OPERATIONS.CLOSE_TAB, { tabId })).resolves.toMatchObject({
       ok: true,

@@ -166,6 +166,12 @@ module.exports = {
   AUTOMATION_NAVIGATE: 'automation:navigate',
   AUTOMATION_NAVIGATE_RESULT: 'automation:navigate-result',
   AUTOMATION_STOP_LOADING: 'automation:stop-loading',
+  AUTOMATION_CREATE_TAB: 'automation:create-tab',
+  AUTOMATION_CREATE_TAB_RESULT: 'automation:create-tab-result',
+  AUTOMATION_CLOSE_TAB: 'automation:close-tab',
+  AUTOMATION_CLOSE_TAB_RESULT: 'automation:close-tab-result',
+  AUTOMATION_FOCUS_TAB: 'automation:focus-tab',
+  AUTOMATION_FOCUS_TAB_RESULT: 'automation:focus-tab-result',
 
   // Embedded agent IPC is available only through the trusted chrome preload.
   AGENT_START: 'agent:start',

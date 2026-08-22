@@ -6,6 +6,7 @@ const { createHiddenPageManager } = require('./hidden-page-manager');
 class FakeWebContents extends EventEmitter {
   constructor() {
     super();
+    this.focus = jest.fn();
     this.setWindowOpenHandler = jest.fn((handler) => {
       this.windowOpenHandler = handler;
     });
@@ -74,6 +75,8 @@ describe('hidden automation page manager', () => {
     });
     expect(window.loadURL).toHaveBeenCalledWith('https://example.test/');
     expect(manager.size()).toBe(1);
+    await expect(manager.focusPage('tab_1')).resolves.toBe(true);
+    expect(window.webContents.focus).toHaveBeenCalledTimes(1);
 
     await expect(manager.closePage('tab_other')).resolves.toBe(false);
     await expect(manager.closePage('tab_1')).resolves.toBe(true);

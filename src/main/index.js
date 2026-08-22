@@ -312,6 +312,9 @@ const {
   automationTabIdForRenderer,
   registerAutomationWebContents,
   subscribeAutomationTabLifecycle,
+  createDesktopAutomationPage,
+  closeDesktopAutomationPage,
+  focusDesktopAutomationPage,
 } = require('./automation/runtime');
 const { createFreedomAgentRuntime } = require('./agent/runtime');
 const { getAgentDataDir } = require('./profile-paths');
@@ -407,6 +410,11 @@ async function bootstrap() {
   registerPermissionManifestIpc();
 
   if (!RUNTIME_MODE) {
+    automationController.setPageLifecycle({
+      createPage: createDesktopAutomationPage,
+      closePage: closeDesktopAutomationPage,
+      focusPage: focusDesktopAutomationPage,
+    });
     agentRuntime = createFreedomAgentRuntime({
       ipcMain,
       safeStorage,
@@ -698,6 +706,7 @@ app.on('before-quit', async (event) => {
   if (agentRuntime) {
     await agentRuntime.dispose();
     agentRuntime = null;
+    automationController.setPageLifecycle(null);
   }
 
   // Close all DevTools first to prevent crashes during cleanup

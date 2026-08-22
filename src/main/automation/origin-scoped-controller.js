@@ -4,7 +4,11 @@ const { OPERATIONS } = require('./contract/operations');
 const { ERROR_CODES } = require('./contract/errors');
 
 const ORIGIN_SCOPED_OPERATIONS = new Set([
+  OPERATIONS.LIST_TABS,
+  OPERATIONS.CREATE_TAB,
   OPERATIONS.GET_TAB,
+  OPERATIONS.FOCUS_TAB,
+  OPERATIONS.CLOSE_TAB,
   OPERATIONS.SNAPSHOT,
   OPERATIONS.NAVIGATE,
   OPERATIONS.CLICK,
@@ -64,6 +68,8 @@ class OriginScopedAutomationController {
   constructor({ controller, tabId, initialState, requestApproval }) {
     this.controller = controller;
     this.tabId = tabId;
+    this.activeTabId = tabId;
+    this.ownedTabs = new Map([[tabId, { created: false }]]);
     this.scopeOrigin = originScopeForUrl(initialState?.result?.tab?.url);
     this.lastState = initialState;
     this.requestApproval = requestApproval;
@@ -72,7 +78,7 @@ class OriginScopedAutomationController {
   }
 
   async prepareResume() {
-    const state = await this.#readState();
+    const state = await this.#readState(this.activeTabId);
     if (!state.ok) return state;
     if (!this.#acceptCurrentOrigin(state)) return this.#originDenied(state);
     this.resumeObservation = 'get_tab';
@@ -87,7 +93,7 @@ class OriginScopedAutomationController {
         'This operation is outside the embedded agent capability scope'
       );
     }
-    if (!input || typeof input !== 'object' || Array.isArray(input) || input.tabId !== this.tabId) {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) {
       return errorEnvelope(
         this.lastState,
         ERROR_CODES.POLICY_DENIED,
@@ -95,9 +101,29 @@ class OriginScopedAutomationController {
       );
     }
 
-    const state = await this.#readState();
+    if (operation === OPERATIONS.LIST_TABS) return this.#listOwnedTabs();
+    if (operation === OPERATIONS.CREATE_TAB) {
+      if (this.resumeObservation) {
+        return errorEnvelope(
+          this.lastState,
+          ERROR_CODES.POLICY_DENIED,
+          'After resume, get the current tab and take a fresh snapshot before acting'
+        );
+      }
+      return this.#createOwnedTab(input);
+    }
+    if (typeof input.tabId !== 'string' || !this.ownedTabs.has(input.tabId)) {
+      return errorEnvelope(
+        this.lastState,
+        ERROR_CODES.POLICY_DENIED,
+        'The embedded agent can only access tabs owned by this task'
+      );
+    }
+
+    const state = await this.#readState(input.tabId);
     if (!state.ok) return state;
     if (operation === OPERATIONS.GET_TAB) {
+      this.activeTabId = input.tabId;
       if (this.resumeObservation === 'get_tab') this.resumeObservation = 'snapshot';
       return state;
     }
@@ -105,6 +131,22 @@ class OriginScopedAutomationController {
     // can still stop page activity before refusing further observation/action.
     if (operation === OPERATIONS.STOP_LOADING) {
       return this.controller.execute(operation, input);
+    }
+    if (operation === OPERATIONS.CLOSE_TAB) {
+      if (input.tabId === this.tabId) {
+        return errorEnvelope(
+          state,
+          ERROR_CODES.POLICY_DENIED,
+          'The agent cannot close the task starting tab'
+        );
+      }
+      const result = await this.controller.execute(operation, input);
+      if (result?.ok) {
+        this.ownedTabs.delete(input.tabId);
+        if (this.activeTabId === input.tabId) this.activeTabId = this.tabId;
+        result.result.activeTabId = this.activeTabId;
+      }
+      return result;
     }
     if (!this.#acceptCurrentOrigin(state)) return this.#originDenied(state);
 
@@ -132,12 +174,17 @@ class OriginScopedAutomationController {
       if (approval) return approval;
     }
 
+    if (operation === OPERATIONS.FOCUS_TAB) {
+      const result = await this.controller.execute(operation, input);
+      if (result?.ok) this.activeTabId = input.tabId;
+      return result;
+    }
     const result = await this.controller.execute(operation, input);
     if (result?.ok && operation === OPERATIONS.SNAPSHOT) {
       this.resumeObservation = null;
     }
     if (result?.ok && operation === OPERATIONS.NAVIGATE) {
-      const navigatedState = await this.#readState();
+      const navigatedState = await this.#readState(input.tabId);
       if (!navigatedState.ok) return navigatedState;
       if (!this.#acceptCurrentOrigin(navigatedState)) {
         return this.#originDenied(navigatedState);
@@ -146,10 +193,68 @@ class OriginScopedAutomationController {
     return result;
   }
 
-  async #readState() {
-    const state = await this.controller.execute(OPERATIONS.GET_TAB, { tabId: this.tabId });
+  handleTabLifecycle(event) {
+    if (event?.type !== 'tab_closed' || typeof event.tabId !== 'string') return;
+    if (event.tabId === this.tabId) return;
+    this.ownedTabs.delete(event.tabId);
+    if (this.activeTabId === event.tabId) this.activeTabId = this.tabId;
+  }
+
+  async #readState(tabId) {
+    const state = await this.controller.execute(OPERATIONS.GET_TAB, { tabId });
     if (state?.runtimeId) this.lastState = state;
     return state;
+  }
+
+  async #listOwnedTabs() {
+    const tabs = [];
+    for (const tabId of [...this.ownedTabs.keys()]) {
+      const state = await this.#readState(tabId);
+      if (!state?.ok) {
+        if (tabId !== this.tabId && state?.error?.code === ERROR_CODES.TAB_NOT_FOUND) {
+          this.ownedTabs.delete(tabId);
+          continue;
+        }
+        return state;
+      }
+      if (!this.#acceptCurrentOrigin(state)) return this.#originDenied(state);
+      tabs.push(state.result.tab);
+    }
+    return {
+      ok: true,
+      ...(this.lastState?.runtimeId && { runtimeId: this.lastState.runtimeId }),
+      ...(this.lastState?.contextId && { contextId: this.lastState.contextId }),
+      result: { tabs, activeTabId: this.activeTabId },
+    };
+  }
+
+  async #createOwnedTab(input) {
+    if (typeof input.tabId !== 'string' || !this.ownedTabs.has(input.tabId)) {
+      return errorEnvelope(
+        this.lastState,
+        ERROR_CODES.POLICY_DENIED,
+        'A task-owned opener tab is required to create a tab'
+      );
+    }
+    const openerState = await this.#readState(input.tabId);
+    if (!openerState.ok) return openerState;
+    if (!this.#acceptCurrentOrigin(openerState)) return this.#originDenied(openerState);
+    if (!this.#acceptRequestedOrigin(input.url)) return this.#originDenied(openerState);
+    const result = await this.controller.execute(OPERATIONS.CREATE_TAB, {
+      url: input.url,
+      openerTabId: input.tabId,
+    });
+    const createdTabId = result?.result?.tab?.tabId;
+    if (result?.ok && typeof createdTabId === 'string') {
+      if (!this.#acceptCurrentOrigin({ result: { tab: result.result.tab } })) {
+        await this.controller.execute(OPERATIONS.CLOSE_TAB, { tabId: createdTabId });
+        return this.#originDenied(openerState);
+      }
+      this.ownedTabs.set(createdTabId, { created: true });
+      this.activeTabId = createdTabId;
+      result.result.activeTabId = createdTabId;
+    }
+    return result;
   }
 
   #acceptCurrentOrigin(state) {
@@ -180,7 +285,7 @@ class OriginScopedAutomationController {
 
   async #authorizeAction(operation, input, state) {
     const inspected = await this.controller.inspectAction(operation, {
-      tabId: this.tabId,
+      tabId: input.tabId,
       ref: input.ref,
       ...(input.key && { key: input.key }),
     });
@@ -192,6 +297,7 @@ class OriginScopedAutomationController {
     if (element?.effect !== 'form_submission') return null;
     const actionKey = JSON.stringify([
       operation,
+      input.tabId,
       input.key || '',
       element.effect,
       element.label,
@@ -221,11 +327,11 @@ class OriginScopedAutomationController {
       return errorEnvelope(state, ERROR_CODES.USER_CANCELLED, 'The user declined form submission');
     }
 
-    const currentState = await this.#readState();
+    const currentState = await this.#readState(input.tabId);
     if (!currentState.ok) return currentState;
     if (!this.#acceptCurrentOrigin(currentState)) return this.#originDenied(currentState);
     const reinspected = await this.controller.inspectAction(operation, {
-      tabId: this.tabId,
+      tabId: input.tabId,
       ref: input.ref,
       ...(input.key && { key: input.key }),
     });

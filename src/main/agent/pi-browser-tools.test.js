@@ -40,7 +40,11 @@ describe('Pi browser tool adapter', () => {
     const tools = await createFreedomBrowserTools({ sdk, controller, tabId: 'tab_assigned' });
 
     expect(tools.map((tool) => tool.name)).toEqual([
+      OPERATIONS.LIST_TABS,
+      OPERATIONS.CREATE_TAB,
       OPERATIONS.GET_TAB,
+      OPERATIONS.FOCUS_TAB,
+      OPERATIONS.CLOSE_TAB,
       OPERATIONS.SNAPSHOT,
       OPERATIONS.NAVIGATE,
       OPERATIONS.CLICK,
@@ -52,7 +56,7 @@ describe('Pi browser tool adapter', () => {
     ]);
     expect(tools.every((tool) => tool.executionMode === 'sequential')).toBe(true);
     expect(tools.some((tool) => tool.name === OPERATIONS.SCREENSHOT)).toBe(false);
-    expect(tools.some((tool) => tool.name === OPERATIONS.LIST_TABS)).toBe(false);
+    expect(tools.some((tool) => tool.name === OPERATIONS.LIST_TABS)).toBe(true);
   });
 
   test('keeps the assigned tab ID out of model-visible schemas', async () => {
@@ -64,7 +68,9 @@ describe('Pi browser tool adapter', () => {
 
     for (const tool of tools) {
       expect(tool.parameters.additionalProperties).toBe(false);
-      expect(tool.parameters.properties).not.toHaveProperty('tabId');
+      if (![OPERATIONS.FOCUS_TAB, OPERATIONS.CLOSE_TAB].includes(tool.name)) {
+        expect(tool.parameters.properties).not.toHaveProperty('tabId');
+      }
     }
     expect(TOOL_SPEC_BY_NAME.get(OPERATIONS.WAIT).parameters).toMatchObject({
       properties: {
@@ -76,6 +82,42 @@ describe('Pi browser tool adapter', () => {
     expect(TOOL_SPEC_BY_NAME.get(OPERATIONS.PRESS).parameters.properties.key.enum).toContain(
       'Enter'
     );
+  });
+
+  test('targets newly created and explicitly focused task tabs without exposing tab IDs broadly', async () => {
+    const controller = {
+      execute: jest.fn(async (operation, input) => {
+        if (operation === OPERATIONS.CREATE_TAB) {
+          return successEnvelope({
+            tab: { tabId: 'tab_created', url: input.url },
+            activeTabId: 'tab_created',
+          });
+        }
+        return successEnvelope(
+          operation === OPERATIONS.FOCUS_TAB ? { focused: true, tabId: input.tabId } : {}
+        );
+      }),
+    };
+    const tools = await createFreedomBrowserTools({
+      sdk: createSdk(),
+      controller,
+      tabId: 'tab_assigned',
+    });
+    const create = tools.find((tool) => tool.name === OPERATIONS.CREATE_TAB);
+    const snapshot = tools.find((tool) => tool.name === OPERATIONS.SNAPSHOT);
+    const focus = tools.find((tool) => tool.name === OPERATIONS.FOCUS_TAB);
+
+    await create.execute('call_create', { url: 'https://example.test/research' });
+    await snapshot.execute('call_created_snapshot', {});
+    await focus.execute('call_focus', { tabId: 'tab_assigned' });
+    await snapshot.execute('call_start_snapshot', {});
+
+    expect(controller.execute.mock.calls).toEqual([
+      [OPERATIONS.CREATE_TAB, { tabId: 'tab_assigned', url: 'https://example.test/research' }],
+      [OPERATIONS.SNAPSHOT, { tabId: 'tab_created' }],
+      [OPERATIONS.FOCUS_TAB, { tabId: 'tab_assigned' }],
+      [OPERATIONS.SNAPSHOT, { tabId: 'tab_assigned' }],
+    ]);
   });
 
   test('routes tool execution through the controller with the pinned tab', async () => {
@@ -125,6 +167,7 @@ describe('Pi browser tool adapter', () => {
       toolCallId: 'call_structured',
       operation: OPERATIONS.SNAPSHOT,
       status: 'failed',
+      tabId: 'tab_assigned',
       errorCode: ERROR_CODES.TAB_NOT_FOUND,
     });
   });

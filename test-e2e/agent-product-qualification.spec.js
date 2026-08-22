@@ -27,6 +27,10 @@ const CLASSIFICATION = Object.freeze({
 
 const EXPECTED_TOOL_NAMES = Object.freeze([
   'browser_get_tab',
+  'browser_list_tabs',
+  'browser_create_tab',
+  'browser_focus_tab',
+  'browser_close_tab',
   'browser_snapshot',
   'browser_navigate',
   'browser_click',
@@ -42,6 +46,7 @@ let baseUrl;
 let requestCount = 0;
 let observedPolicyDenial = false;
 let advertisedToolNames = [];
+let observedTaskTabCount = 0;
 const operations = [];
 
 function completionChunk({ delta = {}, finishReason = null, usage }) {
@@ -310,13 +315,53 @@ async function handleCompletion(request, response) {
   }
 
   if (hasUserMarker(messages, 'PRODUCT_MULTI_TAB_COMPARISON')) {
-    if (toolResults.length === 0) {
-      emitToolCall(response, 1, 'browser_snapshot', {});
-    } else {
-      emitFinal(
-        response,
-        'This run is pinned to one assigned tab and has no create, list, target, focus, or close-tab tools, so it cannot build the requested comparison workspace.'
-      );
+    const envelopes = toolEnvelopes(messages);
+    const createdTabs = envelopes
+      .map((envelope) => envelope?.result?.tab)
+      .filter((tab) => typeof tab?.tabId === 'string');
+    switch (toolResults.length) {
+      case 0:
+        emitToolCall(response, 1, 'browser_list_tabs', {});
+        break;
+      case 1:
+        emitToolCall(response, 2, 'browser_create_tab', {
+          url: `${PRODUCT_ORIGIN}/dashboard/alpha`,
+        });
+        break;
+      case 2:
+        emitToolCall(response, 3, 'browser_snapshot', {});
+        break;
+      case 3:
+        emitToolCall(response, 4, 'browser_create_tab', {
+          url: `${PRODUCT_ORIGIN}/dashboard/beta`,
+        });
+        break;
+      case 4:
+        emitToolCall(response, 5, 'browser_snapshot', {});
+        break;
+      case 5:
+        emitToolCall(response, 6, 'browser_list_tabs', {});
+        break;
+      case 6: {
+        const latestList = envelopes.findLast((envelope) => Array.isArray(envelope?.result?.tabs));
+        observedTaskTabCount = latestList?.result?.tabs?.length || 0;
+        emitToolCall(response, 7, 'browser_focus_tab', {
+          tabId: createdTabs[0]?.tabId || '',
+        });
+        break;
+      }
+      case 7:
+        emitToolCall(response, 8, 'browser_snapshot', {});
+        break;
+      default: {
+        const evidence = allSnapshotTexts(messages).join('\n');
+        const alpha = evidence.match(/Alpha score:\s*(\d+)/)?.[1] || '';
+        const beta = evidence.match(/Beta score:\s*(\d+)/)?.[1] || '';
+        emitFinal(
+          response,
+          `Alpha scores ${alpha}; Beta scores ${beta}. Beta is 6 points higher. Both task tabs remain open for inspection.`
+        );
+      }
     }
     return;
   }
@@ -366,6 +411,7 @@ test.beforeEach(() => {
   requestCount = 0;
   observedPolicyDenial = false;
   advertisedToolNames = [];
+  observedTaskTabCount = 0;
   operations.length = 0;
 });
 
@@ -675,10 +721,16 @@ test('baseline: benign cross-origin research is denied by the current one-origin
   expect(result.assistantOutput).toContain('outside this run’s starting origin');
 });
 
-test('baseline: multi-tab comparison is blocked by single assigned-tab authority', async ({
+test('baseline: multi-tab comparison passes inside a task-owned visible workspace', async ({
   window,
   harness,
 }) => {
+  await harness.setContentFixture(`${PRODUCT_ORIGIN}/dashboard/alpha`, {
+    body: '<!doctype html><title>Alpha dashboard</title><main><h1>Alpha dashboard</h1><p>Alpha score: 41</p></main>',
+  });
+  await harness.setContentFixture(`${PRODUCT_ORIGIN}/dashboard/beta`, {
+    body: '<!doctype html><title>Beta dashboard</title><main><h1>Beta dashboard</h1><p>Beta score: 47</p></main>',
+  });
   await prepareTask(
     window,
     harness,
@@ -694,15 +746,25 @@ test('baseline: multi-tab comparison is blocked by single assigned-tab authority
     window,
     'PRODUCT_MULTI_TAB_COMPARISON: open both dashboards in separate task tabs, compare them, and keep both available for inspection.'
   );
-  const result = await recordQualification(window, 'multi-tab-comparison', CLASSIFICATION.MISSING, {
+  const result = await recordQualification(window, 'multi-tab-comparison', CLASSIFICATION.PASS, {
     browserTabCount: await window.locator('[data-test="tab"]').count(),
+    taskTabCount: observedTaskTabCount,
   });
 
-  expect(result.browserTabCount).toBe(1);
-  expect(result.assistantOutput).toContain('no create, list, target, focus, or close-tab tools');
-  expect(result.advertisedTools).not.toContain('browser_create_tab');
-  expect(result.advertisedTools).not.toContain('browser_list_tabs');
-  expect(result.advertisedTools).not.toContain('browser_close_tab');
+  expect(result.browserTabCount).toBe(3);
+  expect(result.taskTabCount).toBe(3);
+  expect(result.assistantOutput).toContain('Alpha scores 41; Beta scores 47');
+  expect(result.assistantOutput).toContain('Both task tabs remain open for inspection');
+  expect(operations).toEqual([
+    'browser_list_tabs',
+    'browser_create_tab',
+    'browser_snapshot',
+    'browser_create_tab',
+    'browser_snapshot',
+    'browser_list_tabs',
+    'browser_focus_tab',
+    'browser_snapshot',
+  ]);
 });
 
 test('baseline: file delivery is blocked without scoped download authority and receipts', async ({

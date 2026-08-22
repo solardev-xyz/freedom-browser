@@ -16,23 +16,70 @@ const EMPTY_PARAMETERS = Object.freeze({
 
 const TOOL_SPECS = Object.freeze([
   {
+    operation: OPERATIONS.LIST_TABS,
+    label: 'List task tabs',
+    description: 'List only the browser tabs owned by this Agent task and identify the active tab.',
+    parameters: EMPTY_PARAMETERS,
+    tabMode: 'none',
+  },
+  {
+    operation: OPERATIONS.CREATE_TAB,
+    label: 'Create task tab',
+    description:
+      'Create a visible task-owned tab on the current task site and make it the active Agent tab.',
+    parameters: {
+      type: 'object',
+      properties: { url: { type: 'string', minLength: 1 } },
+      required: ['url'],
+      additionalProperties: false,
+    },
+    tabMode: 'current',
+  },
+  {
     operation: OPERATIONS.GET_TAB,
     label: 'Get tab state',
-    description: 'Get the current URL, title, loading state, and navigation ID of the assigned tab.',
+    description:
+      'Get the current URL, title, loading state, and navigation ID of the active task tab.',
     parameters: EMPTY_PARAMETERS,
+  },
+  {
+    operation: OPERATIONS.FOCUS_TAB,
+    label: 'Focus task tab',
+    description:
+      'Focus a task-owned browser tab by ID and make it the active tab for subsequent Agent tools.',
+    parameters: {
+      type: 'object',
+      properties: { tabId: { type: 'string', minLength: 1 } },
+      required: ['tabId'],
+      additionalProperties: false,
+    },
+    tabMode: 'explicit',
+  },
+  {
+    operation: OPERATIONS.CLOSE_TAB,
+    label: 'Close task tab',
+    description:
+      'Close a tab created by this task. The adopted starting tab cannot be closed by the Agent.',
+    parameters: {
+      type: 'object',
+      properties: { tabId: { type: 'string', minLength: 1 } },
+      required: ['tabId'],
+      additionalProperties: false,
+    },
+    tabMode: 'explicit',
   },
   {
     operation: OPERATIONS.SNAPSHOT,
     label: 'Snapshot page',
     description:
-      'Read a compact accessibility-oriented snapshot of the assigned tab. Use returned element references for interaction.',
+      'Read a compact accessibility-oriented snapshot of the active task tab. Use returned element references for interaction.',
     parameters: EMPTY_PARAMETERS,
   },
   {
     operation: OPERATIONS.NAVIGATE,
     label: 'Navigate page',
     description:
-      'Navigate the assigned tab to an absolute http, https, bzz, ipfs, or ipns URL without embedded credentials.',
+      'Navigate the active task tab to an absolute http, https, bzz, ipfs, or ipns URL without embedded credentials.',
     parameters: {
       type: 'object',
       properties: { url: { type: 'string', minLength: 1 } },
@@ -45,7 +92,7 @@ const TOOL_SPECS = Object.freeze([
     operation: OPERATIONS.CLICK,
     label: 'Click element',
     description:
-      'Click an element in the assigned tab using a reference from the latest page snapshot.',
+      'Click an element in the active task tab using a reference from the latest page snapshot.',
     parameters: {
       type: 'object',
       properties: { ref: { type: 'string', minLength: 1 } },
@@ -103,7 +150,7 @@ const TOOL_SPECS = Object.freeze([
     operation: OPERATIONS.WAIT,
     label: 'Wait for page',
     description:
-      'Wait up to 30 seconds for load completion, a navigation, visible text, or an exact URL in the assigned tab.',
+      'Wait up to 30 seconds for load completion, a navigation, visible text, or an exact URL in the active task tab.',
     parameters: {
       type: 'object',
       properties: {
@@ -121,7 +168,7 @@ const TOOL_SPECS = Object.freeze([
   {
     operation: OPERATIONS.STOP_LOADING,
     label: 'Stop page activity',
-    description: 'Stop loading and cancel active waits in the assigned tab.',
+    description: 'Stop loading and cancel active waits in the active task tab.',
     parameters: EMPTY_PARAMETERS,
   },
 ]);
@@ -198,7 +245,12 @@ async function executeCancellable(controller, operation, input, signal) {
 
 async function executeBrowserTool(controller, tabId, spec, params, signal) {
   assertNotAborted(signal, spec.operation);
-  const input = { ...params, tabId };
+  const input =
+    spec.tabMode === 'none'
+      ? { ...params }
+      : spec.tabMode === 'explicit'
+        ? { ...params }
+        : { ...params, tabId };
   let envelope;
   try {
     envelope = spec.cancellable
@@ -241,6 +293,7 @@ async function createFreedomBrowserTools(options = {}) {
   }
 
   const sdk = validatePiSdk(options.sdk || (await loadPiSdk()));
+  const tabState = { currentTabId: options.tabId };
   return TOOL_SPECS.map((spec) =>
     sdk.defineTool({
       name: spec.operation,
@@ -249,18 +302,31 @@ async function createFreedomBrowserTools(options = {}) {
       parameters: spec.parameters,
       executionMode: 'sequential',
       execute: async (toolCallId, params, signal) => {
+        const targetTabId =
+          spec.tabMode === 'none'
+            ? undefined
+            : spec.tabMode === 'explicit'
+              ? params.tabId
+              : tabState.currentTabId;
         try {
           const result = await executeBrowserTool(
             options.controller,
-            options.tabId,
+            tabState.currentTabId,
             spec,
             params,
             signal
           );
+          const activeTabId = result.details.envelope?.result?.activeTabId;
+          if (typeof activeTabId === 'string' && activeTabId) {
+            tabState.currentTabId = activeTabId;
+          } else if (spec.operation === OPERATIONS.FOCUS_TAB) {
+            tabState.currentTabId = params.tabId;
+          }
           notifyToolOutcome(options.onToolOutcome, {
             toolCallId,
             operation: spec.operation,
             status: 'succeeded',
+            ...(typeof targetTabId === 'string' && { tabId: targetTabId }),
           });
           return result;
         } catch (error) {
@@ -268,6 +334,7 @@ async function createFreedomBrowserTools(options = {}) {
             toolCallId,
             operation: spec.operation,
             status: 'failed',
+            ...(typeof targetTabId === 'string' && { tabId: targetTabId }),
             errorCode:
               error instanceof FreedomBrowserToolError ? error.code : ERROR_CODES.INTERNAL_ERROR,
           });

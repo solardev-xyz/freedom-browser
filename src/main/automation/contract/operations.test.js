@@ -17,6 +17,12 @@ describe('automation operation contract', () => {
     expect(
       validateOperationInput(OPERATIONS.CREATE_TAB, { url: ' https://example.test/ ' })
     ).toEqual({ url: 'https://example.test/' });
+    expect(
+      validateOperationInput(OPERATIONS.CREATE_TAB, {
+        url: 'https://example.test/research',
+        openerTabId: ' tab_1 ',
+      })
+    ).toEqual({ url: 'https://example.test/research', openerTabId: 'tab_1' });
     expect(validateOperationInput(OPERATIONS.CLOSE_TAB, { tabId: ' tab_1 ' })).toEqual({
       tabId: 'tab_1',
     });

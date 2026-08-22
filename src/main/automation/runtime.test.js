@@ -103,6 +103,81 @@ describe('automation runtime registration', () => {
     expect(afterDetach.result.tabs).toHaveLength(3);
   });
 
+  test('creates, focuses, and closes visible desktop tabs through acknowledged chrome requests', async () => {
+    let nextTab = 1;
+    const runtime = createAutomationRuntime({
+      isPrivateWebContents: () => false,
+      controllerOptions: { tabIdFactory: () => `tab_${nextTab++}` },
+    });
+    runtime.controller.setPageLifecycle({
+      createPage: runtime.createDesktopPage,
+      closePage: runtime.closeDesktopPage,
+      focusPage: runtime.focusDesktopPage,
+    });
+    const host = new EventEmitter();
+    host.send = jest.fn();
+    const ipcMain = new EventEmitter();
+    const opener = new FakeWebContents('https://desktop.example/', 21);
+    opener.hostWebContents = host;
+    runtime.attachToHostWebContents(host, { ipcMain });
+    host.emit('did-attach-webview', {}, opener);
+    ipcMain.emit(
+      IPC.AUTOMATION_BIND_TAB,
+      { sender: host },
+      { rendererTabId: 7, guestWebContentsId: 21 }
+    );
+
+    const creation = runtime.controller.execute(OPERATIONS.CREATE_TAB, {
+      url: 'https://desktop.example/research',
+      openerTabId: 'tab_1',
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    const createRequest = host.send.mock.calls.find(
+      ([channel]) => channel === IPC.AUTOMATION_CREATE_TAB
+    )[1];
+    ipcMain.emit(
+      IPC.AUTOMATION_CREATE_TAB_RESULT,
+      { sender: host },
+      { requestId: createRequest.requestId, ok: true, rendererTabId: 8 }
+    );
+    const created = new FakeWebContents('https://desktop.example/research', 22);
+    created.hostWebContents = host;
+    host.emit('did-attach-webview', {}, created);
+    ipcMain.emit(
+      IPC.AUTOMATION_BIND_TAB,
+      { sender: host },
+      { rendererTabId: 8, guestWebContentsId: 22 }
+    );
+    await expect(creation).resolves.toMatchObject({
+      ok: true,
+      result: { tab: { tabId: 'tab_2', kind: 'desktop' } },
+    });
+
+    const focus = runtime.controller.execute(OPERATIONS.FOCUS_TAB, { tabId: 'tab_1' });
+    await new Promise((resolve) => setImmediate(resolve));
+    const focusRequest = host.send.mock.calls.find(
+      ([channel]) => channel === IPC.AUTOMATION_FOCUS_TAB
+    )[1];
+    ipcMain.emit(
+      IPC.AUTOMATION_FOCUS_TAB_RESULT,
+      { sender: host },
+      { requestId: focusRequest.requestId, ok: true }
+    );
+    await expect(focus).resolves.toMatchObject({ ok: true, result: { focused: true } });
+
+    const close = runtime.controller.execute(OPERATIONS.CLOSE_TAB, { tabId: 'tab_2' });
+    await new Promise((resolve) => setImmediate(resolve));
+    const closeRequest = host.send.mock.calls.find(
+      ([channel]) => channel === IPC.AUTOMATION_CLOSE_TAB
+    )[1];
+    ipcMain.emit(
+      IPC.AUTOMATION_CLOSE_TAB_RESULT,
+      { sender: host },
+      { requestId: closeRequest.requestId, ok: true }
+    );
+    await expect(close).resolves.toMatchObject({ ok: true, result: { closed: true } });
+  });
+
   test('removes both sides of a desktop binding when the guest is destroyed', () => {
     const runtime = createAutomationRuntime({
       isPrivateWebContents: () => false,

@@ -39,6 +39,8 @@ import {
   getActiveWebview,
   getActiveTab,
   getTabById,
+  closeTab,
+  switchTab,
   setAgentControlledTab,
 } from './lib/tabs.js';
 import {
@@ -147,6 +149,17 @@ electronAPI.onAutomationNavigate?.(({ rendererTabId, url }) => {
 electronAPI.onAutomationStopLoading?.(({ rendererTabId }) => {
   const tab = getTabById(rendererTabId);
   if (tab?.webview) stopPageLoading(tab.webview);
+});
+electronAPI.onAutomationCreateTab?.(({ url }) => createTab(url)?.id || null);
+electronAPI.onAutomationCloseTab?.(({ rendererTabId }) => {
+  if (!getTabById(rendererTabId)) return false;
+  closeTab(rendererTabId);
+  return !getTabById(rendererTabId);
+});
+electronAPI.onAutomationFocusTab?.(({ rendererTabId }) => {
+  if (!getTabById(rendererTabId)) return false;
+  switchTab(rendererTabId);
+  return true;
 });
 // When any popover/menu opens, dismiss other transient surfaces so we
 // don't end up with the autocomplete dropdown or the ENS trust popover

@@ -379,6 +379,24 @@ describe('FreedomAgentService', () => {
     });
   });
 
+  test('does not terminate the task when a created tab disappears', async () => {
+    const fake = createFakeSession();
+    const { service, dependencies } = createService(fake);
+    await service.start(startOptions());
+
+    dependencies.createTools.mock.calls[0][0].onToolOutcome({
+      toolCallId: 'call_created_missing',
+      operation: 'browser_snapshot',
+      status: 'failed',
+      tabId: 'tab_created',
+      errorCode: ERROR_CODES.TAB_NOT_FOUND,
+    });
+
+    expect(fake.session.abort).not.toHaveBeenCalled();
+    expect(service.getState()).toMatchObject({ status: 'running', tabId: 'tab_assigned' });
+    await service.stop('run_test');
+  });
+
   test('aborts immediately with a distinct failure when the controlled tab closes', async () => {
     const fake = createFakeSession();
     let lifecycleListener;
