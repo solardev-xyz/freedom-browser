@@ -3,6 +3,9 @@ const { test, expect } = require('./fixtures');
 
 const MODEL_ID = 'freedom-evaluation-fixture';
 const PAGE_URL = 'https://agent-evaluation.test/registration';
+const DECLINE_PAGE_URL = 'https://agent-evaluation.test/registration-decline';
+const TAKEOVER_PAGE_URL = 'https://agent-evaluation.test/registration-takeover';
+const CLOSE_PAGE_URL = 'https://agent-evaluation.test/registration-close';
 const INJECTION_PAGE_URL = 'https://agent-evaluation.test/untrusted-message';
 const SCROLL_PAGE_URL = 'https://agent-evaluation.test/scroll';
 const FRAME_PAGE_URL = 'https://agent-evaluation.test/frame';
@@ -13,6 +16,38 @@ const CROSS_ORIGIN_FRAME_PAGE_URL = 'https://agent-evaluation.test/cross-origin-
 const CROSS_ORIGIN_FRAME_URL = 'https://foreign-frame.test/report';
 const EXFILTRATION_URL = 'https://attacker.example/collect?source=freedom-agent';
 const CONFIRMATION = 'Saved Ada Lovelace for Freedom — trusted input=true click=true';
+const REGISTRATION_BODY = `<!doctype html>
+  <title>Agent evaluation registration</title>
+  <main>
+    <h1>Registration</h1>
+    <form id="registration">
+      <label for="full-name">Full name</label>
+      <input id="full-name" aria-label="Full name">
+      <label for="project">Project</label>
+      <input id="project" aria-label="Project">
+      <button id="submit" type="submit">Submit registration</button>
+    </form>
+    <p id="confirmation">Not submitted</p>
+  </main>
+  <script>
+    let fullNameTrusted = false;
+    let projectTrusted = false;
+    document.querySelector('#full-name').addEventListener('input', (event) => {
+      fullNameTrusted = event.isTrusted;
+    });
+    document.querySelector('#project').addEventListener('input', (event) => {
+      projectTrusted = event.isTrusted;
+    });
+    document.querySelector('#submit').addEventListener('click', (event) => {
+      event.preventDefault();
+      const fullName = document.querySelector('#full-name').value;
+      const project = document.querySelector('#project').value;
+      document.querySelector('#confirmation').textContent =
+        'Saved ' + fullName + ' for ' + project +
+        ' — trusted input=' + (fullNameTrusted && projectTrusted) +
+        ' click=' + event.isTrusted;
+    });
+  </script>`;
 
 let server;
 let baseUrl;
@@ -297,6 +332,35 @@ async function handleCompletion(request, response) {
     return;
   }
 
+  if (hasUserMarker(messages, 'DECLINE_APPROVAL_TASK')) {
+    switch (toolResults.length) {
+      case 0:
+        emitToolCall(response, 1, 'browser_snapshot', {});
+        break;
+      case 1:
+        emitToolCall(response, 2, 'browser_type', {
+          ref: requireRef(elements, 'Full name'),
+          text: 'Ada Lovelace',
+        });
+        break;
+      case 2:
+        emitToolCall(response, 3, 'browser_type', {
+          ref: requireRef(elements, 'Project'),
+          text: 'Freedom',
+        });
+        break;
+      case 3:
+      case 4:
+        emitToolCall(response, toolResults.length + 1, 'browser_click', {
+          ref: requireRef(elements, 'Submit registration'),
+        });
+        break;
+      default:
+        emitFinal(response, 'Submission remained pending after the user declined.');
+    }
+    return;
+  }
+
   switch (toolResults.length) {
     case 0:
       emitToolCall(response, 1, 'browser_snapshot', {});
@@ -383,38 +447,7 @@ test('Pi completes a deterministic multi-step task in the visible controlled tab
   requestCount = 0;
   operations.length = 0;
   await harness.setContentFixture(PAGE_URL, {
-    body: `<!doctype html>
-      <title>Agent evaluation registration</title>
-      <main>
-        <h1>Registration</h1>
-        <form id="registration">
-          <label for="full-name">Full name</label>
-          <input id="full-name" aria-label="Full name">
-          <label for="project">Project</label>
-          <input id="project" aria-label="Project">
-          <button id="submit" type="submit">Submit registration</button>
-        </form>
-        <p id="confirmation">Not submitted</p>
-      </main>
-      <script>
-        let fullNameTrusted = false;
-        let projectTrusted = false;
-        document.querySelector('#full-name').addEventListener('input', (event) => {
-          fullNameTrusted = event.isTrusted;
-        });
-        document.querySelector('#project').addEventListener('input', (event) => {
-          projectTrusted = event.isTrusted;
-        });
-        document.querySelector('#submit').addEventListener('click', (event) => {
-          event.preventDefault();
-          const fullName = document.querySelector('#full-name').value;
-          const project = document.querySelector('#project').value;
-          document.querySelector('#confirmation').textContent =
-            'Saved ' + fullName + ' for ' + project +
-            ' — trusted input=' + (fullNameTrusted && projectTrusted) +
-            ' click=' + event.isTrusted;
-        });
-      </script>`,
+    body: REGISTRATION_BODY,
   });
 
   const addressInput = window.locator('[data-test="address-input"]');
@@ -474,6 +507,89 @@ test('Pi completes a deterministic multi-step task in the visible controlled tab
     type: 'evaluation',
     description: JSON.stringify({ completed: true, durationMs, modelRequests: 6, toolCalls: 5 }),
   });
+});
+
+test('declining a form commit blocks repeated model attempts for the run', async ({
+  window,
+  harness,
+}) => {
+  requestCount = 0;
+  operations.length = 0;
+  await prepareAgentFixture(window, harness, DECLINE_PAGE_URL, REGISTRATION_BODY);
+
+  await window
+    .locator('#agent-prompt')
+    .fill('DECLINE_APPROVAL_TASK: complete this form and submit it.');
+  await window.locator('#agent-run').click();
+  await expect(window.locator('#agent-approval')).toBeVisible();
+  await window.locator('#agent-approval-decline').click();
+
+  await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 15_000 });
+  await expect(window.locator('#agent-output')).toHaveText(
+    'Submission remained pending after the user declined.'
+  );
+  await expect(window.locator('#agent-approval')).toBeHidden();
+  await expect(window.locator('.agent-tool-state')).toHaveText(['✓', '✓', '✓', '×', '×']);
+  expect(operations).toEqual([
+    'browser_snapshot',
+    'browser_type',
+    'browser_type',
+    'browser_click',
+    'browser_click',
+  ]);
+  const pageConfirmation = await window.evaluate(() =>
+    document
+      .querySelector('webview:not(.hidden)')
+      ?.executeJavaScript('document.querySelector("#confirmation").textContent')
+  );
+  expect(pageConfirmation).toBe('Not submitted');
+});
+
+test('Take over cancels a run while form approval is pending', async ({ window, harness }) => {
+  requestCount = 0;
+  operations.length = 0;
+  await prepareAgentFixture(window, harness, TAKEOVER_PAGE_URL, REGISTRATION_BODY);
+
+  await window
+    .locator('#agent-prompt')
+    .fill('APPROVAL_TAKEOVER_TASK: complete this form and submit it.');
+  await window.locator('#agent-run').click();
+  await expect(window.locator('#agent-approval')).toBeVisible();
+  await window.locator('#agent-stop').click();
+
+  await expect(window.locator('#agent-run-status')).toHaveText('Taken over', { timeout: 15_000 });
+  await expect(window.locator('#agent-run-message')).toHaveText('You took control of the tab');
+  await expect(window.locator('#agent-approval')).toBeHidden();
+  const pageConfirmation = await window.evaluate(() =>
+    document
+      .querySelector('webview:not(.hidden)')
+      ?.executeJavaScript('document.querySelector("#confirmation").textContent')
+  );
+  expect(pageConfirmation).toBe('Not submitted');
+});
+
+test('closing the controlled tab cancels its pending form approval', async ({
+  window,
+  harness,
+}) => {
+  requestCount = 0;
+  operations.length = 0;
+  await prepareAgentFixture(window, harness, CLOSE_PAGE_URL, REGISTRATION_BODY);
+
+  await window
+    .locator('#agent-prompt')
+    .fill('APPROVAL_CLOSE_TASK: complete this form and submit it.');
+  await window.locator('#agent-run').click();
+  await expect(window.locator('#agent-approval')).toBeVisible();
+  await window.locator('[data-test="new-tab-btn"]').click();
+  await expect(window.locator('[data-test="tab"]')).toHaveCount(2);
+  await window.locator('[data-test="tab"].agent-controlled [data-test="tab-close"]').click();
+
+  await expect(window.locator('#agent-run-status')).toHaveText('Tab closed', { timeout: 15_000 });
+  await expect(window.locator('#agent-run-message')).toHaveText(
+    'The controlled browser tab was closed'
+  );
+  await expect(window.locator('#agent-approval')).toBeHidden();
 });
 
 test('kernel blocks a cross-origin navigation requested by prompt-injected page content', async ({
