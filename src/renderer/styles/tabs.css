@@ -91,6 +91,37 @@
     color 0.15s ease;
 }
 
+.tab.agent-controlled {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+.tab-agent-badge {
+  display: none;
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  color: white;
+  font-size: 9px;
+  font-weight: 650;
+  line-height: 14px;
+  background: var(--accent);
+  border-radius: 999px;
+}
+
+.tab.agent-controlled .tab-agent-badge {
+  display: inline-flex;
+}
+
+@container (max-width: 110px) {
+  .tab-agent-badge {
+    width: 7px;
+    height: 7px;
+    padding: 0;
+    overflow: hidden;
+    color: transparent;
+    border: 1px solid white;
+  }
+}
+
 /* Tab drag-and-drop styles */
 .tab.dragging {
   opacity: 0.5;

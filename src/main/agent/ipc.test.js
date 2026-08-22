@@ -178,6 +178,28 @@ describe('Freedom agent IPC', () => {
     expect(ctx.service.stop).toHaveBeenCalledTimes(1);
   });
 
+  test('reports the controlled renderer tab only to the owning chrome', async () => {
+    const ctx = register();
+    const start = ctx.ipcMain.handlers.get(IPC.AGENT_START);
+    const getState = ctx.ipcMain.handlers.get(IPC.AGENT_GET_STATE);
+
+    await start({ sender: ctx.sender }, { rendererTabId: 7, prompt: 'Task' });
+
+    expect(getState({ sender: ctx.sender })).toEqual({
+      ok: true,
+      state: {
+        status: 'running',
+        runId: 'run_test',
+        tabId: 'tab_bound',
+        rendererTabId: 7,
+      },
+    });
+    expect(getState({ sender: ctx.otherSender })).toEqual({
+      ok: true,
+      state: { status: 'idle' },
+    });
+  });
+
   test('configures providers only for trusted chrome and never returns a key', async () => {
     const ctx = register();
     const configure = ctx.ipcMain.handlers.get(IPC.AGENT_PROVIDER_CONFIGURE_HOSTED);

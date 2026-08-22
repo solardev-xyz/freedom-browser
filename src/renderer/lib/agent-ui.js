@@ -12,11 +12,13 @@ const PROVIDER_NAMES = Object.freeze({
 
 let elements = {};
 let getActiveTab = () => null;
+let setAgentControlledTab = () => {};
 let providerCatalog = [];
 let providerCatalogPromise = null;
 let providerStatus = null;
 let currentRunId = null;
 let lastFinishedRunId = null;
+let takeoverRequestedRunId = null;
 let panelOpen = false;
 let agentEventUnsubscribe = null;
 const toolRows = new Map();
@@ -260,6 +262,10 @@ function handleAgentEvent(event) {
     currentRunId = event.runId;
     lastFinishedRunId = null;
     setRunActive(true, 'Running');
+    setMessage(
+      elements.runMessage,
+      'Agent stays attached to this tab if you switch tabs. Choose Take over to stop it.'
+    );
     return;
   }
   if (!currentRunId) return;
@@ -274,10 +280,19 @@ function handleAgentEvent(event) {
     setMessage(elements.runMessage, `Provider retry ${event.attempt} of ${event.maxAttempts}…`);
   } else if (event.type === 'run_finished') {
     const status = event.status || 'finished';
-    setRunActive(false, status === 'completed' ? 'Complete' : status);
-    if (event.error?.message) setMessage(elements.runMessage, event.error.message, true);
+    const wasTakeover = status === 'cancelled' && takeoverRequestedRunId === event.runId;
+    setRunActive(false, wasTakeover ? 'Taken over' : status === 'completed' ? 'Complete' : status);
+    if (wasTakeover) {
+      setMessage(elements.runMessage, 'You took control of the tab');
+    } else if (event.error?.message) {
+      setMessage(elements.runMessage, event.error.message, true);
+    } else {
+      setMessage(elements.runMessage);
+    }
     lastFinishedRunId = event.runId;
     currentRunId = null;
+    takeoverRequestedRunId = null;
+    setAgentControlledTab(null);
   }
 }
 
@@ -293,11 +308,13 @@ async function startRun() {
     return;
   }
   resetRunOutput();
+  setAgentControlledTab(tab.id);
   setRunActive(true, 'Starting');
   try {
     const response = await window.electronAPI.startAgent(tab.id, prompt);
     if (!response?.ok) {
       currentRunId = null;
+      setAgentControlledTab(null);
       setRunActive(false, 'Idle');
       setMessage(elements.runMessage, responseMessage(response, 'Could not start the agent'), true);
       return;
@@ -308,6 +325,7 @@ async function startRun() {
     }
   } catch {
     currentRunId = null;
+    setAgentControlledTab(null);
     setRunActive(false, 'Idle');
     setMessage(elements.runMessage, 'Could not start the agent', true);
   }
@@ -315,15 +333,18 @@ async function startRun() {
 
 async function stopRun() {
   if (!currentRunId) return;
+  takeoverRequestedRunId = currentRunId;
   elements.stop.disabled = true;
-  setMessage(elements.runMessage, 'Stopping…');
+  setMessage(elements.runMessage, 'Taking over…');
   try {
     const response = await window.electronAPI.stopAgent(currentRunId);
     if (!response?.ok) {
+      takeoverRequestedRunId = null;
       elements.stop.disabled = false;
       setMessage(elements.runMessage, responseMessage(response, 'Could not stop the agent'), true);
     }
   } catch {
+    takeoverRequestedRunId = null;
     elements.stop.disabled = false;
     setMessage(elements.runMessage, 'Could not stop the agent', true);
   }
@@ -334,6 +355,9 @@ async function restoreRunState() {
     const response = await window.electronAPI.getAgentState();
     if (response?.ok && response.state?.status !== 'idle' && response.state?.runId) {
       currentRunId = response.state.runId;
+      if (Number.isSafeInteger(response.state.rendererTabId)) {
+        setAgentControlledTab(response.state.rendererTabId);
+      }
       setRunActive(true, 'Running');
       setMessage(elements.runMessage, 'This run began before the panel was loaded');
     }
@@ -371,6 +395,8 @@ export function initAgentUi(options = {}) {
   };
   if (Object.values(elements).some((element) => !element)) return;
   getActiveTab = typeof options.getActiveTab === 'function' ? options.getActiveTab : () => null;
+  setAgentControlledTab =
+    typeof options.setAgentControlledTab === 'function' ? options.setAgentControlledTab : () => {};
   if (isPrivateWindow()) {
     elements.toggle.classList.add('hidden');
     return;

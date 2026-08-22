@@ -42,7 +42,12 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
 
   await window.locator('webview:not(.hidden)').waitFor({ state: 'attached' });
   await window.locator('#agent-prompt').fill('Summarize this page');
-  await window.locator('#agent-run').click();
+  await expect(window.locator('#agent-stop')).toHaveText('Take over');
+  const tabMarkedAtStart = await window.evaluate(() => {
+    document.querySelector('#agent-run').click();
+    return document.querySelector('[data-test="tab"].active').classList.contains('agent-controlled');
+  });
+  expect(tabMarkedAtStart).toBe(true);
 
   await expect(window.locator('#agent-run-status')).toHaveText('failed', { timeout: 15_000 });
   await expect(window.locator('#agent-run-message')).toHaveText(
@@ -50,4 +55,5 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
   );
   await expect(window.locator('#agent-run')).toBeEnabled();
   await expect(window.locator('#agent-stop')).toBeDisabled();
+  await expect(window.locator('[data-test="tab"].active')).not.toHaveClass(/agent-controlled/);
 });

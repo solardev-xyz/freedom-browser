@@ -184,6 +184,7 @@ function registerFreedomAgentIpc(options = {}) {
 
       const pendingOwner = {
         sender: event.sender,
+        rendererTabId,
         runId: null,
         buffer: [],
         stopping: false,
@@ -245,7 +246,10 @@ function registerFreedomAgentIpc(options = {}) {
 
   const handleGetState = (event) => {
     if (!owner || owner.sender !== event?.sender) return { ok: true, state: { status: 'idle' } };
-    return { ok: true, state: service.getState() };
+    return {
+      ok: true,
+      state: { ...service.getState(), rendererTabId: owner.rendererTabId },
+    };
   };
 
   const handleProviderRequest = async (event, action) => {

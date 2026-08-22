@@ -217,7 +217,8 @@ describe('tabs ui behavior', () => {
   });
 
   test('initializes tabs and supports tab lifecycle helpers', async () => {
-    const { mod, electronAPI, createdWebviews, pageContextMenuMocks } = await loadTabsModule();
+    const { mod, electronAPI, createdWebviews, elements, pageContextMenuMocks } =
+      await loadTabsModule();
     const onWebviewEvent = jest.fn();
 
     mod.setWebviewEventHandler(onWebviewEvent);
@@ -248,6 +249,16 @@ describe('tabs ui behavior', () => {
       'tab-switched',
       expect.objectContaining({ tabId: secondTab.id, isNewTab: false })
     );
+
+    mod.setAgentControlledTab(secondTab.id);
+    const controlledTabElement = findTabElement(elements.tabBar, secondTab.id);
+    expect(controlledTabElement.classList.contains('agent-controlled')).toBe(true);
+    expect(controlledTabElement.querySelector('.tab-agent-badge').textContent).toBe('Agent');
+    mod.switchTab(initialTab.id);
+    expect(controlledTabElement.classList.contains('agent-controlled')).toBe(true);
+    mod.setAgentControlledTab(null);
+    expect(controlledTabElement.classList.contains('agent-controlled')).toBe(false);
+    mod.switchTab(secondTab.id);
 
     mod.moveTab('left');
     expect(mod.getTabs().map((tab) => tab.id)).toEqual([secondTab.id, initialTab.id, thirdTab.id]);

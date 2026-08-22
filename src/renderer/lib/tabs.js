@@ -70,6 +70,18 @@ const tabState = {
   nextTabId: 1,
 };
 
+// Renderer tab currently owned by an embedded agent run. This is presentation
+// state only: the main-process automation binding remains the authority for
+// which webContents the run can control.
+let agentControlledTabId = null;
+
+export const setAgentControlledTab = (tabId = null) => {
+  const nextTabId = tabState.tabs.some((tab) => tab.id === tabId) ? tabId : null;
+  if (agentControlledTabId === nextTabId) return;
+  agentControlledTabId = nextTabId;
+  renderTabs();
+};
+
 // Map of named link targets to tab IDs (e.g. "mywindow" -> 3)
 // Used to reuse tabs when links specify target="mywindow"
 const namedTargets = new Map();
@@ -822,6 +834,13 @@ const createTabElement = (tab) => {
   });
   tabEl.appendChild(audioBtn);
 
+  const agentBadge = document.createElement('span');
+  agentBadge.className = 'tab-agent-badge';
+  agentBadge.dataset.test = 'tab-agent-badge';
+  agentBadge.textContent = 'Agent';
+  agentBadge.title = 'Agent is controlling this tab';
+  tabEl.appendChild(agentBadge);
+
   // Tab title
   const titleEl = document.createElement('span');
   titleEl.className = 'tab-title';
@@ -962,6 +981,7 @@ const updateTabElement = (tabEl, tab, isActive, isBeforeActive) => {
   tabEl.classList.toggle('active', isActive);
   tabEl.classList.toggle('before-active', isBeforeActive);
   tabEl.classList.toggle('pinned', !!tab.pinned);
+  tabEl.classList.toggle('agent-controlled', tab.id === agentControlledTabId);
 
   // Update icon container state (loading, favicon, or default)
   const iconContainer = tabEl.querySelector('.tab-icon-container');

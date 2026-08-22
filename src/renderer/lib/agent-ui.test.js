@@ -106,10 +106,19 @@ async function loadAgentUi(options = {}) {
     isSignatureInFlight: () => false,
     onSignatureFlightChange: jest.fn(),
   }));
+  const setAgentControlledTab = jest.fn();
   const mod = await import('./agent-ui.js');
-  mod.initAgentUi({ getActiveTab: () => ({ id: 7 }) });
+  mod.initAgentUi({ getActiveTab: () => ({ id: 7 }), setAgentControlledTab });
   await flush();
-  return { mod, elements, document, electronAPI, sidebar, emit: (event) => eventHandler(event) };
+  return {
+    mod,
+    elements,
+    document,
+    electronAPI,
+    sidebar,
+    setAgentControlledTab,
+    emit: (event) => eventHandler(event),
+  };
 }
 
 describe('Agent UI', () => {
@@ -169,6 +178,28 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-tool-list'].children[0].children[0].textContent).toBe('✓');
     expect(ctx.elements['agent-run-status'].textContent).toBe('Complete');
     expect(ctx.elements['agent-run'].disabled).toBe(false);
+    expect(ctx.setAgentControlledTab).toHaveBeenNthCalledWith(1, 7);
+    expect(ctx.setAgentControlledTab).toHaveBeenLastCalledWith(null);
+  });
+
+  test('keeps the assigned tab marked until the user takes over', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Complete the task';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+
+    expect(ctx.elements['agent-run-message'].textContent).toContain('stays attached to this tab');
+    ctx.elements['agent-stop'].dispatch('click');
+    await flush();
+
+    expect(ctx.electronAPI.stopAgent).toHaveBeenCalledWith('run_test');
+    expect(ctx.elements['agent-run-message'].textContent).toBe('Taking over…');
+
+    ctx.emit({ type: 'run_finished', runId: 'run_test', status: 'cancelled' });
+    expect(ctx.elements['agent-run-status'].textContent).toBe('Taken over');
+    expect(ctx.elements['agent-run-message'].textContent).toBe('You took control of the tab');
+    expect(ctx.setAgentControlledTab).toHaveBeenLastCalledWith(null);
   });
 
   test('never initializes provider or run IPC in a private window', async () => {
