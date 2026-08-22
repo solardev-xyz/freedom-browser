@@ -27,6 +27,7 @@ function createController(initialUrl = 'https://trusted.example/start') {
     effect: 'form_submission',
     label: 'Submit registration',
     navigationTarget: 'https://trusted.example/submit',
+    formPayloadFingerprint: 'payload_initial',
   };
   let createdUrl = '';
   let createdClosed = false;
@@ -699,6 +700,33 @@ describe('OriginScopedAutomationController', () => {
       ok: false,
       error: { code: ERROR_CODES.STALE_ELEMENT_REFERENCE, retryable: true },
     });
+    expect(controller.execute).not.toHaveBeenCalledWith(OPERATIONS.CLICK, expect.anything());
+  });
+
+  test('invalidates approval when the form payload changes during approval', async () => {
+    const controller = createController();
+    const requestApproval = jest.fn(async () => {
+      controller.setSubmitAction({
+        effect: 'form_submission',
+        label: 'Submit registration',
+        navigationTarget: 'https://trusted.example/submit',
+        formPayloadFingerprint: 'payload_changed',
+      });
+      return 'approved';
+    });
+    const scoped = await createOriginScopedAutomationController({
+      controller,
+      tabId: 'tab_assigned',
+      requestApproval,
+    });
+
+    await expect(
+      scoped.execute(OPERATIONS.CLICK, { tabId: 'tab_assigned', ref: 'ref_submit' })
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: ERROR_CODES.STALE_ELEMENT_REFERENCE, retryable: true },
+    });
+    expect(controller.inspectAction).toHaveBeenCalledTimes(2);
     expect(controller.execute).not.toHaveBeenCalledWith(OPERATIONS.CLICK, expect.anything());
   });
 

@@ -148,6 +148,7 @@ describe('WebContentsPageAdapter', () => {
         effect: 'form_submission',
         label: 'Submit registration',
         navigationTarget: 'https://example.test/submit',
+        formPayloadFingerprint: 'payload_hash',
       });
     const adapter = new WebContentsPageAdapter(webContents, {
       referenceIdFactory: () => 'ref_test',
@@ -158,10 +159,14 @@ describe('WebContentsPageAdapter', () => {
       effect: 'form_submission',
       label: 'Submit registration',
       navigationTarget: 'https://example.test/submit',
+      formPayloadFingerprint: 'payload_hash',
     });
     expect(webContents.sendInputEvent).not.toHaveBeenCalled();
     expect(webContents.insertText).not.toHaveBeenCalled();
     expect(webContents.executeJavaScriptInIsolatedWorld.mock.calls[1][2]).toBe(false);
+    const inspectionCode = webContents.executeJavaScriptInIsolatedWorld.mock.calls[1][1][0].code;
+    expect(inspectionCode).toContain('new formWindow.FormData');
+    expect(inspectionCode).toContain("crypto.subtle.digest");
   });
 
   test('focuses a press target before inspecting its live action semantics', async () => {
@@ -174,6 +179,7 @@ describe('WebContentsPageAdapter', () => {
         effect: 'form_submission',
         label: 'Submit registration',
         navigationTarget: 'https://example.test/submit',
+        formPayloadFingerprint: 'payload_hash',
       });
     const adapter = new WebContentsPageAdapter(webContents, {
       referenceIdFactory: () => 'ref_test',
@@ -186,6 +192,7 @@ describe('WebContentsPageAdapter', () => {
       effect: 'form_submission',
       label: 'Submit registration',
       navigationTarget: 'https://example.test/submit',
+      formPayloadFingerprint: 'payload_hash',
     });
     expect(webContents.executeJavaScriptInIsolatedWorld.mock.calls[1][2]).toBe(true);
     expect(webContents.executeJavaScriptInIsolatedWorld.mock.calls[2][2]).toBe(false);

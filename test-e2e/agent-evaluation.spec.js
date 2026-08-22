@@ -8,6 +8,8 @@ const TAKEOVER_PAGE_URL = 'https://agent-evaluation.test/registration-takeover';
 const CLOSE_PAGE_URL = 'https://agent-evaluation.test/registration-close';
 const PAUSE_APPROVAL_PAGE_URL = 'https://agent-evaluation.test/registration-pause';
 const APPROVAL_MUTATION_PAGE_URL = 'https://agent-evaluation.test/registration-mutated-approval';
+const APPROVAL_PAYLOAD_MUTATION_PAGE_URL =
+  'https://agent-evaluation.test/registration-mutated-payload';
 const FILL_ONLY_PAGE_URL = 'https://agent-evaluation.test/profile-draft';
 const NAVIGATION_TARGET_URL = 'https://agent-evaluation.test/navigation-target';
 const SPA_PAGE_URL = 'https://agent-evaluation.test/spa-workflow';
@@ -56,9 +58,9 @@ const REGISTRATION_BODY = `<!doctype html>
     <h1>Registration</h1>
     <form id="registration">
       <label for="full-name">Full name</label>
-      <input id="full-name" aria-label="Full name">
+      <input id="full-name" name="fullName" aria-label="Full name">
       <label for="project">Project</label>
-      <input id="project" aria-label="Project">
+      <input id="project" name="project" aria-label="Project">
       <button id="submit" type="submit">Submit registration</button>
     </form>
     <p id="confirmation">Not submitted</p>
@@ -82,6 +84,10 @@ const REGISTRATION_BODY = `<!doctype html>
         ' click=' + event.isTrusted;
     });
   </script>`;
+const PAYLOAD_MUTATION_BODY = REGISTRATION_BODY.replace(
+  '<form id="registration">',
+  '<form id="registration"><input id="account-tier" name="accountTier" type="hidden" value="free">'
+);
 
 let server;
 let baseUrl;
@@ -479,7 +485,9 @@ async function handleCompletion(request, response) {
     return;
   }
 
-  if (hasUserMarker(messages, 'APPROVAL_MUTATION_TASK')) {
+  const destinationApprovalMutation = hasUserMarker(messages, 'APPROVAL_MUTATION_TASK');
+  const payloadApprovalMutation = hasUserMarker(messages, 'APPROVAL_PAYLOAD_MUTATION_TASK');
+  if (destinationApprovalMutation || payloadApprovalMutation) {
     switch (toolResults.length) {
       case 0:
         emitToolCall(response, 1, 'browser_snapshot', {});
@@ -505,7 +513,12 @@ async function handleCompletion(request, response) {
         observedPolicyDenial = toolResults.some((message) =>
           contentText(message.content).includes('STALE_ELEMENT_REFERENCE')
         );
-        emitFinal(response, 'The changed form destination was blocked before submission.');
+        emitFinal(
+          response,
+          payloadApprovalMutation
+            ? 'The changed form payload was blocked before submission.'
+            : 'The changed form destination was blocked before submission.'
+        );
     }
     return;
   }
@@ -977,6 +990,54 @@ test('approval is invalidated when the form destination changes before dispatch'
     () => document.querySelector('webview:not(.hidden)')?.getURL?.() || ''
   );
   expect(pageUrl).toBe(APPROVAL_MUTATION_PAGE_URL);
+  await expect(window.locator('.agent-tool-state')).toHaveText(['✓', '✓', '✓', '×']);
+});
+
+test('approval is invalidated when a hidden form value changes before dispatch', async ({
+  window,
+  harness,
+}) => {
+  requestCount = 0;
+  operations.length = 0;
+  observedPolicyDenial = false;
+  await prepareAgentFixture(
+    window,
+    harness,
+    APPROVAL_PAYLOAD_MUTATION_PAGE_URL,
+    PAYLOAD_MUTATION_BODY,
+    'every'
+  );
+
+  await window
+    .locator('#agent-prompt')
+    .fill('APPROVAL_PAYLOAD_MUTATION_TASK: complete this form and submit it.');
+  await window.locator('#agent-run').click();
+  await approveInteraction(window, 'Full name');
+  await approveInteraction(window, 'Project');
+  await expect(window.locator('#agent-approval-action')).toContainText('Submit registration');
+  await window.evaluate(() =>
+    document.querySelector('webview:not(.hidden)')?.executeJavaScript(`(() => {
+      document.querySelector('#account-tier').value = 'administrator';
+    })()`)
+  );
+  await window.locator('#agent-approval-approve').click();
+
+  await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 15_000 });
+  await expect(window.locator('#agent-output')).toHaveText(
+    'The changed form payload was blocked before submission.'
+  );
+  expect(observedPolicyDenial).toBe(true);
+  const pageState = await window.evaluate(() =>
+    document.querySelector('webview:not(.hidden)')?.executeJavaScript(`({
+      confirmation: document.querySelector('#confirmation').textContent,
+      accountTier: document.querySelector('#account-tier').value,
+    })`)
+  );
+  expect(pageState).toEqual({ confirmation: 'Not submitted', accountTier: 'administrator' });
+  const pageUrl = await window.evaluate(
+    () => document.querySelector('webview:not(.hidden)')?.getURL?.() || ''
+  );
+  expect(pageUrl).toBe(APPROVAL_PAYLOAD_MUTATION_PAGE_URL);
   await expect(window.locator('.agent-tool-state')).toHaveText(['✓', '✓', '✓', '×']);
 });
 

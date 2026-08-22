@@ -254,7 +254,7 @@ function inspectReferencedElement(ref, action) {
   return { ok: true, contentEditable: element.isContentEditable };
 }
 
-function describeReferencedElement(ref, action, key) {
+async function describeReferencedElement(ref, action, key) {
   const state = globalThis.__FREEDOM_AUTOMATION_ELEMENT_REFERENCES__;
   const reference = state?.refs?.get(ref);
   if (!reference) return { ok: false, reason: 'changed' };
@@ -313,6 +313,7 @@ function describeReferencedElement(ref, action, key) {
   const formSubmission = (submitsForm && activatesElement) || implicitlySubmitsForm;
   let actionLabel = label;
   let navigationTarget = '';
+  let formPayloadFingerprint = '';
   if (tag === 'a' && element.hasAttribute('href') && activatesElement) {
     navigationTarget = element.href;
   } else if (formSubmission) {
@@ -339,12 +340,49 @@ function describeReferencedElement(ref, action, key) {
     navigationTarget = defaultSubmitter?.hasAttribute('formaction')
       ? defaultSubmitter.formAction
       : element.form.action;
+    const formWindow = element.ownerDocument.defaultView;
+    const formData = defaultSubmitter
+      ? new formWindow.FormData(element.form, defaultSubmitter)
+      : new formWindow.FormData(element.form);
+    const entries = Array.from(formData.entries(), ([name, value]) => [
+      name,
+      typeof value === 'string'
+        ? { kind: 'text', value }
+        : {
+            kind: 'file',
+            name: value.name,
+            size: value.size,
+            type: value.type,
+            lastModified: value.lastModified,
+          },
+    ]);
+    const serializedPayload = JSON.stringify({
+      action: navigationTarget,
+      method: defaultSubmitter?.hasAttribute('formmethod')
+        ? defaultSubmitter.formMethod
+        : element.form.method,
+      enctype: defaultSubmitter?.hasAttribute('formenctype')
+        ? defaultSubmitter.formEnctype
+        : element.form.enctype,
+      target: defaultSubmitter?.hasAttribute('formtarget')
+        ? defaultSubmitter.formTarget
+        : element.form.target,
+      entries,
+    });
+    const payloadDigest = await formWindow.crypto.subtle.digest(
+      'SHA-256',
+      new formWindow.TextEncoder().encode(serializedPayload)
+    );
+    formPayloadFingerprint = Array.from(new Uint8Array(payloadDigest), (byte) =>
+      byte.toString(16).padStart(2, '0')
+    ).join('');
   }
   return {
     ok: true,
     label: actionLabel,
     ...(formSubmission && { effect: 'form_submission' }),
     ...(navigationTarget && { navigationTarget }),
+    ...(formPayloadFingerprint && { formPayloadFingerprint }),
   };
 }
 
@@ -573,6 +611,10 @@ class WebContentsPageAdapter extends EventEmitter {
       ...(result.effect === 'form_submission' && { effect: result.effect }),
       ...(typeof result.navigationTarget === 'string' &&
         result.navigationTarget && { navigationTarget: result.navigationTarget }),
+      ...(typeof result.formPayloadFingerprint === 'string' &&
+        result.formPayloadFingerprint && {
+          formPayloadFingerprint: result.formPayloadFingerprint,
+        }),
     };
   }
 

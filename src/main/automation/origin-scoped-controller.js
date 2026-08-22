@@ -64,6 +64,8 @@ function actionDescriptor(element) {
     label: typeof element?.label === 'string' ? element.label : '',
     navigationTarget:
       typeof element?.navigationTarget === 'string' ? element.navigationTarget : '',
+    formPayloadFingerprint:
+      typeof element?.formPayloadFingerprint === 'string' ? element.formPayloadFingerprint : '',
   });
 }
 
@@ -71,7 +73,8 @@ function sameActionDescriptor(left, right) {
   return (
     left.effect === right.effect &&
     left.label === right.label &&
-    left.navigationTarget === right.navigationTarget
+    left.navigationTarget === right.navigationTarget &&
+    left.formPayloadFingerprint === right.formPayloadFingerprint
   );
 }
 
@@ -317,6 +320,7 @@ class OriginScopedAutomationController {
       element.effect,
       element.label,
       element.navigationTarget,
+      element.formPayloadFingerprint,
     ]);
     if (this.declinedActions.has(actionKey)) {
       return errorEnvelope(
