@@ -55,7 +55,10 @@ test('Freedom CLI starts, controls, and stops a persistent headless runtime', as
   };
 
   try {
-    const started = await runCli(['runtime', 'start'], env);
+    const [started, concurrentStart] = await Promise.all([
+      runCli(['runtime', 'start'], env),
+      runCli(['runtime', 'start'], env),
+    ]);
     expect(started).toMatchObject({
       command: 'runtime.start',
       result: {
@@ -63,6 +66,14 @@ test('Freedom CLI starts, controls, and stops a persistent headless runtime', as
         protocolVersion: 1,
         profile: { id: 'test' },
         idle: { enabled: false },
+      },
+    });
+    expect(concurrentStart).toMatchObject({
+      command: 'runtime.start',
+      result: {
+        state: 'ready',
+        runtimeId: started.result.runtimeId,
+        profile: { id: 'test' },
       },
     });
 

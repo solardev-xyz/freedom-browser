@@ -171,7 +171,7 @@ class RuntimeClient {
     this.pending.clear();
   }
 
-  request(method, params = {}) {
+  request(method, params = {}, options = {}) {
     if (this.closed || this.socket.destroyed) {
       return Promise.reject(
         new CliError('RUNTIME_DISCONNECTED', 'Freedom runtime is not connected', {
@@ -181,6 +181,10 @@ class RuntimeClient {
     }
     const id = this.nextRequestId;
     this.nextRequestId += 1;
+    const requestTimeoutMs = options.timeoutMs ?? this.requestTimeoutMs;
+    if (!Number.isSafeInteger(requestTimeoutMs) || requestTimeoutMs < 1) {
+      return Promise.reject(new TypeError('Runtime request timeout must be a positive integer'));
+    }
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.pending.delete(id);
@@ -189,7 +193,7 @@ class RuntimeClient {
             exitCode: EXIT_CODES.RUNTIME_UNAVAILABLE,
           })
         );
-      }, this.requestTimeoutMs);
+      }, requestTimeoutMs);
       this.pending.set(id, { resolve, reject, timeout });
       this.socket.write(`${JSON.stringify({ id, method, params })}\n`);
     });

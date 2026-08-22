@@ -1,7 +1,11 @@
 'use strict';
 
 const { invalidArgument } = require('./errors');
-const { OPERATIONS } = require('../../../shared/automation-operations');
+const {
+  DEFAULT_WAIT_TIMEOUT_MS,
+  MAX_WAIT_TIMEOUT_MS,
+  OPERATIONS,
+} = require('../../../shared/automation-operations');
 
 const OPERATION_SET = new Set(Object.values(OPERATIONS));
 const TAB_OPERATIONS = new Set([
@@ -17,8 +21,6 @@ const TAB_OPERATIONS = new Set([
 ]);
 const ALLOWED_NAVIGATION_SCHEMES = new Set(['http:', 'https:', 'bzz:', 'ipfs:', 'ipns:']);
 const WAIT_CONDITIONS = new Set(['load', 'navigation', 'text', 'url']);
-const DEFAULT_WAIT_TIMEOUT_MS = 10_000;
-const MAX_WAIT_TIMEOUT_MS = 30_000;
 
 function requireObject(input) {
   if (input === undefined) return {};

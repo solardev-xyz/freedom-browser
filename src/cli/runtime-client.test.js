@@ -36,8 +36,14 @@ describe('Freedom CLI runtime client', () => {
     expect(status).toMatchObject({ state: 'ready', runtimeId: 'runtime_cli_test' });
 
     const slowRequest = client.request('automation.execute', { operation: 'slow', input: {} });
+    const boundedSlowRequest = client.request(
+      'automation.execute',
+      { operation: 'slow', input: {} },
+      { timeoutMs: 5 }
+    );
     const fastRequest = client.request('automation.execute', { operation: 'fast', input: {} });
     await expect(fastRequest).resolves.toMatchObject({ result: { operation: 'fast' } });
+    await expect(boundedSlowRequest).rejects.toMatchObject({ code: 'REQUEST_TIMEOUT' });
     releaseSlow();
     await expect(slowRequest).resolves.toMatchObject({ result: { operation: 'slow' } });
 

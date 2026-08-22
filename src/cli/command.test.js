@@ -3,7 +3,12 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { commandSpec, parseArgs, writeScreenshot } = require('./command');
+const {
+  commandSpec,
+  parseArgs,
+  requestTimeoutForSpec,
+  writeScreenshot,
+} = require('./command');
 
 describe('Freedom CLI command parsing', () => {
   test('parses global options independently of the command', () => {
@@ -64,6 +69,23 @@ describe('Freedom CLI command parsing', () => {
     expect(() => commandSpec('page', 'wait', ['--tab=t1', '--until=network-idle'])).toThrow(
       '--until must be one of'
     );
+    expect(() =>
+      commandSpec('page', 'wait', ['--tab=t1', '--until=load', '--timeout-ms=30001'])
+    ).toThrow('--timeout-ms must not exceed 30000');
+  });
+
+  test('allows the runtime to return typed wait timeouts before the client deadline', () => {
+    const maximumWait = commandSpec('page', 'wait', [
+      '--tab=t1',
+      '--until=text',
+      '--text=never',
+      '--timeout-ms=30000',
+    ]);
+    const defaultWait = commandSpec('page', 'wait', ['--tab=t1', '--until=load']);
+    expect(requestTimeoutForSpec(maximumWait)).toBe(35_000);
+    expect(requestTimeoutForSpec(defaultWait)).toBe(15_000);
+    expect(requestTimeoutForSpec(maximumWait, 1_000)).toBe(1_000);
+    expect(requestTimeoutForSpec(commandSpec('tabs', 'list', []))).toBeUndefined();
   });
 
   test('writes screenshots without overwriting unless force is explicit', () => {

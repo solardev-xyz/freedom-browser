@@ -13,5 +13,7 @@ const OPERATIONS = Object.freeze({
   WAIT: 'browser_wait',
   STOP_LOADING: 'browser_stop_loading',
 });
+const DEFAULT_WAIT_TIMEOUT_MS = 10_000;
+const MAX_WAIT_TIMEOUT_MS = 30_000;
 
-module.exports = { OPERATIONS };
+module.exports = { DEFAULT_WAIT_TIMEOUT_MS, MAX_WAIT_TIMEOUT_MS, OPERATIONS };

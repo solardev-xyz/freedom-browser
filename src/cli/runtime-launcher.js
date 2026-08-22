@@ -8,7 +8,15 @@ const { EXIT_CODES } = require('./exit-codes');
 const { connectRuntime } = require('./runtime-client');
 
 const DEFAULT_START_TIMEOUT_MS = 20_000;
+const DEFAULT_START_COLLISION_GRACE_MS = 2_000;
 const START_POLL_MS = 100;
+
+function profileLockedError(profile) {
+  return new CliError('PROFILE_LOCKED', 'The selected Freedom profile is already in use', {
+    exitCode: EXIT_CODES.PROFILE_LOCKED,
+    details: { profileId: profile.id },
+  });
+}
 
 function resolveRuntimeExecutable(options = {}) {
   const env = options.env || process.env;
@@ -56,8 +64,12 @@ function launchRuntime(profile, options = {}) {
 
 async function waitForRuntime(profile, options = {}) {
   const timeoutMs = options.startTimeoutMs || DEFAULT_START_TIMEOUT_MS;
+  const collisionGraceMs = options.startCollisionGraceMs ?? DEFAULT_START_COLLISION_GRACE_MS;
+  const pollMs = options.startPollMs ?? START_POLL_MS;
+  const connect = options.connectRuntime || connectRuntime;
   const deadline = Date.now() + timeoutMs;
   let lastError;
+  let profileLockDetectedAt = null;
   while (Date.now() < deadline) {
     if (options.child?.launchError) {
       throw new CliError('RUNTIME_START_FAILED', 'Freedom runtime could not be launched', {
@@ -68,23 +80,29 @@ async function waitForRuntime(profile, options = {}) {
     if (options.child && (options.child.exitCode !== null || options.child.signalCode !== null)) {
       const exitCode = options.child.exitCode;
       if (exitCode === EXIT_CODES.PROFILE_LOCKED) {
-        throw new CliError('PROFILE_LOCKED', 'The selected Freedom profile is already in use', {
-          exitCode: EXIT_CODES.PROFILE_LOCKED,
-          details: { profileId: profile.id },
+        profileLockDetectedAt ??= Date.now();
+      } else {
+        throw new CliError('RUNTIME_START_FAILED', 'Freedom runtime exited before becoming ready', {
+          exitCode: EXIT_CODES.RUNTIME_UNAVAILABLE,
+          details: { runtimeExitCode: exitCode },
         });
       }
-      throw new CliError('RUNTIME_START_FAILED', 'Freedom runtime exited before becoming ready', {
-        exitCode: EXIT_CODES.RUNTIME_UNAVAILABLE,
-        details: { runtimeExitCode: exitCode },
-      });
     }
     try {
-      return await connectRuntime(profile, options);
+      return await connect(profile, options);
     } catch (error) {
+      if (error?.exitCode && error.exitCode !== EXIT_CODES.RUNTIME_UNAVAILABLE) throw error;
       lastError = error;
-      await new Promise((resolve) => setTimeout(resolve, START_POLL_MS));
+      if (
+        profileLockDetectedAt !== null &&
+        Date.now() - profileLockDetectedAt >= collisionGraceMs
+      ) {
+        throw profileLockedError(profile);
+      }
+      await new Promise((resolve) => setTimeout(resolve, pollMs));
     }
   }
+  if (profileLockDetectedAt !== null) throw profileLockedError(profile);
   throw new CliError('RUNTIME_START_TIMEOUT', 'Freedom runtime did not become ready in time', {
     exitCode: EXIT_CODES.RUNTIME_UNAVAILABLE,
     cause: lastError,
@@ -102,6 +120,7 @@ async function ensureRuntime(profile, options = {}) {
 }
 
 module.exports = {
+  DEFAULT_START_COLLISION_GRACE_MS,
   DEFAULT_START_TIMEOUT_MS,
   ensureRuntime,
   launchRuntime,

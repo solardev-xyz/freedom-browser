@@ -2,7 +2,11 @@
 
 const fs = require('fs');
 const path = require('path');
-const { OPERATIONS } = require('../shared/automation-operations');
+const {
+  DEFAULT_WAIT_TIMEOUT_MS,
+  MAX_WAIT_TIMEOUT_MS,
+  OPERATIONS,
+} = require('../shared/automation-operations');
 const { CliError, usageError } = require('./errors');
 const { EXIT_CODES } = require('./exit-codes');
 const { locateProfile } = require('./profile-locator');
@@ -45,6 +49,7 @@ const VALUE_GLOBALS = new Set([
 ]);
 const BOOLEAN_GLOBALS = new Set(['json', 'help']);
 const WAIT_CONDITIONS = new Set(['load', 'navigation', 'text', 'url']);
+const WAIT_REQUEST_TIMEOUT_MARGIN_MS = 5_000;
 
 function splitOption(token) {
   const equalIndex = token.indexOf('=');
@@ -197,7 +202,12 @@ function commandSpec(group, action, tokens) {
       throw usageError('--until must be one of: load, navigation, text, url');
     }
     const input = { tabId: requireOption(options, 'tab'), condition };
-    if (options['timeout-ms']) input.timeoutMs = parsePositiveInteger(options['timeout-ms'], 'timeout-ms');
+    if (options['timeout-ms']) {
+      input.timeoutMs = parsePositiveInteger(options['timeout-ms'], 'timeout-ms');
+      if (input.timeoutMs > MAX_WAIT_TIMEOUT_MS) {
+        throw usageError(`--timeout-ms must not exceed ${MAX_WAIT_TIMEOUT_MS}`);
+      }
+    }
     if (condition === 'text') input.text = requireOption(options, 'text');
     if (condition === 'url') input.url = requireOption(options, 'url');
     if (condition === 'navigation') {
@@ -250,6 +260,12 @@ function unwrapAutomationResult(envelope) {
     envelope?.error?.message || 'Automation command failed',
     { exitCode: EXIT_CODES.COMMAND_FAILED, details: envelope?.error?.details }
   );
+}
+
+function requestTimeoutForSpec(spec, configuredTimeoutMs) {
+  if (configuredTimeoutMs !== undefined) return configuredTimeoutMs;
+  if (spec.operation !== OPERATIONS.WAIT) return undefined;
+  return (spec.input.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS) + WAIT_REQUEST_TIMEOUT_MARGIN_MS;
 }
 
 function writeScreenshot(spec, envelope) {
@@ -327,10 +343,16 @@ async function executeParsed(parsed, options = {}) {
   connection = await ensureRuntime(profile, connectionOptions);
   try {
     const envelope = unwrapAutomationResult(
-      await connection.client.request('automation.execute', {
-        operation: parsed.spec.operation,
-        input: parsed.spec.input,
-      })
+      await connection.client.request(
+        'automation.execute',
+        {
+          operation: parsed.spec.operation,
+          input: parsed.spec.input,
+        },
+        {
+          timeoutMs: requestTimeoutForSpec(parsed.spec, parsed.globals.requestTimeoutMs),
+        }
+      )
     );
     return {
       command: parsed.spec.name,
@@ -347,5 +369,6 @@ module.exports = {
   executeParsed,
   extractGlobalOptions,
   parseArgs,
+  requestTimeoutForSpec,
   writeScreenshot,
 };

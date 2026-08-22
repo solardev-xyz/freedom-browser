@@ -3,6 +3,10 @@
 const path = require('path');
 
 const RUNTIME_PROTOCOL_VERSION = 1;
+const RUNTIME_PROCESS_EXIT_CODES = Object.freeze({
+  PROFILE_INITIALIZATION_FAILED: 10,
+  PROFILE_LOCKED: 11,
+});
 const RUNTIME_DIR_NAME = 'automation-runtime';
 const DISCOVERY_FILE_NAME = 'runtime.json';
 const TOKEN_FILE_NAME = 'token';
@@ -22,6 +26,7 @@ function getRuntimePaths(profile) {
 module.exports = {
   DISCOVERY_FILE_NAME,
   RUNTIME_DIR_NAME,
+  RUNTIME_PROCESS_EXIT_CODES,
   RUNTIME_PROTOCOL_VERSION,
   TOKEN_FILE_NAME,
   getRuntimePaths,

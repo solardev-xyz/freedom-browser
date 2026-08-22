@@ -1,10 +1,9 @@
 // Set app name early, before electron-log initializes (it uses app name for log path)
 const { app, dialog } = require('electron');
 const RUNTIME_MODE = process.argv.includes('--runtime');
-const RUNTIME_EXIT_CODES = Object.freeze({
-  PROFILE_INITIALIZATION_FAILED: 10,
-  PROFILE_LOCKED: 11,
-});
+const {
+  RUNTIME_PROCESS_EXIT_CODES,
+} = require('../shared/automation-runtime-contract');
 const {
   createRuntimeServer,
   inspectRuntimeDiscovery,
@@ -72,7 +71,7 @@ try {
       `Freedom could not initialize the selected profile.\n\n${error?.message || error}`
     );
   }
-  const exitCode = RUNTIME_MODE ? RUNTIME_EXIT_CODES.PROFILE_INITIALIZATION_FAILED : 1;
+  const exitCode = RUNTIME_MODE ? RUNTIME_PROCESS_EXIT_CODES.PROFILE_INITIALIZATION_FAILED : 1;
   app.exit(exitCode);
   process.exit(exitCode);
 }
@@ -110,7 +109,7 @@ try {
         );
       }
     }
-    const exitCode = RUNTIME_MODE ? RUNTIME_EXIT_CODES.PROFILE_LOCKED : 0;
+    const exitCode = RUNTIME_MODE ? RUNTIME_PROCESS_EXIT_CODES.PROFILE_LOCKED : 0;
     app.exit(exitCode);
     process.exit(exitCode);
   }
