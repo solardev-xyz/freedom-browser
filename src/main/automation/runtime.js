@@ -27,11 +27,31 @@ function createAutomationRuntime(options = {}) {
   const adapters = new WeakMap();
   const desktopBindingsByHost = new WeakMap();
   const desktopBindingsByAutomationTab = new Map();
+  const tabLifecycleListeners = new Set();
   const isPrivateWebContents = options.isPrivateWebContents || defaultIsPrivateWebContents;
   const navigationRequestIdFactory =
     options.navigationRequestIdFactory || defaultNavigationRequestIdFactory;
   const desktopNavigationTimeoutMs =
     options.desktopNavigationTimeoutMs || DEFAULT_DESKTOP_NAVIGATION_TIMEOUT_MS;
+
+  function emitTabLifecycle(event) {
+    const normalized = Object.freeze({ ...event });
+    for (const listener of tabLifecycleListeners) {
+      try {
+        listener(normalized);
+      } catch {
+        // One internal observer cannot break automation registry cleanup.
+      }
+    }
+  }
+
+  function subscribeTabLifecycle(listener) {
+    if (typeof listener !== 'function') {
+      throw new TypeError('Automation tab lifecycle listener must be a function');
+    }
+    tabLifecycleListeners.add(listener);
+    return () => tabLifecycleListeners.delete(listener);
+  }
 
   async function navigateDesktopTab(tabId, url) {
     const binding = desktopBindingsByAutomationTab.get(tabId);
@@ -92,6 +112,7 @@ function createAutomationRuntime(options = {}) {
       desktopBindingsByAutomationTab.delete(tabId);
       controller.unregisterPage(tabId);
       adapters.delete(webContents);
+      emitTabLifecycle({ type: 'tab_closed', tabId, kind: metadata.kind || 'unknown' });
     });
     return tabId;
   }
@@ -318,6 +339,7 @@ function createAutomationRuntime(options = {}) {
     attachToHostWebContents,
     automationTabIdForRenderer,
     desktopBindingForAutomationTab,
+    subscribeTabLifecycle,
   };
 }
 
@@ -330,4 +352,5 @@ module.exports = {
   attachAutomationToHostWebContents: defaultRuntime.attachToHostWebContents,
   automationTabIdForRenderer: defaultRuntime.automationTabIdForRenderer,
   desktopBindingForAutomationTab: defaultRuntime.desktopBindingForAutomationTab,
+  subscribeAutomationTabLifecycle: defaultRuntime.subscribeTabLifecycle,
 };

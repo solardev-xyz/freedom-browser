@@ -368,7 +368,17 @@ function handleAgentEvent(event) {
   } else if (event.type === 'run_finished') {
     const status = event.status || 'finished';
     const wasTakeover = status === 'cancelled' && takeoverRequestedRunId === event.runId;
-    setRunActive(false, wasTakeover ? 'Taken over' : status === 'completed' ? 'Complete' : status);
+    const wasTabClosed = event.error?.code === 'AGENT_TAB_CLOSED';
+    setRunActive(
+      false,
+      wasTakeover
+        ? 'Taken over'
+        : wasTabClosed
+          ? 'Tab closed'
+          : status === 'completed'
+            ? 'Complete'
+            : status
+    );
     if (wasTakeover) {
       setMessage(elements.runMessage, 'You took control of the tab');
     } else if (event.error?.message) {

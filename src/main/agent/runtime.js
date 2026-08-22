@@ -16,7 +16,10 @@ function createFreedomAgentRuntime(options = {}) {
     store: providerStore,
     dataDir: options.dataDir,
   });
-  const service = new FreedomAgentService({ controller: options.controller });
+  const service = new FreedomAgentService({
+    controller: options.controller,
+    subscribeTabLifecycle: options.subscribeTabLifecycle,
+  });
   const unregisterIpc = registerFreedomAgentIpc({
     ipcMain: options.ipcMain,
     service,

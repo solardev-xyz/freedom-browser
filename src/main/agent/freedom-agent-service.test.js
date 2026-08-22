@@ -231,6 +231,41 @@ describe('FreedomAgentService', () => {
     });
   });
 
+  test('aborts immediately with a distinct failure when the controlled tab closes', async () => {
+    const fake = createFakeSession();
+    let lifecycleListener;
+    const unsubscribeTabLifecycle = jest.fn();
+    const subscribeTabLifecycle = jest.fn((listener) => {
+      lifecycleListener = listener;
+      return unsubscribeTabLifecycle;
+    });
+    const { service } = createService(fake, { subscribeTabLifecycle });
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+
+    lifecycleListener({ type: 'tab_closed', tabId: 'tab_other', kind: 'desktop' });
+    expect(fake.session.abort).not.toHaveBeenCalled();
+    lifecycleListener({ type: 'tab_closed', tabId: 'tab_assigned', kind: 'desktop' });
+    await service.waitForIdle();
+
+    expect(fake.session.abort).toHaveBeenCalledTimes(1);
+    expect(events.at(-1)).toEqual({
+      version: AGENT_EVENT_VERSION,
+      sequence: 2,
+      runId: 'run_test',
+      type: 'run_finished',
+      status: 'failed',
+      error: {
+        code: AGENT_ERROR_CODES.TAB_CLOSED,
+        message: 'The controlled browser tab was closed',
+      },
+    });
+
+    await service.dispose();
+    expect(unsubscribeTabLifecycle).toHaveBeenCalledTimes(1);
+  });
+
   test('redacts provider failures from terminal events', async () => {
     const fake = createFakeSession();
     const { service } = createService(fake);

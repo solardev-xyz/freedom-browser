@@ -171,6 +171,35 @@ test('Take over cancels a streaming provider request', async ({ window }) => {
   await expect.poll(() => streamingResponseClosed).toBe(true);
 });
 
+test('closing the controlled tab immediately aborts the active run', async ({ window }) => {
+  streamingResponseClosed = false;
+  await configureFixtureProvider(window);
+  await window.locator('#agent-prompt').fill('STREAM_CANCEL');
+  await window.locator('#agent-run').click();
+  await expect(window.locator('#agent-output')).toHaveText('Streaming fixture started');
+  await expect(window.locator('[data-test="tab"].agent-controlled')).toHaveCount(1);
+
+  await window.locator('[data-test="new-tab-btn"]').click();
+  await expect(window.locator('[data-test="tab"]')).toHaveCount(2);
+
+  const startedAt = Date.now();
+  await window.locator('[data-test="tab"].agent-controlled [data-test="tab-close"]').click();
+  await expect(window.locator('#agent-run-status')).toHaveText('Tab closed', { timeout: 3_000 });
+  expect(Date.now() - startedAt).toBeLessThan(3_000);
+  await expect(window.locator('#agent-run-message')).toHaveText(
+    'The controlled browser tab was closed'
+  );
+  await expect(window.locator('#agent-run')).toBeEnabled();
+  await expect(window.locator('#agent-stop')).toBeDisabled();
+  await expect.poll(() => streamingResponseClosed).toBe(true);
+
+  await window.locator('webview:not(.hidden)').waitFor({ state: 'attached' });
+  await window.locator('#agent-prompt').fill('AFTER_TAB_CLOSE');
+  await window.locator('#agent-run').click();
+  await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 5_000 });
+  await expect(window.locator('#agent-output')).toHaveText('READY');
+});
+
 test('Take over cancels an in-flight browser navigation', async ({ window, harness }) => {
   await harness.setContentFixture(SLOW_NAVIGATION_URL, {
     body: '<!doctype html><title>Still loading</title><p>Navigation started</p>',

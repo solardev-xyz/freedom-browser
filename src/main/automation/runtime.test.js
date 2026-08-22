@@ -111,6 +111,8 @@ describe('automation runtime registration', () => {
     const host = new EventEmitter();
     const ipcMain = new EventEmitter();
     const desktop = new FakeWebContents('https://desktop.example/', 21);
+    const lifecycleEvents = [];
+    const unsubscribe = runtime.subscribeTabLifecycle((event) => lifecycleEvents.push(event));
     desktop.hostWebContents = host;
     runtime.attachToHostWebContents(host, { ipcMain });
     host.emit('did-attach-webview', {}, desktop);
@@ -124,6 +126,10 @@ describe('automation runtime registration', () => {
 
     expect(runtime.automationTabIdForRenderer(host, 9)).toBeNull();
     expect(runtime.desktopBindingForAutomationTab('tab_desktop')).toBeNull();
+    expect(lifecycleEvents).toEqual([
+      { type: 'tab_closed', tabId: 'tab_desktop', kind: 'desktop' },
+    ]);
+    unsubscribe();
   });
 
   test('routes bound desktop navigation through its trusted renderer tab', async () => {

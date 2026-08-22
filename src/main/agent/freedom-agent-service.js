@@ -15,6 +15,7 @@ const AGENT_ERROR_CODES = Object.freeze({
   SESSION_START_FAILED: 'SESSION_START_FAILED',
   PROVIDER_ERROR: 'PROVIDER_ERROR',
   MODEL_OUTPUT_LIMIT: 'MODEL_OUTPUT_LIMIT',
+  TAB_CLOSED: 'AGENT_TAB_CLOSED',
   TAB_UNAVAILABLE: 'TAB_UNAVAILABLE',
   RUN_FAILED: 'RUN_FAILED',
 });
@@ -134,6 +135,19 @@ class FreedomAgentService {
     this.activeRun = null;
     this.disposed = false;
     this.sequence = 0;
+    this.unsubscribeTabLifecycle = null;
+    if (options.subscribeTabLifecycle !== undefined) {
+      if (typeof options.subscribeTabLifecycle !== 'function') {
+        throw new TypeError('FreedomAgentService requires a tab lifecycle subscriber');
+      }
+      const unsubscribe = options.subscribeTabLifecycle((event) =>
+        this.#handleTabLifecycle(event)
+      );
+      if (typeof unsubscribe !== 'function') {
+        throw new TypeError('Automation tab lifecycle subscription must return an unsubscribe function');
+      }
+      this.unsubscribeTabLifecycle = unsubscribe;
+    }
   }
 
   subscribe(listener) {
@@ -214,6 +228,10 @@ class FreedomAgentService {
       run.session = session;
       run.unsubscribe = session.subscribe((event) => this.#handlePiEvent(run, event));
 
+      if (run.failure) {
+        await this.#finish(run, 'failed', run.failure);
+        return { runId: run.runId };
+      }
       if (run.stopRequested || this.disposed) {
         await this.#finish(run, 'cancelled');
         return { runId: run.runId };
@@ -223,10 +241,12 @@ class FreedomAgentService {
       run.execution = this.#executeRun(run, prompt);
       return { runId: run.runId };
     } catch {
-      const error = terminalError(
-        AGENT_ERROR_CODES.SESSION_START_FAILED,
-        'The agent session could not be started'
-      );
+      const error =
+        run.failure ||
+        terminalError(
+          AGENT_ERROR_CODES.SESSION_START_FAILED,
+          'The agent session could not be started'
+        );
       await this.#finish(run, 'failed', error);
       throw new FreedomAgentError(error.code, error.message);
     }
@@ -254,6 +274,14 @@ class FreedomAgentService {
   async dispose() {
     if (this.disposed) return;
     this.disposed = true;
+    if (this.unsubscribeTabLifecycle) {
+      try {
+        this.unsubscribeTabLifecycle();
+      } catch {
+        // Active-run cancellation and session cleanup remain authoritative.
+      }
+      this.unsubscribeTabLifecycle = null;
+    }
     const run = this.activeRun;
     if (run) {
       await this.stop(run.runId);
@@ -350,6 +378,25 @@ class FreedomAgentService {
       );
       Promise.resolve(run.session?.abort()).catch(() => {});
     }
+  }
+
+  #handleTabLifecycle(event) {
+    const run = this.activeRun;
+    if (
+      !run ||
+      run.finished ||
+      event?.type !== 'tab_closed' ||
+      event.tabId !== run.tabId ||
+      run.failure
+    ) {
+      return;
+    }
+    run.failure = terminalError(
+      AGENT_ERROR_CODES.TAB_CLOSED,
+      'The controlled browser tab was closed'
+    );
+    run.stopRequested = true;
+    Promise.resolve(run.session?.abort()).catch(() => {});
   }
 
   async #finish(run, status, error) {

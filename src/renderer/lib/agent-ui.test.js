@@ -226,6 +226,32 @@ describe('Agent UI', () => {
     expect(ctx.setAgentControlledTab).toHaveBeenLastCalledWith(null);
   });
 
+  test('reports controlled-tab closure as a distinct terminal state', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Complete the task';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+
+    ctx.emit({
+      type: 'run_finished',
+      runId: 'run_test',
+      status: 'failed',
+      error: {
+        code: 'AGENT_TAB_CLOSED',
+        message: 'The controlled browser tab was closed',
+      },
+    });
+
+    expect(ctx.elements['agent-run-status'].textContent).toBe('Tab closed');
+    expect(ctx.elements['agent-run-message'].textContent).toBe(
+      'The controlled browser tab was closed'
+    );
+    expect(ctx.elements['agent-run'].disabled).toBe(false);
+    expect(ctx.elements['agent-stop'].disabled).toBe(true);
+    expect(ctx.setAgentControlledTab).toHaveBeenLastCalledWith(null);
+  });
+
   test('connects a ChatGPT subscription without exposing OAuth credentials', async () => {
     let resolveLogin;
     const loginPromise = new Promise((resolve) => {

@@ -33,6 +33,7 @@ describe('Freedom agent runtime', () => {
       dataDir: '/profiles/work/agent',
       controller: {},
       automationTabIdForRenderer: jest.fn(),
+      subscribeTabLifecycle: jest.fn(() => jest.fn()),
       isTrustedSender: jest.fn(),
       openExternal: jest.fn(),
     };
@@ -49,7 +50,10 @@ describe('Freedom agent runtime', () => {
       store: providerStore,
       dataDir: options.dataDir,
     });
-    expect(FreedomAgentService).toHaveBeenCalledWith({ controller: options.controller });
+    expect(FreedomAgentService).toHaveBeenCalledWith({
+      controller: options.controller,
+      subscribeTabLifecycle: options.subscribeTabLifecycle,
+    });
     expect(registerFreedomAgentIpc).toHaveBeenCalledWith({
       ipcMain: options.ipcMain,
       service,

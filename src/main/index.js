@@ -311,6 +311,7 @@ const {
   automationController,
   automationTabIdForRenderer,
   registerAutomationWebContents,
+  subscribeAutomationTabLifecycle,
 } = require('./automation/runtime');
 const { createFreedomAgentRuntime } = require('./agent/runtime');
 const { getAgentDataDir } = require('./profile-paths');
@@ -413,6 +414,7 @@ async function bootstrap() {
       dataDir: getAgentDataDir(),
       controller: automationController,
       automationTabIdForRenderer,
+      subscribeTabLifecycle: subscribeAutomationTabLifecycle,
       isTrustedSender: (sender) =>
         !isPrivateWebContents(sender) &&
         getMainWindows().some((window) => window.webContents === sender),
