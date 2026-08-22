@@ -869,7 +869,6 @@ export function initAgentUi(options = {}) {
     activeModelLabel: byId('agent-active-model-label'),
     modelMenu: byId('agent-model-menu'),
     modelMenuList: byId('agent-model-menu-list'),
-    addProvider: byId('agent-add-provider'),
     manageProviders: byId('agent-manage-providers'),
     scopeButton: byId('agent-scope-button'),
     scopePopover: byId('agent-scope-popover'),
@@ -914,7 +913,6 @@ export function initAgentUi(options = {}) {
     elements.scopePopover.hidden = !opening;
     elements.scopeButton.setAttribute('aria-expanded', String(opening));
   });
-  elements.addProvider.addEventListener('click', showProviderSetup);
   elements.manageProviders.addEventListener('click', showProviderSetup);
   document.addEventListener('click', (event) => {
     if (

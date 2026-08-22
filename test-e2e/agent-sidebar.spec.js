@@ -55,7 +55,7 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
 
   await window.locator('#agent-model-menu-button').click();
   await expect(window.locator('#agent-model-menu')).toBeVisible();
-  await window.locator('#agent-add-provider').click();
+  await window.locator('#agent-manage-providers').click();
   await expect(window.locator('#agent-setup-view')).toBeVisible();
   await expect(window.locator('#agent-connected-provider-list')).toContainText('Free Pi');
 

@@ -57,7 +57,6 @@ function createAgentElements() {
     'agent-active-model-label',
     'agent-model-menu',
     'agent-model-menu-list',
-    'agent-add-provider',
     'agent-manage-providers',
     'agent-scope-button',
     'agent-scope-popover',
@@ -98,7 +97,6 @@ function createAgentElements() {
   elements['agent-model-menu-button'] = createElement('button');
   elements['agent-model-menu'] = createElement('div');
   elements['agent-model-menu'].hidden = true;
-  elements['agent-add-provider'] = createElement('button');
   elements['agent-manage-providers'] = createElement('button');
   elements['agent-scope-button'] = createElement('button');
   elements['agent-scope-popover'] = createElement('div');
