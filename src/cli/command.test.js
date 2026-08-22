@@ -4,6 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const {
+  HELP,
   commandSpec,
   parseArgs,
   requestTimeoutForSpec,
@@ -11,6 +12,11 @@ const {
 } = require('./command');
 
 describe('Freedom CLI command parsing', () => {
+  test('presents the repository-local command as freedom-cli', () => {
+    expect(HELP).toContain('freedom-cli [global options] runtime start|status|stop');
+    expect(HELP).not.toContain('  freedom [global options]');
+  });
+
   test('parses global options independently of the command', () => {
     expect(
       parseArgs([

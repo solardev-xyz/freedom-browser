@@ -16,17 +16,17 @@ const { ensureRuntime } = require('./runtime-launcher');
 const HELP = `Freedom CLI
 
 Usage:
-  freedom [global options] runtime start|status|stop
-  freedom [global options] tabs list
-  freedom [global options] tabs open --url <url>
-  freedom [global options] tabs get|close --tab <tab-id>
-  freedom [global options] page snapshot --tab <tab-id>
-  freedom [global options] page navigate --tab <tab-id> --url <url>
-  freedom [global options] page click --tab <tab-id> --ref <ref>
-  freedom [global options] page type --tab <tab-id> --ref <ref> --text <text> [--append]
-  freedom [global options] page wait --tab <tab-id> --until <condition> [condition options]
-  freedom [global options] page screenshot --tab <tab-id> [--output <path>] [--force]
-  freedom [global options] page stop --tab <tab-id>
+  freedom-cli [global options] runtime start|status|stop
+  freedom-cli [global options] tabs list
+  freedom-cli [global options] tabs open --url <url>
+  freedom-cli [global options] tabs get|close --tab <tab-id>
+  freedom-cli [global options] page snapshot --tab <tab-id>
+  freedom-cli [global options] page navigate --tab <tab-id> --url <url>
+  freedom-cli [global options] page click --tab <tab-id> --ref <ref>
+  freedom-cli [global options] page type --tab <tab-id> --ref <ref> --text <text> [--append]
+  freedom-cli [global options] page wait --tab <tab-id> --until <condition> [condition options]
+  freedom-cli [global options] page screenshot --tab <tab-id> [--output <path>] [--force]
+  freedom-cli [global options] page stop --tab <tab-id>
 
 Global options:
   --profile <id>              Select a registered profile (default: automation)

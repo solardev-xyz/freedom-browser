@@ -17,7 +17,7 @@
   },
   "main": "src/main/index.js",
   "bin": {
-    "freedom": "src/cli/freedom.js"
+    "freedom-cli": "src/cli/freedom.js"
   },
   "scripts": {
     "start": "electron .",
