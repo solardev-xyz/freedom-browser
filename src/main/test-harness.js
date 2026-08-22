@@ -55,6 +55,7 @@ function isTestMode() {
 // In-memory fixtures. Maps are keyed lower-case for ENS / hashes; content
 // fixtures are keyed by exact URL or URL prefix (longest-match wins).
 const contentFixtures = new Map();
+const contentFixtureActivity = new Map();
 const ensFixtures = new Map();
 const probeFixtures = new Map();
 const automationWindows = new Map();
@@ -88,6 +89,7 @@ function resetProfileDeleteSims() {
 
 function resetFixtures() {
   contentFixtures.clear();
+  contentFixtureActivity.clear();
   ensFixtures.clear();
   probeFixtures.clear();
 }
@@ -108,11 +110,26 @@ function pickContentFixture(url) {
   return best;
 }
 
-function buildResponse(fixture) {
+function buildResponse(fixture, url) {
   const status = fixture.status ?? 200;
   const headers = {
     'Content-Type': fixture.contentType ?? 'text/html; charset=utf-8',
   };
+  if (fixture.holdOpen === true) {
+    const activity = contentFixtureActivity.get(url) || { started: 0, cancelled: 0 };
+    activity.started += 1;
+    contentFixtureActivity.set(url, activity);
+    const body = new TextEncoder().encode(fixture.body ?? '');
+    const stream = new ReadableStream({
+      start(controller) {
+        if (body.byteLength) controller.enqueue(body);
+      },
+      cancel() {
+        activity.cancelled += 1;
+      },
+    });
+    return new Response(stream, { status, headers });
+  }
   return new Response(fixture.body ?? '', { status, headers });
 }
 
@@ -134,7 +151,7 @@ function makeProtocolHandler(scheme) {
       log.info(`[test-harness] ${scheme}: 404 (no fixture) for ${redactUrlForLog(request.url)}`);
       return notFoundResponse(request.url);
     }
-    return buildResponse(fixture);
+    return buildResponse(fixture, request.url);
   };
 }
 
@@ -142,7 +159,7 @@ function makeHttpStubHandler(scheme) {
   return async (request) => {
     log.info(`[test-harness] stubbed ${scheme}: ${redactUrlForLog(request.url)}`);
     const fixture = pickContentFixture(request.url);
-    if (fixture) return buildResponse(fixture);
+    if (fixture) return buildResponse(fixture, request.url);
     const body =
       `<!doctype html>` +
       `<title>test-harness ${scheme} stub</title>` +
@@ -549,6 +566,7 @@ function exposeGlobalShim() {
     },
     state: () => ({
       content: [...contentFixtures.keys()],
+      contentActivity: Object.fromEntries(contentFixtureActivity),
       ens: [...ensFixtures.keys()],
       probes: [...probeFixtures.keys()],
       profileLaunches: profileLaunches.map((entry) => ({ ...entry })),
