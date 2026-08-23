@@ -344,6 +344,10 @@ describe('OriginScopedAutomationController', () => {
       ok: true,
       result: { activeTabId: 'tab_created', tab: { tabId: 'tab_created' } },
     });
+    expect(scoped.getWorkspaceState()).toEqual({
+      tabIds: ['tab_assigned', 'tab_created'],
+      activeTabId: 'tab_created',
+    });
     await expect(scoped.execute(OPERATIONS.LIST_TABS, {})).resolves.toMatchObject({
       ok: true,
       result: {
@@ -359,6 +363,10 @@ describe('OriginScopedAutomationController', () => {
     ).resolves.toMatchObject({
       ok: true,
       result: { activeTabId: 'tab_assigned' },
+    });
+    expect(scoped.getWorkspaceState()).toEqual({
+      tabIds: ['tab_assigned'],
+      activeTabId: 'tab_assigned',
     });
     await expect(scoped.execute(OPERATIONS.LIST_TABS, {})).resolves.toMatchObject({
       result: { activeTabId: 'tab_assigned', tabs: [{ url: 'https://trusted.example/start' }] },

@@ -310,6 +310,7 @@ const { installTestHarness, registerStubProtocols } = require('./test-harness');
 const {
   automationController,
   automationTabIdForRenderer,
+  desktopBindingForAutomationTab,
   registerAutomationWebContents,
   subscribeAutomationTabLifecycle,
   createDesktopAutomationPage,
@@ -424,6 +425,7 @@ async function bootstrap() {
       controller: automationController,
       automationTabIdForRenderer,
       createAutomationPageForHost: createDesktopAutomationPageForHost,
+      desktopBindingForAutomationTab,
       subscribeTabLifecycle: subscribeAutomationTabLifecycle,
       isTrustedSender: (sender) =>
         !isPrivateWebContents(sender) &&

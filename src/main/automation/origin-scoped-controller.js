@@ -116,6 +116,13 @@ class OriginScopedAutomationController {
     return this.activeTabId;
   }
 
+  getWorkspaceState() {
+    return {
+      tabIds: [...this.ownedTabs.keys()],
+      activeTabId: this.activeTabId,
+    };
+  }
+
   async execute(operation, input = {}) {
     if (!ORIGIN_SCOPED_OPERATIONS.has(operation)) {
       return errorEnvelope(

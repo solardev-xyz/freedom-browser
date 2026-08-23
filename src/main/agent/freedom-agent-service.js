@@ -272,6 +272,23 @@ class FreedomAgentService {
     };
   }
 
+  getWorkspaceState() {
+    const scopedController = this.conversation?.scopedController;
+    if (!scopedController || typeof scopedController.getWorkspaceState !== 'function') {
+      return { tabIds: [], activeTabId: null };
+    }
+    const workspace = scopedController.getWorkspaceState();
+    return {
+      tabIds: Array.isArray(workspace?.tabIds)
+        ? workspace.tabIds.filter((tabId) => typeof tabId === 'string' && tabId)
+        : [],
+      activeTabId:
+        typeof workspace?.activeTabId === 'string' && workspace.activeTabId
+          ? workspace.activeTabId
+          : null,
+    };
+  }
+
   async start(options) {
     if (this.disposed) {
       throw new FreedomAgentError(

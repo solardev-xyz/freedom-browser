@@ -44,6 +44,9 @@ function createService(options = {}) {
       tabId: 'tab_bound',
       transcript: [],
     })),
+    getWorkspaceState:
+      options.getWorkspaceState ||
+      jest.fn(() => ({ tabIds: ['tab_bound'], activeTabId: 'tab_bound' })),
     subscribe: jest.fn((nextListener) => {
       listener = nextListener;
       return jest.fn();
@@ -61,6 +64,15 @@ function register(overrides = {}) {
     candidate === sender && rendererTabId === 7 ? 'tab_bound' : null
   );
   const createAutomationPageForHost = jest.fn(async () => 'tab_fresh');
+  const desktopBindingForAutomationTab = jest.fn((automationTabId) => {
+    if (automationTabId === 'tab_bound') {
+      return { hostWebContents: sender, rendererTabId: 7 };
+    }
+    if (automationTabId === 'tab_fresh') {
+      return { hostWebContents: sender, rendererTabId: 8 };
+    }
+    return null;
+  });
   const resolveModel = jest.fn(async () => ({
     model: { id: 'model_test' },
     modelRuntime: { kind: 'runtime' },
@@ -90,6 +102,7 @@ function register(overrides = {}) {
     ipcMain,
     service,
     automationTabIdForRenderer,
+    desktopBindingForAutomationTab,
     createAutomationPageForHost,
     resolveModel,
     providerResolver,
@@ -103,6 +116,7 @@ function register(overrides = {}) {
     sender,
     otherSender,
     automationTabIdForRenderer,
+    desktopBindingForAutomationTab,
     createAutomationPageForHost,
     resolveModel,
     providerResolver,
@@ -415,12 +429,40 @@ describe('Freedom agent IPC', () => {
         tabId: 'tab_bound',
         transcript: [],
         rendererTabId: 7,
+        taskTabs: [{ rendererTabId: 7, agentActive: true }],
       },
     });
     expect(getState({ sender: ctx.otherSender })).toEqual({
       ok: true,
       state: { status: 'idle' },
     });
+  });
+
+  test('projects only task tabs bound to the owning chrome', async () => {
+    const service = createService({
+      getWorkspaceState: jest.fn(() => ({
+        tabIds: ['tab_bound', 'tab_foreign', 'tab_missing'],
+        activeTabId: 'tab_foreign',
+      })),
+    });
+    const ctx = register({ service });
+    ctx.desktopBindingForAutomationTab.mockImplementation((automationTabId) => {
+      if (automationTabId === 'tab_bound') {
+        return { hostWebContents: ctx.sender, rendererTabId: 7 };
+      }
+      if (automationTabId === 'tab_foreign') {
+        return { hostWebContents: ctx.otherSender, rendererTabId: 44 };
+      }
+      return null;
+    });
+    const start = ctx.ipcMain.handlers.get(IPC.AGENT_START);
+    const getState = ctx.ipcMain.handlers.get(IPC.AGENT_GET_STATE);
+
+    await start({ sender: ctx.sender }, { rendererTabId: 7, prompt: 'Task' });
+
+    expect(getState({ sender: ctx.sender }).state.taskTabs).toEqual([
+      { rendererTabId: 7, agentActive: false },
+    ]);
   });
 
   test('configures providers only for trusted chrome and never returns a key', async () => {

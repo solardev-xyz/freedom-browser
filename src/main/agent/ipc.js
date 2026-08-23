@@ -102,6 +102,7 @@ function registerFreedomAgentIpc(options = {}) {
     service,
     automationTabIdForRenderer,
     createAutomationPageForHost,
+    desktopBindingForAutomationTab,
     resolveModel,
     providerResolver,
     isTrustedSender,
@@ -119,7 +120,8 @@ function registerFreedomAgentIpc(options = {}) {
     typeof service.clearConversation !== 'function' ||
     typeof service.decideApproval !== 'function' ||
     typeof service.subscribe !== 'function' ||
-    typeof service.getState !== 'function'
+    typeof service.getState !== 'function' ||
+    typeof service.getWorkspaceState !== 'function'
   ) {
     throw new TypeError('Freedom agent IPC requires an agent service');
   }
@@ -128,6 +130,9 @@ function registerFreedomAgentIpc(options = {}) {
   }
   if (typeof createAutomationPageForHost !== 'function') {
     throw new TypeError('Freedom agent IPC requires the desktop tab creation capability');
+  }
+  if (typeof desktopBindingForAutomationTab !== 'function') {
+    throw new TypeError('Freedom agent IPC requires the desktop tab presentation resolver');
   }
   if (typeof resolveModel !== 'function') {
     throw new TypeError('Freedom agent IPC requires a main-process model resolver');
@@ -412,9 +417,29 @@ function registerFreedomAgentIpc(options = {}) {
 
   const handleGetState = (event) => {
     if (!owner || owner.sender !== event?.sender) return { ok: true, state: { status: 'idle' } };
+    const workspace = service.getWorkspaceState();
+    const taskTabs = [];
+    for (const automationTabId of workspace.tabIds) {
+      const binding = desktopBindingForAutomationTab(automationTabId);
+      if (
+        binding?.hostWebContents !== owner.sender ||
+        !Number.isSafeInteger(binding.rendererTabId) ||
+        binding.rendererTabId < 1
+      ) {
+        continue;
+      }
+      taskTabs.push({
+        rendererTabId: binding.rendererTabId,
+        agentActive: automationTabId === workspace.activeTabId,
+      });
+    }
     return {
       ok: true,
-      state: { ...service.getState(), rendererTabId: owner.rendererTabId },
+      state: {
+        ...service.getState(),
+        rendererTabId: owner.rendererTabId,
+        taskTabs,
+      },
     };
   };
 

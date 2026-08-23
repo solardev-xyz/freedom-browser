@@ -53,6 +53,10 @@ function createService(fakeSession, overrides = {}) {
     loadSdk: jest.fn(async () => ({ kind: 'sdk' })),
     createControllerScope: jest.fn(async ({ controller }) => ({
       ...controller,
+      getWorkspaceState: jest.fn(() => ({
+        tabIds: ['tab_assigned', 'tab_research'],
+        activeTabId: 'tab_research',
+      })),
       prepareResume: jest.fn(async () => ({ ok: true })),
     })),
     createTools: jest.fn(async () => [{ name: 'browser_snapshot' }]),
@@ -108,6 +112,10 @@ describe('FreedomAgentService', () => {
       thinkingLevel: 'low',
       customTools: [{ name: 'browser_snapshot' }],
       systemPrompt: expect.stringContaining('requires user approval before every page interaction'),
+    });
+    expect(service.getWorkspaceState()).toEqual({
+      tabIds: ['tab_assigned', 'tab_research'],
+      activeTabId: 'tab_research',
     });
     expect(fake.session.prompt).toHaveBeenCalledWith('Summarize this page', {
       expandPromptTemplates: false,
