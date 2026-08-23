@@ -34,14 +34,14 @@ function finishSse(response, finishReason = 'stop') {
   response.end('data: [DONE]\n\n');
 }
 
-function toolCallChunk(name, argumentsJson) {
+function toolCallChunk(name, argumentsJson, id = `call_${name}`) {
   return completionChunk({
     delta: {
       role: 'assistant',
       tool_calls: [
         {
           index: 0,
-          id: `call_${name}`,
+          id,
           type: 'function',
           function: { name, arguments: argumentsJson },
         },
@@ -68,6 +68,12 @@ function lastToolCallId(body) {
     .reverse()
     .find((candidate) => candidate?.role === 'tool');
   return typeof message?.tool_call_id === 'string' ? message.tool_call_id : '';
+}
+
+function toolResponsesAfterLastUser(body) {
+  const messages = body.messages || [];
+  const lastUserIndex = messages.findLastIndex((message) => message?.role === 'user');
+  return messages.slice(lastUserIndex + 1).filter((message) => message?.role === 'tool');
 }
 
 async function handleCompletion(request, response) {
@@ -142,6 +148,53 @@ async function handleCompletion(request, response) {
           content: retainedUser && retainedAssistant ? 'CONTEXT_RETAINED' : 'CONTEXT_MISSING',
         },
       })
+    );
+    finishSse(response);
+    return;
+  }
+
+  if (prompt.includes('CREATE_FIVE_TASK_TABS')) {
+    const createdCount = toolResponsesAfterLastUser(body).length;
+    if (createdCount < 4) {
+      const articleNumber = createdCount + 1;
+      writeSse(
+        response,
+        toolCallChunk(
+          'browser_create_tab',
+          JSON.stringify({ url: `https://agent-tabs.test/article-${articleNumber}` }),
+          `call_create_${articleNumber}`
+        )
+      );
+      finishSse(response, 'tool_calls');
+      return;
+    }
+    writeSse(response, completionChunk({ delta: { role: 'assistant', content: 'FIVE_TABS_READY' } }));
+    finishSse(response);
+    return;
+  }
+
+  if (prompt.includes('AFTER_ORIGINAL_CLOSE')) {
+    writeSse(response, completionChunk({ delta: { role: 'assistant', content: 'CHAT_CONTINUED' } }));
+    finishSse(response);
+    return;
+  }
+
+  if (prompt.includes('AFTER_ALL_TASK_TABS_CLOSE')) {
+    if (toolResponsesAfterLastUser(body).length === 0) {
+      writeSse(
+        response,
+        toolCallChunk(
+          'browser_create_tab',
+          JSON.stringify({ url: 'https://agent-tabs.test/fresh-workspace' }),
+          'call_create_fresh_workspace'
+        )
+      );
+      finishSse(response, 'tool_calls');
+      return;
+    }
+    writeSse(
+      response,
+      completionChunk({ delta: { role: 'assistant', content: 'FRESH_WORKSPACE_READY' } })
     );
     finishSse(response);
     return;
@@ -282,37 +335,48 @@ test('Pause cancels an active browser wait and the same run can resume', async (
   await expect(window.locator('#agent-output')).toContainText('RESUMED');
 });
 
-test('closing the controlled tab immediately aborts the active run', async ({ window }) => {
-  streamingResponseClosed = false;
+test('a conversation survives its original and then all task tabs closing', async ({
+  window,
+  harness,
+}) => {
+  for (let index = 1; index <= 4; index += 1) {
+    await harness.setContentFixture(`https://agent-tabs.test/article-${index}`, {
+      body: `<!doctype html><title>Article ${index}</title><p>Article ${index}</p>`,
+    });
+  }
+  await harness.setContentFixture('https://agent-tabs.test/fresh-workspace', {
+    body: '<!doctype html><title>Fresh workspace</title><p>Fresh workspace</p>',
+  });
   await configureFixtureProvider(window);
-  await window.locator('#agent-prompt').fill('STREAM_CANCEL');
+  await window.locator('#agent-prompt').fill('CREATE_FIVE_TASK_TABS');
   await window.locator('#agent-run').click();
-  await expect(window.locator('#agent-output')).toHaveText('Streaming fixture started');
-  await expect(window.locator('[data-test="tab"].agent-controlled')).toHaveCount(1);
+  await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 10_000 });
+  await expect(window.locator('#agent-output')).toHaveText('FIVE_TABS_READY');
+  await expect(window.locator('[data-test="tab"]')).toHaveCount(5);
 
-  await window.locator('[data-test="new-tab-btn"]').click();
+  await window.locator('[data-test="tab"]').nth(0).locator('[data-test="tab-close"]').click();
+  await window.locator('[data-test="tab"]').nth(0).locator('[data-test="tab-close"]').click();
+  await window.locator('[data-test="tab"]').nth(0).locator('[data-test="tab-close"]').click();
   await expect(window.locator('[data-test="tab"]')).toHaveCount(2);
 
-  const startedAt = Date.now();
-  await window.locator('[data-test="tab"].agent-controlled [data-test="tab-close"]').click();
-  await expect(window.locator('#agent-run-status')).toHaveText('Tab closed', { timeout: 3_000 });
-  expect(Date.now() - startedAt).toBeLessThan(3_000);
-  await expect(window.locator('#agent-run-message')).toHaveText(
-    'The controlled browser tab was closed'
-  );
-  await expect(window.locator('#agent-prompt')).toBeDisabled();
-  await expect(window.locator('#agent-run')).toBeDisabled();
-  await expect(window.locator('#agent-stop')).toBeDisabled();
-  await expect(window.locator('#agent-new-chat')).toBeEnabled();
-  await expect.poll(() => streamingResponseClosed).toBe(true);
-
-  await window.locator('#agent-new-chat').click();
-  await window.locator('webview:not(.hidden)').waitFor({ state: 'attached' });
-  await expect(window.locator('#agent-prompt')).toBeEnabled();
-  await window.locator('#agent-prompt').fill('AFTER_TAB_CLOSE');
+  await window.locator('#agent-prompt').fill('AFTER_ORIGINAL_CLOSE');
   await window.locator('#agent-run').click();
   await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 5_000 });
-  await expect(window.locator('#agent-output')).toHaveText('READY');
+  await expect(window.locator('#agent-output')).toHaveText('CHAT_CONTINUED');
+  await expect(window.locator('.agent-user-message')).toHaveCount(2);
+
+  await window.locator('[data-test="new-tab-btn"]').click();
+  await expect(window.locator('[data-test="tab"]')).toHaveCount(3);
+  await window.locator('[data-test="tab"]').nth(0).locator('[data-test="tab-close"]').click();
+  await window.locator('[data-test="tab"]').nth(0).locator('[data-test="tab-close"]').click();
+  await expect(window.locator('[data-test="tab"]')).toHaveCount(1);
+
+  await window.locator('#agent-prompt').fill('AFTER_ALL_TASK_TABS_CLOSE');
+  await window.locator('#agent-run').click();
+  await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 10_000 });
+  await expect(window.locator('#agent-output')).toHaveText('FRESH_WORKSPACE_READY');
+  await expect(window.locator('[data-test="tab"]')).toHaveCount(2);
+  await expect(window.locator('[data-test="tab"].active')).toContainText('Fresh workspace');
 });
 
 test('Take over cancels an in-flight browser navigation', async ({ window, harness }) => {

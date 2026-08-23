@@ -178,6 +178,61 @@ describe('automation runtime registration', () => {
     await expect(close).resolves.toMatchObject({ ok: true, result: { closed: true } });
   });
 
+  test('creates a task tab through its trusted browser host without adopting an opener tab', async () => {
+    const runtime = createAutomationRuntime({
+      isPrivateWebContents: () => false,
+      controllerOptions: { tabIdFactory: () => 'tab_fresh' },
+    });
+    runtime.controller.setPageLifecycle({
+      createPage: runtime.createDesktopPage,
+      closePage: runtime.closeDesktopPage,
+      focusPage: runtime.focusDesktopPage,
+    });
+    const host = new EventEmitter();
+    host.send = jest.fn();
+    const ipcMain = new EventEmitter();
+    runtime.attachToHostWebContents(host, { ipcMain });
+
+    const creation = runtime.createDesktopPageForHost(host, 'https://fresh.example/start');
+    await new Promise((resolve) => setImmediate(resolve));
+    const createRequest = host.send.mock.calls.find(
+      ([channel]) => channel === IPC.AUTOMATION_CREATE_TAB
+    )[1];
+    ipcMain.emit(
+      IPC.AUTOMATION_CREATE_TAB_RESULT,
+      { sender: host },
+      { requestId: createRequest.requestId, ok: true, rendererTabId: 19 }
+    );
+    const created = new FakeWebContents('https://fresh.example/start', 29);
+    created.hostWebContents = host;
+    host.emit('did-attach-webview', {}, created);
+    ipcMain.emit(
+      IPC.AUTOMATION_BIND_TAB,
+      { sender: host },
+      { rendererTabId: 19, guestWebContentsId: 29 }
+    );
+
+    await expect(creation).resolves.toBe('tab_fresh');
+    await expect(
+      runtime.controller.execute(OPERATIONS.GET_TAB, { tabId: 'tab_fresh' })
+    ).resolves.toMatchObject({
+      ok: true,
+      result: { tab: { url: 'https://fresh.example/start' } },
+    });
+
+    const closure = runtime.controller.execute(OPERATIONS.CLOSE_TAB, { tabId: 'tab_fresh' });
+    await new Promise((resolve) => setImmediate(resolve));
+    const closeRequest = host.send.mock.calls.find(
+      ([channel]) => channel === IPC.AUTOMATION_CLOSE_TAB
+    )[1];
+    ipcMain.emit(
+      IPC.AUTOMATION_CLOSE_TAB_RESULT,
+      { sender: host },
+      { requestId: closeRequest.requestId, ok: true }
+    );
+    await expect(closure).resolves.toMatchObject({ ok: true, result: { closed: true } });
+  });
+
   test('waits for a routed dweb tab to leave about:blank before completing creation', async () => {
     let nextTab = 1;
     const runtime = createAutomationRuntime({

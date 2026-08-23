@@ -132,6 +132,42 @@ describe('Pi browser tool adapter', () => {
     ]);
   });
 
+  test('tracks controller fallback and can create after every task tab is closed', async () => {
+    let activeTabId = 'tab_assigned';
+    const controller = {
+      getActiveTabId: jest.fn(() => activeTabId),
+      execute: jest.fn(async (operation, input) => {
+        if (operation === OPERATIONS.CREATE_TAB) {
+          activeTabId = 'tab_fresh';
+          return successEnvelope({
+            tab: { tabId: 'tab_fresh', url: input.url },
+            activeTabId,
+          });
+        }
+        return successEnvelope({});
+      }),
+    };
+    const tools = await createFreedomBrowserTools({
+      sdk: createSdk(),
+      controller,
+      tabId: 'tab_assigned',
+    });
+    const snapshot = tools.find((tool) => tool.name === OPERATIONS.SNAPSHOT);
+    const create = tools.find((tool) => tool.name === OPERATIONS.CREATE_TAB);
+
+    activeTabId = 'tab_remaining';
+    await snapshot.execute('call_fallback', {});
+    activeTabId = null;
+    await create.execute('call_fresh', { url: 'https://fresh.example/' });
+    await snapshot.execute('call_fresh_snapshot', {});
+
+    expect(controller.execute.mock.calls).toEqual([
+      [OPERATIONS.SNAPSHOT, { tabId: 'tab_remaining' }],
+      [OPERATIONS.CREATE_TAB, { tabId: null, url: 'https://fresh.example/' }],
+      [OPERATIONS.SNAPSHOT, { tabId: 'tab_fresh' }],
+    ]);
+  });
+
   test('routes tool execution through the controller with the pinned tab', async () => {
     const envelope = successEnvelope({ clicked: true, ref: 'ref_7' });
     const controller = { execute: jest.fn(async () => envelope) };

@@ -60,6 +60,7 @@ function register(overrides = {}) {
   const automationTabIdForRenderer = jest.fn((candidate, rendererTabId) =>
     candidate === sender && rendererTabId === 7 ? 'tab_bound' : null
   );
+  const createAutomationPageForHost = jest.fn(async () => 'tab_fresh');
   const resolveModel = jest.fn(async () => ({
     model: { id: 'model_test' },
     modelRuntime: { kind: 'runtime' },
@@ -89,6 +90,7 @@ function register(overrides = {}) {
     ipcMain,
     service,
     automationTabIdForRenderer,
+    createAutomationPageForHost,
     resolveModel,
     providerResolver,
     isTrustedSender,
@@ -101,6 +103,7 @@ function register(overrides = {}) {
     sender,
     otherSender,
     automationTabIdForRenderer,
+    createAutomationPageForHost,
     resolveModel,
     providerResolver,
     isTrustedSender,
@@ -128,10 +131,17 @@ describe('Freedom agent IPC', () => {
       prompt: 'Summarize this page',
       tabId: 'tab_bound',
       approvalMode: 'every_interaction',
+      createWorkspacePage: expect.any(Function),
       model: { id: 'model_test' },
       modelRuntime: { kind: 'runtime' },
       thinkingLevel: 'low',
     });
+    const { createWorkspacePage } = ctx.service.start.mock.calls[0][0];
+    await expect(createWorkspacePage('https://fresh.example/')).resolves.toBe('tab_fresh');
+    expect(ctx.createAutomationPageForHost).toHaveBeenCalledWith(
+      ctx.sender,
+      'https://fresh.example/'
+    );
   });
 
   test('forwards an explicitly selected website interaction approval mode', async () => {

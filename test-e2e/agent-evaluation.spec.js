@@ -1066,7 +1066,7 @@ test('Take over cancels a run while form approval is pending', async ({ window, 
   expect(pageConfirmation).toBe('Not submitted');
 });
 
-test('closing the controlled tab cancels its pending form approval', async ({
+test('closing an approval tab withdraws its pending action without killing the conversation', async ({
   window,
   harness,
 }) => {
@@ -1085,11 +1085,9 @@ test('closing the controlled tab cancels its pending form approval', async ({
   await expect(window.locator('[data-test="tab"]')).toHaveCount(2);
   await window.locator('[data-test="tab"].agent-controlled [data-test="tab-close"]').click();
 
-  await expect(window.locator('#agent-run-status')).toHaveText('Tab closed', { timeout: 15_000 });
-  await expect(window.locator('#agent-run-message')).toHaveText(
-    'The controlled browser tab was closed'
-  );
   await expect(window.locator('#agent-approval')).toBeHidden();
+  await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 15_000 });
+  await expect(window.locator('#agent-prompt')).toBeEnabled();
 });
 
 test('Pi fills a form draft without triggering commit approval or submission', async ({

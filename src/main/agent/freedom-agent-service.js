@@ -29,12 +29,11 @@ const AGENT_ERROR_CODES = Object.freeze({
   PROVIDER_ERROR: 'PROVIDER_ERROR',
   MODEL_OUTPUT_LIMIT: 'MODEL_OUTPUT_LIMIT',
   RESUME_SCOPE_CHANGED: 'AGENT_RESUME_SCOPE_CHANGED',
-  TAB_CLOSED: 'AGENT_TAB_CLOSED',
   TAB_UNAVAILABLE: 'TAB_UNAVAILABLE',
   RUN_FAILED: 'RUN_FAILED',
 });
 const AUTOMATION_ERROR_CODE_SET = new Set(Object.values(ERROR_CODES));
-const RESUME_PROMPT = `The user resumed this task after potentially changing the page. Treat the current page as authoritative. Do not reuse earlier element references or assumptions. Get the current tab state and take a fresh snapshot before acting. Preserve user changes unless they conflict with the task.`;
+const RESUME_PROMPT = `The user resumed this task after potentially changing the browser workspace. Do not reuse earlier element references or assumptions. If a task tab remains, get its current state and take a fresh snapshot before acting. If no task tab remains, create a fresh task tab before continuing. Preserve user changes unless they conflict with the task.`;
 const EVERY_INTERACTION_SYSTEM_PROMPT = `${DEFAULT_FREEDOM_AGENT_SYSTEM_PROMPT}
 
 This run requires user approval before every page interaction. Reading pages, navigating, and managing task-owned tabs do not require approval. Click, type, select, and press tools pause until the user approves or declines the exact interaction.`;
@@ -116,7 +115,17 @@ function validateStartOptions(options) {
       'Agent run requires a selected model and model runtime'
     );
   }
-  return { ...promptOptions, tabId: options.tabId };
+  if (typeof options.createWorkspacePage !== 'function') {
+    throw new FreedomAgentError(
+      AGENT_ERROR_CODES.INVALID_ARGUMENT,
+      'Agent run requires a browser workspace tab creation capability'
+    );
+  }
+  return {
+    ...promptOptions,
+    tabId: options.tabId,
+    createWorkspacePage: options.createWorkspacePage,
+  };
 }
 
 function normalizePiEvent(event, toolOutcome) {
@@ -243,7 +252,7 @@ class FreedomAgentService {
     }));
     if (!this.activeRun) {
       return {
-        status: conversation.workspaceUnavailable ? 'unavailable' : 'ready',
+        status: 'ready',
         conversationId: conversation.conversationId,
         tabId: conversation.tabId,
         approvalMode: conversation.approvalMode,
@@ -282,12 +291,6 @@ class FreedomAgentService {
       ? validatePromptOptions(options)
       : validateStartOptions(options);
     const { prompt, approvalMode } = validated;
-    if (existingConversation?.workspaceUnavailable) {
-      throw new FreedomAgentError(
-        AGENT_ERROR_CODES.TAB_UNAVAILABLE,
-        'This conversation\'s browser workspace is no longer available'
-      );
-    }
     if (existingConversation && approvalMode !== existingConversation.approvalMode) {
       throw new FreedomAgentError(
         AGENT_ERROR_CODES.INVALID_ARGUMENT,
@@ -333,6 +336,7 @@ class FreedomAgentService {
           tabId,
           navigationScope: AGENT_NAVIGATION_SCOPES.WORKSPACE,
           approvalMode,
+          createWorkspacePage: validated.createWorkspacePage,
           requestApproval: (request) =>
             this.activeRun ? this.#requestApproval(this.activeRun, request) : 'declined',
         });
@@ -381,7 +385,6 @@ class FreedomAgentService {
           unsubscribe: null,
           turns: [],
           activeRun: run,
-          workspaceUnavailable: false,
         };
         this.conversation = conversation;
         run.session = session;
@@ -391,12 +394,11 @@ class FreedomAgentService {
       } else {
         const readiness = await conversation.scopedController.prepareResume();
         if (!readiness?.ok) {
-          conversation.workspaceUnavailable = true;
           throw new FreedomAgentError(
             readiness?.error?.code === ERROR_CODES.POLICY_DENIED
               ? AGENT_ERROR_CODES.RESUME_SCOPE_CHANGED
               : AGENT_ERROR_CODES.TAB_UNAVAILABLE,
-            'This conversation\'s browser workspace is no longer available'
+            'The conversation\'s browser workspace could not be resumed'
           );
         }
       }
@@ -693,23 +695,6 @@ class FreedomAgentService {
       }),
     });
     run.toolOutcomes.set(normalized.toolCallId, normalized);
-    if (
-      normalized.errorCode === ERROR_CODES.TAB_NOT_FOUND &&
-      (outcome.tabId === undefined || outcome.tabId === run.tabId) &&
-      !run.failure
-    ) {
-      run.failure = terminalError(
-        AGENT_ERROR_CODES.TAB_UNAVAILABLE,
-        'The assigned browser tab is no longer available'
-      );
-      const execution = run.execution;
-      void Promise.resolve(run.session?.abort())
-        .catch(() => {})
-        .then(async () => {
-          if (execution) await execution;
-          if (!run.finished) await this.#finish(run, 'failed', run.failure);
-        });
-    }
   }
 
   #handleTabLifecycle(event) {
@@ -719,38 +704,17 @@ class FreedomAgentService {
       try {
         conversation.scopedController.handleTabLifecycle(event);
       } catch {
-        // The task scope must not break terminal starting-tab handling.
+        // A malformed lifecycle event cannot break the active conversation.
       }
     }
     if (
-      conversation &&
+      run &&
+      !run.finished &&
       event?.type === 'tab_closed' &&
-      event.tabId === conversation.tabId
+      event.tabId === run.pendingApproval?.tabId
     ) {
-      conversation.workspaceUnavailable = true;
+      this.#resolveApproval(run, 'withdrawn');
     }
-    if (
-      !run ||
-      run.finished ||
-      event?.type !== 'tab_closed' ||
-      event.tabId !== run.tabId ||
-      run.failure
-    ) {
-      return;
-    }
-    run.failure = terminalError(
-      AGENT_ERROR_CODES.TAB_CLOSED,
-      'The controlled browser tab was closed'
-    );
-    run.stopRequested = true;
-    this.#resolveApproval(run, 'declined');
-    const execution = run.execution;
-    void Promise.resolve(run.session?.abort())
-      .catch(() => {})
-      .then(async () => {
-        if (execution) await execution;
-        if (!run.finished) await this.#finish(run, 'failed', run.failure);
-      });
   }
 
   async #requestApproval(run, request) {
@@ -769,7 +733,11 @@ class FreedomAgentService {
       approvalId: opaqueApprovalId(),
       ...normalizeApprovalRequest(request),
     });
-    run.pendingApproval = { decision, publicRequest };
+    run.pendingApproval = {
+      decision,
+      publicRequest,
+      ...(typeof request?.tabId === 'string' && { tabId: request.tabId }),
+    };
     this.#emit(run, { type: 'approval_requested', ...publicRequest });
     return decision.promise;
   }

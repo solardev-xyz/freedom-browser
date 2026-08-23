@@ -71,6 +71,7 @@ function startOptions(overrides = {}) {
     tabId: 'tab_assigned',
     model: { id: 'model_test', provider: 'test' },
     modelRuntime: { kind: 'model-runtime' },
+    createWorkspacePage: jest.fn(async () => 'tab_fresh'),
     ...overrides,
   };
 }
@@ -91,6 +92,7 @@ describe('FreedomAgentService', () => {
       tabId: 'tab_assigned',
       navigationScope: 'workspace',
       approvalMode: 'every_interaction',
+      createWorkspacePage: expect.any(Function),
       requestApproval: expect.any(Function),
     });
     expect(dependencies.createTools).toHaveBeenCalledWith({
@@ -211,6 +213,7 @@ describe('FreedomAgentService', () => {
       tabId: 'tab_assigned',
       navigationScope: 'workspace',
       approvalMode: 'allow_website_interactions',
+      createWorkspacePage: expect.any(Function),
       requestApproval: expect.any(Function),
     });
     expect(dependencies.createSession.mock.calls[0][0]).not.toHaveProperty('systemPrompt');
@@ -280,6 +283,46 @@ describe('FreedomAgentService', () => {
       ],
     });
     expect(fake.session.dispose).not.toHaveBeenCalled();
+  });
+
+  test('accepts a follow-up after the originally adopted tab closes', async () => {
+    const fake = createFakeSession();
+    let lifecycleListener;
+    const handleTabLifecycle = jest.fn();
+    const prepareResume = jest.fn(async () => ({
+      ok: true,
+      activeTabId: 'tab_remaining',
+      workspaceEmpty: false,
+    }));
+    const { service } = createService(fake, {
+      subscribeTabLifecycle: (listener) => {
+        lifecycleListener = listener;
+        return jest.fn();
+      },
+      createControllerScope: jest.fn(async ({ controller }) => ({
+        ...controller,
+        handleTabLifecycle,
+        prepareResume,
+      })),
+    });
+
+    await service.start(startOptions({ prompt: 'Open five articles' }));
+    fake.prompt.resolve();
+    await service.waitForIdle();
+    lifecycleListener({ type: 'tab_closed', tabId: 'tab_assigned', kind: 'desktop' });
+
+    await expect(
+      service.start({ prompt: 'Compare the remaining articles', approvalMode: 'every_interaction' })
+    ).resolves.toMatchObject({ conversationId: 'conversation_test' });
+    expect(handleTabLifecycle).toHaveBeenCalledWith({
+      type: 'tab_closed',
+      tabId: 'tab_assigned',
+      kind: 'desktop',
+    });
+    expect(prepareResume).toHaveBeenCalledTimes(1);
+    fake.prompts[1].resolve();
+    await service.waitForIdle();
+    expect(service.getState()).toMatchObject({ status: 'ready' });
   });
 
   test('clears an idle conversation and disposes its in-memory Pi session', async () => {
@@ -382,9 +425,8 @@ describe('FreedomAgentService', () => {
 
     expect(scopedController.prepareResume).toHaveBeenCalledTimes(1);
     expect(fake.session.prompt).toHaveBeenCalledTimes(2);
-    expect(fake.session.prompt.mock.calls[1][0]).toContain(
-      'Treat the current page as authoritative'
-    );
+    expect(fake.session.prompt.mock.calls[1][0]).toContain('browser workspace');
+    expect(fake.session.prompt.mock.calls[1][0]).toContain('If no task tab remains');
     expect(events.slice(-2).map((event) => event.type)).toEqual([
       'run_resuming',
       'run_resumed',
@@ -466,7 +508,7 @@ describe('FreedomAgentService', () => {
     expect(events.at(-1)).toMatchObject({ type: 'run_finished', status: 'cancelled' });
   });
 
-  test('fails closed when the assigned tab disappears', async () => {
+  test('returns a missing-tab tool failure to the model without killing the conversation', async () => {
     const fake = createFakeSession();
     const { service, dependencies } = createService(fake);
     const events = [];
@@ -488,26 +530,15 @@ describe('FreedomAgentService', () => {
       },
       isError: true,
     });
-    await service.waitForIdle();
-
-    expect(fake.session.abort).toHaveBeenCalledTimes(1);
-    expect(events.at(-2)).toMatchObject({
+    expect(fake.session.abort).not.toHaveBeenCalled();
+    expect(events.at(-1)).toMatchObject({
       type: 'tool_finished',
       status: 'failed',
       errorCode: ERROR_CODES.TAB_NOT_FOUND,
     });
-    expect(events.at(-1)).toMatchObject({
-      version: AGENT_EVENT_VERSION,
-      sequence: 3,
-      conversationId: 'conversation_test',
-      runId: 'run_test',
-      type: 'run_finished',
-      status: 'failed',
-      error: {
-        code: AGENT_ERROR_CODES.TAB_UNAVAILABLE,
-        message: 'The assigned browser tab is no longer available',
-      },
-    });
+    fake.prompt.resolve();
+    await service.waitForIdle();
+    expect(service.getState()).toMatchObject({ status: 'ready' });
   });
 
   test('does not terminate the task when a created tab disappears', async () => {
@@ -528,7 +559,7 @@ describe('FreedomAgentService', () => {
     await service.stop('run_test');
   });
 
-  test('aborts immediately with a distinct failure when the controlled tab closes', async () => {
+  test('keeps an active conversation running when its originally adopted tab closes', async () => {
     const fake = createFakeSession();
     let lifecycleListener;
     const unsubscribeTabLifecycle = jest.fn();
@@ -544,27 +575,19 @@ describe('FreedomAgentService', () => {
     lifecycleListener({ type: 'tab_closed', tabId: 'tab_other', kind: 'desktop' });
     expect(fake.session.abort).not.toHaveBeenCalled();
     lifecycleListener({ type: 'tab_closed', tabId: 'tab_assigned', kind: 'desktop' });
+    expect(fake.session.abort).not.toHaveBeenCalled();
+    fake.prompt.resolve();
     await service.waitForIdle();
-
-    expect(fake.session.abort).toHaveBeenCalledTimes(1);
     expect(events.at(-1)).toMatchObject({
-      version: AGENT_EVENT_VERSION,
-      sequence: 2,
-      conversationId: 'conversation_test',
-      runId: 'run_test',
       type: 'run_finished',
-      status: 'failed',
-      error: {
-        code: AGENT_ERROR_CODES.TAB_CLOSED,
-        message: 'The controlled browser tab was closed',
-      },
+      status: 'completed',
     });
 
     await service.dispose();
     expect(unsubscribeTabLifecycle).toHaveBeenCalledTimes(1);
   });
 
-  test('closing the controlled tab is terminal while the run is paused', async () => {
+  test('keeps a paused conversation resumable after its originally adopted tab closes', async () => {
     const fake = createFakeSession();
     let lifecycleListener;
     const { service } = createService(fake, {
@@ -579,14 +602,11 @@ describe('FreedomAgentService', () => {
     await service.pause('run_test');
 
     lifecycleListener({ type: 'tab_closed', tabId: 'tab_assigned', kind: 'desktop' });
-    await service.waitForIdle();
-
-    expect(events.at(-1)).toMatchObject({
-      type: 'run_finished',
-      status: 'failed',
-      error: { code: AGENT_ERROR_CODES.TAB_CLOSED },
-    });
+    expect(service.getState()).toMatchObject({ status: 'paused' });
+    await expect(service.resume('run_test')).resolves.toBe(true);
+    expect(fake.session.prompt.mock.calls[1][0]).toContain('If no task tab remains');
     expect(fake.session.dispose).not.toHaveBeenCalled();
+    await service.stop('run_test');
   });
 
   test('redacts provider failures from terminal events', async () => {

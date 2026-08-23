@@ -761,7 +761,7 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-run-status'].textContent).toBe('Running');
   });
 
-  test('reports controlled-tab closure as a distinct terminal state', async () => {
+  test('keeps the conversation reusable after a failed run', async () => {
     const ctx = await loadAgentUi();
     ctx.elements['agent-prompt'].value = 'Complete the task';
     ctx.elements['agent-run'].dispatch('click');
@@ -773,16 +773,18 @@ describe('Agent UI', () => {
       runId: 'run_test',
       status: 'failed',
       error: {
-        code: 'AGENT_TAB_CLOSED',
-        message: 'The controlled browser tab was closed',
+        code: 'RUN_FAILED',
+        message: 'The agent could not complete this turn',
       },
     });
 
-    expect(ctx.elements['agent-run-status'].textContent).toBe('Tab closed');
+    expect(ctx.elements['agent-run-status'].textContent).toBe('failed');
     expect(ctx.elements['agent-run-message'].textContent).toBe(
-      'The controlled browser tab was closed'
+      'The agent could not complete this turn'
     );
-    expect(ctx.elements['agent-run'].disabled).toBe(true);
+    ctx.elements['agent-prompt'].value = 'Try a different approach';
+    ctx.elements['agent-prompt'].dispatch('input');
+    expect(ctx.elements['agent-run'].disabled).toBe(false);
     expect(ctx.elements['agent-stop'].disabled).toBe(true);
     expect(ctx.setAgentControlledTab).toHaveBeenLastCalledWith(null);
   });

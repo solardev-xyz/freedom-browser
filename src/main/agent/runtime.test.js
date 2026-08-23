@@ -33,6 +33,7 @@ describe('Freedom agent runtime', () => {
       dataDir: '/profiles/work/agent',
       controller: {},
       automationTabIdForRenderer: jest.fn(),
+      createAutomationPageForHost: jest.fn(),
       subscribeTabLifecycle: jest.fn(() => jest.fn()),
       isTrustedSender: jest.fn(),
       openExternal: jest.fn(),
@@ -60,6 +61,7 @@ describe('Freedom agent runtime', () => {
       providerResolver,
       resolveModel: expect.any(Function),
       automationTabIdForRenderer: options.automationTabIdForRenderer,
+      createAutomationPageForHost: options.createAutomationPageForHost,
       isTrustedSender: options.isTrustedSender,
       openExternal: options.openExternal,
     });

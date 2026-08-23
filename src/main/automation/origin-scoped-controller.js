@@ -79,25 +79,41 @@ function sameActionDescriptor(left, right) {
 }
 
 class OriginScopedAutomationController {
-  constructor({ controller, tabId, initialState, approvalMode, requestApproval }) {
+  constructor({
+    controller,
+    tabId,
+    initialState,
+    approvalMode,
+    requestApproval,
+    createWorkspacePage,
+  }) {
     this.controller = controller;
-    this.tabId = tabId;
+    this.adoptedTabId = tabId;
     this.activeTabId = tabId;
     this.ownedTabs = new Map([[tabId, { created: false }]]);
     this.workspaceEstablished = Boolean(originScopeForUrl(initialState?.result?.tab?.url));
     this.approvalMode = approvalMode;
     this.lastState = initialState;
     this.requestApproval = requestApproval;
+    this.createWorkspacePage = createWorkspacePage;
     this.declinedActions = new Set();
     this.resumeObservation = null;
   }
 
   async prepareResume() {
-    const state = await this.#readState(this.activeTabId);
+    const state = await this.#readActiveState();
+    if (!state) {
+      this.resumeObservation = 'create_tab';
+      return { ok: true, activeTabId: null, workspaceEmpty: true };
+    }
     if (!state.ok) return state;
     if (!this.#acceptCurrentOrigin(state)) return this.#originDenied(state);
     this.resumeObservation = 'get_tab';
-    return { ok: true };
+    return { ok: true, activeTabId: this.activeTabId, workspaceEmpty: false };
+  }
+
+  getActiveTabId() {
+    return this.activeTabId;
   }
 
   async execute(operation, input = {}) {
@@ -118,7 +134,7 @@ class OriginScopedAutomationController {
 
     if (operation === OPERATIONS.LIST_TABS) return this.#listOwnedTabs();
     if (operation === OPERATIONS.CREATE_TAB) {
-      if (this.resumeObservation) {
+      if (this.resumeObservation && this.resumeObservation !== 'create_tab') {
         return errorEnvelope(
           this.lastState,
           ERROR_CODES.POLICY_DENIED,
@@ -126,6 +142,14 @@ class OriginScopedAutomationController {
         );
       }
       return this.#createOwnedTab(input);
+    }
+    if (this.ownedTabs.size === 0) {
+      return errorEnvelope(
+        this.lastState,
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        'No task tab remains. Create a fresh task tab before using this browser tool.',
+        { retryable: true }
+      );
     }
     if (typeof input.tabId !== 'string' || !this.ownedTabs.has(input.tabId)) {
       return errorEnvelope(
@@ -149,17 +173,17 @@ class OriginScopedAutomationController {
       return this.controller.execute(operation, input);
     }
     if (operation === OPERATIONS.CLOSE_TAB) {
-      if (input.tabId === this.tabId) {
+      if (input.tabId === this.adoptedTabId) {
         return errorEnvelope(
           state,
           ERROR_CODES.POLICY_DENIED,
-          'The agent cannot close the task starting tab'
+          'The agent cannot close the originally adopted user tab'
         );
       }
       const result = await this.controller.execute(operation, input);
       if (result?.ok) {
         this.ownedTabs.delete(input.tabId);
-        if (this.activeTabId === input.tabId) this.activeTabId = this.tabId;
+        if (this.activeTabId === input.tabId) this.activeTabId = this.#fallbackTabId();
         result.result.activeTabId = this.activeTabId;
       }
       return result;
@@ -211,9 +235,23 @@ class OriginScopedAutomationController {
 
   handleTabLifecycle(event) {
     if (event?.type !== 'tab_closed' || typeof event.tabId !== 'string') return;
-    if (event.tabId === this.tabId) return;
     this.ownedTabs.delete(event.tabId);
-    if (this.activeTabId === event.tabId) this.activeTabId = this.tabId;
+    if (this.activeTabId === event.tabId) this.activeTabId = this.#fallbackTabId();
+  }
+
+  #fallbackTabId() {
+    return [...this.ownedTabs.keys()].at(-1) || null;
+  }
+
+  async #readActiveState() {
+    while (this.activeTabId) {
+      const tabId = this.activeTabId;
+      const state = await this.#readState(tabId);
+      if (state?.ok || state?.error?.code !== ERROR_CODES.TAB_NOT_FOUND) return state;
+      this.ownedTabs.delete(tabId);
+      this.activeTabId = this.#fallbackTabId();
+    }
+    return null;
   }
 
   async #readState(tabId) {
@@ -227,8 +265,9 @@ class OriginScopedAutomationController {
     for (const tabId of [...this.ownedTabs.keys()]) {
       const state = await this.#readState(tabId);
       if (!state?.ok) {
-        if (tabId !== this.tabId && state?.error?.code === ERROR_CODES.TAB_NOT_FOUND) {
+        if (state?.error?.code === ERROR_CODES.TAB_NOT_FOUND) {
           this.ownedTabs.delete(tabId);
+          if (this.activeTabId === tabId) this.activeTabId = this.#fallbackTabId();
           continue;
         }
         return state;
@@ -255,6 +294,7 @@ class OriginScopedAutomationController {
   }
 
   async #createOwnedTab(input) {
+    if (this.ownedTabs.size === 0) return this.#createFirstWorkspaceTab(input.url);
     if (typeof input.tabId !== 'string' || !this.ownedTabs.has(input.tabId)) {
       return errorEnvelope(
         this.lastState,
@@ -278,9 +318,56 @@ class OriginScopedAutomationController {
       }
       this.ownedTabs.set(createdTabId, { created: true });
       this.activeTabId = createdTabId;
+      if (this.resumeObservation === 'create_tab') this.resumeObservation = 'snapshot';
       result.result.activeTabId = createdTabId;
     }
     return result;
+  }
+
+  async #createFirstWorkspaceTab(url) {
+    if (typeof this.createWorkspacePage !== 'function') {
+      return errorEnvelope(
+        this.lastState,
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        'A fresh task tab cannot be created in this browser window',
+        { retryable: true }
+      );
+    }
+    if (!this.#acceptRequestedOrigin(url)) return this.#originDenied(this.lastState);
+    let createdTabId;
+    try {
+      createdTabId = await this.createWorkspacePage(url);
+    } catch {
+      return errorEnvelope(
+        this.lastState,
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        'A fresh task tab could not be created in this browser window',
+        { retryable: true }
+      );
+    }
+    if (typeof createdTabId !== 'string' || !createdTabId) {
+      return errorEnvelope(
+        this.lastState,
+        ERROR_CODES.INTERNAL_ERROR,
+        'The fresh task tab did not receive a valid browser binding'
+      );
+    }
+    const state = await this.#readState(createdTabId);
+    if (!state?.ok) {
+      await this.controller.execute(OPERATIONS.CLOSE_TAB, { tabId: createdTabId });
+      return state;
+    }
+    if (!this.#acceptCurrentOrigin(state)) {
+      await this.controller.execute(OPERATIONS.CLOSE_TAB, { tabId: createdTabId });
+      return this.#originDenied(state);
+    }
+    this.ownedTabs.set(createdTabId, { created: true });
+    this.activeTabId = createdTabId;
+    this.resumeObservation = 'snapshot';
+    return {
+      ...state,
+      result: { tab: state.result.tab, activeTabId: createdTabId },
+    };
   }
 
   #acceptCurrentOrigin(state) {
@@ -339,6 +426,7 @@ class OriginScopedAutomationController {
     const decision = await this.requestApproval({
       action: element.effect === 'form_submission' ? 'form_submission' : 'browser_interaction',
       operation,
+      tabId: input.tabId,
       origin: originScopeForUrl(state?.result?.tab?.url) || '',
       label: element.label,
     });
@@ -385,6 +473,12 @@ async function createOriginScopedAutomationController(options = {}) {
   if (options.tabId !== options.tabId.trim()) {
     throw new TypeError('Origin-scoped automation tabId cannot contain surrounding whitespace');
   }
+  if (
+    options.createWorkspacePage !== undefined &&
+    typeof options.createWorkspacePage !== 'function'
+  ) {
+    throw new TypeError('Origin-scoped automation requires a valid workspace page creator');
+  }
   const navigationScope = normalizeAgentNavigationScope(options.navigationScope);
   if (!navigationScope) {
     throw new TypeError('Origin-scoped automation requires a valid navigation scope');
@@ -405,6 +499,7 @@ async function createOriginScopedAutomationController(options = {}) {
     initialState,
     approvalMode,
     requestApproval: options.requestApproval,
+    createWorkspacePage: options.createWorkspacePage,
   });
 }
 

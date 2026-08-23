@@ -27,6 +27,7 @@ function createAutomationRuntime(options = {}) {
     });
   const adapters = new WeakMap();
   const desktopBindingsByHost = new WeakMap();
+  const desktopControlsByHost = new WeakMap();
   const desktopBindingsByAutomationTab = new Map();
   const desktopLifecycleCreatedTabs = new Set();
   const tabLifecycleListeners = new Set();
@@ -304,6 +305,9 @@ function createAutomationRuntime(options = {}) {
           );
         }
       });
+    desktopControlsByHost.set(hostWebContents, {
+      createPage: (url) => requestTabControl(IPC.AUTOMATION_CREATE_TAB, 'creation', { url }),
+    });
     const completeCreatedTabWhenBound = (request) => {
       if (!request.rendererTabId) return;
       const createdTabId = bindingsByRendererTab.get(request.rendererTabId);
@@ -472,6 +476,7 @@ function createAutomationRuntime(options = {}) {
         );
       }
       desktopBindingsByHost.delete(hostWebContents);
+      desktopControlsByHost.delete(hostWebContents);
     };
   }
 
@@ -494,6 +499,22 @@ function createAutomationRuntime(options = {}) {
       );
     }
     const createdTabId = await binding.createPage(url);
+    if (!desktopBindingsByAutomationTab.has(createdTabId)) {
+      throw new AutomationError(ERROR_CODES.TAB_NOT_FOUND, 'The created desktop tab was closed');
+    }
+    desktopLifecycleCreatedTabs.add(createdTabId);
+    return createdTabId;
+  }
+
+  async function createDesktopPageForHost(hostWebContents, url) {
+    const controls = desktopControlsByHost.get(hostWebContents);
+    if (!controls) {
+      throw new AutomationError(
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        'The browser window is not ready to create a visible task tab'
+      );
+    }
+    const createdTabId = await controls.createPage(url);
     if (!desktopBindingsByAutomationTab.has(createdTabId)) {
       throw new AutomationError(ERROR_CODES.TAB_NOT_FOUND, 'The created desktop tab was closed');
     }
@@ -525,6 +546,7 @@ function createAutomationRuntime(options = {}) {
     automationTabIdForRenderer,
     desktopBindingForAutomationTab,
     createDesktopPage,
+    createDesktopPageForHost,
     closeDesktopPage,
     focusDesktopPage,
     subscribeTabLifecycle,
@@ -541,6 +563,7 @@ module.exports = {
   automationTabIdForRenderer: defaultRuntime.automationTabIdForRenderer,
   desktopBindingForAutomationTab: defaultRuntime.desktopBindingForAutomationTab,
   createDesktopAutomationPage: defaultRuntime.createDesktopPage,
+  createDesktopAutomationPageForHost: defaultRuntime.createDesktopPageForHost,
   closeDesktopAutomationPage: defaultRuntime.closeDesktopPage,
   focusDesktopAutomationPage: defaultRuntime.focusDesktopPage,
   subscribeAutomationTabLifecycle: defaultRuntime.subscribeTabLifecycle,

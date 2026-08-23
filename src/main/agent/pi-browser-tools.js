@@ -301,6 +301,10 @@ async function createFreedomBrowserTools(options = {}) {
       parameters: spec.parameters,
       executionMode: 'sequential',
       execute: async (toolCallId, params, signal) => {
+        const controllerTabId = options.controller.getActiveTabId?.();
+        if (typeof controllerTabId === 'string' || controllerTabId === null) {
+          tabState.currentTabId = controllerTabId;
+        }
         const targetTabId =
           spec.tabMode === 'none'
             ? undefined

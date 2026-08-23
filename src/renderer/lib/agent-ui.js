@@ -29,7 +29,6 @@ let providerReady = false;
 let providerLoginPending = false;
 let currentConversationId = null;
 let conversationRendererTabId = null;
-let conversationUnavailable = false;
 let pendingPromptText = '';
 let currentRunId = null;
 let currentRunStatus = 'idle';
@@ -541,7 +540,6 @@ function setRunState(status, label) {
   currentRunStatus = status;
   elements.run.disabled =
     active ||
-    conversationUnavailable ||
     !elements.prompt.value.trim() ||
     !providerStatus?.configured;
   elements.pause.hidden = status !== 'running';
@@ -550,7 +548,7 @@ function setRunState(status, label) {
   elements.resume.disabled = status !== 'paused';
   elements.stop.hidden = !active;
   elements.stop.disabled = !active || !currentRunId;
-  elements.prompt.disabled = active || conversationUnavailable;
+  elements.prompt.disabled = active;
   elements.modelMenuButton.disabled = active || Boolean(currentConversationId);
   elements.approvalModeButton.disabled = active || Boolean(currentConversationId);
   elements.newChat.hidden = !currentConversationId;
@@ -562,7 +560,6 @@ function setRunState(status, label) {
 function updateSendAvailability() {
   elements.run.disabled =
     currentRunStatus !== 'idle' ||
-    conversationUnavailable ||
     !elements.prompt.value.trim() ||
     !providerStatus?.configured;
 }
@@ -812,7 +809,6 @@ function finishTurnView(runId, event = {}) {
 function applyConversationCleared() {
   currentConversationId = null;
   conversationRendererTabId = null;
-  conversationUnavailable = false;
   pendingPromptText = '';
   currentRunId = null;
   lastFinishedRunId = null;
@@ -909,17 +905,13 @@ function handleAgentEvent(event) {
   } else if (event.type === 'run_finished') {
     const status = event.status || 'finished';
     const wasTakeover = status === 'cancelled' && takeoverRequestedRunId === event.runId;
-    const wasTabClosed = event.error?.code === 'AGENT_TAB_CLOSED';
-    if (wasTabClosed) conversationUnavailable = true;
     setRunState(
       'idle',
       wasTakeover
         ? 'Taken over'
-        : wasTabClosed
-          ? 'Tab closed'
-          : status === 'completed'
-            ? 'Complete'
-            : status
+        : status === 'completed'
+          ? 'Complete'
+          : status
     );
     if (wasTakeover) {
       setMessage(elements.runMessage, 'You took control of the tab');
@@ -1091,10 +1083,9 @@ async function restoreRunState() {
     conversationRendererTabId = Number.isSafeInteger(state.rendererTabId)
       ? state.rendererTabId
       : null;
-    conversationUnavailable = state.status === 'unavailable';
     restoreTranscript(Array.isArray(state.transcript) ? state.transcript : []);
 
-    if (state.runId && !['ready', 'unavailable'].includes(state.status)) {
+    if (state.runId && state.status !== 'ready') {
       currentRunId = state.runId;
       if (conversationRendererTabId) setAgentControlledTab(conversationRendererTabId);
       const restoredStatus = ['paused', 'pausing', 'resuming'].includes(state.status)
@@ -1115,14 +1106,7 @@ async function restoreRunState() {
         setRunState('running', 'Approval needed');
       }
     } else {
-      setRunState('idle', conversationUnavailable ? 'Tab closed' : 'Ready');
-      if (conversationUnavailable) {
-        setMessage(
-          elements.runMessage,
-          "This chat's browser workspace is no longer available. Start a new chat to continue.",
-          true
-        );
-      }
+      setRunState('idle', 'Ready');
     }
   } catch {
     // Idle is the safe renderer default when lifecycle state cannot be restored.

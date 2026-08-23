@@ -101,6 +101,7 @@ function registerFreedomAgentIpc(options = {}) {
     ipcMain,
     service,
     automationTabIdForRenderer,
+    createAutomationPageForHost,
     resolveModel,
     providerResolver,
     isTrustedSender,
@@ -124,6 +125,9 @@ function registerFreedomAgentIpc(options = {}) {
   }
   if (typeof automationTabIdForRenderer !== 'function') {
     throw new TypeError('Freedom agent IPC requires the desktop tab binding resolver');
+  }
+  if (typeof createAutomationPageForHost !== 'function') {
+    throw new TypeError('Freedom agent IPC requires the desktop tab creation capability');
   }
   if (typeof resolveModel !== 'function') {
     throw new TypeError('Freedom agent IPC requires a main-process model resolver');
@@ -287,6 +291,8 @@ function registerFreedomAgentIpc(options = {}) {
           approvalMode,
           ...(!continuing && {
             tabId,
+            createWorkspacePage: (url) =>
+              createAutomationPageForHost(pendingOwner.sender, url),
             model: resolved.model,
             modelRuntime: resolved.modelRuntime,
             thinkingLevel: resolved.thinkingLevel,

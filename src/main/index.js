@@ -313,6 +313,7 @@ const {
   registerAutomationWebContents,
   subscribeAutomationTabLifecycle,
   createDesktopAutomationPage,
+  createDesktopAutomationPageForHost,
   closeDesktopAutomationPage,
   focusDesktopAutomationPage,
 } = require('./automation/runtime');
@@ -422,6 +423,7 @@ async function bootstrap() {
       dataDir: getAgentDataDir(),
       controller: automationController,
       automationTabIdForRenderer,
+      createAutomationPageForHost: createDesktopAutomationPageForHost,
       subscribeTabLifecycle: subscribeAutomationTabLifecycle,
       isTrustedSender: (sender) =>
         !isPrivateWebContents(sender) &&

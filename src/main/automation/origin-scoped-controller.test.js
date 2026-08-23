@@ -374,6 +374,73 @@ describe('OriginScopedAutomationController', () => {
     ).resolves.toMatchObject({ error: { code: ERROR_CODES.POLICY_DENIED } });
   });
 
+  test('falls back to a remaining task-owned tab when the originally adopted tab closes', async () => {
+    const controller = createController();
+    const scoped = await createOriginScopedAutomationController({
+      controller,
+      tabId: 'tab_assigned',
+    });
+    await scoped.execute(OPERATIONS.CREATE_TAB, {
+      tabId: 'tab_assigned',
+      url: 'https://research.example/article',
+    });
+    await scoped.execute(OPERATIONS.FOCUS_TAB, { tabId: 'tab_assigned' });
+
+    scoped.handleTabLifecycle({ type: 'tab_closed', tabId: 'tab_assigned' });
+
+    expect(scoped.getActiveTabId()).toBe('tab_created');
+    await expect(scoped.prepareResume()).resolves.toMatchObject({
+      ok: true,
+      activeTabId: 'tab_created',
+      workspaceEmpty: false,
+    });
+    await expect(scoped.execute(OPERATIONS.LIST_TABS, {})).resolves.toMatchObject({
+      result: { activeTabId: 'tab_created', tabs: [{ tabId: 'tab_created' }] },
+    });
+  });
+
+  test('creates a fresh task tab without adopting unrelated tabs after the workspace empties', async () => {
+    const controller = createController();
+    const createWorkspacePage = jest.fn(async (url) => {
+      controller.setCreatedUrl(url);
+      return 'tab_created';
+    });
+    const scoped = await createOriginScopedAutomationController({
+      controller,
+      tabId: 'tab_assigned',
+      createWorkspacePage,
+    });
+    scoped.handleTabLifecycle({ type: 'tab_closed', tabId: 'tab_assigned' });
+
+    await expect(scoped.prepareResume()).resolves.toEqual({
+      ok: true,
+      activeTabId: null,
+      workspaceEmpty: true,
+    });
+    await expect(
+      scoped.execute(OPERATIONS.SNAPSHOT, { tabId: 'tab_unrelated' })
+    ).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        message: expect.stringContaining('Create a fresh task tab'),
+      },
+    });
+    await expect(
+      scoped.execute(OPERATIONS.CREATE_TAB, { url: 'https://fresh.example/start' })
+    ).resolves.toMatchObject({
+      ok: true,
+      result: {
+        activeTabId: 'tab_created',
+        tab: { tabId: 'tab_created', url: 'https://fresh.example/start' },
+      },
+    });
+    expect(createWorkspacePage).toHaveBeenCalledWith('https://fresh.example/start');
+    await expect(
+      scoped.execute(OPERATIONS.SNAPSHOT, { tabId: 'tab_created' })
+    ).resolves.toMatchObject({ ok: true });
+  });
+
   test('adopts a created tab that redirects to another supported website', async () => {
     const controller = createController();
     controller.redirectCreatedTabTo('https://foreign.example/redirected');
@@ -465,7 +532,11 @@ describe('OriginScopedAutomationController', () => {
       tabId: 'tab_assigned',
     });
 
-    await expect(scoped.prepareResume()).resolves.toEqual({ ok: true });
+    await expect(scoped.prepareResume()).resolves.toMatchObject({
+      ok: true,
+      activeTabId: 'tab_assigned',
+      workspaceEmpty: false,
+    });
     await expect(
       scoped.execute(OPERATIONS.CLICK, { tabId: 'tab_assigned', ref: 'ref_button' })
     ).resolves.toMatchObject({
@@ -497,7 +568,11 @@ describe('OriginScopedAutomationController', () => {
     });
     controller.setUrl('https://other.example/changed-by-user');
 
-    await expect(scoped.prepareResume()).resolves.toEqual({ ok: true });
+    await expect(scoped.prepareResume()).resolves.toMatchObject({
+      ok: true,
+      activeTabId: 'tab_assigned',
+      workspaceEmpty: false,
+    });
   });
 
   test('lets a browser-owned start page navigate across supported origins', async () => {
@@ -559,6 +634,7 @@ describe('OriginScopedAutomationController', () => {
     expect(requestApproval).toHaveBeenCalledWith({
       action: 'form_submission',
       operation: OPERATIONS.CLICK,
+      tabId: 'tab_assigned',
       origin: 'https://trusted.example',
       label: 'Submit registration',
     });
@@ -587,6 +663,7 @@ describe('OriginScopedAutomationController', () => {
     expect(requestApproval).toHaveBeenCalledWith({
       action: 'form_submission',
       operation: OPERATIONS.PRESS,
+      tabId: 'tab_assigned',
       origin: 'https://trusted.example',
       label: 'Submit registration',
     });
