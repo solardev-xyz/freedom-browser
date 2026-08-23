@@ -107,6 +107,21 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
   await expect(window.locator('#agent-connected-provider-list')).toContainText('Ollama');
   await window.locator('#agent-sidebar-back').click();
 
+  const agentFirstToggle = window.locator('[data-test="agent-first-toggle"]');
+  await expect(agentFirstToggle).toBeVisible();
+  await agentFirstToggle.click();
+  await expect(window.locator('body')).toHaveClass(/agent-first-mode/);
+  await expect(window.locator('.toolbar')).toBeHidden();
+  await expect(window.locator('[data-test="agent-task-pages"]')).toBeVisible();
+  await expect(window.locator('#agent-task-page-count')).toHaveText('1');
+  await expect(window.locator('#agent-task-page-list .agent-task-page')).toHaveCount(1);
+  await expect(window.locator('#agent-task-pages-note')).toContainText(
+    'currently viewing'
+  );
+  await agentFirstToggle.click();
+  await expect(window.locator('body')).not.toHaveClass(/agent-first-mode/);
+  await expect(window.locator('.toolbar')).toBeVisible();
+
   await window.locator('webview:not(.hidden)').waitFor({ state: 'attached' });
   await window.locator('#agent-prompt').fill('Summarize this page');
   await expect(window.locator('#agent-stop')).toHaveText('Take over');

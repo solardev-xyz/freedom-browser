@@ -21,6 +21,8 @@ const APPROVAL_MODE_LABELS = Object.freeze({
 
 let elements = {};
 let getActiveTab = () => null;
+let getOpenTabs = () => [];
+let switchToTab = () => {};
 let setAgentControlledTab = () => {};
 let providerCatalog = [];
 let providerCatalogPromise = null;
@@ -40,6 +42,10 @@ let agentView = 'loading';
 let approvalMode = APPROVAL_MODES.EVERY_INTERACTION;
 let agentEventUnsubscribe = null;
 let providerAuthEventUnsubscribe = null;
+let tabPresentationUnsubscribe = null;
+let openTabs = [];
+let taskTabProjection = [];
+let agentFirstMode = false;
 const toolRows = new Map();
 const turnViews = new Map();
 
@@ -160,6 +166,7 @@ function setApprovalMode(nextMode) {
 }
 
 function setAgentView(nextView) {
+  if (nextView !== 'workspace' && agentFirstMode) setAgentFirstMode(false);
   agentView = nextView;
   elements.loadingView.hidden = nextView !== 'loading';
   elements.setupView.hidden = nextView !== 'setup';
@@ -172,8 +179,147 @@ function setAgentView(nextView) {
     ? canReturn
       ? 'Add or manage providers'
       : 'Connect a model to continue'
-    : 'Give this tab a task';
+    : 'Give Agent a task';
+  elements.agentFirstToggle.hidden = nextView !== 'workspace';
   closeComposerPopovers();
+}
+
+function taskPageLocation(url) {
+  if (typeof url !== 'string' || !url) return 'New page';
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol === 'file:' || parsed.protocol === 'freedom:') return 'Freedom';
+    return parsed.host || parsed.protocol.replace(':', '');
+  } catch {
+    return 'Page';
+  }
+}
+
+function taskPageIcon(tab) {
+  const icon = document.createElement('span');
+  icon.className = 'agent-task-page-icon';
+  if (typeof tab.favicon === 'string' && tab.favicon) {
+    const image = document.createElement('img');
+    image.src = tab.favicon;
+    image.alt = '';
+    image.addEventListener('error', () => image.remove());
+    icon.appendChild(image);
+  } else {
+    icon.textContent = (tab.title || taskPageLocation(tab.url)).trim().charAt(0).toUpperCase() || '•';
+  }
+  return icon;
+}
+
+function renderTaskPages() {
+  if (!elements.taskPageList) return;
+  const tabById = new Map(openTabs.map((tab) => [tab.id, tab]));
+  const projected = taskTabProjection
+    .map((entry) => ({ ...entry, tab: tabById.get(entry.rendererTabId) }))
+    .filter((entry) => entry.tab);
+  const activeTab = openTabs.find((tab) => tab.isActive);
+  const pages = currentConversationId
+    ? projected
+    : activeTab
+      ? [{ rendererTabId: activeTab.id, agentActive: false, tab: activeTab, startsHere: true }]
+      : [];
+
+  const cards = pages.map((entry) => {
+    const tab = entry.tab;
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'agent-task-page';
+    card.dataset.rendererTabId = String(entry.rendererTabId);
+    card.classList.toggle('viewing', tab.isActive === true);
+    card.appendChild(taskPageIcon(tab));
+
+    const copy = document.createElement('span');
+    copy.className = 'agent-task-page-copy';
+    const title = document.createElement('span');
+    title.className = 'agent-task-page-title';
+    title.textContent = tab.title || 'New tab';
+    const location = document.createElement('span');
+    location.className = 'agent-task-page-location';
+    location.textContent = taskPageLocation(tab.url);
+    copy.appendChild(title);
+    copy.appendChild(location);
+
+    const badges = document.createElement('span');
+    badges.className = 'agent-task-page-badges';
+    const badgeLabels = [
+      ...(entry.startsHere ? ['Starts here'] : []),
+      ...(entry.agentActive ? ['Agent active'] : []),
+      ...(tab.isActive ? ['Viewing'] : []),
+      ...(tab.isLoading ? ['Loading'] : []),
+    ];
+    badgeLabels.forEach((label) => {
+      const badge = document.createElement('span');
+      badge.className = 'agent-task-page-badge';
+      badge.classList.toggle('active', label === 'Agent active');
+      badge.textContent = label;
+      badges.appendChild(badge);
+    });
+    if (badgeLabels.length) copy.appendChild(badges);
+    card.appendChild(copy);
+    card.addEventListener('click', () => {
+      switchToTab(entry.rendererTabId);
+      setAgentFirstMode(false);
+    });
+    return card;
+  });
+
+  elements.taskPageList.replaceChildren(...cards);
+  elements.taskPageCount.textContent = String(pages.length);
+  elements.taskPagesEmpty.hidden = pages.length > 0;
+  elements.taskPagesNote.textContent = currentConversationId
+    ? 'Only pages belonging to this conversation are shown.'
+    : 'Agent will start from the page you are currently viewing.';
+}
+
+function applyWorkspaceProjection(state) {
+  taskTabProjection = Array.isArray(state?.taskTabs)
+    ? state.taskTabs.filter(
+        (entry) =>
+          Number.isSafeInteger(entry?.rendererTabId) &&
+          entry.rendererTabId > 0 &&
+          typeof entry.agentActive === 'boolean'
+      )
+    : [];
+  renderTaskPages();
+}
+
+async function refreshWorkspaceProjection() {
+  try {
+    const response = await window.electronAPI.getAgentState();
+    const state = response?.ok ? response.state : null;
+    if (!state) return;
+    if (
+      currentConversationId &&
+      state.conversationId &&
+      state.conversationId !== currentConversationId
+    ) {
+      return;
+    }
+    applyWorkspaceProjection(state);
+  } catch {
+    // Keep the last trusted renderer projection when state refresh fails.
+  }
+}
+
+function setAgentFirstMode(nextMode) {
+  agentFirstMode = nextMode === true && panelOpen && agentView === 'workspace';
+  document.body.classList.toggle('agent-first-mode', agentFirstMode);
+  elements.taskPages.hidden = !agentFirstMode;
+  elements.agentFirstToggle.setAttribute('aria-pressed', String(agentFirstMode));
+  elements.agentFirstToggle.setAttribute(
+    'aria-label',
+    agentFirstMode ? 'Return to browser view' : 'Make Agent the main view'
+  );
+  elements.agentFirstToggle.title = agentFirstMode ? 'Browser view' : 'Agent-first view';
+  if (agentFirstMode) {
+    openTabs = getOpenTabs();
+    renderTaskPages();
+    void refreshWorkspaceProjection();
+  }
 }
 
 function showPrimaryView() {
@@ -194,6 +340,7 @@ function setPanelOpen(nextOpen) {
 }
 
 function closePanel() {
+  if (agentFirstMode) setAgentFirstMode(false);
   if (panelOpen) setPanelOpen(false);
 }
 
@@ -814,6 +961,8 @@ function applyConversationCleared() {
   lastFinishedRunId = null;
   takeoverRequestedRunId = null;
   setAgentControlledTab(null);
+  taskTabProjection = [];
+  renderTaskPages();
   resetConversationUi();
   setRunState('idle', 'Idle');
 }
@@ -868,6 +1017,7 @@ function handleAgentEvent(event) {
     elements.emptyState.hidden = true;
   } else if (event.type === 'tool_finished') {
     finishToolRow(event);
+    void refreshWorkspaceProjection();
   } else if (event.type === 'run_retrying') {
     setMessage(elements.runMessage, `Provider retry ${event.attempt} of ${event.maxAttempts}…`);
   } else if (event.type === 'context_compaction_started') {
@@ -926,6 +1076,7 @@ function handleAgentEvent(event) {
     takeoverRequestedRunId = null;
     clearApproval();
     setAgentControlledTab(null);
+    void refreshWorkspaceProjection();
   }
 }
 
@@ -962,6 +1113,7 @@ async function startRun() {
       return;
     }
     currentConversationId = response.conversationId || currentConversationId;
+    void refreshWorkspaceProjection();
     pendingPromptText = '';
     if (lastFinishedRunId !== response.runId) {
       currentRunId = response.runId;
@@ -1075,11 +1227,13 @@ async function restoreRunState() {
   try {
     const response = await window.electronAPI.getAgentState();
     const state = response?.ok ? response.state : null;
+    applyWorkspaceProjection(state);
     if (!state?.conversationId) return;
     if (Object.hasOwn(APPROVAL_MODE_LABELS, state.approvalMode)) {
       setApprovalMode(state.approvalMode);
     }
     currentConversationId = state.conversationId;
+    renderTaskPages();
     conversationRendererTabId = Number.isSafeInteger(state.rendererTabId)
       ? state.rendererTabId
       : null;
@@ -1118,6 +1272,12 @@ export function initAgentUi(options = {}) {
     toggle: byId('agent-toggle-btn'),
     panel: byId('agent-sidebar'),
     close: byId('agent-sidebar-close'),
+    agentFirstToggle: byId('agent-first-toggle'),
+    taskPages: byId('agent-task-pages'),
+    taskPageCount: byId('agent-task-page-count'),
+    taskPageList: byId('agent-task-page-list'),
+    taskPagesEmpty: byId('agent-task-pages-empty'),
+    taskPagesNote: byId('agent-task-pages-note'),
     back: byId('agent-sidebar-back'),
     title: byId('agent-sidebar-title'),
     subtitle: byId('agent-sidebar-subtitle'),
@@ -1173,6 +1333,8 @@ export function initAgentUi(options = {}) {
   };
   if (Object.values(elements).some((element) => !element)) return;
   getActiveTab = typeof options.getActiveTab === 'function' ? options.getActiveTab : () => null;
+  getOpenTabs = typeof options.getOpenTabs === 'function' ? options.getOpenTabs : () => [];
+  switchToTab = typeof options.switchTab === 'function' ? options.switchTab : () => {};
   setAgentControlledTab =
     typeof options.setAgentControlledTab === 'function' ? options.setAgentControlledTab : () => {};
   if (isPrivateWindow()) {
@@ -1182,6 +1344,7 @@ export function initAgentUi(options = {}) {
 
   elements.toggle.addEventListener('click', togglePanel);
   elements.close.addEventListener('click', closePanel);
+  elements.agentFirstToggle.addEventListener('click', () => setAgentFirstMode(!agentFirstMode));
   elements.back.addEventListener('click', () => setAgentView('workspace'));
   elements.provider.addEventListener('change', renderProviderFields);
   elements.saveProvider.addEventListener('click', saveProvider);
@@ -1236,7 +1399,10 @@ export function initAgentUi(options = {}) {
     }
   });
   document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') closeComposerPopovers();
+    if (event.key !== 'Escape') return;
+    const popoverWasOpen = !elements.modelMenu.hidden || !elements.approvalModePopover.hidden;
+    closeComposerPopovers();
+    if (!popoverWasOpen && agentFirstMode) setAgentFirstMode(false);
   });
   document.addEventListener('sidebar-opened', closePanel);
   onSignatureFlightChange((inFlight) => {
@@ -1248,7 +1414,16 @@ export function initAgentUi(options = {}) {
   providerAuthEventUnsubscribe?.();
   providerAuthEventUnsubscribe =
     window.electronAPI.onAgentProviderAuthEvent(handleProviderAuthEvent);
+  tabPresentationUnsubscribe?.();
+  tabPresentationUnsubscribe =
+    typeof options.subscribeTabPresentation === 'function'
+      ? options.subscribeTabPresentation((tabs) => {
+          openTabs = Array.isArray(tabs) ? tabs : [];
+          renderTaskPages();
+        })
+      : null;
   setPanelOpen(false);
+  setAgentFirstMode(false);
   setAgentView('loading');
   renderProviderFields();
   updateSendAvailability();

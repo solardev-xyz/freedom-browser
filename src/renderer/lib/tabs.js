@@ -74,6 +74,7 @@ const tabState = {
 // state only: the main-process automation binding remains the authority for
 // which webContents the run can control.
 let agentControlledTabId = null;
+const tabPresentationListeners = new Set();
 
 export const setAgentControlledTab = (tabId = null) => {
   const nextTabId = tabState.tabs.some((tab) => tab.id === tabId) ? tabId : null;
@@ -145,8 +146,17 @@ export const getOpenTabs = () => {
     id: tab.id,
     url: tab.url,
     title: tab.title,
+    favicon: tab.favicon || '',
+    isLoading: tab.isLoading === true,
     isActive: tab.id === tabState.activeTabId,
   }));
+};
+
+export const subscribeTabPresentation = (listener) => {
+  if (typeof listener !== 'function') return () => {};
+  tabPresentationListeners.add(listener);
+  listener(getOpenTabs());
+  return () => tabPresentationListeners.delete(listener);
 };
 
 // Get the webview of the currently active tab
@@ -1083,6 +1093,14 @@ const renderTabs = () => {
 
     previousSibling = tabEl;
   });
+  const presentation = getOpenTabs();
+  for (const listener of tabPresentationListeners) {
+    try {
+      listener(presentation);
+    } catch {
+      // Presentation observers cannot interrupt browser tab rendering.
+    }
+  }
 };
 
 // URLs `createTab` is allowed to load directly as the initial webview

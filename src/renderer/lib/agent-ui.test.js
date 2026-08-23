@@ -10,6 +10,12 @@ function createAgentElements() {
     'agent-toggle-btn',
     'agent-sidebar',
     'agent-sidebar-close',
+    'agent-first-toggle',
+    'agent-task-pages',
+    'agent-task-page-count',
+    'agent-task-page-list',
+    'agent-task-pages-empty',
+    'agent-task-pages-note',
     'agent-sidebar-back',
     'agent-sidebar-title',
     'agent-sidebar-subtitle',
@@ -67,6 +73,13 @@ function createAgentElements() {
   elements['agent-toggle-btn'] = createElement('button');
   elements['agent-sidebar'] = createElement('aside', { classes: ['collapsed'] });
   elements['agent-sidebar-close'] = createElement('button');
+  elements['agent-first-toggle'] = createElement('button');
+  elements['agent-first-toggle'].hidden = true;
+  elements['agent-task-pages'] = createElement('aside');
+  elements['agent-task-pages'].hidden = true;
+  elements['agent-task-page-count'] = createElement('span', { textContent: '0' });
+  elements['agent-task-page-list'] = createElement('div');
+  elements['agent-task-pages-empty'] = createElement('div');
   elements['agent-sidebar-back'] = createElement('button');
   elements['agent-setup-view'].hidden = true;
   elements['agent-workspace-view'].hidden = true;
@@ -209,8 +222,30 @@ async function loadAgentUi(options = {}) {
     onSignatureFlightChange: jest.fn(),
   }));
   const setAgentControlledTab = jest.fn();
+  const switchTab = jest.fn();
+  const getOpenTabs =
+    options.getOpenTabs ||
+    (() => [
+      {
+        id: 7,
+        url: 'https://example.com/start',
+        title: 'Start page',
+        favicon: '',
+        isLoading: false,
+        isActive: true,
+      },
+    ]);
   const mod = await import('./agent-ui.js');
-  mod.initAgentUi({ getActiveTab: () => ({ id: 7 }), setAgentControlledTab });
+  mod.initAgentUi({
+    getActiveTab: () => ({ id: 7 }),
+    getOpenTabs,
+    setAgentControlledTab,
+    subscribeTabPresentation: (listener) => {
+      listener(getOpenTabs());
+      return jest.fn();
+    },
+    switchTab,
+  });
   await flush();
   return {
     mod,
@@ -219,6 +254,7 @@ async function loadAgentUi(options = {}) {
     electronAPI,
     sidebar,
     setAgentControlledTab,
+    switchTab,
     emit: (event) => eventHandler(event),
     emitProviderAuth: (event) => providerAuthEventHandler(event),
   };
@@ -539,6 +575,65 @@ describe('Agent UI', () => {
     );
     expect(ctx.elements['agent-model-menu-button'].disabled).toBe(true);
     expect(ctx.elements['agent-new-chat'].hidden).toBe(false);
+  });
+
+  test('makes chat primary with only conversation-owned pages and returns to inspect a page', async () => {
+    const getOpenTabs = () => [
+      {
+        id: 7,
+        url: 'https://unrelated.example/',
+        title: 'Unrelated page',
+        favicon: '',
+        isLoading: false,
+        isActive: true,
+      },
+      {
+        id: 8,
+        url: 'https://en.wikipedia.org/wiki/Agent',
+        title: 'Agent — Wikipedia',
+        favicon: '',
+        isLoading: false,
+        isActive: false,
+      },
+    ];
+    const ctx = await loadAgentUi({
+      getOpenTabs,
+      electronAPI: {
+        getAgentState: jest.fn().mockResolvedValue({
+          ok: true,
+          state: {
+            status: 'ready',
+            conversationId: 'conversation_restored',
+            rendererTabId: 7,
+            approvalMode: 'every_interaction',
+            transcript: [],
+            taskTabs: [{ rendererTabId: 8, agentActive: true }],
+          },
+        }),
+      },
+    });
+
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    expect(ctx.elements['agent-first-toggle'].hidden).toBe(false);
+
+    ctx.elements['agent-first-toggle'].dispatch('click');
+    await flush();
+
+    expect(ctx.document.body.classList.contains('agent-first-mode')).toBe(true);
+    expect(ctx.elements['agent-task-pages'].hidden).toBe(false);
+    expect(ctx.elements['agent-task-page-count'].textContent).toBe('1');
+    expect(ctx.elements['agent-task-page-list'].children).toHaveLength(1);
+    expect(
+      ctx.elements['agent-task-page-list'].children[0].querySelector('.agent-task-page-title')
+        .textContent
+    ).toBe('Agent — Wikipedia');
+
+    ctx.elements['agent-task-page-list'].children[0].dispatch('click');
+
+    expect(ctx.switchTab).toHaveBeenCalledWith(8);
+    expect(ctx.document.body.classList.contains('agent-first-mode')).toBe(false);
+    expect(ctx.elements['agent-sidebar'].classList.contains('collapsed')).toBe(false);
   });
 
   test('sanitizes completed assistant Markdown with a restricted element allowlist', async () => {

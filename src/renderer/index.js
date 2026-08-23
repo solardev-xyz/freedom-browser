@@ -38,10 +38,12 @@ import {
   openOrFocusInternalPage,
   getActiveWebview,
   getActiveTab,
+  getOpenTabs,
   getTabById,
   closeTab,
   switchTab,
   setAgentControlledTab,
+  subscribeTabPresentation,
 } from './lib/tabs.js';
 import {
   initNavigation,
@@ -781,7 +783,13 @@ window.addEventListener('DOMContentLoaded', async () => {
   initLinkStatus();
   initFindBar({ getActiveWebview }); // In-page find bar (Cmd/Ctrl+F)
   initTabs(); // Creates first tab and starts loading home page
-  initAgentUi({ getActiveTab, setAgentControlledTab }); // Embedded Pi agent panel
+  initAgentUi({
+    getActiveTab,
+    getOpenTabs,
+    setAgentControlledTab,
+    subscribeTabPresentation,
+    switchTab,
+  }); // Embedded Pi agent panel
   initAutocomplete(); // Address bar autocomplete
   initPageContextMenu(); // Page context menu for webviews
   initChromeInputContextMenu({ onOpening: onAnyMenuOpening }); // Address bar edit menu

@@ -1096,26 +1096,57 @@
               </button>
               <div>
                 <h2 id="agent-sidebar-title">Agent</h2>
-                <p id="agent-sidebar-subtitle">Give this tab a task</p>
+                <p id="agent-sidebar-subtitle">Give Agent a task</p>
               </div>
             </div>
-            <button
-              type="button"
-              class="agent-icon-btn"
-              id="agent-sidebar-close"
-              aria-label="Close Agent"
-            >
-              <svg
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                aria-hidden="true"
+            <div class="agent-sidebar-header-actions">
+              <button
+                type="button"
+                class="agent-icon-btn"
+                id="agent-first-toggle"
+                aria-label="Make Agent the main view"
+                aria-pressed="false"
+                title="Agent-first view"
+                data-test="agent-first-toggle"
+                hidden
               >
-                <path d="M18 6 6 18M6 6l12 12" />
-              </svg>
-            </button>
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M8 3H3v5" />
+                  <path d="m3 3 6 6" />
+                  <path d="M16 3h5v5" />
+                  <path d="m21 3-6 6" />
+                  <path d="M8 21H3v-5" />
+                  <path d="m3 21 6-6" />
+                  <path d="M16 21h5v-5" />
+                  <path d="m21 21-6-6" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                class="agent-icon-btn"
+                id="agent-sidebar-close"
+                aria-label="Close Agent"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  aria-hidden="true"
+                >
+                  <path d="M18 6 6 18M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
           </div>
 
           <div id="agent-loading-view" class="agent-view agent-loading-view">
@@ -1256,7 +1287,7 @@
               <div id="agent-empty-state" class="agent-empty-state">
                 <div class="agent-empty-state-icon" aria-hidden="true">✦</div>
                 <h3>What should I do?</h3>
-                <p>Ask Agent to research, fill in a form, or complete another task in this tab.</p>
+                <p>Ask Agent to research, fill in a form, or complete a task across the web.</p>
               </div>
 
               <div id="agent-approval" class="agent-approval" role="alert" hidden>
@@ -1396,6 +1427,28 @@
             </div>
           </div>
         </div>
+      </aside>
+      <aside
+        id="agent-task-pages"
+        class="agent-task-pages"
+        aria-label="Agent task pages"
+        data-test="agent-task-pages"
+        hidden
+      >
+        <div class="agent-task-pages-header">
+          <div>
+            <span class="agent-task-pages-eyebrow">Workspace</span>
+            <h2>Task pages</h2>
+          </div>
+          <span id="agent-task-page-count" class="agent-task-page-count">0</span>
+        </div>
+        <div id="agent-task-page-list" class="agent-task-page-list"></div>
+        <div id="agent-task-pages-empty" class="agent-task-pages-empty">
+          <p>Pages Agent opens for this task will appear here.</p>
+        </div>
+        <p id="agent-task-pages-note" class="agent-task-pages-note">
+          Only pages belonging to this conversation are shown.
+        </p>
       </aside>
       <aside id="sidebar" class="sidebar collapsed">
         <div class="sidebar-inner">

@@ -270,9 +270,30 @@ describe('tabs ui behavior', () => {
     expect(mod.getActiveTab().id).toBe(secondTab.id);
 
     expect(mod.getOpenTabs()).toEqual([
-      { id: secondTab.id, url: secondTab.url, title: secondTab.title, isActive: true },
-      { id: initialTab.id, url: initialTab.url, title: initialTab.title, isActive: false },
-      { id: thirdTab.id, url: thirdTab.url, title: thirdTab.title, isActive: false },
+      {
+        id: secondTab.id,
+        url: secondTab.url,
+        title: secondTab.title,
+        favicon: '',
+        isLoading: true,
+        isActive: true,
+      },
+      {
+        id: initialTab.id,
+        url: initialTab.url,
+        title: initialTab.title,
+        favicon: '',
+        isLoading: false,
+        isActive: false,
+      },
+      {
+        id: thirdTab.id,
+        url: thirdTab.url,
+        title: thirdTab.title,
+        favicon: '',
+        isLoading: false,
+        isActive: false,
+      },
     ]);
   });
 
