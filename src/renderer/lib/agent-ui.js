@@ -18,6 +18,20 @@ const APPROVAL_MODE_LABELS = Object.freeze({
   [APPROVAL_MODES.EVERY_INTERACTION]: 'Ask every action',
   [APPROVAL_MODES.ALLOW_WEBSITE_INTERACTIONS]: 'Allow website actions',
 });
+const PANE_RESIZE_CONFIG = Object.freeze({
+  session: Object.freeze({
+    cssProperty: '--agent-session-sidebar-width',
+    defaultWidth: 242,
+    minWidth: 190,
+    maxWidth: 520,
+  }),
+  workspace: Object.freeze({
+    cssProperty: '--agent-workspace-sidebar-width',
+    defaultWidth: 420,
+    minWidth: 300,
+    maxWidth: 760,
+  }),
+});
 
 let elements = {};
 let getActiveTab = () => null;
@@ -52,6 +66,7 @@ let agentFirstMode = false;
 let sessionSidebarOpen = true;
 let workspaceSidebarOpen = true;
 let conversationTitle = 'New task';
+const paneWidths = { session: null, workspace: null };
 const toolRows = new Map();
 const turnViews = new Map();
 
@@ -414,6 +429,102 @@ function setWorkspaceSidebarOpen(nextOpen) {
     'aria-label',
     workspaceSidebarOpen ? 'Hide workspace sidebar' : 'Show workspace sidebar'
   );
+}
+
+function setBodyStyleProperty(name, value) {
+  if (typeof document.body.style.setProperty === 'function') {
+    document.body.style.setProperty(name, value);
+  } else {
+    document.body.style[name] = value;
+  }
+}
+
+function removeBodyStyleProperty(name) {
+  if (typeof document.body.style.removeProperty === 'function') {
+    document.body.style.removeProperty(name);
+  } else {
+    delete document.body.style[name];
+  }
+}
+
+function paneResizeMaximum(kind) {
+  const config = PANE_RESIZE_CONFIG[kind];
+  const oppositeWidth =
+    kind === 'session'
+      ? workspaceSidebarOpen
+        ? elements.pageSurface.getBoundingClientRect().width
+        : 0
+      : sessionSidebarOpen
+        ? elements.sessionSidebar.getBoundingClientRect().width
+        : 0;
+  const viewportWidth = Number.isFinite(window.innerWidth) ? window.innerWidth : 1280;
+  return Math.max(config.minWidth, Math.min(config.maxWidth, viewportWidth - oppositeWidth - 360));
+}
+
+function setPaneWidth(kind, requestedWidth) {
+  const config = PANE_RESIZE_CONFIG[kind];
+  const maximum = paneResizeMaximum(kind);
+  const width = Math.round(Math.max(config.minWidth, Math.min(maximum, requestedWidth)));
+  paneWidths[kind] = width;
+  setBodyStyleProperty(config.cssProperty, `${width}px`);
+  const handle = kind === 'session' ? elements.sessionResizer : elements.workspaceResizer;
+  handle.setAttribute('aria-valuemax', String(Math.round(maximum)));
+  handle.setAttribute('aria-valuenow', String(width));
+}
+
+function resetPaneWidth(kind) {
+  const config = PANE_RESIZE_CONFIG[kind];
+  paneWidths[kind] = null;
+  removeBodyStyleProperty(config.cssProperty);
+  const handle = kind === 'session' ? elements.sessionResizer : elements.workspaceResizer;
+  handle.setAttribute('aria-valuenow', String(config.defaultWidth));
+}
+
+function initPaneResizer(kind, handle) {
+  let pointerId = null;
+  const isOpen = () =>
+    agentFirstMode && (kind === 'session' ? sessionSidebarOpen : workspaceSidebarOpen);
+  const finishResize = (event) => {
+    if (pointerId === null || (event?.pointerId != null && event.pointerId !== pointerId)) return;
+    handle.releasePointerCapture?.(pointerId);
+    pointerId = null;
+    document.body.classList.remove('agent-sidebar-resizing');
+  };
+
+  handle.addEventListener('pointerdown', (event) => {
+    if (!isOpen() || (event.button != null && event.button !== 0)) return;
+    event.preventDefault();
+    pointerId = event.pointerId;
+    handle.setPointerCapture?.(pointerId);
+    document.body.classList.add('agent-sidebar-resizing');
+  });
+  handle.addEventListener('pointermove', (event) => {
+    if (pointerId === null || event.pointerId !== pointerId) return;
+    const requestedWidth = kind === 'session' ? event.clientX : window.innerWidth - event.clientX;
+    setPaneWidth(kind, requestedWidth);
+  });
+  handle.addEventListener('pointerup', finishResize);
+  handle.addEventListener('pointercancel', finishResize);
+  handle.addEventListener('dblclick', () => resetPaneWidth(kind));
+  handle.addEventListener('keydown', (event) => {
+    if (!isOpen()) return;
+    const config = PANE_RESIZE_CONFIG[kind];
+    const currentWidth =
+      paneWidths[kind] ??
+      (kind === 'session'
+        ? elements.sessionSidebar.getBoundingClientRect().width
+        : elements.pageSurface.getBoundingClientRect().width) ??
+      config.defaultWidth;
+    const direction = kind === 'session' ? 1 : -1;
+    let nextWidth = null;
+    if (event.key === 'ArrowLeft') nextWidth = currentWidth - 16 * direction;
+    if (event.key === 'ArrowRight') nextWidth = currentWidth + 16 * direction;
+    if (event.key === 'Home') nextWidth = config.minWidth;
+    if (event.key === 'End') nextWidth = paneResizeMaximum(kind);
+    if (nextWidth === null) return;
+    event.preventDefault();
+    setPaneWidth(kind, nextWidth);
+  });
 }
 
 function showPrimaryView() {
@@ -1382,6 +1493,9 @@ export function initAgentUi(options = {}) {
     sessionSidebarToggle: byId('agent-session-sidebar-toggle'),
     workspaceSidebarToggle: byId('agent-workspace-sidebar-toggle'),
     sessionSidebar: byId('agent-session-sidebar'),
+    sessionResizer: byId('agent-session-resizer'),
+    pageSurface: byId('agent-page-surface'),
+    workspaceResizer: byId('agent-workspace-resizer'),
     sessionNewChat: byId('agent-session-new-chat'),
     currentSession: byId('agent-current-session'),
     currentSessionTitle: byId('agent-current-session-title'),
@@ -1476,6 +1590,8 @@ export function initAgentUi(options = {}) {
   elements.workspaceSidebarToggle.addEventListener('click', () =>
     setWorkspaceSidebarOpen(!workspaceSidebarOpen)
   );
+  initPaneResizer('session', elements.sessionResizer);
+  initPaneResizer('workspace', elements.workspaceResizer);
   elements.workspaceBack.addEventListener('click', () => {
     const webview = getActiveWebview();
     if (webview?.canGoBack?.()) webview.goBack();

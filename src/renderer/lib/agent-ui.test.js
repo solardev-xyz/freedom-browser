@@ -17,6 +17,9 @@ function createAgentElements() {
     'agent-session-sidebar-toggle',
     'agent-workspace-sidebar-toggle',
     'agent-session-sidebar',
+    'agent-session-resizer',
+    'agent-page-surface',
+    'agent-workspace-resizer',
     'agent-session-new-chat',
     'agent-current-session',
     'agent-current-session-title',
@@ -95,8 +98,15 @@ function createAgentElements() {
   elements['agent-first-browser-return'] = createElement('button');
   elements['agent-session-sidebar-toggle'] = createElement('button');
   elements['agent-workspace-sidebar-toggle'] = createElement('button');
-  elements['agent-session-sidebar'] = createElement('aside');
+  elements['agent-session-sidebar'] = createElement('aside', {
+    rect: { left: 0, right: 242, width: 242 },
+  });
   elements['agent-session-sidebar'].hidden = true;
+  elements['agent-session-resizer'] = createElement('div');
+  elements['agent-page-surface'] = createElement('section', {
+    rect: { left: 860, right: 1280, width: 420 },
+  });
+  elements['agent-workspace-resizer'] = createElement('div');
   elements['agent-session-new-chat'] = createElement('button');
   elements['agent-current-session'] = createElement('button');
   elements['agent-current-session'].hidden = true;
@@ -235,6 +245,7 @@ async function loadAgentUi(options = {}) {
   global.window = {
     electronAPI,
     confirm: jest.fn(() => true),
+    innerWidth: 1280,
     ...(options.windowGlobals || {}),
   };
   global.CustomEvent = class {
@@ -738,6 +749,41 @@ describe('Agent UI', () => {
 
     expect(preventDefault).toHaveBeenCalledTimes(1);
     expect(tabList.scrollLeft).toBe(52);
+  });
+
+  test('resizes both Agent-first sidebars with pointer and keyboard input', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    await flush();
+    ctx.elements['agent-first-toggle'].dispatch('click');
+
+    const sessionHandle = ctx.elements['agent-session-resizer'];
+    sessionHandle.dispatch('pointerdown', {
+      button: 0,
+      pointerId: 1,
+      preventDefault: jest.fn(),
+    });
+    sessionHandle.dispatch('pointermove', { pointerId: 1, clientX: 320 });
+    expect(ctx.document.body.style['--agent-session-sidebar-width']).toBe('320px');
+    expect(sessionHandle.attributes['aria-valuenow']).toBe('320');
+    expect(ctx.document.body.classList.contains('agent-sidebar-resizing')).toBe(true);
+    sessionHandle.dispatch('pointerup', { pointerId: 1 });
+    expect(ctx.document.body.classList.contains('agent-sidebar-resizing')).toBe(false);
+
+    const workspaceHandle = ctx.elements['agent-workspace-resizer'];
+    workspaceHandle.dispatch('pointerdown', {
+      button: 0,
+      pointerId: 2,
+      preventDefault: jest.fn(),
+    });
+    workspaceHandle.dispatch('pointermove', { pointerId: 2, clientX: 760 });
+    workspaceHandle.dispatch('pointerup', { pointerId: 2 });
+    expect(ctx.document.body.style['--agent-workspace-sidebar-width']).toBe('520px');
+
+    workspaceHandle.dispatch('keydown', { key: 'ArrowLeft', preventDefault: jest.fn() });
+    expect(ctx.document.body.style['--agent-workspace-sidebar-width']).toBe('536px');
+    workspaceHandle.dispatch('dblclick');
+    expect(ctx.document.body.style['--agent-workspace-sidebar-width']).toBeUndefined();
   });
 
   test('sanitizes completed assistant Markdown with a restricted element allowlist', async () => {

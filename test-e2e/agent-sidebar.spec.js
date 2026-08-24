@@ -204,17 +204,92 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
   expect(sidebarThemeContrast.dark.sidebar).toBeGreaterThan(sidebarThemeContrast.dark.main);
   expect(sidebarThemeContrast.light.sidebar).toBeLessThan(sidebarThemeContrast.light.main);
 
+  const paneMotion = await window.evaluate(() => ({
+    sessions: getComputedStyle(document.querySelector('#agent-session-sidebar')).transitionDuration,
+    workspace: getComputedStyle(document.querySelector('#agent-page-surface')).transitionDuration,
+  }));
+  expect(paneMotion.sessions).not.toBe('0s');
+  expect(paneMotion.workspace).not.toBe('0s');
+
+  const initialSessionWidth = await window
+    .locator('#agent-session-sidebar')
+    .evaluate((sidebar) => sidebar.getBoundingClientRect().width);
+  const sessionResizeBox = await window
+    .locator('[data-test="agent-session-resizer"]')
+    .boundingBox();
+  await window.mouse.move(
+    sessionResizeBox.x + sessionResizeBox.width / 2,
+    sessionResizeBox.y + sessionResizeBox.height / 2
+  );
+  await window.mouse.down();
+  await expect(window.locator('body')).toHaveClass(/agent-sidebar-resizing/);
+  await window.mouse.move(
+    sessionResizeBox.x + 36,
+    sessionResizeBox.y + sessionResizeBox.height / 2
+  );
+  await window.mouse.up();
+  const resizedSessionGeometry = await window.evaluate(() => ({
+    sidebar: document.querySelector('#agent-session-sidebar').getBoundingClientRect().width,
+    titlebar: document.querySelector('.agent-first-titlebar-left').getBoundingClientRect().width,
+  }));
+  expect(resizedSessionGeometry.sidebar).toBeGreaterThan(initialSessionWidth + 25);
+  expect(Math.abs(resizedSessionGeometry.sidebar - resizedSessionGeometry.titlebar)).toBeLessThan(
+    2
+  );
+
+  const initialWorkspaceWidth = await window
+    .locator('#agent-page-surface')
+    .evaluate((sidebar) => sidebar.getBoundingClientRect().width);
+  const workspaceResizeBox = await window
+    .locator('[data-test="agent-workspace-resizer"]')
+    .boundingBox();
+  await window.mouse.move(
+    workspaceResizeBox.x + workspaceResizeBox.width / 2,
+    workspaceResizeBox.y + workspaceResizeBox.height / 2
+  );
+  await window.mouse.down();
+  await expect(window.locator('body')).toHaveClass(/agent-sidebar-resizing/);
+  await window.mouse.move(
+    workspaceResizeBox.x - 36,
+    workspaceResizeBox.y + workspaceResizeBox.height / 2
+  );
+  await window.mouse.up();
+  const resizedWorkspaceGeometry = await window.evaluate(() => ({
+    sidebar: document.querySelector('#agent-page-surface').getBoundingClientRect().width,
+    titlebar: document.querySelector('.agent-first-titlebar-right').getBoundingClientRect().width,
+  }));
+  expect(resizedWorkspaceGeometry.sidebar).toBeGreaterThan(initialWorkspaceWidth + 25);
+  expect(
+    Math.abs(resizedWorkspaceGeometry.sidebar - resizedWorkspaceGeometry.titlebar)
+  ).toBeLessThan(2);
+
   const openSessionToggleLeft = await window
     .locator('[data-test="agent-session-sidebar-toggle"]')
     .evaluate((button) => button.getBoundingClientRect().left);
   await window.locator('[data-test="agent-session-sidebar-toggle"]').click();
   await expect(window.locator('body')).toHaveClass(/agent-session-sidebar-closed/);
+  await window.waitForTimeout(260);
   const closedSessionToggleLeft = await window
     .locator('[data-test="agent-session-sidebar-toggle"]')
     .evaluate((button) => button.getBoundingClientRect().left);
   expect(Math.abs(closedSessionToggleLeft - openSessionToggleLeft)).toBeLessThan(1);
+  const closedSessionChrome = await window.evaluate(() => ({
+    sidebarDisplay: getComputedStyle(document.querySelector('#agent-session-sidebar')).display,
+    headerBackground: getComputedStyle(document.querySelector('.agent-first-titlebar-left'))
+      .backgroundColor,
+    titlebarBackground: getComputedStyle(document.querySelector('.title-bar')).backgroundColor,
+    slidingSurfaceTransform: getComputedStyle(
+      document.querySelector('.agent-first-titlebar-left'),
+      '::before'
+    ).transform,
+  }));
+  expect(closedSessionChrome.sidebarDisplay).toBe('flex');
+  expect(closedSessionChrome.headerBackground).toBe(closedSessionChrome.titlebarBackground);
+  expect(closedSessionChrome.slidingSurfaceTransform).not.toBe('none');
   await window.locator('[data-test="agent-workspace-sidebar-toggle"]').click();
   await expect(window.locator('body')).toHaveClass(/agent-workspace-sidebar-closed/);
+  await window.waitForTimeout(260);
+  await expect(window.locator('#agent-page-surface')).toHaveCSS('display', 'flex');
   await window.locator('[data-test="agent-session-sidebar-toggle"]').click();
   await window.locator('[data-test="agent-workspace-sidebar-toggle"]').click();
 
