@@ -364,6 +364,17 @@ test('a conversation survives its original and then all task tabs closing', asyn
   await window.locator('[data-test="agent-first-toggle"]').click();
   await expect(window.locator('#agent-task-page-count')).toHaveText('5');
   await expect(window.locator('#agent-task-page-list .agent-task-page')).toHaveCount(5);
+  const compactTabStrip = await window.locator('#agent-task-page-list').evaluate((list) => {
+    const tabs = [...list.querySelectorAll('.agent-task-page')];
+    return {
+      scrollsHorizontally: list.scrollWidth > list.clientWidth,
+      widths: tabs.map((tab) => tab.getBoundingClientRect().width),
+      tops: tabs.map((tab) => tab.getBoundingClientRect().top),
+    };
+  });
+  expect(compactTabStrip.scrollsHorizontally).toBe(true);
+  expect(compactTabStrip.widths.every((width) => width <= 140)).toBe(true);
+  expect(new Set(compactTabStrip.tops).size).toBe(1);
   await window.locator('#agent-task-page-list .agent-task-page').first().click();
   await expect(window.locator('body')).toHaveClass(/agent-first-mode/);
   await expect(window.locator('#agent-page-surface .content')).toBeVisible();

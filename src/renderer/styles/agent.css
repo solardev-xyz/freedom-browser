@@ -384,58 +384,67 @@
 
 .agent-task-page-list {
   display: flex;
-  gap: 6px;
+  align-items: flex-end;
+  gap: 2px;
   min-width: 0;
-  padding: 0 10px 9px;
+  padding: 0 8px;
   overflow-x: auto;
   overflow-y: hidden;
+  scrollbar-width: thin;
 }
 
 .agent-task-page {
-  display: grid;
-  width: 170px;
-  min-width: 150px;
-  flex: 0 1 170px;
-  grid-template-columns: 22px minmax(0, 1fr);
+  position: relative;
+  display: flex;
+  width: 136px;
+  min-width: 96px;
+  height: 30px;
+  flex: 0 0 136px;
+  align-items: center;
   gap: 7px;
-  padding: 7px;
-  color: var(--text);
+  padding: 0 10px;
+  color: var(--muted);
   text-align: left;
-  background: color-mix(in srgb, var(--bg) 72%, var(--toolbar));
+  background: transparent;
   border: 1px solid transparent;
-  border-radius: 8px;
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
 }
 
 .agent-task-page:hover {
-  background: color-mix(in srgb, var(--bg) 55%, var(--toolbar));
-  border-color: var(--border);
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.07);
 }
 
 .agent-task-page.viewing {
-  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  color: var(--text);
+  background: var(--toolbar);
+  border-color: var(--border);
 }
 
 .agent-task-page-icon {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
   overflow: hidden;
   color: var(--muted);
   font-size: 10px;
   font-weight: 650;
-  background: rgba(255, 255, 255, 0.07);
-  border-radius: 6px;
+  background: transparent;
+  border-radius: 3px;
 }
 
 .agent-task-page-icon img {
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   object-fit: contain;
 }
 
 .agent-task-page-copy {
+  display: block;
   min-width: 0;
 }
 
@@ -448,34 +457,24 @@
 }
 
 .agent-task-page-title {
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
 }
 
-.agent-task-page-location {
-  margin-top: 2px;
-  color: var(--muted);
-  font-size: 8px;
-}
-
+.agent-task-page-location,
 .agent-task-page-badges {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 3px;
-  margin-top: 5px;
+  display: none;
 }
 
-.agent-task-page-badge {
-  padding: 1px 4px;
-  color: var(--muted);
-  font-size: 7px;
-  background: rgba(255, 255, 255, 0.06);
-  border-radius: 999px;
-}
-
-.agent-task-page-badge.active {
-  color: color-mix(in srgb, var(--accent) 85%, white);
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
+.agent-task-page.agent-active::after {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 5px;
+  height: 5px;
+  content: '';
+  background: var(--accent);
+  border-radius: 50%;
 }
 
 .agent-task-pages-empty {
@@ -507,6 +506,19 @@ body.agent-first-mode .title-bar {
   align-items: stretch;
   padding-bottom: 0;
   border-bottom: 1px solid var(--border);
+}
+
+body.agent-first-mode,
+body.agent-first-mode .app-body,
+body.agent-first-mode .agent-session-sidebar,
+body.agent-first-mode .agent-sidebar,
+body.agent-first-mode .agent-sidebar-inner,
+body.agent-first-mode .agent-workspace-view,
+body.agent-first-mode .agent-workspace-scroll,
+body.agent-first-mode .agent-composer-wrap,
+body.agent-first-mode .agent-page-surface,
+body.agent-first-mode .agent-task-pages {
+  background: var(--bg);
 }
 
 body.agent-first-mode .agent-first-titlebar {

@@ -661,6 +661,12 @@ describe('Agent UI', () => {
       ctx.elements['agent-task-page-list'].children[0].querySelector('.agent-task-page-title')
         .textContent
     ).toBe('Agent — Wikipedia');
+    expect(ctx.elements['agent-task-page-list'].children[0].classList.contains('agent-active')).toBe(
+      true
+    );
+    expect(ctx.elements['agent-task-page-list'].children[0].title).toBe(
+      'Agent — Wikipedia — en.wikipedia.org — Agent active'
+    );
 
     ctx.elements['agent-task-page-list'].children[0].dispatch('click');
 

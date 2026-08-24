@@ -126,6 +126,21 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
   }));
   expect(paneOrder.sessions).toBeLessThan(paneOrder.conversation);
   expect(paneOrder.conversation).toBeLessThan(paneOrder.workspace);
+  const unifiedChrome = await window.evaluate(() => {
+    const background = (selector) =>
+      getComputedStyle(document.querySelector(selector)).backgroundColor;
+    return {
+      titlebar: background('.title-bar'),
+      sessions: background('#agent-session-sidebar'),
+      conversation: background('#agent-sidebar'),
+      workspace: background('#agent-task-pages'),
+      composer: background('.agent-composer-wrap'),
+    };
+  });
+  expect(unifiedChrome.sessions).toBe(unifiedChrome.titlebar);
+  expect(unifiedChrome.conversation).toBe(unifiedChrome.titlebar);
+  expect(unifiedChrome.workspace).toBe(unifiedChrome.titlebar);
+  expect(unifiedChrome.composer).toBe(unifiedChrome.titlebar);
 
   await window.locator('[data-test="agent-session-sidebar-toggle"]').click();
   await expect(window.locator('body')).toHaveClass(/agent-session-sidebar-closed/);

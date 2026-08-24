@@ -268,6 +268,14 @@ function renderTaskPages() {
     card.className = 'agent-task-page';
     card.dataset.rendererTabId = String(entry.rendererTabId);
     card.classList.toggle('viewing', tab.isActive === true);
+    card.classList.toggle('agent-active', entry.agentActive === true);
+    card.title = [
+      tab.title || 'New tab',
+      taskPageLocation(tab.url),
+      ...(entry.agentActive ? ['Agent active'] : []),
+      ...(tab.isLoading ? ['Loading'] : []),
+    ].join(' — ');
+    card.setAttribute('aria-label', card.title);
     card.appendChild(taskPageIcon(tab));
 
     const copy = document.createElement('span');
