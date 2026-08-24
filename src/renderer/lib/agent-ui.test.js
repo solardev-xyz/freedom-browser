@@ -26,6 +26,11 @@ function createAgentElements() {
     'agent-task-page-list',
     'agent-task-pages-empty',
     'agent-task-pages-note',
+    'agent-workspace-nav',
+    'agent-workspace-back',
+    'agent-workspace-forward',
+    'agent-workspace-reload',
+    'agent-workspace-address',
     'agent-sidebar-back',
     'agent-sidebar-title',
     'agent-sidebar-subtitle',
@@ -101,6 +106,11 @@ function createAgentElements() {
   elements['agent-task-page-count'] = createElement('span', { textContent: '0' });
   elements['agent-task-page-list'] = createElement('div');
   elements['agent-task-pages-empty'] = createElement('div');
+  elements['agent-workspace-nav'] = createElement('form');
+  elements['agent-workspace-back'] = createElement('button');
+  elements['agent-workspace-forward'] = createElement('button');
+  elements['agent-workspace-reload'] = createElement('button');
+  elements['agent-workspace-address'] = createElement('input');
   elements['agent-sidebar-back'] = createElement('button');
   elements['agent-setup-view'].hidden = true;
   elements['agent-workspace-view'].hidden = true;
@@ -244,6 +254,8 @@ async function loadAgentUi(options = {}) {
   }));
   const setAgentControlledTab = jest.fn();
   const switchTab = jest.fn();
+  const navigateWorkspace = jest.fn();
+  const reloadWorkspace = jest.fn();
   const getOpenTabs =
     options.getOpenTabs ||
     (() => [
@@ -258,8 +270,12 @@ async function loadAgentUi(options = {}) {
     ]);
   const mod = await import('./agent-ui.js');
   mod.initAgentUi({
-    getActiveTab: () => ({ id: 7 }),
+    getActiveTab:
+      options.getActiveTab || (() => getOpenTabs().find((tab) => tab.isActive) || getOpenTabs()[0]),
+    getActiveWebview: options.getActiveWebview,
     getOpenTabs,
+    navigateWorkspace,
+    reloadWorkspace,
     setAgentControlledTab,
     subscribeTabPresentation: (listener) => {
       listener(getOpenTabs());
@@ -276,6 +292,8 @@ async function loadAgentUi(options = {}) {
     sidebar,
     setAgentControlledTab,
     switchTab,
+    navigateWorkspace,
+    reloadWorkspace,
     emit: (event) => eventHandler(event),
     emitProviderAuth: (event) => providerAuthEventHandler(event),
   };
@@ -661,9 +679,9 @@ describe('Agent UI', () => {
       ctx.elements['agent-task-page-list'].children[0].querySelector('.agent-task-page-title')
         .textContent
     ).toBe('Agent — Wikipedia');
-    expect(ctx.elements['agent-task-page-list'].children[0].classList.contains('agent-active')).toBe(
-      true
-    );
+    expect(
+      ctx.elements['agent-task-page-list'].children[0].classList.contains('agent-active')
+    ).toBe(true);
     expect(ctx.elements['agent-task-page-list'].children[0].title).toBe(
       'Agent — Wikipedia — en.wikipedia.org — Agent active'
     );
@@ -681,6 +699,31 @@ describe('Agent UI', () => {
     ctx.elements['agent-first-browser-return'].dispatch('click');
     expect(ctx.document.body.classList.contains('agent-first-mode')).toBe(false);
     expect(ctx.elements['agent-sidebar'].classList.contains('collapsed')).toBe(false);
+  });
+
+  test('mirrors active page state in the Agent-first workspace navigation', async () => {
+    const webview = {
+      canGoBack: jest.fn(() => true),
+      canGoForward: jest.fn(() => true),
+      goBack: jest.fn(),
+      goForward: jest.fn(),
+    };
+    const ctx = await loadAgentUi({ getActiveWebview: () => webview });
+
+    expect(ctx.elements['agent-workspace-address'].value).toBe('https://example.com/start');
+    expect(ctx.elements['agent-workspace-back'].disabled).toBe(false);
+    expect(ctx.elements['agent-workspace-forward'].disabled).toBe(false);
+
+    ctx.elements['agent-workspace-back'].dispatch('click');
+    ctx.elements['agent-workspace-forward'].dispatch('click');
+    ctx.elements['agent-workspace-reload'].dispatch('click');
+    expect(webview.goBack).toHaveBeenCalledTimes(1);
+    expect(webview.goForward).toHaveBeenCalledTimes(1);
+    expect(ctx.reloadWorkspace).toHaveBeenCalledTimes(1);
+
+    ctx.elements['agent-workspace-address'].value = 'https://freedom.baby';
+    ctx.elements['agent-workspace-nav'].dispatch('submit', { preventDefault: jest.fn() });
+    expect(ctx.navigateWorkspace).toHaveBeenCalledWith('https://freedom.baby');
   });
 
   test('sanitizes completed assistant Markdown with a restricted element allowlist', async () => {

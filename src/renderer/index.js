@@ -785,7 +785,10 @@ window.addEventListener('DOMContentLoaded', async () => {
   initTabs(); // Creates first tab and starts loading home page
   initAgentUi({
     getActiveTab,
+    getActiveWebview,
     getOpenTabs,
+    navigateWorkspace: loadTarget,
+    reloadWorkspace: reloadPage,
     setAgentControlledTab,
     subscribeTabPresentation,
     switchTab,

@@ -21,7 +21,10 @@ const APPROVAL_MODE_LABELS = Object.freeze({
 
 let elements = {};
 let getActiveTab = () => null;
+let getActiveWebview = () => null;
 let getOpenTabs = () => [];
+let navigateWorkspace = () => {};
+let reloadWorkspace = () => {};
 let switchToTab = () => {};
 let setAgentControlledTab = () => {};
 let providerCatalog = [];
@@ -257,6 +260,17 @@ function ensureWorkspacePageVisible() {
   switchToTab(preferred.rendererTabId);
 }
 
+function renderWorkspaceNavigation() {
+  const activeTab = getActiveTab();
+  const webview = getActiveWebview();
+  if (document.activeElement !== elements.workspaceAddress) {
+    elements.workspaceAddress.value = activeTab?.url || '';
+  }
+  elements.workspaceBack.disabled = !webview?.canGoBack?.();
+  elements.workspaceForward.disabled = !webview?.canGoForward?.();
+  elements.workspaceReload.disabled = !webview;
+}
+
 function renderTaskPages() {
   if (!elements.taskPageList) return;
   const pages = workspacePages();
@@ -313,12 +327,19 @@ function renderTaskPages() {
   });
 
   elements.taskPageList.replaceChildren(...cards);
+  cards
+    .find((card) => card.classList.contains('viewing'))
+    ?.scrollIntoView?.({
+      block: 'nearest',
+      inline: 'nearest',
+    });
   elements.taskPageCount.textContent = String(pages.length);
   elements.taskPagesEmpty.hidden = pages.length > 0;
   document.body.classList.toggle('agent-workspace-page-empty', pages.length === 0);
   elements.taskPagesNote.textContent = currentConversationId
     ? 'Only pages belonging to this conversation are shown.'
     : 'Agent will start from the page you are currently viewing.';
+  renderWorkspaceNavigation();
 }
 
 function applyWorkspaceProjection(state) {
@@ -1370,6 +1391,11 @@ export function initAgentUi(options = {}) {
     taskPageList: byId('agent-task-page-list'),
     taskPagesEmpty: byId('agent-task-pages-empty'),
     taskPagesNote: byId('agent-task-pages-note'),
+    workspaceNav: byId('agent-workspace-nav'),
+    workspaceBack: byId('agent-workspace-back'),
+    workspaceForward: byId('agent-workspace-forward'),
+    workspaceReload: byId('agent-workspace-reload'),
+    workspaceAddress: byId('agent-workspace-address'),
     back: byId('agent-sidebar-back'),
     title: byId('agent-sidebar-title'),
     subtitle: byId('agent-sidebar-subtitle'),
@@ -1425,7 +1451,13 @@ export function initAgentUi(options = {}) {
   };
   if (Object.values(elements).some((element) => !element)) return;
   getActiveTab = typeof options.getActiveTab === 'function' ? options.getActiveTab : () => null;
+  getActiveWebview =
+    typeof options.getActiveWebview === 'function' ? options.getActiveWebview : () => null;
   getOpenTabs = typeof options.getOpenTabs === 'function' ? options.getOpenTabs : () => [];
+  navigateWorkspace =
+    typeof options.navigateWorkspace === 'function' ? options.navigateWorkspace : () => {};
+  reloadWorkspace =
+    typeof options.reloadWorkspace === 'function' ? options.reloadWorkspace : () => {};
   switchToTab = typeof options.switchTab === 'function' ? options.switchTab : () => {};
   setAgentControlledTab =
     typeof options.setAgentControlledTab === 'function' ? options.setAgentControlledTab : () => {};
@@ -1444,6 +1476,21 @@ export function initAgentUi(options = {}) {
   elements.workspaceSidebarToggle.addEventListener('click', () =>
     setWorkspaceSidebarOpen(!workspaceSidebarOpen)
   );
+  elements.workspaceBack.addEventListener('click', () => {
+    const webview = getActiveWebview();
+    if (webview?.canGoBack?.()) webview.goBack();
+  });
+  elements.workspaceForward.addEventListener('click', () => {
+    const webview = getActiveWebview();
+    if (webview?.canGoForward?.()) webview.goForward();
+  });
+  elements.workspaceReload.addEventListener('click', () => reloadWorkspace());
+  elements.workspaceAddress.addEventListener('focus', () => elements.workspaceAddress.select());
+  elements.workspaceNav.addEventListener('submit', (event) => {
+    event.preventDefault();
+    navigateWorkspace(elements.workspaceAddress.value);
+    elements.workspaceAddress.blur();
+  });
   elements.sessionNewChat.addEventListener('click', startNewSessionFromSidebar);
   elements.currentSession.addEventListener('click', () => elements.prompt.focus());
   elements.back.addEventListener('click', () => setAgentView('workspace'));

@@ -119,6 +119,8 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
   await expect(window.locator('#agent-task-page-count')).toHaveText('1');
   await expect(window.locator('#agent-task-page-list .agent-task-page')).toHaveCount(1);
   await expect(window.locator('#agent-task-pages-note')).toContainText('currently viewing');
+  await expect(window.locator('#agent-workspace-nav')).toBeVisible();
+  await expect(window.locator('#agent-workspace-address')).not.toHaveValue('');
   const paneOrder = await window.evaluate(() => ({
     sessions: document.querySelector('#agent-session-sidebar').getBoundingClientRect().left,
     conversation: document.querySelector('#agent-sidebar').getBoundingClientRect().left,
@@ -126,6 +128,39 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
   }));
   expect(paneOrder.sessions).toBeLessThan(paneOrder.conversation);
   expect(paneOrder.conversation).toBeLessThan(paneOrder.workspace);
+  const titlebarLayout = await window.evaluate(() => {
+    const rect = (selector) => {
+      const { left, right, top, bottom, width } = document
+        .querySelector(selector)
+        .getBoundingClientRect();
+      return { left, right, top, bottom, width };
+    };
+    return {
+      titlebar: rect('.title-bar'),
+      sessionTitlebar: rect('.agent-first-titlebar-left'),
+      sessions: rect('#agent-session-sidebar'),
+      conversationTitlebar: rect('.agent-first-titlebar-center'),
+      conversation: rect('#agent-sidebar'),
+      title: rect('#agent-first-title'),
+      workspaceTitlebar: rect('.agent-first-titlebar-right'),
+      workspace: rect('#agent-page-surface'),
+      tabs: rect('#agent-task-pages'),
+    };
+  });
+  expect(
+    Math.abs(titlebarLayout.sessionTitlebar.right - titlebarLayout.sessions.right)
+  ).toBeLessThan(2);
+  expect(
+    Math.abs(titlebarLayout.conversationTitlebar.left - titlebarLayout.conversation.left)
+  ).toBeLessThan(2);
+  expect(
+    Math.abs(titlebarLayout.workspaceTitlebar.left - titlebarLayout.workspace.left)
+  ).toBeLessThan(2);
+  expect(titlebarLayout.title.left).toBeLessThan(
+    titlebarLayout.conversationTitlebar.left + titlebarLayout.conversationTitlebar.width / 3
+  );
+  expect(titlebarLayout.tabs.top).toBeGreaterThanOrEqual(titlebarLayout.titlebar.top);
+  expect(titlebarLayout.tabs.bottom).toBeLessThanOrEqual(titlebarLayout.titlebar.bottom + 1);
   const unifiedChrome = await window.evaluate(() => {
     const background = (selector) =>
       getComputedStyle(document.querySelector(selector)).backgroundColor;

@@ -53,26 +53,28 @@
       </div>
       <div class="title-bar-drag"></div>
       <div id="agent-first-titlebar" class="agent-first-titlebar" hidden>
-        <button
-          id="agent-session-sidebar-toggle"
-          class="agent-titlebar-button"
-          type="button"
-          aria-label="Hide sessions sidebar"
-          aria-expanded="true"
-          title="Toggle sessions sidebar"
-          data-test="agent-session-sidebar-toggle"
-        >
-          <svg
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.8"
-            aria-hidden="true"
+        <div class="agent-first-titlebar-left">
+          <button
+            id="agent-session-sidebar-toggle"
+            class="agent-titlebar-button"
+            type="button"
+            aria-label="Hide sessions sidebar"
+            aria-expanded="true"
+            title="Toggle sessions sidebar"
+            data-test="agent-session-sidebar-toggle"
           >
-            <rect x="3" y="4" width="18" height="16" rx="2" />
-            <path d="M9 4v16" />
-          </svg>
-        </button>
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              aria-hidden="true"
+            >
+              <rect x="3" y="4" width="18" height="16" rx="2" />
+              <path d="M9 4v16" />
+            </svg>
+          </button>
+        </div>
         <div class="agent-first-titlebar-center">
           <button
             id="agent-first-browser-return"
@@ -97,26 +99,41 @@
           </button>
           <span id="agent-first-title" class="agent-first-title">New task</span>
         </div>
-        <button
-          id="agent-workspace-sidebar-toggle"
-          class="agent-titlebar-button"
-          type="button"
-          aria-label="Hide workspace sidebar"
-          aria-expanded="true"
-          title="Toggle workspace sidebar"
-          data-test="agent-workspace-sidebar-toggle"
-        >
-          <svg
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.8"
-            aria-hidden="true"
+        <div class="agent-first-titlebar-right">
+          <aside
+            id="agent-task-pages"
+            class="agent-task-pages"
+            aria-label="Agent workspace tabs"
+            data-test="agent-task-pages"
+            hidden
           >
-            <rect x="3" y="4" width="18" height="16" rx="2" />
-            <path d="M15 4v16" />
-          </svg>
-        </button>
+            <span id="agent-task-page-count" class="sr-only">0</span>
+            <div id="agent-task-page-list" class="agent-task-page-list"></div>
+            <p id="agent-task-pages-note" class="agent-task-pages-note">
+              Only pages belonging to this conversation are shown.
+            </p>
+          </aside>
+          <button
+            id="agent-workspace-sidebar-toggle"
+            class="agent-titlebar-button"
+            type="button"
+            aria-label="Hide workspace sidebar"
+            aria-expanded="true"
+            title="Toggle workspace sidebar"
+            data-test="agent-workspace-sidebar-toggle"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              aria-hidden="true"
+            >
+              <rect x="3" y="4" width="18" height="16" rx="2" />
+              <path d="M15 4v16" />
+            </svg>
+          </button>
+        </div>
       </div>
       <!-- Window controls for Linux (hidden by default, shown via JS) -->
       <div class="window-controls" id="window-controls">
@@ -1133,28 +1150,40 @@
         <p class="agent-session-history-note">Saved session history is coming later.</p>
       </aside>
       <section id="agent-page-surface" class="agent-page-surface">
-        <aside
-          id="agent-task-pages"
-          class="agent-task-pages"
-          aria-label="Agent workspace"
-          data-test="agent-task-pages"
-          hidden
+        <form
+          id="agent-workspace-nav"
+          class="agent-workspace-nav"
+          aria-label="Workspace navigation"
         >
-          <div class="agent-task-pages-header">
-            <div>
-              <span class="agent-task-pages-eyebrow">Agent workspace</span>
-              <h2>Pages</h2>
-            </div>
-            <span id="agent-task-page-count" class="agent-task-page-count">0</span>
+          <div class="agent-workspace-nav-buttons">
+            <button id="agent-workspace-back" type="button" aria-label="Back" title="Back">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <path d="m15 18-6-6 6-6" />
+              </svg>
+            </button>
+            <button id="agent-workspace-forward" type="button" aria-label="Forward" title="Forward">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <path d="m9 18 6-6-6-6" />
+              </svg>
+            </button>
+            <button id="agent-workspace-reload" type="button" aria-label="Reload" title="Reload">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <path d="M20 11a8.1 8.1 0 1 0 1.1 4" />
+                <path d="M20 4v7h-7" />
+              </svg>
+            </button>
           </div>
-          <div id="agent-task-page-list" class="agent-task-page-list"></div>
-          <div id="agent-task-pages-empty" class="agent-task-pages-empty">
-            <p>Pages Agent opens for this task will appear here.</p>
-          </div>
-          <p id="agent-task-pages-note" class="agent-task-pages-note">
-            Only pages belonging to this conversation are shown.
-          </p>
-        </aside>
+          <input
+            id="agent-workspace-address"
+            type="text"
+            aria-label="Workspace address"
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </form>
+        <div id="agent-task-pages-empty" class="agent-task-pages-empty">
+          <p>Pages Agent opens for this task will appear here.</p>
+        </div>
         <main class="content">
           <div class="content-page">
             <div id="webview-container" class="webview-container">

@@ -134,10 +134,14 @@
 
 .agent-first-titlebar {
   display: none;
-  flex: 1;
+  width: 100%;
+  flex: 1 1 auto;
+  grid-template-columns:
+    var(--agent-session-titlebar-width, 242px) minmax(360px, 1fr)
+    var(--agent-workspace-titlebar-width, clamp(340px, 32vw, 560px));
   align-items: center;
   min-width: 0;
-  padding: 0 4px 5px;
+  padding: 0;
   -webkit-app-region: drag;
 }
 
@@ -168,6 +172,24 @@
   height: 17px;
 }
 
+.agent-first-titlebar-left,
+.agent-first-titlebar-center,
+.agent-first-titlebar-right {
+  align-self: stretch;
+  min-width: 0;
+}
+
+.agent-first-titlebar-left {
+  display: flex;
+  align-items: center;
+  padding-left: 76px;
+  border-right: 1px solid var(--border);
+}
+
+.platform-linux .agent-first-titlebar-left {
+  padding-left: 12px;
+}
+
 .agent-titlebar-button:hover,
 .agent-titlebar-return:hover {
   color: var(--text);
@@ -176,11 +198,17 @@
 
 .agent-first-titlebar-center {
   display: flex;
-  flex: 1;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
   gap: 10px;
   min-width: 0;
+  padding: 0 12px;
+  border-right: 1px solid var(--border);
+}
+
+.agent-first-titlebar-right {
+  display: flex;
+  align-items: flex-end;
 }
 
 .agent-titlebar-return {
@@ -195,7 +223,7 @@
 }
 
 .agent-first-title {
-  max-width: min(42vw, 460px);
+  max-width: min(42vw, 560px);
   overflow: hidden;
   font-size: 11px;
   font-weight: 600;
@@ -331,63 +359,29 @@
 
 .agent-task-pages {
   display: none;
-  flex: 0 0 auto;
-  flex-direction: column;
+  flex: 1 1 auto;
+  align-self: stretch;
   min-width: 0;
   overflow: hidden;
-  background: color-mix(in srgb, var(--toolbar) 92%, var(--bg));
-  border-bottom: 1px solid var(--border);
+  background: transparent;
 }
 
 .agent-task-pages[hidden] {
   display: none !important;
 }
 
-.agent-task-pages-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  min-height: 53px;
-  padding: 10px 14px;
-}
-
-.agent-task-pages-header h2,
 .agent-task-pages-empty p,
 .agent-task-pages-note {
   margin: 0;
-}
-
-.agent-task-pages-header h2 {
-  margin-top: 1px;
-  font-size: 13px;
-  font-weight: 650;
-}
-
-.agent-task-pages-eyebrow {
-  color: var(--muted);
-  font-size: 8px;
-  font-weight: 650;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.agent-task-page-count {
-  min-width: 24px;
-  padding: 3px 7px;
-  color: var(--muted);
-  font-size: 9px;
-  text-align: center;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid var(--border);
-  border-radius: 999px;
 }
 
 .agent-task-page-list {
   display: flex;
   align-items: flex-end;
   gap: 2px;
+  height: 100%;
   min-width: 0;
-  padding: 0 8px;
+  padding: 4px 2px 0 6px;
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: thin;
@@ -398,7 +392,7 @@
   display: flex;
   width: 136px;
   min-width: 96px;
-  height: 30px;
+  height: 33px;
   flex: 0 0 136px;
   align-items: center;
   gap: 7px;
@@ -420,6 +414,75 @@
   color: var(--text);
   background: var(--toolbar);
   border-color: var(--border);
+}
+
+.agent-workspace-nav {
+  display: none;
+  min-height: 38px;
+  flex: 0 0 38px;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+
+.agent-workspace-nav-buttons {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+}
+
+.agent-workspace-nav button {
+  display: flex;
+  width: 27px;
+  height: 27px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+}
+
+.agent-workspace-nav button:hover:not(:disabled) {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.agent-workspace-nav button:disabled {
+  opacity: 0.38;
+}
+
+.agent-workspace-nav button svg {
+  width: 14px;
+  height: 14px;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.agent-workspace-nav input {
+  min-width: 0;
+  height: 27px;
+  flex: 1;
+  padding: 0 10px;
+  overflow: hidden;
+  color: var(--text);
+  font: inherit;
+  font-size: 10px;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: color-mix(in srgb, var(--toolbar) 82%, var(--bg));
+  border: 1px solid transparent;
+  border-radius: 7px;
+  outline: 0;
+}
+
+.agent-workspace-nav input:focus {
+  text-align: left;
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
 }
 
 .agent-task-page-icon {
@@ -498,12 +561,14 @@ body.agent-first-mode .toolbar,
 body.agent-first-mode .bookmarks,
 body.agent-first-mode .title-bar .tab-bar,
 body.agent-first-mode .title-bar-drag,
+body.agent-first-mode .title-bar-spacer,
 body.agent-first-mode .app-body > .sidebar {
   display: none;
 }
 
 body.agent-first-mode .title-bar {
   align-items: stretch;
+  padding: 0;
   padding-bottom: 0;
   border-bottom: 1px solid var(--border);
 }
@@ -522,7 +587,7 @@ body.agent-first-mode .agent-task-pages {
 }
 
 body.agent-first-mode .agent-first-titlebar {
-  display: flex;
+  display: grid;
 }
 
 body.agent-first-mode .agent-session-sidebar {
@@ -532,6 +597,14 @@ body.agent-first-mode .agent-session-sidebar {
 
 body.agent-first-mode.agent-session-sidebar-closed .agent-session-sidebar {
   display: none;
+}
+
+body.agent-first-mode.agent-session-sidebar-closed {
+  --agent-session-titlebar-width: 42px;
+}
+
+body.agent-first-mode.agent-session-sidebar-closed .agent-first-titlebar-left {
+  padding-left: 6px;
 }
 
 body.agent-first-mode .agent-sidebar {
@@ -562,15 +635,24 @@ body.agent-first-mode.agent-workspace-sidebar-closed .agent-page-surface {
   display: none;
 }
 
+body.agent-first-mode.agent-workspace-sidebar-closed {
+  --agent-workspace-titlebar-width: 42px;
+}
+
+body.agent-first-mode.agent-workspace-sidebar-closed .agent-task-pages {
+  display: none;
+}
+
 body.agent-first-mode .agent-task-pages {
   display: flex;
 }
 
-body.agent-first-mode.agent-workspace-page-empty .agent-task-pages {
-  flex: 1;
+body.agent-first-mode .agent-workspace-nav {
+  display: flex;
 }
 
 body.agent-first-mode.agent-workspace-page-empty .agent-task-page-list,
+body.agent-first-mode.agent-workspace-page-empty .agent-workspace-nav,
 body.agent-first-mode.agent-workspace-page-empty .agent-page-surface > .content {
   display: none;
 }
