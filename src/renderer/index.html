@@ -1548,13 +1548,57 @@
                   <span class="sr-only">Task for the agent</span>
                   <textarea
                     id="agent-prompt"
-                    rows="3"
+                    rows="2"
                     maxlength="32000"
                     placeholder="Message Agent…"
                   ></textarea>
                 </label>
                 <div class="agent-composer-footer">
                   <div class="agent-composer-tools">
+                    <button
+                      class="agent-composer-icon-button"
+                      type="button"
+                      aria-label="Add attachments (coming soon)"
+                      title="Attachments are coming soon"
+                      data-test="agent-attachment"
+                      disabled
+                    >
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.8"
+                        stroke-linecap="round"
+                        aria-hidden="true"
+                      >
+                        <path d="M12 5v14" />
+                        <path d="M5 12h14" />
+                      </svg>
+                    </button>
+                    <button
+                      id="agent-approval-mode-button"
+                      class="agent-composer-chip agent-approval-chip"
+                      type="button"
+                      aria-haspopup="dialog"
+                      aria-expanded="false"
+                      aria-controls="agent-approval-mode-popover"
+                    >
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.7"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        aria-hidden="true"
+                      >
+                        <path d="M12 3 5 6.5v5.2c0 4.3 2.8 7.7 7 9.3 4.2-1.6 7-5 7-9.3V6.5L12 3Z" />
+                        <circle cx="12" cy="12" r="2.2" />
+                      </svg>
+                      <span id="agent-active-approval-mode-label">Ask every action</span>
+                    </button>
+                  </div>
+                  <div class="agent-composer-actions">
                     <button
                       id="agent-model-menu-button"
                       class="agent-composer-chip"
@@ -1567,36 +1611,47 @@
                       <span aria-hidden="true">⌄</span>
                     </button>
                     <button
-                      id="agent-approval-mode-button"
-                      class="agent-composer-chip"
+                      class="agent-composer-icon-button"
                       type="button"
-                      aria-haspopup="dialog"
-                      aria-expanded="false"
-                      aria-controls="agent-approval-mode-popover"
+                      aria-label="Dictate task (coming soon)"
+                      title="Dictation is coming soon"
+                      data-test="agent-dictation"
+                      disabled
                     >
-                      <span id="agent-active-approval-mode-label">Ask every action</span>
-                      <span aria-hidden="true">⌄</span>
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.8"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        aria-hidden="true"
+                      >
+                        <rect x="9" y="3" width="6" height="12" rx="3" />
+                        <path d="M5.5 11.5a6.5 6.5 0 0 0 13 0" />
+                        <path d="M12 18v3" />
+                      </svg>
+                    </button>
+                    <button
+                      id="agent-run"
+                      class="agent-send-button"
+                      type="button"
+                      aria-label="Run task"
+                    >
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        aria-hidden="true"
+                      >
+                        <path d="m12 19V5" />
+                        <path d="m5 12 7-7 7 7" />
+                      </svg>
                     </button>
                   </div>
-                  <button
-                    id="agent-run"
-                    class="agent-send-button"
-                    type="button"
-                    aria-label="Run task"
-                  >
-                    <svg
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="2"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                      aria-hidden="true"
-                    >
-                      <path d="m12 19V5" />
-                      <path d="m5 12 7-7 7 7" />
-                    </svg>
-                  </button>
                 </div>
               </div>
 

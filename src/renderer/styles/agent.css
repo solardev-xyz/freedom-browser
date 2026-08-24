@@ -818,15 +818,15 @@ body.agent-first-mode .agent-workspace-scroll {
 }
 
 body.agent-first-mode .agent-composer-wrap {
-  width: min(100%, 860px);
-  padding: 14px 24px 22px;
+  width: min(100%, 900px);
+  padding: 14px 24px 20px;
   margin: 0 auto;
   border-top: 0;
 }
 
 body.agent-first-mode .agent-composer textarea {
-  min-height: 92px;
-  font-size: 13px;
+  min-height: 66px;
+  font-size: 14px;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1185,21 +1185,25 @@ body.agent-first-mode .agent-composer textarea {
 
 .agent-composer-wrap {
   position: relative;
-  padding: 12px 14px 14px;
+  padding: 12px 14px 16px;
   background: var(--toolbar);
   border-top: 1px solid var(--border);
 }
 
 .agent-composer {
   overflow: hidden;
-  background: color-mix(in srgb, var(--bg) 84%, var(--toolbar));
+  background: color-mix(in srgb, var(--toolbar) 34%, var(--bg));
   border: 1px solid var(--border);
-  border-radius: 14px;
-  transition: border-color 0.15s ease;
+  border-radius: 22px;
+  box-shadow: 0 8px 24px color-mix(in srgb, black 12%, transparent);
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
 }
 
 .agent-composer:focus-within {
-  border-color: color-mix(in srgb, var(--accent) 65%, var(--border));
+  border-color: color-mix(in srgb, var(--text) 10%, var(--border));
+  box-shadow: 0 8px 24px color-mix(in srgb, black 16%, transparent);
 }
 
 .agent-composer-input {
@@ -1209,13 +1213,14 @@ body.agent-first-mode .agent-composer textarea {
 .agent-composer textarea {
   display: block;
   width: 100%;
-  min-height: 76px;
-  max-height: 180px;
-  padding: 12px 13px 4px;
+  min-height: 62px;
+  max-height: 220px;
+  padding: 17px 20px 5px;
   color: var(--text);
   font: inherit;
-  font-size: 12px;
-  line-height: 1.45;
+  font-size: 14px;
+  line-height: 1.5;
+  field-sizing: content;
   resize: none;
   background: transparent;
   border: 0;
@@ -1223,7 +1228,7 @@ body.agent-first-mode .agent-composer textarea {
 }
 
 .agent-composer textarea::placeholder {
-  color: var(--muted);
+  color: color-mix(in srgb, var(--muted) 62%, transparent);
 }
 
 .agent-composer textarea:disabled {
@@ -1234,31 +1239,86 @@ body.agent-first-mode .agent-composer textarea {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  padding: 7px 8px 8px;
+  gap: 12px;
+  min-height: 43px;
+  padding: 5px 9px 9px 11px;
+}
+
+.agent-composer-tools,
+.agent-composer-actions {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
 }
 
 .agent-composer-tools {
-  display: flex;
+  flex: 1 1 45%;
+  overflow: hidden;
+}
+
+.agent-composer-actions {
+  flex: 1 1 55%;
+  justify-content: flex-end;
+  overflow: hidden;
+}
+
+.agent-composer-icon-button {
+  display: inline-flex;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
   align-items: center;
-  gap: 4px;
-  min-width: 0;
+  justify-content: center;
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-radius: 999px;
+}
+
+.agent-composer-icon-button svg {
+  width: 19px;
+  height: 19px;
+}
+
+.agent-composer-icon-button:not(:disabled):hover,
+.agent-composer-icon-button:not(:disabled):focus-visible {
+  color: var(--text);
+  background: color-mix(in srgb, var(--text) 9%, transparent);
+}
+
+.agent-composer-icon-button:disabled {
+  cursor: default;
+  opacity: 0.72;
 }
 
 .agent-composer-chip {
   display: inline-flex;
+  min-width: 0;
+  flex: 0 1 auto;
   align-items: center;
-  gap: 4px;
-  max-width: 150px;
-  min-height: 26px;
-  padding: 4px 7px;
+  gap: 6px;
+  max-width: 190px;
+  min-height: 30px;
+  padding: 5px 8px;
   overflow: hidden;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 12px;
   background: transparent;
   border: 0;
-  border-radius: 7px;
+  border-radius: 8px;
   white-space: nowrap;
+}
+
+.agent-composer-chip svg {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+}
+
+.agent-approval-chip {
+  max-width: 220px;
 }
 
 .agent-composer-chip:hover,
@@ -1267,7 +1327,7 @@ body.agent-first-mode .agent-composer textarea {
   background: rgba(255, 255, 255, 0.08);
 }
 
-.agent-composer-chip span:first-child {
+.agent-composer-chip > span:first-of-type {
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -1281,22 +1341,33 @@ body.agent-first-mode .agent-composer textarea {
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
-  width: 29px;
-  height: 29px;
+  width: 32px;
+  height: 32px;
   padding: 0;
-  color: white;
-  background: var(--accent);
+  color: var(--bg);
+  background: var(--text);
   border: 0;
-  border-radius: 9px;
+  border-radius: 999px;
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease;
+}
+
+.agent-send-button:not(:disabled):hover {
+  transform: scale(1.04);
+}
+
+.agent-send-button:not(:disabled):active {
+  transform: scale(0.96);
 }
 
 .agent-send-button:disabled {
-  opacity: 0.45;
+  opacity: 0.52;
 }
 
 .agent-send-button svg {
-  width: 15px;
-  height: 15px;
+  width: 17px;
+  height: 17px;
 }
 
 .agent-popover {

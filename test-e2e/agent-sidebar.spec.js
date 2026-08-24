@@ -107,6 +107,25 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
   await expect(window.locator('#agent-connected-provider-list')).toContainText('Ollama');
   await window.locator('#agent-sidebar-back').click();
 
+  const compactComposer = await window.evaluate(() => {
+    const footer = document.querySelector('.agent-composer-footer').getBoundingClientRect();
+    const controls = [
+      '[data-test="agent-attachment"]',
+      '#agent-approval-mode-button',
+      '#agent-model-menu-button',
+      '[data-test="agent-dictation"]',
+      '#agent-run',
+    ].map((selector) => document.querySelector(selector).getBoundingClientRect());
+    return {
+      footer: { left: footer.left, right: footer.right },
+      controls: controls.map(({ left, right }) => ({ left, right })),
+    };
+  });
+  for (const control of compactComposer.controls) {
+    expect(control.left).toBeGreaterThanOrEqual(compactComposer.footer.left);
+    expect(control.right).toBeLessThanOrEqual(compactComposer.footer.right);
+  }
+
   const agentFirstToggle = window.locator('[data-test="agent-first-toggle"]');
   await expect(agentFirstToggle).toBeVisible();
   await agentFirstToggle.click();
@@ -176,6 +195,39 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
   expect(unifiedChrome.conversation).toBe(unifiedChrome.titlebar);
   expect(unifiedChrome.workspace).toBe(unifiedChrome.titlebar);
   expect(unifiedChrome.composer).toBe(unifiedChrome.titlebar);
+  await expect(window.locator('[data-test="agent-attachment"]')).toBeDisabled();
+  await expect(window.locator('[data-test="agent-dictation"]')).toBeDisabled();
+  const composerLayout = await window.evaluate(() => {
+    const rect = (selector) => {
+      const { left, right, width, height } = document
+        .querySelector(selector)
+        .getBoundingClientRect();
+      return { left, right, width, height };
+    };
+    const composerStyle = getComputedStyle(document.querySelector('.agent-composer'));
+    const promptStyle = getComputedStyle(document.querySelector('#agent-prompt'));
+    const sendStyle = getComputedStyle(document.querySelector('#agent-run'));
+    return {
+      attachment: rect('[data-test="agent-attachment"]'),
+      approval: rect('#agent-approval-mode-button'),
+      model: rect('#agent-model-menu-button'),
+      dictation: rect('[data-test="agent-dictation"]'),
+      send: rect('#agent-run'),
+      borderRadius: Number.parseFloat(composerStyle.borderTopLeftRadius),
+      promptFontSize: Number.parseFloat(promptStyle.fontSize),
+      promptMinHeight: Number.parseFloat(promptStyle.minHeight),
+      sendRadius: Number.parseFloat(sendStyle.borderTopLeftRadius),
+    };
+  });
+  expect(composerLayout.attachment.left).toBeLessThan(composerLayout.approval.left);
+  expect(composerLayout.approval.right).toBeLessThanOrEqual(composerLayout.model.left);
+  expect(composerLayout.model.left).toBeLessThan(composerLayout.dictation.left);
+  expect(composerLayout.dictation.left).toBeLessThan(composerLayout.send.left);
+  expect(composerLayout.borderRadius).toBeGreaterThanOrEqual(20);
+  expect(composerLayout.promptFontSize).toBe(14);
+  expect(composerLayout.promptMinHeight).toBeGreaterThanOrEqual(60);
+  expect(Math.abs(composerLayout.send.width - composerLayout.send.height)).toBeLessThan(1);
+  expect(composerLayout.sendRadius).toBeGreaterThanOrEqual(composerLayout.send.width / 2 - 1);
   const sidebarThemeContrast = await window.evaluate(() => {
     const root = document.documentElement;
     const originalTheme = root.getAttribute('data-theme');
