@@ -112,13 +112,29 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
   await agentFirstToggle.click();
   await expect(window.locator('body')).toHaveClass(/agent-first-mode/);
   await expect(window.locator('.toolbar')).toBeHidden();
+  await expect(window.locator('#agent-first-titlebar')).toBeVisible();
+  await expect(window.locator('[data-test="agent-session-sidebar"]')).toBeVisible();
   await expect(window.locator('[data-test="agent-task-pages"]')).toBeVisible();
+  await expect(window.locator('#agent-page-surface .content')).toBeVisible();
   await expect(window.locator('#agent-task-page-count')).toHaveText('1');
   await expect(window.locator('#agent-task-page-list .agent-task-page')).toHaveCount(1);
-  await expect(window.locator('#agent-task-pages-note')).toContainText(
-    'currently viewing'
-  );
-  await agentFirstToggle.click();
+  await expect(window.locator('#agent-task-pages-note')).toContainText('currently viewing');
+  const paneOrder = await window.evaluate(() => ({
+    sessions: document.querySelector('#agent-session-sidebar').getBoundingClientRect().left,
+    conversation: document.querySelector('#agent-sidebar').getBoundingClientRect().left,
+    workspace: document.querySelector('#agent-page-surface').getBoundingClientRect().left,
+  }));
+  expect(paneOrder.sessions).toBeLessThan(paneOrder.conversation);
+  expect(paneOrder.conversation).toBeLessThan(paneOrder.workspace);
+
+  await window.locator('[data-test="agent-session-sidebar-toggle"]').click();
+  await expect(window.locator('body')).toHaveClass(/agent-session-sidebar-closed/);
+  await window.locator('[data-test="agent-workspace-sidebar-toggle"]').click();
+  await expect(window.locator('body')).toHaveClass(/agent-workspace-sidebar-closed/);
+  await window.locator('[data-test="agent-session-sidebar-toggle"]').click();
+  await window.locator('[data-test="agent-workspace-sidebar-toggle"]').click();
+
+  await window.locator('[data-test="agent-first-browser-return"]').click();
   await expect(window.locator('body')).not.toHaveClass(/agent-first-mode/);
   await expect(window.locator('.toolbar')).toBeVisible();
 
@@ -127,7 +143,9 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
   await expect(window.locator('#agent-stop')).toHaveText('Take over');
   const tabMarkedAtStart = await window.evaluate(() => {
     document.querySelector('#agent-run').click();
-    return document.querySelector('[data-test="tab"].active').classList.contains('agent-controlled');
+    return document
+      .querySelector('[data-test="tab"].active')
+      .classList.contains('agent-controlled');
   });
   expect(tabMarkedAtStart).toBe(true);
 

@@ -11,6 +11,16 @@ function createAgentElements() {
     'agent-sidebar',
     'agent-sidebar-close',
     'agent-first-toggle',
+    'agent-first-titlebar',
+    'agent-first-title',
+    'agent-first-browser-return',
+    'agent-session-sidebar-toggle',
+    'agent-workspace-sidebar-toggle',
+    'agent-session-sidebar',
+    'agent-session-new-chat',
+    'agent-current-session',
+    'agent-current-session-title',
+    'agent-session-history-empty',
     'agent-task-pages',
     'agent-task-page-count',
     'agent-task-page-list',
@@ -75,6 +85,17 @@ function createAgentElements() {
   elements['agent-sidebar-close'] = createElement('button');
   elements['agent-first-toggle'] = createElement('button');
   elements['agent-first-toggle'].hidden = true;
+  elements['agent-first-titlebar'] = createElement('div');
+  elements['agent-first-titlebar'].hidden = true;
+  elements['agent-first-browser-return'] = createElement('button');
+  elements['agent-session-sidebar-toggle'] = createElement('button');
+  elements['agent-workspace-sidebar-toggle'] = createElement('button');
+  elements['agent-session-sidebar'] = createElement('aside');
+  elements['agent-session-sidebar'].hidden = true;
+  elements['agent-session-new-chat'] = createElement('button');
+  elements['agent-current-session'] = createElement('button');
+  elements['agent-current-session'].hidden = true;
+  elements['agent-session-history-empty'] = createElement('div');
   elements['agent-task-pages'] = createElement('aside');
   elements['agent-task-pages'].hidden = true;
   elements['agent-task-page-count'] = createElement('span', { textContent: '0' });
@@ -577,7 +598,7 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-new-chat'].hidden).toBe(false);
   });
 
-  test('makes chat primary with only conversation-owned pages and returns to inspect a page', async () => {
+  test('uses a collapsible three-pane shell and inspects owned pages without leaving Agent-first', async () => {
     const getOpenTabs = () => [
       {
         id: 7,
@@ -606,7 +627,15 @@ describe('Agent UI', () => {
             conversationId: 'conversation_restored',
             rendererTabId: 7,
             approvalMode: 'every_interaction',
-            transcript: [],
+            transcript: [
+              {
+                runId: 'run_restored',
+                userText: 'Compare agent definitions',
+                assistantText: 'Ready.',
+                status: 'completed',
+                activity: [],
+              },
+            ],
             taskTabs: [{ rendererTabId: 8, agentActive: true }],
           },
         }),
@@ -621,6 +650,10 @@ describe('Agent UI', () => {
     await flush();
 
     expect(ctx.document.body.classList.contains('agent-first-mode')).toBe(true);
+    expect(ctx.elements['agent-first-titlebar'].hidden).toBe(false);
+    expect(ctx.elements['agent-session-sidebar'].hidden).toBe(false);
+    expect(ctx.elements['agent-current-session'].hidden).toBe(false);
+    expect(ctx.elements['agent-first-title'].textContent).toBe('Compare agent definitions');
     expect(ctx.elements['agent-task-pages'].hidden).toBe(false);
     expect(ctx.elements['agent-task-page-count'].textContent).toBe('1');
     expect(ctx.elements['agent-task-page-list'].children).toHaveLength(1);
@@ -632,6 +665,14 @@ describe('Agent UI', () => {
     ctx.elements['agent-task-page-list'].children[0].dispatch('click');
 
     expect(ctx.switchTab).toHaveBeenCalledWith(8);
+    expect(ctx.document.body.classList.contains('agent-first-mode')).toBe(true);
+
+    ctx.elements['agent-session-sidebar-toggle'].dispatch('click');
+    ctx.elements['agent-workspace-sidebar-toggle'].dispatch('click');
+    expect(ctx.document.body.classList.contains('agent-session-sidebar-closed')).toBe(true);
+    expect(ctx.document.body.classList.contains('agent-workspace-sidebar-closed')).toBe(true);
+
+    ctx.elements['agent-first-browser-return'].dispatch('click');
     expect(ctx.document.body.classList.contains('agent-first-mode')).toBe(false);
     expect(ctx.elements['agent-sidebar'].classList.contains('collapsed')).toBe(false);
   });

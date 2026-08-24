@@ -138,7 +138,8 @@ async function handleCompletion(request, response) {
         message?.role === 'user' && JSON.stringify(message.content).includes('FIRST_CONTEXT')
     );
     const retainedAssistant = (body.messages || []).some(
-      (message) => message?.role === 'assistant' && JSON.stringify(message.content).includes('READY')
+      (message) =>
+        message?.role === 'assistant' && JSON.stringify(message.content).includes('READY')
     );
     writeSse(
       response,
@@ -168,13 +169,19 @@ async function handleCompletion(request, response) {
       finishSse(response, 'tool_calls');
       return;
     }
-    writeSse(response, completionChunk({ delta: { role: 'assistant', content: 'FIVE_TABS_READY' } }));
+    writeSse(
+      response,
+      completionChunk({ delta: { role: 'assistant', content: 'FIVE_TABS_READY' } })
+    );
     finishSse(response);
     return;
   }
 
   if (prompt.includes('AFTER_ORIGINAL_CLOSE')) {
-    writeSse(response, completionChunk({ delta: { role: 'assistant', content: 'CHAT_CONTINUED' } }));
+    writeSse(
+      response,
+      completionChunk({ delta: { role: 'assistant', content: 'CHAT_CONTINUED' } })
+    );
     finishSse(response);
     return;
   }
@@ -353,6 +360,14 @@ test('a conversation survives its original and then all task tabs closing', asyn
   await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 10_000 });
   await expect(window.locator('#agent-output')).toHaveText('FIVE_TABS_READY');
   await expect(window.locator('[data-test="tab"]')).toHaveCount(5);
+
+  await window.locator('[data-test="agent-first-toggle"]').click();
+  await expect(window.locator('#agent-task-page-count')).toHaveText('5');
+  await expect(window.locator('#agent-task-page-list .agent-task-page')).toHaveCount(5);
+  await window.locator('#agent-task-page-list .agent-task-page').first().click();
+  await expect(window.locator('body')).toHaveClass(/agent-first-mode/);
+  await expect(window.locator('#agent-page-surface .content')).toBeVisible();
+  await window.locator('[data-test="agent-first-browser-return"]').click();
 
   await window.locator('[data-test="tab"]').nth(0).locator('[data-test="tab-close"]').click();
   await window.locator('[data-test="tab"]').nth(0).locator('[data-test="tab-close"]').click();

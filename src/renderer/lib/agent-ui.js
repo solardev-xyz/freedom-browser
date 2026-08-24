@@ -46,6 +46,9 @@ let tabPresentationUnsubscribe = null;
 let openTabs = [];
 let taskTabProjection = [];
 let agentFirstMode = false;
+let sessionSidebarOpen = true;
+let workspaceSidebarOpen = true;
+let conversationTitle = 'New task';
 const toolRows = new Map();
 const turnViews = new Map();
 
@@ -205,23 +208,58 @@ function taskPageIcon(tab) {
     image.addEventListener('error', () => image.remove());
     icon.appendChild(image);
   } else {
-    icon.textContent = (tab.title || taskPageLocation(tab.url)).trim().charAt(0).toUpperCase() || '•';
+    icon.textContent =
+      (tab.title || taskPageLocation(tab.url)).trim().charAt(0).toUpperCase() || '•';
   }
   return icon;
 }
 
-function renderTaskPages() {
-  if (!elements.taskPageList) return;
+function titleFromPrompt(prompt) {
+  const normalized = String(prompt || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!normalized) return 'New task';
+  return normalized.length > 64 ? `${normalized.slice(0, 63).trimEnd()}…` : normalized;
+}
+
+function setConversationTitle(nextTitle) {
+  conversationTitle = titleFromPrompt(nextTitle);
+  elements.agentFirstTitle.textContent = conversationTitle;
+  elements.currentSessionTitle.textContent = conversationTitle;
+}
+
+function renderSessionSidebar() {
+  const hasConversation = Boolean(currentConversationId);
+  elements.currentSession.hidden = !hasConversation;
+  elements.sessionHistoryEmpty.hidden = hasConversation;
+  elements.sessionNewChat.disabled = currentRunStatus !== 'idle';
+  elements.agentFirstTitle.textContent = conversationTitle;
+  elements.currentSessionTitle.textContent = conversationTitle;
+}
+
+function workspacePages() {
   const tabById = new Map(openTabs.map((tab) => [tab.id, tab]));
   const projected = taskTabProjection
     .map((entry) => ({ ...entry, tab: tabById.get(entry.rendererTabId) }))
     .filter((entry) => entry.tab);
   const activeTab = openTabs.find((tab) => tab.isActive);
-  const pages = currentConversationId
-    ? projected
-    : activeTab
-      ? [{ rendererTabId: activeTab.id, agentActive: false, tab: activeTab, startsHere: true }]
-      : [];
+  if (currentConversationId) return projected;
+  return activeTab
+    ? [{ rendererTabId: activeTab.id, agentActive: false, tab: activeTab, startsHere: true }]
+    : [];
+}
+
+function ensureWorkspacePageVisible() {
+  if (!agentFirstMode) return;
+  const pages = workspacePages();
+  if (!pages.length || pages.some((entry) => entry.tab.isActive)) return;
+  const preferred = pages.find((entry) => entry.agentActive) || pages[0];
+  switchToTab(preferred.rendererTabId);
+}
+
+function renderTaskPages() {
+  if (!elements.taskPageList) return;
+  const pages = workspacePages();
 
   const cards = pages.map((entry) => {
     const tab = entry.tab;
@@ -262,7 +300,6 @@ function renderTaskPages() {
     card.appendChild(copy);
     card.addEventListener('click', () => {
       switchToTab(entry.rendererTabId);
-      setAgentFirstMode(false);
     });
     return card;
   });
@@ -270,6 +307,7 @@ function renderTaskPages() {
   elements.taskPageList.replaceChildren(...cards);
   elements.taskPageCount.textContent = String(pages.length);
   elements.taskPagesEmpty.hidden = pages.length > 0;
+  document.body.classList.toggle('agent-workspace-page-empty', pages.length === 0);
   elements.taskPagesNote.textContent = currentConversationId
     ? 'Only pages belonging to this conversation are shown.'
     : 'Agent will start from the page you are currently viewing.';
@@ -285,6 +323,7 @@ function applyWorkspaceProjection(state) {
       )
     : [];
   renderTaskPages();
+  ensureWorkspacePageVisible();
 }
 
 async function refreshWorkspaceProjection() {
@@ -308,7 +347,11 @@ async function refreshWorkspaceProjection() {
 function setAgentFirstMode(nextMode) {
   agentFirstMode = nextMode === true && panelOpen && agentView === 'workspace';
   document.body.classList.toggle('agent-first-mode', agentFirstMode);
+  document.body.classList.toggle('agent-session-sidebar-closed', !sessionSidebarOpen);
+  document.body.classList.toggle('agent-workspace-sidebar-closed', !workspaceSidebarOpen);
   elements.taskPages.hidden = !agentFirstMode;
+  elements.sessionSidebar.hidden = !agentFirstMode;
+  elements.agentFirstTitlebar.hidden = !agentFirstMode;
   elements.agentFirstToggle.setAttribute('aria-pressed', String(agentFirstMode));
   elements.agentFirstToggle.setAttribute(
     'aria-label',
@@ -318,8 +361,30 @@ function setAgentFirstMode(nextMode) {
   if (agentFirstMode) {
     openTabs = getOpenTabs();
     renderTaskPages();
+    renderSessionSidebar();
+    ensureWorkspacePageVisible();
     void refreshWorkspaceProjection();
   }
+}
+
+function setSessionSidebarOpen(nextOpen) {
+  sessionSidebarOpen = nextOpen === true;
+  document.body.classList.toggle('agent-session-sidebar-closed', !sessionSidebarOpen);
+  elements.sessionSidebarToggle.setAttribute('aria-expanded', String(sessionSidebarOpen));
+  elements.sessionSidebarToggle.setAttribute(
+    'aria-label',
+    sessionSidebarOpen ? 'Hide sessions sidebar' : 'Show sessions sidebar'
+  );
+}
+
+function setWorkspaceSidebarOpen(nextOpen) {
+  workspaceSidebarOpen = nextOpen === true;
+  document.body.classList.toggle('agent-workspace-sidebar-closed', !workspaceSidebarOpen);
+  elements.workspaceSidebarToggle.setAttribute('aria-expanded', String(workspaceSidebarOpen));
+  elements.workspaceSidebarToggle.setAttribute(
+    'aria-label',
+    workspaceSidebarOpen ? 'Hide workspace sidebar' : 'Show workspace sidebar'
+  );
 }
 
 function showPrimaryView() {
@@ -685,10 +750,7 @@ async function cancelProviderLogin() {
 function setRunState(status, label) {
   const active = status !== 'idle';
   currentRunStatus = status;
-  elements.run.disabled =
-    active ||
-    !elements.prompt.value.trim() ||
-    !providerStatus?.configured;
+  elements.run.disabled = active || !elements.prompt.value.trim() || !providerStatus?.configured;
   elements.pause.hidden = status !== 'running';
   elements.pause.disabled = status !== 'running';
   elements.resume.hidden = status !== 'paused';
@@ -702,13 +764,12 @@ function setRunState(status, label) {
   elements.newChat.disabled = active;
   elements.runStatus.textContent = label;
   elements.runStatus.classList.toggle('active', active);
+  renderSessionSidebar();
 }
 
 function updateSendAvailability() {
   elements.run.disabled =
-    currentRunStatus !== 'idle' ||
-    !elements.prompt.value.trim() ||
-    !providerStatus?.configured;
+    currentRunStatus !== 'idle' || !elements.prompt.value.trim() || !providerStatus?.configured;
 }
 
 function resetConversationUi() {
@@ -960,11 +1021,13 @@ function applyConversationCleared() {
   currentRunId = null;
   lastFinishedRunId = null;
   takeoverRequestedRunId = null;
+  setConversationTitle('New task');
   setAgentControlledTab(null);
   taskTabProjection = [];
   renderTaskPages();
   resetConversationUi();
   setRunState('idle', 'Idle');
+  renderSessionSidebar();
 }
 
 function handleAgentEvent(event) {
@@ -984,6 +1047,9 @@ function handleAgentEvent(event) {
   }
   if (currentRunId && currentRunId !== event.runId) return;
   if (event.type === 'run_started') {
+    if (!currentConversationId && typeof event.userText === 'string') {
+      setConversationTitle(event.userText);
+    }
     currentConversationId =
       typeof event.conversationId === 'string' ? event.conversationId : currentConversationId;
     currentRunId = event.runId;
@@ -1055,14 +1121,7 @@ function handleAgentEvent(event) {
   } else if (event.type === 'run_finished') {
     const status = event.status || 'finished';
     const wasTakeover = status === 'cancelled' && takeoverRequestedRunId === event.runId;
-    setRunState(
-      'idle',
-      wasTakeover
-        ? 'Taken over'
-        : status === 'completed'
-          ? 'Complete'
-          : status
-    );
+    setRunState('idle', wasTakeover ? 'Taken over' : status === 'completed' ? 'Complete' : status);
     if (wasTakeover) {
       setMessage(elements.runMessage, 'You took control of the tab');
     } else if (event.error?.message) {
@@ -1092,6 +1151,8 @@ async function startRun() {
     setMessage(elements.runMessage, 'The current tab is not ready for the agent', true);
     return;
   }
+  const startsConversation = !currentConversationId;
+  if (startsConversation) setConversationTitle(prompt);
   pendingPromptText = prompt;
   elements.prompt.value = '';
   if (!currentConversationId) conversationRendererTabId = rendererTabId;
@@ -1105,6 +1166,7 @@ async function startRun() {
       if (!currentConversationId) {
         conversationRendererTabId = null;
         setAgentControlledTab(null);
+        setConversationTitle('New task');
       }
       if (!elements.prompt.value) elements.prompt.value = pendingPromptText;
       pendingPromptText = '';
@@ -1126,6 +1188,7 @@ async function startRun() {
     if (!currentConversationId) {
       conversationRendererTabId = null;
       setAgentControlledTab(null);
+      setConversationTitle('New task');
     }
     if (!elements.prompt.value) elements.prompt.value = pendingPromptText;
     pendingPromptText = '';
@@ -1155,6 +1218,15 @@ async function clearConversation() {
     setMessage(elements.runMessage, 'Could not start a new chat', true);
     elements.newChat.disabled = false;
   }
+}
+
+async function startNewSessionFromSidebar() {
+  if (currentRunStatus !== 'idle') return;
+  if (currentConversationId) {
+    await clearConversation();
+    return;
+  }
+  elements.prompt.focus();
 }
 
 async function pauseRun() {
@@ -1233,11 +1305,13 @@ async function restoreRunState() {
       setApprovalMode(state.approvalMode);
     }
     currentConversationId = state.conversationId;
+    const restoredTranscript = Array.isArray(state.transcript) ? state.transcript : [];
+    setConversationTitle(restoredTranscript[0]?.userText || 'Current task');
     renderTaskPages();
     conversationRendererTabId = Number.isSafeInteger(state.rendererTabId)
       ? state.rendererTabId
       : null;
-    restoreTranscript(Array.isArray(state.transcript) ? state.transcript : []);
+    restoreTranscript(restoredTranscript);
 
     if (state.runId && state.status !== 'ready') {
       currentRunId = state.runId;
@@ -1273,6 +1347,16 @@ export function initAgentUi(options = {}) {
     panel: byId('agent-sidebar'),
     close: byId('agent-sidebar-close'),
     agentFirstToggle: byId('agent-first-toggle'),
+    agentFirstTitlebar: byId('agent-first-titlebar'),
+    agentFirstTitle: byId('agent-first-title'),
+    browserReturn: byId('agent-first-browser-return'),
+    sessionSidebarToggle: byId('agent-session-sidebar-toggle'),
+    workspaceSidebarToggle: byId('agent-workspace-sidebar-toggle'),
+    sessionSidebar: byId('agent-session-sidebar'),
+    sessionNewChat: byId('agent-session-new-chat'),
+    currentSession: byId('agent-current-session'),
+    currentSessionTitle: byId('agent-current-session-title'),
+    sessionHistoryEmpty: byId('agent-session-history-empty'),
     taskPages: byId('agent-task-pages'),
     taskPageCount: byId('agent-task-page-count'),
     taskPageList: byId('agent-task-page-list'),
@@ -1345,6 +1429,15 @@ export function initAgentUi(options = {}) {
   elements.toggle.addEventListener('click', togglePanel);
   elements.close.addEventListener('click', closePanel);
   elements.agentFirstToggle.addEventListener('click', () => setAgentFirstMode(!agentFirstMode));
+  elements.browserReturn.addEventListener('click', () => setAgentFirstMode(false));
+  elements.sessionSidebarToggle.addEventListener('click', () =>
+    setSessionSidebarOpen(!sessionSidebarOpen)
+  );
+  elements.workspaceSidebarToggle.addEventListener('click', () =>
+    setWorkspaceSidebarOpen(!workspaceSidebarOpen)
+  );
+  elements.sessionNewChat.addEventListener('click', startNewSessionFromSidebar);
+  elements.currentSession.addEventListener('click', () => elements.prompt.focus());
   elements.back.addEventListener('click', () => setAgentView('workspace'));
   elements.provider.addEventListener('change', renderProviderFields);
   elements.saveProvider.addEventListener('click', saveProvider);
@@ -1420,13 +1513,18 @@ export function initAgentUi(options = {}) {
       ? options.subscribeTabPresentation((tabs) => {
           openTabs = Array.isArray(tabs) ? tabs : [];
           renderTaskPages();
+          ensureWorkspacePageVisible();
         })
       : null;
   setPanelOpen(false);
+  setSessionSidebarOpen(true);
+  setWorkspaceSidebarOpen(true);
+  setConversationTitle('New task');
   setAgentFirstMode(false);
   setAgentView('loading');
   renderProviderFields();
   updateSendAvailability();
+  renderSessionSidebar();
   refreshProvider();
   restoreRunState();
 }

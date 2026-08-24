@@ -52,6 +52,72 @@
         </button>
       </div>
       <div class="title-bar-drag"></div>
+      <div id="agent-first-titlebar" class="agent-first-titlebar" hidden>
+        <button
+          id="agent-session-sidebar-toggle"
+          class="agent-titlebar-button"
+          type="button"
+          aria-label="Hide sessions sidebar"
+          aria-expanded="true"
+          title="Toggle sessions sidebar"
+          data-test="agent-session-sidebar-toggle"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            aria-hidden="true"
+          >
+            <rect x="3" y="4" width="18" height="16" rx="2" />
+            <path d="M9 4v16" />
+          </svg>
+        </button>
+        <div class="agent-first-titlebar-center">
+          <button
+            id="agent-first-browser-return"
+            class="agent-titlebar-return"
+            type="button"
+            aria-label="Return to browser"
+            title="Return to browser"
+            data-test="agent-first-browser-return"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="m15 18-6-6 6-6" />
+            </svg>
+            <span>Browser</span>
+          </button>
+          <span id="agent-first-title" class="agent-first-title">New task</span>
+        </div>
+        <button
+          id="agent-workspace-sidebar-toggle"
+          class="agent-titlebar-button"
+          type="button"
+          aria-label="Hide workspace sidebar"
+          aria-expanded="true"
+          title="Toggle workspace sidebar"
+          data-test="agent-workspace-sidebar-toggle"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            aria-hidden="true"
+          >
+            <rect x="3" y="4" width="18" height="16" rx="2" />
+            <path d="M15 4v16" />
+          </svg>
+        </button>
+      </div>
       <!-- Window controls for Linux (hidden by default, shown via JS) -->
       <div class="window-controls" id="window-controls">
         <button class="window-control-btn" id="minimize-btn" aria-label="Minimize">
@@ -1032,45 +1098,160 @@
       data-test="bookmarks-bar"
     ></nav>
     <section class="app-body">
-      <main class="content">
-        <div class="content-page">
-          <div id="webview-container" class="webview-container">
-            <!-- Webviews inserted dynamically by tabs.js -->
-          </div>
-          <div id="link-status" class="link-status" hidden aria-hidden="true">
-            <span id="link-status-url" class="link-status-url"></span>
-          </div>
-          <div id="find-bar" class="find-bar" role="search" aria-label="Find in page" hidden data-test="find-bar">
-            <input
-              id="find-bar-input"
-              class="find-bar-input"
-              type="text"
-              placeholder="Find in page"
-              spellcheck="false"
-              autocomplete="off"
-              aria-label="Find in page"
-              data-test="find-bar-input"
-            />
-            <span id="find-bar-count" class="find-bar-count" aria-live="polite" data-test="find-bar-count"></span>
-            <div class="find-bar-divider"></div>
-            <button id="find-bar-prev" class="find-bar-btn" type="button" disabled aria-label="Previous match" title="Previous match (Shift+Enter)" data-test="find-bar-prev">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="m18 15-6-6-6 6"/>
-              </svg>
-            </button>
-            <button id="find-bar-next" class="find-bar-btn" type="button" disabled aria-label="Next match" title="Next match (Enter)" data-test="find-bar-next">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="m6 9 6 6 6-6"/>
-              </svg>
-            </button>
-            <button id="find-bar-close" class="find-bar-btn" type="button" aria-label="Close find bar" title="Close (Esc)" data-test="find-bar-close">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M18 6 6 18"/><path d="M6 6 18 18"/>
-              </svg>
-            </button>
+      <aside
+        id="agent-session-sidebar"
+        class="agent-session-sidebar"
+        aria-label="Agent sessions"
+        data-test="agent-session-sidebar"
+        hidden
+      >
+        <div class="agent-session-sidebar-header">
+          <strong>Freedom Agent</strong>
+          <button id="agent-session-new-chat" type="button" aria-label="New chat" title="New chat">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              aria-hidden="true"
+            >
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+          </button>
+        </div>
+        <div class="agent-session-sidebar-content">
+          <span class="agent-session-section-label">Sessions</span>
+          <button id="agent-current-session" class="agent-current-session" type="button" hidden>
+            <span id="agent-current-session-title">New task</span>
+            <small>Current session</small>
+          </button>
+          <div id="agent-session-history-empty" class="agent-session-history-empty">
+            <p>Your current conversation will appear here.</p>
           </div>
         </div>
-      </main>
+        <p class="agent-session-history-note">Saved session history is coming later.</p>
+      </aside>
+      <section id="agent-page-surface" class="agent-page-surface">
+        <aside
+          id="agent-task-pages"
+          class="agent-task-pages"
+          aria-label="Agent workspace"
+          data-test="agent-task-pages"
+          hidden
+        >
+          <div class="agent-task-pages-header">
+            <div>
+              <span class="agent-task-pages-eyebrow">Agent workspace</span>
+              <h2>Pages</h2>
+            </div>
+            <span id="agent-task-page-count" class="agent-task-page-count">0</span>
+          </div>
+          <div id="agent-task-page-list" class="agent-task-page-list"></div>
+          <div id="agent-task-pages-empty" class="agent-task-pages-empty">
+            <p>Pages Agent opens for this task will appear here.</p>
+          </div>
+          <p id="agent-task-pages-note" class="agent-task-pages-note">
+            Only pages belonging to this conversation are shown.
+          </p>
+        </aside>
+        <main class="content">
+          <div class="content-page">
+            <div id="webview-container" class="webview-container">
+              <!-- Webviews inserted dynamically by tabs.js -->
+            </div>
+            <div id="link-status" class="link-status" hidden aria-hidden="true">
+              <span id="link-status-url" class="link-status-url"></span>
+            </div>
+            <div
+              id="find-bar"
+              class="find-bar"
+              role="search"
+              aria-label="Find in page"
+              hidden
+              data-test="find-bar"
+            >
+              <input
+                id="find-bar-input"
+                class="find-bar-input"
+                type="text"
+                placeholder="Find in page"
+                spellcheck="false"
+                autocomplete="off"
+                aria-label="Find in page"
+                data-test="find-bar-input"
+              />
+              <span
+                id="find-bar-count"
+                class="find-bar-count"
+                aria-live="polite"
+                data-test="find-bar-count"
+              ></span>
+              <div class="find-bar-divider"></div>
+              <button
+                id="find-bar-prev"
+                class="find-bar-btn"
+                type="button"
+                disabled
+                aria-label="Previous match"
+                title="Previous match (Shift+Enter)"
+                data-test="find-bar-prev"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="m18 15-6-6-6 6" />
+                </svg>
+              </button>
+              <button
+                id="find-bar-next"
+                class="find-bar-btn"
+                type="button"
+                disabled
+                aria-label="Next match"
+                title="Next match (Enter)"
+                data-test="find-bar-next"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="m6 9 6 6 6-6" />
+                </svg>
+              </button>
+              <button
+                id="find-bar-close"
+                class="find-bar-btn"
+                type="button"
+                aria-label="Close find bar"
+                title="Close (Esc)"
+                data-test="find-bar-close"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M18 6 6 18" />
+                  <path d="M6 6 18 18" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        </main>
+      </section>
       <aside id="agent-sidebar" class="agent-sidebar collapsed" aria-label="Freedom Agent">
         <div class="agent-sidebar-inner">
           <div class="agent-sidebar-header">
@@ -1428,28 +1609,6 @@
           </div>
         </div>
       </aside>
-      <aside
-        id="agent-task-pages"
-        class="agent-task-pages"
-        aria-label="Agent task pages"
-        data-test="agent-task-pages"
-        hidden
-      >
-        <div class="agent-task-pages-header">
-          <div>
-            <span class="agent-task-pages-eyebrow">Workspace</span>
-            <h2>Task pages</h2>
-          </div>
-          <span id="agent-task-page-count" class="agent-task-page-count">0</span>
-        </div>
-        <div id="agent-task-page-list" class="agent-task-page-list"></div>
-        <div id="agent-task-pages-empty" class="agent-task-pages-empty">
-          <p>Pages Agent opens for this task will appear here.</p>
-        </div>
-        <p id="agent-task-pages-note" class="agent-task-pages-note">
-          Only pages belonging to this conversation are shown.
-        </p>
-      </aside>
       <aside id="sidebar" class="sidebar collapsed">
         <div class="sidebar-inner">
           <div class="sidebar-header">
@@ -1644,12 +1803,16 @@
                         </svg>
                         <span>Create New Wallet</span>
                       </button>
-                      <button type="button" class="wallet-selector-action" id="wallet-connect-ledger-btn">
+                      <button
+                        type="button"
+                        class="wallet-selector-action"
+                        id="wallet-connect-ledger-btn"
+                      >
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                          <rect x="2" y="8" width="14" height="8" rx="2"/>
-                          <path d="M16 12h3"/>
-                          <path d="M19 10v4"/>
-                          <path d="M6 12h.01M10 12h.01"/>
+                          <rect x="2" y="8" width="14" height="8" rx="2" />
+                          <path d="M16 12h3" />
+                          <path d="M19 10v4" />
+                          <path d="M6 12h.01M10 12h.01" />
                         </svg>
                         <span>Connect Hardware Wallet</span>
                       </button>
@@ -2224,7 +2387,7 @@
               <div class="subscreen-header">
                 <button type="button" class="subscreen-back-btn" id="connect-ledger-back">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="15 18 9 12 15 6"/>
+                    <polyline points="15 18 9 12 15 6" />
                   </svg>
                   <span>Back</span>
                 </button>
@@ -2235,15 +2398,15 @@
               <div id="connect-ledger-detect" class="subscreen-content hidden">
                 <div class="connect-ledger-illustration">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                    <rect x="2" y="8" width="14" height="8" rx="2"/>
-                    <path d="M16 12h3"/>
-                    <path d="M19 10v4"/>
-                    <path d="M6 12h.01M10 12h.01"/>
+                    <rect x="2" y="8" width="14" height="8" rx="2" />
+                    <path d="M16 12h3" />
+                    <path d="M19 10v4" />
+                    <path d="M6 12h.01M10 12h.01" />
                   </svg>
                 </div>
                 <p class="create-wallet-message">
-                  Connect your Ledger via USB, unlock it with your PIN,
-                  and open the <strong>Ethereum</strong> app.
+                  Connect your Ledger via USB, unlock it with your PIN, and open the
+                  <strong>Ethereum</strong> app.
                 </p>
                 <div id="connect-ledger-status" class="connect-ledger-status">
                   <span class="connect-ledger-status-spinner"></span>
@@ -2266,17 +2429,29 @@
                 </div>
 
                 <div id="connect-ledger-account-list" class="connect-ledger-account-list"></div>
-                <button type="button" id="connect-ledger-load-more" class="connect-ledger-load-more">
+                <button
+                  type="button"
+                  id="connect-ledger-load-more"
+                  class="connect-ledger-load-more"
+                >
                   Show more accounts
                 </button>
 
-                <input type="text" id="connect-ledger-name-input"
-                       class="create-wallet-input"
-                       placeholder="Name (e.g. Ledger Stax)"
-                       maxlength="32"
-                       autocomplete="off">
+                <input
+                  type="text"
+                  id="connect-ledger-name-input"
+                  class="create-wallet-input"
+                  placeholder="Name (e.g. Ledger Stax)"
+                  maxlength="32"
+                  autocomplete="off"
+                />
 
-                <button type="button" id="connect-ledger-submit" class="create-wallet-submit-btn" disabled>
+                <button
+                  type="button"
+                  id="connect-ledger-submit"
+                  class="create-wallet-submit-btn"
+                  disabled
+                >
                   Add Account
                 </button>
 
@@ -2287,15 +2462,18 @@
               <div id="connect-ledger-success" class="subscreen-content hidden">
                 <div class="create-wallet-success-icon">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                    <circle cx="12" cy="12" r="10"/>
-                    <polyline points="8 12 11 15 16 9"/>
+                    <circle cx="12" cy="12" r="10" />
+                    <polyline points="8 12 11 15 16 9" />
                   </svg>
                 </div>
                 <h4 class="create-wallet-success-title">Ledger Account Added!</h4>
 
                 <div class="create-wallet-result">
                   <span class="create-wallet-result-name" id="connect-ledger-result-name"></span>
-                  <code class="create-wallet-result-address" id="connect-ledger-result-address"></code>
+                  <code
+                    class="create-wallet-result-address"
+                    id="connect-ledger-result-address"
+                  ></code>
                 </div>
 
                 <p class="create-wallet-message">
@@ -3194,7 +3372,8 @@
                     >
                   </label>
                   <p class="x402-grant-ledger-note hidden" id="x402-approval-ledger-note">
-                    Auto-pay skips this dialog, but every payment still needs a confirmation on your Ledger.
+                    Auto-pay skips this dialog, but every payment still needs a confirmation on your
+                    Ledger.
                   </p>
                   <div class="x402-grant-fields">
                     <div class="x402-grant-field">
@@ -3510,7 +3689,7 @@
               <div class="subscreen-header">
                 <button type="button" class="subscreen-back-btn" id="swarm-manifest-back">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="15 18 9 12 15 6"/>
+                    <polyline points="15 18 9 12 15 6" />
                   </svg>
                   <span>Back</span>
                 </button>
@@ -3524,11 +3703,24 @@
                 </div>
                 <div id="swarm-manifest-rows" class="swarm-manifest-rows"></div>
                 <div id="swarm-manifest-identity-note" class="swarm-connect-warning hidden"></div>
-                <div class="swarm-manifest-choice-note">Allow all applies these permissions now. Asking each time keeps the normal per-action prompts.</div>
+                <div class="swarm-manifest-choice-note">
+                  Allow all applies these permissions now. Asking each time keeps the normal
+                  per-action prompts.
+                </div>
                 <div class="swarm-manifest-actions">
-                  <button type="button" class="swarm-connect-reject-btn" id="swarm-manifest-reject">Don’t allow</button>
-                  <button type="button" class="swarm-connect-reject-btn" id="swarm-manifest-individual">Connect, but ask each time</button>
-                  <button type="button" class="swarm-connect-approve-btn" id="swarm-manifest-allow">Allow all</button>
+                  <button type="button" class="swarm-connect-reject-btn" id="swarm-manifest-reject">
+                    Don’t allow
+                  </button>
+                  <button
+                    type="button"
+                    class="swarm-connect-reject-btn"
+                    id="swarm-manifest-individual"
+                  >
+                    Connect, but ask each time
+                  </button>
+                  <button type="button" class="swarm-connect-approve-btn" id="swarm-manifest-allow">
+                    Allow all
+                  </button>
                 </div>
               </div>
             </div>
@@ -3666,11 +3858,14 @@
             </div>
 
             <!-- Swarm Messaging Approval sub-screen (PSS/GSOC) -->
-            <div id="sidebar-swarm-messaging-approve" class="sidebar-subscreen sidebar-modal hidden">
+            <div
+              id="sidebar-swarm-messaging-approve"
+              class="sidebar-subscreen sidebar-modal hidden"
+            >
               <div class="subscreen-header">
                 <button type="button" class="subscreen-back-btn" id="swarm-messaging-back">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="15 18 9 12 15 6"/>
+                    <polyline points="15 18 9 12 15 6" />
                   </svg>
                   <span>Back</span>
                 </button>
@@ -3680,7 +3875,9 @@
               <div class="subscreen-content">
                 <div class="swarm-connect-origin">
                   <div class="swarm-connect-site" id="swarm-messaging-site">site.eth</div>
-                  <div class="swarm-connect-wants" id="swarm-messaging-wants">wants to send and receive real-time messages</div>
+                  <div class="swarm-connect-wants" id="swarm-messaging-wants">
+                    wants to send and receive real-time messages
+                  </div>
                 </div>
 
                 <div class="swarm-publish-details">
@@ -3696,11 +3893,14 @@
 
                 <div class="swarm-connect-warning">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <circle cx="12" cy="12" r="10"/>
-                    <line x1="12" y1="16" x2="12" y2="12"/>
-                    <line x1="12" y1="8" x2="12.01" y2="8"/>
+                    <circle cx="12" cy="12" r="10" />
+                    <line x1="12" y1="16" x2="12" y2="12" />
+                    <line x1="12" y1="8" x2="12.01" y2="8" />
                   </svg>
-                  <span id="swarm-messaging-warning">Sending messages uses your stamps. Open subscriptions use bandwidth while the page is loaded.</span>
+                  <span id="swarm-messaging-warning"
+                    >Sending messages uses your stamps. Open subscriptions use bandwidth while the
+                    page is loaded.</span
+                  >
                 </div>
 
                 <label class="auto-approve-checkbox hidden" id="swarm-messaging-auto-approve-label">
@@ -3709,8 +3909,20 @@
                 </label>
 
                 <div class="swarm-connect-actions">
-                  <button type="button" class="swarm-connect-reject-btn" id="swarm-messaging-reject">Cancel</button>
-                  <button type="button" class="swarm-connect-approve-btn" id="swarm-messaging-confirm">Allow</button>
+                  <button
+                    type="button"
+                    class="swarm-connect-reject-btn"
+                    id="swarm-messaging-reject"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    class="swarm-connect-approve-btn"
+                    id="swarm-messaging-confirm"
+                  >
+                    Allow
+                  </button>
                 </div>
               </div>
             </div>
