@@ -364,6 +364,7 @@
   min-width: 0;
   overflow: hidden;
   background: transparent;
+  -webkit-app-region: no-drag;
 }
 
 .agent-task-pages[hidden] {
@@ -381,10 +382,12 @@
   gap: 2px;
   height: 100%;
   min-width: 0;
-  padding: 4px 2px 0 6px;
+  padding: 8px 2px 0 6px;
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: thin;
+  overscroll-behavior-x: contain;
+  -webkit-app-region: no-drag;
 }
 
 .agent-task-page {
@@ -392,7 +395,7 @@
   display: flex;
   width: 136px;
   min-width: 96px;
-  height: 33px;
+  height: 29px;
   flex: 0 0 136px;
   align-items: center;
   gap: 7px;
@@ -403,6 +406,7 @@
   border: 1px solid transparent;
   border-bottom: 0;
   border-radius: 8px 8px 0 0;
+  -webkit-app-region: no-drag;
 }
 
 .agent-task-page:hover {
@@ -575,7 +579,6 @@ body.agent-first-mode .title-bar {
 
 body.agent-first-mode,
 body.agent-first-mode .app-body,
-body.agent-first-mode .agent-session-sidebar,
 body.agent-first-mode .agent-sidebar,
 body.agent-first-mode .agent-sidebar-inner,
 body.agent-first-mode .agent-workspace-view,
@@ -584,6 +587,16 @@ body.agent-first-mode .agent-composer-wrap,
 body.agent-first-mode .agent-page-surface,
 body.agent-first-mode .agent-task-pages {
   background: var(--bg);
+}
+
+body.agent-first-mode .agent-session-sidebar,
+body.agent-first-mode .agent-first-titlebar-left {
+  background: color-mix(in srgb, var(--toolbar) 38%, var(--bg));
+}
+
+[data-theme='light'] body.agent-first-mode .agent-session-sidebar,
+[data-theme='light'] body.agent-first-mode .agent-first-titlebar-left {
+  background: color-mix(in srgb, var(--bg) 94%, var(--text));
 }
 
 body.agent-first-mode .agent-first-titlebar {
@@ -600,11 +613,15 @@ body.agent-first-mode.agent-session-sidebar-closed .agent-session-sidebar {
 }
 
 body.agent-first-mode.agent-session-sidebar-closed {
-  --agent-session-titlebar-width: 42px;
+  --agent-session-titlebar-width: 118px;
 }
 
 body.agent-first-mode.agent-session-sidebar-closed .agent-first-titlebar-left {
-  padding-left: 6px;
+  border-right-color: transparent;
+}
+
+.platform-linux.agent-first-mode.agent-session-sidebar-closed {
+  --agent-session-titlebar-width: 54px;
 }
 
 body.agent-first-mode .agent-sidebar {

@@ -371,6 +371,7 @@ test('a conversation survives its original and then all task tabs closing', asyn
     return {
       scrollsHorizontally: list.scrollWidth > list.clientWidth,
       widths: tabs.map((tab) => tab.getBoundingClientRect().width),
+      heights: tabs.map((tab) => tab.getBoundingClientRect().height),
       tops: tabs.map((tab) => tab.getBoundingClientRect().top),
       activeTabIsVisible:
         activeRect && activeRect.left >= listRect.left && activeRect.right <= listRect.right,
@@ -378,8 +379,16 @@ test('a conversation survives its original and then all task tabs closing', asyn
   });
   expect(compactTabStrip.scrollsHorizontally).toBe(true);
   expect(compactTabStrip.widths.every((width) => width <= 140)).toBe(true);
+  expect(compactTabStrip.heights.every((height) => height <= 30)).toBe(true);
   expect(new Set(compactTabStrip.tops).size).toBe(1);
   expect(compactTabStrip.activeTabIsVisible).toBe(true);
+  const wheelScrollMovedTabs = await window.locator('#agent-task-page-list').evaluate((list) => {
+    const before = list.scrollLeft;
+    const deltaY = before > 0 ? -48 : 48;
+    list.dispatchEvent(new WheelEvent('wheel', { deltaY, bubbles: true, cancelable: true }));
+    return list.scrollLeft !== before;
+  });
+  expect(wheelScrollMovedTabs).toBe(true);
   await window.locator('#agent-task-page-list .agent-task-page').first().click();
   await expect(window.locator('body')).toHaveClass(/agent-first-mode/);
   await expect(window.locator('#agent-page-surface .content')).toBeVisible();

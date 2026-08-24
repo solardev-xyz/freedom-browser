@@ -1491,6 +1491,17 @@ export function initAgentUi(options = {}) {
     navigateWorkspace(elements.workspaceAddress.value);
     elements.workspaceAddress.blur();
   });
+  elements.taskPageList.addEventListener(
+    'wheel',
+    (event) => {
+      if (elements.taskPageList.scrollWidth <= elements.taskPageList.clientWidth) return;
+      const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+      if (!delta) return;
+      event.preventDefault();
+      elements.taskPageList.scrollLeft += delta;
+    },
+    { passive: false }
+  );
   elements.sessionNewChat.addEventListener('click', startNewSessionFromSidebar);
   elements.currentSession.addEventListener('click', () => elements.prompt.focus());
   elements.back.addEventListener('click', () => setAgentView('workspace'));

@@ -172,13 +172,47 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
       composer: background('.agent-composer-wrap'),
     };
   });
-  expect(unifiedChrome.sessions).toBe(unifiedChrome.titlebar);
+  expect(unifiedChrome.sessions).not.toBe(unifiedChrome.titlebar);
   expect(unifiedChrome.conversation).toBe(unifiedChrome.titlebar);
   expect(unifiedChrome.workspace).toBe(unifiedChrome.titlebar);
   expect(unifiedChrome.composer).toBe(unifiedChrome.titlebar);
+  const sidebarThemeContrast = await window.evaluate(() => {
+    const root = document.documentElement;
+    const originalTheme = root.getAttribute('data-theme');
+    const intensity = (color) => {
+      const values = color
+        .match(/[\d.]+/g)
+        .map(Number)
+        .slice(0, 3);
+      const scale = color.startsWith('color(') ? 255 : 1;
+      return values.reduce((total, value) => total + value * scale, 0);
+    };
+    const sample = (theme) => {
+      root.setAttribute('data-theme', theme);
+      return {
+        sidebar: intensity(
+          getComputedStyle(document.querySelector('#agent-session-sidebar')).backgroundColor
+        ),
+        main: intensity(getComputedStyle(document.querySelector('#agent-sidebar')).backgroundColor),
+      };
+    };
+    const result = { dark: sample('dark'), light: sample('light') };
+    if (originalTheme === null) root.removeAttribute('data-theme');
+    else root.setAttribute('data-theme', originalTheme);
+    return result;
+  });
+  expect(sidebarThemeContrast.dark.sidebar).toBeGreaterThan(sidebarThemeContrast.dark.main);
+  expect(sidebarThemeContrast.light.sidebar).toBeLessThan(sidebarThemeContrast.light.main);
 
+  const openSessionToggleLeft = await window
+    .locator('[data-test="agent-session-sidebar-toggle"]')
+    .evaluate((button) => button.getBoundingClientRect().left);
   await window.locator('[data-test="agent-session-sidebar-toggle"]').click();
   await expect(window.locator('body')).toHaveClass(/agent-session-sidebar-closed/);
+  const closedSessionToggleLeft = await window
+    .locator('[data-test="agent-session-sidebar-toggle"]')
+    .evaluate((button) => button.getBoundingClientRect().left);
+  expect(Math.abs(closedSessionToggleLeft - openSessionToggleLeft)).toBeLessThan(1);
   await window.locator('[data-test="agent-workspace-sidebar-toggle"]').click();
   await expect(window.locator('body')).toHaveClass(/agent-workspace-sidebar-closed/);
   await window.locator('[data-test="agent-session-sidebar-toggle"]').click();

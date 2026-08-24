@@ -726,6 +726,20 @@ describe('Agent UI', () => {
     expect(ctx.navigateWorkspace).toHaveBeenCalledWith('https://freedom.baby');
   });
 
+  test('translates wheel gestures into horizontal workspace tab scrolling', async () => {
+    const ctx = await loadAgentUi();
+    const tabList = ctx.elements['agent-task-page-list'];
+    tabList.scrollWidth = 600;
+    tabList.clientWidth = 240;
+    tabList.scrollLeft = 0;
+    const preventDefault = jest.fn();
+
+    tabList.dispatch('wheel', { deltaX: 0, deltaY: 52, preventDefault });
+
+    expect(preventDefault).toHaveBeenCalledTimes(1);
+    expect(tabList.scrollLeft).toBe(52);
+  });
+
   test('sanitizes completed assistant Markdown with a restricted element allowlist', async () => {
     const sanitize = jest.fn(() => '<p>Safe response</p>');
     const ctx = await loadAgentUi({
