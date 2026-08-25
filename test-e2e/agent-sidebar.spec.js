@@ -163,7 +163,11 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
       title: rect('#agent-first-title'),
       workspaceTitlebar: rect('.agent-first-titlebar-right'),
       workspace: rect('#agent-page-surface'),
+      workspaceContent: rect('#agent-page-surface .content'),
       tabs: rect('#agent-task-pages'),
+      firstTab: rect('#agent-task-page-list .agent-task-page'),
+      centerDividerWidth: getComputedStyle(document.querySelector('.agent-first-titlebar-center'))
+        .borderRightWidth,
     };
   });
   expect(
@@ -174,6 +178,10 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
   ).toBeLessThan(2);
   expect(
     Math.abs(titlebarLayout.workspaceTitlebar.left - titlebarLayout.workspace.left)
+  ).toBeLessThan(2);
+  expect(titlebarLayout.centerDividerWidth).toBe('0px');
+  expect(
+    Math.abs(titlebarLayout.firstTab.left - titlebarLayout.workspaceContent.left)
   ).toBeLessThan(2);
   expect(titlebarLayout.title.left).toBeLessThan(
     titlebarLayout.conversationTitlebar.left + titlebarLayout.conversationTitlebar.width / 3
