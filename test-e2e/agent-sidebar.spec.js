@@ -166,6 +166,10 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
       workspaceContent: rect('#agent-page-surface .content'),
       tabs: rect('#agent-task-pages'),
       firstTab: rect('#agent-task-page-list .agent-task-page'),
+      sessionDividerShadow: getComputedStyle(
+        document.querySelector('.agent-first-titlebar-left'),
+        '::before'
+      ).boxShadow,
       centerDividerWidth: getComputedStyle(document.querySelector('.agent-first-titlebar-center'))
         .borderRightWidth,
     };
@@ -173,6 +177,7 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
   expect(
     Math.abs(titlebarLayout.sessionTitlebar.right - titlebarLayout.sessions.right)
   ).toBeLessThan(2);
+  expect(titlebarLayout.sessionDividerShadow).not.toBe('none');
   expect(
     Math.abs(titlebarLayout.conversationTitlebar.left - titlebarLayout.conversation.left)
   ).toBeLessThan(2);
