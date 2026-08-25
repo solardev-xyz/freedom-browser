@@ -667,7 +667,7 @@ body.agent-first-mode .title-bar {
 body.agent-first-mode {
   --agent-browser-address: var(--bg);
   --agent-browser-chrome: color-mix(in srgb, var(--toolbar) 82%, var(--bg));
-  --agent-divider: color-mix(in srgb, var(--border) 68%, var(--bg));
+  --agent-divider: color-mix(in srgb, var(--border) 42%, var(--bg));
   --agent-session-sidebar-width: 242px;
   --agent-workspace-sidebar-width: clamp(340px, 32vw, 560px);
 }
