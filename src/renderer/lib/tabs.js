@@ -103,9 +103,12 @@ const pushTabMenuState = () => {
 
 // DOM elements (initialized in initTabs)
 let tabBar = null;
+let tabBarHome = null;
 let newTabBtn = null;
 let webviewContainer = null;
 let tabContextMenu = null;
+let projectedTabIds = null;
+let projectedActiveTabId = null;
 
 // Context menu state
 let contextMenuTabId = null;
@@ -1080,6 +1083,7 @@ const renderTabs = () => {
 
     // Update the element state
     updateTabElement(tabEl, tab, isActive, isBeforeActive);
+    tabEl.hidden = projectedTabIds !== null && !projectedTabIds.has(tab.id);
 
     // Ensure correct DOM order
     const expectedNextSibling = previousSibling ? previousSibling.nextSibling : tabBar.firstChild;
@@ -1101,6 +1105,36 @@ const renderTabs = () => {
       // Presentation observers cannot interrupt browser tab rendering.
     }
   }
+  if (projectedTabIds !== null) {
+    const activeTabElement = projectedTabIds.has(tabState.activeTabId)
+      ? tabElements.get(tabState.activeTabId)
+      : null;
+    if (activeTabElement && projectedActiveTabId !== tabState.activeTabId) {
+      activeTabElement.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+    }
+    projectedActiveTabId = activeTabElement ? tabState.activeTabId : null;
+  } else {
+    projectedActiveTabId = null;
+  }
+};
+
+// Agent-first changes where the canonical tab strip is presented and which
+// conversation-owned tabs are visible; it does not create a second tab UI.
+// Moving the existing strip preserves close/mute/context-menu/reorder behavior
+// and every future tab interaction automatically in both layouts.
+export const setTabStripProjection = ({ container = null, tabIds = null } = {}) => {
+  if (!tabBar) return;
+  if (container) {
+    container.appendChild(tabBar);
+    projectedActiveTabId = null;
+    projectedTabIds = new Set(
+      Array.isArray(tabIds) ? tabIds.filter((tabId) => Number.isSafeInteger(tabId)) : []
+    );
+  } else {
+    tabBarHome?.prepend(tabBar);
+    projectedTabIds = null;
+  }
+  renderTabs();
 };
 
 // URLs `createTab` is allowed to load directly as the initial webview
@@ -1640,6 +1674,7 @@ export const openOrFocusInternalPage = (pageName, subPath = null) => {
 export const initTabs = async () => {
   // Initialize DOM elements
   tabBar = document.getElementById('tab-bar');
+  tabBarHome = tabBar?.parentNode || null;
   newTabBtn = document.getElementById('new-tab-btn');
   webviewContainer = document.getElementById('webview-container');
   tabContextMenu = document.getElementById('tab-context-menu');

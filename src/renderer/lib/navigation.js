@@ -264,6 +264,13 @@ let bookmarksBar = null;
 let protocolIcon = null;
 let trustShield = null;
 let trustPopover = null;
+let addressBarContainer = null;
+let addressBarHome = null;
+let agentBackBtn = null;
+let agentForwardBtn = null;
+let agentReloadBtn = null;
+let agentWorkspaceNavigationMounted = false;
+let agentWorkspaceNavigationEditable = false;
 
 // Bookmark bar toggle state: true = always show, false = hide on non-home pages (default)
 let bookmarkBarOverride = false;
@@ -728,16 +735,73 @@ const updateNavigationState = () => {
   if (!webview) {
     if (backBtn) backBtn.disabled = true;
     if (forwardBtn) forwardBtn.disabled = true;
+    if (agentBackBtn) agentBackBtn.disabled = true;
+    if (agentForwardBtn) agentForwardBtn.disabled = true;
+    if (agentReloadBtn) agentReloadBtn.disabled = true;
     return;
   }
   try {
-    if (backBtn) backBtn.disabled = !webview.canGoBack();
-    if (forwardBtn) forwardBtn.disabled = !webview.canGoForward();
+    const canGoBack = webview.canGoBack();
+    const canGoForward = webview.canGoForward();
+    if (backBtn) backBtn.disabled = !canGoBack;
+    if (forwardBtn) forwardBtn.disabled = !canGoForward;
+    if (agentBackBtn) agentBackBtn.disabled = !canGoBack;
+    if (agentForwardBtn) agentForwardBtn.disabled = !canGoForward;
+    if (agentReloadBtn) agentReloadBtn.disabled = false;
   } catch (err) {
     pushDebug(`[Nav] Webview not ready for canGoBack/canGoForward: ${err.message}`);
     if (backBtn) backBtn.disabled = true;
     if (forwardBtn) forwardBtn.disabled = true;
+    if (agentBackBtn) agentBackBtn.disabled = true;
+    if (agentForwardBtn) agentForwardBtn.disabled = true;
+    if (agentReloadBtn) agentReloadBtn.disabled = false;
   }
+};
+
+const setReloadState = (nextState) => {
+  if (reloadBtn) reloadBtn.dataset.state = nextState;
+  if (agentReloadBtn) agentReloadBtn.dataset.state = nextState;
+};
+
+export const setAgentWorkspaceNavigationEditable = (editable) => {
+  agentWorkspaceNavigationEditable = editable === true;
+  if (!addressInput) return;
+  const readOnly = agentWorkspaceNavigationMounted && !agentWorkspaceNavigationEditable;
+  addressInput.readOnly = readOnly;
+  addressInput.setAttribute('aria-readonly', String(readOnly));
+  addressInput.title = readOnly
+    ? 'Pause or finish the agent to navigate manually'
+    : '';
+  if (readOnly) {
+    const tab = getActiveTab();
+    if (tab) {
+      addressInput.value = deriveSwitchedTabDisplay({
+        url: tab.url || tab.navigationState?.currentPageUrl || '',
+        isLoading: tab.isLoading === true,
+        addressBarSnapshot: tab.navigationState?.addressBarSnapshot || '',
+        isViewingSource: tab.isViewingSource === true,
+        bzzRoutePrefix: state.bzzRoutePrefix,
+        homeUrlNormalized,
+        ipfsRoutePrefix: state.ipfsRoutePrefix,
+        ipnsRoutePrefix: state.ipnsRoutePrefix,
+        radicleApiPrefix: state.radicleApiPrefix,
+        knownEnsNames: state.knownEnsNames,
+      });
+    }
+    addressInput.blur();
+    updateProtocolIcon();
+  }
+};
+
+export const setAgentWorkspaceNavigationProjection = (container = null) => {
+  if (!addressBarContainer || !addressInput) return;
+  agentWorkspaceNavigationMounted = Boolean(container);
+  if (container) {
+    container.appendChild(addressBarContainer);
+  } else {
+    addressBarHome?.appendChild(addressBarContainer);
+  }
+  setAgentWorkspaceNavigationEditable(agentWorkspaceNavigationEditable);
 };
 
 const ensureWebContentsId = () => {
@@ -898,7 +962,7 @@ const startBzzNavigationWithProbe = (webview, target, navState, displayUrl) => {
   setLoading(true, probeTabId);
   navState.isWebviewLoading = true;
   if (isActiveTab(probeTabId)) {
-    reloadBtn.dataset.state = 'stop';
+    setReloadState('stop');
   }
   pushDebug(`[Swarm] Probing ${gatewayUrl} before navigating`);
 
@@ -1651,7 +1715,7 @@ export const stopPageLoading = (targetWebview = null) => {
     pushDebug(`[AddressBar] Restored to: ${display} (raw: ${targetUrl})`);
   }
   if (isActiveTab(targetTabId) || targetTabId === null) {
-    reloadBtn.dataset.state = 'reload';
+    setReloadState('reload');
   }
   return true;
 };
@@ -2016,6 +2080,12 @@ export const initNavigation = () => {
   protocolIcon = document.getElementById('protocol-icon');
   trustShield = document.getElementById('trust-shield');
   trustPopover = document.getElementById('trust-popover');
+  addressBarContainer = navForm?.querySelector('.address-bar-container') || null;
+  addressBarHome = addressBarContainer?.parentNode || null;
+  agentBackBtn = document.getElementById('agent-workspace-back');
+  agentForwardBtn = document.getElementById('agent-workspace-forward');
+  agentReloadBtn = document.getElementById('agent-workspace-reload');
+  setAgentWorkspaceNavigationEditable(agentWorkspaceNavigationEditable);
 
   if (trustShield) {
     // Don't stopPropagation: we want the click to bubble to the
@@ -2111,30 +2181,44 @@ export const initNavigation = () => {
     addressInput.blur();
   });
 
+  document.getElementById('agent-workspace-nav')?.addEventListener('submit', (event) => {
+    event.preventDefault();
+    if (!agentWorkspaceNavigationMounted || !agentWorkspaceNavigationEditable) return;
+    loadTarget(addressInput.value);
+    addressInput.blur();
+  });
+
   // Navigation buttons
-  backBtn.addEventListener('click', () => {
+  const navigateBack = () => {
     const webview = getActiveWebview();
     if (webview?.canGoBack()) webview.goBack();
-  });
+  };
 
-  forwardBtn.addEventListener('click', () => {
+  const navigateForward = () => {
     const webview = getActiveWebview();
     if (webview?.canGoForward()) webview.goForward();
-  });
+  };
 
-  reloadBtn.addEventListener('click', (e) => {
+  const reloadOrStop = (event = {}) => {
     const navState = getNavState();
     if (navState.isWebviewLoading) {
       stopLoadingAndRestore();
-      reloadBtn.dataset.state = 'reload';
+      setReloadState('reload');
       return;
     }
 
     const webview = getActiveWebview();
     if (!webview) return;
 
-    retryErrorPageOrReload(webview, e.shiftKey);
-  });
+    retryErrorPageOrReload(webview, event.shiftKey === true);
+  };
+
+  backBtn.addEventListener('click', navigateBack);
+  agentBackBtn?.addEventListener('click', navigateBack);
+  forwardBtn.addEventListener('click', navigateForward);
+  agentForwardBtn?.addEventListener('click', navigateForward);
+  reloadBtn.addEventListener('click', reloadOrStop);
+  agentReloadBtn?.addEventListener('click', reloadOrStop);
 
   homeBtn?.addEventListener('click', () => {
     loadHomePage();
@@ -2154,7 +2238,7 @@ export const initNavigation = () => {
           stopIpfsProgressStatus({ immediate: true });
         }
         navState.isWebviewLoading = true;
-        reloadBtn.dataset.state = 'stop';
+        setReloadState('stop');
         pushDebug('Webview started loading.');
         break;
 
@@ -2164,7 +2248,7 @@ export const initNavigation = () => {
         navState.isWebviewLoading = false;
         navState.hasNavigatedDuringCurrentLoad = false;
         navState.pendingNavigationUrl = '';
-        reloadBtn.dataset.state = 'reload';
+        setReloadState('reload');
         if (data.url) {
           updateBookmarkBarState(data.url);
         }
@@ -2269,7 +2353,7 @@ export const initNavigation = () => {
         stopIpfsProgressStatus({ immediate: true });
         navState.isWebviewLoading = false;
         navState.hasNavigatedDuringCurrentLoad = false;
-        reloadBtn.dataset.state = 'reload';
+        setReloadState('reload');
         updateNavigationState();
 
         if (data.event && data.event.errorCode !== -3 && webview) {
@@ -2437,7 +2521,7 @@ export const initNavigation = () => {
             stopIpfsProgressStatus({ immediate: true });
           }
           tabNavState.isWebviewLoading = isLoading;
-          reloadBtn.dataset.state = isLoading ? 'stop' : 'reload';
+          setReloadState(isLoading ? 'stop' : 'reload');
           // Focus address bar only for new empty tabs (home page)
           // Don't focus for: view-source, links opened in new tab/window, etc.
           const isEmptyNewTab =

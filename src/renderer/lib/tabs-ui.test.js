@@ -100,7 +100,9 @@ const loadTabsModule = async (options = {}) => {
 
   const createdWebviews = [];
   const { api: electronAPI, handlers: electronHandlers } = createElectronApi();
+  const tabBarHome = createElement('div');
   const tabBar = createElement('div');
+  tabBarHome.appendChild(tabBar);
   const newTabBtn = createElement('button');
   const webviewContainer = createElement('div');
   const bzzWebview = createElement('webview');
@@ -184,6 +186,7 @@ const loadTabsModule = async (options = {}) => {
     createdWebviews,
     elements: {
       tabBar,
+      tabBarHome,
       newTabBtn,
       webviewContainer,
       tabContextMenu,
@@ -295,6 +298,29 @@ describe('tabs ui behavior', () => {
         isActive: false,
       },
     ]);
+  });
+
+  test('projects the canonical tab strip into Agent-first and restores it', async () => {
+    const { mod, elements } = await loadTabsModule();
+    await mod.initTabs();
+    const initialTab = mod.getActiveTab();
+    const taskTab = mod.createTab('https://task.example');
+    const workspaceStripHost = createElement('div');
+
+    mod.setTabStripProjection({
+      container: workspaceStripHost,
+      tabIds: [taskTab.id],
+    });
+
+    expect(workspaceStripHost.children).toContain(elements.tabBar);
+    expect(findTabElement(elements.tabBar, initialTab.id).hidden).toBe(true);
+    expect(findTabElement(elements.tabBar, taskTab.id).hidden).toBe(false);
+
+    mod.setTabStripProjection();
+
+    expect(elements.tabBarHome.children[0]).toBe(elements.tabBar);
+    expect(findTabElement(elements.tabBar, initialTab.id).hidden).toBe(false);
+    expect(findTabElement(elements.tabBar, taskTab.id).hidden).toBe(false);
   });
 
   test('createTab loads file:// homeUrl directly without going through onLoadTarget', async () => {

@@ -363,10 +363,10 @@ test('a conversation survives its original and then all task tabs closing', asyn
 
   await window.locator('[data-test="agent-first-toggle"]').click();
   await expect(window.locator('#agent-task-page-count')).toHaveText('5');
-  await expect(window.locator('#agent-task-page-list .agent-task-page')).toHaveCount(5);
+  await expect(window.locator('#agent-task-page-list .tab:not([hidden])')).toHaveCount(5);
   const compactTabStrip = await window.locator('#agent-task-page-list').evaluate((list) => {
-    const tabs = [...list.querySelectorAll('.agent-task-page')];
-    const activeRect = list.querySelector('.agent-task-page.viewing')?.getBoundingClientRect();
+    const tabs = [...list.querySelectorAll('.tab:not([hidden])')];
+    const activeRect = list.querySelector('.tab.active:not([hidden])')?.getBoundingClientRect();
     const listRect = list.getBoundingClientRect();
     return {
       scrollsHorizontally: list.scrollWidth > list.clientWidth,
@@ -389,7 +389,7 @@ test('a conversation survives its original and then all task tabs closing', asyn
     return list.scrollLeft !== before;
   });
   expect(wheelScrollMovedTabs).toBe(true);
-  await window.locator('#agent-task-page-list .agent-task-page').first().click();
+  await window.locator('#agent-task-page-list .tab:not([hidden])').first().click();
   await expect(window.locator('body')).toHaveClass(/agent-first-mode/);
   await expect(window.locator('#agent-page-surface .content')).toBeVisible();
   await window.locator('[data-test="agent-first-browser-return"]').click();

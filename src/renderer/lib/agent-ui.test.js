@@ -33,7 +33,7 @@ function createAgentElements() {
     'agent-workspace-back',
     'agent-workspace-forward',
     'agent-workspace-reload',
-    'agent-workspace-address',
+    'agent-workspace-address-host',
     'agent-sidebar-back',
     'agent-sidebar-title',
     'agent-sidebar-subtitle',
@@ -120,7 +120,7 @@ function createAgentElements() {
   elements['agent-workspace-back'] = createElement('button');
   elements['agent-workspace-forward'] = createElement('button');
   elements['agent-workspace-reload'] = createElement('button');
-  elements['agent-workspace-address'] = createElement('input');
+  elements['agent-workspace-address-host'] = createElement('div');
   elements['agent-sidebar-back'] = createElement('button');
   elements['agent-setup-view'].hidden = true;
   elements['agent-workspace-view'].hidden = true;
@@ -265,8 +265,9 @@ async function loadAgentUi(options = {}) {
   }));
   const setAgentControlledTab = jest.fn();
   const switchTab = jest.fn();
-  const navigateWorkspace = jest.fn();
-  const reloadWorkspace = jest.fn();
+  const setTabStripProjection = jest.fn();
+  const setWorkspaceNavigationProjection = jest.fn();
+  const setWorkspaceNavigationEditable = jest.fn();
   const getOpenTabs =
     options.getOpenTabs ||
     (() => [
@@ -283,11 +284,11 @@ async function loadAgentUi(options = {}) {
   mod.initAgentUi({
     getActiveTab:
       options.getActiveTab || (() => getOpenTabs().find((tab) => tab.isActive) || getOpenTabs()[0]),
-    getActiveWebview: options.getActiveWebview,
     getOpenTabs,
-    navigateWorkspace,
-    reloadWorkspace,
     setAgentControlledTab,
+    setTabStripProjection,
+    setWorkspaceNavigationProjection,
+    setWorkspaceNavigationEditable,
     subscribeTabPresentation: (listener) => {
       listener(getOpenTabs());
       return jest.fn();
@@ -303,8 +304,9 @@ async function loadAgentUi(options = {}) {
     sidebar,
     setAgentControlledTab,
     switchTab,
-    navigateWorkspace,
-    reloadWorkspace,
+    setTabStripProjection,
+    setWorkspaceNavigationProjection,
+    setWorkspaceNavigationEditable,
     emit: (event) => eventHandler(event),
     emitProviderAuth: (event) => providerAuthEventHandler(event),
   };
@@ -685,21 +687,13 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-first-title'].textContent).toBe('Compare agent definitions');
     expect(ctx.elements['agent-task-pages'].hidden).toBe(false);
     expect(ctx.elements['agent-task-page-count'].textContent).toBe('1');
-    expect(ctx.elements['agent-task-page-list'].children).toHaveLength(1);
-    expect(
-      ctx.elements['agent-task-page-list'].children[0].querySelector('.agent-task-page-title')
-        .textContent
-    ).toBe('Agent — Wikipedia');
-    expect(
-      ctx.elements['agent-task-page-list'].children[0].classList.contains('agent-active')
-    ).toBe(true);
-    expect(ctx.elements['agent-task-page-list'].children[0].title).toBe(
-      'Agent — Wikipedia — en.wikipedia.org — Agent active'
+    expect(ctx.setTabStripProjection).toHaveBeenLastCalledWith({
+      container: ctx.elements['agent-task-page-list'],
+      tabIds: [8],
+    });
+    expect(ctx.setWorkspaceNavigationProjection).toHaveBeenLastCalledWith(
+      ctx.elements['agent-workspace-address-host']
     );
-
-    ctx.elements['agent-task-page-list'].children[0].dispatch('click');
-
-    expect(ctx.switchTab).toHaveBeenCalledWith(8);
     expect(ctx.document.body.classList.contains('agent-first-mode')).toBe(true);
 
     ctx.elements['agent-session-sidebar-toggle'].dispatch('click');
@@ -710,31 +704,26 @@ describe('Agent UI', () => {
     ctx.elements['agent-first-browser-return'].dispatch('click');
     expect(ctx.document.body.classList.contains('agent-first-mode')).toBe(false);
     expect(ctx.elements['agent-sidebar'].classList.contains('collapsed')).toBe(false);
+    expect(ctx.setTabStripProjection).toHaveBeenLastCalledWith();
+    expect(ctx.setWorkspaceNavigationProjection).toHaveBeenLastCalledWith();
   });
 
-  test('mirrors active page state in the Agent-first workspace navigation', async () => {
-    const webview = {
-      canGoBack: jest.fn(() => true),
-      canGoForward: jest.fn(() => true),
-      goBack: jest.fn(),
-      goForward: jest.fn(),
-    };
-    const ctx = await loadAgentUi({ getActiveWebview: () => webview });
+  test('delegates workspace address editing policy to shared browser navigation', async () => {
+    const ctx = await loadAgentUi();
 
-    expect(ctx.elements['agent-workspace-address'].value).toBe('https://example.com/start');
-    expect(ctx.elements['agent-workspace-back'].disabled).toBe(false);
-    expect(ctx.elements['agent-workspace-forward'].disabled).toBe(false);
+    expect(ctx.setWorkspaceNavigationEditable).toHaveBeenLastCalledWith(true);
 
-    ctx.elements['agent-workspace-back'].dispatch('click');
-    ctx.elements['agent-workspace-forward'].dispatch('click');
-    ctx.elements['agent-workspace-reload'].dispatch('click');
-    expect(webview.goBack).toHaveBeenCalledTimes(1);
-    expect(webview.goForward).toHaveBeenCalledTimes(1);
-    expect(ctx.reloadWorkspace).toHaveBeenCalledTimes(1);
+    ctx.elements['agent-prompt'].value = 'Inspect this page';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    expect(ctx.setWorkspaceNavigationEditable).toHaveBeenLastCalledWith(false);
 
-    ctx.elements['agent-workspace-address'].value = 'https://freedom.baby';
-    ctx.elements['agent-workspace-nav'].dispatch('submit', { preventDefault: jest.fn() });
-    expect(ctx.navigateWorkspace).toHaveBeenCalledWith('https://freedom.baby');
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({ type: 'run_paused', runId: 'run_test' });
+    expect(ctx.setWorkspaceNavigationEditable).toHaveBeenLastCalledWith(true);
+
+    ctx.emit({ type: 'run_resumed', runId: 'run_test' });
+    expect(ctx.setWorkspaceNavigationEditable).toHaveBeenLastCalledWith(false);
   });
 
   test('translates wheel gestures into horizontal workspace tab scrolling', async () => {

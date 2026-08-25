@@ -35,12 +35,12 @@ const PANE_RESIZE_CONFIG = Object.freeze({
 
 let elements = {};
 let getActiveTab = () => null;
-let getActiveWebview = () => null;
 let getOpenTabs = () => [];
-let navigateWorkspace = () => {};
-let reloadWorkspace = () => {};
 let switchToTab = () => {};
 let setAgentControlledTab = () => {};
+let setTabStripProjection = () => {};
+let setWorkspaceNavigationProjection = () => {};
+let setWorkspaceNavigationEditable = () => {};
 let providerCatalog = [];
 let providerCatalogPromise = null;
 let providerStatus = null;
@@ -205,33 +205,6 @@ function setAgentView(nextView) {
   closeComposerPopovers();
 }
 
-function taskPageLocation(url) {
-  if (typeof url !== 'string' || !url) return 'New page';
-  try {
-    const parsed = new URL(url);
-    if (parsed.protocol === 'file:' || parsed.protocol === 'freedom:') return 'Freedom';
-    return parsed.host || parsed.protocol.replace(':', '');
-  } catch {
-    return 'Page';
-  }
-}
-
-function taskPageIcon(tab) {
-  const icon = document.createElement('span');
-  icon.className = 'agent-task-page-icon';
-  if (typeof tab.favicon === 'string' && tab.favicon) {
-    const image = document.createElement('img');
-    image.src = tab.favicon;
-    image.alt = '';
-    image.addEventListener('error', () => image.remove());
-    icon.appendChild(image);
-  } else {
-    icon.textContent =
-      (tab.title || taskPageLocation(tab.url)).trim().charAt(0).toUpperCase() || '•';
-  }
-  return icon;
-}
-
 function titleFromPrompt(prompt) {
   const normalized = String(prompt || '')
     .replace(/\s+/g, ' ')
@@ -275,86 +248,21 @@ function ensureWorkspacePageVisible() {
   switchToTab(preferred.rendererTabId);
 }
 
-function renderWorkspaceNavigation() {
-  const activeTab = getActiveTab();
-  const webview = getActiveWebview();
-  if (document.activeElement !== elements.workspaceAddress) {
-    elements.workspaceAddress.value = activeTab?.url || '';
-  }
-  elements.workspaceBack.disabled = !webview?.canGoBack?.();
-  elements.workspaceForward.disabled = !webview?.canGoForward?.();
-  elements.workspaceReload.disabled = !webview;
-}
-
 function renderTaskPages() {
   if (!elements.taskPageList) return;
   const pages = workspacePages();
-
-  const cards = pages.map((entry) => {
-    const tab = entry.tab;
-    const card = document.createElement('button');
-    card.type = 'button';
-    card.className = 'agent-task-page';
-    card.dataset.rendererTabId = String(entry.rendererTabId);
-    card.classList.toggle('viewing', tab.isActive === true);
-    card.classList.toggle('agent-active', entry.agentActive === true);
-    card.title = [
-      tab.title || 'New tab',
-      taskPageLocation(tab.url),
-      ...(entry.agentActive ? ['Agent active'] : []),
-      ...(tab.isLoading ? ['Loading'] : []),
-    ].join(' — ');
-    card.setAttribute('aria-label', card.title);
-    card.appendChild(taskPageIcon(tab));
-
-    const copy = document.createElement('span');
-    copy.className = 'agent-task-page-copy';
-    const title = document.createElement('span');
-    title.className = 'agent-task-page-title';
-    title.textContent = tab.title || 'New tab';
-    const location = document.createElement('span');
-    location.className = 'agent-task-page-location';
-    location.textContent = taskPageLocation(tab.url);
-    copy.appendChild(title);
-    copy.appendChild(location);
-
-    const badges = document.createElement('span');
-    badges.className = 'agent-task-page-badges';
-    const badgeLabels = [
-      ...(entry.startsHere ? ['Starts here'] : []),
-      ...(entry.agentActive ? ['Agent active'] : []),
-      ...(tab.isActive ? ['Viewing'] : []),
-      ...(tab.isLoading ? ['Loading'] : []),
-    ];
-    badgeLabels.forEach((label) => {
-      const badge = document.createElement('span');
-      badge.className = 'agent-task-page-badge';
-      badge.classList.toggle('active', label === 'Agent active');
-      badge.textContent = label;
-      badges.appendChild(badge);
+  if (agentFirstMode) {
+    setTabStripProjection({
+      container: elements.taskPageList,
+      tabIds: pages.map((entry) => entry.rendererTabId),
     });
-    if (badgeLabels.length) copy.appendChild(badges);
-    card.appendChild(copy);
-    card.addEventListener('click', () => {
-      switchToTab(entry.rendererTabId);
-    });
-    return card;
-  });
-
-  elements.taskPageList.replaceChildren(...cards);
-  cards
-    .find((card) => card.classList.contains('viewing'))
-    ?.scrollIntoView?.({
-      block: 'nearest',
-      inline: 'nearest',
-    });
+  }
   elements.taskPageCount.textContent = String(pages.length);
   elements.taskPagesEmpty.hidden = pages.length > 0;
   document.body.classList.toggle('agent-workspace-page-empty', pages.length === 0);
   elements.taskPagesNote.textContent = currentConversationId
     ? 'Only pages belonging to this conversation are shown.'
     : 'Agent will start from the page you are currently viewing.';
-  renderWorkspaceNavigation();
 }
 
 function applyWorkspaceProjection(state) {
@@ -390,6 +298,12 @@ async function refreshWorkspaceProjection() {
 
 function setAgentFirstMode(nextMode) {
   agentFirstMode = nextMode === true && panelOpen && agentView === 'workspace';
+  if (agentFirstMode) {
+    setWorkspaceNavigationProjection(elements.workspaceAddressHost);
+  } else {
+    setTabStripProjection();
+    setWorkspaceNavigationProjection();
+  }
   document.body.classList.toggle('agent-first-mode', agentFirstMode);
   document.body.classList.toggle('agent-session-sidebar-closed', !sessionSidebarOpen);
   document.body.classList.toggle('agent-workspace-sidebar-closed', !workspaceSidebarOpen);
@@ -890,6 +804,7 @@ async function cancelProviderLogin() {
 function setRunState(status, label) {
   const active = status !== 'idle';
   currentRunStatus = status;
+  setWorkspaceNavigationEditable(status === 'idle' || status === 'paused');
   elements.run.disabled = active || !elements.prompt.value.trim() || !providerStatus?.configured;
   elements.pause.hidden = status !== 'running';
   elements.pause.disabled = status !== 'running';
@@ -1509,7 +1424,7 @@ export function initAgentUi(options = {}) {
     workspaceBack: byId('agent-workspace-back'),
     workspaceForward: byId('agent-workspace-forward'),
     workspaceReload: byId('agent-workspace-reload'),
-    workspaceAddress: byId('agent-workspace-address'),
+    workspaceAddressHost: byId('agent-workspace-address-host'),
     back: byId('agent-sidebar-back'),
     title: byId('agent-sidebar-title'),
     subtitle: byId('agent-sidebar-subtitle'),
@@ -1565,16 +1480,20 @@ export function initAgentUi(options = {}) {
   };
   if (Object.values(elements).some((element) => !element)) return;
   getActiveTab = typeof options.getActiveTab === 'function' ? options.getActiveTab : () => null;
-  getActiveWebview =
-    typeof options.getActiveWebview === 'function' ? options.getActiveWebview : () => null;
   getOpenTabs = typeof options.getOpenTabs === 'function' ? options.getOpenTabs : () => [];
-  navigateWorkspace =
-    typeof options.navigateWorkspace === 'function' ? options.navigateWorkspace : () => {};
-  reloadWorkspace =
-    typeof options.reloadWorkspace === 'function' ? options.reloadWorkspace : () => {};
   switchToTab = typeof options.switchTab === 'function' ? options.switchTab : () => {};
   setAgentControlledTab =
     typeof options.setAgentControlledTab === 'function' ? options.setAgentControlledTab : () => {};
+  setTabStripProjection =
+    typeof options.setTabStripProjection === 'function' ? options.setTabStripProjection : () => {};
+  setWorkspaceNavigationProjection =
+    typeof options.setWorkspaceNavigationProjection === 'function'
+      ? options.setWorkspaceNavigationProjection
+      : () => {};
+  setWorkspaceNavigationEditable =
+    typeof options.setWorkspaceNavigationEditable === 'function'
+      ? options.setWorkspaceNavigationEditable
+      : () => {};
   if (isPrivateWindow()) {
     elements.toggle.classList.add('hidden');
     return;
@@ -1592,21 +1511,6 @@ export function initAgentUi(options = {}) {
   );
   initPaneResizer('session', elements.sessionResizer);
   initPaneResizer('workspace', elements.workspaceResizer);
-  elements.workspaceBack.addEventListener('click', () => {
-    const webview = getActiveWebview();
-    if (webview?.canGoBack?.()) webview.goBack();
-  });
-  elements.workspaceForward.addEventListener('click', () => {
-    const webview = getActiveWebview();
-    if (webview?.canGoForward?.()) webview.goForward();
-  });
-  elements.workspaceReload.addEventListener('click', () => reloadWorkspace());
-  elements.workspaceAddress.addEventListener('focus', () => elements.workspaceAddress.select());
-  elements.workspaceNav.addEventListener('submit', (event) => {
-    event.preventDefault();
-    navigateWorkspace(elements.workspaceAddress.value);
-    elements.workspaceAddress.blur();
-  });
   elements.taskPageList.addEventListener(
     'wheel',
     (event) => {
@@ -1706,6 +1610,7 @@ export function initAgentUi(options = {}) {
   setAgentView('loading');
   renderProviderFields();
   updateSendAvailability();
+  setWorkspaceNavigationEditable(true);
   renderSessionSidebar();
   refreshProvider();
   restoreRunState();

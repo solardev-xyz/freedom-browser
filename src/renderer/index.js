@@ -43,6 +43,7 @@ import {
   closeTab,
   switchTab,
   setAgentControlledTab,
+  setTabStripProjection,
   subscribeTabPresentation,
 } from './lib/tabs.js';
 import {
@@ -54,6 +55,8 @@ import {
   onSettingsChanged,
   setOnHistoryRecorded,
   closeTrustPopover,
+  setAgentWorkspaceNavigationProjection,
+  setAgentWorkspaceNavigationEditable,
 } from './lib/navigation.js';
 import {
   initAutocomplete,
@@ -785,11 +788,11 @@ window.addEventListener('DOMContentLoaded', async () => {
   initTabs(); // Creates first tab and starts loading home page
   initAgentUi({
     getActiveTab,
-    getActiveWebview,
     getOpenTabs,
-    navigateWorkspace: loadTarget,
-    reloadWorkspace: reloadPage,
     setAgentControlledTab,
+    setTabStripProjection,
+    setWorkspaceNavigationProjection: setAgentWorkspaceNavigationProjection,
+    setWorkspaceNavigationEditable: setAgentWorkspaceNavigationEditable,
     subscribeTabPresentation,
     switchTab,
   }); // Embedded Pi agent panel

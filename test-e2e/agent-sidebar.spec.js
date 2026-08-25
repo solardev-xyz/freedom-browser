@@ -139,10 +139,16 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
   await expect(window.locator('[data-test="agent-task-pages"]')).toBeVisible();
   await expect(window.locator('#agent-page-surface .content')).toBeVisible();
   await expect(window.locator('#agent-task-page-count')).toHaveText('1');
-  await expect(window.locator('#agent-task-page-list .agent-task-page')).toHaveCount(1);
+  await expect(window.locator('#agent-task-page-list .tab:not([hidden])')).toHaveCount(1);
   await expect(window.locator('#agent-task-pages-note')).toContainText('currently viewing');
   await expect(window.locator('#agent-workspace-nav')).toBeVisible();
-  await expect(window.locator('#agent-workspace-address')).not.toHaveValue('');
+  await expect(
+    window.locator('#agent-workspace-address-host > .address-bar-container')
+  ).toHaveCount(1);
+  await expect(window.locator('#agent-workspace-address-host #trust-shield')).toHaveCount(1);
+  await expect(window.locator('#agent-workspace-address-host #permission-indicator')).toHaveCount(1);
+  await expect(window.locator('#agent-workspace-address-host #add-bookmark-btn')).toHaveCount(1);
+  await expect(window.locator('#agent-workspace-address-host #address-input')).toHaveValue('');
   const paneOrder = await window.evaluate(() => ({
     sessions: document.querySelector('#agent-session-sidebar').getBoundingClientRect().left,
     conversation: document.querySelector('#agent-sidebar').getBoundingClientRect().left,
@@ -168,7 +174,7 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
       workspace: rect('#agent-page-surface'),
       workspaceContent: rect('#agent-page-surface .content'),
       tabs: rect('#agent-task-pages'),
-      firstTab: rect('#agent-task-page-list .agent-task-page'),
+      firstTab: rect('#agent-task-page-list .tab:not([hidden])'),
       sessionDividerShadow: getComputedStyle(
         document.querySelector('.agent-first-titlebar-left'),
         '::before'
@@ -260,7 +266,7 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
       const background = (selector) =>
         getComputedStyle(document.querySelector(selector)).backgroundColor;
       const browserChrome = background('#agent-workspace-nav');
-      const browserAddress = background('#agent-workspace-address');
+      const browserAddress = background('#agent-workspace-address-host #address-input');
       const titlebarDivider = getComputedStyle(
         document.querySelector('.title-bar')
       ).borderBottomColor;
@@ -273,13 +279,13 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
         browserAddress,
         browserChromeIntensity: intensity(browserChrome),
         browserAddressIntensity: intensity(browserAddress),
-        activeTab: background('.agent-task-page.viewing'),
+        activeTab: background('#agent-task-page-list .tab.active'),
         titlebarDivider,
         workspaceDivider: getComputedStyle(document.querySelector('#agent-page-surface'))
           .borderLeftColor,
         navigationDivider: getComputedStyle(document.querySelector('#agent-workspace-nav'))
           .borderBottomColor,
-        activeTabDivider: getComputedStyle(document.querySelector('.agent-task-page.viewing'))
+        activeTabDivider: getComputedStyle(document.querySelector('#agent-task-page-list .tab.active'))
           .borderTopColor,
         composerBorder: getComputedStyle(document.querySelector('.agent-composer')).borderTopColor,
       };
@@ -393,6 +399,7 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
   await window.locator('[data-test="agent-first-browser-return"]').click();
   await expect(window.locator('body')).not.toHaveClass(/agent-first-mode/);
   await expect(window.locator('.toolbar')).toBeVisible();
+  await expect(window.locator('#nav-form > .address-bar-container')).toHaveCount(1);
 
   await window.locator('webview:not(.hidden)').waitFor({ state: 'attached' });
   await window.locator('#agent-prompt').fill('Summarize this page');

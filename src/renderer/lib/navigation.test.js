@@ -325,6 +325,7 @@ const loadNavigationModule = async (options = {}) => {
 
   const addressInput = createElement('input');
   const navForm = createElement('form');
+  const addressBarContainer = createElement('div', { classes: ['address-bar-container'] });
   const backBtn = createElement('button');
   const forwardBtn = createElement('button');
   const reloadBtn = createElement('button');
@@ -339,6 +340,16 @@ const loadNavigationModule = async (options = {}) => {
   const trustPopoverContent = createElement('div');
   const trustPopoverContentFields = createElement('div');
   const trustPopoverTooltip = createElement('div');
+  const agentNavForm = createElement('form');
+  const agentAddressHost = createElement('div');
+  const agentBackBtn = createElement('button');
+  const agentForwardBtn = createElement('button');
+  const agentReloadBtn = createElement('button');
+  addressBarContainer.appendChild(trustShield);
+  addressBarContainer.appendChild(trustPopover);
+  addressBarContainer.appendChild(protocolIcon);
+  addressBarContainer.appendChild(addressInput);
+  navForm.appendChild(addressBarContainer);
   const document = createDocument({
     elementsById: {
       'address-input': addressInput,
@@ -356,6 +367,11 @@ const loadNavigationModule = async (options = {}) => {
       'trust-popover-content': trustPopoverContent,
       'trust-popover-content-fields': trustPopoverContentFields,
       'trust-popover-tooltip': trustPopoverTooltip,
+      'agent-workspace-nav': agentNavForm,
+      'agent-workspace-address-host': agentAddressHost,
+      'agent-workspace-back': agentBackBtn,
+      'agent-workspace-forward': agentForwardBtn,
+      'agent-workspace-reload': agentReloadBtn,
     },
   });
 
@@ -437,6 +453,7 @@ const loadNavigationModule = async (options = {}) => {
     swarmProbeState,
     elements: {
       addressInput,
+      addressBarContainer,
       navForm,
       backBtn,
       forwardBtn,
@@ -447,6 +464,11 @@ const loadNavigationModule = async (options = {}) => {
       trustShield,
       trustPopover,
       trustPopoverContent,
+      agentNavForm,
+      agentAddressHost,
+      agentBackBtn,
+      agentForwardBtn,
+      agentReloadBtn,
     },
   };
 };
@@ -484,12 +506,17 @@ describe('navigation', () => {
       })
     );
     expect(ctx.elements.protocolIcon.getAttribute('data-protocol')).toBe('swarm');
+    ctx.mod.setAgentWorkspaceNavigationProjection(ctx.elements.agentAddressHost);
+    expect(ctx.elements.agentAddressHost.children).toContain(ctx.elements.addressBarContainer);
+    expect(ctx.elements.addressBarContainer.children).toContain(ctx.elements.addressInput);
 
     ctx.elements.backBtn.dispatch('click');
     ctx.elements.forwardBtn.dispatch('click');
+    ctx.elements.agentBackBtn.dispatch('click');
+    ctx.elements.agentForwardBtn.dispatch('click');
 
-    expect(ctx.activeRef.tab.webview.goBack).toHaveBeenCalled();
-    expect(ctx.activeRef.tab.webview.goForward).toHaveBeenCalled();
+    expect(ctx.activeRef.tab.webview.goBack).toHaveBeenCalledTimes(2);
+    expect(ctx.activeRef.tab.webview.goForward).toHaveBeenCalledTimes(2);
 
     ctx.elements.homeBtn.dispatch('click');
 
@@ -497,6 +524,7 @@ describe('navigation', () => {
     expect(ctx.tabsMocks.updateActiveTabTitle).toHaveBeenCalledWith('New Tab');
     expect(ctx.electronAPI.setWindowTitle).toHaveBeenCalledWith('');
     expect(ctx.tabsMocks.updateTabFavicon).toHaveBeenCalledWith(ctx.activeRef.tab.id, null);
+    expect(ctx.elements.addressInput.value).toBe('');
 
     await ctx.mod.toggleBookmarkBar();
     expect(ctx.electronAPI.setBookmarkBarChecked).toHaveBeenLastCalledWith(false);
@@ -574,6 +602,25 @@ describe('navigation', () => {
     expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(
       'file:///app/pages/rad-browser.html?error=disabled'
     );
+  });
+
+  test('makes the shared address bar read-only only while Agent-first owns it', async () => {
+    const ctx = await loadNavigationModule();
+    await ctx.mod.initNavigation();
+
+    ctx.mod.setAgentWorkspaceNavigationProjection(ctx.elements.agentAddressHost);
+    ctx.mod.setAgentWorkspaceNavigationEditable(false);
+
+    expect(ctx.elements.addressInput.readOnly).toBe(true);
+    expect(ctx.elements.addressInput.getAttribute('aria-readonly')).toBe('true');
+
+    ctx.mod.setAgentWorkspaceNavigationEditable(true);
+    expect(ctx.elements.addressInput.readOnly).toBe(false);
+
+    ctx.mod.setAgentWorkspaceNavigationEditable(false);
+    ctx.mod.setAgentWorkspaceNavigationProjection();
+    expect(ctx.elements.navForm.children).toContain(ctx.elements.addressBarContainer);
+    expect(ctx.elements.addressInput.readOnly).toBe(false);
   });
 
   test('processes webview lifecycle events and records history', async () => {
@@ -2001,6 +2048,22 @@ describe('navigation', () => {
       expect(ctx.elements.trustShield.getAttribute('data-trust')).toBe('verified');
       expect(ctx.elements.trustShield.getAttribute('aria-label')).toContain('verified');
       expect(ctx.elements.trustShield.hidden).toBe(false);
+    });
+
+    test('opens the same trust details from Agent-first chrome', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      ctx.mod.setAgentWorkspaceNavigationProjection(ctx.elements.agentAddressHost);
+      ctx.elements.trustPopover.hidden = true;
+      ctx.state.ensTrustByName.set('vitalik.eth', { level: 'verified' });
+      ctx.elements.addressInput.value = 'ens://vitalik.eth';
+      ctx.elements.addressInput.dispatch('input');
+
+      ctx.elements.trustShield.dispatch('click');
+
+      expect(ctx.elements.trustPopover.hidden).toBe(false);
+      expect(ctx.elements.trustShield.getAttribute('aria-expanded')).toBe('true');
+      expect(ctx.elements.agentAddressHost.contains(ctx.elements.trustPopover)).toBe(true);
     });
 
     test('hides for non-ENS URLs', async () => {
