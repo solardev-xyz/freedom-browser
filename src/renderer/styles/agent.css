@@ -504,7 +504,7 @@ body.agent-sidebar-resizing .agent-pane-resizer::after {
 
 .agent-task-page.viewing {
   color: var(--text);
-  background: var(--toolbar);
+  background: var(--agent-browser-chrome, var(--toolbar));
   border-color: var(--border);
 }
 
@@ -515,7 +515,7 @@ body.agent-sidebar-resizing .agent-pane-resizer::after {
   align-items: center;
   gap: 8px;
   padding: 5px 8px;
-  background: var(--bg);
+  background: var(--agent-browser-chrome, var(--bg));
   border-bottom: 1px solid var(--border);
 }
 
@@ -566,7 +566,7 @@ body.agent-sidebar-resizing .agent-pane-resizer::after {
   text-align: center;
   text-overflow: ellipsis;
   white-space: nowrap;
-  background: color-mix(in srgb, var(--toolbar) 82%, var(--bg));
+  background: var(--agent-browser-address, var(--bg));
   border: 1px solid transparent;
   border-radius: 7px;
   outline: 0;
@@ -666,6 +666,8 @@ body.agent-first-mode .title-bar {
 }
 
 body.agent-first-mode {
+  --agent-browser-address: var(--bg);
+  --agent-browser-chrome: color-mix(in srgb, var(--toolbar) 82%, var(--bg));
   --agent-session-sidebar-width: 242px;
   --agent-workspace-sidebar-width: clamp(340px, 32vw, 560px);
 }

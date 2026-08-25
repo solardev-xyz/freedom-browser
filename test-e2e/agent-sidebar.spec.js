@@ -241,11 +241,20 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
     };
     const sample = (theme) => {
       root.setAttribute('data-theme', theme);
+      const background = (selector) =>
+        getComputedStyle(document.querySelector(selector)).backgroundColor;
+      const browserChrome = background('#agent-workspace-nav');
+      const browserAddress = background('#agent-workspace-address');
       return {
         sidebar: intensity(
           getComputedStyle(document.querySelector('#agent-session-sidebar')).backgroundColor
         ),
         main: intensity(getComputedStyle(document.querySelector('#agent-sidebar')).backgroundColor),
+        browserChrome,
+        browserAddress,
+        browserChromeIntensity: intensity(browserChrome),
+        browserAddressIntensity: intensity(browserAddress),
+        activeTab: background('.agent-task-page.viewing'),
       };
     };
     const result = { dark: sample('dark'), light: sample('light') };
@@ -255,6 +264,11 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
   });
   expect(sidebarThemeContrast.dark.sidebar).toBeGreaterThan(sidebarThemeContrast.dark.main);
   expect(sidebarThemeContrast.light.sidebar).toBeLessThan(sidebarThemeContrast.light.main);
+  for (const theme of [sidebarThemeContrast.dark, sidebarThemeContrast.light]) {
+    expect(theme.activeTab).toBe(theme.browserChrome);
+    expect(theme.browserChrome).not.toBe(theme.browserAddress);
+    expect(theme.browserChromeIntensity).toBeGreaterThan(theme.browserAddressIntensity);
+  }
 
   const paneMotion = await window.evaluate(() => ({
     sessions: getComputedStyle(document.querySelector('#agent-session-sidebar')).transitionDuration,
