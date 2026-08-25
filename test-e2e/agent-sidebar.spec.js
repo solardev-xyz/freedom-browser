@@ -258,6 +258,9 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
         getComputedStyle(document.querySelector(selector)).backgroundColor;
       const browserChrome = background('#agent-workspace-nav');
       const browserAddress = background('#agent-workspace-address');
+      const titlebarDivider = getComputedStyle(
+        document.querySelector('.title-bar')
+      ).borderBottomColor;
       return {
         sidebar: intensity(
           getComputedStyle(document.querySelector('#agent-session-sidebar')).backgroundColor
@@ -268,6 +271,13 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
         browserChromeIntensity: intensity(browserChrome),
         browserAddressIntensity: intensity(browserAddress),
         activeTab: background('.agent-task-page.viewing'),
+        titlebarDivider,
+        workspaceDivider: getComputedStyle(document.querySelector('#agent-page-surface'))
+          .borderLeftColor,
+        navigationDivider: getComputedStyle(document.querySelector('#agent-workspace-nav'))
+          .borderBottomColor,
+        activeTabDivider: getComputedStyle(document.querySelector('.agent-task-page.viewing'))
+          .borderTopColor,
       };
     };
     const result = { dark: sample('dark'), light: sample('light') };
@@ -281,6 +291,9 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
     expect(theme.activeTab).toBe(theme.browserChrome);
     expect(theme.browserChrome).not.toBe(theme.browserAddress);
     expect(theme.browserChromeIntensity).toBeGreaterThan(theme.browserAddressIntensity);
+    expect(theme.workspaceDivider).toBe(theme.titlebarDivider);
+    expect(theme.navigationDivider).toBe(theme.titlebarDivider);
+    expect(theme.activeTabDivider).toBe(theme.titlebarDivider);
   }
 
   const paneMotion = await window.evaluate(() => ({
