@@ -1186,25 +1186,25 @@ body.agent-first-mode .agent-composer textarea {
 }
 
 .agent-composer-wrap {
+  --agent-composer-border: var(--agent-divider, color-mix(in srgb, var(--border) 42%, var(--bg)));
+  --agent-composer-surface: color-mix(in srgb, var(--toolbar) 34%, var(--bg));
+
   position: relative;
   padding: 12px 14px 16px;
   background: var(--toolbar);
-  border-top: 1px solid var(--border);
 }
 
 .agent-composer {
   overflow: hidden;
-  background: color-mix(in srgb, var(--toolbar) 34%, var(--bg));
-  border: 1px solid var(--border);
+  background: var(--agent-composer-surface);
+  border: 1px solid var(--agent-composer-border);
   border-radius: 22px;
   box-shadow: 0 8px 24px color-mix(in srgb, black 12%, transparent);
-  transition:
-    border-color 0.15s ease,
-    box-shadow 0.15s ease;
+  transition: box-shadow 0.15s ease;
 }
 
 .agent-composer:focus-within {
-  border-color: color-mix(in srgb, var(--text) 10%, var(--border));
+  border-color: var(--agent-composer-border);
   box-shadow: 0 8px 24px color-mix(in srgb, black 16%, transparent);
 }
 

@@ -119,8 +119,11 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
     return {
       footer: { left: footer.left, right: footer.right },
       controls: controls.map(({ left, right }) => ({ left, right })),
+      separatorWidth: getComputedStyle(document.querySelector('.agent-composer-wrap'))
+        .borderTopWidth,
     };
   });
+  expect(compactComposer.separatorWidth).toBe('0px');
   for (const control of compactComposer.controls) {
     expect(control.left).toBeGreaterThanOrEqual(compactComposer.footer.left);
     expect(control.right).toBeLessThanOrEqual(compactComposer.footer.right);
@@ -278,6 +281,7 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
           .borderBottomColor,
         activeTabDivider: getComputedStyle(document.querySelector('.agent-task-page.viewing'))
           .borderTopColor,
+        composerBorder: getComputedStyle(document.querySelector('.agent-composer')).borderTopColor,
       };
     };
     const result = { dark: sample('dark'), light: sample('light') };
@@ -294,6 +298,7 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
     expect(theme.workspaceDivider).toBe(theme.titlebarDivider);
     expect(theme.navigationDivider).toBe(theme.titlebarDivider);
     expect(theme.activeTabDivider).toBe(theme.titlebarDivider);
+    expect(theme.composerBorder).toBe(theme.titlebarDivider);
   }
 
   const paneMotion = await window.evaluate(() => ({
