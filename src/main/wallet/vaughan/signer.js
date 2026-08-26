@@ -78,8 +78,18 @@ function assertAccountMatches(record, accounts) {
     throw createVaughanError(VAUGHAN_ERROR_CODES.UNAUTHORIZED);
   }
   const actual = Array.isArray(accounts) && accounts[0] ? String(accounts[0]).toLowerCase() : '';
+  if (!actual) {
+    // eth_accounts answered empty: Vaughan is locked or the site grant is
+    // gone (lock/restart). Distinct from an account mismatch — the fix is
+    // reconnecting, not switching accounts.
+    throw createVaughanError(VAUGHAN_ERROR_CODES.NOT_CONNECTED);
+  }
   if (actual !== expected) {
-    throw createVaughanError(VAUGHAN_ERROR_CODES.UNAUTHORIZED);
+    throw createVaughanError(
+      VAUGHAN_ERROR_CODES.UNAUTHORIZED,
+      undefined,
+      "Vaughan's active account differs from the paired account. Switch accounts in Vaughan or re-pair."
+    );
   }
 }
 

@@ -41,9 +41,7 @@ describe('createVaughanBackend', () => {
   });
 
   test('signTransaction maps ethers fields and calls vaughan_signTransaction', async () => {
-    mockRpcRequest
-      .mockResolvedValueOnce([record.address])
-      .mockResolvedValueOnce('0xsignedtx');
+    mockRpcRequest.mockResolvedValueOnce([record.address]).mockResolvedValueOnce('0xsignedtx');
     const backend = createVaughanBackend(record);
     const raw = await backend.signTransaction({
       to: '0x0000000000000000000000000000000000000001',
@@ -83,9 +81,7 @@ describe('createVaughanBackend', () => {
       primaryType: 'Mail',
       message: { contents: 'hi' },
     };
-    mockRpcRequest
-      .mockResolvedValueOnce([record.address])
-      .mockResolvedValueOnce('0x712sig');
+    mockRpcRequest.mockResolvedValueOnce([record.address]).mockResolvedValueOnce('0x712sig');
     const backend = createVaughanBackend(record);
     await expect(backend.signTypedData(typedData)).resolves.toBe('0x712sig');
     expect(mockRpcRequest).toHaveBeenNthCalledWith(
@@ -99,7 +95,47 @@ describe('createVaughanBackend', () => {
   test('rejects when provider account does not match record address', async () => {
     mockRpcRequest.mockResolvedValueOnce(['0x0000000000000000000000000000000000000000']);
     const backend = createVaughanBackend(record);
-    await expect(backend.signMessage('hello')).rejects.toMatchObject({ code: 'VAUGHAN_UNAUTHORIZED' });
+    await expect(backend.signMessage('hello')).rejects.toMatchObject({
+      code: 'VAUGHAN_UNAUTHORIZED',
+    });
+  });
+
+  test('mismatch message points at account switching, not origin rejection', async () => {
+    mockRpcRequest.mockResolvedValueOnce(['0x0000000000000000000000000000000000000000']);
+    const backend = createVaughanBackend(record);
+    await expect(backend.getAddress()).rejects.toMatchObject({
+      code: 'VAUGHAN_UNAUTHORIZED',
+      message: expect.stringContaining('active account differs'),
+    });
+  });
+
+  test('empty eth_accounts maps to NOT_CONNECTED (locked or grant expired)', async () => {
+    mockRpcRequest.mockResolvedValueOnce([]);
+    const backend = createVaughanBackend(record);
+    await expect(backend.getAddress()).rejects.toMatchObject({
+      code: 'VAUGHAN_NOT_CONNECTED',
+      message: expect.stringContaining('locked or this site was disconnected'),
+    });
+  });
+});
+
+describe('mapVaughanError', () => {
+  const { mapVaughanError } = require('./errors');
+
+  test('keeps the server detail for EIP-1193 errors', () => {
+    const err = new Error('wallet is locked; unlock it first');
+    err.eip1193Code = 4100;
+    const mapped = mapVaughanError(err);
+    expect(mapped.code).toBe('VAUGHAN_UNAUTHORIZED');
+    expect(mapped.message).toBe('wallet is locked; unlock it first');
+  });
+
+  test('falls back to the generic message when the server sent none', () => {
+    const err = new Error('');
+    err.eip1193Code = 4100;
+    const mapped = mapVaughanError(err);
+    expect(mapped.code).toBe('VAUGHAN_UNAUTHORIZED');
+    expect(mapped.message).toBe('Vaughan rejected this account or origin.');
   });
 });
 
