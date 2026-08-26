@@ -66,6 +66,8 @@ let agentFirstMode = false;
 let sessionSidebarOpen = true;
 let workspaceSidebarOpen = true;
 let conversationTitle = 'New task';
+let sessionHistory = [];
+let sessionHistoryLoading = false;
 const paneWidths = { session: null, workspace: null };
 const toolRows = new Map();
 const turnViews = new Map();
@@ -162,11 +164,10 @@ function closeComposerPopovers() {
   elements.approvalModeButton.setAttribute('aria-expanded', 'false');
 }
 
-function setApprovalMode(nextMode) {
+function setApprovalMode(nextMode, options = {}) {
   if (
     !Object.hasOwn(APPROVAL_MODE_LABELS, nextMode) ||
-    currentRunStatus !== 'idle' ||
-    currentConversationId
+    (!options.force && (currentRunStatus !== 'idle' || currentConversationId))
   ) {
     return;
   }
@@ -216,16 +217,91 @@ function titleFromPrompt(prompt) {
 function setConversationTitle(nextTitle) {
   conversationTitle = titleFromPrompt(nextTitle);
   elements.agentFirstTitle.textContent = conversationTitle;
-  elements.currentSessionTitle.textContent = conversationTitle;
 }
 
 function renderSessionSidebar() {
-  const hasConversation = Boolean(currentConversationId);
-  elements.currentSession.hidden = !hasConversation;
-  elements.sessionHistoryEmpty.hidden = hasConversation;
+  const rows = sessionHistory.map((session) => {
+    const row = document.createElement('div');
+    row.className = 'agent-session-row';
+    row.dataset.conversationId = session.conversationId;
+    const active = session.conversationId === currentConversationId;
+    row.classList.toggle('active', active);
+
+    const select = document.createElement('button');
+    select.type = 'button';
+    select.className = 'agent-session-select';
+    select.disabled = currentRunStatus !== 'idle';
+    select.setAttribute('aria-current', active ? 'page' : 'false');
+    const title = document.createElement('span');
+    title.textContent = session.title || 'Untitled session';
+    const meta = document.createElement('small');
+    const turnCount = Number.isSafeInteger(session.turnCount) ? session.turnCount : 0;
+    meta.textContent = `${turnCount} ${turnCount === 1 ? 'turn' : 'turns'}${session.status === 'interrupted' ? ' · Interrupted' : ''}`;
+    select.appendChild(title);
+    select.appendChild(meta);
+    select.addEventListener('click', () => openSavedSession(session.conversationId));
+
+    const more = document.createElement('button');
+    more.type = 'button';
+    more.className = 'agent-session-more';
+    more.textContent = '•••';
+    more.title = 'Session options';
+    more.setAttribute('aria-label', `Options for ${session.title || 'session'}`);
+    more.setAttribute('aria-expanded', 'false');
+    more.disabled = currentRunStatus !== 'idle';
+
+    const actions = document.createElement('div');
+    actions.className = 'agent-session-actions';
+    actions.hidden = true;
+    const rename = document.createElement('button');
+    rename.type = 'button';
+    rename.textContent = 'Rename';
+    rename.addEventListener('click', () => renameSavedSession(session));
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'danger';
+    remove.textContent = 'Delete';
+    remove.addEventListener('click', () => deleteSavedSession(session));
+    actions.appendChild(rename);
+    actions.appendChild(remove);
+    more.addEventListener('click', () => {
+      const nextOpen = actions.hidden;
+      for (const menu of elements.sessionList.querySelectorAll('.agent-session-actions')) {
+        menu.hidden = true;
+      }
+      actions.hidden = !nextOpen;
+      more.setAttribute('aria-expanded', String(nextOpen));
+    });
+
+    row.appendChild(select);
+    row.appendChild(more);
+    row.appendChild(actions);
+    return row;
+  });
+  elements.sessionList.replaceChildren(...rows);
+  elements.sessionHistoryEmpty.hidden = sessionHistoryLoading || rows.length > 0;
   elements.sessionNewChat.disabled = currentRunStatus !== 'idle';
   elements.agentFirstTitle.textContent = conversationTitle;
-  elements.currentSessionTitle.textContent = conversationTitle;
+}
+
+async function refreshSessionHistory() {
+  if (sessionHistoryLoading) return;
+  sessionHistoryLoading = true;
+  try {
+    const response = await window.electronAPI.listAgentSessions();
+    if (!response?.ok || !Array.isArray(response.sessions)) return;
+    sessionHistory = response.sessions.filter(
+      (session) =>
+        typeof session?.conversationId === 'string' &&
+        session.conversationId &&
+        typeof session.title === 'string'
+    );
+  } catch {
+    // Keep the last successfully loaded history projection.
+  } finally {
+    sessionHistoryLoading = false;
+    renderSessionSidebar();
+  }
 }
 
 function workspacePages() {
@@ -1069,6 +1145,88 @@ function finishTurnView(runId, event = {}) {
   if (event.status === 'completed') renderAssistantMarkdown(view);
 }
 
+function applyReadyConversationState(state) {
+  if (!state?.conversationId) return false;
+  applyWorkspaceProjection(state);
+  if (Object.hasOwn(APPROVAL_MODE_LABELS, state.approvalMode)) {
+    setApprovalMode(state.approvalMode, { force: true });
+  }
+  currentConversationId = state.conversationId;
+  currentRunId = null;
+  lastFinishedRunId = null;
+  takeoverRequestedRunId = null;
+  conversationRendererTabId = Number.isSafeInteger(state.rendererTabId)
+    ? state.rendererTabId
+    : null;
+  const transcript = Array.isArray(state.transcript) ? state.transcript : [];
+  setConversationTitle(state.title || transcript[0]?.userText || 'Current task');
+  restoreTranscript(transcript);
+  setAgentControlledTab(null);
+  setRunState('idle', 'Ready');
+  renderTaskPages();
+  renderSessionSidebar();
+  return true;
+}
+
+async function openSavedSession(conversationId) {
+  if (currentRunStatus !== 'idle' || conversationId === currentConversationId) return;
+  setMessage(elements.runMessage, 'Opening saved session…');
+  try {
+    const response = await window.electronAPI.openAgentSession(conversationId);
+    if (!response?.ok || !applyReadyConversationState(response.state)) {
+      setMessage(
+        elements.runMessage,
+        responseMessage(response, 'Could not open the saved session'),
+        true
+      );
+      return;
+    }
+    setMessage(elements.runMessage, 'Saved conversation restored. Agent will inspect a fresh page before continuing.');
+    elements.prompt.focus();
+    void refreshSessionHistory();
+  } catch {
+    setMessage(elements.runMessage, 'Could not open the saved session', true);
+  }
+}
+
+async function renameSavedSession(session) {
+  if (currentRunStatus !== 'idle') return;
+  const title = window.prompt('Rename session', session.title || '');
+  if (title === null || !title.trim() || title.trim() === session.title) return;
+  try {
+    const response = await window.electronAPI.renameAgentSession(
+      session.conversationId,
+      title.trim()
+    );
+    if (!response?.ok) {
+      setMessage(elements.runMessage, responseMessage(response, 'Could not rename session'), true);
+      return;
+    }
+    if (session.conversationId === currentConversationId) {
+      setConversationTitle(response.session?.title || title.trim());
+    }
+    await refreshSessionHistory();
+  } catch {
+    setMessage(elements.runMessage, 'Could not rename session', true);
+  }
+}
+
+async function deleteSavedSession(session) {
+  if (currentRunStatus !== 'idle') return;
+  if (!window.confirm(`Delete “${session.title}”? This cannot be undone.`)) return;
+  try {
+    const response = await window.electronAPI.deleteAgentSession(session.conversationId);
+    if (!response?.ok) {
+      setMessage(elements.runMessage, responseMessage(response, 'Could not delete session'), true);
+      return;
+    }
+    if (session.conversationId === currentConversationId) applyConversationCleared();
+    await refreshSessionHistory();
+  } catch {
+    setMessage(elements.runMessage, 'Could not delete session', true);
+  }
+}
+
 function applyConversationCleared() {
   currentConversationId = null;
   conversationRendererTabId = null;
@@ -1083,6 +1241,7 @@ function applyConversationCleared() {
   resetConversationUi();
   setRunState('idle', 'Idle');
   renderSessionSidebar();
+  void refreshSessionHistory();
 }
 
 function handleAgentEvent(event) {
@@ -1123,6 +1282,7 @@ function handleAgentEvent(event) {
       elements.runMessage,
       'Agent stays attached to this tab if you switch tabs. Choose Take over to stop it.'
     );
+    void refreshSessionHistory();
     return;
   }
   if (!currentRunId) return;
@@ -1191,6 +1351,7 @@ function handleAgentEvent(event) {
     clearApproval();
     setAgentControlledTab(null);
     void refreshWorkspaceProjection();
+    void refreshSessionHistory();
   }
 }
 
@@ -1201,7 +1362,9 @@ async function startRun() {
     setMessage(elements.runMessage, 'Describe what you want the agent to do', true);
     return;
   }
-  const rendererTabId = currentConversationId ? conversationRendererTabId : tab?.id;
+  const rendererTabId = currentConversationId
+    ? conversationRendererTabId || tab?.id
+    : tab?.id;
   if (!Number.isSafeInteger(rendererTabId) || rendererTabId < 1) {
     setMessage(elements.runMessage, 'The current tab is not ready for the agent', true);
     return;
@@ -1210,7 +1373,7 @@ async function startRun() {
   if (startsConversation) setConversationTitle(prompt);
   pendingPromptText = prompt;
   elements.prompt.value = '';
-  if (!currentConversationId) conversationRendererTabId = rendererTabId;
+  if (!conversationRendererTabId) conversationRendererTabId = rendererTabId;
   setAgentControlledTab(conversationRendererTabId);
   setRunState('starting', 'Starting');
   setMessage(elements.runMessage);
@@ -1232,6 +1395,7 @@ async function startRun() {
     currentConversationId = response.conversationId || currentConversationId;
     void refreshWorkspaceProjection();
     pendingPromptText = '';
+    void refreshSessionHistory();
     if (lastFinishedRunId !== response.runId) {
       currentRunId = response.runId;
       setRunState('running', 'Running');
@@ -1356,17 +1520,7 @@ async function restoreRunState() {
     const state = response?.ok ? response.state : null;
     applyWorkspaceProjection(state);
     if (!state?.conversationId) return;
-    if (Object.hasOwn(APPROVAL_MODE_LABELS, state.approvalMode)) {
-      setApprovalMode(state.approvalMode);
-    }
-    currentConversationId = state.conversationId;
-    const restoredTranscript = Array.isArray(state.transcript) ? state.transcript : [];
-    setConversationTitle(restoredTranscript[0]?.userText || 'Current task');
-    renderTaskPages();
-    conversationRendererTabId = Number.isSafeInteger(state.rendererTabId)
-      ? state.rendererTabId
-      : null;
-    restoreTranscript(restoredTranscript);
+    applyReadyConversationState(state);
 
     if (state.runId && state.status !== 'ready') {
       currentRunId = state.runId;
@@ -1412,8 +1566,7 @@ export function initAgentUi(options = {}) {
     pageSurface: byId('agent-page-surface'),
     workspaceResizer: byId('agent-workspace-resizer'),
     sessionNewChat: byId('agent-session-new-chat'),
-    currentSession: byId('agent-current-session'),
-    currentSessionTitle: byId('agent-current-session-title'),
+    sessionList: byId('agent-session-list'),
     sessionHistoryEmpty: byId('agent-session-history-empty'),
     taskPages: byId('agent-task-pages'),
     taskPageCount: byId('agent-task-page-count'),
@@ -1523,7 +1676,6 @@ export function initAgentUi(options = {}) {
     { passive: false }
   );
   elements.sessionNewChat.addEventListener('click', startNewSessionFromSidebar);
-  elements.currentSession.addEventListener('click', () => elements.prompt.focus());
   elements.back.addEventListener('click', () => setAgentView('workspace'));
   elements.provider.addEventListener('change', renderProviderFields);
   elements.saveProvider.addEventListener('click', saveProvider);
@@ -1614,6 +1766,7 @@ export function initAgentUi(options = {}) {
   renderSessionSidebar();
   refreshProvider();
   restoreRunState();
+  void refreshSessionHistory();
 }
 
 export { formatOperation, handleAgentEvent, providerPrivacyMessage, responseMessage };

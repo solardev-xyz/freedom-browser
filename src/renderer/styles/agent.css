@@ -353,24 +353,44 @@
   text-transform: uppercase;
 }
 
-.agent-current-session {
+.agent-session-list {
   display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.agent-session-row {
+  position: relative;
+  display: flex;
+  align-items: center;
   width: 100%;
+  gap: 2px;
+  border-radius: 8px;
+}
+
+.agent-session-row.active {
+  background: rgba(255, 255, 255, 0.075);
+}
+
+.agent-session-select {
+  display: flex;
+  min-width: 0;
+  flex: 1;
   flex-direction: column;
   gap: 3px;
-  padding: 9px 10px;
+  padding: 9px 8px 9px 10px;
   color: var(--text);
   text-align: left;
-  background: rgba(255, 255, 255, 0.075);
+  background: transparent;
   border: 0;
   border-radius: 8px;
 }
 
-.agent-current-session[hidden] {
-  display: none;
+.agent-session-row:not(.active) .agent-session-select:hover {
+  background: rgba(255, 255, 255, 0.05);
 }
 
-.agent-current-session span {
+.agent-session-select span {
   overflow: hidden;
   font-size: 11px;
   font-weight: 600;
@@ -378,11 +398,70 @@
   white-space: nowrap;
 }
 
-.agent-current-session small,
+.agent-session-select small,
 .agent-session-history-empty,
 .agent-session-history-note {
   color: var(--muted);
   font-size: 9px;
+}
+
+.agent-session-more {
+  display: flex;
+  width: 25px;
+  height: 25px;
+  flex: 0 0 25px;
+  align-items: center;
+  justify-content: center;
+  margin-right: 4px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+}
+
+.agent-session-more:hover,
+.agent-session-more[aria-expanded='true'] {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.agent-session-actions {
+  position: absolute;
+  top: calc(100% - 3px);
+  right: 4px;
+  z-index: 30;
+  display: flex;
+  min-width: 112px;
+  flex-direction: column;
+  padding: 4px;
+  background: var(--toolbar);
+  border: 1px solid var(--agent-divider, var(--border));
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+}
+
+.agent-session-actions[hidden] {
+  display: none;
+}
+
+.agent-session-actions button {
+  padding: 6px 8px;
+  color: var(--text);
+  font-size: 10px;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+}
+
+.agent-session-actions button:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.agent-session-actions .danger {
+  color: var(--danger, #f06f6f);
 }
 
 .agent-session-history-empty {

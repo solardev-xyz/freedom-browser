@@ -1,4 +1,8 @@
 const { test, expect } = require('./fixtures');
+const { _electron: electron } = require('@playwright/test');
+const path = require('path');
+
+const repositoryRoot = path.resolve(__dirname, '..');
 
 test('Agent, wallet, and menu actions remain on the address-bar row', async ({ window }) => {
   const geometry = await window.evaluate(() => {
@@ -23,6 +27,7 @@ test('Agent, wallet, and menu actions remain on the address-bar row', async ({ w
 });
 
 test('Agent sidebar configures hosted and local models and reports the run lifecycle', async ({
+  electronApp,
   window,
 }) => {
   const toggle = window.locator('[data-test="agent-toggle-btn"]');
@@ -430,4 +435,41 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
   await expect(window.locator('#agent-transcript')).toBeHidden();
   await expect(window.locator('#agent-model-menu-button')).toBeEnabled();
   await expect(window.locator('#agent-approval-mode-button')).toBeEnabled();
+
+  await window.locator('[data-test="agent-first-toggle"]').click();
+  await expect(window.locator('#agent-session-list .agent-session-row')).toHaveCount(1);
+  await expect(window.locator('#agent-session-list')).toContainText('Summarize this page');
+  await window.locator('#agent-session-list .agent-session-select').click();
+  await expect(window.locator('.agent-user-message')).toHaveText('Summarize this page');
+  await expect(window.locator('#agent-task-page-count')).toHaveText('0');
+  await expect(window.locator('#agent-run-message')).toContainText('fresh page');
+
+  const userDataDir = await electronApp.evaluate(({ app }) => app.getPath('userData'));
+  await electronApp.close();
+  const reopened = await electron.launch({
+    args: ['.'],
+    cwd: repositoryRoot,
+    env: {
+      ...process.env,
+      FREEDOM_TEST_MODE: '1',
+      FREEDOM_TEST_USER_DATA: userDataDir,
+      ELECTRON_DISABLE_SECURITY_WARNINGS: 'true',
+      LANG: 'en_US.UTF-8',
+    },
+    timeout: 20_000,
+  });
+  try {
+    const reopenedWindow = await reopened.firstWindow();
+    await reopenedWindow.waitForLoadState('domcontentloaded');
+    await reopenedWindow.waitForSelector('[data-test="address-input"]', { state: 'visible' });
+    await reopenedWindow.locator('[data-test="agent-toggle-btn"]').click();
+    await reopenedWindow.locator('[data-test="agent-first-toggle"]').click();
+    await expect(reopenedWindow.locator('#agent-session-list .agent-session-row')).toHaveCount(1);
+    await expect(reopenedWindow.locator('#agent-session-list')).toContainText('Summarize this page');
+    await reopenedWindow.locator('#agent-session-list .agent-session-select').click();
+    await expect(reopenedWindow.locator('.agent-user-message')).toHaveText('Summarize this page');
+    await expect(reopenedWindow.locator('#agent-task-page-count')).toHaveText('0');
+  } finally {
+    await reopened.close();
+  }
 });

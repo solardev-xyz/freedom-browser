@@ -21,8 +21,7 @@ function createAgentElements() {
     'agent-page-surface',
     'agent-workspace-resizer',
     'agent-session-new-chat',
-    'agent-current-session',
-    'agent-current-session-title',
+    'agent-session-list',
     'agent-session-history-empty',
     'agent-task-pages',
     'agent-task-page-count',
@@ -108,8 +107,7 @@ function createAgentElements() {
   });
   elements['agent-workspace-resizer'] = createElement('div');
   elements['agent-session-new-chat'] = createElement('button');
-  elements['agent-current-session'] = createElement('button');
-  elements['agent-current-session'].hidden = true;
+  elements['agent-session-list'] = createElement('div');
   elements['agent-session-history-empty'] = createElement('div');
   elements['agent-task-pages'] = createElement('aside');
   elements['agent-task-pages'].hidden = true;
@@ -227,6 +225,10 @@ async function loadAgentUi(options = {}) {
       conversationId: 'conversation_test',
     }),
     clearAgentConversation: jest.fn().mockResolvedValue({ ok: true, cleared: true }),
+    listAgentSessions: jest.fn().mockResolvedValue({ ok: true, sessions: [] }),
+    openAgentSession: jest.fn(),
+    renameAgentSession: jest.fn(),
+    deleteAgentSession: jest.fn(),
     pauseAgent: jest.fn().mockResolvedValue({ ok: true, paused: true }),
     resumeAgent: jest.fn().mockResolvedValue({ ok: true, resumed: true }),
     stopAgent: jest.fn().mockResolvedValue({ ok: true, stopped: true }),
@@ -245,6 +247,7 @@ async function loadAgentUi(options = {}) {
   global.window = {
     electronAPI,
     confirm: jest.fn(() => true),
+    prompt: jest.fn(() => null),
     innerWidth: 1280,
     ...(options.windowGlobals || {}),
   };
@@ -629,6 +632,112 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-new-chat'].hidden).toBe(false);
   });
 
+  test('opens a saved session and continues it from the current page with fresh authority', async () => {
+    const sessions = [
+      {
+        conversationId: 'conversation_saved',
+        title: 'Saved comparison',
+        status: 'ready',
+        turnCount: 1,
+      },
+    ];
+    const ctx = await loadAgentUi({
+      electronAPI: {
+        listAgentSessions: jest.fn().mockResolvedValue({ ok: true, sessions }),
+        openAgentSession: jest.fn().mockResolvedValue({
+          ok: true,
+          state: {
+            status: 'ready',
+            conversationId: 'conversation_saved',
+            title: 'Saved comparison',
+            approvalMode: 'every_interaction',
+            runtimeAvailable: false,
+            transcript: [
+              {
+                runId: 'run_saved',
+                userText: 'Compare these pages',
+                assistantText: 'The first one is newer.',
+                status: 'completed',
+                activity: [],
+              },
+            ],
+            taskTabs: [],
+          },
+        }),
+        startAgent: jest.fn().mockResolvedValue({
+          ok: true,
+          runId: 'run_followup',
+          conversationId: 'conversation_saved',
+        }),
+      },
+    });
+
+    const row = ctx.elements['agent-session-list'].children[0];
+    row.children[0].dispatch('click');
+    await flush();
+
+    expect(ctx.electronAPI.openAgentSession).toHaveBeenCalledWith('conversation_saved');
+    expect(ctx.elements['agent-first-title'].textContent).toBe('Saved comparison');
+    expect(ctx.elements['agent-transcript'].querySelector('.agent-user-message').textContent).toBe(
+      'Compare these pages'
+    );
+    expect(ctx.elements['agent-run-message'].textContent).toContain('fresh page');
+
+    ctx.elements['agent-prompt'].value = 'Now compare their authors';
+    ctx.elements['agent-prompt'].dispatch('input');
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+
+    expect(ctx.electronAPI.startAgent).toHaveBeenCalledWith(
+      7,
+      'Now compare their authors',
+      'every_interaction'
+    );
+  });
+
+  test('renames and deletes saved sessions from their sidebar menu', async () => {
+    const sessions = [
+      {
+        conversationId: 'conversation_saved',
+        title: 'Original title',
+        status: 'ready',
+        turnCount: 2,
+      },
+    ];
+    const ctx = await loadAgentUi({
+      electronAPI: {
+        listAgentSessions: jest.fn().mockResolvedValue({ ok: true, sessions }),
+        renameAgentSession: jest.fn().mockResolvedValue({
+          ok: true,
+          session: { ...sessions[0], title: 'Renamed title' },
+        }),
+        deleteAgentSession: jest.fn().mockResolvedValue({ ok: true, deleted: true }),
+      },
+      windowGlobals: {
+        prompt: jest.fn(() => 'Renamed title'),
+        confirm: jest.fn(() => true),
+      },
+    });
+
+    let row = ctx.elements['agent-session-list'].children[0];
+    row.children[1].dispatch('click');
+    row.children[2].children[0].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.renameAgentSession).toHaveBeenCalledWith(
+      'conversation_saved',
+      'Renamed title'
+    );
+
+    row = ctx.elements['agent-session-list'].children[0];
+    row.children[1].dispatch('click');
+    row.children[2].children[1].dispatch('click');
+    await flush();
+    expect(global.window.confirm).toHaveBeenCalledWith(
+      'Delete “Original title”? This cannot be undone.'
+    );
+    expect(ctx.electronAPI.deleteAgentSession).toHaveBeenCalledWith('conversation_saved');
+  });
+
   test('uses a collapsible three-pane shell and inspects owned pages without leaving Agent-first', async () => {
     const getOpenTabs = () => [
       {
@@ -651,6 +760,17 @@ describe('Agent UI', () => {
     const ctx = await loadAgentUi({
       getOpenTabs,
       electronAPI: {
+        listAgentSessions: jest.fn().mockResolvedValue({
+          ok: true,
+          sessions: [
+            {
+              conversationId: 'conversation_restored',
+              title: 'Compare agent definitions',
+              status: 'ready',
+              turnCount: 1,
+            },
+          ],
+        }),
         getAgentState: jest.fn().mockResolvedValue({
           ok: true,
           state: {
@@ -683,7 +803,10 @@ describe('Agent UI', () => {
     expect(ctx.document.body.classList.contains('agent-first-mode')).toBe(true);
     expect(ctx.elements['agent-first-titlebar'].hidden).toBe(false);
     expect(ctx.elements['agent-session-sidebar'].hidden).toBe(false);
-    expect(ctx.elements['agent-current-session'].hidden).toBe(false);
+    expect(ctx.elements['agent-session-list'].children).toHaveLength(1);
+    expect(
+      ctx.elements['agent-session-list'].children[0].classList.contains('active')
+    ).toBe(true);
     expect(ctx.elements['agent-first-title'].textContent).toBe('Compare agent definitions');
     expect(ctx.elements['agent-task-pages'].hidden).toBe(false);
     expect(ctx.elements['agent-task-page-count'].textContent).toBe('1');
@@ -1080,6 +1203,7 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-toggle-btn'].classList.contains('hidden')).toBe(true);
     expect(ctx.electronAPI.getAgentProviderStatus).not.toHaveBeenCalled();
     expect(ctx.electronAPI.getAgentProviderCatalog).not.toHaveBeenCalled();
+    expect(ctx.electronAPI.listAgentSessions).not.toHaveBeenCalled();
     expect(ctx.electronAPI.onAgentEvent).not.toHaveBeenCalled();
     expect(ctx.electronAPI.onAgentProviderAuthEvent).not.toHaveBeenCalled();
   });

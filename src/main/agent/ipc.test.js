@@ -284,6 +284,9 @@ describe('Freedom agent IPC', () => {
     expect(service.openConversation).toHaveBeenCalledWith('conversation_saved');
     expect(ctx.automationTabIdForRenderer).not.toHaveBeenCalled();
     expect(ctx.resolveModel).not.toHaveBeenCalled();
+    expect(
+      ctx.ipcMain.handlers.get(IPC.AGENT_HISTORY_LIST)({ sender: ctx.otherSender })
+    ).toMatchObject({ ok: false, error: { code: AGENT_IPC_ERROR_CODES.NOT_OWNER } });
   });
 
   test('creates fresh browser authority when continuing a dormant saved session', async () => {

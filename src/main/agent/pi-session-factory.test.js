@@ -153,7 +153,7 @@ describe('isolated Pi session factory', () => {
     expect(VIRTUAL_AGENT_CWD).not.toContain(repositoryRoot);
   });
 
-  test('creates a real Pi session with no tools, discovery, or persistence', () => {
+  test('creates a real Pi session with restored visible context and no hidden persistence', () => {
     const script = `
       (async () => {
         const crypto = require('crypto');
@@ -170,10 +170,25 @@ describe('isolated Pi session factory', () => {
           refreshOnCreate: false,
         });
         const model = modelRuntime.getModels('anthropic')[0];
-        const created = await createIsolatedPiSession({ sdk, model, modelRuntime });
+        const created = await createIsolatedPiSession({
+          sdk,
+          model,
+          modelRuntime,
+          restoredTranscript: [{
+            userText: 'Find the release date',
+            assistantText: 'The visible page said August 25.',
+            startedAt: 1000,
+            durationMs: 250,
+            activity: [{ operation: 'browser_snapshot', secret: 'must-not-survive' }],
+          }],
+        });
         const result = {
           tools: created.session.agent.state.tools.map((tool) => tool.name),
           prompt: created.session.agent.state.systemPrompt,
+          messages: created.session.agent.state.messages.map((message) => ({
+            role: message.role,
+            content: message.content,
+          })),
           extensions: created.extensionsResult.extensions.length,
           sessionFile: created.session.sessionFile || null,
           skills: created.resourceLoader.getSkills().skills.length,
@@ -196,6 +211,13 @@ describe('isolated Pi session factory', () => {
     expect(result).toEqual({
       tools: [],
       prompt: `${DEFAULT_FREEDOM_AGENT_SYSTEM_PROMPT}\nCurrent working directory: ${VIRTUAL_AGENT_CWD}\n`,
+      messages: [
+        { role: 'user', content: 'Find the release date' },
+        {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'The visible page said August 25.' }],
+        },
+      ],
       extensions: 0,
       sessionFile: null,
       skills: 0,
