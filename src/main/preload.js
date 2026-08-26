@@ -168,6 +168,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('agent:approval:decide', { runId, approvalId, approved }),
   getAgentState: () => ipcRenderer.invoke('agent:get-state'),
   clearAgentConversation: () => ipcRenderer.invoke('agent:clear-conversation'),
+  listAgentSessions: () => ipcRenderer.invoke('agent:history:list'),
+  openAgentSession: (conversationId) =>
+    ipcRenderer.invoke('agent:history:open', { conversationId }),
+  renameAgentSession: (conversationId, title) =>
+    ipcRenderer.invoke('agent:history:rename', { conversationId, title }),
+  deleteAgentSession: (conversationId) =>
+    ipcRenderer.invoke('agent:history:delete', { conversationId }),
   getAgentProviderStatus: () => ipcRenderer.invoke('agent:provider:get-status'),
   getAgentProviderCatalog: () => ipcRenderer.invoke('agent:provider:get-catalog'),
   configureHostedAgentProvider: (providerId, modelId, apiKey) =>

@@ -80,6 +80,19 @@ function startOptions(overrides = {}) {
   };
 }
 
+function createHistoryStore(overrides = {}) {
+  return {
+    createSession: jest.fn(),
+    startTurn: jest.fn(),
+    finishTurn: jest.fn(),
+    listSessions: jest.fn(() => []),
+    getSession: jest.fn(() => null),
+    renameSession: jest.fn(() => null),
+    deleteSession: jest.fn(() => false),
+    ...overrides,
+  };
+}
+
 describe('FreedomAgentService', () => {
   test('builds one isolated run and emits normalized lifecycle events', async () => {
     const fake = createFakeSession();
@@ -351,6 +364,141 @@ describe('FreedomAgentService', () => {
       type: 'conversation_cleared',
       conversationId: 'conversation_test',
     });
+  });
+
+  test('persists the visible conversation lifecycle without raw Pi events', async () => {
+    const fake = createFakeSession();
+    const historyStore = createHistoryStore();
+    const { service } = createService(fake, { historyStore });
+
+    await service.start(startOptions({ prompt: 'Research this page' }));
+    fake.emit({
+      type: 'tool_execution_start',
+      toolCallId: 'call_1',
+      toolName: 'browser_snapshot',
+      args: { pageContents: 'not persisted' },
+    });
+    fake.emit({
+      type: 'message_update',
+      assistantMessageEvent: { type: 'text_delta', delta: 'Finished.' },
+    });
+    fake.prompt.resolve();
+    await service.waitForIdle();
+
+    expect(historyStore.createSession).toHaveBeenCalledWith({
+      conversationId: 'conversation_test',
+      title: 'Research this page',
+      approvalMode: 'every_interaction',
+      providerId: 'test',
+      modelId: 'model_test',
+      thinkingLevel: undefined,
+      createdAt: 1_000,
+    });
+    expect(historyStore.startTurn).toHaveBeenCalledWith({
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      position: 0,
+      userText: 'Research this page',
+      startedAt: 1_000,
+    });
+    expect(historyStore.finishTurn).toHaveBeenCalledWith({
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      assistantText: 'Finished.',
+      status: 'completed',
+      durationMs: 0,
+      activity: [
+        {
+          toolCallId: 'call_1',
+          operation: 'browser_snapshot',
+          status: 'running',
+        },
+      ],
+      error: undefined,
+    });
+    expect(JSON.stringify(historyStore.finishTurn.mock.calls)).not.toContain(
+      'pageContents'
+    );
+  });
+
+  test('opens a stored conversation dormant and rebuilds safe Pi context on follow-up', async () => {
+    const fake = createFakeSession();
+    const stored = {
+      conversationId: 'conversation_saved',
+      title: 'Saved research',
+      approvalMode: 'every_interaction',
+      transcript: [
+        {
+          runId: 'run_saved',
+          userText: 'Research this topic',
+          assistantText: 'I found three sources.',
+          status: 'completed',
+          startedAt: 500,
+          durationMs: 200,
+          activity: [],
+        },
+      ],
+    };
+    const historyStore = createHistoryStore({
+      getSession: jest.fn(() => stored),
+    });
+    const { service, dependencies } = createService(fake, {
+      historyStore,
+      runIdFactory: jest.fn(() => 'run_followup'),
+    });
+
+    await expect(service.openConversation('conversation_saved')).resolves.toMatchObject({
+      status: 'ready',
+      conversationId: 'conversation_saved',
+      title: 'Saved research',
+      runtimeAvailable: false,
+      transcript: [expect.objectContaining({ runId: 'run_saved' })],
+    });
+    expect(service.getWorkspaceState()).toEqual({ tabIds: [], activeTabId: null });
+
+    await service.start(
+      startOptions({ prompt: 'Continue from there', tabId: 'tab_new' })
+    );
+    expect(dependencies.createSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        restoredTranscript: [
+          expect.objectContaining({
+            runId: 'run_saved',
+            userText: 'Research this topic',
+            assistantText: 'I found three sources.',
+          }),
+        ],
+        systemPrompt: expect.stringContaining('restored from Freedom\'s saved session history'),
+      })
+    );
+    expect(historyStore.createSession).not.toHaveBeenCalled();
+    expect(historyStore.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationId: 'conversation_saved',
+        runId: 'run_followup',
+        position: 1,
+      })
+    );
+    fake.prompt.resolve();
+    await service.waitForIdle();
+    expect(service.getState()).toMatchObject({ runtimeAvailable: true });
+  });
+
+  test('lists, renames, and deletes stored conversations while idle', async () => {
+    const fake = createFakeSession();
+    const summary = { conversationId: 'conversation_saved', title: 'Saved' };
+    const historyStore = createHistoryStore({
+      listSessions: jest.fn(() => [summary]),
+      renameSession: jest.fn(() => ({ ...summary, title: 'Renamed' })),
+      deleteSession: jest.fn(() => true),
+    });
+    const { service } = createService(fake, { historyStore });
+
+    expect(service.listConversations()).toEqual([summary]);
+    expect(service.renameConversation('conversation_saved', 'Renamed')).toMatchObject({
+      title: 'Renamed',
+    });
+    await expect(service.deleteConversation('conversation_saved')).resolves.toBe(true);
   });
 
   test('pauses a run for a bounded approval and accepts only its exact decision', async () => {

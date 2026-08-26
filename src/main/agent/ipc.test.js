@@ -36,6 +36,10 @@ function createService(options = {}) {
     resume: options.resume || jest.fn(async () => true),
     stop: options.stop || jest.fn(async () => true),
     clearConversation: options.clearConversation || jest.fn(async () => true),
+    listConversations: options.listConversations || jest.fn(() => []),
+    openConversation: options.openConversation || jest.fn(async () => null),
+    renameConversation: options.renameConversation || jest.fn(() => null),
+    deleteConversation: options.deleteConversation || jest.fn(async () => false),
     decideApproval: options.decideApproval || jest.fn(async () => true),
     getState: jest.fn(() => ({
       status: 'running',
@@ -43,6 +47,7 @@ function createService(options = {}) {
       runId: 'run_test',
       tabId: 'tab_bound',
       transcript: [],
+      runtimeAvailable: options.runtimeAvailable ?? true,
     })),
     getWorkspaceState:
       options.getWorkspaceState ||
@@ -228,6 +233,133 @@ describe('Freedom agent IPC', () => {
     });
     await expect(clear({ sender: ctx.sender })).resolves.toEqual({ ok: true, cleared: true });
     expect(ctx.service.clearConversation).toHaveBeenCalledTimes(1);
+  });
+
+  test('lists and opens saved sessions without granting browser authority', async () => {
+    const sessions = [
+      {
+        conversationId: 'conversation_saved',
+        title: 'Saved task',
+        status: 'ready',
+        turnCount: 2,
+      },
+    ];
+    const service = createService({
+      listConversations: jest.fn(() => sessions),
+      getWorkspaceState: jest.fn(() => ({ tabIds: [], activeTabId: null })),
+      openConversation: jest.fn(async () => ({
+        status: 'ready',
+        conversationId: 'conversation_saved',
+        title: 'Saved task',
+        runtimeAvailable: false,
+        transcript: [],
+      })),
+    });
+    service.getState.mockReturnValue({
+      status: 'ready',
+      conversationId: 'conversation_saved',
+      title: 'Saved task',
+      runtimeAvailable: false,
+      transcript: [],
+    });
+    const ctx = register({ service });
+
+    expect(ctx.ipcMain.handlers.get(IPC.AGENT_HISTORY_LIST)({ sender: ctx.sender })).toEqual({
+      ok: true,
+      sessions,
+    });
+    await expect(
+      ctx.ipcMain.handlers.get(IPC.AGENT_HISTORY_OPEN)(
+        { sender: ctx.sender },
+        { conversationId: 'conversation_saved' }
+      )
+    ).resolves.toMatchObject({
+      ok: true,
+      state: {
+        conversationId: 'conversation_saved',
+        runtimeAvailable: false,
+        taskTabs: [],
+      },
+    });
+    expect(service.openConversation).toHaveBeenCalledWith('conversation_saved');
+    expect(ctx.automationTabIdForRenderer).not.toHaveBeenCalled();
+    expect(ctx.resolveModel).not.toHaveBeenCalled();
+  });
+
+  test('creates fresh browser authority when continuing a dormant saved session', async () => {
+    const service = createService({
+      runtimeAvailable: false,
+      openConversation: jest.fn(async () => ({
+        status: 'ready',
+        conversationId: 'conversation_saved',
+        runtimeAvailable: false,
+        transcript: [],
+      })),
+    });
+    service.start.mockResolvedValue({
+      runId: 'run_followup',
+      conversationId: 'conversation_saved',
+    });
+    service.getState.mockReturnValue({
+      status: 'ready',
+      conversationId: 'conversation_saved',
+      runtimeAvailable: false,
+      transcript: [],
+    });
+    const ctx = register({ service });
+    await ctx.ipcMain.handlers.get(IPC.AGENT_HISTORY_OPEN)(
+      { sender: ctx.sender },
+      { conversationId: 'conversation_saved' }
+    );
+
+    await expect(
+      ctx.ipcMain.handlers.get(IPC.AGENT_START)(
+        { sender: ctx.sender },
+        { rendererTabId: 7, prompt: 'Continue it', approvalMode: 'every_interaction' }
+      )
+    ).resolves.toEqual({
+      ok: true,
+      runId: 'run_followup',
+      conversationId: 'conversation_saved',
+    });
+    expect(ctx.automationTabIdForRenderer).toHaveBeenCalledWith(ctx.sender, 7);
+    expect(ctx.resolveModel).toHaveBeenCalledTimes(1);
+    expect(service.start).toHaveBeenCalledWith({
+      prompt: 'Continue it',
+      approvalMode: 'every_interaction',
+      tabId: 'tab_bound',
+      createWorkspacePage: expect.any(Function),
+      model: { id: 'model_test' },
+      modelRuntime: { kind: 'runtime' },
+      thinkingLevel: 'low',
+    });
+  });
+
+  test('renames and permanently deletes saved sessions through trusted chrome only', async () => {
+    const service = createService({
+      renameConversation: jest.fn(() => ({
+        conversationId: 'conversation_saved',
+        title: 'Renamed task',
+      })),
+      deleteConversation: jest.fn(async () => true),
+    });
+    const ctx = register({ service });
+    const rename = ctx.ipcMain.handlers.get(IPC.AGENT_HISTORY_RENAME);
+    const remove = ctx.ipcMain.handlers.get(IPC.AGENT_HISTORY_DELETE);
+
+    expect(
+      rename(
+        { sender: ctx.sender },
+        { conversationId: 'conversation_saved', title: 'Renamed task' }
+      )
+    ).toMatchObject({ ok: true, session: { title: 'Renamed task' } });
+    await expect(
+      remove({ sender: ctx.sender }, { conversationId: 'conversation_saved' })
+    ).resolves.toEqual({ ok: true, deleted: true });
+    await expect(
+      remove({ sender: ctx.otherSender }, { conversationId: 'conversation_saved' })
+    ).resolves.toMatchObject({ ok: false, error: { code: AGENT_IPC_ERROR_CODES.NOT_OWNER } });
+    expect(service.deleteConversation).toHaveBeenCalledTimes(1);
   });
 
   test('rejects untrusted chrome before resolving its tab', async () => {
@@ -428,6 +560,7 @@ describe('Freedom agent IPC', () => {
         runId: 'run_test',
         tabId: 'tab_bound',
         transcript: [],
+        runtimeAvailable: true,
         rendererTabId: 7,
         taskTabs: [{ rendererTabId: 7, agentActive: true }],
       },

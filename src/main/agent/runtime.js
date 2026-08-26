@@ -4,6 +4,7 @@ const { FreedomAgentService } = require('./freedom-agent-service');
 const { registerFreedomAgentIpc } = require('./ipc');
 const { AgentProviderResolver } = require('./provider-resolver');
 const { AgentProviderStore } = require('./provider-store');
+const { AgentSessionHistoryStore } = require('./session-history-store');
 
 function createFreedomAgentRuntime(options = {}) {
   const providerStore = new AgentProviderStore({
@@ -16,9 +17,14 @@ function createFreedomAgentRuntime(options = {}) {
     store: providerStore,
     dataDir: options.dataDir,
   });
+  const historyStore = new AgentSessionHistoryStore({
+    userDataDir: options.profile?.userDataDir,
+  });
+  historyStore.markStaleRunningAsInterrupted();
   const service = new FreedomAgentService({
     controller: options.controller,
     subscribeTabLifecycle: options.subscribeTabLifecycle,
+    historyStore,
   });
   const unregisterIpc = registerFreedomAgentIpc({
     ipcMain: options.ipcMain,
@@ -35,10 +41,12 @@ function createFreedomAgentRuntime(options = {}) {
   return {
     providerStore,
     providerResolver,
+    historyStore,
     service,
     async dispose() {
       await unregisterIpc();
       await service.dispose();
+      historyStore.close();
     },
   };
 }

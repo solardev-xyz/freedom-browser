@@ -4,11 +4,13 @@ jest.mock('./freedom-agent-service');
 jest.mock('./ipc');
 jest.mock('./provider-resolver');
 jest.mock('./provider-store');
+jest.mock('./session-history-store');
 
 const { FreedomAgentService } = require('./freedom-agent-service');
 const { registerFreedomAgentIpc } = require('./ipc');
 const { AgentProviderResolver } = require('./provider-resolver');
 const { AgentProviderStore } = require('./provider-store');
+const { AgentSessionHistoryStore } = require('./session-history-store');
 const { createFreedomAgentRuntime } = require('./runtime');
 
 describe('Freedom agent runtime', () => {
@@ -20,10 +22,15 @@ describe('Freedom agent runtime', () => {
     const calls = [];
     const providerStore = {};
     const providerResolver = { resolveModel: jest.fn(async () => ({ model: {} })) };
+    const historyStore = {
+      markStaleRunningAsInterrupted: jest.fn(),
+      close: jest.fn(() => calls.push('history')),
+    };
     const service = { dispose: jest.fn(async () => calls.push('service')) };
     const unregisterIpc = jest.fn(async () => calls.push('ipc'));
     AgentProviderStore.mockImplementation(() => providerStore);
     AgentProviderResolver.mockImplementation(() => providerResolver);
+    AgentSessionHistoryStore.mockImplementation(() => historyStore);
     FreedomAgentService.mockImplementation(() => service);
     registerFreedomAgentIpc.mockReturnValue(unregisterIpc);
     const options = {
@@ -52,9 +59,14 @@ describe('Freedom agent runtime', () => {
       store: providerStore,
       dataDir: options.dataDir,
     });
+    expect(AgentSessionHistoryStore).toHaveBeenCalledWith({
+      userDataDir: options.profile.userDataDir,
+    });
+    expect(historyStore.markStaleRunningAsInterrupted).toHaveBeenCalledTimes(1);
     expect(FreedomAgentService).toHaveBeenCalledWith({
       controller: options.controller,
       subscribeTabLifecycle: options.subscribeTabLifecycle,
+      historyStore,
     });
     expect(registerFreedomAgentIpc).toHaveBeenCalledWith({
       ipcMain: options.ipcMain,
@@ -74,6 +86,7 @@ describe('Freedom agent runtime', () => {
 
     expect(unregisterIpc).toHaveBeenCalledTimes(1);
     expect(service.dispose).toHaveBeenCalledTimes(1);
-    expect(calls).toEqual(['ipc', 'service']);
+    expect(historyStore.close).toHaveBeenCalledTimes(1);
+    expect(calls).toEqual(['ipc', 'service', 'history']);
   });
 });

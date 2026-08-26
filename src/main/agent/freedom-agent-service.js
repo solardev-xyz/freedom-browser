@@ -9,6 +9,7 @@ const {
   AGENT_NAVIGATION_SCOPES,
 } = require('../../shared/agent-navigation-scopes');
 const { ERROR_CODES } = require('../automation/contract/errors');
+const log = require('../logger');
 const {
   createOriginScopedAutomationController,
 } = require('../automation/origin-scoped-controller');
@@ -37,6 +38,7 @@ const RESUME_PROMPT = `The user resumed this task after potentially changing the
 const EVERY_INTERACTION_SYSTEM_PROMPT = `${DEFAULT_FREEDOM_AGENT_SYSTEM_PROMPT}
 
 This run requires user approval before every page interaction. Reading pages, navigating, and managing task-owned tabs do not require approval. Click, type, select, and press tools pause until the user approves or declines the exact interaction.`;
+const RESTORED_SESSION_PROMPT = `This conversation was restored from Freedom's saved session history. Only the visible user and assistant conversation was retained. Earlier browser tool results, page snapshots, element references, and control grants were deliberately not restored. Reinspect the current browser workspace before acting and do not assume an earlier page or action is still available.`;
 
 class FreedomAgentError extends Error {
   constructor(code, message) {
@@ -205,6 +207,16 @@ class FreedomAgentService {
       options.createControllerScope || createOriginScopedAutomationController;
     this.createTools = options.createTools || createFreedomBrowserTools;
     this.createSession = options.createSession || createIsolatedPiSession;
+    this.historyStore = options.historyStore || null;
+    if (
+      this.historyStore &&
+      ['createSession', 'startTurn', 'finishTurn', 'listSessions', 'getSession',
+        'renameSession', 'deleteSession'].some(
+        (method) => typeof this.historyStore[method] !== 'function'
+      )
+    ) {
+      throw new TypeError('FreedomAgentService requires a complete Agent history store');
+    }
     this.runIdFactory = options.runIdFactory || opaqueRunId;
     this.conversationIdFactory = options.conversationIdFactory || opaqueConversationId;
     this.now = options.now || Date.now;
@@ -256,6 +268,8 @@ class FreedomAgentService {
         conversationId: conversation.conversationId,
         tabId: conversation.tabId,
         approvalMode: conversation.approvalMode,
+        title: conversation.title,
+        runtimeAvailable: Boolean(conversation.session && conversation.scopedController),
         transcript,
       };
     }
@@ -265,11 +279,66 @@ class FreedomAgentService {
       runId: this.activeRun.runId,
       tabId: this.activeRun.tabId,
       approvalMode: conversation.approvalMode,
+      title: conversation.title,
+      runtimeAvailable: Boolean(conversation.session && conversation.scopedController),
       transcript,
       ...(this.activeRun.pendingApproval && {
         pendingApproval: this.activeRun.pendingApproval.publicRequest,
       }),
     };
+  }
+
+  listConversations() {
+    return this.historyStore ? this.historyStore.listSessions() : [];
+  }
+
+  async openConversation(conversationId) {
+    if (this.disposed || this.activeRun || !this.historyStore) return null;
+    const stored = this.historyStore.getSession(conversationId);
+    if (!stored) return null;
+    const current = this.conversation;
+    if (current?.conversationId !== stored.conversationId) {
+      this.conversation = null;
+      if (current) this.#disposeConversation(current);
+      this.conversation = {
+        conversationId: stored.conversationId,
+        title: stored.title,
+        tabId: null,
+        approvalMode: stored.approvalMode,
+        session: null,
+        scopedController: null,
+        unsubscribe: null,
+        turns: stored.transcript.map((turn) => ({
+          ...turn,
+          activity: turn.activity.map((item) => ({ ...item })),
+          activeRun: null,
+          finished: true,
+        })),
+        activeRun: null,
+        restored: true,
+      };
+    }
+    return this.getState();
+  }
+
+  renameConversation(conversationId, title) {
+    if (!this.historyStore) return null;
+    const renamed = this.historyStore.renameSession(conversationId, title);
+    if (renamed && this.conversation?.conversationId === conversationId) {
+      this.conversation.title = renamed.title;
+    }
+    return renamed;
+  }
+
+  async deleteConversation(conversationId) {
+    if (!this.historyStore || this.activeRun) return false;
+    if (this.conversation?.conversationId === conversationId) {
+      const conversation = this.conversation;
+      this.conversation = null;
+      this.#disposeConversation(conversation);
+      this.#broadcast({ type: 'conversation_cleared', conversationId });
+    }
+    return this.historyStore.deleteSession(conversationId);
   }
 
   getWorkspaceState() {
@@ -304,9 +373,8 @@ class FreedomAgentService {
     }
 
     const existingConversation = this.conversation;
-    const validated = existingConversation
-      ? validatePromptOptions(options)
-      : validateStartOptions(options);
+    const needsRuntime = !existingConversation?.session || !existingConversation?.scopedController;
+    const validated = needsRuntime ? validateStartOptions(options) : validatePromptOptions(options);
     const { prompt, approvalMode } = validated;
     if (existingConversation && approvalMode !== existingConversation.approvalMode) {
       throw new FreedomAgentError(
@@ -314,7 +382,7 @@ class FreedomAgentService {
         'Start a new conversation to change the interaction approval setting'
       );
     }
-    const tabId = existingConversation?.tabId || validated.tabId;
+    const tabId = needsRuntime ? validated.tabId : existingConversation.tabId;
     const completion = createDeferred();
     const run = {
       runId: this.runIdFactory(),
@@ -329,8 +397,8 @@ class FreedomAgentService {
       startedAt: this.now(),
       durationMs: null,
       completion,
-      session: existingConversation?.session || null,
-      scopedController: existingConversation?.scopedController || null,
+      session: needsRuntime ? null : existingConversation.session,
+      scopedController: needsRuntime ? null : existingConversation.scopedController,
       stopRequested: false,
       pauseRequested: false,
       resumePending: false,
@@ -346,7 +414,7 @@ class FreedomAgentService {
     this.#emit(run, { type: 'run_started', tabId, approvalMode, userText: prompt });
 
     try {
-      if (!conversation) {
+      if (needsRuntime) {
         const sdk = await this.loadSdk();
         const scopedController = await this.createControllerScope({
           controller: this.controller,
@@ -373,14 +441,31 @@ class FreedomAgentService {
             if (this.activeRun) this.#handleToolOutcome(this.activeRun, outcome);
           },
         });
+        const baseSystemPrompt =
+          approvalMode === AGENT_APPROVAL_MODES.EVERY_INTERACTION
+            ? EVERY_INTERACTION_SYSTEM_PROMPT
+            : DEFAULT_FREEDOM_AGENT_SYSTEM_PROMPT;
         const created = await this.createSession({
           sdk,
           model: options.model,
           modelRuntime: options.modelRuntime,
           thinkingLevel: options.thinkingLevel,
           customTools,
-          ...(approvalMode === AGENT_APPROVAL_MODES.EVERY_INTERACTION && {
-            systemPrompt: EVERY_INTERACTION_SYSTEM_PROMPT,
+          ...(existingConversation?.restored && {
+            restoredTranscript: existingConversation.turns.map((turn) => ({
+              runId: turn.runId,
+              userText: turn.userText,
+              assistantText: turn.assistantText,
+              status: turn.status,
+              startedAt: turn.startedAt,
+              ...(Number.isFinite(turn.durationMs) && { durationMs: turn.durationMs }),
+            })),
+          }),
+          ...((approvalMode === AGENT_APPROVAL_MODES.EVERY_INTERACTION ||
+            existingConversation?.restored) && {
+            systemPrompt: existingConversation?.restored
+              ? `${baseSystemPrompt}\n\n${RESTORED_SESSION_PROMPT}`
+              : baseSystemPrompt,
           }),
         });
         const session = created?.session;
@@ -393,17 +478,36 @@ class FreedomAgentService {
         ) {
           throw new TypeError('Pi session factory returned an invalid session');
         }
-        conversation = {
-          conversationId: run.conversationId,
-          tabId,
-          approvalMode,
-          session,
-          scopedController,
-          unsubscribe: null,
-          turns: [],
-          activeRun: run,
-        };
-        this.conversation = conversation;
+        if (!conversation) {
+          conversation = {
+            conversationId: run.conversationId,
+            title: prompt.slice(0, 120),
+            tabId,
+            approvalMode,
+            session,
+            scopedController,
+            unsubscribe: null,
+            turns: [],
+            activeRun: run,
+            restored: false,
+          };
+          this.conversation = conversation;
+          this.#persistHistory('createSession', {
+            conversationId: conversation.conversationId,
+            title: conversation.title,
+            approvalMode,
+            providerId: options.model?.provider,
+            modelId: options.model?.id,
+            thinkingLevel: options.thinkingLevel,
+            createdAt: run.startedAt,
+          });
+        } else {
+          conversation.tabId = tabId;
+          conversation.session = session;
+          conversation.scopedController = scopedController;
+          conversation.activeRun = run;
+          conversation.restored = false;
+        }
         run.session = session;
         conversation.unsubscribe = session.subscribe((event) =>
           this.#handlePiEvent(conversation, event)
@@ -420,6 +524,13 @@ class FreedomAgentService {
         }
       }
       conversation.turns.push(run);
+      this.#persistHistory('startTurn', {
+        conversationId: conversation.conversationId,
+        runId: run.runId,
+        position: conversation.turns.length - 1,
+        userText: run.userText,
+        startedAt: run.startedAt,
+      });
 
       if (run.failure) {
         await this.#finish(run, 'failed', run.failure);
@@ -788,6 +899,15 @@ class FreedomAgentService {
       failedActionCount: run.activity.filter((item) => item.status === 'failed').length,
       ...(error && { error }),
     });
+    this.#persistHistory('finishTurn', {
+      conversationId: run.conversationId,
+      runId: run.runId,
+      assistantText: run.assistantText,
+      status,
+      durationMs: run.durationMs,
+      activity: run.activity,
+      error,
+    });
     run.completion.resolve({ status, error });
   }
 
@@ -811,6 +931,16 @@ class FreedomAgentService {
       } catch {
         // One chrome subscriber cannot break the agent lifecycle or other subscribers.
       }
+    }
+  }
+
+  #persistHistory(method, payload) {
+    if (!this.historyStore) return null;
+    try {
+      return this.historyStore[method](payload);
+    } catch (error) {
+      log.warn(`[AgentHistory] ${method} failed:`, error?.message || 'unknown error');
+      return null;
     }
   }
 

@@ -9,6 +9,7 @@ const AGENT_IPC_ERROR_CODES = Object.freeze({
   MODEL_UNAVAILABLE: 'AGENT_MODEL_UNAVAILABLE',
   NOT_OWNER: 'AGENT_NOT_OWNER',
   INTERNAL_ERROR: 'AGENT_INTERNAL_ERROR',
+  SESSION_NOT_FOUND: 'AGENT_SESSION_NOT_FOUND',
 });
 const OPENAI_DEVICE_VERIFICATION_URL = 'https://auth.openai.com/codex/device';
 const SAFE_PROVIDER_ERROR_MESSAGES = Object.freeze({
@@ -96,6 +97,33 @@ function validateStartPayload(payload) {
   return { rendererTabId: payload.rendererTabId, prompt: payload.prompt, approvalMode };
 }
 
+function validateConversationPayload(payload, options = {}) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw new FreedomAgentError(AGENT_ERROR_CODES.INVALID_ARGUMENT, 'Agent session input is required');
+  }
+  if (
+    typeof payload.conversationId !== 'string' ||
+    !payload.conversationId.trim() ||
+    payload.conversationId.length > 160
+  ) {
+    throw new FreedomAgentError(
+      AGENT_ERROR_CODES.INVALID_ARGUMENT,
+      'Agent session input requires a valid conversation ID'
+    );
+  }
+  const result = { conversationId: payload.conversationId.trim() };
+  if (options.title) {
+    if (typeof payload.title !== 'string' || !payload.title.trim() || payload.title.length > 120) {
+      throw new FreedomAgentError(
+        AGENT_ERROR_CODES.INVALID_ARGUMENT,
+        'Agent session title must contain between 1 and 120 characters'
+      );
+    }
+    result.title = payload.title.trim();
+  }
+  return result;
+}
+
 function registerFreedomAgentIpc(options = {}) {
   const {
     ipcMain,
@@ -118,6 +146,10 @@ function registerFreedomAgentIpc(options = {}) {
     typeof service.resume !== 'function' ||
     typeof service.stop !== 'function' ||
     typeof service.clearConversation !== 'function' ||
+    typeof service.listConversations !== 'function' ||
+    typeof service.openConversation !== 'function' ||
+    typeof service.renameConversation !== 'function' ||
+    typeof service.deleteConversation !== 'function' ||
     typeof service.decideApproval !== 'function' ||
     typeof service.subscribe !== 'function' ||
     typeof service.getState !== 'function' ||
@@ -248,7 +280,8 @@ function registerFreedomAgentIpc(options = {}) {
       let pendingOwner = owner;
       let tabId;
       let resolved;
-      if (!continuing) {
+      const needsRuntime = !continuing || service.getState().runtimeAvailable !== true;
+      if (needsRuntime) {
         tabId = automationTabIdForRenderer(event?.sender, rendererTabId);
         if (!tabId) {
           return errorEnvelope(
@@ -272,19 +305,24 @@ function registerFreedomAgentIpc(options = {}) {
             'No configured agent model is available'
           );
         }
-        pendingOwner = {
-          sender: event.sender,
-          rendererTabId,
-          conversationId: null,
-          runId: null,
-          buffer: [],
-          starting: true,
-          stopping: false,
-          onDestroyed: () => stopOwnedConversation(),
-        };
-        owner = pendingOwner;
-        event.sender.once?.('destroyed', pendingOwner.onDestroyed);
-      } else {
+        if (!continuing) {
+          pendingOwner = {
+            sender: event.sender,
+            rendererTabId,
+            conversationId: null,
+            runId: null,
+            buffer: [],
+            starting: true,
+            stopping: false,
+            onDestroyed: () => stopOwnedConversation(),
+          };
+          owner = pendingOwner;
+          event.sender.once?.('destroyed', pendingOwner.onDestroyed);
+        } else {
+          pendingOwner.rendererTabId = rendererTabId;
+        }
+      }
+      if (continuing) {
         pendingOwner.starting = true;
         pendingOwner.buffer = [];
       }
@@ -294,7 +332,7 @@ function registerFreedomAgentIpc(options = {}) {
         started = await service.start({
           prompt,
           approvalMode,
-          ...(!continuing && {
+          ...(needsRuntime && {
             tabId,
             createWorkspacePage: (url) =>
               createAutomationPageForHost(pendingOwner.sender, url),
@@ -462,6 +500,104 @@ function registerFreedomAgentIpc(options = {}) {
       : errorEnvelope(AGENT_ERROR_CODES.BUSY, 'The agent conversation is still active');
   };
 
+  const trustedHistoryRequest = (event, action) => {
+    try {
+      if (!isTrustedSender(event?.sender)) {
+        return errorEnvelope(
+          AGENT_IPC_ERROR_CODES.NOT_OWNER,
+          'The sender is not trusted browser chrome'
+        );
+      }
+      return action();
+    } catch (error) {
+      return safeServiceError(error);
+    }
+  };
+
+  const handleHistoryList = (event) =>
+    trustedHistoryRequest(event, () => ({ ok: true, sessions: service.listConversations() }));
+
+  const handleHistoryOpen = async (event, payload) => {
+    const trusted = trustedHistoryRequest(event, () => ({ ok: true }));
+    if (!trusted.ok) return trusted;
+    if (owner?.runId || owner?.starting) {
+      return errorEnvelope(AGENT_ERROR_CODES.BUSY, 'Take over the active turn before switching sessions');
+    }
+    if (owner && owner.sender !== event.sender) {
+      return errorEnvelope(
+        AGENT_IPC_ERROR_CODES.NOT_OWNER,
+        'Another browser window owns the current agent conversation'
+      );
+    }
+    try {
+      const { conversationId } = validateConversationPayload(payload);
+      const state = await service.openConversation(conversationId);
+      if (!state) {
+        return errorEnvelope(
+          AGENT_IPC_ERROR_CODES.SESSION_NOT_FOUND,
+          'That saved Agent session is no longer available'
+        );
+      }
+      if (!owner) {
+        const pendingOwner = {
+          sender: event.sender,
+          rendererTabId: null,
+          conversationId,
+          runId: null,
+          buffer: [],
+          starting: false,
+          stopping: false,
+          onDestroyed: () => stopOwnedConversation(),
+        };
+        owner = pendingOwner;
+        event.sender.once?.('destroyed', pendingOwner.onDestroyed);
+      } else {
+        owner.conversationId = conversationId;
+        owner.rendererTabId = null;
+      }
+      return { ok: true, state: handleGetState(event).state };
+    } catch (error) {
+      return safeServiceError(error);
+    }
+  };
+
+  const handleHistoryRename = (event, payload) =>
+    trustedHistoryRequest(event, () => {
+      const { conversationId, title } = validateConversationPayload(payload, { title: true });
+      const session = service.renameConversation(conversationId, title);
+      return session
+        ? { ok: true, session }
+        : errorEnvelope(
+            AGENT_IPC_ERROR_CODES.SESSION_NOT_FOUND,
+            'That saved Agent session is no longer available'
+          );
+    });
+
+  const handleHistoryDelete = async (event, payload) => {
+    const trusted = trustedHistoryRequest(event, () => ({ ok: true }));
+    if (!trusted.ok) return trusted;
+    try {
+      const { conversationId } = validateConversationPayload(payload);
+      if (owner?.conversationId === conversationId && (owner.runId || owner.starting)) {
+        return errorEnvelope(
+          AGENT_ERROR_CODES.BUSY,
+          'Take over the active turn before deleting this session'
+        );
+      }
+      const deleted = await service.deleteConversation(conversationId);
+      if (!deleted) {
+        return errorEnvelope(
+          AGENT_IPC_ERROR_CODES.SESSION_NOT_FOUND,
+          'That saved Agent session is no longer available'
+        );
+      }
+      if (owner?.conversationId === conversationId) detachOwner();
+      return { ok: true, deleted: true };
+    } catch (error) {
+      return safeServiceError(error);
+    }
+  };
+
   const handleProviderRequest = async (event, action) => {
     let trusted;
     try {
@@ -597,6 +733,10 @@ function registerFreedomAgentIpc(options = {}) {
   ipcMain.handle(IPC.AGENT_APPROVAL_DECIDE, handleApprovalDecision);
   ipcMain.handle(IPC.AGENT_GET_STATE, handleGetState);
   ipcMain.handle(IPC.AGENT_CLEAR_CONVERSATION, handleClearConversation);
+  ipcMain.handle(IPC.AGENT_HISTORY_LIST, handleHistoryList);
+  ipcMain.handle(IPC.AGENT_HISTORY_OPEN, handleHistoryOpen);
+  ipcMain.handle(IPC.AGENT_HISTORY_RENAME, handleHistoryRename);
+  ipcMain.handle(IPC.AGENT_HISTORY_DELETE, handleHistoryDelete);
   ipcMain.handle(IPC.AGENT_PROVIDER_GET_STATUS, handleProviderStatus);
   ipcMain.handle(IPC.AGENT_PROVIDER_GET_CATALOG, handleProviderCatalog);
   ipcMain.handle(IPC.AGENT_PROVIDER_CONFIGURE_HOSTED, handleConfigureHosted);
@@ -615,6 +755,10 @@ function registerFreedomAgentIpc(options = {}) {
     ipcMain.removeHandler?.(IPC.AGENT_APPROVAL_DECIDE);
     ipcMain.removeHandler?.(IPC.AGENT_GET_STATE);
     ipcMain.removeHandler?.(IPC.AGENT_CLEAR_CONVERSATION);
+    ipcMain.removeHandler?.(IPC.AGENT_HISTORY_LIST);
+    ipcMain.removeHandler?.(IPC.AGENT_HISTORY_OPEN);
+    ipcMain.removeHandler?.(IPC.AGENT_HISTORY_RENAME);
+    ipcMain.removeHandler?.(IPC.AGENT_HISTORY_DELETE);
     ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_GET_STATUS);
     ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_GET_CATALOG);
     ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_CONFIGURE_HOSTED);
@@ -647,4 +791,5 @@ module.exports = {
   safeProviderError,
   safeServiceError,
   validateStartPayload,
+  validateConversationPayload,
 };

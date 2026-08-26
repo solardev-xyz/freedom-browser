@@ -7,6 +7,7 @@ const {
   VIRTUAL_AGENT_CWD,
   createIsolatedPiSession,
   createNoDiscoveryResourceLoader,
+  hydrateVisibleTranscript,
   validateCustomTools,
 } = require('./pi-session-factory');
 
@@ -14,7 +15,7 @@ const repositoryRoot = path.resolve(__dirname, '../../..');
 
 function createSdk() {
   const extensionRuntime = {};
-  const sessionManager = { kind: 'session-manager' };
+  const sessionManager = { kind: 'session-manager', appendMessage: jest.fn() };
   const settingsManager = { kind: 'settings-manager' };
   const SessionManager = jest.fn();
   const SettingsManager = jest.fn();
@@ -95,6 +96,53 @@ describe('isolated Pi session factory', () => {
     );
     expect(() => validateCustomTools([{ name: 'browser_wait' }, { name: 'browser_wait' }])).toThrow(
       'Duplicate Pi custom tool name'
+    );
+  });
+
+  test('restores only visible user and assistant text into Pi context', async () => {
+    const sdk = createSdk();
+    await createIsolatedPiSession({
+      sdk,
+      model: { id: 'gpt-test', provider: 'openai', api: 'responses' },
+      modelRuntime: {},
+      restoredTranscript: [
+        {
+          userText: 'Compare the pages',
+          assistantText: 'The first page is newer.',
+          startedAt: 1_000,
+          durationMs: 250,
+          activity: [
+            {
+              operation: 'browser_snapshot',
+              arguments: { rawPageContents: 'must not be restored' },
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(sdk.SessionManager.inMemory().appendMessage.mock.calls).toEqual([
+      [{ role: 'user', content: 'Compare the pages', timestamp: 1_000 }],
+      [
+        expect.objectContaining({
+          role: 'assistant',
+          content: [{ type: 'text', text: 'The first page is newer.' }],
+          api: 'responses',
+          provider: 'openai',
+          model: 'gpt-test',
+          stopReason: 'stop',
+          timestamp: 1_250,
+        }),
+      ],
+    ]);
+    expect(JSON.stringify(sdk.SessionManager.inMemory().appendMessage.mock.calls)).not.toContain(
+      'rawPageContents'
+    );
+  });
+
+  test('rejects transcript restoration without an appendable session manager', () => {
+    expect(() => hydrateVisibleTranscript({}, [{ userText: 'Task' }], {})).toThrow(
+      'requires a session manager'
     );
   });
 

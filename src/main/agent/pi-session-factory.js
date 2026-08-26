@@ -4,6 +4,14 @@ const { loadPiSdk, validatePiSdk } = require('./pi-sdk');
 
 const BUILTIN_PI_TOOL_NAMES = new Set(['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls']);
 const VIRTUAL_AGENT_CWD = process.platform === 'win32' ? 'C:\\freedom-agent' : '/freedom-agent';
+const ZERO_USAGE = Object.freeze({
+  input: 0,
+  output: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
+  totalTokens: 0,
+  cost: Object.freeze({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }),
+});
 
 const DEFAULT_FREEDOM_AGENT_SYSTEM_PROMPT = `You are Freedom Agent inside Freedom Browser.
 
@@ -54,6 +62,37 @@ function createNoDiscoveryResourceLoader(sdk, systemPrompt) {
   });
 }
 
+function hydrateVisibleTranscript(sessionManager, turns, model) {
+  if (!Array.isArray(turns) || turns.length === 0) return;
+  if (!sessionManager || typeof sessionManager.appendMessage !== 'function') {
+    throw new TypeError('Freedom Pi transcript restoration requires a session manager');
+  }
+  const provider = typeof model?.provider === 'string' && model.provider ? model.provider : 'unknown';
+  const modelId = typeof model?.id === 'string' && model.id ? model.id : 'unknown';
+  const api = typeof model?.api === 'string' && model.api ? model.api : 'openai-completions';
+
+  for (const turn of turns) {
+    if (typeof turn?.userText !== 'string' || !turn.userText.trim()) continue;
+    const timestamp = Number.isFinite(turn.startedAt) ? turn.startedAt : Date.now();
+    sessionManager.appendMessage({
+      role: 'user',
+      content: turn.userText,
+      timestamp,
+    });
+    if (typeof turn.assistantText !== 'string' || !turn.assistantText.trim()) continue;
+    sessionManager.appendMessage({
+      role: 'assistant',
+      content: [{ type: 'text', text: turn.assistantText }],
+      api,
+      provider,
+      model: modelId,
+      usage: ZERO_USAGE,
+      stopReason: 'stop',
+      timestamp: timestamp + Math.max(0, Number(turn.durationMs) || 0),
+    });
+  }
+}
+
 async function createIsolatedPiSession(options = {}) {
   if (!options.model) throw new TypeError('Freedom Pi session requires a model');
   if (!options.modelRuntime) throw new TypeError('Freedom Pi session requires a modelRuntime');
@@ -71,6 +110,7 @@ async function createIsolatedPiSession(options = {}) {
     retry: { enabled: true, maxRetries: 2 },
   });
   const sessionManager = sdk.SessionManager.inMemory(VIRTUAL_AGENT_CWD);
+  hydrateVisibleTranscript(sessionManager, options.restoredTranscript, options.model);
 
   const result = await sdk.createAgentSession({
     cwd: VIRTUAL_AGENT_CWD,
@@ -101,5 +141,6 @@ module.exports = {
   VIRTUAL_AGENT_CWD,
   createIsolatedPiSession,
   createNoDiscoveryResourceLoader,
+  hydrateVisibleTranscript,
   validateCustomTools,
 };
