@@ -229,6 +229,7 @@ async function loadAgentUi(options = {}) {
     openAgentSession: jest.fn(),
     renameAgentSession: jest.fn(),
     deleteAgentSession: jest.fn(),
+    claimAgentTab: jest.fn(),
     pauseAgent: jest.fn().mockResolvedValue({ ok: true, paused: true }),
     resumeAgent: jest.fn().mockResolvedValue({ ok: true, resumed: true }),
     stopAgent: jest.fn().mockResolvedValue({ ok: true, stopped: true }),
@@ -267,6 +268,8 @@ async function loadAgentUi(options = {}) {
     onSignatureFlightChange: jest.fn(),
   }));
   const setAgentControlledTab = jest.fn();
+  const setAgentTabCustody = jest.fn();
+  const setAgentTabClaimHandler = jest.fn();
   const switchTab = jest.fn();
   const setTabStripProjection = jest.fn();
   const setWorkspaceNavigationProjection = jest.fn();
@@ -289,6 +292,8 @@ async function loadAgentUi(options = {}) {
       options.getActiveTab || (() => getOpenTabs().find((tab) => tab.isActive) || getOpenTabs()[0]),
     getOpenTabs,
     setAgentControlledTab,
+    setAgentTabCustody,
+    setAgentTabClaimHandler,
     setTabStripProjection,
     setWorkspaceNavigationProjection,
     setWorkspaceNavigationEditable,
@@ -306,6 +311,8 @@ async function loadAgentUi(options = {}) {
     electronAPI,
     sidebar,
     setAgentControlledTab,
+    setAgentTabCustody,
+    setAgentTabClaimHandler,
     switchTab,
     setTabStripProjection,
     setWorkspaceNavigationProjection,
@@ -692,6 +699,70 @@ describe('Agent UI', () => {
       7,
       'Now compare their authors',
       'every_interaction'
+    );
+  });
+
+  test('restores a live session workspace and claims an Agent-owned tab', async () => {
+    const agentTab = {
+      rendererTabId: 8,
+      provenance: 'agent',
+      custody: 'agent',
+      conversationId: 'conversation_live',
+    };
+    const ctx = await loadAgentUi({
+      electronAPI: {
+        listAgentSessions: jest.fn().mockResolvedValue({
+          ok: true,
+          sessions: [
+            {
+              conversationId: 'conversation_live',
+              title: 'Live research',
+              status: 'ready',
+              turnCount: 1,
+            },
+          ],
+        }),
+        openAgentSession: jest.fn().mockResolvedValue({
+          ok: true,
+          state: {
+            status: 'ready',
+            conversationId: 'conversation_live',
+            title: 'Live research',
+            approvalMode: 'every_interaction',
+            runtimeAvailable: true,
+            transcript: [],
+            taskTabs: [{ rendererTabId: 8, agentActive: true }],
+            agentTabs: [agentTab],
+          },
+        }),
+        claimAgentTab: jest.fn().mockResolvedValue({
+          ok: true,
+          claimed: true,
+          state: {
+            status: 'ready',
+            conversationId: 'conversation_live',
+            taskTabs: [],
+            agentTabs: [],
+          },
+        }),
+      },
+    });
+
+    ctx.elements['agent-session-list'].children[0].children[0].dispatch('click');
+    await flush();
+
+    expect(ctx.elements['agent-run-message'].textContent).toBe(
+      'Live conversation and workspace restored.'
+    );
+    expect(ctx.setAgentTabCustody).toHaveBeenLastCalledWith([agentTab]);
+
+    const claimHandler = ctx.setAgentTabClaimHandler.mock.calls[0][0];
+    await claimHandler(8);
+
+    expect(ctx.electronAPI.claimAgentTab).toHaveBeenCalledWith(8);
+    expect(ctx.setAgentTabCustody).toHaveBeenLastCalledWith([]);
+    expect(ctx.elements['agent-run-message'].textContent).toBe(
+      'This tab is now yours. Agent no longer controls it.'
     );
   });
 

@@ -331,9 +331,11 @@ describe('OriginScopedAutomationController', () => {
 
   test('creates, focuses, lists, and closes task-owned tabs across sites', async () => {
     const controller = createController();
+    const onWorkspaceTabCreated = jest.fn();
     const scoped = await createOriginScopedAutomationController({
       controller,
       tabId: 'tab_assigned',
+      onWorkspaceTabCreated,
     });
 
     const created = await scoped.execute(OPERATIONS.CREATE_TAB, {
@@ -344,6 +346,7 @@ describe('OriginScopedAutomationController', () => {
       ok: true,
       result: { activeTabId: 'tab_created', tab: { tabId: 'tab_created' } },
     });
+    expect(onWorkspaceTabCreated).toHaveBeenCalledWith('tab_created');
     expect(scoped.getWorkspaceState()).toEqual({
       tabIds: ['tab_assigned', 'tab_created'],
       activeTabId: 'tab_created',
@@ -379,6 +382,28 @@ describe('OriginScopedAutomationController', () => {
     ).resolves.toMatchObject({ ok: true, result: { activeTabId: 'tab_created' } });
     await expect(
       scoped.execute(OPERATIONS.CLOSE_TAB, { tabId: 'tab_assigned' })
+    ).resolves.toMatchObject({ error: { code: ERROR_CODES.POLICY_DENIED } });
+  });
+
+  test('releases a claimed Agent-created tab without affecting the adopted user tab', async () => {
+    const controller = createController();
+    const scoped = await createOriginScopedAutomationController({
+      controller,
+      tabId: 'tab_assigned',
+    });
+    await scoped.execute(OPERATIONS.CREATE_TAB, {
+      tabId: 'tab_assigned',
+      url: 'https://research.example/article',
+    });
+
+    expect(scoped.releaseTab('tab_created')).toBe(true);
+    expect(scoped.releaseTab('tab_created')).toBe(false);
+    expect(scoped.getWorkspaceState()).toEqual({
+      tabIds: ['tab_assigned'],
+      activeTabId: 'tab_assigned',
+    });
+    await expect(
+      scoped.execute(OPERATIONS.SNAPSHOT, { tabId: 'tab_created' })
     ).resolves.toMatchObject({ error: { code: ERROR_CODES.POLICY_DENIED } });
   });
 

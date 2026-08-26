@@ -82,7 +82,7 @@ const buildTabContextMenu = () => {
   const tabContextMenu = createElement('div', { classes: ['hidden'] });
   const actions = {};
 
-  ['close', 'close-others', 'close-right', 'pin'].forEach((action) => {
+  ['close', 'close-others', 'close-right', 'pin', 'claim-agent-tab'].forEach((action) => {
     const button = createElement('button');
     button.dataset.action = action;
     tabContextMenu.appendChild(button);
@@ -261,6 +261,31 @@ describe('tabs ui behavior', () => {
     expect(controlledTabElement.classList.contains('agent-controlled')).toBe(true);
     mod.setAgentControlledTab(null);
     expect(controlledTabElement.classList.contains('agent-controlled')).toBe(false);
+
+    const claimAgentTab = jest.fn();
+    const custodyListener = jest.fn();
+    mod.setAgentTabClaimHandler(claimAgentTab);
+    mod.subscribeAgentTabCustody(custodyListener);
+    mod.setAgentTabCustody([
+      {
+        rendererTabId: secondTab.id,
+        provenance: 'agent',
+        custody: 'agent',
+        conversationId: 'conversation_test',
+      },
+    ]);
+    expect(mod.isTabAgentOwned(secondTab.id)).toBe(true);
+    expect(controlledTabElement.classList.contains('agent-owned')).toBe(true);
+    controlledTabElement
+      .querySelector('.tab-agent-badge')
+      .dispatch('click', { stopPropagation: jest.fn() });
+    expect(claimAgentTab).toHaveBeenCalledWith(secondTab.id);
+    expect(custodyListener).toHaveBeenLastCalledWith([
+      expect.objectContaining({ rendererTabId: secondTab.id, custody: 'agent' }),
+    ]);
+    mod.setAgentTabCustody([]);
+    expect(mod.isTabAgentOwned(secondTab.id)).toBe(false);
+    expect(controlledTabElement.classList.contains('agent-owned')).toBe(false);
     mod.switchTab(secondTab.id);
 
     mod.moveTab('left');

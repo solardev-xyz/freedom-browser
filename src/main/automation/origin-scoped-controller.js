@@ -86,6 +86,7 @@ class OriginScopedAutomationController {
     approvalMode,
     requestApproval,
     createWorkspacePage,
+    onWorkspaceTabCreated,
   }) {
     this.controller = controller;
     this.adoptedTabId = tabId;
@@ -96,6 +97,7 @@ class OriginScopedAutomationController {
     this.lastState = initialState;
     this.requestApproval = requestApproval;
     this.createWorkspacePage = createWorkspacePage;
+    this.onWorkspaceTabCreated = onWorkspaceTabCreated;
     this.declinedActions = new Set();
     this.resumeObservation = null;
   }
@@ -121,6 +123,13 @@ class OriginScopedAutomationController {
       tabIds: [...this.ownedTabs.keys()],
       activeTabId: this.activeTabId,
     };
+  }
+
+  releaseTab(tabId) {
+    if (typeof tabId !== 'string' || !this.ownedTabs.has(tabId)) return false;
+    this.ownedTabs.delete(tabId);
+    if (this.activeTabId === tabId) this.activeTabId = this.#fallbackTabId();
+    return true;
   }
 
   async execute(operation, input = {}) {
@@ -324,6 +333,7 @@ class OriginScopedAutomationController {
         return this.#originDenied(openerState);
       }
       this.ownedTabs.set(createdTabId, { created: true });
+      this.#notifyWorkspaceTabCreated(createdTabId);
       this.activeTabId = createdTabId;
       if (this.resumeObservation === 'create_tab') this.resumeObservation = 'snapshot';
       result.result.activeTabId = createdTabId;
@@ -369,6 +379,7 @@ class OriginScopedAutomationController {
       return this.#originDenied(state);
     }
     this.ownedTabs.set(createdTabId, { created: true });
+    this.#notifyWorkspaceTabCreated(createdTabId);
     this.activeTabId = createdTabId;
     this.resumeObservation = 'snapshot';
     return {
@@ -384,6 +395,15 @@ class OriginScopedAutomationController {
       return true;
     }
     return !this.workspaceEstablished;
+  }
+
+  #notifyWorkspaceTabCreated(tabId) {
+    if (typeof this.onWorkspaceTabCreated !== 'function') return;
+    try {
+      this.onWorkspaceTabCreated(tabId);
+    } catch {
+      // Presentation metadata cannot invalidate an already-created browser tab.
+    }
   }
 
   #acceptRequestedOrigin(url) {
@@ -486,6 +506,12 @@ async function createOriginScopedAutomationController(options = {}) {
   ) {
     throw new TypeError('Origin-scoped automation requires a valid workspace page creator');
   }
+  if (
+    options.onWorkspaceTabCreated !== undefined &&
+    typeof options.onWorkspaceTabCreated !== 'function'
+  ) {
+    throw new TypeError('Origin-scoped automation requires a valid workspace tab observer');
+  }
   const navigationScope = normalizeAgentNavigationScope(options.navigationScope);
   if (!navigationScope) {
     throw new TypeError('Origin-scoped automation requires a valid navigation scope');
@@ -507,6 +533,7 @@ async function createOriginScopedAutomationController(options = {}) {
     approvalMode,
     requestApproval: options.requestApproval,
     createWorkspacePage: options.createWorkspacePage,
+    onWorkspaceTabCreated: options.onWorkspaceTabCreated,
   });
 }
 

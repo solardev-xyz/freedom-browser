@@ -124,6 +124,22 @@ function validateConversationPayload(payload, options = {}) {
   return result;
 }
 
+function validateTabClaimPayload(payload) {
+  if (
+    !payload ||
+    typeof payload !== 'object' ||
+    Array.isArray(payload) ||
+    !Number.isSafeInteger(payload.rendererTabId) ||
+    payload.rendererTabId < 1
+  ) {
+    throw new FreedomAgentError(
+      AGENT_ERROR_CODES.INVALID_ARGUMENT,
+      'Claiming an Agent tab requires a valid renderer tab ID'
+    );
+  }
+  return { rendererTabId: payload.rendererTabId };
+}
+
 function registerFreedomAgentIpc(options = {}) {
   const {
     ipcMain,
@@ -147,6 +163,8 @@ function registerFreedomAgentIpc(options = {}) {
     typeof service.stop !== 'function' ||
     typeof service.clearConversation !== 'function' ||
     typeof service.listConversations !== 'function' ||
+    typeof service.listAgentTabs !== 'function' ||
+    typeof service.claimTab !== 'function' ||
     typeof service.openConversation !== 'function' ||
     typeof service.renameConversation !== 'function' ||
     typeof service.deleteConversation !== 'function' ||
@@ -454,13 +472,22 @@ function registerFreedomAgentIpc(options = {}) {
   };
 
   const handleGetState = (event) => {
-    if (!owner || owner.sender !== event?.sender) return { ok: true, state: { status: 'idle' } };
-    const workspace = service.getWorkspaceState();
+    let trusted;
+    try {
+      trusted = isTrustedSender(event?.sender);
+    } catch {
+      trusted = false;
+    }
+    if (!trusted) return { ok: true, state: { status: 'idle', taskTabs: [], agentTabs: [] } };
+    const ownsSelectedConversation = Boolean(owner && owner.sender === event.sender);
+    const workspace = ownsSelectedConversation
+      ? service.getWorkspaceState()
+      : { tabIds: [], activeTabId: null };
     const taskTabs = [];
     for (const automationTabId of workspace.tabIds) {
       const binding = desktopBindingForAutomationTab(automationTabId);
       if (
-        binding?.hostWebContents !== owner.sender ||
+        binding?.hostWebContents !== event.sender ||
         !Number.isSafeInteger(binding.rendererTabId) ||
         binding.rendererTabId < 1
       ) {
@@ -471,12 +498,30 @@ function registerFreedomAgentIpc(options = {}) {
         agentActive: automationTabId === workspace.activeTabId,
       });
     }
+    const agentTabs = [];
+    for (const record of service.listAgentTabs()) {
+      const binding = desktopBindingForAutomationTab(record.tabId);
+      if (
+        binding?.hostWebContents !== event.sender ||
+        !Number.isSafeInteger(binding.rendererTabId) ||
+        binding.rendererTabId < 1
+      ) {
+        continue;
+      }
+      agentTabs.push({
+        rendererTabId: binding.rendererTabId,
+        provenance: 'agent',
+        custody: 'agent',
+        conversationId: record.conversationId,
+      });
+    }
     return {
       ok: true,
       state: {
-        ...service.getState(),
-        rendererTabId: owner.rendererTabId,
+        ...(ownsSelectedConversation ? service.getState() : { status: 'idle' }),
+        rendererTabId: ownsSelectedConversation ? owner.rendererTabId : null,
         taskTabs,
+        agentTabs,
       },
     };
   };
@@ -593,6 +638,31 @@ function registerFreedomAgentIpc(options = {}) {
       }
       if (owner?.conversationId === conversationId) detachOwner();
       return { ok: true, deleted: true };
+    } catch (error) {
+      return safeServiceError(error);
+    }
+  };
+
+  const handleTabClaim = async (event, payload) => {
+    const trusted = trustedHistoryRequest(event, () => ({ ok: true }));
+    if (!trusted.ok) return trusted;
+    try {
+      const { rendererTabId } = validateTabClaimPayload(payload);
+      const tabId = automationTabIdForRenderer(event.sender, rendererTabId);
+      if (!tabId) {
+        return errorEnvelope(
+          AGENT_IPC_ERROR_CODES.TAB_NOT_BOUND,
+          'That browser tab is no longer available'
+        );
+      }
+      const claimed = await service.claimTab(tabId);
+      if (!claimed) {
+        return errorEnvelope(
+          AGENT_IPC_ERROR_CODES.NOT_OWNER,
+          'That tab is not currently owned by Agent'
+        );
+      }
+      return { ok: true, claimed: true, state: handleGetState(event).state };
     } catch (error) {
       return safeServiceError(error);
     }
@@ -737,6 +807,7 @@ function registerFreedomAgentIpc(options = {}) {
   ipcMain.handle(IPC.AGENT_HISTORY_OPEN, handleHistoryOpen);
   ipcMain.handle(IPC.AGENT_HISTORY_RENAME, handleHistoryRename);
   ipcMain.handle(IPC.AGENT_HISTORY_DELETE, handleHistoryDelete);
+  ipcMain.handle(IPC.AGENT_TAB_CLAIM, handleTabClaim);
   ipcMain.handle(IPC.AGENT_PROVIDER_GET_STATUS, handleProviderStatus);
   ipcMain.handle(IPC.AGENT_PROVIDER_GET_CATALOG, handleProviderCatalog);
   ipcMain.handle(IPC.AGENT_PROVIDER_CONFIGURE_HOSTED, handleConfigureHosted);
@@ -759,6 +830,7 @@ function registerFreedomAgentIpc(options = {}) {
     ipcMain.removeHandler?.(IPC.AGENT_HISTORY_OPEN);
     ipcMain.removeHandler?.(IPC.AGENT_HISTORY_RENAME);
     ipcMain.removeHandler?.(IPC.AGENT_HISTORY_DELETE);
+    ipcMain.removeHandler?.(IPC.AGENT_TAB_CLAIM);
     ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_GET_STATUS);
     ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_GET_CATALOG);
     ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_CONFIGURE_HOSTED);

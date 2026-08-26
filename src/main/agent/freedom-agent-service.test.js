@@ -110,6 +110,7 @@ describe('FreedomAgentService', () => {
       navigationScope: 'workspace',
       approvalMode: 'every_interaction',
       createWorkspacePage: expect.any(Function),
+      onWorkspaceTabCreated: expect.any(Function),
       requestApproval: expect.any(Function),
     });
     expect(dependencies.createTools).toHaveBeenCalledWith({
@@ -235,6 +236,7 @@ describe('FreedomAgentService', () => {
       navigationScope: 'workspace',
       approvalMode: 'allow_website_interactions',
       createWorkspacePage: expect.any(Function),
+      onWorkspaceTabCreated: expect.any(Function),
       requestApproval: expect.any(Function),
     });
     expect(dependencies.createSession.mock.calls[0][0]).not.toHaveProperty('systemPrompt');
@@ -346,9 +348,10 @@ describe('FreedomAgentService', () => {
     expect(service.getState()).toMatchObject({ status: 'ready' });
   });
 
-  test('clears an idle conversation and disposes its in-memory Pi session', async () => {
+  test('New chat deselects an idle live conversation without disposing it', async () => {
     const fake = createFakeSession();
-    const { service } = createService(fake);
+    const historyStore = createHistoryStore();
+    const { service } = createService(fake, { historyStore });
     const events = [];
     service.subscribe((event) => events.push(event));
 
@@ -358,12 +361,117 @@ describe('FreedomAgentService', () => {
     await service.waitForIdle();
 
     await expect(service.clearConversation()).resolves.toBe(true);
-    expect(fake.session.dispose).toHaveBeenCalledTimes(1);
+    expect(fake.session.dispose).not.toHaveBeenCalled();
     expect(service.getState()).toEqual({ status: 'idle' });
     expect(events.at(-1)).toMatchObject({
       type: 'conversation_cleared',
       conversationId: 'conversation_test',
     });
+    await expect(service.openConversation('conversation_test')).resolves.toMatchObject({
+      status: 'ready',
+      conversationId: 'conversation_test',
+      runtimeAvailable: true,
+    });
+    expect(historyStore.getSession).not.toHaveBeenCalled();
+  });
+
+  test('retains live session workspaces across switches and transfers claimed tabs to the user', async () => {
+    const first = createFakeSession();
+    const second = createFakeSession();
+    const scopes = new Map();
+    const createControllerScope = jest.fn(async ({ controller, tabId }) => {
+      const tabIds = [tabId];
+      const scope = {
+        ...controller,
+        getWorkspaceState: jest.fn(() => ({
+          tabIds: [...tabIds],
+          activeTabId: tabIds.at(-1) || null,
+        })),
+        prepareResume: jest.fn(async () => ({ ok: true })),
+        releaseTab: jest.fn((candidate) => {
+          const index = tabIds.indexOf(candidate);
+          if (index === -1) return false;
+          tabIds.splice(index, 1);
+          return true;
+        }),
+        addTab: (candidate) => tabIds.push(candidate),
+      };
+      scopes.set(tabId, scope);
+      return scope;
+    });
+    const historyStore = createHistoryStore({ deleteSession: jest.fn(() => true) });
+    const { service, dependencies } = createService(first, {
+      historyStore,
+      createControllerScope,
+      createSession: jest
+        .fn()
+        .mockResolvedValueOnce({ session: first.session })
+        .mockResolvedValueOnce({ session: second.session }),
+      conversationIdFactory: jest
+        .fn()
+        .mockReturnValueOnce('conversation_first')
+        .mockReturnValueOnce('conversation_second'),
+      runIdFactory: jest
+        .fn()
+        .mockReturnValueOnce('run_first')
+        .mockReturnValueOnce('run_second'),
+    });
+
+    await service.start(startOptions({ tabId: 'tab_user_first' }));
+    const firstCreated = dependencies.createControllerScope.mock.calls[0][0].onWorkspaceTabCreated;
+    scopes.get('tab_user_first').addTab('tab_agent_first');
+    firstCreated('tab_agent_first');
+    first.prompt.resolve();
+    await service.waitForIdle();
+    await service.clearConversation();
+
+    await service.start(startOptions({ tabId: 'tab_user_second' }));
+    const secondCreated = dependencies.createControllerScope.mock.calls[1][0].onWorkspaceTabCreated;
+    scopes.get('tab_user_second').addTab('tab_agent_second');
+    secondCreated('tab_agent_second');
+    second.prompt.resolve();
+    await service.waitForIdle();
+
+    await expect(service.openConversation('conversation_first')).resolves.toMatchObject({
+      conversationId: 'conversation_first',
+      runtimeAvailable: true,
+    });
+    expect(service.getWorkspaceState()).toEqual({
+      tabIds: ['tab_user_first', 'tab_agent_first'],
+      activeTabId: 'tab_agent_first',
+    });
+    expect(first.session.dispose).not.toHaveBeenCalled();
+    expect(service.listAgentTabs()).toEqual([
+      {
+        tabId: 'tab_agent_first',
+        provenance: 'agent',
+        custody: 'agent',
+        conversationId: 'conversation_first',
+      },
+      {
+        tabId: 'tab_agent_second',
+        provenance: 'agent',
+        custody: 'agent',
+        conversationId: 'conversation_second',
+      },
+    ]);
+
+    await expect(service.claimTab('tab_agent_first')).resolves.toBe(true);
+    expect(scopes.get('tab_user_first').releaseTab).toHaveBeenCalledWith('tab_agent_first');
+    expect(service.getWorkspaceState()).toEqual({
+      tabIds: ['tab_user_first'],
+      activeTabId: 'tab_user_first',
+    });
+    expect(service.listAgentTabs().map((record) => record.tabId)).toEqual(['tab_agent_second']);
+
+    await service.openConversation('conversation_second');
+    expect(service.getWorkspaceState()).toEqual({
+      tabIds: ['tab_user_second', 'tab_agent_second'],
+      activeTabId: 'tab_agent_second',
+    });
+    await expect(service.deleteConversation('conversation_first')).resolves.toBe(true);
+    expect(first.session.dispose).toHaveBeenCalledTimes(1);
+    expect(second.session.dispose).not.toHaveBeenCalled();
   });
 
   test('persists the visible conversation lifecycle without raw Pi events', async () => {

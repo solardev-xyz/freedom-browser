@@ -37,6 +37,8 @@ function createService(options = {}) {
     stop: options.stop || jest.fn(async () => true),
     clearConversation: options.clearConversation || jest.fn(async () => true),
     listConversations: options.listConversations || jest.fn(() => []),
+    listAgentTabs: options.listAgentTabs || jest.fn(() => []),
+    claimTab: options.claimTab || jest.fn(async () => false),
     openConversation: options.openConversation || jest.fn(async () => null),
     renameConversation: options.renameConversation || jest.fn(() => null),
     deleteConversation: options.deleteConversation || jest.fn(async () => false),
@@ -365,6 +367,57 @@ describe('Freedom agent IPC', () => {
     expect(service.deleteConversation).toHaveBeenCalledTimes(1);
   });
 
+  test('projects profile-level Agent custody and claims only an exactly bound trusted tab', async () => {
+    const service = createService({
+      listAgentTabs: jest
+        .fn()
+        .mockReturnValueOnce([
+          {
+            tabId: 'tab_bound',
+            provenance: 'agent',
+            custody: 'agent',
+            conversationId: 'conversation_saved',
+          },
+        ])
+        .mockReturnValue([]),
+      claimTab: jest.fn(async () => true),
+    });
+    const ctx = register({ service });
+
+    expect(ctx.ipcMain.handlers.get(IPC.AGENT_GET_STATE)({ sender: ctx.sender })).toEqual({
+      ok: true,
+      state: {
+        status: 'idle',
+        rendererTabId: null,
+        taskTabs: [],
+        agentTabs: [
+          {
+            rendererTabId: 7,
+            provenance: 'agent',
+            custody: 'agent',
+            conversationId: 'conversation_saved',
+          },
+        ],
+      },
+    });
+    await expect(
+      ctx.ipcMain.handlers.get(IPC.AGENT_TAB_CLAIM)(
+        { sender: ctx.sender },
+        { rendererTabId: 7 }
+      )
+    ).resolves.toMatchObject({ ok: true, claimed: true, state: { agentTabs: [] } });
+    expect(service.claimTab).toHaveBeenCalledWith('tab_bound');
+    await expect(
+      ctx.ipcMain.handlers.get(IPC.AGENT_TAB_CLAIM)(
+        { sender: ctx.otherSender },
+        { rendererTabId: 7 }
+      )
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: AGENT_IPC_ERROR_CODES.NOT_OWNER },
+    });
+  });
+
   test('rejects untrusted chrome before resolving its tab', async () => {
     const ctx = register();
     const start = ctx.ipcMain.handlers.get(IPC.AGENT_START);
@@ -566,11 +619,12 @@ describe('Freedom agent IPC', () => {
         runtimeAvailable: true,
         rendererTabId: 7,
         taskTabs: [{ rendererTabId: 7, agentActive: true }],
+        agentTabs: [],
       },
     });
     expect(getState({ sender: ctx.otherSender })).toEqual({
       ok: true,
-      state: { status: 'idle' },
+      state: { status: 'idle', taskTabs: [], agentTabs: [] },
     });
   });
 

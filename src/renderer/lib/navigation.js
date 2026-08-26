@@ -43,6 +43,8 @@ import {
   getTabById,
   getTabIdForWebview,
   isActiveTab,
+  isTabAgentOwned,
+  subscribeAgentTabCustody,
 } from './tabs.js';
 import {
   homeUrl,
@@ -732,6 +734,7 @@ export const setPageSecure = (secure) => {
 
 const updateNavigationState = () => {
   const webview = getActiveWebview();
+  const agentOwned = isTabAgentOwned(getActiveTab()?.id);
   if (!webview) {
     if (backBtn) backBtn.disabled = true;
     if (forwardBtn) forwardBtn.disabled = true;
@@ -743,11 +746,13 @@ const updateNavigationState = () => {
   try {
     const canGoBack = webview.canGoBack();
     const canGoForward = webview.canGoForward();
-    if (backBtn) backBtn.disabled = !canGoBack;
-    if (forwardBtn) forwardBtn.disabled = !canGoForward;
-    if (agentBackBtn) agentBackBtn.disabled = !canGoBack;
-    if (agentForwardBtn) agentForwardBtn.disabled = !canGoForward;
-    if (agentReloadBtn) agentReloadBtn.disabled = false;
+    if (backBtn) backBtn.disabled = agentOwned || !canGoBack;
+    if (forwardBtn) forwardBtn.disabled = agentOwned || !canGoForward;
+    if (reloadBtn) reloadBtn.disabled = agentOwned;
+    if (homeBtn) homeBtn.disabled = agentOwned;
+    if (agentBackBtn) agentBackBtn.disabled = agentOwned || !canGoBack;
+    if (agentForwardBtn) agentForwardBtn.disabled = agentOwned || !canGoForward;
+    if (agentReloadBtn) agentReloadBtn.disabled = agentOwned;
   } catch (err) {
     pushDebug(`[Nav] Webview not ready for canGoBack/canGoForward: ${err.message}`);
     if (backBtn) backBtn.disabled = true;
@@ -766,12 +771,15 @@ const setReloadState = (nextState) => {
 export const setAgentWorkspaceNavigationEditable = (editable) => {
   agentWorkspaceNavigationEditable = editable === true;
   if (!addressInput) return;
-  const readOnly = agentWorkspaceNavigationMounted && !agentWorkspaceNavigationEditable;
+  const agentOwned = isTabAgentOwned(getActiveTab()?.id);
+  const readOnly = agentOwned || (agentWorkspaceNavigationMounted && !agentWorkspaceNavigationEditable);
   addressInput.readOnly = readOnly;
   addressInput.setAttribute('aria-readonly', String(readOnly));
-  addressInput.title = readOnly
-    ? 'Pause or finish the agent to navigate manually'
-    : '';
+  addressInput.title = agentOwned
+    ? 'Claim this Agent-owned tab before navigating it manually'
+    : readOnly
+      ? 'Pause or finish the agent to navigate manually'
+      : '';
   if (readOnly) {
     const tab = getActiveTab();
     if (tab) {
@@ -2173,6 +2181,7 @@ export const initNavigation = () => {
   // Form submission (navigate)
   navForm.addEventListener('submit', (event) => {
     event.preventDefault();
+    if (isTabAgentOwned(getActiveTab()?.id)) return;
     // loadTarget handles all protocol dispatch (ENS, freedom://, bzz://,
     // ipfs://, https://, rad://) and owns the ENS trust state mutation.
     // Earlier this handler duplicated the ENS path, which bypassed the
@@ -2190,16 +2199,19 @@ export const initNavigation = () => {
 
   // Navigation buttons
   const navigateBack = () => {
+    if (isTabAgentOwned(getActiveTab()?.id)) return;
     const webview = getActiveWebview();
     if (webview?.canGoBack()) webview.goBack();
   };
 
   const navigateForward = () => {
+    if (isTabAgentOwned(getActiveTab()?.id)) return;
     const webview = getActiveWebview();
     if (webview?.canGoForward()) webview.goForward();
   };
 
   const reloadOrStop = (event = {}) => {
+    if (isTabAgentOwned(getActiveTab()?.id)) return;
     const navState = getNavState();
     if (navState.isWebviewLoading) {
       stopLoadingAndRestore();
@@ -2221,7 +2233,13 @@ export const initNavigation = () => {
   agentReloadBtn?.addEventListener('click', reloadOrStop);
 
   homeBtn?.addEventListener('click', () => {
+    if (isTabAgentOwned(getActiveTab()?.id)) return;
     loadHomePage();
+  });
+
+  subscribeAgentTabCustody(() => {
+    setAgentWorkspaceNavigationEditable(agentWorkspaceNavigationEditable);
+    updateNavigationState();
   });
 
   // Register webview event handler with tabs module
@@ -2252,6 +2270,7 @@ export const initNavigation = () => {
         if (data.url) {
           updateBookmarkBarState(data.url);
         }
+        setAgentWorkspaceNavigationEditable(agentWorkspaceNavigationEditable);
         updateNavigationState();
 
         // Record history entry after successful page load
@@ -2559,12 +2578,12 @@ export const initNavigation = () => {
     // Hard reload (check first, before soft reload)
     if (matchesShortcut(event, 'page.hardReload')) {
       event.preventDefault();
-      hardReloadPage();
+      if (!isTabAgentOwned(getActiveTab()?.id)) hardReloadPage();
     }
     // Reload (soft, uses cache)
     else if (matchesShortcut(event, 'page.reload')) {
       event.preventDefault();
-      reloadPage();
+      if (!isTabAgentOwned(getActiveTab()?.id)) reloadPage();
     } else if (event.key === 'Escape') {
       if (stopLoadingAndRestore()) {
         event.preventDefault();

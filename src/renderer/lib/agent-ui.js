@@ -38,6 +38,8 @@ let getActiveTab = () => null;
 let getOpenTabs = () => [];
 let switchToTab = () => {};
 let setAgentControlledTab = () => {};
+let setAgentTabCustody = () => {};
+let setAgentTabClaimHandler = () => {};
 let setTabStripProjection = () => {};
 let setWorkspaceNavigationProjection = () => {};
 let setWorkspaceNavigationEditable = () => {};
@@ -350,6 +352,7 @@ function applyWorkspaceProjection(state) {
           typeof entry.agentActive === 'boolean'
       )
     : [];
+  setAgentTabCustody(Array.isArray(state?.agentTabs) ? state.agentTabs : []);
   renderTaskPages();
   ensureWorkspacePageVisible();
 }
@@ -1181,11 +1184,36 @@ async function openSavedSession(conversationId) {
       );
       return;
     }
-    setMessage(elements.runMessage, 'Saved conversation restored. Agent will inspect a fresh page before continuing.');
+    setMessage(
+      elements.runMessage,
+      response.state.runtimeAvailable
+        ? 'Live conversation and workspace restored.'
+        : 'Saved conversation restored. Agent will inspect a fresh page before continuing.'
+    );
     elements.prompt.focus();
     void refreshSessionHistory();
   } catch {
     setMessage(elements.runMessage, 'Could not open the saved session', true);
+  }
+}
+
+async function claimAgentOwnedTab(rendererTabId) {
+  if (!Number.isSafeInteger(rendererTabId) || rendererTabId < 1) return;
+  try {
+    const response = await window.electronAPI.claimAgentTab(rendererTabId);
+    if (!response?.ok) {
+      setMessage(elements.runMessage, responseMessage(response, 'Could not claim the Agent tab'), true);
+      return;
+    }
+    applyWorkspaceProjection(response.state);
+    if (currentRunId && response.state?.runId !== currentRunId) {
+      currentRunId = null;
+      setAgentControlledTab(null);
+      setRunState('idle', 'Taken over');
+    }
+    setMessage(elements.runMessage, 'This tab is now yours. Agent no longer controls it.');
+  } catch {
+    setMessage(elements.runMessage, 'Could not claim the Agent tab', true);
   }
 }
 
@@ -1242,6 +1270,7 @@ function applyConversationCleared() {
   setRunState('idle', 'Idle');
   renderSessionSidebar();
   void refreshSessionHistory();
+  void refreshWorkspaceProjection();
 }
 
 function handleAgentEvent(event) {
@@ -1637,6 +1666,12 @@ export function initAgentUi(options = {}) {
   switchToTab = typeof options.switchTab === 'function' ? options.switchTab : () => {};
   setAgentControlledTab =
     typeof options.setAgentControlledTab === 'function' ? options.setAgentControlledTab : () => {};
+  setAgentTabCustody =
+    typeof options.setAgentTabCustody === 'function' ? options.setAgentTabCustody : () => {};
+  setAgentTabClaimHandler =
+    typeof options.setAgentTabClaimHandler === 'function'
+      ? options.setAgentTabClaimHandler
+      : () => {};
   setTabStripProjection =
     typeof options.setTabStripProjection === 'function' ? options.setTabStripProjection : () => {};
   setWorkspaceNavigationProjection =
@@ -1651,6 +1686,8 @@ export function initAgentUi(options = {}) {
     elements.toggle.classList.add('hidden');
     return;
   }
+
+  setAgentTabClaimHandler(claimAgentOwnedTab);
 
   elements.toggle.addEventListener('click', togglePanel);
   elements.close.addEventListener('click', closePanel);

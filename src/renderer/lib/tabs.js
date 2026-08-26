@@ -74,6 +74,9 @@ const tabState = {
 // state only: the main-process automation binding remains the authority for
 // which webContents the run can control.
 let agentControlledTabId = null;
+const agentCustodyByTabId = new Map();
+let onAgentTabClaim = null;
+const agentCustodyListeners = new Set();
 const tabPresentationListeners = new Set();
 
 export const setAgentControlledTab = (tabId = null) => {
@@ -81,6 +84,43 @@ export const setAgentControlledTab = (tabId = null) => {
   if (agentControlledTabId === nextTabId) return;
   agentControlledTabId = nextTabId;
   renderTabs();
+};
+
+export const setAgentTabCustody = (records = []) => {
+  agentCustodyByTabId.clear();
+  if (Array.isArray(records)) {
+    for (const record of records) {
+      if (
+        Number.isSafeInteger(record?.rendererTabId) &&
+        record.rendererTabId > 0 &&
+        record.provenance === 'agent' &&
+        record.custody === 'agent'
+      ) {
+        agentCustodyByTabId.set(record.rendererTabId, { ...record });
+      }
+    }
+  }
+  renderTabs();
+  const recordsSnapshot = [...agentCustodyByTabId.values()].map((record) => ({ ...record }));
+  for (const listener of agentCustodyListeners) {
+    try {
+      listener(recordsSnapshot);
+    } catch {
+      // One renderer observer cannot break canonical tab presentation.
+    }
+  }
+};
+
+export const setAgentTabClaimHandler = (handler = null) => {
+  onAgentTabClaim = typeof handler === 'function' ? handler : null;
+};
+
+export const isTabAgentOwned = (tabId) => agentCustodyByTabId.has(tabId);
+
+export const subscribeAgentTabCustody = (listener) => {
+  if (typeof listener !== 'function') return () => {};
+  agentCustodyListeners.add(listener);
+  return () => agentCustodyListeners.delete(listener);
 };
 
 // Map of named link targets to tab IDs (e.g. "mywindow" -> 3)
@@ -847,11 +887,16 @@ const createTabElement = (tab) => {
   });
   tabEl.appendChild(audioBtn);
 
-  const agentBadge = document.createElement('span');
+  const agentBadge = document.createElement('button');
+  agentBadge.type = 'button';
   agentBadge.className = 'tab-agent-badge';
   agentBadge.dataset.test = 'tab-agent-badge';
   agentBadge.textContent = 'Agent';
-  agentBadge.title = 'Agent is controlling this tab';
+  agentBadge.title = 'Agent-owned tab — click to claim';
+  agentBadge.addEventListener('click', (event) => {
+    event.stopPropagation();
+    if (agentCustodyByTabId.has(tab.id)) onAgentTabClaim?.(tab.id);
+  });
   tabEl.appendChild(agentBadge);
 
   // Tab title
@@ -994,7 +1039,21 @@ const updateTabElement = (tabEl, tab, isActive, isBeforeActive) => {
   tabEl.classList.toggle('active', isActive);
   tabEl.classList.toggle('before-active', isBeforeActive);
   tabEl.classList.toggle('pinned', !!tab.pinned);
+  tabEl.classList.toggle('agent-owned', agentCustodyByTabId.has(tab.id));
   tabEl.classList.toggle('agent-controlled', tab.id === agentControlledTabId);
+
+  const agentBadge = tabEl.querySelector('.tab-agent-badge');
+  if (agentBadge) {
+    agentBadge.disabled = !agentCustodyByTabId.has(tab.id);
+    agentBadge.title =
+      agentCustodyByTabId.has(tab.id)
+        ? tab.id === agentControlledTabId
+          ? 'Agent is controlling this tab — click to take over'
+          : 'Agent-owned tab — click to claim'
+        : tab.id === agentControlledTabId
+          ? 'Agent is controlling this user tab'
+          : '';
+  }
 
   // Update icon container state (loading, favicon, or default)
   const iconContainer = tabEl.querySelector('.tab-icon-container');
@@ -1436,6 +1495,8 @@ const showContextMenu = (x, y, tabId) => {
   if (muteBtn) {
     muteBtn.textContent = tab.isMuted ? 'Unmute Tab' : 'Mute Tab';
   }
+  const claimBtn = tabContextMenu.querySelector('[data-action="claim-agent-tab"]');
+  if (claimBtn) claimBtn.hidden = !agentCustodyByTabId.has(tab.id);
 
   // Disable "Close Tabs to the Right" if there are no tabs to the right (excluding pinned)
   const tabIndex = tabState.tabs.findIndex((t) => t.id === tabId);
@@ -1700,6 +1761,9 @@ export const initTabs = async () => {
           break;
         case 'mute':
           toggleMuteTab(contextMenuTabId);
+          break;
+        case 'claim-agent-tab':
+          if (agentCustodyByTabId.has(contextMenuTabId)) onAgentTabClaim?.(contextMenuTabId);
           break;
       }
       hideTabContextMenu();

@@ -221,6 +221,8 @@ class FreedomAgentService {
     this.conversationIdFactory = options.conversationIdFactory || opaqueConversationId;
     this.now = options.now || Date.now;
     this.listeners = new Set();
+    this.conversations = new Map();
+    this.agentTabs = new Map();
     this.conversation = null;
     this.activeRun = null;
     this.disposed = false;
@@ -292,53 +294,84 @@ class FreedomAgentService {
     return this.historyStore ? this.historyStore.listSessions() : [];
   }
 
+  listAgentTabs() {
+    return [...this.agentTabs.values()]
+      .filter((record) => record.custody === 'agent')
+      .map((record) => ({ ...record }));
+  }
+
   async openConversation(conversationId) {
     if (this.disposed || this.activeRun || !this.historyStore) return null;
+    const liveConversation = this.conversations.get(conversationId);
+    if (liveConversation) {
+      this.conversation = liveConversation;
+      return this.getState();
+    }
     const stored = this.historyStore.getSession(conversationId);
     if (!stored) return null;
-    const current = this.conversation;
-    if (current?.conversationId !== stored.conversationId) {
-      this.conversation = null;
-      if (current) this.#disposeConversation(current);
-      this.conversation = {
-        conversationId: stored.conversationId,
-        title: stored.title,
-        tabId: null,
-        approvalMode: stored.approvalMode,
-        session: null,
-        scopedController: null,
-        unsubscribe: null,
-        turns: stored.transcript.map((turn) => ({
-          ...turn,
-          activity: turn.activity.map((item) => ({ ...item })),
-          activeRun: null,
-          finished: true,
-        })),
+    this.conversation = {
+      conversationId: stored.conversationId,
+      title: stored.title,
+      tabId: null,
+      approvalMode: stored.approvalMode,
+      session: null,
+      scopedController: null,
+      unsubscribe: null,
+      turns: stored.transcript.map((turn) => ({
+        ...turn,
+        activity: turn.activity.map((item) => ({ ...item })),
         activeRun: null,
-        restored: true,
-      };
-    }
+        finished: true,
+      })),
+      activeRun: null,
+      restored: true,
+    };
+    this.conversations.set(stored.conversationId, this.conversation);
     return this.getState();
   }
 
   renameConversation(conversationId, title) {
     if (!this.historyStore) return null;
     const renamed = this.historyStore.renameSession(conversationId, title);
-    if (renamed && this.conversation?.conversationId === conversationId) {
-      this.conversation.title = renamed.title;
+    const liveConversation = this.conversations.get(conversationId);
+    if (renamed && liveConversation) {
+      liveConversation.title = renamed.title;
     }
     return renamed;
   }
 
   async deleteConversation(conversationId) {
     if (!this.historyStore || this.activeRun) return false;
-    if (this.conversation?.conversationId === conversationId) {
-      const conversation = this.conversation;
-      this.conversation = null;
+    const conversation = this.conversations.get(conversationId);
+    if (conversation) {
+      this.conversations.delete(conversationId);
+      if (this.conversation === conversation) {
+        this.conversation = null;
+      }
       this.#disposeConversation(conversation);
+      for (const record of this.agentTabs.values()) {
+        if (record.conversationId === conversationId) record.conversationId = null;
+      }
+    }
+    if (conversation) {
       this.#broadcast({ type: 'conversation_cleared', conversationId });
     }
     return this.historyStore.deleteSession(conversationId);
+  }
+
+  async claimTab(tabId) {
+    if (this.disposed || typeof tabId !== 'string' || !tabId) return false;
+    const record = this.agentTabs.get(tabId);
+    if (!record || record.custody !== 'agent') return false;
+    if (this.activeRun && this.#conversationHasTab(this.conversation, tabId)) {
+      await this.stop(this.activeRun.runId);
+    }
+    for (const conversation of this.conversations.values()) {
+      conversation.scopedController?.releaseTab?.(tabId);
+    }
+    record.custody = 'user';
+    record.conversationId = null;
+    return true;
   }
 
   getWorkspaceState() {
@@ -422,6 +455,8 @@ class FreedomAgentService {
           navigationScope: AGENT_NAVIGATION_SCOPES.WORKSPACE,
           approvalMode,
           createWorkspacePage: validated.createWorkspacePage,
+          onWorkspaceTabCreated: (createdTabId) =>
+            this.#registerAgentTab(createdTabId, run.conversationId),
           requestApproval: (request) =>
             this.activeRun ? this.#requestApproval(this.activeRun, request) : 'declined',
         });
@@ -492,6 +527,7 @@ class FreedomAgentService {
             restored: false,
           };
           this.conversation = conversation;
+          this.conversations.set(conversation.conversationId, conversation);
           this.#persistHistory('createSession', {
             conversationId: conversation.conversationId,
             title: conversation.title,
@@ -557,6 +593,7 @@ class FreedomAgentService {
       if (!existingConversation && this.conversation?.conversationId === run.conversationId) {
         const failedConversation = this.conversation;
         this.conversation = null;
+        this.conversations.delete(run.conversationId);
         this.#disposeConversation(failedConversation);
       }
       throw new FreedomAgentError(error.code, error.message);
@@ -663,7 +700,6 @@ class FreedomAgentService {
     const conversation = this.conversation;
     if (!conversation) return true;
     this.conversation = null;
-    this.#disposeConversation(conversation);
     this.#broadcast({
       type: 'conversation_cleared',
       conversationId: conversation.conversationId,
@@ -687,9 +723,12 @@ class FreedomAgentService {
       await this.stop(run.runId);
       await run.completion.promise;
     }
-    const conversation = this.conversation;
     this.conversation = null;
-    if (conversation) this.#disposeConversation(conversation);
+    for (const conversation of this.conversations.values()) {
+      this.#disposeConversation(conversation);
+    }
+    this.conversations.clear();
+    this.agentTabs.clear();
     this.listeners.clear();
   }
 
@@ -827,13 +866,17 @@ class FreedomAgentService {
 
   #handleTabLifecycle(event) {
     const run = this.activeRun;
-    const conversation = this.conversation;
-    if (conversation?.scopedController?.handleTabLifecycle) {
-      try {
-        conversation.scopedController.handleTabLifecycle(event);
-      } catch {
-        // A malformed lifecycle event cannot break the active conversation.
+    for (const conversation of this.conversations.values()) {
+      if (conversation.scopedController?.handleTabLifecycle) {
+        try {
+          conversation.scopedController.handleTabLifecycle(event);
+        } catch {
+          // A malformed lifecycle event cannot break another conversation.
+        }
       }
+    }
+    if (event?.type === 'tab_closed' && typeof event.tabId === 'string') {
+      this.agentTabs.delete(event.tabId);
     }
     if (
       run &&
@@ -942,6 +985,22 @@ class FreedomAgentService {
       log.warn(`[AgentHistory] ${method} failed:`, error?.message || 'unknown error');
       return null;
     }
+  }
+
+  #registerAgentTab(tabId, conversationId) {
+    if (typeof tabId !== 'string' || !tabId) return;
+    this.agentTabs.set(tabId, {
+      tabId,
+      provenance: 'agent',
+      custody: 'agent',
+      conversationId,
+    });
+  }
+
+  #conversationHasTab(conversation, tabId) {
+    if (!conversation?.scopedController?.getWorkspaceState) return false;
+    const workspace = conversation.scopedController.getWorkspaceState();
+    return Array.isArray(workspace?.tabIds) && workspace.tabIds.includes(tabId);
   }
 
   #disposeConversation(conversation) {

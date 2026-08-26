@@ -43,6 +43,8 @@ import {
   closeTab,
   switchTab,
   setAgentControlledTab,
+  setAgentTabCustody,
+  setAgentTabClaimHandler,
   setTabStripProjection,
   subscribeTabPresentation,
 } from './lib/tabs.js';
@@ -790,6 +792,8 @@ window.addEventListener('DOMContentLoaded', async () => {
     getActiveTab,
     getOpenTabs,
     setAgentControlledTab,
+    setAgentTabCustody,
+    setAgentTabClaimHandler,
     setTabStripProjection,
     setWorkspaceNavigationProjection: setAgentWorkspaceNavigationProjection,
     setWorkspaceNavigationEditable: setAgentWorkspaceNavigationEditable,

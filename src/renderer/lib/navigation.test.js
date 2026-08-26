@@ -103,6 +103,7 @@ const loadNavigationModule = async (options = {}) => {
   const tabsRef = { list: [] };
   const tabsMocks = {
     webviewEventHandler: null,
+    custodyListener: null,
     createTab: jest.fn(),
     openInNewTabWithTarget: jest.fn(),
     getActiveWebview: jest.fn(() => activeRef.tab?.webview || null),
@@ -129,6 +130,11 @@ const loadNavigationModule = async (options = {}) => {
     isActiveTab: jest.fn(
       (tabId) => tabId !== null && tabId !== undefined && tabId === activeRef.tab?.id
     ),
+    isTabAgentOwned: jest.fn((tabId) => options.agentOwnedTabIds?.includes(tabId) === true),
+    subscribeAgentTabCustody: jest.fn((listener) => {
+      tabsMocks.custodyListener = listener;
+      return jest.fn();
+    }),
   };
   const navigationUtilsMocks = {
     applyEnsSuffix: jest.fn((targetUri, suffix = '') => `${targetUri}${suffix}`),
@@ -621,6 +627,27 @@ describe('navigation', () => {
     ctx.mod.setAgentWorkspaceNavigationProjection();
     expect(ctx.elements.navForm.children).toContain(ctx.elements.addressBarContainer);
     expect(ctx.elements.addressInput.readOnly).toBe(false);
+  });
+
+  test('locks canonical navigation while the active tab is Agent-owned', async () => {
+    const ctx = await loadNavigationModule({ agentOwnedTabIds: [1] });
+    await ctx.mod.initNavigation();
+    ctx.tabsMocks.custodyListener([]);
+
+    expect(ctx.elements.addressInput.readOnly).toBe(true);
+    expect(ctx.elements.addressInput.title).toContain('Claim this Agent-owned tab');
+    expect(ctx.elements.backBtn.disabled).toBe(true);
+    expect(ctx.elements.forwardBtn.disabled).toBe(true);
+    expect(ctx.elements.reloadBtn.disabled).toBe(true);
+    expect(ctx.elements.homeBtn.disabled).toBe(true);
+
+    ctx.tabsMocks.isTabAgentOwned.mockReturnValue(false);
+    ctx.tabsMocks.custodyListener([]);
+    expect(ctx.elements.addressInput.readOnly).toBe(false);
+    expect(ctx.elements.backBtn.disabled).toBe(false);
+    expect(ctx.elements.forwardBtn.disabled).toBe(false);
+    expect(ctx.elements.reloadBtn.disabled).toBe(false);
+    expect(ctx.elements.homeBtn.disabled).toBe(false);
   });
 
   test('processes webview lifecycle events and records history', async () => {

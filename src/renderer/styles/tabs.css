@@ -104,11 +104,18 @@
   font-weight: 650;
   line-height: 14px;
   background: var(--accent);
+  border: 0;
   border-radius: 999px;
+  cursor: pointer;
 }
 
+.tab.agent-owned .tab-agent-badge,
 .tab.agent-controlled .tab-agent-badge {
   display: inline-flex;
+}
+
+.tab-agent-badge:disabled {
+  cursor: default;
 }
 
 @container (max-width: 110px) {

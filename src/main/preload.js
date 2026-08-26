@@ -175,6 +175,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('agent:history:rename', { conversationId, title }),
   deleteAgentSession: (conversationId) =>
     ipcRenderer.invoke('agent:history:delete', { conversationId }),
+  claimAgentTab: (rendererTabId) =>
+    ipcRenderer.invoke('agent:tab:claim', { rendererTabId }),
   getAgentProviderStatus: () => ipcRenderer.invoke('agent:provider:get-status'),
   getAgentProviderCatalog: () => ipcRenderer.invoke('agent:provider:get-catalog'),
   configureHostedAgentProvider: (providerId, modelId, apiKey) =>

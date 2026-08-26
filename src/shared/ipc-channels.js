@@ -185,6 +185,7 @@ module.exports = {
   AGENT_HISTORY_OPEN: 'agent:history:open',
   AGENT_HISTORY_RENAME: 'agent:history:rename',
   AGENT_HISTORY_DELETE: 'agent:history:delete',
+  AGENT_TAB_CLAIM: 'agent:tab:claim',
   AGENT_EVENT: 'agent:event',
   AGENT_PROVIDER_GET_STATUS: 'agent:provider:get-status',
   AGENT_PROVIDER_GET_CATALOG: 'agent:provider:get-catalog',
