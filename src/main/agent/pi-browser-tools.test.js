@@ -248,8 +248,44 @@ describe('Pi browser tool adapter', () => {
       operation: OPERATIONS.SNAPSHOT,
       status: 'failed',
       tabId: 'tab_assigned',
+      pageId: 'tab_assigned',
       errorCode: ERROR_CODES.TAB_NOT_FOUND,
     });
+  });
+
+  test('reports only redacted browser metadata in successful progress receipts', async () => {
+    const onToolOutcome = jest.fn();
+    const controller = {
+      execute: jest.fn(async () =>
+        successEnvelope({
+          url: 'https://accounts.example/private?token=secret#details',
+          title: 'Private account',
+          text: 'sensitive page contents',
+          elements: [],
+        })
+      ),
+    };
+    const tools = await createFreedomBrowserTools({
+      sdk: createSdk(),
+      controller,
+      tabId: 'tab_assigned',
+      onToolOutcome,
+    });
+    const snapshot = tools.find((tool) => tool.name === OPERATIONS.SNAPSHOT);
+
+    await snapshot.execute('call_receipt', {});
+
+    expect(onToolOutcome).toHaveBeenCalledWith({
+      toolCallId: 'call_receipt',
+      operation: OPERATIONS.SNAPSHOT,
+      status: 'succeeded',
+      tabId: 'tab_assigned',
+      pageId: 'tab_assigned',
+      origin: 'https://accounts.example',
+    });
+    expect(JSON.stringify(onToolOutcome.mock.calls)).not.toMatch(
+      /token|secret|Private account|sensitive page contents/
+    );
   });
 
   test('retains the canonical controller policy boundary', async () => {

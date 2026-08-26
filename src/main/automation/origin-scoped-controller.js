@@ -456,6 +456,7 @@ class OriginScopedAutomationController {
       operation,
       tabId: input.tabId,
       origin: originScopeForUrl(state?.result?.tab?.url) || '',
+      destinationOrigin: originScopeForUrl(element.navigationTarget) || '',
       label: element.label,
     });
     if (decision === 'withdrawn') {

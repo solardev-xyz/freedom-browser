@@ -1025,6 +1025,24 @@ function createTurnView(turn) {
   output.textContent = turn.assistantText || '';
   assistantRow.appendChild(output);
 
+  const outcome = document.createElement('div');
+  outcome.className = 'agent-turn-outcome';
+  outcome.hidden = true;
+  const outcomeIcon = document.createElement('span');
+  outcomeIcon.className = 'agent-turn-outcome-icon';
+  outcomeIcon.setAttribute('aria-hidden', 'true');
+  const outcomeCopy = document.createElement('div');
+  outcomeCopy.className = 'agent-turn-outcome-copy';
+  const outcomeHeadline = document.createElement('strong');
+  const outcomeDetail = document.createElement('span');
+  const outcomeNextStep = document.createElement('span');
+  outcomeNextStep.className = 'agent-turn-outcome-next';
+  outcomeCopy.appendChild(outcomeHeadline);
+  outcomeCopy.appendChild(outcomeDetail);
+  outcomeCopy.appendChild(outcomeNextStep);
+  outcome.appendChild(outcomeIcon);
+  outcome.appendChild(outcomeCopy);
+
   const guidanceList = document.createElement('div');
   guidanceList.className = 'agent-guidance-list';
 
@@ -1043,6 +1061,7 @@ function createTurnView(turn) {
   section.appendChild(userRow);
   section.appendChild(guidanceList);
   section.appendChild(assistantRow);
+  section.appendChild(outcome);
   section.appendChild(activity);
   elements.transcript.appendChild(section);
   elements.transcript.hidden = false;
@@ -1051,6 +1070,11 @@ function createTurnView(turn) {
   const view = {
     section,
     output,
+    outcome,
+    outcomeIcon,
+    outcomeHeadline,
+    outcomeDetail,
+    outcomeNextStep,
     activity,
     activitySummary,
     toolList,
@@ -1203,9 +1227,11 @@ function renderApproval(request) {
     request.action === 'form_submission'
       ? `Submit this form using “${label}”?`
       : interactionCopy[request.operation] || `Let Agent interact with “${label}”?`;
-  elements.approvalOrigin.textContent = request.origin
-    ? `Site: ${request.origin}`
-    : 'Site origin unavailable';
+  const approvalOrigins = [request.origin ? `Site: ${request.origin}` : 'Site origin unavailable'];
+  if (request.destinationOrigin) {
+    approvalOrigins.push(`Destination: ${request.destinationOrigin}`);
+  }
+  elements.approvalOrigin.textContent = approvalOrigins.join('\n');
   elements.approvalApprove.disabled = false;
   elements.approvalDecline.disabled = false;
   setMessage(elements.approvalMessage, 'The agent is paused until you decide.');
@@ -1247,6 +1273,46 @@ function formatOperation(operation) {
     .replaceAll('_', ' ');
 }
 
+function formatToolError(code) {
+  const labels = {
+    TAB_NOT_FOUND: 'Page is no longer open',
+    NAVIGATION_FAILED: 'Page could not be opened',
+    WAIT_TIMEOUT: 'Expected page state did not appear',
+    STALE_ELEMENT_REFERENCE: 'Page changed before this could run',
+    ELEMENT_NOT_FOUND: 'Page element is no longer available',
+    ELEMENT_NOT_INTERACTABLE: 'Page element could not be used',
+    APPROVAL_REQUIRED: 'Approval is still required',
+    POLICY_DENIED: 'Blocked by Freedom policy',
+    USER_CANCELLED: 'Not applied',
+    CAPABILITY_UNAVAILABLE: 'Browser capability is unavailable',
+    INTERNAL_ERROR: 'Browser action failed unexpectedly',
+  };
+  return labels[code] || 'Browser action failed';
+}
+
+function renderTurnOutcome(view, outcome) {
+  if (!view || !outcome || typeof outcome !== 'object') return;
+  const icons = { success: '✓', caution: '!', danger: '×', neutral: '•' };
+  const tone = Object.hasOwn(icons, outcome.tone) ? outcome.tone : 'neutral';
+  view.outcome.className = `agent-turn-outcome ${tone}`;
+  view.outcomeIcon.textContent = icons[tone];
+  view.outcomeHeadline.textContent = outcome.headline || 'Run finished';
+  view.outcomeDetail.textContent = outcome.detail || '';
+  view.outcomeNextStep.textContent = outcome.nextStep ? `Next: ${outcome.nextStep}` : '';
+  view.outcomeNextStep.hidden = !outcome.nextStep;
+  view.outcome.hidden = false;
+}
+
+function outcomeSummaryLabel(outcome) {
+  if (outcome?.verification === 'result_observed') return 'Result checked';
+  if (outcome?.verification === 'actions_recorded') return 'Actions recorded';
+  if (outcome?.verification === 'browser_observed') return 'Browser inspected';
+  if (outcome?.verification === 'model_only') return 'Agent reported';
+  if (outcome?.kind === 'recovery') return 'Needs recovery';
+  if (outcome?.kind === 'interrupted') return 'Stopped';
+  return '';
+}
+
 function addToolRow(event) {
   const view = turnView(event.runId);
   if (!view || typeof event.toolCallId !== 'string') return;
@@ -1256,21 +1322,46 @@ function addToolRow(event) {
   state.className = 'agent-tool-state';
   state.textContent = '•';
   const label = document.createElement('span');
-  label.textContent = formatOperation(event.operation);
+  label.textContent = event.intent || event.label || formatOperation(event.operation);
+  const approval = document.createElement('span');
+  approval.className = 'agent-tool-approval';
+  approval.hidden = true;
   row.appendChild(state);
   row.appendChild(label);
+  row.appendChild(approval);
   view.toolList.appendChild(row);
   view.activity.hidden = false;
   view.activity.open = true;
   view.actionCount += 1;
-  toolRows.set(`${event.runId}:${event.toolCallId}`, { row, state });
+  toolRows.set(`${event.runId}:${event.toolCallId}`, { row, state, label, approval });
+  updateToolApproval(event.runId, event.toolCallId, event.approval);
+}
+
+function updateToolApproval(runId, toolCallId, decision) {
+  if (typeof toolCallId !== 'string') return;
+  const record = toolRows.get(`${runId}:${toolCallId}`);
+  if (!record) return;
+  const labels = {
+    requested: 'Approval needed',
+    approved: 'Approved',
+    declined: 'Declined',
+    withdrawn: 'Withdrawn',
+  };
+  record.approval.textContent = labels[decision] || '';
+  record.approval.hidden = !labels[decision];
 }
 
 function finishToolRow(event) {
   const record = toolRows.get(`${event.runId}:${event.toolCallId}`);
   if (!record) return;
+  record.label.textContent = event.label || record.label.textContent;
   record.state.textContent = event.status === 'failed' ? '×' : '✓';
   record.row.classList.toggle('failed', event.status === 'failed');
+  if (event.status === 'failed') {
+    record.row.title = formatToolError(event.errorCode);
+    record.label.textContent = `${record.label.textContent} — ${formatToolError(event.errorCode)}`;
+  }
+  updateToolApproval(event.runId, event.toolCallId, event.approval);
 }
 
 function finishTurnView(runId, event = {}) {
@@ -1282,10 +1373,12 @@ function finishTurnView(runId, event = {}) {
   if (actionCount > 0) {
     view.activity.hidden = false;
     view.activity.open = false;
-    view.activitySummary.textContent = `Worked for ${formatDuration(event.durationMs)} · ${actionCount} ${actionCount === 1 ? 'action' : 'actions'}`;
+    const outcomeLabel = outcomeSummaryLabel(event.outcome);
+    view.activitySummary.textContent = `Worked for ${formatDuration(event.durationMs)} · ${actionCount} ${actionCount === 1 ? 'action' : 'actions'}${outcomeLabel ? ` · ${outcomeLabel}` : ''}`;
   } else {
     view.activity.hidden = true;
   }
+  renderTurnOutcome(view, event.outcome);
   if (event.status === 'completed') renderAssistantMarkdown(view);
 }
 
@@ -1491,9 +1584,20 @@ function handleAgentEvent(event) {
     elements.emptyState.hidden = true;
   } else if (event.type === 'tool_started') {
     addToolRow(event);
+    const view = turnView(event.runId);
+    if (view && event.intent) view.activitySummary.textContent = event.intent;
+    setMessage(elements.runMessage, event.intent || 'Agent is working in the browser…');
     elements.emptyState.hidden = true;
   } else if (event.type === 'tool_finished') {
     finishToolRow(event);
+    if (event.status === 'failed') {
+      setMessage(
+        elements.runMessage,
+        `${formatToolError(event.errorCode)}. Agent is deciding how to recover.`
+      );
+    } else if (event.label) {
+      setMessage(elements.runMessage, event.label);
+    }
     void refreshWorkspaceProjection();
   } else if (event.type === 'run_retrying') {
     setMessage(elements.runMessage, `Provider retry ${event.attempt} of ${event.maxAttempts}…`);
@@ -1508,12 +1612,14 @@ function handleAgentEvent(event) {
       event.status === 'failed'
     );
   } else if (event.type === 'approval_requested') {
+    updateToolApproval(event.runId, event.toolCallId, 'requested');
     renderApproval(event);
     setRunState('running', 'Approval needed');
   } else if (
     event.type === 'approval_resolved' &&
     pendingApproval?.approvalId === event.approvalId
   ) {
+    updateToolApproval(event.runId, event.toolCallId, event.decision);
     clearApproval();
     setRunState('running', 'Running');
   } else if (event.type === 'run_pausing') {

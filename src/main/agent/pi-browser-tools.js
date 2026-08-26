@@ -6,6 +6,8 @@ const {
   PRESS_KEYS,
 } = require('../automation/contract/operations');
 const { ERROR_CODES } = require('../automation/contract/errors');
+const { originScopeForUrl } = require('../automation/origin-scoped-controller');
+const { createToolReceipt } = require('./agent-progress');
 const { loadPiSdk, validatePiSdk } = require('./pi-sdk');
 
 const EMPTY_PARAMETERS = Object.freeze({
@@ -297,6 +299,7 @@ async function createFreedomBrowserTools(options = {}) {
 
   const sdk = validatePiSdk(options.sdk || (await loadPiSdk()));
   const tabState = { currentTabId: options.tabId };
+  const pageOrigins = new Map();
   return TOOL_SPECS.map((spec) =>
     sdk.defineTool({
       name: spec.operation,
@@ -329,19 +332,47 @@ async function createFreedomBrowserTools(options = {}) {
           } else if (spec.operation === OPERATIONS.FOCUS_TAB) {
             tabState.currentTabId = params.tabId;
           }
+          if (spec.operation === OPERATIONS.LIST_TABS) {
+            for (const tab of result.details.envelope?.result?.tabs || []) {
+              const origin = originScopeForUrl(tab?.url);
+              if (typeof tab?.tabId === 'string' && origin) pageOrigins.set(tab.tabId, origin);
+            }
+          }
+          const resultTabId =
+            result.details.envelope?.result?.tab?.tabId ||
+            result.details.envelope?.tabId ||
+            activeTabId ||
+            targetTabId;
+          const receipt = createToolReceipt(spec.operation, {
+            envelope: result.details.envelope,
+            pageId: resultTabId,
+            origin: pageOrigins.get(resultTabId),
+            requestedUrl: params.url,
+          });
+          if (receipt.pageId && receipt.origin) pageOrigins.set(receipt.pageId, receipt.origin);
           notifyToolOutcome(options.onToolOutcome, {
             toolCallId,
             operation: spec.operation,
             status: 'succeeded',
             ...(typeof targetTabId === 'string' && { tabId: targetTabId }),
+            ...receipt,
           });
+          if (spec.operation === OPERATIONS.CLOSE_TAB && typeof targetTabId === 'string') {
+            pageOrigins.delete(targetTabId);
+          }
           return result;
         } catch (error) {
+          const receipt = createToolReceipt(spec.operation, {
+            pageId: targetTabId,
+            origin: pageOrigins.get(targetTabId),
+            requestedUrl: params.url,
+          });
           notifyToolOutcome(options.onToolOutcome, {
             toolCallId,
             operation: spec.operation,
             status: 'failed',
             ...(typeof targetTabId === 'string' && { tabId: targetTabId }),
+            ...receipt,
             errorCode:
               error instanceof FreedomBrowserToolError ? error.code : ERROR_CODES.INTERNAL_ERROR,
           });

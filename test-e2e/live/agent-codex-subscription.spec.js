@@ -200,7 +200,7 @@ test('Take over cancels a real Codex declarative browser wait', async ({ window 
     window,
     `Use browser_wait to wait for the exact text "${WAIT_SENTINEL}" for 30000 milliseconds. Do not answer or perform another action until that wait finishes.`
   );
-  const waitRow = window.locator('.agent-tool-item').filter({ hasText: 'wait' }).last();
+  const waitRow = window.locator('.agent-tool-item').filter({ hasText: /wait/i }).last();
   await expect(waitRow).toBeVisible({ timeout: 2 * 60_000 });
   const startedAt = Date.now();
   await window.locator('#agent-stop').click();

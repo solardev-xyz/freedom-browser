@@ -66,7 +66,20 @@ describe('AgentSessionHistoryStore', () => {
       status: 'completed',
       durationMs: 350,
       activity: [
-        { toolCallId: 'call_1', operation: 'browser_snapshot', status: 'succeeded' },
+        {
+          toolCallId: 'call_1',
+          operation: 'browser_snapshot',
+          status: 'succeeded',
+          label: 'Read https://example.test',
+          intent: 'Reading https://example.test',
+          effect: 'observed',
+          approval: 'approved',
+          origin: 'https://example.test',
+          destinationOrigin: 'https://submit.example/private?token=secret',
+          pageId: 'tab_1',
+          pageCount: 1,
+          pageText: 'not persisted',
+        },
       ],
       guidance: [
         {
@@ -99,7 +112,19 @@ describe('AgentSessionHistoryStore', () => {
           status: 'completed',
           durationMs: 350,
           activity: [
-            { toolCallId: 'call_1', operation: 'browser_snapshot', status: 'succeeded' },
+            {
+              toolCallId: 'call_1',
+              operation: 'browser_snapshot',
+              status: 'succeeded',
+              label: 'Read https://example.test',
+              intent: 'Reading https://example.test',
+              effect: 'observed',
+              approval: 'approved',
+              origin: 'https://example.test',
+              destinationOrigin: 'https://submit.example',
+              pageId: 'tab_1',
+              pageCount: 1,
+            },
           ],
           guidance: [
             {

@@ -4,6 +4,7 @@ const path = require('path');
 const Database = require('better-sqlite3');
 const log = require('../logger');
 const { normalizeAgentApprovalMode } = require('../../shared/agent-approval-modes');
+const { originScopeForUrl } = require('../automation/origin-scoped-controller');
 
 const DB_FILE = 'agent-history.sqlite';
 const SCHEMA_VERSION = 2;
@@ -12,6 +13,8 @@ const MAX_MODEL_FIELD_LENGTH = 240;
 const SESSION_STATUSES = new Set(['running', 'ready', 'interrupted', 'failed', 'cancelled']);
 const TURN_STATUSES = new Set(['running', 'completed', 'interrupted', 'failed', 'cancelled']);
 const GUIDANCE_STATUSES = new Set(['queued', 'applying', 'applied', 'cancelled']);
+const ACTIVITY_EFFECTS = new Set(['observed', 'changed', 'managed']);
+const ACTIVITY_APPROVALS = new Set(['requested', 'approved', 'declined', 'withdrawn']);
 
 function requiredString(value, label, maxLength) {
   if (typeof value !== 'string' || !value.trim()) {
@@ -49,16 +52,35 @@ function normalizeActivity(activity) {
   return activity
     .filter((item) => item && typeof item === 'object')
     .slice(0, 2_000)
-    .map((item) => ({
-      toolCallId: optionalString(item.toolCallId, 160) || '',
-      operation: optionalString(item.operation, 120) || '',
-      status: ['running', 'succeeded', 'failed'].includes(item.status)
-        ? item.status
-        : 'failed',
-      ...(typeof item.errorCode === 'string' && item.errorCode.length <= 120
-        ? { errorCode: item.errorCode }
-        : {}),
-    }));
+    .map((item) => {
+      const label = optionalString(item.label, 240);
+      const intent = optionalString(item.intent, 240);
+      const origin = originScopeForUrl(optionalString(item.origin, 512));
+      const destinationOrigin = originScopeForUrl(
+        optionalString(item.destinationOrigin, 512)
+      );
+      const pageId = optionalString(item.pageId, 160);
+      return {
+        toolCallId: optionalString(item.toolCallId, 160) || '',
+        operation: optionalString(item.operation, 120) || '',
+        status: ['running', 'succeeded', 'failed'].includes(item.status)
+          ? item.status
+          : 'failed',
+        ...(label && { label }),
+        ...(intent && { intent }),
+        ...(ACTIVITY_EFFECTS.has(item.effect) && { effect: item.effect }),
+        ...(ACTIVITY_APPROVALS.has(item.approval) && { approval: item.approval }),
+        ...(origin && { origin }),
+        ...(destinationOrigin && { destinationOrigin }),
+        ...(pageId && { pageId }),
+        ...(Number.isSafeInteger(item.pageCount) && item.pageCount >= 0
+          ? { pageCount: item.pageCount }
+          : {}),
+        ...(typeof item.errorCode === 'string' && item.errorCode.length <= 120
+          ? { errorCode: item.errorCode }
+          : {}),
+      };
+    });
 }
 
 function normalizeGuidance(guidance) {

@@ -714,6 +714,7 @@ describe('OriginScopedAutomationController', () => {
       operation: OPERATIONS.CLICK,
       tabId: 'tab_assigned',
       origin: 'https://trusted.example',
+      destinationOrigin: 'https://trusted.example',
       label: 'Submit registration',
     });
     expect(controller.execute).toHaveBeenCalledWith(OPERATIONS.CLICK, {
@@ -743,6 +744,7 @@ describe('OriginScopedAutomationController', () => {
       operation: OPERATIONS.PRESS,
       tabId: 'tab_assigned',
       origin: 'https://trusted.example',
+      destinationOrigin: 'https://trusted.example',
       label: 'Submit registration',
     });
     expect(controller.execute).toHaveBeenCalledWith(OPERATIONS.PRESS, {

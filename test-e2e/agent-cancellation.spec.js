@@ -396,7 +396,10 @@ test('Pause preserves the Pi session and resume re-observes the page', async ({
   await window.locator('#agent-resume').click();
   await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 5_000 });
   await expect(window.locator('#agent-output')).toContainText('RESUMED');
-  await expect(window.locator('.agent-tool-item')).toContainText(['get tab', 'snapshot']);
+  await expect(window.locator('.agent-tool-item')).toContainText([
+    'Checked https://agent-cancellation.test',
+    'Read https://agent-cancellation.test',
+  ]);
   await expect(window.locator('[data-test="tab"].active')).not.toHaveClass(/agent-controlled/);
 });
 
@@ -446,7 +449,7 @@ test('Pause cancels an active browser wait and the same run can resume', async (
   await configureFixtureProvider(window);
   await window.locator('#agent-prompt').fill('WAIT_CANCEL');
   await window.locator('#agent-run').click();
-  await expect(window.locator('.agent-tool-item')).toContainText('wait');
+  await expect(window.locator('.agent-tool-item')).toContainText('Waiting for');
 
   await window.locator('#agent-pause').click();
   await expect(window.locator('#agent-run-status')).toHaveText('Paused', { timeout: 3_000 });
@@ -615,7 +618,7 @@ test('Take over cancels an in-flight browser navigation', async ({ window, harne
   await configureFixtureProvider(window);
   await window.locator('#agent-prompt').fill('NAV_CANCEL');
   await window.locator('#agent-run').click();
-  await expect(window.locator('.agent-tool-item')).toContainText('navigate');
+  await expect(window.locator('.agent-tool-item')).toContainText('Navigating to');
   await expect
     .poll(async () => (await harness.state()).contentActivity[SLOW_NAVIGATION_URL]?.started)
     .toBe(1);
@@ -632,7 +635,7 @@ test('Take over cancels an active declarative wait', async ({ window, harness })
   await configureFixtureProvider(window);
   await window.locator('#agent-prompt').fill('WAIT_CANCEL');
   await window.locator('#agent-run').click();
-  await expect(window.locator('.agent-tool-item')).toContainText('wait');
+  await expect(window.locator('.agent-tool-item')).toContainText('Waiting for');
 
   await takeOverAndExpectReusable(window);
 });

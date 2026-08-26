@@ -725,6 +725,131 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-approval-mode-button'].disabled).toBe(false);
   });
 
+  test('shows live browser intent and trusted completion evidence', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Update the profile';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({
+      type: 'run_started',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      userText: 'Update the profile',
+    });
+    ctx.emit({
+      type: 'tool_started',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      toolCallId: 'tool_snapshot',
+      operation: 'browser_snapshot',
+      intent: 'Reading https://example.test',
+      label: 'Read https://example.test',
+    });
+
+    expect(ctx.elements['agent-run-message'].textContent).toBe(
+      'Reading https://example.test'
+    );
+    const liveActivity = ctx.elements['agent-transcript'].querySelector('.agent-turn-activity');
+    expect(liveActivity.children[0].textContent).toBe('Reading https://example.test');
+
+    ctx.emit({
+      type: 'tool_finished',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      toolCallId: 'tool_snapshot',
+      operation: 'browser_snapshot',
+      status: 'succeeded',
+      label: 'Read https://example.test',
+    });
+    ctx.emit({
+      type: 'run_finished',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      status: 'completed',
+      durationMs: 4_000,
+      actionCount: 1,
+      outcome: {
+        kind: 'completed',
+        verification: 'browser_observed',
+        tone: 'success',
+        headline: 'Browser state inspected',
+        detail: 'Freedom recorded 1 successful browser action. No browser change was made.',
+      },
+    });
+
+    const outcome = ctx.elements['agent-transcript'].querySelector('.agent-turn-outcome');
+    expect(outcome.hidden).toBe(false);
+    expect(outcome.classList.contains('success')).toBe(true);
+    expect(outcome.children[1].children[0].textContent).toBe('Browser state inspected');
+    expect(outcome.children[1].children[1].textContent).toContain(
+      'Freedom recorded 1 successful browser action'
+    );
+    expect(liveActivity.children[0].textContent).toBe(
+      'Worked for 4s · 1 action · Browser inspected'
+    );
+  });
+
+  test('explains partial failure and does not present an unsafe blind retry', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Submit the application';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({
+      type: 'run_started',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      userText: 'Submit the application',
+    });
+    ctx.emit({
+      type: 'tool_started',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      toolCallId: 'tool_click',
+      operation: 'browser_click',
+      label: 'Clicking on https://example.test',
+    });
+    ctx.emit({
+      type: 'tool_finished',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      toolCallId: 'tool_click',
+      operation: 'browser_click',
+      status: 'failed',
+      errorCode: 'STALE_ELEMENT_REFERENCE',
+      label: 'Clicked on https://example.test',
+    });
+    expect(ctx.elements['agent-run-message'].textContent).toContain(
+      'Page changed before this could run'
+    );
+    ctx.emit({
+      type: 'run_finished',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      status: 'failed',
+      durationMs: 2_000,
+      actionCount: 1,
+      error: { code: 'PROVIDER_ERROR', message: 'The model provider request failed' },
+      outcome: {
+        kind: 'recovery',
+        verification: 'partial',
+        tone: 'danger',
+        headline: 'Agent stopped before completion',
+        detail: 'The model connection failed. 1 earlier browser change remains in place.',
+        nextStep: 'Review the Agent tabs, then tell Agent what to continue or redo.',
+        retrySafety: 'review',
+      },
+    });
+
+    const outcome = ctx.elements['agent-transcript'].querySelector('.agent-turn-outcome');
+    expect(outcome.classList.contains('danger')).toBe(true);
+    expect(outcome.children[1].children[0].textContent).toBe('Agent stopped before completion');
+    expect(outcome.children[1].children[2].textContent).toContain('Review the Agent tabs');
+    expect(outcome.children[1].children[2].textContent).not.toContain('safely try');
+    expect(
+      ctx.elements['agent-transcript'].querySelector('.agent-tool-item').children[1].textContent
+    ).toContain('Page changed before this could run');
+  });
+
   test('restores an idle in-memory conversation when the sidebar UI reloads', async () => {
     const ctx = await loadAgentUi({
       electronAPI: {
@@ -1332,17 +1457,32 @@ describe('Agent UI', () => {
     await flush();
     ctx.emit({ type: 'run_started', runId: 'run_test' });
     ctx.emit({
+      type: 'tool_started',
+      runId: 'run_test',
+      toolCallId: 'tool_approval',
+      operation: 'browser_click',
+      intent: 'Clicking on the current page',
+    });
+    ctx.emit({
       type: 'approval_requested',
       runId: 'run_test',
       approvalId: 'approval_test',
       action: 'form_submission',
+      toolCallId: 'tool_approval',
     });
+    expect(
+      ctx.elements['agent-transcript'].querySelector('.agent-tool-approval').textContent
+    ).toBe('Approval needed');
     ctx.emit({
       type: 'approval_resolved',
       runId: 'run_test',
       approvalId: 'approval_test',
       decision: 'withdrawn',
+      toolCallId: 'tool_approval',
     });
+    expect(
+      ctx.elements['agent-transcript'].querySelector('.agent-tool-approval').textContent
+    ).toBe('Withdrawn');
     ctx.emit({ type: 'run_pausing', runId: 'run_test' });
     ctx.emit({ type: 'run_paused', runId: 'run_test' });
 
@@ -1370,6 +1510,7 @@ describe('Agent UI', () => {
       approvalId: 'approval_test',
       action: 'form_submission',
       origin: 'https://trusted.example',
+      destinationOrigin: 'https://submit.example',
       label: '<img src=x onerror=alert(1)>',
     });
 
@@ -1380,6 +1521,9 @@ describe('Agent UI', () => {
     );
     expect(ctx.elements['agent-approval-action'].children).toHaveLength(0);
     expect(ctx.elements['agent-approval-origin'].textContent).toContain('https://trusted.example');
+    expect(ctx.elements['agent-approval-origin'].textContent).toContain(
+      'Destination: https://submit.example'
+    );
 
     ctx.elements['agent-approval-approve'].dispatch('click');
     await flush();

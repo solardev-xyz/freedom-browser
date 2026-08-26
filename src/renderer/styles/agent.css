@@ -1667,6 +1667,7 @@ body.agent-first-mode .agent-composer textarea {
 .agent-approval .agent-approval-origin {
   color: var(--muted);
   font-size: 11px;
+  white-space: pre-line;
 }
 
 .agent-approval .agent-message {
@@ -1792,6 +1793,63 @@ body.agent-first-mode .agent-composer textarea {
   font-size: 11px;
 }
 
+.agent-turn-outcome {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  padding: 9px 10px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 34%, transparent);
+  border-radius: 9px;
+}
+
+.agent-turn-outcome[hidden] {
+  display: none;
+}
+
+.agent-turn-outcome-icon {
+  display: grid;
+  width: 17px;
+  height: 17px;
+  flex: 0 0 17px;
+  place-items: center;
+  color: var(--accent);
+  font-weight: 700;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+}
+
+.agent-turn-outcome.caution .agent-turn-outcome-icon {
+  color: #d6a85f;
+}
+
+.agent-turn-outcome.danger .agent-turn-outcome-icon {
+  color: #ff8b8b;
+}
+
+.agent-turn-outcome.neutral .agent-turn-outcome-icon {
+  color: var(--muted);
+}
+
+.agent-turn-outcome-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.agent-turn-outcome-copy strong {
+  color: var(--text);
+  font-size: 11px;
+}
+
+.agent-turn-outcome-next {
+  margin-top: 2px;
+  color: var(--text);
+}
+
 .agent-turn-activity summary {
   width: fit-content;
   cursor: pointer;
@@ -1822,6 +1880,19 @@ body.agent-first-mode .agent-composer textarea {
   width: 14px;
   color: var(--accent);
   text-align: center;
+}
+
+.agent-tool-approval {
+  padding: 1px 5px;
+  margin-left: auto;
+  color: var(--muted);
+  white-space: nowrap;
+  border: 1px solid color-mix(in srgb, var(--border) 42%, transparent);
+  border-radius: 999px;
+}
+
+.agent-tool-approval[hidden] {
+  display: none;
 }
 
 .agent-tool-item.failed .agent-tool-state {

@@ -187,6 +187,9 @@ describe('FreedomAgentService', () => {
         type: 'tool_started',
         toolCallId: 'call_1',
         operation: 'browser_snapshot',
+        intent: 'Reading the current page',
+        label: 'Read the current page',
+        effect: 'observed',
       },
       {
         version: AGENT_EVENT_VERSION,
@@ -197,6 +200,9 @@ describe('FreedomAgentService', () => {
         toolCallId: 'call_1',
         operation: 'browser_snapshot',
         status: 'succeeded',
+        intent: 'Reading the current page',
+        label: 'Read the current page',
+        effect: 'observed',
       },
       {
         version: AGENT_EVENT_VERSION,
@@ -208,6 +214,22 @@ describe('FreedomAgentService', () => {
         durationMs: 0,
         actionCount: 1,
         failedActionCount: 0,
+        outcome: {
+          kind: 'completed',
+          verification: 'browser_observed',
+          tone: 'success',
+          headline: 'Browser state inspected',
+          detail: 'Freedom recorded 1 successful browser action. No browser change was made.',
+          destinations: [],
+          counts: {
+            successful: 1,
+            failed: 0,
+            changed: 0,
+            observed: 1,
+            pages: 0,
+            approvals: { requested: 0, approved: 0, declined: 0, withdrawn: 0 },
+          },
+        },
       },
     ]);
     expect(fake.unsubscribe).not.toHaveBeenCalled();
@@ -546,6 +568,9 @@ describe('FreedomAgentService', () => {
           toolCallId: 'call_1',
           operation: 'browser_snapshot',
           status: 'running',
+          label: 'Read the current page',
+          intent: 'Reading the current page',
+          effect: 'observed',
         },
       ],
       guidance: [],
@@ -643,12 +668,21 @@ describe('FreedomAgentService', () => {
     service.subscribe((event) => events.push(event));
     await service.start(startOptions());
 
+    fake.emit({
+      type: 'tool_execution_start',
+      toolCallId: 'call_approval',
+      toolName: 'browser_click',
+      args: { ref: 'snapshot_ref' },
+    });
+
     const requestApproval = dependencies.createControllerScope.mock.calls[0][0].requestApproval;
     const decision = requestApproval({
       action: 'form_submission',
       operation: 'browser_click',
       origin: 'https://trusted.example',
+      destinationOrigin: 'https://submit.example/path?private=yes',
       label: 'Submit registration',
+      toolCallId: 'call_approval',
     });
     const approval = events.at(-1);
 
@@ -657,7 +691,9 @@ describe('FreedomAgentService', () => {
       action: 'form_submission',
       operation: 'browser_click',
       origin: 'https://trusted.example',
+      destinationOrigin: 'https://submit.example',
       label: 'Submit registration',
+      toolCallId: 'call_approval',
     });
     expect(service.getState()).toMatchObject({
       pendingApproval: { approvalId: approval.approvalId },
@@ -684,6 +720,19 @@ describe('FreedomAgentService', () => {
       type: 'approval_resolved',
       approvalId: approval.approvalId,
       decision: 'approved',
+      toolCallId: 'call_approval',
+    });
+    expect(service.getState()).toMatchObject({
+      transcript: [
+        expect.objectContaining({
+          activity: [
+            expect.objectContaining({
+              approval: 'approved',
+              destinationOrigin: 'https://submit.example',
+            }),
+          ],
+        }),
+      ],
     });
 
     await service.stop('run_test');

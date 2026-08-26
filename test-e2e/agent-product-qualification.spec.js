@@ -552,6 +552,12 @@ test('baseline: same-origin multi-page research passes with attributable evidenc
   expect(result.assistantOutput).toContain(URLS.researchMeridian);
   expect(result.assistantOutput).toContain('6 credits more');
   expect(result.finalUrl).toBe(URLS.researchMeridian);
+  await expect(window.locator('.agent-turn-outcome').last()).toContainText(
+    'Result checked in the browser'
+  );
+  await expect(window.locator('.agent-turn-activity summary').last()).toContainText(
+    'Result checked'
+  );
   expect(operations).toEqual([
     'browser_snapshot',
     'browser_navigate',
@@ -635,6 +641,12 @@ test('baseline: rich form passes with semantic select and bounded keyboard capab
       keysTrusted: ['ArrowDown=true', 'Enter=true'],
     },
   });
+  await expect(window.locator('.agent-turn-outcome').last()).toContainText(
+    'Browser actions recorded'
+  );
+  await expect(window.locator('.agent-turn-outcome').last()).toContainText(
+    'did not recheck the page after its last change'
+  );
   expect(operations).toEqual([
     'browser_snapshot',
     'browser_select',
@@ -682,6 +694,9 @@ test('baseline: Pause, human edit, Resume, and fresh approval preserve collabora
   await expect(window.locator('#agent-approval-action')).toContainText('Contact email');
   await window.locator('#agent-approval-approve').click();
   await expect(window.locator('#agent-approval-action')).toContainText('Submit application');
+  await expect(window.locator('#agent-approval-origin')).toContainText(
+    'Destination: https://agent-product.test'
+  );
   await window.locator('#agent-pause').click();
   await expect(window.locator('#agent-run-status')).toHaveText('Paused', { timeout: 5_000 });
   await expect(window.locator('#agent-approval')).toBeHidden();
@@ -712,6 +727,9 @@ test('baseline: Pause, human edit, Resume, and fresh approval preserve collabora
 
   expect(confirmation).toBe('Submitted human-edited@example.test — trusted click=true');
   expect(result.assistantOutput).toContain('human-edited application');
+  await expect(window.locator('.agent-turn-outcome').last()).toContainText(
+    'Approved destination: https://agent-product.test'
+  );
   expect(operations).toEqual([
     'browser_snapshot',
     'browser_type',

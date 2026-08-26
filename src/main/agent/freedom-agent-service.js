@@ -12,8 +12,10 @@ const { ERROR_CODES } = require('../automation/contract/errors');
 const log = require('../logger');
 const {
   createOriginScopedAutomationController,
+  originScopeForUrl,
 } = require('../automation/origin-scoped-controller');
 const { createFreedomBrowserTools } = require('./pi-browser-tools');
+const { activityProgress, buildAgentOutcome } = require('./agent-progress');
 const { loadPiSdk } = require('./pi-sdk');
 const {
   createIsolatedPiSession,
@@ -175,20 +177,29 @@ function normalizePiEvent(event, toolOutcome) {
     return { type: 'assistant_text_delta', text: event.assistantMessageEvent.delta };
   }
   if (event.type === 'tool_execution_start') {
+    const progress = activityProgress(String(event.toolName), {
+      origin:
+        event.toolName === 'browser_create_tab' || event.toolName === 'browser_navigate'
+          ? event.args?.url
+          : undefined,
+    });
     return {
       type: 'tool_started',
       toolCallId: String(event.toolCallId),
       operation: String(event.toolName),
+      ...progress,
     };
   }
   if (event.type === 'tool_execution_end') {
     const errorCode =
       event.isError && toolOutcome?.status === 'failed' ? toolOutcome.errorCode : undefined;
+    const progress = toolOutcome?.progress || activityProgress(String(event.toolName));
     return {
       type: 'tool_finished',
       toolCallId: String(event.toolCallId),
       operation: String(event.toolName),
       status: event.isError ? 'failed' : 'succeeded',
+      ...progress,
       ...(errorCode && { errorCode }),
     };
   }
@@ -225,7 +236,8 @@ function normalizeApprovalRequest(request) {
     action:
       request?.action === 'form_submission' ? 'form_submission' : 'browser_interaction',
     operation: typeof request?.operation === 'string' ? request.operation.slice(0, 80) : '',
-    origin: typeof request?.origin === 'string' ? request.origin.slice(0, 512) : '',
+    origin: originScopeForUrl(request?.origin) || '',
+    destinationOrigin: originScopeForUrl(request?.destinationOrigin) || '',
     label: typeof request?.label === 'string' ? request.label.slice(0, 160) : '',
   });
 }
@@ -298,6 +310,7 @@ class FreedomAgentService {
       ...(Number.isFinite(turn.durationMs) && { durationMs: turn.durationMs }),
       activity: turn.activity.map((item) => ({ ...item })),
       guidance: turn.guidance.map((item) => ({ ...item })),
+      outcome: turn.outcome || buildAgentOutcome(turn.activity, turn.status, turn.error),
       ...(turn.error && { error: turn.error }),
     }));
     if (!this.activeRun) {
@@ -918,6 +931,14 @@ class FreedomAgentService {
         toolCallId: normalized.toolCallId,
         operation: normalized.operation,
         status: 'running',
+        label: normalized.label,
+        intent: normalized.intent,
+        effect: normalized.effect,
+        ...(normalized.origin && { origin: normalized.origin }),
+        ...(normalized.pageId && { pageId: normalized.pageId }),
+        ...(Number.isSafeInteger(normalized.pageCount) && {
+          pageCount: normalized.pageCount,
+        }),
       });
     } else if (normalized.type === 'tool_finished') {
       const item = run.activity.find(
@@ -925,7 +946,14 @@ class FreedomAgentService {
       );
       if (item) {
         item.status = normalized.status;
+        item.label = normalized.label;
+        item.intent = normalized.intent;
+        item.effect = normalized.effect;
+        if (normalized.origin) item.origin = normalized.origin;
+        if (normalized.pageId) item.pageId = normalized.pageId;
+        if (Number.isSafeInteger(normalized.pageCount)) item.pageCount = normalized.pageCount;
         if (normalized.errorCode) item.errorCode = normalized.errorCode;
+        if (item.approval) normalized.approval = item.approval;
       }
     }
     this.#emit(run, normalized);
@@ -947,6 +975,11 @@ class FreedomAgentService {
       status: outcome.status === 'failed' ? 'failed' : 'succeeded',
       ...(AUTOMATION_ERROR_CODE_SET.has(outcome.errorCode) && {
         errorCode: outcome.errorCode,
+      }),
+      progress: activityProgress(outcome.operation, {
+        origin: outcome.origin,
+        pageId: outcome.pageId || outcome.tabId,
+        pageCount: outcome.pageCount,
       }),
     });
     run.toolOutcomes.set(normalized.toolCallId, normalized);
@@ -992,12 +1025,30 @@ class FreedomAgentService {
       approvalId: opaqueApprovalId(),
       ...normalizeApprovalRequest(request),
     });
+    const activityItem = [...run.activity]
+      .reverse()
+      .find(
+        (item) =>
+          item.status === 'running' &&
+          (!publicRequest.operation || item.operation === publicRequest.operation)
+      );
+    if (activityItem) {
+      activityItem.approval = 'requested';
+      if (publicRequest.destinationOrigin) {
+        activityItem.destinationOrigin = publicRequest.destinationOrigin;
+      }
+    }
     run.pendingApproval = {
       decision,
       publicRequest,
+      ...(activityItem?.toolCallId && { toolCallId: activityItem.toolCallId }),
       ...(typeof request?.tabId === 'string' && { tabId: request.tabId }),
     };
-    this.#emit(run, { type: 'approval_requested', ...publicRequest });
+    this.#emit(run, {
+      type: 'approval_requested',
+      ...publicRequest,
+      ...(activityItem?.toolCallId && { toolCallId: activityItem.toolCallId }),
+    });
     return decision.promise;
   }
 
@@ -1005,11 +1056,16 @@ class FreedomAgentService {
     const pending = run.pendingApproval;
     if (!pending) return;
     run.pendingApproval = null;
+    const activityItem = pending.toolCallId
+      ? run.activity.find((item) => item.toolCallId === pending.toolCallId)
+      : null;
+    if (activityItem) activityItem.approval = decision;
     pending.decision.resolve(decision);
     this.#emit(run, {
       type: 'approval_resolved',
       approvalId: pending.publicRequest.approvalId,
       decision,
+      ...(pending.toolCallId && { toolCallId: pending.toolCallId }),
     });
   }
 
@@ -1036,6 +1092,7 @@ class FreedomAgentService {
     run.status = status;
     run.durationMs = Math.max(0, this.now() - run.startedAt);
     run.error = error;
+    run.outcome = buildAgentOutcome(run.activity, status, error);
     if (this.activeRun === run) this.activeRun = null;
     if (this.conversation?.activeRun === run) this.conversation.activeRun = null;
     this.#emit(run, {
@@ -1044,6 +1101,7 @@ class FreedomAgentService {
       durationMs: run.durationMs,
       actionCount: run.activity.length,
       failedActionCount: run.activity.filter((item) => item.status === 'failed').length,
+      outcome: run.outcome,
       ...(error && { error }),
     });
     this.#persistHistory('finishTurn', {
