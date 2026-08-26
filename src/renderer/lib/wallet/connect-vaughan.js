@@ -9,7 +9,7 @@
 
 import { walletState, registerScreenHider } from './wallet-state.js';
 import { refuseSubscreenWhileInFlight } from './signature-flight.js';
-import { loadDerivedWallets, updateWalletSelectorDisplay } from './wallet-selector.js';
+import { loadDerivedWallets, activateAddedWallet } from './wallet-selector.js';
 import { refreshBalances } from './balance-display.js';
 import { escapeHtml, truncateAddress } from './wallet-utils.js';
 
@@ -221,17 +221,10 @@ async function handleAddAccount() {
     }
 
     accountAdded = true;
-    walletState.derivedWallets.push(result.wallet);
-
     if (resultName) resultName.textContent = result.wallet.name;
     if (resultAddress) resultAddress.textContent = result.wallet.address;
 
-    const activated = await window.wallet.setActiveWallet(result.wallet.index);
-    if (activated.success) {
-      walletState.activeWalletIndex = result.wallet.index;
-      updateWalletSelectorDisplay(result.wallet);
-      walletState.fullAddresses.wallet = result.wallet.address || '';
-    }
+    await activateAddedWallet(result.wallet);
 
     showStep('success');
   } catch (err) {

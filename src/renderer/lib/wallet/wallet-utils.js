@@ -50,11 +50,16 @@ export function isExternalSignerAccount(walletIndex) {
  * build their copy from.
  */
 export function deviceLabel(walletIndex) {
-  return { ledger: 'your Ledger', remote: 'your phone', vaughan: 'Vaughan' }[accountType(walletIndex)] || null;
+  return {
+    ledger: 'your Ledger',
+    remote: 'your phone',
+    vaughan: 'Vaughan',
+  }[accountType(walletIndex)] || null;
 }
 
 /** Pending label for approve buttons while a signature is in flight. */
 export function signingButtonLabel(walletIndex) {
+  if (isVaughanAccount(walletIndex)) return 'Confirm in Vaughan…';
   const label = deviceLabel(walletIndex);
   return label ? `Confirm on ${label}…` : 'Signing…';
 }
