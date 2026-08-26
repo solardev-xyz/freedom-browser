@@ -415,7 +415,7 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
       .querySelector('[data-test="tab"].active')
       .classList.contains('agent-controlled');
   });
-  expect(tabMarkedAtStart).toBe(true);
+  expect(tabMarkedAtStart).toBe(false);
 
   await expect(window.locator('#agent-run-status')).toHaveText('failed', { timeout: 15_000 });
   await expect(window.locator('#agent-run-message')).toHaveText(
@@ -441,7 +441,7 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
   await expect(window.locator('#agent-session-list')).toContainText('Summarize this page');
   await window.locator('#agent-session-list .agent-session-select').click();
   await expect(window.locator('.agent-user-message')).toHaveText('Summarize this page');
-  await expect(window.locator('#agent-task-page-count')).toHaveText('1');
+  await expect(window.locator('#agent-task-page-count')).toHaveText('0');
   await expect(window.locator('#agent-run-message')).toContainText('Live conversation');
 
   const userDataDir = await electronApp.evaluate(({ app }) => app.getPath('userData'));

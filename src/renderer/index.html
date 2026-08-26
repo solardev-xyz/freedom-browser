@@ -1538,6 +1538,32 @@
 
             <div class="agent-composer-wrap">
               <div class="agent-composer">
+                <div id="agent-page-contexts" class="agent-composer-contexts" hidden>
+                  <button
+                    id="agent-page-context"
+                    class="agent-page-context"
+                    type="button"
+                    aria-label="Remove current page from this conversation"
+                    title="Remove current page"
+                  >
+                    <svg
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.7"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      aria-hidden="true"
+                    >
+                      <circle cx="12" cy="12" r="9" />
+                      <path d="M3 12h18" />
+                      <path d="M12 3a15 15 0 0 1 0 18" />
+                      <path d="M12 3a15 15 0 0 0 0 18" />
+                    </svg>
+                    <span id="agent-page-context-label"></span>
+                    <span class="agent-page-context-remove" aria-hidden="true">×</span>
+                  </button>
+                </div>
                 <label class="agent-composer-input">
                   <span class="sr-only">Task for the agent</span>
                   <textarea

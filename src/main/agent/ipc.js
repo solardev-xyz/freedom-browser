@@ -75,10 +75,14 @@ function validateStartPayload(payload) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
     throw new FreedomAgentError(AGENT_ERROR_CODES.INVALID_ARGUMENT, 'Agent input is required');
   }
-  if (!Number.isSafeInteger(payload.rendererTabId) || payload.rendererTabId < 1) {
+  if (
+    payload.rendererTabId !== null &&
+    payload.rendererTabId !== undefined &&
+    (!Number.isSafeInteger(payload.rendererTabId) || payload.rendererTabId < 1)
+  ) {
     throw new FreedomAgentError(
       AGENT_ERROR_CODES.INVALID_ARGUMENT,
-      'Agent input requires a valid renderer tab ID'
+      'Agent input requires a valid renderer tab ID or no shared page'
     );
   }
   if (typeof payload.prompt !== 'string' || !payload.prompt.trim()) {
@@ -94,7 +98,11 @@ function validateStartPayload(payload) {
       'Agent input requires a supported approval mode'
     );
   }
-  return { rendererTabId: payload.rendererTabId, prompt: payload.prompt, approvalMode };
+  return {
+    rendererTabId: Number.isSafeInteger(payload.rendererTabId) ? payload.rendererTabId : null,
+    prompt: payload.prompt,
+    approvalMode,
+  };
 }
 
 function validateConversationPayload(payload, options = {}) {
@@ -300,8 +308,10 @@ function registerFreedomAgentIpc(options = {}) {
       let resolved;
       const needsRuntime = !continuing || service.getState().runtimeAvailable !== true;
       if (needsRuntime) {
-        tabId = automationTabIdForRenderer(event?.sender, rendererTabId);
-        if (!tabId) {
+        tabId = rendererTabId
+          ? automationTabIdForRenderer(event?.sender, rendererTabId)
+          : null;
+        if (rendererTabId && !tabId) {
           return errorEnvelope(
             AGENT_IPC_ERROR_CODES.TAB_NOT_BOUND,
             'The selected browser tab is not ready for the agent'
@@ -480,9 +490,19 @@ function registerFreedomAgentIpc(options = {}) {
     }
     if (!trusted) return { ok: true, state: { status: 'idle', taskTabs: [], agentTabs: [] } };
     const ownsSelectedConversation = Boolean(owner && owner.sender === event.sender);
+    const selectedState = ownsSelectedConversation ? service.getState() : { status: 'idle' };
     const workspace = ownsSelectedConversation
       ? service.getWorkspaceState()
       : { tabIds: [], activeTabId: null };
+    const sharedPageBinding = ownsSelectedConversation
+      ? desktopBindingForAutomationTab(selectedState.tabId)
+      : null;
+    const sharedPageRendererTabId =
+      sharedPageBinding?.hostWebContents === event.sender &&
+      Number.isSafeInteger(sharedPageBinding.rendererTabId) &&
+      sharedPageBinding.rendererTabId > 0
+        ? sharedPageBinding.rendererTabId
+        : null;
     const taskTabs = [];
     for (const automationTabId of workspace.tabIds) {
       const binding = desktopBindingForAutomationTab(automationTabId);
@@ -518,8 +538,8 @@ function registerFreedomAgentIpc(options = {}) {
     return {
       ok: true,
       state: {
-        ...(ownsSelectedConversation ? service.getState() : { status: 'idle' }),
-        rendererTabId: ownsSelectedConversation ? owner.rendererTabId : null,
+        ...selectedState,
+        rendererTabId: sharedPageRendererTabId,
         taskTabs,
         agentTabs,
       },

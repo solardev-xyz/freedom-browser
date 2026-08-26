@@ -543,7 +543,7 @@ async function handleCompletion(request, response) {
   if (hasUserMarker(messages, 'NAVIGATE_EXTRACT_TASK')) {
     switch (toolResults.length) {
       case 0:
-        emitToolCall(response, 1, 'browser_navigate', { url: NAVIGATION_TARGET_URL });
+        emitToolCall(response, 1, 'browser_create_tab', { url: NAVIGATION_TARGET_URL });
         break;
       case 1:
         emitToolCall(response, 2, 'browser_snapshot', {});
@@ -1147,7 +1147,7 @@ test('Pi fills a form draft without triggering commit approval or submission', a
   expect(operations).toEqual(['browser_snapshot', 'browser_type']);
 });
 
-test('Pi navigates from the browser start page and extracts an exact fact', async ({
+test('Pi leaves the browser start page untouched and extracts a fact in an Agent tab', async ({
   window,
   harness,
 }) => {
@@ -1174,7 +1174,9 @@ test('Pi navigates from the browser start page and extracts an exact fact', asyn
       window.evaluate(() => document.querySelector('webview:not(.hidden)')?.getURL?.() || '')
     )
     .toBe(NAVIGATION_TARGET_URL);
-  expect(operations).toEqual(['browser_navigate', 'browser_snapshot']);
+  await expect(window.locator('[data-test="tab"]')).toHaveCount(2);
+  await expect(window.locator('[data-test="tab"].agent-owned')).toHaveCount(1);
+  expect(operations).toEqual(['browser_create_tab', 'browser_snapshot']);
 });
 
 test('Pi refreshes semantics across an in-page SPA workflow', async ({ window, harness }) => {

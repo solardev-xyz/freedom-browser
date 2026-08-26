@@ -3,6 +3,7 @@ const { test, expect } = require('./fixtures');
 
 const MODEL_ID = 'freedom-cancellation-fixture';
 const SLOW_NAVIGATION_URL = 'https://agent-cancellation.test/slow-navigation';
+const SHARED_START_URL = 'https://agent-cancellation.test/shared-start';
 
 let server;
 let baseUrl;
@@ -156,7 +157,7 @@ async function handleCompletion(request, response) {
 
   if (prompt.includes('CREATE_FIVE_TASK_TABS')) {
     const createdCount = toolResponsesAfterLastUser(body).length;
-    if (createdCount < 4) {
+    if (createdCount < 5) {
       const articleNumber = createdCount + 1;
       writeSse(
         response,
@@ -249,6 +250,22 @@ async function configureFixtureProvider(window) {
   await window.locator('webview:not(.hidden)').waitFor({ state: 'attached' });
 }
 
+async function openSharedStartPage(window, harness) {
+  await harness.setContentFixture(SHARED_START_URL, {
+    body: '<!doctype html><title>Shared start</title><p>Shared Agent context</p>',
+  });
+  const address = window.locator('[data-test="address-input"]');
+  await address.click();
+  await address.fill(SHARED_START_URL);
+  await address.press('Enter');
+  await expect
+    .poll(() =>
+      window.evaluate(() => document.querySelector('webview:not(.hidden)')?.getURL?.() || '')
+    )
+    .toBe(SHARED_START_URL);
+  await expect(window.locator('#agent-page-contexts')).not.toHaveAttribute('hidden', '');
+}
+
 async function takeOverAndExpectReusable(window) {
   const startedAt = Date.now();
   await window.locator('#agent-stop').click();
@@ -306,8 +323,12 @@ test('follow-up prompts retain Pi context and the visible chat across sidebar re
   await expect(window.locator('.agent-output')).toHaveText(['READY', 'CONTEXT_RETAINED']);
 });
 
-test('Pause preserves the Pi session and resume re-observes the page', async ({ window }) => {
+test('Pause preserves the Pi session and resume re-observes the page', async ({
+  window,
+  harness,
+}) => {
   streamingResponseClosed = false;
+  await openSharedStartPage(window, harness);
   await configureFixtureProvider(window);
   await window.locator('#agent-prompt').fill('STREAM_CANCEL');
   await window.locator('#agent-run').click();
@@ -327,7 +348,11 @@ test('Pause preserves the Pi session and resume re-observes the page', async ({ 
   await expect(window.locator('[data-test="tab"].active')).not.toHaveClass(/agent-controlled/);
 });
 
-test('Pause cancels an active browser wait and the same run can resume', async ({ window }) => {
+test('Pause cancels an active browser wait and the same run can resume', async ({
+  window,
+  harness,
+}) => {
+  await openSharedStartPage(window, harness);
   await configureFixtureProvider(window);
   await window.locator('#agent-prompt').fill('WAIT_CANCEL');
   await window.locator('#agent-run').click();
@@ -346,7 +371,7 @@ test('a conversation survives its original and then all task tabs closing', asyn
   window,
   harness,
 }) => {
-  for (let index = 1; index <= 4; index += 1) {
+  for (let index = 1; index <= 5; index += 1) {
     await harness.setContentFixture(`https://agent-tabs.test/article-${index}`, {
       body: `<!doctype html><title>Article ${index}</title><p>Article ${index}</p>`,
     });
@@ -355,11 +380,13 @@ test('a conversation survives its original and then all task tabs closing', asyn
     body: '<!doctype html><title>Fresh workspace</title><p>Fresh workspace</p>',
   });
   await configureFixtureProvider(window);
+  await expect(window.locator('#agent-page-contexts')).toBeHidden();
   await window.locator('#agent-prompt').fill('CREATE_FIVE_TASK_TABS');
   await window.locator('#agent-run').click();
   await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 10_000 });
   await expect(window.locator('#agent-output')).toHaveText('FIVE_TABS_READY');
-  await expect(window.locator('[data-test="tab"]')).toHaveCount(5);
+  await expect(window.locator('[data-test="tab"]')).toHaveCount(6);
+  await expect(window.locator('[data-test="tab"].agent-owned')).toHaveCount(5);
 
   await window.locator('[data-test="agent-first-toggle"]').click();
   await expect(window.locator('#agent-task-page-count')).toHaveText('5');
@@ -399,6 +426,7 @@ test('a conversation survives its original and then all task tabs closing', asyn
   await window.locator('[data-test="tab"]').nth(0).locator('[data-test="tab-close"]').click();
   await window.locator('[data-test="tab"]').nth(0).locator('[data-test="tab-close"]').click();
   await window.locator('[data-test="tab"]').nth(0).locator('[data-test="tab-close"]').click();
+  await window.locator('[data-test="tab"]').nth(0).locator('[data-test="tab-close"]').click();
   await expect(window.locator('[data-test="tab"]')).toHaveCount(2);
 
   await window.locator('#agent-prompt').fill('AFTER_ORIGINAL_CLOSE');
@@ -425,7 +453,7 @@ test('session switching restores live workspaces and Claim transfers Agent tabs'
   window,
   harness,
 }) => {
-  for (let index = 1; index <= 4; index += 1) {
+  for (let index = 1; index <= 5; index += 1) {
     await harness.setContentFixture(`https://agent-tabs.test/article-${index}`, {
       body: `<!doctype html><title>Article ${index}</title><p>Article ${index}</p>`,
     });
@@ -434,8 +462,8 @@ test('session switching restores live workspaces and Claim transfers Agent tabs'
   await window.locator('#agent-prompt').fill('CREATE_FIVE_TASK_TABS');
   await window.locator('#agent-run').click();
   await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 10_000 });
-  await expect(window.locator('[data-test="tab"]')).toHaveCount(5);
-  await expect(window.locator('[data-test="tab"].agent-owned')).toHaveCount(4);
+  await expect(window.locator('[data-test="tab"]')).toHaveCount(6);
+  await expect(window.locator('[data-test="tab"].agent-owned')).toHaveCount(5);
 
   await window.locator('[data-test="agent-first-toggle"]').click();
   await expect(window.locator('#agent-task-page-count')).toHaveText('5');
@@ -443,7 +471,7 @@ test('session switching restores live workspaces and Claim transfers Agent tabs'
   await window.locator('[data-test="agent-first-browser-return"]').click();
 
   await window.locator('[data-test="new-tab-btn"]').click();
-  await expect(window.locator('[data-test="tab"]')).toHaveCount(6);
+  await expect(window.locator('[data-test="tab"]')).toHaveCount(7);
   await window.locator('#agent-new-chat').click();
   await expect(window.locator('#agent-empty-state')).toBeVisible();
   await window.locator('#agent-prompt').fill('SECOND_SESSION');
@@ -452,7 +480,7 @@ test('session switching restores live workspaces and Claim transfers Agent tabs'
 
   await window.locator('[data-test="agent-first-toggle"]').click();
   await expect(window.locator('#agent-session-list .agent-session-row')).toHaveCount(2);
-  await expect(window.locator('#agent-task-page-count')).toHaveText('1');
+  await expect(window.locator('#agent-task-page-count')).toHaveText('0');
 
   const firstSession = window
     .locator('#agent-session-list .agent-session-row')
@@ -466,7 +494,7 @@ test('session switching restores live workspaces and Claim transfers Agent tabs'
   await expect(window.locator('#agent-task-page-count')).toHaveText('5');
   await expect(window.locator('#agent-task-page-list .tab:not([hidden])')).toHaveCount(5);
   await secondSession.click();
-  await expect(window.locator('#agent-task-page-count')).toHaveText('1');
+  await expect(window.locator('#agent-task-page-count')).toHaveText('0');
   await firstSession.click();
   await expect(window.locator('#agent-task-page-count')).toHaveText('5');
   await window.locator('[data-test="agent-first-browser-return"]').click();
@@ -475,7 +503,7 @@ test('session switching restores live workspaces and Claim transfers Agent tabs'
   await claimedTab.click();
   await expect(window.locator('[data-test="address-input"]')).toHaveJSProperty('readOnly', true);
   await claimedTab.locator('[data-test="tab-agent-badge"]').click();
-  await expect(window.locator('[data-test="tab"].agent-owned')).toHaveCount(3);
+  await expect(window.locator('[data-test="tab"].agent-owned')).toHaveCount(4);
   await expect(window.locator('[data-test="address-input"]')).toHaveJSProperty('readOnly', false);
 
   await window.locator('[data-test="agent-first-toggle"]').click();
@@ -493,6 +521,7 @@ test('Take over cancels an in-flight browser navigation', async ({ window, harne
     body: '<!doctype html><title>Still loading</title><p>Navigation started</p>',
     holdOpen: true,
   });
+  await openSharedStartPage(window, harness);
   await configureFixtureProvider(window);
   await window.locator('#agent-prompt').fill('NAV_CANCEL');
   await window.locator('#agent-run').click();
@@ -508,7 +537,8 @@ test('Take over cancels an in-flight browser navigation', async ({ window, harne
     .toBe(1);
 });
 
-test('Take over cancels an active declarative wait', async ({ window }) => {
+test('Take over cancels an active declarative wait', async ({ window, harness }) => {
+  await openSharedStartPage(window, harness);
   await configureFixtureProvider(window);
   await window.locator('#agent-prompt').fill('WAIT_CANCEL');
   await window.locator('#agent-run').click();

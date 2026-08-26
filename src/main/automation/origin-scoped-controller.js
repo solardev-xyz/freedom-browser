@@ -91,7 +91,7 @@ class OriginScopedAutomationController {
     this.controller = controller;
     this.adoptedTabId = tabId;
     this.activeTabId = tabId;
-    this.ownedTabs = new Map([[tabId, { created: false }]]);
+    this.ownedTabs = tabId ? new Map([[tabId, { created: false }]]) : new Map();
     this.workspaceEstablished = Boolean(originScopeForUrl(initialState?.result?.tab?.url));
     this.approvalMode = approvalMode;
     this.lastState = initialState;
@@ -351,6 +351,7 @@ class OriginScopedAutomationController {
       );
     }
     if (!this.#acceptRequestedOrigin(url)) return this.#originDenied(this.lastState);
+    const resumingEmptyWorkspace = this.resumeObservation === 'create_tab';
     let createdTabId;
     try {
       createdTabId = await this.createWorkspacePage(url);
@@ -381,7 +382,7 @@ class OriginScopedAutomationController {
     this.ownedTabs.set(createdTabId, { created: true });
     this.#notifyWorkspaceTabCreated(createdTabId);
     this.activeTabId = createdTabId;
-    this.resumeObservation = 'snapshot';
+    if (resumingEmptyWorkspace) this.resumeObservation = 'snapshot';
     return {
       ...state,
       result: { tab: state.result.tab, activeTabId: createdTabId },
@@ -494,10 +495,14 @@ async function createOriginScopedAutomationController(options = {}) {
   if (typeof options.controller.inspectAction !== 'function') {
     throw new TypeError('Origin-scoped automation requires action inspection');
   }
-  if (typeof options.tabId !== 'string' || !options.tabId.trim()) {
-    throw new TypeError('Origin-scoped automation requires a tabId');
+  if (
+    options.tabId !== null &&
+    options.tabId !== undefined &&
+    (typeof options.tabId !== 'string' || !options.tabId.trim())
+  ) {
+    throw new TypeError('Origin-scoped automation requires a valid tabId or an empty workspace');
   }
-  if (options.tabId !== options.tabId.trim()) {
+  if (typeof options.tabId === 'string' && options.tabId !== options.tabId.trim()) {
     throw new TypeError('Origin-scoped automation tabId cannot contain surrounding whitespace');
   }
   if (
@@ -520,11 +525,14 @@ async function createOriginScopedAutomationController(options = {}) {
   if (!approvalMode) {
     throw new TypeError('Origin-scoped automation requires a supported approval mode');
   }
-  const initialState = await options.controller.execute(OPERATIONS.GET_TAB, {
-    tabId: options.tabId,
-  });
-  if (!initialState?.ok) {
-    throw new Error('The assigned automation tab is unavailable');
+  let initialState = null;
+  if (typeof options.tabId === 'string') {
+    initialState = await options.controller.execute(OPERATIONS.GET_TAB, {
+      tabId: options.tabId,
+    });
+    if (!initialState?.ok) {
+      throw new Error('The assigned automation tab is unavailable');
+    }
   }
   return new OriginScopedAutomationController({
     controller: options.controller,

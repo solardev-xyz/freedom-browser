@@ -284,10 +284,14 @@ async function createFreedomBrowserTools(options = {}) {
   if (!options.controller || typeof options.controller.execute !== 'function') {
     throw new TypeError('Freedom browser tools require an automation controller');
   }
-  if (typeof options.tabId !== 'string' || !options.tabId.trim()) {
-    throw new TypeError('Freedom browser tools require a tabId');
+  if (
+    options.tabId !== null &&
+    options.tabId !== undefined &&
+    (typeof options.tabId !== 'string' || !options.tabId.trim())
+  ) {
+    throw new TypeError('Freedom browser tools require a valid tabId or an empty workspace');
   }
-  if (options.tabId !== options.tabId.trim()) {
+  if (typeof options.tabId === 'string' && options.tabId !== options.tabId.trim()) {
     throw new TypeError('Freedom browser tool tabId cannot contain surrounding whitespace');
   }
 

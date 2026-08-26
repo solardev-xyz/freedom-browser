@@ -58,6 +58,9 @@ function createAgentElements() {
     'agent-auth-code',
     'agent-auth-user-code',
     'agent-provider-message',
+    'agent-page-contexts',
+    'agent-page-context',
+    'agent-page-context-label',
     'agent-prompt',
     'agent-run',
     'agent-new-chat',
@@ -134,6 +137,8 @@ function createAgentElements() {
   elements['agent-provider-login'] = createElement('button');
   elements['agent-provider-cancel-login'] = createElement('button');
   elements['agent-auth-code'].hidden = true;
+  elements['agent-page-contexts'].hidden = true;
+  elements['agent-page-context'] = createElement('button');
   elements['agent-prompt'] = createElement('textarea');
   elements['agent-run'] = createElement('button');
   elements['agent-new-chat'] = createElement('button');
@@ -262,6 +267,7 @@ async function loadAgentUi(options = {}) {
     isVisible: jest.fn(() => false),
   };
   jest.doMock('./private-mode.js', () => ({ isPrivateWindow: () => options.isPrivate === true }));
+  jest.doMock('./page-urls.js', () => ({ homeUrl: 'file:///app/pages/home.html' }));
   jest.doMock('./sidebar.js', () => sidebar);
   jest.doMock('./wallet/signature-flight.js', () => ({
     isSignatureInFlight: () => false,
@@ -368,16 +374,61 @@ describe('Agent UI', () => {
     );
   });
 
-  test('requires an explicit claim before a new chat adopts an Agent-owned tab', async () => {
+  test('starts without page access instead of adopting an Agent-owned tab', async () => {
     const ctx = await loadAgentUi({ isTabAgentOwned: (tabId) => tabId === 7 });
 
     ctx.elements['agent-prompt'].value = 'Continue this work in a new chat';
     ctx.elements['agent-run'].dispatch('click');
     await flush();
 
-    expect(ctx.electronAPI.startAgent).not.toHaveBeenCalled();
-    expect(ctx.elements['agent-run-message'].textContent).toBe(
-      'Claim this Agent tab or select one of your tabs before starting a new chat'
+    expect(ctx.electronAPI.startAgent).toHaveBeenCalledWith(
+      null,
+      'Continue this work in a new chat',
+      'every_interaction'
+    );
+  });
+
+  test('keeps the pristine homepage outside a new Agent workspace', async () => {
+    const homeTab = {
+      id: 7,
+      url: 'file:///app/pages/home.html',
+      title: 'New Tab',
+      favicon: '',
+      isLoading: false,
+      isActive: true,
+    };
+    const ctx = await loadAgentUi({ getOpenTabs: () => [homeTab] });
+
+    expect(ctx.elements['agent-page-contexts'].hidden).toBe(true);
+    ctx.elements['agent-prompt'].value = 'Research five sources';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+
+    expect(ctx.electronAPI.startAgent).toHaveBeenCalledWith(
+      null,
+      'Research five sources',
+      'every_interaction'
+    );
+  });
+
+  test('shares an ordinary current page visibly and lets the user remove it', async () => {
+    const ctx = await loadAgentUi();
+
+    expect(ctx.elements['agent-page-contexts'].hidden).toBe(false);
+    expect(ctx.elements['agent-page-context-label'].textContent).toBe(
+      'Current page · Start page'
+    );
+    ctx.elements['agent-page-context'].dispatch('click');
+    expect(ctx.elements['agent-page-contexts'].hidden).toBe(true);
+
+    ctx.elements['agent-prompt'].value = 'Research independently';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+
+    expect(ctx.electronAPI.startAgent).toHaveBeenCalledWith(
+      null,
+      'Research independently',
+      'every_interaction'
     );
   });
 
@@ -703,7 +754,7 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-new-chat'].hidden).toBe(false);
   });
 
-  test('opens a saved session and continues it from the current page with fresh authority', async () => {
+  test('opens a saved session and continues without silently adopting the current page', async () => {
     const sessions = [
       {
         conversationId: 'conversation_saved',
@@ -760,7 +811,7 @@ describe('Agent UI', () => {
     await flush();
 
     expect(ctx.electronAPI.startAgent).toHaveBeenCalledWith(
-      7,
+      null,
       'Now compare their authors',
       'every_interaction'
     );
@@ -1121,7 +1172,9 @@ describe('Agent UI', () => {
     await flush();
     ctx.emit({ type: 'run_started', runId: 'run_test' });
 
-    expect(ctx.elements['agent-run-message'].textContent).toContain('stays attached to this tab');
+    expect(ctx.elements['agent-run-message'].textContent).toContain(
+      'page you shared and any tabs it opens'
+    );
     ctx.elements['agent-stop'].dispatch('click');
     await flush();
 

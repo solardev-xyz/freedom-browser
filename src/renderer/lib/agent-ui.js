@@ -1,4 +1,5 @@
 import { isPrivateWindow } from './private-mode.js';
+import { homeUrl } from './page-urls.js';
 import { close as closeWalletSidebar, isVisible as isWalletSidebarVisible } from './sidebar.js';
 import { isSignatureInFlight, onSignatureFlightChange } from './wallet/signature-flight.js';
 
@@ -51,6 +52,7 @@ let providerReady = false;
 let providerLoginPending = false;
 let currentConversationId = null;
 let conversationRendererTabId = null;
+let dismissedPageContextTabId = null;
 let pendingPromptText = '';
 let currentRunId = null;
 let currentRunStatus = 'idle';
@@ -94,6 +96,67 @@ function setMessage(element, message = '', isError = false) {
 
 function providerName(providerId) {
   return PROVIDER_NAMES[providerId] || providerId || 'Model';
+}
+
+function isShareablePage(tab) {
+  if (!Number.isSafeInteger(tab?.id) || tab.id < 1 || typeof tab.url !== 'string') return false;
+  if (
+    tab.url === homeUrl ||
+    tab.url === 'freedom://home' ||
+    (tab.url.startsWith('file:') && tab.url.endsWith('/pages/home.html'))
+  ) {
+    return false;
+  }
+  try {
+    return ['http:', 'https:', 'bzz:', 'ipfs:', 'ipns:'].includes(new URL(tab.url).protocol);
+  } catch {
+    return false;
+  }
+}
+
+function pageContextTab() {
+  if (currentConversationId) {
+    return openTabs.find((tab) => tab.id === conversationRendererTabId) || null;
+  }
+  const tab = getActiveTab();
+  if (
+    !isShareablePage(tab) ||
+    isTabAgentOwned(tab.id) ||
+    dismissedPageContextTabId === tab.id
+  ) {
+    return null;
+  }
+  return tab;
+}
+
+function pageContextLabel(tab) {
+  let pageName = tab?.title && tab.title !== 'New Tab' ? tab.title : '';
+  if (!pageName) {
+    try {
+      pageName = new URL(tab.url).hostname;
+    } catch {
+      pageName = 'Current page';
+    }
+  }
+  return `Current page · ${pageName}`;
+}
+
+function renderPageContext() {
+  const tab = pageContextTab();
+  elements.pageContexts.hidden = !tab;
+  if (!tab) return;
+  const label = pageContextLabel(tab);
+  elements.pageContextLabel.textContent = label;
+  elements.pageContext.disabled = Boolean(currentConversationId) || currentRunStatus !== 'idle';
+  elements.pageContext.setAttribute(
+    'aria-label',
+    currentConversationId
+      ? `Page shared with this conversation: ${label}`
+      : `Remove ${label} from this conversation`
+  );
+  elements.pageContext.title = currentConversationId
+    ? 'Shared with this conversation'
+    : 'Remove current page';
 }
 
 function providerPrivacyMessage(providerId) {
@@ -903,6 +966,7 @@ function setRunState(status, label) {
   elements.newChat.disabled = active;
   elements.runStatus.textContent = label;
   elements.runStatus.classList.toggle('active', active);
+  renderPageContext();
   renderSessionSidebar();
 }
 
@@ -1167,6 +1231,7 @@ function applyReadyConversationState(state) {
   conversationRendererTabId = Number.isSafeInteger(state.rendererTabId)
     ? state.rendererTabId
     : null;
+  dismissedPageContextTabId = null;
   const transcript = Array.isArray(state.transcript) ? state.transcript : [];
   setConversationTitle(state.title || transcript[0]?.userText || 'Current task');
   restoreTranscript(transcript);
@@ -1265,6 +1330,7 @@ function applyConversationCleared() {
   workspaceProjectionGeneration += 1;
   currentConversationId = null;
   conversationRendererTabId = null;
+  dismissedPageContextTabId = null;
   pendingPromptText = '';
   currentRunId = null;
   lastFinishedRunId = null;
@@ -1321,7 +1387,9 @@ function handleAgentEvent(event) {
     elements.emptyState.hidden = true;
     setMessage(
       elements.runMessage,
-      'Agent stays attached to this tab if you switch tabs. Choose Take over to stop it.'
+      conversationRendererTabId
+        ? 'Agent can use the page you shared and any tabs it opens.'
+        : 'Agent can use only the tabs it opens for this conversation.'
     );
     void refreshSessionHistory();
     return;
@@ -1398,32 +1466,22 @@ function handleAgentEvent(event) {
 
 async function startRun() {
   const prompt = elements.prompt.value.trim();
-  const tab = getActiveTab();
   if (!prompt) {
     setMessage(elements.runMessage, 'Describe what you want the agent to do', true);
     return;
   }
-  if (!currentConversationId && isTabAgentOwned(tab?.id)) {
-    setMessage(
-      elements.runMessage,
-      'Claim this Agent tab or select one of your tabs before starting a new chat',
-      true
-    );
-    return;
-  }
+  const sharedPage = currentConversationId ? null : pageContextTab();
   const rendererTabId = currentConversationId
-    ? conversationRendererTabId || tab?.id
-    : tab?.id;
-  if (!Number.isSafeInteger(rendererTabId) || rendererTabId < 1) {
-    setMessage(elements.runMessage, 'The current tab is not ready for the agent', true);
-    return;
-  }
+    ? conversationRendererTabId
+    : Number.isSafeInteger(sharedPage?.id)
+      ? sharedPage.id
+      : null;
   const startsConversation = !currentConversationId;
   if (startsConversation) setConversationTitle(prompt);
   pendingPromptText = prompt;
   elements.prompt.value = '';
-  if (!conversationRendererTabId) conversationRendererTabId = rendererTabId;
-  setAgentControlledTab(conversationRendererTabId);
+  if (!currentConversationId) conversationRendererTabId = rendererTabId;
+  if (conversationRendererTabId) setAgentControlledTab(conversationRendererTabId);
   setRunState('starting', 'Starting');
   setMessage(elements.runMessage);
   try {
@@ -1445,6 +1503,7 @@ async function startRun() {
       workspaceProjectionGeneration += 1;
       currentConversationId = response.conversationId;
     }
+    renderPageContext();
     void refreshWorkspaceProjection();
     pendingPromptText = '';
     void refreshSessionHistory();
@@ -1663,6 +1722,9 @@ export function initAgentUi(options = {}) {
     authCode: byId('agent-auth-code'),
     authUserCode: byId('agent-auth-user-code'),
     providerMessage: byId('agent-provider-message'),
+    pageContexts: byId('agent-page-contexts'),
+    pageContext: byId('agent-page-context'),
+    pageContextLabel: byId('agent-page-context-label'),
     prompt: byId('agent-prompt'),
     run: byId('agent-run'),
     newChat: byId('agent-new-chat'),
@@ -1752,6 +1814,12 @@ export function initAgentUi(options = {}) {
   elements.loginProvider.addEventListener('click', loginSubscriptionProvider);
   elements.cancelProviderLogin.addEventListener('click', cancelProviderLogin);
   elements.run.addEventListener('click', startRun);
+  elements.pageContext.addEventListener('click', () => {
+    if (currentConversationId || currentRunStatus !== 'idle') return;
+    dismissedPageContextTabId = getActiveTab()?.id || null;
+    renderPageContext();
+    elements.prompt.focus();
+  });
   elements.newChat.addEventListener('click', clearConversation);
   elements.prompt.addEventListener('input', updateSendAvailability);
   elements.prompt.addEventListener('keydown', (event) => {
@@ -1820,6 +1888,13 @@ export function initAgentUi(options = {}) {
     typeof options.subscribeTabPresentation === 'function'
       ? options.subscribeTabPresentation((tabs) => {
           openTabs = Array.isArray(tabs) ? tabs : [];
+          if (
+            dismissedPageContextTabId &&
+            !openTabs.some((tab) => tab.id === dismissedPageContextTabId && tab.isActive)
+          ) {
+            dismissedPageContextTabId = null;
+          }
+          renderPageContext();
           renderTaskPages();
           ensureWorkspacePageVisible();
         })

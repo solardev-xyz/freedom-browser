@@ -1306,6 +1306,59 @@ body.agent-first-mode .agent-composer textarea {
   display: block;
 }
 
+.agent-composer-contexts {
+  display: flex;
+  gap: 6px;
+  padding: 12px 14px 0;
+}
+
+.agent-composer-contexts[hidden] {
+  display: none;
+}
+
+.agent-page-context {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 100%;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 5px 8px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  background: color-mix(in srgb, var(--text) 7%, transparent);
+  border: 1px solid color-mix(in srgb, var(--text) 8%, transparent);
+  border-radius: 8px;
+}
+
+.agent-page-context:hover:not(:disabled) {
+  color: var(--text);
+  background: color-mix(in srgb, var(--text) 10%, transparent);
+}
+
+.agent-page-context svg {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+}
+
+.agent-page-context > span:not(.agent-page-context-remove) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-page-context-remove {
+  flex: 0 0 auto;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.agent-page-context:disabled .agent-page-context-remove {
+  display: none;
+}
+
 .agent-composer textarea {
   display: block;
   width: 100%;

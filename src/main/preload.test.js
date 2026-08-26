@@ -162,6 +162,19 @@ describe('preload', () => {
           },
         ],
       ],
+      [
+        exposures.electronAPI,
+        'startAgent',
+        [null, 'Research independently'],
+        IPC.AGENT_START,
+        [
+          {
+            rendererTabId: null,
+            prompt: 'Research independently',
+            approvalMode: 'every_interaction',
+          },
+        ],
+      ],
       [exposures.electronAPI, 'pauseAgent', ['run_test'], IPC.AGENT_PAUSE, [{ runId: 'run_test' }]],
       [exposures.electronAPI, 'resumeAgent', ['run_test'], IPC.AGENT_RESUME, [{ runId: 'run_test' }]],
       [exposures.electronAPI, 'stopAgent', ['run_1'], IPC.AGENT_STOP, [{ runId: 'run_1' }]],

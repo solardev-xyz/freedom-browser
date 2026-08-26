@@ -239,7 +239,30 @@ describe('FreedomAgentService', () => {
       onWorkspaceTabCreated: expect.any(Function),
       requestApproval: expect.any(Function),
     });
-    expect(dependencies.createSession.mock.calls[0][0]).not.toHaveProperty('systemPrompt');
+    expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toEqual(
+      expect.stringContaining('You are Freedom Agent inside Freedom Browser')
+    );
+
+    fake.prompt.resolve();
+    await service.waitForIdle();
+  });
+
+  test('starts with an empty workspace when no user page is shared', async () => {
+    const fake = createFakeSession();
+    const { service, dependencies } = createService(fake);
+
+    await service.start(startOptions({ tabId: null }));
+
+    expect(dependencies.createControllerScope).toHaveBeenCalledWith(
+      expect.objectContaining({ tabId: null })
+    );
+    expect(dependencies.createTools).toHaveBeenCalledWith(
+      expect.objectContaining({ tabId: null })
+    );
+    expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toContain(
+      'No existing browser page was shared with this conversation'
+    );
+    expect(service.getState()).toMatchObject({ tabId: null });
 
     fake.prompt.resolve();
     await service.waitForIdle();

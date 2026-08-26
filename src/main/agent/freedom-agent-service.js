@@ -38,6 +38,7 @@ const RESUME_PROMPT = `The user resumed this task after potentially changing the
 const EVERY_INTERACTION_SYSTEM_PROMPT = `${DEFAULT_FREEDOM_AGENT_SYSTEM_PROMPT}
 
 This run requires user approval before every page interaction. Reading pages, navigating, and managing task-owned tabs do not require approval. Click, type, select, and press tools pause until the user approves or declines the exact interaction.`;
+const EMPTY_WORKSPACE_SYSTEM_PROMPT = `No existing browser page was shared with this conversation. You cannot inspect unrelated user tabs. Create a fresh task tab before reading or interacting with the web.`;
 const RESTORED_SESSION_PROMPT = `This conversation was restored from Freedom's saved session history. Only the visible user and assistant conversation was retained. Earlier browser tool results, page snapshots, element references, and control grants were deliberately not restored. Reinspect the current browser workspace before acting and do not assume an earlier page or action is still available.`;
 
 class FreedomAgentError extends Error {
@@ -99,13 +100,17 @@ function validatePromptOptions(options) {
 
 function validateStartOptions(options) {
   const promptOptions = validatePromptOptions(options);
-  if (typeof options.tabId !== 'string' || !options.tabId.trim()) {
+  if (
+    options.tabId !== null &&
+    options.tabId !== undefined &&
+    (typeof options.tabId !== 'string' || !options.tabId.trim())
+  ) {
     throw new FreedomAgentError(
       AGENT_ERROR_CODES.INVALID_ARGUMENT,
-      'Agent run requires an assigned tab ID'
+      'Agent run requires a valid assigned tab ID or an empty workspace'
     );
   }
-  if (options.tabId !== options.tabId.trim()) {
+  if (typeof options.tabId === 'string' && options.tabId !== options.tabId.trim()) {
     throw new FreedomAgentError(
       AGENT_ERROR_CODES.INVALID_ARGUMENT,
       'Agent tab ID cannot contain surrounding whitespace'
@@ -125,7 +130,7 @@ function validateStartOptions(options) {
   }
   return {
     ...promptOptions,
-    tabId: options.tabId,
+    tabId: typeof options.tabId === 'string' ? options.tabId : null,
     createWorkspacePage: options.createWorkspacePage,
   };
 }
@@ -476,10 +481,14 @@ class FreedomAgentService {
             if (this.activeRun) this.#handleToolOutcome(this.activeRun, outcome);
           },
         });
-        const baseSystemPrompt =
+        let systemPrompt =
           approvalMode === AGENT_APPROVAL_MODES.EVERY_INTERACTION
             ? EVERY_INTERACTION_SYSTEM_PROMPT
             : DEFAULT_FREEDOM_AGENT_SYSTEM_PROMPT;
+        if (!tabId) systemPrompt = `${systemPrompt}\n\n${EMPTY_WORKSPACE_SYSTEM_PROMPT}`;
+        if (existingConversation?.restored) {
+          systemPrompt = `${systemPrompt}\n\n${RESTORED_SESSION_PROMPT}`;
+        }
         const created = await this.createSession({
           sdk,
           model: options.model,
@@ -496,12 +505,7 @@ class FreedomAgentService {
               ...(Number.isFinite(turn.durationMs) && { durationMs: turn.durationMs }),
             })),
           }),
-          ...((approvalMode === AGENT_APPROVAL_MODES.EVERY_INTERACTION ||
-            existingConversation?.restored) && {
-            systemPrompt: existingConversation?.restored
-              ? `${baseSystemPrompt}\n\n${RESTORED_SESSION_PROMPT}`
-              : baseSystemPrompt,
-          }),
+          systemPrompt,
         });
         const session = created?.session;
         if (

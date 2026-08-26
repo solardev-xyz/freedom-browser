@@ -164,6 +164,51 @@ describe('OriginScopedAutomationController', () => {
     expect(originScopeForUrl('not a url')).toBeNull();
   });
 
+  test('starts without adopting a user tab and creates the first Agent-owned page', async () => {
+    const controller = createController();
+    const createWorkspacePage = jest.fn(async (url) => {
+      controller.setCreatedUrl(url);
+      return 'tab_created';
+    });
+    const onWorkspaceTabCreated = jest.fn();
+    const scoped = await createOriginScopedAutomationController({
+      controller,
+      tabId: null,
+      createWorkspacePage,
+      onWorkspaceTabCreated,
+    });
+
+    expect(controller.execute).not.toHaveBeenCalledWith(OPERATIONS.GET_TAB, {
+      tabId: 'tab_assigned',
+    });
+    expect(scoped.getWorkspaceState()).toEqual({ tabIds: [], activeTabId: null });
+    await expect(scoped.execute(OPERATIONS.LIST_TABS, {})).resolves.toMatchObject({
+      ok: true,
+      result: { tabs: [], activeTabId: null },
+    });
+    await expect(
+      scoped.execute(OPERATIONS.CREATE_TAB, { url: 'https://fresh.example/start' })
+    ).resolves.toMatchObject({
+      ok: true,
+      result: {
+        activeTabId: 'tab_created',
+        tab: { tabId: 'tab_created', url: 'https://fresh.example/start' },
+      },
+    });
+    expect(createWorkspacePage).toHaveBeenCalledWith('https://fresh.example/start');
+    expect(onWorkspaceTabCreated).toHaveBeenCalledWith('tab_created');
+    expect(scoped.getWorkspaceState()).toEqual({
+      tabIds: ['tab_created'],
+      activeTabId: 'tab_created',
+    });
+    await expect(
+      scoped.execute(OPERATIONS.CREATE_TAB, {
+        tabId: 'tab_created',
+        url: 'https://second.example/source',
+      })
+    ).resolves.toMatchObject({ ok: true });
+  });
+
   test('allows assigned-tab operations and same-origin navigation', async () => {
     const controller = createController();
     const scoped = await createOriginScopedAutomationController({

@@ -165,6 +165,33 @@ describe('Freedom agent IPC', () => {
     );
   });
 
+  test('starts an empty workspace without binding or exposing an existing user tab', async () => {
+    const ctx = register();
+    const start = ctx.ipcMain.handlers.get(IPC.AGENT_START);
+
+    await expect(
+      start(
+        { sender: ctx.sender },
+        { rendererTabId: null, prompt: 'Research five sources' }
+      )
+    ).resolves.toEqual({
+      ok: true,
+      runId: 'run_test',
+      conversationId: 'conversation_test',
+    });
+
+    expect(ctx.automationTabIdForRenderer).not.toHaveBeenCalled();
+    expect(ctx.service.start).toHaveBeenCalledWith({
+      prompt: 'Research five sources',
+      tabId: null,
+      approvalMode: 'every_interaction',
+      createWorkspacePage: expect.any(Function),
+      model: { id: 'model_test' },
+      modelRuntime: { kind: 'runtime' },
+      thinkingLevel: 'low',
+    });
+  });
+
   test('forwards an explicitly selected website interaction approval mode', async () => {
     const ctx = register();
 

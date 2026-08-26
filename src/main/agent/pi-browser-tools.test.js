@@ -168,6 +168,38 @@ describe('Pi browser tool adapter', () => {
     ]);
   });
 
+  test('creates the first task tab from an initially empty workspace', async () => {
+    let activeTabId = null;
+    const controller = {
+      getActiveTabId: jest.fn(() => activeTabId),
+      execute: jest.fn(async (operation, input) => {
+        if (operation === OPERATIONS.CREATE_TAB) {
+          activeTabId = 'tab_fresh';
+          return successEnvelope({
+            tab: { tabId: activeTabId, url: input.url },
+            activeTabId,
+          });
+        }
+        return successEnvelope({});
+      }),
+    };
+    const tools = await createFreedomBrowserTools({
+      sdk: createSdk(),
+      controller,
+      tabId: null,
+    });
+    const create = tools.find((tool) => tool.name === OPERATIONS.CREATE_TAB);
+    const snapshot = tools.find((tool) => tool.name === OPERATIONS.SNAPSHOT);
+
+    await create.execute('call_create', { url: 'https://fresh.example/' });
+    await snapshot.execute('call_snapshot', {});
+
+    expect(controller.execute.mock.calls).toEqual([
+      [OPERATIONS.CREATE_TAB, { tabId: null, url: 'https://fresh.example/' }],
+      [OPERATIONS.SNAPSHOT, { tabId: 'tab_fresh' }],
+    ]);
+  });
+
   test('routes tool execution through the controller with the pinned tab', async () => {
     const envelope = successEnvelope({ clicked: true, ref: 'ref_7' });
     const controller = { execute: jest.fn(async () => envelope) };
