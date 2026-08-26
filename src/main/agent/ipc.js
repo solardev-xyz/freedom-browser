@@ -166,6 +166,7 @@ function registerFreedomAgentIpc(options = {}) {
   if (
     !service ||
     typeof service.start !== 'function' ||
+    typeof service.steer !== 'function' ||
     typeof service.pause !== 'function' ||
     typeof service.resume !== 'function' ||
     typeof service.stop !== 'function' ||
@@ -434,6 +435,28 @@ function registerFreedomAgentIpc(options = {}) {
     return { ok: true, paused: await service.pause(owner.runId) };
   };
 
+  const handleSteer = async (event, payload = {}) => {
+    if (
+      !owner ||
+      owner.sender !== event?.sender ||
+      typeof payload?.runId !== 'string' ||
+      payload.runId !== owner.runId
+    ) {
+      return errorEnvelope(
+        AGENT_IPC_ERROR_CODES.NOT_OWNER,
+        'The sender does not own that agent run'
+      );
+    }
+    try {
+      const guidance = await service.steer(owner.runId, payload.prompt);
+      return guidance
+        ? { ok: true, guidance }
+        : errorEnvelope(AGENT_ERROR_CODES.BUSY, 'Agent cannot accept guidance right now');
+    } catch (error) {
+      return safeServiceError(error);
+    }
+  };
+
   const handleResume = async (event, payload = {}) => {
     if (
       !owner ||
@@ -447,7 +470,7 @@ function registerFreedomAgentIpc(options = {}) {
       );
     }
     try {
-      return { ok: true, resumed: await service.resume(owner.runId) };
+      return { ok: true, resumed: await service.resume(owner.runId, payload.prompt) };
     } catch (error) {
       return safeServiceError(error);
     }
@@ -817,6 +840,7 @@ function registerFreedomAgentIpc(options = {}) {
     });
 
   ipcMain.handle(IPC.AGENT_START, handleStart);
+  ipcMain.handle(IPC.AGENT_STEER, handleSteer);
   ipcMain.handle(IPC.AGENT_PAUSE, handlePause);
   ipcMain.handle(IPC.AGENT_RESUME, handleResume);
   ipcMain.handle(IPC.AGENT_STOP, handleStop);
@@ -840,6 +864,7 @@ function registerFreedomAgentIpc(options = {}) {
 
   return async () => {
     ipcMain.removeHandler?.(IPC.AGENT_START);
+    ipcMain.removeHandler?.(IPC.AGENT_STEER);
     ipcMain.removeHandler?.(IPC.AGENT_PAUSE);
     ipcMain.removeHandler?.(IPC.AGENT_RESUME);
     ipcMain.removeHandler?.(IPC.AGENT_STOP);

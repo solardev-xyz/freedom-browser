@@ -229,6 +229,14 @@ async function loadAgentUi(options = {}) {
       runId: 'run_test',
       conversationId: 'conversation_test',
     }),
+    steerAgent: jest.fn().mockResolvedValue({
+      ok: true,
+      guidance: {
+        guidanceId: 'guidance_test',
+        text: 'Focus on primary sources',
+        status: 'queued',
+      },
+    }),
     clearAgentConversation: jest.fn().mockResolvedValue({ ok: true, cleared: true }),
     listAgentSessions: jest.fn().mockResolvedValue({ ok: true, sessions: [] }),
     openAgentSession: jest.fn(),
@@ -1208,7 +1216,7 @@ describe('Agent UI', () => {
 
     ctx.elements['agent-resume'].dispatch('click');
     await flush();
-    expect(ctx.electronAPI.resumeAgent).toHaveBeenCalledWith('run_test');
+    expect(ctx.electronAPI.resumeAgent).toHaveBeenCalledWith('run_test', undefined);
     ctx.emit({ type: 'run_resuming', runId: 'run_test' });
     ctx.emit({ type: 'run_resumed', runId: 'run_test' });
 
@@ -1220,6 +1228,91 @@ describe('Agent UI', () => {
     expect(ctx.setAgentControlledTab).toHaveBeenLastCalledWith(7);
 
     ctx.emit({ type: 'run_finished', runId: 'run_test', status: 'completed' });
+  });
+
+  test('uses the active composer for steering without resolving a pending approval', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Complete the task';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test', userText: 'Complete the task' });
+    ctx.emit({
+      type: 'approval_requested',
+      runId: 'run_test',
+      approvalId: 'approval_test',
+      action: 'form_submission',
+      label: 'Submit',
+    });
+
+    expect(ctx.elements['agent-prompt'].disabled).toBe(false);
+    expect(ctx.elements['agent-prompt'].placeholder).toBe('Guide Agent…');
+    ctx.elements['agent-prompt'].value = 'Do not submit yet';
+    ctx.elements['agent-prompt'].dispatch('input');
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+
+    expect(ctx.electronAPI.steerAgent).toHaveBeenCalledWith(
+      'run_test',
+      'Do not submit yet'
+    );
+    expect(ctx.electronAPI.decideAgentApproval).not.toHaveBeenCalled();
+    ctx.emit({
+      type: 'guidance_queued',
+      runId: 'run_test',
+      guidance: {
+        guidanceId: 'guidance_test',
+        text: 'Do not submit yet',
+        status: 'queued',
+      },
+    });
+    expect(ctx.elements['agent-approval'].hidden).toBe(false);
+    expect(ctx.elements['agent-run-message'].textContent).toContain('approval separately');
+    expect(
+      ctx.elements['agent-transcript'].querySelector('.agent-guidance-message').textContent
+    ).toBe('Do not submit yet');
+    expect(
+      ctx.elements['agent-transcript'].querySelector('.agent-guidance-status').textContent
+    ).toBe('Guidance queued');
+
+    ctx.emit({
+      type: 'guidance_applying',
+      runId: 'run_test',
+      guidanceId: 'guidance_test',
+    });
+    expect(
+      ctx.elements['agent-transcript'].querySelector('.agent-guidance-status').textContent
+    ).toBe('Applying guidance…');
+    ctx.emit({
+      type: 'guidance_applied',
+      runId: 'run_test',
+      guidanceId: 'guidance_test',
+    });
+    expect(
+      ctx.elements['agent-transcript'].querySelector('.agent-guidance-status').hidden
+    ).toBe(true);
+  });
+
+  test('submits paused composer text as resume guidance', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Complete the task';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({ type: 'run_paused', runId: 'run_test' });
+
+    expect(ctx.elements['agent-prompt'].placeholder).toBe('Add guidance and resume…');
+    ctx.elements['agent-prompt'].value = 'I logged in; continue';
+    ctx.elements['agent-prompt'].dispatch('input');
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+
+    expect(ctx.electronAPI.resumeAgent).toHaveBeenCalledWith(
+      'run_test',
+      'I logged in; continue'
+    );
+    expect(ctx.electronAPI.steerAgent).not.toHaveBeenCalled();
+    expect(ctx.elements['agent-prompt'].value).toBe('');
+    expect(ctx.elements['agent-run-status'].textContent).toBe('Resuming');
   });
 
   test('withdraws approval UI on pause and reports a refused resume without detaching', async () => {

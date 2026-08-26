@@ -4,6 +4,7 @@ const { test, expect } = require('./fixtures');
 const MODEL_ID = 'freedom-cancellation-fixture';
 const SLOW_NAVIGATION_URL = 'https://agent-cancellation.test/slow-navigation';
 const SHARED_START_URL = 'https://agent-cancellation.test/shared-start';
+const STEERING_URL = 'https://agent-cancellation.test/steering';
 
 let server;
 let baseUrl;
@@ -64,6 +65,31 @@ function userPrompt(body) {
   return typeof message?.content === 'string' ? message.content : JSON.stringify(message?.content);
 }
 
+function contentText(content) {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content.map((part) => (typeof part === 'string' ? part : part?.text || '')).join('');
+}
+
+function hasUserMarker(body, marker) {
+  return (body.messages || []).some(
+    (message) => message?.role === 'user' && contentText(message.content).includes(marker)
+  );
+}
+
+function latestSnapshotElements(body) {
+  for (const message of [...(body.messages || [])].reverse()) {
+    if (message?.role !== 'tool') continue;
+    try {
+      const envelope = JSON.parse(contentText(message.content));
+      if (Array.isArray(envelope?.result?.elements)) return envelope.result.elements;
+    } catch {
+      // Ignore non-snapshot tool results.
+    }
+  }
+  return [];
+}
+
 function lastToolCallId(body) {
   const message = [...(body.messages || [])]
     .reverse()
@@ -93,6 +119,32 @@ async function handleCompletion(request, response) {
     response.on('close', () => {
       streamingResponseClosed = true;
     });
+    return;
+  }
+
+  if (prompt.includes('STEER_DO_NOT_SUBMIT')) {
+    writeSse(
+      response,
+      completionChunk({ delta: { role: 'assistant', content: 'STEERING_APPLIED' } })
+    );
+    finishSse(response);
+    return;
+  }
+
+  if (hasUserMarker(body, 'STEERING_APPROVAL')) {
+    const submit = latestSnapshotElements(body).find(
+      (element) => element?.name === 'Submit research'
+    );
+    if (!submit?.ref) {
+      writeSse(response, toolCallChunk('browser_snapshot', '{}'));
+      finishSse(response, 'tool_calls');
+      return;
+    }
+    writeSse(
+      response,
+      toolCallChunk('browser_click', JSON.stringify({ ref: submit.ref }), 'call_steering_submit')
+    );
+    finishSse(response, 'tool_calls');
     return;
   }
 
@@ -346,6 +398,44 @@ test('Pause preserves the Pi session and resume re-observes the page', async ({
   await expect(window.locator('#agent-output')).toContainText('RESUMED');
   await expect(window.locator('.agent-tool-item')).toContainText(['get tab', 'snapshot']);
   await expect(window.locator('[data-test="tab"].active')).not.toHaveClass(/agent-controlled/);
+});
+
+test('in-flight steering changes the retained run without resolving its approval', async ({
+  window,
+  harness,
+}) => {
+  await harness.setContentFixture(STEERING_URL, {
+    body: `<!doctype html><title>Steering</title><main>
+      <h1>Research submission</h1>
+      <button type="button">Submit research</button>
+    </main>`,
+  });
+  const address = window.locator('[data-test="address-input"]');
+  await address.click();
+  await address.fill(STEERING_URL);
+  await address.press('Enter');
+  await expect
+    .poll(() =>
+      window.evaluate(() => document.querySelector('webview:not(.hidden)')?.getURL?.() || '')
+    )
+    .toBe(STEERING_URL);
+  await configureFixtureProvider(window);
+
+  await window.locator('#agent-prompt').fill('STEERING_APPROVAL');
+  await window.locator('#agent-run').click();
+  await expect(window.locator('#agent-approval')).toBeVisible({ timeout: 5_000 });
+  await expect(window.locator('#agent-approval-action')).toContainText('Submit research');
+
+  await window.locator('#agent-prompt').fill('STEER_DO_NOT_SUBMIT');
+  await window.locator('#agent-run').click();
+  await expect(window.locator('.agent-guidance-message')).toHaveText('STEER_DO_NOT_SUBMIT');
+  await expect(window.locator('.agent-guidance-status')).toHaveText('Guidance queued');
+  await expect(window.locator('#agent-approval')).toBeVisible();
+
+  await window.locator('#agent-approval-decline').click();
+  await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 5_000 });
+  await expect(window.locator('#agent-output')).toContainText('STEERING_APPLIED');
+  await expect(window.locator('.agent-guidance-status')).toBeHidden();
 });
 
 test('Pause cancels an active browser wait and the same run can resume', async ({

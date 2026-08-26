@@ -61,6 +61,10 @@ function opaqueApprovalId() {
   return `approval_${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
 }
 
+function opaqueGuidanceId() {
+  return `guidance_${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
+}
+
 function createDeferred() {
   let resolve;
   const promise = new Promise((resolvePromise) => {
@@ -96,6 +100,31 @@ function validatePromptOptions(options) {
     );
   }
   return { prompt: options.prompt.trim(), approvalMode };
+}
+
+function validateGuidanceText(value) {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new FreedomAgentError(
+      AGENT_ERROR_CODES.INVALID_ARGUMENT,
+      'Agent guidance must be a non-empty string'
+    );
+  }
+  if (value.length > MAX_AGENT_PROMPT_LENGTH) {
+    throw new FreedomAgentError(
+      AGENT_ERROR_CODES.INVALID_ARGUMENT,
+      `Agent guidance cannot exceed ${MAX_AGENT_PROMPT_LENGTH} characters`
+    );
+  }
+  return value.trim();
+}
+
+function piMessageText(message) {
+  if (typeof message?.content === 'string') return message.content;
+  if (!Array.isArray(message?.content)) return '';
+  return message.content
+    .filter((part) => part?.type === 'text' && typeof part.text === 'string')
+    .map((part) => part.text)
+    .join('\n');
 }
 
 function validateStartOptions(options) {
@@ -216,7 +245,7 @@ class FreedomAgentService {
     if (
       this.historyStore &&
       ['createSession', 'startTurn', 'finishTurn', 'listSessions', 'getSession',
-        'renameSession', 'deleteSession'].some(
+        'updateTurnGuidance', 'renameSession', 'deleteSession'].some(
         (method) => typeof this.historyStore[method] !== 'function'
       )
     ) {
@@ -224,6 +253,7 @@ class FreedomAgentService {
     }
     this.runIdFactory = options.runIdFactory || opaqueRunId;
     this.conversationIdFactory = options.conversationIdFactory || opaqueConversationId;
+    this.guidanceIdFactory = options.guidanceIdFactory || opaqueGuidanceId;
     this.now = options.now || Date.now;
     this.listeners = new Set();
     this.conversations = new Map();
@@ -267,6 +297,7 @@ class FreedomAgentService {
       startedAt: turn.startedAt,
       ...(Number.isFinite(turn.durationMs) && { durationMs: turn.durationMs }),
       activity: turn.activity.map((item) => ({ ...item })),
+      guidance: turn.guidance.map((item) => ({ ...item })),
       ...(turn.error && { error: turn.error }),
     }));
     if (!this.activeRun) {
@@ -325,6 +356,9 @@ class FreedomAgentService {
       turns: stored.transcript.map((turn) => ({
         ...turn,
         activity: turn.activity.map((item) => ({ ...item })),
+        guidance: Array.isArray(turn.guidance)
+          ? turn.guidance.map((item) => ({ ...item }))
+          : [],
         activeRun: null,
         finished: true,
       })),
@@ -432,6 +466,7 @@ class FreedomAgentService {
       userText: prompt,
       assistantText: '',
       activity: [],
+      guidance: [],
       startedAt: this.now(),
       durationMs: null,
       completion,
@@ -503,6 +538,7 @@ class FreedomAgentService {
               status: turn.status,
               startedAt: turn.startedAt,
               ...(Number.isFinite(turn.durationMs) && { durationMs: turn.durationMs }),
+              guidance: turn.guidance.map((item) => ({ ...item })),
             })),
           }),
           systemPrompt,
@@ -512,6 +548,8 @@ class FreedomAgentService {
           !session ||
           typeof session.subscribe !== 'function' ||
           typeof session.prompt !== 'function' ||
+          typeof session.steer !== 'function' ||
+          typeof session.clearQueue !== 'function' ||
           typeof session.abort !== 'function' ||
           typeof session.dispose !== 'function'
         ) {
@@ -635,10 +673,36 @@ class FreedomAgentService {
       // The active turn converts provider failures to a terminal run result.
     }
     await run.execution;
+    if (!run.finished && run.status === 'paused') {
+      try {
+        run.session.clearQueue();
+      } catch {
+        // Resume still uses Freedom's retained guidance projection.
+      }
+      for (const guidance of run.guidance.filter((item) => item.status === 'applying')) {
+        this.#setGuidanceStatus(run, guidance, 'queued');
+      }
+    }
     return !run.finished && run.status === 'paused';
   }
 
-  async resume(runId) {
+  async steer(runId, text) {
+    const run = this.activeRun;
+    if (!run || run.runId !== runId || run.status !== 'running' || !run.execution) return null;
+    const guidance = this.#createGuidance(run, validateGuidanceText(text), 'queued');
+    try {
+      await run.session.steer(guidance.text);
+    } catch {
+      this.#setGuidanceStatus(run, guidance, 'cancelled');
+      throw new FreedomAgentError(
+        AGENT_ERROR_CODES.RUN_FAILED,
+        'The guidance could not be queued for Agent'
+      );
+    }
+    return { ...guidance };
+  }
+
+  async resume(runId, instruction) {
     const run = this.activeRun;
     if (
       !run ||
@@ -649,6 +713,7 @@ class FreedomAgentService {
     ) {
       return false;
     }
+    const guidanceText = instruction === undefined ? null : validateGuidanceText(instruction);
     run.resumePending = true;
     let readiness;
     try {
@@ -671,10 +736,19 @@ class FreedomAgentService {
     }
     run.status = 'resuming';
     run.lastAssistant = null;
+    if (guidanceText) this.#createGuidance(run, guidanceText, 'queued');
+    const queuedGuidance = run.guidance.filter((item) => item.status === 'queued');
     this.#emit(run, { type: 'run_resuming' });
     run.status = 'running';
     this.#emit(run, { type: 'run_resumed' });
-    this.#launchTurn(run, RESUME_PROMPT);
+    for (const item of queuedGuidance) this.#setGuidanceStatus(run, item, 'applying');
+    const guidanceBlock = queuedGuidance.map((item) => item.text).join('\n\n');
+    this.#launchTurn(
+      run,
+      guidanceBlock
+        ? `${RESUME_PROMPT}\n\nThe user added this guidance before resuming:\n${guidanceBlock}`
+        : RESUME_PROMPT
+    );
     return true;
   }
 
@@ -816,10 +890,20 @@ class FreedomAgentService {
     ) {
       return;
     }
+    if (event?.type === 'message_start' && event.message?.role === 'user') {
+      const text = piMessageText(event.message);
+      const guidance = run.guidance.find(
+        (item) => item.status === 'queued' && item.text === text
+      );
+      if (guidance) this.#setGuidanceStatus(run, guidance, 'applying');
+    }
     if (event?.type === 'message_end' && event.message?.role === 'assistant') {
       run.lastAssistant = {
         stopReason: event.message.stopReason,
       };
+      for (const guidance of run.guidance.filter((item) => item.status === 'applying')) {
+        this.#setGuidanceStatus(run, guidance, 'applied');
+      }
     }
 
     const toolCallId = event?.type === 'tool_execution_end' ? String(event.toolCallId) : null;
@@ -932,6 +1016,22 @@ class FreedomAgentService {
   async #finish(run, status, error) {
     if (run.finished) return;
     this.#resolveApproval(run, 'declined');
+    if (status !== 'completed') {
+      try {
+        run.session?.clearQueue?.();
+      } catch {
+        // Terminal cleanup below remains authoritative.
+      }
+    }
+    for (const guidance of run.guidance.filter(
+      (item) => item.status === 'queued' || item.status === 'applying'
+    )) {
+      this.#setGuidanceStatus(
+        run,
+        guidance,
+        status === 'completed' && guidance.status === 'applying' ? 'applied' : 'cancelled'
+      );
+    }
     run.finished = true;
     run.status = status;
     run.durationMs = Math.max(0, this.now() - run.startedAt);
@@ -953,6 +1053,7 @@ class FreedomAgentService {
       status,
       durationMs: run.durationMs,
       activity: run.activity,
+      guidance: run.guidance,
       error,
     });
     run.completion.resolve({ status, error });
@@ -989,6 +1090,46 @@ class FreedomAgentService {
       log.warn(`[AgentHistory] ${method} failed:`, error?.message || 'unknown error');
       return null;
     }
+  }
+
+  #createGuidance(run, text, status) {
+    const guidance = {
+      guidanceId: this.guidanceIdFactory(),
+      text,
+      status,
+      createdAt: this.now(),
+    };
+    run.guidance.push(guidance);
+    this.#persistGuidance(run);
+    this.#emit(run, { type: 'guidance_queued', guidance: { ...guidance } });
+    return guidance;
+  }
+
+  #setGuidanceStatus(run, guidance, status) {
+    if (!guidance || guidance.status === status) return;
+    guidance.status = status;
+    this.#persistGuidance(run);
+    this.#emit(run, {
+      type:
+        status === 'queued'
+          ? 'guidance_queued'
+          : status === 'applying'
+          ? 'guidance_applying'
+          : status === 'applied'
+            ? 'guidance_applied'
+            : 'guidance_cancelled',
+      ...(status === 'queued'
+        ? { guidance: { ...guidance } }
+        : { guidanceId: guidance.guidanceId }),
+    });
+  }
+
+  #persistGuidance(run) {
+    this.#persistHistory('updateTurnGuidance', {
+      conversationId: run.conversationId,
+      runId: run.runId,
+      guidance: run.guidance,
+    });
   }
 
   #registerAgentTab(tabId, conversationId) {

@@ -83,6 +83,7 @@ class FakeBetterSqlite3AgentHistoryDatabase {
             started_at: startedAt,
             duration_ms: null,
             activity_json: '[]',
+            guidance_json: '[]',
             error_code: null,
             error_message: null,
           });
@@ -98,6 +99,7 @@ class FakeBetterSqlite3AgentHistoryDatabase {
           status,
           durationMs,
           activityJson,
+          guidanceJson,
           errorCode,
           errorMessage,
           id,
@@ -112,9 +114,23 @@ class FakeBetterSqlite3AgentHistoryDatabase {
             status,
             duration_ms: durationMs,
             activity_json: activityJson,
+            guidance_json: guidanceJson,
             error_code: errorCode,
             error_message: errorMessage,
           });
+          return { changes: 1 };
+        },
+      };
+    }
+
+    if (query === 'UPDATE agent_turns SET guidance_json = ? WHERE id = ? AND session_id = ?') {
+      return {
+        run: (guidanceJson, id, sessionId) => {
+          const row = this.state.turns.find(
+            (candidate) => candidate.id === id && candidate.session_id === sessionId
+          );
+          if (!row) return { changes: 0 };
+          row.guidance_json = guidanceJson;
           return { changes: 1 };
         },
       };

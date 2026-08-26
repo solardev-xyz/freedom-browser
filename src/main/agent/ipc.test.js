@@ -32,6 +32,12 @@ function createService(options = {}) {
     start:
       options.start ||
       jest.fn(async () => ({ runId: 'run_test', conversationId: 'conversation_test' })),
+    steer: options.steer || jest.fn(async (_runId, prompt) => ({
+      guidanceId: 'guidance_test',
+      text: prompt,
+      status: 'queued',
+      createdAt: 1_000,
+    })),
     pause: options.pause || jest.fn(async () => true),
     resume: options.resume || jest.fn(async () => true),
     stop: options.stop || jest.fn(async () => true),
@@ -570,7 +576,32 @@ describe('Freedom agent IPC', () => {
       resumed: true,
     });
     expect(ctx.service.pause).toHaveBeenCalledWith('run_test');
-    expect(ctx.service.resume).toHaveBeenCalledWith('run_test');
+    expect(ctx.service.resume).toHaveBeenCalledWith('run_test', undefined);
+  });
+
+  test('routes steering only from the owning chrome and keeps it separate from approvals', async () => {
+    const ctx = register();
+    const start = ctx.ipcMain.handlers.get(IPC.AGENT_START);
+    const steer = ctx.ipcMain.handlers.get(IPC.AGENT_STEER);
+    await start({ sender: ctx.sender }, { rendererTabId: 7, prompt: 'Task' });
+
+    await expect(
+      steer(
+        { sender: ctx.otherSender },
+        { runId: 'run_test', prompt: 'Change direction' }
+      )
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: AGENT_IPC_ERROR_CODES.NOT_OWNER },
+    });
+    await expect(
+      steer({ sender: ctx.sender }, { runId: 'run_test', prompt: 'Change direction' })
+    ).resolves.toMatchObject({
+      ok: true,
+      guidance: { text: 'Change direction', status: 'queued' },
+    });
+    expect(ctx.service.steer).toHaveBeenCalledWith('run_test', 'Change direction');
+    expect(ctx.service.decideApproval).not.toHaveBeenCalled();
   });
 
   test('returns a safe service error when resume refuses the changed page scope', async () => {

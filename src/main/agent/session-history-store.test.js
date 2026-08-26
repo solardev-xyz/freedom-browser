@@ -45,6 +45,19 @@ describe('AgentSessionHistoryStore', () => {
       userText: 'Research Freedom',
       startedAt: 900,
     });
+    store.updateTurnGuidance({
+      conversationId: 'conversation_one',
+      runId: 'run_one',
+      guidance: [
+        {
+          guidanceId: 'guidance_one',
+          text: 'Prefer primary sources',
+          status: 'applied',
+          createdAt: 1_000,
+          ignored: 'not persisted',
+        },
+      ],
+    });
     now = 1_250;
     store.finishTurn({
       conversationId: 'conversation_one',
@@ -54,6 +67,14 @@ describe('AgentSessionHistoryStore', () => {
       durationMs: 350,
       activity: [
         { toolCallId: 'call_1', operation: 'browser_snapshot', status: 'succeeded' },
+      ],
+      guidance: [
+        {
+          guidanceId: 'guidance_one',
+          text: 'Prefer primary sources',
+          status: 'applied',
+          createdAt: 1_000,
+        },
       ],
     });
     store.close();
@@ -79,6 +100,14 @@ describe('AgentSessionHistoryStore', () => {
           durationMs: 350,
           activity: [
             { toolCallId: 'call_1', operation: 'browser_snapshot', status: 'succeeded' },
+          ],
+          guidance: [
+            {
+              guidanceId: 'guidance_one',
+              text: 'Prefer primary sources',
+              status: 'applied',
+              createdAt: 1_000,
+            },
           ],
         },
       ],

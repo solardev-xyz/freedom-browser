@@ -111,6 +111,13 @@ describe('isolated Pi session factory', () => {
           assistantText: 'The first page is newer.',
           startedAt: 1_000,
           durationMs: 250,
+          guidance: [
+            {
+              text: 'Use primary sources only',
+              createdAt: 1_100,
+              status: 'applied',
+            },
+          ],
           activity: [
             {
               operation: 'browser_snapshot',
@@ -123,6 +130,7 @@ describe('isolated Pi session factory', () => {
 
     expect(sdk.SessionManager.inMemory().appendMessage.mock.calls).toEqual([
       [{ role: 'user', content: 'Compare the pages', timestamp: 1_000 }],
+      [{ role: 'user', content: 'Use primary sources only', timestamp: 1_100 }],
       [
         expect.objectContaining({
           role: 'assistant',

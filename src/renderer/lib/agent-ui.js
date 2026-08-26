@@ -77,6 +77,7 @@ let sessionHistoryLoading = false;
 const paneWidths = { session: null, workspace: null };
 const toolRows = new Map();
 const turnViews = new Map();
+const guidanceViews = new Map();
 
 function byId(id) {
   return document.getElementById(id);
@@ -950,16 +951,28 @@ async function cancelProviderLogin() {
 
 function setRunState(status, label) {
   const active = status !== 'idle';
+  const acceptsComposerInput = ['idle', 'running', 'paused'].includes(status);
   currentRunStatus = status;
   setWorkspaceNavigationEditable(status === 'idle' || status === 'paused');
-  elements.run.disabled = active || !elements.prompt.value.trim() || !providerStatus?.configured;
+  elements.run.disabled =
+    !acceptsComposerInput || !elements.prompt.value.trim() || !providerStatus?.configured;
   elements.pause.hidden = status !== 'running';
   elements.pause.disabled = status !== 'running';
   elements.resume.hidden = status !== 'paused';
   elements.resume.disabled = status !== 'paused';
   elements.stop.hidden = !active;
   elements.stop.disabled = !active || !currentRunId;
-  elements.prompt.disabled = active;
+  elements.prompt.disabled = !acceptsComposerInput;
+  elements.prompt.placeholder =
+    status === 'running'
+      ? 'Guide Agent…'
+      : status === 'paused'
+        ? 'Add guidance and resume…'
+        : 'Message Agent…';
+  elements.run.setAttribute(
+    'aria-label',
+    status === 'running' ? 'Send guidance' : status === 'paused' ? 'Resume with guidance' : 'Run task'
+  );
   elements.modelMenuButton.disabled = active || Boolean(currentConversationId);
   elements.approvalModeButton.disabled = active || Boolean(currentConversationId);
   elements.newChat.hidden = !currentConversationId;
@@ -971,13 +984,15 @@ function setRunState(status, label) {
 }
 
 function updateSendAvailability() {
+  const acceptsComposerInput = ['idle', 'running', 'paused'].includes(currentRunStatus);
   elements.run.disabled =
-    currentRunStatus !== 'idle' || !elements.prompt.value.trim() || !providerStatus?.configured;
+    !acceptsComposerInput || !elements.prompt.value.trim() || !providerStatus?.configured;
 }
 
 function resetConversationUi() {
   toolRows.clear();
   turnViews.clear();
+  guidanceViews.clear();
   elements.transcript.replaceChildren();
   elements.transcript.hidden = true;
   elements.emptyState.hidden = false;
@@ -1010,6 +1025,9 @@ function createTurnView(turn) {
   output.textContent = turn.assistantText || '';
   assistantRow.appendChild(output);
 
+  const guidanceList = document.createElement('div');
+  guidanceList.className = 'agent-guidance-list';
+
   const activity = document.createElement('details');
   activity.className = 'agent-turn-activity';
   activity.open = true;
@@ -1023,6 +1041,7 @@ function createTurnView(turn) {
   activity.appendChild(toolList);
 
   section.appendChild(userRow);
+  section.appendChild(guidanceList);
   section.appendChild(assistantRow);
   section.appendChild(activity);
   elements.transcript.appendChild(section);
@@ -1035,12 +1054,65 @@ function createTurnView(turn) {
     activity,
     activitySummary,
     toolList,
+    guidanceList,
     assistantText: turn.assistantText || '',
     actionCount: 0,
   };
   turnViews.set(turn.runId, view);
+  for (const guidance of Array.isArray(turn.guidance) ? turn.guidance : []) {
+    createGuidanceView(turn.runId, guidance);
+  }
   section.scrollIntoView?.({ block: 'end' });
   return view;
+}
+
+function guidanceStatusLabel(status) {
+  if (status === 'queued') return 'Guidance queued';
+  if (status === 'applying') return 'Applying guidance…';
+  if (status === 'cancelled') return 'Not applied';
+  return '';
+}
+
+function createGuidanceView(runId, guidance) {
+  const view = turnView(runId);
+  if (
+    !view ||
+    typeof guidance?.guidanceId !== 'string' ||
+    !guidance.guidanceId ||
+    typeof guidance.text !== 'string'
+  ) {
+    return null;
+  }
+  const key = `${runId}:${guidance.guidanceId}`;
+  const existing = guidanceViews.get(key);
+  if (existing) return existing;
+  const row = document.createElement('div');
+  row.className = 'agent-message-row user guidance';
+  const content = document.createElement('div');
+  content.className = 'agent-guidance-content';
+  const message = document.createElement('div');
+  message.className = 'agent-user-message agent-guidance-message';
+  message.textContent = guidance.text;
+  const status = document.createElement('small');
+  status.className = 'agent-guidance-status';
+  content.appendChild(message);
+  content.appendChild(status);
+  row.appendChild(content);
+  view.guidanceList.appendChild(row);
+  const record = { row, status };
+  guidanceViews.set(key, record);
+  updateGuidanceView(runId, guidance.guidanceId, guidance.status);
+  row.scrollIntoView?.({ block: 'end' });
+  return record;
+}
+
+function updateGuidanceView(runId, guidanceId, status) {
+  const record = guidanceViews.get(`${runId}:${guidanceId}`);
+  if (!record) return;
+  const label = guidanceStatusLabel(status);
+  record.status.textContent = label;
+  record.status.hidden = !label;
+  record.row.classList.toggle('cancelled', status === 'cancelled');
 }
 
 function turnView(runId) {
@@ -1395,7 +1467,22 @@ function handleAgentEvent(event) {
     return;
   }
   if (!currentRunId) return;
-  if (event.type === 'assistant_text_delta' && typeof event.text === 'string') {
+  if (event.type === 'guidance_queued') {
+    createGuidanceView(event.runId, event.guidance);
+    setMessage(
+      elements.runMessage,
+      pendingApproval
+        ? 'Guidance queued. Decide the pending approval separately.'
+        : 'Guidance queued for Agent.'
+    );
+  } else if (
+    ['guidance_applying', 'guidance_applied', 'guidance_cancelled'].includes(event.type) &&
+    typeof event.guidanceId === 'string'
+  ) {
+    const status = event.type.replace('guidance_', '');
+    updateGuidanceView(event.runId, event.guidanceId, status);
+    if (status === 'applying') setMessage(elements.runMessage, 'Applying your guidance…');
+  } else if (event.type === 'assistant_text_delta' && typeof event.text === 'string') {
     const view = turnView(event.runId);
     if (!view) return;
     view.assistantText += event.text;
@@ -1527,6 +1614,42 @@ async function startRun() {
   }
 }
 
+async function steerRun() {
+  if (!currentRunId || currentRunStatus !== 'running') return;
+  const prompt = elements.prompt.value.trim();
+  if (!prompt) return;
+  const runId = currentRunId;
+  elements.prompt.value = '';
+  updateSendAvailability();
+  try {
+    const response = await window.electronAPI.steerAgent(runId, prompt);
+    if (!response?.ok && currentRunId === runId) {
+      if (!elements.prompt.value) elements.prompt.value = prompt;
+      updateSendAvailability();
+      setMessage(
+        elements.runMessage,
+        responseMessage(response, 'Could not send guidance to Agent'),
+        true
+      );
+    }
+  } catch {
+    if (currentRunId !== runId) return;
+    if (!elements.prompt.value) elements.prompt.value = prompt;
+    updateSendAvailability();
+    setMessage(elements.runMessage, 'Could not send guidance to Agent', true);
+  }
+}
+
+function submitComposer() {
+  if (currentRunStatus === 'running') {
+    void steerRun();
+  } else if (currentRunStatus === 'paused') {
+    void resumeRun(elements.prompt.value.trim());
+  } else if (currentRunStatus === 'idle') {
+    void startRun();
+  }
+}
+
 async function clearConversation() {
   if (!currentConversationId || currentRunStatus !== 'idle') return;
   elements.newChat.disabled = true;
@@ -1577,14 +1700,17 @@ async function pauseRun() {
   }
 }
 
-async function resumeRun() {
+async function resumeRun(instruction = '') {
   if (!currentRunId || currentRunStatus !== 'paused') return;
   const runId = currentRunId;
+  const guidance = typeof instruction === 'string' ? instruction.trim() : '';
+  if (guidance) elements.prompt.value = '';
   setRunState('resuming', 'Resuming');
   setMessage(elements.runMessage, 'Checking the page before the agent continues…');
   try {
-    const response = await window.electronAPI.resumeAgent(runId);
+    const response = await window.electronAPI.resumeAgent(runId, guidance || undefined);
     if ((!response?.ok || response.resumed !== true) && currentRunId === runId) {
+      if (guidance && !elements.prompt.value) elements.prompt.value = guidance;
       setRunState('paused', 'Paused');
       setMessage(
         elements.runMessage,
@@ -1594,6 +1720,7 @@ async function resumeRun() {
     }
   } catch {
     if (currentRunId !== runId) return;
+    if (guidance && !elements.prompt.value) elements.prompt.value = guidance;
     setRunState('paused', 'Paused');
     setMessage(elements.runMessage, 'Could not resume the agent', true);
   }
@@ -1813,7 +1940,7 @@ export function initAgentUi(options = {}) {
   elements.saveProvider.addEventListener('click', saveProvider);
   elements.loginProvider.addEventListener('click', loginSubscriptionProvider);
   elements.cancelProviderLogin.addEventListener('click', cancelProviderLogin);
-  elements.run.addEventListener('click', startRun);
+  elements.run.addEventListener('click', submitComposer);
   elements.pageContext.addEventListener('click', () => {
     if (currentConversationId || currentRunStatus !== 'idle') return;
     dismissedPageContextTabId = getActiveTab()?.id || null;
@@ -1825,10 +1952,10 @@ export function initAgentUi(options = {}) {
   elements.prompt.addEventListener('keydown', (event) => {
     if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
     event.preventDefault();
-    if (!elements.run.disabled) startRun();
+    if (!elements.run.disabled) submitComposer();
   });
   elements.pause.addEventListener('click', pauseRun);
-  elements.resume.addEventListener('click', resumeRun);
+  elements.resume.addEventListener('click', () => resumeRun());
   elements.stop.addEventListener('click', stopRun);
   elements.approvalApprove.addEventListener('click', () => decideApproval(true));
   elements.approvalDecline.addEventListener('click', () => decideApproval(false));

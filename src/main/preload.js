@@ -164,8 +164,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.send('automation:bind-tab', { rendererTabId, guestWebContentsId }),
   startAgent: (rendererTabId, prompt, approvalMode = 'every_interaction') =>
     ipcRenderer.invoke('agent:start', { rendererTabId, prompt, approvalMode }),
+  steerAgent: (runId, prompt) => ipcRenderer.invoke('agent:steer', { runId, prompt }),
   pauseAgent: (runId) => ipcRenderer.invoke('agent:pause', { runId }),
-  resumeAgent: (runId) => ipcRenderer.invoke('agent:resume', { runId }),
+  resumeAgent: (runId, prompt) => ipcRenderer.invoke('agent:resume', { runId, prompt }),
   stopAgent: (runId) => ipcRenderer.invoke('agent:stop', { runId }),
   decideAgentApproval: (runId, approvalId, approved) =>
     ipcRenderer.invoke('agent:approval:decide', { runId, approvalId, approved }),

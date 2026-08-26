@@ -35,6 +35,8 @@ function createFakeSession() {
       prompts.push(turn);
       return turn.promise;
     }),
+    steer: jest.fn(async () => {}),
+    clearQueue: jest.fn(() => ({ steering: [], followUp: [] })),
     abort: jest.fn(async () => prompts.at(-1)?.resolve()),
     dispose: jest.fn(),
   };
@@ -85,6 +87,7 @@ function createHistoryStore(overrides = {}) {
     createSession: jest.fn(),
     startTurn: jest.fn(),
     finishTurn: jest.fn(),
+    updateTurnGuidance: jest.fn(),
     listSessions: jest.fn(() => []),
     getSession: jest.fn(() => null),
     renameSession: jest.fn(() => null),
@@ -545,6 +548,7 @@ describe('FreedomAgentService', () => {
           status: 'running',
         },
       ],
+      guidance: [],
       error: undefined,
     });
     expect(JSON.stringify(historyStore.finishTurn.mock.calls)).not.toContain(
@@ -658,6 +662,19 @@ describe('FreedomAgentService', () => {
     expect(service.getState()).toMatchObject({
       pendingApproval: { approvalId: approval.approvalId },
     });
+    await expect(service.steer('run_test', 'Do not submit until I confirm')).resolves.toMatchObject({
+      text: 'Do not submit until I confirm',
+      status: 'queued',
+    });
+    expect(fake.session.steer).toHaveBeenCalledWith('Do not submit until I confirm');
+    expect(service.getState()).toMatchObject({
+      pendingApproval: { approvalId: approval.approvalId },
+      transcript: [
+        expect.objectContaining({
+          guidance: [expect.objectContaining({ status: 'queued' })],
+        }),
+      ],
+    });
     await expect(service.decideApproval('run_other', approval.approvalId, true)).resolves.toBe(
       false
     );
@@ -671,6 +688,69 @@ describe('FreedomAgentService', () => {
 
     await service.stop('run_test');
     await service.waitForIdle();
+  });
+
+  test('delivers native Pi steering in the retained run and projects its lifecycle', async () => {
+    const fake = createFakeSession();
+    const historyStore = createHistoryStore();
+    const { service } = createService(fake, {
+      historyStore,
+      guidanceIdFactory: jest.fn(() => 'guidance_test'),
+    });
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+
+    await expect(service.steer('run_test', 'Focus on primary sources')).resolves.toEqual({
+      guidanceId: 'guidance_test',
+      text: 'Focus on primary sources',
+      status: 'queued',
+      createdAt: 1_000,
+    });
+    expect(fake.session.steer).toHaveBeenCalledWith('Focus on primary sources');
+    expect(events.at(-1)).toMatchObject({
+      type: 'guidance_queued',
+      guidance: { guidanceId: 'guidance_test', status: 'queued' },
+    });
+
+    fake.emit({
+      type: 'message_start',
+      message: {
+        role: 'user',
+        content: [{ type: 'text', text: 'Focus on primary sources' }],
+      },
+    });
+    expect(events.at(-1)).toMatchObject({
+      type: 'guidance_applying',
+      guidanceId: 'guidance_test',
+    });
+    fake.emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop' } });
+    expect(events.at(-1)).toMatchObject({
+      type: 'guidance_applied',
+      guidanceId: 'guidance_test',
+    });
+    expect(historyStore.updateTurnGuidance).toHaveBeenLastCalledWith({
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      guidance: [
+        {
+          guidanceId: 'guidance_test',
+          text: 'Focus on primary sources',
+          status: 'applied',
+          createdAt: 1_000,
+        },
+      ],
+    });
+
+    fake.prompt.resolve();
+    await service.waitForIdle();
+    expect(service.getState()).toMatchObject({
+      transcript: [
+        expect.objectContaining({
+          guidance: [expect.objectContaining({ status: 'applied' })],
+        }),
+      ],
+    });
   });
 
   test('declines a pending approval when the user takes over', async () => {
@@ -724,6 +804,50 @@ describe('FreedomAgentService', () => {
     await service.waitForIdle();
     expect(events.at(-1)).toMatchObject({ type: 'run_finished', status: 'completed' });
     expect(fake.session.dispose).not.toHaveBeenCalled();
+  });
+
+  test('retains queued steering across Pause and resumes with additional guidance', async () => {
+    const fake = createFakeSession();
+    const { service } = createService(fake, {
+      guidanceIdFactory: jest
+        .fn()
+        .mockReturnValueOnce('guidance_running')
+        .mockReturnValueOnce('guidance_resume'),
+    });
+    await service.start(startOptions());
+    await service.steer('run_test', 'Do not submit yet');
+    fake.emit({
+      type: 'message_start',
+      message: {
+        role: 'user',
+        content: [{ type: 'text', text: 'Do not submit yet' }],
+      },
+    });
+    expect(service.getState().transcript[0].guidance[0].status).toBe('applying');
+
+    await expect(service.pause('run_test')).resolves.toBe(true);
+    expect(fake.session.clearQueue).toHaveBeenCalledTimes(1);
+    expect(service.getState().transcript[0].guidance[0].status).toBe('queued');
+    await expect(service.resume('run_test', 'I have logged in; continue')).resolves.toBe(true);
+
+    const resumePrompt = fake.session.prompt.mock.calls[1][0];
+    expect(resumePrompt).toContain('browser workspace');
+    expect(resumePrompt).toContain('Do not submit yet');
+    expect(resumePrompt).toContain('I have logged in; continue');
+    expect(service.getState()).toMatchObject({
+      transcript: [
+        expect.objectContaining({
+          guidance: [
+            expect.objectContaining({ guidanceId: 'guidance_running', status: 'applying' }),
+            expect.objectContaining({ guidanceId: 'guidance_resume', status: 'applying' }),
+          ],
+        }),
+      ],
+    });
+
+    fake.emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop' } });
+    fake.prompts[1].resolve();
+    await service.waitForIdle();
   });
 
   test('refuses resume after the controlled tab leaves its starting site', async () => {

@@ -6,11 +6,12 @@ const log = require('../logger');
 const { normalizeAgentApprovalMode } = require('../../shared/agent-approval-modes');
 
 const DB_FILE = 'agent-history.sqlite';
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 const MAX_TITLE_LENGTH = 120;
 const MAX_MODEL_FIELD_LENGTH = 240;
 const SESSION_STATUSES = new Set(['running', 'ready', 'interrupted', 'failed', 'cancelled']);
 const TURN_STATUSES = new Set(['running', 'completed', 'interrupted', 'failed', 'cancelled']);
+const GUIDANCE_STATUSES = new Set(['queued', 'applying', 'applied', 'cancelled']);
 
 function requiredString(value, label, maxLength) {
   if (typeof value !== 'string' || !value.trim()) {
@@ -60,6 +61,20 @@ function normalizeActivity(activity) {
     }));
 }
 
+function normalizeGuidance(guidance) {
+  if (!Array.isArray(guidance)) return [];
+  return guidance
+    .filter((item) => item && typeof item === 'object')
+    .slice(0, 1_000)
+    .map((item) => ({
+      guidanceId: optionalString(item.guidanceId, 160) || '',
+      text: optionalString(item.text, 32_000) || '',
+      status: GUIDANCE_STATUSES.has(item.status) ? item.status : 'cancelled',
+      createdAt: Number.isFinite(item.createdAt) ? item.createdAt : 0,
+    }))
+    .filter((item) => item.guidanceId && item.text);
+}
+
 function rowToSession(row) {
   if (!row) return null;
   return {
@@ -81,6 +96,11 @@ function rowToTurn(row) {
   const error = row.error_code
     ? { code: row.error_code, message: row.error_message || 'The agent turn failed' }
     : null;
+  const guidance = normalizeGuidance(safeJsonParse(row.guidance_json, [])).map((item) =>
+    row.status === 'interrupted' && (item.status === 'queued' || item.status === 'applying')
+      ? { ...item, status: 'cancelled' }
+      : item
+  );
   return {
     runId: row.id,
     userText: row.user_text,
@@ -89,6 +109,7 @@ function rowToTurn(row) {
     startedAt: row.started_at,
     ...(Number.isFinite(row.duration_ms) && { durationMs: row.duration_ms }),
     activity: normalizeActivity(safeJsonParse(row.activity_json, [])),
+    guidance,
     ...(error && { error }),
   };
 }
@@ -156,6 +177,13 @@ class AgentSessionHistoryStore {
         CREATE INDEX IF NOT EXISTS idx_agent_turns_session_position
           ON agent_turns(session_id, position ASC);
       `);
+      this.db.pragma('user_version = 1');
+    }
+    if (version < 2) {
+      this.db.exec(`
+        ALTER TABLE agent_turns
+          ADD COLUMN guidance_json TEXT NOT NULL DEFAULT '[]';
+      `);
       this.db.pragma(`user_version = ${SCHEMA_VERSION}`);
     }
   }
@@ -179,7 +207,11 @@ class AgentSessionHistoryStore {
       finishTurn: db.prepare(`
         UPDATE agent_turns SET
           assistant_text = ?, status = ?, duration_ms = ?, activity_json = ?,
-          error_code = ?, error_message = ?
+          guidance_json = ?, error_code = ?, error_message = ?
+        WHERE id = ? AND session_id = ?
+      `),
+      updateTurnGuidance: db.prepare(`
+        UPDATE agent_turns SET guidance_json = ?
         WHERE id = ? AND session_id = ?
       `),
       touchSession: db.prepare(`
@@ -265,6 +297,7 @@ class AgentSessionHistoryStore {
     const assistantText = typeof entry?.assistantText === 'string' ? entry.assistantText : '';
     const durationMs = Number.isFinite(entry?.durationMs) ? Math.max(0, entry.durationMs) : null;
     const activity = normalizeActivity(entry?.activity);
+    const guidance = normalizeGuidance(entry?.guidance);
     const errorCode = optionalString(entry?.error?.code, 120);
     const errorMessage = optionalString(entry?.error?.message, 512);
     const result = this.#getStatements().finishTurn.run(
@@ -272,6 +305,7 @@ class AgentSessionHistoryStore {
       status,
       durationMs,
       JSON.stringify(activity),
+      JSON.stringify(guidance),
       errorCode,
       errorMessage,
       runId,
@@ -284,6 +318,21 @@ class AgentSessionHistoryStore {
         this.now(),
         sessionId
       );
+    }
+    return result.changes > 0;
+  }
+
+  updateTurnGuidance(entry) {
+    const sessionId = requiredString(entry?.conversationId, 'Agent conversation ID', 160);
+    const runId = requiredString(entry?.runId, 'Agent run ID', 160);
+    const guidance = normalizeGuidance(entry?.guidance);
+    const result = this.#getStatements().updateTurnGuidance.run(
+      JSON.stringify(guidance),
+      runId,
+      sessionId
+    );
+    if (result.changes > 0) {
+      this.#getStatements().touchSession.run('running', this.now(), sessionId);
     }
     return result.changes > 0;
   }
@@ -337,6 +386,7 @@ module.exports = {
   MAX_TITLE_LENGTH,
   SCHEMA_VERSION,
   normalizeActivity,
+  normalizeGuidance,
   rowToSession,
   rowToTurn,
 };

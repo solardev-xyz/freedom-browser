@@ -1698,6 +1698,38 @@ body.agent-first-mode .agent-composer textarea {
   justify-content: flex-end;
 }
 
+.agent-guidance-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.agent-guidance-list:empty {
+  display: none;
+}
+
+.agent-guidance-content {
+  display: flex;
+  max-width: 88%;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.agent-guidance-status {
+  padding-right: 4px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.agent-guidance-message {
+  max-width: 100%;
+}
+
+.agent-message-row.guidance.cancelled .agent-guidance-message {
+  opacity: 0.62;
+}
+
 .agent-user-message {
   max-width: 88%;
   padding: 8px 11px;
