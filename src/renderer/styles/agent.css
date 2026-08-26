@@ -735,7 +735,7 @@ body.agent-first-mode .agent-task-pages-empty {
 }
 
 .agent-task-pages-empty[hidden] {
-  display: none;
+  display: none !important;
 }
 
 .agent-task-pages-note {
