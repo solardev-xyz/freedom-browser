@@ -896,7 +896,7 @@ test('declining a form commit blocks repeated model attempts for the run', async
   expect(pageConfirmation).toBe('Not submitted');
 });
 
-test('pausing a pending approval allows a fresh approval after resume', async ({
+test('taking over during a pending approval allows a fresh approval after resume', async ({
   window,
   harness,
 }) => {
@@ -912,12 +912,16 @@ test('pausing a pending approval allows a fresh approval after resume', async ({
   await approveInteraction(window, 'Project');
   await expect(window.locator('#agent-approval-action')).toContainText('Submit registration');
 
-  await window.locator('#agent-pause').click();
-  await expect(window.locator('#agent-run-status')).toHaveText('Paused', { timeout: 5_000 });
+  await window.locator('[data-test="agent-page-interlock"]').click({ position: { x: 10, y: 10 } });
+  await expect(window.locator('#agent-takeover-dialog')).toBeVisible();
+  await window.locator('#agent-takeover-confirm').click();
+  await expect(window.locator('#agent-run-status')).toHaveText('You’re in control', {
+    timeout: 5_000,
+  });
   await expect(window.locator('#agent-approval')).toBeHidden();
-  await expect(window.locator('#agent-resume')).toBeVisible();
+  await expect(window.locator('#agent-run')).toHaveAttribute('data-action', 'resume');
 
-  await window.locator('#agent-resume').click();
+  await window.locator('#agent-run').click();
   await expect(window.locator('#agent-approval')).toBeVisible({ timeout: 10_000 });
   await expect(window.locator('#agent-approval-action')).toContainText('Submit registration');
   await window.locator('#agent-approval-approve').click();
@@ -1041,7 +1045,7 @@ test('approval is invalidated when a hidden form value changes before dispatch',
   await expect(window.locator('.agent-tool-state')).toHaveText(['✓', '✓', '✓', '×']);
 });
 
-test('Take over cancels a run while form approval is pending', async ({ window, harness }) => {
+test('Stop cancels a run while form approval is pending', async ({ window, harness }) => {
   requestCount = 0;
   operations.length = 0;
   await prepareAgentFixture(window, harness, TAKEOVER_PAGE_URL, REGISTRATION_BODY, 'every');
@@ -1053,10 +1057,11 @@ test('Take over cancels a run while form approval is pending', async ({ window, 
   await approveInteraction(window, 'Full name');
   await approveInteraction(window, 'Project');
   await expect(window.locator('#agent-approval-action')).toContainText('Submit registration');
-  await window.locator('#agent-stop').click();
+  await expect(window.locator('#agent-run')).toHaveAttribute('data-action', 'stop');
+  await window.locator('#agent-run').click();
 
-  await expect(window.locator('#agent-run-status')).toHaveText('Taken over', { timeout: 15_000 });
-  await expect(window.locator('#agent-run-message')).toHaveText('You took control of the tab');
+  await expect(window.locator('#agent-run-status')).toHaveText('Stopped', { timeout: 15_000 });
+  await expect(window.locator('#agent-run-message')).toHaveText('Agent stopped.');
   await expect(window.locator('#agent-approval')).toBeHidden();
   const pageConfirmation = await window.evaluate(() =>
     document

@@ -1519,6 +1519,133 @@ body.agent-first-mode .agent-composer textarea {
   height: 17px;
 }
 
+.agent-send-button .agent-run-icon-stop,
+.agent-send-button .agent-run-icon-resume {
+  display: none;
+}
+
+.agent-send-button[data-action='stop'] .agent-run-icon-send,
+.agent-send-button[data-action='resume'] .agent-run-icon-send {
+  display: none;
+}
+
+.agent-send-button[data-action='stop'] .agent-run-icon-stop,
+.agent-send-button[data-action='resume'] .agent-run-icon-resume {
+  display: block;
+}
+
+.agent-send-button[data-action='stop'] {
+  color: var(--text);
+  background: color-mix(in srgb, var(--text) 13%, var(--toolbar));
+}
+
+.agent-page-interlock {
+  position: absolute;
+  inset: 0;
+  z-index: 12;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: default;
+  outline: none;
+  transition: background-color 120ms ease;
+}
+
+.agent-page-interlock[hidden] {
+  display: none;
+}
+
+.agent-page-interlock.dialog-open {
+  background: color-mix(in srgb, black 18%, transparent);
+}
+
+.agent-page-lock-trigger {
+  position: absolute;
+  inset: 0;
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  cursor: default;
+}
+
+.agent-page-lock-hint {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  max-width: calc(100% - 24px);
+  padding: 6px 9px;
+  color: var(--text);
+  font-size: 10px;
+  line-height: 1.3;
+  text-align: center;
+  background: color-mix(in srgb, var(--toolbar) 94%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 35%, transparent);
+  border-radius: 999px;
+  box-shadow: 0 5px 18px rgba(0, 0, 0, 0.24);
+  pointer-events: none;
+}
+
+.agent-takeover-dialog {
+  position: relative;
+  z-index: 1;
+  width: min(330px, calc(100% - 32px));
+  padding: 17px;
+  color: var(--text);
+  background: var(--menu-bg);
+  border: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+  border-radius: 12px;
+  box-shadow: 0 18px 45px rgba(0, 0, 0, 0.42);
+}
+
+.agent-takeover-dialog[hidden] {
+  display: none;
+}
+
+.agent-takeover-dialog h3,
+.agent-takeover-dialog p {
+  margin: 0;
+}
+
+.agent-takeover-dialog h3 {
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.agent-takeover-dialog p {
+  margin-top: 7px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.agent-takeover-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 7px;
+  margin-top: 15px;
+}
+
+.agent-takeover-actions button {
+  min-height: 30px;
+  padding: 6px 10px;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+  background: color-mix(in srgb, var(--text) 7%, transparent);
+  border: 0;
+  border-radius: 7px;
+}
+
+.agent-takeover-actions button.primary {
+  color: white;
+  background: var(--accent);
+}
+
+.agent-takeover-actions button:disabled {
+  opacity: 0.55;
+}
+
 .agent-popover {
   position: absolute;
   right: 14px;

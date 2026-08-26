@@ -658,7 +658,7 @@ test('baseline: rich form passes with semantic select and bounded keyboard capab
   ]);
 });
 
-test('baseline: Pause, human edit, Resume, and fresh approval preserve collaboration', async ({
+test('baseline: Take over, human edit, Resume, and fresh approval preserve collaboration', async ({
   window,
   harness,
 }) => {
@@ -697,8 +697,13 @@ test('baseline: Pause, human edit, Resume, and fresh approval preserve collabora
   await expect(window.locator('#agent-approval-origin')).toContainText(
     'Destination: https://agent-product.test'
   );
-  await window.locator('#agent-pause').click();
-  await expect(window.locator('#agent-run-status')).toHaveText('Paused', { timeout: 5_000 });
+  await expect(window.locator('[data-test="agent-page-interlock"]')).toBeVisible();
+  await window.locator('[data-test="agent-page-interlock"]').click({ position: { x: 10, y: 10 } });
+  await expect(window.locator('#agent-takeover-dialog')).toBeVisible();
+  await window.locator('#agent-takeover-confirm').click();
+  await expect(window.locator('#agent-run-status')).toHaveText('You’re in control', {
+    timeout: 5_000,
+  });
   await expect(window.locator('#agent-approval')).toBeHidden();
 
   await guestValue(
@@ -709,7 +714,8 @@ test('baseline: Pause, human edit, Resume, and fresh approval preserve collabora
       input.dispatchEvent(new Event('input', { bubbles: true }));
     })()`
   );
-  await window.locator('#agent-resume').click();
+  await expect(window.locator('#agent-run')).toHaveAttribute('data-action', 'resume');
+  await window.locator('#agent-run').click();
   await expect(window.locator('#agent-approval')).toBeVisible({ timeout: 10_000 });
   await window.locator('#agent-approval-approve').click();
   await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 15_000 });

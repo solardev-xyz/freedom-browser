@@ -1198,6 +1198,10 @@ class FreedomAgentService {
       custody: 'agent',
       conversationId,
     });
+    const run = this.activeRun;
+    if (run && !run.finished && run.conversationId === conversationId) {
+      this.#emit(run, { type: 'workspace_changed' });
+    }
   }
 
   #conversationHasTab(conversation, tabId) {

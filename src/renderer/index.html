@@ -1206,6 +1206,43 @@
           <div class="content-page">
             <div id="webview-container" class="webview-container">
               <!-- Webviews inserted dynamically by tabs.js -->
+              <div
+                id="agent-page-interlock"
+                class="agent-page-interlock"
+                data-test="agent-page-interlock"
+                hidden
+              >
+                <button
+                  id="agent-page-lock-trigger"
+                  class="agent-page-lock-trigger"
+                  type="button"
+                  aria-label="Agent is controlling this page. Click to take over."
+                >
+                  <span id="agent-page-lock-hint" class="agent-page-lock-hint">
+                    Agent is controlling this page · Click to take over
+                  </span>
+                </button>
+                <section
+                  id="agent-takeover-dialog"
+                  class="agent-takeover-dialog"
+                  role="dialog"
+                  aria-modal="true"
+                  aria-labelledby="agent-takeover-title"
+                  hidden
+                >
+                  <h3 id="agent-takeover-title">Take over this page?</h3>
+                  <p>
+                    Agent will wait while you use its pages. You can resume the task when
+                    you are finished.
+                  </p>
+                  <div class="agent-takeover-actions">
+                    <button id="agent-takeover-cancel" type="button">Keep Agent working</button>
+                    <button id="agent-takeover-confirm" class="primary" type="button">
+                      Take over
+                    </button>
+                  </div>
+                </section>
+              </div>
             </div>
             <div id="link-status" class="link-status" hidden aria-hidden="true">
               <span id="link-status-url" class="link-status-url"></span>
@@ -1493,21 +1530,6 @@
                   <button id="agent-new-chat" class="agent-text-button" type="button" hidden>
                     New chat
                   </button>
-                  <button id="agent-pause" class="agent-text-button" type="button" disabled hidden>
-                    Pause
-                  </button>
-                  <button id="agent-resume" class="agent-text-button" type="button" hidden>
-                    Resume
-                  </button>
-                  <button
-                    id="agent-stop"
-                    class="agent-text-button danger"
-                    type="button"
-                    disabled
-                    hidden
-                  >
-                    Take over
-                  </button>
                 </div>
               </div>
               <p id="agent-run-message" class="agent-message" aria-live="polite"></p>
@@ -1657,6 +1679,7 @@
                       class="agent-send-button"
                       type="button"
                       aria-label="Run task"
+                      data-action="send"
                     >
                       <svg
                         viewBox="0 0 24 24"
@@ -1667,8 +1690,26 @@
                         stroke-linejoin="round"
                         aria-hidden="true"
                       >
-                        <path d="m12 19V5" />
-                        <path d="m5 12 7-7 7 7" />
+                        <g class="agent-run-icon-send">
+                          <path d="m12 19V5" />
+                          <path d="m5 12 7-7 7 7" />
+                        </g>
+                        <rect
+                          class="agent-run-icon-stop"
+                          x="7"
+                          y="7"
+                          width="10"
+                          height="10"
+                          rx="1.5"
+                          fill="currentColor"
+                          stroke="none"
+                        />
+                        <path
+                          class="agent-run-icon-resume"
+                          d="m8.5 6.5 9 5.5-9 5.5Z"
+                          fill="currentColor"
+                          stroke="none"
+                        />
                       </svg>
                     </button>
                   </div>

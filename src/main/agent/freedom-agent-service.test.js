@@ -464,6 +464,8 @@ describe('FreedomAgentService', () => {
         .mockReturnValueOnce('run_first')
         .mockReturnValueOnce('run_second'),
     });
+    const events = [];
+    service.subscribe((event) => events.push(event));
 
     await service.start(startOptions({ tabId: 'tab_user_first' }));
     const firstCreated = dependencies.createControllerScope.mock.calls[0][0].onWorkspaceTabCreated;
@@ -477,6 +479,12 @@ describe('FreedomAgentService', () => {
     const secondCreated = dependencies.createControllerScope.mock.calls[1][0].onWorkspaceTabCreated;
     scopes.get('tab_user_second').addTab('tab_agent_second');
     secondCreated('tab_agent_second');
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'workspace_changed', runId: 'run_first' }),
+        expect.objectContaining({ type: 'workspace_changed', runId: 'run_second' }),
+      ])
+    );
     second.prompt.resolve();
     await service.waitForIdle();
 

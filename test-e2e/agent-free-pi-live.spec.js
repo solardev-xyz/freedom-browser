@@ -35,8 +35,8 @@ test('Free Pi returns text through the embedded Agent', async ({ window }) => {
     timeout: 60_000,
   });
   await expect(window.locator('#agent-output')).toContainText(/hello/i);
-  await expect(window.locator('#agent-run')).toBeEnabled();
-  await expect(window.locator('#agent-stop')).toBeDisabled();
+  await expect(window.locator('#agent-run')).toBeDisabled();
+  await expect(window.locator('#agent-run')).toHaveAttribute('data-action', 'send');
 });
 
 test.describe('Free Pi browser-tool qualification', () => {

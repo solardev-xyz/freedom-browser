@@ -57,7 +57,7 @@ let pendingPromptText = '';
 let currentRunId = null;
 let currentRunStatus = 'idle';
 let lastFinishedRunId = null;
-let takeoverRequestedRunId = null;
+let stopRequestedRunId = null;
 let pendingApproval = null;
 let panelOpen = false;
 let agentView = 'loading';
@@ -409,6 +409,50 @@ function renderTaskPages() {
     : 'Agent will start from the page you are currently viewing.';
 }
 
+function activePageIsControlled() {
+  if (!currentRunId || !['running', 'pausing', 'resuming', 'stopping'].includes(currentRunStatus)) {
+    return false;
+  }
+  const activeTab = openTabs.find((tab) => tab.isActive) || getActiveTab();
+  if (!Number.isSafeInteger(activeTab?.id)) return false;
+  return (
+    isTabAgentOwned(activeTab.id) ||
+    activeTab.id === conversationRendererTabId ||
+    taskTabProjection.some((entry) => entry.rendererTabId === activeTab.id)
+  );
+}
+
+function setTakeoverDialogOpen(open) {
+  const shouldOpen = open === true && activePageIsControlled() && currentRunStatus === 'running';
+  elements.takeoverDialog.hidden = !shouldOpen;
+  elements.pageInterlock.classList.toggle('dialog-open', shouldOpen);
+  elements.pageLockHint.hidden = shouldOpen;
+  elements.takeoverCancel.disabled = false;
+  elements.takeoverConfirm.disabled = false;
+  if (shouldOpen) elements.takeoverConfirm.focus();
+}
+
+function renderPageInterlock() {
+  const locked = activePageIsControlled();
+  elements.pageInterlock.hidden = !locked;
+  elements.pageInterlock.setAttribute('aria-hidden', String(!locked));
+  elements.pageLockHint.textContent =
+    currentRunStatus === 'pausing'
+      ? 'Taking over…'
+      : currentRunStatus === 'stopping'
+        ? 'Stopping Agent…'
+        : 'Agent is controlling this page · Click to take over';
+  if (!locked || currentRunStatus !== 'running') setTakeoverDialogOpen(false);
+}
+
+function requestTakeoverConfirmation(rendererTabId = null) {
+  if (Number.isSafeInteger(rendererTabId) && getActiveTab()?.id !== rendererTabId) {
+    switchToTab(rendererTabId);
+  }
+  renderPageInterlock();
+  setTakeoverDialogOpen(true);
+}
+
 function applyWorkspaceProjection(state) {
   taskTabProjection = Array.isArray(state?.taskTabs)
     ? state.taskTabs.filter(
@@ -421,6 +465,7 @@ function applyWorkspaceProjection(state) {
   setAgentTabCustody(Array.isArray(state?.agentTabs) ? state.agentTabs : []);
   renderTaskPages();
   ensureWorkspacePageVisible();
+  renderPageInterlock();
 }
 
 async function refreshWorkspaceProjection() {
@@ -954,14 +999,6 @@ function setRunState(status, label) {
   const acceptsComposerInput = ['idle', 'running', 'paused'].includes(status);
   currentRunStatus = status;
   setWorkspaceNavigationEditable(status === 'idle' || status === 'paused');
-  elements.run.disabled =
-    !acceptsComposerInput || !elements.prompt.value.trim() || !providerStatus?.configured;
-  elements.pause.hidden = status !== 'running';
-  elements.pause.disabled = status !== 'running';
-  elements.resume.hidden = status !== 'paused';
-  elements.resume.disabled = status !== 'paused';
-  elements.stop.hidden = !active;
-  elements.stop.disabled = !active || !currentRunId;
   elements.prompt.disabled = !acceptsComposerInput;
   elements.prompt.placeholder =
     status === 'running'
@@ -969,24 +1006,38 @@ function setRunState(status, label) {
       : status === 'paused'
         ? 'Add guidance and resume…'
         : 'Message Agent…';
-  elements.run.setAttribute(
-    'aria-label',
-    status === 'running' ? 'Send guidance' : status === 'paused' ? 'Resume with guidance' : 'Run task'
-  );
   elements.modelMenuButton.disabled = active || Boolean(currentConversationId);
   elements.approvalModeButton.disabled = active || Boolean(currentConversationId);
   elements.newChat.hidden = !currentConversationId;
   elements.newChat.disabled = active;
   elements.runStatus.textContent = label;
   elements.runStatus.classList.toggle('active', active);
+  updateSendAvailability();
+  renderPageInterlock();
   renderPageContext();
   renderSessionSidebar();
 }
 
 function updateSendAvailability() {
-  const acceptsComposerInput = ['idle', 'running', 'paused'].includes(currentRunStatus);
-  elements.run.disabled =
-    !acceptsComposerInput || !elements.prompt.value.trim() || !providerStatus?.configured;
+  const hasText = Boolean(elements.prompt.value.trim());
+  let action = 'send';
+  let label = 'Run task';
+  let disabled = true;
+  if (currentRunStatus === 'idle') {
+    disabled = !hasText || !providerStatus?.configured;
+  } else if (currentRunStatus === 'running') {
+    action = hasText ? 'send' : 'stop';
+    label = hasText ? 'Send guidance' : 'Stop Agent';
+    disabled = !currentRunId;
+  } else if (currentRunStatus === 'paused') {
+    action = hasText ? 'send' : 'resume';
+    label = hasText ? 'Resume with guidance' : 'Resume Agent';
+    disabled = !currentRunId;
+  }
+  elements.run.dataset.action = action;
+  elements.run.disabled = disabled;
+  elements.run.setAttribute('aria-label', label);
+  elements.run.title = label;
 }
 
 function resetConversationUi() {
@@ -1392,7 +1443,7 @@ function applyReadyConversationState(state) {
   currentConversationId = state.conversationId;
   currentRunId = null;
   lastFinishedRunId = null;
-  takeoverRequestedRunId = null;
+  stopRequestedRunId = null;
   conversationRendererTabId = Number.isSafeInteger(state.rendererTabId)
     ? state.rendererTabId
     : null;
@@ -1435,6 +1486,11 @@ async function openSavedSession(conversationId) {
 
 async function claimAgentOwnedTab(rendererTabId) {
   if (!Number.isSafeInteger(rendererTabId) || rendererTabId < 1) return;
+  if (currentRunId && currentRunStatus === 'running') {
+    requestTakeoverConfirmation(rendererTabId);
+    return;
+  }
+  if (currentRunId && ['pausing', 'resuming', 'stopping'].includes(currentRunStatus)) return;
   try {
     const response = await window.electronAPI.claimAgentTab(rendererTabId);
     if (!response?.ok) {
@@ -1445,7 +1501,7 @@ async function claimAgentOwnedTab(rendererTabId) {
     if (currentRunId && response.state?.runId !== currentRunId) {
       currentRunId = null;
       setAgentControlledTab(null);
-      setRunState('idle', 'Taken over');
+      setRunState('idle', 'Claimed');
     }
     setMessage(elements.runMessage, 'This tab is now yours. Agent no longer controls it.');
   } catch {
@@ -1499,7 +1555,7 @@ function applyConversationCleared() {
   pendingPromptText = '';
   currentRunId = null;
   lastFinishedRunId = null;
-  takeoverRequestedRunId = null;
+  stopRequestedRunId = null;
   setConversationTitle('New task');
   setAgentControlledTab(null);
   taskTabProjection = [];
@@ -1560,7 +1616,9 @@ function handleAgentEvent(event) {
     return;
   }
   if (!currentRunId) return;
-  if (event.type === 'guidance_queued') {
+  if (event.type === 'workspace_changed') {
+    void refreshWorkspaceProjection();
+  } else if (event.type === 'guidance_queued') {
     createGuidanceView(event.runId, event.guidance);
     setMessage(
       elements.runMessage,
@@ -1623,12 +1681,12 @@ function handleAgentEvent(event) {
     clearApproval();
     setRunState('running', 'Running');
   } else if (event.type === 'run_pausing') {
-    setRunState('pausing', 'Pausing');
-    setMessage(elements.runMessage, 'Pausing after the current browser operation settles…');
+    setRunState('pausing', 'Taking over');
+    setMessage(elements.runMessage, 'Taking over after the current browser operation settles…');
   } else if (event.type === 'run_paused') {
     clearApproval();
-    setRunState('paused', 'Paused');
-    setMessage(elements.runMessage, 'You can change the page, then resume this task.');
+    setRunState('paused', 'You’re in control');
+    setMessage(elements.runMessage, 'Agent is waiting while you use its pages.');
   } else if (event.type === 'run_resuming') {
     setRunState('resuming', 'Resuming');
     setMessage(elements.runMessage, 'Checking the page before the agent continues…');
@@ -1637,10 +1695,10 @@ function handleAgentEvent(event) {
     setMessage(elements.runMessage, 'Agent is re-reading the current page before acting.');
   } else if (event.type === 'run_finished') {
     const status = event.status || 'finished';
-    const wasTakeover = status === 'cancelled' && takeoverRequestedRunId === event.runId;
-    setRunState('idle', wasTakeover ? 'Taken over' : status === 'completed' ? 'Complete' : status);
-    if (wasTakeover) {
-      setMessage(elements.runMessage, 'You took control of the tab');
+    const wasStopped = status === 'cancelled' && stopRequestedRunId === event.runId;
+    setRunState('idle', wasStopped ? 'Stopped' : status === 'completed' ? 'Complete' : status);
+    if (wasStopped) {
+      setMessage(elements.runMessage, 'Agent stopped.');
     } else if (event.error?.message) {
       setMessage(elements.runMessage, event.error.message, true);
     } else {
@@ -1649,7 +1707,7 @@ function handleAgentEvent(event) {
     finishTurnView(event.runId, event);
     lastFinishedRunId = event.runId;
     currentRunId = null;
-    takeoverRequestedRunId = null;
+    stopRequestedRunId = null;
     clearApproval();
     setAgentControlledTab(null);
     void refreshWorkspaceProjection();
@@ -1748,7 +1806,11 @@ async function steerRun() {
 
 function submitComposer() {
   if (currentRunStatus === 'running') {
-    void steerRun();
+    if (elements.prompt.value.trim()) {
+      void steerRun();
+    } else {
+      void stopRun();
+    }
   } else if (currentRunStatus === 'paused') {
     void resumeRun(elements.prompt.value.trim());
   } else if (currentRunStatus === 'idle') {
@@ -1788,21 +1850,22 @@ async function startNewSessionFromSidebar() {
   elements.prompt.focus();
 }
 
-async function pauseRun() {
+async function takeOverRun() {
   if (!currentRunId || currentRunStatus !== 'running') return;
   const runId = currentRunId;
-  setRunState('pausing', 'Pausing');
-  setMessage(elements.runMessage, 'Pausing…');
+  setTakeoverDialogOpen(false);
+  setRunState('pausing', 'Taking over');
+  setMessage(elements.runMessage, 'Taking over…');
   try {
     const response = await window.electronAPI.pauseAgent(runId);
     if ((!response?.ok || response.paused !== true) && currentRunId === runId) {
       setRunState('running', 'Running');
-      setMessage(elements.runMessage, responseMessage(response, 'Could not pause the agent'), true);
+      setMessage(elements.runMessage, responseMessage(response, 'Could not take over'), true);
     }
   } catch {
     if (currentRunId !== runId) return;
     setRunState('running', 'Running');
-    setMessage(elements.runMessage, 'Could not pause the agent', true);
+    setMessage(elements.runMessage, 'Could not take over', true);
   }
 }
 
@@ -1817,7 +1880,7 @@ async function resumeRun(instruction = '') {
     const response = await window.electronAPI.resumeAgent(runId, guidance || undefined);
     if ((!response?.ok || response.resumed !== true) && currentRunId === runId) {
       if (guidance && !elements.prompt.value) elements.prompt.value = guidance;
-      setRunState('paused', 'Paused');
+      setRunState('paused', 'You’re in control');
       setMessage(
         elements.runMessage,
         responseMessage(response, 'Could not resume the agent'),
@@ -1827,33 +1890,28 @@ async function resumeRun(instruction = '') {
   } catch {
     if (currentRunId !== runId) return;
     if (guidance && !elements.prompt.value) elements.prompt.value = guidance;
-    setRunState('paused', 'Paused');
+    setRunState('paused', 'You’re in control');
     setMessage(elements.runMessage, 'Could not resume the agent', true);
   }
 }
 
 async function stopRun() {
-  if (!currentRunId) return;
+  if (!currentRunId || currentRunStatus !== 'running') return;
   const previousStatus = currentRunStatus;
-  takeoverRequestedRunId = currentRunId;
-  setRunState('stopping', 'Taking over');
-  setMessage(elements.runMessage, 'Taking over…');
+  stopRequestedRunId = currentRunId;
+  setTakeoverDialogOpen(false);
+  setRunState('stopping', 'Stopping');
+  setMessage(elements.runMessage, 'Stopping Agent…');
   try {
     const response = await window.electronAPI.stopAgent(currentRunId);
     if (!response?.ok) {
-      takeoverRequestedRunId = null;
-      setRunState(
-        previousStatus === 'paused' ? 'paused' : 'running',
-        previousStatus === 'paused' ? 'Paused' : 'Running'
-      );
+      stopRequestedRunId = null;
+      setRunState(previousStatus, 'Running');
       setMessage(elements.runMessage, responseMessage(response, 'Could not stop the agent'), true);
     }
   } catch {
-    takeoverRequestedRunId = null;
-    setRunState(
-      previousStatus === 'paused' ? 'paused' : 'running',
-      previousStatus === 'paused' ? 'Paused' : 'Running'
-    );
+    stopRequestedRunId = null;
+    setRunState(previousStatus, 'Running');
     setMessage(elements.runMessage, 'Could not stop the agent', true);
   }
 }
@@ -1882,9 +1940,9 @@ async function restoreRunState() {
         : 'running';
       const restoredLabel =
         restoredStatus === 'paused'
-          ? 'Paused'
+          ? 'You’re in control'
           : restoredStatus === 'pausing'
-            ? 'Pausing'
+            ? 'Taking over'
             : restoredStatus === 'resuming'
               ? 'Resuming'
               : 'Running';
@@ -1961,9 +2019,12 @@ export function initAgentUi(options = {}) {
     prompt: byId('agent-prompt'),
     run: byId('agent-run'),
     newChat: byId('agent-new-chat'),
-    pause: byId('agent-pause'),
-    resume: byId('agent-resume'),
-    stop: byId('agent-stop'),
+    pageInterlock: byId('agent-page-interlock'),
+    pageLockTrigger: byId('agent-page-lock-trigger'),
+    pageLockHint: byId('agent-page-lock-hint'),
+    takeoverDialog: byId('agent-takeover-dialog'),
+    takeoverCancel: byId('agent-takeover-cancel'),
+    takeoverConfirm: byId('agent-takeover-confirm'),
     runStatus: byId('agent-run-status'),
     runMessage: byId('agent-run-message'),
     approval: byId('agent-approval'),
@@ -2060,9 +2121,21 @@ export function initAgentUi(options = {}) {
     event.preventDefault();
     if (!elements.run.disabled) submitComposer();
   });
-  elements.pause.addEventListener('click', pauseRun);
-  elements.resume.addEventListener('click', () => resumeRun());
-  elements.stop.addEventListener('click', stopRun);
+  elements.pageLockTrigger.addEventListener('click', () => requestTakeoverConfirmation());
+  elements.pageInterlock.addEventListener('wheel', (event) => event.preventDefault(), {
+    passive: false,
+  });
+  elements.pageInterlock.addEventListener('contextmenu', (event) => event.preventDefault());
+  elements.takeoverCancel.addEventListener('click', (event) => {
+    event.stopPropagation();
+    setTakeoverDialogOpen(false);
+  });
+  elements.takeoverConfirm.addEventListener('click', (event) => {
+    event.stopPropagation();
+    elements.takeoverCancel.disabled = true;
+    elements.takeoverConfirm.disabled = true;
+    void takeOverRun();
+  });
   elements.approvalApprove.addEventListener('click', () => decideApproval(true));
   elements.approvalDecline.addEventListener('click', () => decideApproval(false));
   elements.modelMenuButton.addEventListener('click', () => {
@@ -2104,7 +2177,13 @@ export function initAgentUi(options = {}) {
     if (event.key !== 'Escape') return;
     const popoverWasOpen = !elements.modelMenu.hidden || !elements.approvalModePopover.hidden;
     closeComposerPopovers();
-    if (!popoverWasOpen && agentFirstMode) setAgentFirstMode(false);
+    if (!elements.takeoverDialog.hidden) {
+      setTakeoverDialogOpen(false);
+    } else if (!popoverWasOpen && currentRunStatus === 'running' && currentRunId) {
+      void stopRun();
+    } else if (!popoverWasOpen && agentFirstMode) {
+      setAgentFirstMode(false);
+    }
   });
   document.addEventListener('sidebar-opened', closePanel);
   onSignatureFlightChange((inFlight) => {
@@ -2130,6 +2209,7 @@ export function initAgentUi(options = {}) {
           renderPageContext();
           renderTaskPages();
           ensureWorkspacePageVisible();
+          renderPageInterlock();
         })
       : null;
   setPanelOpen(false);

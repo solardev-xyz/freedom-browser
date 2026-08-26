@@ -318,15 +318,15 @@ async function openSharedStartPage(window, harness) {
   await expect(window.locator('#agent-page-contexts')).not.toHaveAttribute('hidden', '');
 }
 
-async function takeOverAndExpectReusable(window) {
+async function stopAndExpectReusable(window) {
   const startedAt = Date.now();
-  await window.locator('#agent-stop').click();
-  await expect(window.locator('#agent-run-status')).toHaveText('Taken over', { timeout: 3_000 });
+  await expect(window.locator('#agent-run')).toHaveAttribute('data-action', 'stop');
+  await window.locator('#agent-run').click();
+  await expect(window.locator('#agent-run-status')).toHaveText('Stopped', { timeout: 3_000 });
   expect(Date.now() - startedAt).toBeLessThan(3_000);
-  await expect(window.locator('#agent-run-message')).toHaveText('You took control of the tab');
+  await expect(window.locator('#agent-run-message')).toHaveText('Agent stopped.');
   await expect(window.locator('#agent-prompt')).toBeEnabled();
   await expect(window.locator('#agent-run')).toBeDisabled();
-  await expect(window.locator('#agent-stop')).toBeDisabled();
   await expect(window.locator('#agent-new-chat')).toBeEnabled();
   await expect(window.locator('[data-test="tab"].active')).not.toHaveClass(/agent-controlled/);
 
@@ -337,14 +337,25 @@ async function takeOverAndExpectReusable(window) {
   await expect(window.locator('#agent-output')).toHaveText('READY');
 }
 
-test('Take over cancels a streaming provider request', async ({ window }) => {
+async function takeOverControlledPage(window) {
+  const interlock = window.locator('[data-test="agent-page-interlock"]');
+  await expect(interlock).toBeVisible();
+  await interlock.click({ position: { x: 10, y: 10 } });
+  await expect(window.locator('#agent-takeover-dialog')).toBeVisible();
+  await window.locator('#agent-takeover-confirm').click();
+  await expect(window.locator('#agent-run-status')).toHaveText('You’re in control', {
+    timeout: 3_000,
+  });
+}
+
+test('Stop cancels a streaming provider request', async ({ window }) => {
   streamingResponseClosed = false;
   await configureFixtureProvider(window);
   await window.locator('#agent-prompt').fill('STREAM_CANCEL');
   await window.locator('#agent-run').click();
   await expect(window.locator('#agent-output')).toHaveText('Streaming fixture started');
 
-  await takeOverAndExpectReusable(window);
+  await stopAndExpectReusable(window);
   await expect.poll(() => streamingResponseClosed).toBe(true);
 });
 
@@ -375,7 +386,7 @@ test('follow-up prompts retain Pi context and the visible chat across sidebar re
   await expect(window.locator('.agent-output')).toHaveText(['READY', 'CONTEXT_RETAINED']);
 });
 
-test('Pause preserves the Pi session and resume re-observes the page', async ({
+test('Take over preserves the Pi session and resume re-observes the page', async ({
   window,
   harness,
 }) => {
@@ -386,14 +397,12 @@ test('Pause preserves the Pi session and resume re-observes the page', async ({
   await window.locator('#agent-run').click();
   await expect(window.locator('#agent-output')).toHaveText('Streaming fixture started');
 
-  await window.locator('#agent-pause').click();
-  await expect(window.locator('#agent-run-status')).toHaveText('Paused', { timeout: 3_000 });
-  await expect(window.locator('#agent-resume')).toBeVisible();
-  await expect(window.locator('#agent-stop')).toBeEnabled();
+  await takeOverControlledPage(window);
+  await expect(window.locator('#agent-run')).toHaveAttribute('data-action', 'resume');
   await expect(window.locator('[data-test="tab"].active')).toHaveClass(/agent-controlled/);
   await expect.poll(() => streamingResponseClosed).toBe(true);
 
-  await window.locator('#agent-resume').click();
+  await window.locator('#agent-run').click();
   await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 5_000 });
   await expect(window.locator('#agent-output')).toContainText('RESUMED');
   await expect(window.locator('.agent-tool-item')).toContainText([
@@ -441,7 +450,7 @@ test('in-flight steering changes the retained run without resolving its approval
   await expect(window.locator('.agent-guidance-status')).toBeHidden();
 });
 
-test('Pause cancels an active browser wait and the same run can resume', async ({
+test('Take over cancels an active browser wait and the same run can resume', async ({
   window,
   harness,
 }) => {
@@ -451,11 +460,10 @@ test('Pause cancels an active browser wait and the same run can resume', async (
   await window.locator('#agent-run').click();
   await expect(window.locator('.agent-tool-item')).toContainText('Waiting for');
 
-  await window.locator('#agent-pause').click();
-  await expect(window.locator('#agent-run-status')).toHaveText('Paused', { timeout: 3_000 });
+  await takeOverControlledPage(window);
   await expect(window.locator('[data-test="tab"].active')).toHaveClass(/agent-controlled/);
 
-  await window.locator('#agent-resume').click();
+  await window.locator('#agent-run').click();
   await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 5_000 });
   await expect(window.locator('#agent-output')).toContainText('RESUMED');
 });
@@ -609,7 +617,7 @@ test('session switching restores live workspaces and Claim transfers Agent tabs'
   await expect(window.locator('#webview-container webview:not(.hidden)')).toBeVisible();
 });
 
-test('Take over cancels an in-flight browser navigation', async ({ window, harness }) => {
+test('Stop cancels an in-flight browser navigation', async ({ window, harness }) => {
   await harness.setContentFixture(SLOW_NAVIGATION_URL, {
     body: '<!doctype html><title>Still loading</title><p>Navigation started</p>',
     holdOpen: true,
@@ -624,18 +632,18 @@ test('Take over cancels an in-flight browser navigation', async ({ window, harne
     .toBe(1);
   expect((await harness.state()).contentActivity[SLOW_NAVIGATION_URL].cancelled).toBe(0);
 
-  await takeOverAndExpectReusable(window);
+  await stopAndExpectReusable(window);
   await expect
     .poll(async () => (await harness.state()).contentActivity[SLOW_NAVIGATION_URL]?.cancelled)
     .toBe(1);
 });
 
-test('Take over cancels an active declarative wait', async ({ window, harness }) => {
+test('Stop cancels an active declarative wait', async ({ window, harness }) => {
   await openSharedStartPage(window, harness);
   await configureFixtureProvider(window);
   await window.locator('#agent-prompt').fill('WAIT_CANCEL');
   await window.locator('#agent-run').click();
   await expect(window.locator('.agent-tool-item')).toContainText('Waiting for');
 
-  await takeOverAndExpectReusable(window);
+  await stopAndExpectReusable(window);
 });

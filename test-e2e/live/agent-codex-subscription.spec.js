@@ -168,7 +168,7 @@ test('completes the deterministic visible form task autonomously', async ({ wind
   expect(evaluation.toolCalls).toBeGreaterThanOrEqual(4);
 });
 
-test('Take over cancels a real Codex model stream and leaves the agent reusable', async ({
+test('Stop cancels a real Codex model stream and leaves the agent reusable', async ({
   window,
 }) => {
   test.setTimeout(5 * 60_000);
@@ -181,17 +181,17 @@ test('Take over cancels a real Codex model stream and leaves the agent reusable'
   );
   await expect(window.locator('#agent-output')).not.toHaveText('', { timeout: 2 * 60_000 });
   const startedAt = Date.now();
-  await window.locator('#agent-stop').click();
-  await expect(window.locator('#agent-run-status')).toHaveText('Taken over', { timeout: 15_000 });
+  await expect(window.locator('#agent-run')).toHaveAttribute('data-action', 'stop');
+  await window.locator('#agent-run').click();
+  await expect(window.locator('#agent-run-status')).toHaveText('Stopped', { timeout: 15_000 });
   const cancellationMs = Date.now() - startedAt;
   await recordEvaluation('stream-cancellation', { cancellationMs });
 
   expect(cancellationMs).toBeLessThan(15_000);
-  await expect(window.locator('#agent-run')).toBeEnabled();
-  await expect(window.locator('#agent-stop')).toBeDisabled();
+  await expect(window.locator('#agent-run')).toBeDisabled();
 });
 
-test('Take over cancels a real Codex declarative browser wait', async ({ window }) => {
+test('Stop cancels a real Codex declarative browser wait', async ({ window }) => {
   test.setTimeout(5 * 60_000);
   await navigate(window, `${baseUrl}/waiting`);
   await openConfiguredAgent(window);
@@ -203,8 +203,9 @@ test('Take over cancels a real Codex declarative browser wait', async ({ window 
   const waitRow = window.locator('.agent-tool-item').filter({ hasText: /wait/i }).last();
   await expect(waitRow).toBeVisible({ timeout: 2 * 60_000 });
   const startedAt = Date.now();
-  await window.locator('#agent-stop').click();
-  await expect(window.locator('#agent-run-status')).toHaveText('Taken over', { timeout: 15_000 });
+  await expect(window.locator('#agent-run')).toHaveAttribute('data-action', 'stop');
+  await window.locator('#agent-run').click();
+  await expect(window.locator('#agent-run-status')).toHaveText('Stopped', { timeout: 15_000 });
   const cancellationMs = Date.now() - startedAt;
   await recordEvaluation('wait-cancellation', {
     cancellationMs,
@@ -212,8 +213,7 @@ test('Take over cancels a real Codex declarative browser wait', async ({ window 
   });
 
   expect(cancellationMs).toBeLessThan(15_000);
-  await expect(window.locator('#agent-run')).toBeEnabled();
-  await expect(window.locator('#agent-stop')).toBeDisabled();
+  await expect(window.locator('#agent-run')).toBeDisabled();
 });
 
 test('reads one harmless public page without side effects', async ({ window }) => {

@@ -64,9 +64,12 @@ function createAgentElements() {
     'agent-prompt',
     'agent-run',
     'agent-new-chat',
-    'agent-pause',
-    'agent-resume',
-    'agent-stop',
+    'agent-page-interlock',
+    'agent-page-lock-trigger',
+    'agent-page-lock-hint',
+    'agent-takeover-dialog',
+    'agent-takeover-cancel',
+    'agent-takeover-confirm',
     'agent-run-status',
     'agent-run-message',
     'agent-approval',
@@ -143,12 +146,19 @@ function createAgentElements() {
   elements['agent-run'] = createElement('button');
   elements['agent-new-chat'] = createElement('button');
   elements['agent-new-chat'].hidden = true;
-  elements['agent-pause'] = createElement('button', { disabled: true });
-  elements['agent-pause'].hidden = true;
-  elements['agent-resume'] = createElement('button', { disabled: true });
-  elements['agent-resume'].hidden = true;
-  elements['agent-stop'] = createElement('button', { disabled: true });
-  elements['agent-stop'].hidden = true;
+  elements['agent-page-interlock'] = createElement('div');
+  elements['agent-page-interlock'].hidden = true;
+  elements['agent-page-lock-trigger'] = createElement('button');
+  elements['agent-page-lock-hint'] = createElement('div');
+  elements['agent-takeover-dialog'] = createElement('section');
+  elements['agent-takeover-dialog'].hidden = true;
+  elements['agent-takeover-cancel'] = createElement('button');
+  elements['agent-takeover-confirm'] = createElement('button');
+  elements['agent-takeover-dialog'].appendChild(elements['agent-takeover-cancel']);
+  elements['agent-takeover-dialog'].appendChild(elements['agent-takeover-confirm']);
+  elements['agent-page-lock-trigger'].appendChild(elements['agent-page-lock-hint']);
+  elements['agent-page-interlock'].appendChild(elements['agent-page-lock-trigger']);
+  elements['agent-page-interlock'].appendChild(elements['agent-takeover-dialog']);
   elements['agent-approval'] = createElement('div');
   elements['agent-approval'].hidden = true;
   elements['agent-approval-approve'] = createElement('button');
@@ -1298,7 +1308,7 @@ describe('Agent UI', () => {
     );
   });
 
-  test('keeps the assigned tab marked until the user takes over', async () => {
+  test('uses the empty running composer as Stop without conflating it with takeover', async () => {
     const ctx = await loadAgentUi();
     ctx.elements['agent-prompt'].value = 'Complete the task';
     ctx.elements['agent-run'].dispatch('click');
@@ -1308,51 +1318,89 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-run-message'].textContent).toContain(
       'page you shared and any tabs it opens'
     );
-    ctx.elements['agent-stop'].dispatch('click');
+    expect(ctx.elements['agent-run'].dataset.action).toBe('stop');
+    expect(ctx.elements['agent-run'].disabled).toBe(false);
+    ctx.elements['agent-run'].dispatch('click');
     await flush();
 
     expect(ctx.electronAPI.stopAgent).toHaveBeenCalledWith('run_test');
-    expect(ctx.elements['agent-run-message'].textContent).toBe('Taking over…');
+    expect(ctx.elements['agent-run-message'].textContent).toBe('Stopping Agent…');
 
     ctx.emit({ type: 'run_finished', runId: 'run_test', status: 'cancelled' });
-    expect(ctx.elements['agent-run-status'].textContent).toBe('Taken over');
-    expect(ctx.elements['agent-run-message'].textContent).toBe('You took control of the tab');
+    expect(ctx.elements['agent-run-status'].textContent).toBe('Stopped');
+    expect(ctx.elements['agent-run-message'].textContent).toBe('Agent stopped.');
     expect(ctx.setAgentControlledTab).toHaveBeenLastCalledWith(null);
   });
 
-  test('keeps the run attached while paused and resumes it explicitly', async () => {
+  test('intercepts the controlled page before takeover and resumes from the composer', async () => {
     const ctx = await loadAgentUi();
     ctx.elements['agent-prompt'].value = 'Complete the task';
     ctx.elements['agent-run'].dispatch('click');
     await flush();
     ctx.emit({ type: 'run_started', runId: 'run_test' });
 
-    ctx.elements['agent-pause'].dispatch('click');
+    expect(ctx.elements['agent-page-interlock'].hidden).toBe(false);
+    const preventScroll = jest.fn();
+    ctx.elements['agent-page-interlock'].dispatch('wheel', { preventDefault: preventScroll });
+    expect(preventScroll).toHaveBeenCalled();
+    expect(ctx.elements['agent-takeover-dialog'].hidden).toBe(true);
+    ctx.elements['agent-page-lock-trigger'].dispatch('click');
+    expect(ctx.elements['agent-takeover-dialog'].hidden).toBe(false);
+    ctx.elements['agent-takeover-cancel'].dispatch('click', {
+      stopPropagation: jest.fn(),
+    });
+    expect(ctx.elements['agent-takeover-dialog'].hidden).toBe(true);
+    expect(ctx.electronAPI.pauseAgent).not.toHaveBeenCalled();
+
+    ctx.elements['agent-page-lock-trigger'].dispatch('click');
+    ctx.elements['agent-takeover-confirm'].dispatch('click', {
+      stopPropagation: jest.fn(),
+    });
     await flush();
     expect(ctx.electronAPI.pauseAgent).toHaveBeenCalledWith('run_test');
 
     ctx.emit({ type: 'run_pausing', runId: 'run_test' });
     ctx.emit({ type: 'run_paused', runId: 'run_test' });
-    expect(ctx.elements['agent-run-status'].textContent).toBe('Paused');
-    expect(ctx.elements['agent-pause'].hidden).toBe(true);
-    expect(ctx.elements['agent-resume'].hidden).toBe(false);
-    expect(ctx.elements['agent-stop'].disabled).toBe(false);
+    expect(ctx.elements['agent-run-status'].textContent).toBe('You’re in control');
+    expect(ctx.elements['agent-page-interlock'].hidden).toBe(true);
+    expect(ctx.elements['agent-run'].dataset.action).toBe('resume');
+    expect(ctx.elements['agent-run'].disabled).toBe(false);
     expect(ctx.setAgentControlledTab).toHaveBeenLastCalledWith(7);
 
-    ctx.elements['agent-resume'].dispatch('click');
+    ctx.elements['agent-run'].dispatch('click');
     await flush();
     expect(ctx.electronAPI.resumeAgent).toHaveBeenCalledWith('run_test', undefined);
     ctx.emit({ type: 'run_resuming', runId: 'run_test' });
     ctx.emit({ type: 'run_resumed', runId: 'run_test' });
 
     expect(ctx.elements['agent-run-status'].textContent).toBe('Running');
-    expect(ctx.elements['agent-pause'].hidden).toBe(false);
-    expect(ctx.elements['agent-pause'].disabled).toBe(false);
-    expect(ctx.elements['agent-resume'].hidden).toBe(true);
+    expect(ctx.elements['agent-run'].dataset.action).toBe('stop');
+    expect(ctx.elements['agent-page-interlock'].hidden).toBe(false);
     expect(ctx.elements['agent-run-message'].textContent).toContain('re-reading');
     expect(ctx.setAgentControlledTab).toHaveBeenLastCalledWith(7);
 
     ctx.emit({ type: 'run_finished', runId: 'run_test', status: 'completed' });
+  });
+
+  test('routes an Agent-owned tab claim through takeover while a run is active', async () => {
+    const ctx = await loadAgentUi({ isTabAgentOwned: (tabId) => tabId === 7 });
+    ctx.elements['agent-prompt'].value = 'Keep researching';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+
+    expect(ctx.elements['agent-page-interlock'].hidden).toBe(false);
+    const claimHandler = ctx.setAgentTabClaimHandler.mock.calls[0][0];
+    await claimHandler(7);
+
+    expect(ctx.electronAPI.claimAgentTab).not.toHaveBeenCalled();
+    expect(ctx.elements['agent-takeover-dialog'].hidden).toBe(false);
+    ctx.elements['agent-takeover-cancel'].dispatch('click', {
+      stopPropagation: jest.fn(),
+    });
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_finished', runId: 'run_test', status: 'cancelled' });
   });
 
   test('uses the active composer for steering without resolving a pending approval', async () => {
@@ -1371,8 +1419,10 @@ describe('Agent UI', () => {
 
     expect(ctx.elements['agent-prompt'].disabled).toBe(false);
     expect(ctx.elements['agent-prompt'].placeholder).toBe('Guide Agent…');
+    expect(ctx.elements['agent-run'].dataset.action).toBe('stop');
     ctx.elements['agent-prompt'].value = 'Do not submit yet';
     ctx.elements['agent-prompt'].dispatch('input');
+    expect(ctx.elements['agent-run'].dataset.action).toBe('send');
     ctx.elements['agent-run'].dispatch('click');
     await flush();
 
@@ -1426,8 +1476,10 @@ describe('Agent UI', () => {
     ctx.emit({ type: 'run_paused', runId: 'run_test' });
 
     expect(ctx.elements['agent-prompt'].placeholder).toBe('Add guidance and resume…');
+    expect(ctx.elements['agent-run'].dataset.action).toBe('resume');
     ctx.elements['agent-prompt'].value = 'I logged in; continue';
     ctx.elements['agent-prompt'].dispatch('input');
+    expect(ctx.elements['agent-run'].dataset.action).toBe('send');
     ctx.elements['agent-run'].dispatch('click');
     await flush();
 
@@ -1487,10 +1539,10 @@ describe('Agent UI', () => {
     ctx.emit({ type: 'run_paused', runId: 'run_test' });
 
     expect(ctx.elements['agent-approval'].hidden).toBe(true);
-    ctx.elements['agent-resume'].dispatch('click');
+    ctx.elements['agent-run'].dispatch('click');
     await flush();
 
-    expect(ctx.elements['agent-run-status'].textContent).toBe('Paused');
+    expect(ctx.elements['agent-run-status'].textContent).toBe('You’re in control');
     expect(ctx.elements['agent-run-message'].textContent).toContain('left the task');
     expect(ctx.elements['agent-run-message'].classList.contains('error')).toBe(true);
     expect(ctx.setAgentControlledTab).toHaveBeenLastCalledWith(7);
@@ -1567,7 +1619,7 @@ describe('Agent UI', () => {
     ctx.elements['agent-prompt'].value = 'Try a different approach';
     ctx.elements['agent-prompt'].dispatch('input');
     expect(ctx.elements['agent-run'].disabled).toBe(false);
-    expect(ctx.elements['agent-stop'].disabled).toBe(true);
+    expect(ctx.elements['agent-run'].dataset.action).toBe('send');
     expect(ctx.setAgentControlledTab).toHaveBeenLastCalledWith(null);
   });
 
@@ -1666,6 +1718,6 @@ describe('Agent UI', () => {
 
     expect(ctx.elements['agent-run-status'].textContent).toBe('Complete');
     expect(ctx.elements['agent-run'].disabled).toBe(true);
-    expect(ctx.elements['agent-stop'].disabled).toBe(true);
+    expect(ctx.elements['agent-run'].dataset.action).toBe('send');
   });
 });

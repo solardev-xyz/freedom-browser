@@ -408,7 +408,7 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
 
   await window.locator('webview:not(.hidden)').waitFor({ state: 'attached' });
   await window.locator('#agent-prompt').fill('Summarize this page');
-  await expect(window.locator('#agent-stop')).toHaveText('Take over');
+  await expect(window.locator('#agent-run')).toHaveAttribute('data-action', 'send');
   const tabMarkedAtStart = await window.evaluate(() => {
     document.querySelector('#agent-run').click();
     return document
@@ -424,7 +424,6 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
   await expect(window.locator('.agent-user-message')).toHaveText('Summarize this page');
   await expect(window.locator('#agent-prompt')).toBeEnabled();
   await expect(window.locator('#agent-run')).toBeDisabled();
-  await expect(window.locator('#agent-stop')).toBeDisabled();
   await expect(window.locator('#agent-new-chat')).toBeEnabled();
   await expect(window.locator('#agent-model-menu-button')).toBeDisabled();
   await expect(window.locator('#agent-approval-mode-button')).toBeDisabled();
