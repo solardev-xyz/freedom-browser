@@ -1,4 +1,5 @@
 const { registerVaughanIpc } = require('./ipc');
+const { SIGN_TIMEOUT_MS } = require('./signer');
 
 const mockRpcRequest = jest.fn();
 const mockHandlers = new Map();
@@ -26,7 +27,7 @@ describe('registerVaughanIpc', () => {
     mockRpcRequest.mockResolvedValueOnce(['0xAbc']);
     const handler = mockHandlers.get('vaughan:get-accounts');
     await expect(handler()).resolves.toEqual({ success: true, accounts: ['0xAbc'] });
-    expect(mockRpcRequest).toHaveBeenCalledWith('eth_requestAccounts', []);
+    expect(mockRpcRequest).toHaveBeenCalledWith('eth_requestAccounts', [], { timeoutMs: SIGN_TIMEOUT_MS });
   });
 
   test('falls back to eth_accounts when eth_requestAccounts is unsupported', async () => {
@@ -34,7 +35,7 @@ describe('registerVaughanIpc', () => {
     mockRpcRequest.mockRejectedValueOnce(unsupported).mockResolvedValueOnce(['0xDef']);
     const handler = mockHandlers.get('vaughan:get-accounts');
     await expect(handler()).resolves.toEqual({ success: true, accounts: ['0xDef'] });
-    expect(mockRpcRequest).toHaveBeenNthCalledWith(1, 'eth_requestAccounts', []);
+    expect(mockRpcRequest).toHaveBeenNthCalledWith(1, 'eth_requestAccounts', [], { timeoutMs: SIGN_TIMEOUT_MS });
     expect(mockRpcRequest).toHaveBeenNthCalledWith(2, 'eth_accounts', []);
   });
 
