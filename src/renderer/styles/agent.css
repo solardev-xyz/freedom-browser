@@ -721,12 +721,17 @@ body.agent-first-mode .agent-task-page-list .tab.active {
 }
 
 .agent-task-pages-empty {
+  display: none;
   flex: 1;
   padding: 24px 18px;
   color: var(--muted);
   font-size: 10px;
   line-height: 1.5;
   text-align: center;
+}
+
+body.agent-first-mode .agent-task-pages-empty {
+  display: block;
 }
 
 .agent-task-pages-empty[hidden] {
