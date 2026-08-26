@@ -12,7 +12,16 @@ class MockWebSocket {
 
   once(event, cb) {
     if (event === 'open') {
-      setImmediate(cb);
+      setImmediate(() => {
+        cb();
+        if (MockWebSocket.closeAfterOpen) {
+          setImmediate(() => {
+            if (this.onceListeners.close) {
+              this.onceListeners.close(1006);
+            }
+          });
+        }
+      });
       return;
     }
     this.onceListeners[event] = cb;
@@ -46,6 +55,7 @@ class MockWebSocket {
 }
 MockWebSocket.instances = [];
 MockWebSocket.replyEnabled = true;
+MockWebSocket.closeAfterOpen = false;
 
 jest.mock('ws', () => MockWebSocket);
 jest.mock('./session-token', () => ({
@@ -57,6 +67,7 @@ const { rpcRequest } = require('./transport');
 beforeEach(() => {
   MockWebSocket.instances.length = 0;
   MockWebSocket.replyEnabled = true;
+  MockWebSocket.closeAfterOpen = false;
   mockResolveSessionToken.mockReset().mockReturnValue(null);
 });
 
@@ -83,6 +94,16 @@ describe('rpcRequest', () => {
     mockResolveSessionToken.mockReturnValue('tok-123');
     await rpcRequest('eth_accounts', []);
     expect(MockWebSocket.instances[0].url).not.toContain('tok-123');
+  });
+
+  test('rejects promptly when the server closes without a response', async () => {
+    MockWebSocket.closeAfterOpen = true;
+    MockWebSocket.replyEnabled = false;
+    // A long timeout proves the close path fails fast: if the close handler
+    // regresses, this rejects with a timeout error instead.
+    await expect(rpcRequest('eth_accounts', [], { timeoutMs: 60_000 })).rejects.toMatchObject({
+      code: 'VAUGHAN_DISCONNECTED',
+    });
   });
 
   test('times out and terminates the socket when no response arrives', async () => {

@@ -61,6 +61,17 @@ function rpcRequest(method, params = [], opts = {}) {
     });
 
     ws.once('error', fail);
+    ws.once('close', (code) => {
+      // The provider drops gated-out clients without a close frame (observed
+      // as 1006): no response is coming, so fail fast instead of waiting out
+      // the full timeout. After a normal finish() this is a no-op — the
+      // promise is already settled.
+      fail(
+        Object.assign(new Error(`Vaughan closed the connection before responding (code ${code})`), {
+          code: 'EPIPE',
+        })
+      );
+    });
     ws.on('message', (raw) => {
       let msg;
       try {
