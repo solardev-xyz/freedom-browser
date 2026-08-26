@@ -28,6 +28,6 @@ module.exports = {
     '^.+\\.js$': 'babel-jest',
   },
   transformIgnorePatterns: [
-    '/node_modules/(?!(@scure|@noble|micro-key-producer|micro-packed)/)',
+    '/node_modules/(?!(@scure|@noble|micro-key-producer|micro-packed|@openlv|websocket-mqtt|ts-pattern)/)',
   ],
 };

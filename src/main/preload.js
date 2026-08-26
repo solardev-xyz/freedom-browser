@@ -14,6 +14,9 @@ const defaultAntApi = process.env.ANT_API || process.env.BEE_API || null;
 
 contextBridge.exposeInMainWorld('nodeConfig', {
   antApi: defaultAntApi,
+  // Override the openlv signaling relay (remote/phone signing). E2E
+  // tests point this at an in-test local MQTT broker for determinism.
+  openlvSignaling: process.env.FREEDOM_OPENLV_SIGNALING || null,
 });
 
 contextBridge.exposeInMainWorld('internalPages', internalPages);
@@ -625,6 +628,28 @@ contextBridge.exposeInMainWorld('wallet', {
 contextBridge.exposeInMainWorld('ledger', {
   getAccounts: (options) => ipcRenderer.invoke('ledger:get-accounts', options),
   addAccount: (name, address, path) => ipcRenderer.invoke('wallet:add-ledger-wallet', name, address, path),
+});
+
+// Remote (phone) signing: main publishes signing jobs here; the renderer
+// session broker (lib/wallet/remote-session.js) shows the QR, tunnels the
+// request to the phone over openlv, and responds with the result.
+contextBridge.exposeInMainWorld('remoteSigner', {
+  // Main asks the renderer to run a signing job. Returns a disposer.
+  onRequest: (callback) => {
+    const handler = (_event, job) => callback(job);
+    ipcRenderer.on('remote-signer:request', handler);
+    return () => ipcRenderer.removeListener('remote-signer:request', handler);
+  },
+  // Main gave up on a job (timeout) — close its QR dialog. Returns a disposer.
+  onAbort: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('remote-signer:abort', handler);
+    return () => ipcRenderer.removeListener('remote-signer:abort', handler);
+  },
+  // Job outcome: { jobId, result } or { jobId, error: {code, message} }.
+  respond: (payload) => ipcRenderer.send('remote-signer:response', payload),
+  // Persist a phone account discovered via eth_requestAccounts.
+  addAccount: (name, address) => ipcRenderer.invoke('wallet:add-remote-wallet', name, address),
 });
 
 contextBridge.exposeInMainWorld('swarmNode', {

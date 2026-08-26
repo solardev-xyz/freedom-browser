@@ -16,13 +16,15 @@ let walletSelectorDropdown;
 let walletSelectorList;
 let walletCreateBtn;
 let walletConnectLedgerBtn;
+let walletConnectPhoneBtn;
 let walletHeadlineName;
 
 // Callbacks for opening subscreens (set by coordinator)
 let openCreateWalletFn = null;
 let openConnectLedgerFn = null;
+let openConnectPhoneFn = null;
 
-export function initWalletSelector(openCreateWallet, openConnectLedger) {
+export function initWalletSelector(openCreateWallet, openConnectLedger, openConnectPhone) {
   walletSelectorBtn = document.getElementById('wallet-selector-btn');
   walletSelectorName = document.getElementById('wallet-selector-name');
   walletSelectorAddress = document.getElementById('wallet-selector-address');
@@ -30,10 +32,12 @@ export function initWalletSelector(openCreateWallet, openConnectLedger) {
   walletSelectorList = document.getElementById('wallet-selector-list');
   walletCreateBtn = document.getElementById('wallet-create-btn');
   walletConnectLedgerBtn = document.getElementById('wallet-connect-ledger-btn');
+  walletConnectPhoneBtn = document.getElementById('wallet-connect-phone-btn');
   walletHeadlineName = document.getElementById('wallet-headline-name');
 
   openCreateWalletFn = openCreateWallet;
   openConnectLedgerFn = openConnectLedger;
+  openConnectPhoneFn = openConnectPhone;
 
   setupWalletSelector();
 }
@@ -63,6 +67,13 @@ function setupWalletSelector() {
       if (openConnectLedgerFn) openConnectLedgerFn();
     });
   }
+
+  if (walletConnectPhoneBtn) {
+    walletConnectPhoneBtn.addEventListener('click', () => {
+      closeWalletDropdown();
+      if (openConnectPhoneFn) openConnectPhoneFn();
+    });
+  }
 }
 
 function toggleWalletDropdown() {
@@ -90,6 +101,12 @@ function closeWalletDropdown() {
   }
 }
 
+/** Badge label for device account types (mnemonic accounts get none). */
+function walletTypeBadge(type) {
+  const label = { ledger: 'Ledger', remote: 'Phone' }[type];
+  return label ? `<span class="wallet-selector-item-badge">${label}</span>` : '';
+}
+
 function renderWalletList() {
   if (!walletSelectorList) return;
 
@@ -109,7 +126,7 @@ function renderWalletList() {
 
     item.innerHTML = `
       <div class="wallet-selector-item-info">
-        <span class="wallet-selector-item-name">${escapeHtml(wallet.name)}${wallet.type === 'ledger' ? '<span class="wallet-selector-item-badge">Ledger</span>' : ''}</span>
+        <span class="wallet-selector-item-name">${escapeHtml(wallet.name)}${walletTypeBadge(wallet.type)}</span>
         <div class="wallet-selector-item-address-row">
           <code class="wallet-selector-item-address">${truncatedAddress}</code>
           ${wallet.address ? `
@@ -214,6 +231,23 @@ export function updateWalletSelectorDisplay(wallet) {
   }
   if (walletHeadlineName) {
     walletHeadlineName.textContent = wallet.name.toUpperCase();
+  }
+}
+
+/**
+ * Register a freshly added device account locally and switch to it —
+ * the shared tail of the connect-ledger / connect-phone add flows.
+ * walletState's index, selector display, and fullAddresses must move
+ * together, so the sequence lives in one place.
+ */
+export async function activateAddedWallet(wallet) {
+  walletState.derivedWallets.push(wallet);
+
+  const activated = await window.wallet.setActiveWallet(wallet.index);
+  if (activated.success) {
+    walletState.activeWalletIndex = wallet.index;
+    updateWalletSelectorDisplay(wallet);
+    walletState.fullAddresses.wallet = wallet.address || '';
   }
 }
 

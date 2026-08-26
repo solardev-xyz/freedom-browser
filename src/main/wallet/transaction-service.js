@@ -9,6 +9,7 @@
 const { parseUnits, formatUnits, Interface, Transaction } = require('ethers');
 const chainData = require('../networks/chain-data-router');
 const { getTxExplorerUrl } = require('./chains');
+const { REMOTE_ERROR_CODES, createRemoteError } = require('./remote/errors');
 
 // ERC-20 transfer function interface
 const ERC20_INTERFACE = new Interface([
@@ -154,6 +155,30 @@ function buildTransaction({
 }
 
 /**
+ * Best-effort check that a device-broadcast tx really came from the
+ * signer's account: a compromised responder could report the hash of
+ * someone else's transaction. The tx usually reaches our RPC a beat
+ * after the device's, so "not visible yet" is not an error — only a
+ * visible mismatch is.
+ */
+async function verifyDeviceBroadcastFrom(hash, expectedFrom, chainId) {
+  let tx;
+  try {
+    ({ result: tx } = await chainData.request(chainId, 'eth_getTransactionByHash', [hash]));
+  } catch (err) {
+    console.warn('[TransactionService] Device-broadcast lookup failed:', err.message);
+    return;
+  }
+  if (!tx) {
+    console.warn('[TransactionService] Device-broadcast tx not visible on our RPC yet:', hash);
+    return;
+  }
+  if (tx.from.toLowerCase() !== expectedFrom.toLowerCase()) {
+    throw createRemoteError(REMOTE_ERROR_CODES.WRONG_ACCOUNT);
+  }
+}
+
+/**
  * Fill in fee parameters the caller didn't supply.
  *
  * ethers' Wallet.sendTransaction used to populate missing fees from the
@@ -217,12 +242,33 @@ function isPositiveFee(value) {
 async function signAndSendTransaction(params, signer) {
   const { to, value, data, gasLimit, maxFeePerGas, maxPriorityFeePerGas, gasPrice, chainId } = params;
 
-  // Outside the try: fee-resolution failures should surface as-is instead
-  // of being remapped to the generic "gas estimation" message below.
-  const fees = await resolveFeeParams({ maxFeePerGas, maxPriorityFeePerGas, gasPrice, chainId });
+  // Phone wallets populate fees and broadcast through their own RPC. All
+  // raw-signing backends need complete fee data before device approval.
+  const fees = typeof signer.sendTransaction === 'function'
+    ? null
+    : await resolveFeeParams({ maxFeePerGas, maxPriorityFeePerGas, gasPrice, chainId });
 
   try {
     const from = await signer.getAddress();
+
+    // Backends that can only sign-and-broadcast through their own channel
+    // (phone wallets) expose the optional sendTransaction capability: the
+    // remote wallet picks the nonce, estimates gas, and broadcasts via its
+    // own RPC — our gas parameters would be stale guesses by the time the
+    // user confirms on the device, so only the intent fields go over.
+    if (typeof signer.sendTransaction === 'function') {
+      const hash = await signer.sendTransaction({ to, value, data, chainId });
+      await verifyDeviceBroadcastFrom(hash, from, chainId);
+      console.log('[TransactionService] Transaction broadcast by signer:', hash);
+      return {
+        hash,
+        from,
+        to,
+        value,
+        chainId,
+        explorerUrl: getTxExplorerUrl(chainId, hash),
+      };
+    }
 
     // Get nonce
     const nonceResponse = await chainData.request(chainId, 'eth_getTransactionCount', [
@@ -280,6 +326,13 @@ async function signAndSendTransaction(params, signer) {
     };
   } catch (err) {
     console.error('[TransactionService] Transaction failed:', err);
+
+    // Device-backend errors (LEDGER_*/REMOTE_*) carry a stable code and a
+    // user-facing message; rewrapping them here would strip the code and
+    // let the local-provider heuristics below mislabel them.
+    if (typeof err.code === 'string' && /^(LEDGER|REMOTE)_/.test(err.code)) {
+      throw err;
+    }
 
     // Parse common error messages
     const message = String(err?.message || '');

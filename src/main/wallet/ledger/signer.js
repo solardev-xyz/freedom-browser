@@ -29,6 +29,7 @@ const { Transaction, Signature, TypedDataEncoder } = require('ethers');
 
 const { withEthApp } = require('./transport');
 const { LEDGER_ERROR_CODES, createLedgerError } = require('./errors');
+const { getEip712WirePayload, messageToBytes } = require('../signing-utils');
 
 /** hw-app-eth returns r/s as bare hex and v as hex string or number. */
 function toEthersSignature(sig) {
@@ -37,13 +38,6 @@ function toEthersSignature(sig) {
     s: '0x' + sig.s,
     v: typeof sig.v === 'string' ? BigInt('0x' + sig.v) : BigInt(sig.v),
   });
-}
-
-/** Types with EIP712Domain stripped, as ethers' hashing helpers expect. */
-function withoutDomainType(types) {
-  const stripped = { ...types };
-  delete stripped.EIP712Domain;
-  return stripped;
 }
 
 /**
@@ -82,9 +76,7 @@ function createLedgerBackend(record) {
     },
 
     signMessage: async (message) => {
-      const messageHex = Buffer.isBuffer(message)
-        ? message.toString('hex')
-        : Buffer.from(String(message), 'utf8').toString('hex');
+      const messageHex = messageToBytes(message).toString('hex');
 
       return withVerifiedDevice(async (eth) => {
         const sig = await eth.signPersonalMessage(record.path, messageHex);
@@ -93,11 +85,8 @@ function createLedgerBackend(record) {
     },
 
     signTypedData: async (typedData) => {
-      // The device wants the full EIP-712 wire payload (EIP712Domain in
-      // types + explicit primaryType); ethers-style callers may omit
-      // both, and getPayload reconstructs them canonically.
-      const strippedTypes = withoutDomainType(typedData.types);
-      const payload = TypedDataEncoder.getPayload(typedData.domain || {}, strippedTypes, typedData.message);
+      // The device wants the full EIP-712 wire payload.
+      const { strippedTypes, payload } = getEip712WirePayload(typedData);
 
       return withVerifiedDevice(async (eth) => {
         let sig;

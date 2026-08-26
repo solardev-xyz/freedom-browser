@@ -11,25 +11,57 @@ export function truncateAddress(address, startChars = 6, endChars = 4) {
   return `${address.slice(0, startChars)}...${address.slice(-endChars)}`;
 }
 
+/** Account type ('mnemonic' | 'ledger' | 'remote') for a wallet index. */
+export function accountType(walletIndex) {
+  return walletState.derivedWallets?.find((wallet) => wallet.index === walletIndex)?.type;
+}
+
+export function isLedgerAccount(walletIndex) {
+  return accountType(walletIndex) === 'ledger';
+}
+
 /**
- * Whether a wallet index belongs to a Ledger hardware account. Hardware
- * accounts sign on the device: no vault unlock, and approval UIs show a
- * "confirm on your Ledger" state instead of instant signing.
+ * Whether a wallet index belongs to a device account (Ledger hardware,
+ * remote phone). Device accounts sign on the device: no vault unlock,
+ * and approval UIs show a "confirm on your device" state instead of
+ * instant signing.
  *
  * @param {number} walletIndex
  * @returns {boolean}
  */
-export function isLedgerAccount(walletIndex) {
-  return walletState.derivedWallets?.find((wallet) => wallet.index === walletIndex)?.type === 'ledger';
+export function isDeviceAccount(walletIndex) {
+  const type = accountType(walletIndex);
+  return type === 'ledger' || type === 'remote';
+}
+
+/**
+ * Where a device account confirms ('your Ledger' / 'your phone'), or
+ * null for vault accounts — the one type→noun mapping the approval UIs
+ * build their copy from.
+ */
+export function deviceLabel(walletIndex) {
+  return { ledger: 'your Ledger', remote: 'your phone' }[accountType(walletIndex)] || null;
 }
 
 /** Pending label for approve buttons while a signature is in flight. */
 export function signingButtonLabel(walletIndex) {
-  return isLedgerAccount(walletIndex) ? 'Confirm on your Ledger…' : 'Signing…';
+  const label = deviceLabel(walletIndex);
+  return label ? `Confirm on ${label}…` : 'Signing…';
+}
+
+/** QR options for phone-scanned codes: fixed black-on-white regardless of theme. */
+export function generateScannableQr(text) {
+  return window.wallet.generateQR(text, {
+    width: 200,
+    margin: 2,
+    dark: '#000000',
+    light: '#ffffff',
+    errorCorrectionLevel: 'M',
+  });
 }
 
 /**
- * Hardware accounts sign on the device — no vault key, no unlock gate.
+ * Device accounts sign on the device — no vault key, no unlock gate.
  * Hides the unlock section and enables the confirm button; returns true
  * when the gate was bypassed so callers can skip the vault-status flow.
  *
@@ -38,8 +70,8 @@ export function signingButtonLabel(walletIndex) {
  * @param {HTMLButtonElement|null} confirmBtn - the approve/confirm button
  * @returns {boolean}
  */
-export function bypassUnlockGateForHardware(walletIndex, unlockEl, confirmBtn) {
-  if (!isLedgerAccount(walletIndex)) return false;
+export function bypassUnlockGateForDevice(walletIndex, unlockEl, confirmBtn) {
+  if (!isDeviceAccount(walletIndex)) return false;
   unlockEl?.classList.add('hidden');
   if (confirmBtn) confirmBtn.disabled = false;
   return true;
@@ -49,6 +81,21 @@ export function escapeHtml(text) {
   const div = document.createElement('div');
   div.textContent = text;
   return div.innerHTML;
+}
+
+/** Show a message in an inline error box (the `.hidden`-toggled pattern). */
+export function showInlineError(el, message) {
+  if (el) {
+    el.textContent = message;
+    el.classList.remove('hidden');
+  }
+}
+
+export function hideInlineError(el) {
+  if (el) {
+    el.classList.add('hidden');
+    el.textContent = '';
+  }
 }
 
 export function timeAgo(date) {

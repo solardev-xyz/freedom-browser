@@ -147,4 +147,67 @@ describe('http-fetch dweb schemes', () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  test('cancels the body stream on a non-OK response', async () => {
+    const cancel = jest.fn().mockResolvedValue(undefined);
+    session.defaultSession.fetch.mockResolvedValue({ ok: false, status: 503, body: { cancel } });
+
+    await expect(fetchBuffer('bzz://example.eth/missing.png')).rejects.toThrow(
+      'Failed to download: HTTP 503'
+    );
+    expect(cancel).toHaveBeenCalled();
+  });
+
+  test('cancels the transfer when writing a chunk fails', async () => {
+    const cancelled = jest.fn();
+    session.defaultSession.fetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      body: new ReadableStream({
+        pull(controller) {
+          controller.enqueue(Uint8Array.from(Buffer.from('chunk')));
+        },
+        cancel: cancelled,
+      }),
+    });
+    // Parent directory does not exist, so opening the destination fails on
+    // the first chunk.
+    const destPath = path.join(os.tmpdir(), 'http-fetch-no-such-dir', 'nested', 'pic.png');
+
+    await expect(fetchToFile('bzz://example.eth/pic.png', destPath)).rejects.toThrow();
+    expect(cancelled).toHaveBeenCalled();
+  });
+
+  test('fails loudly when a file write makes no progress', async () => {
+    session.defaultSession.fetch.mockResolvedValue(okResponse('abcdef'));
+    const write = jest.fn().mockResolvedValue({ bytesWritten: 0 });
+    const close = jest.fn().mockResolvedValue(undefined);
+    const openSpy = jest.spyOn(fs.promises, 'open').mockResolvedValue({ write, close });
+
+    try {
+      await expect(
+        fetchToFile('bzz://example.eth/pic.png', '/tmp/http-fetch-no-progress.png')
+      ).rejects.toThrow('File write made no progress');
+      expect(write).toHaveBeenCalledTimes(1);
+    } finally {
+      openSpy.mockRestore();
+    }
+  });
+
+  test('retries partial file writes until the whole chunk is on disk', async () => {
+    session.defaultSession.fetch.mockResolvedValue(okResponse('abcdef'));
+    const write = jest
+      .fn()
+      .mockImplementation(async (chunk, offset, length) => ({ bytesWritten: Math.min(2, length) }));
+    const close = jest.fn().mockResolvedValue(undefined);
+    const openSpy = jest.spyOn(fs.promises, 'open').mockResolvedValue({ write, close });
+
+    try {
+      await fetchToFile('bzz://example.eth/pic.png', '/tmp/http-fetch-partial-write.png');
+      expect(write.mock.calls.map((call) => call[1])).toEqual([0, 2, 4]);
+      expect(close).toHaveBeenCalled();
+    } finally {
+      openSpy.mockRestore();
+    }
+  });
 });

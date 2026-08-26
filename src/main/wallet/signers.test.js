@@ -18,6 +18,14 @@ const mockLedgerBackend = {
   signTypedData: jest.fn(),
 };
 const mockCreateLedgerBackend = jest.fn(() => mockLedgerBackend);
+const mockRemoteBackend = {
+  getAddress: jest.fn(),
+  signTransaction: jest.fn(),
+  signMessage: jest.fn(),
+  signTypedData: jest.fn(),
+  sendTransaction: jest.fn(),
+};
+const mockCreateRemoteBackend = jest.fn(() => mockRemoteBackend);
 
 jest.mock('../identity-manager', () => ({
   loadIdentityModule: jest.fn(async () => mockIdentity),
@@ -25,13 +33,16 @@ jest.mock('../identity-manager', () => ({
   // Mirrors identity-manager's HARDWARE_INDEX_BASE (inlined: jest.mock
   // factories may not close over out-of-scope constants).
   isHardwareWalletIndex: (index) => Number.isInteger(index) && index >= 1000000,
-  WALLET_TYPES: { MNEMONIC: 'mnemonic', LEDGER: 'ledger' },
+  WALLET_TYPES: { MNEMONIC: 'mnemonic', LEDGER: 'ledger', REMOTE: 'remote' },
 }));
 jest.mock('../vault-timer', () => ({
   resetVaultAutoLockTimer: mockResetVaultAutoLockTimer,
 }));
 jest.mock('./ledger/signer', () => ({
   createLedgerBackend: (...args) => mockCreateLedgerBackend(...args),
+}));
+jest.mock('./remote/signer', () => ({
+  createRemoteBackend: (...args) => mockCreateRemoteBackend(...args),
 }));
 
 const { getSigner } = require('./signers');
@@ -186,14 +197,53 @@ describe('getSigner (ledger-backed dispatch)', () => {
     expect(mockLedgerBackend.signTypedData).toHaveBeenCalledWith({ domain: {}, types: {}, message: {} });
   });
 
-  test('a deleted hardware account fails loudly instead of falling through to the vault', async () => {
-    // Deleting a Ledger leaves no record, so the type check can't fire.
-    // A stale reference to its index (dApp permission, publisher identity)
-    // must not reach the vault backend, which would derive and sign with a
-    // phantom mnemonic key at that index.
+  test('vault and ledger signers do not advertise the sendTransaction capability', () => {
+    expect(getSigner(2).sendTransaction).toBeUndefined();
+    mockGetWalletRecord.mockReturnValue({ index: 0, name: 'Main Wallet', type: 'mnemonic' });
+    expect(getSigner(0).sendTransaction).toBeUndefined();
+  });
+
+  test('a deleted hardware account fails loudly instead of falling through to the vault', () => {
     mockGetWalletRecord.mockReturnValue(null);
     expect(() => getSigner(1000000)).toThrow('Hardware wallet account no longer exists');
     expect(mockIdentity.exportPrivateKey).not.toHaveBeenCalled();
     expect(mockCreateLedgerBackend).not.toHaveBeenCalled();
+  });
+});
+
+describe('getSigner (remote-backed dispatch)', () => {
+  const REMOTE_RECORD = {
+    index: 4,
+    name: 'My Phone',
+    address: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8',
+    type: 'remote',
+  };
+
+  beforeEach(() => {
+    mockGetWalletRecord.mockReturnValue(REMOTE_RECORD);
+    mockRemoteBackend.getAddress.mockReset().mockResolvedValue(REMOTE_RECORD.address);
+    mockRemoteBackend.signMessage.mockReset().mockResolvedValue('0xsig');
+    mockRemoteBackend.sendTransaction.mockReset().mockResolvedValue('0xhash');
+    mockCreateRemoteBackend.mockClear();
+  });
+
+  test('routes to the remote backend built from the wallet record, never the vault', async () => {
+    const signer = getSigner(4);
+    await expect(signer.getAddress()).resolves.toBe(REMOTE_RECORD.address);
+    expect(mockCreateRemoteBackend).toHaveBeenCalledWith(REMOTE_RECORD);
+    expect(mockIdentity.isUnlocked).not.toHaveBeenCalled();
+    expect(mockIdentity.exportPrivateKey).not.toHaveBeenCalled();
+  });
+
+  test('advertises the backend sendTransaction capability', async () => {
+    const signer = getSigner(4);
+    await expect(signer.sendTransaction({ to: '0x1', chainId: 100 })).resolves.toBe('0xhash');
+    expect(mockRemoteBackend.sendTransaction).toHaveBeenCalledWith({ to: '0x1', chainId: 100 });
+  });
+
+  test('factory-level normalization applies to remote backends too', async () => {
+    const signer = getSigner(4);
+    await signer.signMessage('0x48656c6c6f');
+    expect(mockRemoteBackend.signMessage).toHaveBeenCalledWith(Buffer.from('Hello', 'utf8'));
   });
 });

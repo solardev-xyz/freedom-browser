@@ -47,6 +47,9 @@ async function sessionFetchStream(url, onChunk, { timeout = DEFAULT_TIMEOUT } = 
   try {
     const response = await session.defaultSession.fetch(url, { signal: controller.signal });
     if (!response.ok) {
+      // Release the connection — an abandoned body keeps the protocol
+      // handler pulling from the gateway until GC collects the stream.
+      response.body?.cancel().catch(() => {});
       throw new Error(`Failed to download: HTTP ${response.status}`);
     }
     // Headers arriving is activity too — don't let a slow time-to-headers
@@ -69,6 +72,11 @@ async function sessionFetchStream(url, onChunk, { timeout = DEFAULT_TIMEOUT } = 
           touch();
           await onChunk(Buffer.from(value));
         }
+      } catch (err) {
+        // e.g. onChunk threw (disk full mid-write) — stop the transfer
+        // instead of letting the handler drain the rest in the background.
+        reader.cancel().catch(() => {});
+        throw err;
       } finally {
         controller.signal.removeEventListener('abort', onAbort);
       }
@@ -107,7 +115,16 @@ async function sessionFetchToFile(url, destPath, opts) {
         if (!handle) {
           handle = await fs.promises.open(destPath, 'w');
         }
-        await handle.write(chunk);
+        // FileHandle.write may perform a partial write without throwing;
+        // loop until the whole chunk is on disk.
+        let offset = 0;
+        while (offset < chunk.length) {
+          const { bytesWritten } = await handle.write(chunk, offset, chunk.length - offset);
+          if (bytesWritten === 0) {
+            throw new Error('File write made no progress');
+          }
+          offset += bytesWritten;
+        }
       },
       opts
     );

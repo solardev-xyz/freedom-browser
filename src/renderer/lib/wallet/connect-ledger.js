@@ -9,9 +9,10 @@
 
 import { walletState, registerScreenHider } from './wallet-state.js';
 import { refuseSubscreenWhileInFlight } from './signature-flight.js';
-import { loadDerivedWallets, updateWalletSelectorDisplay } from './wallet-selector.js';
+import { loadDerivedWallets, activateAddedWallet } from './wallet-selector.js';
 import { refreshBalances } from './balance-display.js';
-import { escapeHtml, truncateAddress } from './wallet-utils.js';
+import { showInlineError, hideInlineError } from './wallet-utils.js';
+import { renderDeviceAccountList, existingWalletAddresses } from './device-account-list.js';
 
 const ACCOUNTS_PER_PAGE = 5;
 const DETECT_POLL_MS = 1500;
@@ -189,42 +190,19 @@ async function loadAccountsPage(replace, onFailure = showError) {
 }
 
 function renderAccountList() {
-  if (!accountList) return;
-  accountList.innerHTML = '';
-
-  const existingAddresses = new Set(
-    walletState.derivedWallets
-      .filter((wallet) => wallet.address)
-      .map((wallet) => wallet.address.toLowerCase())
-  );
-
-  discoveredAccounts.forEach((account) => {
-    const alreadyAdded = existingAddresses.has(account.address.toLowerCase());
-    const item = document.createElement('button');
-    item.type = 'button';
-    item.className = 'connect-ledger-account';
-    if (alreadyAdded) item.classList.add('added');
-    if (selectedAccount?.address === account.address) item.classList.add('selected');
-    item.disabled = alreadyAdded;
-
-    item.innerHTML = `
-      <div class="connect-ledger-account-info">
-        <code class="connect-ledger-account-address">${escapeHtml(truncateAddress(account.address))}</code>
-        <span class="connect-ledger-account-path">m/${escapeHtml(account.path)}</span>
-      </div>
-      ${alreadyAdded ? '<span class="connect-ledger-account-added">Added</span>' : ''}
-    `;
-
-    if (!alreadyAdded) {
-      item.addEventListener('click', () => {
+  renderDeviceAccountList(
+    accountList,
+    discoveredAccounts.map((account) => ({ ...account, subLabel: `m/${account.path}` })),
+    {
+      selectedAddress: selectedAccount?.address || null,
+      existingAddresses: existingWalletAddresses(walletState.derivedWallets),
+      onSelect: (account) => {
         selectedAccount = account;
         if (submitBtn) submitBtn.disabled = false;
         renderAccountList();
-      });
+      },
     }
-
-    accountList.appendChild(item);
-  });
+  );
 }
 
 async function handleAddAccount() {
@@ -247,19 +225,10 @@ async function handleAddAccount() {
     }
 
     accountAdded = true;
-    walletState.derivedWallets.push(result.wallet);
-
     if (resultName) resultName.textContent = result.wallet.name;
     if (resultAddress) resultAddress.textContent = result.wallet.address;
 
-    // Switch to the new account, mirroring the create-wallet flow.
-    const activated = await window.wallet.setActiveWallet(result.wallet.index);
-    if (activated.success) {
-      walletState.activeWalletIndex = result.wallet.index;
-      updateWalletSelectorDisplay(result.wallet);
-      walletState.fullAddresses.wallet = result.wallet.address || '';
-    }
-
+    await activateAddedWallet(result.wallet);
     showStep('success');
   } catch (err) {
     console.error('[ConnectLedger] Failed to add account:', err);
@@ -271,16 +240,5 @@ async function handleAddAccount() {
   }
 }
 
-function showError(message) {
-  if (errorEl) {
-    errorEl.textContent = message;
-    errorEl.classList.remove('hidden');
-  }
-}
-
-function hideError() {
-  if (errorEl) {
-    errorEl.classList.add('hidden');
-    errorEl.textContent = '';
-  }
-}
+const showError = (message) => showInlineError(errorEl, message);
+const hideError = () => hideInlineError(errorEl);

@@ -32,7 +32,8 @@ import {
   truncateAddress,
   toAtomicUnits,
   X402_WINDOW_OPTIONS,
-  isLedgerAccount,
+  isDeviceAccount,
+  deviceLabel,
   signingButtonLabel,
 } from './wallet-utils.js';
 import { getPermissionKey } from '../origin-utils.js';
@@ -406,9 +407,13 @@ function renderCard() {
   const accepts = pending.accepts || [];
   const fundableCount = accepts.filter((e) => e.fundable).length;
 
-  // Auto-pay can skip this dialog but never the physical confirmation —
-  // say so when the paying account is a hardware wallet.
-  ledgerNoteEl?.classList.toggle('hidden', !isLedgerAccount(walletState.activeWalletIndex));
+  // Auto-pay can skip this dialog but never the device confirmation —
+  // say so when the paying account signs on a device.
+  const confirmWhere = deviceLabel(walletState.activeWalletIndex);
+  ledgerNoteEl?.classList.toggle('hidden', !confirmWhere);
+  if (ledgerNoteEl && confirmWhere) {
+    ledgerNoteEl.textContent = `Auto-pay skips this dialog, but every payment still needs a confirmation on ${confirmWhere}.`;
+  }
 
   let origin;
   try { origin = new URL(pending.url).origin; } catch { origin = pending.url; }
@@ -706,7 +711,7 @@ function buildGrantPayloadFromInputs() {
 
 async function checkUnlockState() {
   try {
-    // Ledger accounts sign payment authorizations on the device — no
+    // Device accounts sign payment authorizations on the device — no
     // vault key, no unlock gate (short-circuit skips the status IPC).
     // Either way: drop locked-mode collapse + re-derive Pay-button
     // state from fundability + asset-recognised. The locked branch
@@ -714,7 +719,7 @@ async function checkUnlockState() {
     // disabled state — without it the Pay button stays stuck until a
     // chooser interaction re-triggers renderCard.
     if (
-      isLedgerAccount(walletState.activeWalletIndex) ||
+      isDeviceAccount(walletState.activeWalletIndex) ||
       (await window.identity.getStatus()).isUnlocked
     ) {
       screen?.classList.remove('is-locked');

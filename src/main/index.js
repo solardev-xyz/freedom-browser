@@ -264,6 +264,7 @@ const { registerIdentityIpc, hasVault, setBeeLifecycle } = require('./identity-m
 const { registerQuickUnlockIpc } = require('./quick-unlock');
 const { registerWalletIpc } = require('./wallet/wallet-ipc');
 const { registerLedgerIpc } = require('./wallet/ledger/ipc');
+const { registerRemoteSignerIpc } = require('./wallet/remote/bridge');
 const { registerTokenRegistryIpc } = require('./token-registry');
 const { registerRpcManagerIpc } = require('./wallet/rpc-manager');
 const { registerNetworkConfigIpc } = require('./networks/network-ipc');
@@ -389,6 +390,7 @@ async function bootstrap() {
   registerQuickUnlockIpc();
   registerWalletIpc();
   registerLedgerIpc();
+  registerRemoteSignerIpc();
 
   // Let identity (re)injection stop the Bee node before wiping its statestore
   // (which it holds a LevelDB lock on) and restart it with the new key. Without

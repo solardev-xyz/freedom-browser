@@ -11,7 +11,8 @@
  * typed data → object) happens once in the factory, so backends always
  * receive the same shapes. The EIP-712 payload keeps its full dApp wire
  * shape (EIP712Domain in types) because backends genuinely diverge there:
- * ethers wants the domain stripped, a Ledger app consumes the full payload.
+ * ethers wants the domain stripped, device backends (Ledger, phone) want
+ * the canonical wire payload — both conversions live in ./signing-utils.js.
  *
  * Error contract: vault-locked errors keep their identity (check with
  * `isVaultLockedError`); hardware backends must surface user-rejection
@@ -23,6 +24,8 @@ const { Wallet, computeAddress } = require('ethers');
 const { withVaultPrivateKey, isValidWalletIndex } = require('./vault-access');
 const { getWalletRecord, isHardwareWalletIndex, WALLET_TYPES } = require('../identity-manager');
 const { createLedgerBackend } = require('./ledger/signer');
+const { createRemoteBackend } = require('./remote/signer');
+const { withoutDomainType } = require('./signing-utils');
 
 /**
  * @typedef {Object} Signer
@@ -36,6 +39,11 @@ const { createLedgerBackend } = require('./ledger/signer');
  * @property {(typedData: object) => Promise<string>} signTypedData
  *   EIP-712 signature; receives the parsed full payload
  *   ({domain, types, message}, EIP712Domain in types allowed).
+ * @property {(tx: object) => Promise<string>} [sendTransaction]
+ *   Optional capability: sign AND broadcast through the backend's own
+ *   channel, returning the tx hash. Present when the backend cannot
+ *   produce a raw signed tx (phone wallets expose eth_sendTransaction
+ *   only); callers must prefer it over signTransaction+broadcast.
  */
 
 /** 0x-hex dApp messages are signatures over the bytes, not the hex text. */
@@ -70,9 +78,7 @@ function createVaultBackend(walletIndex) {
         try {
           const { domain, types, message } = typedData;
           // ethers computes the domain separator itself
-          const typesWithoutDomain = { ...types };
-          delete typesWithoutDomain.EIP712Domain;
-          return await new Wallet(privateKey).signTypedData(domain, typesWithoutDomain, message);
+          return await new Wallet(privateKey).signTypedData(domain, withoutDomainType(types), message);
         } catch (err) {
           throw new Error(`Typed data signing failed: ${err.message}`, { cause: err });
         }
@@ -109,13 +115,17 @@ function getSigner(walletIndex) {
   if (!record && isHardwareWalletIndex(walletIndex)) {
     throw new Error('Hardware wallet account no longer exists; reconnect the device');
   }
-  const backend =
-    record && record.type === WALLET_TYPES.LEDGER
-      ? createLedgerBackend(record)
-      : createVaultBackend(walletIndex);
+  let backend;
+  if (record && record.type === WALLET_TYPES.LEDGER) {
+    backend = createLedgerBackend(record);
+  } else if (record && record.type === WALLET_TYPES.REMOTE) {
+    backend = createRemoteBackend(record);
+  } else {
+    backend = createVaultBackend(walletIndex);
+  }
 
   let address = null;
-  return {
+  const signer = {
     getAddress: async () => {
       if (address === null) {
         address = await backend.getAddress();
@@ -126,6 +136,13 @@ function getSigner(walletIndex) {
     signMessage: (message) => backend.signMessage(normalizeMessage(message)),
     signTypedData: (typedData) => backend.signTypedData(normalizeTypedData(typedData)),
   };
+  // Optional capability: backends that sign AND broadcast through their
+  // own channel (phone wallets only expose eth_sendTransaction). Callers
+  // probe for it — see transaction-service's signAndSendTransaction.
+  if (typeof backend.sendTransaction === 'function') {
+    signer.sendTransaction = (tx) => backend.sendTransaction(tx);
+  }
+  return signer;
 }
 
 module.exports = { getSigner };

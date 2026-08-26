@@ -394,7 +394,7 @@ describe('identity-manager ledger accounts', () => {
     await identityManager.addLedgerWallet('My Stax', LEDGER_ADDRESS, LEDGER_PATH);
 
     await expect(identityManager.getUserWalletKey(HARDWARE_INDEX_BASE))
-      .rejects.toThrow('Hardware wallet accounts have no derivable private key');
+      .rejects.toThrow('This account has no derivable private key');
   });
 
   test('getActiveWalletAddress returns the device address for an active ledger account', async () => {
@@ -403,6 +403,49 @@ describe('identity-manager ledger accounts', () => {
     await identityManager.setActiveWalletIndex(wallet.index);
 
     await expect(identityManager.getActiveWalletAddress()).resolves.toBe(LEDGER_ADDRESS);
+  });
+
+  test('addRemoteWallet appends a pathless typed record and auto-names', async () => {
+    seedMainWallet();
+
+    const wallet = await identityManager.addRemoteWallet('', LEDGER_ADDRESS);
+
+    expect(wallet).toEqual({
+      index: HARDWARE_INDEX_BASE,
+      name: 'Phone 1',
+      address: LEDGER_ADDRESS,
+      type: 'remote',
+    });
+    expect(readVaultMeta().derivedWallets[1]).toEqual(wallet);
+  });
+
+  test('addRemoteWallet rejects bad addresses and duplicates across account types', async () => {
+    seedMainWallet();
+    await identityManager.addLedgerWallet('My Stax', LEDGER_ADDRESS, LEDGER_PATH);
+
+    await expect(identityManager.addRemoteWallet('Bad', '0x123'))
+      .rejects.toThrow('Invalid Phone account address');
+    // The same address already added as a Ledger account is still a duplicate.
+    await expect(identityManager.addRemoteWallet('Again', LEDGER_ADDRESS.toLowerCase()))
+      .rejects.toThrow(/already in your wallet list/);
+  });
+
+  test('remote accounts behave like device accounts across the record seams', async () => {
+    seedMainWallet();
+    const wallet = await identityManager.addRemoteWallet('My Phone', LEDGER_ADDRESS);
+
+    expect(identityManager.getWalletRecord(wallet.index)).toMatchObject({
+      type: 'remote',
+      address: LEDGER_ADDRESS,
+    });
+    await expect(identityManager.getUserWalletKey(wallet.index))
+      .rejects.toThrow('This account has no derivable private key');
+
+    await identityManager.setActiveWalletIndex(wallet.index);
+    await expect(identityManager.getActiveWalletAddress()).resolves.toBe(LEDGER_ADDRESS);
+
+    const wallets = await identityManager.getDerivedWallets();
+    expect(wallets[1]).toMatchObject({ type: 'remote', address: LEDGER_ADDRESS });
   });
 });
 

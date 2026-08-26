@@ -84,7 +84,7 @@ describe('preload', () => {
       beeApiEnv: 'http://127.0.0.1:1700',
     });
 
-    expect(contextBridge.exposeInMainWorld).toHaveBeenCalledTimes(27);
+    expect(contextBridge.exposeInMainWorld).toHaveBeenCalledTimes(28);
     expect(Object.keys(exposures)).toEqual([
       'nodeConfig',
       'internalPages',
@@ -100,6 +100,7 @@ describe('preload', () => {
       'quickUnlock',
       'wallet',
       'ledger',
+      'remoteSigner',
       'swarmNode',
       'networks',
       'payments',
@@ -117,6 +118,7 @@ describe('preload', () => {
     expect(ipcRenderer.sendSync).toHaveBeenCalledWith(IPC.GET_INTERNAL_PAGES);
     expect(exposures.nodeConfig).toEqual({
       antApi: 'http://127.0.0.1:1700',
+      openlvSignaling: null,
     });
     expect(exposures.internalPages).toBe(internalPages);
 
@@ -470,6 +472,7 @@ describe('preload', () => {
 
     expect(exposures.nodeConfig).toEqual({
       antApi: null,
+      openlvSignaling: null,
     });
   });
 

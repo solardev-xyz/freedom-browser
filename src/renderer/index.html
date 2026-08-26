@@ -6,7 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: http: https:; connect-src 'self' http://127.0.0.1:*;"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: http: https:; connect-src 'self' http://127.0.0.1:* ws://127.0.0.1:* wss:;"
     />
     <title>Freedom</title>
     <link rel="stylesheet" href="./styles.css" />
@@ -1918,6 +1918,13 @@
                         </svg>
                         <span>Connect Hardware Wallet</span>
                       </button>
+                      <button type="button" class="wallet-selector-action" id="wallet-connect-phone-btn">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <rect x="7" y="2" width="10" height="20" rx="2"/>
+                          <path d="M12 18h.01"/>
+                        </svg>
+                        <span>Connect Phone / Other Device</span>
+                      </button>
                     </div>
                   </div>
 
@@ -2583,6 +2590,83 @@
                 </p>
 
                 <button type="button" id="connect-ledger-done" class="create-wallet-done-btn">
+                  Done
+                </button>
+              </div>
+            </div>
+
+            <!-- Connect Phone sub-screen -->
+            <div id="sidebar-connect-phone" class="sidebar-subscreen hidden">
+              <div class="subscreen-header">
+                <button type="button" class="subscreen-back-btn" id="connect-phone-back">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="15 18 9 12 15 6"/>
+                  </svg>
+                  <span>Back</span>
+                </button>
+                <h3 class="subscreen-title">Connect Phone</h3>
+              </div>
+
+              <!-- Step 1: Scan QR -->
+              <div id="connect-phone-qr-step" class="subscreen-content hidden">
+                <p class="create-wallet-message">
+                  Scan this code with your phone's camera or wallet app.
+                  The connection is peer-to-peer and end-to-end encrypted.
+                </p>
+                <div class="receive-qr-container">
+                  <img id="connect-phone-qr-image" class="receive-qr-image" alt="Connection QR code">
+                </div>
+                <div class="connect-ledger-status">
+                  <span class="connect-ledger-status-spinner" id="connect-phone-status-spinner"></span>
+                  <span id="connect-phone-status-text">Preparing connection…</span>
+                </div>
+                <button type="button" id="connect-phone-retry" class="connect-ledger-load-more hidden">
+                  Generate a new code
+                </button>
+                <div id="connect-phone-qr-error" class="unlock-error hidden"></div>
+              </div>
+
+              <!-- Step 2: Pick account -->
+              <div id="connect-phone-accounts-step" class="subscreen-content hidden">
+                <p class="create-wallet-message">Choose the account to add.</p>
+
+                <div id="connect-phone-account-list" class="connect-ledger-account-list"></div>
+
+                <input type="text" id="connect-phone-name-input"
+                       class="create-wallet-input"
+                       placeholder="Name (e.g. My Phone)"
+                       maxlength="32"
+                       autocomplete="off">
+
+                <button type="button" id="connect-phone-submit" class="create-wallet-submit-btn" disabled>
+                  Add Account
+                </button>
+
+                <div id="connect-phone-error" class="unlock-error hidden"></div>
+              </div>
+
+              <!-- Step 3: Success -->
+              <div id="connect-phone-success" class="subscreen-content hidden">
+                <div class="create-wallet-success-icon">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                    <circle cx="12" cy="12" r="10"/>
+                    <polyline points="8 12 11 15 16 9"/>
+                  </svg>
+                </div>
+                <h4 class="create-wallet-success-title">Phone Account Added!</h4>
+
+                <div class="create-wallet-result">
+                  <span class="create-wallet-result-name" id="connect-phone-result-name"></span>
+                  <code class="create-wallet-result-address" id="connect-phone-result-address"></code>
+                </div>
+
+                <p class="create-wallet-message">
+                  Signing requests for this account will show a QR code —
+                  scan it with your phone and confirm there. Transactions
+                  are broadcast by your phone's wallet.
+                </p>
+
+                <button type="button" id="connect-phone-done" class="create-wallet-done-btn">
                   Done
                 </button>
               </div>
@@ -3527,6 +3611,31 @@
                     Pay
                   </button>
                 </div>
+              </div>
+            </div>
+
+            <!-- Remote-signing QR panel: overlays whichever approval flow
+                 asked a phone account to sign (dapp tx/sign, send, x402).
+                 Driven by remote-signing-panel.js off broker job events. -->
+            <div id="sidebar-remote-signing" class="sidebar-subscreen sidebar-modal remote-signing-panel hidden">
+              <div class="subscreen-header">
+                <h3 class="subscreen-title">Confirm on Your Phone</h3>
+              </div>
+              <div class="subscreen-content">
+                <p class="create-wallet-message" id="remote-signing-request-label">Signature request</p>
+                <div class="receive-qr-container">
+                  <img id="remote-signing-qr-image" class="receive-qr-image" alt="Signing QR code">
+                </div>
+                <div class="connect-ledger-status">
+                  <span class="connect-ledger-status-spinner"></span>
+                  <span id="remote-signing-status-text">Preparing connection…</span>
+                </div>
+                <button type="button" id="remote-signing-new-code" class="connect-ledger-load-more">
+                  Generate a new code
+                </button>
+                <button type="button" id="remote-signing-cancel" class="create-wallet-done-btn">
+                  Cancel
+                </button>
               </div>
             </div>
 

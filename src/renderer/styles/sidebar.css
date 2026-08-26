@@ -704,6 +704,12 @@
   background: var(--toolbar);
 }
 
+/* The remote-signing QR panel overlays the approval modals themselves
+   (it appears after the user already confirmed in one of them). */
+.sidebar-subscreen.remote-signing-panel {
+  z-index: 60;
+}
+
 .subscreen-header {
   display: flex;
   align-items: center;

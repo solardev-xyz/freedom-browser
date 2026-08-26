@@ -75,12 +75,15 @@ describe('withVaultPrivateKey', () => {
     expect(mockIdentity.exportPrivateKey).toHaveBeenCalledWith(3);
   });
 
-  test('refuses to derive a vault key for a hardware-wallet index', async () => {
+  test.each([
+    ['ledger', '0xstax'],
+    ['remote', '0xphone'],
+  ])('refuses to derive a vault key for a %s account index', async (type, address) => {
     // The chokepoint guard: even a caller that bypasses the signer
-    // factory must never get a mnemonic key at a ledger account's index.
-    mockGetWalletRecord.mockReturnValue({ index: 3, type: 'ledger', address: '0xstax' });
+    // factory must never get a mnemonic key at a device account's index.
+    mockGetWalletRecord.mockReturnValue({ index: 3, type, address });
     await expect(withVaultPrivateKey(3, () => 'unreachable'))
-      .rejects.toThrow('Hardware wallet accounts have no vault key');
+      .rejects.toThrow('This account keeps its key on another device');
     expect(mockIdentity.exportPrivateKey).not.toHaveBeenCalled();
   });
 
@@ -92,7 +95,7 @@ describe('withVaultPrivateKey', () => {
     // with an address the user has never seen.
     mockGetWalletRecord.mockReturnValue(null);
     await expect(withVaultPrivateKey(1000000, () => 'unreachable'))
-      .rejects.toThrow('Hardware wallet accounts have no vault key');
+      .rejects.toThrow('This account keeps its key on another device');
     expect(mockIdentity.exportPrivateKey).not.toHaveBeenCalled();
     expect(mockIdentity.isUnlocked).not.toHaveBeenCalled();
   });

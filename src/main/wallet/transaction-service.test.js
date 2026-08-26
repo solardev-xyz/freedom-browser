@@ -139,6 +139,96 @@ describe('signAndSendTransaction (signer-based)', () => {
     ).rejects.toThrow('Insufficient funds for transaction');
   });
 
+  describe('signer sendTransaction capability (device broadcasts itself)', () => {
+    // Remote (phone) signers cannot produce a raw signed tx: the phone
+    // picks the nonce and broadcasts itself. Only intent fields go over.
+    const hash = '0x' + 'cd'.repeat(32);
+    const params = {
+      to: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C',
+      value: '1000',
+      data: '0xabcdef',
+      gasLimit: '21000',
+      maxFeePerGas: '2000000000',
+      maxPriorityFeePerGas: '1000000000',
+      chainId: 8453,
+    };
+    let getTransaction;
+    let broadcastingSigner;
+
+    beforeEach(() => {
+      getTransaction = jest.fn(async () => ({ from: testWallet.address }));
+      mockChainRequest.mockImplementation(async (_chainId, method, args) => {
+        if (method === 'eth_getTransactionByHash') {
+          return { result: await getTransaction(...args), source: 'direct' };
+        }
+        return { result: '0x5', source: 'direct' };
+      });
+      broadcastingSigner = { ...signer, sendTransaction: jest.fn(async () => hash) };
+    });
+
+    it('prefers the capability over sign+broadcast and verifies the tx sender', async () => {
+      const result = await signAndSendTransaction(params, broadcastingSigner);
+
+      expect(broadcastingSigner.sendTransaction).toHaveBeenCalledWith({
+        to: params.to,
+        value: '1000',
+        data: '0xabcdef',
+        chainId: 8453,
+      });
+      expect(broadcastedRaw).toBeNull(); // never touched our provider's broadcast path
+      expect(getTransaction).toHaveBeenCalledWith(hash);
+      expect(mockGetFeeQuote).not.toHaveBeenCalled();
+      expect(result).toEqual({
+        hash,
+        from: testWallet.address,
+        to: params.to,
+        value: '1000',
+        chainId: 8453,
+        explorerUrl: `https://explorer.test/8453/${hash}`,
+      });
+    });
+
+    it('rejects with REMOTE_WRONG_ACCOUNT when the broadcast tx is from someone else', async () => {
+      getTransaction.mockResolvedValue({ from: '0x' + '11'.repeat(20) });
+      await expect(signAndSendTransaction(params, broadcastingSigner)).rejects.toMatchObject({
+        code: 'REMOTE_WRONG_ACCOUNT',
+      });
+    });
+
+    it('tolerates a tx not yet visible on our RPC (best-effort check)', async () => {
+      getTransaction.mockResolvedValue(null);
+      await expect(signAndSendTransaction(params, broadcastingSigner)).resolves.toMatchObject({ hash });
+    });
+
+    it('tolerates lookup failures (best-effort check)', async () => {
+      getTransaction.mockRejectedValue(new Error('rpc down'));
+      await expect(signAndSendTransaction(params, broadcastingSigner)).resolves.toMatchObject({ hash });
+    });
+  });
+
+  it('passes device-backend errors through with their stable code intact', async () => {
+    // LEDGER_*/REMOTE_* errors carry user-facing messages and codes the
+    // approval UIs rely on; the generic rewrap must not swallow them —
+    // e.g. a phone error mentioning "gas" must not become our local
+    // gas-estimation message.
+    const deviceError = Object.assign(new Error('intrinsic gas too low'), {
+      code: 'REMOTE_UNKNOWN',
+    });
+    const rejectingSigner = {
+      ...signer,
+      signTransaction: async () => {
+        throw deviceError;
+      },
+    };
+
+    await expect(
+      signAndSendTransaction(
+        { to: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C', value: '1', gasLimit: '21000', gasPrice: '7', chainId: 1 },
+        rejectingSigner,
+      ),
+    ).rejects.toBe(deviceError);
+  });
+
   it('surfaces signer rejection (e.g. user declined on device) unchanged', async () => {
     const decliningSigner = {
       ...signer,
