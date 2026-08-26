@@ -3,10 +3,11 @@
  * Manual smoke: Freedom's real Vaughan transport against a running Vaughan provider.
  *
  * Prerequisites:
- *   1. Unlock Vaughan with:
- *        VAUGHAN_PROVIDER_TRUSTED_ORIGINS=https://freedom.browser
+ *   1. Vaughan running with the wallet unlocked (the TUI trusts the Freedom
+ *      origin by default and writes provider.session, which the transport
+ *      picks up automatically).
  *   2. Provider listening on ws://127.0.0.1:8745
- *   3. Approve any personal_sign / sign prompts that appear in the TUI
+ *   3. Approve any connect / sign prompts that appear in the TUI
  *
  * Usage:
  *   node scripts/smoke-vaughan-bridge.js
@@ -17,7 +18,7 @@ const path = require('path');
 const { rpcRequest, DEFAULT_URL, DEFAULT_ORIGIN } = require(
   path.join(__dirname, '..', 'src', 'main', 'wallet', 'vaughan', 'transport')
 );
-const { createVaughanBackend } = require(
+const { createVaughanBackend, SIGN_TIMEOUT_MS } = require(
   path.join(__dirname, '..', 'src', 'main', 'wallet', 'vaughan', 'signer')
 );
 
@@ -25,7 +26,8 @@ async function main() {
   const url = process.env.FREEDOM_VAUGHAN_WS_URL || DEFAULT_URL;
   console.log(`Connecting as Origin=${DEFAULT_ORIGIN} → ${url}`);
 
-  const accounts = await rpcRequest('eth_requestAccounts', [], { url });
+  // Connect gesture waits on interactive TUI approval — signing-grade timeout.
+  const accounts = await rpcRequest('eth_requestAccounts', [], { url, timeoutMs: SIGN_TIMEOUT_MS });
   if (!Array.isArray(accounts) || !accounts[0]) {
     throw new Error(`eth_requestAccounts returned no accounts: ${JSON.stringify(accounts)}`);
   }
