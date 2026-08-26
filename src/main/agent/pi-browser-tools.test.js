@@ -51,6 +51,8 @@ describe('Pi browser tool adapter', () => {
       OPERATIONS.TYPE,
       OPERATIONS.SELECT,
       OPERATIONS.PRESS,
+      OPERATIONS.DOWNLOAD,
+      OPERATIONS.LIST_DOWNLOADS,
       OPERATIONS.WAIT,
       OPERATIONS.STOP_LOADING,
     ]);
@@ -220,6 +222,55 @@ describe('Pi browser tool adapter', () => {
       content: [{ type: 'text', text: JSON.stringify(envelope) }],
       details: { operation: OPERATIONS.CLICK, envelope },
     });
+  });
+
+  test('returns a safe download artifact and forwards bounded progress', async () => {
+    const artifact = {
+      artifactId: 'artifact_1234567890abcdef1234',
+      filename: 'report.pdf',
+      mimeType: 'application/pdf',
+      bytes: 2048,
+      state: 'completed',
+      sourceOrigin: 'https://files.example',
+      location: 'downloads',
+      available: true,
+    };
+    const controller = {
+      execute: jest.fn(async (_operation, _input, execution) => {
+        execution.onProgress({ receivedBytes: 1024, totalBytes: 2048, state: 'in_progress' });
+        return successEnvelope({ artifact });
+      }),
+    };
+    const onToolOutcome = jest.fn();
+    const onToolProgress = jest.fn();
+    const tools = await createFreedomBrowserTools({
+      sdk: createSdk(),
+      controller,
+      tabId: 'tab_assigned',
+      onToolOutcome,
+      onToolProgress,
+    });
+    const download = tools.find((tool) => tool.name === OPERATIONS.DOWNLOAD);
+
+    const result = await download.execute(
+      'call_download',
+      { ref: 'ref_download' },
+      new AbortController().signal
+    );
+
+    expect(controller.execute).toHaveBeenCalledWith(
+      OPERATIONS.DOWNLOAD,
+      { tabId: 'tab_assigned', ref: 'ref_download' },
+      expect.objectContaining({ signal: expect.any(Object), onProgress: expect.any(Function) })
+    );
+    expect(JSON.parse(result.content[0].text).result.artifact).toEqual(artifact);
+    expect(result.content[0].text).not.toContain('/Users/');
+    expect(onToolProgress).toHaveBeenCalledWith(
+      expect.objectContaining({ toolCallId: 'call_download', operation: OPERATIONS.DOWNLOAD })
+    );
+    expect(onToolOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({ artifact, status: 'succeeded' })
+    );
   });
 
   test('reports structured outcomes independently of Pi error rendering', async () => {

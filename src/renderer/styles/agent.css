@@ -1937,6 +1937,74 @@ body.agent-first-mode .agent-composer textarea {
   display: none;
 }
 
+.agent-artifact-list {
+  display: grid;
+  gap: 7px;
+}
+
+.agent-artifact-list[hidden] {
+  display: none;
+}
+
+.agent-artifact {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+  padding: 9px 10px;
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 34%, transparent);
+  border-radius: 9px;
+}
+
+.agent-artifact-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.agent-artifact-copy strong,
+.agent-artifact-copy span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-artifact-copy strong {
+  color: var(--text);
+  font-size: 11px;
+}
+
+.agent-artifact-copy span {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.agent-artifact-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 5px;
+}
+
+.agent-artifact-actions button {
+  padding: 4px 7px;
+  color: var(--text);
+  font: inherit;
+  font-size: 10px;
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--border) 42%, transparent);
+  border-radius: 6px;
+}
+
+.agent-artifact-actions button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+}
+
+.agent-artifact-actions button:disabled {
+  opacity: 0.45;
+}
+
 .agent-turn-outcome-icon {
   display: grid;
   width: 17px;

@@ -115,12 +115,14 @@ describe('FreedomAgentService', () => {
       createWorkspacePage: expect.any(Function),
       onWorkspaceTabCreated: expect.any(Function),
       requestApproval: expect.any(Function),
+      transferOwnerId: 'conversation_test',
     });
     expect(dependencies.createTools).toHaveBeenCalledWith({
       sdk: { kind: 'sdk' },
       controller: expect.objectContaining({ execute: dependencies.controller.execute }),
       tabId: 'tab_assigned',
       onToolOutcome: expect.any(Function),
+      onToolProgress: expect.any(Function),
     });
     expect(dependencies.createSession).toHaveBeenCalledWith({
       sdk: { kind: 'sdk' },
@@ -263,6 +265,7 @@ describe('FreedomAgentService', () => {
       createWorkspacePage: expect.any(Function),
       onWorkspaceTabCreated: expect.any(Function),
       requestApproval: expect.any(Function),
+      transferOwnerId: 'conversation_test',
     });
     expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toEqual(
       expect.stringContaining('You are Freedom Agent inside Freedom Browser')
@@ -825,7 +828,8 @@ describe('FreedomAgentService', () => {
 
   test('pauses and resumes the same Pi session with a mandatory recovery prompt', async () => {
     const fake = createFakeSession();
-    const { service, dependencies } = createService(fake);
+    const cancelAgentDownloads = jest.fn();
+    const { service, dependencies } = createService(fake, { cancelAgentDownloads });
     const events = [];
     service.subscribe((event) => events.push(event));
     await service.start(startOptions());
@@ -844,6 +848,7 @@ describe('FreedomAgentService', () => {
     });
     expect(service.getState()).toMatchObject({ status: 'paused', runId: 'run_test' });
     expect(fake.session.dispose).not.toHaveBeenCalled();
+    expect(cancelAgentDownloads).not.toHaveBeenCalled();
 
     await expect(service.resume('run_test')).resolves.toBe(true);
 
@@ -963,7 +968,8 @@ describe('FreedomAgentService', () => {
 
   test('stops the matching run and reports cancellation', async () => {
     const fake = createFakeSession();
-    const { service } = createService(fake);
+    const cancelAgentDownloads = jest.fn(() => 1);
+    const { service } = createService(fake, { cancelAgentDownloads });
     const events = [];
     service.subscribe((event) => events.push(event));
     await service.start(startOptions());
@@ -973,6 +979,7 @@ describe('FreedomAgentService', () => {
     await service.waitForIdle();
 
     expect(fake.session.abort).toHaveBeenCalledTimes(1);
+    expect(cancelAgentDownloads).toHaveBeenCalledWith('conversation_test');
     expect(events.at(-1)).toMatchObject({ type: 'run_finished', status: 'cancelled' });
   });
 

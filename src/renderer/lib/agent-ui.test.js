@@ -253,6 +253,8 @@ async function loadAgentUi(options = {}) {
     renameAgentSession: jest.fn(),
     deleteAgentSession: jest.fn(),
     claimAgentTab: jest.fn(),
+    openAgentArtifact: jest.fn().mockResolvedValue({ success: true }),
+    showAgentArtifactInFolder: jest.fn().mockResolvedValue({ success: true }),
     pauseAgent: jest.fn().mockResolvedValue({ ok: true, paused: true }),
     resumeAgent: jest.fn().mockResolvedValue({ ok: true, resumed: true }),
     stopAgent: jest.fn().mockResolvedValue({ ok: true, stopped: true }),
@@ -733,6 +735,64 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-new-chat'].hidden).toBe(true);
     expect(ctx.elements['agent-model-menu-button'].disabled).toBe(false);
     expect(ctx.elements['agent-approval-mode-button'].disabled).toBe(false);
+  });
+
+  test('renders verified download receipts with trusted file actions', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Download the report';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({
+      type: 'run_started',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      userText: 'Download the report',
+    });
+    ctx.emit({
+      type: 'tool_started',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      toolCallId: 'tool_download',
+      operation: 'browser_download',
+      intent: 'Downloading a file',
+    });
+    ctx.emit({
+      type: 'tool_progress',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      toolCallId: 'tool_download',
+      operation: 'browser_download',
+      receivedBytes: 1024,
+      totalBytes: 2048,
+      state: 'in_progress',
+    });
+    const artifact = {
+      artifactId: 'artifact_1234567890abcdef1234',
+      filename: 'report.pdf',
+      bytes: 2048,
+      state: 'completed',
+      location: 'downloads',
+      available: true,
+    };
+    ctx.emit({
+      type: 'tool_finished',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      toolCallId: 'tool_download',
+      operation: 'browser_download',
+      status: 'succeeded',
+      label: 'Downloaded report.pdf',
+      artifact,
+    });
+
+    const turn = ctx.elements['agent-transcript'].children[0];
+    const artifactList = turn.querySelector('.agent-artifact-list');
+    expect(artifactList.hidden).toBe(false);
+    expect(artifactList.children[0].children[0].children[0].textContent).toBe('report.pdf');
+    expect(artifactList.children[0].children[0].children[1].textContent).not.toContain('/Users/');
+    artifactList.children[0].children[1].children[0].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.openAgentArtifact).toHaveBeenCalledWith(artifact.artifactId);
   });
 
   test('shows live browser intent and trusted completion evidence', async () => {

@@ -140,6 +140,8 @@ module.exports = {
   DOWNLOADS_CANCEL: 'downloads:cancel',
   DOWNLOADS_OPEN_FILE: 'downloads:open-file',
   DOWNLOADS_SHOW_IN_FOLDER: 'downloads:show-in-folder',
+  DOWNLOADS_OPEN_ARTIFACT: 'downloads:open-artifact',
+  DOWNLOADS_SHOW_ARTIFACT_IN_FOLDER: 'downloads:show-artifact-in-folder',
   DOWNLOADS_REMOVE: 'downloads:remove',
   DOWNLOADS_CLEAR: 'downloads:clear',
   // Main→renderer, sent to the download's owning window only — drives the

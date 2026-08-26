@@ -133,6 +133,7 @@ function collectPageSnapshot(
         Boolean(element.form) &&
         ((tag === 'button' && (!inputType || inputType === 'submit')) ||
           (tag === 'input' && ['submit', 'image'].includes(inputType)));
+      const downloadsFile = tag === 'a' && element.hasAttribute('href') && element.hasAttribute('download');
       state.refs.set(ref, { element, frameWindow });
       elements.push({
         ref,
@@ -145,7 +146,11 @@ function collectPageSnapshot(
         editable:
           element.matches('input:not([readonly]),textarea:not([readonly])') ||
           element.isContentEditable,
-        ...(submitsForm && { effect: 'form_submission' }),
+        ...(downloadsFile
+          ? { effect: 'file_download' }
+          : submitsForm
+            ? { effect: 'form_submission' }
+            : {}),
         ...(tag === 'select' && {
           value: element.value,
           options: Array.from(element.options)
@@ -292,7 +297,14 @@ async function describeReferencedElement(ref, action, key) {
     ((tag === 'button' && (!inputType || inputType === 'submit')) ||
       (tag === 'input' && ['submit', 'image'].includes(inputType)));
   const activatesElement =
-    action === 'click' || (action === 'press' && ['Enter', 'Space'].includes(key));
+    action === 'click' ||
+    action === 'download' ||
+    (action === 'press' && ['Enter', 'Space'].includes(key));
+  const downloadsFile =
+    tag === 'a' &&
+    element.hasAttribute('href') &&
+    (element.hasAttribute('download') || action === 'download') &&
+    activatesElement;
   const implicitlySubmitsForm =
     action === 'press' &&
     key === 'Enter' &&
@@ -380,7 +392,11 @@ async function describeReferencedElement(ref, action, key) {
   return {
     ok: true,
     label: actionLabel,
-    ...(formSubmission && { effect: 'form_submission' }),
+    ...(downloadsFile
+      ? { effect: 'file_download' }
+      : formSubmission
+        ? { effect: 'form_submission' }
+        : {}),
     ...(navigationTarget && { navigationTarget }),
     ...(formPayloadFingerprint && { formPayloadFingerprint }),
   };
@@ -550,7 +566,7 @@ class WebContentsPageAdapter extends EventEmitter {
     if (navigationId !== this.navigationId) throw this.#staleReferenceError();
 
     const elements = snapshot.elements.map((publicNode) => {
-      this.references.set(publicNode.ref, { navigationId });
+      this.references.set(publicNode.ref, { navigationId, effect: publicNode.effect || '' });
       return publicNode;
     });
     this.#pruneReferences();
@@ -559,7 +575,32 @@ class WebContentsPageAdapter extends EventEmitter {
 
   async click(ref) {
     this.#assertAvailable();
+    const reference = this.#requireReference(ref);
+    if (reference.effect === 'file_download') {
+      throw new AutomationError(
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        'Use browser_download for file downloads so Freedom can track the artifact',
+        { retryable: true }
+      );
+    }
+    return this.#trustedClick(ref);
+  }
+
+  async download(ref) {
+    this.#assertAvailable();
     this.#requireReference(ref);
+    const described = await this.#execute(describeReferencedElement, [ref, 'download', ''], false);
+    this.#assertActionResult(described);
+    if (described.effect !== 'file_download') {
+      throw new AutomationError(
+        ERROR_CODES.ELEMENT_NOT_INTERACTABLE,
+        'The referenced element is not a downloadable link'
+      );
+    }
+    return this.#trustedClick(ref);
+  }
+
+  async #trustedClick(ref) {
     const result = await this.#execute(inspectReferencedElement, [ref, 'click'], true);
     this.#assertActionResult(result);
     if (!result.point || typeof this.webContents.sendInputEvent !== 'function') {
@@ -604,11 +645,18 @@ class WebContentsPageAdapter extends EventEmitter {
       const prepared = await this.#execute(inspectReferencedElement, [ref, action], true);
       this.#assertActionResult(prepared);
     }
-    const result = await this.#execute(describeReferencedElement, [ref, action, key], false);
+    const describeAction = operation === 'browser_download' ? 'download' : action;
+    const result = await this.#execute(
+      describeReferencedElement,
+      [ref, describeAction, key],
+      false
+    );
     this.#assertActionResult(result);
     return {
       label: typeof result.label === 'string' ? result.label : '',
-      ...(result.effect === 'form_submission' && { effect: result.effect }),
+      ...(['form_submission', 'file_download'].includes(result.effect) && {
+        effect: result.effect,
+      }),
       ...(typeof result.navigationTarget === 'string' &&
         result.navigationTarget && { navigationTarget: result.navigationTarget }),
       ...(typeof result.formPayloadFingerprint === 'string' &&

@@ -20,6 +20,8 @@ const ORIGIN_SCOPED_OPERATIONS = new Set([
   OPERATIONS.TYPE,
   OPERATIONS.SELECT,
   OPERATIONS.PRESS,
+  OPERATIONS.DOWNLOAD,
+  OPERATIONS.LIST_DOWNLOADS,
   OPERATIONS.WAIT,
   OPERATIONS.STOP_LOADING,
 ]);
@@ -29,6 +31,7 @@ const PAGE_INTERACTION_OPERATIONS = new Set([
   OPERATIONS.TYPE,
   OPERATIONS.SELECT,
   OPERATIONS.PRESS,
+  OPERATIONS.DOWNLOAD,
 ]);
 
 function originScopeForUrl(value) {
@@ -60,7 +63,9 @@ function errorEnvelope(state, code, message, options = {}) {
 
 function actionDescriptor(element) {
   return Object.freeze({
-    effect: element?.effect === 'form_submission' ? element.effect : '',
+    effect: ['form_submission', 'file_download'].includes(element?.effect)
+      ? element.effect
+      : '',
     label: typeof element?.label === 'string' ? element.label : '',
     navigationTarget:
       typeof element?.navigationTarget === 'string' ? element.navigationTarget : '',
@@ -87,6 +92,7 @@ class OriginScopedAutomationController {
     requestApproval,
     createWorkspacePage,
     onWorkspaceTabCreated,
+    transferOwnerId,
   }) {
     this.controller = controller;
     this.adoptedTabId = tabId;
@@ -98,6 +104,7 @@ class OriginScopedAutomationController {
     this.requestApproval = requestApproval;
     this.createWorkspacePage = createWorkspacePage;
     this.onWorkspaceTabCreated = onWorkspaceTabCreated;
+    this.transferOwnerId = transferOwnerId;
     this.declinedActions = new Set();
     this.resumeObservation = null;
   }
@@ -132,7 +139,7 @@ class OriginScopedAutomationController {
     return true;
   }
 
-  async execute(operation, input = {}) {
+  async execute(operation, input = {}, execution = {}) {
     if (!ORIGIN_SCOPED_OPERATIONS.has(operation)) {
       return errorEnvelope(
         this.lastState,
@@ -149,6 +156,9 @@ class OriginScopedAutomationController {
     }
 
     if (operation === OPERATIONS.LIST_TABS) return this.#listOwnedTabs();
+    if (operation === OPERATIONS.LIST_DOWNLOADS) {
+      return this.#executeController(operation, input, execution);
+    }
     if (operation === OPERATIONS.CREATE_TAB) {
       if (this.resumeObservation && this.resumeObservation !== 'create_tab') {
         return errorEnvelope(
@@ -186,7 +196,7 @@ class OriginScopedAutomationController {
     // Cancellation authority must survive an unexpected redirect so Freedom
     // can still stop page activity before refusing further observation/action.
     if (operation === OPERATIONS.STOP_LOADING) {
-      return this.controller.execute(operation, input);
+      return this.#executeController(operation, input, execution);
     }
     if (operation === OPERATIONS.CLOSE_TAB) {
       if (input.tabId === this.adoptedTabId) {
@@ -196,7 +206,7 @@ class OriginScopedAutomationController {
           'The agent cannot close the originally adopted user tab'
         );
       }
-      const result = await this.controller.execute(operation, input);
+      const result = await this.#executeController(operation, input, execution);
       if (result?.ok) {
         this.ownedTabs.delete(input.tabId);
         if (this.activeTabId === input.tabId) this.activeTabId = this.#fallbackTabId();
@@ -231,11 +241,11 @@ class OriginScopedAutomationController {
     }
 
     if (operation === OPERATIONS.FOCUS_TAB) {
-      const result = await this.controller.execute(operation, input);
+      const result = await this.#executeController(operation, input, execution);
       if (result?.ok) this.activeTabId = input.tabId;
       return result;
     }
-    const result = await this.controller.execute(operation, input);
+    const result = await this.#executeController(operation, input, execution);
     if (result?.ok && operation === OPERATIONS.SNAPSHOT) {
       this.resumeObservation = null;
     }
@@ -257,6 +267,16 @@ class OriginScopedAutomationController {
 
   #fallbackTabId() {
     return [...this.ownedTabs.keys()].at(-1) || null;
+  }
+
+  #executeController(operation, input, execution = {}) {
+    if (!this.transferOwnerId && Object.keys(execution).length === 0) {
+      return this.controller.execute(operation, input);
+    }
+    return this.controller.execute(operation, input, {
+      ...execution,
+      conversationId: this.transferOwnerId,
+    });
   }
 
   async #readActiveState() {
@@ -420,7 +440,12 @@ class OriginScopedAutomationController {
   }
 
   async #authorizeAction(operation, input, state) {
-    if (this.approvalMode === AGENT_APPROVAL_MODES.ALLOW_WEBSITE_INTERACTIONS) return null;
+    if (
+      this.approvalMode === AGENT_APPROVAL_MODES.ALLOW_WEBSITE_INTERACTIONS &&
+      operation !== OPERATIONS.DOWNLOAD
+    ) {
+      return null;
+    }
     const inspected = await this.controller.inspectAction(operation, input);
     if (!inspected?.ok) return inspected;
     const element = actionDescriptor(inspected.result);
@@ -452,7 +477,12 @@ class OriginScopedAutomationController {
       );
     }
     const decision = await this.requestApproval({
-      action: element.effect === 'form_submission' ? 'form_submission' : 'browser_interaction',
+      action:
+        element.effect === 'form_submission'
+          ? 'form_submission'
+          : element.effect === 'file_download'
+            ? 'file_download'
+            : 'browser_interaction',
       operation,
       tabId: input.tabId,
       origin: originScopeForUrl(state?.result?.tab?.url) || '',
@@ -543,6 +573,7 @@ async function createOriginScopedAutomationController(options = {}) {
     requestApproval: options.requestApproval,
     createWorkspacePage: options.createWorkspacePage,
     onWorkspaceTabCreated: options.onWorkspaceTabCreated,
+    transferOwnerId: options.transferOwnerId,
   });
 }
 

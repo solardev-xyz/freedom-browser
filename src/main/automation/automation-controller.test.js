@@ -186,6 +186,39 @@ describe('AutomationController', () => {
     expect(adapter.press).toHaveBeenCalledWith('ref_environment', 'ArrowDown');
   });
 
+  test('routes controlled downloads through the download boundary with execution context', async () => {
+    const { controller } = createController();
+    const adapter = new FakePageAdapter();
+    const tabId = controller.registerPage(adapter, { kind: 'desktop' });
+    const download = jest.fn(async () => ({
+      artifact: {
+        artifactId: 'artifact_1234567890abcdef1234',
+        filename: 'report.pdf',
+      },
+    }));
+    controller.setDownloadController({ download, list: jest.fn(() => []) });
+    const signal = new AbortController().signal;
+
+    await expect(
+      controller.execute(
+        OPERATIONS.DOWNLOAD,
+        { tabId, ref: 'ref_download' },
+        { conversationId: 'conversation_test', signal }
+      )
+    ).resolves.toMatchObject({
+      ok: true,
+      result: { artifact: { filename: 'report.pdf' } },
+    });
+    expect(download).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pageAdapter: adapter,
+        ref: 'ref_download',
+        conversationId: 'conversation_test',
+        signal,
+      })
+    );
+  });
+
   test('does not echo an unvalidated tab ID into error envelopes', async () => {
     const { controller } = createController();
     const failure = await controller.execute(OPERATIONS.SNAPSHOT, {

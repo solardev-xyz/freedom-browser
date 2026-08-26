@@ -12,6 +12,8 @@ const OPERATIONS = Object.freeze({
   TYPE: 'browser_type',
   SELECT: 'browser_select',
   PRESS: 'browser_press',
+  DOWNLOAD: 'browser_download',
+  LIST_DOWNLOADS: 'browser_list_downloads',
   SCREENSHOT: 'browser_screenshot',
   WAIT: 'browser_wait',
   STOP_LOADING: 'browser_stop_loading',

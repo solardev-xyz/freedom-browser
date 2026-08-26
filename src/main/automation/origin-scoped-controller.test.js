@@ -130,6 +130,12 @@ function createController(initialUrl = 'https://trusted.example/start') {
     result:
       input.ref === 'ref_submit'
         ? submitAction
+        : input.ref === 'ref_download'
+          ? {
+              effect: 'file_download',
+              label: 'Download report',
+              navigationTarget: 'https://trusted.example/report.pdf',
+            }
         : input.ref === 'ref_cross_origin'
           ? { label: 'Leave site', navigationTarget: 'https://attacker.example/collect' }
           : { label: 'Ordinary action' },
@@ -915,5 +921,52 @@ describe('OriginScopedAutomationController', () => {
       scoped.execute(OPERATIONS.CLICK, { tabId: 'tab_assigned', ref: 'ref_submit' })
     ).resolves.toMatchObject({ ok: true });
     expect(controller.inspectAction).not.toHaveBeenCalled();
+  });
+
+  test('requires explicit approval for a controlled download and scopes its artifact owner', async () => {
+    const controller = createController();
+    const requestApproval = jest.fn(async () => 'approved');
+    const scoped = await createOriginScopedAutomationController({
+      controller,
+      tabId: 'tab_assigned',
+      requestApproval,
+      transferOwnerId: 'conversation_test',
+    });
+
+    await expect(
+      scoped.execute(OPERATIONS.DOWNLOAD, {
+        tabId: 'tab_assigned',
+        ref: 'ref_download',
+      })
+    ).resolves.toMatchObject({ ok: true });
+    expect(requestApproval).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'file_download',
+        operation: OPERATIONS.DOWNLOAD,
+        label: 'Download report',
+      })
+    );
+    expect(controller.execute).toHaveBeenCalledWith(
+      OPERATIONS.DOWNLOAD,
+      { tabId: 'tab_assigned', ref: 'ref_download' },
+      { conversationId: 'conversation_test' }
+    );
+  });
+
+  test('lists only downloads belonging to the scoped conversation without requiring a tab', async () => {
+    const controller = createController();
+    const scoped = await createOriginScopedAutomationController({
+      controller,
+      tabId: null,
+      transferOwnerId: 'conversation_test',
+    });
+
+    await scoped.execute(OPERATIONS.LIST_DOWNLOADS, {});
+
+    expect(controller.execute).toHaveBeenLastCalledWith(
+      OPERATIONS.LIST_DOWNLOADS,
+      {},
+      { conversationId: 'conversation_test' }
+    );
   });
 });

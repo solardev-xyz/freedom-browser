@@ -54,6 +54,40 @@ describe('Agent progress projection', () => {
     });
   });
 
+  test('projects a safe artifact receipt and verifies completed downloads', () => {
+    const artifact = {
+      artifactId: 'artifact_1234567890abcdef1234',
+      filename: 'report.pdf',
+      mimeType: 'application/pdf',
+      bytes: 2048,
+      state: 'completed',
+      sourceOrigin: 'https://files.example',
+      location: 'downloads',
+      available: true,
+      savePath: '/Users/private/report.pdf',
+    };
+    const receipt = createToolReceipt(OPERATIONS.DOWNLOAD, {
+      envelope: { ok: true, result: { artifact } },
+    });
+
+    expect(receipt).toEqual({ artifact: expect.not.objectContaining({ savePath: expect.anything() }) });
+    expect(activityProgress(OPERATIONS.DOWNLOAD, receipt)).toMatchObject({
+      intent: 'Downloading report.pdf',
+      label: 'Downloaded report.pdf',
+      effect: 'changed',
+    });
+    expect(
+      buildAgentOutcome(
+        [{ operation: OPERATIONS.DOWNLOAD, status: 'succeeded', artifact }],
+        'completed'
+      )
+    ).toMatchObject({
+      verification: 'artifact_available',
+      headline: 'File downloaded',
+      counts: { artifacts: 1 },
+    });
+  });
+
   test('distinguishes a rechecked result from an action-only completion', () => {
     const changed = {
       operation: OPERATIONS.CLICK,

@@ -5,6 +5,7 @@ const Database = require('better-sqlite3');
 const log = require('../logger');
 const { normalizeAgentApprovalMode } = require('../../shared/agent-approval-modes');
 const { originScopeForUrl } = require('../automation/origin-scoped-controller');
+const { normalizeArtifact } = require('./agent-progress');
 
 const DB_FILE = 'agent-history.sqlite';
 const SCHEMA_VERSION = 2;
@@ -60,6 +61,10 @@ function normalizeActivity(activity) {
         optionalString(item.destinationOrigin, 512)
       );
       const pageId = optionalString(item.pageId, 160);
+      const artifact = normalizeArtifact(item.artifact);
+      const artifacts = Array.isArray(item.artifacts)
+        ? item.artifacts.map(normalizeArtifact).filter(Boolean).slice(0, 100)
+        : [];
       return {
         toolCallId: optionalString(item.toolCallId, 160) || '',
         operation: optionalString(item.operation, 120) || '',
@@ -73,6 +78,8 @@ function normalizeActivity(activity) {
         ...(origin && { origin }),
         ...(destinationOrigin && { destinationOrigin }),
         ...(pageId && { pageId }),
+        ...(artifact && { artifact }),
+        ...(artifacts.length && { artifacts }),
         ...(Number.isSafeInteger(item.pageCount) && item.pageCount >= 0
           ? { pageCount: item.pageCount }
           : {}),

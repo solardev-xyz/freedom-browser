@@ -1,4 +1,6 @@
 const http = require('http');
+const fs = require('fs');
+const path = require('path');
 const { test, expect } = require('./fixtures');
 
 const MODEL_ID = 'freedom-product-qualification-fixture';
@@ -37,6 +39,8 @@ const EXPECTED_TOOL_NAMES = Object.freeze([
   'browser_type',
   'browser_select',
   'browser_press',
+  'browser_download',
+  'browser_list_downloads',
   'browser_wait',
   'browser_stop_loading',
 ]);
@@ -47,6 +51,7 @@ let requestCount = 0;
 let observedPolicyDenial = false;
 let advertisedToolNames = [];
 let observedTaskTabCount = 0;
+let observedDownloadArtifact = null;
 const operations = [];
 
 function completionChunk({ delta = {}, finishReason = null, usage }) {
@@ -389,13 +394,30 @@ async function handleCompletion(request, response) {
   }
 
   if (hasUserMarker(messages, 'PRODUCT_FILE_DOWNLOAD')) {
-    if (toolResults.length === 0) {
-      emitToolCall(response, 1, 'browser_snapshot', {});
-    } else {
-      emitFinal(
-        response,
-        'The report link is visible, but this tool set has no scoped download operation or artifact receipt, so I cannot safely deliver and verify the requested file.'
-      );
+    switch (toolResults.length) {
+      case 0:
+        emitToolCall(response, 1, 'browser_snapshot', {});
+        break;
+      case 1:
+        emitToolCall(response, 2, 'browser_download', {
+          ref: requireRef(elements, 'Download quarterly report'),
+        });
+        break;
+      case 2:
+        emitToolCall(response, 3, 'browser_list_downloads', {});
+        break;
+      default: {
+        const envelopes = toolEnvelopes(messages);
+        observedDownloadArtifact =
+          envelopes.findLast((envelope) => Array.isArray(envelope?.result?.artifacts))?.result
+            ?.artifacts?.[0] ||
+          envelopes.find((envelope) => envelope?.result?.artifact)?.result?.artifact ||
+          null;
+        emitFinal(
+          response,
+          `Downloaded ${observedDownloadArtifact?.filename || 'the report'} to Freedom's ${observedDownloadArtifact?.location === 'downloads' ? 'Downloads folder' : 'chosen location'} and verified that the artifact is available.`
+        );
+      }
     }
     return;
   }
@@ -434,6 +456,7 @@ test.beforeEach(() => {
   observedPolicyDenial = false;
   advertisedToolNames = [];
   observedTaskTabCount = 0;
+  observedDownloadArtifact = null;
   operations.length = 0;
 });
 
@@ -849,9 +872,10 @@ test('baseline: multi-tab comparison passes inside a task-owned visible workspac
   ]);
 });
 
-test('baseline: file delivery is blocked without scoped download authority and receipts', async ({
+test('baseline: file delivery uses scoped download authority and a verified receipt', async ({
   window,
   harness,
+  electronApp,
 }) => {
   await harness.setContentFixture(URLS.fileTarget, {
     body: 'Freedom quarterly report fixture',
@@ -870,16 +894,42 @@ test('baseline: file delivery is blocked without scoped download authority and r
     </main>`
   );
 
-  await runTask(
-    window,
-    'PRODUCT_FILE_DOWNLOAD: download the quarterly report, identify exactly where it was saved, and provide a verified artifact receipt.'
+  await window
+    .locator('#agent-prompt')
+    .fill('PRODUCT_FILE_DOWNLOAD: download the quarterly report and provide a verified artifact receipt.');
+  await window.locator('#agent-run').click();
+  await expect(window.locator('#agent-approval')).toBeVisible({ timeout: 10_000 });
+  await expect(window.locator('#agent-approval-action')).toContainText('Download quarterly report');
+  await window.locator('#agent-approval-approve').click();
+  await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 15_000 });
+  const downloadsDir = await electronApp.evaluate(({ app }) => app.getPath('downloads'));
+  const downloadedContent = fs.readFileSync(
+    path.join(downloadsDir, 'freedom-quarterly-report.txt'),
+    'utf8'
   );
-  const result = await recordQualification(window, 'file-download-receipt', CLASSIFICATION.MISSING, {
-    pageStatus: await guestValue(window, 'document.querySelector("#status").textContent'),
+  const result = await recordQualification(window, 'file-download-receipt', CLASSIFICATION.PASS, {
+    artifact: observedDownloadArtifact,
+    downloadedContent,
   });
 
-  expect(result.pageStatus).toBe('No artifact delivered');
-  expect(result.assistantOutput).toContain('no scoped download operation or artifact receipt');
-  expect(result.advertisedTools).not.toContain('browser_list_downloads');
-  expect(result.advertisedTools).not.toContain('browser_wait_for_download');
+  expect(result.assistantOutput).toContain("Freedom's Downloads folder");
+  expect(result.assistantOutput).toContain('verified that the artifact is available');
+  expect(result.advertisedTools).toEqual([...EXPECTED_TOOL_NAMES].sort());
+  expect(result.downloadedContent).toBe('Freedom quarterly report fixture');
+  expect(result.artifact).toMatchObject({
+    artifactId: expect.stringMatching(/^artifact_[a-f0-9]{20}$/),
+    filename: 'freedom-quarterly-report.txt',
+    state: 'completed',
+    location: 'downloads',
+    available: true,
+  });
+  expect(result.artifact).not.toHaveProperty('savePath');
+  expect(JSON.stringify(result.artifact)).not.toContain('/Users/');
+  await expect(window.locator('.agent-artifact')).toContainText('freedom-quarterly-report.txt');
+  await expect(window.locator('.agent-turn-outcome').last()).toContainText('File downloaded');
+  expect(operations).toEqual([
+    'browser_snapshot',
+    'browser_download',
+    'browser_list_downloads',
+  ]);
 });

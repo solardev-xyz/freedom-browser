@@ -221,8 +221,11 @@ const {
   registerDownloadsIpc,
   attachDownloadsManager,
   cancelPartitionDownloads: cancelPrivateDownloads,
+  cancelAgentDownloads,
   getActiveDownloadCount,
+  listAgentDownloads,
   onDownloadActivity,
+  runControlledDownload,
 } = require('./downloads/downloads-manager');
 const { closeDb: closeDownloadsDb } = require('./downloads/downloads-store');
 const { dropPartition: dropPrivateDownloads } = require('./downloads/private-downloads-store');
@@ -376,6 +379,17 @@ async function bootstrap() {
   registerBookmarksIpc();
   registerHistoryIpc();
   registerDownloadsIpc();
+  automationController.setDownloadController({
+    download: ({ pageAdapter, ref, conversationId, signal, onProgress }) =>
+      runControlledDownload({
+        pageAdapter,
+        conversationId,
+        signal,
+        onProgress,
+        trigger: () => pageAdapter.download(ref),
+      }),
+    list: listAgentDownloads,
+  });
   registerFaviconsIpc();
   registerEnsIpc();
   registerTezosDomainsIpc();
@@ -429,6 +443,7 @@ async function bootstrap() {
       createAutomationPageForHost: createDesktopAutomationPageForHost,
       desktopBindingForAutomationTab,
       subscribeTabLifecycle: subscribeAutomationTabLifecycle,
+      cancelAgentDownloads,
       isTrustedSender: (sender) =>
         !isPrivateWebContents(sender) &&
         getMainWindows().some((window) => window.webContents === sender),

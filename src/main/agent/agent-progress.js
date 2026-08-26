@@ -66,6 +66,16 @@ const OPERATION_PROGRESS = Object.freeze({
     intent: 'Using the keyboard on the current page',
     completed: 'Used the keyboard on the current page',
   },
+  [OPERATIONS.DOWNLOAD]: {
+    effect: ACTIVITY_EFFECTS.CHANGED,
+    intent: 'Downloading a file',
+    completed: 'Downloaded a file',
+  },
+  [OPERATIONS.LIST_DOWNLOADS]: {
+    effect: ACTIVITY_EFFECTS.OBSERVED,
+    intent: 'Checking task downloads',
+    completed: 'Checked task downloads',
+  },
   [OPERATIONS.WAIT]: {
     effect: ACTIVITY_EFFECTS.OBSERVED,
     intent: 'Waiting for the current page',
@@ -114,6 +124,29 @@ function boundedString(value, maxLength) {
   return typeof value === 'string' && value ? value.slice(0, maxLength) : '';
 }
 
+function normalizeArtifact(value) {
+  if (!value || typeof value !== 'object') return null;
+  const artifactId = boundedString(value.artifactId, 80);
+  // eslint-disable-next-line no-control-regex
+  const filename = boundedString(value.filename, 255).replace(/[\u0000-\u001f\u007f]/g, '');
+  if (!/^artifact_[a-f0-9]{20}$/.test(artifactId) || !filename) return null;
+  const bytes = Number.isSafeInteger(value.bytes) && value.bytes >= 0 ? value.bytes : 0;
+  const state = ['in_progress', 'completed', 'cancelled', 'interrupted'].includes(value.state)
+    ? value.state
+    : 'interrupted';
+  const sourceOrigin = originScopeForUrl(value.sourceOrigin) || '';
+  return Object.freeze({
+    artifactId,
+    filename,
+    ...(boundedString(value.mimeType, 200) && { mimeType: value.mimeType.slice(0, 200) }),
+    bytes,
+    state,
+    ...(sourceOrigin && { sourceOrigin }),
+    location: value.location === 'chosen_location' ? 'chosen_location' : 'downloads',
+    available: value.available === true,
+  });
+}
+
 function activityProgress(operation, receipt = {}) {
   const copy = OPERATION_PROGRESS[operation] || {
     effect: ACTIVITY_EFFECTS.MANAGED,
@@ -126,11 +159,15 @@ function activityProgress(operation, receipt = {}) {
     : null;
   let intent = copy.intent;
   let label = copy.completed;
+  const artifact = normalizeArtifact(receipt.artifact);
 
   if (operation === OPERATIONS.LIST_TABS && pageCount !== null) {
     const pages = `${pageCount} Agent ${pageCount === 1 ? 'tab' : 'tabs'}`;
     intent = `Checking ${pages}`;
     label = `Checked ${pages}`;
+  } else if (operation === OPERATIONS.DOWNLOAD && artifact) {
+    intent = `Downloading ${artifact.filename}`;
+    label = `Downloaded ${artifact.filename}`;
   } else if (origin) {
     const originCopy = {
       [OPERATIONS.CREATE_TAB]: ['Opening', 'Opened'],
@@ -159,6 +196,7 @@ function activityProgress(operation, receipt = {}) {
     ...(origin && { origin }),
     ...(boundedString(receipt.pageId, 160) && { pageId: receipt.pageId.slice(0, 160) }),
     ...(pageCount !== null && { pageCount }),
+    ...(artifact && { artifact }),
   });
 }
 
@@ -181,11 +219,17 @@ function createToolReceipt(operation, options = {}) {
     operation === OPERATIONS.LIST_TABS && Array.isArray(result?.tabs)
       ? result.tabs.length
       : null;
+  const artifact = normalizeArtifact(result?.artifact);
+  const artifacts = Array.isArray(result?.artifacts)
+    ? result.artifacts.map(normalizeArtifact).filter(Boolean).slice(0, 100)
+    : [];
 
   return Object.freeze({
     ...(pageId && { pageId }),
     ...(origin && { origin }),
     ...(pageCount !== null && { pageCount }),
+    ...(artifact && { artifact }),
+    ...(artifacts.length && { artifacts }),
   });
 }
 
@@ -209,6 +253,7 @@ function buildAgentOutcome(activity, status, error) {
   const pageIds = new Set(
     succeeded.map((item) => item?.pageId || item?.origin).filter(Boolean)
   );
+  const artifacts = succeeded.map((item) => normalizeArtifact(item?.artifact)).filter(Boolean);
   const uncertainChanges = items.filter((item) => {
     if (normalizedEffect(item) !== ACTIVITY_EFFECTS.CHANGED || item?.status === 'succeeded') {
       return false;
@@ -246,6 +291,7 @@ function buildAgentOutcome(activity, status, error) {
     changed: changed.length,
     observed: observed.length,
     pages: pageIds.size,
+    ...(artifacts.length && { artifacts: artifacts.length }),
     approvals,
   });
   const browserActionCopy = `${counts.successful} successful browser ${counts.successful === 1 ? 'action' : 'actions'}${counts.pages ? ` across ${counts.pages} ${counts.pages === 1 ? 'page' : 'pages'}` : ''}`;
@@ -262,6 +308,18 @@ function buildAgentOutcome(activity, status, error) {
     : '';
 
   if (status === 'completed') {
+    if (artifacts.length) {
+      return Object.freeze({
+        kind: 'completed',
+        verification: 'artifact_available',
+        tone: 'success',
+        headline: artifacts.length === 1 ? 'File downloaded' : 'Files downloaded',
+        detail: `Freedom verified ${artifacts.length} downloaded ${artifacts.length === 1 ? 'file' : 'files'} and recorded ${browserActionCopy}.${approvalNote}${recoveryNote}`,
+        artifacts,
+        destinations,
+        counts,
+      });
+    }
     if (resultObserved) {
       return Object.freeze({
         kind: 'completed',
@@ -364,4 +422,5 @@ module.exports = {
   buildAgentOutcome,
   createToolReceipt,
   errorExplanation,
+  normalizeArtifact,
 };

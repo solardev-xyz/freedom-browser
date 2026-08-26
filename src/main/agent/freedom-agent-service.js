@@ -8,6 +8,7 @@ const {
 const {
   AGENT_NAVIGATION_SCOPES,
 } = require('../../shared/agent-navigation-scopes');
+const { OPERATIONS } = require('../automation/contract/operations');
 const { ERROR_CODES } = require('../automation/contract/errors');
 const log = require('../logger');
 const {
@@ -15,7 +16,7 @@ const {
   originScopeForUrl,
 } = require('../automation/origin-scoped-controller');
 const { createFreedomBrowserTools } = require('./pi-browser-tools');
-const { activityProgress, buildAgentOutcome } = require('./agent-progress');
+const { activityProgress, buildAgentOutcome, normalizeArtifact } = require('./agent-progress');
 const { loadPiSdk } = require('./pi-sdk');
 const {
   createIsolatedPiSession,
@@ -200,6 +201,8 @@ function normalizePiEvent(event, toolOutcome) {
       operation: String(event.toolName),
       status: event.isError ? 'failed' : 'succeeded',
       ...progress,
+      ...(toolOutcome?.artifact && { artifact: toolOutcome.artifact }),
+      ...(toolOutcome?.artifacts && { artifacts: toolOutcome.artifacts }),
       ...(errorCode && { errorCode }),
     };
   }
@@ -234,7 +237,11 @@ function terminalError(code, message) {
 function normalizeApprovalRequest(request) {
   return Object.freeze({
     action:
-      request?.action === 'form_submission' ? 'form_submission' : 'browser_interaction',
+      request?.action === 'form_submission'
+        ? 'form_submission'
+        : request?.action === 'file_download'
+          ? 'file_download'
+          : 'browser_interaction',
     operation: typeof request?.operation === 'string' ? request.operation.slice(0, 80) : '',
     origin: originScopeForUrl(request?.origin) || '',
     destinationOrigin: originScopeForUrl(request?.destinationOrigin) || '',
@@ -253,6 +260,13 @@ class FreedomAgentService {
       options.createControllerScope || createOriginScopedAutomationController;
     this.createTools = options.createTools || createFreedomBrowserTools;
     this.createSession = options.createSession || createIsolatedPiSession;
+    if (
+      options.cancelAgentDownloads !== undefined &&
+      typeof options.cancelAgentDownloads !== 'function'
+    ) {
+      throw new TypeError('FreedomAgentService requires a valid Agent download canceller');
+    }
+    this.cancelAgentDownloads = options.cancelAgentDownloads || (() => 0);
     this.historyStore = options.historyStore || null;
     if (
       this.historyStore &&
@@ -510,6 +524,7 @@ class FreedomAgentService {
           createWorkspacePage: validated.createWorkspacePage,
           onWorkspaceTabCreated: (createdTabId) =>
             this.#registerAgentTab(createdTabId, run.conversationId),
+          transferOwnerId: run.conversationId,
           requestApproval: (request) =>
             this.activeRun ? this.#requestApproval(this.activeRun, request) : 'declined',
         });
@@ -527,6 +542,9 @@ class FreedomAgentService {
           tabId,
           onToolOutcome: (outcome) => {
             if (this.activeRun) this.#handleToolOutcome(this.activeRun, outcome);
+          },
+          onToolProgress: (outcome) => {
+            if (this.activeRun) this.#handleToolProgress(this.activeRun, outcome);
           },
         });
         let systemPrompt =
@@ -660,6 +678,11 @@ class FreedomAgentService {
     if (!run || (runId !== undefined && run.runId !== runId)) return false;
     run.stopRequested = true;
     this.#resolveApproval(run, 'declined');
+    try {
+      this.cancelAgentDownloads(run.conversationId);
+    } catch (error) {
+      log.warn('[Agent] Could not cancel conversation downloads:', error?.message || error);
+    }
     const execution = run.execution;
     if (run.session) {
       try {
@@ -953,6 +976,8 @@ class FreedomAgentService {
         if (normalized.pageId) item.pageId = normalized.pageId;
         if (Number.isSafeInteger(normalized.pageCount)) item.pageCount = normalized.pageCount;
         if (normalized.errorCode) item.errorCode = normalized.errorCode;
+        if (normalized.artifact) item.artifact = normalized.artifact;
+        if (normalized.artifacts) item.artifacts = normalized.artifacts;
         if (item.approval) normalized.approval = item.approval;
       }
     }
@@ -976,13 +1001,50 @@ class FreedomAgentService {
       ...(AUTOMATION_ERROR_CODE_SET.has(outcome.errorCode) && {
         errorCode: outcome.errorCode,
       }),
+      ...(normalizeArtifact(outcome.artifact) && {
+        artifact: normalizeArtifact(outcome.artifact),
+      }),
+      ...(Array.isArray(outcome.artifacts) && {
+        artifacts: outcome.artifacts.map(normalizeArtifact).filter(Boolean).slice(0, 100),
+      }),
       progress: activityProgress(outcome.operation, {
         origin: outcome.origin,
         pageId: outcome.pageId || outcome.tabId,
         pageCount: outcome.pageCount,
+        artifact: outcome.artifact,
       }),
     });
     run.toolOutcomes.set(normalized.toolCallId, normalized);
+  }
+
+  #handleToolProgress(run, outcome) {
+    if (
+      run.finished ||
+      this.activeRun !== run ||
+      !outcome ||
+      typeof outcome.toolCallId !== 'string' ||
+      outcome.operation !== OPERATIONS.DOWNLOAD
+    ) {
+      return;
+    }
+    const progress = outcome.progress;
+    if (!progress || typeof progress !== 'object') return;
+    const receivedBytes = Math.max(0, Number(progress.receivedBytes) || 0);
+    const totalBytes = Math.max(0, Number(progress.totalBytes) || 0);
+    const artifact = normalizeArtifact(progress.receipt);
+    const item = run.activity.find((candidate) => candidate.toolCallId === outcome.toolCallId);
+    if (item && artifact) item.artifact = artifact;
+    this.#emit(run, {
+      type: 'tool_progress',
+      toolCallId: outcome.toolCallId,
+      operation: OPERATIONS.DOWNLOAD,
+      receivedBytes,
+      totalBytes,
+      state: ['in_progress', 'interrupted', 'completed', 'cancelled'].includes(progress.state)
+        ? progress.state
+        : 'in_progress',
+      ...(artifact && { artifact }),
+    });
   }
 
   #handleTabLifecycle(event) {

@@ -16,6 +16,8 @@ const OPERATION_CLASSES = Object.freeze({
   [OPERATIONS.TYPE]: 'interact',
   [OPERATIONS.SELECT]: 'interact',
   [OPERATIONS.PRESS]: 'interact',
+  [OPERATIONS.DOWNLOAD]: 'transfer',
+  [OPERATIONS.LIST_DOWNLOADS]: 'observe',
   [OPERATIONS.STOP_LOADING]: 'control',
 });
 
@@ -42,7 +44,7 @@ function createInitialAutomationPolicy() {
   // policy boundary. Later work replaces these class-wide grants with
   // capability manifests, origin scopes, and approval decisions.
   return new AutomationPolicyController({
-    allowedClasses: ['observe', 'navigate', 'interact', 'control'],
+    allowedClasses: ['observe', 'navigate', 'interact', 'control', 'transfer'],
   });
 }
 

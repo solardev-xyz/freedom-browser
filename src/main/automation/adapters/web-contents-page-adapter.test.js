@@ -139,6 +139,37 @@ describe('WebContentsPageAdapter', () => {
     expect(typeCode).toContain('const inspectReferencedElement');
   });
 
+  test('reserves declarative file links for the controlled download action', async () => {
+    const webContents = new FakeWebContents();
+    const downloadSnapshot = snapshotResult();
+    downloadSnapshot.elements[0] = {
+      ...downloadSnapshot.elements[0],
+      role: 'link',
+      tag: 'a',
+      effect: 'file_download',
+    };
+    webContents.executeJavaScriptInIsolatedWorld
+      .mockResolvedValueOnce(downloadSnapshot)
+      .mockResolvedValueOnce({ ok: true, effect: 'file_download', label: 'Download report' })
+      .mockResolvedValueOnce({ ok: true, point: { x: 20, y: 30 } })
+      .mockResolvedValueOnce({ ok: true, point: { x: 20, y: 30 } });
+    const adapter = new WebContentsPageAdapter(webContents, {
+      referenceIdFactory: () => 'ref_test',
+    });
+    await adapter.snapshot();
+
+    await expect(adapter.click('ref_test_0')).rejects.toMatchObject({
+      code: ERROR_CODES.CAPABILITY_UNAVAILABLE,
+    });
+    await expect(adapter.download('ref_test_0')).resolves.toEqual({
+      clicked: true,
+      ref: 'ref_test_0',
+    });
+    expect(webContents.sendInputEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'mouseUp', button: 'left' })
+    );
+  });
+
   test('revalidates native form-submission semantics without dispatching input', async () => {
     const webContents = new FakeWebContents();
     webContents.executeJavaScriptInIsolatedWorld

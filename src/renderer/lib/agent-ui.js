@@ -1094,6 +1094,10 @@ function createTurnView(turn) {
   outcome.appendChild(outcomeIcon);
   outcome.appendChild(outcomeCopy);
 
+  const artifactList = document.createElement('div');
+  artifactList.className = 'agent-artifact-list';
+  artifactList.hidden = true;
+
   const guidanceList = document.createElement('div');
   guidanceList.className = 'agent-guidance-list';
 
@@ -1113,6 +1117,7 @@ function createTurnView(turn) {
   section.appendChild(guidanceList);
   section.appendChild(assistantRow);
   section.appendChild(outcome);
+  section.appendChild(artifactList);
   section.appendChild(activity);
   elements.transcript.appendChild(section);
   elements.transcript.hidden = false;
@@ -1126,6 +1131,7 @@ function createTurnView(turn) {
     outcomeHeadline,
     outcomeDetail,
     outcomeNextStep,
+    artifactList,
     activity,
     activitySummary,
     toolList,
@@ -1277,7 +1283,9 @@ function renderApproval(request) {
   elements.approvalAction.textContent =
     request.action === 'form_submission'
       ? `Submit this form using “${label}”?`
-      : interactionCopy[request.operation] || `Let Agent interact with “${label}”?`;
+      : request.action === 'file_download'
+        ? `Download “${label}”?`
+        : interactionCopy[request.operation] || `Let Agent interact with “${label}”?`;
   const approvalOrigins = [request.origin ? `Site: ${request.origin}` : 'Site origin unavailable'];
   if (request.destinationOrigin) {
     approvalOrigins.push(`Destination: ${request.destinationOrigin}`);
@@ -1355,6 +1363,7 @@ function renderTurnOutcome(view, outcome) {
 }
 
 function outcomeSummaryLabel(outcome) {
+  if (outcome?.verification === 'artifact_available') return 'Download verified';
   if (outcome?.verification === 'result_observed') return 'Result checked';
   if (outcome?.verification === 'actions_recorded') return 'Actions recorded';
   if (outcome?.verification === 'browser_observed') return 'Browser inspected';
@@ -1362,6 +1371,64 @@ function outcomeSummaryLabel(outcome) {
   if (outcome?.kind === 'recovery') return 'Needs recovery';
   if (outcome?.kind === 'interrupted') return 'Stopped';
   return '';
+}
+
+function formatArtifactBytes(bytes) {
+  const value = Math.max(0, Number(bytes) || 0);
+  if (value < 1_024) return `${value} B`;
+  if (value < 1_048_576) return `${(value / 1_024).toFixed(value < 10_240 ? 1 : 0)} KB`;
+  return `${(value / 1_048_576).toFixed(value < 10_485_760 ? 1 : 0)} MB`;
+}
+
+function renderArtifact(runId, artifact) {
+  const view = turnView(runId);
+  if (
+    !view ||
+    !artifact ||
+    !/^artifact_[a-f0-9]{20}$/.test(artifact.artifactId) ||
+    typeof artifact.filename !== 'string'
+  ) {
+    return;
+  }
+  if (view.artifactList.querySelector(`[data-artifact-id="${artifact.artifactId}"]`)) return;
+  const card = document.createElement('div');
+  card.className = 'agent-artifact';
+  card.dataset.artifactId = artifact.artifactId;
+  const copy = document.createElement('div');
+  copy.className = 'agent-artifact-copy';
+  const name = document.createElement('strong');
+  name.textContent = artifact.filename;
+  const meta = document.createElement('span');
+  meta.textContent = `${formatArtifactBytes(artifact.bytes)} · ${artifact.location === 'chosen_location' ? 'Chosen location' : 'Downloads'}`;
+  copy.appendChild(name);
+  copy.appendChild(meta);
+  const actions = document.createElement('div');
+  actions.className = 'agent-artifact-actions';
+  for (const [label, action] of [
+    ['Open', () => window.electronAPI.openAgentArtifact(artifact.artifactId)],
+    ['Show', () => window.electronAPI.showAgentArtifactInFolder(artifact.artifactId)],
+  ]) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = label;
+    button.disabled = artifact.available !== true;
+    button.addEventListener('click', async () => {
+      button.disabled = true;
+      try {
+        const result = await action();
+        if (!result?.success) {
+          setMessage(elements.runMessage, result?.error || 'File unavailable', true);
+        }
+      } finally {
+        button.disabled = artifact.available !== true;
+      }
+    });
+    actions.appendChild(button);
+  }
+  card.appendChild(copy);
+  card.appendChild(actions);
+  view.artifactList.appendChild(card);
+  view.artifactList.hidden = false;
 }
 
 function addToolRow(event) {
@@ -1413,6 +1480,17 @@ function finishToolRow(event) {
     record.label.textContent = `${record.label.textContent} — ${formatToolError(event.errorCode)}`;
   }
   updateToolApproval(event.runId, event.toolCallId, event.approval);
+  if (event.artifact) renderArtifact(event.runId, event.artifact);
+}
+
+function updateToolProgress(event) {
+  const record = toolRows.get(`${event.runId}:${event.toolCallId}`);
+  if (!record) return;
+  const received = Math.max(0, Number(event.receivedBytes) || 0);
+  const total = Math.max(0, Number(event.totalBytes) || 0);
+  const progress = total > 0 ? ` · ${Math.min(100, Math.round((received / total) * 100))}%` : '';
+  record.label.textContent = `Downloading${progress}`;
+  if (event.artifact) renderArtifact(event.runId, event.artifact);
 }
 
 function finishTurnView(runId, event = {}) {
@@ -1657,6 +1735,11 @@ function handleAgentEvent(event) {
       setMessage(elements.runMessage, event.label);
     }
     void refreshWorkspaceProjection();
+  } else if (event.type === 'tool_progress') {
+    updateToolProgress(event);
+    const received = formatArtifactBytes(event.receivedBytes);
+    const total = event.totalBytes > 0 ? ` of ${formatArtifactBytes(event.totalBytes)}` : '';
+    setMessage(elements.runMessage, `Downloading ${received}${total}…`);
   } else if (event.type === 'run_retrying') {
     setMessage(elements.runMessage, `Provider retry ${event.attempt} of ${event.maxAttempts}…`);
   } else if (event.type === 'context_compaction_started') {

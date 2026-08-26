@@ -18,6 +18,7 @@ const TAB_OPERATIONS = new Set([
   OPERATIONS.TYPE,
   OPERATIONS.SELECT,
   OPERATIONS.PRESS,
+  OPERATIONS.DOWNLOAD,
   OPERATIONS.SCREENSHOT,
   OPERATIONS.WAIT,
   OPERATIONS.STOP_LOADING,
@@ -110,7 +111,8 @@ function validateOperationInput(operation, rawInput) {
     operation === OPERATIONS.CLICK ||
     operation === OPERATIONS.TYPE ||
     operation === OPERATIONS.SELECT ||
-    operation === OPERATIONS.PRESS
+    operation === OPERATIONS.PRESS ||
+    operation === OPERATIONS.DOWNLOAD
   ) {
     normalized.ref = requireString(input.ref, 'ref').trim();
   }

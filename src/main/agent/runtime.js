@@ -25,6 +25,7 @@ function createFreedomAgentRuntime(options = {}) {
     controller: options.controller,
     subscribeTabLifecycle: options.subscribeTabLifecycle,
     historyStore,
+    cancelAgentDownloads: options.cancelAgentDownloads,
   });
   const unregisterIpc = registerFreedomAgentIpc({
     ipcMain: options.ipcMain,

@@ -88,6 +88,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   cancelDownload: (id) => ipcRenderer.invoke('downloads:cancel', id),
   openDownloadedFile: (id) => ipcRenderer.invoke('downloads:open-file', id),
   showDownloadInFolder: (id) => ipcRenderer.invoke('downloads:show-in-folder', id),
+  openAgentArtifact: (artifactId) => ipcRenderer.invoke('downloads:open-artifact', artifactId),
+  showAgentArtifactInFolder: (artifactId) =>
+    ipcRenderer.invoke('downloads:show-artifact-in-folder', artifactId),
   // Main sends this to the download's owning window only; drives the shelf.
   onDownloadUpdated: (callback) => {
     const handler = (_event, download) => callback(download);

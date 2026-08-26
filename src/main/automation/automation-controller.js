@@ -20,6 +20,8 @@ class AutomationController {
     this.pages = options.pageRegistry || new PageRegistry(options);
     this.pageLifecycle = null;
     if (options.pageLifecycle) this.setPageLifecycle(options.pageLifecycle);
+    this.downloadController = null;
+    if (options.downloadController) this.setDownloadController(options.downloadController);
   }
 
   setPageLifecycle(pageLifecycle) {
@@ -37,6 +39,21 @@ class AutomationController {
     this.pageLifecycle = pageLifecycle;
   }
 
+  setDownloadController(downloadController) {
+    if (downloadController === null) {
+      this.downloadController = null;
+      return;
+    }
+    if (
+      !downloadController ||
+      typeof downloadController.download !== 'function' ||
+      typeof downloadController.list !== 'function'
+    ) {
+      throw new TypeError('Automation download controller requires download() and list()');
+    }
+    this.downloadController = downloadController;
+  }
+
   registerPage(adapter, metadata) {
     return this.pages.register(adapter, metadata);
   }
@@ -45,7 +62,7 @@ class AutomationController {
     return this.pages.unregister(tabId);
   }
 
-  async execute(operation, rawInput = {}) {
+  async execute(operation, rawInput = {}, execution = {}) {
     let input;
     let entry;
     try {
@@ -77,7 +94,7 @@ class AutomationController {
         );
       }
 
-      const result = await this.#dispatch(operation, input, entry);
+      const result = await this.#dispatch(operation, input, entry, execution);
       return this.#successEnvelope(entry, result);
     } catch (error) {
       const rawTabId = typeof rawInput?.tabId === 'string' ? rawInput.tabId.trim() : '';
@@ -91,7 +108,13 @@ class AutomationController {
     try {
       input = validateOperationInput(operation, rawInput);
       if (
-        ![OPERATIONS.CLICK, OPERATIONS.TYPE, OPERATIONS.SELECT, OPERATIONS.PRESS].includes(operation)
+        ![
+          OPERATIONS.CLICK,
+          OPERATIONS.TYPE,
+          OPERATIONS.SELECT,
+          OPERATIONS.PRESS,
+          OPERATIONS.DOWNLOAD,
+        ].includes(operation)
       ) {
         throw new AutomationError(
           ERROR_CODES.CAPABILITY_UNAVAILABLE,
@@ -116,7 +139,7 @@ class AutomationController {
     }
   }
 
-  async #dispatch(operation, input, entry) {
+  async #dispatch(operation, input, entry, execution) {
     switch (operation) {
       case OPERATIONS.LIST_TABS:
         return { tabs: this.pages.list() };
@@ -175,6 +198,16 @@ class AutomationController {
         return entry.adapter.select(input.ref, input.value);
       case OPERATIONS.PRESS:
         return entry.adapter.press(input.ref, input.key);
+      case OPERATIONS.DOWNLOAD:
+        return this.#requireDownloadController().download({
+          pageAdapter: entry.adapter,
+          ref: input.ref,
+          conversationId: execution?.conversationId,
+          signal: execution?.signal,
+          onProgress: execution?.onProgress,
+        });
+      case OPERATIONS.LIST_DOWNLOADS:
+        return { artifacts: this.#requireDownloadController().list(execution?.conversationId) };
       case OPERATIONS.SCREENSHOT:
         return entry.adapter.screenshot();
       case OPERATIONS.WAIT:
@@ -210,6 +243,16 @@ class AutomationController {
       );
     }
     return this.pageLifecycle;
+  }
+
+  #requireDownloadController() {
+    if (!this.downloadController) {
+      throw new AutomationError(
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        'Controlled downloads are unavailable in this runtime'
+      );
+    }
+    return this.downloadController;
   }
 
   #errorEnvelope(tabId, entry, error) {

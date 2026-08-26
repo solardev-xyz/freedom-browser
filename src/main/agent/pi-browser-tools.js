@@ -149,6 +149,27 @@ const TOOL_SPECS = Object.freeze([
     },
   },
   {
+    operation: OPERATIONS.DOWNLOAD,
+    label: 'Download file',
+    description:
+      'Download a file through Freedom using a download link reference from the latest page snapshot. Returns a safe artifact receipt, never a filesystem path.',
+    parameters: {
+      type: 'object',
+      properties: { ref: { type: 'string', minLength: 1 } },
+      required: ['ref'],
+      additionalProperties: false,
+    },
+    cancellable: true,
+  },
+  {
+    operation: OPERATIONS.LIST_DOWNLOADS,
+    label: 'List task downloads',
+    description:
+      'List safe receipts for downloads created by this Agent conversation, including whether each file is still available.',
+    parameters: EMPTY_PARAMETERS,
+    tabMode: 'none',
+  },
+  {
     operation: OPERATIONS.WAIT,
     label: 'Wait for page',
     description:
@@ -207,8 +228,11 @@ function assertNotAborted(signal, operation) {
   if (signal?.aborted) throw new FreedomBrowserToolError(operation, cancellationError());
 }
 
-async function executeCancellable(controller, operation, input, signal) {
+async function executeCancellable(controller, operation, input, signal, execution = {}) {
   assertNotAborted(signal, operation);
+  if (operation === OPERATIONS.DOWNLOAD) {
+    return controller.execute(operation, input, { ...execution, signal });
+  }
   if (!signal) return controller.execute(operation, input);
 
   let resolveAbort;
@@ -244,7 +268,7 @@ async function executeCancellable(controller, operation, input, signal) {
   }
 }
 
-async function executeBrowserTool(controller, tabId, spec, params, signal) {
+async function executeBrowserTool(controller, tabId, spec, params, signal, execution = {}) {
   assertNotAborted(signal, spec.operation);
   const input =
     spec.tabMode === 'none'
@@ -255,8 +279,10 @@ async function executeBrowserTool(controller, tabId, spec, params, signal) {
   let envelope;
   try {
     envelope = spec.cancellable
-      ? await executeCancellable(controller, spec.operation, input, signal)
-      : await controller.execute(spec.operation, input);
+      ? await executeCancellable(controller, spec.operation, input, signal, execution)
+      : spec.operation === OPERATIONS.DOWNLOAD
+        ? await controller.execute(spec.operation, input, execution)
+        : await controller.execute(spec.operation, input);
   } catch (error) {
     if (error instanceof FreedomBrowserToolError) throw error;
     throw new FreedomBrowserToolError(spec.operation, internalError());
@@ -324,7 +350,15 @@ async function createFreedomBrowserTools(options = {}) {
             tabState.currentTabId,
             spec,
             params,
-            signal
+            signal,
+            {
+              onProgress: (progress) =>
+                notifyToolOutcome(options.onToolProgress, {
+                  toolCallId,
+                  operation: spec.operation,
+                  progress,
+                }),
+            }
           );
           const activeTabId = result.details.envelope?.result?.activeTabId;
           if (typeof activeTabId === 'string' && activeTabId) {
