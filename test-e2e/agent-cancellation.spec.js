@@ -419,6 +419,73 @@ test('a conversation survives its original and then all task tabs closing', asyn
   await expect(window.locator('[data-test="tab"].active')).toContainText('Fresh workspace');
 });
 
+test('session switching restores live workspaces and Claim transfers Agent tabs', async ({
+  window,
+  harness,
+}) => {
+  for (let index = 1; index <= 4; index += 1) {
+    await harness.setContentFixture(`https://agent-tabs.test/article-${index}`, {
+      body: `<!doctype html><title>Article ${index}</title><p>Article ${index}</p>`,
+    });
+  }
+  await configureFixtureProvider(window);
+  await window.locator('#agent-prompt').fill('CREATE_FIVE_TASK_TABS');
+  await window.locator('#agent-run').click();
+  await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 10_000 });
+  await expect(window.locator('[data-test="tab"]')).toHaveCount(5);
+  await expect(window.locator('[data-test="tab"].agent-owned')).toHaveCount(4);
+
+  await window.locator('[data-test="agent-first-toggle"]').click();
+  await expect(window.locator('#agent-task-page-count')).toHaveText('5');
+  await expect(window.locator('#agent-task-page-list .tab:not([hidden])')).toHaveCount(5);
+  await window.locator('[data-test="agent-first-browser-return"]').click();
+
+  await window.locator('[data-test="new-tab-btn"]').click();
+  await expect(window.locator('[data-test="tab"]')).toHaveCount(6);
+  await window.locator('#agent-new-chat').click();
+  await expect(window.locator('#agent-empty-state')).toBeVisible();
+  await window.locator('#agent-prompt').fill('SECOND_SESSION');
+  await window.locator('#agent-run').click();
+  await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 5_000 });
+
+  await window.locator('[data-test="agent-first-toggle"]').click();
+  await expect(window.locator('#agent-session-list .agent-session-row')).toHaveCount(2);
+  await expect(window.locator('#agent-task-page-count')).toHaveText('1');
+
+  const firstSession = window
+    .locator('#agent-session-list .agent-session-row')
+    .filter({ hasText: 'CREATE_FIVE_TASK_TABS' })
+    .locator('.agent-session-select');
+  const secondSession = window
+    .locator('#agent-session-list .agent-session-row')
+    .filter({ hasText: 'SECOND_SESSION' })
+    .locator('.agent-session-select');
+  await firstSession.click();
+  await expect(window.locator('#agent-task-page-count')).toHaveText('5');
+  await expect(window.locator('#agent-task-page-list .tab:not([hidden])')).toHaveCount(5);
+  await secondSession.click();
+  await expect(window.locator('#agent-task-page-count')).toHaveText('1');
+  await firstSession.click();
+  await expect(window.locator('#agent-task-page-count')).toHaveText('5');
+  await window.locator('[data-test="agent-first-browser-return"]').click();
+
+  const claimedTab = window.locator('[data-test="tab"].agent-owned').first();
+  await claimedTab.click();
+  await expect(window.locator('[data-test="address-input"]')).toHaveJSProperty('readOnly', true);
+  await claimedTab.locator('[data-test="tab-agent-badge"]').click();
+  await expect(window.locator('[data-test="tab"].agent-owned')).toHaveCount(3);
+  await expect(window.locator('[data-test="address-input"]')).toHaveJSProperty('readOnly', false);
+
+  await window.locator('[data-test="agent-first-toggle"]').click();
+  await expect(window.locator('#agent-task-page-count')).toHaveText('4');
+  await window.locator('#agent-new-chat').click();
+  await expect(window.locator('#agent-task-page-count')).toHaveText('1');
+  await window.locator('[data-test="agent-first-browser-return"]').click();
+  await expect(window.locator('body')).not.toHaveClass(/agent-first-mode/);
+  await expect(window.locator('#agent-task-pages-empty')).toHaveCSS('display', 'none');
+  await expect(window.locator('#webview-container webview:not(.hidden)')).toBeVisible();
+});
+
 test('Take over cancels an in-flight browser navigation', async ({ window, harness }) => {
   await harness.setContentFixture(SLOW_NAVIGATION_URL, {
     body: '<!doctype html><title>Still loading</title><p>Navigation started</p>',

@@ -291,6 +291,7 @@ async function loadAgentUi(options = {}) {
     getActiveTab:
       options.getActiveTab || (() => getOpenTabs().find((tab) => tab.isActive) || getOpenTabs()[0]),
     getOpenTabs,
+    isTabAgentOwned: options.isTabAgentOwned || (() => false),
     setAgentControlledTab,
     setAgentTabCustody,
     setAgentTabClaimHandler,
@@ -365,6 +366,69 @@ describe('Agent UI', () => {
       'Summarize this page',
       'every_interaction'
     );
+  });
+
+  test('requires an explicit claim before a new chat adopts an Agent-owned tab', async () => {
+    const ctx = await loadAgentUi({ isTabAgentOwned: (tabId) => tabId === 7 });
+
+    ctx.elements['agent-prompt'].value = 'Continue this work in a new chat';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+
+    expect(ctx.electronAPI.startAgent).not.toHaveBeenCalled();
+    expect(ctx.elements['agent-run-message'].textContent).toBe(
+      'Claim this Agent tab or select one of your tabs before starting a new chat'
+    );
+  });
+
+  test('ignores a stale workspace refresh after New chat', async () => {
+    let resolveStaleProjection;
+    const getAgentState = jest
+      .fn()
+      .mockResolvedValueOnce({ ok: true, state: { status: 'idle' } })
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveStaleProjection = resolve;
+        })
+      )
+      .mockResolvedValue({ ok: true, state: { status: 'idle' } });
+    const ctx = await loadAgentUi({ electronAPI: { getAgentState } });
+
+    ctx.elements['agent-prompt'].value = 'Open supporting pages';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({
+      type: 'run_finished',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      status: 'completed',
+    });
+    ctx.elements['agent-new-chat'].dispatch('click');
+    await flush();
+
+    expect(ctx.electronAPI.clearAgentConversation).toHaveBeenCalledTimes(1);
+    expect(ctx.elements['agent-task-page-count'].textContent).toBe('1');
+
+    resolveStaleProjection({
+      ok: true,
+      state: {
+        status: 'ready',
+        conversationId: 'conversation_test',
+        taskTabs: [{ rendererTabId: 8, agentActive: true }],
+        agentTabs: [
+          {
+            rendererTabId: 8,
+            provenance: 'agent',
+            custody: 'agent',
+            conversationId: 'conversation_test',
+          },
+        ],
+      },
+    });
+    await flush();
+
+    expect(ctx.elements['agent-task-page-count'].textContent).toBe('1');
+    expect(ctx.setAgentTabCustody).toHaveBeenLastCalledWith([]);
   });
 
   test('selects website interaction approval behavior while sensitive actions remain a stub', async () => {

@@ -36,6 +36,7 @@ const PANE_RESIZE_CONFIG = Object.freeze({
 let elements = {};
 let getActiveTab = () => null;
 let getOpenTabs = () => [];
+let isTabAgentOwned = () => false;
 let switchToTab = () => {};
 let setAgentControlledTab = () => {};
 let setAgentTabCustody = () => {};
@@ -64,6 +65,7 @@ let providerAuthEventUnsubscribe = null;
 let tabPresentationUnsubscribe = null;
 let openTabs = [];
 let taskTabProjection = [];
+let workspaceProjectionGeneration = 0;
 let agentFirstMode = false;
 let sessionSidebarOpen = true;
 let workspaceSidebarOpen = true;
@@ -358,14 +360,17 @@ function applyWorkspaceProjection(state) {
 }
 
 async function refreshWorkspaceProjection() {
+  const generation = workspaceProjectionGeneration;
+  const expectedConversationId = currentConversationId;
   try {
     const response = await window.electronAPI.getAgentState();
     const state = response?.ok ? response.state : null;
-    if (!state) return;
+    if (!state || generation !== workspaceProjectionGeneration) return;
     if (
-      currentConversationId &&
-      state.conversationId &&
-      state.conversationId !== currentConversationId
+      expectedConversationId !== currentConversationId ||
+      (expectedConversationId
+        ? state.conversationId !== expectedConversationId
+        : Boolean(state.conversationId))
     ) {
       return;
     }
@@ -1150,6 +1155,7 @@ function finishTurnView(runId, event = {}) {
 
 function applyReadyConversationState(state) {
   if (!state?.conversationId) return false;
+  workspaceProjectionGeneration += 1;
   applyWorkspaceProjection(state);
   if (Object.hasOwn(APPROVAL_MODE_LABELS, state.approvalMode)) {
     setApprovalMode(state.approvalMode, { force: true });
@@ -1256,6 +1262,7 @@ async function deleteSavedSession(session) {
 }
 
 function applyConversationCleared() {
+  workspaceProjectionGeneration += 1;
   currentConversationId = null;
   conversationRendererTabId = null;
   pendingPromptText = '';
@@ -1293,8 +1300,13 @@ function handleAgentEvent(event) {
     if (!currentConversationId && typeof event.userText === 'string') {
       setConversationTitle(event.userText);
     }
-    currentConversationId =
-      typeof event.conversationId === 'string' ? event.conversationId : currentConversationId;
+    if (
+      typeof event.conversationId === 'string' &&
+      event.conversationId !== currentConversationId
+    ) {
+      workspaceProjectionGeneration += 1;
+      currentConversationId = event.conversationId;
+    }
     currentRunId = event.runId;
     lastFinishedRunId = null;
     if (!turnView(event.runId)) {
@@ -1391,6 +1403,14 @@ async function startRun() {
     setMessage(elements.runMessage, 'Describe what you want the agent to do', true);
     return;
   }
+  if (!currentConversationId && isTabAgentOwned(tab?.id)) {
+    setMessage(
+      elements.runMessage,
+      'Claim this Agent tab or select one of your tabs before starting a new chat',
+      true
+    );
+    return;
+  }
   const rendererTabId = currentConversationId
     ? conversationRendererTabId || tab?.id
     : tab?.id;
@@ -1421,7 +1441,10 @@ async function startRun() {
       setMessage(elements.runMessage, responseMessage(response, 'Could not start the agent'), true);
       return;
     }
-    currentConversationId = response.conversationId || currentConversationId;
+    if (response.conversationId && response.conversationId !== currentConversationId) {
+      workspaceProjectionGeneration += 1;
+      currentConversationId = response.conversationId;
+    }
     void refreshWorkspaceProjection();
     pendingPromptText = '';
     void refreshSessionHistory();
@@ -1544,9 +1567,17 @@ async function stopRun() {
 }
 
 async function restoreRunState() {
+  const generation = workspaceProjectionGeneration;
+  const expectedConversationId = currentConversationId;
   try {
     const response = await window.electronAPI.getAgentState();
     const state = response?.ok ? response.state : null;
+    if (
+      generation !== workspaceProjectionGeneration ||
+      expectedConversationId !== currentConversationId
+    ) {
+      return;
+    }
     applyWorkspaceProjection(state);
     if (!state?.conversationId) return;
     applyReadyConversationState(state);
@@ -1663,6 +1694,8 @@ export function initAgentUi(options = {}) {
   if (Object.values(elements).some((element) => !element)) return;
   getActiveTab = typeof options.getActiveTab === 'function' ? options.getActiveTab : () => null;
   getOpenTabs = typeof options.getOpenTabs === 'function' ? options.getOpenTabs : () => [];
+  isTabAgentOwned =
+    typeof options.isTabAgentOwned === 'function' ? options.isTabAgentOwned : () => false;
   switchToTab = typeof options.switchTab === 'function' ? options.switchTab : () => {};
   setAgentControlledTab =
     typeof options.setAgentControlledTab === 'function' ? options.setAgentControlledTab : () => {};

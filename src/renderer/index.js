@@ -45,6 +45,7 @@ import {
   setAgentControlledTab,
   setAgentTabCustody,
   setAgentTabClaimHandler,
+  isTabAgentOwned,
   setTabStripProjection,
   subscribeTabPresentation,
 } from './lib/tabs.js';
@@ -791,6 +792,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   initAgentUi({
     getActiveTab,
     getOpenTabs,
+    isTabAgentOwned,
     setAgentControlledTab,
     setAgentTabCustody,
     setAgentTabClaimHandler,
