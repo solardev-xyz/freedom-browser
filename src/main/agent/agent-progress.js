@@ -99,6 +99,7 @@ const ERROR_LABELS = Object.freeze({
   [ERROR_CODES.APPROVAL_REQUIRED]: 'This action still needs approval.',
   [ERROR_CODES.POLICY_DENIED]: 'Freedom blocked this browser action.',
   [ERROR_CODES.USER_CANCELLED]: 'The browser action was not applied.',
+  [ERROR_CODES.DOWNLOAD_CANCELLED_BY_USER]: 'The user cancelled the download.',
   [ERROR_CODES.CAPABILITY_UNAVAILABLE]: 'This browser capability is unavailable.',
   [ERROR_CODES.INTERNAL_ERROR]: 'The browser action failed unexpectedly.',
   SESSION_START_FAILED: 'The agent session could not start.',
@@ -117,6 +118,7 @@ const CONFIRMED_NOT_APPLIED_ERRORS = new Set([
   ERROR_CODES.APPROVAL_REQUIRED,
   ERROR_CODES.POLICY_DENIED,
   ERROR_CODES.USER_CANCELLED,
+  ERROR_CODES.DOWNLOAD_CANCELLED_BY_USER,
   ERROR_CODES.CAPABILITY_UNAVAILABLE,
 ]);
 
@@ -147,6 +149,11 @@ function normalizeArtifact(value) {
   });
 }
 
+function availableArtifact(value) {
+  const artifact = normalizeArtifact(value);
+  return artifact?.state === 'completed' && artifact.available ? artifact : null;
+}
+
 function activityProgress(operation, receipt = {}) {
   const copy = OPERATION_PROGRESS[operation] || {
     effect: ACTIVITY_EFFECTS.MANAGED,
@@ -159,7 +166,7 @@ function activityProgress(operation, receipt = {}) {
     : null;
   let intent = copy.intent;
   let label = copy.completed;
-  const artifact = normalizeArtifact(receipt.artifact);
+  const artifact = availableArtifact(receipt.artifact);
 
   if (operation === OPERATIONS.LIST_TABS && pageCount !== null) {
     const pages = `${pageCount} Agent ${pageCount === 1 ? 'tab' : 'tabs'}`;
@@ -219,7 +226,7 @@ function createToolReceipt(operation, options = {}) {
     operation === OPERATIONS.LIST_TABS && Array.isArray(result?.tabs)
       ? result.tabs.length
       : null;
-  const artifact = normalizeArtifact(result?.artifact);
+  const artifact = availableArtifact(result?.artifact);
   const artifacts = Array.isArray(result?.artifacts)
     ? result.artifacts.map(normalizeArtifact).filter(Boolean).slice(0, 100)
     : [];
@@ -245,7 +252,14 @@ function errorExplanation(code) {
 function buildAgentOutcome(activity, status, error) {
   const items = Array.isArray(activity) ? activity : [];
   const succeeded = items.filter((item) => item?.status === 'succeeded');
-  const failed = items.filter((item) => item?.status === 'failed');
+  const cancelledDownloads = items.filter(
+    (item) => item?.errorCode === ERROR_CODES.DOWNLOAD_CANCELLED_BY_USER
+  );
+  const failed = items.filter(
+    (item) =>
+      item?.status === 'failed' &&
+      item?.errorCode !== ERROR_CODES.DOWNLOAD_CANCELLED_BY_USER
+  );
   const changed = succeeded.filter((item) => normalizedEffect(item) === ACTIVITY_EFFECTS.CHANGED);
   const observed = succeeded.filter(
     (item) => normalizedEffect(item) === ACTIVITY_EFFECTS.OBSERVED
@@ -253,7 +267,7 @@ function buildAgentOutcome(activity, status, error) {
   const pageIds = new Set(
     succeeded.map((item) => item?.pageId || item?.origin).filter(Boolean)
   );
-  const artifacts = succeeded.map((item) => normalizeArtifact(item?.artifact)).filter(Boolean);
+  const artifacts = succeeded.map((item) => availableArtifact(item?.artifact)).filter(Boolean);
   const uncertainChanges = items.filter((item) => {
     if (normalizedEffect(item) !== ACTIVITY_EFFECTS.CHANGED || item?.status === 'succeeded') {
       return false;
@@ -292,6 +306,7 @@ function buildAgentOutcome(activity, status, error) {
     observed: observed.length,
     pages: pageIds.size,
     ...(artifacts.length && { artifacts: artifacts.length }),
+    ...(cancelledDownloads.length && { cancelledDownloads: cancelledDownloads.length }),
     approvals,
   });
   const browserActionCopy = `${counts.successful} successful browser ${counts.successful === 1 ? 'action' : 'actions'}${counts.pages ? ` across ${counts.pages} ${counts.pages === 1 ? 'page' : 'pages'}` : ''}`;
@@ -316,6 +331,20 @@ function buildAgentOutcome(activity, status, error) {
         headline: artifacts.length === 1 ? 'File downloaded' : 'Files downloaded',
         detail: `Freedom verified ${artifacts.length} downloaded ${artifacts.length === 1 ? 'file' : 'files'} and recorded ${browserActionCopy}.${approvalNote}${recoveryNote}`,
         artifacts,
+        destinations,
+        counts,
+      });
+    }
+    if (cancelledDownloads.length) {
+      return Object.freeze({
+        kind: 'completed',
+        verification: 'download_cancelled',
+        tone: 'neutral',
+        headline: cancelledDownloads.length === 1 ? 'Download cancelled' : 'Downloads cancelled',
+        detail:
+          cancelledDownloads.length === 1
+            ? 'You stopped the transfer. Freedom did not record a completed file.'
+            : `You stopped ${cancelledDownloads.length} transfers. Freedom did not record completed files for them.`,
         destinations,
         counts,
       });

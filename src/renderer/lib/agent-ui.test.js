@@ -799,6 +799,84 @@ describe('Agent UI', () => {
     expect(ctx.electronAPI.openAgentArtifact).toHaveBeenCalledWith(artifact.artifactId);
   });
 
+  test('renders a cancelled download without exposing a phantom artifact', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Download the image';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({
+      type: 'run_started',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      userText: 'Download the image',
+    });
+    ctx.emit({
+      type: 'tool_started',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      toolCallId: 'tool_download',
+      operation: 'browser_download',
+      intent: 'Downloading a file',
+    });
+    ctx.emit({
+      type: 'tool_progress',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      toolCallId: 'tool_download',
+      operation: 'browser_download',
+      receivedBytes: 0,
+      totalBytes: 6_000_000_000,
+      state: 'cancelled',
+      artifact: {
+        artifactId: 'artifact_1234567890abcdef1234',
+        filename: 'large.iso',
+        bytes: 0,
+        state: 'cancelled',
+        location: 'downloads',
+        available: false,
+      },
+    });
+    ctx.emit({
+      type: 'tool_finished',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      toolCallId: 'tool_download',
+      operation: 'browser_download',
+      status: 'failed',
+      errorCode: 'DOWNLOAD_CANCELLED_BY_USER',
+      label: 'Downloaded a file',
+      approval: 'approved',
+    });
+    ctx.emit({
+      type: 'run_finished',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      status: 'completed',
+      durationMs: 1_000,
+      actionCount: 1,
+      outcome: {
+        kind: 'completed',
+        verification: 'download_cancelled',
+        tone: 'neutral',
+        headline: 'Download cancelled',
+        detail: 'You stopped the transfer. Freedom did not record a completed file.',
+      },
+    });
+
+    const turn = ctx.elements['agent-transcript'].children[0];
+    const toolRow = turn.querySelector('.agent-tool-item');
+    expect(toolRow.classList.contains('failed')).toBe(false);
+    expect(toolRow.classList.contains('cancelled')).toBe(true);
+    expect(toolRow.children[0].textContent).toBe('•');
+    expect(toolRow.children[1].textContent).toContain('Download cancelled by you');
+    expect(toolRow.children[2].textContent).toBe('Cancelled by you');
+    expect(turn.querySelector('.agent-artifact-list').hidden).toBe(true);
+    expect(turn.querySelector('.agent-turn-outcome').classList.contains('neutral')).toBe(true);
+    expect(turn.querySelector('.agent-turn-activity').children[0].textContent).toContain(
+      'Download cancelled'
+    );
+  });
+
   test('shows live browser intent and trusted completion evidence', async () => {
     const ctx = await loadAgentUi();
     ctx.elements['agent-prompt'].value = 'Update the profile';

@@ -304,6 +304,44 @@ describe('Pi browser tool adapter', () => {
     });
   });
 
+  test('tells the model not to retry a download cancelled by the user', async () => {
+    const onToolOutcome = jest.fn();
+    const controller = {
+      execute: jest.fn(async () => ({
+        ok: false,
+        error: {
+          code: ERROR_CODES.DOWNLOAD_CANCELLED_BY_USER,
+          message:
+            'The user cancelled this download. Do not retry it unless the user explicitly asks again.',
+          retryable: false,
+          suggestedAction: 'Acknowledge the cancellation and continue without this file.',
+        },
+      })),
+    };
+    const tools = await createFreedomBrowserTools({
+      sdk: createSdk(),
+      controller,
+      tabId: 'tab_assigned',
+      onToolOutcome,
+    });
+    const download = tools.find((tool) => tool.name === OPERATIONS.DOWNLOAD);
+
+    await expect(download.execute('call_cancelled', { ref: 'ref_download' })).rejects.toMatchObject({
+      code: ERROR_CODES.DOWNLOAD_CANCELLED_BY_USER,
+      retryable: false,
+      suggestedAction: expect.stringContaining('Acknowledge'),
+      message: expect.stringContaining('Do not retry'),
+    });
+    expect(onToolOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toolCallId: 'call_cancelled',
+        operation: OPERATIONS.DOWNLOAD,
+        status: 'failed',
+        errorCode: ERROR_CODES.DOWNLOAD_CANCELLED_BY_USER,
+      })
+    );
+  });
+
   test('reports only redacted browser metadata in successful progress receipts', async () => {
     const onToolOutcome = jest.fn();
     const controller = {

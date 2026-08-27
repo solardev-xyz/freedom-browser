@@ -1031,7 +1031,11 @@ class FreedomAgentService {
     if (!progress || typeof progress !== 'object') return;
     const receivedBytes = Math.max(0, Number(progress.receivedBytes) || 0);
     const totalBytes = Math.max(0, Number(progress.totalBytes) || 0);
-    const artifact = normalizeArtifact(progress.receipt);
+    const normalizedArtifact = normalizeArtifact(progress.receipt);
+    const artifact =
+      normalizedArtifact?.state === 'completed' && normalizedArtifact.available
+        ? normalizedArtifact
+        : null;
     const item = run.activity.find((candidate) => candidate.toolCallId === outcome.toolCallId);
     if (item && artifact) item.artifact = artifact;
     this.#emit(run, {
@@ -1155,6 +1159,9 @@ class FreedomAgentService {
     run.durationMs = Math.max(0, this.now() - run.startedAt);
     run.error = error;
     run.outcome = buildAgentOutcome(run.activity, status, error);
+    const cancelledActionCount = run.activity.filter(
+      (item) => item.errorCode === ERROR_CODES.DOWNLOAD_CANCELLED_BY_USER
+    ).length;
     if (this.activeRun === run) this.activeRun = null;
     if (this.conversation?.activeRun === run) this.conversation.activeRun = null;
     this.#emit(run, {
@@ -1162,7 +1169,12 @@ class FreedomAgentService {
       status,
       durationMs: run.durationMs,
       actionCount: run.activity.length,
-      failedActionCount: run.activity.filter((item) => item.status === 'failed').length,
+      failedActionCount: run.activity.filter(
+        (item) =>
+          item.status === 'failed' &&
+          item.errorCode !== ERROR_CODES.DOWNLOAD_CANCELLED_BY_USER
+      ).length,
+      ...(cancelledActionCount && { cancelledActionCount }),
       outcome: run.outcome,
       ...(error && { error }),
     });

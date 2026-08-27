@@ -47,6 +47,10 @@ const downloadActivityListeners = new Set();
 const controlledIntentByWebContents = new WeakMap();
 const pendingControlledIntents = new Set();
 const CONTROLLED_DOWNLOAD_START_TIMEOUT_MS = 10_000;
+const DOWNLOAD_CANCELLATION_REASONS = Object.freeze({
+  USER: 'user',
+  RUN_STOPPED: 'run_stopped',
+});
 
 function createDeferred() {
   let resolve;
@@ -320,6 +324,7 @@ function handleWillDownload(item, webContents, { privatePartition = null } = {})
     reservedPath,
     artifactId: controlledIntent?.artifactId || null,
     agentConversationId: controlledIntent?.conversationId || null,
+    cancellationReason: null,
   });
   if (controlledIntent) {
     controlledIntent.downloadId = id;
@@ -386,7 +391,8 @@ function handleWillDownload(item, webContents, { privatePartition = null } = {})
     // same-named download would be handed that identical path, leaving two
     // transfers writing one file. The unwind clears `activeItemMeta`, so its
     // membership is the "do we still own the claim?" flag.
-    const ownsReservation = activeItemMeta.has(id);
+    const liveMeta = activeItemMeta.get(id);
+    const ownsReservation = Boolean(liveMeta);
     activeItems.delete(id);
     activeItemMeta.delete(id);
     interruptedItems.delete(id);
@@ -426,14 +432,18 @@ function handleWillDownload(item, webContents, { privatePartition = null } = {})
     if (controlledIntent) {
       const stored = store.getDownloadByArtifactId(controlledIntent.artifactId);
       const receipt = artifactReceipt(stored);
-      controlledIntent.completion.resolve(receipt);
+      const cancellationReason =
+        state === store.STATES.CANCELLED
+          ? liveMeta?.cancellationReason || DOWNLOAD_CANCELLATION_REASONS.USER
+          : null;
+      controlledIntent.completion.resolve({ receipt, cancellationReason });
       try {
         controlledIntent.onProgress?.({
           artifactId: controlledIntent.artifactId,
-          receivedBytes: receipt?.bytes || 0,
-          totalBytes: receipt?.bytes || 0,
+          receivedBytes: item.getReceivedBytes(),
+          totalBytes: item.getTotalBytes(),
           state,
-          receipt,
+          ...(state === store.STATES.COMPLETED && receipt?.available && { receipt }),
         });
       } catch (error) {
         log.warn('[Downloads] Agent progress observer failed:', error?.message || error);
@@ -616,7 +626,7 @@ async function runControlledDownload(options = {}) {
     }
 
     const settled = await Promise.race([
-      intent.completion.promise.then((receipt) => ({ kind: 'completed', receipt })),
+      intent.completion.promise.then((terminal) => ({ kind: 'completed', terminal })),
       aborted.promise.then(() => ({ kind: 'aborted' })),
     ]);
     if (settled.kind === 'aborted') {
@@ -625,23 +635,39 @@ async function runControlledDownload(options = {}) {
         'Agent stopped waiting for the download; the browser continues tracking it'
       );
     }
-    if (!settled.receipt || settled.receipt.state !== store.STATES.COMPLETED) {
-      const state = settled.receipt?.state || store.STATES.INTERRUPTED;
+    const receipt = settled.terminal?.receipt;
+    if (!receipt || receipt.state !== store.STATES.COMPLETED) {
+      const state = receipt?.state || store.STATES.INTERRUPTED;
+      const userCancelled =
+        state === store.STATES.CANCELLED &&
+        settled.terminal?.cancellationReason === DOWNLOAD_CANCELLATION_REASONS.USER;
       throw new AutomationError(
-        state === store.STATES.CANCELLED ? ERROR_CODES.USER_CANCELLED : ERROR_CODES.CAPABILITY_UNAVAILABLE,
-        state === store.STATES.CANCELLED
-          ? 'The download was cancelled'
+        userCancelled
+          ? ERROR_CODES.DOWNLOAD_CANCELLED_BY_USER
+          : state === store.STATES.CANCELLED
+            ? ERROR_CODES.USER_CANCELLED
+            : ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        userCancelled
+          ? 'The user cancelled this download. Do not retry it unless the user explicitly asks again.'
+          : state === store.STATES.CANCELLED
+            ? 'The download stopped with the Agent task'
           : 'The download did not complete successfully',
-        { retryable: state !== store.STATES.CANCELLED }
+        {
+          retryable: state !== store.STATES.CANCELLED,
+          ...(userCancelled && {
+            suggestedAction:
+              'Acknowledge the cancellation and continue without this file. Do not retry the download during this turn.',
+          }),
+        }
       );
     }
-    if (!settled.receipt.available) {
+    if (!receipt.available) {
       throw new AutomationError(
         ERROR_CODES.CAPABILITY_UNAVAILABLE,
         'The browser reported completion but the downloaded file is unavailable'
       );
     }
-    return { artifact: settled.receipt };
+    return { artifact: receipt };
   } finally {
     pendingControlledIntents.delete(intent);
     if (controlledIntentByWebContents.get(sourceWebContents) === intent) {
@@ -677,6 +703,7 @@ function cancelAgentDownloads(conversationId) {
     const item = activeItems.get(id);
     if (!item) continue;
     try {
+      meta.cancellationReason = DOWNLOAD_CANCELLATION_REASONS.RUN_STOPPED;
       item.cancel();
       cancelled += 1;
     } catch (error) {
@@ -792,6 +819,8 @@ function registerDownloadsIpc() {
   ipcMain.handle(IPC.DOWNLOADS_CANCEL, (event, id) => {
     const item = resolveActiveItemForSender(event, id);
     if (!item) return false;
+    const meta = activeItemMeta.get(id);
+    if (meta) meta.cancellationReason = DOWNLOAD_CANCELLATION_REASONS.USER;
     item.cancel();
     return true;
   });

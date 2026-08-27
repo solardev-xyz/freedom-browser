@@ -306,6 +306,42 @@ describe('downloads-manager', () => {
     await expect(pending).rejects.toMatchObject({ code: 'USER_CANCELLED' });
   });
 
+  test('reports a shelf cancellation as an explicit user decision without an artifact', async () => {
+    const mod = loadManager();
+    const item = new FakeDownloadItem({
+      url: 'https://files.example/large.iso',
+      filename: 'large.iso',
+      totalBytes: 6_000_000_000,
+    });
+    const sourceWebContents = {
+      hostWebContents: { id: 42 },
+      isDestroyed: () => false,
+    };
+    const progress = jest.fn();
+    const pending = mod.runControlledDownload({
+      pageAdapter: { webContents: sourceWebContents },
+      conversationId: 'conversation_download',
+      onProgress: progress,
+      trigger: async () => session.emit('will-download', {}, item, sourceWebContents),
+    });
+    await Promise.resolve();
+
+    const [row] = await ipcMain.invoke(IPC.DOWNLOADS_GET, {});
+    await expect(ipcMain.invoke(IPC.DOWNLOADS_CANCEL, row.id)).resolves.toBe(true);
+    expect(item.cancel).toHaveBeenCalledTimes(1);
+    item.emit('done', {}, 'cancelled');
+
+    await expect(pending).rejects.toMatchObject({
+      code: 'DOWNLOAD_CANCELLED_BY_USER',
+      retryable: false,
+      suggestedAction: expect.stringContaining('Do not retry'),
+    });
+    expect(progress).toHaveBeenLastCalledWith(
+      expect.objectContaining({ state: 'cancelled' })
+    );
+    expect(progress.mock.calls.at(-1)[0]).not.toHaveProperty('receipt');
+  });
+
   test('reports active download transitions for runtime idle accounting', () => {
     const mod = loadManager();
     const activity = [];

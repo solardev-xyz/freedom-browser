@@ -1366,6 +1366,7 @@ function formatToolError(code) {
     APPROVAL_REQUIRED: 'Approval is still required',
     POLICY_DENIED: 'Blocked by Freedom policy',
     USER_CANCELLED: 'Not applied',
+    DOWNLOAD_CANCELLED_BY_USER: 'Download cancelled by you',
     CAPABILITY_UNAVAILABLE: 'Browser capability is unavailable',
     INTERNAL_ERROR: 'Browser action failed unexpectedly',
   };
@@ -1387,6 +1388,7 @@ function renderTurnOutcome(view, outcome) {
 
 function outcomeSummaryLabel(outcome) {
   if (outcome?.verification === 'artifact_available') return 'Download verified';
+  if (outcome?.verification === 'download_cancelled') return 'Download cancelled';
   if (outcome?.verification === 'result_observed') return 'Result checked';
   if (outcome?.verification === 'actions_recorded') return 'Actions recorded';
   if (outcome?.verification === 'browser_observed') return 'Browser inspected';
@@ -1409,7 +1411,9 @@ function renderArtifact(runId, artifact) {
     !view ||
     !artifact ||
     !/^artifact_[a-f0-9]{20}$/.test(artifact.artifactId) ||
-    typeof artifact.filename !== 'string'
+    typeof artifact.filename !== 'string' ||
+    artifact.state !== 'completed' ||
+    artifact.available !== true
   ) {
     return;
   }
@@ -1495,14 +1499,20 @@ function updateToolApproval(runId, toolCallId, decision) {
 function finishToolRow(event) {
   const record = toolRows.get(`${event.runId}:${event.toolCallId}`);
   if (!record) return;
+  const downloadCancelled = event.errorCode === 'DOWNLOAD_CANCELLED_BY_USER';
   record.label.textContent = event.label || record.label.textContent;
-  record.state.textContent = event.status === 'failed' ? '×' : '✓';
-  record.row.classList.toggle('failed', event.status === 'failed');
+  record.state.textContent = downloadCancelled ? '•' : event.status === 'failed' ? '×' : '✓';
+  record.row.classList.toggle('cancelled', downloadCancelled);
+  record.row.classList.toggle('failed', event.status === 'failed' && !downloadCancelled);
   if (event.status === 'failed') {
     record.row.title = formatToolError(event.errorCode);
     record.label.textContent = `${record.label.textContent} — ${formatToolError(event.errorCode)}`;
   }
   updateToolApproval(event.runId, event.toolCallId, event.approval);
+  if (downloadCancelled) {
+    record.approval.textContent = 'Cancelled by you';
+    record.approval.hidden = false;
+  }
   if (event.artifact) renderArtifact(event.runId, event.artifact);
 }
 
@@ -1512,7 +1522,9 @@ function updateToolProgress(event) {
   const received = Math.max(0, Number(event.receivedBytes) || 0);
   const total = Math.max(0, Number(event.totalBytes) || 0);
   const progress = total > 0 ? ` · ${Math.min(100, Math.round((received / total) * 100))}%` : '';
-  record.label.textContent = `Downloading${progress}`;
+  const cancelled = event.state === 'cancelled';
+  record.label.textContent = cancelled ? 'Download cancelled' : `Downloading${progress}`;
+  record.row.classList.toggle('cancelled', cancelled);
   if (event.artifact) renderArtifact(event.runId, event.artifact);
 }
 
@@ -1752,7 +1764,9 @@ function handleAgentEvent(event) {
     if (event.status === 'failed') {
       setMessage(
         elements.runMessage,
-        `${formatToolError(event.errorCode)}. Agent is deciding how to recover.`
+        event.errorCode === 'DOWNLOAD_CANCELLED_BY_USER'
+          ? 'Download cancelled by you. Agent will not retry it unless you ask.'
+          : `${formatToolError(event.errorCode)}. Agent is deciding how to recover.`
       );
     } else if (event.label) {
       setMessage(elements.runMessage, event.label);
@@ -1760,9 +1774,13 @@ function handleAgentEvent(event) {
     void refreshWorkspaceProjection();
   } else if (event.type === 'tool_progress') {
     updateToolProgress(event);
-    const received = formatArtifactBytes(event.receivedBytes);
-    const total = event.totalBytes > 0 ? ` of ${formatArtifactBytes(event.totalBytes)}` : '';
-    setMessage(elements.runMessage, `Downloading ${received}${total}…`);
+    if (event.state === 'cancelled') {
+      setMessage(elements.runMessage, 'Download cancelled by you.');
+    } else {
+      const received = formatArtifactBytes(event.receivedBytes);
+      const total = event.totalBytes > 0 ? ` of ${formatArtifactBytes(event.totalBytes)}` : '';
+      setMessage(elements.runMessage, `Downloading ${received}${total}…`);
+    }
   } else if (event.type === 'run_retrying') {
     setMessage(elements.runMessage, `Provider retry ${event.attempt} of ${event.maxAttempts}…`);
   } else if (event.type === 'context_compaction_started') {

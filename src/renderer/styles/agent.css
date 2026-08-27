@@ -2282,6 +2282,10 @@ body.agent-first-mode .agent-composer textarea {
   color: #ff8b8b;
 }
 
+.agent-tool-item.cancelled .agent-tool-state {
+  color: var(--muted);
+}
+
 .sr-only {
   position: absolute;
   width: 1px;

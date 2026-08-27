@@ -1,6 +1,7 @@
 'use strict';
 
 const { ERROR_CODES } = require('../automation/contract/errors');
+const { OPERATIONS } = require('../automation/contract/operations');
 const {
   AGENT_ERROR_CODES,
   AGENT_EVENT_VERSION,
@@ -1014,6 +1015,72 @@ describe('FreedomAgentService', () => {
     fake.prompt.resolve();
     await service.waitForIdle();
     expect(service.getState()).toMatchObject({ status: 'ready' });
+  });
+
+  test('projects user-cancelled downloads without promoting an incomplete receipt', async () => {
+    const fake = createFakeSession();
+    const { service, dependencies } = createService(fake);
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+
+    fake.emit({
+      type: 'tool_execution_start',
+      toolCallId: 'call_download',
+      toolName: OPERATIONS.DOWNLOAD,
+      args: { ref: 'ref_download' },
+    });
+    dependencies.createTools.mock.calls[0][0].onToolProgress({
+      toolCallId: 'call_download',
+      operation: OPERATIONS.DOWNLOAD,
+      progress: {
+        receivedBytes: 0,
+        totalBytes: 6_000_000_000,
+        state: 'cancelled',
+        receipt: {
+          artifactId: 'artifact_1234567890abcdef1234',
+          filename: 'large.iso',
+          bytes: 0,
+          state: 'cancelled',
+          location: 'downloads',
+          available: false,
+        },
+      },
+    });
+    expect(events.at(-1)).toMatchObject({
+      type: 'tool_progress',
+      state: 'cancelled',
+    });
+    expect(events.at(-1)).not.toHaveProperty('artifact');
+
+    dependencies.createTools.mock.calls[0][0].onToolOutcome({
+      toolCallId: 'call_download',
+      operation: OPERATIONS.DOWNLOAD,
+      status: 'failed',
+      errorCode: ERROR_CODES.DOWNLOAD_CANCELLED_BY_USER,
+    });
+    fake.emit({
+      type: 'tool_execution_end',
+      toolCallId: 'call_download',
+      toolName: OPERATIONS.DOWNLOAD,
+      result: { content: [{ type: 'text', text: 'cancelled' }] },
+      isError: true,
+    });
+    fake.prompt.resolve();
+    await service.waitForIdle();
+
+    expect(events.find((event) => event.type === 'tool_finished')).toMatchObject({
+      status: 'failed',
+      errorCode: ERROR_CODES.DOWNLOAD_CANCELLED_BY_USER,
+    });
+    expect(events.at(-1)).toMatchObject({
+      failedActionCount: 0,
+      cancelledActionCount: 1,
+      outcome: {
+        verification: 'download_cancelled',
+        headline: 'Download cancelled',
+      },
+    });
   });
 
   test('does not terminate the task when a created tab disappears', async () => {

@@ -88,6 +88,42 @@ describe('Agent progress projection', () => {
     });
   });
 
+  test('treats a user-cancelled download as a neutral terminal state without an artifact', () => {
+    const cancelledArtifact = {
+      artifactId: 'artifact_1234567890abcdef1234',
+      filename: 'large.iso',
+      bytes: 0,
+      state: 'cancelled',
+      location: 'downloads',
+      available: false,
+    };
+
+    expect(
+      createToolReceipt(OPERATIONS.DOWNLOAD, {
+        envelope: { ok: true, result: { artifact: cancelledArtifact } },
+      })
+    ).toEqual({});
+    expect(
+      buildAgentOutcome(
+        [
+          {
+            operation: OPERATIONS.DOWNLOAD,
+            status: 'failed',
+            effect: 'changed',
+            errorCode: ERROR_CODES.DOWNLOAD_CANCELLED_BY_USER,
+            artifact: cancelledArtifact,
+          },
+        ],
+        'completed'
+      )
+    ).toMatchObject({
+      verification: 'download_cancelled',
+      tone: 'neutral',
+      headline: 'Download cancelled',
+      counts: { failed: 0, cancelledDownloads: 1 },
+    });
+  });
+
   test('distinguishes a rechecked result from an action-only completion', () => {
     const changed = {
       operation: OPERATIONS.CLICK,

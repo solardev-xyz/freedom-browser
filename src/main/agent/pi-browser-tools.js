@@ -152,7 +152,7 @@ const TOOL_SPECS = Object.freeze([
     operation: OPERATIONS.DOWNLOAD,
     label: 'Download file',
     description:
-      'Download a file through Freedom using a download link reference from the latest page snapshot. Returns a safe artifact receipt, never a filesystem path.',
+      'Download a file through Freedom using a download link reference from the latest page snapshot. Returns a safe artifact receipt, never a filesystem path. If the user cancels the transfer, do not retry it unless they explicitly ask again.',
     parameters: {
       type: 'object',
       properties: { ref: { type: 'string', minLength: 1 } },
