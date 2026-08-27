@@ -979,6 +979,31 @@ describe('OriginScopedAutomationController', () => {
     );
   });
 
+  test('delegates wallet approval to the agent-native wallet boundary exactly once', async () => {
+    const controller = createController();
+    const requestApproval = jest.fn(async () => 'approved');
+    const scoped = await createOriginScopedAutomationController({
+      controller,
+      tabId: 'tab_assigned',
+      requestApproval,
+      transferOwnerId: 'conversation_test',
+    });
+
+    await expect(
+      scoped.execute(OPERATIONS.WALLET_ACTION, {
+        tabId: 'tab_assigned',
+        ref: 'ref_wallet',
+      })
+    ).resolves.toMatchObject({ ok: true });
+    expect(controller.inspectAction).not.toHaveBeenCalled();
+    expect(requestApproval).not.toHaveBeenCalled();
+    expect(controller.execute).toHaveBeenLastCalledWith(
+      OPERATIONS.WALLET_ACTION,
+      { tabId: 'tab_assigned', ref: 'ref_wallet' },
+      { conversationId: 'conversation_test', requestApproval }
+    );
+  });
+
   test('lists only downloads belonging to the scoped conversation without requiring a tab', async () => {
     const controller = createController();
     const scoped = await createOriginScopedAutomationController({

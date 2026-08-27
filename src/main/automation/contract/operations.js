@@ -20,6 +20,7 @@ const TAB_OPERATIONS = new Set([
   OPERATIONS.PRESS,
   OPERATIONS.UPLOAD,
   OPERATIONS.DOWNLOAD,
+  OPERATIONS.WALLET_ACTION,
   OPERATIONS.SCREENSHOT,
   OPERATIONS.WAIT,
   OPERATIONS.STOP_LOADING,
@@ -114,7 +115,8 @@ function validateOperationInput(operation, rawInput) {
     operation === OPERATIONS.SELECT ||
     operation === OPERATIONS.PRESS ||
     operation === OPERATIONS.UPLOAD ||
-    operation === OPERATIONS.DOWNLOAD
+    operation === OPERATIONS.DOWNLOAD ||
+    operation === OPERATIONS.WALLET_ACTION
   ) {
     normalized.ref = requireString(input.ref, 'ref').trim();
   }

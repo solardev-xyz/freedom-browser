@@ -1263,8 +1263,63 @@ function clearApproval() {
   elements.approval.hidden = true;
   elements.composer.classList.remove('approval-pending');
   elements.approvalApprove.textContent = 'Allow once';
+  elements.walletApprovalDetails.hidden = true;
+  elements.walletApprovalSummary.replaceChildren();
+  elements.walletAccountField.hidden = true;
+  elements.walletAccount.replaceChildren();
+  elements.walletUnlock.hidden = true;
+  elements.walletPassword.value = '';
   setApprovalControlsDisabled(false);
   setMessage(elements.approvalMessage);
+}
+
+function appendWalletSummary(label, value) {
+  if (!value) return;
+  const term = document.createElement('dt');
+  term.textContent = label;
+  const description = document.createElement('dd');
+  description.textContent = value;
+  elements.walletApprovalSummary.appendChild(term);
+  elements.walletApprovalSummary.appendChild(description);
+}
+
+function shortAddress(value) {
+  return typeof value === 'string' && value.length > 18
+    ? `${value.slice(0, 10)}…${value.slice(-6)}`
+    : value || '';
+}
+
+function renderWalletApproval(request) {
+  const wallet = request.wallet;
+  elements.walletApprovalDetails.hidden = false;
+  elements.walletApprovalSummary.replaceChildren();
+  appendWalletSummary('Site', request.origin);
+  appendWalletSummary('Network', wallet.chainName || `Chain ${wallet.chainId}`);
+  if (wallet.kind === 'connection') {
+    elements.walletAccountField.hidden = false;
+    elements.walletAccount.replaceChildren();
+    for (const account of wallet.wallets || []) {
+      const option = document.createElement('option');
+      option.value = String(account.index);
+      option.textContent = `${account.name || 'Wallet'} · ${shortAddress(account.address)}`;
+      option.selected = account.index === wallet.defaultWalletIndex;
+      elements.walletAccount.appendChild(option);
+    }
+  } else {
+    elements.walletAccountField.hidden = true;
+    appendWalletSummary(
+      'Account',
+      `${wallet.account?.name || 'Wallet'} · ${shortAddress(wallet.account?.address)}`
+    );
+  }
+  if (wallet.kind === 'transaction') {
+    appendWalletSummary('To', wallet.to);
+    appendWalletSummary('Amount', wallet.value);
+    appendWalletSummary('Maximum fee', wallet.maxFee);
+    if (wallet.data) appendWalletSummary('Contract data', wallet.data);
+  } else if (wallet.kind === 'signature') {
+    appendWalletSummary(wallet.signatureType || 'Signature', wallet.summary);
+  }
 }
 
 function setApprovalControlsDisabled(disabled) {
@@ -1314,30 +1369,95 @@ function renderApproval(request) {
         ? `Download ${label.replace(/^download\s+/i, '').trim() || 'this file'}?`
         : request.action === 'file_upload'
           ? `Choose a file to share with ${describeApprovalOrigin(request.destinationOrigin)?.label || 'this site'}?`
-          : interactionCopy[request.operation] || `Let Agent interact with “${label}”?`;
+          : request.action === 'wallet_connection'
+            ? 'Connect this site to a wallet account?'
+            : request.action === 'wallet_transaction'
+              ? 'Approve this wallet transaction?'
+              : request.action === 'wallet_signature'
+                ? 'Approve this wallet signature?'
+                : interactionCopy[request.operation] || `Let Agent interact with “${label}”?`;
   elements.approvalOrigin.textContent =
     request.action === 'file_upload'
       ? `For “${label}” · Freedom shares only the file you choose and never shows Agent its local path.`
-      : approvalOriginSummary(request);
+      : request.wallet
+        ? 'Requested by the page Agent is controlling. The request is held until you decide.'
+        : approvalOriginSummary(request);
   elements.approvalApprove.textContent =
-    request.action === 'file_upload' ? 'Choose file…' : 'Allow once';
+    request.action === 'file_upload'
+      ? 'Choose file…'
+      : request.wallet
+        ? request.wallet.kind === 'signature'
+          ? 'Sign once'
+          : request.wallet.kind === 'transaction'
+            ? 'Confirm transaction'
+            : 'Connect once'
+        : 'Allow once';
+  elements.walletApprovalDetails.hidden = true;
+  elements.walletUnlock.hidden = true;
+  if (request.wallet) renderWalletApproval(request);
   setApprovalControlsDisabled(false);
   setMessage(elements.approvalMessage, 'Agent is waiting');
   elements.composer.classList.add('approval-pending');
   elements.approval.hidden = false;
 }
 
+async function ensureWalletUnlocked(request) {
+  if (!request.wallet?.requiresUnlock) return true;
+  const status = await window.identity.getStatus();
+  if (status?.isUnlocked) return true;
+  const canUseTouchId = await window.quickUnlock.canUseTouchId();
+  const touchIdEnabled = await window.quickUnlock.isEnabled();
+  if (canUseTouchId && touchIdEnabled) {
+    setMessage(elements.approvalMessage, 'Waiting for Touch ID…');
+    const quick = await window.quickUnlock.unlock();
+    if (!quick?.success) {
+      setMessage(elements.approvalMessage, quick?.error || 'Wallet unlock was cancelled', true);
+      return false;
+    }
+    const unlocked = await window.identity.unlock(quick.password);
+    if (!unlocked?.success) {
+      setMessage(elements.approvalMessage, unlocked?.error || 'Wallet unlock failed', true);
+      return false;
+    }
+    return true;
+  }
+  elements.walletUnlock.hidden = false;
+  elements.walletPassword.focus();
+  setMessage(elements.approvalMessage, 'Wallet is locked');
+  return false;
+}
+
 async function decideApproval(approved) {
   const request = pendingApproval;
   if (!request || !currentRunId) return;
   setApprovalControlsDisabled(true);
+  if (approved && request.wallet) {
+    try {
+      if (!(await ensureWalletUnlocked(request))) {
+        setApprovalControlsDisabled(false);
+        return;
+      }
+    } catch {
+      setApprovalControlsDisabled(false);
+      setMessage(elements.approvalMessage, 'Wallet unlock failed', true);
+      return;
+    }
+  }
   setMessage(elements.approvalMessage, approved ? 'Allowing…' : 'Not allowing…');
   try {
-    const response = await window.electronAPI.decideAgentApproval(
-      currentRunId,
-      request.approvalId,
-      approved
-    );
+    const walletIndex = Number(elements.walletAccount.value);
+    const decisionOptions =
+      approved && request.wallet?.kind === 'connection' && Number.isSafeInteger(walletIndex)
+        ? { walletIndex }
+        : null;
+    const response = decisionOptions
+      ? await window.electronAPI.decideAgentApproval(
+          currentRunId,
+          request.approvalId,
+          approved,
+          decisionOptions
+        )
+      : await window.electronAPI.decideAgentApproval(currentRunId, request.approvalId, approved);
     if (!response?.ok && pendingApproval === request) {
       setApprovalControlsDisabled(false);
       setMessage(
@@ -1350,6 +1470,27 @@ async function decideApproval(approved) {
     if (pendingApproval !== request) return;
     setApprovalControlsDisabled(false);
     setMessage(elements.approvalMessage, 'Could not record the decision', true);
+  }
+}
+
+async function unlockWalletWithPassword() {
+  const request = pendingApproval;
+  const password = elements.walletPassword.value;
+  if (!request?.wallet || !password) return;
+  elements.walletUnlockSubmit.disabled = true;
+  try {
+    const result = await window.identity.unlock(password);
+    if (!result?.success) {
+      setMessage(elements.approvalMessage, result?.error || 'Incorrect password', true);
+      return;
+    }
+    elements.walletPassword.value = '';
+    elements.walletUnlock.hidden = true;
+    await decideApproval(true);
+  } catch {
+    setMessage(elements.approvalMessage, 'Wallet unlock failed', true);
+  } finally {
+    elements.walletUnlockSubmit.disabled = false;
   }
 }
 
@@ -1372,6 +1513,7 @@ function formatToolError(code) {
     USER_CANCELLED: 'Not applied',
     FILE_UPLOAD_CANCELLED_BY_USER: 'File selection cancelled by you',
     DOWNLOAD_CANCELLED_BY_USER: 'Download cancelled by you',
+    WALLET_REQUEST_CANCELLED_BY_USER: 'Wallet request declined by you',
     CAPABILITY_UNAVAILABLE: 'Browser capability is unavailable',
     INTERNAL_ERROR: 'Browser action failed unexpectedly',
   };
@@ -2185,6 +2327,13 @@ export function initAgentUi(options = {}) {
     approvalDecline: byId('agent-approval-decline'),
     approvalStop: byId('agent-approval-stop'),
     approvalMessage: byId('agent-approval-message'),
+    walletApprovalDetails: byId('agent-wallet-approval-details'),
+    walletApprovalSummary: byId('agent-wallet-approval-summary'),
+    walletAccountField: byId('agent-wallet-account-field'),
+    walletAccount: byId('agent-wallet-account'),
+    walletUnlock: byId('agent-wallet-unlock'),
+    walletPassword: byId('agent-wallet-password'),
+    walletUnlockSubmit: byId('agent-wallet-unlock-submit'),
     transcript: byId('agent-transcript'),
     emptyState: byId('agent-empty-state'),
     modelMenuButton: byId('agent-model-menu-button'),
@@ -2291,6 +2440,10 @@ export function initAgentUi(options = {}) {
   elements.approvalApprove.addEventListener('click', () => decideApproval(true));
   elements.approvalDecline.addEventListener('click', () => decideApproval(false));
   elements.approvalStop.addEventListener('click', () => stopRun());
+  elements.walletUnlockSubmit.addEventListener('click', unlockWalletWithPassword);
+  elements.walletPassword.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') void unlockWalletWithPassword();
+  });
   elements.modelMenuButton.addEventListener('click', () => {
     const opening = elements.modelMenu.hidden;
     closeComposerPopovers();

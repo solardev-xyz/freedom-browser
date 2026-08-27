@@ -182,6 +182,7 @@ module.exports = {
   AGENT_RESUME: 'agent:resume',
   AGENT_STOP: 'agent:stop',
   AGENT_APPROVAL_DECIDE: 'agent:approval:decide',
+  AGENT_WALLET_REQUEST: 'agent:wallet:request',
   AGENT_GET_STATE: 'agent:get-state',
   AGENT_CLEAR_CONVERSATION: 'agent:clear-conversation',
   AGENT_HISTORY_LIST: 'agent:history:list',

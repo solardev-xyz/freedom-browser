@@ -80,6 +80,13 @@ function createAgentElements() {
     'agent-approval-decline',
     'agent-approval-stop',
     'agent-approval-message',
+    'agent-wallet-approval-details',
+    'agent-wallet-approval-summary',
+    'agent-wallet-account-field',
+    'agent-wallet-account',
+    'agent-wallet-unlock',
+    'agent-wallet-password',
+    'agent-wallet-unlock-submit',
     'agent-transcript',
     'agent-empty-state',
     'agent-model-menu-button',
@@ -167,6 +174,13 @@ function createAgentElements() {
   elements['agent-approval-approve'] = createElement('button');
   elements['agent-approval-decline'] = createElement('button');
   elements['agent-approval-stop'] = createElement('button');
+  elements['agent-wallet-approval-details'].hidden = true;
+  elements['agent-wallet-approval-summary'] = createElement('dl');
+  elements['agent-wallet-account-field'].hidden = true;
+  elements['agent-wallet-account'] = createElement('select');
+  elements['agent-wallet-unlock'].hidden = true;
+  elements['agent-wallet-password'] = createElement('input');
+  elements['agent-wallet-unlock-submit'] = createElement('button');
   elements['agent-transcript'].hidden = true;
   elements['agent-model-menu-button'] = createElement('button');
   elements['agent-model-menu'] = createElement('div');
@@ -276,6 +290,15 @@ async function loadAgentUi(options = {}) {
   global.document = document;
   global.window = {
     electronAPI,
+    identity: {
+      getStatus: jest.fn().mockResolvedValue({ isUnlocked: true }),
+      unlock: jest.fn().mockResolvedValue({ success: true }),
+    },
+    quickUnlock: {
+      canUseTouchId: jest.fn().mockResolvedValue(false),
+      isEnabled: jest.fn().mockResolvedValue(false),
+      unlock: jest.fn(),
+    },
     confirm: jest.fn(() => true),
     prompt: jest.fn(() => null),
     innerWidth: 1280,
@@ -1743,6 +1766,125 @@ describe('Agent UI', () => {
       'Download Ubuntu 26.04 LTS amd64?'
     );
     expect(ctx.elements['agent-approval-origin'].textContent).toBe('ubuntu.com');
+  });
+
+  test('renders an Agent-native wallet decision and sends the selected public account', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Connect my wallet';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'approval_requested',
+      runId: 'run_test',
+      approvalId: 'approval_wallet',
+      action: 'wallet_connection',
+      origin: 'https://app.example',
+      destinationOrigin: 'https://app.example',
+      wallet: {
+        kind: 'connection',
+        chainId: 100,
+        chainName: 'Gnosis',
+        defaultWalletIndex: 2,
+        requiresUnlock: false,
+        wallets: [
+          {
+            index: 0,
+            name: 'Main Wallet',
+            address: '0x1111111111111111111111111111111111111111',
+            type: 'mnemonic',
+          },
+          {
+            index: 2,
+            name: 'Ledger',
+            address: '0x2222222222222222222222222222222222222222',
+            type: 'ledger',
+          },
+        ],
+      },
+    });
+
+    expect(ctx.elements['agent-wallet-approval-details'].hidden).toBe(false);
+    expect(
+      ctx.elements['agent-wallet-approval-summary'].children.some(
+        (child) => child.textContent === 'Gnosis'
+      )
+    ).toBe(true);
+    expect(ctx.elements['agent-wallet-account-field'].hidden).toBe(false);
+    expect(ctx.elements['agent-wallet-account'].children).toHaveLength(2);
+    expect(ctx.elements['agent-approval-approve'].textContent).toBe('Connect once');
+
+    ctx.elements['agent-wallet-account'].value = '2';
+    ctx.elements['agent-approval-approve'].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.decideAgentApproval).toHaveBeenCalledWith(
+      'run_test',
+      'approval_wallet',
+      true,
+      { walletIndex: 2 }
+    );
+  });
+
+  test('keeps a locked transaction approval in the composer until password unlock succeeds', async () => {
+    const unlock = jest.fn().mockResolvedValue({ success: true });
+    const ctx = await loadAgentUi({
+      windowGlobals: {
+        identity: {
+          getStatus: jest
+            .fn()
+            .mockResolvedValueOnce({ isUnlocked: false })
+            .mockResolvedValue({ isUnlocked: true }),
+          unlock,
+        },
+        quickUnlock: {
+          canUseTouchId: jest.fn().mockResolvedValue(false),
+          isEnabled: jest.fn().mockResolvedValue(false),
+          unlock: jest.fn(),
+        },
+      },
+    });
+    ctx.elements['agent-prompt'].value = 'Send transaction';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'approval_requested',
+      runId: 'run_test',
+      approvalId: 'approval_tx',
+      action: 'wallet_transaction',
+      origin: 'https://app.example',
+      wallet: {
+        kind: 'transaction',
+        chainId: 100,
+        chainName: 'Gnosis',
+        requiresUnlock: true,
+        account: {
+          index: 0,
+          name: 'Main Wallet',
+          address: '0x1111111111111111111111111111111111111111',
+          type: 'mnemonic',
+        },
+        to: '0x3333333333333333333333333333333333333333',
+        value: '1.0 xDAI',
+        maxFee: '0.000024 xDAI',
+      },
+    });
+
+    ctx.elements['agent-approval-approve'].dispatch('click');
+    await flush();
+    expect(ctx.elements['agent-wallet-unlock'].hidden).toBe(false);
+    expect(ctx.electronAPI.decideAgentApproval).not.toHaveBeenCalled();
+
+    ctx.elements['agent-wallet-password'].value = 'secret';
+    ctx.elements['agent-wallet-unlock-submit'].dispatch('click');
+    await flush();
+    await flush();
+    expect(unlock).toHaveBeenCalledWith('secret');
+    expect(ctx.electronAPI.decideAgentApproval).toHaveBeenCalledWith(
+      'run_test',
+      'approval_tx',
+      true
+    );
   });
 
   test('uses the native picker as the final consent surface for a file upload', async () => {

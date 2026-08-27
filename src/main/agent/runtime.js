@@ -5,6 +5,7 @@ const { registerFreedomAgentIpc } = require('./ipc');
 const { AgentProviderResolver } = require('./provider-resolver');
 const { AgentProviderStore } = require('./provider-store');
 const { AgentSessionHistoryStore } = require('./session-history-store');
+const { AgentWalletController } = require('./agent-wallet-controller');
 
 function createFreedomAgentRuntime(options = {}) {
   const providerStore = new AgentProviderStore({
@@ -21,6 +22,8 @@ function createFreedomAgentRuntime(options = {}) {
     userDataDir: options.profile?.userDataDir,
   });
   historyStore.markStaleRunningAsInterrupted();
+  const walletController = new AgentWalletController();
+  options.controller.setWalletController(walletController);
   const service = new FreedomAgentService({
     controller: options.controller,
     subscribeTabLifecycle: options.subscribeTabLifecycle,
@@ -37,15 +40,18 @@ function createFreedomAgentRuntime(options = {}) {
     desktopBindingForAutomationTab: options.desktopBindingForAutomationTab,
     isTrustedSender: options.isTrustedSender,
     openExternal: options.openExternal,
+    walletController,
   });
 
   return {
     providerStore,
     providerResolver,
     historyStore,
+    walletController,
     service,
     async dispose() {
       await unregisterIpc();
+      options.controller.setWalletController(null);
       await service.dispose();
       historyStore.close();
     },

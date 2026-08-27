@@ -22,6 +22,7 @@ const ORIGIN_SCOPED_OPERATIONS = new Set([
   OPERATIONS.PRESS,
   OPERATIONS.UPLOAD,
   OPERATIONS.DOWNLOAD,
+  OPERATIONS.WALLET_ACTION,
   OPERATIONS.LIST_DOWNLOADS,
   OPERATIONS.WAIT,
   OPERATIONS.STOP_LOADING,
@@ -34,6 +35,7 @@ const PAGE_INTERACTION_OPERATIONS = new Set([
   OPERATIONS.PRESS,
   OPERATIONS.UPLOAD,
   OPERATIONS.DOWNLOAD,
+  OPERATIONS.WALLET_ACTION,
 ]);
 
 function originScopeForUrl(value) {
@@ -234,6 +236,13 @@ class OriginScopedAutomationController {
         : null;
     if (requestedUrl && !this.#acceptRequestedOrigin(requestedUrl)) {
       return this.#originDenied(state);
+    }
+
+    if (operation === OPERATIONS.WALLET_ACTION) {
+      return this.#executeController(operation, input, {
+        ...execution,
+        requestApproval: this.requestApproval,
+      });
     }
 
     if (PAGE_INTERACTION_OPERATIONS.has(operation)) {

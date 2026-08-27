@@ -1718,6 +1718,25 @@
                       <h4>Approval needed</h4>
                       <p id="agent-approval-action" class="agent-approval-action"></p>
                       <p id="agent-approval-origin" class="agent-approval-origin"></p>
+                      <div id="agent-wallet-approval-details" class="agent-wallet-approval-details" hidden>
+                        <dl id="agent-wallet-approval-summary"></dl>
+                        <label id="agent-wallet-account-field" class="agent-wallet-account-field" hidden>
+                          <span>Account</span>
+                          <select id="agent-wallet-account"></select>
+                        </label>
+                        <div id="agent-wallet-unlock" class="agent-wallet-unlock" hidden>
+                          <p>Unlock your wallet to approve. Your password is never sent to Agent.</p>
+                          <div class="agent-wallet-unlock-row">
+                            <input
+                              id="agent-wallet-password"
+                              type="password"
+                              autocomplete="current-password"
+                              placeholder="Wallet password"
+                            />
+                            <button id="agent-wallet-unlock-submit" type="button">Unlock</button>
+                          </div>
+                        </div>
+                      </div>
                     </div>
                   </div>
                   <div class="agent-approval-footer">

@@ -107,7 +107,10 @@ function validateStartPayload(payload) {
 
 function validateConversationPayload(payload, options = {}) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-    throw new FreedomAgentError(AGENT_ERROR_CODES.INVALID_ARGUMENT, 'Agent session input is required');
+    throw new FreedomAgentError(
+      AGENT_ERROR_CODES.INVALID_ARGUMENT,
+      'Agent session input is required'
+    );
   }
   if (
     typeof payload.conversationId !== 'string' ||
@@ -159,6 +162,7 @@ function registerFreedomAgentIpc(options = {}) {
     providerResolver,
     isTrustedSender,
     openExternal,
+    walletController,
   } = options;
   if (!ipcMain || typeof ipcMain.handle !== 'function') {
     throw new TypeError('Freedom agent IPC requires ipcMain');
@@ -214,6 +218,9 @@ function registerFreedomAgentIpc(options = {}) {
   }
   if (typeof openExternal !== 'function') {
     throw new TypeError('Freedom agent IPC requires an external URL opener');
+  }
+  if (!walletController || typeof walletController.handleRequest !== 'function') {
+    throw new TypeError('Freedom agent IPC requires an Agent wallet controller');
   }
 
   let owner = null;
@@ -309,9 +316,7 @@ function registerFreedomAgentIpc(options = {}) {
       let resolved;
       const needsRuntime = !continuing || service.getState().runtimeAvailable !== true;
       if (needsRuntime) {
-        tabId = rendererTabId
-          ? automationTabIdForRenderer(event?.sender, rendererTabId)
-          : null;
+        tabId = rendererTabId ? automationTabIdForRenderer(event?.sender, rendererTabId) : null;
         if (rendererTabId && !tabId) {
           return errorEnvelope(
             AGENT_IPC_ERROR_CODES.TAB_NOT_BOUND,
@@ -363,8 +368,7 @@ function registerFreedomAgentIpc(options = {}) {
           approvalMode,
           ...(needsRuntime && {
             tabId,
-            createWorkspacePage: (url) =>
-              createAutomationPageForHost(pendingOwner.sender, url),
+            createWorkspacePage: (url) => createAutomationPageForHost(pendingOwner.sender, url),
             model: resolved.model,
             modelRuntime: resolved.modelRuntime,
             thinkingLevel: resolved.thinkingLevel,
@@ -491,17 +495,39 @@ function registerFreedomAgentIpc(options = {}) {
         'The sender does not own that agent approval'
       );
     }
-    const decided = await service.decideApproval(
-      owner.runId,
-      payload.approvalId,
-      payload.approved
-    );
+    const decision =
+      payload.approved && Number.isSafeInteger(payload.walletIndex) && payload.walletIndex >= 0
+        ? { approved: true, walletIndex: payload.walletIndex }
+        : payload.approved;
+    const decided = await service.decideApproval(owner.runId, payload.approvalId, decision);
     return decided
       ? { ok: true, decided: true }
       : errorEnvelope(
           AGENT_IPC_ERROR_CODES.NOT_OWNER,
           'The sender does not own that agent approval'
         );
+  };
+
+  const handleAgentWalletRequest = async (event, payload = {}) => {
+    let trusted;
+    try {
+      trusted = isTrustedSender(event?.sender);
+    } catch {
+      trusted = false;
+    }
+    if (
+      !trusted ||
+      !Number.isSafeInteger(payload.rendererTabId) ||
+      payload.rendererTabId < 1 ||
+      !payload.request ||
+      typeof payload.request !== 'object' ||
+      Array.isArray(payload.request)
+    ) {
+      return { handled: false };
+    }
+    const tabId = automationTabIdForRenderer(event.sender, payload.rendererTabId);
+    if (!tabId) return { handled: false };
+    return walletController.handleRequest(tabId, payload.request);
   };
 
   const handleGetState = (event) => {
@@ -609,7 +635,10 @@ function registerFreedomAgentIpc(options = {}) {
     const trusted = trustedHistoryRequest(event, () => ({ ok: true }));
     if (!trusted.ok) return trusted;
     if (owner?.runId || owner?.starting) {
-      return errorEnvelope(AGENT_ERROR_CODES.BUSY, 'Take over the active turn before switching sessions');
+      return errorEnvelope(
+        AGENT_ERROR_CODES.BUSY,
+        'Take over the active turn before switching sessions'
+      );
     }
     if (owner && owner.sender !== event.sender) {
       return errorEnvelope(
@@ -845,6 +874,7 @@ function registerFreedomAgentIpc(options = {}) {
   ipcMain.handle(IPC.AGENT_RESUME, handleResume);
   ipcMain.handle(IPC.AGENT_STOP, handleStop);
   ipcMain.handle(IPC.AGENT_APPROVAL_DECIDE, handleApprovalDecision);
+  ipcMain.handle(IPC.AGENT_WALLET_REQUEST, handleAgentWalletRequest);
   ipcMain.handle(IPC.AGENT_GET_STATE, handleGetState);
   ipcMain.handle(IPC.AGENT_CLEAR_CONVERSATION, handleClearConversation);
   ipcMain.handle(IPC.AGENT_HISTORY_LIST, handleHistoryList);
@@ -869,6 +899,7 @@ function registerFreedomAgentIpc(options = {}) {
     ipcMain.removeHandler?.(IPC.AGENT_RESUME);
     ipcMain.removeHandler?.(IPC.AGENT_STOP);
     ipcMain.removeHandler?.(IPC.AGENT_APPROVAL_DECIDE);
+    ipcMain.removeHandler?.(IPC.AGENT_WALLET_REQUEST);
     ipcMain.removeHandler?.(IPC.AGENT_GET_STATE);
     ipcMain.removeHandler?.(IPC.AGENT_CLEAR_CONVERSATION);
     ipcMain.removeHandler?.(IPC.AGENT_HISTORY_LIST);

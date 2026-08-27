@@ -111,6 +111,7 @@ function register(overrides = {}) {
   };
   const openExternal = jest.fn(async () => {});
   const isTrustedSender = jest.fn((candidate) => candidate === sender);
+  const walletController = { handleRequest: jest.fn(async () => ({ handled: false })) };
   const dispose = registerFreedomAgentIpc({
     ipcMain,
     service,
@@ -121,6 +122,7 @@ function register(overrides = {}) {
     providerResolver,
     isTrustedSender,
     openExternal,
+    walletController,
     ...overrides,
   });
   return {
@@ -135,6 +137,7 @@ function register(overrides = {}) {
     providerResolver,
     isTrustedSender,
     openExternal,
+    walletController,
     dispose,
   };
 }
@@ -657,6 +660,50 @@ describe('Freedom agent IPC', () => {
       'approval_test',
       true
     );
+  });
+
+  test('routes only trusted, exactly bound Agent wallet requests to the armed controller', async () => {
+    const ctx = register();
+    const handleWallet = ctx.ipcMain.handlers.get(IPC.AGENT_WALLET_REQUEST);
+    const request = { method: 'eth_requestAccounts', chainId: 100 };
+
+    await expect(
+      handleWallet({ sender: ctx.otherSender }, { rendererTabId: 7, request })
+    ).resolves.toEqual({ handled: false });
+    expect(ctx.walletController.handleRequest).not.toHaveBeenCalled();
+
+    await expect(
+      handleWallet({ sender: ctx.sender }, { rendererTabId: 99, request })
+    ).resolves.toEqual({ handled: false });
+    expect(ctx.walletController.handleRequest).not.toHaveBeenCalled();
+
+    await expect(
+      handleWallet({ sender: ctx.sender }, { rendererTabId: 7, request })
+    ).resolves.toEqual({ handled: false });
+    expect(ctx.walletController.handleRequest).toHaveBeenCalledWith('tab_bound', request);
+  });
+
+  test('passes an approved Agent wallet account choice as bounded decision data', async () => {
+    const ctx = register();
+    const start = ctx.ipcMain.handlers.get(IPC.AGENT_START);
+    const decide = ctx.ipcMain.handlers.get(IPC.AGENT_APPROVAL_DECIDE);
+    await start({ sender: ctx.sender }, { rendererTabId: 7, prompt: 'Connect wallet' });
+
+    await expect(
+      decide(
+        { sender: ctx.sender },
+        {
+          runId: 'run_test',
+          approvalId: 'approval_wallet',
+          approved: true,
+          walletIndex: 2,
+        }
+      )
+    ).resolves.toEqual({ ok: true, decided: true });
+    expect(ctx.service.decideApproval).toHaveBeenCalledWith('run_test', 'approval_wallet', {
+      approved: true,
+      walletIndex: 2,
+    });
   });
 
   test('reports the controlled renderer tab only to the owning chrome', async () => {

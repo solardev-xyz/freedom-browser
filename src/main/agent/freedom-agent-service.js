@@ -8,6 +8,7 @@ const {
 const { AGENT_NAVIGATION_SCOPES } = require('../../shared/agent-navigation-scopes');
 const { OPERATIONS } = require('../automation/contract/operations');
 const { ERROR_CODES } = require('../automation/contract/errors');
+const { getPermissionKey } = require('../../shared/origin-utils');
 const log = require('../logger');
 const {
   createOriginScopedAutomationController,
@@ -239,6 +240,10 @@ function terminalError(code, message) {
 }
 
 function normalizeApprovalRequest(request) {
+  const wallet = normalizeWalletApproval(request?.wallet);
+  const origin = wallet
+    ? getPermissionKey(request?.origin) || ''
+    : originScopeForUrl(request?.origin) || '';
   return Object.freeze({
     action:
       request?.action === 'form_submission'
@@ -247,11 +252,55 @@ function normalizeApprovalRequest(request) {
           ? 'file_download'
           : request?.action === 'file_upload'
             ? 'file_upload'
-            : 'browser_interaction',
+            : ['wallet_connection', 'wallet_transaction', 'wallet_signature'].includes(
+                  request?.action
+                )
+              ? request.action
+              : 'browser_interaction',
     operation: typeof request?.operation === 'string' ? request.operation.slice(0, 80) : '',
-    origin: originScopeForUrl(request?.origin) || '',
-    destinationOrigin: originScopeForUrl(request?.destinationOrigin) || '',
+    origin,
+    destinationOrigin: wallet
+      ? getPermissionKey(request?.destinationOrigin) || origin
+      : originScopeForUrl(request?.destinationOrigin) || '',
     label: typeof request?.label === 'string' ? request.label.slice(0, 160) : '',
+    ...(wallet && { wallet }),
+  });
+}
+
+function normalizeWalletApproval(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  if (!['connection', 'transaction', 'signature'].includes(value.kind)) return null;
+  const normalizeAccount = (account) => {
+    if (!Number.isSafeInteger(account?.index) || account.index < 0 || !account.address) return null;
+    return Object.freeze({
+      index: account.index,
+      name: typeof account.name === 'string' ? account.name.slice(0, 80) : '',
+      address: typeof account.address === 'string' ? account.address.slice(0, 80) : '',
+      type: ['mnemonic', 'ledger', 'remote'].includes(account.type) ? account.type : 'mnemonic',
+    });
+  };
+  const wallets = Array.isArray(value.wallets)
+    ? value.wallets.map(normalizeAccount).filter(Boolean).slice(0, 50)
+    : [];
+  const account = normalizeAccount(value.account);
+  return Object.freeze({
+    kind: value.kind,
+    chainId: Number.isSafeInteger(value.chainId) ? value.chainId : 0,
+    chainName: typeof value.chainName === 'string' ? value.chainName.slice(0, 80) : '',
+    ...(wallets.length && { wallets }),
+    ...(account && { account }),
+    ...(Number.isSafeInteger(value.defaultWalletIndex) && value.defaultWalletIndex >= 0
+      ? { defaultWalletIndex: value.defaultWalletIndex }
+      : {}),
+    ...(typeof value.to === 'string' && { to: value.to.slice(0, 100) }),
+    ...(typeof value.value === 'string' && { value: value.value.slice(0, 100) }),
+    ...(typeof value.maxFee === 'string' && { maxFee: value.maxFee.slice(0, 100) }),
+    ...(typeof value.data === 'string' && { data: value.data.slice(0, 65_536) }),
+    ...(typeof value.signatureType === 'string' && {
+      signatureType: value.signatureType.slice(0, 80),
+    }),
+    ...(typeof value.summary === 'string' && { summary: value.summary.slice(0, 65_536) }),
+    requiresUnlock: value.requiresUnlock === true,
   });
 }
 
@@ -804,11 +853,21 @@ class FreedomAgentService {
       run.runId !== runId ||
       typeof approvalId !== 'string' ||
       run.pendingApproval?.publicRequest.approvalId !== approvalId ||
-      typeof approved !== 'boolean'
+      !(
+        typeof approved === 'boolean' ||
+        (approved && typeof approved === 'object' && approved.approved === true)
+      )
     ) {
       return false;
     }
-    this.#resolveApproval(run, approved ? 'approved' : 'declined');
+    this.#resolveApproval(
+      run,
+      typeof approved === 'object'
+        ? { status: 'approved', walletIndex: approved.walletIndex }
+        : approved
+          ? 'approved'
+          : 'declined'
+    );
     return true;
   }
 
@@ -1133,12 +1192,13 @@ class FreedomAgentService {
     const activityItem = pending.toolCallId
       ? run.activity.find((item) => item.toolCallId === pending.toolCallId)
       : null;
-    if (activityItem) activityItem.approval = decision;
+    const status = typeof decision === 'object' ? decision.status : decision;
+    if (activityItem) activityItem.approval = status;
     pending.decision.resolve(decision);
     this.#emit(run, {
       type: 'approval_resolved',
       approvalId: pending.publicRequest.approvalId,
-      decision,
+      decision: status,
       ...(pending.toolCallId && { toolCallId: pending.toolCallId }),
     });
   }

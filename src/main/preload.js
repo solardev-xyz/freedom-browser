@@ -171,8 +171,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
   pauseAgent: (runId) => ipcRenderer.invoke('agent:pause', { runId }),
   resumeAgent: (runId, prompt) => ipcRenderer.invoke('agent:resume', { runId, prompt }),
   stopAgent: (runId) => ipcRenderer.invoke('agent:stop', { runId }),
-  decideAgentApproval: (runId, approvalId, approved) =>
-    ipcRenderer.invoke('agent:approval:decide', { runId, approvalId, approved }),
+  decideAgentApproval: (runId, approvalId, approved, options = {}) =>
+    ipcRenderer.invoke('agent:approval:decide', {
+      runId,
+      approvalId,
+      approved,
+      ...(Number.isSafeInteger(options.walletIndex) && options.walletIndex >= 0
+        ? { walletIndex: options.walletIndex }
+        : {}),
+    }),
+  handleAgentWalletRequest: (rendererTabId, request) =>
+    ipcRenderer.invoke('agent:wallet:request', { rendererTabId, request }),
   getAgentState: () => ipcRenderer.invoke('agent:get-state'),
   clearAgentConversation: () => ipcRenderer.invoke('agent:clear-conversation'),
   listAgentSessions: () => ipcRenderer.invoke('agent:history:list'),

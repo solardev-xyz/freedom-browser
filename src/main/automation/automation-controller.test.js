@@ -239,6 +239,37 @@ describe('AutomationController', () => {
     expect(upload).toHaveBeenCalledWith({ pageAdapter: adapter, ref: 'ref_upload', signal });
   });
 
+  test('routes wallet actions through the agent-native wallet boundary', async () => {
+    const { controller } = createController();
+    const adapter = new FakePageAdapter();
+    const tabId = controller.registerPage(adapter, { kind: 'desktop' });
+    const run = jest.fn(async () => ({
+      wallet: { action: 'signed', origin: 'https://example.test', chainId: 100 },
+    }));
+    controller.setWalletController({ run });
+    const signal = new AbortController().signal;
+    const requestApproval = jest.fn(async () => 'approved');
+
+    await expect(
+      controller.execute(
+        OPERATIONS.WALLET_ACTION,
+        { tabId, ref: 'ref_wallet' },
+        { conversationId: 'conversation_test', requestApproval, signal }
+      )
+    ).resolves.toMatchObject({
+      ok: true,
+      result: { wallet: { action: 'signed' } },
+    });
+    expect(run).toHaveBeenCalledWith({
+      pageAdapter: adapter,
+      tabId,
+      ref: 'ref_wallet',
+      conversationId: 'conversation_test',
+      requestApproval,
+      signal,
+    });
+  });
+
   test('does not echo an unvalidated tab ID into error envelopes', async () => {
     const { controller } = createController();
     const failure = await controller.execute(OPERATIONS.SNAPSHOT, {

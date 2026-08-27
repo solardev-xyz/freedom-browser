@@ -38,7 +38,7 @@ describe('Freedom agent runtime', () => {
       safeStorage: {},
       profile: { id: 'work', userDataDir: '/profiles/work' },
       dataDir: '/profiles/work/agent',
-      controller: {},
+      controller: { setWalletController: jest.fn() },
       automationTabIdForRenderer: jest.fn(),
       desktopBindingForAutomationTab: jest.fn(),
       createAutomationPageForHost: jest.fn(),
@@ -78,11 +78,15 @@ describe('Freedom agent runtime', () => {
       createAutomationPageForHost: options.createAutomationPageForHost,
       isTrustedSender: options.isTrustedSender,
       openExternal: options.openExternal,
+      walletController: expect.any(Object),
     });
 
     const resolveModel = registerFreedomAgentIpc.mock.calls[0][0].resolveModel;
     await expect(resolveModel()).resolves.toEqual({ model: {} });
     await runtime.dispose();
+
+    expect(options.controller.setWalletController).toHaveBeenNthCalledWith(1, expect.any(Object));
+    expect(options.controller.setWalletController).toHaveBeenNthCalledWith(2, null);
 
     expect(unregisterIpc).toHaveBeenCalledTimes(1);
     expect(service.dispose).toHaveBeenCalledTimes(1);

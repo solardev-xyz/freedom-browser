@@ -87,6 +87,27 @@ const READ_ONLY_METHODS = [
   'web3_clientVersion',
   'web3_sha3',
 ];
+const AGENT_WALLET_METHODS = new Set([
+  'eth_requestAccounts',
+  'eth_sendTransaction',
+  'personal_sign',
+  'eth_signTypedData_v4',
+]);
+
+async function offerAgentWalletRequest(webview, method, params, displayUrl, permissionKey) {
+  if (!AGENT_WALLET_METHODS.has(method)) return { handled: false };
+  const rendererTabId = Number(webview?.dataset?.tabId);
+  if (!Number.isSafeInteger(rendererTabId) || rendererTabId < 1) return { handled: false };
+  const chainId = parseInt(await getCurrentChainId(), 16);
+  const response = await window.electronAPI?.handleAgentWalletRequest?.(rendererTabId, {
+    method,
+    params,
+    displayUrl,
+    permissionKey,
+    chainId,
+  });
+  return response && typeof response === 'object' ? response : { handled: false };
+}
 
 /**
  * Get or create provider state for a webview
@@ -142,6 +163,20 @@ async function handleProviderRequest(webview, request) {
 
   try {
     let result;
+
+    const agentWallet = await offerAgentWalletRequest(
+      webview,
+      method,
+      params,
+      displayUrl,
+      permissionKey
+    );
+    if (agentWallet.handled) {
+      if (agentWallet.error) throw agentWallet.error;
+      result = agentWallet.result;
+      sendProviderResponse(webview, id, result, null);
+      return;
+    }
 
     // Handle different method categories
     if (method === 'eth_chainId') {

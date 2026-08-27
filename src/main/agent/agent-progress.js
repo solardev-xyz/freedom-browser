@@ -76,6 +76,11 @@ const OPERATION_PROGRESS = Object.freeze({
     intent: 'Choosing a file to share',
     completed: 'Attached a file to the page',
   },
+  [OPERATIONS.WALLET_ACTION]: {
+    effect: ACTIVITY_EFFECTS.CHANGED,
+    intent: 'Waiting for a wallet request',
+    completed: 'Completed a wallet request',
+  },
   [OPERATIONS.LIST_DOWNLOADS]: {
     effect: ACTIVITY_EFFECTS.OBSERVED,
     intent: 'Checking task downloads',
@@ -106,6 +111,7 @@ const ERROR_LABELS = Object.freeze({
   [ERROR_CODES.USER_CANCELLED]: 'The browser action was not applied.',
   [ERROR_CODES.FILE_UPLOAD_CANCELLED_BY_USER]: 'The user cancelled file selection.',
   [ERROR_CODES.DOWNLOAD_CANCELLED_BY_USER]: 'The user cancelled the download.',
+  [ERROR_CODES.WALLET_REQUEST_CANCELLED_BY_USER]: 'The user declined the wallet request.',
   [ERROR_CODES.CAPABILITY_UNAVAILABLE]: 'This browser capability is unavailable.',
   [ERROR_CODES.INTERNAL_ERROR]: 'The browser action failed unexpectedly.',
   SESSION_START_FAILED: 'The agent session could not start.',
@@ -126,6 +132,7 @@ const CONFIRMED_NOT_APPLIED_ERRORS = new Set([
   ERROR_CODES.USER_CANCELLED,
   ERROR_CODES.FILE_UPLOAD_CANCELLED_BY_USER,
   ERROR_CODES.DOWNLOAD_CANCELLED_BY_USER,
+  ERROR_CODES.WALLET_REQUEST_CANCELLED_BY_USER,
   ERROR_CODES.CAPABILITY_UNAVAILABLE,
 ]);
 

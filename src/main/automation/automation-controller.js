@@ -24,6 +24,8 @@ class AutomationController {
     if (options.downloadController) this.setDownloadController(options.downloadController);
     this.uploadController = null;
     if (options.uploadController) this.setUploadController(options.uploadController);
+    this.walletController = null;
+    if (options.walletController) this.setWalletController(options.walletController);
   }
 
   setPageLifecycle(pageLifecycle) {
@@ -65,6 +67,17 @@ class AutomationController {
       throw new TypeError('Automation upload controller requires upload()');
     }
     this.uploadController = uploadController;
+  }
+
+  setWalletController(walletController) {
+    if (walletController === null) {
+      this.walletController = null;
+      return;
+    }
+    if (!walletController || typeof walletController.run !== 'function') {
+      throw new TypeError('Automation wallet controller requires run()');
+    }
+    this.walletController = walletController;
   }
 
   registerPage(adapter, metadata) {
@@ -128,6 +141,7 @@ class AutomationController {
           OPERATIONS.PRESS,
           OPERATIONS.UPLOAD,
           OPERATIONS.DOWNLOAD,
+          OPERATIONS.WALLET_ACTION,
         ].includes(operation)
       ) {
         throw new AutomationError(
@@ -226,6 +240,15 @@ class AutomationController {
           signal: execution?.signal,
           onProgress: execution?.onProgress,
         });
+      case OPERATIONS.WALLET_ACTION:
+        return this.#requireWalletController().run({
+          pageAdapter: entry.adapter,
+          tabId: entry.tabId,
+          ref: input.ref,
+          conversationId: execution?.conversationId,
+          requestApproval: execution?.requestApproval,
+          signal: execution?.signal,
+        });
       case OPERATIONS.LIST_DOWNLOADS:
         return { artifacts: this.#requireDownloadController().list(execution?.conversationId) };
       case OPERATIONS.SCREENSHOT:
@@ -283,6 +306,16 @@ class AutomationController {
       );
     }
     return this.uploadController;
+  }
+
+  #requireWalletController() {
+    if (!this.walletController) {
+      throw new AutomationError(
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        'Agent-native wallet actions are unavailable in this runtime'
+      );
+    }
+    return this.walletController;
   }
 
   #errorEnvelope(tabId, entry, error) {

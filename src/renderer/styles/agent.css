@@ -1851,6 +1851,94 @@ body.agent-first-mode .agent-composer textarea {
   white-space: pre-line;
 }
 
+.agent-wallet-approval-details {
+  margin-top: 13px;
+  padding-top: 12px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 30%, transparent);
+}
+
+.agent-wallet-approval-details[hidden],
+.agent-wallet-account-field[hidden],
+.agent-wallet-unlock[hidden] {
+  display: none;
+}
+
+.agent-wallet-approval-details dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px 12px;
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.agent-wallet-approval-details dt {
+  color: var(--muted);
+}
+
+.agent-wallet-approval-details dd {
+  min-width: 0;
+  max-height: 180px;
+  margin: 0;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.agent-wallet-account-field {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.agent-wallet-account-field select,
+.agent-wallet-unlock input {
+  width: 100%;
+  min-height: 34px;
+  padding: 7px 9px;
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 45%, transparent);
+  border-radius: 8px;
+}
+
+.agent-wallet-unlock {
+  margin-top: 12px;
+  padding: 10px;
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+  border-radius: 9px;
+}
+
+.agent-wallet-unlock p {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.agent-wallet-unlock-row {
+  display: flex;
+  gap: 7px;
+  margin-top: 8px;
+}
+
+.agent-wallet-unlock-row button {
+  padding: 6px 10px;
+  color: var(--bg);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--text);
+  border: 0;
+  border-radius: 8px;
+}
+
 .agent-approval-footer {
   display: flex;
   flex-wrap: wrap;
