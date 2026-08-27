@@ -22,6 +22,8 @@ class AutomationController {
     if (options.pageLifecycle) this.setPageLifecycle(options.pageLifecycle);
     this.downloadController = null;
     if (options.downloadController) this.setDownloadController(options.downloadController);
+    this.uploadController = null;
+    if (options.uploadController) this.setUploadController(options.uploadController);
   }
 
   setPageLifecycle(pageLifecycle) {
@@ -52,6 +54,17 @@ class AutomationController {
       throw new TypeError('Automation download controller requires download() and list()');
     }
     this.downloadController = downloadController;
+  }
+
+  setUploadController(uploadController) {
+    if (uploadController === null) {
+      this.uploadController = null;
+      return;
+    }
+    if (!uploadController || typeof uploadController.upload !== 'function') {
+      throw new TypeError('Automation upload controller requires upload()');
+    }
+    this.uploadController = uploadController;
   }
 
   registerPage(adapter, metadata) {
@@ -113,6 +126,7 @@ class AutomationController {
           OPERATIONS.TYPE,
           OPERATIONS.SELECT,
           OPERATIONS.PRESS,
+          OPERATIONS.UPLOAD,
           OPERATIONS.DOWNLOAD,
         ].includes(operation)
       ) {
@@ -198,6 +212,12 @@ class AutomationController {
         return entry.adapter.select(input.ref, input.value);
       case OPERATIONS.PRESS:
         return entry.adapter.press(input.ref, input.key);
+      case OPERATIONS.UPLOAD:
+        return this.#requireUploadController().upload({
+          pageAdapter: entry.adapter,
+          ref: input.ref,
+          signal: execution?.signal,
+        });
       case OPERATIONS.DOWNLOAD:
         return this.#requireDownloadController().download({
           pageAdapter: entry.adapter,
@@ -253,6 +273,16 @@ class AutomationController {
       );
     }
     return this.downloadController;
+  }
+
+  #requireUploadController() {
+    if (!this.uploadController) {
+      throw new AutomationError(
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        'Controlled file uploads are unavailable in this runtime'
+      );
+    }
+    return this.uploadController;
   }
 
   #errorEnvelope(tabId, entry, error) {

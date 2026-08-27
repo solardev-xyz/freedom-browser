@@ -5,7 +5,7 @@ const Database = require('better-sqlite3');
 const log = require('../logger');
 const { normalizeAgentApprovalMode } = require('../../shared/agent-approval-modes');
 const { originScopeForUrl } = require('../automation/origin-scoped-controller');
-const { normalizeArtifact } = require('./agent-progress');
+const { normalizeArtifact, normalizeUpload } = require('./agent-progress');
 
 const DB_FILE = 'agent-history.sqlite';
 const SCHEMA_VERSION = 2;
@@ -57,20 +57,17 @@ function normalizeActivity(activity) {
       const label = optionalString(item.label, 240);
       const intent = optionalString(item.intent, 240);
       const origin = originScopeForUrl(optionalString(item.origin, 512));
-      const destinationOrigin = originScopeForUrl(
-        optionalString(item.destinationOrigin, 512)
-      );
+      const destinationOrigin = originScopeForUrl(optionalString(item.destinationOrigin, 512));
       const pageId = optionalString(item.pageId, 160);
       const artifact = normalizeArtifact(item.artifact);
+      const upload = normalizeUpload(item.upload);
       const artifacts = Array.isArray(item.artifacts)
         ? item.artifacts.map(normalizeArtifact).filter(Boolean).slice(0, 100)
         : [];
       return {
         toolCallId: optionalString(item.toolCallId, 160) || '',
         operation: optionalString(item.operation, 120) || '',
-        status: ['running', 'succeeded', 'failed'].includes(item.status)
-          ? item.status
-          : 'failed',
+        status: ['running', 'succeeded', 'failed'].includes(item.status) ? item.status : 'failed',
         ...(label && { label }),
         ...(intent && { intent }),
         ...(ACTIVITY_EFFECTS.has(item.effect) && { effect: item.effect }),
@@ -79,6 +76,7 @@ function normalizeActivity(activity) {
         ...(destinationOrigin && { destinationOrigin }),
         ...(pageId && { pageId }),
         ...(artifact && { artifact }),
+        ...(upload && { upload }),
         ...(artifacts.length && { artifacts }),
         ...(Number.isSafeInteger(item.pageCount) && item.pageCount >= 0
           ? { pageCount: item.pageCount }
@@ -306,16 +304,11 @@ class AgentSessionHistoryStore {
     const runId = requiredString(entry?.runId, 'Agent run ID', 160);
     const userText = requiredString(entry?.userText, 'Agent turn text', 32_000);
     const startedAt = Number.isFinite(entry.startedAt) ? entry.startedAt : this.now();
-    const position = Number.isSafeInteger(entry.position) && entry.position >= 0
-      ? entry.position
-      : this.#getStatements().getTurns.all(sessionId).length;
-    this.#getStatements().insertTurn.run(
-      runId,
-      sessionId,
-      position,
-      userText,
-      startedAt
-    );
+    const position =
+      Number.isSafeInteger(entry.position) && entry.position >= 0
+        ? entry.position
+        : this.#getStatements().getTurns.all(sessionId).length;
+    this.#getStatements().insertTurn.run(runId, sessionId, position, userText, startedAt);
     this.#getStatements().touchSession.run('running', startedAt, sessionId);
   }
 

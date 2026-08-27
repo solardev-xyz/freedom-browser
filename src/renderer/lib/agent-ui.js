@@ -120,11 +120,7 @@ function pageContextTab() {
     return openTabs.find((tab) => tab.id === conversationRendererTabId) || null;
   }
   const tab = getActiveTab();
-  if (
-    !isShareablePage(tab) ||
-    isTabAgentOwned(tab.id) ||
-    dismissedPageContextTabId === tab.id
-  ) {
+  if (!isShareablePage(tab) || isTabAgentOwned(tab.id) || dismissedPageContextTabId === tab.id) {
     return null;
   }
   return tab;
@@ -1266,6 +1262,7 @@ function clearApproval() {
   pendingApproval = null;
   elements.approval.hidden = true;
   elements.composer.classList.remove('approval-pending');
+  elements.approvalApprove.textContent = 'Allow once';
   setApprovalControlsDisabled(false);
   setMessage(elements.approvalMessage);
 }
@@ -1315,8 +1312,15 @@ function renderApproval(request) {
       ? `Submit this form using “${label}”?`
       : request.action === 'file_download'
         ? `Download ${label.replace(/^download\s+/i, '').trim() || 'this file'}?`
-        : interactionCopy[request.operation] || `Let Agent interact with “${label}”?`;
-  elements.approvalOrigin.textContent = approvalOriginSummary(request);
+        : request.action === 'file_upload'
+          ? `Choose a file to share with ${describeApprovalOrigin(request.destinationOrigin)?.label || 'this site'}?`
+          : interactionCopy[request.operation] || `Let Agent interact with “${label}”?`;
+  elements.approvalOrigin.textContent =
+    request.action === 'file_upload'
+      ? `For “${label}” · Freedom shares only the file you choose and never shows Agent its local path.`
+      : approvalOriginSummary(request);
+  elements.approvalApprove.textContent =
+    request.action === 'file_upload' ? 'Choose file…' : 'Allow once';
   setApprovalControlsDisabled(false);
   setMessage(elements.approvalMessage, 'Agent is waiting');
   elements.composer.classList.add('approval-pending');
@@ -1366,6 +1370,7 @@ function formatToolError(code) {
     APPROVAL_REQUIRED: 'Approval is still required',
     POLICY_DENIED: 'Blocked by Freedom policy',
     USER_CANCELLED: 'Not applied',
+    FILE_UPLOAD_CANCELLED_BY_USER: 'File selection cancelled by you',
     DOWNLOAD_CANCELLED_BY_USER: 'Download cancelled by you',
     CAPABILITY_UNAVAILABLE: 'Browser capability is unavailable',
     INTERNAL_ERROR: 'Browser action failed unexpectedly',
@@ -1500,16 +1505,18 @@ function finishToolRow(event) {
   const record = toolRows.get(`${event.runId}:${event.toolCallId}`);
   if (!record) return;
   const downloadCancelled = event.errorCode === 'DOWNLOAD_CANCELLED_BY_USER';
+  const uploadCancelled = event.errorCode === 'FILE_UPLOAD_CANCELLED_BY_USER';
+  const userCancelled = downloadCancelled || uploadCancelled;
   record.label.textContent = event.label || record.label.textContent;
-  record.state.textContent = downloadCancelled ? '•' : event.status === 'failed' ? '×' : '✓';
-  record.row.classList.toggle('cancelled', downloadCancelled);
-  record.row.classList.toggle('failed', event.status === 'failed' && !downloadCancelled);
+  record.state.textContent = userCancelled ? '•' : event.status === 'failed' ? '×' : '✓';
+  record.row.classList.toggle('cancelled', userCancelled);
+  record.row.classList.toggle('failed', event.status === 'failed' && !userCancelled);
   if (event.status === 'failed') {
     record.row.title = formatToolError(event.errorCode);
     record.label.textContent = `${record.label.textContent} — ${formatToolError(event.errorCode)}`;
   }
   updateToolApproval(event.runId, event.toolCallId, event.approval);
-  if (downloadCancelled) {
+  if (userCancelled) {
     record.approval.textContent = 'Cancelled by you';
     record.approval.hidden = false;
   }
@@ -1607,7 +1614,11 @@ async function claimAgentOwnedTab(rendererTabId) {
   try {
     const response = await window.electronAPI.claimAgentTab(rendererTabId);
     if (!response?.ok) {
-      setMessage(elements.runMessage, responseMessage(response, 'Could not claim the Agent tab'), true);
+      setMessage(
+        elements.runMessage,
+        responseMessage(response, 'Could not claim the Agent tab'),
+        true
+      );
       return;
     }
     applyWorkspaceProjection(response.state);
@@ -1766,7 +1777,9 @@ function handleAgentEvent(event) {
         elements.runMessage,
         event.errorCode === 'DOWNLOAD_CANCELLED_BY_USER'
           ? 'Download cancelled by you. Agent will not retry it unless you ask.'
-          : `${formatToolError(event.errorCode)}. Agent is deciding how to recover.`
+          : event.errorCode === 'FILE_UPLOAD_CANCELLED_BY_USER'
+            ? 'File selection cancelled by you. Agent will not retry it unless you ask.'
+            : `${formatToolError(event.errorCode)}. Agent is deciding how to recover.`
       );
     } else if (event.label) {
       setMessage(elements.runMessage, event.label);

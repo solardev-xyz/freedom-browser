@@ -2,11 +2,7 @@
 
 const { OPERATIONS } = require('../automation/contract/operations');
 const { ERROR_CODES } = require('../automation/contract/errors');
-const {
-  activityProgress,
-  buildAgentOutcome,
-  createToolReceipt,
-} = require('./agent-progress');
+const { activityProgress, buildAgentOutcome, createToolReceipt } = require('./agent-progress');
 
 describe('Agent progress projection', () => {
   test('projects only an origin and opaque page identity from browser receipts', () => {
@@ -70,7 +66,9 @@ describe('Agent progress projection', () => {
       envelope: { ok: true, result: { artifact } },
     });
 
-    expect(receipt).toEqual({ artifact: expect.not.objectContaining({ savePath: expect.anything() }) });
+    expect(receipt).toEqual({
+      artifact: expect.not.objectContaining({ savePath: expect.anything() }),
+    });
     expect(activityProgress(OPERATIONS.DOWNLOAD, receipt)).toMatchObject({
       intent: 'Downloading report.pdf',
       label: 'Downloaded report.pdf',
@@ -85,6 +83,38 @@ describe('Agent progress projection', () => {
       verification: 'artifact_available',
       headline: 'File downloaded',
       counts: { artifacts: 1 },
+    });
+  });
+
+  test('projects an attached-file receipt without retaining its local path', () => {
+    const receipt = createToolReceipt(OPERATIONS.UPLOAD, {
+      envelope: {
+        ok: true,
+        result: {
+          upload: {
+            filename: 'résumé.pdf',
+            mimeType: 'application/pdf',
+            bytes: 4096,
+            state: 'attached',
+            path: '/Users/private/Documents/résumé.pdf',
+          },
+        },
+      },
+    });
+
+    expect(receipt).toEqual({
+      upload: {
+        filename: 'résumé.pdf',
+        mimeType: 'application/pdf',
+        bytes: 4096,
+        state: 'attached',
+      },
+    });
+    expect(JSON.stringify(receipt)).not.toContain('/Users/private');
+    expect(activityProgress(OPERATIONS.UPLOAD, receipt)).toMatchObject({
+      intent: 'Choosing résumé.pdf',
+      label: 'Attached résumé.pdf',
+      effect: 'changed',
     });
   });
 
@@ -121,6 +151,27 @@ describe('Agent progress projection', () => {
       tone: 'neutral',
       headline: 'Download cancelled',
       counts: { failed: 0, cancelledDownloads: 1 },
+    });
+  });
+
+  test('treats a cancelled native file picker as a neutral terminal state', () => {
+    expect(
+      buildAgentOutcome(
+        [
+          {
+            operation: OPERATIONS.UPLOAD,
+            status: 'failed',
+            effect: 'changed',
+            errorCode: ERROR_CODES.FILE_UPLOAD_CANCELLED_BY_USER,
+          },
+        ],
+        'completed'
+      )
+    ).toMatchObject({
+      verification: 'file_selection_cancelled',
+      tone: 'neutral',
+      headline: 'File selection cancelled',
+      counts: { failed: 0, cancelledUploads: 1 },
     });
   });
 

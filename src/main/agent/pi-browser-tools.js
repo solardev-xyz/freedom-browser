@@ -149,6 +149,19 @@ const TOOL_SPECS = Object.freeze([
     },
   },
   {
+    operation: OPERATIONS.UPLOAD,
+    label: 'Attach file',
+    description:
+      'Ask the user to choose one local file, then attach it to an exact file-input reference from the latest page snapshot. Freedom never reveals the local path. File selection always requires approval, even when ordinary website interactions are allowed. If the user cancels the picker, do not retry unless they explicitly ask again.',
+    parameters: {
+      type: 'object',
+      properties: { ref: { type: 'string', minLength: 1 } },
+      required: ['ref'],
+      additionalProperties: false,
+    },
+    cancellable: true,
+  },
+  {
     operation: OPERATIONS.DOWNLOAD,
     label: 'Download file',
     description:
@@ -230,7 +243,7 @@ function assertNotAborted(signal, operation) {
 
 async function executeCancellable(controller, operation, input, signal, execution = {}) {
   assertNotAborted(signal, operation);
-  if (operation === OPERATIONS.DOWNLOAD) {
+  if (operation === OPERATIONS.DOWNLOAD || operation === OPERATIONS.UPLOAD) {
     return controller.execute(operation, input, { ...execution, signal });
   }
   if (!signal) return controller.execute(operation, input);
@@ -280,7 +293,7 @@ async function executeBrowserTool(controller, tabId, spec, params, signal, execu
   try {
     envelope = spec.cancellable
       ? await executeCancellable(controller, spec.operation, input, signal, execution)
-      : spec.operation === OPERATIONS.DOWNLOAD
+      : spec.operation === OPERATIONS.DOWNLOAD || spec.operation === OPERATIONS.UPLOAD
         ? await controller.execute(spec.operation, input, execution)
         : await controller.execute(spec.operation, input);
   } catch (error) {

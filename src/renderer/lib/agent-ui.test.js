@@ -439,9 +439,7 @@ describe('Agent UI', () => {
     const ctx = await loadAgentUi();
 
     expect(ctx.elements['agent-page-contexts'].hidden).toBe(false);
-    expect(ctx.elements['agent-page-context-label'].textContent).toBe(
-      'Current page · Start page'
-    );
+    expect(ctx.elements['agent-page-context-label'].textContent).toBe('Current page · Start page');
     ctx.elements['agent-page-context'].dispatch('click');
     expect(ctx.elements['agent-page-contexts'].hidden).toBe(true);
 
@@ -898,9 +896,7 @@ describe('Agent UI', () => {
       label: 'Read https://example.test',
     });
 
-    expect(ctx.elements['agent-run-message'].textContent).toBe(
-      'Reading https://example.test'
-    );
+    expect(ctx.elements['agent-run-message'].textContent).toBe('Reading https://example.test');
     const liveActivity = ctx.elements['agent-transcript'].querySelector('.agent-turn-activity');
     expect(liveActivity.children[0].textContent).toBe('Reading https://example.test');
 
@@ -1275,9 +1271,7 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-first-titlebar'].hidden).toBe(false);
     expect(ctx.elements['agent-session-sidebar'].hidden).toBe(false);
     expect(ctx.elements['agent-session-list'].children).toHaveLength(1);
-    expect(
-      ctx.elements['agent-session-list'].children[0].classList.contains('active')
-    ).toBe(true);
+    expect(ctx.elements['agent-session-list'].children[0].classList.contains('active')).toBe(true);
     expect(ctx.elements['agent-first-title'].textContent).toBe('Compare agent definitions');
     expect(ctx.elements['agent-task-pages'].hidden).toBe(false);
     expect(ctx.elements['agent-task-page-count'].textContent).toBe('1');
@@ -1621,10 +1615,7 @@ describe('Agent UI', () => {
     ctx.elements['agent-run'].dispatch('click');
     await flush();
 
-    expect(ctx.electronAPI.resumeAgent).toHaveBeenCalledWith(
-      'run_test',
-      'I logged in; continue'
-    );
+    expect(ctx.electronAPI.resumeAgent).toHaveBeenCalledWith('run_test', 'I logged in; continue');
     expect(ctx.electronAPI.steerAgent).not.toHaveBeenCalled();
     expect(ctx.elements['agent-prompt'].value).toBe('');
     expect(ctx.elements['agent-run-status'].textContent).toBe('Resuming');
@@ -1660,9 +1651,9 @@ describe('Agent UI', () => {
       action: 'form_submission',
       toolCallId: 'tool_approval',
     });
-    expect(
-      ctx.elements['agent-transcript'].querySelector('.agent-tool-approval').textContent
-    ).toBe('Approval needed');
+    expect(ctx.elements['agent-transcript'].querySelector('.agent-tool-approval').textContent).toBe(
+      'Approval needed'
+    );
     ctx.emit({
       type: 'approval_resolved',
       runId: 'run_test',
@@ -1670,9 +1661,9 @@ describe('Agent UI', () => {
       decision: 'withdrawn',
       toolCallId: 'tool_approval',
     });
-    expect(
-      ctx.elements['agent-transcript'].querySelector('.agent-tool-approval').textContent
-    ).toBe('Withdrawn');
+    expect(ctx.elements['agent-transcript'].querySelector('.agent-tool-approval').textContent).toBe(
+      'Withdrawn'
+    );
     ctx.emit({ type: 'run_pausing', runId: 'run_test' });
     ctx.emit({ type: 'run_paused', runId: 'run_test' });
 
@@ -1752,6 +1743,46 @@ describe('Agent UI', () => {
       'Download Ubuntu 26.04 LTS amd64?'
     );
     expect(ctx.elements['agent-approval-origin'].textContent).toBe('ubuntu.com');
+  });
+
+  test('uses the native picker as the final consent surface for a file upload', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Upload my résumé';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'approval_requested',
+      runId: 'run_test',
+      approvalId: 'approval_upload',
+      action: 'file_upload',
+      operation: 'browser_upload',
+      origin: 'https://jobs.example',
+      destinationOrigin: 'https://jobs.example',
+      label: 'Résumé or CV',
+    });
+
+    expect(ctx.elements['agent-approval-action'].textContent).toBe(
+      'Choose a file to share with jobs.example?'
+    );
+    expect(ctx.elements['agent-approval-origin'].textContent).toContain('For “Résumé or CV”');
+    expect(ctx.elements['agent-approval-origin'].textContent).toContain('never shows Agent');
+    expect(ctx.elements['agent-approval-approve'].textContent).toBe('Choose file…');
+
+    ctx.elements['agent-approval-approve'].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.decideAgentApproval).toHaveBeenCalledWith(
+      'run_test',
+      'approval_upload',
+      true
+    );
+    ctx.emit({
+      type: 'approval_resolved',
+      runId: 'run_test',
+      approvalId: 'approval_upload',
+      decision: 'approved',
+    });
+    expect(ctx.elements['agent-approval-approve'].textContent).toBe('Allow once');
   });
 
   test('keeps the conversation reusable after a failed run', async () => {

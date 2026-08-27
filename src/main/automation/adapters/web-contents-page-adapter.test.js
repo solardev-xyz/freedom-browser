@@ -17,6 +17,12 @@ class FakeWebContents extends EventEmitter {
     this.sendInputEvent = jest.fn();
     this.capturePage = jest.fn(async () => ({ toPNG: () => Buffer.from('png') }));
     this.stop = jest.fn();
+    this.debugger = {
+      attach: jest.fn(),
+      detach: jest.fn(),
+      isAttached: jest.fn(() => false),
+      sendCommand: jest.fn(),
+    };
   }
 
   async loadURL(url) {
@@ -170,6 +176,56 @@ describe('WebContentsPageAdapter', () => {
     );
   });
 
+  test('attaches one selected file to the exact snapshotted file input through Chromium', async () => {
+    const webContents = new FakeWebContents();
+    const uploadSnapshot = snapshotResult();
+    uploadSnapshot.elements[0] = {
+      ...uploadSnapshot.elements[0],
+      name: 'Résumé',
+      tag: 'input',
+      effect: 'file_upload',
+      accept: '.pdf',
+      multiple: false,
+    };
+    webContents.executeJavaScriptInIsolatedWorld
+      .mockResolvedValueOnce(uploadSnapshot)
+      .mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce({
+        ok: true,
+        filename: 'résumé.pdf',
+        bytes: 4096,
+        mimeType: 'application/pdf',
+        fileCount: 1,
+      })
+      .mockResolvedValueOnce({ ok: true });
+    webContents.debugger.sendCommand.mockImplementation(async (command) => {
+      if (command === 'DOM.performSearch') return { searchId: 'search_upload', resultCount: 1 };
+      if (command === 'DOM.getSearchResults') return { nodeIds: [42] };
+      return {};
+    });
+    const adapter = new WebContentsPageAdapter(webContents, {
+      referenceIdFactory: () => 'ref_test',
+    });
+    await adapter.snapshot();
+
+    await expect(adapter.click('ref_test_0')).rejects.toMatchObject({
+      code: ERROR_CODES.CAPABILITY_UNAVAILABLE,
+    });
+    await expect(adapter.upload('ref_test_0', '/private/path/résumé.pdf')).resolves.toEqual({
+      attached: true,
+      ref: 'ref_test_0',
+      filename: 'résumé.pdf',
+      bytes: 4096,
+      mimeType: 'application/pdf',
+      fileCount: 1,
+    });
+    expect(webContents.debugger.sendCommand).toHaveBeenCalledWith('DOM.setFileInputFiles', {
+      nodeId: 42,
+      files: ['/private/path/résumé.pdf'],
+    });
+    expect(webContents.debugger.detach).toHaveBeenCalledTimes(1);
+  });
+
   test('revalidates native form-submission semantics without dispatching input', async () => {
     const webContents = new FakeWebContents();
     webContents.executeJavaScriptInIsolatedWorld
@@ -197,7 +253,7 @@ describe('WebContentsPageAdapter', () => {
     expect(webContents.executeJavaScriptInIsolatedWorld.mock.calls[1][2]).toBe(false);
     const inspectionCode = webContents.executeJavaScriptInIsolatedWorld.mock.calls[1][1][0].code;
     expect(inspectionCode).toContain('new formWindow.FormData');
-    expect(inspectionCode).toContain("crypto.subtle.digest");
+    expect(inspectionCode).toContain('crypto.subtle.digest');
   });
 
   test('focuses a press target before inspecting its live action semantics', async () => {

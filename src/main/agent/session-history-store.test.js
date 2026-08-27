@@ -90,6 +90,21 @@ describe('AgentSessionHistoryStore', () => {
           },
           pageText: 'not persisted',
         },
+        {
+          toolCallId: 'call_upload',
+          operation: 'browser_upload',
+          status: 'succeeded',
+          label: 'Attached résumé.pdf',
+          effect: 'changed',
+          origin: 'https://submit.example',
+          upload: {
+            filename: 'résumé.pdf',
+            bytes: 4096,
+            mimeType: 'application/pdf',
+            state: 'attached',
+            path: '/Users/private/Documents/résumé.pdf',
+          },
+        },
       ],
       guidance: [
         {
@@ -111,7 +126,8 @@ describe('AgentSessionHistoryStore', () => {
         turnCount: 1,
       }),
     ]);
-    expect(store.getSession('conversation_one')).toMatchObject({
+    const restored = store.getSession('conversation_one');
+    expect(restored).toMatchObject({
       providerId: 'openai-codex',
       modelId: 'gpt-test',
       transcript: [
@@ -144,6 +160,20 @@ describe('AgentSessionHistoryStore', () => {
                 available: true,
               },
             },
+            {
+              toolCallId: 'call_upload',
+              operation: 'browser_upload',
+              status: 'succeeded',
+              label: 'Attached résumé.pdf',
+              effect: 'changed',
+              origin: 'https://submit.example',
+              upload: {
+                filename: 'résumé.pdf',
+                bytes: 4096,
+                mimeType: 'application/pdf',
+                state: 'attached',
+              },
+            },
           ],
           guidance: [
             {
@@ -156,6 +186,7 @@ describe('AgentSessionHistoryStore', () => {
         },
       ],
     });
+    expect(JSON.stringify(restored)).not.toContain('/Users/private');
     expect(store.getDb().filePath).toBe(path.join(userDataDir, DB_FILE));
   });
 

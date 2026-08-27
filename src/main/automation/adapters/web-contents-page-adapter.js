@@ -17,6 +17,7 @@ const ELECTRON_KEY_CODES = Object.freeze({
   ArrowRight: 'Right',
 });
 const CHARACTER_KEYS = new Set(['Enter', 'Space']);
+const UPLOAD_MARKER_ATTRIBUTE = 'data-freedom-agent-upload';
 
 function defaultReferenceIdFactory() {
   return `ref_${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
@@ -76,6 +77,7 @@ function collectPageSnapshot(
     if (tag === 'select') return 'combobox';
     if (tag === 'textarea') return 'textbox';
     if (tag === 'input') {
+      if (element.type === 'file') return 'button';
       if (['button', 'submit', 'reset'].includes(element.type)) return 'button';
       if (element.type === 'checkbox') return 'checkbox';
       if (element.type === 'radio') return 'radio';
@@ -129,11 +131,13 @@ function collectPageSnapshot(
       const ref = `${snapshotToken}_${String(elements.length)}`;
       const tag = element.tagName.toLowerCase();
       const inputType = normalize(element.getAttribute('type')).toLowerCase();
+      const uploadsFile = tag === 'input' && inputType === 'file';
       const submitsForm =
         Boolean(element.form) &&
         ((tag === 'button' && (!inputType || inputType === 'submit')) ||
           (tag === 'input' && ['submit', 'image'].includes(inputType)));
-      const downloadsFile = tag === 'a' && element.hasAttribute('href') && element.hasAttribute('download');
+      const downloadsFile =
+        tag === 'a' && element.hasAttribute('href') && element.hasAttribute('download');
       state.refs.set(ref, { element, frameWindow });
       elements.push({
         ref,
@@ -144,13 +148,19 @@ function collectPageSnapshot(
         disabled: element.matches(':disabled') || element.getAttribute('aria-disabled') === 'true',
         focused: element === frameDocument.activeElement,
         editable:
-          element.matches('input:not([readonly]),textarea:not([readonly])') ||
+          (!uploadsFile && element.matches('input:not([readonly]),textarea:not([readonly])')) ||
           element.isContentEditable,
-        ...(downloadsFile
-          ? { effect: 'file_download' }
-          : submitsForm
-            ? { effect: 'form_submission' }
-            : {}),
+        ...(uploadsFile
+          ? { effect: 'file_upload' }
+          : downloadsFile
+            ? { effect: 'file_download' }
+            : submitsForm
+              ? { effect: 'form_submission' }
+              : {}),
+        ...(uploadsFile && {
+          accept: normalize(element.getAttribute('accept')).slice(0, 500),
+          multiple: element.multiple === true,
+        }),
         ...(tag === 'select' && {
           value: element.value,
           options: Array.from(element.options)
@@ -209,6 +219,14 @@ function inspectReferencedElement(ref, action) {
     element.matches(':disabled') ||
     element.getAttribute('aria-disabled') === 'true';
   if (unavailable) return { ok: false, reason: 'not_interactable' };
+
+  if (action === 'upload') {
+    const tag = element.tagName.toLowerCase();
+    const inputType = String(element.getAttribute('type') || '').toLowerCase();
+    return tag === 'input' && inputType === 'file'
+      ? { ok: true }
+      : { ok: false, reason: 'not_interactable' };
+  }
 
   if (action === 'click') {
     element.scrollIntoView({ block: 'center', inline: 'center' });
@@ -292,6 +310,7 @@ async function describeReferencedElement(ref, action, key) {
   );
   const tag = element.tagName.toLowerCase();
   const inputType = normalize(element.getAttribute('type')).toLowerCase();
+  const uploadsFile = action === 'upload' && tag === 'input' && inputType === 'file';
   const submitsForm =
     Boolean(element.form) &&
     ((tag === 'button' && (!inputType || inputType === 'submit')) ||
@@ -392,13 +411,51 @@ async function describeReferencedElement(ref, action, key) {
   return {
     ok: true,
     label: actionLabel,
-    ...(downloadsFile
-      ? { effect: 'file_download' }
-      : formSubmission
-        ? { effect: 'form_submission' }
-        : {}),
+    ...(uploadsFile
+      ? { effect: 'file_upload' }
+      : downloadsFile
+        ? { effect: 'file_download' }
+        : formSubmission
+          ? { effect: 'form_submission' }
+          : {}),
+    ...(uploadsFile && {
+      accept: normalize(element.getAttribute('accept')).slice(0, 500),
+      multiple: element.multiple === true,
+    }),
     ...(navigationTarget && { navigationTarget }),
     ...(formPayloadFingerprint && { formPayloadFingerprint }),
+  };
+}
+
+function markReferencedFileInput(ref, marker) {
+  const inspected = inspectReferencedElement(ref, 'upload');
+  if (!inspected.ok) return inspected;
+  const element = globalThis.__FREEDOM_AUTOMATION_ELEMENT_REFERENCES__.refs.get(ref).element;
+  element.setAttribute('data-freedom-agent-upload', marker);
+  return { ok: true };
+}
+
+function clearReferencedFileInputMarker(ref, marker) {
+  const reference = globalThis.__FREEDOM_AUTOMATION_ELEMENT_REFERENCES__?.refs?.get(ref);
+  const element = reference?.element;
+  if (element?.getAttribute('data-freedom-agent-upload') === marker) {
+    element.removeAttribute('data-freedom-agent-upload');
+  }
+  return { ok: true };
+}
+
+function describeAttachedFile(ref) {
+  const inspected = inspectReferencedElement(ref, 'upload');
+  if (!inspected.ok) return inspected;
+  const element = globalThis.__FREEDOM_AUTOMATION_ELEMENT_REFERENCES__.refs.get(ref).element;
+  const file = element.files?.[0];
+  if (!file) return { ok: false, reason: 'selection_not_applied' };
+  return {
+    ok: true,
+    filename: String(file.name || '').slice(0, 255),
+    bytes: Number.isSafeInteger(file.size) && file.size >= 0 ? file.size : 0,
+    mimeType: String(file.type || '').slice(0, 200),
+    fileCount: element.files.length,
   };
 }
 
@@ -583,6 +640,13 @@ class WebContentsPageAdapter extends EventEmitter {
         { retryable: true }
       );
     }
+    if (reference.effect === 'file_upload') {
+      throw new AutomationError(
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        'Use browser_upload for file inputs so Freedom can ask you to choose a file',
+        { retryable: true }
+      );
+    }
     return this.#trustedClick(ref);
   }
 
@@ -598,6 +662,97 @@ class WebContentsPageAdapter extends EventEmitter {
       );
     }
     return this.#trustedClick(ref);
+  }
+
+  async upload(ref, filePath) {
+    this.#assertAvailable();
+    const reference = this.#requireReference(ref);
+    if (reference.effect !== 'file_upload') {
+      throw new AutomationError(
+        ERROR_CODES.ELEMENT_NOT_INTERACTABLE,
+        'The referenced element is not a file input'
+      );
+    }
+    if (typeof filePath !== 'string' || !filePath) {
+      throw new AutomationError(ERROR_CODES.INVALID_ARGUMENT, 'A selected file is required');
+    }
+    const marker = crypto.randomUUID();
+    const marked = await this.#execute(markReferencedFileInput, [ref, marker], true, [
+      inspectReferencedElement,
+    ]);
+    this.#assertActionResult(marked);
+    const debuggerApi = this.webContents.debugger;
+    if (
+      !debuggerApi ||
+      typeof debuggerApi.attach !== 'function' ||
+      typeof debuggerApi.sendCommand !== 'function'
+    ) {
+      await this.#execute(clearReferencedFileInputMarker, [ref, marker], false).catch(() => {});
+      throw new AutomationError(
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        'Native file attachment is unavailable for this page'
+      );
+    }
+    let attachedDebugger = false;
+    let searchId = '';
+    try {
+      if (debuggerApi.isAttached?.()) {
+        throw new AutomationError(
+          ERROR_CODES.CAPABILITY_UNAVAILABLE,
+          'Close the page debugger before attaching a file'
+        );
+      }
+      debuggerApi.attach('1.3');
+      attachedDebugger = true;
+      await debuggerApi.sendCommand('DOM.enable');
+      // Prime the DOM domain without serializing the page tree into main.
+      await debuggerApi.sendCommand('DOM.getDocument', { depth: 0, pierce: true });
+      const search = await debuggerApi.sendCommand('DOM.performSearch', {
+        query: `[${UPLOAD_MARKER_ATTRIBUTE}="${marker}"]`,
+        includeUserAgentShadowDOM: true,
+      });
+      searchId = search?.searchId || '';
+      if (!searchId || search.resultCount !== 1) throw this.#staleReferenceError();
+      const matches = await debuggerApi.sendCommand('DOM.getSearchResults', {
+        searchId,
+        fromIndex: 0,
+        toIndex: 1,
+      });
+      const nodeId = matches?.nodeIds?.[0];
+      if (!Number.isInteger(nodeId) || nodeId < 1) throw this.#staleReferenceError();
+      await debuggerApi.sendCommand('DOM.setFileInputFiles', { nodeId, files: [filePath] });
+      const result = await this.#execute(describeAttachedFile, [ref], false, [
+        inspectReferencedElement,
+      ]);
+      this.#assertActionResult(result);
+      return {
+        attached: true,
+        ref,
+        filename: result.filename,
+        bytes: result.bytes,
+        ...(result.mimeType && { mimeType: result.mimeType }),
+        fileCount: result.fileCount,
+      };
+    } catch (error) {
+      if (error instanceof AutomationError) throw error;
+      throw new AutomationError(
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        'Freedom could not attach the selected file to this page',
+        { retryable: true, cause: error }
+      );
+    } finally {
+      if (searchId) {
+        await debuggerApi.sendCommand('DOM.discardSearchResults', { searchId }).catch(() => {});
+      }
+      await this.#execute(clearReferencedFileInputMarker, [ref, marker], false).catch(() => {});
+      if (attachedDebugger) {
+        try {
+          debuggerApi.detach();
+        } catch {
+          // The file-selection result is authoritative even if Chromium already detached.
+        }
+      }
+    }
   }
 
   async #trustedClick(ref) {
@@ -636,12 +791,14 @@ class WebContentsPageAdapter extends EventEmitter {
     const action =
       operation === 'browser_press'
         ? 'press'
-        : operation === 'browser_type'
-          ? 'type'
-          : operation === 'browser_select'
-            ? 'select'
-            : 'click';
-    if (action === 'press') {
+        : operation === 'browser_upload'
+          ? 'upload'
+          : operation === 'browser_type'
+            ? 'type'
+            : operation === 'browser_select'
+              ? 'select'
+              : 'click';
+    if (action === 'press' || action === 'upload') {
       const prepared = await this.#execute(inspectReferencedElement, [ref, action], true);
       this.#assertActionResult(prepared);
     }
@@ -654,8 +811,12 @@ class WebContentsPageAdapter extends EventEmitter {
     this.#assertActionResult(result);
     return {
       label: typeof result.label === 'string' ? result.label : '',
-      ...(['form_submission', 'file_download'].includes(result.effect) && {
+      ...(['form_submission', 'file_download', 'file_upload'].includes(result.effect) && {
         effect: result.effect,
+      }),
+      ...(result.effect === 'file_upload' && {
+        accept: typeof result.accept === 'string' ? result.accept : '',
+        multiple: result.multiple === true,
       }),
       ...(typeof result.navigationTarget === 'string' &&
         result.navigationTarget && { navigationTarget: result.navigationTarget }),

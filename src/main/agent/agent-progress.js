@@ -71,6 +71,11 @@ const OPERATION_PROGRESS = Object.freeze({
     intent: 'Downloading a file',
     completed: 'Downloaded a file',
   },
+  [OPERATIONS.UPLOAD]: {
+    effect: ACTIVITY_EFFECTS.CHANGED,
+    intent: 'Choosing a file to share',
+    completed: 'Attached a file to the page',
+  },
   [OPERATIONS.LIST_DOWNLOADS]: {
     effect: ACTIVITY_EFFECTS.OBSERVED,
     intent: 'Checking task downloads',
@@ -99,6 +104,7 @@ const ERROR_LABELS = Object.freeze({
   [ERROR_CODES.APPROVAL_REQUIRED]: 'This action still needs approval.',
   [ERROR_CODES.POLICY_DENIED]: 'Freedom blocked this browser action.',
   [ERROR_CODES.USER_CANCELLED]: 'The browser action was not applied.',
+  [ERROR_CODES.FILE_UPLOAD_CANCELLED_BY_USER]: 'The user cancelled file selection.',
   [ERROR_CODES.DOWNLOAD_CANCELLED_BY_USER]: 'The user cancelled the download.',
   [ERROR_CODES.CAPABILITY_UNAVAILABLE]: 'This browser capability is unavailable.',
   [ERROR_CODES.INTERNAL_ERROR]: 'The browser action failed unexpectedly.',
@@ -118,6 +124,7 @@ const CONFIRMED_NOT_APPLIED_ERRORS = new Set([
   ERROR_CODES.APPROVAL_REQUIRED,
   ERROR_CODES.POLICY_DENIED,
   ERROR_CODES.USER_CANCELLED,
+  ERROR_CODES.FILE_UPLOAD_CANCELLED_BY_USER,
   ERROR_CODES.DOWNLOAD_CANCELLED_BY_USER,
   ERROR_CODES.CAPABILITY_UNAVAILABLE,
 ]);
@@ -154,6 +161,20 @@ function availableArtifact(value) {
   return artifact?.state === 'completed' && artifact.available ? artifact : null;
 }
 
+function normalizeUpload(value) {
+  if (!value || typeof value !== 'object') return null;
+  // eslint-disable-next-line no-control-regex
+  const filename = boundedString(value.filename, 255).replace(/[\u0000-\u001f\u007f]/g, '');
+  if (!filename || value.state !== 'attached') return null;
+  const bytes = Number.isSafeInteger(value.bytes) && value.bytes >= 0 ? value.bytes : 0;
+  return Object.freeze({
+    filename,
+    bytes,
+    ...(boundedString(value.mimeType, 200) && { mimeType: value.mimeType.slice(0, 200) }),
+    state: 'attached',
+  });
+}
+
 function activityProgress(operation, receipt = {}) {
   const copy = OPERATION_PROGRESS[operation] || {
     effect: ACTIVITY_EFFECTS.MANAGED,
@@ -161,12 +182,12 @@ function activityProgress(operation, receipt = {}) {
     completed: 'Used the browser',
   };
   const origin = originScopeForUrl(receipt.origin) || '';
-  const pageCount = Number.isSafeInteger(receipt.pageCount) && receipt.pageCount >= 0
-    ? receipt.pageCount
-    : null;
+  const pageCount =
+    Number.isSafeInteger(receipt.pageCount) && receipt.pageCount >= 0 ? receipt.pageCount : null;
   let intent = copy.intent;
   let label = copy.completed;
   const artifact = availableArtifact(receipt.artifact);
+  const upload = normalizeUpload(receipt.upload);
 
   if (operation === OPERATIONS.LIST_TABS && pageCount !== null) {
     const pages = `${pageCount} Agent ${pageCount === 1 ? 'tab' : 'tabs'}`;
@@ -175,6 +196,9 @@ function activityProgress(operation, receipt = {}) {
   } else if (operation === OPERATIONS.DOWNLOAD && artifact) {
     intent = `Downloading ${artifact.filename}`;
     label = `Downloaded ${artifact.filename}`;
+  } else if (operation === OPERATIONS.UPLOAD && upload) {
+    intent = `Choosing ${upload.filename}`;
+    label = `Attached ${upload.filename}`;
   } else if (origin) {
     const originCopy = {
       [OPERATIONS.CREATE_TAB]: ['Opening', 'Opened'],
@@ -187,6 +211,7 @@ function activityProgress(operation, receipt = {}) {
       [OPERATIONS.TYPE]: ['Entering information on', 'Entered information on'],
       [OPERATIONS.SELECT]: ['Changing a selection on', 'Changed a selection on'],
       [OPERATIONS.PRESS]: ['Using the keyboard on', 'Used the keyboard on'],
+      [OPERATIONS.UPLOAD]: ['Choosing a file for', 'Attached a file on'],
       [OPERATIONS.WAIT]: ['Waiting for', 'Waited for'],
       [OPERATIONS.STOP_LOADING]: ['Stopping page loading on', 'Stopped page loading on'],
     }[operation];
@@ -204,6 +229,7 @@ function activityProgress(operation, receipt = {}) {
     ...(boundedString(receipt.pageId, 160) && { pageId: receipt.pageId.slice(0, 160) }),
     ...(pageCount !== null && { pageCount }),
     ...(artifact && { artifact }),
+    ...(upload && { upload }),
   });
 }
 
@@ -223,10 +249,9 @@ function createToolReceipt(operation, options = {}) {
       ? originScopeForUrl(options.requestedUrl)
       : null);
   const pageCount =
-    operation === OPERATIONS.LIST_TABS && Array.isArray(result?.tabs)
-      ? result.tabs.length
-      : null;
+    operation === OPERATIONS.LIST_TABS && Array.isArray(result?.tabs) ? result.tabs.length : null;
   const artifact = availableArtifact(result?.artifact);
+  const upload = normalizeUpload(result?.upload);
   const artifacts = Array.isArray(result?.artifacts)
     ? result.artifacts.map(normalizeArtifact).filter(Boolean).slice(0, 100)
     : [];
@@ -236,6 +261,7 @@ function createToolReceipt(operation, options = {}) {
     ...(origin && { origin }),
     ...(pageCount !== null && { pageCount }),
     ...(artifact && { artifact }),
+    ...(upload && { upload }),
     ...(artifacts.length && { artifacts }),
   });
 }
@@ -255,18 +281,18 @@ function buildAgentOutcome(activity, status, error) {
   const cancelledDownloads = items.filter(
     (item) => item?.errorCode === ERROR_CODES.DOWNLOAD_CANCELLED_BY_USER
   );
+  const cancelledUploads = items.filter(
+    (item) => item?.errorCode === ERROR_CODES.FILE_UPLOAD_CANCELLED_BY_USER
+  );
   const failed = items.filter(
     (item) =>
       item?.status === 'failed' &&
-      item?.errorCode !== ERROR_CODES.DOWNLOAD_CANCELLED_BY_USER
+      item?.errorCode !== ERROR_CODES.DOWNLOAD_CANCELLED_BY_USER &&
+      item?.errorCode !== ERROR_CODES.FILE_UPLOAD_CANCELLED_BY_USER
   );
   const changed = succeeded.filter((item) => normalizedEffect(item) === ACTIVITY_EFFECTS.CHANGED);
-  const observed = succeeded.filter(
-    (item) => normalizedEffect(item) === ACTIVITY_EFFECTS.OBSERVED
-  );
-  const pageIds = new Set(
-    succeeded.map((item) => item?.pageId || item?.origin).filter(Boolean)
-  );
+  const observed = succeeded.filter((item) => normalizedEffect(item) === ACTIVITY_EFFECTS.OBSERVED);
+  const pageIds = new Set(succeeded.map((item) => item?.pageId || item?.origin).filter(Boolean));
   const artifacts = succeeded.map((item) => availableArtifact(item?.artifact)).filter(Boolean);
   const uncertainChanges = items.filter((item) => {
     if (normalizedEffect(item) !== ACTIVITY_EFFECTS.CHANGED || item?.status === 'succeeded') {
@@ -280,25 +306,28 @@ function buildAgentOutcome(activity, status, error) {
     declined: items.filter((item) => item?.approval === 'declined').length,
     withdrawn: items.filter((item) => item?.approval === 'withdrawn').length,
   });
-  const destinations = [...new Set(
-    items
-      .filter((item) => item?.approval === 'approved')
-      .map((item) => originScopeForUrl(item?.destinationOrigin))
-      .filter(Boolean)
-  )].slice(0, 20);
+  const destinations = [
+    ...new Set(
+      items
+        .filter((item) => item?.approval === 'approved')
+        .map((item) => originScopeForUrl(item?.destinationOrigin))
+        .filter(Boolean)
+    ),
+  ].slice(0, 20);
   const lastChangeIndex = items.findLastIndex(
     (item) => item?.status === 'succeeded' && normalizedEffect(item) === ACTIVITY_EFFECTS.CHANGED
   );
-  const changedPageId = lastChangeIndex >= 0
-    ? items[lastChangeIndex]?.pageId || items[lastChangeIndex]?.origin
-    : null;
-  const resultObserved = lastChangeIndex >= 0 && items.slice(lastChangeIndex + 1).some((item) => {
-    if (item?.status !== 'succeeded' || normalizedEffect(item) !== ACTIVITY_EFFECTS.OBSERVED) {
-      return false;
-    }
-    if (item.operation === OPERATIONS.LIST_TABS || !changedPageId) return true;
-    return (item.pageId || item.origin) === changedPageId;
-  });
+  const changedPageId =
+    lastChangeIndex >= 0 ? items[lastChangeIndex]?.pageId || items[lastChangeIndex]?.origin : null;
+  const resultObserved =
+    lastChangeIndex >= 0 &&
+    items.slice(lastChangeIndex + 1).some((item) => {
+      if (item?.status !== 'succeeded' || normalizedEffect(item) !== ACTIVITY_EFFECTS.OBSERVED) {
+        return false;
+      }
+      if (item.operation === OPERATIONS.LIST_TABS || !changedPageId) return true;
+      return (item.pageId || item.origin) === changedPageId;
+    });
   const counts = Object.freeze({
     successful: succeeded.length,
     failed: failed.length,
@@ -307,6 +336,7 @@ function buildAgentOutcome(activity, status, error) {
     pages: pageIds.size,
     ...(artifacts.length && { artifacts: artifacts.length }),
     ...(cancelledDownloads.length && { cancelledDownloads: cancelledDownloads.length }),
+    ...(cancelledUploads.length && { cancelledUploads: cancelledUploads.length }),
     approvals,
   });
   const browserActionCopy = `${counts.successful} successful browser ${counts.successful === 1 ? 'action' : 'actions'}${counts.pages ? ` across ${counts.pages} ${counts.pages === 1 ? 'page' : 'pages'}` : ''}`;
@@ -345,6 +375,20 @@ function buildAgentOutcome(activity, status, error) {
           cancelledDownloads.length === 1
             ? 'You stopped the transfer. Freedom did not record a completed file.'
             : `You stopped ${cancelledDownloads.length} transfers. Freedom did not record completed files for them.`,
+        destinations,
+        counts,
+      });
+    }
+    if (cancelledUploads.length) {
+      return Object.freeze({
+        kind: 'completed',
+        verification: 'file_selection_cancelled',
+        tone: 'neutral',
+        headline: 'File selection cancelled',
+        detail:
+          cancelledUploads.length === 1
+            ? 'You closed the file picker. Freedom did not attach a file.'
+            : `You cancelled ${cancelledUploads.length} file selections. Freedom did not attach files for them.`,
         destinations,
         counts,
       });
@@ -452,4 +496,5 @@ module.exports = {
   createToolReceipt,
   errorExplanation,
   normalizeArtifact,
+  normalizeUpload,
 };

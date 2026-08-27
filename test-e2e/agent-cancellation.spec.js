@@ -412,7 +412,7 @@ test('Take over preserves the Pi session and resume re-observes the page', async
   await expect(window.locator('[data-test="tab"].active')).not.toHaveClass(/agent-controlled/);
 });
 
-test('in-flight steering changes the retained run without resolving its approval', async ({
+test('the approval composer requires a decision before further steering', async ({
   window,
   harness,
 }) => {
@@ -438,16 +438,14 @@ test('in-flight steering changes the retained run without resolving its approval
   await expect(window.locator('#agent-approval')).toBeVisible({ timeout: 5_000 });
   await expect(window.locator('#agent-approval-action')).toContainText('Submit research');
 
-  await window.locator('#agent-prompt').fill('STEER_DO_NOT_SUBMIT');
-  await window.locator('#agent-run').click();
-  await expect(window.locator('.agent-guidance-message')).toHaveText('STEER_DO_NOT_SUBMIT');
-  await expect(window.locator('.agent-guidance-status')).toHaveText('Guidance queued');
+  await expect(window.locator('#agent-prompt')).toBeDisabled();
+  await expect(window.locator('#agent-run')).toBeHidden();
+  await expect(window.locator('.agent-guidance-message')).toHaveCount(0);
   await expect(window.locator('#agent-approval')).toBeVisible();
 
-  await window.locator('#agent-approval-decline').click();
-  await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 5_000 });
-  await expect(window.locator('#agent-output')).toContainText('STEERING_APPLIED');
-  await expect(window.locator('.agent-guidance-status')).toBeHidden();
+  await window.locator('#agent-approval-stop').click();
+  await expect(window.locator('#agent-run-status')).toHaveText('Stopped', { timeout: 5_000 });
+  await expect(window.locator('#agent-approval')).toBeHidden();
 });
 
 test('Take over cancels an active browser wait and the same run can resume', async ({

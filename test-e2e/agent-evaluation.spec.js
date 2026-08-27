@@ -826,9 +826,7 @@ test('Pi completes a deterministic multi-step task in the visible controlled tab
   await approveInteraction(window, 'Full name');
   await approveInteraction(window, 'Project');
   await expect(window.locator('#agent-approval-action')).toContainText('Submit registration');
-  await expect(window.locator('#agent-approval-origin')).toContainText(
-    'https://agent-evaluation.test'
-  );
+  await expect(window.locator('#agent-approval-origin')).toHaveText('agent-evaluation.test');
   await window.locator('#agent-approval-approve').click();
 
   await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 15_000 });
@@ -1057,8 +1055,9 @@ test('Stop cancels a run while form approval is pending', async ({ window, harne
   await approveInteraction(window, 'Full name');
   await approveInteraction(window, 'Project');
   await expect(window.locator('#agent-approval-action')).toContainText('Submit registration');
-  await expect(window.locator('#agent-run')).toHaveAttribute('data-action', 'stop');
-  await window.locator('#agent-run').click();
+  await expect(window.locator('#agent-run')).toBeHidden();
+  await expect(window.locator('#agent-approval-stop')).toBeEnabled();
+  await window.locator('#agent-approval-stop').click();
 
   await expect(window.locator('#agent-run-status')).toHaveText('Stopped', { timeout: 15_000 });
   await expect(window.locator('#agent-run-message')).toHaveText('Agent stopped.');
@@ -1171,9 +1170,7 @@ test('Pi leaves the browser start page untouched and extracts a fact in an Agent
   await window.locator('#agent-run').click();
 
   await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 15_000 });
-  await expect(window.locator('#agent-output')).toHaveText(
-    'The navigation fact is NAV-ORIGIN-42.'
-  );
+  await expect(window.locator('#agent-output')).toHaveText('The navigation fact is NAV-ORIGIN-42.');
   await expect
     .poll(() =>
       window.evaluate(() => document.querySelector('webview:not(.hidden)')?.getURL?.() || '')
@@ -1322,9 +1319,7 @@ test('Pi follows a same-origin link and extracts a fact after navigation', async
   await window.locator('#agent-run').click();
 
   await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 15_000 });
-  await expect(window.locator('#agent-output')).toHaveText(
-    'The linked fact is LINKED-DETAIL-58.'
-  );
+  await expect(window.locator('#agent-output')).toHaveText('The linked fact is LINKED-DETAIL-58.');
   await expect
     .poll(() =>
       window.evaluate(() => document.querySelector('webview:not(.hidden)')?.getURL?.() || '')
@@ -1338,10 +1333,7 @@ test('Pi follows a same-origin link and extracts a fact after navigation', async
   ]);
 });
 
-test('Pi recovers from a typed wait timeout with a fresh snapshot', async ({
-  window,
-  harness,
-}) => {
+test('Pi recovers from a typed wait timeout with a fresh snapshot', async ({ window, harness }) => {
   requestCount = 0;
   operations.length = 0;
   await prepareAgentFixture(
@@ -1421,7 +1413,9 @@ for (const protocolCase of DWEB_CREATE_CASES) {
 
     await window
       .locator('#agent-prompt')
-      .fill(`${protocolCase.marker}: open the decentralized source in a new tab and report its artifact code.`);
+      .fill(
+        `${protocolCase.marker}: open the decentralized source in a new tab and report its artifact code.`
+      );
     await window.locator('#agent-run').click();
 
     await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 15_000 });

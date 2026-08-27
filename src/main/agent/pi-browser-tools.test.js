@@ -51,6 +51,7 @@ describe('Pi browser tool adapter', () => {
       OPERATIONS.TYPE,
       OPERATIONS.SELECT,
       OPERATIONS.PRESS,
+      OPERATIONS.UPLOAD,
       OPERATIONS.DOWNLOAD,
       OPERATIONS.LIST_DOWNLOADS,
       OPERATIONS.WAIT,

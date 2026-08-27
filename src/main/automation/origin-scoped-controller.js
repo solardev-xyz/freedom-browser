@@ -20,6 +20,7 @@ const ORIGIN_SCOPED_OPERATIONS = new Set([
   OPERATIONS.TYPE,
   OPERATIONS.SELECT,
   OPERATIONS.PRESS,
+  OPERATIONS.UPLOAD,
   OPERATIONS.DOWNLOAD,
   OPERATIONS.LIST_DOWNLOADS,
   OPERATIONS.WAIT,
@@ -31,6 +32,7 @@ const PAGE_INTERACTION_OPERATIONS = new Set([
   OPERATIONS.TYPE,
   OPERATIONS.SELECT,
   OPERATIONS.PRESS,
+  OPERATIONS.UPLOAD,
   OPERATIONS.DOWNLOAD,
 ]);
 
@@ -63,12 +65,11 @@ function errorEnvelope(state, code, message, options = {}) {
 
 function actionDescriptor(element) {
   return Object.freeze({
-    effect: ['form_submission', 'file_download'].includes(element?.effect)
+    effect: ['form_submission', 'file_download', 'file_upload'].includes(element?.effect)
       ? element.effect
       : '',
     label: typeof element?.label === 'string' ? element.label : '',
-    navigationTarget:
-      typeof element?.navigationTarget === 'string' ? element.navigationTarget : '',
+    navigationTarget: typeof element?.navigationTarget === 'string' ? element.navigationTarget : '',
     formPayloadFingerprint:
       typeof element?.formPayloadFingerprint === 'string' ? element.formPayloadFingerprint : '',
   });
@@ -442,7 +443,8 @@ class OriginScopedAutomationController {
   async #authorizeAction(operation, input, state) {
     if (
       this.approvalMode === AGENT_APPROVAL_MODES.ALLOW_WEBSITE_INTERACTIONS &&
-      operation !== OPERATIONS.DOWNLOAD
+      operation !== OPERATIONS.DOWNLOAD &&
+      operation !== OPERATIONS.UPLOAD
     ) {
       return null;
     }
@@ -482,11 +484,16 @@ class OriginScopedAutomationController {
           ? 'form_submission'
           : element.effect === 'file_download'
             ? 'file_download'
-            : 'browser_interaction',
+            : element.effect === 'file_upload'
+              ? 'file_upload'
+              : 'browser_interaction',
       operation,
       tabId: input.tabId,
       origin: originScopeForUrl(state?.result?.tab?.url) || '',
-      destinationOrigin: originScopeForUrl(element.navigationTarget) || '',
+      destinationOrigin:
+        element.effect === 'file_upload'
+          ? originScopeForUrl(state?.result?.tab?.url) || ''
+          : originScopeForUrl(element.navigationTarget) || '',
       label: element.label,
     });
     if (decision === 'withdrawn') {

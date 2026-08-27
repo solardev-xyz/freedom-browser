@@ -17,6 +17,7 @@ const URLS = Object.freeze({
   multiTab: `${PRODUCT_ORIGIN}/research/multi-tab`,
   fileDownload: `${PRODUCT_ORIGIN}/files/report`,
   fileTarget: `${PRODUCT_ORIGIN}/files/quarterly-report.txt`,
+  fileUpload: `${PRODUCT_ORIGIN}/workflow/upload`,
 });
 
 const CLASSIFICATION = Object.freeze({
@@ -39,6 +40,7 @@ const EXPECTED_TOOL_NAMES = Object.freeze([
   'browser_type',
   'browser_select',
   'browser_press',
+  'browser_upload',
   'browser_download',
   'browser_list_downloads',
   'browser_wait',
@@ -52,6 +54,7 @@ let observedPolicyDenial = false;
 let advertisedToolNames = [];
 let observedTaskTabCount = 0;
 let observedDownloadArtifact = null;
+let observedUploadReceipt = null;
 const operations = [];
 
 function completionChunk({ delta = {}, finishReason = null, usage }) {
@@ -422,6 +425,34 @@ async function handleCompletion(request, response) {
     return;
   }
 
+  if (hasUserMarker(messages, 'PRODUCT_FILE_UPLOAD')) {
+    switch (toolResults.length) {
+      case 0:
+        emitToolCall(response, 1, 'browser_snapshot', {});
+        break;
+      case 1:
+        emitToolCall(response, 2, 'browser_upload', {
+          ref: requireRef(elements, 'Résumé file'),
+        });
+        break;
+      case 2:
+        emitToolCall(response, 3, 'browser_snapshot', {});
+        break;
+      default: {
+        const envelopes = toolEnvelopes(messages);
+        observedUploadReceipt =
+          envelopes.find((envelope) => envelope?.result?.upload)?.result?.upload || null;
+        const evidence = allSnapshotTexts(messages).join('\n');
+        const selected = evidence.match(/Selected file:\s*([^\n]+)/)?.[1] || '';
+        emitFinal(
+          response,
+          `Attached ${observedUploadReceipt?.filename || 'the selected file'} to the page. The page reports: ${selected}`
+        );
+      }
+    }
+    return;
+  }
+
   emitFinal(response, 'Qualification task marker missing.');
 }
 
@@ -457,6 +488,7 @@ test.beforeEach(() => {
   advertisedToolNames = [];
   observedTaskTabCount = 0;
   observedDownloadArtifact = null;
+  observedUploadReceipt = null;
   operations.length = 0;
 });
 
@@ -500,9 +532,7 @@ async function runTask(window, prompt) {
 }
 
 async function currentUrl(window) {
-  return window.evaluate(
-    () => document.querySelector('webview:not(.hidden)')?.getURL?.() || ''
-  );
+  return window.evaluate(() => document.querySelector('webview:not(.hidden)')?.getURL?.() || '');
 }
 
 async function guestValue(window, expression) {
@@ -512,8 +542,8 @@ async function guestValue(window, expression) {
 }
 
 async function recordQualification(window, taskId, classification, evidence = {}) {
-  const operationLabels = (await window.locator('.agent-tool-item').allTextContents()).map((label) =>
-    label.replace(/^[•✓×]\s*/, '')
+  const operationLabels = (await window.locator('.agent-tool-item').allTextContents()).map(
+    (label) => label.replace(/^[•✓×]\s*/, '')
   );
   const result = {
     taskId,
@@ -794,17 +824,12 @@ test('baseline: cross-site workspace reads and interacts across origins', async 
     window,
     'PRODUCT_CROSS_ORIGIN_RESEARCH: compare the primary finding with the linked independent source, mark the independent source reviewed, and cite both.'
   );
-  const result = await recordQualification(
-    window,
-    'cross-origin-workspace',
-    CLASSIFICATION.PASS,
-    {
-      finalUrl: await currentUrl(window),
-      policyDenied: observedPolicyDenial,
-      taskTabCount: observedTaskTabCount,
-      reviewStatus: await guestValue(window, 'document.querySelector("#status").textContent'),
-    }
-  );
+  const result = await recordQualification(window, 'cross-origin-workspace', CLASSIFICATION.PASS, {
+    finalUrl: await currentUrl(window),
+    policyDenied: observedPolicyDenial,
+    taskTabCount: observedTaskTabCount,
+    reviewStatus: await guestValue(window, 'document.querySelector("#status").textContent'),
+  });
 
   expect(result.policyDenied).toBe(false);
   expect(result.taskTabCount).toBe(2);
@@ -894,7 +919,9 @@ test('baseline: file delivery uses scoped download authority and a verified rece
 
   await window
     .locator('#agent-prompt')
-    .fill('PRODUCT_FILE_DOWNLOAD: download the quarterly report and provide a verified artifact receipt.');
+    .fill(
+      'PRODUCT_FILE_DOWNLOAD: download the quarterly report and provide a verified artifact receipt.'
+    );
   await window.locator('#agent-run').click();
   await expect(window.locator('#agent-approval')).toBeVisible({ timeout: 10_000 });
   await expect(window.locator('#agent-approval-action')).toHaveText('Download quarterly report?');
@@ -956,9 +983,67 @@ test('baseline: file delivery uses scoped download authority and a verified rece
   expect(JSON.stringify(result.artifact)).not.toContain('/Users/');
   await expect(window.locator('.agent-artifact')).toContainText('freedom-quarterly-report.txt');
   await expect(window.locator('.agent-turn-outcome').last()).toContainText('File downloaded');
-  expect(operations).toEqual([
-    'browser_snapshot',
-    'browser_download',
-    'browser_list_downloads',
-  ]);
+  expect(operations).toEqual(['browser_snapshot', 'browser_download', 'browser_list_downloads']);
+});
+
+test('baseline: file upload uses native user selection and a redacted receipt', async ({
+  window,
+  harness,
+  electronApp,
+}) => {
+  const userDataDir = await electronApp.evaluate(({ app }) => app.getPath('userData'));
+  const selectedPath = path.join(userDataDir, 'private-agent-upload.txt');
+  fs.writeFileSync(selectedPath, 'Freedom upload fixture', 'utf8');
+  await electronApp.evaluate(({ dialog }, filePath) => {
+    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [filePath] });
+  }, selectedPath);
+  await prepareTask(
+    window,
+    harness,
+    URLS.fileUpload,
+    `<!doctype html><title>Application upload</title><main>
+      <h1>Application upload</h1>
+      <label for="resume">Résumé file</label>
+      <input id="resume" type="file" aria-label="Résumé file" accept=".txt">
+      <p id="status">No file selected</p>
+      <script>
+        document.querySelector('#resume').addEventListener('change', (event) => {
+          const file = event.target.files[0];
+          document.querySelector('#status').textContent = file
+            ? 'Selected file: ' + file.name + ' (' + file.size + ' bytes)'
+            : 'No file selected';
+        });
+      </script>
+    </main>`
+  );
+
+  await window
+    .locator('#agent-prompt')
+    .fill('PRODUCT_FILE_UPLOAD: attach the résumé file I choose and verify the page received it.');
+  await window.locator('#agent-run').click();
+  await expect(window.locator('#agent-approval')).toBeVisible({ timeout: 10_000 });
+  await expect(window.locator('#agent-approval-action')).toHaveText(
+    'Choose a file to share with agent-product.test?'
+  );
+  await expect(window.locator('#agent-approval-origin')).toContainText('Résumé file');
+  await expect(window.locator('#agent-approval-origin')).toContainText('never shows Agent');
+  await expect(window.locator('#agent-approval-approve')).toHaveText('Choose file…');
+  await window.locator('#agent-approval-approve').click();
+
+  await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 15_000 });
+  const result = await recordQualification(window, 'file-upload-receipt', CLASSIFICATION.PASS, {
+    upload: observedUploadReceipt,
+    selectedStatus: await guestValue(window, 'document.querySelector("#status").textContent'),
+  });
+
+  expect(result.assistantOutput).toContain('private-agent-upload.txt');
+  expect(result.selectedStatus).toBe('Selected file: private-agent-upload.txt (22 bytes)');
+  expect(result.upload).toMatchObject({
+    filename: 'private-agent-upload.txt',
+    bytes: 22,
+    state: 'attached',
+  });
+  expect(result.upload).not.toHaveProperty('path');
+  expect(JSON.stringify(result.upload)).not.toContain(userDataDir);
+  expect(operations).toEqual(['browser_snapshot', 'browser_upload', 'browser_snapshot']);
 });

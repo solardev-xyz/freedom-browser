@@ -1,13 +1,8 @@
 // Set app name early, before electron-log initializes (it uses app name for log path)
 const { app, dialog } = require('electron');
 const RUNTIME_MODE = process.argv.includes('--runtime');
-const {
-  RUNTIME_PROCESS_EXIT_CODES,
-} = require('../shared/automation-runtime-contract');
-const {
-  createRuntimeServer,
-  inspectRuntimeDiscovery,
-} = require('./automation/runtime-server');
+const { RUNTIME_PROCESS_EXIT_CODES } = require('../shared/automation-runtime-contract');
+const { createRuntimeServer, inspectRuntimeDiscovery } = require('./automation/runtime-server');
 
 function reportRuntimeLaunchError(code, message, details = {}) {
   console.error(
@@ -45,10 +40,7 @@ if (process.env.FREEDOM_TEST_USER_DATA) {
   app.setPath('userData', process.env.FREEDOM_TEST_USER_DATA);
   // Keep E2E download artifacts inside the per-run temp dir instead of
   // polluting the real ~/Downloads folder.
-  app.setPath(
-    'downloads',
-    require('path').join(process.env.FREEDOM_TEST_USER_DATA, 'downloads')
-  );
+  app.setPath('downloads', require('path').join(process.env.FREEDOM_TEST_USER_DATA, 'downloads'));
 }
 const TEST_MODE = process.env.FREEDOM_TEST_MODE === '1';
 const { migrateBeeDataToAntData, migrateUserData } = require('./migrate-user-data');
@@ -228,6 +220,7 @@ const {
   runControlledDownload,
 } = require('./downloads/downloads-manager');
 const { closeDb: closeDownloadsDb } = require('./downloads/downloads-store');
+const { createAgentFileUploadController } = require('./agent/file-upload-controller');
 const { dropPartition: dropPrivateDownloads } = require('./downloads/private-downloads-store');
 const { registerFaviconsIpc } = require('./favicons');
 const { registerEnsIpc } = require('./ens-resolver');
@@ -390,6 +383,13 @@ async function bootstrap() {
       }),
     list: listAgentDownloads,
   });
+  automationController.setUploadController(
+    createAgentFileUploadController({
+      dialog,
+      getOwnerWindow: (webContents) =>
+        webContents.getOwnerBrowserWindow?.() || BrowserWindow.fromWebContents(webContents),
+    })
+  );
   registerFaviconsIpc();
   registerEnsIpc();
   registerTezosDomainsIpc();
@@ -641,10 +641,7 @@ async function bootstrap() {
         app.quit();
       },
     });
-    runtimeIdleController.registerProbe(
-      'downloads',
-      () => getActiveDownloadCount() > 0
-    );
+    runtimeIdleController.registerProbe('downloads', () => getActiveDownloadCount() > 0);
     runtimeIdleController.registerProbe('node-transition', hasRuntimeNodeTransition);
     unregisterRuntimeDownloadActivity = onDownloadActivity(() =>
       runtimeIdleController?.touch('download-state-changed')

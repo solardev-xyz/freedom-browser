@@ -136,6 +136,8 @@ function createController(initialUrl = 'https://trusted.example/start') {
               label: 'Download report',
               navigationTarget: 'https://trusted.example/report.pdf',
             }
+        : input.ref === 'ref_upload'
+          ? { effect: 'file_upload', label: 'Attach résumé' }
         : input.ref === 'ref_cross_origin'
           ? { label: 'Leave site', navigationTarget: 'https://attacker.example/collect' }
           : { label: 'Ordinary action' },
@@ -950,6 +952,30 @@ describe('OriginScopedAutomationController', () => {
       OPERATIONS.DOWNLOAD,
       { tabId: 'tab_assigned', ref: 'ref_download' },
       { conversationId: 'conversation_test' }
+    );
+  });
+
+  test('always asks before file selection and binds approval to the current site', async () => {
+    const controller = createController();
+    const requestApproval = jest.fn(async () => 'approved');
+    const scoped = await createOriginScopedAutomationController({
+      controller,
+      tabId: 'tab_assigned',
+      requestApproval,
+      approvalMode: AGENT_APPROVAL_MODES.ALLOW_WEBSITE_INTERACTIONS,
+    });
+
+    await expect(
+      scoped.execute(OPERATIONS.UPLOAD, { tabId: 'tab_assigned', ref: 'ref_upload' })
+    ).resolves.toMatchObject({ ok: true });
+    expect(requestApproval).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'file_upload',
+        operation: OPERATIONS.UPLOAD,
+        label: 'Attach résumé',
+        origin: 'https://trusted.example',
+        destinationOrigin: 'https://trusted.example',
+      })
     );
   });
 

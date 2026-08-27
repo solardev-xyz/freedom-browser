@@ -5,9 +5,7 @@ const {
   AGENT_APPROVAL_MODES,
   normalizeAgentApprovalMode,
 } = require('../../shared/agent-approval-modes');
-const {
-  AGENT_NAVIGATION_SCOPES,
-} = require('../../shared/agent-navigation-scopes');
+const { AGENT_NAVIGATION_SCOPES } = require('../../shared/agent-navigation-scopes');
 const { OPERATIONS } = require('../automation/contract/operations');
 const { ERROR_CODES } = require('../automation/contract/errors');
 const log = require('../logger');
@@ -16,7 +14,12 @@ const {
   originScopeForUrl,
 } = require('../automation/origin-scoped-controller');
 const { createFreedomBrowserTools } = require('./pi-browser-tools');
-const { activityProgress, buildAgentOutcome, normalizeArtifact } = require('./agent-progress');
+const {
+  activityProgress,
+  buildAgentOutcome,
+  normalizeArtifact,
+  normalizeUpload,
+} = require('./agent-progress');
 const { loadPiSdk } = require('./pi-sdk');
 const {
   createIsolatedPiSession,
@@ -202,6 +205,7 @@ function normalizePiEvent(event, toolOutcome) {
       status: event.isError ? 'failed' : 'succeeded',
       ...progress,
       ...(toolOutcome?.artifact && { artifact: toolOutcome.artifact }),
+      ...(toolOutcome?.upload && { upload: toolOutcome.upload }),
       ...(toolOutcome?.artifacts && { artifacts: toolOutcome.artifacts }),
       ...(errorCode && { errorCode }),
     };
@@ -241,7 +245,9 @@ function normalizeApprovalRequest(request) {
         ? 'form_submission'
         : request?.action === 'file_download'
           ? 'file_download'
-          : 'browser_interaction',
+          : request?.action === 'file_upload'
+            ? 'file_upload'
+            : 'browser_interaction',
     operation: typeof request?.operation === 'string' ? request.operation.slice(0, 80) : '',
     origin: originScopeForUrl(request?.origin) || '',
     destinationOrigin: originScopeForUrl(request?.destinationOrigin) || '',
@@ -270,10 +276,16 @@ class FreedomAgentService {
     this.historyStore = options.historyStore || null;
     if (
       this.historyStore &&
-      ['createSession', 'startTurn', 'finishTurn', 'listSessions', 'getSession',
-        'updateTurnGuidance', 'renameSession', 'deleteSession'].some(
-        (method) => typeof this.historyStore[method] !== 'function'
-      )
+      [
+        'createSession',
+        'startTurn',
+        'finishTurn',
+        'listSessions',
+        'getSession',
+        'updateTurnGuidance',
+        'renameSession',
+        'deleteSession',
+      ].some((method) => typeof this.historyStore[method] !== 'function')
     ) {
       throw new TypeError('FreedomAgentService requires a complete Agent history store');
     }
@@ -383,9 +395,7 @@ class FreedomAgentService {
       turns: stored.transcript.map((turn) => ({
         ...turn,
         activity: turn.activity.map((item) => ({ ...item })),
-        guidance: Array.isArray(turn.guidance)
-          ? turn.guidance.map((item) => ({ ...item }))
-          : [],
+        guidance: Array.isArray(turn.guidance) ? turn.guidance.map((item) => ({ ...item })) : [],
         activeRun: null,
         finished: true,
       })),
@@ -485,8 +495,7 @@ class FreedomAgentService {
     const completion = createDeferred();
     const run = {
       runId: this.runIdFactory(),
-      conversationId:
-        existingConversation?.conversationId || this.conversationIdFactory(),
+      conversationId: existingConversation?.conversationId || this.conversationIdFactory(),
       tabId,
       approvalMode,
       status: 'starting',
@@ -628,7 +637,7 @@ class FreedomAgentService {
             readiness?.error?.code === ERROR_CODES.POLICY_DENIED
               ? AGENT_ERROR_CODES.RESUME_SCOPE_CHANGED
               : AGENT_ERROR_CODES.TAB_UNAVAILABLE,
-            'The conversation\'s browser workspace could not be resumed'
+            "The conversation's browser workspace could not be resumed"
           );
         }
       }
@@ -928,9 +937,7 @@ class FreedomAgentService {
     }
     if (event?.type === 'message_start' && event.message?.role === 'user') {
       const text = piMessageText(event.message);
-      const guidance = run.guidance.find(
-        (item) => item.status === 'queued' && item.text === text
-      );
+      const guidance = run.guidance.find((item) => item.status === 'queued' && item.text === text);
       if (guidance) this.#setGuidanceStatus(run, guidance, 'applying');
     }
     if (event?.type === 'message_end' && event.message?.role === 'assistant') {
@@ -964,9 +971,7 @@ class FreedomAgentService {
         }),
       });
     } else if (normalized.type === 'tool_finished') {
-      const item = run.activity.find(
-        (candidate) => candidate.toolCallId === normalized.toolCallId
-      );
+      const item = run.activity.find((candidate) => candidate.toolCallId === normalized.toolCallId);
       if (item) {
         item.status = normalized.status;
         item.label = normalized.label;
@@ -977,6 +982,7 @@ class FreedomAgentService {
         if (Number.isSafeInteger(normalized.pageCount)) item.pageCount = normalized.pageCount;
         if (normalized.errorCode) item.errorCode = normalized.errorCode;
         if (normalized.artifact) item.artifact = normalized.artifact;
+        if (normalized.upload) item.upload = normalized.upload;
         if (normalized.artifacts) item.artifacts = normalized.artifacts;
         if (item.approval) normalized.approval = item.approval;
       }
@@ -1004,6 +1010,7 @@ class FreedomAgentService {
       ...(normalizeArtifact(outcome.artifact) && {
         artifact: normalizeArtifact(outcome.artifact),
       }),
+      ...(normalizeUpload(outcome.upload) && { upload: normalizeUpload(outcome.upload) }),
       ...(Array.isArray(outcome.artifacts) && {
         artifacts: outcome.artifacts.map(normalizeArtifact).filter(Boolean).slice(0, 100),
       }),
@@ -1012,6 +1019,7 @@ class FreedomAgentService {
         pageId: outcome.pageId || outcome.tabId,
         pageCount: outcome.pageCount,
         artifact: outcome.artifact,
+        upload: outcome.upload,
       }),
     });
     run.toolOutcomes.set(normalized.toolCallId, normalized);
@@ -1160,7 +1168,9 @@ class FreedomAgentService {
     run.error = error;
     run.outcome = buildAgentOutcome(run.activity, status, error);
     const cancelledActionCount = run.activity.filter(
-      (item) => item.errorCode === ERROR_CODES.DOWNLOAD_CANCELLED_BY_USER
+      (item) =>
+        item.errorCode === ERROR_CODES.DOWNLOAD_CANCELLED_BY_USER ||
+        item.errorCode === ERROR_CODES.FILE_UPLOAD_CANCELLED_BY_USER
     ).length;
     if (this.activeRun === run) this.activeRun = null;
     if (this.conversation?.activeRun === run) this.conversation.activeRun = null;
@@ -1172,7 +1182,8 @@ class FreedomAgentService {
       failedActionCount: run.activity.filter(
         (item) =>
           item.status === 'failed' &&
-          item.errorCode !== ERROR_CODES.DOWNLOAD_CANCELLED_BY_USER
+          item.errorCode !== ERROR_CODES.DOWNLOAD_CANCELLED_BY_USER &&
+          item.errorCode !== ERROR_CODES.FILE_UPLOAD_CANCELLED_BY_USER
       ).length,
       ...(cancelledActionCount && { cancelledActionCount }),
       outcome: run.outcome,
@@ -1246,10 +1257,10 @@ class FreedomAgentService {
         status === 'queued'
           ? 'guidance_queued'
           : status === 'applying'
-          ? 'guidance_applying'
-          : status === 'applied'
-            ? 'guidance_applied'
-            : 'guidance_cancelled',
+            ? 'guidance_applying'
+            : status === 'applied'
+              ? 'guidance_applied'
+              : 'guidance_cancelled',
       ...(status === 'queued'
         ? { guidance: { ...guidance } }
         : { guidanceId: guidance.guidanceId }),

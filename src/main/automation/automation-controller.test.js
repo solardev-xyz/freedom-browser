@@ -219,6 +219,26 @@ describe('AutomationController', () => {
     );
   });
 
+  test('routes a selected file through the controlled upload boundary', async () => {
+    const { controller } = createController();
+    const adapter = new FakePageAdapter();
+    const tabId = controller.registerPage(adapter, { kind: 'desktop' });
+    const upload = jest.fn(async () => ({
+      attached: true,
+      upload: { filename: 'report.pdf', bytes: 2048, state: 'attached' },
+    }));
+    controller.setUploadController({ upload });
+    const signal = new AbortController().signal;
+
+    await expect(
+      controller.execute(OPERATIONS.UPLOAD, { tabId, ref: 'ref_upload' }, { signal })
+    ).resolves.toMatchObject({
+      ok: true,
+      result: { upload: { filename: 'report.pdf', state: 'attached' } },
+    });
+    expect(upload).toHaveBeenCalledWith({ pageAdapter: adapter, ref: 'ref_upload', signal });
+  });
+
   test('does not echo an unvalidated tab ID into error envelopes', async () => {
     const { controller } = createController();
     const failure = await controller.execute(OPERATIONS.SNAPSHOT, {
