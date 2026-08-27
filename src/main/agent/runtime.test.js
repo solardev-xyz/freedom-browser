@@ -73,6 +73,8 @@ describe('Freedom agent runtime', () => {
       controller: options.controller,
       subscribeTabLifecycle: options.subscribeTabLifecycle,
       historyStore,
+      cancelAgentDownloads: undefined,
+      walletController,
     });
     expect(registerFreedomAgentIpc).toHaveBeenCalledWith({
       ipcMain: options.ipcMain,
@@ -84,15 +86,13 @@ describe('Freedom agent runtime', () => {
       createAutomationPageForHost: options.createAutomationPageForHost,
       isTrustedSender: options.isTrustedSender,
       openExternal: options.openExternal,
-      walletController,
     });
 
     const resolveModel = registerFreedomAgentIpc.mock.calls[0][0].resolveModel;
     await expect(resolveModel()).resolves.toEqual({ model: {} });
     await runtime.dispose();
 
-    expect(options.controller.setWalletController).toHaveBeenNthCalledWith(1, walletController);
-    expect(options.controller.setWalletController).toHaveBeenNthCalledWith(2, null);
+    expect(options.controller.setWalletController).not.toHaveBeenCalled();
 
     expect(unregisterIpc).toHaveBeenCalledTimes(1);
     expect(service.dispose).toHaveBeenCalledTimes(1);

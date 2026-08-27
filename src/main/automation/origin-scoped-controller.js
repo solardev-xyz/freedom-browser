@@ -28,6 +28,7 @@ const ORIGIN_SCOPED_OPERATIONS = new Set([
   OPERATIONS.STOP_LOADING,
 ]);
 const SCOPED_SCHEMES = new Set(['http:', 'https:', 'bzz:', 'ipfs:', 'ipns:']);
+const TRUSTED_INPUT_EFFECT_SETTLE_MS = 50;
 const PAGE_INTERACTION_OPERATIONS = new Set([
   OPERATIONS.CLICK,
   OPERATIONS.TYPE,
@@ -110,6 +111,7 @@ class OriginScopedAutomationController {
     this.transferOwnerId = transferOwnerId;
     this.declinedActions = new Set();
     this.resumeObservation = null;
+    this.externalApprovalBarriers = new Set();
   }
 
   async prepareResume() {
@@ -142,7 +144,16 @@ class OriginScopedAutomationController {
     return true;
   }
 
+  setExternalApprovalBarrier(promise) {
+    const barrier = Promise.resolve(promise).catch(() => undefined);
+    this.externalApprovalBarriers.add(barrier);
+    void barrier.finally(() => {
+      this.externalApprovalBarriers.delete(barrier);
+    });
+  }
+
   async execute(operation, input = {}, execution = {}) {
+    await this.#awaitExternalApprovalBarrier();
     if (!ORIGIN_SCOPED_OPERATIONS.has(operation)) {
       return errorEnvelope(
         this.lastState,
@@ -238,13 +249,6 @@ class OriginScopedAutomationController {
       return this.#originDenied(state);
     }
 
-    if (operation === OPERATIONS.WALLET_ACTION) {
-      return this.#executeController(operation, input, {
-        ...execution,
-        requestApproval: this.requestApproval,
-      });
-    }
-
     if (PAGE_INTERACTION_OPERATIONS.has(operation)) {
       const approval = await this.#authorizeAction(operation, input, state);
       if (approval) return approval;
@@ -256,6 +260,14 @@ class OriginScopedAutomationController {
       return result;
     }
     const result = await this.#executeController(operation, input, execution);
+    if (result?.ok && PAGE_INTERACTION_OPERATIONS.has(operation)) {
+      // Trusted input is queued into the guest renderer. Allow the resulting
+      // event handler and its guest/host IPC to settle so a synchronously
+      // triggered provider request can install its approval barrier before Pi
+      // is allowed to take another step or finish the turn.
+      await new Promise((resolve) => setTimeout(resolve, TRUSTED_INPUT_EFFECT_SETTLE_MS));
+      await this.#awaitExternalApprovalBarrier();
+    }
     if (result?.ok && operation === OPERATIONS.SNAPSHOT) {
       this.resumeObservation = null;
     }
@@ -287,6 +299,12 @@ class OriginScopedAutomationController {
       ...execution,
       conversationId: this.transferOwnerId,
     });
+  }
+
+  async #awaitExternalApprovalBarrier() {
+    while (this.externalApprovalBarriers.size) {
+      await Promise.allSettled([...this.externalApprovalBarriers]);
+    }
   }
 
   async #readActiveState() {

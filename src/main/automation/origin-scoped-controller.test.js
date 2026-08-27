@@ -979,7 +979,7 @@ describe('OriginScopedAutomationController', () => {
     );
   });
 
-  test('delegates wallet approval to the agent-native wallet boundary exactly once', async () => {
+  test('subjects the legacy wallet action alias to ordinary page-interaction approval', async () => {
     const controller = createController();
     const requestApproval = jest.fn(async () => 'approved');
     const scoped = await createOriginScopedAutomationController({
@@ -995,13 +995,49 @@ describe('OriginScopedAutomationController', () => {
         ref: 'ref_wallet',
       })
     ).resolves.toMatchObject({ ok: true });
-    expect(controller.inspectAction).not.toHaveBeenCalled();
-    expect(requestApproval).not.toHaveBeenCalled();
+    expect(controller.inspectAction).toHaveBeenCalledTimes(2);
+    expect(requestApproval).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'browser_interaction',
+        operation: OPERATIONS.WALLET_ACTION,
+      })
+    );
     expect(controller.execute).toHaveBeenLastCalledWith(
       OPERATIONS.WALLET_ACTION,
       { tabId: 'tab_assigned', ref: 'ref_wallet' },
-      { conversationId: 'conversation_test', requestApproval }
+      { conversationId: 'conversation_test' }
     );
+  });
+
+  test('holds a triggering page interaction until its external approval settles', async () => {
+    const controller = createController();
+    const scoped = await createOriginScopedAutomationController({
+      controller,
+      tabId: 'tab_assigned',
+    });
+    let releaseApproval;
+    const approval = new Promise((resolve) => {
+      releaseApproval = resolve;
+    });
+    const executeController = controller.execute.getMockImplementation();
+    controller.execute.mockImplementation(async (operation, input) => {
+      const result = await executeController(operation, input);
+      if (operation === OPERATIONS.CLICK) scoped.setExternalApprovalBarrier(approval);
+      return result;
+    });
+
+    let settled = false;
+    const execution = scoped
+      .execute(OPERATIONS.CLICK, { tabId: 'tab_assigned', ref: 'ref_wallet' })
+      .then((result) => {
+        settled = true;
+        return result;
+      });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(settled).toBe(false);
+
+    releaseApproval();
+    await expect(execution).resolves.toMatchObject({ ok: true });
   });
 
   test('lists only downloads belonging to the scoped conversation without requiring a tab', async () => {

@@ -15,23 +15,12 @@ const { estimateGas, getGasPrices } = require('../wallet/transaction-service');
 const { signAndRecord, KINDS } = require('../wallet/tx-recorder');
 const { getSigner } = require('../wallet/signers');
 
-const REQUEST_TIMEOUT_MS = 10_000;
 const PRIVILEGED_METHODS = new Set([
   'eth_requestAccounts',
   'eth_sendTransaction',
   'personal_sign',
   'eth_signTypedData_v4',
 ]);
-
-function deferred() {
-  let resolve;
-  let reject;
-  const promise = new Promise((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-  return { promise, resolve, reject };
-}
 
 function providerError(code, message) {
   return { code, message };
@@ -83,8 +72,6 @@ function exactTypedData(value) {
 
 class AgentWalletController {
   constructor(options = {}) {
-    this.pendingByTab = new Map();
-    this.requestTimeoutMs = options.requestTimeoutMs || REQUEST_TIMEOUT_MS;
     this.identity = options.identityManager || identityManager;
     this.getPermission = options.getPermission || getPermission;
     this.grantPermission = options.grantPermission || grantPermission;
@@ -97,78 +84,16 @@ class AgentWalletController {
     this.getSigner = options.getSigner || getSigner;
   }
 
-  async run({ pageAdapter, tabId, ref, conversationId, requestApproval, signal }) {
-    if (!pageAdapter || typeof pageAdapter.click !== 'function') {
-      throw new AutomationError(
-        ERROR_CODES.CAPABILITY_UNAVAILABLE,
-        'This page cannot initiate a controlled wallet action'
-      );
+  async handleRequest(context, payload) {
+    if (
+      !context ||
+      typeof context !== 'object' ||
+      typeof context.tabId !== 'string' ||
+      typeof context.pageUrl !== 'string' ||
+      typeof context.requestApproval !== 'function'
+    ) {
+      return { handled: false };
     }
-    if (typeof requestApproval !== 'function') {
-      throw new AutomationError(
-        ERROR_CODES.APPROVAL_REQUIRED,
-        'Wallet actions require Agent-native user approval'
-      );
-    }
-    if (this.pendingByTab.has(tabId)) {
-      throw new AutomationError(
-        ERROR_CODES.CAPABILITY_UNAVAILABLE,
-        'Another wallet request is already pending for this page'
-      );
-    }
-    if (signal?.aborted) {
-      throw new AutomationError(ERROR_CODES.USER_CANCELLED, 'The wallet action was cancelled');
-    }
-
-    const result = deferred();
-    const pending = {
-      tabId,
-      conversationId,
-      pageAdapter,
-      requestApproval,
-      result,
-      claimed: false,
-      timer: null,
-      onAbort: null,
-    };
-    pending.timer = setTimeout(() => {
-      if (pending.claimed || this.pendingByTab.get(tabId) !== pending) return;
-      this.pendingByTab.delete(tabId);
-      result.reject(
-        new AutomationError(
-          ERROR_CODES.CAPABILITY_UNAVAILABLE,
-          'The page did not make a supported wallet request after the Agent interaction'
-        )
-      );
-    }, this.requestTimeoutMs);
-    pending.onAbort = () => {
-      if (pending.claimed || this.pendingByTab.get(tabId) !== pending) return;
-      clearTimeout(pending.timer);
-      this.pendingByTab.delete(tabId);
-      result.reject(
-        new AutomationError(ERROR_CODES.USER_CANCELLED, 'The wallet action was cancelled')
-      );
-    };
-    signal?.addEventListener('abort', pending.onAbort, { once: true });
-    this.pendingByTab.set(tabId, pending);
-
-    try {
-      try {
-        await pageAdapter.click(ref);
-      } catch (error) {
-        if (!pending.claimed) throw error;
-      }
-      return await result.promise;
-    } finally {
-      clearTimeout(pending.timer);
-      signal?.removeEventListener('abort', pending.onAbort);
-      if (this.pendingByTab.get(tabId) === pending) this.pendingByTab.delete(tabId);
-    }
-  }
-
-  async handleRequest(tabId, payload) {
-    const pending = this.pendingByTab.get(tabId);
-    if (!pending || pending.claimed) return { handled: false };
     if (!payload || typeof payload !== 'object' || Array.isArray(payload))
       return { handled: false };
     if (!PRIVILEGED_METHODS.has(payload.method)) return { handled: false };
@@ -179,58 +104,44 @@ class AgentWalletController {
       return { handled: false };
     }
     if (serialized.length > 131_072) {
-      this.#rejectCapturedRequest(
-        pending,
-        new AutomationError(ERROR_CODES.INVALID_ARGUMENT, 'The wallet request is too large')
-      );
-      return { handled: true, error: providerError(-32602, 'Wallet request is too large') };
-    }
-
-    const pageKey = getPermissionKey(pending.pageAdapter.getState()?.url);
-    const requestKey = getPermissionKey(payload.displayUrl);
-    if (!pageKey || requestKey !== pageKey || payload.permissionKey !== pageKey) {
-      this.#rejectCapturedRequest(
-        pending,
-        new AutomationError(
-          ERROR_CODES.POLICY_DENIED,
-          'Wallet request origin did not match the page'
-        )
-      );
       return {
         handled: true,
-        error: providerError(4100, 'Wallet request origin did not match the page'),
+        error: providerError(-32602, 'Wallet request is too large'),
+        errorCode: ERROR_CODES.INVALID_ARGUMENT,
       };
     }
 
-    pending.claimed = true;
-    clearTimeout(pending.timer);
+    const pageKey = getPermissionKey(context.pageUrl);
+    const requestKey = getPermissionKey(payload.displayUrl);
+    if (!pageKey || requestKey !== pageKey || payload.permissionKey !== pageKey) {
+      return {
+        handled: true,
+        error: providerError(4100, 'Wallet request origin did not match the page'),
+        errorCode: ERROR_CODES.POLICY_DENIED,
+      };
+    }
+
     try {
-      const outcome = await this.#executeRequest(pending, payload, pageKey);
-      pending.result.resolve(outcome.receipt);
-      return { handled: true, result: outcome.providerResult };
+      const outcome = await this.#executeRequest(context, payload, pageKey);
+      return {
+        handled: true,
+        result: outcome.providerResult,
+        receipt: outcome.receipt,
+      };
     } catch (error) {
       const declined = error?.code === ERROR_CODES.WALLET_REQUEST_CANCELLED_BY_USER;
-      pending.result.reject(
-        error instanceof AutomationError
-          ? error
-          : new AutomationError(ERROR_CODES.INTERNAL_ERROR, 'The approved wallet request failed')
-      );
       return {
         handled: true,
         error: declined
           ? providerError(4001, 'User rejected the request')
           : providerError(-32603, bounded(error?.message, 240) || 'Wallet request failed'),
+        errorCode:
+          error instanceof AutomationError ? error.code : ERROR_CODES.INTERNAL_ERROR,
       };
     }
   }
 
-  #rejectCapturedRequest(pending, error) {
-    pending.claimed = true;
-    clearTimeout(pending.timer);
-    pending.result.reject(error);
-  }
-
-  async #executeRequest(pending, payload, permissionKey) {
+  async #executeRequest(context, payload, permissionKey) {
     const chainId = Number(payload.chainId);
     const chain = this.getChain(chainId);
     if (!Number.isSafeInteger(chainId) || !chain) {
@@ -250,10 +161,10 @@ class AgentWalletController {
 
     if (payload.method === 'eth_requestAccounts') {
       const defaultWalletIndex = permission?.walletIndex ?? this.identity.getActiveWalletIndex();
-      const decision = await this.#approve(pending, {
+      const decision = await this.#approve(context, {
         action: 'wallet_connection',
         operation: 'browser_wallet_action',
-        tabId: pending.tabId,
+        tabId: context.tabId,
         origin: permissionKey,
         destinationOrigin: permissionKey,
         label: 'Connect a wallet account',
@@ -309,12 +220,12 @@ class AgentWalletController {
     }
 
     if (payload.method === 'eth_sendTransaction') {
-      return this.#sendTransaction(pending, payload, permissionKey, chain, wallet);
+      return this.#sendTransaction(context, payload, permissionKey, chain, wallet);
     }
-    return this.#sign(pending, payload, permissionKey, chain, wallet);
+    return this.#sign(context, payload, permissionKey, chain, wallet);
   }
 
-  async #sendTransaction(pending, payload, permissionKey, chain, wallet) {
+  async #sendTransaction(context, payload, permissionKey, chain, wallet) {
     const txParams = payload.params?.[0];
     if (!txParams || typeof txParams !== 'object' || !txParams.to) {
       throw new AutomationError(
@@ -355,10 +266,10 @@ class AgentWalletController {
     }
     const feePerGas = tx.maxFeePerGas || tx.gasPrice || '0';
     const maxFee = BigInt(gasLimit) * BigInt(feePerGas);
-    await this.#approve(pending, {
+    await this.#approve(context, {
       action: 'wallet_transaction',
       operation: 'browser_wallet_action',
-      tabId: pending.tabId,
+      tabId: context.tabId,
       origin: permissionKey,
       destinationOrigin: permissionKey,
       label: 'Send a wallet transaction',
@@ -393,7 +304,7 @@ class AgentWalletController {
     };
   }
 
-  async #sign(pending, payload, permissionKey, chain, wallet) {
+  async #sign(context, payload, permissionKey, chain, wallet) {
     const personal = payload.method === 'personal_sign';
     const message = personal && typeof payload.params?.[0] === 'string' ? payload.params[0] : '';
     const typedData = personal ? null : payload.params?.[1];
@@ -414,10 +325,10 @@ class AgentWalletController {
         'The signature payload is invalid or too large to review safely'
       );
     }
-    await this.#approve(pending, {
+    await this.#approve(context, {
       action: 'wallet_signature',
       operation: 'browser_wallet_action',
-      tabId: pending.tabId,
+      tabId: context.tabId,
       origin: permissionKey,
       destinationOrigin: permissionKey,
       label: personal ? 'Sign a message' : 'Sign typed data',
@@ -449,8 +360,8 @@ class AgentWalletController {
     };
   }
 
-  async #approve(pending, request) {
-    const decision = normalizeDecision(await pending.requestApproval(request));
+  async #approve(context, request) {
+    const decision = normalizeDecision(await context.requestApproval(request));
     if (decision.status !== 'approved') {
       throw new AutomationError(
         ERROR_CODES.WALLET_REQUEST_CANCELLED_BY_USER,

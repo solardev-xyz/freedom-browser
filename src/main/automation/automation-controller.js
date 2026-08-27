@@ -24,8 +24,6 @@ class AutomationController {
     if (options.downloadController) this.setDownloadController(options.downloadController);
     this.uploadController = null;
     if (options.uploadController) this.setUploadController(options.uploadController);
-    this.walletController = null;
-    if (options.walletController) this.setWalletController(options.walletController);
   }
 
   setPageLifecycle(pageLifecycle) {
@@ -69,23 +67,25 @@ class AutomationController {
     this.uploadController = uploadController;
   }
 
-  setWalletController(walletController) {
-    if (walletController === null) {
-      this.walletController = null;
-      return;
-    }
-    if (!walletController || typeof walletController.run !== 'function') {
-      throw new TypeError('Automation wallet controller requires run()');
-    }
-    this.walletController = walletController;
-  }
-
   registerPage(adapter, metadata) {
     return this.pages.register(adapter, metadata);
   }
 
   unregisterPage(tabId) {
     return this.pages.unregister(tabId);
+  }
+
+  getPageState(tabId) {
+    try {
+      const entry = this.pages.require(tabId);
+      return Object.freeze({
+        tabId: entry.tabId,
+        kind: entry.kind,
+        ...entry.adapter.getState(),
+      });
+    } catch {
+      return null;
+    }
   }
 
   async execute(operation, rawInput = {}, execution = {}) {
@@ -241,14 +241,7 @@ class AutomationController {
           onProgress: execution?.onProgress,
         });
       case OPERATIONS.WALLET_ACTION:
-        return this.#requireWalletController().run({
-          pageAdapter: entry.adapter,
-          tabId: entry.tabId,
-          ref: input.ref,
-          conversationId: execution?.conversationId,
-          requestApproval: execution?.requestApproval,
-          signal: execution?.signal,
-        });
+        return entry.adapter.click(input.ref);
       case OPERATIONS.LIST_DOWNLOADS:
         return { artifacts: this.#requireDownloadController().list(execution?.conversationId) };
       case OPERATIONS.SCREENSHOT:
@@ -306,16 +299,6 @@ class AutomationController {
       );
     }
     return this.uploadController;
-  }
-
-  #requireWalletController() {
-    if (!this.walletController) {
-      throw new AutomationError(
-        ERROR_CODES.CAPABILITY_UNAVAILABLE,
-        'Agent-native wallet actions are unavailable in this runtime'
-      );
-    }
-    return this.walletController;
   }
 
   #errorEnvelope(tabId, entry, error) {

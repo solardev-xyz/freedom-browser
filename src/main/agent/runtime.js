@@ -23,12 +23,12 @@ function createFreedomAgentRuntime(options = {}) {
   });
   historyStore.markStaleRunningAsInterrupted();
   const walletController = new AgentWalletController(options.walletControllerOptions);
-  options.controller.setWalletController(walletController);
   const service = new FreedomAgentService({
     controller: options.controller,
     subscribeTabLifecycle: options.subscribeTabLifecycle,
     historyStore,
     cancelAgentDownloads: options.cancelAgentDownloads,
+    walletController,
   });
   const unregisterIpc = registerFreedomAgentIpc({
     ipcMain: options.ipcMain,
@@ -40,7 +40,6 @@ function createFreedomAgentRuntime(options = {}) {
     desktopBindingForAutomationTab: options.desktopBindingForAutomationTab,
     isTrustedSender: options.isTrustedSender,
     openExternal: options.openExternal,
-    walletController,
   });
 
   return {
@@ -51,7 +50,6 @@ function createFreedomAgentRuntime(options = {}) {
     service,
     async dispose() {
       await unregisterIpc();
-      options.controller.setWalletController(null);
       await service.dispose();
       historyStore.close();
     },

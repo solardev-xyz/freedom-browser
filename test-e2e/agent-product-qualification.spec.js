@@ -46,7 +46,6 @@ const EXPECTED_TOOL_NAMES = Object.freeze([
   'browser_press',
   'browser_upload',
   'browser_download',
-  'browser_wallet_action',
   'browser_list_downloads',
   'browser_wait',
   'browser_stop_loading',
@@ -177,14 +176,30 @@ function advertisedNames(body) {
     .sort();
 }
 
+function trustedWalletEvents(messages) {
+  const prefix = 'Freedom wallet event (trusted browser result): ';
+  return messages
+    .filter((message) => message?.role === 'user')
+    .map((message) => contentText(message.content))
+    .filter((value) => value.startsWith(prefix))
+    .map((value) => {
+      try {
+        return JSON.parse(value.slice(prefix.length));
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+}
+
 async function handleCompletion(request, response) {
   const body = await readJsonBody(request);
   requestCount += 1;
   const messages = body.messages || [];
   const toolResults = messages.filter((message) => message?.role === 'tool');
   const elements = snapshotElements(messages);
-  observedWalletReceipts = toolEnvelopes(messages)
-    .map((envelope) => envelope?.result?.wallet)
+  observedWalletReceipts = trustedWalletEvents(messages)
+    .map((event) => event?.wallet)
     .filter(Boolean);
   advertisedToolNames = advertisedNames(body);
   response.writeHead(200, {
@@ -468,7 +483,7 @@ async function handleCompletion(request, response) {
         emitToolCall(response, 1, 'browser_snapshot', {});
         break;
       case 1:
-        emitToolCall(response, 2, 'browser_wallet_action', {
+        emitToolCall(response, 2, 'browser_click', {
           ref: requireRef(elements, 'Connect wallet'),
         });
         break;
@@ -476,20 +491,28 @@ async function handleCompletion(request, response) {
         emitToolCall(response, 3, 'browser_snapshot', {});
         break;
       case 3:
-        emitToolCall(response, 4, 'browser_wallet_action', {
-          ref: requireRef(elements, 'Sign personal message'),
+        emitToolCall(response, 4, 'browser_click', {
+          ref: requireRef(elements, 'Freedom wallet'),
         });
         break;
       case 4:
         emitToolCall(response, 5, 'browser_snapshot', {});
         break;
       case 5:
-        emitToolCall(response, 6, 'browser_wallet_action', {
-          ref: requireRef(elements, 'Sign typed data'),
+        emitToolCall(response, 6, 'browser_click', {
+          ref: requireRef(elements, 'Sign personal message'),
         });
         break;
       case 6:
         emitToolCall(response, 7, 'browser_snapshot', {});
+        break;
+      case 7:
+        emitToolCall(response, 8, 'browser_click', {
+          ref: requireRef(elements, 'Sign typed data'),
+        });
+        break;
+      case 8:
+        emitToolCall(response, 9, 'browser_snapshot', {});
         break;
       default:
         emitFinal(
@@ -506,7 +529,7 @@ async function handleCompletion(request, response) {
         emitToolCall(response, 1, 'browser_snapshot', {});
         break;
       case 1:
-        emitToolCall(response, 2, 'browser_wallet_action', {
+        emitToolCall(response, 2, 'browser_click', {
           ref: requireRef(elements, 'Connect wallet'),
         });
         break;
@@ -514,12 +537,20 @@ async function handleCompletion(request, response) {
         emitToolCall(response, 3, 'browser_snapshot', {});
         break;
       case 3:
-        emitToolCall(response, 4, 'browser_wallet_action', {
-          ref: requireRef(elements, 'Send test transaction'),
+        emitToolCall(response, 4, 'browser_click', {
+          ref: requireRef(elements, 'Freedom wallet'),
         });
         break;
       case 4:
         emitToolCall(response, 5, 'browser_snapshot', {});
+        break;
+      case 5:
+        emitToolCall(response, 6, 'browser_click', {
+          ref: requireRef(elements, 'Send test transaction'),
+        });
+        break;
+      case 6:
+        emitToolCall(response, 7, 'browser_snapshot', {});
         break;
       default:
         emitFinal(
@@ -536,8 +567,16 @@ async function handleCompletion(request, response) {
         emitToolCall(response, 1, 'browser_snapshot', {});
         break;
       case 1:
-        emitToolCall(response, 2, 'browser_wallet_action', {
+        emitToolCall(response, 2, 'browser_click', {
           ref: requireRef(elements, 'Connect wallet'),
+        });
+        break;
+      case 2:
+        emitToolCall(response, 3, 'browser_snapshot', {});
+        break;
+      case 3:
+        emitToolCall(response, 4, 'browser_click', {
+          ref: requireRef(elements, 'Freedom wallet'),
         });
         break;
       default:
@@ -654,6 +693,11 @@ function walletFixtureBody() {
   return `<!doctype html><title>Agent wallet fixture</title><main>
     <h1>Agent wallet fixture</h1>
     <button id="connect" type="button">Connect wallet</button>
+    <section id="wallet-picker" role="dialog" aria-label="Choose a wallet" hidden>
+      <h2>Choose a wallet</h2>
+      <button id="freedom-wallet" type="button">Freedom wallet</button>
+      <button type="button">Another wallet</button>
+    </section>
     <button id="personal" type="button">Sign personal message</button>
     <button id="typed" type="button">Sign typed data</button>
     <button id="transaction" type="button">Send test transaction</button>
@@ -664,9 +708,13 @@ function walletFixtureBody() {
     <script>
       let account = '';
       document.querySelector('#connect').addEventListener('click', async () => {
+        document.querySelector('#wallet-picker').hidden = false;
+      });
+      document.querySelector('#freedom-wallet').addEventListener('click', async () => {
         try {
           const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
           account = accounts[0] || '';
+          document.querySelector('#wallet-picker').hidden = true;
           document.querySelector('#connection-status').textContent = account
             ? 'Connected ' + account
             : 'No account returned';
@@ -1311,11 +1359,13 @@ test('privileged capability: wallet connect and signatures use Agent-native appr
   expect(result.assistantOutput).toContain('safe wallet receipts');
   expect(operations).toEqual([
     'browser_snapshot',
-    'browser_wallet_action',
+    'browser_click',
     'browser_snapshot',
-    'browser_wallet_action',
+    'browser_click',
     'browser_snapshot',
-    'browser_wallet_action',
+    'browser_click',
+    'browser_snapshot',
+    'browser_click',
     'browser_snapshot',
   ]);
 });
@@ -1325,12 +1375,23 @@ test('privileged capability: declining an Agent wallet request is final and reco
   harness,
 }) => {
   await createUnlockedTestWallet(window);
-  await prepareTask(window, harness, URLS.walletDecline, walletFixtureBody());
+  await prepareTask(window, harness, URLS.walletDecline, walletFixtureBody(), 'every');
 
   await window
     .locator('#agent-prompt')
     .fill('PRODUCT_AGENT_WALLET_DECLINE: try to connect the wallet once.');
   await window.locator('#agent-run').click();
+
+  await expect(window.locator('#agent-approval-action')).toHaveText(
+    'Let Agent click “Connect wallet”?',
+    { timeout: 10_000 }
+  );
+  await window.locator('#agent-approval-approve').click();
+  await expect(window.locator('#agent-approval-action')).toHaveText(
+    'Let Agent click “Freedom wallet”?',
+    { timeout: 10_000 }
+  );
+  await window.locator('#agent-approval-approve').click();
   await expect(window.locator('#agent-approval-action')).toHaveText(
     'Connect this site to a wallet account?',
     { timeout: 10_000 }
@@ -1345,7 +1406,12 @@ test('privileged capability: declining an Agent wallet request is final and reco
   expect((await window.locator('#agent-output').textContent()) || '').toContain(
     'left it disconnected'
   );
-  expect(operations).toEqual(['browser_snapshot', 'browser_wallet_action']);
+  expect(operations).toEqual([
+    'browser_snapshot',
+    'browser_click',
+    'browser_snapshot',
+    'browser_click',
+  ]);
 });
 
 test('privileged capability: locked-wallet transaction shows exact data and returns a safe receipt', async ({
@@ -1431,9 +1497,11 @@ test('privileged capability: locked-wallet transaction shows exact data and retu
   expect(result.assistantOutput).toContain('safe transaction receipt');
   expect(operations).toEqual([
     'browser_snapshot',
-    'browser_wallet_action',
+    'browser_click',
     'browser_snapshot',
-    'browser_wallet_action',
+    'browser_click',
+    'browser_snapshot',
+    'browser_click',
     'browser_snapshot',
   ]);
 });

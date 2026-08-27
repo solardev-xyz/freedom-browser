@@ -162,7 +162,6 @@ function registerFreedomAgentIpc(options = {}) {
     providerResolver,
     isTrustedSender,
     openExternal,
-    walletController,
   } = options;
   if (!ipcMain || typeof ipcMain.handle !== 'function') {
     throw new TypeError('Freedom agent IPC requires ipcMain');
@@ -182,6 +181,7 @@ function registerFreedomAgentIpc(options = {}) {
     typeof service.renameConversation !== 'function' ||
     typeof service.deleteConversation !== 'function' ||
     typeof service.decideApproval !== 'function' ||
+    typeof service.handleWalletRequest !== 'function' ||
     typeof service.subscribe !== 'function' ||
     typeof service.getState !== 'function' ||
     typeof service.getWorkspaceState !== 'function'
@@ -219,10 +219,6 @@ function registerFreedomAgentIpc(options = {}) {
   if (typeof openExternal !== 'function') {
     throw new TypeError('Freedom agent IPC requires an external URL opener');
   }
-  if (!walletController || typeof walletController.handleRequest !== 'function') {
-    throw new TypeError('Freedom agent IPC requires an Agent wallet controller');
-  }
-
   let owner = null;
   let startPending = false;
   let providerLogin = null;
@@ -527,7 +523,7 @@ function registerFreedomAgentIpc(options = {}) {
     }
     const tabId = automationTabIdForRenderer(event.sender, payload.rendererTabId);
     if (!tabId) return { handled: false };
-    return walletController.handleRequest(tabId, payload.request);
+    return service.handleWalletRequest(tabId, payload.request);
   };
 
   const handleGetState = (event) => {

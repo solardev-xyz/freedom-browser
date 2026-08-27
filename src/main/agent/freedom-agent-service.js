@@ -322,6 +322,13 @@ class FreedomAgentService {
       throw new TypeError('FreedomAgentService requires a valid Agent download canceller');
     }
     this.cancelAgentDownloads = options.cancelAgentDownloads || (() => 0);
+    if (
+      options.walletController !== undefined &&
+      typeof options.walletController?.handleRequest !== 'function'
+    ) {
+      throw new TypeError('FreedomAgentService requires a valid Agent wallet controller');
+    }
+    this.walletController = options.walletController || null;
     this.historyStore = options.historyStore || null;
     if (
       this.historyStore &&
@@ -516,6 +523,34 @@ class FreedomAgentService {
     };
   }
 
+  async handleWalletRequest(tabId, payload) {
+    const run = this.activeRun;
+    if (
+      !this.walletController ||
+      !run ||
+      run.finished ||
+      run.stopRequested ||
+      run.pauseRequested ||
+      run.status !== 'running' ||
+      typeof tabId !== 'string' ||
+      run.scopedController?.getActiveTabId?.() !== tabId ||
+      !this.#conversationHasTab(this.conversation, tabId)
+    ) {
+      return { handled: false };
+    }
+    const pageState = this.controller.getPageState?.(tabId);
+    if (!pageState?.url) return { handled: false };
+
+    const handling = this.#handleActiveWalletRequest(run, tabId, pageState, payload);
+    run.pendingWalletRequests.add(handling);
+    run.scopedController?.setExternalApprovalBarrier?.(handling);
+    try {
+      return await handling;
+    } finally {
+      run.pendingWalletRequests.delete(handling);
+    }
+  }
+
   async start(options) {
     if (this.disposed) {
       throw new FreedomAgentError(
@@ -564,6 +599,7 @@ class FreedomAgentService {
       lastAssistant: null,
       toolOutcomes: new Map(),
       pendingApproval: null,
+      pendingWalletRequests: new Set(),
       finished: false,
     };
     this.activeRun = run;
@@ -935,6 +971,9 @@ class FreedomAgentService {
         expandPromptTemplates: false,
         source: 'interactive',
       });
+      while (run.pendingWalletRequests.size) {
+        await Promise.allSettled([...run.pendingWalletRequests]);
+      }
       if (run.stopRequested) {
         status = 'cancelled';
       } else if (run.pauseRequested) {
@@ -1140,6 +1179,80 @@ class FreedomAgentService {
     ) {
       this.#resolveApproval(run, 'withdrawn');
     }
+  }
+
+  async #handleActiveWalletRequest(run, tabId, pageState, payload) {
+    const toolCallId = `wallet_${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
+    const progress = activityProgress(OPERATIONS.WALLET_ACTION, {
+      origin: pageState.url,
+      pageId: tabId,
+    });
+    const activityItem = {
+      toolCallId,
+      operation: OPERATIONS.WALLET_ACTION,
+      status: 'running',
+      label: progress.label,
+      intent: progress.intent,
+      effect: progress.effect,
+      ...(progress.origin && { origin: progress.origin }),
+      ...(progress.pageId && { pageId: progress.pageId }),
+    };
+    run.activity.push(activityItem);
+    this.#emit(run, {
+      type: 'tool_started',
+      toolCallId,
+      operation: OPERATIONS.WALLET_ACTION,
+      ...progress,
+    });
+
+    const outcome = await this.walletController.handleRequest(
+      {
+        tabId,
+        pageUrl: pageState.url,
+        conversationId: run.conversationId,
+        requestApproval: (request) => this.#requestApproval(run, request),
+      },
+      payload
+    );
+    const succeeded = outcome?.handled === true && !outcome.error;
+    activityItem.status = succeeded ? 'succeeded' : 'failed';
+    if (outcome?.errorCode && AUTOMATION_ERROR_CODE_SET.has(outcome.errorCode)) {
+      activityItem.errorCode = outcome.errorCode;
+    }
+    this.#emit(run, {
+      type: 'tool_finished',
+      toolCallId,
+      operation: OPERATIONS.WALLET_ACTION,
+      status: succeeded ? 'succeeded' : 'failed',
+      ...progress,
+      ...(activityItem.errorCode && { errorCode: activityItem.errorCode }),
+    });
+
+    const event = outcome?.receipt
+      ? { status: 'completed', wallet: outcome.receipt.wallet }
+      : outcome?.errorCode === ERROR_CODES.WALLET_REQUEST_CANCELLED_BY_USER
+        ? {
+            status: 'declined',
+            method: typeof payload?.method === 'string' ? payload.method : '',
+            origin: getPermissionKey(pageState.url) || '',
+          }
+        : null;
+    if (event && this.activeRun === run && !run.finished && !run.stopRequested) {
+      try {
+        await run.session.steer(
+          `Freedom wallet event (trusted browser result): ${JSON.stringify(event)}`
+        );
+      } catch {
+        // The page still receives the authoritative provider result. A later
+        // snapshot remains available if Pi's current turn has already ended.
+      }
+    }
+
+    return {
+      handled: outcome?.handled === true,
+      ...(outcome?.result !== undefined && { result: outcome.result }),
+      ...(outcome?.error && { error: outcome.error }),
+    };
   }
 
   async #requestApproval(run, request) {

@@ -175,19 +175,6 @@ const TOOL_SPECS = Object.freeze([
     cancellable: true,
   },
   {
-    operation: OPERATIONS.WALLET_ACTION,
-    label: 'Use wallet action',
-    description:
-      'Activate an exact page control expected to request a wallet connection, transaction, or signature. Freedom shows the captured wallet request to the user in Agent and executes it only after explicit approval. Never use a normal click for an action that may open a wallet confirmation.',
-    parameters: {
-      type: 'object',
-      properties: { ref: { type: 'string', minLength: 1 } },
-      required: ['ref'],
-      additionalProperties: false,
-    },
-    cancellable: true,
-  },
-  {
     operation: OPERATIONS.LIST_DOWNLOADS,
     label: 'List task downloads',
     description:
@@ -258,8 +245,7 @@ async function executeCancellable(controller, operation, input, signal, executio
   assertNotAborted(signal, operation);
   if (
     operation === OPERATIONS.DOWNLOAD ||
-    operation === OPERATIONS.UPLOAD ||
-    operation === OPERATIONS.WALLET_ACTION
+    operation === OPERATIONS.UPLOAD
   ) {
     return controller.execute(operation, input, { ...execution, signal });
   }
@@ -311,8 +297,7 @@ async function executeBrowserTool(controller, tabId, spec, params, signal, execu
     envelope = spec.cancellable
       ? await executeCancellable(controller, spec.operation, input, signal, execution)
       : spec.operation === OPERATIONS.DOWNLOAD ||
-          spec.operation === OPERATIONS.UPLOAD ||
-          spec.operation === OPERATIONS.WALLET_ACTION
+          spec.operation === OPERATIONS.UPLOAD
         ? await controller.execute(spec.operation, input, execution)
         : await controller.execute(spec.operation, input);
   } catch (error) {

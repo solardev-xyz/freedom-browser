@@ -814,6 +814,133 @@ describe('FreedomAgentService', () => {
     });
   });
 
+  test('holds a provider request from the actively controlled tab in Agent-native approval', async () => {
+    const fake = createFakeSession();
+    const externalBarriers = [];
+    const scopedController = {
+      execute: jest.fn(),
+      prepareResume: jest.fn(async () => ({ ok: true })),
+      getActiveTabId: jest.fn(() => 'tab_assigned'),
+      getWorkspaceState: jest.fn(() => ({
+        tabIds: ['tab_assigned'],
+        activeTabId: 'tab_assigned',
+      })),
+      setExternalApprovalBarrier: jest.fn((promise) => externalBarriers.push(promise)),
+    };
+    const walletController = {
+      handleRequest: jest.fn(async (context, payload) => {
+        const decision = await context.requestApproval({
+          action: 'wallet_connection',
+          operation: OPERATIONS.WALLET_ACTION,
+          tabId: context.tabId,
+          origin: payload.permissionKey,
+          destinationOrigin: payload.permissionKey,
+          label: 'Connect a wallet account',
+          wallet: {
+            kind: 'connection',
+            chainId: 100,
+            chainName: 'Gnosis',
+            wallets: [
+              {
+                index: 0,
+                name: 'Main Wallet',
+                address: '0x1111111111111111111111111111111111111111',
+                type: 'mnemonic',
+              },
+            ],
+            defaultWalletIndex: 0,
+            requiresUnlock: false,
+          },
+        });
+        expect(decision).toEqual({ status: 'approved', walletIndex: 0 });
+        return {
+          handled: true,
+          result: ['0x1111111111111111111111111111111111111111'],
+          receipt: {
+            wallet: {
+              action: 'connected',
+              origin: payload.permissionKey,
+              chainId: 100,
+              account: '0x1111111111111111111111111111111111111111',
+            },
+          },
+        };
+      }),
+    };
+    const { service } = createService(fake, {
+      controller: {
+        execute: jest.fn(),
+        getPageState: jest.fn(() => ({
+          tabId: 'tab_assigned',
+          url: 'https://app.example/swap',
+          navigationId: 4,
+        })),
+      },
+      createControllerScope: jest.fn(async () => scopedController),
+      walletController,
+    });
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+
+    const providerResponse = service.handleWalletRequest('tab_assigned', {
+      method: 'eth_requestAccounts',
+      params: [],
+      displayUrl: 'https://app.example/swap',
+      permissionKey: 'https://app.example',
+      chainId: 100,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const approval = events.find((event) => event.type === 'approval_requested');
+    expect(approval).toMatchObject({
+      action: 'wallet_connection',
+      operation: OPERATIONS.WALLET_ACTION,
+      origin: 'https://app.example',
+    });
+    expect(externalBarriers).toHaveLength(1);
+    await service.decideApproval('run_test', approval.approvalId, {
+      approved: true,
+      walletIndex: 0,
+    });
+    await expect(providerResponse).resolves.toEqual({
+      handled: true,
+      result: ['0x1111111111111111111111111111111111111111'],
+    });
+    expect(fake.session.steer).toHaveBeenCalledWith(
+      expect.stringContaining('Freedom wallet event (trusted browser result)')
+    );
+    expect(events.filter((event) => event.type === 'tool_started').at(-1)).toMatchObject({
+      operation: OPERATIONS.WALLET_ACTION,
+    });
+    expect(events.filter((event) => event.type === 'tool_finished').at(-1)).toMatchObject({
+      operation: OPERATIONS.WALLET_ACTION,
+      status: 'succeeded',
+    });
+
+    fake.prompt.resolve();
+    await service.waitForIdle();
+  });
+
+  test('leaves wallet requests from inactive or unrelated tabs to the human wallet flow', async () => {
+    const fake = createFakeSession();
+    const walletController = { handleRequest: jest.fn() };
+    const { service } = createService(fake, { walletController });
+
+    await expect(
+      service.handleWalletRequest('tab_assigned', { method: 'eth_requestAccounts' })
+    ).resolves.toEqual({ handled: false });
+    await service.start(startOptions());
+    await expect(
+      service.handleWalletRequest('tab_assigned', { method: 'eth_requestAccounts' })
+    ).resolves.toEqual({ handled: false });
+    expect(walletController.handleRequest).not.toHaveBeenCalled();
+
+    fake.prompt.resolve();
+    await service.waitForIdle();
+  });
+
   test('declines a pending approval when the user takes over', async () => {
     const fake = createFakeSession();
     const { service, dependencies } = createService(fake);

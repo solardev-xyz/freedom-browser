@@ -49,6 +49,8 @@ function createService(options = {}) {
     renameConversation: options.renameConversation || jest.fn(() => null),
     deleteConversation: options.deleteConversation || jest.fn(async () => false),
     decideApproval: options.decideApproval || jest.fn(async () => true),
+    handleWalletRequest:
+      options.handleWalletRequest || jest.fn(async () => ({ handled: false })),
     getState: jest.fn(() => ({
       status: 'running',
       conversationId: 'conversation_test',
@@ -111,7 +113,6 @@ function register(overrides = {}) {
   };
   const openExternal = jest.fn(async () => {});
   const isTrustedSender = jest.fn((candidate) => candidate === sender);
-  const walletController = { handleRequest: jest.fn(async () => ({ handled: false })) };
   const dispose = registerFreedomAgentIpc({
     ipcMain,
     service,
@@ -122,7 +123,6 @@ function register(overrides = {}) {
     providerResolver,
     isTrustedSender,
     openExternal,
-    walletController,
     ...overrides,
   });
   return {
@@ -137,7 +137,6 @@ function register(overrides = {}) {
     providerResolver,
     isTrustedSender,
     openExternal,
-    walletController,
     dispose,
   };
 }
@@ -662,7 +661,7 @@ describe('Freedom agent IPC', () => {
     );
   });
 
-  test('routes only trusted, exactly bound Agent wallet requests to the armed controller', async () => {
+  test('routes only trusted, exactly bound wallet requests to the active Agent service', async () => {
     const ctx = register();
     const handleWallet = ctx.ipcMain.handlers.get(IPC.AGENT_WALLET_REQUEST);
     const request = { method: 'eth_requestAccounts', chainId: 100 };
@@ -670,17 +669,17 @@ describe('Freedom agent IPC', () => {
     await expect(
       handleWallet({ sender: ctx.otherSender }, { rendererTabId: 7, request })
     ).resolves.toEqual({ handled: false });
-    expect(ctx.walletController.handleRequest).not.toHaveBeenCalled();
+    expect(ctx.service.handleWalletRequest).not.toHaveBeenCalled();
 
     await expect(
       handleWallet({ sender: ctx.sender }, { rendererTabId: 99, request })
     ).resolves.toEqual({ handled: false });
-    expect(ctx.walletController.handleRequest).not.toHaveBeenCalled();
+    expect(ctx.service.handleWalletRequest).not.toHaveBeenCalled();
 
     await expect(
       handleWallet({ sender: ctx.sender }, { rendererTabId: 7, request })
     ).resolves.toEqual({ handled: false });
-    expect(ctx.walletController.handleRequest).toHaveBeenCalledWith('tab_bound', request);
+    expect(ctx.service.handleWalletRequest).toHaveBeenCalledWith('tab_bound', request);
   });
 
   test('passes an approved Agent wallet account choice as bounded decision data', async () => {

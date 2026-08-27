@@ -4,10 +4,6 @@ const { AgentWalletController } = require('./agent-wallet-controller');
 const { ERROR_CODES } = require('../automation/contract/errors');
 
 function createHarness(options = {}) {
-  const pageAdapter = {
-    click: jest.fn(async () => ({ clicked: true })),
-    getState: jest.fn(() => ({ url: 'https://app.example/swap' })),
-  };
   const permission = options.permission ?? null;
   const wallets = options.wallets || [
     {
@@ -22,7 +18,6 @@ function createHarness(options = {}) {
     signTypedData: jest.fn(async () => '0xtyped'),
   };
   const dependencies = {
-    requestTimeoutMs: 500,
     identityManager: {
       getDerivedWallets: jest.fn(async () => wallets),
       getActiveWalletIndex: jest.fn(() => 0),
@@ -48,7 +43,6 @@ function createHarness(options = {}) {
   return {
     controller: new AgentWalletController(dependencies),
     dependencies,
-    pageAdapter,
     signer,
   };
 }
@@ -63,16 +57,13 @@ function request(method, params = []) {
   };
 }
 
-async function begin(harness, requestApproval = jest.fn(async () => 'approved')) {
-  const run = harness.controller.run({
-    pageAdapter: harness.pageAdapter,
+function context(requestApproval = jest.fn(async () => 'approved')) {
+  return {
     tabId: 'tab_test',
-    ref: 'ref_button',
+    pageUrl: 'https://app.example/swap',
     conversationId: 'conversation_test',
     requestApproval,
-  });
-  await Promise.resolve();
-  return { run, requestApproval };
+  };
 }
 
 describe('AgentWalletController', () => {
@@ -94,14 +85,12 @@ describe('AgentWalletController', () => {
       ],
     });
     const approval = jest.fn(async () => ({ status: 'approved', walletIndex: 2 }));
-    const pending = await begin(harness, approval);
-
     const provider = await harness.controller.handleRequest(
-      'tab_test',
+      context(approval),
       request('eth_requestAccounts')
     );
 
-    await expect(pending.run).resolves.toEqual({
+    expect(provider.receipt).toEqual({
       wallet: {
         action: 'connected',
         origin: 'https://app.example',
@@ -109,7 +98,7 @@ describe('AgentWalletController', () => {
         account: '0x2222222222222222222222222222222222222222',
       },
     });
-    expect(provider).toEqual({
+    expect(provider).toMatchObject({
       handled: true,
       result: ['0x2222222222222222222222222222222222222222'],
     });
@@ -128,23 +117,16 @@ describe('AgentWalletController', () => {
 
   test('returns EIP-1193 rejection and a typed Agent cancellation when declined', async () => {
     const harness = createHarness();
-    const pending = await begin(
-      harness,
-      jest.fn(async () => 'declined')
-    );
-
     const provider = await harness.controller.handleRequest(
-      'tab_test',
+      context(jest.fn(async () => 'declined')),
       request('eth_requestAccounts')
     );
 
-    expect(provider).toEqual({
+    expect(provider).toMatchObject({
       handled: true,
       error: { code: 4001, message: 'User rejected the request' },
     });
-    await expect(pending.run).rejects.toMatchObject({
-      code: ERROR_CODES.WALLET_REQUEST_CANCELLED_BY_USER,
-    });
+    expect(provider.errorCode).toBe(ERROR_CODES.WALLET_REQUEST_CANCELLED_BY_USER);
     expect(harness.dependencies.grantPermission).not.toHaveBeenCalled();
   });
 
@@ -160,7 +142,6 @@ describe('AgentWalletController', () => {
       wallets: [wallet],
     });
     const approval = jest.fn(async () => 'approved');
-    const pending = await begin(harness, approval);
     const txParams = {
       from: wallet.address,
       to: '0x3333333333333333333333333333333333333333',
@@ -169,12 +150,12 @@ describe('AgentWalletController', () => {
     };
 
     const provider = await harness.controller.handleRequest(
-      'tab_test',
+      context(approval),
       request('eth_sendTransaction', [txParams])
     );
 
-    expect(provider).toEqual({ handled: true, result: '0xtransaction' });
-    await expect(pending.run).resolves.toEqual({
+    expect(provider).toMatchObject({ handled: true, result: '0xtransaction' });
+    expect(provider.receipt).toEqual({
       wallet: expect.objectContaining({
         action: 'broadcast',
         transactionHash: '0xtransaction',
@@ -208,14 +189,13 @@ describe('AgentWalletController', () => {
   test('keeps signatures out of the Agent receipt while returning them to the page', async () => {
     const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
     const approval = jest.fn(async () => 'approved');
-    const pending = await begin(harness, approval);
 
     const provider = await harness.controller.handleRequest(
-      'tab_test',
+      context(approval),
       request('personal_sign', ['Hello Freedom', '0x1111111111111111111111111111111111111111'])
     );
 
-    expect(provider).toEqual({ handled: true, result: '0xsignature' });
+    expect(provider).toMatchObject({ handled: true, result: '0xsignature' });
     expect(approval).toHaveBeenCalledWith(
       expect.objectContaining({
         wallet: expect.objectContaining({
@@ -224,7 +204,7 @@ describe('AgentWalletController', () => {
         }),
       })
     );
-    await expect(pending.run).resolves.toEqual({
+    expect(provider.receipt).toEqual({
       wallet: {
         action: 'signed',
         origin: 'https://app.example',
@@ -232,13 +212,12 @@ describe('AgentWalletController', () => {
         signatureType: 'personal_sign',
       },
     });
-    expect(JSON.stringify(await pending.run.catch(() => null))).not.toContain('0xsignature');
+    expect(JSON.stringify(provider.receipt)).not.toContain('0xsignature');
   });
 
   test('shows the complete canonical typed payload before signing it', async () => {
     const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
     const approval = jest.fn(async () => 'approved');
-    const pending = await begin(harness, approval);
     const typedData = {
       domain: { name: 'Freedom Test', chainId: 100 },
       types: { Message: [{ name: 'contents', type: 'string' }] },
@@ -247,14 +226,14 @@ describe('AgentWalletController', () => {
     };
 
     const provider = await harness.controller.handleRequest(
-      'tab_test',
+      context(approval),
       request('eth_signTypedData_v4', [
         '0x1111111111111111111111111111111111111111',
         JSON.stringify(typedData),
       ])
     );
 
-    expect(provider).toEqual({ handled: true, result: '0xtyped' });
+    expect(provider).toMatchObject({ handled: true, result: '0xtyped' });
     expect(approval).toHaveBeenCalledWith(
       expect.objectContaining({
         wallet: expect.objectContaining({
@@ -264,43 +243,40 @@ describe('AgentWalletController', () => {
       })
     );
     expect(harness.signer.signTypedData).toHaveBeenCalledWith(JSON.stringify(typedData));
-    await expect(pending.run).resolves.toMatchObject({
+    expect(provider.receipt).toMatchObject({
       wallet: { action: 'signed', signatureType: 'eth_signTypedData_v4' },
     });
   });
 
   test('rejects a signature claiming a different connected account', async () => {
     const harness = createHarness({ permission: { walletIndex: 0, chainId: 100 } });
-    const pending = await begin(harness);
-
     const provider = await harness.controller.handleRequest(
-      'tab_test',
+      context(),
       request('personal_sign', [
         'Hello Freedom',
         '0x2222222222222222222222222222222222222222',
       ])
     );
 
-    expect(provider).toEqual({
+    expect(provider).toMatchObject({
       handled: true,
       error: { code: -32603, message: 'Signature account does not match the connected wallet' },
     });
-    await expect(pending.run).rejects.toMatchObject({ code: ERROR_CODES.POLICY_DENIED });
+    expect(provider.errorCode).toBe(ERROR_CODES.POLICY_DENIED);
   });
 
   test('does not intercept an unarmed page or a mismatched page identity', async () => {
     const harness = createHarness();
     await expect(
-      harness.controller.handleRequest('tab_test', request('eth_requestAccounts'))
+      harness.controller.handleRequest(null, request('eth_requestAccounts'))
     ).resolves.toEqual({ handled: false });
 
-    const pending = await begin(harness);
     const mismatch = request('eth_requestAccounts');
     mismatch.displayUrl = 'https://evil.example';
-    await expect(harness.controller.handleRequest('tab_test', mismatch)).resolves.toEqual({
+    await expect(harness.controller.handleRequest(context(), mismatch)).resolves.toEqual({
       handled: true,
       error: { code: 4100, message: 'Wallet request origin did not match the page' },
+      errorCode: ERROR_CODES.POLICY_DENIED,
     });
-    await expect(pending.run).rejects.toMatchObject({ code: ERROR_CODES.POLICY_DENIED });
   });
 });
