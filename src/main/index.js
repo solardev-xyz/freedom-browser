@@ -303,7 +303,11 @@ const {
 const { initUpdater } = require('./updater');
 const { setupApplicationMenu, updateTabMenuItems } = require('./menu');
 const { registerWebContentsHandlers } = require('./webcontents-setup');
-const { installTestHarness, registerStubProtocols } = require('./test-harness');
+const {
+  createAgentWalletTestOptions,
+  installTestHarness,
+  registerStubProtocols,
+} = require('./test-harness');
 const {
   automationController,
   automationTabIdForRenderer,
@@ -448,6 +452,7 @@ async function bootstrap() {
         !isPrivateWebContents(sender) &&
         getMainWindows().some((window) => window.webContents === sender),
       openExternal: (url) => shell.openExternal(url),
+      walletControllerOptions: createAgentWalletTestOptions(),
     });
   }
 

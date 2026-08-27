@@ -4,6 +4,7 @@ const path = require('path');
 const { test, expect } = require('./fixtures');
 
 const MODEL_ID = 'freedom-product-qualification-fixture';
+const WALLET_PASSWORD = 'Freedom-Agent-Wallet-E2E-2026!';
 const PRODUCT_ORIGIN = 'https://agent-product.test';
 const FOREIGN_ORIGIN = 'https://agent-research-source.test';
 const URLS = Object.freeze({
@@ -18,6 +19,9 @@ const URLS = Object.freeze({
   fileDownload: `${PRODUCT_ORIGIN}/files/report`,
   fileTarget: `${PRODUCT_ORIGIN}/files/quarterly-report.txt`,
   fileUpload: `${PRODUCT_ORIGIN}/workflow/upload`,
+  wallet: `${PRODUCT_ORIGIN}/wallet/agent-native`,
+  walletTransaction: `${PRODUCT_ORIGIN}/wallet/transaction`,
+  walletDecline: `${PRODUCT_ORIGIN}/wallet/decline`,
 });
 
 const CLASSIFICATION = Object.freeze({
@@ -42,6 +46,7 @@ const EXPECTED_TOOL_NAMES = Object.freeze([
   'browser_press',
   'browser_upload',
   'browser_download',
+  'browser_wallet_action',
   'browser_list_downloads',
   'browser_wait',
   'browser_stop_loading',
@@ -55,6 +60,7 @@ let advertisedToolNames = [];
 let observedTaskTabCount = 0;
 let observedDownloadArtifact = null;
 let observedUploadReceipt = null;
+let observedWalletReceipts = [];
 const operations = [];
 
 function completionChunk({ delta = {}, finishReason = null, usage }) {
@@ -177,6 +183,9 @@ async function handleCompletion(request, response) {
   const messages = body.messages || [];
   const toolResults = messages.filter((message) => message?.role === 'tool');
   const elements = snapshotElements(messages);
+  observedWalletReceipts = toolEnvelopes(messages)
+    .map((envelope) => envelope?.result?.wallet)
+    .filter(Boolean);
   advertisedToolNames = advertisedNames(body);
   response.writeHead(200, {
     'Content-Type': 'text/event-stream',
@@ -453,6 +462,90 @@ async function handleCompletion(request, response) {
     return;
   }
 
+  if (hasUserMarker(messages, 'PRODUCT_AGENT_WALLET_APPROVE')) {
+    switch (toolResults.length) {
+      case 0:
+        emitToolCall(response, 1, 'browser_snapshot', {});
+        break;
+      case 1:
+        emitToolCall(response, 2, 'browser_wallet_action', {
+          ref: requireRef(elements, 'Connect wallet'),
+        });
+        break;
+      case 2:
+        emitToolCall(response, 3, 'browser_snapshot', {});
+        break;
+      case 3:
+        emitToolCall(response, 4, 'browser_wallet_action', {
+          ref: requireRef(elements, 'Sign personal message'),
+        });
+        break;
+      case 4:
+        emitToolCall(response, 5, 'browser_snapshot', {});
+        break;
+      case 5:
+        emitToolCall(response, 6, 'browser_wallet_action', {
+          ref: requireRef(elements, 'Sign typed data'),
+        });
+        break;
+      case 6:
+        emitToolCall(response, 7, 'browser_snapshot', {});
+        break;
+      default:
+        emitFinal(
+          response,
+          'Connected the selected Freedom account and completed both explicitly approved signatures. Freedom returned only safe wallet receipts.'
+        );
+    }
+    return;
+  }
+
+  if (hasUserMarker(messages, 'PRODUCT_AGENT_WALLET_TRANSACTION')) {
+    switch (toolResults.length) {
+      case 0:
+        emitToolCall(response, 1, 'browser_snapshot', {});
+        break;
+      case 1:
+        emitToolCall(response, 2, 'browser_wallet_action', {
+          ref: requireRef(elements, 'Connect wallet'),
+        });
+        break;
+      case 2:
+        emitToolCall(response, 3, 'browser_snapshot', {});
+        break;
+      case 3:
+        emitToolCall(response, 4, 'browser_wallet_action', {
+          ref: requireRef(elements, 'Send test transaction'),
+        });
+        break;
+      case 4:
+        emitToolCall(response, 5, 'browser_snapshot', {});
+        break;
+      default:
+        emitFinal(
+          response,
+          'Connected the wallet and broadcast the explicitly approved transaction. Freedom returned only its safe transaction receipt.'
+        );
+    }
+    return;
+  }
+
+  if (hasUserMarker(messages, 'PRODUCT_AGENT_WALLET_DECLINE')) {
+    switch (toolResults.length) {
+      case 0:
+        emitToolCall(response, 1, 'browser_snapshot', {});
+        break;
+      case 1:
+        emitToolCall(response, 2, 'browser_wallet_action', {
+          ref: requireRef(elements, 'Connect wallet'),
+        });
+        break;
+      default:
+        emitFinal(response, 'You declined the wallet connection, so I left it disconnected.');
+    }
+    return;
+  }
+
   emitFinal(response, 'Qualification task marker missing.');
 }
 
@@ -489,6 +582,7 @@ test.beforeEach(() => {
   observedTaskTabCount = 0;
   observedDownloadArtifact = null;
   observedUploadReceipt = null;
+  observedWalletReceipts = [];
   operations.length = 0;
 });
 
@@ -539,6 +633,99 @@ async function guestValue(window, expression) {
   return window.evaluate((script) => {
     return document.querySelector('webview:not(.hidden)')?.executeJavaScript(script);
   }, expression);
+}
+
+async function createUnlockedTestWallet(window) {
+  await window.evaluate(async (password) => {
+    const result = await window.identity.createVault(password, 128, true);
+    if (!result?.success) throw new Error(result?.error || 'Could not create test wallet');
+    return true;
+  }, WALLET_PASSWORD);
+}
+
+async function lockTestWallet(window) {
+  await window.evaluate(async () => {
+    const result = await window.identity.lock();
+    if (result?.success === false) throw new Error(result.error || 'Could not lock test wallet');
+  });
+}
+
+function walletFixtureBody() {
+  return `<!doctype html><title>Agent wallet fixture</title><main>
+    <h1>Agent wallet fixture</h1>
+    <button id="connect" type="button">Connect wallet</button>
+    <button id="personal" type="button">Sign personal message</button>
+    <button id="typed" type="button">Sign typed data</button>
+    <button id="transaction" type="button">Send test transaction</button>
+    <p id="connection-status">Disconnected</p>
+    <p id="personal-status">Personal signature pending</p>
+    <p id="typed-status">Typed signature pending</p>
+    <p id="transaction-status">Transaction pending</p>
+    <script>
+      let account = '';
+      document.querySelector('#connect').addEventListener('click', async () => {
+        try {
+          const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+          account = accounts[0] || '';
+          document.querySelector('#connection-status').textContent = account
+            ? 'Connected ' + account
+            : 'No account returned';
+        } catch (error) {
+          document.querySelector('#connection-status').textContent =
+            'Connection rejected ' + (error.code || 'unknown');
+        }
+      });
+      document.querySelector('#personal').addEventListener('click', async () => {
+        try {
+          const signature = await window.ethereum.request({
+            method: 'personal_sign',
+            params: ['Freedom Agent exact personal message', account],
+          });
+          document.querySelector('#personal-status').textContent =
+            'Personal signature ' + signature.slice(0, 10);
+        } catch (error) {
+          document.querySelector('#personal-status').textContent =
+            'Personal signature rejected ' + (error.code || 'unknown');
+        }
+      });
+      document.querySelector('#typed').addEventListener('click', async () => {
+        const payload = {
+          domain: { name: 'Freedom Agent Fixture', chainId: 100 },
+          types: { Message: [{ name: 'contents', type: 'string' }] },
+          primaryType: 'Message',
+          message: { contents: 'Approve typed Freedom action' },
+        };
+        try {
+          const signature = await window.ethereum.request({
+            method: 'eth_signTypedData_v4',
+            params: [account, JSON.stringify(payload)],
+          });
+          document.querySelector('#typed-status').textContent =
+            'Typed signature ' + signature.slice(0, 10);
+        } catch (error) {
+          document.querySelector('#typed-status').textContent =
+            'Typed signature rejected ' + (error.code || 'unknown');
+        }
+      });
+      document.querySelector('#transaction').addEventListener('click', async () => {
+        try {
+          const hash = await window.ethereum.request({
+            method: 'eth_sendTransaction',
+            params: [{
+              from: account,
+              to: '0x3333333333333333333333333333333333333333',
+              value: '0xde0b6b3a7640000',
+              data: '0xabcdef12',
+            }],
+          });
+          document.querySelector('#transaction-status').textContent = 'Transaction ' + hash;
+        } catch (error) {
+          document.querySelector('#transaction-status').textContent =
+            'Transaction rejected ' + (error.code || 'unknown');
+        }
+      });
+    </script>
+  </main>`;
 }
 
 async function recordQualification(window, taskId, classification, evidence = {}) {
@@ -1046,4 +1233,207 @@ test('baseline: file upload uses native user selection and a redacted receipt', 
   expect(result.upload).not.toHaveProperty('path');
   expect(JSON.stringify(result.upload)).not.toContain(userDataDir);
   expect(operations).toEqual(['browser_snapshot', 'browser_upload', 'browser_snapshot']);
+});
+
+test('privileged capability: wallet connect and signatures use Agent-native approval', async ({
+  window,
+  harness,
+}) => {
+  await createUnlockedTestWallet(window);
+  await prepareTask(window, harness, URLS.wallet, walletFixtureBody());
+
+  await window
+    .locator('#agent-prompt')
+    .fill(
+      'PRODUCT_AGENT_WALLET_APPROVE: connect the wallet, sign the exact personal message, and sign the exact typed data. Ask me for every wallet decision.'
+    );
+  await window.locator('#agent-run').click();
+
+  await expect(window.locator('#agent-approval')).toBeVisible({ timeout: 10_000 });
+  await expect(window.locator('#agent-approval-action')).toHaveText(
+    'Connect this site to a wallet account?'
+  );
+  await expect(window.locator('#agent-wallet-approval-summary')).toContainText(
+    'agent-product.test'
+  );
+  await expect(window.locator('#agent-wallet-account option')).toHaveCount(1);
+  await expect(window.locator('#agent-approval-approve')).toHaveText('Connect once');
+  await window.locator('#agent-approval-approve').click();
+
+  await expect(window.locator('#agent-approval-action')).toHaveText(
+    'Approve this wallet signature?',
+    { timeout: 10_000 }
+  );
+  await expect(window.locator('#agent-wallet-approval-summary')).toContainText(
+    'Freedom Agent exact personal message'
+  );
+  await expect(window.locator('#agent-approval-approve')).toHaveText('Sign once');
+  await window.locator('#agent-approval-approve').click();
+
+  await expect(window.locator('#agent-wallet-approval-summary')).toContainText(
+    'Approve typed Freedom action',
+    { timeout: 10_000 }
+  );
+  await expect(window.locator('#agent-wallet-approval-summary')).toContainText(
+    'Freedom Agent Fixture'
+  );
+  await window.locator('#agent-approval-approve').click();
+
+  await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 15_000 });
+  const connectionStatus = await guestValue(
+    window,
+    'document.querySelector("#connection-status").textContent'
+  );
+  const personalStatus = await guestValue(
+    window,
+    'document.querySelector("#personal-status").textContent'
+  );
+  const typedStatus = await guestValue(
+    window,
+    'document.querySelector("#typed-status").textContent'
+  );
+  const result = await recordQualification(
+    window,
+    'agent-native-wallet-signatures',
+    CLASSIFICATION.PASS,
+    { connectionStatus, personalStatus, typedStatus, walletReceipts: observedWalletReceipts }
+  );
+
+  expect(result.connectionStatus).toMatch(/^Connected 0x[0-9a-fA-F]{40}$/);
+  expect(result.personalStatus).toMatch(/^Personal signature 0x[0-9a-fA-F]{8}$/);
+  expect(result.typedStatus).toMatch(/^Typed signature 0x[0-9a-fA-F]{8}$/);
+  expect(result.walletReceipts).toEqual([
+    expect.objectContaining({ action: 'connected', origin: 'https://agent-product.test' }),
+    expect.objectContaining({ action: 'signed', signatureType: 'personal_sign' }),
+    expect.objectContaining({ action: 'signed', signatureType: 'eth_signTypedData_v4' }),
+  ]);
+  expect(JSON.stringify(result.walletReceipts)).not.toMatch(/0x[0-9a-fA-F]{130}/);
+  expect(result.assistantOutput).toContain('safe wallet receipts');
+  expect(operations).toEqual([
+    'browser_snapshot',
+    'browser_wallet_action',
+    'browser_snapshot',
+    'browser_wallet_action',
+    'browser_snapshot',
+    'browser_wallet_action',
+    'browser_snapshot',
+  ]);
+});
+
+test('privileged capability: declining an Agent wallet request is final and recoverable', async ({
+  window,
+  harness,
+}) => {
+  await createUnlockedTestWallet(window);
+  await prepareTask(window, harness, URLS.walletDecline, walletFixtureBody());
+
+  await window
+    .locator('#agent-prompt')
+    .fill('PRODUCT_AGENT_WALLET_DECLINE: try to connect the wallet once.');
+  await window.locator('#agent-run').click();
+  await expect(window.locator('#agent-approval-action')).toHaveText(
+    'Connect this site to a wallet account?',
+    { timeout: 10_000 }
+  );
+  await window.locator('#agent-approval-decline').click();
+
+  await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 15_000 });
+  await expect(window.locator('.agent-tool-item').last()).toContainText('Wallet request declined');
+  expect(
+    await guestValue(window, 'document.querySelector("#connection-status").textContent')
+  ).toBe('Connection rejected 4001');
+  expect((await window.locator('#agent-output').textContent()) || '').toContain(
+    'left it disconnected'
+  );
+  expect(operations).toEqual(['browser_snapshot', 'browser_wallet_action']);
+});
+
+test('privileged capability: locked-wallet transaction shows exact data and returns a safe receipt', async ({
+  window,
+  harness,
+}) => {
+  await createUnlockedTestWallet(window);
+  await lockTestWallet(window);
+  await prepareTask(window, harness, URLS.walletTransaction, walletFixtureBody());
+
+  await window
+    .locator('#agent-prompt')
+    .fill(
+      'PRODUCT_AGENT_WALLET_TRANSACTION: connect the wallet and send the requested test transaction. Ask me for every wallet decision.'
+    );
+  await window.locator('#agent-run').click();
+
+  await expect(window.locator('#agent-approval-action')).toHaveText(
+    'Connect this site to a wallet account?',
+    { timeout: 10_000 }
+  );
+  await window.locator('#agent-approval-approve').click();
+
+  await expect(window.locator('#agent-approval-action')).toHaveText(
+    'Approve this wallet transaction?',
+    { timeout: 10_000 }
+  );
+  const summary = window.locator('#agent-wallet-approval-summary');
+  await expect(summary).toContainText('0x3333333333333333333333333333333333333333');
+  await expect(summary).toContainText('1.0 xDAI');
+  await expect(summary).toContainText('0.000021 xDAI');
+  await expect(summary).toContainText('0xabcdef12');
+  await expect(window.locator('#agent-approval-approve')).toHaveText('Confirm transaction');
+  await window.locator('#agent-approval-approve').click();
+
+  await expect(window.locator('#agent-wallet-unlock')).toBeVisible();
+  await expect(window.locator('#agent-approval-message')).toHaveText('Wallet is locked');
+  await window.locator('#agent-wallet-password').fill(WALLET_PASSWORD);
+  await window.locator('#agent-wallet-unlock-submit').click();
+
+  await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 15_000 });
+  const deterministicHash = `0x${'ab'.repeat(32)}`;
+  const transactionStatus = await guestValue(
+    window,
+    'document.querySelector("#transaction-status").textContent'
+  );
+  const identityStatus = await window.evaluate(() => window.identity.getStatus());
+  const harnessState = await harness.state();
+  const result = await recordQualification(
+    window,
+    'agent-native-wallet-transaction',
+    CLASSIFICATION.PASS,
+    {
+      transactionStatus,
+      identityUnlocked: identityStatus?.isUnlocked,
+      capturedTransaction: harnessState.agentWalletTransaction,
+      walletReceipts: observedWalletReceipts,
+    }
+  );
+
+  expect(result.transactionStatus).toBe(`Transaction ${deterministicHash}`);
+  expect(result.identityUnlocked).toBe(true);
+  expect(result.capturedTransaction).toEqual({
+    transaction: {
+      to: '0x3333333333333333333333333333333333333333',
+      value: '0xde0b6b3a7640000',
+      data: '0xabcdef12',
+      gasLimit: '21000',
+      chainId: 100,
+      gasPrice: '1000000000',
+    },
+    context: { kind: 'dapp-send', origin: PRODUCT_ORIGIN },
+  });
+  expect(result.walletReceipts).toEqual([
+    expect.objectContaining({ action: 'connected', origin: PRODUCT_ORIGIN }),
+    expect.objectContaining({
+      action: 'broadcast',
+      transactionHash: deterministicHash,
+      paymentId: 'payment_agent_wallet_test',
+    }),
+  ]);
+  expect(JSON.stringify(result.walletReceipts)).not.toContain('abcdef12');
+  expect(result.assistantOutput).toContain('safe transaction receipt');
+  expect(operations).toEqual([
+    'browser_snapshot',
+    'browser_wallet_action',
+    'browser_snapshot',
+    'browser_wallet_action',
+    'browser_snapshot',
+  ]);
 });

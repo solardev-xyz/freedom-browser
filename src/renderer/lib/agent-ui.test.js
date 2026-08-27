@@ -1887,6 +1887,65 @@ describe('Agent UI', () => {
     );
   });
 
+  test('uses Touch ID for an Agent-native wallet approval when quick unlock is enabled', async () => {
+    const identityUnlock = jest.fn().mockResolvedValue({ success: true });
+    const quickUnlock = jest.fn().mockResolvedValue({
+      success: true,
+      password: 'test-only-touch-id-password',
+    });
+    const ctx = await loadAgentUi({
+      windowGlobals: {
+        identity: {
+          getStatus: jest.fn().mockResolvedValue({ isUnlocked: false }),
+          unlock: identityUnlock,
+        },
+        quickUnlock: {
+          canUseTouchId: jest.fn().mockResolvedValue(true),
+          isEnabled: jest.fn().mockResolvedValue(true),
+          unlock: quickUnlock,
+        },
+      },
+    });
+    ctx.elements['agent-prompt'].value = 'Sign message';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'approval_requested',
+      runId: 'run_test',
+      approvalId: 'approval_signature',
+      action: 'wallet_signature',
+      origin: 'https://app.example',
+      wallet: {
+        kind: 'signature',
+        chainId: 100,
+        chainName: 'Gnosis',
+        requiresUnlock: true,
+        account: {
+          index: 0,
+          name: 'Main Wallet',
+          address: '0x1111111111111111111111111111111111111111',
+          type: 'mnemonic',
+        },
+        signatureType: 'Personal message',
+        summary: 'Approve this exact message',
+      },
+    });
+
+    ctx.elements['agent-approval-approve'].dispatch('click');
+    await flush();
+    await flush();
+
+    expect(quickUnlock).toHaveBeenCalledTimes(1);
+    expect(identityUnlock).toHaveBeenCalledWith('test-only-touch-id-password');
+    expect(ctx.elements['agent-wallet-unlock'].hidden).toBe(true);
+    expect(ctx.electronAPI.decideAgentApproval).toHaveBeenCalledWith(
+      'run_test',
+      'approval_signature',
+      true
+    );
+  });
+
   test('uses the native picker as the final consent surface for a file upload', async () => {
     const ctx = await loadAgentUi();
     ctx.elements['agent-prompt'].value = 'Upload my résumé';

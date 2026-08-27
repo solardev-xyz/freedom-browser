@@ -22,7 +22,7 @@ function createFreedomAgentRuntime(options = {}) {
     userDataDir: options.profile?.userDataDir,
   });
   historyStore.markStaleRunningAsInterrupted();
-  const walletController = new AgentWalletController();
+  const walletController = new AgentWalletController(options.walletControllerOptions);
   options.controller.setWalletController(walletController);
   const service = new FreedomAgentService({
     controller: options.controller,

@@ -59,6 +59,7 @@ const contentFixtureActivity = new Map();
 const ensFixtures = new Map();
 const probeFixtures = new Map();
 const automationWindows = new Map();
+let agentWalletTransaction = null;
 
 // Records profile "open" launches instead of cold-starting a real second
 // Electron instance. See installProfileLaunchRecorder / profile-launcher.js.
@@ -92,6 +93,26 @@ function resetFixtures() {
   contentFixtureActivity.clear();
   ensFixtures.clear();
   probeFixtures.clear();
+  agentWalletTransaction = null;
+}
+
+function createAgentWalletTestOptions() {
+  if (!TEST_MODE_ENABLED) return undefined;
+  return {
+    estimateGas: async () => ({ gasLimit: '21000' }),
+    getGasPrices: async () => ({ type: 'legacy', gasPrice: '1000000000' }),
+    signAndRecord: async (transaction, _signer, context) => {
+      agentWalletTransaction = {
+        transaction: { ...transaction },
+        context: { ...context },
+      };
+      return {
+        hash: `0x${'ab'.repeat(32)}`,
+        paymentId: 'payment_agent_wallet_test',
+        recorded: true,
+      };
+    },
+  };
 }
 
 // Longest-prefix match so a fixture for `bzz://<hash>/` answers for
@@ -457,6 +478,7 @@ function registerTestOps() {
     content: [...contentFixtures.keys()],
     ens: [...ensFixtures.keys()],
     probes: [...probeFixtures.keys()],
+    agentWalletTransaction,
   }));
 }
 
@@ -570,6 +592,7 @@ function exposeGlobalShim() {
       ens: [...ensFixtures.keys()],
       probes: [...probeFixtures.keys()],
       profileLaunches: profileLaunches.map((entry) => ({ ...entry })),
+      agentWalletTransaction,
     }),
   };
 }
@@ -595,6 +618,7 @@ function installTestHarness({ defaultSession }) {
 }
 
 module.exports = {
+  createAgentWalletTestOptions,
   isTestMode,
   installTestHarness,
   // Exposed so private-window sessions (created after startup) get the same
