@@ -1276,6 +1276,29 @@ function setApprovalControlsDisabled(disabled) {
   elements.approvalStop.disabled = disabled;
 }
 
+function describeApprovalOrigin(value) {
+  if (typeof value !== 'string' || !value) return null;
+  try {
+    const url = new URL(value);
+    const key = url.origin !== 'null' ? url.origin : `${url.protocol}//${url.host}`;
+    return { key, label: url.host || url.protocol.replace(/:$/, '') };
+  } catch {
+    return null;
+  }
+}
+
+function approvalOriginSummary(request) {
+  const source = describeApprovalOrigin(request.origin);
+  const destination = describeApprovalOrigin(request.destinationOrigin);
+  if (!source && !destination) return 'Site unavailable';
+  if (!source) return destination.label;
+  if (!destination || source.key === destination.key) return source.label;
+  if (source.label === destination.label) {
+    return `${source.key} → ${destination.key}`;
+  }
+  return `${source.label} → ${destination.label}`;
+}
+
 function renderApproval(request) {
   if (!request || typeof request.approvalId !== 'string') return;
   pendingApproval = request;
@@ -1291,13 +1314,9 @@ function renderApproval(request) {
     request.action === 'form_submission'
       ? `Submit this form using “${label}”?`
       : request.action === 'file_download'
-        ? `Download “${label}”?`
+        ? `Download ${label.replace(/^download\s+/i, '').trim() || 'this file'}?`
         : interactionCopy[request.operation] || `Let Agent interact with “${label}”?`;
-  const approvalOrigins = [request.origin ? `Site: ${request.origin}` : 'Site origin unavailable'];
-  if (request.destinationOrigin) {
-    approvalOrigins.push(`Destination: ${request.destinationOrigin}`);
-  }
-  elements.approvalOrigin.textContent = approvalOrigins.join('\n');
+  elements.approvalOrigin.textContent = approvalOriginSummary(request);
   setApprovalControlsDisabled(false);
   setMessage(elements.approvalMessage, 'Agent is waiting');
   elements.composer.classList.add('approval-pending');

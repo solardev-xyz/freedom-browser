@@ -717,9 +717,7 @@ test('baseline: Take over, human edit, Resume, and fresh approval preserve colla
   await expect(window.locator('#agent-approval-action')).toContainText('Contact email');
   await window.locator('#agent-approval-approve').click();
   await expect(window.locator('#agent-approval-action')).toContainText('Submit application');
-  await expect(window.locator('#agent-approval-origin')).toContainText(
-    'Destination: https://agent-product.test'
-  );
+  await expect(window.locator('#agent-approval-origin')).toHaveText('agent-product.test');
   await expect(window.locator('[data-test="agent-page-interlock"]')).toBeVisible();
   await window.locator('[data-test="agent-page-interlock"]').click({ position: { x: 10, y: 10 } });
   await expect(window.locator('#agent-takeover-dialog')).toBeVisible();
@@ -899,8 +897,39 @@ test('baseline: file delivery uses scoped download authority and a verified rece
     .fill('PRODUCT_FILE_DOWNLOAD: download the quarterly report and provide a verified artifact receipt.');
   await window.locator('#agent-run').click();
   await expect(window.locator('#agent-approval')).toBeVisible({ timeout: 10_000 });
-  await expect(window.locator('#agent-approval-action')).toContainText('Download quarterly report');
+  await expect(window.locator('#agent-approval-action')).toHaveText('Download quarterly report?');
+  await expect(window.locator('#agent-approval-origin')).toHaveText('agent-product.test');
+  const approvalLayout = await window.locator('#agent-approval').evaluate((approval) => {
+    const decline = approval.querySelector('#agent-approval-decline').getBoundingClientRect();
+    const allow = approval.querySelector('#agent-approval-approve').getBoundingClientRect();
+    const status = approval.querySelector('.agent-approval-status').getBoundingClientRect();
+    return {
+      declineTop: decline.top,
+      declineWidth: decline.width,
+      allowTop: allow.top,
+      allowWidth: allow.width,
+      buttonsBottom: Math.max(decline.bottom, allow.bottom),
+      statusTop: status.top,
+    };
+  });
+  expect(Math.abs(approvalLayout.declineTop - approvalLayout.allowTop)).toBeLessThanOrEqual(1);
+  expect(Math.abs(approvalLayout.declineWidth - approvalLayout.allowWidth)).toBeLessThanOrEqual(1);
+  expect(approvalLayout.statusTop).toBeGreaterThan(approvalLayout.buttonsBottom);
   await window.locator('#agent-approval-approve').click();
+  const shelfCard = window.locator('#download-shelf .download-card');
+  await expect(shelfCard).toBeVisible({ timeout: 10_000 });
+  const shelfLayout = await shelfCard.evaluate((card) => {
+    const cardRect = card.getBoundingClientRect();
+    const pageRect = card.closest('.content-page').getBoundingClientRect();
+    const sidebarRect = document.querySelector('#agent-sidebar').getBoundingClientRect();
+    return {
+      cardRight: cardRect.right,
+      pageRight: pageRect.right,
+      sidebarLeft: sidebarRect.left,
+    };
+  });
+  expect(shelfLayout.cardRight).toBeLessThanOrEqual(shelfLayout.pageRight);
+  expect(shelfLayout.cardRight).toBeLessThan(shelfLayout.sidebarLeft);
   await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 15_000 });
   const downloadsDir = await electronApp.evaluate(({ app }) => app.getPath('downloads'));
   const downloadedContent = fs.readFileSync(

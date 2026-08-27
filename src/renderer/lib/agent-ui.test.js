@@ -1632,9 +1632,8 @@ describe('Agent UI', () => {
       '<img src=x onerror=alert(1)>'
     );
     expect(ctx.elements['agent-approval-action'].children).toHaveLength(0);
-    expect(ctx.elements['agent-approval-origin'].textContent).toContain('https://trusted.example');
-    expect(ctx.elements['agent-approval-origin'].textContent).toContain(
-      'Destination: https://submit.example'
+    expect(ctx.elements['agent-approval-origin'].textContent).toBe(
+      'trusted.example → submit.example'
     );
 
     ctx.elements['agent-approval-approve'].dispatch('click');
@@ -1653,6 +1652,28 @@ describe('Agent UI', () => {
     });
     expect(ctx.elements['agent-approval'].hidden).toBe(true);
     expect(ctx.elements['agent-run-status'].textContent).toBe('Running');
+  });
+
+  test('condenses same-origin download approval copy without repeating Download', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Download Ubuntu';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'approval_requested',
+      runId: 'run_test',
+      approvalId: 'approval_test',
+      action: 'file_download',
+      origin: 'https://ubuntu.com',
+      destinationOrigin: 'https://ubuntu.com',
+      label: 'Download Ubuntu 26.04 LTS amd64',
+    });
+
+    expect(ctx.elements['agent-approval-action'].textContent).toBe(
+      'Download Ubuntu 26.04 LTS amd64?'
+    );
+    expect(ctx.elements['agent-approval-origin'].textContent).toBe('ubuntu.com');
   });
 
   test('keeps the conversation reusable after a failed run', async () => {

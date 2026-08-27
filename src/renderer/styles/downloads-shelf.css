@@ -1,21 +1,23 @@
 /* Download shelf — bottom-right stack of compact download cards.
    (The update toast owns the bottom-left corner.) */
 .download-shelf {
-  position: fixed;
+  position: absolute;
   bottom: 16px;
+  left: 16px;
   right: 16px;
   z-index: 10000;
   display: flex;
   flex-direction: column;
   gap: 8px;
   align-items: flex-end;
+  pointer-events: none;
 }
 
 .download-card {
   display: flex;
   align-items: center;
   gap: 12px;
-  width: 320px;
+  width: min(320px, 100%);
   padding: 10px 12px;
   background: var(--menu-bg);
   border: 1px solid var(--border);
@@ -23,6 +25,7 @@
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
   color: var(--text);
   font-size: 13px;
+  pointer-events: auto;
 }
 
 .download-card-main {

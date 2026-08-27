@@ -1289,6 +1289,8 @@ body.agent-first-mode .agent-composer textarea {
 }
 
 .agent-composer {
+  container-name: agent-composer;
+  container-type: inline-size;
   overflow: hidden;
   background: var(--agent-composer-surface);
   border: 1px solid var(--agent-composer-border);
@@ -1887,6 +1889,7 @@ body.agent-first-mode .agent-composer textarea {
 }
 
 .agent-approval-stop {
+  margin-left: auto;
   padding: 2px 4px;
   color: var(--muted);
   font: inherit;
@@ -1894,12 +1897,6 @@ body.agent-first-mode .agent-composer textarea {
   background: transparent;
   border: 0;
   border-radius: 5px;
-}
-
-.agent-approval-stop::before {
-  margin-right: 7px;
-  color: color-mix(in srgb, var(--muted) 58%, transparent);
-  content: '·';
 }
 
 .agent-approval-stop:hover:not(:disabled),
@@ -1944,6 +1941,34 @@ body.agent-first-mode .agent-composer textarea {
 .agent-approval button:disabled {
   cursor: default;
   opacity: 0.5;
+}
+
+@container agent-composer (max-width: 460px) {
+  .agent-approval {
+    padding: 16px 16px 12px;
+  }
+
+  .agent-approval-footer {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+    padding-top: 14px;
+  }
+
+  .agent-approval-actions {
+    order: 1;
+    width: 100%;
+  }
+
+  .agent-approval-button {
+    flex: 1 1 0;
+  }
+
+  .agent-approval-status {
+    order: 2;
+    width: 100%;
+    flex: none;
+  }
 }
 
 @keyframes agent-approval-enter {

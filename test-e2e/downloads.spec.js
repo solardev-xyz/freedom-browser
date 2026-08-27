@@ -27,6 +27,7 @@ test('a download shows a shelf card and a freedom://downloads entry', async ({
   // transient progress bar.
   const card = window.locator('#download-shelf .download-card');
   await expect(card).toHaveCount(1, { timeout: 10_000 });
+  await expect(window.locator('.content-page > #download-shelf')).toHaveCount(1);
   await expect(card.locator('[data-test="download-show-in-folder"]')).toBeVisible({
     timeout: 10_000,
   });
