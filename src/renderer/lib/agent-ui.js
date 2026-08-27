@@ -996,7 +996,7 @@ async function cancelProviderLogin() {
 
 function setRunState(status, label) {
   const active = status !== 'idle';
-  const acceptsComposerInput = ['idle', 'running', 'paused'].includes(status);
+  const acceptsComposerInput = ['idle', 'running', 'paused'].includes(status) && !pendingApproval;
   currentRunStatus = status;
   setWorkspaceNavigationEditable(status === 'idle' || status === 'paused');
   elements.prompt.disabled = !acceptsComposerInput;
@@ -1265,14 +1265,21 @@ function restoreTranscript(transcript = []) {
 function clearApproval() {
   pendingApproval = null;
   elements.approval.hidden = true;
-  elements.approvalApprove.disabled = false;
-  elements.approvalDecline.disabled = false;
+  elements.composer.classList.remove('approval-pending');
+  setApprovalControlsDisabled(false);
   setMessage(elements.approvalMessage);
+}
+
+function setApprovalControlsDisabled(disabled) {
+  elements.approvalApprove.disabled = disabled;
+  elements.approvalDecline.disabled = disabled;
+  elements.approvalStop.disabled = disabled;
 }
 
 function renderApproval(request) {
   if (!request || typeof request.approvalId !== 'string') return;
   pendingApproval = request;
+  closeComposerPopovers();
   const label = typeof request.label === 'string' && request.label ? request.label : 'this element';
   const interactionCopy = {
     browser_click: `Let Agent click “${label}”?`,
@@ -1291,18 +1298,17 @@ function renderApproval(request) {
     approvalOrigins.push(`Destination: ${request.destinationOrigin}`);
   }
   elements.approvalOrigin.textContent = approvalOrigins.join('\n');
-  elements.approvalApprove.disabled = false;
-  elements.approvalDecline.disabled = false;
-  setMessage(elements.approvalMessage, 'The agent is paused until you decide.');
+  setApprovalControlsDisabled(false);
+  setMessage(elements.approvalMessage, 'Agent is waiting');
+  elements.composer.classList.add('approval-pending');
   elements.approval.hidden = false;
 }
 
 async function decideApproval(approved) {
   const request = pendingApproval;
   if (!request || !currentRunId) return;
-  elements.approvalApprove.disabled = true;
-  elements.approvalDecline.disabled = true;
-  setMessage(elements.approvalMessage, approved ? 'Approving…' : 'Declining…');
+  setApprovalControlsDisabled(true);
+  setMessage(elements.approvalMessage, approved ? 'Allowing…' : 'Not allowing…');
   try {
     const response = await window.electronAPI.decideAgentApproval(
       currentRunId,
@@ -1310,8 +1316,7 @@ async function decideApproval(approved) {
       approved
     );
     if (!response?.ok && pendingApproval === request) {
-      elements.approvalApprove.disabled = false;
-      elements.approvalDecline.disabled = false;
+      setApprovalControlsDisabled(false);
       setMessage(
         elements.approvalMessage,
         responseMessage(response, 'Could not record the decision'),
@@ -1320,8 +1325,7 @@ async function decideApproval(approved) {
     }
   } catch {
     if (pendingApproval !== request) return;
-    elements.approvalApprove.disabled = false;
-    elements.approvalDecline.disabled = false;
+    setApprovalControlsDisabled(false);
     setMessage(elements.approvalMessage, 'Could not record the decision', true);
   }
 }
@@ -1779,6 +1783,7 @@ function handleAgentEvent(event) {
   } else if (event.type === 'run_finished') {
     const status = event.status || 'finished';
     const wasStopped = status === 'cancelled' && stopRequestedRunId === event.runId;
+    clearApproval();
     setRunState('idle', wasStopped ? 'Stopped' : status === 'completed' ? 'Complete' : status);
     if (wasStopped) {
       setMessage(elements.runMessage, 'Agent stopped.');
@@ -1791,7 +1796,6 @@ function handleAgentEvent(event) {
     lastFinishedRunId = event.runId;
     currentRunId = null;
     stopRequestedRunId = null;
-    clearApproval();
     setAgentControlledTab(null);
     void refreshWorkspaceProjection();
     void refreshSessionHistory();
@@ -1981,6 +1985,11 @@ async function resumeRun(instruction = '') {
 async function stopRun() {
   if (!currentRunId || currentRunStatus !== 'running') return;
   const previousStatus = currentRunStatus;
+  const approvalAtStop = pendingApproval;
+  if (approvalAtStop) {
+    setApprovalControlsDisabled(true);
+    setMessage(elements.approvalMessage, 'Stopping…');
+  }
   stopRequestedRunId = currentRunId;
   setTakeoverDialogOpen(false);
   setRunState('stopping', 'Stopping');
@@ -1990,11 +1999,19 @@ async function stopRun() {
     if (!response?.ok) {
       stopRequestedRunId = null;
       setRunState(previousStatus, 'Running');
+      if (pendingApproval === approvalAtStop) {
+        setApprovalControlsDisabled(false);
+        setMessage(elements.approvalMessage, 'Agent is waiting');
+      }
       setMessage(elements.runMessage, responseMessage(response, 'Could not stop the agent'), true);
     }
   } catch {
     stopRequestedRunId = null;
     setRunState(previousStatus, 'Running');
+    if (pendingApproval === approvalAtStop) {
+      setApprovalControlsDisabled(false);
+      setMessage(elements.approvalMessage, 'Agent is waiting');
+    }
     setMessage(elements.runMessage, 'Could not stop the agent', true);
   }
 }
@@ -2100,6 +2117,7 @@ export function initAgentUi(options = {}) {
     pageContext: byId('agent-page-context'),
     pageContextLabel: byId('agent-page-context-label'),
     prompt: byId('agent-prompt'),
+    composer: byId('agent-composer'),
     run: byId('agent-run'),
     newChat: byId('agent-new-chat'),
     pageInterlock: byId('agent-page-interlock'),
@@ -2115,6 +2133,7 @@ export function initAgentUi(options = {}) {
     approvalOrigin: byId('agent-approval-origin'),
     approvalApprove: byId('agent-approval-approve'),
     approvalDecline: byId('agent-approval-decline'),
+    approvalStop: byId('agent-approval-stop'),
     approvalMessage: byId('agent-approval-message'),
     transcript: byId('agent-transcript'),
     emptyState: byId('agent-empty-state'),
@@ -2221,6 +2240,7 @@ export function initAgentUi(options = {}) {
   });
   elements.approvalApprove.addEventListener('click', () => decideApproval(true));
   elements.approvalDecline.addEventListener('click', () => decideApproval(false));
+  elements.approvalStop.addEventListener('click', () => stopRun());
   elements.modelMenuButton.addEventListener('click', () => {
     const opening = elements.modelMenu.hidden;
     closeComposerPopovers();

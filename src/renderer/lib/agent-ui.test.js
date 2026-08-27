@@ -61,6 +61,7 @@ function createAgentElements() {
     'agent-page-contexts',
     'agent-page-context',
     'agent-page-context-label',
+    'agent-composer',
     'agent-prompt',
     'agent-run',
     'agent-new-chat',
@@ -77,6 +78,7 @@ function createAgentElements() {
     'agent-approval-origin',
     'agent-approval-approve',
     'agent-approval-decline',
+    'agent-approval-stop',
     'agent-approval-message',
     'agent-transcript',
     'agent-empty-state',
@@ -142,6 +144,7 @@ function createAgentElements() {
   elements['agent-auth-code'].hidden = true;
   elements['agent-page-contexts'].hidden = true;
   elements['agent-page-context'] = createElement('button');
+  elements['agent-composer'] = createElement('div');
   elements['agent-prompt'] = createElement('textarea');
   elements['agent-run'] = createElement('button');
   elements['agent-new-chat'] = createElement('button');
@@ -163,6 +166,7 @@ function createAgentElements() {
   elements['agent-approval'].hidden = true;
   elements['agent-approval-approve'] = createElement('button');
   elements['agent-approval-decline'] = createElement('button');
+  elements['agent-approval-stop'] = createElement('button');
   elements['agent-transcript'].hidden = true;
   elements['agent-model-menu-button'] = createElement('button');
   elements['agent-model-menu'] = createElement('div');
@@ -1463,7 +1467,7 @@ describe('Agent UI', () => {
     ctx.emit({ type: 'run_finished', runId: 'run_test', status: 'cancelled' });
   });
 
-  test('uses the active composer for steering without resolving a pending approval', async () => {
+  test('morphs the composer into a decision surface until approval resolves', async () => {
     const ctx = await loadAgentUi();
     ctx.elements['agent-prompt'].value = 'Complete the task';
     ctx.elements['agent-run'].dispatch('click');
@@ -1477,54 +1481,50 @@ describe('Agent UI', () => {
       label: 'Submit',
     });
 
+    expect(ctx.elements['agent-prompt'].disabled).toBe(true);
+    expect(ctx.elements['agent-composer'].classList.contains('approval-pending')).toBe(true);
+    expect(ctx.elements['agent-approval'].hidden).toBe(false);
+    expect(ctx.elements['agent-approval-message'].textContent).toBe('Agent is waiting');
+    expect(ctx.elements['agent-approval-stop'].disabled).toBe(false);
+    expect(ctx.electronAPI.steerAgent).not.toHaveBeenCalled();
+    expect(ctx.electronAPI.decideAgentApproval).not.toHaveBeenCalled();
+
+    ctx.emit({
+      type: 'approval_resolved',
+      runId: 'run_test',
+      approvalId: 'approval_test',
+      decision: 'declined',
+    });
+
+    expect(ctx.elements['agent-approval'].hidden).toBe(true);
+    expect(ctx.elements['agent-composer'].classList.contains('approval-pending')).toBe(false);
     expect(ctx.elements['agent-prompt'].disabled).toBe(false);
-    expect(ctx.elements['agent-prompt'].placeholder).toBe('Guide Agent…');
-    expect(ctx.elements['agent-run'].dataset.action).toBe('stop');
-    ctx.elements['agent-prompt'].value = 'Do not submit yet';
-    ctx.elements['agent-prompt'].dispatch('input');
-    expect(ctx.elements['agent-run'].dataset.action).toBe('send');
+  });
+
+  test('stops the task directly from the approval composer', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Complete the task';
     ctx.elements['agent-run'].dispatch('click');
     await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test', userText: 'Complete the task' });
+    ctx.emit({
+      type: 'approval_requested',
+      runId: 'run_test',
+      approvalId: 'approval_test',
+      action: 'form_submission',
+      label: 'Submit',
+    });
 
-    expect(ctx.electronAPI.steerAgent).toHaveBeenCalledWith(
-      'run_test',
-      'Do not submit yet'
-    );
-    expect(ctx.electronAPI.decideAgentApproval).not.toHaveBeenCalled();
-    ctx.emit({
-      type: 'guidance_queued',
-      runId: 'run_test',
-      guidance: {
-        guidanceId: 'guidance_test',
-        text: 'Do not submit yet',
-        status: 'queued',
-      },
-    });
-    expect(ctx.elements['agent-approval'].hidden).toBe(false);
-    expect(ctx.elements['agent-run-message'].textContent).toContain('approval separately');
-    expect(
-      ctx.elements['agent-transcript'].querySelector('.agent-guidance-message').textContent
-    ).toBe('Do not submit yet');
-    expect(
-      ctx.elements['agent-transcript'].querySelector('.agent-guidance-status').textContent
-    ).toBe('Guidance queued');
+    ctx.elements['agent-approval-stop'].dispatch('click');
+    await flush();
 
-    ctx.emit({
-      type: 'guidance_applying',
-      runId: 'run_test',
-      guidanceId: 'guidance_test',
-    });
-    expect(
-      ctx.elements['agent-transcript'].querySelector('.agent-guidance-status').textContent
-    ).toBe('Applying guidance…');
-    ctx.emit({
-      type: 'guidance_applied',
-      runId: 'run_test',
-      guidanceId: 'guidance_test',
-    });
-    expect(
-      ctx.elements['agent-transcript'].querySelector('.agent-guidance-status').hidden
-    ).toBe(true);
+    expect(ctx.electronAPI.stopAgent).toHaveBeenCalledWith('run_test');
+    expect(ctx.elements['agent-approval-message'].textContent).toBe('Stopping…');
+    expect(ctx.elements['agent-approval-stop'].disabled).toBe(true);
+
+    ctx.emit({ type: 'run_finished', runId: 'run_test', status: 'cancelled' });
+    expect(ctx.elements['agent-approval'].hidden).toBe(true);
+    expect(ctx.elements['agent-prompt'].disabled).toBe(false);
   });
 
   test('submits paused composer text as resume guidance', async () => {
