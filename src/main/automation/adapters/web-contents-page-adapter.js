@@ -55,9 +55,15 @@ function collectPageSnapshot(
   const accessibleName = (element) => {
     const labelledBy = element.getAttribute('aria-labelledby');
     if (labelledBy) {
+      const root = element.getRootNode();
       const label = labelledBy
         .split(/\s+/)
-        .map((id) => element.ownerDocument.getElementById(id)?.textContent || '')
+        .map(
+          (id) =>
+            root.getElementById?.(id)?.textContent ||
+            element.ownerDocument.getElementById(id)?.textContent ||
+            ''
+        )
         .join(' ');
       if (normalize(label)) return normalize(label);
     }
@@ -93,6 +99,12 @@ function collectPageSnapshot(
   const pageText = [];
   let candidateCount = 0;
 
+  const composedActiveElement = (frameDocument) => {
+    let active = frameDocument.activeElement;
+    while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
+    return active;
+  };
+
   const visitDocument = (frameWindow, parentFrameId, depth, frameElement) => {
     const frameId = depth === 0 ? 'frame_main' : `frame_${snapshotToken}_${String(frames.length)}`;
     let frameDocument;
@@ -122,59 +134,67 @@ function collectPageSnapshot(
     const text = normalize(frameDocument.body?.innerText || '');
     if (text) pageText.push(text);
 
-    const candidates = frameDocument.querySelectorAll(candidateSelector);
-    candidateCount += candidates.length;
-    for (const element of candidates) {
-      if (elements.length >= maxElements || !visible(element)) continue;
-      const role = element.getAttribute('role') || implicitRole(element);
-      const name = accessibleName(element);
-      const ref = `${snapshotToken}_${String(elements.length)}`;
-      const tag = element.tagName.toLowerCase();
-      const inputType = normalize(element.getAttribute('type')).toLowerCase();
-      const uploadsFile = tag === 'input' && inputType === 'file';
-      const submitsForm =
-        Boolean(element.form) &&
-        ((tag === 'button' && (!inputType || inputType === 'submit')) ||
-          (tag === 'input' && ['submit', 'image'].includes(inputType)));
-      const downloadsFile =
-        tag === 'a' && element.hasAttribute('href') && element.hasAttribute('download');
-      state.refs.set(ref, { element, frameWindow });
-      elements.push({
-        ref,
-        frameId,
-        role,
-        name,
-        tag,
-        disabled: element.matches(':disabled') || element.getAttribute('aria-disabled') === 'true',
-        focused: element === frameDocument.activeElement,
-        editable:
-          (!uploadsFile && element.matches('input:not([readonly]),textarea:not([readonly])')) ||
-          element.isContentEditable,
-        ...(uploadsFile
-          ? { effect: 'file_upload' }
-          : downloadsFile
-            ? { effect: 'file_download' }
-            : submitsForm
-              ? { effect: 'form_submission' }
-              : {}),
-        ...(uploadsFile && {
-          accept: normalize(element.getAttribute('accept')).slice(0, 500),
-          multiple: element.multiple === true,
-        }),
-        ...(tag === 'select' && {
-          value: element.value,
-          options: Array.from(element.options)
-            .slice(0, maxSelectOptions)
-            .map((option) => ({
-              value: option.value,
-              label: normalize(option.label || option.textContent),
-              disabled: option.disabled,
-              selected: option.selected,
-            })),
-          ...(element.options.length > maxSelectOptions && { optionsTruncated: true }),
-        }),
-      });
-    }
+    const visitRoot = (root) => {
+      const candidates = root.querySelectorAll(candidateSelector);
+      candidateCount += candidates.length;
+      for (const element of candidates) {
+        if (elements.length >= maxElements || !visible(element)) continue;
+        const role = element.getAttribute('role') || implicitRole(element);
+        const name = accessibleName(element);
+        const ref = `${snapshotToken}_${String(elements.length)}`;
+        const tag = element.tagName.toLowerCase();
+        const inputType = normalize(element.getAttribute('type')).toLowerCase();
+        const uploadsFile = tag === 'input' && inputType === 'file';
+        const submitsForm =
+          Boolean(element.form) &&
+          ((tag === 'button' && (!inputType || inputType === 'submit')) ||
+            (tag === 'input' && ['submit', 'image'].includes(inputType)));
+        const downloadsFile =
+          tag === 'a' && element.hasAttribute('href') && element.hasAttribute('download');
+        state.refs.set(ref, { element, frameWindow });
+        elements.push({
+          ref,
+          frameId,
+          role,
+          name,
+          tag,
+          disabled:
+            element.matches(':disabled') || element.getAttribute('aria-disabled') === 'true',
+          focused: element === composedActiveElement(frameDocument),
+          editable:
+            (!uploadsFile && element.matches('input:not([readonly]),textarea:not([readonly])')) ||
+            element.isContentEditable,
+          ...(uploadsFile
+            ? { effect: 'file_upload' }
+            : downloadsFile
+              ? { effect: 'file_download' }
+              : submitsForm
+                ? { effect: 'form_submission' }
+                : {}),
+          ...(uploadsFile && {
+            accept: normalize(element.getAttribute('accept')).slice(0, 500),
+            multiple: element.multiple === true,
+          }),
+          ...(tag === 'select' && {
+            value: element.value,
+            options: Array.from(element.options)
+              .slice(0, maxSelectOptions)
+              .map((option) => ({
+                value: option.value,
+                label: normalize(option.label || option.textContent),
+                disabled: option.disabled,
+                selected: option.selected,
+              })),
+            ...(element.options.length > maxSelectOptions && { optionsTruncated: true }),
+          }),
+        });
+      }
+      for (const host of root.querySelectorAll('*')) {
+        if (host.shadowRoot) visitRoot(host.shadowRoot);
+      }
+    };
+
+    visitRoot(frameDocument);
 
     for (const childFrame of frameDocument.querySelectorAll('iframe,frame')) {
       const childWindow = childFrame.contentWindow;
@@ -241,7 +261,16 @@ function inspectReferencedElement(ref, action) {
     const rect = element.getBoundingClientRect();
     let x = rect.left + rect.width / 2;
     let y = rect.top + rect.height / 2;
-    const hit = element.ownerDocument.elementFromPoint(x, y);
+    const deepElementFromPoint = (root, pointX, pointY) => {
+      let hit = root.elementFromPoint(pointX, pointY);
+      while (hit?.shadowRoot) {
+        const nested = hit.shadowRoot.elementFromPoint(pointX, pointY);
+        if (!nested || nested === hit) break;
+        hit = nested;
+      }
+      return hit;
+    };
+    const hit = deepElementFromPoint(element.ownerDocument, x, y);
     if (!hit || (hit !== element && !element.contains(hit))) {
       return { ok: false, reason: 'not_interactable' };
     }
@@ -254,7 +283,7 @@ function inspectReferencedElement(ref, action) {
       x += frameRect.left + currentFrame.clientLeft;
       y += frameRect.top + currentFrame.clientTop;
       const parentDocument = currentWindow.parent.document;
-      const parentHit = parentDocument.elementFromPoint(x, y);
+      const parentHit = deepElementFromPoint(parentDocument, x, y);
       if (!parentHit || (parentHit !== currentFrame && !currentFrame.contains(parentHit))) {
         return { ok: false, reason: 'not_interactable' };
       }
@@ -271,7 +300,9 @@ function inspectReferencedElement(ref, action) {
   if (action !== 'press' && !editable) return { ok: false, reason: 'not_interactable' };
   element.scrollIntoView({ block: 'center', inline: 'center' });
   element.focus();
-  if (element.ownerDocument.activeElement !== element) {
+  let active = element.ownerDocument.activeElement;
+  while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
+  if (active !== element) {
     return { ok: false, reason: 'not_interactable' };
   }
   return { ok: true, contentEditable: element.isContentEditable };
@@ -295,10 +326,16 @@ async function describeReferencedElement(ref, action, key) {
       .replace(/\s+/g, ' ')
       .trim();
   const labelledBy = element.getAttribute('aria-labelledby');
+  const root = element.getRootNode();
   const labelledByText = labelledBy
     ? labelledBy
         .split(/\s+/)
-        .map((id) => element.ownerDocument.getElementById(id)?.textContent || '')
+        .map(
+          (id) =>
+            root.getElementById?.(id)?.textContent ||
+            element.ownerDocument.getElementById(id)?.textContent ||
+            ''
+        )
         .join(' ')
     : '';
   const label = normalize(

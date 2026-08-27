@@ -693,11 +693,7 @@ function walletFixtureBody() {
   return `<!doctype html><title>Agent wallet fixture</title><main>
     <h1>Agent wallet fixture</h1>
     <button id="connect" type="button">Connect wallet</button>
-    <section id="wallet-picker" role="dialog" aria-label="Choose a wallet" hidden>
-      <h2>Choose a wallet</h2>
-      <button id="freedom-wallet" type="button">Freedom wallet</button>
-      <button type="button">Another wallet</button>
-    </section>
+    <freedom-wallet-picker id="wallet-picker" hidden></freedom-wallet-picker>
     <button id="personal" type="button">Sign personal message</button>
     <button id="typed" type="button">Sign typed data</button>
     <button id="transaction" type="button">Send test transaction</button>
@@ -707,10 +703,22 @@ function walletFixtureBody() {
     <p id="transaction-status">Transaction pending</p>
     <script>
       let account = '';
+      customElements.define('freedom-wallet-picker', class extends HTMLElement {
+        constructor() {
+          super();
+          const root = this.attachShadow({ mode: 'open' });
+          root.innerHTML = \`<section role="dialog" aria-labelledby="picker-title">
+            <h2 id="picker-title">Choose a wallet</h2>
+            <button id="freedom-wallet" type="button">Freedom wallet</button>
+            <button type="button">Another wallet</button>
+          </section>\`;
+        }
+      });
       document.querySelector('#connect').addEventListener('click', async () => {
         document.querySelector('#wallet-picker').hidden = false;
       });
-      document.querySelector('#freedom-wallet').addEventListener('click', async () => {
+      document.querySelector('#wallet-picker').shadowRoot
+        .querySelector('#freedom-wallet').addEventListener('click', async () => {
         try {
           const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
           account = accounts[0] || '';
