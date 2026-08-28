@@ -33,6 +33,7 @@ const CLASSIFICATION = Object.freeze({
 });
 
 const EXPECTED_TOOL_NAMES = Object.freeze([
+  'read',
   'browser_get_tab',
   'browser_list_tabs',
   'browser_create_tab',
@@ -73,6 +74,7 @@ let observedNodeRequest = null;
 let observedNodeLifecycle = null;
 let observedNodeDiagnostics = null;
 let observedAppDiagnostics = null;
+let observedSkillRead = '';
 const operations = [];
 
 function completionChunk({ delta = {}, finishReason = null, usage }) {
@@ -459,6 +461,23 @@ async function handleCompletion(request, response) {
     return;
   }
 
+  if (hasUserMarker(messages, 'PRODUCT_SWARM_POSTAGE_SKILL')) {
+    if (toolResults.length === 0) {
+      emitToolCall(response, 1, 'read', {
+        path: '/freedom-agent/skills/swarm-postage/SKILL.md',
+      });
+    } else {
+      observedSkillRead = contentText(toolResults.at(-1)?.content);
+      emitFinal(
+        response,
+        observedSkillRead.includes('node_operation_status')
+          ? 'Loaded the bundled Swarm postage procedure, including safe recovery for long-running purchases.'
+          : 'The bundled Swarm postage procedure was unavailable.'
+      );
+    }
+    return;
+  }
+
   if (hasUserMarker(messages, 'PRODUCT_FILE_DOWNLOAD')) {
     switch (toolResults.length) {
       case 0:
@@ -784,6 +803,7 @@ test.beforeEach(() => {
   observedNodeLifecycle = null;
   observedNodeDiagnostics = null;
   observedAppDiagnostics = null;
+  observedSkillRead = '';
   operations.length = 0;
 });
 
@@ -1799,6 +1819,31 @@ test('node intelligence: reports redacted integrated-service status without a br
   expect(result.assistantOutput).toContain('Checked 6 Freedom services');
   await expect(window.locator('.agent-turn-outcome').last()).toContainText('Node status checked');
   expect(operations).toEqual(['node_status']);
+});
+
+test('native skills: Pi progressively loads only the bundled Swarm postage procedure', async ({
+  window,
+}) => {
+  await configureFixtureProvider(window);
+
+  await runTask(
+    window,
+    'PRODUCT_SWARM_POSTAGE_SKILL: load the relevant procedure before planning a stamp purchase.'
+  );
+
+  const result = await recordQualification(
+    window,
+    'agent-native-swarm-postage-skill',
+    CLASSIFICATION.PASS,
+    { skillLoaded: observedSkillRead.includes('# Swarm postage batches') }
+  );
+  expect(result.advertisedTools).toEqual([...EXPECTED_TOOL_NAMES].sort());
+  expect(result.skillLoaded).toBe(true);
+  expect(observedSkillRead).toContain('node_operation_status');
+  expect(observedSkillRead).toContain('10^16');
+  expect(result.assistantOutput).toContain('Loaded the bundled Swarm postage procedure');
+  await expect(window.locator('.agent-turn-outcome').last()).toBeHidden();
+  expect(operations).toEqual(['read']);
 });
 
 test('node request classifier: confidently reads the registry-selected Ant API without approval', async ({

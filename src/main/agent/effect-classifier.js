@@ -171,6 +171,7 @@ class EffectClassifier {
         modelRuntime: runtime.modelRuntime,
         thinkingLevel: 'off',
         customTools: [],
+        enableBuiltInSkills: false,
         systemPrompt: EFFECT_CLASSIFIER_SYSTEM_PROMPT,
       });
       const session = created?.session;

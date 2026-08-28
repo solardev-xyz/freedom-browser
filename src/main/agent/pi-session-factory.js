@@ -1,6 +1,10 @@
 'use strict';
 
 const { loadPiSdk, validatePiSdk } = require('./pi-sdk');
+const {
+  createBuiltInSkillReadTool,
+  getBuiltInSkills,
+} = require('./builtin-skills');
 
 const BUILTIN_PI_TOOL_NAMES = new Set(['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls']);
 const VIRTUAL_AGENT_CWD = process.platform === 'win32' ? 'C:\\freedom-agent' : '/freedom-agent';
@@ -56,13 +60,14 @@ function validateCustomTools(customTools) {
   return [...names];
 }
 
-function createNoDiscoveryResourceLoader(sdk, systemPrompt) {
+function createNoDiscoveryResourceLoader(sdk, systemPrompt, options = {}) {
   const extensionRuntime = sdk.createExtensionRuntime();
   const extensionsResult = Object.freeze({ extensions: [], errors: [], runtime: extensionRuntime });
+  const skills = options.enableBuiltInSkills === true ? getBuiltInSkills() : [];
 
   return Object.freeze({
     getExtensions: () => extensionsResult,
-    getSkills: () => ({ skills: [], diagnostics: [] }),
+    getSkills: () => ({ skills, diagnostics: [] }),
     getPrompts: () => ({ prompts: [], diagnostics: [] }),
     getThemes: () => ({ themes: [], diagnostics: [] }),
     getAgentsFiles: () => ({ agentsFiles: [] }),
@@ -124,9 +129,15 @@ async function createIsolatedPiSession(options = {}) {
       ? options.systemPrompt.trim()
       : DEFAULT_FREEDOM_AGENT_SYSTEM_PROMPT;
   const customTools = options.customTools === undefined ? [] : options.customTools;
-  const toolNames = validateCustomTools(customTools);
   const sdk = validatePiSdk(options.sdk || (await loadPiSdk()));
-  const resourceLoader = createNoDiscoveryResourceLoader(sdk, systemPrompt);
+  const toolNames = validateCustomTools(customTools);
+  const enableBuiltInSkills = options.enableBuiltInSkills === true;
+  const builtInSkillTools = enableBuiltInSkills ? [createBuiltInSkillReadTool(sdk)] : [];
+  const sessionTools = [...customTools, ...builtInSkillTools];
+  if (enableBuiltInSkills) toolNames.push('read');
+  const resourceLoader = createNoDiscoveryResourceLoader(sdk, systemPrompt, {
+    enableBuiltInSkills,
+  });
   const settingsManager = sdk.SettingsManager.inMemory({
     compaction: { enabled: true },
     retry: { enabled: true, maxRetries: 2 },
@@ -142,7 +153,7 @@ async function createIsolatedPiSession(options = {}) {
     modelRuntime: options.modelRuntime,
     noTools: 'builtin',
     tools: toolNames,
-    customTools,
+    customTools: sessionTools,
     resourceLoader,
     sessionManager,
     settingsManager,

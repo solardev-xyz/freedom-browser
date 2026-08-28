@@ -133,6 +133,7 @@ describe('FreedomAgentService', () => {
       modelRuntime: { kind: 'model-runtime' },
       thinkingLevel: 'low',
       customTools: [{ name: 'browser_snapshot' }],
+      enableBuiltInSkills: true,
       systemPrompt: expect.stringContaining('requires user approval before every page interaction'),
     });
     expect(service.getWorkspaceState()).toEqual({
@@ -1600,6 +1601,22 @@ describe('FreedomAgentService', () => {
   });
 
   test('normalizes only the safe event subset and known tool errors', () => {
+    expect(
+      normalizePiEvent({
+        type: 'tool_execution_start',
+        toolCallId: 'call_skill',
+        toolName: 'read',
+        args: { path: '/freedom-agent/skills/swarm-postage/SKILL.md' },
+      })
+    ).toBeNull();
+    expect(
+      normalizePiEvent({
+        type: 'tool_execution_end',
+        toolCallId: 'call_skill',
+        toolName: 'read',
+        result: { content: [{ type: 'text', text: 'bundled skill contents' }] },
+      })
+    ).toBeNull();
     expect(
       normalizePiEvent({
         type: 'auto_retry_start',

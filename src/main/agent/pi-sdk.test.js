@@ -16,6 +16,7 @@ const repositoryRoot = path.resolve(__dirname, '../../..');
 const completeSdk = () => ({
   createAgentSession: jest.fn(),
   createExtensionRuntime: jest.fn(),
+  createReadTool: jest.fn(),
   defineTool: jest.fn(),
   ModelRuntime: jest.fn(),
   SessionManager: jest.fn(),
@@ -72,7 +73,7 @@ describe('Pi SDK loader', () => {
   test('rejects an incompatible module namespace', () => {
     expect(() => validatePiSdk({ createAgentSession: () => {} })).toThrow(
       new PiSdkLoadError(
-        'Pi SDK is missing required exports: createExtensionRuntime, defineTool, ModelRuntime, SessionManager, SettingsManager'
+        'Pi SDK is missing required exports: createExtensionRuntime, createReadTool, defineTool, ModelRuntime, SessionManager, SettingsManager'
       )
     );
   });
@@ -82,11 +83,11 @@ describe('Pi SDK loader', () => {
       process.execPath,
       [
         '-e',
-        'require("./src/main/agent/pi-sdk").loadPiSdk().then((sdk) => process.stdout.write([typeof sdk.createAgentSession, typeof sdk.defineTool, typeof sdk.ModelRuntime].join(",")))',
+        'require("./src/main/agent/pi-sdk").loadPiSdk().then((sdk) => process.stdout.write([typeof sdk.createAgentSession, typeof sdk.createReadTool, typeof sdk.defineTool, typeof sdk.ModelRuntime].join(",")))',
       ],
       { cwd: repositoryRoot, encoding: 'utf8' }
     );
 
-    expect(output).toBe('function,function,function');
+    expect(output).toBe('function,function,function,function');
   });
 });

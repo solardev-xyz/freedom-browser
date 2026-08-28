@@ -71,6 +71,7 @@ describe('EffectClassifier', () => {
       modelRuntime,
       thinkingLevel: 'off',
       customTools: [],
+      enableBuiltInSkills: false,
       systemPrompt: EFFECT_CLASSIFIER_SYSTEM_PROMPT,
     });
     expect(session.prompt.mock.calls[0][0]).toContain(CLASSIFIER_PROTOCOL);

@@ -15,6 +15,7 @@ function createSdk() {
   return {
     createAgentSession: jest.fn(),
     createExtensionRuntime: jest.fn(),
+    createReadTool: jest.fn(),
     defineTool: jest.fn((tool) => tool),
     ModelRuntime: jest.fn(),
     SessionManager,

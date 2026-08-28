@@ -4,6 +4,7 @@ const PI_SDK_PACKAGE = '@earendil-works/pi-coding-agent';
 const REQUIRED_EXPORTS = Object.freeze([
   'createAgentSession',
   'createExtensionRuntime',
+  'createReadTool',
   'defineTool',
   'ModelRuntime',
   'SessionManager',

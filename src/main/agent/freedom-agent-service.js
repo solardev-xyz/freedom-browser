@@ -187,6 +187,12 @@ function validateStartOptions(options) {
 
 function normalizePiEvent(event, toolOutcome) {
   if (!event || typeof event !== 'object') return null;
+  if (
+    (event.type === 'tool_execution_start' || event.type === 'tool_execution_end') &&
+    event.toolName === 'read'
+  ) {
+    return null;
+  }
 
   if (
     event.type === 'message_update' &&
@@ -847,6 +853,7 @@ class FreedomAgentService {
           modelRuntime: options.modelRuntime,
           thinkingLevel: options.thinkingLevel,
           customTools,
+          enableBuiltInSkills: true,
           ...(existingConversation?.restored && {
             restoredTranscript: existingConversation.turns.map((turn) => ({
               runId: turn.runId,

@@ -27,6 +27,7 @@ function createSdk() {
       extensionsResult: { extensions: [], errors: [], runtime: extensionRuntime },
     }),
     createExtensionRuntime: jest.fn(() => extensionRuntime),
+    createReadTool: jest.fn(() => ({ name: 'read', execute: jest.fn() })),
     defineTool: jest.fn(),
     ModelRuntime: jest.fn(),
     SessionManager,
@@ -85,6 +86,31 @@ describe('isolated Pi session factory', () => {
       })
     );
     expect(created.toolNames).toEqual(['browser_snapshot']);
+  });
+
+  test('adds native Pi skill discovery and a virtual read tool only when enabled', async () => {
+    const sdk = createSdk();
+    const browserTool = { name: 'node_request', execute: jest.fn() };
+
+    const created = await createIsolatedPiSession({
+      sdk,
+      model: { id: 'test-model', provider: 'test' },
+      modelRuntime: {},
+      customTools: [browserTool],
+      enableBuiltInSkills: true,
+    });
+
+    expect(created.toolNames).toEqual(['node_request', 'read']);
+    expect(created.resourceLoader.getSkills()).toEqual({
+      skills: [expect.objectContaining({ name: 'swarm-postage' })],
+      diagnostics: [],
+    });
+    expect(sdk.createAgentSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tools: ['node_request', 'read'],
+        customTools: [browserTool, expect.objectContaining({ name: 'read' })],
+      })
+    );
   });
 
   test('rejects built-in, unnamed, and duplicate tool names', () => {
@@ -182,6 +208,7 @@ describe('isolated Pi session factory', () => {
           sdk,
           model,
           modelRuntime,
+          enableBuiltInSkills: true,
           restoredTranscript: [{
             userText: 'Find the release date',
             assistantText: 'The visible page said August 25.',
@@ -217,8 +244,8 @@ describe('isolated Pi session factory', () => {
     );
 
     expect(result).toEqual({
-      tools: [],
-      prompt: `${DEFAULT_FREEDOM_AGENT_SYSTEM_PROMPT}\nCurrent working directory: ${VIRTUAL_AGENT_CWD}\n`,
+      tools: ['read'],
+      prompt: expect.stringContaining('<available_skills>'),
       messages: [
         { role: 'user', content: 'Find the release date' },
         {
@@ -228,8 +255,11 @@ describe('isolated Pi session factory', () => {
       ],
       extensions: 0,
       sessionFile: null,
-      skills: 0,
+      skills: 1,
       contextFiles: 0,
     });
+    expect(result.prompt).toContain('swarm-postage');
+    expect(result.prompt).toContain('/freedom-agent/skills/swarm-postage/SKILL.md');
+    expect(result.prompt).toContain(DEFAULT_FREEDOM_AGENT_SYSTEM_PROMPT);
   });
 });
