@@ -1532,6 +1532,10 @@ function formatToolError(code) {
 
 function renderTurnOutcome(view, outcome) {
   if (!view || !outcome || typeof outcome !== 'object') return;
+  if (outcome.verification === 'not_applicable') {
+    view.outcome.hidden = true;
+    return;
+  }
   const icons = { success: '✓', caution: '!', danger: '×', neutral: '•' };
   const tone = Object.hasOwn(icons, outcome.tone) ? outcome.tone : 'neutral';
   view.outcome.className = `agent-turn-outcome ${tone}`;

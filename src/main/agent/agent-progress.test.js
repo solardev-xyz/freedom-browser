@@ -287,6 +287,23 @@ describe('Agent progress projection', () => {
     });
   });
 
+  test('does not require browser evidence for a conversational response', () => {
+    expect(buildAgentOutcome([], 'completed')).toEqual({
+      kind: 'completed',
+      verification: 'not_applicable',
+      tone: 'neutral',
+      destinations: [],
+      counts: {
+        successful: 0,
+        failed: 0,
+        changed: 0,
+        observed: 0,
+        pages: 0,
+        approvals: { requested: 0, approved: 0, declined: 0, withdrawn: 0 },
+      },
+    });
+  });
+
   test('does not treat an observation on another page as result verification', () => {
     const outcome = buildAgentOutcome(
       [

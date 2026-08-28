@@ -960,6 +960,43 @@ describe('Agent UI', () => {
     );
   });
 
+  test('does not show a browser-evidence outcome for conversation', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Hello';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({
+      type: 'run_started',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      userText: 'Hello',
+    });
+    ctx.emit({
+      type: 'assistant_text_delta',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      text: 'Hello! How can I help?',
+    });
+    ctx.emit({
+      type: 'run_finished',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      status: 'completed',
+      durationMs: 1_000,
+      actionCount: 0,
+      outcome: {
+        kind: 'completed',
+        verification: 'not_applicable',
+        tone: 'neutral',
+      },
+    });
+
+    const turn = ctx.elements['agent-transcript'].children[0];
+    expect(turn.querySelector('.agent-output').textContent).toBe('Hello! How can I help?');
+    expect(turn.querySelector('.agent-turn-outcome').hidden).toBe(true);
+    expect(turn.querySelector('.agent-turn-activity').hidden).toBe(true);
+  });
+
   test('explains partial failure and does not present an unsafe blind retry', async () => {
     const ctx = await loadAgentUi();
     ctx.elements['agent-prompt'].value = 'Submit the application';

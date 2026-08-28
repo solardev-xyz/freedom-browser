@@ -501,6 +501,15 @@ function buildAgentOutcome(activity, status, error) {
         counts,
       });
     }
+    if (!items.length) {
+      return Object.freeze({
+        kind: 'completed',
+        verification: 'not_applicable',
+        tone: 'neutral',
+        destinations,
+        counts,
+      });
+    }
     return Object.freeze({
       kind: 'completed',
       verification: 'model_only',
