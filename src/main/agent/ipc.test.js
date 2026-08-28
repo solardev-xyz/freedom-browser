@@ -705,6 +705,30 @@ describe('Freedom agent IPC', () => {
     });
   });
 
+  test('passes only the supported conversation diagnostic grant', async () => {
+    const ctx = register();
+    const start = ctx.ipcMain.handlers.get(IPC.AGENT_START);
+    const decide = ctx.ipcMain.handlers.get(IPC.AGENT_APPROVAL_DECIDE);
+    await start({ sender: ctx.sender }, { rendererTabId: 7, prompt: 'Diagnose IPFS' });
+
+    await expect(
+      decide(
+        { sender: ctx.sender },
+        {
+          runId: 'run_test',
+          approvalId: 'approval_diagnostics',
+          approved: true,
+          diagnosticScope: 'conversation',
+        }
+      )
+    ).resolves.toEqual({ ok: true, decided: true });
+    expect(ctx.service.decideApproval).toHaveBeenCalledWith(
+      'run_test',
+      'approval_diagnostics',
+      { approved: true, diagnosticScope: 'conversation' }
+    );
+  });
+
   test('reports the controlled renderer tab only to the owning chrome', async () => {
     const ctx = register();
     const start = ctx.ipcMain.handlers.get(IPC.AGENT_START);

@@ -166,4 +166,25 @@ describe('automation operation contract', () => {
   test('normalizes read-only node status without a browser tab', () => {
     expect(validateOperationInput(OPERATIONS.NODE_STATUS, {})).toEqual({});
   });
+
+  test('bounds node and application diagnostic requests without accepting paths', () => {
+    expect(
+      validateOperationInput(OPERATIONS.NODE_DIAGNOSTICS, {
+        service: 'myotis-gnosis',
+        maxLines: 25,
+        maxBytes: 4_096,
+        path: '/not/accepted',
+      })
+    ).toEqual({ service: 'myotis-gnosis', maxLines: 25, maxBytes: 4_096 });
+    expect(validateOperationInput(OPERATIONS.APP_DIAGNOSTICS, {})).toEqual({
+      maxLines: 200,
+      maxBytes: 49_152,
+    });
+    expect(() =>
+      validateOperationInput(OPERATIONS.NODE_DIAGNOSTICS, { service: 'arbitrary-process' })
+    ).toThrow('service must be one of');
+    expect(() =>
+      validateOperationInput(OPERATIONS.APP_DIAGNOSTICS, { maxBytes: 65_537 })
+    ).toThrow('maxBytes must be an integer');
+  });
 });

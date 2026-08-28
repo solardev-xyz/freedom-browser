@@ -77,6 +77,7 @@ function createAgentElements() {
     'agent-approval-action',
     'agent-approval-origin',
     'agent-approval-approve',
+    'agent-approval-allow-conversation',
     'agent-approval-decline',
     'agent-approval-stop',
     'agent-approval-message',
@@ -172,6 +173,7 @@ function createAgentElements() {
   elements['agent-approval'] = createElement('div');
   elements['agent-approval'].hidden = true;
   elements['agent-approval-approve'] = createElement('button');
+  elements['agent-approval-allow-conversation'] = createElement('button');
   elements['agent-approval-decline'] = createElement('button');
   elements['agent-approval-stop'] = createElement('button');
   elements['agent-wallet-approval-details'].hidden = true;
@@ -1836,6 +1838,50 @@ describe('Agent UI', () => {
     });
     expect(ctx.elements['agent-approval'].hidden).toBe(true);
     expect(ctx.elements['agent-run-status'].textContent).toBe('Running');
+  });
+
+  test('renders an honest provider diagnostic disclosure and can grant the conversation', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Diagnose IPFS';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'approval_requested',
+      runId: 'run_test',
+      approvalId: 'approval_diagnostics',
+      action: 'diagnostic_data',
+      operation: 'node_diagnostics',
+      diagnostic: {
+        scope: 'node',
+        service: 'ipfs',
+        providerId: 'openai',
+        providerLabel: 'OpenAI',
+        modelId: 'gpt-5.6-sol',
+        local: false,
+        maxLines: 200,
+        maxBytes: 49152,
+      },
+    });
+
+    expect(ctx.elements['agent-approval-action'].textContent).toBe(
+      'Share recent ipfs node diagnostics with OpenAI?'
+    );
+    expect(ctx.elements['agent-approval-origin'].textContent).toContain(
+      'This sends raw diagnostic logs to OpenAI using gpt-5.6-sol.'
+    );
+    expect(ctx.elements['agent-approval-origin'].textContent).toContain('local paths');
+    expect(ctx.elements['agent-approval-approve'].textContent).toBe('Share once');
+    expect(ctx.elements['agent-approval-allow-conversation'].hidden).toBe(false);
+
+    ctx.elements['agent-approval-allow-conversation'].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.decideAgentApproval).toHaveBeenCalledWith(
+      'run_test',
+      'approval_diagnostics',
+      true,
+      { diagnosticScope: 'conversation' }
+    );
   });
 
   test('condenses same-origin download approval copy without repeating Download', async () => {

@@ -751,6 +751,55 @@ describe('FreedomAgentService', () => {
     await service.waitForIdle();
   });
 
+  test('discloses raw diagnostics to the selected provider and returns a conversation grant', async () => {
+    const fake = createFakeSession();
+    const { service, dependencies } = createService(fake);
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(
+      startOptions({ model: { id: 'gpt-5.6-sol', name: 'GPT-5.6 Sol', provider: 'openai' } })
+    );
+
+    const requestApproval = dependencies.createControllerScope.mock.calls[0][0].requestApproval;
+    const decision = requestApproval({
+      action: 'diagnostic_data',
+      operation: OPERATIONS.NODE_DIAGNOSTICS,
+      label: 'Share recent ipfs diagnostics',
+      diagnostic: { scope: 'node', service: 'ipfs', maxLines: 50, maxBytes: 8192 },
+    });
+    const approval = events.at(-1);
+
+    expect(approval).toMatchObject({
+      type: 'approval_requested',
+      action: 'diagnostic_data',
+      operation: OPERATIONS.NODE_DIAGNOSTICS,
+      diagnostic: {
+        scope: 'node',
+        service: 'ipfs',
+        maxLines: 50,
+        maxBytes: 8192,
+        providerId: 'openai',
+        providerLabel: 'OpenAI',
+        modelId: 'gpt-5.6-sol',
+        local: false,
+      },
+    });
+    await expect(
+      service.decideApproval('run_test', approval.approvalId, {
+        approved: true,
+        diagnosticScope: 'conversation',
+      })
+    ).resolves.toBe(true);
+    await expect(decision).resolves.toEqual({
+      status: 'approved',
+      diagnosticScope: 'conversation',
+    });
+    expect(JSON.stringify(approval)).not.toMatch(/entries|logs|runtime|statusSnapshot/);
+
+    await service.stop('run_test');
+    await service.waitForIdle();
+  });
+
   test('delivers native Pi steering in the retained run and projects its lifecycle', async () => {
     const fake = createFakeSession();
     const historyStore = createHistoryStore();

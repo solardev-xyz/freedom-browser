@@ -179,6 +179,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ...(Number.isSafeInteger(options.walletIndex) && options.walletIndex >= 0
         ? { walletIndex: options.walletIndex }
         : {}),
+      ...(options.diagnosticScope === 'conversation'
+        ? { diagnosticScope: 'conversation' }
+        : {}),
     }),
   handleAgentWalletRequest: (rendererTabId, request) =>
     ipcRenderer.invoke('agent:wallet:request', { rendererTabId, request }),

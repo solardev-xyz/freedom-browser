@@ -17,4 +17,9 @@ describe('AutomationPolicyController', () => {
       createInitialAutomationPolicy().authorize({ operation: OPERATIONS.NODE_STATUS })
     ).resolves.toEqual({ allowed: true, operationClass: 'observe' });
   });
+
+  test('classifies raw diagnostics as observation while execution still requires disclosure', () => {
+    expect(OPERATION_CLASSES[OPERATIONS.NODE_DIAGNOSTICS]).toBe('observe');
+    expect(OPERATION_CLASSES[OPERATIONS.APP_DIAGNOSTICS]).toBe('observe');
+  });
 });

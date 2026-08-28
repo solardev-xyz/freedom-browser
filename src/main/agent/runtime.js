@@ -7,6 +7,7 @@ const { AgentProviderStore } = require('./provider-store');
 const { AgentSessionHistoryStore } = require('./session-history-store');
 const { AgentWalletController } = require('./agent-wallet-controller');
 const { NodeStatusController } = require('../node-status-controller');
+const { NodeDiagnosticsController } = require('../node-diagnostics-controller');
 
 function createFreedomAgentRuntime(options = {}) {
   const providerStore = new AgentProviderStore({
@@ -25,8 +26,13 @@ function createFreedomAgentRuntime(options = {}) {
   historyStore.markStaleRunningAsInterrupted();
   const walletController = new AgentWalletController(options.walletControllerOptions);
   const nodeController = new NodeStatusController(options.nodeControllerOptions);
+  const diagnosticsController = new NodeDiagnosticsController({
+    nodeStatusController: nodeController,
+    ...options.nodeDiagnosticsControllerOptions,
+  });
   options.controller.setWalletTransferController(walletController);
   options.controller.setNodeController(nodeController);
+  options.controller.setDiagnosticsController(diagnosticsController);
   const service = new FreedomAgentService({
     controller: options.controller,
     subscribeTabLifecycle: options.subscribeTabLifecycle,
@@ -52,6 +58,7 @@ function createFreedomAgentRuntime(options = {}) {
     historyStore,
     walletController,
     nodeController,
+    diagnosticsController,
     service,
     async dispose() {
       await unregisterIpc();
@@ -59,6 +66,7 @@ function createFreedomAgentRuntime(options = {}) {
       historyStore.close();
       options.controller.setWalletTransferController(null);
       options.controller.setNodeController(null);
+      options.controller.setDiagnosticsController(null);
     },
   };
 }

@@ -17,6 +17,8 @@ const OPERATIONS = Object.freeze({
   WALLET_ACTION: 'browser_wallet_action',
   WALLET_TRANSFER: 'wallet_transfer',
   NODE_STATUS: 'node_status',
+  NODE_DIAGNOSTICS: 'node_diagnostics',
+  APP_DIAGNOSTICS: 'app_diagnostics',
   LIST_DOWNLOADS: 'browser_list_downloads',
   SCREENSHOT: 'browser_screenshot',
   WAIT: 'browser_wait',
@@ -24,5 +26,26 @@ const OPERATIONS = Object.freeze({
 });
 const DEFAULT_WAIT_TIMEOUT_MS = 10_000;
 const MAX_WAIT_TIMEOUT_MS = 30_000;
+const DEFAULT_DIAGNOSTIC_MAX_LINES = 200;
+const MAX_DIAGNOSTIC_LINES = 400;
+const DEFAULT_DIAGNOSTIC_MAX_BYTES = 49_152;
+const MAX_DIAGNOSTIC_BYTES = 65_536;
+const DIAGNOSTIC_SERVICES = Object.freeze([
+  'ant',
+  'ipfs',
+  'radicle',
+  'tor',
+  'myotis-ethereum',
+  'myotis-gnosis',
+]);
 
-module.exports = { DEFAULT_WAIT_TIMEOUT_MS, MAX_WAIT_TIMEOUT_MS, OPERATIONS };
+module.exports = {
+  DEFAULT_DIAGNOSTIC_MAX_BYTES,
+  DEFAULT_DIAGNOSTIC_MAX_LINES,
+  DEFAULT_WAIT_TIMEOUT_MS,
+  DIAGNOSTIC_SERVICES,
+  MAX_DIAGNOSTIC_BYTES,
+  MAX_DIAGNOSTIC_LINES,
+  MAX_WAIT_TIMEOUT_MS,
+  OPERATIONS,
+};

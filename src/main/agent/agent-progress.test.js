@@ -223,6 +223,73 @@ describe('Agent progress projection', () => {
     });
   });
 
+  test('projects only diagnostic counts and never raw logs into Agent history', () => {
+    const receipt = createToolReceipt(OPERATIONS.NODE_DIAGNOSTICS, {
+      envelope: {
+        ok: true,
+        result: {
+          scope: 'node',
+          service: 'ipfs',
+          runtime: { platform: 'darwin' },
+          status: { id: 'ipfs', error: 'private failure' },
+          logs: {
+            entries: [{ text: '/Users/private/node.log authorization header' }],
+            lineCount: 1,
+            bytes: 51,
+            truncated: false,
+          },
+          summary: {
+            scope: 'node',
+            service: 'ipfs',
+            lineCount: 1,
+            bytes: 51,
+            truncated: false,
+          },
+        },
+      },
+    });
+
+    expect(receipt).toEqual({
+      diagnostic: {
+        scope: 'node',
+        service: 'ipfs',
+        lineCount: 1,
+        bytes: 51,
+        truncated: false,
+      },
+    });
+    expect(JSON.stringify(receipt)).not.toMatch(/private|authorization|runtime|status|entries/);
+    expect(activityProgress(OPERATIONS.NODE_DIAGNOSTICS, receipt)).toMatchObject({
+      intent: 'Inspecting ipfs diagnostics',
+      label: 'Inspected 1 diagnostic line',
+      effect: 'observed',
+    });
+    expect(
+      buildAgentOutcome(
+        [
+          {
+            operation: OPERATIONS.NODE_STATUS,
+            status: 'succeeded',
+            effect: 'observed',
+            nodeStatus: { total: 6, ready: 3, active: 4, disabled: 1, attention: 2 },
+          },
+          {
+            operation: OPERATIONS.NODE_DIAGNOSTICS,
+            status: 'succeeded',
+            effect: 'observed',
+            diagnostic: receipt.diagnostic,
+          },
+        ],
+        'completed'
+      )
+    ).toMatchObject({
+      verification: 'diagnostics_inspected',
+      headline: 'Diagnostics inspected',
+      diagnostic: receipt.diagnostic,
+      counts: { diagnostics: 1, nodeChecks: 1, pages: 0 },
+    });
+  });
+
   test('treats a declined wallet request as a final user decision, not a failure', () => {
     expect(
       buildAgentOutcome(

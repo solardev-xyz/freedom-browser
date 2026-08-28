@@ -55,6 +55,8 @@ describe('Pi browser tool adapter', () => {
       OPERATIONS.DOWNLOAD,
       OPERATIONS.LIST_DOWNLOADS,
       OPERATIONS.NODE_STATUS,
+      OPERATIONS.NODE_DIAGNOSTICS,
+      OPERATIONS.APP_DIAGNOSTICS,
       OPERATIONS.WALLET_TRANSFER,
       OPERATIONS.WAIT,
       OPERATIONS.STOP_LOADING,
@@ -442,6 +444,61 @@ describe('Pi browser tool adapter', () => {
       status: 'succeeded',
       nodeStatus: result.summary,
     });
+  });
+
+  test('gives Pi raw diagnostic evidence while progress receives only its summary', async () => {
+    const onToolOutcome = jest.fn();
+    const diagnosticResult = {
+      scope: 'node',
+      service: 'ipfs',
+      capturedAt: '2026-08-28T10:00:00.000Z',
+      runtime: { platform: 'darwin', nodeVersion: '24.0.0' },
+      status: { id: 'ipfs', state: 'error' },
+      logs: {
+        entries: [{ text: '/Users/private/ipfs daemon failed near peer 12D3KooW' }],
+        lineCount: 1,
+        bytes: 57,
+        truncated: false,
+      },
+      summary: {
+        scope: 'node',
+        service: 'ipfs',
+        lineCount: 1,
+        bytes: 57,
+        truncated: false,
+      },
+    };
+    const controller = {
+      execute: jest.fn(async () => ({ ok: true, result: diagnosticResult })),
+    };
+    const tools = await createFreedomBrowserTools({
+      sdk: createSdk(),
+      controller,
+      tabId: null,
+      onToolOutcome,
+    });
+    const diagnostics = tools.find((tool) => tool.name === OPERATIONS.NODE_DIAGNOSTICS);
+
+    const response = await diagnostics.execute('call_diagnostics', {
+      service: 'ipfs',
+      maxLines: 50,
+      maxBytes: 8192,
+    });
+
+    expect(controller.execute).toHaveBeenCalledWith(OPERATIONS.NODE_DIAGNOSTICS, {
+      service: 'ipfs',
+      maxLines: 50,
+      maxBytes: 8192,
+    });
+    expect(JSON.parse(response.content[0].text).result).toEqual(diagnosticResult);
+    expect(response.content[0].text).toContain('/Users/private/ipfs');
+    expect(onToolOutcome).toHaveBeenCalledWith({
+      toolCallId: 'call_diagnostics',
+      operation: OPERATIONS.NODE_DIAGNOSTICS,
+      status: 'succeeded',
+      diagnostic: diagnosticResult.summary,
+    });
+    expect(JSON.stringify(onToolOutcome.mock.calls)).not.toMatch(/entries|private|12D3KooW/);
   });
 
   test('reports only redacted browser metadata in successful progress receipts', async () => {

@@ -1263,6 +1263,7 @@ function clearApproval() {
   elements.approval.hidden = true;
   elements.composer.classList.remove('approval-pending');
   elements.approvalApprove.textContent = 'Allow once';
+  elements.approvalAllowConversation.hidden = true;
   elements.walletApprovalDetails.hidden = true;
   elements.walletApprovalSummary.replaceChildren();
   elements.walletAccountField.hidden = true;
@@ -1328,6 +1329,7 @@ function renderWalletApproval(request) {
 
 function setApprovalControlsDisabled(disabled) {
   elements.approvalApprove.disabled = disabled;
+  elements.approvalAllowConversation.disabled = disabled;
   elements.approvalDecline.disabled = disabled;
   elements.approvalStop.disabled = disabled;
 }
@@ -1366,8 +1368,12 @@ function renderApproval(request) {
     browser_select: `Let Agent change “${label}”?`,
     browser_press: `Let Agent press a key on “${label}”?`,
   };
-  elements.approvalAction.textContent =
-    request.action === 'form_submission'
+  const diagnostic = request.diagnostic;
+  const diagnosticSubject =
+    diagnostic?.scope === 'node' ? `${diagnostic.service} node` : 'Freedom application';
+  elements.approvalAction.textContent = diagnostic
+    ? `Share recent ${diagnosticSubject} diagnostics with ${diagnostic.providerLabel}?`
+    : request.action === 'form_submission'
       ? `Submit this form using “${label}”?`
       : request.action === 'file_download'
         ? `Download ${label.replace(/^download\s+/i, '').trim() || 'this file'}?`
@@ -1382,16 +1388,20 @@ function renderApproval(request) {
               : request.action === 'wallet_signature'
                 ? 'Approve this wallet signature?'
                 : interactionCopy[request.operation] || `Let Agent interact with “${label}”?`;
-  elements.approvalOrigin.textContent =
-    request.action === 'file_upload'
+  elements.approvalOrigin.textContent = diagnostic
+    ? diagnostic.local
+      ? `Raw diagnostic logs will be added to this conversation with ${diagnostic.providerLabel}${diagnostic.modelId ? ` using ${diagnostic.modelId}` : ''}. They remain on this device, but may include peer IDs, network or wallet addresses, local paths, and requested resources.`
+      : `This sends raw diagnostic logs to ${diagnostic.providerLabel}${diagnostic.modelId ? ` using ${diagnostic.modelId}` : ''}. They may include peer IDs, network or wallet addresses, local paths, and requested resources.`
+    : request.action === 'file_upload'
       ? `For “${label}” · Freedom shares only the file you choose and never shows Agent its local path.`
       : request.wallet
         ? request.wallet.kind === 'transfer'
           ? 'Prepared directly by Freedom. The exact transfer is held until you decide.'
           : 'Requested by the page Agent is controlling. The request is held until you decide.'
         : approvalOriginSummary(request);
-  elements.approvalApprove.textContent =
-    request.action === 'file_upload'
+  elements.approvalApprove.textContent = diagnostic
+    ? 'Share once'
+    : request.action === 'file_upload'
       ? 'Choose file…'
       : request.wallet
         ? request.wallet.kind === 'signature'
@@ -1404,6 +1414,8 @@ function renderApproval(request) {
         : 'Allow once';
   elements.walletApprovalDetails.hidden = true;
   elements.walletUnlock.hidden = true;
+  elements.approvalAllowConversation.hidden = !diagnostic;
+  if (diagnostic) elements.approvalAllowConversation.textContent = 'Share for conversation';
   if (request.wallet) renderWalletApproval(request);
   setApprovalControlsDisabled(false);
   setMessage(elements.approvalMessage, 'Agent is waiting');
@@ -1437,7 +1449,7 @@ async function ensureWalletUnlocked(request) {
   return false;
 }
 
-async function decideApproval(approved) {
+async function decideApproval(approved, options = {}) {
   const request = pendingApproval;
   if (!request || !currentRunId) return;
   setApprovalControlsDisabled(true);
@@ -1456,11 +1468,18 @@ async function decideApproval(approved) {
   setMessage(elements.approvalMessage, approved ? 'Allowing…' : 'Not allowing…');
   try {
     const walletIndex = Number(elements.walletAccount.value);
-    const decisionOptions =
-      approved && request.wallet?.kind === 'connection' && Number.isSafeInteger(walletIndex)
-        ? { walletIndex }
-        : null;
-    const response = decisionOptions
+    const decisionOptions = approved
+      ? {
+          ...(request.wallet?.kind === 'connection' && Number.isSafeInteger(walletIndex)
+            ? { walletIndex }
+            : {}),
+          ...(request.diagnostic && options.diagnosticScope === 'conversation'
+            ? { diagnosticScope: 'conversation' }
+            : {}),
+        }
+      : null;
+    const hasDecisionOptions = decisionOptions && Object.keys(decisionOptions).length > 0;
+    const response = hasDecisionOptions
       ? await window.electronAPI.decideAgentApproval(
           currentRunId,
           request.approvalId,
@@ -1554,6 +1573,7 @@ function outcomeSummaryLabel(outcome) {
   if (outcome?.verification === 'actions_recorded') return 'Actions recorded';
   if (outcome?.verification === 'browser_observed') return 'Browser inspected';
   if (outcome?.verification === 'nodes_inspected') return 'Node status checked';
+  if (outcome?.verification === 'diagnostics_inspected') return 'Diagnostics inspected';
   if (outcome?.verification === 'model_only') return 'Agent reported';
   if (outcome?.kind === 'recovery') return 'Needs recovery';
   if (outcome?.kind === 'interrupted') return 'Stopped';
@@ -2339,6 +2359,7 @@ export function initAgentUi(options = {}) {
     approvalAction: byId('agent-approval-action'),
     approvalOrigin: byId('agent-approval-origin'),
     approvalApprove: byId('agent-approval-approve'),
+    approvalAllowConversation: byId('agent-approval-allow-conversation'),
     approvalDecline: byId('agent-approval-decline'),
     approvalStop: byId('agent-approval-stop'),
     approvalMessage: byId('agent-approval-message'),
@@ -2453,6 +2474,9 @@ export function initAgentUi(options = {}) {
     void takeOverRun();
   });
   elements.approvalApprove.addEventListener('click', () => decideApproval(true));
+  elements.approvalAllowConversation.addEventListener('click', () =>
+    decideApproval(true, { diagnosticScope: 'conversation' })
+  );
   elements.approvalDecline.addEventListener('click', () => decideApproval(false));
   elements.approvalStop.addEventListener('click', () => stopRun());
   elements.walletUnlockSubmit.addEventListener('click', unlockWalletWithPassword);

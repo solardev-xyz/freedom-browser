@@ -25,6 +25,8 @@ const ORIGIN_SCOPED_OPERATIONS = new Set([
   OPERATIONS.WALLET_ACTION,
   OPERATIONS.WALLET_TRANSFER,
   OPERATIONS.NODE_STATUS,
+  OPERATIONS.NODE_DIAGNOSTICS,
+  OPERATIONS.APP_DIAGNOSTICS,
   OPERATIONS.LIST_DOWNLOADS,
   OPERATIONS.WAIT,
   OPERATIONS.STOP_LOADING,
@@ -112,6 +114,8 @@ class OriginScopedAutomationController {
     this.onWorkspaceTabCreated = onWorkspaceTabCreated;
     this.transferOwnerId = transferOwnerId;
     this.declinedActions = new Set();
+    this.diagnosticGrant = false;
+    this.declinedDiagnostics = new Set();
     this.resumeObservation = null;
     this.externalApprovalBarriers = new Set();
   }
@@ -177,6 +181,15 @@ class OriginScopedAutomationController {
     }
     if (operation === OPERATIONS.NODE_STATUS) {
       return this.#executeController(operation, input, execution);
+    }
+    if (
+      operation === OPERATIONS.NODE_DIAGNOSTICS ||
+      operation === OPERATIONS.APP_DIAGNOSTICS
+    ) {
+      return this.#executeController(operation, input, {
+        ...execution,
+        requestApproval: (request) => this.#requestDiagnosticApproval(request),
+      });
     }
     if (operation === OPERATIONS.WALLET_TRANSFER) {
       return this.#executeController(operation, input, {
@@ -476,6 +489,32 @@ class OriginScopedAutomationController {
       ERROR_CODES.POLICY_DENIED,
       'The task workspace can only use supported web and distributed-web pages'
     );
+  }
+
+  async #requestDiagnosticApproval(request) {
+    if (this.diagnosticGrant) {
+      return { status: 'approved', diagnosticScope: 'conversation' };
+    }
+    const key = JSON.stringify([
+      request?.operation || '',
+      request?.diagnostic?.scope || '',
+      request?.diagnostic?.service || '',
+    ]);
+    if (this.declinedDiagnostics.has(key) || typeof this.requestApproval !== 'function') {
+      return 'declined';
+    }
+    const decision = await this.requestApproval(request);
+    const status = typeof decision === 'object' ? decision?.status : decision;
+    if (
+      status === 'approved' &&
+      typeof decision === 'object' &&
+      decision.diagnosticScope === 'conversation'
+    ) {
+      this.diagnosticGrant = true;
+    } else if (status !== 'approved' && decision !== true) {
+      this.declinedDiagnostics.add(key);
+    }
+    return decision;
   }
 
   async #authorizeAction(operation, input, state) {

@@ -2,7 +2,12 @@
 
 const { invalidArgument } = require('./errors');
 const {
+  DEFAULT_DIAGNOSTIC_MAX_BYTES,
+  DEFAULT_DIAGNOSTIC_MAX_LINES,
   DEFAULT_WAIT_TIMEOUT_MS,
+  DIAGNOSTIC_SERVICES,
+  MAX_DIAGNOSTIC_BYTES,
+  MAX_DIAGNOSTIC_LINES,
   MAX_WAIT_TIMEOUT_MS,
   OPERATIONS,
 } = require('../../../shared/automation-operations');
@@ -44,6 +49,7 @@ const PRESS_KEYS = Object.freeze([
   'Space',
 ]);
 const PRESS_KEY_SET = new Set(PRESS_KEYS);
+const DIAGNOSTIC_SERVICE_SET = new Set(DIAGNOSTIC_SERVICES);
 
 function requireObject(input) {
   if (input === undefined) return {};
@@ -196,11 +202,47 @@ function validateOperationInput(operation, rawInput) {
     }
   }
 
+  if (operation === OPERATIONS.NODE_DIAGNOSTICS || operation === OPERATIONS.APP_DIAGNOSTICS) {
+    if (operation === OPERATIONS.NODE_DIAGNOSTICS) {
+      normalized.service = requireString(input.service, 'service').trim();
+      if (!DIAGNOSTIC_SERVICE_SET.has(normalized.service)) {
+        throw invalidArgument(`service must be one of: ${DIAGNOSTIC_SERVICES.join(', ')}`, {
+          field: 'service',
+        });
+      }
+    }
+    normalized.maxLines = input.maxLines ?? DEFAULT_DIAGNOSTIC_MAX_LINES;
+    if (
+      !Number.isSafeInteger(normalized.maxLines) ||
+      normalized.maxLines < 1 ||
+      normalized.maxLines > MAX_DIAGNOSTIC_LINES
+    ) {
+      throw invalidArgument(`maxLines must be an integer between 1 and ${MAX_DIAGNOSTIC_LINES}`, {
+        field: 'maxLines',
+      });
+    }
+    normalized.maxBytes = input.maxBytes ?? DEFAULT_DIAGNOSTIC_MAX_BYTES;
+    if (
+      !Number.isSafeInteger(normalized.maxBytes) ||
+      normalized.maxBytes < 1_024 ||
+      normalized.maxBytes > MAX_DIAGNOSTIC_BYTES
+    ) {
+      throw invalidArgument(`maxBytes must be an integer between 1024 and ${MAX_DIAGNOSTIC_BYTES}`, {
+        field: 'maxBytes',
+      });
+    }
+  }
+
   return normalized;
 }
 
 module.exports = {
+  DEFAULT_DIAGNOSTIC_MAX_BYTES,
+  DEFAULT_DIAGNOSTIC_MAX_LINES,
   DEFAULT_WAIT_TIMEOUT_MS,
+  DIAGNOSTIC_SERVICES,
+  MAX_DIAGNOSTIC_BYTES,
+  MAX_DIAGNOSTIC_LINES,
   MAX_WAIT_TIMEOUT_MS,
   OPERATIONS,
   PRESS_KEYS,

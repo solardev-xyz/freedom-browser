@@ -491,10 +491,22 @@ function registerFreedomAgentIpc(options = {}) {
         'The sender does not own that agent approval'
       );
     }
-    const decision =
-      payload.approved && Number.isSafeInteger(payload.walletIndex) && payload.walletIndex >= 0
-        ? { approved: true, walletIndex: payload.walletIndex }
-        : payload.approved;
+    let decision = payload.approved;
+    if (payload.approved) {
+      const walletIndex =
+        Number.isSafeInteger(payload.walletIndex) && payload.walletIndex >= 0
+          ? payload.walletIndex
+          : null;
+      const diagnosticScope =
+        payload.diagnosticScope === 'conversation' ? 'conversation' : null;
+      if (walletIndex !== null || diagnosticScope) {
+        decision = {
+          approved: true,
+          ...(walletIndex !== null && { walletIndex }),
+          ...(diagnosticScope && { diagnosticScope }),
+        };
+      }
+    }
     const decided = await service.decideApproval(owner.runId, payload.approvalId, decision);
     return decided
       ? { ok: true, decided: true }

@@ -181,6 +181,7 @@ describe('preload', () => {
       [exposures.electronAPI, 'resumeAgent', ['run_test', 'I logged in'], IPC.AGENT_RESUME, [{ runId: 'run_test', prompt: 'I logged in' }]],
       [exposures.electronAPI, 'stopAgent', ['run_1'], IPC.AGENT_STOP, [{ runId: 'run_1' }]],
       [exposures.electronAPI, 'decideAgentApproval', ['run_1', 'approval_1', true, { walletIndex: 2 }], IPC.AGENT_APPROVAL_DECIDE, [{ runId: 'run_1', approvalId: 'approval_1', approved: true, walletIndex: 2 }]],
+      [exposures.electronAPI, 'decideAgentApproval', ['run_1', 'approval_2', true, { diagnosticScope: 'conversation' }], IPC.AGENT_APPROVAL_DECIDE, [{ runId: 'run_1', approvalId: 'approval_2', approved: true, diagnosticScope: 'conversation' }]],
       [exposures.electronAPI, 'handleAgentWalletRequest', [7, { method: 'eth_requestAccounts' }], IPC.AGENT_WALLET_REQUEST, [{ rendererTabId: 7, request: { method: 'eth_requestAccounts' } }]],
       [exposures.electronAPI, 'getAgentState', [], IPC.AGENT_GET_STATE, []],
       [exposures.electronAPI, 'claimAgentTab', [7], IPC.AGENT_TAB_CLAIM, [{ rendererTabId: 7 }]],

@@ -1097,4 +1097,36 @@ describe('OriginScopedAutomationController', () => {
       { conversationId: 'conversation_test' }
     );
   });
+
+  test('requires one provider disclosure and can grant diagnostics for the conversation', async () => {
+    const controller = createController();
+    const requestApproval = jest.fn(async () => ({
+      status: 'approved',
+      diagnosticScope: 'conversation',
+    }));
+    const scoped = await createOriginScopedAutomationController({
+      controller,
+      tabId: null,
+      transferOwnerId: 'conversation_test',
+      requestApproval,
+    });
+
+    controller.execute.mockImplementation(async (_operation, _input, execution) => {
+      await execution.requestApproval({
+        operation: _operation,
+        diagnostic: { scope: _operation === OPERATIONS.APP_DIAGNOSTICS ? 'app' : 'node' },
+      });
+      return { ok: true };
+    });
+    await scoped.execute(OPERATIONS.NODE_DIAGNOSTICS, { service: 'ipfs' });
+    await scoped.execute(OPERATIONS.APP_DIAGNOSTICS, {});
+
+    expect(requestApproval).toHaveBeenCalledTimes(1);
+    expect(controller.execute).toHaveBeenNthCalledWith(
+      1,
+      OPERATIONS.NODE_DIAGNOSTICS,
+      { service: 'ipfs' },
+      expect.objectContaining({ conversationId: 'conversation_test' })
+    );
+  });
 });

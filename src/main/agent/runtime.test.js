@@ -7,6 +7,7 @@ jest.mock('./provider-store');
 jest.mock('./session-history-store');
 jest.mock('./agent-wallet-controller');
 jest.mock('../node-status-controller');
+jest.mock('../node-diagnostics-controller');
 
 const { FreedomAgentService } = require('./freedom-agent-service');
 const { registerFreedomAgentIpc } = require('./ipc');
@@ -15,6 +16,7 @@ const { AgentProviderStore } = require('./provider-store');
 const { AgentSessionHistoryStore } = require('./session-history-store');
 const { AgentWalletController } = require('./agent-wallet-controller');
 const { NodeStatusController } = require('../node-status-controller');
+const { NodeDiagnosticsController } = require('../node-diagnostics-controller');
 const { createFreedomAgentRuntime } = require('./runtime');
 
 describe('Freedom agent runtime', () => {
@@ -33,12 +35,14 @@ describe('Freedom agent runtime', () => {
     const service = { dispose: jest.fn(async () => calls.push('service')) };
     const walletController = {};
     const nodeController = {};
+    const diagnosticsController = {};
     const unregisterIpc = jest.fn(async () => calls.push('ipc'));
     AgentProviderStore.mockImplementation(() => providerStore);
     AgentProviderResolver.mockImplementation(() => providerResolver);
     AgentSessionHistoryStore.mockImplementation(() => historyStore);
     AgentWalletController.mockImplementation(() => walletController);
     NodeStatusController.mockImplementation(() => nodeController);
+    NodeDiagnosticsController.mockImplementation(() => diagnosticsController);
     FreedomAgentService.mockImplementation(() => service);
     registerFreedomAgentIpc.mockReturnValue(unregisterIpc);
     const options = {
@@ -50,6 +54,7 @@ describe('Freedom agent runtime', () => {
         setWalletController: jest.fn(),
         setWalletTransferController: jest.fn(),
         setNodeController: jest.fn(),
+        setDiagnosticsController: jest.fn(),
       },
       automationTabIdForRenderer: jest.fn(),
       desktopBindingForAutomationTab: jest.fn(),
@@ -59,6 +64,7 @@ describe('Freedom agent runtime', () => {
       openExternal: jest.fn(),
       walletControllerOptions: { requestTimeoutMs: 250 },
       nodeControllerOptions: { fixture: true },
+      nodeDiagnosticsControllerOptions: { logBuffer: {} },
     };
 
     const runtime = createFreedomAgentRuntime(options);
@@ -79,8 +85,15 @@ describe('Freedom agent runtime', () => {
     expect(historyStore.markStaleRunningAsInterrupted).toHaveBeenCalledTimes(1);
     expect(AgentWalletController).toHaveBeenCalledWith(options.walletControllerOptions);
     expect(NodeStatusController).toHaveBeenCalledWith(options.nodeControllerOptions);
+    expect(NodeDiagnosticsController).toHaveBeenCalledWith({
+      nodeStatusController: nodeController,
+      ...options.nodeDiagnosticsControllerOptions,
+    });
     expect(options.controller.setWalletTransferController).toHaveBeenCalledWith(walletController);
     expect(options.controller.setNodeController).toHaveBeenCalledWith(nodeController);
+    expect(options.controller.setDiagnosticsController).toHaveBeenCalledWith(
+      diagnosticsController
+    );
     expect(FreedomAgentService).toHaveBeenCalledWith({
       controller: options.controller,
       subscribeTabLifecycle: options.subscribeTabLifecycle,
@@ -111,6 +124,7 @@ describe('Freedom agent runtime', () => {
     expect(historyStore.close).toHaveBeenCalledTimes(1);
     expect(options.controller.setWalletTransferController).toHaveBeenLastCalledWith(null);
     expect(options.controller.setNodeController).toHaveBeenLastCalledWith(null);
+    expect(options.controller.setDiagnosticsController).toHaveBeenLastCalledWith(null);
     expect(calls).toEqual(['ipc', 'service', 'history']);
   });
 });

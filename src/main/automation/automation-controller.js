@@ -30,6 +30,8 @@ class AutomationController {
     }
     this.nodeController = null;
     if (options.nodeController) this.setNodeController(options.nodeController);
+    this.diagnosticsController = null;
+    if (options.diagnosticsController) this.setDiagnosticsController(options.diagnosticsController);
   }
 
   setPageLifecycle(pageLifecycle) {
@@ -93,6 +95,21 @@ class AutomationController {
       throw new TypeError('Automation node controller requires status()');
     }
     this.nodeController = nodeController;
+  }
+
+  setDiagnosticsController(diagnosticsController) {
+    if (diagnosticsController === null) {
+      this.diagnosticsController = null;
+      return;
+    }
+    if (
+      !diagnosticsController ||
+      typeof diagnosticsController.node !== 'function' ||
+      typeof diagnosticsController.app !== 'function'
+    ) {
+      throw new TypeError('Automation diagnostics controller requires node() and app()');
+    }
+    this.diagnosticsController = diagnosticsController;
   }
 
   registerPage(adapter, metadata) {
@@ -277,6 +294,14 @@ class AutomationController {
         });
       case OPERATIONS.NODE_STATUS:
         return this.#requireNodeController().status();
+      case OPERATIONS.NODE_DIAGNOSTICS:
+        return this.#requireDiagnosticsController().node(input, {
+          requestApproval: execution?.requestApproval,
+        });
+      case OPERATIONS.APP_DIAGNOSTICS:
+        return this.#requireDiagnosticsController().app(input, {
+          requestApproval: execution?.requestApproval,
+        });
       case OPERATIONS.LIST_DOWNLOADS:
         return { artifacts: this.#requireDownloadController().list(execution?.conversationId) };
       case OPERATIONS.SCREENSHOT:
@@ -354,6 +379,16 @@ class AutomationController {
       );
     }
     return this.nodeController;
+  }
+
+  #requireDiagnosticsController() {
+    if (!this.diagnosticsController) {
+      throw new AutomationError(
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        'Freedom diagnostics are unavailable in this runtime'
+      );
+    }
+    return this.diagnosticsController;
   }
 
   #errorEnvelope(tabId, entry, error) {

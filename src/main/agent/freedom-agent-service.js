@@ -19,6 +19,7 @@ const {
   activityProgress,
   buildAgentOutcome,
   normalizeArtifact,
+  normalizeDiagnosticReceipt,
   normalizeNodeStatusReceipt,
   normalizeUpload,
   normalizeWalletReceipt,
@@ -49,6 +50,14 @@ const EVERY_INTERACTION_SYSTEM_PROMPT = `${DEFAULT_FREEDOM_AGENT_SYSTEM_PROMPT}
 This run requires user approval before every page interaction. Reading pages, navigating, and managing task-owned tabs do not require approval. Click, type, select, and press tools pause until the user approves or declines the exact interaction.`;
 const EMPTY_WORKSPACE_SYSTEM_PROMPT = `No existing browser page was shared with this conversation. You cannot inspect unrelated user tabs. Create a fresh task tab before reading or interacting with the web.`;
 const RESTORED_SESSION_PROMPT = `This conversation was restored from Freedom's saved session history. Only the visible user and assistant conversation was retained. Earlier browser tool results, page snapshots, element references, and control grants were deliberately not restored. Reinspect the current browser workspace before acting and do not assume an earlier page or action is still available.`;
+const PROVIDER_LABELS = Object.freeze({
+  anthropic: 'Anthropic',
+  openai: 'OpenAI',
+  openrouter: 'OpenRouter',
+  freepi: 'Free Pi',
+  'openai-codex': 'ChatGPT (Codex)',
+  ollama: 'Ollama',
+});
 
 class FreedomAgentError extends Error {
   constructor(code, message) {
@@ -211,6 +220,7 @@ function normalizePiEvent(event, toolOutcome) {
       ...(toolOutcome?.upload && { upload: toolOutcome.upload }),
       ...(toolOutcome?.wallet && { wallet: toolOutcome.wallet }),
       ...(toolOutcome?.nodeStatus && { nodeStatus: toolOutcome.nodeStatus }),
+      ...(toolOutcome?.diagnostic && { diagnostic: toolOutcome.diagnostic }),
       ...(toolOutcome?.artifacts && { artifacts: toolOutcome.artifacts }),
       ...(errorCode && { errorCode }),
     };
@@ -243,14 +253,37 @@ function terminalError(code, message) {
   return Object.freeze({ code, message });
 }
 
-function normalizeApprovalRequest(request) {
+function normalizeDiagnosticApproval(value, recipient = {}) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const scope = value.scope === 'node' ? 'node' : value.scope === 'app' ? 'app' : null;
+  if (!scope) return null;
+  const service = typeof value.service === 'string' ? value.service.slice(0, 40) : '';
+  if (scope === 'node' && !service) return null;
+  const providerId =
+    typeof recipient.providerId === 'string' ? recipient.providerId.slice(0, 80) : '';
+  const modelId = typeof recipient.modelId === 'string' ? recipient.modelId.slice(0, 160) : '';
+  return Object.freeze({
+    scope,
+    ...(service && { service }),
+    maxLines: Number.isSafeInteger(value.maxLines) ? value.maxLines : 200,
+    maxBytes: Number.isSafeInteger(value.maxBytes) ? value.maxBytes : 49_152,
+    providerId,
+    providerLabel: PROVIDER_LABELS[providerId] || providerId || 'the selected model provider',
+    modelId,
+    local: providerId === 'ollama',
+  });
+}
+
+function normalizeApprovalRequest(request, recipient) {
   const wallet = normalizeWalletApproval(request?.wallet);
+  const diagnostic = normalizeDiagnosticApproval(request?.diagnostic, recipient);
   const origin = wallet
     ? getPermissionKey(request?.origin) || ''
     : originScopeForUrl(request?.origin) || '';
   return Object.freeze({
-    action:
-      request?.action === 'form_submission'
+    action: diagnostic
+      ? 'diagnostic_data'
+      : request?.action === 'form_submission'
         ? 'form_submission'
         : request?.action === 'file_download'
           ? 'file_download'
@@ -273,6 +306,7 @@ function normalizeApprovalRequest(request) {
       : originScopeForUrl(request?.destinationOrigin) || '',
     label: typeof request?.label === 'string' ? request.label.slice(0, 160) : '',
     ...(wallet && { wallet }),
+    ...(diagnostic && { diagnostic }),
   });
 }
 
@@ -472,6 +506,10 @@ class FreedomAgentService {
       })),
       activeRun: null,
       restored: true,
+      providerId: stored.providerId || '',
+      providerLabel:
+        PROVIDER_LABELS[stored.providerId] || stored.providerId || 'the selected model provider',
+      modelId: stored.modelId || '',
     };
     this.conversations.set(stored.conversationId, this.conversation);
     return this.getState();
@@ -616,6 +654,13 @@ class FreedomAgentService {
       pendingApproval: null,
       pendingWalletRequests: new Set(),
       finished: false,
+      providerId: existingConversation?.providerId || options.model?.provider || '',
+      providerLabel:
+        existingConversation?.providerLabel ||
+        PROVIDER_LABELS[options.model?.provider] ||
+        options.model?.provider ||
+        'the selected model provider',
+      modelId: existingConversation?.modelId || options.model?.id || '',
     };
     this.activeRun = run;
     let conversation = existingConversation;
@@ -707,6 +752,9 @@ class FreedomAgentService {
             turns: [],
             activeRun: run,
             restored: false,
+            providerId: run.providerId,
+            providerLabel: run.providerLabel,
+            modelId: run.modelId,
           };
           this.conversation = conversation;
           this.conversations.set(conversation.conversationId, conversation);
@@ -914,7 +962,15 @@ class FreedomAgentService {
     this.#resolveApproval(
       run,
       typeof approved === 'object'
-        ? { status: 'approved', walletIndex: approved.walletIndex }
+        ? {
+            status: 'approved',
+            ...(Number.isSafeInteger(approved.walletIndex) && {
+              walletIndex: approved.walletIndex,
+            }),
+            ...(approved.diagnosticScope === 'conversation' && {
+              diagnosticScope: 'conversation',
+            }),
+          }
         : approved
           ? 'approved'
           : 'declined'
@@ -1098,6 +1154,7 @@ class FreedomAgentService {
         if (normalized.upload) item.upload = normalized.upload;
         if (normalized.wallet) item.wallet = normalized.wallet;
         if (normalized.nodeStatus) item.nodeStatus = normalized.nodeStatus;
+        if (normalized.diagnostic) item.diagnostic = normalized.diagnostic;
         if (normalized.artifacts) item.artifacts = normalized.artifacts;
         if (item.approval) normalized.approval = item.approval;
       }
@@ -1132,6 +1189,9 @@ class FreedomAgentService {
       ...(normalizeNodeStatusReceipt(outcome.nodeStatus) && {
         nodeStatus: normalizeNodeStatusReceipt(outcome.nodeStatus),
       }),
+      ...(normalizeDiagnosticReceipt(outcome.diagnostic) && {
+        diagnostic: normalizeDiagnosticReceipt(outcome.diagnostic),
+      }),
       ...(Array.isArray(outcome.artifacts) && {
         artifacts: outcome.artifacts.map(normalizeArtifact).filter(Boolean).slice(0, 100),
       }),
@@ -1143,6 +1203,7 @@ class FreedomAgentService {
         upload: outcome.upload,
         wallet: outcome.wallet,
         nodeStatus: outcome.nodeStatus,
+        diagnostic: outcome.diagnostic,
       }),
     });
     run.toolOutcomes.set(normalized.toolCallId, normalized);
@@ -1294,7 +1355,7 @@ class FreedomAgentService {
     const decision = createDeferred();
     const publicRequest = Object.freeze({
       approvalId: opaqueApprovalId(),
-      ...normalizeApprovalRequest(request),
+      ...normalizeApprovalRequest(request, run),
     });
     const activityItem = [...run.activity]
       .reverse()

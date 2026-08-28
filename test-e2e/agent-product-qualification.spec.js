@@ -49,6 +49,8 @@ const EXPECTED_TOOL_NAMES = Object.freeze([
   'browser_list_downloads',
   'wallet_transfer',
   'node_status',
+  'node_diagnostics',
+  'app_diagnostics',
   'browser_wait',
   'browser_stop_loading',
 ]);
@@ -64,6 +66,8 @@ let observedUploadReceipt = null;
 let observedWalletReceipts = [];
 let observedDirectWalletReceipt = null;
 let observedNodeStatus = null;
+let observedNodeDiagnostics = null;
+let observedAppDiagnostics = null;
 const operations = [];
 
 function completionChunk({ delta = {}, finishReason = null, usage }) {
@@ -624,6 +628,32 @@ async function handleCompletion(request, response) {
     return;
   }
 
+  if (hasUserMarker(messages, 'PRODUCT_RAW_DIAGNOSTICS')) {
+    if (toolResults.length === 0) {
+      emitToolCall(response, 1, 'node_diagnostics', {
+        service: 'ipfs',
+        maxLines: 50,
+        maxBytes: 8192,
+      });
+    } else if (toolResults.length === 1) {
+      observedNodeDiagnostics =
+        toolEnvelopes(messages).find((envelope) => envelope?.result?.scope === 'node')?.result ||
+        null;
+      emitToolCall(response, 2, 'app_diagnostics', { maxLines: 50, maxBytes: 8192 });
+    } else {
+      const envelopes = toolEnvelopes(messages);
+      observedNodeDiagnostics =
+        envelopes.find((envelope) => envelope?.result?.scope === 'node')?.result || null;
+      observedAppDiagnostics =
+        envelopes.find((envelope) => envelope?.result?.scope === 'app')?.result || null;
+      emitFinal(
+        response,
+        `Inspected ${observedNodeDiagnostics?.summary?.lineCount || 0} IPFS diagnostic lines and ${observedAppDiagnostics?.summary?.lineCount || 0} Freedom application diagnostic lines.`
+      );
+    }
+    return;
+  }
+
   emitFinal(response, 'Qualification task marker missing.');
 }
 
@@ -663,6 +693,8 @@ test.beforeEach(() => {
   observedWalletReceipts = [];
   observedDirectWalletReceipt = null;
   observedNodeStatus = null;
+  observedNodeDiagnostics = null;
+  observedAppDiagnostics = null;
   operations.length = 0;
 });
 
@@ -1678,4 +1710,75 @@ test('node intelligence: reports redacted integrated-service status without a br
   expect(result.assistantOutput).toContain('Checked 6 Freedom services');
   await expect(window.locator('.agent-turn-outcome').last()).toContainText('Node status checked');
   expect(operations).toEqual(['node_status']);
+});
+
+test('node diagnostics: one honest disclosure grants bounded raw node and app evidence to the conversation', async ({
+  window,
+}) => {
+  await configureFixtureProvider(window);
+
+  await window
+    .locator('#agent-prompt')
+    .fill('PRODUCT_RAW_DIAGNOSTICS: inspect IPFS logs, then Freedom application logs.');
+  await window.locator('#agent-run').click();
+  await expect(window.locator('#agent-approval-action')).toHaveText(
+    'Share recent ipfs node diagnostics with Ollama?'
+  );
+  await expect(window.locator('#agent-approval-origin')).toContainText(
+    'Raw diagnostic logs will be added to this conversation with Ollama'
+  );
+  await expect(window.locator('#agent-approval-origin')).toContainText('local paths');
+  await window.locator('#agent-approval-allow-conversation').click();
+  await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 15_000 });
+
+  const result = await recordQualification(window, 'agent-raw-diagnostics', CLASSIFICATION.PASS, {
+    nodeDiagnostics: observedNodeDiagnostics,
+    appDiagnostics: observedAppDiagnostics,
+  });
+  expect(result.advertisedTools).toEqual([...EXPECTED_TOOL_NAMES].sort());
+  expect(result.nodeDiagnostics).toMatchObject({
+    scope: 'node',
+    service: 'ipfs',
+    capturedAt: expect.any(String),
+    runtime: expect.objectContaining({ platform: expect.any(String) }),
+    logs: {
+      entries: expect.any(Array),
+      lineCount: expect.any(Number),
+      bytes: expect.any(Number),
+      truncated: expect.any(Boolean),
+    },
+    summary: {
+      scope: 'node',
+      service: 'ipfs',
+      lineCount: expect.any(Number),
+      bytes: expect.any(Number),
+      truncated: expect.any(Boolean),
+    },
+  });
+  expect(result.appDiagnostics).toMatchObject({
+    scope: 'app',
+    capturedAt: expect.any(String),
+    runtime: expect.objectContaining({ platform: expect.any(String) }),
+    logs: {
+      entries: expect.any(Array),
+      lineCount: expect.any(Number),
+      bytes: expect.any(Number),
+      truncated: expect.any(Boolean),
+    },
+    summary: {
+      scope: 'app',
+      lineCount: expect.any(Number),
+      bytes: expect.any(Number),
+      truncated: expect.any(Boolean),
+    },
+  });
+  expect(result.nodeDiagnostics.logs.lineCount).toBeLessThanOrEqual(50);
+  expect(result.appDiagnostics.logs.lineCount).toBeLessThanOrEqual(50);
+  expect(result.nodeDiagnostics.logs.bytes).toBeLessThanOrEqual(8192);
+  expect(result.appDiagnostics.logs.bytes).toBeLessThanOrEqual(8192);
+  expect(result.assistantOutput).toContain('Inspected');
+  await expect(window.locator('.agent-turn-outcome').last()).toContainText(
+    'Diagnostics inspected'
+  );
+  expect(operations).toEqual(['node_diagnostics', 'app_diagnostics']);
 });

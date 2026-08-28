@@ -306,6 +306,33 @@ describe('AutomationController', () => {
     expect(status).toHaveBeenCalledTimes(1);
   });
 
+  test('routes diagnostics through a separate approved main-process boundary', async () => {
+    const { controller } = createController();
+    const requestApproval = jest.fn(async () => 'approved');
+    const diagnostics = {
+      node: jest.fn(async () => ({ scope: 'node', service: 'ipfs' })),
+      app: jest.fn(async () => ({ scope: 'app' })),
+    };
+    controller.setDiagnosticsController(diagnostics);
+
+    await expect(
+      controller.execute(
+        OPERATIONS.NODE_DIAGNOSTICS,
+        { service: 'ipfs' },
+        { requestApproval }
+      )
+    ).resolves.toMatchObject({ ok: true, result: { scope: 'node', service: 'ipfs' } });
+    expect(diagnostics.node).toHaveBeenCalledWith(
+      { service: 'ipfs', maxLines: 200, maxBytes: 49_152 },
+      { requestApproval }
+    );
+    await controller.execute(OPERATIONS.APP_DIAGNOSTICS, {}, { requestApproval });
+    expect(diagnostics.app).toHaveBeenCalledWith(
+      { maxLines: 200, maxBytes: 49_152 },
+      { requestApproval }
+    );
+  });
+
   test('does not echo an unvalidated tab ID into error envelopes', async () => {
     const { controller } = createController();
     const failure = await controller.execute(OPERATIONS.SNAPSHOT, {

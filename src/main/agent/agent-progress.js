@@ -91,6 +91,16 @@ const OPERATION_PROGRESS = Object.freeze({
     intent: 'Checking Freedom nodes',
     completed: 'Checked Freedom nodes',
   },
+  [OPERATIONS.NODE_DIAGNOSTICS]: {
+    effect: ACTIVITY_EFFECTS.OBSERVED,
+    intent: 'Inspecting node diagnostics',
+    completed: 'Inspected node diagnostics',
+  },
+  [OPERATIONS.APP_DIAGNOSTICS]: {
+    effect: ACTIVITY_EFFECTS.OBSERVED,
+    intent: 'Inspecting Freedom diagnostics',
+    completed: 'Inspected Freedom diagnostics',
+  },
   [OPERATIONS.LIST_DOWNLOADS]: {
     effect: ACTIVITY_EFFECTS.OBSERVED,
     intent: 'Checking task downloads',
@@ -228,6 +238,31 @@ function normalizeNodeStatusReceipt(value) {
   return Object.freeze(normalized);
 }
 
+function normalizeDiagnosticReceipt(value) {
+  if (!value || typeof value !== 'object') return null;
+  const scope = value.scope === 'node' ? 'node' : value.scope === 'app' ? 'app' : null;
+  if (!scope) return null;
+  if (
+    !Number.isSafeInteger(value.lineCount) ||
+    value.lineCount < 0 ||
+    value.lineCount > 400 ||
+    !Number.isSafeInteger(value.bytes) ||
+    value.bytes < 0 ||
+    value.bytes > 65_536
+  ) {
+    return null;
+  }
+  const service = boundedString(value.service, 40);
+  if (scope === 'node' && !service) return null;
+  return Object.freeze({
+    scope,
+    ...(service && { service }),
+    lineCount: value.lineCount,
+    bytes: value.bytes,
+    truncated: value.truncated === true,
+  });
+}
+
 function activityProgress(operation, receipt = {}) {
   const copy = OPERATION_PROGRESS[operation] || {
     effect: ACTIVITY_EFFECTS.MANAGED,
@@ -243,6 +278,7 @@ function activityProgress(operation, receipt = {}) {
   const upload = normalizeUpload(receipt.upload);
   const wallet = normalizeWalletReceipt(receipt.wallet);
   const nodeStatus = normalizeNodeStatusReceipt(receipt.nodeStatus);
+  const diagnostic = normalizeDiagnosticReceipt(receipt.diagnostic);
 
   if (operation === OPERATIONS.LIST_TABS && pageCount !== null) {
     const pages = `${pageCount} Agent ${pageCount === 1 ? 'tab' : 'tabs'}`;
@@ -261,6 +297,13 @@ function activityProgress(operation, receipt = {}) {
     const services = `${nodeStatus.total} ${nodeStatus.total === 1 ? 'service' : 'services'}`;
     intent = `Checking ${services}`;
     label = `Checked ${services}`;
+  } else if (
+    (operation === OPERATIONS.NODE_DIAGNOSTICS || operation === OPERATIONS.APP_DIAGNOSTICS) &&
+    diagnostic
+  ) {
+    const subject = diagnostic.scope === 'node' ? diagnostic.service : 'Freedom';
+    intent = `Inspecting ${subject} diagnostics`;
+    label = `Inspected ${diagnostic.lineCount} diagnostic ${diagnostic.lineCount === 1 ? 'line' : 'lines'}`;
   } else if (origin) {
     const originCopy = {
       [OPERATIONS.CREATE_TAB]: ['Opening', 'Opened'],
@@ -294,6 +337,7 @@ function activityProgress(operation, receipt = {}) {
     ...(upload && { upload }),
     ...(wallet && { wallet }),
     ...(nodeStatus && { nodeStatus }),
+    ...(diagnostic && { diagnostic }),
   });
 }
 
@@ -318,6 +362,7 @@ function createToolReceipt(operation, options = {}) {
   const upload = normalizeUpload(result?.upload);
   const wallet = normalizeWalletReceipt(result?.wallet);
   const nodeStatus = normalizeNodeStatusReceipt(result?.summary);
+  const diagnostic = normalizeDiagnosticReceipt(result?.summary);
   const artifacts = Array.isArray(result?.artifacts)
     ? result.artifacts.map(normalizeArtifact).filter(Boolean).slice(0, 100)
     : [];
@@ -330,6 +375,7 @@ function createToolReceipt(operation, options = {}) {
     ...(upload && { upload }),
     ...(wallet && { wallet }),
     ...(nodeStatus && { nodeStatus }),
+    ...(diagnostic && { diagnostic }),
     ...(artifacts.length && { artifacts }),
   });
 }
@@ -373,7 +419,18 @@ function buildAgentOutcome(activity, status, error) {
     .filter((item) => item?.operation === OPERATIONS.NODE_STATUS)
     .map((item) => normalizeNodeStatusReceipt(item?.nodeStatus))
     .filter(Boolean);
-  const browserObserved = observed.filter((item) => item?.operation !== OPERATIONS.NODE_STATUS);
+  const diagnostics = succeeded
+    .filter((item) =>
+      [OPERATIONS.NODE_DIAGNOSTICS, OPERATIONS.APP_DIAGNOSTICS].includes(item?.operation)
+    )
+    .map((item) => normalizeDiagnosticReceipt(item?.diagnostic))
+    .filter(Boolean);
+  const nonBrowserObservations = new Set([
+    OPERATIONS.NODE_STATUS,
+    OPERATIONS.NODE_DIAGNOSTICS,
+    OPERATIONS.APP_DIAGNOSTICS,
+  ]);
+  const browserObserved = observed.filter((item) => !nonBrowserObservations.has(item?.operation));
   const uncertainChanges = items.filter((item) => {
     if (normalizedEffect(item) !== ACTIVITY_EFFECTS.CHANGED || item?.status === 'succeeded') {
       return false;
@@ -422,6 +479,7 @@ function buildAgentOutcome(activity, status, error) {
     }),
     ...(walletTransfers.length && { walletTransfers: walletTransfers.length }),
     ...(nodeChecks.length && { nodeChecks: nodeChecks.length }),
+    ...(diagnostics.length && { diagnostics: diagnostics.length }),
     approvals,
   });
   const browserActionCopy = `${counts.successful} successful browser ${counts.successful === 1 ? 'action' : 'actions'}${counts.pages ? ` across ${counts.pages} ${counts.pages === 1 ? 'page' : 'pages'}` : ''}`;
@@ -502,6 +560,20 @@ function buildAgentOutcome(activity, status, error) {
         headline: 'Wallet transfer broadcast',
         detail: `${transfer} was sent through Freedom Wallet on chain ${wallet.chainId}. Transaction: ${wallet.transactionHash}.`,
         wallet,
+        destinations,
+        counts,
+      });
+    }
+    if (diagnostics.length && !changed.length && !browserObserved.length) {
+      const diagnostic = diagnostics.at(-1);
+      const subject = diagnostic.scope === 'node' ? diagnostic.service : 'Freedom';
+      return Object.freeze({
+        kind: 'completed',
+        verification: 'diagnostics_inspected',
+        tone: 'success',
+        headline: 'Diagnostics inspected',
+        detail: `Agent inspected ${diagnostic.lineCount} bounded raw diagnostic ${diagnostic.lineCount === 1 ? 'line' : 'lines'} from ${subject}${diagnostic.truncated ? '; the requested evidence was truncated at Freedom’s limit' : ''}.`,
+        diagnostic,
         destinations,
         counts,
       });
@@ -635,6 +707,7 @@ module.exports = {
   createToolReceipt,
   errorExplanation,
   normalizeArtifact,
+  normalizeDiagnosticReceipt,
   normalizeNodeStatusReceipt,
   normalizeUpload,
   normalizeWalletReceipt,
