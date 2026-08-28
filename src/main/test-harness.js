@@ -98,9 +98,35 @@ function resetFixtures() {
 
 function createAgentWalletTestOptions() {
   if (!TEST_MODE_ENABLED) return undefined;
+  const gnoAddress = '0x4444444444444444444444444444444444444444';
   return {
     estimateGas: async () => ({ gasLimit: '21000' }),
     getGasPrices: async () => ({ type: 'legacy', gasPrice: '1000000000' }),
+    getTokens: () => ({
+      '100:native': {
+        chainId: 100,
+        address: null,
+        symbol: 'xDAI',
+        name: 'xDAI',
+        decimals: 18,
+      },
+      [`100:${gnoAddress.toLowerCase()}`]: {
+        chainId: 100,
+        address: gnoAddress,
+        symbol: 'GNO',
+        name: 'Gnosis',
+        decimals: 18,
+      },
+    }),
+    getAllBalances: async () => ({
+      '100:native': { raw: '10000000000000000000', formatted: '10.0', decimals: 18 },
+      [`100:${gnoAddress.toLowerCase()}`]: {
+        raw: '5000000000000000000',
+        formatted: '5.0',
+        decimals: 18,
+      },
+    }),
+    clearBalanceCache: () => {},
     signAndRecord: async (transaction, _signer, context) => {
       agentWalletTransaction = {
         transaction: { ...transaction },

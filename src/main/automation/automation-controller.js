@@ -24,6 +24,10 @@ class AutomationController {
     if (options.downloadController) this.setDownloadController(options.downloadController);
     this.uploadController = null;
     if (options.uploadController) this.setUploadController(options.uploadController);
+    this.walletTransferController = null;
+    if (options.walletTransferController) {
+      this.setWalletTransferController(options.walletTransferController);
+    }
   }
 
   setPageLifecycle(pageLifecycle) {
@@ -65,6 +69,17 @@ class AutomationController {
       throw new TypeError('Automation upload controller requires upload()');
     }
     this.uploadController = uploadController;
+  }
+
+  setWalletTransferController(walletTransferController) {
+    if (walletTransferController === null) {
+      this.walletTransferController = null;
+      return;
+    }
+    if (!walletTransferController || typeof walletTransferController.transfer !== 'function') {
+      throw new TypeError('Automation wallet transfer controller requires transfer()');
+    }
+    this.walletTransferController = walletTransferController;
   }
 
   registerPage(adapter, metadata) {
@@ -242,6 +257,11 @@ class AutomationController {
         });
       case OPERATIONS.WALLET_ACTION:
         return entry.adapter.click(input.ref);
+      case OPERATIONS.WALLET_TRANSFER:
+        return this.#requireWalletTransferController().transfer(input, {
+          requestApproval: execution?.requestApproval,
+          signal: execution?.signal,
+        });
       case OPERATIONS.LIST_DOWNLOADS:
         return { artifacts: this.#requireDownloadController().list(execution?.conversationId) };
       case OPERATIONS.SCREENSHOT:
@@ -299,6 +319,16 @@ class AutomationController {
       );
     }
     return this.uploadController;
+  }
+
+  #requireWalletTransferController() {
+    if (!this.walletTransferController) {
+      throw new AutomationError(
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        'Direct wallet transfers are unavailable in this runtime'
+      );
+    }
+    return this.walletTransferController;
   }
 
   #errorEnvelope(tabId, entry, error) {

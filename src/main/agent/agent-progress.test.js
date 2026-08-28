@@ -118,6 +118,85 @@ describe('Agent progress projection', () => {
     });
   });
 
+  test('projects only the safe direct wallet broadcast receipt', () => {
+    const receipt = createToolReceipt(OPERATIONS.WALLET_TRANSFER, {
+      envelope: {
+        ok: true,
+        result: {
+          wallet: {
+            action: 'broadcast',
+            transactionHash: '0xtransaction',
+            paymentId: 'payment_test',
+            chainId: 100,
+            recipient: '0x3333333333333333333333333333333333333333',
+            amount: '0.01',
+            asset: 'GNO',
+            privateKey: 'secret',
+            rawTransaction: '0xsigned',
+          },
+        },
+      },
+    });
+
+    expect(receipt).toEqual({
+      wallet: {
+        action: 'broadcast',
+        transactionHash: '0xtransaction',
+        paymentId: 'payment_test',
+        chainId: 100,
+        recipient: '0x3333333333333333333333333333333333333333',
+        amount: '0.01',
+        asset: 'GNO',
+      },
+    });
+    expect(JSON.stringify(receipt)).not.toMatch(/secret|signed|privateKey|rawTransaction/);
+    expect(activityProgress(OPERATIONS.WALLET_TRANSFER, receipt)).toMatchObject({
+      intent: 'Sending 0.01 GNO',
+      label: 'Sent 0.01 GNO',
+      effect: 'changed',
+    });
+    expect(
+      buildAgentOutcome(
+        [
+          {
+            operation: OPERATIONS.WALLET_TRANSFER,
+            status: 'succeeded',
+            effect: 'changed',
+            wallet: receipt.wallet,
+          },
+        ],
+        'completed'
+      )
+    ).toMatchObject({
+      verification: 'wallet_broadcast',
+      headline: 'Wallet transfer broadcast',
+      detail: expect.stringContaining('0xtransaction'),
+      counts: { walletTransfers: 1 },
+    });
+  });
+
+  test('treats a declined wallet request as a final user decision, not a failure', () => {
+    expect(
+      buildAgentOutcome(
+        [
+          {
+            operation: OPERATIONS.WALLET_TRANSFER,
+            status: 'failed',
+            effect: 'changed',
+            approval: 'declined',
+            errorCode: ERROR_CODES.WALLET_REQUEST_CANCELLED_BY_USER,
+          },
+        ],
+        'completed'
+      )
+    ).toMatchObject({
+      verification: 'wallet_declined',
+      tone: 'neutral',
+      headline: 'Wallet request declined',
+      counts: { failed: 0, declinedWalletRequests: 1 },
+    });
+  });
+
   test('treats a user-cancelled download as a neutral terminal state without an artifact', () => {
     const cancelledArtifact = {
       artifactId: 'artifact_1234567890abcdef1234',

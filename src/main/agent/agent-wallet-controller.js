@@ -1,9 +1,10 @@
 'use strict';
 
-const { formatUnits } = require('ethers');
+const { formatUnits, getAddress } = require('ethers');
 const { AutomationError, ERROR_CODES } = require('../automation/contract/errors');
-const { getPermissionKey } = require('../../shared/origin-utils');
+const { getPermissionKey, isEnsHost } = require('../../shared/origin-utils');
 const identityManager = require('../identity-manager');
+const tokenRegistry = require('../token-registry');
 const {
   getPermission,
   grantPermission,
@@ -11,7 +12,14 @@ const {
   updateWalletIndex,
 } = require('../wallet/dapp-permissions');
 const { getChain } = require('../wallet/chains');
-const { estimateGas, getGasPrices } = require('../wallet/transaction-service');
+const { getAllBalances, clearBalanceCache } = require('../wallet/balance-service');
+const { resolveEnsAddress } = require('../ens-resolver');
+const {
+  estimateGas,
+  getGasPrices,
+  buildErc20TransferData,
+  parseAmount,
+} = require('../wallet/transaction-service');
 const { signAndRecord, KINDS } = require('../wallet/tx-recorder');
 const { getSigner } = require('../wallet/signers');
 
@@ -70,6 +78,24 @@ function exactTypedData(value) {
   }
 }
 
+function abortIfRequested(signal) {
+  if (signal?.aborted) {
+    throw new AutomationError(ERROR_CODES.USER_CANCELLED, 'The wallet transfer was cancelled');
+  }
+}
+
+function normalizedAddress(value) {
+  try {
+    return getAddress(value);
+  } catch {
+    return null;
+  }
+}
+
+function tokenKey(token) {
+  return token.address ? `${token.chainId}:${token.address.toLowerCase()}` : `${token.chainId}:native`;
+}
+
 class AgentWalletController {
   constructor(options = {}) {
     this.identity = options.identityManager || identityManager;
@@ -82,6 +108,233 @@ class AgentWalletController {
     this.getGasPrices = options.getGasPrices || getGasPrices;
     this.signAndRecord = options.signAndRecord || signAndRecord;
     this.getSigner = options.getSigner || getSigner;
+    this.getTokens = options.getTokens || tokenRegistry.getTokens;
+    this.getAllBalances = options.getAllBalances || getAllBalances;
+    this.clearBalanceCache = options.clearBalanceCache || clearBalanceCache;
+    this.resolveEnsAddress = options.resolveEnsAddress || resolveEnsAddress;
+    this.buildErc20TransferData = options.buildErc20TransferData || buildErc20TransferData;
+    this.parseAmount = options.parseAmount || parseAmount;
+  }
+
+  async transfer(input, context = {}) {
+    if (typeof context.requestApproval !== 'function') {
+      throw new AutomationError(
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        'Direct wallet transfers require an Agent approval surface'
+      );
+    }
+    abortIfRequested(context.signal);
+    const token = this.#resolveTransferToken(input.asset, input.chainId);
+    const chain = this.getChain(token.chainId);
+    if (!chain) {
+      throw new AutomationError(
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        `Chain ${token.chainId} is unavailable`
+      );
+    }
+    const wallets = (await this.identity.getDerivedWallets()).map(safeWallet).filter(Boolean);
+    const walletIndex = input.walletIndex ?? this.identity.getActiveWalletIndex();
+    const wallet = wallets.find((item) => item.index === walletIndex);
+    if (!wallet) {
+      throw new AutomationError(
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        'The selected wallet account is unavailable'
+      );
+    }
+    const recipient = await this.#resolveTransferRecipient(input.recipient);
+    let atomicAmount;
+    try {
+      atomicAmount = this.parseAmount(input.amount, token.decimals);
+    } catch {
+      throw new AutomationError(
+        ERROR_CODES.INVALID_ARGUMENT,
+        `${input.amount} is not a valid ${token.symbol} amount`
+      );
+    }
+    if (atomicAmount <= 0n) {
+      throw new AutomationError(ERROR_CODES.INVALID_ARGUMENT, 'Transfer amount must be positive');
+    }
+    const tx = {
+      to: token.address || recipient.address,
+      value: token.address ? '0' : atomicAmount.toString(),
+      ...(token.address && {
+        data: this.buildErc20TransferData(recipient.address, atomicAmount.toString()),
+      }),
+      chainId: token.chainId,
+    };
+    const [gasEstimate, gasPrices] = await Promise.all([
+      this.estimateGas({ from: wallet.address, ...tx }),
+      this.getGasPrices(token.chainId),
+    ]);
+    tx.gasLimit = gasEstimate.gasLimit;
+    if (!tx.gasLimit) {
+      throw new AutomationError(
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        'Freedom could not estimate the transfer fee'
+      );
+    }
+    if (gasPrices.type === 'eip1559') {
+      tx.maxFeePerGas = gasPrices.maxFeePerGas;
+      tx.maxPriorityFeePerGas = gasPrices.maxPriorityFeePerGas;
+    } else {
+      tx.gasPrice = gasPrices.gasPrice;
+    }
+    const feePerGas = tx.maxFeePerGas || tx.gasPrice;
+    if (!feePerGas) {
+      throw new AutomationError(
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        'Freedom could not determine the maximum transfer fee'
+      );
+    }
+    const maxFee = BigInt(tx.gasLimit) * BigInt(feePerGas);
+    await this.#assertTransferBalance(wallet.address, token, atomicAmount, maxFee);
+    abortIfRequested(context.signal);
+    const amount = formatUnits(atomicAmount, token.decimals);
+    const to = recipient.name
+      ? `${recipient.name} · ${recipient.address}`
+      : recipient.address;
+    const recipientVerification = recipient.name
+      ? recipient.trustLevel === 'verified'
+        ? 'Verified name resolution'
+        : 'Unverified name resolution — check the address carefully'
+      : '';
+    const decision = normalizeDecision(
+      await context.requestApproval({
+        action: 'wallet_transfer',
+        operation: 'wallet_transfer',
+        label: `Send ${amount} ${token.symbol}`,
+        wallet: {
+          kind: 'transfer',
+          chainId: token.chainId,
+          chainName: bounded(chain.name, 80),
+          account: wallet,
+          to,
+          ...(recipientVerification && { recipientVerification }),
+          value: `${amount} ${token.symbol}`,
+          maxFee: `${formatUnits(maxFee, chain.nativeCurrency.decimals)} ${chain.nativeCurrency.symbol}`,
+          ...(token.address && { tokenContract: token.address }),
+          requiresUnlock: wallet.type === 'mnemonic',
+        },
+      })
+    );
+    if (decision.status !== 'approved') {
+      throw new AutomationError(
+        ERROR_CODES.WALLET_REQUEST_CANCELLED_BY_USER,
+        decision.status === 'withdrawn'
+          ? 'Wallet approval was withdrawn'
+          : 'The user declined the wallet transfer'
+      );
+    }
+    abortIfRequested(context.signal);
+    await this.#assertTransferBalance(wallet.address, token, atomicAmount, maxFee);
+    const result = await this.signAndRecord(tx, this.getSigner(wallet.index), {
+      kind: KINDS.WALLET_SEND,
+      origin: 'freedom-agent',
+      asset: token.address,
+      amount: atomicAmount.toString(),
+      toAddress: recipient.address,
+      metadata: { source: 'agent', assetSymbol: token.symbol },
+    });
+    return {
+      wallet: {
+        action: 'broadcast',
+        chainId: token.chainId,
+        transactionHash: result.hash,
+        ...(result.paymentId && { paymentId: result.paymentId }),
+        recipient: recipient.address,
+        amount,
+        asset: token.symbol,
+      },
+    };
+  }
+
+  #resolveTransferToken(asset, chainId) {
+    const needle = asset.toLowerCase();
+    const candidates = Object.values(this.getTokens())
+      .filter(
+        (token) =>
+          token &&
+          (!chainId || token.chainId === chainId) &&
+          (String(token.symbol || '').toLowerCase() === needle ||
+            String(token.address || '').toLowerCase() === needle)
+      )
+      .map((token) => ({ ...token, address: token.address || null }));
+    if (candidates.length === 0) {
+      throw new AutomationError(
+        ERROR_CODES.INVALID_ARGUMENT,
+        chainId
+          ? `${asset} is not a configured asset on chain ${chainId}`
+          : `${asset} is not a configured Freedom wallet asset`,
+        { suggestedAction: 'Ask the user to choose a configured asset and network' }
+      );
+    }
+    if (candidates.length > 1) {
+      const networks = candidates
+        .map((token) => this.getChain(token.chainId)?.name || `chain ${token.chainId}`)
+        .join(', ');
+      throw new AutomationError(
+        ERROR_CODES.INVALID_ARGUMENT,
+        `${asset} is available on multiple networks: ${networks}`,
+        { suggestedAction: 'Ask the user which network to use, then provide its chainId' }
+      );
+    }
+    return candidates[0];
+  }
+
+  async #resolveTransferRecipient(value) {
+    const address = normalizedAddress(value);
+    if (address) return { address };
+    if (!isEnsHost(value)) {
+      throw new AutomationError(
+        ERROR_CODES.INVALID_ARGUMENT,
+        'Recipient must be an Ethereum address or supported Ethereum name'
+      );
+    }
+    let result;
+    try {
+      result = await this.resolveEnsAddress(value);
+    } catch {
+      throw new AutomationError(
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        `Freedom could not resolve ${value}`,
+        { retryable: true }
+      );
+    }
+    const resolved = result?.success ? normalizedAddress(result.address) : null;
+    if (!resolved) {
+      throw new AutomationError(
+        ERROR_CODES.INVALID_ARGUMENT,
+        `${value} does not resolve to an Ethereum address`
+      );
+    }
+    return {
+      address: resolved,
+      name: bounded(result.name || value, 255),
+      trustLevel: result.trust?.level === 'verified' ? 'verified' : 'unverified',
+    };
+  }
+
+  async #assertTransferBalance(address, token, amount, maxFee) {
+    this.clearBalanceCache(address);
+    const balances = await this.getAllBalances(address);
+    const assetBalance = balances?.[tokenKey(token)];
+    if (!assetBalance || BigInt(assetBalance.raw) < amount) {
+      throw new AutomationError(
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        `The selected wallet does not have enough ${token.symbol}`
+      );
+    }
+    const native = Object.values(this.getTokens()).find(
+      (candidate) => candidate?.chainId === token.chainId && candidate.address === null
+    );
+    const nativeBalance = native ? balances?.[tokenKey(native)] : null;
+    const requiredNative = token.address ? maxFee : amount + maxFee;
+    if (!nativeBalance || BigInt(nativeBalance.raw) < requiredNative) {
+      throw new AutomationError(
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        `The selected wallet does not have enough ${native?.symbol || 'native currency'} for the transfer and maximum fee`
+      );
+    }
   }
 
   async handleRequest(context, payload) {

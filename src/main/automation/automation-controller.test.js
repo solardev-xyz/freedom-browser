@@ -254,6 +254,37 @@ describe('AutomationController', () => {
     expect(adapter.click).toHaveBeenCalledWith('ref_wallet');
   });
 
+  test('routes direct wallet transfers through the privileged main-process boundary', async () => {
+    const { controller, authorize } = createController();
+    const transfer = jest.fn(async () => ({
+      wallet: { action: 'broadcast', transactionHash: '0xtransaction' },
+    }));
+    controller.setWalletTransferController({ transfer });
+    const requestApproval = jest.fn();
+    const signal = new AbortController().signal;
+
+    await expect(
+      controller.execute(
+        OPERATIONS.WALLET_TRANSFER,
+        { recipient: 'meinhard.eth', amount: '0.01', asset: 'GNO', chainId: 100 },
+        { requestApproval, signal }
+      )
+    ).resolves.toMatchObject({
+      ok: true,
+      result: { wallet: { action: 'broadcast', transactionHash: '0xtransaction' } },
+    });
+    expect(authorize).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operation: OPERATIONS.WALLET_TRANSFER,
+        tab: null,
+      })
+    );
+    expect(transfer).toHaveBeenCalledWith(
+      { recipient: 'meinhard.eth', amount: '0.01', asset: 'GNO', chainId: 100 },
+      { requestApproval, signal }
+    );
+  });
+
   test('does not echo an unvalidated tab ID into error envelopes', async () => {
     const { controller } = createController();
     const failure = await controller.execute(OPERATIONS.SNAPSHOT, {

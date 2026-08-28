@@ -19,6 +19,7 @@ const OPERATION_CLASSES = Object.freeze({
   [OPERATIONS.UPLOAD]: 'transfer',
   [OPERATIONS.DOWNLOAD]: 'transfer',
   [OPERATIONS.WALLET_ACTION]: 'interact',
+  [OPERATIONS.WALLET_TRANSFER]: 'privileged',
   [OPERATIONS.LIST_DOWNLOADS]: 'observe',
   [OPERATIONS.STOP_LOADING]: 'control',
 });

@@ -42,7 +42,7 @@ describe('Freedom agent runtime', () => {
       safeStorage: {},
       profile: { id: 'work', userDataDir: '/profiles/work' },
       dataDir: '/profiles/work/agent',
-      controller: { setWalletController: jest.fn() },
+      controller: { setWalletController: jest.fn(), setWalletTransferController: jest.fn() },
       automationTabIdForRenderer: jest.fn(),
       desktopBindingForAutomationTab: jest.fn(),
       createAutomationPageForHost: jest.fn(),
@@ -69,6 +69,7 @@ describe('Freedom agent runtime', () => {
     });
     expect(historyStore.markStaleRunningAsInterrupted).toHaveBeenCalledTimes(1);
     expect(AgentWalletController).toHaveBeenCalledWith(options.walletControllerOptions);
+    expect(options.controller.setWalletTransferController).toHaveBeenCalledWith(walletController);
     expect(FreedomAgentService).toHaveBeenCalledWith({
       controller: options.controller,
       subscribeTabLifecycle: options.subscribeTabLifecycle,
@@ -97,6 +98,7 @@ describe('Freedom agent runtime', () => {
     expect(unregisterIpc).toHaveBeenCalledTimes(1);
     expect(service.dispose).toHaveBeenCalledTimes(1);
     expect(historyStore.close).toHaveBeenCalledTimes(1);
+    expect(options.controller.setWalletTransferController).toHaveBeenLastCalledWith(null);
     expect(calls).toEqual(['ipc', 'service', 'history']);
   });
 });

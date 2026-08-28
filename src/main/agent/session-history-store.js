@@ -5,7 +5,11 @@ const Database = require('better-sqlite3');
 const log = require('../logger');
 const { normalizeAgentApprovalMode } = require('../../shared/agent-approval-modes');
 const { originScopeForUrl } = require('../automation/origin-scoped-controller');
-const { normalizeArtifact, normalizeUpload } = require('./agent-progress');
+const {
+  normalizeArtifact,
+  normalizeUpload,
+  normalizeWalletReceipt,
+} = require('./agent-progress');
 
 const DB_FILE = 'agent-history.sqlite';
 const SCHEMA_VERSION = 2;
@@ -61,6 +65,7 @@ function normalizeActivity(activity) {
       const pageId = optionalString(item.pageId, 160);
       const artifact = normalizeArtifact(item.artifact);
       const upload = normalizeUpload(item.upload);
+      const wallet = normalizeWalletReceipt(item.wallet);
       const artifacts = Array.isArray(item.artifacts)
         ? item.artifacts.map(normalizeArtifact).filter(Boolean).slice(0, 100)
         : [];
@@ -77,6 +82,7 @@ function normalizeActivity(activity) {
         ...(pageId && { pageId }),
         ...(artifact && { artifact }),
         ...(upload && { upload }),
+        ...(wallet && { wallet }),
         ...(artifacts.length && { artifacts }),
         ...(Number.isSafeInteger(item.pageCount) && item.pageCount >= 0
           ? { pageCount: item.pageCount }

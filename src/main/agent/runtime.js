@@ -23,6 +23,7 @@ function createFreedomAgentRuntime(options = {}) {
   });
   historyStore.markStaleRunningAsInterrupted();
   const walletController = new AgentWalletController(options.walletControllerOptions);
+  options.controller.setWalletTransferController(walletController);
   const service = new FreedomAgentService({
     controller: options.controller,
     subscribeTabLifecycle: options.subscribeTabLifecycle,
@@ -52,6 +53,7 @@ function createFreedomAgentRuntime(options = {}) {
       await unregisterIpc();
       await service.dispose();
       historyStore.close();
+      options.controller.setWalletTransferController(null);
     },
   };
 }

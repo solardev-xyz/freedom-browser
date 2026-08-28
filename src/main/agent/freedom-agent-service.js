@@ -20,6 +20,7 @@ const {
   buildAgentOutcome,
   normalizeArtifact,
   normalizeUpload,
+  normalizeWalletReceipt,
 } = require('./agent-progress');
 const { loadPiSdk } = require('./pi-sdk');
 const {
@@ -207,6 +208,7 @@ function normalizePiEvent(event, toolOutcome) {
       ...progress,
       ...(toolOutcome?.artifact && { artifact: toolOutcome.artifact }),
       ...(toolOutcome?.upload && { upload: toolOutcome.upload }),
+      ...(toolOutcome?.wallet && { wallet: toolOutcome.wallet }),
       ...(toolOutcome?.artifacts && { artifacts: toolOutcome.artifacts }),
       ...(errorCode && { errorCode }),
     };
@@ -252,7 +254,12 @@ function normalizeApprovalRequest(request) {
           ? 'file_download'
           : request?.action === 'file_upload'
             ? 'file_upload'
-            : ['wallet_connection', 'wallet_transaction', 'wallet_signature'].includes(
+            : [
+                  'wallet_connection',
+                  'wallet_transaction',
+                  'wallet_signature',
+                  'wallet_transfer',
+                ].includes(
                   request?.action
                 )
               ? request.action
@@ -269,7 +276,7 @@ function normalizeApprovalRequest(request) {
 
 function normalizeWalletApproval(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  if (!['connection', 'transaction', 'signature'].includes(value.kind)) return null;
+  if (!['connection', 'transaction', 'signature', 'transfer'].includes(value.kind)) return null;
   const normalizeAccount = (account) => {
     if (!Number.isSafeInteger(account?.index) || account.index < 0 || !account.address) return null;
     return Object.freeze({
@@ -292,10 +299,16 @@ function normalizeWalletApproval(value) {
     ...(Number.isSafeInteger(value.defaultWalletIndex) && value.defaultWalletIndex >= 0
       ? { defaultWalletIndex: value.defaultWalletIndex }
       : {}),
-    ...(typeof value.to === 'string' && { to: value.to.slice(0, 100) }),
+    ...(typeof value.to === 'string' && { to: value.to.slice(0, 400) }),
     ...(typeof value.value === 'string' && { value: value.value.slice(0, 100) }),
     ...(typeof value.maxFee === 'string' && { maxFee: value.maxFee.slice(0, 100) }),
     ...(typeof value.data === 'string' && { data: value.data.slice(0, 65_536) }),
+    ...(typeof value.tokenContract === 'string' && {
+      tokenContract: value.tokenContract.slice(0, 100),
+    }),
+    ...(typeof value.recipientVerification === 'string' && {
+      recipientVerification: value.recipientVerification.slice(0, 160),
+    }),
     ...(typeof value.signatureType === 'string' && {
       signatureType: value.signatureType.slice(0, 80),
     }),
@@ -1081,6 +1094,7 @@ class FreedomAgentService {
         if (normalized.errorCode) item.errorCode = normalized.errorCode;
         if (normalized.artifact) item.artifact = normalized.artifact;
         if (normalized.upload) item.upload = normalized.upload;
+        if (normalized.wallet) item.wallet = normalized.wallet;
         if (normalized.artifacts) item.artifacts = normalized.artifacts;
         if (item.approval) normalized.approval = item.approval;
       }
@@ -1109,6 +1123,9 @@ class FreedomAgentService {
         artifact: normalizeArtifact(outcome.artifact),
       }),
       ...(normalizeUpload(outcome.upload) && { upload: normalizeUpload(outcome.upload) }),
+      ...(normalizeWalletReceipt(outcome.wallet) && {
+        wallet: normalizeWalletReceipt(outcome.wallet),
+      }),
       ...(Array.isArray(outcome.artifacts) && {
         artifacts: outcome.artifacts.map(normalizeArtifact).filter(Boolean).slice(0, 100),
       }),
@@ -1118,6 +1135,7 @@ class FreedomAgentService {
         pageCount: outcome.pageCount,
         artifact: outcome.artifact,
         upload: outcome.upload,
+        wallet: outcome.wallet,
       }),
     });
     run.toolOutcomes.set(normalized.toolCallId, normalized);

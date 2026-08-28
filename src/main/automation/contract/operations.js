@@ -167,6 +167,35 @@ function validateOperationInput(operation, rawInput) {
     }
   }
 
+  if (operation === OPERATIONS.WALLET_TRANSFER) {
+    normalized.recipient = requireString(input.recipient, 'recipient').trim();
+    normalized.amount = requireString(input.amount, 'amount').trim();
+    normalized.asset = requireString(input.asset, 'asset').trim();
+    if (normalized.recipient.length > 255) {
+      throw invalidArgument('recipient cannot exceed 255 characters', { field: 'recipient' });
+    }
+    if (normalized.amount.length > 80) {
+      throw invalidArgument('amount cannot exceed 80 characters', { field: 'amount' });
+    }
+    if (normalized.asset.length > 80) {
+      throw invalidArgument('asset cannot exceed 80 characters', { field: 'asset' });
+    }
+    if (input.chainId !== undefined) {
+      if (!Number.isSafeInteger(input.chainId) || input.chainId < 1) {
+        throw invalidArgument('chainId must be a positive integer', { field: 'chainId' });
+      }
+      normalized.chainId = input.chainId;
+    }
+    if (input.walletIndex !== undefined) {
+      if (!Number.isSafeInteger(input.walletIndex) || input.walletIndex < 0) {
+        throw invalidArgument('walletIndex must be a non-negative integer', {
+          field: 'walletIndex',
+        });
+      }
+      normalized.walletIndex = input.walletIndex;
+    }
+  }
+
   return normalized;
 }
 

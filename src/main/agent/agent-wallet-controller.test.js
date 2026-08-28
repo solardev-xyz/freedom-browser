@@ -39,6 +39,42 @@ function createHarness(options = {}) {
       recorded: true,
     })),
     getSigner: jest.fn(() => signer),
+    getTokens: jest.fn(() => ({
+      '100:native': {
+        chainId: 100,
+        address: null,
+        symbol: 'xDAI',
+        name: 'xDAI',
+        decimals: 18,
+      },
+      '100:0x4444444444444444444444444444444444444444': {
+        chainId: 100,
+        address: '0x4444444444444444444444444444444444444444',
+        symbol: 'GNO',
+        name: 'Gnosis',
+        decimals: 18,
+      },
+    })),
+    getAllBalances: jest.fn(async () => ({
+      '100:native': { raw: '1000000000000000000', formatted: '1.0', decimals: 18 },
+      '100:0x4444444444444444444444444444444444444444': {
+        raw: '5000000000000000000',
+        formatted: '5.0',
+        decimals: 18,
+      },
+    })),
+    clearBalanceCache: jest.fn(),
+    resolveEnsAddress: jest.fn(async (name) => ({
+      success: true,
+      name,
+      address: '0x3333333333333333333333333333333333333333',
+      trust: { level: 'verified' },
+    })),
+    buildErc20TransferData: jest.fn(() => '0xa9059cbbencoded'),
+    parseAmount: jest.fn((amount, decimals) => {
+      const [whole, fraction = ''] = amount.split('.');
+      return BigInt(`${whole}${fraction.padEnd(decimals, '0')}`);
+    }),
   };
   return {
     controller: new AgentWalletController(dependencies),
@@ -67,6 +103,162 @@ function context(requestApproval = jest.fn(async () => 'approved')) {
 }
 
 describe('AgentWalletController', () => {
+  describe('direct transfers', () => {
+    test('holds one resolved ERC-20 transfer for approval and broadcasts that exact intent', async () => {
+      const harness = createHarness();
+      const approval = jest.fn(async () => 'approved');
+
+      const result = await harness.controller.transfer(
+        { recipient: 'meinhard.eth', amount: '0.01', asset: 'gno', chainId: 100 },
+        { requestApproval: approval }
+      );
+
+      expect(harness.dependencies.resolveEnsAddress).toHaveBeenCalledWith('meinhard.eth');
+      expect(approval).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'wallet_transfer',
+          operation: 'wallet_transfer',
+          wallet: expect.objectContaining({
+            kind: 'transfer',
+            chainId: 100,
+            to: expect.stringContaining('meinhard.eth'),
+            recipientVerification: 'Verified name resolution',
+            value: '0.01 GNO',
+            tokenContract: '0x4444444444444444444444444444444444444444',
+            requiresUnlock: true,
+          }),
+        })
+      );
+      expect(harness.dependencies.signAndRecord).toHaveBeenCalledWith(
+        {
+          to: '0x4444444444444444444444444444444444444444',
+          value: '0',
+          data: '0xa9059cbbencoded',
+          gasLimit: '24000',
+          gasPrice: '1000000000',
+          chainId: 100,
+        },
+        harness.signer,
+        expect.objectContaining({
+          kind: expect.any(String),
+          origin: 'freedom-agent',
+          asset: '0x4444444444444444444444444444444444444444',
+          amount: '10000000000000000',
+          toAddress: '0x3333333333333333333333333333333333333333',
+        })
+      );
+      expect(result).toEqual({
+        wallet: {
+          action: 'broadcast',
+          chainId: 100,
+          transactionHash: '0xtransaction',
+          paymentId: 'payment_test',
+          recipient: '0x3333333333333333333333333333333333333333',
+          amount: '0.01',
+          asset: 'GNO',
+        },
+      });
+    });
+
+    test('fails closed before approval when an asset is ambiguous without a chain', async () => {
+      const harness = createHarness();
+      harness.dependencies.getTokens.mockReturnValue({
+        '1:native': { chainId: 1, address: null, symbol: 'ETH', decimals: 18 },
+        '8453:native': { chainId: 8453, address: null, symbol: 'ETH', decimals: 18 },
+      });
+      const approval = jest.fn();
+
+      await expect(
+        harness.controller.transfer(
+          {
+            recipient: '0x3333333333333333333333333333333333333333',
+            amount: '1',
+            asset: 'ETH',
+          },
+          { requestApproval: approval }
+        )
+      ).rejects.toMatchObject({
+        code: ERROR_CODES.INVALID_ARGUMENT,
+        retryable: false,
+        suggestedAction: expect.stringContaining('chainId'),
+      });
+      expect(approval).not.toHaveBeenCalled();
+      expect(harness.dependencies.signAndRecord).not.toHaveBeenCalled();
+    });
+
+    test('does not sign when the user declines the exact transfer', async () => {
+      const harness = createHarness();
+
+      await expect(
+        harness.controller.transfer(
+          {
+            recipient: '0x3333333333333333333333333333333333333333',
+            amount: '0.5',
+            asset: 'xDAI',
+            chainId: 100,
+          },
+          { requestApproval: jest.fn(async () => 'declined') }
+        )
+      ).rejects.toMatchObject({ code: ERROR_CODES.WALLET_REQUEST_CANCELLED_BY_USER });
+      expect(harness.dependencies.signAndRecord).not.toHaveBeenCalled();
+    });
+
+    test('sends a native transfer with the approved amount and fee fields', async () => {
+      const harness = createHarness();
+
+      const result = await harness.controller.transfer(
+        {
+          recipient: '0x3333333333333333333333333333333333333333',
+          amount: '0.25',
+          asset: 'xDAI',
+          chainId: 100,
+        },
+        { requestApproval: jest.fn(async () => 'approved') }
+      );
+
+      expect(harness.dependencies.buildErc20TransferData).not.toHaveBeenCalled();
+      expect(harness.dependencies.signAndRecord).toHaveBeenCalledWith(
+        {
+          to: '0x3333333333333333333333333333333333333333',
+          value: '250000000000000000',
+          chainId: 100,
+          gasLimit: '24000',
+          gasPrice: '1000000000',
+        },
+        harness.signer,
+        expect.objectContaining({
+          asset: null,
+          amount: '250000000000000000',
+          toAddress: '0x3333333333333333333333333333333333333333',
+        })
+      );
+      expect(harness.dependencies.getAllBalances).toHaveBeenCalledTimes(2);
+      expect(result.wallet).toMatchObject({ amount: '0.25', asset: 'xDAI' });
+    });
+
+    test('checks native value plus maximum fee before asking', async () => {
+      const harness = createHarness();
+      harness.dependencies.getAllBalances.mockResolvedValue({
+        '100:native': { raw: '1000000000000000000', formatted: '1.0', decimals: 18 },
+      });
+      const approval = jest.fn();
+
+      await expect(
+        harness.controller.transfer(
+          {
+            recipient: '0x3333333333333333333333333333333333333333',
+            amount: '1',
+            asset: 'xDAI',
+            chainId: 100,
+          },
+          { requestApproval: approval }
+        )
+      ).rejects.toMatchObject({ code: ERROR_CODES.CAPABILITY_UNAVAILABLE });
+      expect(approval).not.toHaveBeenCalled();
+      expect(harness.dependencies.signAndRecord).not.toHaveBeenCalled();
+    });
+  });
+
   test('holds a connection request in Agent and grants only the selected public account', async () => {
     const harness = createHarness({
       wallets: [

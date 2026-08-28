@@ -1056,4 +1056,28 @@ describe('OriginScopedAutomationController', () => {
       { conversationId: 'conversation_test' }
     );
   });
+
+  test('allows a direct wallet transfer from an empty browser workspace but preserves approval', async () => {
+    const controller = createController();
+    const requestApproval = jest.fn();
+    const scoped = await createOriginScopedAutomationController({
+      controller,
+      tabId: null,
+      transferOwnerId: 'conversation_test',
+      requestApproval,
+    });
+    const input = {
+      recipient: 'meinhard.eth',
+      amount: '0.01',
+      asset: 'GNO',
+      chainId: 100,
+    };
+
+    await scoped.execute(OPERATIONS.WALLET_TRANSFER, input);
+
+    expect(controller.execute).toHaveBeenLastCalledWith(OPERATIONS.WALLET_TRANSFER, input, {
+      conversationId: 'conversation_test',
+      requestApproval,
+    });
+  });
 });

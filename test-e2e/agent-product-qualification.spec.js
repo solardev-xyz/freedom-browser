@@ -47,6 +47,7 @@ const EXPECTED_TOOL_NAMES = Object.freeze([
   'browser_upload',
   'browser_download',
   'browser_list_downloads',
+  'wallet_transfer',
   'browser_wait',
   'browser_stop_loading',
 ]);
@@ -60,6 +61,7 @@ let observedTaskTabCount = 0;
 let observedDownloadArtifact = null;
 let observedUploadReceipt = null;
 let observedWalletReceipts = [];
+let observedDirectWalletReceipt = null;
 const operations = [];
 
 function completionChunk({ delta = {}, finishReason = null, usage }) {
@@ -585,6 +587,25 @@ async function handleCompletion(request, response) {
     return;
   }
 
+  if (hasUserMarker(messages, 'PRODUCT_DIRECT_WALLET_TRANSFER')) {
+    if (toolResults.length === 0) {
+      emitToolCall(response, 1, 'wallet_transfer', {
+        recipient: '0x3333333333333333333333333333333333333333',
+        amount: '0.01',
+        asset: 'GNO',
+        chainId: 100,
+      });
+    } else {
+      observedDirectWalletReceipt =
+        toolEnvelopes(messages).find((envelope) => envelope?.result?.wallet)?.result?.wallet || null;
+      emitFinal(
+        response,
+        `Sent 0.01 GNO directly from Freedom Wallet. Transaction ${observedDirectWalletReceipt?.transactionHash || 'was not verified'}.`
+      );
+    }
+    return;
+  }
+
   emitFinal(response, 'Qualification task marker missing.');
 }
 
@@ -622,6 +643,7 @@ test.beforeEach(() => {
   observedDownloadArtifact = null;
   observedUploadReceipt = null;
   observedWalletReceipts = [];
+  observedDirectWalletReceipt = null;
   operations.length = 0;
 });
 
@@ -1512,4 +1534,91 @@ test('privileged capability: locked-wallet transaction shows exact data and retu
     'browser_click',
     'browser_snapshot',
   ]);
+});
+
+test('privileged capability: direct wallet transfer needs exact approval and no dApp', async ({
+  window,
+  harness,
+}) => {
+  await createUnlockedTestWallet(window);
+  await lockTestWallet(window);
+  await prepareTask(
+    window,
+    harness,
+    URLS.walletTransaction,
+    '<!doctype html><title>Freedom home</title><main><h1>Freedom</h1></main>'
+  );
+
+  await window
+    .locator('#agent-prompt')
+    .fill('PRODUCT_DIRECT_WALLET_TRANSFER: send 0.01 GNO on Gnosis to the specified recipient.');
+  await window.locator('#agent-run').click();
+
+  await expect(window.locator('#agent-approval-action')).toHaveText(
+    'Send these funds from your Freedom wallet?',
+    { timeout: 10_000 }
+  );
+  await expect(window.locator('#agent-approval-origin')).toContainText(
+    'Prepared directly by Freedom'
+  );
+  const summary = window.locator('#agent-wallet-approval-summary');
+  await expect(summary).toContainText('Gnosis');
+  await expect(summary).toContainText('0x3333333333333333333333333333333333333333');
+  await expect(summary).toContainText('0.01 GNO');
+  await expect(summary).toContainText('0.000021 xDAI');
+  await expect(summary).toContainText('0x4444444444444444444444444444444444444444');
+  await expect(summary).not.toContainText('Site');
+  await expect(window.locator('#agent-approval-approve')).toHaveText('Send once');
+  await window.locator('#agent-approval-approve').click();
+
+  await expect(window.locator('#agent-wallet-unlock')).toBeVisible();
+  await window.locator('#agent-wallet-password').fill(WALLET_PASSWORD);
+  await window.locator('#agent-wallet-unlock-submit').click();
+  await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 15_000 });
+
+  const deterministicHash = `0x${'ab'.repeat(32)}`;
+  const harnessState = await harness.state();
+  const result = await recordQualification(
+    window,
+    'agent-direct-wallet-transfer',
+    CLASSIFICATION.PASS,
+    {
+      capturedTransaction: harnessState.agentWalletTransaction,
+      walletReceipt: observedDirectWalletReceipt,
+    }
+  );
+
+  expect(result.capturedTransaction).toEqual({
+    transaction: {
+      to: '0x4444444444444444444444444444444444444444',
+      value: '0',
+      data: expect.stringMatching(/^0xa9059cbb/),
+      gasLimit: '21000',
+      chainId: 100,
+      gasPrice: '1000000000',
+    },
+    context: {
+      kind: 'wallet-send',
+      origin: 'freedom-agent',
+      asset: '0x4444444444444444444444444444444444444444',
+      amount: '10000000000000000',
+      toAddress: '0x3333333333333333333333333333333333333333',
+      metadata: { source: 'agent', assetSymbol: 'GNO' },
+    },
+  });
+  expect(result.walletReceipt).toEqual({
+    action: 'broadcast',
+    chainId: 100,
+    transactionHash: deterministicHash,
+    paymentId: 'payment_agent_wallet_test',
+    recipient: '0x3333333333333333333333333333333333333333',
+    amount: '0.01',
+    asset: 'GNO',
+  });
+  expect(JSON.stringify(result.walletReceipt)).not.toMatch(/private|signature|rawTransaction/);
+  expect(result.assistantOutput).toContain(deterministicHash);
+  await expect(window.locator('.agent-turn-outcome').last()).toContainText(
+    'Wallet transfer broadcast'
+  );
+  expect(operations).toEqual(['wallet_transfer']);
 });

@@ -183,6 +183,39 @@ const TOOL_SPECS = Object.freeze([
     tabMode: 'none',
   },
   {
+    operation: OPERATIONS.WALLET_TRANSFER,
+    label: 'Send wallet funds',
+    description:
+      'Prepare and send one exact asset transfer from a Freedom wallet. This is a direct Freedom capability, not a webpage interaction. Freedom resolves the recipient, verifies balances, estimates the maximum fee, and always asks the user to approve the exact transfer before signing. If an asset exists on multiple networks, ask the user which network to use and retry with its chainId. If the user declines, do not retry or work around the decision unless they explicitly ask again.',
+    parameters: {
+      type: 'object',
+      properties: {
+        recipient: { type: 'string', minLength: 1, maxLength: 255 },
+        amount: { type: 'string', minLength: 1, maxLength: 80 },
+        asset: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 80,
+          description: 'Configured wallet asset symbol or token contract address.',
+        },
+        chainId: {
+          type: 'integer',
+          minimum: 1,
+          description: 'Exact EVM chain ID. Required when the asset is ambiguous.',
+        },
+        walletIndex: {
+          type: 'integer',
+          minimum: 0,
+          description: 'Freedom wallet account index. Omit to use the active account.',
+        },
+      },
+      required: ['recipient', 'amount', 'asset'],
+      additionalProperties: false,
+    },
+    tabMode: 'none',
+    cancellable: true,
+  },
+  {
     operation: OPERATIONS.WAIT,
     label: 'Wait for page',
     description:
@@ -245,7 +278,8 @@ async function executeCancellable(controller, operation, input, signal, executio
   assertNotAborted(signal, operation);
   if (
     operation === OPERATIONS.DOWNLOAD ||
-    operation === OPERATIONS.UPLOAD
+    operation === OPERATIONS.UPLOAD ||
+    operation === OPERATIONS.WALLET_TRANSFER
   ) {
     return controller.execute(operation, input, { ...execution, signal });
   }

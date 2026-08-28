@@ -1312,10 +1312,14 @@ function renderWalletApproval(request) {
       `${wallet.account?.name || 'Wallet'} · ${shortAddress(wallet.account?.address)}`
     );
   }
-  if (wallet.kind === 'transaction') {
+  if (wallet.kind === 'transaction' || wallet.kind === 'transfer') {
     appendWalletSummary('To', wallet.to);
+    if (wallet.recipientVerification) {
+      appendWalletSummary('Recipient verification', wallet.recipientVerification);
+    }
     appendWalletSummary('Amount', wallet.value);
     appendWalletSummary('Maximum fee', wallet.maxFee);
+    if (wallet.tokenContract) appendWalletSummary('Token contract', wallet.tokenContract);
     if (wallet.data) appendWalletSummary('Contract data', wallet.data);
   } else if (wallet.kind === 'signature') {
     appendWalletSummary(wallet.signatureType || 'Signature', wallet.summary);
@@ -1373,6 +1377,8 @@ function renderApproval(request) {
             ? 'Connect this site to a wallet account?'
             : request.action === 'wallet_transaction'
               ? 'Approve this wallet transaction?'
+              : request.action === 'wallet_transfer'
+                ? 'Send these funds from your Freedom wallet?'
               : request.action === 'wallet_signature'
                 ? 'Approve this wallet signature?'
                 : interactionCopy[request.operation] || `Let Agent interact with “${label}”?`;
@@ -1380,7 +1386,9 @@ function renderApproval(request) {
     request.action === 'file_upload'
       ? `For “${label}” · Freedom shares only the file you choose and never shows Agent its local path.`
       : request.wallet
-        ? 'Requested by the page Agent is controlling. The request is held until you decide.'
+        ? request.wallet.kind === 'transfer'
+          ? 'Prepared directly by Freedom. The exact transfer is held until you decide.'
+          : 'Requested by the page Agent is controlling. The request is held until you decide.'
         : approvalOriginSummary(request);
   elements.approvalApprove.textContent =
     request.action === 'file_upload'
@@ -1390,6 +1398,8 @@ function renderApproval(request) {
           ? 'Sign once'
           : request.wallet.kind === 'transaction'
             ? 'Confirm transaction'
+            : request.wallet.kind === 'transfer'
+              ? 'Send once'
             : 'Connect once'
         : 'Allow once';
   elements.walletApprovalDetails.hidden = true;

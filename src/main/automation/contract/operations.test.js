@@ -128,4 +128,38 @@ describe('automation operation contract', () => {
       })
     ).toThrow('key must be one of');
   });
+
+  test('normalizes and bounds direct wallet transfer intent without a tab', () => {
+    expect(
+      validateOperationInput(OPERATIONS.WALLET_TRANSFER, {
+        recipient: ' meinhard.eth ',
+        amount: ' 0.01 ',
+        asset: ' GNO ',
+        chainId: 100,
+        walletIndex: 2,
+      })
+    ).toEqual({
+      recipient: 'meinhard.eth',
+      amount: '0.01',
+      asset: 'GNO',
+      chainId: 100,
+      walletIndex: 2,
+    });
+    expect(() =>
+      validateOperationInput(OPERATIONS.WALLET_TRANSFER, {
+        recipient: '0x3333333333333333333333333333333333333333',
+        amount: '1',
+        asset: 'ETH',
+        chainId: 0,
+      })
+    ).toThrow('chainId must be a positive integer');
+    expect(() =>
+      validateOperationInput(OPERATIONS.WALLET_TRANSFER, {
+        recipient: '0x3333333333333333333333333333333333333333',
+        amount: '1',
+        asset: 'ETH',
+        walletIndex: -1,
+      })
+    ).toThrow('walletIndex must be a non-negative integer');
+  });
 });

@@ -1887,6 +1887,58 @@ describe('Agent UI', () => {
     );
   });
 
+  test('renders a direct transfer as an exact Freedom-native send decision', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Send 0.01 GNO';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'approval_requested',
+      runId: 'run_test',
+      approvalId: 'approval_transfer',
+      action: 'wallet_transfer',
+      operation: 'wallet_transfer',
+      origin: '',
+      wallet: {
+        kind: 'transfer',
+        chainId: 100,
+        chainName: 'Gnosis',
+        requiresUnlock: false,
+        account: {
+          index: 2,
+          name: 'Ledger',
+          address: '0x1111111111111111111111111111111111111111',
+          type: 'ledger',
+        },
+        to: 'meinhard.eth · 0x3333333333333333333333333333333333333333',
+        value: '0.01 GNO',
+        maxFee: '0.000024 xDAI',
+        tokenContract: '0x4444444444444444444444444444444444444444',
+      },
+    });
+
+    expect(ctx.elements['agent-approval-action'].textContent).toBe(
+      'Send these funds from your Freedom wallet?'
+    );
+    expect(ctx.elements['agent-approval-origin'].textContent).toContain(
+      'Prepared directly by Freedom'
+    );
+    expect(ctx.elements['agent-approval-approve'].textContent).toBe('Send once');
+    const summary = ctx.elements['agent-wallet-approval-summary'].children.map(
+      (child) => child.textContent
+    );
+    expect(summary).toEqual(
+      expect.arrayContaining([
+        'Gnosis',
+        '0.01 GNO',
+        '0.000024 xDAI',
+        '0x4444444444444444444444444444444444444444',
+      ])
+    );
+    expect(summary).not.toContain('Site');
+  });
+
   test('uses Touch ID for an Agent-native wallet approval when quick unlock is enabled', async () => {
     const identityUnlock = jest.fn().mockResolvedValue({ success: true });
     const quickUnlock = jest.fn().mockResolvedValue({

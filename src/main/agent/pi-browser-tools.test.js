@@ -54,6 +54,7 @@ describe('Pi browser tool adapter', () => {
       OPERATIONS.UPLOAD,
       OPERATIONS.DOWNLOAD,
       OPERATIONS.LIST_DOWNLOADS,
+      OPERATIONS.WALLET_TRANSFER,
       OPERATIONS.WAIT,
       OPERATIONS.STOP_LOADING,
     ]);
@@ -341,6 +342,60 @@ describe('Pi browser tool adapter', () => {
         errorCode: ERROR_CODES.DOWNLOAD_CANCELLED_BY_USER,
       })
     );
+  });
+
+  test('executes a direct wallet transfer without attaching a browser tab', async () => {
+    const onToolOutcome = jest.fn();
+    const signal = new AbortController().signal;
+    const controller = {
+      execute: jest.fn(async () => ({
+        ok: true,
+        runtimeId: 'runtime_test',
+        contextId: 'context_test',
+        result: {
+          wallet: {
+            action: 'broadcast',
+            transactionHash: '0xtransaction',
+            paymentId: 'payment_test',
+            chainId: 100,
+            recipient: '0x3333333333333333333333333333333333333333',
+            amount: '0.01',
+            asset: 'GNO',
+          },
+        },
+      })),
+    };
+    const tools = await createFreedomBrowserTools({
+      sdk: createSdk(),
+      controller,
+      tabId: null,
+      onToolOutcome,
+    });
+    const transfer = tools.find((tool) => tool.name === OPERATIONS.WALLET_TRANSFER);
+
+    await transfer.execute(
+      'call_transfer',
+      { recipient: 'meinhard.eth', amount: '0.01', asset: 'GNO', chainId: 100 },
+      signal
+    );
+
+    expect(controller.execute).toHaveBeenCalledWith(
+      OPERATIONS.WALLET_TRANSFER,
+      { recipient: 'meinhard.eth', amount: '0.01', asset: 'GNO', chainId: 100 },
+      expect.objectContaining({ signal })
+    );
+    expect(onToolOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toolCallId: 'call_transfer',
+        operation: OPERATIONS.WALLET_TRANSFER,
+        status: 'succeeded',
+        wallet: expect.objectContaining({
+          transactionHash: '0xtransaction',
+          paymentId: 'payment_test',
+        }),
+      })
+    );
+    expect(JSON.stringify(onToolOutcome.mock.calls)).not.toContain('meinhard.eth');
   });
 
   test('reports only redacted browser metadata in successful progress receipts', async () => {

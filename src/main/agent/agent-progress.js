@@ -81,6 +81,11 @@ const OPERATION_PROGRESS = Object.freeze({
     intent: 'Waiting for a wallet request',
     completed: 'Completed a wallet request',
   },
+  [OPERATIONS.WALLET_TRANSFER]: {
+    effect: ACTIVITY_EFFECTS.CHANGED,
+    intent: 'Preparing a wallet transfer',
+    completed: 'Sent wallet funds',
+  },
   [OPERATIONS.LIST_DOWNLOADS]: {
     effect: ACTIVITY_EFFECTS.OBSERVED,
     intent: 'Checking task downloads',
@@ -182,6 +187,23 @@ function normalizeUpload(value) {
   });
 }
 
+function normalizeWalletReceipt(value) {
+  if (value?.action !== 'broadcast') return null;
+  const transactionHash = boundedString(value.transactionHash, 100);
+  if (!transactionHash) return null;
+  return Object.freeze({
+    action: 'broadcast',
+    transactionHash,
+    ...(boundedString(value.paymentId, 100) && { paymentId: value.paymentId.slice(0, 100) }),
+    ...(Number.isSafeInteger(value.chainId) && value.chainId > 0
+      ? { chainId: value.chainId }
+      : {}),
+    ...(boundedString(value.recipient, 80) && { recipient: value.recipient.slice(0, 80) }),
+    ...(boundedString(value.amount, 100) && { amount: value.amount.slice(0, 100) }),
+    ...(boundedString(value.asset, 80) && { asset: value.asset.slice(0, 80) }),
+  });
+}
+
 function activityProgress(operation, receipt = {}) {
   const copy = OPERATION_PROGRESS[operation] || {
     effect: ACTIVITY_EFFECTS.MANAGED,
@@ -195,6 +217,7 @@ function activityProgress(operation, receipt = {}) {
   let label = copy.completed;
   const artifact = availableArtifact(receipt.artifact);
   const upload = normalizeUpload(receipt.upload);
+  const wallet = normalizeWalletReceipt(receipt.wallet);
 
   if (operation === OPERATIONS.LIST_TABS && pageCount !== null) {
     const pages = `${pageCount} Agent ${pageCount === 1 ? 'tab' : 'tabs'}`;
@@ -206,6 +229,9 @@ function activityProgress(operation, receipt = {}) {
   } else if (operation === OPERATIONS.UPLOAD && upload) {
     intent = `Choosing ${upload.filename}`;
     label = `Attached ${upload.filename}`;
+  } else if (operation === OPERATIONS.WALLET_TRANSFER && wallet) {
+    intent = `Sending ${wallet.amount || 'funds'}${wallet.asset ? ` ${wallet.asset}` : ''}`;
+    label = `Sent ${wallet.amount || 'funds'}${wallet.asset ? ` ${wallet.asset}` : ''}`;
   } else if (origin) {
     const originCopy = {
       [OPERATIONS.CREATE_TAB]: ['Opening', 'Opened'],
@@ -237,6 +263,7 @@ function activityProgress(operation, receipt = {}) {
     ...(pageCount !== null && { pageCount }),
     ...(artifact && { artifact }),
     ...(upload && { upload }),
+    ...(wallet && { wallet }),
   });
 }
 
@@ -259,6 +286,7 @@ function createToolReceipt(operation, options = {}) {
     operation === OPERATIONS.LIST_TABS && Array.isArray(result?.tabs) ? result.tabs.length : null;
   const artifact = availableArtifact(result?.artifact);
   const upload = normalizeUpload(result?.upload);
+  const wallet = normalizeWalletReceipt(result?.wallet);
   const artifacts = Array.isArray(result?.artifacts)
     ? result.artifacts.map(normalizeArtifact).filter(Boolean).slice(0, 100)
     : [];
@@ -269,6 +297,7 @@ function createToolReceipt(operation, options = {}) {
     ...(pageCount !== null && { pageCount }),
     ...(artifact && { artifact }),
     ...(upload && { upload }),
+    ...(wallet && { wallet }),
     ...(artifacts.length && { artifacts }),
   });
 }
@@ -291,16 +320,23 @@ function buildAgentOutcome(activity, status, error) {
   const cancelledUploads = items.filter(
     (item) => item?.errorCode === ERROR_CODES.FILE_UPLOAD_CANCELLED_BY_USER
   );
+  const declinedWalletRequests = items.filter(
+    (item) => item?.errorCode === ERROR_CODES.WALLET_REQUEST_CANCELLED_BY_USER
+  );
   const failed = items.filter(
     (item) =>
       item?.status === 'failed' &&
       item?.errorCode !== ERROR_CODES.DOWNLOAD_CANCELLED_BY_USER &&
-      item?.errorCode !== ERROR_CODES.FILE_UPLOAD_CANCELLED_BY_USER
+      item?.errorCode !== ERROR_CODES.FILE_UPLOAD_CANCELLED_BY_USER &&
+      item?.errorCode !== ERROR_CODES.WALLET_REQUEST_CANCELLED_BY_USER
   );
   const changed = succeeded.filter((item) => normalizedEffect(item) === ACTIVITY_EFFECTS.CHANGED);
   const observed = succeeded.filter((item) => normalizedEffect(item) === ACTIVITY_EFFECTS.OBSERVED);
   const pageIds = new Set(succeeded.map((item) => item?.pageId || item?.origin).filter(Boolean));
   const artifacts = succeeded.map((item) => availableArtifact(item?.artifact)).filter(Boolean);
+  const walletTransfers = succeeded
+    .map((item) => normalizeWalletReceipt(item?.wallet))
+    .filter(Boolean);
   const uncertainChanges = items.filter((item) => {
     if (normalizedEffect(item) !== ACTIVITY_EFFECTS.CHANGED || item?.status === 'succeeded') {
       return false;
@@ -344,6 +380,10 @@ function buildAgentOutcome(activity, status, error) {
     ...(artifacts.length && { artifacts: artifacts.length }),
     ...(cancelledDownloads.length && { cancelledDownloads: cancelledDownloads.length }),
     ...(cancelledUploads.length && { cancelledUploads: cancelledUploads.length }),
+    ...(declinedWalletRequests.length && {
+      declinedWalletRequests: declinedWalletRequests.length,
+    }),
+    ...(walletTransfers.length && { walletTransfers: walletTransfers.length }),
     approvals,
   });
   const browserActionCopy = `${counts.successful} successful browser ${counts.successful === 1 ? 'action' : 'actions'}${counts.pages ? ` across ${counts.pages} ${counts.pages === 1 ? 'page' : 'pages'}` : ''}`;
@@ -396,6 +436,34 @@ function buildAgentOutcome(activity, status, error) {
           cancelledUploads.length === 1
             ? 'You closed the file picker. Freedom did not attach a file.'
             : `You cancelled ${cancelledUploads.length} file selections. Freedom did not attach files for them.`,
+        destinations,
+        counts,
+      });
+    }
+    if (declinedWalletRequests.length) {
+      return Object.freeze({
+        kind: 'completed',
+        verification: 'wallet_declined',
+        tone: 'neutral',
+        headline: 'Wallet request declined',
+        detail:
+          declinedWalletRequests.length === 1
+            ? 'You declined the wallet request. Freedom did not sign or broadcast it.'
+            : `You declined ${declinedWalletRequests.length} wallet requests. Freedom did not sign or broadcast them.`,
+        destinations,
+        counts,
+      });
+    }
+    if (walletTransfers.length) {
+      const wallet = walletTransfers.at(-1);
+      const transfer = `${wallet.amount || 'Funds'}${wallet.asset ? ` ${wallet.asset}` : ''}`;
+      return Object.freeze({
+        kind: 'completed',
+        verification: 'wallet_broadcast',
+        tone: 'success',
+        headline: 'Wallet transfer broadcast',
+        detail: `${transfer} was sent through Freedom Wallet on chain ${wallet.chainId}. Transaction: ${wallet.transactionHash}.`,
+        wallet,
         destinations,
         counts,
       });
@@ -504,4 +572,5 @@ module.exports = {
   errorExplanation,
   normalizeArtifact,
   normalizeUpload,
+  normalizeWalletReceipt,
 };
