@@ -28,6 +28,8 @@ class AutomationController {
     if (options.walletTransferController) {
       this.setWalletTransferController(options.walletTransferController);
     }
+    this.nodeController = null;
+    if (options.nodeController) this.setNodeController(options.nodeController);
   }
 
   setPageLifecycle(pageLifecycle) {
@@ -80,6 +82,17 @@ class AutomationController {
       throw new TypeError('Automation wallet transfer controller requires transfer()');
     }
     this.walletTransferController = walletTransferController;
+  }
+
+  setNodeController(nodeController) {
+    if (nodeController === null) {
+      this.nodeController = null;
+      return;
+    }
+    if (!nodeController || typeof nodeController.status !== 'function') {
+      throw new TypeError('Automation node controller requires status()');
+    }
+    this.nodeController = nodeController;
   }
 
   registerPage(adapter, metadata) {
@@ -262,6 +275,8 @@ class AutomationController {
           requestApproval: execution?.requestApproval,
           signal: execution?.signal,
         });
+      case OPERATIONS.NODE_STATUS:
+        return this.#requireNodeController().status();
       case OPERATIONS.LIST_DOWNLOADS:
         return { artifacts: this.#requireDownloadController().list(execution?.conversationId) };
       case OPERATIONS.SCREENSHOT:
@@ -329,6 +344,16 @@ class AutomationController {
       );
     }
     return this.walletTransferController;
+  }
+
+  #requireNodeController() {
+    if (!this.nodeController) {
+      throw new AutomationError(
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        'Freedom node status is unavailable in this runtime'
+      );
+    }
+    return this.nodeController;
   }
 
   #errorEnvelope(tabId, entry, error) {

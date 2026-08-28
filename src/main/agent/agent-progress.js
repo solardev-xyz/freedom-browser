@@ -86,6 +86,11 @@ const OPERATION_PROGRESS = Object.freeze({
     intent: 'Preparing a wallet transfer',
     completed: 'Sent wallet funds',
   },
+  [OPERATIONS.NODE_STATUS]: {
+    effect: ACTIVITY_EFFECTS.OBSERVED,
+    intent: 'Checking Freedom nodes',
+    completed: 'Checked Freedom nodes',
+  },
   [OPERATIONS.LIST_DOWNLOADS]: {
     effect: ACTIVITY_EFFECTS.OBSERVED,
     intent: 'Checking task downloads',
@@ -204,6 +209,25 @@ function normalizeWalletReceipt(value) {
   });
 }
 
+function normalizeNodeStatusReceipt(value) {
+  if (!value || typeof value !== 'object') return null;
+  const fields = ['total', 'ready', 'active', 'disabled', 'attention'];
+  const normalized = {};
+  for (const field of fields) {
+    if (!Number.isSafeInteger(value[field]) || value[field] < 0 || value[field] > 100) return null;
+    normalized[field] = value[field];
+  }
+  if (
+    normalized.ready > normalized.total ||
+    normalized.active > normalized.total ||
+    normalized.disabled > normalized.total ||
+    normalized.attention > normalized.total
+  ) {
+    return null;
+  }
+  return Object.freeze(normalized);
+}
+
 function activityProgress(operation, receipt = {}) {
   const copy = OPERATION_PROGRESS[operation] || {
     effect: ACTIVITY_EFFECTS.MANAGED,
@@ -218,6 +242,7 @@ function activityProgress(operation, receipt = {}) {
   const artifact = availableArtifact(receipt.artifact);
   const upload = normalizeUpload(receipt.upload);
   const wallet = normalizeWalletReceipt(receipt.wallet);
+  const nodeStatus = normalizeNodeStatusReceipt(receipt.nodeStatus);
 
   if (operation === OPERATIONS.LIST_TABS && pageCount !== null) {
     const pages = `${pageCount} Agent ${pageCount === 1 ? 'tab' : 'tabs'}`;
@@ -232,6 +257,10 @@ function activityProgress(operation, receipt = {}) {
   } else if (operation === OPERATIONS.WALLET_TRANSFER && wallet) {
     intent = `Sending ${wallet.amount || 'funds'}${wallet.asset ? ` ${wallet.asset}` : ''}`;
     label = `Sent ${wallet.amount || 'funds'}${wallet.asset ? ` ${wallet.asset}` : ''}`;
+  } else if (operation === OPERATIONS.NODE_STATUS && nodeStatus) {
+    const services = `${nodeStatus.total} ${nodeStatus.total === 1 ? 'service' : 'services'}`;
+    intent = `Checking ${services}`;
+    label = `Checked ${services}`;
   } else if (origin) {
     const originCopy = {
       [OPERATIONS.CREATE_TAB]: ['Opening', 'Opened'],
@@ -264,6 +293,7 @@ function activityProgress(operation, receipt = {}) {
     ...(artifact && { artifact }),
     ...(upload && { upload }),
     ...(wallet && { wallet }),
+    ...(nodeStatus && { nodeStatus }),
   });
 }
 
@@ -287,6 +317,7 @@ function createToolReceipt(operation, options = {}) {
   const artifact = availableArtifact(result?.artifact);
   const upload = normalizeUpload(result?.upload);
   const wallet = normalizeWalletReceipt(result?.wallet);
+  const nodeStatus = normalizeNodeStatusReceipt(result?.summary);
   const artifacts = Array.isArray(result?.artifacts)
     ? result.artifacts.map(normalizeArtifact).filter(Boolean).slice(0, 100)
     : [];
@@ -298,6 +329,7 @@ function createToolReceipt(operation, options = {}) {
     ...(artifact && { artifact }),
     ...(upload && { upload }),
     ...(wallet && { wallet }),
+    ...(nodeStatus && { nodeStatus }),
     ...(artifacts.length && { artifacts }),
   });
 }
@@ -337,6 +369,11 @@ function buildAgentOutcome(activity, status, error) {
   const walletTransfers = succeeded
     .map((item) => normalizeWalletReceipt(item?.wallet))
     .filter(Boolean);
+  const nodeChecks = succeeded
+    .filter((item) => item?.operation === OPERATIONS.NODE_STATUS)
+    .map((item) => normalizeNodeStatusReceipt(item?.nodeStatus))
+    .filter(Boolean);
+  const browserObserved = observed.filter((item) => item?.operation !== OPERATIONS.NODE_STATUS);
   const uncertainChanges = items.filter((item) => {
     if (normalizedEffect(item) !== ACTIVITY_EFFECTS.CHANGED || item?.status === 'succeeded') {
       return false;
@@ -384,6 +421,7 @@ function buildAgentOutcome(activity, status, error) {
       declinedWalletRequests: declinedWalletRequests.length,
     }),
     ...(walletTransfers.length && { walletTransfers: walletTransfers.length }),
+    ...(nodeChecks.length && { nodeChecks: nodeChecks.length }),
     approvals,
   });
   const browserActionCopy = `${counts.successful} successful browser ${counts.successful === 1 ? 'action' : 'actions'}${counts.pages ? ` across ${counts.pages} ${counts.pages === 1 ? 'page' : 'pages'}` : ''}`;
@@ -468,6 +506,23 @@ function buildAgentOutcome(activity, status, error) {
         counts,
       });
     }
+    if (nodeChecks.length && !changed.length && !browserObserved.length) {
+      const nodeStatus = nodeChecks.at(-1);
+      const readiness = `${nodeStatus.ready} ready, ${nodeStatus.disabled} disabled`;
+      const attention = nodeStatus.attention
+        ? `, ${nodeStatus.attention} ${nodeStatus.attention === 1 ? 'needs' : 'need'} attention`
+        : '';
+      return Object.freeze({
+        kind: 'completed',
+        verification: 'nodes_inspected',
+        tone: nodeStatus.attention ? 'caution' : 'success',
+        headline: 'Node status checked',
+        detail: `Freedom checked ${nodeStatus.total} integrated services: ${readiness}${attention}.`,
+        nodeStatus,
+        destinations,
+        counts,
+      });
+    }
     if (resultObserved) {
       return Object.freeze({
         kind: 'completed',
@@ -490,7 +545,7 @@ function buildAgentOutcome(activity, status, error) {
         counts,
       });
     }
-    if (observed.length) {
+    if (browserObserved.length) {
       return Object.freeze({
         kind: 'completed',
         verification: 'browser_observed',
@@ -580,6 +635,7 @@ module.exports = {
   createToolReceipt,
   errorExplanation,
   normalizeArtifact,
+  normalizeNodeStatusReceipt,
   normalizeUpload,
   normalizeWalletReceipt,
 };

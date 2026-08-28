@@ -183,6 +183,14 @@ const TOOL_SPECS = Object.freeze([
     tabMode: 'none',
   },
   {
+    operation: OPERATIONS.NODE_STATUS,
+    label: 'Check Freedom nodes',
+    description:
+      'Inspect the current safe lifecycle and readiness state of Freedom’s integrated Swarm, IPFS, Radicle, Tor, and Myotis services. This read-only tool cannot start, stop, configure, fund, or reset a node.',
+    parameters: EMPTY_PARAMETERS,
+    tabMode: 'none',
+  },
+  {
     operation: OPERATIONS.WALLET_TRANSFER,
     label: 'Send wallet funds',
     description:

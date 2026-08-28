@@ -175,6 +175,54 @@ describe('Agent progress projection', () => {
     });
   });
 
+  test('projects only a bounded node summary and reports node-specific completion', () => {
+    const receipt = createToolReceipt(OPERATIONS.NODE_STATUS, {
+      envelope: {
+        ok: true,
+        result: {
+          summary: { total: 6, ready: 3, active: 4, disabled: 1, attention: 2 },
+          nodes: [
+            {
+              id: 'ipfs',
+              state: 'error',
+              endpoint: 'http://127.0.0.1:secret',
+              error: 'private daemon failure',
+            },
+          ],
+        },
+      },
+    });
+
+    expect(receipt).toEqual({
+      nodeStatus: { total: 6, ready: 3, active: 4, disabled: 1, attention: 2 },
+    });
+    expect(JSON.stringify(receipt)).not.toMatch(/endpoint|secret|daemon|nodes/);
+    expect(activityProgress(OPERATIONS.NODE_STATUS, receipt)).toMatchObject({
+      intent: 'Checking 6 services',
+      label: 'Checked 6 services',
+      effect: 'observed',
+    });
+    expect(
+      buildAgentOutcome(
+        [
+          {
+            operation: OPERATIONS.NODE_STATUS,
+            status: 'succeeded',
+            effect: 'observed',
+            nodeStatus: receipt.nodeStatus,
+          },
+        ],
+        'completed'
+      )
+    ).toMatchObject({
+      verification: 'nodes_inspected',
+      tone: 'caution',
+      headline: 'Node status checked',
+      detail: 'Freedom checked 6 integrated services: 3 ready, 1 disabled, 2 need attention.',
+      counts: { nodeChecks: 1, pages: 0 },
+    });
+  });
+
   test('treats a declined wallet request as a final user decision, not a failure', () => {
     expect(
       buildAgentOutcome(

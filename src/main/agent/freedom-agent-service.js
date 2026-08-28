@@ -19,6 +19,7 @@ const {
   activityProgress,
   buildAgentOutcome,
   normalizeArtifact,
+  normalizeNodeStatusReceipt,
   normalizeUpload,
   normalizeWalletReceipt,
 } = require('./agent-progress');
@@ -209,6 +210,7 @@ function normalizePiEvent(event, toolOutcome) {
       ...(toolOutcome?.artifact && { artifact: toolOutcome.artifact }),
       ...(toolOutcome?.upload && { upload: toolOutcome.upload }),
       ...(toolOutcome?.wallet && { wallet: toolOutcome.wallet }),
+      ...(toolOutcome?.nodeStatus && { nodeStatus: toolOutcome.nodeStatus }),
       ...(toolOutcome?.artifacts && { artifacts: toolOutcome.artifacts }),
       ...(errorCode && { errorCode }),
     };
@@ -1095,6 +1097,7 @@ class FreedomAgentService {
         if (normalized.artifact) item.artifact = normalized.artifact;
         if (normalized.upload) item.upload = normalized.upload;
         if (normalized.wallet) item.wallet = normalized.wallet;
+        if (normalized.nodeStatus) item.nodeStatus = normalized.nodeStatus;
         if (normalized.artifacts) item.artifacts = normalized.artifacts;
         if (item.approval) normalized.approval = item.approval;
       }
@@ -1126,6 +1129,9 @@ class FreedomAgentService {
       ...(normalizeWalletReceipt(outcome.wallet) && {
         wallet: normalizeWalletReceipt(outcome.wallet),
       }),
+      ...(normalizeNodeStatusReceipt(outcome.nodeStatus) && {
+        nodeStatus: normalizeNodeStatusReceipt(outcome.nodeStatus),
+      }),
       ...(Array.isArray(outcome.artifacts) && {
         artifacts: outcome.artifacts.map(normalizeArtifact).filter(Boolean).slice(0, 100),
       }),
@@ -1136,6 +1142,7 @@ class FreedomAgentService {
         artifact: outcome.artifact,
         upload: outcome.upload,
         wallet: outcome.wallet,
+        nodeStatus: outcome.nodeStatus,
       }),
     });
     run.toolOutcomes.set(normalized.toolCallId, normalized);

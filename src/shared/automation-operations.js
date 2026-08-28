@@ -16,6 +16,7 @@ const OPERATIONS = Object.freeze({
   DOWNLOAD: 'browser_download',
   WALLET_ACTION: 'browser_wallet_action',
   WALLET_TRANSFER: 'wallet_transfer',
+  NODE_STATUS: 'node_status',
   LIST_DOWNLOADS: 'browser_list_downloads',
   SCREENSHOT: 'browser_screenshot',
   WAIT: 'browser_wait',

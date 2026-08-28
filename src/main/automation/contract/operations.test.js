@@ -162,4 +162,8 @@ describe('automation operation contract', () => {
       })
     ).toThrow('walletIndex must be a non-negative integer');
   });
+
+  test('normalizes read-only node status without a browser tab', () => {
+    expect(validateOperationInput(OPERATIONS.NODE_STATUS, {})).toEqual({});
+  });
 });

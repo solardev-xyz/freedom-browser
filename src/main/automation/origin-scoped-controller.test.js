@@ -1080,4 +1080,21 @@ describe('OriginScopedAutomationController', () => {
       requestApproval,
     });
   });
+
+  test('allows read-only node inspection from an empty browser workspace', async () => {
+    const controller = createController();
+    const scoped = await createOriginScopedAutomationController({
+      controller,
+      tabId: null,
+      transferOwnerId: 'conversation_test',
+    });
+
+    await scoped.execute(OPERATIONS.NODE_STATUS, {});
+
+    expect(controller.execute).toHaveBeenLastCalledWith(
+      OPERATIONS.NODE_STATUS,
+      {},
+      { conversationId: 'conversation_test' }
+    );
+  });
 });

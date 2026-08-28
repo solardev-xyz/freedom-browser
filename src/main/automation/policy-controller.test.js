@@ -10,4 +10,11 @@ describe('AutomationPolicyController', () => {
       createInitialAutomationPolicy().authorize({ operation: OPERATIONS.WALLET_ACTION })
     ).resolves.toEqual({ allowed: true, operationClass: 'interact' });
   });
+
+  test('classifies node status as read-only observation', async () => {
+    expect(OPERATION_CLASSES[OPERATIONS.NODE_STATUS]).toBe('observe');
+    await expect(
+      createInitialAutomationPolicy().authorize({ operation: OPERATIONS.NODE_STATUS })
+    ).resolves.toEqual({ allowed: true, operationClass: 'observe' });
+  });
 });

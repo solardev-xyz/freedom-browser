@@ -24,6 +24,7 @@ const ORIGIN_SCOPED_OPERATIONS = new Set([
   OPERATIONS.DOWNLOAD,
   OPERATIONS.WALLET_ACTION,
   OPERATIONS.WALLET_TRANSFER,
+  OPERATIONS.NODE_STATUS,
   OPERATIONS.LIST_DOWNLOADS,
   OPERATIONS.WAIT,
   OPERATIONS.STOP_LOADING,
@@ -172,6 +173,9 @@ class OriginScopedAutomationController {
 
     if (operation === OPERATIONS.LIST_TABS) return this.#listOwnedTabs();
     if (operation === OPERATIONS.LIST_DOWNLOADS) {
+      return this.#executeController(operation, input, execution);
+    }
+    if (operation === OPERATIONS.NODE_STATUS) {
       return this.#executeController(operation, input, execution);
     }
     if (operation === OPERATIONS.WALLET_TRANSFER) {

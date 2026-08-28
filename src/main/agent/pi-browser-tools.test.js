@@ -54,6 +54,7 @@ describe('Pi browser tool adapter', () => {
       OPERATIONS.UPLOAD,
       OPERATIONS.DOWNLOAD,
       OPERATIONS.LIST_DOWNLOADS,
+      OPERATIONS.NODE_STATUS,
       OPERATIONS.WALLET_TRANSFER,
       OPERATIONS.WAIT,
       OPERATIONS.STOP_LOADING,
@@ -396,6 +397,51 @@ describe('Pi browser tool adapter', () => {
       })
     );
     expect(JSON.stringify(onToolOutcome.mock.calls)).not.toContain('meinhard.eth');
+  });
+
+  test('inspects safe node status without attaching a browser tab', async () => {
+    const onToolOutcome = jest.fn();
+    const result = {
+      nodes: [
+        {
+          id: 'ant',
+          name: 'Swarm',
+          implementation: 'Ant',
+          protocols: ['bzz'],
+          state: 'running',
+          mode: 'bundled',
+          running: true,
+          ready: true,
+        },
+      ],
+      summary: { total: 1, ready: 1, active: 1, disabled: 0, attention: 0 },
+    };
+    const controller = {
+      execute: jest.fn(async () => ({
+        ok: true,
+        runtimeId: 'runtime_test',
+        contextId: 'context_test',
+        result,
+      })),
+    };
+    const tools = await createFreedomBrowserTools({
+      sdk: createSdk(),
+      controller,
+      tabId: null,
+      onToolOutcome,
+    });
+    const status = tools.find((tool) => tool.name === OPERATIONS.NODE_STATUS);
+
+    const response = await status.execute('call_nodes', {});
+
+    expect(controller.execute).toHaveBeenCalledWith(OPERATIONS.NODE_STATUS, {});
+    expect(JSON.parse(response.content[0].text).result).toEqual(result);
+    expect(onToolOutcome).toHaveBeenCalledWith({
+      toolCallId: 'call_nodes',
+      operation: OPERATIONS.NODE_STATUS,
+      status: 'succeeded',
+      nodeStatus: result.summary,
+    });
   });
 
   test('reports only redacted browser metadata in successful progress receipts', async () => {

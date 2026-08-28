@@ -997,6 +997,61 @@ describe('Agent UI', () => {
     expect(turn.querySelector('.agent-turn-activity').hidden).toBe(true);
   });
 
+  test('shows node diagnostics as node evidence rather than browser evidence', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'How are my nodes doing?';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({
+      type: 'run_started',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      userText: 'How are my nodes doing?',
+    });
+    ctx.emit({
+      type: 'tool_started',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      toolCallId: 'tool_node_status',
+      operation: 'node_status',
+      intent: 'Checking Freedom nodes',
+      label: 'Checked Freedom nodes',
+    });
+    ctx.emit({
+      type: 'tool_finished',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      toolCallId: 'tool_node_status',
+      operation: 'node_status',
+      status: 'succeeded',
+      label: 'Checked 6 services',
+    });
+    ctx.emit({
+      type: 'run_finished',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      status: 'completed',
+      durationMs: 2_000,
+      actionCount: 1,
+      outcome: {
+        kind: 'completed',
+        verification: 'nodes_inspected',
+        tone: 'caution',
+        headline: 'Node status checked',
+        detail: 'Freedom checked 6 integrated services: 3 ready, 1 disabled, 2 need attention.',
+      },
+    });
+
+    const turn = ctx.elements['agent-transcript'].children[0];
+    const outcome = turn.querySelector('.agent-turn-outcome');
+    expect(outcome.hidden).toBe(false);
+    expect(outcome.classList.contains('caution')).toBe(true);
+    expect(outcome.children[1].children[0].textContent).toBe('Node status checked');
+    expect(turn.querySelector('.agent-turn-activity').children[0].textContent).toBe(
+      'Worked for 2s · 1 action · Node status checked'
+    );
+  });
+
   test('explains partial failure and does not present an unsafe blind retry', async () => {
     const ctx = await loadAgentUi();
     ctx.elements['agent-prompt'].value = 'Submit the application';

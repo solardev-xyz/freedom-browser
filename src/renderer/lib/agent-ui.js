@@ -1553,6 +1553,7 @@ function outcomeSummaryLabel(outcome) {
   if (outcome?.verification === 'result_observed') return 'Result checked';
   if (outcome?.verification === 'actions_recorded') return 'Actions recorded';
   if (outcome?.verification === 'browser_observed') return 'Browser inspected';
+  if (outcome?.verification === 'nodes_inspected') return 'Node status checked';
   if (outcome?.verification === 'model_only') return 'Agent reported';
   if (outcome?.kind === 'recovery') return 'Needs recovery';
   if (outcome?.kind === 'interrupted') return 'Stopped';

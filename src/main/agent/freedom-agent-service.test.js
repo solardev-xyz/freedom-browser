@@ -1144,6 +1144,53 @@ describe('FreedomAgentService', () => {
     expect(service.getState()).toMatchObject({ status: 'ready' });
   });
 
+  test('retains only the safe node summary for progress and completion evidence', async () => {
+    const fake = createFakeSession();
+    const { service, dependencies } = createService(fake);
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+
+    fake.emit({
+      type: 'tool_execution_start',
+      toolCallId: 'call_nodes',
+      toolName: OPERATIONS.NODE_STATUS,
+      args: {},
+    });
+    dependencies.createTools.mock.calls[0][0].onToolOutcome({
+      toolCallId: 'call_nodes',
+      operation: OPERATIONS.NODE_STATUS,
+      status: 'succeeded',
+      nodeStatus: { total: 6, ready: 2, active: 3, disabled: 1, attention: 1 },
+      nodes: [{ endpoint: 'http://private.test', error: 'secret' }],
+    });
+    fake.emit({
+      type: 'tool_execution_end',
+      toolCallId: 'call_nodes',
+      toolName: OPERATIONS.NODE_STATUS,
+      result: { content: [{ type: 'text', text: 'node details for the model' }] },
+      isError: false,
+    });
+    fake.prompt.resolve();
+    await service.waitForIdle();
+
+    expect(events.find((event) => event.type === 'tool_finished')).toMatchObject({
+      operation: OPERATIONS.NODE_STATUS,
+      status: 'succeeded',
+      label: 'Checked 6 services',
+      nodeStatus: { total: 6, ready: 2, active: 3, disabled: 1, attention: 1 },
+    });
+    expect(events.at(-1)).toMatchObject({
+      type: 'run_finished',
+      outcome: {
+        verification: 'nodes_inspected',
+        headline: 'Node status checked',
+        counts: { nodeChecks: 1 },
+      },
+    });
+    expect(JSON.stringify(events)).not.toMatch(/private\.test|secret/);
+  });
+
   test('projects user-cancelled downloads without promoting an incomplete receipt', async () => {
     const fake = createFakeSession();
     const { service, dependencies } = createService(fake);

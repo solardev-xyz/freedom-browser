@@ -48,6 +48,7 @@ const EXPECTED_TOOL_NAMES = Object.freeze([
   'browser_download',
   'browser_list_downloads',
   'wallet_transfer',
+  'node_status',
   'browser_wait',
   'browser_stop_loading',
 ]);
@@ -62,6 +63,7 @@ let observedDownloadArtifact = null;
 let observedUploadReceipt = null;
 let observedWalletReceipts = [];
 let observedDirectWalletReceipt = null;
+let observedNodeStatus = null;
 const operations = [];
 
 function completionChunk({ delta = {}, finishReason = null, usage }) {
@@ -606,6 +608,22 @@ async function handleCompletion(request, response) {
     return;
   }
 
+  if (hasUserMarker(messages, 'PRODUCT_NODE_STATUS')) {
+    if (toolResults.length === 0) {
+      emitToolCall(response, 1, 'node_status', {});
+    } else {
+      observedNodeStatus =
+        toolEnvelopes(messages).find((envelope) => Array.isArray(envelope?.result?.nodes))?.result ||
+        null;
+      const summary = observedNodeStatus?.summary;
+      emitFinal(
+        response,
+        `Checked ${summary?.total || 0} Freedom services: ${summary?.ready || 0} ready, ${summary?.disabled || 0} disabled, and ${summary?.attention || 0} need attention.`
+      );
+    }
+    return;
+  }
+
   emitFinal(response, 'Qualification task marker missing.');
 }
 
@@ -644,6 +662,7 @@ test.beforeEach(() => {
   observedUploadReceipt = null;
   observedWalletReceipts = [];
   observedDirectWalletReceipt = null;
+  observedNodeStatus = null;
   operations.length = 0;
 });
 
@@ -1622,4 +1641,41 @@ test('privileged capability: direct wallet transfer needs exact approval and no 
     'Wallet transfer broadcast'
   );
   expect(operations).toEqual(['wallet_transfer']);
+});
+
+test('node intelligence: reports redacted integrated-service status without a browser tab', async ({
+  window,
+}) => {
+  await configureFixtureProvider(window);
+
+  await runTask(window, 'PRODUCT_NODE_STATUS: check the health of all Freedom nodes.');
+
+  const result = await recordQualification(window, 'agent-node-status', CLASSIFICATION.PASS, {
+    nodeStatus: observedNodeStatus,
+  });
+  expect(result.advertisedTools).toEqual([...EXPECTED_TOOL_NAMES].sort());
+  expect(result.nodeStatus).toMatchObject({
+    summary: {
+      total: 6,
+      ready: expect.any(Number),
+      active: expect.any(Number),
+      disabled: expect.any(Number),
+      attention: expect.any(Number),
+    },
+    nodes: expect.arrayContaining([
+      expect.objectContaining({ id: 'ant', name: 'Swarm', implementation: 'Ant' }),
+      expect.objectContaining({ id: 'ipfs', name: 'IPFS', implementation: 'Freedom IPFS' }),
+      expect.objectContaining({ id: 'radicle', name: 'Radicle' }),
+      expect.objectContaining({ id: 'tor', name: 'Tor' }),
+      expect.objectContaining({ id: 'myotis-ethereum', chainId: 1 }),
+      expect.objectContaining({ id: 'myotis-gnosis', chainId: 100 }),
+    ]),
+  });
+  expect(result.nodeStatus.nodes).toHaveLength(6);
+  expect(JSON.stringify(result.nodeStatus)).not.toMatch(
+    /endpoint|port|path|pid|config|raw|log|errorMessage|stack/i
+  );
+  expect(result.assistantOutput).toContain('Checked 6 Freedom services');
+  await expect(window.locator('.agent-turn-outcome').last()).toContainText('Node status checked');
+  expect(operations).toEqual(['node_status']);
 });

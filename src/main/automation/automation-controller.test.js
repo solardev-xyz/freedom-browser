@@ -285,6 +285,27 @@ describe('AutomationController', () => {
     );
   });
 
+  test('routes node inspection through a read-only main-process boundary', async () => {
+    const { controller, authorize } = createController();
+    const status = jest.fn(async () => ({
+      nodes: [{ id: 'ant', state: 'running', ready: true }],
+      summary: { total: 1, ready: 1, active: 1, disabled: 0, attention: 0 },
+    }));
+    controller.setNodeController({ status });
+
+    await expect(controller.execute(OPERATIONS.NODE_STATUS)).resolves.toMatchObject({
+      ok: true,
+      result: {
+        nodes: [{ id: 'ant', state: 'running', ready: true }],
+        summary: { total: 1, ready: 1 },
+      },
+    });
+    expect(authorize).toHaveBeenCalledWith(
+      expect.objectContaining({ operation: OPERATIONS.NODE_STATUS, input: {}, tab: null })
+    );
+    expect(status).toHaveBeenCalledTimes(1);
+  });
+
   test('does not echo an unvalidated tab ID into error envelopes', async () => {
     const { controller } = createController();
     const failure = await controller.execute(OPERATIONS.SNAPSHOT, {
