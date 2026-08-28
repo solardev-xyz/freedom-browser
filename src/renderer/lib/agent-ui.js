@@ -1261,8 +1261,11 @@ function restoreTranscript(transcript = []) {
 function clearApproval() {
   pendingApproval = null;
   elements.approval.hidden = true;
+  elements.approval.classList.remove('diagnostic-approval');
   elements.composer.classList.remove('approval-pending');
   elements.approvalApprove.textContent = 'Allow once';
+  elements.approvalApprove.classList.add('primary');
+  elements.approvalApprove.classList.remove('secondary');
   elements.approvalAllowConversation.hidden = true;
   elements.walletApprovalDetails.hidden = true;
   elements.walletApprovalSummary.replaceChildren();
@@ -1369,6 +1372,7 @@ function renderApproval(request) {
     browser_press: `Let Agent press a key on “${label}”?`,
   };
   const diagnostic = request.diagnostic;
+  elements.approval.classList.toggle('diagnostic-approval', Boolean(diagnostic));
   const diagnosticSubject =
     diagnostic?.scope === 'node' ? `${diagnostic.service} node` : 'Freedom application';
   elements.approvalAction.textContent = diagnostic
@@ -1412,6 +1416,8 @@ function renderApproval(request) {
               ? 'Send once'
             : 'Connect once'
         : 'Allow once';
+  elements.approvalApprove.classList.toggle('primary', !diagnostic);
+  elements.approvalApprove.classList.toggle('secondary', Boolean(diagnostic));
   elements.walletApprovalDetails.hidden = true;
   elements.walletUnlock.hidden = true;
   elements.approvalAllowConversation.hidden = !diagnostic;

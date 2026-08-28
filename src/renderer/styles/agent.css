@@ -2014,6 +2014,31 @@ body.agent-first-mode .agent-composer textarea {
   gap: 7px;
 }
 
+.agent-approval.diagnostic-approval .agent-approval-footer {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+}
+
+.agent-approval.diagnostic-approval .agent-approval-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  order: 1;
+  width: 100%;
+}
+
+.agent-approval.diagnostic-approval .agent-approval-allow-conversation {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  min-height: 38px;
+}
+
+.agent-approval.diagnostic-approval .agent-approval-status {
+  order: 2;
+  width: 100%;
+  flex: none;
+}
+
 .agent-approval-button {
   min-height: 32px;
   padding: 6px 12px;

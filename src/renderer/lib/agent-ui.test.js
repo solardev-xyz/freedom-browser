@@ -1872,6 +1872,9 @@ describe('Agent UI', () => {
     );
     expect(ctx.elements['agent-approval-origin'].textContent).toContain('local paths');
     expect(ctx.elements['agent-approval-approve'].textContent).toBe('Share once');
+    expect(ctx.elements['agent-approval'].classList.contains('diagnostic-approval')).toBe(true);
+    expect(ctx.elements['agent-approval-approve'].classList.contains('secondary')).toBe(true);
+    expect(ctx.elements['agent-approval-approve'].classList.contains('primary')).toBe(false);
     expect(ctx.elements['agent-approval-allow-conversation'].hidden).toBe(false);
 
     ctx.elements['agent-approval-allow-conversation'].dispatch('click');
