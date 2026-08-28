@@ -93,8 +93,8 @@ const OPERATION_PROGRESS = Object.freeze({
   },
   [OPERATIONS.NODE_REQUEST]: {
     effect: ACTIVITY_EFFECTS.MANAGED,
-    intent: 'Requesting the Ant node',
-    completed: 'Requested the Ant node',
+    intent: 'Requesting a Freedom node',
+    completed: 'Requested a Freedom node',
   },
   [OPERATIONS.NODE_DIAGNOSTICS]: {
     effect: ACTIVITY_EFFECTS.OBSERVED,
@@ -282,7 +282,7 @@ function normalizeNodeRequestReceipt(value) {
     'unknown',
   ]);
   if (
-    service !== 'ant' ||
+    !['ant', 'radicle', 'ipfs'].includes(service) ||
     !method ||
     !path ||
     !effects.has(value.effect) ||
@@ -656,7 +656,7 @@ function buildAgentOutcome(activity, status, error) {
         verification: 'node_response_received',
         tone: nodeRequest.status >= 400 ? 'caution' : 'success',
         headline: 'Node request completed',
-        detail: `Ant returned HTTP ${nodeRequest.status} for ${nodeRequest.method} ${nodeRequest.path}. Freedom classified its effect as ${nodeRequest.effect.replaceAll('_', ' ')}.`,
+        detail: `${nodeRequest.service} returned ${nodeRequest.status} for ${nodeRequest.method} ${nodeRequest.path}. Freedom classified its effect as ${nodeRequest.effect.replaceAll('_', ' ')}.`,
         nodeRequest,
         destinations,
         counts,

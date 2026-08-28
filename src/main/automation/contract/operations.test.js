@@ -149,8 +149,35 @@ describe('automation operation contract', () => {
     });
   });
 
+  test('normalizes Radicle HTTP and native IPFS gateway requests', () => {
+    expect(
+      validateOperationInput(OPERATIONS.NODE_REQUEST, {
+        service: 'radicle',
+        transport: 'http',
+        request: { method: 'GET', path: '/api/v1/repos' },
+      })
+    ).toEqual({
+      service: 'radicle',
+      transport: 'http',
+      request: { method: 'GET', path: '/api/v1/repos' },
+    });
+    expect(
+      validateOperationInput(OPERATIONS.NODE_REQUEST, {
+        service: 'ipfs',
+        transport: 'gateway',
+        request: { method: 'HEAD', path: '/ipfs/bafy-test' },
+      })
+    ).toEqual({
+      service: 'ipfs',
+      transport: 'gateway',
+      request: { method: 'HEAD', path: '/ipfs/bafy-test' },
+    });
+  });
+
   test.each([
-    ['another service', { service: 'ipfs', transport: 'http', request: { method: 'GET', path: '/' } }],
+    ['wrong IPFS transport', { service: 'ipfs', transport: 'http', request: { method: 'GET', path: '/' } }],
+    ['mutating IPFS gateway request', { service: 'ipfs', transport: 'gateway', request: { method: 'POST', path: '/ipfs/bafy' } }],
+    ['unsupported service', { service: 'tor', transport: 'http', request: { method: 'GET', path: '/' } }],
     ['absolute URL', { service: 'ant', transport: 'http', request: { method: 'GET', path: 'https://evil.test/' } }],
     ['authority path', { service: 'ant', transport: 'http', request: { method: 'GET', path: '//evil.test/' } }],
     ['authorization header', { service: 'ant', transport: 'http', request: { method: 'GET', path: '/', headers: { authorization: 'secret' } } }],

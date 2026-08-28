@@ -1421,8 +1421,9 @@ function renderApproval(request) {
   elements.approval.classList.toggle('diagnostic-approval', Boolean(diagnostic));
   const diagnosticSubject =
     diagnostic?.scope === 'node' ? `${diagnostic.service} node` : 'Freedom application';
+  const nodeLabels = { ant: 'Ant', radicle: 'Radicle', ipfs: 'IPFS' };
   elements.approvalAction.textContent = nodeRequest
-    ? `Allow this ${nodeRequest.service === 'ant' ? 'Ant' : nodeRequest.service} node request?`
+    ? `Allow this ${nodeLabels[nodeRequest.service] || nodeRequest.service} node request?`
     : diagnostic
     ? `Share recent ${diagnosticSubject} diagnostics with ${diagnostic.providerLabel}?`
     : request.action === 'form_submission'

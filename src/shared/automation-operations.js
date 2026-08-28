@@ -18,6 +18,7 @@ const OPERATIONS = Object.freeze({
   WALLET_TRANSFER: 'wallet_transfer',
   NODE_STATUS: 'node_status',
   NODE_REQUEST: 'node_request',
+  NODE_LIFECYCLE: 'node_lifecycle',
   NODE_DIAGNOSTICS: 'node_diagnostics',
   APP_DIAGNOSTICS: 'app_diagnostics',
   LIST_DOWNLOADS: 'browser_list_downloads',
@@ -33,6 +34,15 @@ const DEFAULT_DIAGNOSTIC_MAX_BYTES = 49_152;
 const MAX_DIAGNOSTIC_BYTES = 65_536;
 const MAX_NODE_REQUEST_BODY_BYTES = 65_536;
 const MAX_NODE_RESPONSE_BYTES = 65_536;
+const NODE_REQUEST_SERVICES = Object.freeze(['ant', 'radicle', 'ipfs']);
+const NODE_LIFECYCLE_SERVICES = Object.freeze([
+  'ant',
+  'ipfs',
+  'radicle',
+  'tor',
+  'myotis-ethereum',
+  'myotis-gnosis',
+]);
 const DIAGNOSTIC_SERVICES = Object.freeze([
   'ant',
   'ipfs',
@@ -52,5 +62,7 @@ module.exports = {
   MAX_NODE_REQUEST_BODY_BYTES,
   MAX_NODE_RESPONSE_BYTES,
   MAX_WAIT_TIMEOUT_MS,
+  NODE_LIFECYCLE_SERVICES,
+  NODE_REQUEST_SERVICES,
   OPERATIONS,
 };

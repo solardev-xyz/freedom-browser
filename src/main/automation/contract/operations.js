@@ -11,6 +11,8 @@ const {
   MAX_NODE_REQUEST_BODY_BYTES,
   MAX_NODE_RESPONSE_BYTES,
   MAX_WAIT_TIMEOUT_MS,
+  NODE_LIFECYCLE_SERVICES,
+  NODE_REQUEST_SERVICES,
   OPERATIONS,
 } = require('../../../shared/automation-operations');
 
@@ -54,6 +56,10 @@ const PRESS_KEY_SET = new Set(PRESS_KEYS);
 const DIAGNOSTIC_SERVICE_SET = new Set(DIAGNOSTIC_SERVICES);
 const NODE_REQUEST_METHODS = Object.freeze(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE']);
 const NODE_REQUEST_METHOD_SET = new Set(NODE_REQUEST_METHODS);
+const NODE_REQUEST_SERVICE_SET = new Set(NODE_REQUEST_SERVICES);
+const NODE_LIFECYCLE_SERVICE_SET = new Set(NODE_LIFECYCLE_SERVICES);
+const NODE_LIFECYCLE_ACTIONS = Object.freeze(['start', 'stop', 'restart']);
+const NODE_LIFECYCLE_ACTION_SET = new Set(NODE_LIFECYCLE_ACTIONS);
 const NODE_REQUEST_HEADER_NAME = /^[a-z0-9][a-z0-9-]*$/;
 const BLOCKED_NODE_REQUEST_HEADERS = new Set([
   'authorization',
@@ -224,19 +230,27 @@ function validateOperationInput(operation, rawInput) {
 
   if (operation === OPERATIONS.NODE_REQUEST) {
     normalized.service = requireString(input.service, 'service').trim();
-    if (normalized.service !== 'ant') {
-      throw invalidArgument('service must be ant for the initial node request capability', {
+    if (!NODE_REQUEST_SERVICE_SET.has(normalized.service)) {
+      throw invalidArgument(`service must be one of: ${NODE_REQUEST_SERVICES.join(', ')}`, {
         field: 'service',
       });
     }
     normalized.transport = requireString(input.transport, 'transport').trim();
-    if (normalized.transport !== 'http') {
-      throw invalidArgument('transport must be http', { field: 'transport' });
+    const expectedTransport = normalized.service === 'ipfs' ? 'gateway' : 'http';
+    if (normalized.transport !== expectedTransport) {
+      throw invalidArgument(`transport must be ${expectedTransport} for ${normalized.service}`, {
+        field: 'transport',
+      });
     }
     const request = requireObject(input.request);
     const method = requireString(request.method, 'request.method').trim().toUpperCase();
     if (!NODE_REQUEST_METHOD_SET.has(method)) {
       throw invalidArgument(`request.method must be one of: ${NODE_REQUEST_METHODS.join(', ')}`, {
+        field: 'request.method',
+      });
+    }
+    if (normalized.service === 'ipfs' && !['GET', 'HEAD'].includes(method)) {
+      throw invalidArgument('IPFS native gateway requests support only GET and HEAD', {
         field: 'request.method',
       });
     }
@@ -307,6 +321,21 @@ function validateOperationInput(operation, rawInput) {
     };
   }
 
+  if (operation === OPERATIONS.NODE_LIFECYCLE) {
+    normalized.service = requireString(input.service, 'service').trim();
+    if (!NODE_LIFECYCLE_SERVICE_SET.has(normalized.service)) {
+      throw invalidArgument(`service must be one of: ${NODE_LIFECYCLE_SERVICES.join(', ')}`, {
+        field: 'service',
+      });
+    }
+    normalized.action = requireString(input.action, 'action').trim();
+    if (!NODE_LIFECYCLE_ACTION_SET.has(normalized.action)) {
+      throw invalidArgument(`action must be one of: ${NODE_LIFECYCLE_ACTIONS.join(', ')}`, {
+        field: 'action',
+      });
+    }
+  }
+
   if (operation === OPERATIONS.NODE_DIAGNOSTICS || operation === OPERATIONS.APP_DIAGNOSTICS) {
     if (operation === OPERATIONS.NODE_DIAGNOSTICS) {
       normalized.service = requireString(input.service, 'service').trim();
@@ -351,7 +380,10 @@ module.exports = {
   MAX_NODE_REQUEST_BODY_BYTES,
   MAX_NODE_RESPONSE_BYTES,
   MAX_WAIT_TIMEOUT_MS,
+  NODE_LIFECYCLE_ACTIONS,
+  NODE_LIFECYCLE_SERVICES,
   NODE_REQUEST_METHODS,
+  NODE_REQUEST_SERVICES,
   OPERATIONS,
   PRESS_KEYS,
   validateOperationInput,

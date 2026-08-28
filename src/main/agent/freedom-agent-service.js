@@ -319,7 +319,8 @@ function normalizeApprovalRequest(request, recipient) {
 
 function normalizeNodeRequestApproval(value, recipient = {}) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  if (value.service !== 'ant' || value.transport !== 'http') return null;
+  const transports = { ant: 'http', radicle: 'http', ipfs: 'gateway' };
+  if (!transports[value.service] || value.transport !== transports[value.service]) return null;
   const request = value.request;
   if (!request || typeof request !== 'object' || Array.isArray(request)) return null;
   const method = typeof request.method === 'string' ? request.method.slice(0, 12) : '';
@@ -333,8 +334,8 @@ function normalizeNodeRequestApproval(value, recipient = {}) {
   const providerId =
     typeof recipient.providerId === 'string' ? recipient.providerId.slice(0, 80) : '';
   return Object.freeze({
-    service: 'ant',
-    transport: 'http',
+    service: value.service,
+    transport: value.transport,
     request: Object.freeze({
       method,
       path,

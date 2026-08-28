@@ -20,6 +20,20 @@ function defaultGetAntApiUrl() {
   return require('./service-registry').getAntApiUrl();
 }
 
+function defaultGetRadicleApiUrl() {
+  return require('./service-registry').getRadicleApiUrl();
+}
+
+function defaultServeIpfsRequest(request) {
+  return require('./ipfs-manager').serveNativeGatewayRequest(request);
+}
+
+const SERVICE_PROTOCOLS = Object.freeze({
+  ant: Object.freeze({ transport: 'http', wireProtocol: 'Bee HTTP API' }),
+  radicle: Object.freeze({ transport: 'http', wireProtocol: 'radicle-httpd HTTP API' }),
+  ipfs: Object.freeze({ transport: 'gateway', wireProtocol: 'Freedom IPFS native gateway' }),
+});
+
 function minimumEffectForMethod(method) {
   if (method === 'GET' || method === 'HEAD') return EFFECTS.READ;
   if (method === 'DELETE') return EFFECTS.DESTRUCTIVE;
@@ -34,20 +48,20 @@ function approved(decision) {
   );
 }
 
-function fixedEndpoint(base, path) {
+function fixedEndpoint(base, path, service = 'node') {
   let baseUrl;
   try {
     baseUrl = new URL(base);
   } catch {
     throw new AutomationError(
       ERROR_CODES.CAPABILITY_UNAVAILABLE,
-      'The Ant node API endpoint is unavailable'
+      `The ${service} node API endpoint is unavailable`
     );
   }
   if (!['http:', 'https:'].includes(baseUrl.protocol) || baseUrl.username || baseUrl.password) {
     throw new AutomationError(
       ERROR_CODES.CAPABILITY_UNAVAILABLE,
-      'The Ant node API endpoint is unavailable'
+      `The ${service} node API endpoint is unavailable`
     );
   }
   const target = new URL(path, `${baseUrl.origin}/`);
@@ -110,6 +124,8 @@ function safeResponseHeaders(headers) {
 class NodeRequestController {
   constructor(options = {}) {
     this.getAntApiUrl = options.getAntApiUrl || defaultGetAntApiUrl;
+    this.getRadicleApiUrl = options.getRadicleApiUrl || defaultGetRadicleApiUrl;
+    this.serveIpfsRequest = options.serveIpfsRequest || defaultServeIpfsRequest;
     this.fetch = options.fetch || globalThis.fetch;
     this.timeoutMs = Number.isFinite(options.timeoutMs)
       ? Math.max(1, options.timeoutMs)
@@ -123,14 +139,14 @@ class NodeRequestController {
   }
 
   async request(input, context = {}) {
-    const endpoint = this.getAntApiUrl();
-    if (!endpoint) {
+    const protocol = SERVICE_PROTOCOLS[input.service];
+    if (!protocol || protocol.transport !== input.transport) {
       throw new AutomationError(
         ERROR_CODES.CAPABILITY_UNAVAILABLE,
-        'The Ant node API is not currently available'
+        'This node request transport is unavailable'
       );
     }
-    const target = fixedEndpoint(endpoint, input.request.path);
+    if (input.service !== 'ipfs') this.#httpEndpointFor(input.service);
     const classification =
       typeof context.classifyEffect === 'function'
         ? await context.classifyEffect({
@@ -141,8 +157,11 @@ class NodeRequestController {
               request: input.request,
             },
             trustedContext: {
-              endpointAuthority: 'Freedom service registry',
-              wireProtocol: 'Bee HTTP API',
+              endpointAuthority:
+                input.service === 'ipfs'
+                  ? 'Freedom-managed native node instance'
+                  : 'Freedom service registry',
+              wireProtocol: protocol.wireProtocol,
             },
           })
         : unknownClassification('classifier_unavailable');
@@ -181,13 +200,7 @@ class NodeRequestController {
     let response;
     let body;
     try {
-      response = await this.fetch(target, {
-        method: input.request.method,
-        headers: input.request.headers,
-        ...(input.request.body !== undefined && { body: input.request.body }),
-        redirect: 'error',
-        signal: abortController.signal,
-      });
+      response = await this.#dispatch(input, abortController.signal);
       body =
         input.request.method === 'HEAD'
           ? ''
@@ -197,9 +210,11 @@ class NodeRequestController {
       if (context.signal?.aborted) {
         throw new AutomationError(ERROR_CODES.USER_CANCELLED, 'The node request was cancelled');
       }
-      throw new AutomationError(ERROR_CODES.CAPABILITY_UNAVAILABLE, 'The Ant node request failed', {
-        cause: error,
-      });
+      throw new AutomationError(
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        `The ${input.service} node request failed`,
+        { cause: error }
+      );
     } finally {
       clearTimeout(timeout);
       context.signal?.removeEventListener?.('abort', abortFromCaller);
@@ -227,6 +242,37 @@ class NodeRequestController {
       }),
     });
   }
+
+  #httpEndpointFor(service) {
+    const endpoint = service === 'ant' ? this.getAntApiUrl() : this.getRadicleApiUrl();
+    if (!endpoint) {
+      throw new AutomationError(
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        `The ${service} node API is not currently available`
+      );
+    }
+    return fixedEndpoint(endpoint, '/', service);
+  }
+
+  #dispatch(input, signal) {
+    if (input.service === 'ipfs') {
+      return this.serveIpfsRequest({
+        path: input.request.path,
+        method: input.request.method,
+        headers: new Headers(input.request.headers || {}),
+        signal,
+      });
+    }
+    const endpoint = this.#httpEndpointFor(input.service);
+    const target = fixedEndpoint(endpoint, input.request.path, input.service);
+    return this.fetch(target, {
+      method: input.request.method,
+      headers: input.request.headers,
+      ...(input.request.body !== undefined && { body: input.request.body }),
+      redirect: 'error',
+      signal,
+    });
+  }
 }
 
 module.exports = {
@@ -235,4 +281,5 @@ module.exports = {
   minimumEffectForMethod,
   readBoundedResponse,
   safeResponseHeaders,
+  SERVICE_PROTOCOLS,
 };

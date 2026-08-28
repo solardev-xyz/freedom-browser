@@ -112,6 +112,61 @@ describe('NodeRequestController', () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
+  test('dispatches Radicle HTTP to its registry-selected endpoint', async () => {
+    const fetch = jest.fn(async () => new Response('[]', { status: 200 }));
+    const controller = new NodeRequestController({
+      getRadicleApiUrl: () => 'http://127.0.0.1:8780',
+      fetch,
+    });
+    const input = {
+      service: 'radicle',
+      transport: 'http',
+      request: { method: 'GET', path: '/api/v1/repos' },
+    };
+
+    await expect(
+      controller.request(input, { classifyEffect: async () => classification(EFFECTS.READ) })
+    ).resolves.toMatchObject({
+      service: 'radicle',
+      transport: 'http',
+      response: { body: '[]' },
+      summary: { service: 'radicle', status: 200 },
+    });
+    expect(fetch).toHaveBeenCalledWith(
+      new URL('http://127.0.0.1:8780/api/v1/repos'),
+      expect.objectContaining({ method: 'GET', redirect: 'error' })
+    );
+  });
+
+  test('dispatches IPFS reads through the active native gateway instance', async () => {
+    const serveIpfsRequest = jest.fn(async () =>
+      new Response('ipfs-body', { status: 200, headers: { 'content-type': 'text/plain' } })
+    );
+    const controller = new NodeRequestController({ serveIpfsRequest });
+    const input = {
+      service: 'ipfs',
+      transport: 'gateway',
+      request: { method: 'GET', path: '/ipfs/bafy-test' },
+    };
+
+    await expect(
+      controller.request(input, { classifyEffect: async () => classification(EFFECTS.READ) })
+    ).resolves.toMatchObject({
+      service: 'ipfs',
+      transport: 'gateway',
+      response: { body: 'ipfs-body' },
+      summary: { service: 'ipfs', status: 200 },
+    });
+    expect(serveIpfsRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'GET',
+        path: '/ipfs/bafy-test',
+        headers: expect.any(Headers),
+        signal: expect.any(AbortSignal),
+      })
+    );
+  });
+
   test('fails closed to approval when classification is unavailable or uncertain', async () => {
     const fetch = jest.fn(async () => new Response('{}'));
     const requestApproval = jest.fn(async () => 'declined');
