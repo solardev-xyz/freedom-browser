@@ -45,8 +45,17 @@ function collectPageSnapshot(
     String(value || '')
       .replace(/\s+/g, ' ')
       .trim();
+  const styleCache = new WeakMap();
+  const styleFor = (element) => {
+    let style = styleCache.get(element);
+    if (!style) {
+      style = element.ownerDocument.defaultView.getComputedStyle(element);
+      styleCache.set(element, style);
+    }
+    return style;
+  };
   const visible = (element) => {
-    const style = element.ownerDocument.defaultView.getComputedStyle(element);
+    const style = styleFor(element);
     if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
       return false;
     }
@@ -92,8 +101,18 @@ function collectPageSnapshot(
     }
     return element.isContentEditable ? 'textbox' : 'generic';
   };
-  const candidateSelector =
+  const semanticCandidateSelector =
     'a[href],button,input:not([type="hidden"]),select,textarea,[role],[contenteditable="true"],[tabindex]:not([tabindex="-1"])';
+  const isExplicitClickTarget = (element) =>
+    element.hasAttribute('onclick') || typeof element.onclick === 'function';
+  const isPointerBoundary = (element) => {
+    if (['HTML', 'BODY'].includes(element.tagName)) return false;
+    if (styleFor(element).cursor !== 'pointer') return false;
+    const parent = element.parentElement;
+    // Cursor is inherited. Keep the outer boundary so a clickable card and
+    // each of its text/icon descendants do not all become separate targets.
+    return !parent || styleFor(parent).cursor !== 'pointer';
+  };
   const elements = [];
   const frames = [];
   const pageText = [];
@@ -135,12 +154,17 @@ function collectPageSnapshot(
     if (text) pageText.push(text);
 
     const visitRoot = (root) => {
-      const candidates = root.querySelectorAll(candidateSelector);
-      candidateCount += candidates.length;
-      for (const element of candidates) {
+      const descendants = root.querySelectorAll('*');
+      for (const element of descendants) {
+        const semantic = element.matches(semanticCandidateSelector);
+        const inferred =
+          !semantic && (isExplicitClickTarget(element) || isPointerBoundary(element));
+        if (!semantic && !inferred) continue;
+        candidateCount += 1;
         if (elements.length >= maxElements || !visible(element)) continue;
-        const role = element.getAttribute('role') || implicitRole(element);
         const name = accessibleName(element);
+        if (inferred && !name) continue;
+        const role = element.getAttribute('role') || (inferred ? 'button' : implicitRole(element));
         const ref = `${snapshotToken}_${String(elements.length)}`;
         const tag = element.tagName.toLowerCase();
         const inputType = normalize(element.getAttribute('type')).toLowerCase();
@@ -158,6 +182,7 @@ function collectPageSnapshot(
           role,
           name,
           tag,
+          ...(inferred && { inferred: true }),
           disabled:
             element.matches(':disabled') || element.getAttribute('aria-disabled') === 'true',
           focused: element === composedActiveElement(frameDocument),

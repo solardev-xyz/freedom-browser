@@ -84,6 +84,11 @@ test('one automation contract drives desktop and hidden Electron pages', async (
       <button id="replace-target">Replace target</button>
       <button id="dynamic-target">Dynamic target</button>
       <p id="dynamic-output">Dynamic waiting</p>
+      <div id="inline-wallet" onclick="document.querySelector('#inline-wallet-output').textContent = 'Inline wallet trusted=' + event.isTrusted">Inline wallet</div>
+      <p id="inline-wallet-output">Inline wallet waiting</p>
+      <div id="pointer-wallet" class="pointer-wallet"><span>Freedom wallet</span></div>
+      <p id="pointer-wallet-output">Freedom wallet waiting</p>
+      <style>.pointer-wallet { cursor: pointer; }</style>
       <button id="open-popup">Open popup</button>
       <iframe id="child-frame" name="automation-child"></iframe>
       <script>
@@ -112,6 +117,10 @@ test('one automation contract drives desktop and hidden Electron pages', async (
           });
         };
         wireDynamicTarget(document.querySelector('#dynamic-target'));
+        document.querySelector('#pointer-wallet').addEventListener('click', (event) => {
+          document.querySelector('#pointer-wallet-output').textContent =
+            'Freedom wallet trusted=' + event.isTrusted;
+        });
         document.querySelector('#replace-target').addEventListener('click', () => {
           const current = document.querySelector('#dynamic-target');
           const replacement = current.cloneNode(true);
@@ -178,6 +187,14 @@ test('one automation contract drives desktop and hidden Electron pages', async (
     (element) => element.name === 'Redirected input'
   )?.ref;
   const submitRef = snapshot.result.elements.find((element) => element.name === 'Submit')?.ref;
+  const inlineWallet = snapshot.result.elements.find((element) => element.name === 'Inline wallet');
+  const pointerWallets = snapshot.result.elements.filter(
+    (element) => element.name === 'Freedom wallet'
+  );
+  expect(inlineWallet).toMatchObject({ role: 'button', tag: 'div', inferred: true });
+  expect(pointerWallets).toEqual([
+    expect.objectContaining({ role: 'button', tag: 'div', inferred: true }),
+  ]);
   const replaceRef = snapshot.result.elements.find(
     (element) => element.name === 'Replace target'
   )?.ref;
@@ -187,6 +204,34 @@ test('one automation contract drives desktop and hidden Electron pages', async (
   expect(nameRef).toBeTruthy();
   expect(redirectedInputRef).toBeTruthy();
   expect(submitRef).toBeTruthy();
+  await expect(
+    executeAutomation(electronApp, 'browser_click', {
+      tabId: desktopTab.tabId,
+      ref: inlineWallet.ref,
+    })
+  ).resolves.toMatchObject({ ok: true });
+  await expect(
+    executeAutomation(electronApp, 'browser_wait', {
+      tabId: desktopTab.tabId,
+      condition: 'text',
+      text: 'Inline wallet trusted=true',
+      timeoutMs: 2_000,
+    })
+  ).resolves.toMatchObject({ ok: true });
+  await expect(
+    executeAutomation(electronApp, 'browser_click', {
+      tabId: desktopTab.tabId,
+      ref: pointerWallets[0].ref,
+    })
+  ).resolves.toMatchObject({ ok: true });
+  await expect(
+    executeAutomation(electronApp, 'browser_wait', {
+      tabId: desktopTab.tabId,
+      condition: 'text',
+      text: 'Freedom wallet trusted=true',
+      timeoutMs: 2_000,
+    })
+  ).resolves.toMatchObject({ ok: true });
   expect(replaceRef).toBeTruthy();
   expect(dynamicRef).toBeTruthy();
 

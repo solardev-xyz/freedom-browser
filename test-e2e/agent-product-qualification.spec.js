@@ -730,8 +730,9 @@ function walletFixtureBody() {
           super();
           const root = this.attachShadow({ mode: 'open' });
           root.innerHTML = \`<section role="dialog" aria-labelledby="picker-title">
+            <style>.wallet-option { cursor: pointer; }</style>
             <h2 id="picker-title">Choose a wallet</h2>
-            <button id="freedom-wallet" type="button">Freedom wallet</button>
+            <div id="freedom-wallet" class="wallet-option"><span>Freedom wallet</span></div>
             <button type="button">Another wallet</button>
           </section>\`;
         }
