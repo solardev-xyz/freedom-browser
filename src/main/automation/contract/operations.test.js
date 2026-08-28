@@ -119,6 +119,46 @@ describe('automation operation contract', () => {
     ).toThrow('timeoutMs must be an integer');
   });
 
+  test('normalizes a bounded Ant HTTP node request', () => {
+    expect(
+      validateOperationInput(OPERATIONS.NODE_REQUEST, {
+        service: ' ant ',
+        transport: ' http ',
+        request: {
+          method: ' post ',
+          path: ' /tags?limit=1 ',
+          headers: {
+            'Content-Type': 'application/json',
+            'Swarm-Postage-Batch-Id': 'batch-id',
+          },
+          body: '{"address":"abc"}',
+        },
+      })
+    ).toEqual({
+      service: 'ant',
+      transport: 'http',
+      request: {
+        method: 'POST',
+        path: '/tags?limit=1',
+        headers: {
+          'content-type': 'application/json',
+          'swarm-postage-batch-id': 'batch-id',
+        },
+        body: '{"address":"abc"}',
+      },
+    });
+  });
+
+  test.each([
+    ['another service', { service: 'ipfs', transport: 'http', request: { method: 'GET', path: '/' } }],
+    ['absolute URL', { service: 'ant', transport: 'http', request: { method: 'GET', path: 'https://evil.test/' } }],
+    ['authority path', { service: 'ant', transport: 'http', request: { method: 'GET', path: '//evil.test/' } }],
+    ['authorization header', { service: 'ant', transport: 'http', request: { method: 'GET', path: '/', headers: { authorization: 'secret' } } }],
+    ['GET body', { service: 'ant', transport: 'http', request: { method: 'GET', path: '/', body: 'x' } }],
+  ])('rejects unsafe node request input: %s', (_label, input) => {
+    expect(() => validateOperationInput(OPERATIONS.NODE_REQUEST, input)).toThrow();
+  });
+
   test('rejects arbitrary keyboard input', () => {
     expect(() =>
       validateOperationInput(OPERATIONS.PRESS, {

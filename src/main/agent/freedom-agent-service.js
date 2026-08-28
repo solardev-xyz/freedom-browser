@@ -15,11 +15,13 @@ const {
   originScopeForUrl,
 } = require('../automation/origin-scoped-controller');
 const { createFreedomBrowserTools } = require('./pi-browser-tools');
+const { EffectClassifier } = require('./effect-classifier');
 const {
   activityProgress,
   buildAgentOutcome,
   normalizeArtifact,
   normalizeDiagnosticReceipt,
+  normalizeNodeRequestReceipt,
   normalizeNodeStatusReceipt,
   normalizeUpload,
   normalizeWalletReceipt,
@@ -220,6 +222,7 @@ function normalizePiEvent(event, toolOutcome) {
       ...(toolOutcome?.upload && { upload: toolOutcome.upload }),
       ...(toolOutcome?.wallet && { wallet: toolOutcome.wallet }),
       ...(toolOutcome?.nodeStatus && { nodeStatus: toolOutcome.nodeStatus }),
+      ...(toolOutcome?.nodeRequest && { nodeRequest: toolOutcome.nodeRequest }),
       ...(toolOutcome?.diagnostic && { diagnostic: toolOutcome.diagnostic }),
       ...(toolOutcome?.artifacts && { artifacts: toolOutcome.artifacts }),
       ...(errorCode && { errorCode }),
@@ -277,11 +280,14 @@ function normalizeDiagnosticApproval(value, recipient = {}) {
 function normalizeApprovalRequest(request, recipient) {
   const wallet = normalizeWalletApproval(request?.wallet);
   const diagnostic = normalizeDiagnosticApproval(request?.diagnostic, recipient);
+  const nodeRequest = normalizeNodeRequestApproval(request?.nodeRequest, recipient);
   const origin = wallet
     ? getPermissionKey(request?.origin) || ''
     : originScopeForUrl(request?.origin) || '';
   return Object.freeze({
-    action: diagnostic
+    action: nodeRequest
+      ? 'node_request'
+      : diagnostic
       ? 'diagnostic_data'
       : request?.action === 'form_submission'
         ? 'form_submission'
@@ -307,6 +313,65 @@ function normalizeApprovalRequest(request, recipient) {
     label: typeof request?.label === 'string' ? request.label.slice(0, 160) : '',
     ...(wallet && { wallet }),
     ...(diagnostic && { diagnostic }),
+    ...(nodeRequest && { nodeRequest }),
+  });
+}
+
+function normalizeNodeRequestApproval(value, recipient = {}) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  if (value.service !== 'ant' || value.transport !== 'http') return null;
+  const request = value.request;
+  if (!request || typeof request !== 'object' || Array.isArray(request)) return null;
+  const method = typeof request.method === 'string' ? request.method.slice(0, 12) : '';
+  const path = typeof request.path === 'string' ? request.path.slice(0, 2_048) : '';
+  if (!method || !path) return null;
+  const headers = {};
+  for (const [name, headerValue] of Object.entries(request.headers || {}).slice(0, 32)) {
+    if (typeof headerValue === 'string') headers[name.slice(0, 120)] = headerValue.slice(0, 4_096);
+  }
+  const classification = value.classification;
+  const providerId =
+    typeof recipient.providerId === 'string' ? recipient.providerId.slice(0, 80) : '';
+  return Object.freeze({
+    service: 'ant',
+    transport: 'http',
+    request: Object.freeze({
+      method,
+      path,
+      ...(Object.keys(headers).length && { headers: Object.freeze(headers) }),
+      ...(typeof request.body === 'string' && { body: request.body.slice(0, 65_536) }),
+    }),
+    effect: [
+      'read',
+      'reversible_admin',
+      'persistent_change',
+      'financial',
+      'destructive',
+      'unknown',
+    ].includes(value.effect)
+      ? value.effect
+      : 'unknown',
+    classification: Object.freeze({
+      summary:
+        typeof classification?.summary === 'string'
+          ? classification.summary.slice(0, 240)
+          : 'The effect could not be classified reliably.',
+      confidence: Number.isFinite(classification?.confidence)
+        ? Math.max(0, Math.min(1, classification.confidence))
+        : 0,
+      uncertainties: Object.freeze(
+        Array.isArray(classification?.uncertainties)
+          ? classification.uncertainties
+              .filter((item) => typeof item === 'string')
+              .slice(0, 12)
+              .map((item) => item.slice(0, 240))
+          : []
+      ),
+    }),
+    providerId,
+    providerLabel: PROVIDER_LABELS[providerId] || providerId || 'the selected model provider',
+    modelId: typeof recipient.modelId === 'string' ? recipient.modelId.slice(0, 160) : '',
+    local: providerId === 'ollama',
   });
 }
 
@@ -364,6 +429,10 @@ class FreedomAgentService {
       options.createControllerScope || createOriginScopedAutomationController;
     this.createTools = options.createTools || createFreedomBrowserTools;
     this.createSession = options.createSession || createIsolatedPiSession;
+    this.effectClassifier = options.effectClassifier || new EffectClassifier();
+    if (!this.effectClassifier || typeof this.effectClassifier.classify !== 'function') {
+      throw new TypeError('FreedomAgentService requires a valid effect classifier');
+    }
     if (
       options.cancelAgentDownloads !== undefined &&
       typeof options.cancelAgentDownloads !== 'function'
@@ -681,6 +750,11 @@ class FreedomAgentService {
           transferOwnerId: run.conversationId,
           requestApproval: (request) =>
             this.activeRun ? this.#requestApproval(this.activeRun, request) : 'declined',
+          classifyEffect: (input) =>
+            this.effectClassifier.classify(input, {
+              model: options.model,
+              modelRuntime: options.modelRuntime,
+            }),
         });
         if (
           !scopedController ||
@@ -1154,6 +1228,7 @@ class FreedomAgentService {
         if (normalized.upload) item.upload = normalized.upload;
         if (normalized.wallet) item.wallet = normalized.wallet;
         if (normalized.nodeStatus) item.nodeStatus = normalized.nodeStatus;
+        if (normalized.nodeRequest) item.nodeRequest = normalized.nodeRequest;
         if (normalized.diagnostic) item.diagnostic = normalized.diagnostic;
         if (normalized.artifacts) item.artifacts = normalized.artifacts;
         if (item.approval) normalized.approval = item.approval;
@@ -1188,6 +1263,9 @@ class FreedomAgentService {
       }),
       ...(normalizeNodeStatusReceipt(outcome.nodeStatus) && {
         nodeStatus: normalizeNodeStatusReceipt(outcome.nodeStatus),
+      }),
+      ...(normalizeNodeRequestReceipt(outcome.nodeRequest) && {
+        nodeRequest: normalizeNodeRequestReceipt(outcome.nodeRequest),
       }),
       ...(normalizeDiagnosticReceipt(outcome.diagnostic) && {
         diagnostic: normalizeDiagnosticReceipt(outcome.diagnostic),

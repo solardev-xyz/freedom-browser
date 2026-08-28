@@ -55,6 +55,7 @@ describe('Pi browser tool adapter', () => {
       OPERATIONS.DOWNLOAD,
       OPERATIONS.LIST_DOWNLOADS,
       OPERATIONS.NODE_STATUS,
+      OPERATIONS.NODE_REQUEST,
       OPERATIONS.NODE_DIAGNOSTICS,
       OPERATIONS.APP_DIAGNOSTICS,
       OPERATIONS.WALLET_TRANSFER,
@@ -499,6 +500,55 @@ describe('Pi browser tool adapter', () => {
       diagnostic: diagnosticResult.summary,
     });
     expect(JSON.stringify(onToolOutcome.mock.calls)).not.toMatch(/entries|private|12D3KooW/);
+  });
+
+  test('gives Pi a raw node response while progress receives only its safe receipt', async () => {
+    const onToolOutcome = jest.fn();
+    const result = {
+      service: 'ant',
+      transport: 'http',
+      effect: 'read',
+      request: { method: 'GET', path: '/health' },
+      response: {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+        body: '{"sensitiveRawNodeEvidence":true}',
+        bytes: 33,
+      },
+      summary: {
+        service: 'ant',
+        effect: 'read',
+        method: 'GET',
+        path: '/health',
+        status: 200,
+        bytes: 33,
+      },
+    };
+    const controller = { execute: jest.fn(async () => ({ ok: true, result })) };
+    const tools = await createFreedomBrowserTools({
+      sdk: createSdk(),
+      controller,
+      tabId: null,
+      onToolOutcome,
+    });
+    const request = tools.find((tool) => tool.name === OPERATIONS.NODE_REQUEST);
+
+    const response = await request.execute('call_node_request', {
+      service: 'ant',
+      transport: 'http',
+      request: { method: 'GET', path: '/health' },
+    });
+
+    expect(JSON.parse(response.content[0].text).result).toEqual(result);
+    expect(response.content[0].text).toContain('sensitiveRawNodeEvidence');
+    expect(onToolOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toolCallId: 'call_node_request',
+        operation: OPERATIONS.NODE_REQUEST,
+        status: 'succeeded',
+      })
+    );
+    expect(JSON.stringify(onToolOutcome.mock.calls)).not.toContain('sensitiveRawNodeEvidence');
   });
 
   test('reports only redacted browser metadata in successful progress receipts', async () => {

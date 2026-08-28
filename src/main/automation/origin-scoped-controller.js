@@ -25,6 +25,7 @@ const ORIGIN_SCOPED_OPERATIONS = new Set([
   OPERATIONS.WALLET_ACTION,
   OPERATIONS.WALLET_TRANSFER,
   OPERATIONS.NODE_STATUS,
+  OPERATIONS.NODE_REQUEST,
   OPERATIONS.NODE_DIAGNOSTICS,
   OPERATIONS.APP_DIAGNOSTICS,
   OPERATIONS.LIST_DOWNLOADS,
@@ -98,6 +99,7 @@ class OriginScopedAutomationController {
     initialState,
     approvalMode,
     requestApproval,
+    classifyEffect,
     createWorkspacePage,
     onWorkspaceTabCreated,
     transferOwnerId,
@@ -110,6 +112,7 @@ class OriginScopedAutomationController {
     this.approvalMode = approvalMode;
     this.lastState = initialState;
     this.requestApproval = requestApproval;
+    this.classifyEffect = classifyEffect;
     this.createWorkspacePage = createWorkspacePage;
     this.onWorkspaceTabCreated = onWorkspaceTabCreated;
     this.transferOwnerId = transferOwnerId;
@@ -181,6 +184,13 @@ class OriginScopedAutomationController {
     }
     if (operation === OPERATIONS.NODE_STATUS) {
       return this.#executeController(operation, input, execution);
+    }
+    if (operation === OPERATIONS.NODE_REQUEST) {
+      return this.#executeController(operation, input, {
+        ...execution,
+        classifyEffect: this.classifyEffect,
+        requestApproval: this.requestApproval,
+      });
     }
     if (
       operation === OPERATIONS.NODE_DIAGNOSTICS ||
@@ -655,6 +665,7 @@ async function createOriginScopedAutomationController(options = {}) {
     initialState,
     approvalMode,
     requestApproval: options.requestApproval,
+    classifyEffect: options.classifyEffect,
     createWorkspacePage: options.createWorkspacePage,
     onWorkspaceTabCreated: options.onWorkspaceTabCreated,
     transferOwnerId: options.transferOwnerId,

@@ -1867,19 +1867,22 @@ body.agent-first-mode .agent-composer textarea {
   white-space: pre-line;
 }
 
-.agent-wallet-approval-details {
+.agent-wallet-approval-details,
+.agent-approval-details {
   margin-top: 13px;
   padding-top: 12px;
   border-top: 1px solid color-mix(in srgb, var(--border) 30%, transparent);
 }
 
 .agent-wallet-approval-details[hidden],
+.agent-approval-details[hidden],
 .agent-wallet-account-field[hidden],
 .agent-wallet-unlock[hidden] {
   display: none;
 }
 
-.agent-wallet-approval-details dl {
+.agent-wallet-approval-details dl,
+.agent-approval-details dl {
   display: grid;
   grid-template-columns: max-content minmax(0, 1fr);
   gap: 6px 12px;
@@ -1888,11 +1891,13 @@ body.agent-first-mode .agent-composer textarea {
   line-height: 1.4;
 }
 
-.agent-wallet-approval-details dt {
+.agent-wallet-approval-details dt,
+.agent-approval-details dt {
   color: var(--muted);
 }
 
-.agent-wallet-approval-details dd {
+.agent-wallet-approval-details dd,
+.agent-approval-details dd {
   min-width: 0;
   max-height: 180px;
   margin: 0;

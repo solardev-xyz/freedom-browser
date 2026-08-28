@@ -304,6 +304,7 @@ const { initUpdater } = require('./updater');
 const { setupApplicationMenu, updateTabMenuItems } = require('./menu');
 const { registerWebContentsHandlers } = require('./webcontents-setup');
 const {
+  createAgentNodeRequestTestOptions,
   createAgentWalletTestOptions,
   installTestHarness,
   registerStubProtocols,
@@ -453,6 +454,7 @@ async function bootstrap() {
         getMainWindows().some((window) => window.webContents === sender),
       openExternal: (url) => shell.openExternal(url),
       walletControllerOptions: createAgentWalletTestOptions(),
+      nodeRequestControllerOptions: createAgentNodeRequestTestOptions(),
     });
   }
 

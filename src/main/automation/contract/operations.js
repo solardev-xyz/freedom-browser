@@ -8,6 +8,8 @@ const {
   DIAGNOSTIC_SERVICES,
   MAX_DIAGNOSTIC_BYTES,
   MAX_DIAGNOSTIC_LINES,
+  MAX_NODE_REQUEST_BODY_BYTES,
+  MAX_NODE_RESPONSE_BYTES,
   MAX_WAIT_TIMEOUT_MS,
   OPERATIONS,
 } = require('../../../shared/automation-operations');
@@ -50,6 +52,17 @@ const PRESS_KEYS = Object.freeze([
 ]);
 const PRESS_KEY_SET = new Set(PRESS_KEYS);
 const DIAGNOSTIC_SERVICE_SET = new Set(DIAGNOSTIC_SERVICES);
+const NODE_REQUEST_METHODS = Object.freeze(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE']);
+const NODE_REQUEST_METHOD_SET = new Set(NODE_REQUEST_METHODS);
+const NODE_REQUEST_HEADER_NAME = /^[a-z0-9][a-z0-9-]*$/;
+const BLOCKED_NODE_REQUEST_HEADERS = new Set([
+  'authorization',
+  'cookie',
+  'host',
+  'origin',
+  'proxy-authorization',
+  'referer',
+]);
 
 function requireObject(input) {
   if (input === undefined) return {};
@@ -66,6 +79,13 @@ function requireString(value, field, { allowEmpty = false } = {}) {
     });
   }
   return value;
+}
+
+function containsControlCharacters(value) {
+  return [...value].some((character) => {
+    const code = character.charCodeAt(0);
+    return code <= 31 || code === 127;
+  });
 }
 
 function validateNavigationUrl(value) {
@@ -202,6 +222,91 @@ function validateOperationInput(operation, rawInput) {
     }
   }
 
+  if (operation === OPERATIONS.NODE_REQUEST) {
+    normalized.service = requireString(input.service, 'service').trim();
+    if (normalized.service !== 'ant') {
+      throw invalidArgument('service must be ant for the initial node request capability', {
+        field: 'service',
+      });
+    }
+    normalized.transport = requireString(input.transport, 'transport').trim();
+    if (normalized.transport !== 'http') {
+      throw invalidArgument('transport must be http', { field: 'transport' });
+    }
+    const request = requireObject(input.request);
+    const method = requireString(request.method, 'request.method').trim().toUpperCase();
+    if (!NODE_REQUEST_METHOD_SET.has(method)) {
+      throw invalidArgument(`request.method must be one of: ${NODE_REQUEST_METHODS.join(', ')}`, {
+        field: 'request.method',
+      });
+    }
+    const path = requireString(request.path, 'request.path').trim();
+    if (
+      path.length > 2_048 ||
+      !path.startsWith('/') ||
+      path.startsWith('//') ||
+      path.includes('\\') ||
+      containsControlCharacters(path)
+    ) {
+      throw invalidArgument('request.path must be a bounded absolute API path', {
+        field: 'request.path',
+      });
+    }
+    const headers = {};
+    if (request.headers !== undefined) {
+      const rawHeaders = requireObject(request.headers);
+      const entries = Object.entries(rawHeaders);
+      if (entries.length > 32) {
+        throw invalidArgument('request.headers cannot contain more than 32 fields', {
+          field: 'request.headers',
+        });
+      }
+      for (const [rawName, rawValue] of entries) {
+        const name = rawName.trim().toLowerCase();
+        if (
+          !NODE_REQUEST_HEADER_NAME.test(name) ||
+          BLOCKED_NODE_REQUEST_HEADERS.has(name) ||
+          name.startsWith('sec-') ||
+          name.startsWith('proxy-')
+        ) {
+          throw invalidArgument(`request header is not allowed: ${rawName}`, {
+            field: 'request.headers',
+          });
+        }
+        const value = requireString(rawValue, `request.headers.${rawName}`, {
+          allowEmpty: true,
+        });
+        if (value.length > 4_096 || /[\r\n]/.test(value)) {
+          throw invalidArgument(`request header value is invalid: ${rawName}`, {
+            field: 'request.headers',
+          });
+        }
+        headers[name] = value;
+      }
+    }
+    let body;
+    if (request.body !== undefined) {
+      body = requireString(request.body, 'request.body', { allowEmpty: true });
+      if (Buffer.byteLength(body, 'utf8') > MAX_NODE_REQUEST_BODY_BYTES) {
+        throw invalidArgument(
+          `request.body cannot exceed ${MAX_NODE_REQUEST_BODY_BYTES} UTF-8 bytes`,
+          { field: 'request.body' }
+        );
+      }
+      if (method === 'GET' || method === 'HEAD') {
+        throw invalidArgument(`${method} node requests cannot include a body`, {
+          field: 'request.body',
+        });
+      }
+    }
+    normalized.request = {
+      method,
+      path,
+      ...(Object.keys(headers).length && { headers }),
+      ...(body !== undefined && { body }),
+    };
+  }
+
   if (operation === OPERATIONS.NODE_DIAGNOSTICS || operation === OPERATIONS.APP_DIAGNOSTICS) {
     if (operation === OPERATIONS.NODE_DIAGNOSTICS) {
       normalized.service = requireString(input.service, 'service').trim();
@@ -243,7 +348,10 @@ module.exports = {
   DIAGNOSTIC_SERVICES,
   MAX_DIAGNOSTIC_BYTES,
   MAX_DIAGNOSTIC_LINES,
+  MAX_NODE_REQUEST_BODY_BYTES,
+  MAX_NODE_RESPONSE_BYTES,
   MAX_WAIT_TIMEOUT_MS,
+  NODE_REQUEST_METHODS,
   OPERATIONS,
   PRESS_KEYS,
   validateOperationInput,

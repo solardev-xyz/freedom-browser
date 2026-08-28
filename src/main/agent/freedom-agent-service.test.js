@@ -64,6 +64,7 @@ function createService(fakeSession, overrides = {}) {
     })),
     createTools: jest.fn(async () => [{ name: 'browser_snapshot' }]),
     createSession: jest.fn(async () => ({ session: fakeSession.session })),
+    effectClassifier: { classify: jest.fn(async () => ({ effect: 'read', confidence: 1 })) },
     runIdFactory: jest.fn(() => 'run_test'),
     conversationIdFactory: jest.fn(() => 'conversation_test'),
     now: jest.fn(() => 1_000),
@@ -116,6 +117,7 @@ describe('FreedomAgentService', () => {
       createWorkspacePage: expect.any(Function),
       onWorkspaceTabCreated: expect.any(Function),
       requestApproval: expect.any(Function),
+      classifyEffect: expect.any(Function),
       transferOwnerId: 'conversation_test',
     });
     expect(dependencies.createTools).toHaveBeenCalledWith({
@@ -266,6 +268,7 @@ describe('FreedomAgentService', () => {
       createWorkspacePage: expect.any(Function),
       onWorkspaceTabCreated: expect.any(Function),
       requestApproval: expect.any(Function),
+      classifyEffect: expect.any(Function),
       transferOwnerId: 'conversation_test',
     });
     expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toEqual(
@@ -795,6 +798,92 @@ describe('FreedomAgentService', () => {
       diagnosticScope: 'conversation',
     });
     expect(JSON.stringify(approval)).not.toMatch(/entries|logs|runtime|statusSnapshot/);
+
+    await service.stop('run_test');
+    await service.waitForIdle();
+  });
+
+  test('classifies an exact node request in the isolated model context and exposes a bounded approval', async () => {
+    const fake = createFakeSession();
+    const effectClassifier = {
+      classify: jest.fn(async () => ({
+        effect: 'persistent_change',
+        confidence: 0.96,
+        summary: 'Creates a durable postage batch.',
+        resources: ['postage batch'],
+        uncertainties: [],
+      })),
+    };
+    const { service, dependencies } = createService(fake, { effectClassifier });
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    const options = startOptions({
+      model: { id: 'gpt-5.6-sol', provider: 'openai' },
+      modelRuntime: { kind: 'isolated-runtime' },
+    });
+    await service.start(options);
+
+    const classifyEffect = dependencies.createControllerScope.mock.calls[0][0].classifyEffect;
+    const proposed = {
+      domain: 'node',
+      action: {
+        service: 'ant',
+        request: { method: 'POST', path: '/stamps/100/20' },
+      },
+    };
+    await expect(classifyEffect(proposed)).resolves.toMatchObject({
+      effect: 'persistent_change',
+    });
+    expect(effectClassifier.classify).toHaveBeenCalledWith(proposed, {
+      model: options.model,
+      modelRuntime: options.modelRuntime,
+    });
+
+    const requestApproval = dependencies.createControllerScope.mock.calls[0][0].requestApproval;
+    const decision = requestApproval({
+      action: 'node_request',
+      operation: OPERATIONS.NODE_REQUEST,
+      label: 'POST /stamps/100/20',
+      nodeRequest: {
+        service: 'ant',
+        transport: 'http',
+        request: {
+          method: 'POST',
+          path: '/stamps/100/20',
+          headers: { 'content-type': 'application/json' },
+          body: '{"immutable":false}',
+        },
+        effect: 'persistent_change',
+        classification: await effectClassifier.classify.mock.results[0].value,
+      },
+    });
+    const approval = events.at(-1);
+
+    expect(approval).toMatchObject({
+      type: 'approval_requested',
+      action: 'node_request',
+      operation: OPERATIONS.NODE_REQUEST,
+      nodeRequest: {
+        service: 'ant',
+        transport: 'http',
+        request: {
+          method: 'POST',
+          path: '/stamps/100/20',
+          headers: { 'content-type': 'application/json' },
+          body: '{"immutable":false}',
+        },
+        effect: 'persistent_change',
+        classification: {
+          summary: 'Creates a durable postage batch.',
+          confidence: 0.96,
+          uncertainties: [],
+        },
+        providerLabel: 'OpenAI',
+        modelId: 'gpt-5.6-sol',
+      },
+    });
+    await service.decideApproval('run_test', approval.approvalId, true);
+    await expect(decision).resolves.toBe('approved');
 
     await service.stop('run_test');
     await service.waitForIdle();

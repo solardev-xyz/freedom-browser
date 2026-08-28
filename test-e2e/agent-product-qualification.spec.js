@@ -49,6 +49,7 @@ const EXPECTED_TOOL_NAMES = Object.freeze([
   'browser_list_downloads',
   'wallet_transfer',
   'node_status',
+  'node_request',
   'node_diagnostics',
   'app_diagnostics',
   'browser_wait',
@@ -66,6 +67,7 @@ let observedUploadReceipt = null;
 let observedWalletReceipts = [];
 let observedDirectWalletReceipt = null;
 let observedNodeStatus = null;
+let observedNodeRequest = null;
 let observedNodeDiagnostics = null;
 let observedAppDiagnostics = null;
 const operations = [];
@@ -215,6 +217,27 @@ async function handleCompletion(request, response) {
     'Cache-Control': 'no-cache',
     Connection: 'keep-alive',
   });
+
+  if (hasUserMarker(messages, 'FREEDOM_EFFECT_CLASSIFIER_V1')) {
+    const requestText = latestUserText(messages);
+    const effect = requestText.includes('"method":"POST"')
+      ? 'persistent_change'
+      : 'read';
+    emitFinal(
+      response,
+      JSON.stringify({
+        effect,
+        confidence: 0.99,
+        summary:
+          effect === 'read'
+            ? 'Reads the Ant health endpoint.'
+            : 'Creates a durable Ant postage batch.',
+        resources: [effect === 'read' ? 'Ant health' : 'Ant postage batch'],
+        uncertainties: [],
+      })
+    );
+    return;
+  }
 
   if (hasUserMarker(messages, 'PRODUCT_SAME_ORIGIN_RESEARCH')) {
     switch (toolResults.length) {
@@ -628,6 +651,36 @@ async function handleCompletion(request, response) {
     return;
   }
 
+  if (
+    hasUserMarker(messages, 'PRODUCT_NODE_REQUEST_READ') ||
+    hasUserMarker(messages, 'PRODUCT_NODE_REQUEST_CHANGE')
+  ) {
+    const changing = hasUserMarker(messages, 'PRODUCT_NODE_REQUEST_CHANGE');
+    if (toolResults.length === 0) {
+      emitToolCall(response, 1, 'node_request', {
+        service: 'ant',
+        transport: 'http',
+        request: changing
+          ? {
+              method: 'POST',
+              path: '/stamps/100/20',
+              headers: { 'content-type': 'application/json' },
+              body: '{"immutable":false}',
+            }
+          : { method: 'GET', path: '/health' },
+      });
+    } else {
+      observedNodeRequest =
+        toolEnvelopes(messages).find((envelope) => envelope?.result?.service === 'ant')?.result ||
+        null;
+      emitFinal(
+        response,
+        `Ant returned HTTP ${observedNodeRequest?.response?.status || 0} for ${observedNodeRequest?.request?.method || ''} ${observedNodeRequest?.request?.path || ''}.`
+      );
+    }
+    return;
+  }
+
   if (hasUserMarker(messages, 'PRODUCT_RAW_DIAGNOSTICS')) {
     if (toolResults.length === 0) {
       emitToolCall(response, 1, 'node_diagnostics', {
@@ -693,6 +746,7 @@ test.beforeEach(() => {
   observedWalletReceipts = [];
   observedDirectWalletReceipt = null;
   observedNodeStatus = null;
+  observedNodeRequest = null;
   observedNodeDiagnostics = null;
   observedAppDiagnostics = null;
   operations.length = 0;
@@ -1710,6 +1764,71 @@ test('node intelligence: reports redacted integrated-service status without a br
   expect(result.assistantOutput).toContain('Checked 6 Freedom services');
   await expect(window.locator('.agent-turn-outcome').last()).toContainText('Node status checked');
   expect(operations).toEqual(['node_status']);
+});
+
+test('node request classifier: confidently reads the registry-selected Ant API without approval', async ({
+  window,
+}) => {
+  await configureFixtureProvider(window);
+
+  await runTask(window, 'PRODUCT_NODE_REQUEST_READ: inspect the Ant health API.');
+
+  const result = await recordQualification(window, 'agent-node-request-read', CLASSIFICATION.PASS, {
+    nodeRequest: observedNodeRequest,
+  });
+  expect(result.nodeRequest).toMatchObject({
+    service: 'ant',
+    transport: 'http',
+    effect: 'read',
+    request: { method: 'GET', path: '/health' },
+    response: {
+      status: 200,
+      body: '{"status":"ok","version":"test-ant"}',
+      bytes: expect.any(Number),
+    },
+  });
+  await expect(window.locator('.agent-turn-outcome').last()).toContainText(
+    'Node request completed'
+  );
+  expect(operations).toEqual(['node_request']);
+});
+
+test('node request classifier: shows the exact persistent request before sending it', async ({
+  window,
+}) => {
+  await configureFixtureProvider(window);
+
+  await window
+    .locator('#agent-prompt')
+    .fill('PRODUCT_NODE_REQUEST_CHANGE: create the deterministic Ant postage batch.');
+  await window.locator('#agent-run').click();
+  await expect(window.locator('#agent-approval-action')).toHaveText(
+    'Allow this Ant node request?'
+  );
+  await expect(window.locator('#agent-node-request-summary')).toContainText(
+    'POST /stamps/100/20'
+  );
+  await expect(window.locator('#agent-node-request-summary')).toContainText('Persistent change');
+  await expect(window.locator('#agent-node-request-summary')).toContainText(
+    'Creates a durable Ant postage batch.'
+  );
+  await window.locator('#agent-approval-approve').click();
+  await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 15_000 });
+
+  const result = await recordQualification(
+    window,
+    'agent-node-request-change',
+    CLASSIFICATION.PASS,
+    { nodeRequest: observedNodeRequest }
+  );
+  expect(result.nodeRequest).toMatchObject({
+    service: 'ant',
+    effect: 'persistent_change',
+    request: { method: 'POST', path: '/stamps/100/20' },
+    response: { status: 201, body: '{"batchID":"test-postage-batch"}' },
+  });
+  expect(result.assistantOutput).toContain('Ant returned HTTP 201');
+  expect(operations).toEqual(['node_request']);
 });
 
 test('node diagnostics: one honest disclosure grants bounded raw node and app evidence to the conversation', async ({

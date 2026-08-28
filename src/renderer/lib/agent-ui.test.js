@@ -83,6 +83,8 @@ function createAgentElements() {
     'agent-approval-message',
     'agent-wallet-approval-details',
     'agent-wallet-approval-summary',
+    'agent-node-request-details',
+    'agent-node-request-summary',
     'agent-wallet-account-field',
     'agent-wallet-account',
     'agent-wallet-unlock',
@@ -178,6 +180,8 @@ function createAgentElements() {
   elements['agent-approval-stop'] = createElement('button');
   elements['agent-wallet-approval-details'].hidden = true;
   elements['agent-wallet-approval-summary'] = createElement('dl');
+  elements['agent-node-request-details'].hidden = true;
+  elements['agent-node-request-summary'] = createElement('dl');
   elements['agent-wallet-account-field'].hidden = true;
   elements['agent-wallet-account'] = createElement('select');
   elements['agent-wallet-unlock'].hidden = true;
@@ -1884,6 +1888,70 @@ describe('Agent UI', () => {
       'approval_diagnostics',
       true,
       { diagnosticScope: 'conversation' }
+    );
+  });
+
+  test('renders the exact classified node request as a one-shot approval', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Create a postage stamp';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'approval_requested',
+      runId: 'run_test',
+      approvalId: 'approval_node_request',
+      action: 'node_request',
+      operation: 'node_request',
+      nodeRequest: {
+        service: 'ant',
+        transport: 'http',
+        request: {
+          method: 'POST',
+          path: '/stamps/100/20',
+          headers: { 'content-type': 'application/json' },
+          body: '{"immutable":false}',
+        },
+        effect: 'persistent_change',
+        classification: {
+          summary: 'Creates a durable postage batch.',
+          confidence: 0.96,
+          uncertainties: [],
+        },
+        providerLabel: 'OpenAI',
+        modelId: 'gpt-5.6-sol',
+      },
+    });
+
+    expect(ctx.elements['agent-approval-action'].textContent).toBe(
+      'Allow this Ant node request?'
+    );
+    expect(ctx.elements['agent-approval-origin'].textContent).toContain(
+      'OpenAI using gpt-5.6-sol independently classified this request as persistent change.'
+    );
+    expect(ctx.elements['agent-node-request-details'].hidden).toBe(false);
+    expect(
+      ctx.elements['agent-node-request-summary'].children.map((child) => child.textContent)
+    ).toEqual([
+      'Request',
+      'POST /stamps/100/20',
+      'Effect',
+      'Persistent change',
+      'Classifier',
+      'Creates a durable postage batch.',
+      'Headers',
+      'content-type: application/json',
+      'Body',
+      '{"immutable":false}',
+    ]);
+    expect(ctx.elements['agent-approval-allow-conversation'].hidden).toBe(true);
+
+    ctx.elements['agent-approval-approve'].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.decideAgentApproval).toHaveBeenCalledWith(
+      'run_test',
+      'approval_node_request',
+      true
     );
   });
 

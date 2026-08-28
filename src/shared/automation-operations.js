@@ -17,6 +17,7 @@ const OPERATIONS = Object.freeze({
   WALLET_ACTION: 'browser_wallet_action',
   WALLET_TRANSFER: 'wallet_transfer',
   NODE_STATUS: 'node_status',
+  NODE_REQUEST: 'node_request',
   NODE_DIAGNOSTICS: 'node_diagnostics',
   APP_DIAGNOSTICS: 'app_diagnostics',
   LIST_DOWNLOADS: 'browser_list_downloads',
@@ -30,6 +31,8 @@ const DEFAULT_DIAGNOSTIC_MAX_LINES = 200;
 const MAX_DIAGNOSTIC_LINES = 400;
 const DEFAULT_DIAGNOSTIC_MAX_BYTES = 49_152;
 const MAX_DIAGNOSTIC_BYTES = 65_536;
+const MAX_NODE_REQUEST_BODY_BYTES = 65_536;
+const MAX_NODE_RESPONSE_BYTES = 65_536;
 const DIAGNOSTIC_SERVICES = Object.freeze([
   'ant',
   'ipfs',
@@ -46,6 +49,8 @@ module.exports = {
   DIAGNOSTIC_SERVICES,
   MAX_DIAGNOSTIC_BYTES,
   MAX_DIAGNOSTIC_LINES,
+  MAX_NODE_REQUEST_BODY_BYTES,
+  MAX_NODE_RESPONSE_BYTES,
   MAX_WAIT_TIMEOUT_MS,
   OPERATIONS,
 };

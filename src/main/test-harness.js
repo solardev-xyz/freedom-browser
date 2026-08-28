@@ -141,6 +141,34 @@ function createAgentWalletTestOptions() {
   };
 }
 
+function createAgentNodeRequestTestOptions() {
+  if (!TEST_MODE_ENABLED) return undefined;
+  return {
+    fetch: async (url, options = {}) => {
+      const target = url instanceof URL ? url : new URL(url);
+      if (target.origin !== 'http://127.0.0.1:11633') {
+        throw new Error('Test node requests must use the registry-selected Ant endpoint');
+      }
+      if (options.method === 'GET' && target.pathname === '/health') {
+        return new Response('{"status":"ok","version":"test-ant"}', {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (options.method === 'POST' && target.pathname === '/stamps/100/20') {
+        return new Response('{"batchID":"test-postage-batch"}', {
+          status: 201,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response('{"message":"not found"}', {
+        status: 404,
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+  };
+}
+
 // Longest-prefix match so a fixture for `bzz://<hash>/` answers for
 // every sub-resource fetched while loading that page. Exact match wins
 // over prefix match by virtue of the length sort.
@@ -644,6 +672,7 @@ function installTestHarness({ defaultSession }) {
 }
 
 module.exports = {
+  createAgentNodeRequestTestOptions,
   createAgentWalletTestOptions,
   isTestMode,
   installTestHarness,

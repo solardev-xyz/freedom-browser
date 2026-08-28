@@ -91,6 +91,11 @@ const OPERATION_PROGRESS = Object.freeze({
     intent: 'Checking Freedom nodes',
     completed: 'Checked Freedom nodes',
   },
+  [OPERATIONS.NODE_REQUEST]: {
+    effect: ACTIVITY_EFFECTS.MANAGED,
+    intent: 'Requesting the Ant node',
+    completed: 'Requested the Ant node',
+  },
   [OPERATIONS.NODE_DIAGNOSTICS]: {
     effect: ACTIVITY_EFFECTS.OBSERVED,
     intent: 'Inspecting node diagnostics',
@@ -263,6 +268,36 @@ function normalizeDiagnosticReceipt(value) {
   });
 }
 
+function normalizeNodeRequestReceipt(value) {
+  if (!value || typeof value !== 'object') return null;
+  const service = boundedString(value.service, 40);
+  const method = boundedString(value.method, 12);
+  const path = boundedString(value.path, 2_048);
+  const effects = new Set([
+    'read',
+    'reversible_admin',
+    'persistent_change',
+    'financial',
+    'destructive',
+    'unknown',
+  ]);
+  if (
+    service !== 'ant' ||
+    !method ||
+    !path ||
+    !effects.has(value.effect) ||
+    !Number.isInteger(value.status) ||
+    value.status < 100 ||
+    value.status > 599 ||
+    !Number.isSafeInteger(value.bytes) ||
+    value.bytes < 0 ||
+    value.bytes > 65_536
+  ) {
+    return null;
+  }
+  return Object.freeze({ service, method, path, effect: value.effect, status: value.status, bytes: value.bytes });
+}
+
 function activityProgress(operation, receipt = {}) {
   const copy = OPERATION_PROGRESS[operation] || {
     effect: ACTIVITY_EFFECTS.MANAGED,
@@ -278,6 +313,7 @@ function activityProgress(operation, receipt = {}) {
   const upload = normalizeUpload(receipt.upload);
   const wallet = normalizeWalletReceipt(receipt.wallet);
   const nodeStatus = normalizeNodeStatusReceipt(receipt.nodeStatus);
+  const nodeRequest = normalizeNodeRequestReceipt(receipt.nodeRequest);
   const diagnostic = normalizeDiagnosticReceipt(receipt.diagnostic);
 
   if (operation === OPERATIONS.LIST_TABS && pageCount !== null) {
@@ -297,6 +333,9 @@ function activityProgress(operation, receipt = {}) {
     const services = `${nodeStatus.total} ${nodeStatus.total === 1 ? 'service' : 'services'}`;
     intent = `Checking ${services}`;
     label = `Checked ${services}`;
+  } else if (operation === OPERATIONS.NODE_REQUEST && nodeRequest) {
+    intent = `Requesting ${nodeRequest.method} ${nodeRequest.path}`;
+    label = `Requested ${nodeRequest.method} ${nodeRequest.path} — ${nodeRequest.status}`;
   } else if (
     (operation === OPERATIONS.NODE_DIAGNOSTICS || operation === OPERATIONS.APP_DIAGNOSTICS) &&
     diagnostic
@@ -326,10 +365,16 @@ function activityProgress(operation, receipt = {}) {
     }
   }
 
+  const effect =
+    operation === OPERATIONS.NODE_REQUEST && nodeRequest
+      ? nodeRequest.effect === 'read'
+        ? ACTIVITY_EFFECTS.OBSERVED
+        : ACTIVITY_EFFECTS.CHANGED
+      : copy.effect;
   return Object.freeze({
     intent,
     label,
-    effect: copy.effect,
+    effect,
     ...(origin && { origin }),
     ...(boundedString(receipt.pageId, 160) && { pageId: receipt.pageId.slice(0, 160) }),
     ...(pageCount !== null && { pageCount }),
@@ -337,6 +382,7 @@ function activityProgress(operation, receipt = {}) {
     ...(upload && { upload }),
     ...(wallet && { wallet }),
     ...(nodeStatus && { nodeStatus }),
+    ...(nodeRequest && { nodeRequest }),
     ...(diagnostic && { diagnostic }),
   });
 }
@@ -362,6 +408,7 @@ function createToolReceipt(operation, options = {}) {
   const upload = normalizeUpload(result?.upload);
   const wallet = normalizeWalletReceipt(result?.wallet);
   const nodeStatus = normalizeNodeStatusReceipt(result?.summary);
+  const nodeRequest = normalizeNodeRequestReceipt(result?.summary);
   const diagnostic = normalizeDiagnosticReceipt(result?.summary);
   const artifacts = Array.isArray(result?.artifacts)
     ? result.artifacts.map(normalizeArtifact).filter(Boolean).slice(0, 100)
@@ -375,6 +422,7 @@ function createToolReceipt(operation, options = {}) {
     ...(upload && { upload }),
     ...(wallet && { wallet }),
     ...(nodeStatus && { nodeStatus }),
+    ...(nodeRequest && { nodeRequest }),
     ...(diagnostic && { diagnostic }),
     ...(artifacts.length && { artifacts }),
   });
@@ -419,6 +467,10 @@ function buildAgentOutcome(activity, status, error) {
     .filter((item) => item?.operation === OPERATIONS.NODE_STATUS)
     .map((item) => normalizeNodeStatusReceipt(item?.nodeStatus))
     .filter(Boolean);
+  const nodeRequests = succeeded
+    .filter((item) => item?.operation === OPERATIONS.NODE_REQUEST)
+    .map((item) => normalizeNodeRequestReceipt(item?.nodeRequest))
+    .filter(Boolean);
   const diagnostics = succeeded
     .filter((item) =>
       [OPERATIONS.NODE_DIAGNOSTICS, OPERATIONS.APP_DIAGNOSTICS].includes(item?.operation)
@@ -427,6 +479,7 @@ function buildAgentOutcome(activity, status, error) {
     .filter(Boolean);
   const nonBrowserObservations = new Set([
     OPERATIONS.NODE_STATUS,
+    OPERATIONS.NODE_REQUEST,
     OPERATIONS.NODE_DIAGNOSTICS,
     OPERATIONS.APP_DIAGNOSTICS,
   ]);
@@ -479,6 +532,7 @@ function buildAgentOutcome(activity, status, error) {
     }),
     ...(walletTransfers.length && { walletTransfers: walletTransfers.length }),
     ...(nodeChecks.length && { nodeChecks: nodeChecks.length }),
+    ...(nodeRequests.length && { nodeRequests: nodeRequests.length }),
     ...(diagnostics.length && { diagnostics: diagnostics.length }),
     approvals,
   });
@@ -591,6 +645,19 @@ function buildAgentOutcome(activity, status, error) {
         headline: 'Node status checked',
         detail: `Freedom checked ${nodeStatus.total} integrated services: ${readiness}${attention}.`,
         nodeStatus,
+        destinations,
+        counts,
+      });
+    }
+    if (nodeRequests.length && !browserObserved.length) {
+      const nodeRequest = nodeRequests.at(-1);
+      return Object.freeze({
+        kind: 'completed',
+        verification: 'node_response_received',
+        tone: nodeRequest.status >= 400 ? 'caution' : 'success',
+        headline: 'Node request completed',
+        detail: `Ant returned HTTP ${nodeRequest.status} for ${nodeRequest.method} ${nodeRequest.path}. Freedom classified its effect as ${nodeRequest.effect.replaceAll('_', ' ')}.`,
+        nodeRequest,
         destinations,
         counts,
       });
@@ -708,6 +775,7 @@ module.exports = {
   errorExplanation,
   normalizeArtifact,
   normalizeDiagnosticReceipt,
+  normalizeNodeRequestReceipt,
   normalizeNodeStatusReceipt,
   normalizeUpload,
   normalizeWalletReceipt,

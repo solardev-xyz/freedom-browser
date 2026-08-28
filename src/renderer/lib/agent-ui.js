@@ -1269,6 +1269,8 @@ function clearApproval() {
   elements.approvalAllowConversation.hidden = true;
   elements.walletApprovalDetails.hidden = true;
   elements.walletApprovalSummary.replaceChildren();
+  elements.nodeRequestDetails.hidden = true;
+  elements.nodeRequestSummary.replaceChildren();
   elements.walletAccountField.hidden = true;
   elements.walletAccount.replaceChildren();
   elements.walletUnlock.hidden = true;
@@ -1285,6 +1287,49 @@ function appendWalletSummary(label, value) {
   description.textContent = value;
   elements.walletApprovalSummary.appendChild(term);
   elements.walletApprovalSummary.appendChild(description);
+}
+
+function appendNodeRequestSummary(label, value) {
+  if (!value) return;
+  const term = document.createElement('dt');
+  term.textContent = label;
+  const description = document.createElement('dd');
+  description.textContent = value;
+  elements.nodeRequestSummary.appendChild(term);
+  elements.nodeRequestSummary.appendChild(description);
+}
+
+function effectLabel(value) {
+  return {
+    read: 'Read-only',
+    reversible_admin: 'Reversible admin change',
+    persistent_change: 'Persistent change',
+    financial: 'Financial action',
+    destructive: 'Destructive action',
+    unknown: 'Uncertain effect',
+  }[value] || 'Uncertain effect';
+}
+
+function renderNodeRequestApproval(request) {
+  const nodeRequest = request.nodeRequest;
+  const wireRequest = nodeRequest.request;
+  elements.nodeRequestDetails.hidden = false;
+  elements.nodeRequestSummary.replaceChildren();
+  appendNodeRequestSummary('Request', `${wireRequest.method} ${wireRequest.path}`);
+  appendNodeRequestSummary('Effect', effectLabel(nodeRequest.effect));
+  appendNodeRequestSummary('Classifier', nodeRequest.classification?.summary);
+  if (nodeRequest.classification?.uncertainties?.length) {
+    appendNodeRequestSummary('Uncertainty', nodeRequest.classification.uncertainties.join('\n'));
+  }
+  if (wireRequest.headers && Object.keys(wireRequest.headers).length) {
+    appendNodeRequestSummary(
+      'Headers',
+      Object.entries(wireRequest.headers)
+        .map(([name, value]) => `${name}: ${value}`)
+        .join('\n')
+    );
+  }
+  if (typeof wireRequest.body === 'string') appendNodeRequestSummary('Body', wireRequest.body);
 }
 
 function shortAddress(value) {
@@ -1372,10 +1417,13 @@ function renderApproval(request) {
     browser_press: `Let Agent press a key on “${label}”?`,
   };
   const diagnostic = request.diagnostic;
+  const nodeRequest = request.nodeRequest;
   elements.approval.classList.toggle('diagnostic-approval', Boolean(diagnostic));
   const diagnosticSubject =
     diagnostic?.scope === 'node' ? `${diagnostic.service} node` : 'Freedom application';
-  elements.approvalAction.textContent = diagnostic
+  elements.approvalAction.textContent = nodeRequest
+    ? `Allow this ${nodeRequest.service === 'ant' ? 'Ant' : nodeRequest.service} node request?`
+    : diagnostic
     ? `Share recent ${diagnosticSubject} diagnostics with ${diagnostic.providerLabel}?`
     : request.action === 'form_submission'
       ? `Submit this form using “${label}”?`
@@ -1392,7 +1440,9 @@ function renderApproval(request) {
               : request.action === 'wallet_signature'
                 ? 'Approve this wallet signature?'
                 : interactionCopy[request.operation] || `Let Agent interact with “${label}”?`;
-  elements.approvalOrigin.textContent = diagnostic
+  elements.approvalOrigin.textContent = nodeRequest
+    ? `${nodeRequest.providerLabel}${nodeRequest.modelId ? ` using ${nodeRequest.modelId}` : ''} independently classified this request as ${effectLabel(nodeRequest.effect).toLowerCase()}. Freedom has not sent it to the node yet.`
+    : diagnostic
     ? diagnostic.local
       ? `Raw diagnostic logs will be added to this conversation with ${diagnostic.providerLabel}${diagnostic.modelId ? ` using ${diagnostic.modelId}` : ''}. They remain on this device, but may include peer IDs, network or wallet addresses, local paths, and requested resources.`
       : `This sends raw diagnostic logs to ${diagnostic.providerLabel}${diagnostic.modelId ? ` using ${diagnostic.modelId}` : ''}. They may include peer IDs, network or wallet addresses, local paths, and requested resources.`
@@ -1419,10 +1469,12 @@ function renderApproval(request) {
   elements.approvalApprove.classList.toggle('primary', !diagnostic);
   elements.approvalApprove.classList.toggle('secondary', Boolean(diagnostic));
   elements.walletApprovalDetails.hidden = true;
+  elements.nodeRequestDetails.hidden = true;
   elements.walletUnlock.hidden = true;
   elements.approvalAllowConversation.hidden = !diagnostic;
   if (diagnostic) elements.approvalAllowConversation.textContent = 'Share for conversation';
   if (request.wallet) renderWalletApproval(request);
+  if (nodeRequest) renderNodeRequestApproval(request);
   setApprovalControlsDisabled(false);
   setMessage(elements.approvalMessage, 'Agent is waiting');
   elements.composer.classList.add('approval-pending');
@@ -2371,6 +2423,8 @@ export function initAgentUi(options = {}) {
     approvalMessage: byId('agent-approval-message'),
     walletApprovalDetails: byId('agent-wallet-approval-details'),
     walletApprovalSummary: byId('agent-wallet-approval-summary'),
+    nodeRequestDetails: byId('agent-node-request-details'),
+    nodeRequestSummary: byId('agent-node-request-summary'),
     walletAccountField: byId('agent-wallet-account-field'),
     walletAccount: byId('agent-wallet-account'),
     walletUnlock: byId('agent-wallet-unlock'),

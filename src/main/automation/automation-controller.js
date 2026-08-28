@@ -30,6 +30,8 @@ class AutomationController {
     }
     this.nodeController = null;
     if (options.nodeController) this.setNodeController(options.nodeController);
+    this.nodeRequestController = null;
+    if (options.nodeRequestController) this.setNodeRequestController(options.nodeRequestController);
     this.diagnosticsController = null;
     if (options.diagnosticsController) this.setDiagnosticsController(options.diagnosticsController);
   }
@@ -95,6 +97,17 @@ class AutomationController {
       throw new TypeError('Automation node controller requires status()');
     }
     this.nodeController = nodeController;
+  }
+
+  setNodeRequestController(nodeRequestController) {
+    if (nodeRequestController === null) {
+      this.nodeRequestController = null;
+      return;
+    }
+    if (!nodeRequestController || typeof nodeRequestController.request !== 'function') {
+      throw new TypeError('Automation node request controller requires request()');
+    }
+    this.nodeRequestController = nodeRequestController;
   }
 
   setDiagnosticsController(diagnosticsController) {
@@ -294,6 +307,12 @@ class AutomationController {
         });
       case OPERATIONS.NODE_STATUS:
         return this.#requireNodeController().status();
+      case OPERATIONS.NODE_REQUEST:
+        return this.#requireNodeRequestController().request(input, {
+          classifyEffect: execution?.classifyEffect,
+          requestApproval: execution?.requestApproval,
+          signal: execution?.signal,
+        });
       case OPERATIONS.NODE_DIAGNOSTICS:
         return this.#requireDiagnosticsController().node(input, {
           requestApproval: execution?.requestApproval,
@@ -379,6 +398,16 @@ class AutomationController {
       );
     }
     return this.nodeController;
+  }
+
+  #requireNodeRequestController() {
+    if (!this.nodeRequestController) {
+      throw new AutomationError(
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        'Direct Freedom node requests are unavailable in this runtime'
+      );
+    }
+    return this.nodeRequestController;
   }
 
   #requireDiagnosticsController() {
