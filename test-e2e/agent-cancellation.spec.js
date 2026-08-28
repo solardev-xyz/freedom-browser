@@ -489,10 +489,17 @@ test('a conversation survives its original and then all task tabs closing', asyn
   await expect(window.locator('#agent-output')).toHaveText('FIVE_TABS_READY');
   await expect(window.locator('[data-test="tab"]')).toHaveCount(6);
   await expect(window.locator('[data-test="tab"].agent-owned')).toHaveCount(5);
+  const activeOwnedTab = window.locator('[data-test="tab"].active.agent-owned');
+  await expect(activeOwnedTab).toHaveCSS('box-shadow', 'none');
+  await expect(activeOwnedTab).toHaveCSS('background-image', /linear-gradient/);
 
   await window.locator('[data-test="agent-first-toggle"]').click();
   await expect(window.locator('#agent-task-page-count')).toHaveText('5');
   await expect(window.locator('#agent-task-page-list .tab:not([hidden])')).toHaveCount(5);
+  await expect(window.locator('#agent-task-page-list .tab.active.agent-owned')).toHaveCSS(
+    'background-image',
+    /linear-gradient/
+  );
   await expect(window.locator('#agent-task-pages-empty')).toHaveCSS('display', 'none');
   await expect(window.locator('#agent-page-surface webview:not(.hidden)')).toBeVisible();
   const compactTabStrip = await window.locator('#agent-task-page-list').evaluate((list) => {
