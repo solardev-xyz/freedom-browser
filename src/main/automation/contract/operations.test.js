@@ -186,6 +186,21 @@ describe('automation operation contract', () => {
     expect(() => validateOperationInput(OPERATIONS.NODE_REQUEST, input)).toThrow();
   });
 
+  test('normalizes and constrains node lifecycle actions', () => {
+    expect(
+      validateOperationInput(OPERATIONS.NODE_LIFECYCLE, {
+        service: ' myotis-gnosis ',
+        action: ' restart ',
+      })
+    ).toEqual({ service: 'myotis-gnosis', action: 'restart' });
+    expect(() =>
+      validateOperationInput(OPERATIONS.NODE_LIFECYCLE, {
+        service: 'ant',
+        action: 'reset',
+      })
+    ).toThrow('action must be one of');
+  });
+
   test('rejects arbitrary keyboard input', () => {
     expect(() =>
       validateOperationInput(OPERATIONS.PRESS, {

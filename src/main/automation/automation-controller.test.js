@@ -306,6 +306,34 @@ describe('AutomationController', () => {
     expect(status).toHaveBeenCalledTimes(1);
   });
 
+  test('routes node lifecycle through its approved manager boundary', async () => {
+    const { controller } = createController();
+    const lifecycle = jest.fn(async () => ({
+      service: 'ipfs',
+      action: 'restart',
+      verified: true,
+    }));
+    controller.setNodeLifecycleController({ lifecycle });
+    const classifyEffect = jest.fn();
+    const requestApproval = jest.fn();
+    const signal = new AbortController().signal;
+
+    await expect(
+      controller.execute(
+        OPERATIONS.NODE_LIFECYCLE,
+        { service: 'ipfs', action: 'restart' },
+        { classifyEffect, requestApproval, signal }
+      )
+    ).resolves.toMatchObject({
+      ok: true,
+      result: { service: 'ipfs', action: 'restart', verified: true },
+    });
+    expect(lifecycle).toHaveBeenCalledWith(
+      { service: 'ipfs', action: 'restart' },
+      { classifyEffect, requestApproval, signal }
+    );
+  });
+
   test('routes diagnostics through a separate approved main-process boundary', async () => {
     const { controller } = createController();
     const requestApproval = jest.fn(async () => 'approved');

@@ -1955,6 +1955,51 @@ describe('Agent UI', () => {
     );
   });
 
+  test('renders an exact node lifecycle approval with current state and classifier result', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Restart IPFS';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'approval_requested',
+      runId: 'run_test',
+      approvalId: 'approval_node_lifecycle',
+      action: 'node_lifecycle',
+      operation: 'node_lifecycle',
+      nodeLifecycle: {
+        service: 'ipfs',
+        action: 'restart',
+        beforeState: 'running',
+        effect: 'reversible_admin',
+        classification: {
+          summary: 'Restarts one Freedom-managed IPFS process.',
+          confidence: 0.99,
+          uncertainties: [],
+        },
+        providerLabel: 'OpenAI',
+        modelId: 'gpt-5.6-sol',
+      },
+    });
+
+    expect(ctx.elements['agent-approval-action'].textContent).toBe('Restart the IPFS node?');
+    expect(ctx.elements['agent-approval-origin'].textContent).toContain(
+      'Freedom will run it through the node manager and verify the resulting state.'
+    );
+    expect(
+      ctx.elements['agent-node-request-summary'].children.map((child) => child.textContent)
+    ).toEqual([
+      'Action',
+      'restart ipfs',
+      'Current state',
+      'running',
+      'Effect',
+      'Reversible admin change',
+      'Classifier',
+      'Restarts one Freedom-managed IPFS process.',
+    ]);
+  });
+
   test('condenses same-origin download approval copy without repeating Download', async () => {
     const ctx = await loadAgentUi();
     ctx.elements['agent-prompt'].value = 'Download Ubuntu';

@@ -290,6 +290,61 @@ describe('Agent progress projection', () => {
     });
   });
 
+  test('projects and reports only verified node lifecycle state', () => {
+    const receipt = createToolReceipt(OPERATIONS.NODE_LIFECYCLE, {
+      envelope: {
+        ok: true,
+        result: {
+          service: 'ipfs',
+          action: 'restart',
+          beforeState: 'running',
+          afterState: 'running',
+          verified: true,
+          summary: {
+            service: 'ipfs',
+            action: 'restart',
+            beforeState: 'running',
+            afterState: 'running',
+            verified: true,
+          },
+        },
+      },
+    });
+
+    expect(receipt).toEqual({
+      nodeLifecycle: {
+        service: 'ipfs',
+        action: 'restart',
+        beforeState: 'running',
+        afterState: 'running',
+        verified: true,
+      },
+    });
+    expect(activityProgress(OPERATIONS.NODE_LIFECYCLE, receipt)).toMatchObject({
+      intent: 'Restarting ipfs',
+      label: 'Restarted ipfs — running',
+      effect: 'changed',
+    });
+    expect(
+      buildAgentOutcome(
+        [
+          {
+            operation: OPERATIONS.NODE_LIFECYCLE,
+            status: 'succeeded',
+            effect: 'changed',
+            nodeLifecycle: receipt.nodeLifecycle,
+          },
+        ],
+        'completed'
+      )
+    ).toMatchObject({
+      verification: 'node_lifecycle_verified',
+      headline: 'Node state verified',
+      nodeLifecycle: receipt.nodeLifecycle,
+      counts: { nodeLifecycles: 1, pages: 0 },
+    });
+  });
+
   test('treats a declined wallet request as a final user decision, not a failure', () => {
     expect(
       buildAgentOutcome(

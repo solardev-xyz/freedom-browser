@@ -60,6 +60,15 @@ const ensFixtures = new Map();
 const probeFixtures = new Map();
 const automationWindows = new Map();
 let agentWalletTransaction = null;
+const DEFAULT_AGENT_NODE_LIFECYCLE_STATES = Object.freeze([
+  ['ant', 'running'],
+  ['ipfs', 'running'],
+  ['radicle', 'running'],
+  ['tor', 'running'],
+  ['myotis-ethereum', 'ready'],
+  ['myotis-gnosis', 'ready'],
+]);
+const agentNodeLifecycleStates = new Map(DEFAULT_AGENT_NODE_LIFECYCLE_STATES);
 
 // Records profile "open" launches instead of cold-starting a real second
 // Electron instance. See installProfileLaunchRecorder / profile-launcher.js.
@@ -94,6 +103,10 @@ function resetFixtures() {
   ensFixtures.clear();
   probeFixtures.clear();
   agentWalletTransaction = null;
+  agentNodeLifecycleStates.clear();
+  for (const [service, state] of DEFAULT_AGENT_NODE_LIFECYCLE_STATES) {
+    agentNodeLifecycleStates.set(service, state);
+  }
 }
 
 function createAgentWalletTestOptions() {
@@ -166,6 +179,32 @@ function createAgentNodeRequestTestOptions() {
         headers: { 'content-type': 'application/json' },
       });
     },
+  };
+}
+
+function createAgentNodeLifecycleTestOptions() {
+  if (!TEST_MODE_ENABLED) return undefined;
+  const start = (service, state = 'running') => agentNodeLifecycleStates.set(service, state);
+  const stop = (service) => agentNodeLifecycleStates.set(service, 'stopped');
+  return {
+    nodeStatusController: {
+      status: async () => ({
+        nodes: [...agentNodeLifecycleStates].map(([id, state]) => ({ id, state })),
+      }),
+    },
+    dependencies: {
+      startAnt: () => start('ant'),
+      stopAnt: () => stop('ant'),
+      startIpfs: () => start('ipfs'),
+      stopIpfs: () => stop('ipfs'),
+      startRadicle: () => start('radicle'),
+      stopRadicle: () => stop('radicle'),
+      startTor: () => start('tor'),
+      stopTor: () => stop('tor'),
+      startMyotis: (chainId) => start(chainId === 100 ? 'myotis-gnosis' : 'myotis-ethereum', 'ready'),
+      stopMyotis: (chainId) => stop(chainId === 100 ? 'myotis-gnosis' : 'myotis-ethereum'),
+    },
+    verifyTimeoutMs: 0,
   };
 }
 
@@ -672,6 +711,7 @@ function installTestHarness({ defaultSession }) {
 }
 
 module.exports = {
+  createAgentNodeLifecycleTestOptions,
   createAgentNodeRequestTestOptions,
   createAgentWalletTestOptions,
   isTestMode,

@@ -50,6 +50,7 @@ const EXPECTED_TOOL_NAMES = Object.freeze([
   'wallet_transfer',
   'node_status',
   'node_request',
+  'node_lifecycle',
   'node_diagnostics',
   'app_diagnostics',
   'browser_wait',
@@ -68,6 +69,7 @@ let observedWalletReceipts = [];
 let observedDirectWalletReceipt = null;
 let observedNodeStatus = null;
 let observedNodeRequest = null;
+let observedNodeLifecycle = null;
 let observedNodeDiagnostics = null;
 let observedAppDiagnostics = null;
 const operations = [];
@@ -220,19 +222,24 @@ async function handleCompletion(request, response) {
 
   if (hasUserMarker(messages, 'FREEDOM_EFFECT_CLASSIFIER_V1')) {
     const requestText = latestUserText(messages);
-    const effect = requestText.includes('"method":"POST"')
-      ? 'persistent_change'
-      : 'read';
+    const lifecycle = requestText.includes('"transport":"freedom_lifecycle"');
+    const effect = lifecycle
+      ? 'reversible_admin'
+      : requestText.includes('"method":"POST"')
+        ? 'persistent_change'
+        : 'read';
     emitFinal(
       response,
       JSON.stringify({
         effect,
         confidence: 0.99,
         summary:
-          effect === 'read'
+          lifecycle
+            ? 'Restarts one Freedom-managed node.'
+            : effect === 'read'
             ? 'Reads the Ant health endpoint.'
             : 'Creates a durable Ant postage batch.',
-        resources: [effect === 'read' ? 'Ant health' : 'Ant postage batch'],
+        resources: [lifecycle ? 'IPFS node' : effect === 'read' ? 'Ant health' : 'Ant postage batch'],
         uncertainties: [],
       })
     );
@@ -681,6 +688,24 @@ async function handleCompletion(request, response) {
     return;
   }
 
+  if (hasUserMarker(messages, 'PRODUCT_NODE_LIFECYCLE')) {
+    if (toolResults.length === 0) {
+      emitToolCall(response, 1, 'node_lifecycle', {
+        service: 'ipfs',
+        action: 'restart',
+      });
+    } else {
+      observedNodeLifecycle =
+        toolEnvelopes(messages).find((envelope) => envelope?.result?.verified === true)?.result ||
+        null;
+      emitFinal(
+        response,
+        `Restarted IPFS and verified its state as ${observedNodeLifecycle?.afterState || 'unknown'}.`
+      );
+    }
+    return;
+  }
+
   if (hasUserMarker(messages, 'PRODUCT_RAW_DIAGNOSTICS')) {
     if (toolResults.length === 0) {
       emitToolCall(response, 1, 'node_diagnostics', {
@@ -747,6 +772,7 @@ test.beforeEach(() => {
   observedDirectWalletReceipt = null;
   observedNodeStatus = null;
   observedNodeRequest = null;
+  observedNodeLifecycle = null;
   observedNodeDiagnostics = null;
   observedAppDiagnostics = null;
   operations.length = 0;
@@ -1829,6 +1855,37 @@ test('node request classifier: shows the exact persistent request before sending
   });
   expect(result.assistantOutput).toContain('Ant returned HTTP 201');
   expect(operations).toEqual(['node_request']);
+});
+
+test('node lifecycle: exact approval is followed by verified manager state', async ({ window }) => {
+  await configureFixtureProvider(window);
+
+  await window
+    .locator('#agent-prompt')
+    .fill('PRODUCT_NODE_LIFECYCLE: restart the integrated IPFS node.');
+  await window.locator('#agent-run').click();
+  await expect(window.locator('#agent-approval-action')).toHaveText('Restart the IPFS node?');
+  await expect(window.locator('#agent-node-request-summary')).toContainText('restart ipfs');
+  await expect(window.locator('#agent-node-request-summary')).toContainText('Current state');
+  await expect(window.locator('#agent-node-request-summary')).toContainText(
+    'Reversible admin change'
+  );
+  await window.locator('#agent-approval-approve').click();
+  await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 15_000 });
+
+  const result = await recordQualification(window, 'agent-node-lifecycle', CLASSIFICATION.PASS, {
+    nodeLifecycle: observedNodeLifecycle,
+  });
+  expect(result.nodeLifecycle).toMatchObject({
+    service: 'ipfs',
+    action: 'restart',
+    beforeState: 'running',
+    afterState: 'running',
+    verified: true,
+  });
+  expect(result.assistantOutput).toContain('Restarted IPFS and verified its state as running');
+  await expect(window.locator('.agent-turn-outcome').last()).toContainText('Node state verified');
+  expect(operations).toEqual(['node_lifecycle']);
 });
 
 test('node diagnostics: one honest disclosure grants bounded raw node and app evidence to the conversation', async ({

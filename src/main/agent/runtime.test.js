@@ -8,6 +8,7 @@ jest.mock('./session-history-store');
 jest.mock('./agent-wallet-controller');
 jest.mock('../node-status-controller');
 jest.mock('../node-request-controller');
+jest.mock('../node-lifecycle-controller');
 jest.mock('../node-diagnostics-controller');
 
 const { FreedomAgentService } = require('./freedom-agent-service');
@@ -18,6 +19,7 @@ const { AgentSessionHistoryStore } = require('./session-history-store');
 const { AgentWalletController } = require('./agent-wallet-controller');
 const { NodeStatusController } = require('../node-status-controller');
 const { NodeRequestController } = require('../node-request-controller');
+const { NodeLifecycleController } = require('../node-lifecycle-controller');
 const { NodeDiagnosticsController } = require('../node-diagnostics-controller');
 const { createFreedomAgentRuntime } = require('./runtime');
 
@@ -38,6 +40,7 @@ describe('Freedom agent runtime', () => {
     const walletController = {};
     const nodeController = {};
     const nodeRequestController = {};
+    const nodeLifecycleController = {};
     const diagnosticsController = {};
     const unregisterIpc = jest.fn(async () => calls.push('ipc'));
     AgentProviderStore.mockImplementation(() => providerStore);
@@ -46,6 +49,7 @@ describe('Freedom agent runtime', () => {
     AgentWalletController.mockImplementation(() => walletController);
     NodeStatusController.mockImplementation(() => nodeController);
     NodeRequestController.mockImplementation(() => nodeRequestController);
+    NodeLifecycleController.mockImplementation(() => nodeLifecycleController);
     NodeDiagnosticsController.mockImplementation(() => diagnosticsController);
     FreedomAgentService.mockImplementation(() => service);
     registerFreedomAgentIpc.mockReturnValue(unregisterIpc);
@@ -59,6 +63,7 @@ describe('Freedom agent runtime', () => {
         setWalletTransferController: jest.fn(),
         setNodeController: jest.fn(),
         setNodeRequestController: jest.fn(),
+        setNodeLifecycleController: jest.fn(),
         setDiagnosticsController: jest.fn(),
       },
       automationTabIdForRenderer: jest.fn(),
@@ -70,6 +75,7 @@ describe('Freedom agent runtime', () => {
       walletControllerOptions: { requestTimeoutMs: 250 },
       nodeControllerOptions: { fixture: true },
       nodeRequestControllerOptions: { timeoutMs: 250 },
+      nodeLifecycleControllerOptions: { verifyTimeoutMs: 250 },
       nodeDiagnosticsControllerOptions: { logBuffer: {} },
     };
 
@@ -92,6 +98,10 @@ describe('Freedom agent runtime', () => {
     expect(AgentWalletController).toHaveBeenCalledWith(options.walletControllerOptions);
     expect(NodeStatusController).toHaveBeenCalledWith(options.nodeControllerOptions);
     expect(NodeRequestController).toHaveBeenCalledWith(options.nodeRequestControllerOptions);
+    expect(NodeLifecycleController).toHaveBeenCalledWith({
+      nodeStatusController: nodeController,
+      ...options.nodeLifecycleControllerOptions,
+    });
     expect(NodeDiagnosticsController).toHaveBeenCalledWith({
       nodeStatusController: nodeController,
       ...options.nodeDiagnosticsControllerOptions,
@@ -100,6 +110,9 @@ describe('Freedom agent runtime', () => {
     expect(options.controller.setNodeController).toHaveBeenCalledWith(nodeController);
     expect(options.controller.setNodeRequestController).toHaveBeenCalledWith(
       nodeRequestController
+    );
+    expect(options.controller.setNodeLifecycleController).toHaveBeenCalledWith(
+      nodeLifecycleController
     );
     expect(options.controller.setDiagnosticsController).toHaveBeenCalledWith(
       diagnosticsController
@@ -135,6 +148,7 @@ describe('Freedom agent runtime', () => {
     expect(options.controller.setWalletTransferController).toHaveBeenLastCalledWith(null);
     expect(options.controller.setNodeController).toHaveBeenLastCalledWith(null);
     expect(options.controller.setNodeRequestController).toHaveBeenLastCalledWith(null);
+    expect(options.controller.setNodeLifecycleController).toHaveBeenLastCalledWith(null);
     expect(options.controller.setDiagnosticsController).toHaveBeenLastCalledWith(null);
     expect(calls).toEqual(['ipc', 'service', 'history']);
   });

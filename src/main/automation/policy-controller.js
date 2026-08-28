@@ -22,6 +22,7 @@ const OPERATION_CLASSES = Object.freeze({
   [OPERATIONS.WALLET_TRANSFER]: 'privileged',
   [OPERATIONS.NODE_STATUS]: 'observe',
   [OPERATIONS.NODE_REQUEST]: 'privileged',
+  [OPERATIONS.NODE_LIFECYCLE]: 'privileged',
   [OPERATIONS.NODE_DIAGNOSTICS]: 'observe',
   [OPERATIONS.APP_DIAGNOSTICS]: 'observe',
   [OPERATIONS.LIST_DOWNLOADS]: 'observe',

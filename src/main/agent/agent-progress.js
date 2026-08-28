@@ -96,6 +96,11 @@ const OPERATION_PROGRESS = Object.freeze({
     intent: 'Requesting a Freedom node',
     completed: 'Requested a Freedom node',
   },
+  [OPERATIONS.NODE_LIFECYCLE]: {
+    effect: ACTIVITY_EFFECTS.CHANGED,
+    intent: 'Changing a Freedom node',
+    completed: 'Changed a Freedom node',
+  },
   [OPERATIONS.NODE_DIAGNOSTICS]: {
     effect: ACTIVITY_EFFECTS.OBSERVED,
     intent: 'Inspecting node diagnostics',
@@ -298,6 +303,24 @@ function normalizeNodeRequestReceipt(value) {
   return Object.freeze({ service, method, path, effect: value.effect, status: value.status, bytes: value.bytes });
 }
 
+function normalizeNodeLifecycleReceipt(value) {
+  if (!value || typeof value !== 'object') return null;
+  const service = boundedString(value.service, 40);
+  const action = boundedString(value.action, 12);
+  const beforeState = boundedString(value.beforeState, 40);
+  const afterState = boundedString(value.afterState, 40);
+  if (
+    !['ant', 'ipfs', 'radicle', 'tor', 'myotis-ethereum', 'myotis-gnosis'].includes(service) ||
+    !['start', 'stop', 'restart'].includes(action) ||
+    !beforeState ||
+    !afterState ||
+    value.verified !== true
+  ) {
+    return null;
+  }
+  return Object.freeze({ service, action, beforeState, afterState, verified: true });
+}
+
 function activityProgress(operation, receipt = {}) {
   const copy = OPERATION_PROGRESS[operation] || {
     effect: ACTIVITY_EFFECTS.MANAGED,
@@ -314,6 +337,7 @@ function activityProgress(operation, receipt = {}) {
   const wallet = normalizeWalletReceipt(receipt.wallet);
   const nodeStatus = normalizeNodeStatusReceipt(receipt.nodeStatus);
   const nodeRequest = normalizeNodeRequestReceipt(receipt.nodeRequest);
+  const nodeLifecycle = normalizeNodeLifecycleReceipt(receipt.nodeLifecycle);
   const diagnostic = normalizeDiagnosticReceipt(receipt.diagnostic);
 
   if (operation === OPERATIONS.LIST_TABS && pageCount !== null) {
@@ -336,6 +360,9 @@ function activityProgress(operation, receipt = {}) {
   } else if (operation === OPERATIONS.NODE_REQUEST && nodeRequest) {
     intent = `Requesting ${nodeRequest.method} ${nodeRequest.path}`;
     label = `Requested ${nodeRequest.method} ${nodeRequest.path} — ${nodeRequest.status}`;
+  } else if (operation === OPERATIONS.NODE_LIFECYCLE && nodeLifecycle) {
+    intent = `${nodeLifecycle.action === 'restart' ? 'Restarting' : nodeLifecycle.action === 'start' ? 'Starting' : 'Stopping'} ${nodeLifecycle.service}`;
+    label = `${nodeLifecycle.action === 'restart' ? 'Restarted' : nodeLifecycle.action === 'start' ? 'Started' : 'Stopped'} ${nodeLifecycle.service} — ${nodeLifecycle.afterState}`;
   } else if (
     (operation === OPERATIONS.NODE_DIAGNOSTICS || operation === OPERATIONS.APP_DIAGNOSTICS) &&
     diagnostic
@@ -383,6 +410,7 @@ function activityProgress(operation, receipt = {}) {
     ...(wallet && { wallet }),
     ...(nodeStatus && { nodeStatus }),
     ...(nodeRequest && { nodeRequest }),
+    ...(nodeLifecycle && { nodeLifecycle }),
     ...(diagnostic && { diagnostic }),
   });
 }
@@ -409,6 +437,7 @@ function createToolReceipt(operation, options = {}) {
   const wallet = normalizeWalletReceipt(result?.wallet);
   const nodeStatus = normalizeNodeStatusReceipt(result?.summary);
   const nodeRequest = normalizeNodeRequestReceipt(result?.summary);
+  const nodeLifecycle = normalizeNodeLifecycleReceipt(result?.summary);
   const diagnostic = normalizeDiagnosticReceipt(result?.summary);
   const artifacts = Array.isArray(result?.artifacts)
     ? result.artifacts.map(normalizeArtifact).filter(Boolean).slice(0, 100)
@@ -423,6 +452,7 @@ function createToolReceipt(operation, options = {}) {
     ...(wallet && { wallet }),
     ...(nodeStatus && { nodeStatus }),
     ...(nodeRequest && { nodeRequest }),
+    ...(nodeLifecycle && { nodeLifecycle }),
     ...(diagnostic && { diagnostic }),
     ...(artifacts.length && { artifacts }),
   });
@@ -471,6 +501,10 @@ function buildAgentOutcome(activity, status, error) {
     .filter((item) => item?.operation === OPERATIONS.NODE_REQUEST)
     .map((item) => normalizeNodeRequestReceipt(item?.nodeRequest))
     .filter(Boolean);
+  const nodeLifecycles = succeeded
+    .filter((item) => item?.operation === OPERATIONS.NODE_LIFECYCLE)
+    .map((item) => normalizeNodeLifecycleReceipt(item?.nodeLifecycle))
+    .filter(Boolean);
   const diagnostics = succeeded
     .filter((item) =>
       [OPERATIONS.NODE_DIAGNOSTICS, OPERATIONS.APP_DIAGNOSTICS].includes(item?.operation)
@@ -480,6 +514,7 @@ function buildAgentOutcome(activity, status, error) {
   const nonBrowserObservations = new Set([
     OPERATIONS.NODE_STATUS,
     OPERATIONS.NODE_REQUEST,
+    OPERATIONS.NODE_LIFECYCLE,
     OPERATIONS.NODE_DIAGNOSTICS,
     OPERATIONS.APP_DIAGNOSTICS,
   ]);
@@ -533,6 +568,7 @@ function buildAgentOutcome(activity, status, error) {
     ...(walletTransfers.length && { walletTransfers: walletTransfers.length }),
     ...(nodeChecks.length && { nodeChecks: nodeChecks.length }),
     ...(nodeRequests.length && { nodeRequests: nodeRequests.length }),
+    ...(nodeLifecycles.length && { nodeLifecycles: nodeLifecycles.length }),
     ...(diagnostics.length && { diagnostics: diagnostics.length }),
     approvals,
   });
@@ -662,6 +698,19 @@ function buildAgentOutcome(activity, status, error) {
         counts,
       });
     }
+    if (nodeLifecycles.length && !browserObserved.length) {
+      const lifecycle = nodeLifecycles.at(-1);
+      return Object.freeze({
+        kind: 'completed',
+        verification: 'node_lifecycle_verified',
+        tone: 'success',
+        headline: 'Node state verified',
+        detail: `Freedom verified ${lifecycle.service} changed from ${lifecycle.beforeState} to ${lifecycle.afterState} after ${lifecycle.action}.`,
+        nodeLifecycle: lifecycle,
+        destinations,
+        counts,
+      });
+    }
     if (resultObserved) {
       return Object.freeze({
         kind: 'completed',
@@ -776,6 +825,7 @@ module.exports = {
   normalizeArtifact,
   normalizeDiagnosticReceipt,
   normalizeNodeRequestReceipt,
+  normalizeNodeLifecycleReceipt,
   normalizeNodeStatusReceipt,
   normalizeUpload,
   normalizeWalletReceipt,

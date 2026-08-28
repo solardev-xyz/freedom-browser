@@ -21,6 +21,7 @@ const {
   buildAgentOutcome,
   normalizeArtifact,
   normalizeDiagnosticReceipt,
+  normalizeNodeLifecycleReceipt,
   normalizeNodeRequestReceipt,
   normalizeNodeStatusReceipt,
   normalizeUpload,
@@ -223,6 +224,7 @@ function normalizePiEvent(event, toolOutcome) {
       ...(toolOutcome?.wallet && { wallet: toolOutcome.wallet }),
       ...(toolOutcome?.nodeStatus && { nodeStatus: toolOutcome.nodeStatus }),
       ...(toolOutcome?.nodeRequest && { nodeRequest: toolOutcome.nodeRequest }),
+      ...(toolOutcome?.nodeLifecycle && { nodeLifecycle: toolOutcome.nodeLifecycle }),
       ...(toolOutcome?.diagnostic && { diagnostic: toolOutcome.diagnostic }),
       ...(toolOutcome?.artifacts && { artifacts: toolOutcome.artifacts }),
       ...(errorCode && { errorCode }),
@@ -281,11 +283,14 @@ function normalizeApprovalRequest(request, recipient) {
   const wallet = normalizeWalletApproval(request?.wallet);
   const diagnostic = normalizeDiagnosticApproval(request?.diagnostic, recipient);
   const nodeRequest = normalizeNodeRequestApproval(request?.nodeRequest, recipient);
+  const nodeLifecycle = normalizeNodeLifecycleApproval(request?.nodeLifecycle, recipient);
   const origin = wallet
     ? getPermissionKey(request?.origin) || ''
     : originScopeForUrl(request?.origin) || '';
   return Object.freeze({
-    action: nodeRequest
+    action: nodeLifecycle
+      ? 'node_lifecycle'
+      : nodeRequest
       ? 'node_request'
       : diagnostic
       ? 'diagnostic_data'
@@ -314,6 +319,58 @@ function normalizeApprovalRequest(request, recipient) {
     ...(wallet && { wallet }),
     ...(diagnostic && { diagnostic }),
     ...(nodeRequest && { nodeRequest }),
+    ...(nodeLifecycle && { nodeLifecycle }),
+  });
+}
+
+function normalizeNodeLifecycleApproval(value, recipient = {}) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  if (
+    !['ant', 'ipfs', 'radicle', 'tor', 'myotis-ethereum', 'myotis-gnosis'].includes(
+      value.service
+    ) ||
+    !['start', 'stop', 'restart'].includes(value.action)
+  ) {
+    return null;
+  }
+  const classification = value.classification;
+  const providerId =
+    typeof recipient.providerId === 'string' ? recipient.providerId.slice(0, 80) : '';
+  return Object.freeze({
+    service: value.service,
+    action: value.action,
+    beforeState:
+      typeof value.beforeState === 'string' ? value.beforeState.slice(0, 40) : 'unknown',
+    effect: [
+      'reversible_admin',
+      'persistent_change',
+      'financial',
+      'destructive',
+      'unknown',
+    ].includes(value.effect)
+      ? value.effect
+      : 'unknown',
+    classification: Object.freeze({
+      summary:
+        typeof classification?.summary === 'string'
+          ? classification.summary.slice(0, 240)
+          : 'The effect could not be classified reliably.',
+      confidence: Number.isFinite(classification?.confidence)
+        ? Math.max(0, Math.min(1, classification.confidence))
+        : 0,
+      uncertainties: Object.freeze(
+        Array.isArray(classification?.uncertainties)
+          ? classification.uncertainties
+              .filter((item) => typeof item === 'string')
+              .slice(0, 12)
+              .map((item) => item.slice(0, 240))
+          : []
+      ),
+    }),
+    providerId,
+    providerLabel: PROVIDER_LABELS[providerId] || providerId || 'the selected model provider',
+    modelId: typeof recipient.modelId === 'string' ? recipient.modelId.slice(0, 160) : '',
+    local: providerId === 'ollama',
   });
 }
 
@@ -1230,6 +1287,7 @@ class FreedomAgentService {
         if (normalized.wallet) item.wallet = normalized.wallet;
         if (normalized.nodeStatus) item.nodeStatus = normalized.nodeStatus;
         if (normalized.nodeRequest) item.nodeRequest = normalized.nodeRequest;
+        if (normalized.nodeLifecycle) item.nodeLifecycle = normalized.nodeLifecycle;
         if (normalized.diagnostic) item.diagnostic = normalized.diagnostic;
         if (normalized.artifacts) item.artifacts = normalized.artifacts;
         if (item.approval) normalized.approval = item.approval;
@@ -1268,6 +1326,9 @@ class FreedomAgentService {
       ...(normalizeNodeRequestReceipt(outcome.nodeRequest) && {
         nodeRequest: normalizeNodeRequestReceipt(outcome.nodeRequest),
       }),
+      ...(normalizeNodeLifecycleReceipt(outcome.nodeLifecycle) && {
+        nodeLifecycle: normalizeNodeLifecycleReceipt(outcome.nodeLifecycle),
+      }),
       ...(normalizeDiagnosticReceipt(outcome.diagnostic) && {
         diagnostic: normalizeDiagnosticReceipt(outcome.diagnostic),
       }),
@@ -1282,6 +1343,8 @@ class FreedomAgentService {
         upload: outcome.upload,
         wallet: outcome.wallet,
         nodeStatus: outcome.nodeStatus,
+        nodeRequest: outcome.nodeRequest,
+        nodeLifecycle: outcome.nodeLifecycle,
         diagnostic: outcome.diagnostic,
       }),
     });

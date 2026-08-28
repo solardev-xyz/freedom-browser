@@ -105,6 +105,21 @@ describe('AgentSessionHistoryStore', () => {
             path: '/Users/private/Documents/résumé.pdf',
           },
         },
+        {
+          toolCallId: 'call_lifecycle',
+          operation: 'node_lifecycle',
+          status: 'succeeded',
+          label: 'Restarted ipfs — running',
+          effect: 'changed',
+          nodeLifecycle: {
+            service: 'ipfs',
+            action: 'restart',
+            beforeState: 'running',
+            afterState: 'running',
+            verified: true,
+            rawStatus: { endpoint: 'http://127.0.0.1:secret' },
+          },
+        },
       ],
       guidance: [
         {
@@ -172,6 +187,20 @@ describe('AgentSessionHistoryStore', () => {
                 bytes: 4096,
                 mimeType: 'application/pdf',
                 state: 'attached',
+              },
+            },
+            {
+              toolCallId: 'call_lifecycle',
+              operation: 'node_lifecycle',
+              status: 'succeeded',
+              label: 'Restarted ipfs — running',
+              effect: 'changed',
+              nodeLifecycle: {
+                service: 'ipfs',
+                action: 'restart',
+                beforeState: 'running',
+                afterState: 'running',
+                verified: true,
               },
             },
           ],

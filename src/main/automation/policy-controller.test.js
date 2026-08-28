@@ -13,6 +13,7 @@ describe('AutomationPolicyController', () => {
 
   test('classifies node status as read-only observation', async () => {
     expect(OPERATION_CLASSES[OPERATIONS.NODE_STATUS]).toBe('observe');
+    expect(OPERATION_CLASSES[OPERATIONS.NODE_LIFECYCLE]).toBe('privileged');
     await expect(
       createInitialAutomationPolicy().authorize({ operation: OPERATIONS.NODE_STATUS })
     ).resolves.toEqual({ allowed: true, operationClass: 'observe' });

@@ -1098,6 +1098,28 @@ describe('OriginScopedAutomationController', () => {
     );
   });
 
+  test('preserves classifier and approval boundaries for node lifecycle without a tab', async () => {
+    const controller = createController();
+    const requestApproval = jest.fn();
+    const classifyEffect = jest.fn();
+    const scoped = await createOriginScopedAutomationController({
+      controller,
+      tabId: null,
+      transferOwnerId: 'conversation_test',
+      requestApproval,
+      classifyEffect,
+    });
+    const input = { service: 'ipfs', action: 'restart' };
+
+    await scoped.execute(OPERATIONS.NODE_LIFECYCLE, input);
+
+    expect(controller.execute).toHaveBeenLastCalledWith(OPERATIONS.NODE_LIFECYCLE, input, {
+      conversationId: 'conversation_test',
+      classifyEffect,
+      requestApproval,
+    });
+  });
+
   test('requires one provider disclosure and can grant diagnostics for the conversation', async () => {
     const controller = createController();
     const requestApproval = jest.fn(async () => ({

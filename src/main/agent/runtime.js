@@ -8,6 +8,7 @@ const { AgentSessionHistoryStore } = require('./session-history-store');
 const { AgentWalletController } = require('./agent-wallet-controller');
 const { NodeStatusController } = require('../node-status-controller');
 const { NodeRequestController } = require('../node-request-controller');
+const { NodeLifecycleController } = require('../node-lifecycle-controller');
 const { NodeDiagnosticsController } = require('../node-diagnostics-controller');
 
 function createFreedomAgentRuntime(options = {}) {
@@ -28,6 +29,10 @@ function createFreedomAgentRuntime(options = {}) {
   const walletController = new AgentWalletController(options.walletControllerOptions);
   const nodeController = new NodeStatusController(options.nodeControllerOptions);
   const nodeRequestController = new NodeRequestController(options.nodeRequestControllerOptions);
+  const nodeLifecycleController = new NodeLifecycleController({
+    nodeStatusController: nodeController,
+    ...options.nodeLifecycleControllerOptions,
+  });
   const diagnosticsController = new NodeDiagnosticsController({
     nodeStatusController: nodeController,
     ...options.nodeDiagnosticsControllerOptions,
@@ -35,6 +40,7 @@ function createFreedomAgentRuntime(options = {}) {
   options.controller.setWalletTransferController(walletController);
   options.controller.setNodeController(nodeController);
   options.controller.setNodeRequestController(nodeRequestController);
+  options.controller.setNodeLifecycleController(nodeLifecycleController);
   options.controller.setDiagnosticsController(diagnosticsController);
   const service = new FreedomAgentService({
     controller: options.controller,
@@ -62,6 +68,7 @@ function createFreedomAgentRuntime(options = {}) {
     walletController,
     nodeController,
     nodeRequestController,
+    nodeLifecycleController,
     diagnosticsController,
     service,
     async dispose() {
@@ -71,6 +78,7 @@ function createFreedomAgentRuntime(options = {}) {
       options.controller.setWalletTransferController(null);
       options.controller.setNodeController(null);
       options.controller.setNodeRequestController(null);
+      options.controller.setNodeLifecycleController(null);
       options.controller.setDiagnosticsController(null);
     },
   };

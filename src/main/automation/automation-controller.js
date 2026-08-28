@@ -32,6 +32,10 @@ class AutomationController {
     if (options.nodeController) this.setNodeController(options.nodeController);
     this.nodeRequestController = null;
     if (options.nodeRequestController) this.setNodeRequestController(options.nodeRequestController);
+    this.nodeLifecycleController = null;
+    if (options.nodeLifecycleController) {
+      this.setNodeLifecycleController(options.nodeLifecycleController);
+    }
     this.diagnosticsController = null;
     if (options.diagnosticsController) this.setDiagnosticsController(options.diagnosticsController);
   }
@@ -108,6 +112,17 @@ class AutomationController {
       throw new TypeError('Automation node request controller requires request()');
     }
     this.nodeRequestController = nodeRequestController;
+  }
+
+  setNodeLifecycleController(nodeLifecycleController) {
+    if (nodeLifecycleController === null) {
+      this.nodeLifecycleController = null;
+      return;
+    }
+    if (!nodeLifecycleController || typeof nodeLifecycleController.lifecycle !== 'function') {
+      throw new TypeError('Automation node lifecycle controller requires lifecycle()');
+    }
+    this.nodeLifecycleController = nodeLifecycleController;
   }
 
   setDiagnosticsController(diagnosticsController) {
@@ -313,6 +328,12 @@ class AutomationController {
           requestApproval: execution?.requestApproval,
           signal: execution?.signal,
         });
+      case OPERATIONS.NODE_LIFECYCLE:
+        return this.#requireNodeLifecycleController().lifecycle(input, {
+          classifyEffect: execution?.classifyEffect,
+          requestApproval: execution?.requestApproval,
+          signal: execution?.signal,
+        });
       case OPERATIONS.NODE_DIAGNOSTICS:
         return this.#requireDiagnosticsController().node(input, {
           requestApproval: execution?.requestApproval,
@@ -408,6 +429,16 @@ class AutomationController {
       );
     }
     return this.nodeRequestController;
+  }
+
+  #requireNodeLifecycleController() {
+    if (!this.nodeLifecycleController) {
+      throw new AutomationError(
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        'Freedom node lifecycle controls are unavailable in this runtime'
+      );
+    }
+    return this.nodeLifecycleController;
   }
 
   #requireDiagnosticsController() {

@@ -7,6 +7,7 @@ const { normalizeAgentApprovalMode } = require('../../shared/agent-approval-mode
 const { originScopeForUrl } = require('../automation/origin-scoped-controller');
 const {
   normalizeArtifact,
+  normalizeNodeLifecycleReceipt,
   normalizeUpload,
   normalizeWalletReceipt,
 } = require('./agent-progress');
@@ -66,6 +67,7 @@ function normalizeActivity(activity) {
       const artifact = normalizeArtifact(item.artifact);
       const upload = normalizeUpload(item.upload);
       const wallet = normalizeWalletReceipt(item.wallet);
+      const nodeLifecycle = normalizeNodeLifecycleReceipt(item.nodeLifecycle);
       const artifacts = Array.isArray(item.artifacts)
         ? item.artifacts.map(normalizeArtifact).filter(Boolean).slice(0, 100)
         : [];
@@ -83,6 +85,7 @@ function normalizeActivity(activity) {
         ...(artifact && { artifact }),
         ...(upload && { upload }),
         ...(wallet && { wallet }),
+        ...(nodeLifecycle && { nodeLifecycle }),
         ...(artifacts.length && { artifacts }),
         ...(Number.isSafeInteger(item.pageCount) && item.pageCount >= 0
           ? { pageCount: item.pageCount }

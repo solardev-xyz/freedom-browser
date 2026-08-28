@@ -222,6 +222,26 @@ const TOOL_SPECS = Object.freeze([
     cancellable: true,
   },
   {
+    operation: OPERATIONS.NODE_LIFECYCLE,
+    label: 'Manage a Freedom node',
+    description:
+      'Start, stop, or restart one Freedom-integrated node through its owning node manager. Every action requires exact user approval and Freedom verifies the resulting node state before reporting success. This does not enable a disabled integration or install an unavailable runtime.',
+    parameters: {
+      type: 'object',
+      properties: {
+        service: {
+          type: 'string',
+          enum: ['ant', 'ipfs', 'radicle', 'tor', 'myotis-ethereum', 'myotis-gnosis'],
+        },
+        action: { type: 'string', enum: ['start', 'stop', 'restart'] },
+      },
+      required: ['service', 'action'],
+      additionalProperties: false,
+    },
+    tabMode: 'none',
+    cancellable: true,
+  },
+  {
     operation: OPERATIONS.NODE_DIAGNOSTICS,
     label: 'Inspect node diagnostics',
     description:
@@ -354,7 +374,8 @@ async function executeCancellable(controller, operation, input, signal, executio
     operation === OPERATIONS.DOWNLOAD ||
     operation === OPERATIONS.UPLOAD ||
     operation === OPERATIONS.WALLET_TRANSFER ||
-    operation === OPERATIONS.NODE_REQUEST
+    operation === OPERATIONS.NODE_REQUEST ||
+    operation === OPERATIONS.NODE_LIFECYCLE
   ) {
     return controller.execute(operation, input, { ...execution, signal });
   }

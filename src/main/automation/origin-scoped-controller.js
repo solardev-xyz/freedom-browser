@@ -26,6 +26,7 @@ const ORIGIN_SCOPED_OPERATIONS = new Set([
   OPERATIONS.WALLET_TRANSFER,
   OPERATIONS.NODE_STATUS,
   OPERATIONS.NODE_REQUEST,
+  OPERATIONS.NODE_LIFECYCLE,
   OPERATIONS.NODE_DIAGNOSTICS,
   OPERATIONS.APP_DIAGNOSTICS,
   OPERATIONS.LIST_DOWNLOADS,
@@ -186,6 +187,13 @@ class OriginScopedAutomationController {
       return this.#executeController(operation, input, execution);
     }
     if (operation === OPERATIONS.NODE_REQUEST) {
+      return this.#executeController(operation, input, {
+        ...execution,
+        classifyEffect: this.classifyEffect,
+        requestApproval: this.requestApproval,
+      });
+    }
+    if (operation === OPERATIONS.NODE_LIFECYCLE) {
       return this.#executeController(operation, input, {
         ...execution,
         classifyEffect: this.classifyEffect,

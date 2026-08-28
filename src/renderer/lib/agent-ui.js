@@ -1332,6 +1332,19 @@ function renderNodeRequestApproval(request) {
   if (typeof wireRequest.body === 'string') appendNodeRequestSummary('Body', wireRequest.body);
 }
 
+function renderNodeLifecycleApproval(request) {
+  const lifecycle = request.nodeLifecycle;
+  elements.nodeRequestDetails.hidden = false;
+  elements.nodeRequestSummary.replaceChildren();
+  appendNodeRequestSummary('Action', `${lifecycle.action} ${lifecycle.service}`);
+  appendNodeRequestSummary('Current state', lifecycle.beforeState);
+  appendNodeRequestSummary('Effect', effectLabel(lifecycle.effect));
+  appendNodeRequestSummary('Classifier', lifecycle.classification?.summary);
+  if (lifecycle.classification?.uncertainties?.length) {
+    appendNodeRequestSummary('Uncertainty', lifecycle.classification.uncertainties.join('\n'));
+  }
+}
+
 function shortAddress(value) {
   return typeof value === 'string' && value.length > 18
     ? `${value.slice(0, 10)}…${value.slice(-6)}`
@@ -1418,12 +1431,22 @@ function renderApproval(request) {
   };
   const diagnostic = request.diagnostic;
   const nodeRequest = request.nodeRequest;
+  const nodeLifecycle = request.nodeLifecycle;
   elements.approval.classList.toggle('diagnostic-approval', Boolean(diagnostic));
   const diagnosticSubject =
     diagnostic?.scope === 'node' ? `${diagnostic.service} node` : 'Freedom application';
-  const nodeLabels = { ant: 'Ant', radicle: 'Radicle', ipfs: 'IPFS' };
+  const nodeLabels = {
+    ant: 'Ant',
+    ipfs: 'IPFS',
+    radicle: 'Radicle',
+    tor: 'Tor',
+    'myotis-ethereum': 'Myotis Ethereum',
+    'myotis-gnosis': 'Myotis Gnosis',
+  };
   elements.approvalAction.textContent = nodeRequest
     ? `Allow this ${nodeLabels[nodeRequest.service] || nodeRequest.service} node request?`
+    : nodeLifecycle
+      ? `${nodeLifecycle.action[0].toUpperCase()}${nodeLifecycle.action.slice(1)} the ${nodeLabels[nodeLifecycle.service] || nodeLifecycle.service} node?`
     : diagnostic
     ? `Share recent ${diagnosticSubject} diagnostics with ${diagnostic.providerLabel}?`
     : request.action === 'form_submission'
@@ -1443,6 +1466,8 @@ function renderApproval(request) {
                 : interactionCopy[request.operation] || `Let Agent interact with “${label}”?`;
   elements.approvalOrigin.textContent = nodeRequest
     ? `${nodeRequest.providerLabel}${nodeRequest.modelId ? ` using ${nodeRequest.modelId}` : ''} independently classified this request as ${effectLabel(nodeRequest.effect).toLowerCase()}. Freedom has not sent it to the node yet.`
+    : nodeLifecycle
+      ? `${nodeLifecycle.providerLabel}${nodeLifecycle.modelId ? ` using ${nodeLifecycle.modelId}` : ''} classified this as ${effectLabel(nodeLifecycle.effect).toLowerCase()}. Freedom will run it through the node manager and verify the resulting state.`
     : diagnostic
     ? diagnostic.local
       ? `Raw diagnostic logs will be added to this conversation with ${diagnostic.providerLabel}${diagnostic.modelId ? ` using ${diagnostic.modelId}` : ''}. They remain on this device, but may include peer IDs, network or wallet addresses, local paths, and requested resources.`
@@ -1476,6 +1501,7 @@ function renderApproval(request) {
   if (diagnostic) elements.approvalAllowConversation.textContent = 'Share for conversation';
   if (request.wallet) renderWalletApproval(request);
   if (nodeRequest) renderNodeRequestApproval(request);
+  if (nodeLifecycle) renderNodeLifecycleApproval(request);
   setApprovalControlsDisabled(false);
   setMessage(elements.approvalMessage, 'Agent is waiting');
   elements.composer.classList.add('approval-pending');

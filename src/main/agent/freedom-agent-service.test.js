@@ -885,6 +885,40 @@ describe('FreedomAgentService', () => {
     await service.decideApproval('run_test', approval.approvalId, true);
     await expect(decision).resolves.toBe('approved');
 
+    const lifecycleDecision = requestApproval({
+      action: 'node_lifecycle',
+      operation: OPERATIONS.NODE_LIFECYCLE,
+      label: 'restart ipfs',
+      nodeLifecycle: {
+        service: 'ipfs',
+        action: 'restart',
+        beforeState: 'running',
+        effect: 'reversible_admin',
+        classification: {
+          effect: 'reversible_admin',
+          summary: 'Restarts one Freedom-managed node.',
+          confidence: 0.99,
+          uncertainties: [],
+        },
+      },
+    });
+    const lifecycleApproval = events.at(-1);
+    expect(lifecycleApproval).toMatchObject({
+      type: 'approval_requested',
+      action: 'node_lifecycle',
+      operation: OPERATIONS.NODE_LIFECYCLE,
+      nodeLifecycle: {
+        service: 'ipfs',
+        action: 'restart',
+        beforeState: 'running',
+        effect: 'reversible_admin',
+        providerLabel: 'OpenAI',
+        modelId: 'gpt-5.6-sol',
+      },
+    });
+    await service.decideApproval('run_test', lifecycleApproval.approvalId, true);
+    await expect(lifecycleDecision).resolves.toBe('approved');
+
     await service.stop('run_test');
     await service.waitForIdle();
   });
