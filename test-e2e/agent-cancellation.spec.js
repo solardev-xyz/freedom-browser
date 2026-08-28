@@ -399,7 +399,10 @@ test('Take over preserves the Pi session and resume re-observes the page', async
 
   await takeOverControlledPage(window);
   await expect(window.locator('#agent-run')).toHaveAttribute('data-action', 'resume');
-  await expect(window.locator('[data-test="tab"].active')).toHaveClass(/agent-controlled/);
+  const controlledTab = window.locator('[data-test="tab"].active');
+  await expect(controlledTab).toHaveClass(/agent-controlled/);
+  await expect(controlledTab).toHaveCSS('box-shadow', 'none');
+  await expect(controlledTab).toHaveCSS('background-image', /linear-gradient/);
   await expect.poll(() => streamingResponseClosed).toBe(true);
 
   await window.locator('#agent-run').click();

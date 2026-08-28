@@ -91,10 +91,6 @@
     color 0.15s ease;
 }
 
-.tab.agent-controlled {
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent);
-}
-
 .tab-agent-badge {
   display: none;
   flex: 0 0 auto;
@@ -184,6 +180,33 @@
   color: var(--text);
   z-index: 2;
   overflow: visible;
+}
+
+/* Agent control is a tab state, not a focus ring. Tint the top of the tab and
+   let it settle into the normal chrome color where the tab joins the toolbar. */
+.tab.agent-controlled.active {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--accent) 26%, var(--toolbar)) 0%,
+    color-mix(in srgb, var(--accent) 9%, var(--toolbar)) 52%,
+    var(--toolbar) 100%
+  );
+}
+
+.tab.agent-controlled:not(.active) {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--accent) 14%, var(--bg)) 0%,
+    transparent 100%
+  );
+}
+
+.tab.agent-controlled:not(.active):hover {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--accent) 20%, var(--bg)) 0%,
+    color-mix(in srgb, var(--text) 6%, transparent) 100%
+  );
 }
 
 /* Corner curves for active tab */

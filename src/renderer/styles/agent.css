@@ -599,6 +599,14 @@ body.agent-first-mode .agent-task-page-list .tab.active {
   border-color: var(--agent-divider, var(--border));
 }
 
+body.agent-first-mode .agent-task-page-list .tab.agent-controlled.active {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--accent) 22%, var(--agent-browser-chrome, var(--toolbar))) 0%,
+    var(--agent-browser-chrome, var(--toolbar)) 100%
+  );
+}
+
 .agent-task-page-list .tab-corner,
 .agent-task-page-list .tab-separator {
   display: none !important;
