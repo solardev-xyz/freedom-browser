@@ -96,6 +96,11 @@ const OPERATION_PROGRESS = Object.freeze({
     intent: 'Requesting a Freedom node',
     completed: 'Requested a Freedom node',
   },
+  [OPERATIONS.NODE_OPERATION_STATUS]: {
+    effect: ACTIVITY_EFFECTS.OBSERVED,
+    intent: 'Checking a node operation',
+    completed: 'Checked a node operation',
+  },
   [OPERATIONS.NODE_LIFECYCLE]: {
     effect: ACTIVITY_EFFECTS.CHANGED,
     intent: 'Changing a Freedom node',
@@ -286,21 +291,41 @@ function normalizeNodeRequestReceipt(value) {
     'destructive',
     'unknown',
   ]);
+  const states = new Set(['not_dispatched', 'in_flight', 'responded', 'delivery_uncertain']);
+  const operationId = boundedString(value.operationId, 160);
+  const state = boundedString(value.state, 40);
+  const retrySafety = value.retrySafety === 'safe' ? 'safe' : 'unsafe';
   if (
     !['ant', 'radicle', 'ipfs'].includes(service) ||
     !method ||
     !path ||
     !effects.has(value.effect) ||
-    !Number.isInteger(value.status) ||
-    value.status < 100 ||
-    value.status > 599 ||
-    !Number.isSafeInteger(value.bytes) ||
-    value.bytes < 0 ||
-    value.bytes > 65_536
+    !/^node_op_[a-f0-9]{24}$/.test(operationId) ||
+    !states.has(state)
   ) {
     return null;
   }
-  return Object.freeze({ service, method, path, effect: value.effect, status: value.status, bytes: value.bytes });
+  if (
+    state === 'responded' &&
+    (!Number.isInteger(value.status) ||
+      value.status < 100 ||
+      value.status > 599 ||
+      !Number.isSafeInteger(value.bytes) ||
+      value.bytes < 0 ||
+      value.bytes > 65_536)
+  ) {
+    return null;
+  }
+  return Object.freeze({
+    operationId,
+    state,
+    retrySafety,
+    service,
+    method,
+    path,
+    effect: value.effect,
+    ...(state === 'responded' && { status: value.status, bytes: value.bytes }),
+  });
 }
 
 function normalizeNodeLifecycleReceipt(value) {
@@ -357,9 +382,20 @@ function activityProgress(operation, receipt = {}) {
     const services = `${nodeStatus.total} ${nodeStatus.total === 1 ? 'service' : 'services'}`;
     intent = `Checking ${services}`;
     label = `Checked ${services}`;
-  } else if (operation === OPERATIONS.NODE_REQUEST && nodeRequest) {
-    intent = `Requesting ${nodeRequest.method} ${nodeRequest.path}`;
-    label = `Requested ${nodeRequest.method} ${nodeRequest.path} — ${nodeRequest.status}`;
+  } else if (
+    (operation === OPERATIONS.NODE_REQUEST || operation === OPERATIONS.NODE_OPERATION_STATUS) &&
+    nodeRequest
+  ) {
+    intent =
+      operation === OPERATIONS.NODE_REQUEST
+        ? `Requesting ${nodeRequest.method} ${nodeRequest.path}`
+        : `Checking ${nodeRequest.method} ${nodeRequest.path}`;
+    label =
+      nodeRequest.state === 'responded'
+        ? `Requested ${nodeRequest.method} ${nodeRequest.path} — ${nodeRequest.status}`
+        : nodeRequest.state === 'in_flight'
+          ? `Requested ${nodeRequest.method} ${nodeRequest.path} — still running`
+          : `Requested ${nodeRequest.method} ${nodeRequest.path} — outcome uncertain`;
   } else if (operation === OPERATIONS.NODE_LIFECYCLE && nodeLifecycle) {
     intent = `${nodeLifecycle.action === 'restart' ? 'Restarting' : nodeLifecycle.action === 'start' ? 'Starting' : 'Stopping'} ${nodeLifecycle.service}`;
     label = `${nodeLifecycle.action === 'restart' ? 'Restarted' : nodeLifecycle.action === 'start' ? 'Started' : 'Stopped'} ${nodeLifecycle.service} — ${nodeLifecycle.afterState}`;
@@ -393,7 +429,8 @@ function activityProgress(operation, receipt = {}) {
   }
 
   const effect =
-    operation === OPERATIONS.NODE_REQUEST && nodeRequest
+    (operation === OPERATIONS.NODE_REQUEST || operation === OPERATIONS.NODE_OPERATION_STATUS) &&
+    nodeRequest
       ? nodeRequest.effect === 'read'
         ? ACTIVITY_EFFECTS.OBSERVED
         : ACTIVITY_EFFECTS.CHANGED
@@ -498,7 +535,9 @@ function buildAgentOutcome(activity, status, error) {
     .map((item) => normalizeNodeStatusReceipt(item?.nodeStatus))
     .filter(Boolean);
   const nodeRequests = succeeded
-    .filter((item) => item?.operation === OPERATIONS.NODE_REQUEST)
+    .filter((item) =>
+      [OPERATIONS.NODE_REQUEST, OPERATIONS.NODE_OPERATION_STATUS].includes(item?.operation)
+    )
     .map((item) => normalizeNodeRequestReceipt(item?.nodeRequest))
     .filter(Boolean);
   const nodeLifecycles = succeeded
@@ -514,6 +553,7 @@ function buildAgentOutcome(activity, status, error) {
   const nonBrowserObservations = new Set([
     OPERATIONS.NODE_STATUS,
     OPERATIONS.NODE_REQUEST,
+    OPERATIONS.NODE_OPERATION_STATUS,
     OPERATIONS.NODE_LIFECYCLE,
     OPERATIONS.NODE_DIAGNOSTICS,
     OPERATIONS.APP_DIAGNOSTICS,
@@ -687,6 +727,34 @@ function buildAgentOutcome(activity, status, error) {
     }
     if (nodeRequests.length && !browserObserved.length) {
       const nodeRequest = nodeRequests.at(-1);
+      if (nodeRequest.state === 'in_flight') {
+        return Object.freeze({
+          kind: 'completed',
+          verification: 'node_request_in_flight',
+          tone: 'caution',
+          headline: 'Node request still running',
+          detail: `${nodeRequest.service} is still processing ${nodeRequest.method} ${nodeRequest.path}. Freedom operation ${nodeRequest.operationId} remains in flight; unsafe requests must not be repeated.`,
+          nodeRequest,
+          destinations,
+          counts,
+        });
+      }
+      if (nodeRequest.state === 'delivery_uncertain') {
+        const detail =
+          nodeRequest.retrySafety === 'safe'
+            ? `Freedom did not receive a complete response for ${nodeRequest.method} ${nodeRequest.path}. Operation ${nodeRequest.operationId} is safe to retry because it was classified as read-only.`
+            : `Freedom attempted ${nodeRequest.method} ${nodeRequest.path} but lost observability before receiving a response. Operation ${nodeRequest.operationId} may have reached ${nodeRequest.service}; do not retry it without reconciliation.`;
+        return Object.freeze({
+          kind: 'completed',
+          verification: 'node_delivery_uncertain',
+          tone: 'caution',
+          headline: 'Node outcome uncertain',
+          detail,
+          nodeRequest,
+          destinations,
+          counts,
+        });
+      }
       return Object.freeze({
         kind: 'completed',
         verification: 'node_response_received',

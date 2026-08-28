@@ -222,6 +222,23 @@ const TOOL_SPECS = Object.freeze([
     cancellable: true,
   },
   {
+    operation: OPERATIONS.NODE_OPERATION_STATUS,
+    label: 'Check a node operation',
+    description:
+      'Check a Freedom-local node operation receipt by ID. Omit operationId after an interrupted run to list this conversation’s recent operation summaries, then inspect the relevant ID. Use this when node_request reports in_flight. A responded receipt contains the eventual raw node response. delivery_uncertain means Freedom lost observability after dispatch; do not retry an unsafe operation or claim that it failed without reconciliation.',
+    parameters: {
+      type: 'object',
+      properties: {
+        operationId: {
+          type: 'string',
+          pattern: '^node_op_[a-f0-9]{24}$',
+        },
+      },
+      additionalProperties: false,
+    },
+    tabMode: 'none',
+  },
+  {
     operation: OPERATIONS.NODE_LIFECYCLE,
     label: 'Manage a Freedom node',
     description:

@@ -8,6 +8,7 @@ const { originScopeForUrl } = require('../automation/origin-scoped-controller');
 const {
   normalizeArtifact,
   normalizeNodeLifecycleReceipt,
+  normalizeNodeRequestReceipt,
   normalizeUpload,
   normalizeWalletReceipt,
 } = require('./agent-progress');
@@ -68,6 +69,7 @@ function normalizeActivity(activity) {
       const upload = normalizeUpload(item.upload);
       const wallet = normalizeWalletReceipt(item.wallet);
       const nodeLifecycle = normalizeNodeLifecycleReceipt(item.nodeLifecycle);
+      const nodeRequest = normalizeNodeRequestReceipt(item.nodeRequest);
       const artifacts = Array.isArray(item.artifacts)
         ? item.artifacts.map(normalizeArtifact).filter(Boolean).slice(0, 100)
         : [];
@@ -86,6 +88,7 @@ function normalizeActivity(activity) {
         ...(upload && { upload }),
         ...(wallet && { wallet }),
         ...(nodeLifecycle && { nodeLifecycle }),
+        ...(nodeRequest && { nodeRequest }),
         ...(artifacts.length && { artifacts }),
         ...(Number.isSafeInteger(item.pageCount) && item.pageCount >= 0
           ? { pageCount: item.pageCount }

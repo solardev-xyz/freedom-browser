@@ -157,6 +157,8 @@ function createAgentWalletTestOptions() {
 function createAgentNodeRequestTestOptions() {
   if (!TEST_MODE_ENABLED) return undefined;
   return {
+    interactiveTimeoutMs: 20,
+    mutationTimeoutMs: 2_000,
     fetch: async (url, options = {}) => {
       const target = url instanceof URL ? url : new URL(url);
       if (target.origin !== 'http://127.0.0.1:11633') {
@@ -171,6 +173,13 @@ function createAgentNodeRequestTestOptions() {
       if (options.method === 'POST' && target.pathname === '/stamps/100/20') {
         return new Response('{"batchID":"test-postage-batch"}', {
           status: 201,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (options.method === 'POST' && target.pathname === '/test/slow-write') {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        return new Response('{"operation":"settled"}', {
+          status: 202,
           headers: { 'content-type': 'application/json' },
         });
       }

@@ -1098,6 +1098,24 @@ describe('OriginScopedAutomationController', () => {
     );
   });
 
+  test('keeps node operation lookup scoped to the current conversation', async () => {
+    const controller = createController();
+    const scoped = await createOriginScopedAutomationController({
+      controller,
+      tabId: null,
+      transferOwnerId: 'conversation_test',
+    });
+    const input = { operationId: 'node_op_aaaaaaaaaaaaaaaaaaaaaaaa' };
+
+    await scoped.execute(OPERATIONS.NODE_OPERATION_STATUS, input);
+
+    expect(controller.execute).toHaveBeenLastCalledWith(
+      OPERATIONS.NODE_OPERATION_STATUS,
+      input,
+      { conversationId: 'conversation_test' }
+    );
+  });
+
   test('preserves classifier and approval boundaries for node lifecycle without a tab', async () => {
     const controller = createController();
     const requestApproval = jest.fn();

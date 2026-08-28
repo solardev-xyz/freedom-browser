@@ -186,6 +186,18 @@ describe('automation operation contract', () => {
     expect(() => validateOperationInput(OPERATIONS.NODE_REQUEST, input)).toThrow();
   });
 
+  test('accepts exact or discovery-mode node operation status input', () => {
+    expect(validateOperationInput(OPERATIONS.NODE_OPERATION_STATUS, {})).toEqual({});
+    expect(
+      validateOperationInput(OPERATIONS.NODE_OPERATION_STATUS, {
+        operationId: ' node_op_aaaaaaaaaaaaaaaaaaaaaaaa ',
+      })
+    ).toEqual({ operationId: 'node_op_aaaaaaaaaaaaaaaaaaaaaaaa' });
+    expect(() =>
+      validateOperationInput(OPERATIONS.NODE_OPERATION_STATUS, { operationId: 'node_op_guess' })
+    ).toThrow('Freedom node operation ID');
+  });
+
   test('normalizes and constrains node lifecycle actions', () => {
     expect(
       validateOperationInput(OPERATIONS.NODE_LIFECYCLE, {

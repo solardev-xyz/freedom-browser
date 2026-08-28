@@ -5,6 +5,7 @@ const { registerFreedomAgentIpc } = require('./ipc');
 const { AgentProviderResolver } = require('./provider-resolver');
 const { AgentProviderStore } = require('./provider-store');
 const { AgentSessionHistoryStore } = require('./session-history-store');
+const { AgentNodeOperationStore } = require('./node-operation-store');
 const { AgentWalletController } = require('./agent-wallet-controller');
 const { NodeStatusController } = require('../node-status-controller');
 const { NodeRequestController } = require('../node-request-controller');
@@ -26,9 +27,16 @@ function createFreedomAgentRuntime(options = {}) {
     userDataDir: options.profile?.userDataDir,
   });
   historyStore.markStaleRunningAsInterrupted();
+  const nodeOperationStore = new AgentNodeOperationStore({
+    userDataDir: options.profile?.userDataDir,
+  });
+  nodeOperationStore.markStaleInFlightAsUncertain();
   const walletController = new AgentWalletController(options.walletControllerOptions);
   const nodeController = new NodeStatusController(options.nodeControllerOptions);
-  const nodeRequestController = new NodeRequestController(options.nodeRequestControllerOptions);
+  const nodeRequestController = new NodeRequestController({
+    ...options.nodeRequestControllerOptions,
+    operationStore: nodeOperationStore,
+  });
   const nodeLifecycleController = new NodeLifecycleController({
     nodeStatusController: nodeController,
     ...options.nodeLifecycleControllerOptions,
@@ -65,6 +73,7 @@ function createFreedomAgentRuntime(options = {}) {
     providerStore,
     providerResolver,
     historyStore,
+    nodeOperationStore,
     walletController,
     nodeController,
     nodeRequestController,
@@ -74,7 +83,9 @@ function createFreedomAgentRuntime(options = {}) {
     async dispose() {
       await unregisterIpc();
       await service.dispose();
+      await nodeRequestController.dispose();
       historyStore.close();
+      nodeOperationStore.close();
       options.controller.setWalletTransferController(null);
       options.controller.setNodeController(null);
       options.controller.setNodeRequestController(null);

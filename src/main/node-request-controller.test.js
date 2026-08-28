@@ -34,6 +34,8 @@ describe('NodeRequestController', () => {
     const controller = new NodeRequestController({
       getAntApiUrl: () => 'http://127.0.0.1:1633',
       fetch,
+      operationIdFactory: () => 'node_op_aaaaaaaaaaaaaaaaaaaaaaaa',
+      now: () => 1_000,
     });
 
     await expect(
@@ -42,6 +44,13 @@ describe('NodeRequestController', () => {
       service: 'ant',
       transport: 'http',
       effect: 'read',
+      operation: {
+        operationId: 'node_op_aaaaaaaaaaaaaaaaaaaaaaaa',
+        state: 'responded',
+        retrySafety: 'safe',
+        createdAt: 1_000,
+        updatedAt: 1_000,
+      },
       request: { method: 'GET', path: '/health' },
       response: {
         status: 200,
@@ -55,6 +64,9 @@ describe('NodeRequestController', () => {
         effect: 'read',
         method: 'GET',
         path: '/health',
+        operationId: 'node_op_aaaaaaaaaaaaaaaaaaaaaaaa',
+        state: 'responded',
+        retrySafety: 'safe',
         status: 200,
         bytes: 15,
       },
@@ -221,6 +233,217 @@ describe('NodeRequestController', () => {
         classifyEffect: async () => classification(EFFECTS.READ),
       })
     ).rejects.toMatchObject({ code: 'CAPABILITY_UNAVAILABLE' });
+  });
+
+  test('keeps a slow state-changing request alive and exposes its eventual response by operation ID', async () => {
+    let release;
+    const responseReady = new Promise((resolve) => {
+      release = resolve;
+    });
+    const fetch = jest.fn(() => responseReady);
+    const controller = new NodeRequestController({
+      getAntApiUrl: () => 'http://127.0.0.1:1633',
+      fetch,
+      interactiveTimeoutMs: 5,
+      mutationTimeoutMs: 1_000,
+      operationIdFactory: () => 'node_op_bbbbbbbbbbbbbbbbbbbbbbbb',
+    });
+    const context = {
+      conversationId: 'conversation_one',
+      classifyEffect: async () => classification(EFFECTS.FINANCIAL),
+      requestApproval: async () => 'approved',
+    };
+
+    const pending = await controller.request(
+      requestInput({ method: 'POST', path: '/stamps/100/20' }),
+      context
+    );
+    expect(pending).toMatchObject({
+      operation: {
+        operationId: 'node_op_bbbbbbbbbbbbbbbbbbbbbbbb',
+        state: 'in_flight',
+        retrySafety: 'unsafe',
+      },
+      summary: { state: 'in_flight' },
+    });
+    expect(fetch.mock.calls[0][1].signal.aborted).toBe(false);
+
+    release(new Response('{"batchID":"batch-1"}', { status: 201 }));
+    await new Promise((resolve) => setImmediate(resolve));
+    await expect(
+      controller.status(
+        { operationId: 'node_op_bbbbbbbbbbbbbbbbbbbbbbbb' },
+        { conversationId: 'conversation_one' }
+      )
+    ).resolves.toMatchObject({
+      operation: { state: 'responded', retrySafety: 'unsafe' },
+      response: { status: 201, body: '{"batchID":"batch-1"}' },
+    });
+  });
+
+  test('stopping the Agent after dispatch stops waiting without aborting an unsafe request', async () => {
+    let release;
+    let dispatched;
+    const dispatchedPromise = new Promise((resolve) => {
+      dispatched = resolve;
+    });
+    const fetch = jest.fn((_url, options) => {
+      dispatched(options.signal);
+      return new Promise((resolve) => {
+        release = resolve;
+      });
+    });
+    const controller = new NodeRequestController({
+      getAntApiUrl: () => 'http://127.0.0.1:1633',
+      fetch,
+      interactiveTimeoutMs: 1_000,
+      mutationTimeoutMs: 2_000,
+      operationIdFactory: () => 'node_op_cccccccccccccccccccccccc',
+    });
+    const abortController = new AbortController();
+    const request = controller.request(requestInput({ method: 'PATCH', path: '/configuration' }), {
+      conversationId: 'conversation_one',
+      classifyEffect: async () => classification(EFFECTS.PERSISTENT_CHANGE),
+      requestApproval: async () => 'approved',
+      signal: abortController.signal,
+    });
+
+    const nodeSignal = await dispatchedPromise;
+    abortController.abort();
+    await expect(request).resolves.toMatchObject({ operation: { state: 'in_flight' } });
+    expect(nodeSignal.aborted).toBe(false);
+    release(new Response('{}', { status: 200 }));
+    await new Promise((resolve) => setImmediate(resolve));
+    await expect(
+      controller.status(
+        { operationId: 'node_op_cccccccccccccccccccccccc' },
+        { conversationId: 'conversation_one' }
+      )
+    ).resolves.toMatchObject({ operation: { state: 'responded' } });
+  });
+
+  test('records an in-flight unsafe request as uncertain when Freedom shuts down', async () => {
+    let dispatched;
+    const dispatchedPromise = new Promise((resolve) => {
+      dispatched = resolve;
+    });
+    const controller = new NodeRequestController({
+      getAntApiUrl: () => 'http://127.0.0.1:1633',
+      fetch: (_url, options) =>
+        new Promise((_resolve, reject) => {
+          dispatched();
+          options.signal.addEventListener(
+            'abort',
+            () => reject(new DOMException('Aborted', 'AbortError')),
+            { once: true }
+          );
+        }),
+      interactiveTimeoutMs: 1_000,
+      mutationTimeoutMs: 2_000,
+      operationIdFactory: () => 'node_op_ffffffffffffffffffffffff',
+    });
+    const request = controller.request(requestInput({ method: 'POST', path: '/admin' }), {
+      conversationId: 'conversation_one',
+      classifyEffect: async () => classification(EFFECTS.REVERSIBLE_ADMIN),
+      requestApproval: async () => 'approved',
+    });
+    await dispatchedPromise;
+
+    await controller.dispose();
+
+    await expect(request).resolves.toMatchObject({
+      operation: {
+        state: 'delivery_uncertain',
+        retrySafety: 'unsafe',
+        error: {
+          code: 'NODE_DELIVERY_UNCERTAIN',
+          message: 'Freedom shut down before the node response was received',
+        },
+      },
+    });
+  });
+
+  test('reports transport loss after unsafe dispatch as delivery uncertain and never as not applied', async () => {
+    const controller = new NodeRequestController({
+      getAntApiUrl: () => 'http://127.0.0.1:1633',
+      fetch: async () => {
+        throw new TypeError('socket closed');
+      },
+      operationIdFactory: () => 'node_op_dddddddddddddddddddddddd',
+    });
+
+    await expect(
+      controller.request(requestInput({ method: 'POST', path: '/admin' }), {
+        conversationId: 'conversation_one',
+        classifyEffect: async () => classification(EFFECTS.REVERSIBLE_ADMIN),
+        requestApproval: async () => 'approved',
+      })
+    ).resolves.toMatchObject({
+      operation: {
+        state: 'delivery_uncertain',
+        retrySafety: 'unsafe',
+        error: { code: 'NODE_DELIVERY_UNCERTAIN' },
+      },
+    });
+  });
+
+  test('records a failed read response as safely retryable instead of leaving it in flight', async () => {
+    const controller = new NodeRequestController({
+      getAntApiUrl: () => 'http://127.0.0.1:1633',
+      fetch: async () => {
+        throw new TypeError('socket closed');
+      },
+      operationIdFactory: () => 'node_op_111111111111111111111111',
+    });
+
+    await expect(
+      controller.request(requestInput(), {
+        conversationId: 'conversation_one',
+        classifyEffect: async () => classification(EFFECTS.READ),
+      })
+    ).rejects.toMatchObject({ code: 'CAPABILITY_UNAVAILABLE' });
+    await expect(
+      controller.status(
+        { operationId: 'node_op_111111111111111111111111' },
+        { conversationId: 'conversation_one' }
+      )
+    ).resolves.toMatchObject({
+      operation: {
+        state: 'delivery_uncertain',
+        retrySafety: 'safe',
+        error: { code: 'NODE_RESPONSE_UNAVAILABLE' },
+      },
+    });
+  });
+
+  test('keeps operation receipts conversation-scoped', async () => {
+    const controller = new NodeRequestController({
+      getAntApiUrl: () => 'http://127.0.0.1:1633',
+      fetch: async () => new Response('{}'),
+      operationIdFactory: () => 'node_op_eeeeeeeeeeeeeeeeeeeeeeee',
+    });
+    await controller.request(requestInput(), {
+      conversationId: 'conversation_one',
+      classifyEffect: async () => classification(EFFECTS.READ),
+    });
+
+    await expect(
+      controller.status(
+        { operationId: 'node_op_eeeeeeeeeeeeeeeeeeeeeeee' },
+        { conversationId: 'conversation_two' }
+      )
+    ).rejects.toThrow('unavailable in the current conversation');
+    await expect(controller.status({}, { conversationId: 'conversation_one' })).resolves.toEqual({
+      operations: [
+        expect.objectContaining({
+          operationId: 'node_op_eeeeeeeeeeeeeeeeeeeeeeee',
+          state: 'responded',
+          retrySafety: 'safe',
+          status: 200,
+        }),
+      ],
+      summary: { count: 1, inFlight: 0, uncertain: 0 },
+    });
   });
 });
 

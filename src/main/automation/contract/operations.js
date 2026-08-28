@@ -321,6 +321,17 @@ function validateOperationInput(operation, rawInput) {
     };
   }
 
+  if (operation === OPERATIONS.NODE_OPERATION_STATUS) {
+    if (input.operationId !== undefined) {
+      normalized.operationId = requireString(input.operationId, 'operationId').trim();
+      if (!/^node_op_[a-f0-9]{24}$/.test(normalized.operationId)) {
+        throw invalidArgument('operationId must be a Freedom node operation ID', {
+          field: 'operationId',
+        });
+      }
+    }
+  }
+
   if (operation === OPERATIONS.NODE_LIFECYCLE) {
     normalized.service = requireString(input.service, 'service').trim();
     if (!NODE_LIFECYCLE_SERVICE_SET.has(normalized.service)) {

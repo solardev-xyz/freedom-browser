@@ -290,6 +290,77 @@ describe('Agent progress projection', () => {
     });
   });
 
+  test('reports a slow unsafe node request as running without implying failure', () => {
+    const nodeRequest = {
+      operationId: 'node_op_aaaaaaaaaaaaaaaaaaaaaaaa',
+      state: 'in_flight',
+      retrySafety: 'unsafe',
+      service: 'ant',
+      method: 'POST',
+      path: '/stamps/100/20',
+      effect: 'financial',
+    };
+    const receipt = createToolReceipt(OPERATIONS.NODE_REQUEST, {
+      envelope: { ok: true, result: { summary: nodeRequest } },
+    });
+
+    expect(receipt).toEqual({ nodeRequest });
+    expect(activityProgress(OPERATIONS.NODE_REQUEST, receipt)).toMatchObject({
+      label: 'Requested POST /stamps/100/20 — still running',
+      effect: 'changed',
+    });
+    expect(
+      buildAgentOutcome(
+        [
+          {
+            operation: OPERATIONS.NODE_REQUEST,
+            status: 'succeeded',
+            effect: 'changed',
+            nodeRequest,
+          },
+        ],
+        'completed'
+      )
+    ).toMatchObject({
+      verification: 'node_request_in_flight',
+      tone: 'caution',
+      headline: 'Node request still running',
+      nodeRequest,
+    });
+  });
+
+  test('reports lost observability as uncertain and warns against a blind retry', () => {
+    const nodeRequest = {
+      operationId: 'node_op_bbbbbbbbbbbbbbbbbbbbbbbb',
+      state: 'delivery_uncertain',
+      retrySafety: 'unsafe',
+      service: 'ant',
+      method: 'POST',
+      path: '/stamps/100/20',
+      effect: 'financial',
+    };
+
+    const outcome = buildAgentOutcome(
+      [
+        {
+          operation: OPERATIONS.NODE_OPERATION_STATUS,
+          status: 'succeeded',
+          effect: 'changed',
+          nodeRequest,
+        },
+      ],
+      'completed'
+    );
+
+    expect(outcome).toMatchObject({
+      verification: 'node_delivery_uncertain',
+      tone: 'caution',
+      headline: 'Node outcome uncertain',
+      nodeRequest,
+    });
+    expect(outcome.detail).toContain('do not retry it without reconciliation');
+  });
+
   test('projects and reports only verified node lifecycle state', () => {
     const receipt = createToolReceipt(OPERATIONS.NODE_LIFECYCLE, {
       envelope: {

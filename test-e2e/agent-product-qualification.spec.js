@@ -50,6 +50,7 @@ const EXPECTED_TOOL_NAMES = Object.freeze([
   'wallet_transfer',
   'node_status',
   'node_request',
+  'node_operation_status',
   'node_lifecycle',
   'node_diagnostics',
   'app_diagnostics',
@@ -660,9 +661,11 @@ async function handleCompletion(request, response) {
 
   if (
     hasUserMarker(messages, 'PRODUCT_NODE_REQUEST_READ') ||
-    hasUserMarker(messages, 'PRODUCT_NODE_REQUEST_CHANGE')
+    hasUserMarker(messages, 'PRODUCT_NODE_REQUEST_CHANGE') ||
+    hasUserMarker(messages, 'PRODUCT_NODE_REQUEST_SLOW')
   ) {
-    const changing = hasUserMarker(messages, 'PRODUCT_NODE_REQUEST_CHANGE');
+    const slow = hasUserMarker(messages, 'PRODUCT_NODE_REQUEST_SLOW');
+    const changing = hasUserMarker(messages, 'PRODUCT_NODE_REQUEST_CHANGE') || slow;
     if (toolResults.length === 0) {
       emitToolCall(response, 1, 'node_request', {
         service: 'ant',
@@ -670,16 +673,22 @@ async function handleCompletion(request, response) {
         request: changing
           ? {
               method: 'POST',
-              path: '/stamps/100/20',
+              path: slow ? '/test/slow-write' : '/stamps/100/20',
               headers: { 'content-type': 'application/json' },
               body: '{"immutable":false}',
             }
           : { method: 'GET', path: '/health' },
       });
+    } else if (slow && toolResults.length === 1) {
+      const operationId = toolEnvelopes(messages).find(
+        (envelope) => envelope?.result?.operation?.state === 'in_flight'
+      )?.result?.operation?.operationId;
+      emitToolCall(response, 2, 'node_operation_status', { operationId });
     } else {
       observedNodeRequest =
-        toolEnvelopes(messages).find((envelope) => envelope?.result?.service === 'ant')?.result ||
-        null;
+        toolEnvelopes(messages)
+          .filter((envelope) => envelope?.result?.service === 'ant')
+          .at(-1)?.result || null;
       emitFinal(
         response,
         `Ant returned HTTP ${observedNodeRequest?.response?.status || 0} for ${observedNodeRequest?.request?.method || ''} ${observedNodeRequest?.request?.path || ''}.`
@@ -1855,6 +1864,42 @@ test('node request classifier: shows the exact persistent request before sending
   });
   expect(result.assistantOutput).toContain('Ant returned HTTP 201');
   expect(operations).toEqual(['node_request']);
+});
+
+test('node request lifecycle: a slow write stays alive and is collected by operation ID', async ({
+  window,
+}) => {
+  await configureFixtureProvider(window);
+
+  await window
+    .locator('#agent-prompt')
+    .fill('PRODUCT_NODE_REQUEST_SLOW: run the deterministic delayed Ant change.');
+  await window.locator('#agent-run').click();
+  await expect(window.locator('#agent-approval-action')).toHaveText(
+    'Allow this Ant node request?'
+  );
+  await window.locator('#agent-approval-approve').click();
+  await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 15_000 });
+
+  const result = await recordQualification(
+    window,
+    'agent-node-request-slow-lifecycle',
+    CLASSIFICATION.PASS,
+    { nodeRequest: observedNodeRequest }
+  );
+  expect(result.nodeRequest).toMatchObject({
+    service: 'ant',
+    effect: 'persistent_change',
+    request: { method: 'POST', path: '/test/slow-write' },
+    operation: {
+      state: 'responded',
+      retrySafety: 'unsafe',
+      operationId: expect.stringMatching(/^node_op_[a-f0-9]{24}$/),
+    },
+    response: { status: 202, body: '{"operation":"settled"}' },
+  });
+  expect(result.assistantOutput).toContain('Ant returned HTTP 202');
+  expect(operations).toEqual(['node_request', 'node_operation_status']);
 });
 
 test('node lifecycle: exact approval is followed by verified manager state', async ({ window }) => {

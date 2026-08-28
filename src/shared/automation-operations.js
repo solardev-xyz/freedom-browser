@@ -18,6 +18,7 @@ const OPERATIONS = Object.freeze({
   WALLET_TRANSFER: 'wallet_transfer',
   NODE_STATUS: 'node_status',
   NODE_REQUEST: 'node_request',
+  NODE_OPERATION_STATUS: 'node_operation_status',
   NODE_LIFECYCLE: 'node_lifecycle',
   NODE_DIAGNOSTICS: 'node_diagnostics',
   APP_DIAGNOSTICS: 'app_diagnostics',

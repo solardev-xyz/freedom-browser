@@ -108,8 +108,12 @@ class AutomationController {
       this.nodeRequestController = null;
       return;
     }
-    if (!nodeRequestController || typeof nodeRequestController.request !== 'function') {
-      throw new TypeError('Automation node request controller requires request()');
+    if (
+      !nodeRequestController ||
+      typeof nodeRequestController.request !== 'function' ||
+      typeof nodeRequestController.status !== 'function'
+    ) {
+      throw new TypeError('Automation node request controller requires request() and status()');
     }
     this.nodeRequestController = nodeRequestController;
   }
@@ -327,6 +331,11 @@ class AutomationController {
           classifyEffect: execution?.classifyEffect,
           requestApproval: execution?.requestApproval,
           signal: execution?.signal,
+          conversationId: execution?.conversationId,
+        });
+      case OPERATIONS.NODE_OPERATION_STATUS:
+        return this.#requireNodeRequestController().status(input, {
+          conversationId: execution?.conversationId,
         });
       case OPERATIONS.NODE_LIFECYCLE:
         return this.#requireNodeLifecycleController().lifecycle(input, {

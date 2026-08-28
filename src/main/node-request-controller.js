@@ -1,10 +1,15 @@
 'use strict';
 
+const crypto = require('crypto');
 const { OPERATIONS, MAX_NODE_RESPONSE_BYTES } = require('./automation/contract/operations');
 const { AutomationError, ERROR_CODES } = require('./automation/contract/errors');
 const { EFFECTS, decideEffectPolicy, unknownClassification } = require('./agent/effect-classifier');
+const { OPERATION_STATES } = require('./agent/node-operation-store');
 
-const DEFAULT_TIMEOUT_MS = 10_000;
+const DEFAULT_READ_TIMEOUT_MS = 10_000;
+const DEFAULT_INTERACTIVE_TIMEOUT_MS = 10_000;
+const DEFAULT_STATUS_WAIT_TIMEOUT_MS = 10_000;
+const DEFAULT_MUTATION_TIMEOUT_MS = 300_000;
 const RESPONSE_HEADER_ALLOWLIST = new Set([
   'content-length',
   'content-type',
@@ -46,6 +51,98 @@ function approved(decision) {
     decision === 'approved' ||
     (decision && typeof decision === 'object' && decision.status === 'approved')
   );
+}
+
+function opaqueOperationId() {
+  return `node_op_${crypto.randomUUID().replaceAll('-', '').slice(0, 24)}`;
+}
+
+function observeOperation(promise, timeoutMs, signal) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', handleAbort);
+      resolve(result);
+    };
+    const handleAbort = () => finish({ kind: 'aborted' });
+    const timer = setTimeout(() => finish({ kind: 'timeout' }), timeoutMs);
+    timer.unref?.();
+    if (signal?.aborted) {
+      finish({ kind: 'aborted' });
+      return;
+    }
+    signal?.addEventListener('abort', handleAbort, { once: true });
+    promise.then(finish, (error) => finish({ kind: 'error', error }));
+  });
+}
+
+class MemoryNodeOperationStore {
+  constructor(options = {}) {
+    this.now = options.now || Date.now;
+    this.operations = new Map();
+  }
+
+  create(entry) {
+    const operation = {
+      ...entry,
+      state: OPERATION_STATES.NOT_DISPATCHED,
+      createdAt: entry.createdAt || this.now(),
+      updatedAt: entry.createdAt || this.now(),
+    };
+    this.operations.set(entry.operationId, operation);
+    return Object.freeze({ ...operation });
+  }
+
+  markInFlight(operationId) {
+    return this.#update(operationId, {
+      state: OPERATION_STATES.IN_FLIGHT,
+      error: undefined,
+    });
+  }
+
+  markResponded(operationId, response) {
+    return this.#update(operationId, {
+      state: OPERATION_STATES.RESPONDED,
+      response,
+      error: undefined,
+    });
+  }
+
+  markDeliveryUncertain(operationId, error) {
+    return this.#update(operationId, {
+      state: OPERATION_STATES.DELIVERY_UNCERTAIN,
+      error,
+    });
+  }
+
+  get(operationId, ownerId) {
+    const operation = this.operations.get(operationId);
+    return operation?.ownerId === ownerId ? Object.freeze({ ...operation }) : null;
+  }
+
+  getAny(operationId) {
+    const operation = this.operations.get(operationId);
+    return operation ? Object.freeze({ ...operation }) : null;
+  }
+
+  listRecent(ownerId, limit = 20) {
+    return [...this.operations.values()]
+      .filter((operation) => operation.ownerId === ownerId)
+      .sort((first, second) => second.updatedAt - first.updatedAt)
+      .slice(0, limit)
+      .map((operation) => Object.freeze({ ...operation }));
+  }
+
+  #update(operationId, changes) {
+    const operation = this.operations.get(operationId);
+    if (!operation) return null;
+    const updated = { ...operation, ...changes, updatedAt: this.now() };
+    this.operations.set(operationId, updated);
+    return Object.freeze({ ...updated });
+  }
 }
 
 function fixedEndpoint(base, path, service = 'node') {
@@ -127,12 +224,28 @@ class NodeRequestController {
     this.getRadicleApiUrl = options.getRadicleApiUrl || defaultGetRadicleApiUrl;
     this.serveIpfsRequest = options.serveIpfsRequest || defaultServeIpfsRequest;
     this.fetch = options.fetch || globalThis.fetch;
-    this.timeoutMs = Number.isFinite(options.timeoutMs)
+    const legacyTimeoutMs = Number.isFinite(options.timeoutMs)
       ? Math.max(1, options.timeoutMs)
-      : DEFAULT_TIMEOUT_MS;
+      : null;
+    this.readTimeoutMs = Number.isFinite(options.readTimeoutMs)
+      ? Math.max(1, options.readTimeoutMs)
+      : legacyTimeoutMs || DEFAULT_READ_TIMEOUT_MS;
+    this.interactiveTimeoutMs = Number.isFinite(options.interactiveTimeoutMs)
+      ? Math.max(1, options.interactiveTimeoutMs)
+      : legacyTimeoutMs || DEFAULT_INTERACTIVE_TIMEOUT_MS;
+    this.mutationTimeoutMs = Number.isFinite(options.mutationTimeoutMs)
+      ? Math.max(1, options.mutationTimeoutMs)
+      : DEFAULT_MUTATION_TIMEOUT_MS;
+    this.statusWaitTimeoutMs = Number.isFinite(options.statusWaitTimeoutMs)
+      ? Math.max(1, options.statusWaitTimeoutMs)
+      : DEFAULT_STATUS_WAIT_TIMEOUT_MS;
     this.maxResponseBytes = Number.isFinite(options.maxResponseBytes)
       ? Math.max(1, options.maxResponseBytes)
       : MAX_NODE_RESPONSE_BYTES;
+    this.operationStore = options.operationStore || new MemoryNodeOperationStore(options);
+    this.operationIdFactory = options.operationIdFactory || opaqueOperationId;
+    this.activeOperations = new Map();
+    this.disposed = false;
     if (typeof this.fetch !== 'function') {
       throw new TypeError('Node requests require an HTTP transport');
     }
@@ -192,54 +305,220 @@ class NodeRequestController {
       }
     }
 
-    const abortController = new AbortController();
-    const abortFromCaller = () => abortController.abort();
-    if (context.signal?.aborted) abortFromCaller();
-    context.signal?.addEventListener?.('abort', abortFromCaller, { once: true });
-    const timeout = setTimeout(() => abortController.abort(), this.timeoutMs);
-    let response;
-    let body;
-    try {
-      response = await this.#dispatch(input, abortController.signal);
-      body =
-        input.request.method === 'HEAD'
-          ? ''
-          : await readBoundedResponse(response, this.maxResponseBytes);
-    } catch (error) {
-      if (error instanceof AutomationError) throw error;
-      if (context.signal?.aborted) {
-        throw new AutomationError(ERROR_CODES.USER_CANCELLED, 'The node request was cancelled');
-      }
+    if (this.disposed) {
       throw new AutomationError(
         ERROR_CODES.CAPABILITY_UNAVAILABLE,
-        `The ${input.service} node request failed`,
-        { cause: error }
+        'Direct node requests are shutting down'
       );
-    } finally {
-      clearTimeout(timeout);
-      context.signal?.removeEventListener?.('abort', abortFromCaller);
     }
-    const bytes = Buffer.byteLength(body, 'utf8');
-    return Object.freeze({
+    if (context.signal?.aborted) {
+      throw new AutomationError(ERROR_CODES.USER_CANCELLED, 'The node request was cancelled');
+    }
+
+    const ownerId =
+      typeof context.conversationId === 'string' && context.conversationId
+        ? context.conversationId
+        : 'local';
+    const operationId = this.operationIdFactory();
+    const bodySha256 =
+      input.request.body === undefined
+        ? null
+        : crypto.createHash('sha256').update(input.request.body).digest('hex');
+    this.operationStore.create({
+      operationId,
+      ownerId,
       service: input.service,
       transport: input.transport,
       effect: policy.effect,
-      request: Object.freeze({ method: input.request.method, path: input.request.path }),
-      response: Object.freeze({
-        status: response.status,
-        statusText: response.statusText || '',
-        headers: Object.freeze(safeResponseHeaders(response.headers)),
-        body,
-        bytes,
-      }),
-      summary: Object.freeze({
-        service: input.service,
-        effect: policy.effect,
+      request: {
         method: input.request.method,
         path: input.request.path,
-        status: response.status,
-        bytes,
+        headerNames: Object.keys(input.request.headers || {}).sort(),
+        ...(bodySha256 && { bodySha256 }),
+      },
+    });
+    this.operationStore.markInFlight(operationId);
+
+    const stateChanging = policy.effect !== EFFECTS.READ;
+    const active = this.#beginOperation(input, operationId, {
+      stateChanging,
+      timeoutMs: stateChanging ? this.mutationTimeoutMs : this.readTimeoutMs,
+    });
+    this.activeOperations.set(operationId, active);
+    void active.promise.finally(() => this.activeOperations.delete(operationId));
+
+    const observed = await observeOperation(
+      active.promise,
+      stateChanging ? this.interactiveTimeoutMs : this.readTimeoutMs,
+      context.signal
+    );
+    if (observed.kind === 'result') return observed.value;
+    if (observed.kind === 'error') throw observed.error;
+
+    if (stateChanging) {
+      return this.#operationResult(this.operationStore.getAny(operationId));
+    }
+
+    active.abort(observed.kind === 'aborted' ? 'caller' : 'deadline');
+    const settled = await active.promise;
+    if (settled.kind === 'result') return settled.value;
+    throw settled.error;
+  }
+
+  async status(input, context = {}) {
+    const ownerId =
+      typeof context.conversationId === 'string' && context.conversationId
+        ? context.conversationId
+        : 'local';
+    if (!input.operationId) {
+      const operations = this.operationStore.listRecent(ownerId, 20);
+      return Object.freeze({
+        operations: Object.freeze(operations.map((operation) => this.#operationSummary(operation))),
+        summary: Object.freeze({
+          count: operations.length,
+          inFlight: operations.filter((operation) => operation.state === OPERATION_STATES.IN_FLIGHT)
+            .length,
+          uncertain: operations.filter(
+            (operation) => operation.state === OPERATION_STATES.DELIVERY_UNCERTAIN
+          ).length,
+        }),
+      });
+    }
+    const operation = this.operationStore.get(input.operationId, ownerId);
+    if (!operation) {
+      throw new AutomationError(
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        'This node operation is unavailable in the current conversation'
+      );
+    }
+    const active = this.activeOperations.get(input.operationId);
+    if (operation.state === OPERATION_STATES.IN_FLIGHT && active) {
+      await observeOperation(active.promise, this.statusWaitTimeoutMs);
+    }
+    return this.#operationResult(this.operationStore.get(input.operationId, ownerId));
+  }
+
+  async dispose() {
+    this.disposed = true;
+    const active = [...this.activeOperations.values()];
+    for (const operation of active) operation.abort('shutdown');
+    await Promise.allSettled(active.map((operation) => operation.promise));
+    this.activeOperations.clear();
+  }
+
+  #beginOperation(input, operationId, options) {
+    const abortController = new AbortController();
+    let abortReason = null;
+    const abort = (reason) => {
+      if (abortController.signal.aborted) return;
+      abortReason = reason;
+      abortController.abort();
+    };
+    const timeout = setTimeout(() => abort('deadline'), options.timeoutMs);
+    timeout.unref?.();
+    const promise = (async () => {
+      try {
+        const response = await this.#dispatch(input, abortController.signal);
+        const body =
+          input.request.method === 'HEAD'
+            ? ''
+            : await readBoundedResponse(response, this.maxResponseBytes);
+        const normalizedResponse = Object.freeze({
+          status: response.status,
+          statusText: response.statusText || '',
+          headers: Object.freeze(safeResponseHeaders(response.headers)),
+          body,
+          bytes: Buffer.byteLength(body, 'utf8'),
+        });
+        const operation = this.operationStore.markResponded(operationId, normalizedResponse);
+        return { kind: 'result', value: this.#operationResult(operation) };
+      } catch (error) {
+        if (options.stateChanging) {
+          const operation = this.operationStore.markDeliveryUncertain(operationId, {
+            code: 'NODE_DELIVERY_UNCERTAIN',
+            message:
+              abortReason === 'shutdown'
+                ? 'Freedom shut down before the node response was received'
+                : abortReason === 'deadline'
+                  ? 'Freedom reached its background deadline before the node responded'
+                  : 'Freedom lost observability after attempting to dispatch the node request',
+          });
+          return { kind: 'result', value: this.#operationResult(operation) };
+        }
+        this.operationStore.markDeliveryUncertain(operationId, {
+          code: 'NODE_RESPONSE_UNAVAILABLE',
+          message: 'Freedom did not receive a complete response from the node',
+        });
+        const normalizedError =
+          abortReason === 'caller'
+            ? new AutomationError(ERROR_CODES.USER_CANCELLED, 'The node request was cancelled')
+            : error instanceof AutomationError
+              ? error
+              : new AutomationError(
+                  ERROR_CODES.CAPABILITY_UNAVAILABLE,
+                  `The ${input.service} node request failed`,
+                  { cause: error }
+                );
+        return { kind: 'error', error: normalizedError };
+      } finally {
+        clearTimeout(timeout);
+      }
+    })();
+    return { promise, abort };
+  }
+
+  #operationResult(operation) {
+    const retrySafety = operation.effect === EFFECTS.READ ? 'safe' : 'unsafe';
+    const publicOperation = Object.freeze({
+      operationId: operation.operationId,
+      state: operation.state,
+      retrySafety,
+      createdAt: operation.createdAt,
+      updatedAt: operation.updatedAt,
+      ...(operation.error && { error: operation.error }),
+    });
+    return Object.freeze({
+      service: operation.service,
+      transport: operation.transport,
+      effect: operation.effect,
+      request: Object.freeze({
+        method: operation.request.method,
+        path: operation.request.path,
       }),
+      operation: publicOperation,
+      ...(operation.response && { response: operation.response }),
+      summary: Object.freeze({
+        operationId: operation.operationId,
+        state: operation.state,
+        retrySafety,
+        service: operation.service,
+        effect: operation.effect,
+        method: operation.request.method,
+        path: operation.request.path,
+        ...(operation.response && {
+          status: operation.response.status,
+          bytes: operation.response.bytes,
+        }),
+      }),
+    });
+  }
+
+  #operationSummary(operation) {
+    return Object.freeze({
+      operationId: operation.operationId,
+      state: operation.state,
+      retrySafety: operation.effect === EFFECTS.READ ? 'safe' : 'unsafe',
+      service: operation.service,
+      effect: operation.effect,
+      method: operation.request.method,
+      path: operation.request.path,
+      ...(operation.response && {
+        status: operation.response.status,
+        bytes: operation.response.bytes,
+      }),
+      ...(operation.error && { error: operation.error }),
+      createdAt: operation.createdAt,
+      updatedAt: operation.updatedAt,
     });
   }
 
