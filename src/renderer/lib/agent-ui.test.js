@@ -1914,7 +1914,7 @@ describe('Agent UI', () => {
         to: 'meinhard.eth · 0x3333333333333333333333333333333333333333',
         value: '0.01 GNO',
         maxFee: '0.000024 xDAI',
-        tokenContract: '0x4444444444444444444444444444444444444444',
+        tokenContract: '0x9C58BAcC331c9aa871AFD802DB6379a98e80CEdb',
       },
     });
 
@@ -1933,7 +1933,7 @@ describe('Agent UI', () => {
         'Gnosis',
         '0.01 GNO',
         '0.000024 xDAI',
-        '0x4444444444444444444444444444444444444444',
+        '0x9C58BAcC331c9aa871AFD802DB6379a98e80CEdb',
       ])
     );
     expect(summary).not.toContain('Site');

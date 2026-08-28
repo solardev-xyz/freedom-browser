@@ -98,7 +98,7 @@ function resetFixtures() {
 
 function createAgentWalletTestOptions() {
   if (!TEST_MODE_ENABLED) return undefined;
-  const gnoAddress = '0x4444444444444444444444444444444444444444';
+  const gnoAddress = '0x9C58BAcC331c9aa871AFD802DB6379a98e80CEdb';
   return {
     estimateGas: async () => ({ gasLimit: '21000' }),
     getGasPrices: async () => ({ type: 'legacy', gasPrice: '1000000000' }),

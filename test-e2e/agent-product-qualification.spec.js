@@ -1566,7 +1566,7 @@ test('privileged capability: direct wallet transfer needs exact approval and no 
   await expect(summary).toContainText('0x3333333333333333333333333333333333333333');
   await expect(summary).toContainText('0.01 GNO');
   await expect(summary).toContainText('0.000021 xDAI');
-  await expect(summary).toContainText('0x4444444444444444444444444444444444444444');
+  await expect(summary).toContainText('0x9C58BAcC331c9aa871AFD802DB6379a98e80CEdb');
   await expect(summary).not.toContainText('Site');
   await expect(window.locator('#agent-approval-approve')).toHaveText('Send once');
   await window.locator('#agent-approval-approve').click();
@@ -1590,7 +1590,7 @@ test('privileged capability: direct wallet transfer needs exact approval and no 
 
   expect(result.capturedTransaction).toEqual({
     transaction: {
-      to: '0x4444444444444444444444444444444444444444',
+      to: '0x9C58BAcC331c9aa871AFD802DB6379a98e80CEdb',
       value: '0',
       data: expect.stringMatching(/^0xa9059cbb/),
       gasLimit: '21000',
@@ -1600,7 +1600,7 @@ test('privileged capability: direct wallet transfer needs exact approval and no 
     context: {
       kind: 'wallet-send',
       origin: 'freedom-agent',
-      asset: '0x4444444444444444444444444444444444444444',
+      asset: '0x9C58BAcC331c9aa871AFD802DB6379a98e80CEdb',
       amount: '10000000000000000',
       toAddress: '0x3333333333333333333333333333333333333333',
       metadata: { source: 'agent', assetSymbol: 'GNO' },

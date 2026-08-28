@@ -47,9 +47,9 @@ function createHarness(options = {}) {
         name: 'xDAI',
         decimals: 18,
       },
-      '100:0x4444444444444444444444444444444444444444': {
+      '100:0x9c58bacc331c9aa871afd802db6379a98e80cedb': {
         chainId: 100,
-        address: '0x4444444444444444444444444444444444444444',
+        address: '0x9C58BAcC331c9aa871AFD802DB6379a98e80CEdb',
         symbol: 'GNO',
         name: 'Gnosis',
         decimals: 18,
@@ -57,7 +57,7 @@ function createHarness(options = {}) {
     })),
     getAllBalances: jest.fn(async () => ({
       '100:native': { raw: '1000000000000000000', formatted: '1.0', decimals: 18 },
-      '100:0x4444444444444444444444444444444444444444': {
+      '100:0x9c58bacc331c9aa871afd802db6379a98e80cedb': {
         raw: '5000000000000000000',
         formatted: '5.0',
         decimals: 18,
@@ -124,14 +124,14 @@ describe('AgentWalletController', () => {
             to: expect.stringContaining('meinhard.eth'),
             recipientVerification: 'Verified name resolution',
             value: '0.01 GNO',
-            tokenContract: '0x4444444444444444444444444444444444444444',
+            tokenContract: '0x9C58BAcC331c9aa871AFD802DB6379a98e80CEdb',
             requiresUnlock: true,
           }),
         })
       );
       expect(harness.dependencies.signAndRecord).toHaveBeenCalledWith(
         {
-          to: '0x4444444444444444444444444444444444444444',
+          to: '0x9C58BAcC331c9aa871AFD802DB6379a98e80CEdb',
           value: '0',
           data: '0xa9059cbbencoded',
           gasLimit: '24000',
@@ -142,7 +142,7 @@ describe('AgentWalletController', () => {
         expect.objectContaining({
           kind: expect.any(String),
           origin: 'freedom-agent',
-          asset: '0x4444444444444444444444444444444444444444',
+          asset: '0x9C58BAcC331c9aa871AFD802DB6379a98e80CEdb',
           amount: '10000000000000000',
           toAddress: '0x3333333333333333333333333333333333333333',
         })
