@@ -75,6 +75,7 @@ let observedNodeLifecycle = null;
 let observedNodeDiagnostics = null;
 let observedAppDiagnostics = null;
 let observedSkillRead = '';
+let providerRecoveryFailuresRemaining = 0;
 const operations = [];
 
 function completionChunk({ delta = {}, finishReason = null, usage }) {
@@ -217,6 +218,22 @@ async function handleCompletion(request, response) {
     .map((event) => event?.wallet)
     .filter(Boolean);
   advertisedToolNames = advertisedNames(body);
+  if (
+    hasUserMarker(messages, 'PRODUCT_PROVIDER_RECOVERY') &&
+    providerRecoveryFailuresRemaining > 0
+  ) {
+    providerRecoveryFailuresRemaining -= 1;
+    response.writeHead(503, { 'Content-Type': 'application/json' });
+    response.end(
+      JSON.stringify({
+        error: {
+          message: 'Temporary fixture outage with provider-private-detail',
+          type: 'service_unavailable',
+        },
+      })
+    );
+    return;
+  }
   response.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
@@ -246,6 +263,11 @@ async function handleCompletion(request, response) {
         uncertainties: [],
       })
     );
+    return;
+  }
+
+  if (hasUserMarker(messages, 'PRODUCT_PROVIDER_RECOVERY')) {
+    emitFinal(response, 'The model connection recovered and the task continued.');
     return;
   }
 
@@ -804,6 +826,7 @@ test.beforeEach(() => {
   observedNodeDiagnostics = null;
   observedAppDiagnostics = null;
   observedSkillRead = '';
+  providerRecoveryFailuresRemaining = 2;
   operations.length = 0;
 });
 
@@ -845,6 +868,31 @@ async function runTask(window, prompt) {
   await window.locator('#agent-run').click();
   await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 15_000 });
 }
+
+test('provider recovery: transient failures are explained, retried, and resumed', async ({
+  window,
+}) => {
+  await configureFixtureProvider(window);
+  await window.locator('#agent-prompt').fill('PRODUCT_PROVIDER_RECOVERY: say when recovered.');
+  await window.locator('#agent-run').click();
+
+  await expect(window.locator('#agent-run-status')).toHaveText('Reconnecting', {
+    timeout: 5_000,
+  });
+  await expect(window.locator('#agent-run-message')).toContainText(
+    'The model provider is temporarily unavailable. Retrying automatically'
+  );
+  await expect(window.locator('#agent-run-message')).not.toContainText('provider-private-detail');
+  await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 15_000 });
+
+  const result = await recordQualification(
+    window,
+    'provider-transient-recovery',
+    CLASSIFICATION.PASS
+  );
+  expect(result.assistantOutput).toContain('connection recovered');
+  expect(result.modelRequests).toBe(3);
+});
 
 async function currentUrl(window) {
   return window.evaluate(() => document.querySelector('webview:not(.hidden)')?.getURL?.() || '');

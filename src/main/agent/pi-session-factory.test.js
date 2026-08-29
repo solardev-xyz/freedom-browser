@@ -68,7 +68,12 @@ describe('isolated Pi session factory', () => {
     expect(sdk.SessionManager.inMemory).toHaveBeenCalledWith(VIRTUAL_AGENT_CWD);
     expect(sdk.SettingsManager.inMemory).toHaveBeenCalledWith({
       compaction: { enabled: true },
-      retry: { enabled: true, maxRetries: 2 },
+      retry: {
+        enabled: true,
+        maxRetries: 2,
+        baseDelayMs: 2_000,
+        provider: { maxRetries: 0 },
+      },
     });
     expect(sdk.createAgentSession).toHaveBeenCalledWith(
       expect.objectContaining({

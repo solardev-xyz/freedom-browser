@@ -966,6 +966,82 @@ describe('Agent UI', () => {
     );
   });
 
+  test('explains automatic provider retries and connection recovery', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Continue the task';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({
+      type: 'run_started',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      userText: 'Continue the task',
+    });
+    ctx.emit({
+      type: 'run_retrying',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      attempt: 1,
+      maxAttempts: 2,
+      delayMs: 2_000,
+      message: 'The connection to the model provider was interrupted.',
+      providerFailure: { category: 'connection', recovery: 'transient' },
+    });
+
+    expect(ctx.elements['agent-run-status'].textContent).toBe('Reconnecting');
+    expect(ctx.elements['agent-run-message'].textContent).toBe(
+      'The connection to the model provider was interrupted. Retrying automatically (1 of 2) in 2s…'
+    );
+
+    ctx.emit({
+      type: 'run_retry_recovered',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      attempt: 1,
+    });
+    expect(ctx.elements['agent-run-status'].textContent).toBe('Running');
+    expect(ctx.elements['agent-run-message'].textContent).toBe(
+      'Model connection restored. Agent is continuing…'
+    );
+  });
+
+  test('labels a terminal provider failure as a provider issue', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Continue the task';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({
+      type: 'run_started',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      userText: 'Continue the task',
+    });
+    ctx.emit({
+      type: 'run_finished',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      status: 'failed',
+      durationMs: 6_000,
+      actionCount: 0,
+      error: {
+        code: 'PROVIDER_ERROR',
+        message: 'The model provider remained unavailable. Freedom exhausted 2 automatic retries.',
+      },
+      outcome: {
+        kind: 'recovery',
+        verification: 'none',
+        tone: 'danger',
+        headline: 'Agent stopped before completion',
+        detail: 'The model provider remained unavailable.',
+        nextStep: 'Wait a moment, then continue this conversation.',
+        retrySafety: 'safe',
+      },
+    });
+
+    expect(ctx.elements['agent-run-status'].textContent).toBe('Provider issue');
+    expect(ctx.elements['agent-run-message'].textContent).toContain('exhausted 2 automatic retries');
+  });
+
   test('does not show a browser-evidence outcome for conversation', async () => {
     const ctx = await loadAgentUi();
     ctx.elements['agent-prompt'].value = 'Hello';

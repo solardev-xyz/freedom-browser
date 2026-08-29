@@ -1521,7 +1521,102 @@ describe('FreedomAgentService', () => {
       status: 'failed',
       error: {
         code: AGENT_ERROR_CODES.PROVIDER_ERROR,
-        message: 'The model provider request failed',
+        message:
+          'The model provider rejected the saved credentials. Reconnect it in Models before continuing.',
+        providerFailure: {
+          category: 'authentication',
+          recovery: 'provider_setup',
+        },
+      },
+    });
+    expect(JSON.stringify(events)).not.toContain('sk-secret-key');
+  });
+
+  test('reports sanitized transient retry progress and successful recovery', async () => {
+    const fake = createFakeSession();
+    const { service } = createService(fake);
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+
+    fake.emit({
+      type: 'auto_retry_start',
+      attempt: 1,
+      maxAttempts: 2,
+      delayMs: 2_000,
+      errorMessage: '429 upstream exposed sk-secret-key',
+    });
+    fake.emit({ type: 'auto_retry_end', success: true, attempt: 1 });
+    fake.emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop' } });
+    fake.prompt.resolve();
+    await service.waitForIdle();
+
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'run_retrying',
+          attempt: 1,
+          maxAttempts: 2,
+          delayMs: 2_000,
+          message: 'The model provider is rate-limiting requests.',
+          providerFailure: { category: 'rate_limited', recovery: 'transient' },
+        }),
+        expect.objectContaining({ type: 'run_retry_recovered', attempt: 1 }),
+      ])
+    );
+    expect(events.at(-1)).toMatchObject({ type: 'run_finished', status: 'completed' });
+    expect(JSON.stringify(events)).not.toContain('sk-secret-key');
+  });
+
+  test('explains exhausted automatic retries without exposing provider detail', async () => {
+    const fake = createFakeSession();
+    const { service } = createService(fake);
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+
+    fake.emit({
+      type: 'auto_retry_start',
+      attempt: 1,
+      maxAttempts: 2,
+      delayMs: 2_000,
+      errorMessage: '503 upstream sk-secret-key',
+    });
+    fake.emit({
+      type: 'auto_retry_start',
+      attempt: 2,
+      maxAttempts: 2,
+      delayMs: 4_000,
+      errorMessage: '503 upstream sk-secret-key',
+    });
+    fake.emit({
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        stopReason: 'error',
+        errorMessage: '503 upstream sk-secret-key',
+      },
+    });
+    fake.emit({
+      type: 'auto_retry_end',
+      success: false,
+      attempt: 2,
+      finalError: '503 upstream sk-secret-key',
+    });
+    fake.prompt.resolve();
+    await service.waitForIdle();
+
+    expect(events.at(-1)).toMatchObject({
+      type: 'run_finished',
+      status: 'failed',
+      error: {
+        code: AGENT_ERROR_CODES.PROVIDER_ERROR,
+        message: 'The model provider remained unavailable. Freedom exhausted 2 automatic retries.',
+        providerFailure: {
+          category: 'service_unavailable',
+          recovery: 'transient',
+        },
+        retryCount: 2,
       },
     });
     expect(JSON.stringify(events)).not.toContain('sk-secret-key');
@@ -1625,7 +1720,18 @@ describe('FreedomAgentService', () => {
         delayMs: 500,
         errorMessage: 'secret provider detail',
       })
-    ).toEqual({ type: 'run_retrying', attempt: 1, maxAttempts: 2, delayMs: 500 });
+    ).toEqual({
+      type: 'run_retrying',
+      attempt: 1,
+      maxAttempts: 2,
+      delayMs: 500,
+      message: 'The model provider request failed for an unknown reason.',
+      providerFailure: { category: 'unknown', recovery: 'unknown' },
+    });
+    expect(normalizePiEvent({ type: 'auto_retry_end', success: true, attempt: 1 })).toEqual({
+      type: 'run_retry_recovered',
+      attempt: 1,
+    });
     expect(normalizePiEvent({ type: 'message_end', message: { secret: true } })).toBeNull();
     expect(normalizePiEvent({ type: 'compaction_start', reason: 'threshold' })).toEqual({
       type: 'context_compaction_started',

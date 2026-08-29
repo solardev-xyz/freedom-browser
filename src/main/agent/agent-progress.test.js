@@ -593,7 +593,7 @@ describe('Agent progress projection', () => {
       retrySafety: 'review',
       counts: { successful: 1, failed: 1, changed: 1 },
     });
-    expect(outcome.detail).toContain('model connection failed');
+    expect(outcome.detail).toContain('could not determine whether the problem is transient');
     expect(outcome.detail).toContain('earlier browser change remains');
     expect(outcome.nextStep).toContain('Review the Agent tabs');
   });
@@ -602,7 +602,59 @@ describe('Agent progress projection', () => {
     const outcome = buildAgentOutcome([], 'failed', { code: 'PROVIDER_ERROR' });
     expect(outcome).toMatchObject({ retrySafety: 'safe' });
     expect(outcome.detail).toContain('did not verify any browser changes');
-    expect(outcome.nextStep).toBe('You can safely try the task again.');
+    expect(outcome.nextStep).toContain('Try continuing once');
+  });
+
+  test('reconstructs provider recovery evidence from persisted safe error copy', () => {
+    const outcome = buildAgentOutcome([], 'failed', {
+      code: 'PROVIDER_ERROR',
+      message: 'The model provider remained unavailable. Freedom exhausted 2 automatic retries.',
+    });
+
+    expect(outcome.detail).toContain('remained unavailable');
+    expect(outcome.detail).toContain('exhausted 2 automatic retries');
+    expect(outcome.nextStep).toContain('Wait a moment');
+  });
+
+  test('preserves an in-flight node operation across a provider disconnect', () => {
+    const nodeRequest = {
+      operationId: 'node_op_cccccccccccccccccccccccc',
+      state: 'in_flight',
+      retrySafety: 'unsafe',
+      service: 'ant',
+      method: 'POST',
+      path: '/stamps/100/20',
+      effect: 'financial',
+    };
+    const outcome = buildAgentOutcome(
+      [
+        {
+          operation: OPERATIONS.NODE_REQUEST,
+          status: 'succeeded',
+          effect: 'changed',
+          nodeRequest,
+        },
+      ],
+      'failed',
+      {
+        code: 'PROVIDER_ERROR',
+        message: 'The model provider remained unavailable.',
+        providerFailure: { category: 'service_unavailable', recovery: 'transient' },
+        retryCount: 2,
+      }
+    );
+
+    expect(outcome).toMatchObject({
+      verification: 'node_operation_unresolved',
+      tone: 'caution',
+      headline: 'Model disconnected; node request still running',
+      retrySafety: 'review',
+      nodeRequest,
+    });
+    expect(outcome.detail).toContain('exhausted 2 automatic retries');
+    expect(outcome.detail).toContain(nodeRequest.operationId);
+    expect(outcome.detail).not.toContain('browser change');
+    expect(outcome.nextStep).toContain('check the existing node operation');
   });
 
   test('retains approval counts without persisting the approval payload', () => {

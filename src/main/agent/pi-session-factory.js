@@ -140,7 +140,12 @@ async function createIsolatedPiSession(options = {}) {
   });
   const settingsManager = sdk.SettingsManager.inMemory({
     compaction: { enabled: true },
-    retry: { enabled: true, maxRetries: 2 },
+    retry: {
+      enabled: true,
+      maxRetries: 2,
+      baseDelayMs: 2_000,
+      provider: { maxRetries: 0 },
+    },
   });
   const sessionManager = sdk.SessionManager.inMemory(VIRTUAL_AGENT_CWD);
   hydrateVisibleTranscript(sessionManager, options.restoredTranscript, options.model);

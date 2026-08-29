@@ -417,9 +417,11 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
   });
   expect(tabMarkedAtStart).toBe(false);
 
-  await expect(window.locator('#agent-run-status')).toHaveText('failed', { timeout: 15_000 });
+  await expect(window.locator('#agent-run-status')).toHaveText('Provider issue', {
+    timeout: 15_000,
+  });
   await expect(window.locator('#agent-run-message')).toHaveText(
-    'The model provider request failed'
+    'The model provider request failed. Freedom could not determine whether the problem is transient.'
   );
   await expect(window.locator('.agent-user-message')).toHaveText('Summarize this page');
   await expect(window.locator('#agent-prompt')).toBeEnabled();

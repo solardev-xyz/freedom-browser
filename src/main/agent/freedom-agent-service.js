@@ -32,6 +32,11 @@ const {
   createIsolatedPiSession,
   DEFAULT_FREEDOM_AGENT_SYSTEM_PROMPT,
 } = require('./pi-session-factory');
+const {
+  classifyProviderFailure,
+  createProviderTerminalError,
+  providerFailurePresentation,
+} = require('./provider-failure');
 
 const AGENT_EVENT_VERSION = 1;
 const MAX_AGENT_PROMPT_LENGTH = 32_000;
@@ -237,11 +242,20 @@ function normalizePiEvent(event, toolOutcome) {
     };
   }
   if (event.type === 'auto_retry_start') {
+    const providerFailure = classifyProviderFailure(event.errorMessage);
     return {
       type: 'run_retrying',
       attempt: event.attempt,
       maxAttempts: event.maxAttempts,
       delayMs: event.delayMs,
+      providerFailure,
+      message: providerFailurePresentation(providerFailure).retryMessage,
+    };
+  }
+  if (event.type === 'auto_retry_end' && event.success === true) {
+    return {
+      type: 'run_retry_recovered',
+      attempt: event.attempt,
     };
   }
   if (event.type === 'compaction_start') {
@@ -783,6 +797,8 @@ class FreedomAgentService {
       resumePending: false,
       failure: null,
       lastAssistant: null,
+      providerFailure: null,
+      providerRetryCount: 0,
       toolOutcomes: new Map(),
       pendingApproval: null,
       pendingWalletRequests: new Set(),
@@ -1193,10 +1209,9 @@ class FreedomAgentService {
         error = run.failure;
       } else if (run.lastAssistant?.stopReason === 'error') {
         status = 'failed';
-        error = terminalError(
-          AGENT_ERROR_CODES.PROVIDER_ERROR,
-          'The model provider request failed'
-        );
+        error = createProviderTerminalError(run.providerFailure, {
+          retryCount: run.providerRetryCount,
+        });
       } else if (run.lastAssistant?.stopReason === 'length') {
         status = 'failed';
         error = terminalError(
@@ -1207,17 +1222,16 @@ class FreedomAgentService {
         status = 'failed';
         error = terminalError(AGENT_ERROR_CODES.RUN_FAILED, 'The agent run ended unexpectedly');
       }
-    } catch {
+    } catch (caughtError) {
       if (run.stopRequested) {
         status = 'cancelled';
       } else if (run.pauseRequested) {
         status = 'paused';
       } else {
         status = 'failed';
-        error = terminalError(
-          AGENT_ERROR_CODES.PROVIDER_ERROR,
-          'The model provider request failed'
-        );
+        error = createProviderTerminalError(caughtError, {
+          retryCount: run.providerRetryCount,
+        });
       }
     }
     if (run.failure) {
@@ -1252,6 +1266,9 @@ class FreedomAgentService {
       run.lastAssistant = {
         stopReason: event.message.stopReason,
       };
+      if (event.message.stopReason === 'error') {
+        run.providerFailure = classifyProviderFailure(event.message.errorMessage);
+      }
       for (const guidance of run.guidance.filter((item) => item.status === 'applying')) {
         this.#setGuidanceStatus(run, guidance, 'applied');
       }
@@ -1262,7 +1279,13 @@ class FreedomAgentService {
     const normalized = normalizePiEvent(event, toolOutcome);
     if (toolCallId) run.toolOutcomes.delete(toolCallId);
     if (!normalized) return;
-    if (normalized.type === 'assistant_text_delta') {
+    if (normalized.type === 'run_retrying') {
+      run.providerFailure = normalized.providerFailure;
+      run.providerRetryCount = Math.max(run.providerRetryCount, normalized.attempt);
+    } else if (normalized.type === 'run_retry_recovered') {
+      run.providerFailure = null;
+      run.providerRetryCount = 0;
+    } else if (normalized.type === 'assistant_text_delta') {
       run.assistantText += normalized.text;
     } else if (normalized.type === 'tool_started') {
       run.activity.push({

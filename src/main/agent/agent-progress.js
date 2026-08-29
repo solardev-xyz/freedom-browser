@@ -3,6 +3,11 @@
 const { OPERATIONS } = require('../automation/contract/operations');
 const { ERROR_CODES } = require('../automation/contract/errors');
 const { originScopeForUrl } = require('../automation/origin-scoped-controller');
+const {
+  classifyProviderFailure,
+  providerFailurePresentation,
+  providerRetryCount,
+} = require('./provider-failure');
 
 const ACTIVITY_EFFECTS = Object.freeze({
   OBSERVED: 'observed',
@@ -869,16 +874,46 @@ function buildAgentOutcome(activity, status, error) {
 
   const lastFailed = failed.at(-1);
   const failureCode = error?.code || lastFailed?.errorCode;
+  const providerPresentation =
+    failureCode === 'PROVIDER_ERROR'
+      ? providerFailurePresentation(
+          classifyProviderFailure(error?.providerFailure || error?.message),
+          { retryCount: error?.retryCount || providerRetryCount(error?.message) }
+        )
+      : null;
+  const pendingNodeRequest = nodeRequests.findLast((request) => request.state === 'in_flight');
+  const uncertainNodeRequest = nodeRequests.findLast(
+    (request) => request.state === 'delivery_uncertain'
+  );
+  const unresolvedNodeRequest = pendingNodeRequest || uncertainNodeRequest;
+  if (providerPresentation && unresolvedNodeRequest) {
+    const stillRunning = unresolvedNodeRequest.state === 'in_flight';
+    return Object.freeze({
+      kind: 'recovery',
+      verification: 'node_operation_unresolved',
+      tone: 'caution',
+      headline: stillRunning
+        ? 'Model disconnected; node request still running'
+        : 'Model disconnected; node outcome uncertain',
+      detail: `${providerPresentation.terminalMessage} ${unresolvedNodeRequest.service} ${stillRunning ? 'is still processing' : 'may have received'} ${unresolvedNodeRequest.method} ${unresolvedNodeRequest.path}. Freedom operation ${unresolvedNodeRequest.operationId} must be reconciled before any repeat.`,
+      nodeRequest: unresolvedNodeRequest,
+      destinations,
+      nextStep: 'Continue this conversation so Agent can check the existing node operation.',
+      retrySafety: 'review',
+      counts,
+    });
+  }
+  const failureExplanation = providerPresentation?.terminalMessage || errorExplanation(failureCode);
   return Object.freeze({
     kind: 'recovery',
     verification: counts.successful ? 'partial' : 'none',
     tone: 'danger',
     headline: 'Agent stopped before completion',
-    detail: `${errorExplanation(failureCode)} ${browserState}${destinationNote}`,
+    detail: `${failureExplanation} ${browserState}${destinationNote}`,
     destinations,
     nextStep: retryNeedsReview
       ? 'Review the Agent tabs, then tell Agent what to continue or redo.'
-      : 'You can safely try the task again.',
+      : providerPresentation?.nextStep || 'You can safely try the task again.',
     retrySafety: retryNeedsReview ? 'review' : 'safe',
     counts,
   });

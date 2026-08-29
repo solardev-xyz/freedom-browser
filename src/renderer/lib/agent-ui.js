@@ -2057,7 +2057,15 @@ function handleAgentEvent(event) {
       setMessage(elements.runMessage, `Downloading ${received}${total}…`);
     }
   } else if (event.type === 'run_retrying') {
-    setMessage(elements.runMessage, `Provider retry ${event.attempt} of ${event.maxAttempts}…`);
+    const delaySeconds = Math.max(1, Math.ceil((Number(event.delayMs) || 0) / 1_000));
+    setRunState('running', 'Reconnecting');
+    setMessage(
+      elements.runMessage,
+      `${event.message || 'The model provider request failed.'} Retrying automatically (${event.attempt} of ${event.maxAttempts}) in ${delaySeconds}s…`
+    );
+  } else if (event.type === 'run_retry_recovered') {
+    setRunState('running', 'Running');
+    setMessage(elements.runMessage, 'Model connection restored. Agent is continuing…');
   } else if (event.type === 'context_compaction_started') {
     setMessage(elements.runMessage, 'Making room for more conversation…');
   } else if (event.type === 'context_compaction_finished') {
@@ -2096,7 +2104,16 @@ function handleAgentEvent(event) {
     const status = event.status || 'finished';
     const wasStopped = status === 'cancelled' && stopRequestedRunId === event.runId;
     clearApproval();
-    setRunState('idle', wasStopped ? 'Stopped' : status === 'completed' ? 'Complete' : status);
+    setRunState(
+      'idle',
+      wasStopped
+        ? 'Stopped'
+        : status === 'completed'
+          ? 'Complete'
+          : event.error?.code === 'PROVIDER_ERROR'
+            ? 'Provider issue'
+            : status
+    );
     if (wasStopped) {
       setMessage(elements.runMessage, 'Agent stopped.');
     } else if (event.error?.message) {
