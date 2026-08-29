@@ -228,6 +228,12 @@ describe('OriginScopedAutomationController', () => {
       scoped.execute(OPERATIONS.SNAPSHOT, { tabId: 'tab_assigned' })
     ).resolves.toMatchObject({ ok: true });
     await expect(
+      scoped.execute(OPERATIONS.SCREENSHOT, { tabId: 'tab_assigned' })
+    ).resolves.toMatchObject({ ok: true });
+    expect(controller.execute).toHaveBeenCalledWith(OPERATIONS.SCREENSHOT, {
+      tabId: 'tab_assigned',
+    });
+    await expect(
       scoped.execute(OPERATIONS.NAVIGATE, {
         tabId: 'tab_assigned',
         url: 'https://trusted.example/next',
@@ -372,6 +378,9 @@ describe('OriginScopedAutomationController', () => {
 
     await expect(
       scoped.execute(OPERATIONS.SNAPSHOT, { tabId: 'tab_other' })
+    ).resolves.toMatchObject({ error: { code: ERROR_CODES.POLICY_DENIED } });
+    await expect(
+      scoped.execute(OPERATIONS.SCREENSHOT, { tabId: 'tab_other' })
     ).resolves.toMatchObject({ error: { code: ERROR_CODES.POLICY_DENIED } });
     await expect(scoped.execute(OPERATIONS.LIST_TABS, {})).resolves.toMatchObject({
       ok: true,
@@ -639,7 +648,16 @@ describe('OriginScopedAutomationController', () => {
       scoped.execute(OPERATIONS.GET_TAB, { tabId: 'tab_assigned' })
     ).resolves.toMatchObject({ ok: true });
     await expect(
+      scoped.execute(OPERATIONS.SCREENSHOT, { tabId: 'tab_assigned' })
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: ERROR_CODES.POLICY_DENIED },
+    });
+    await expect(
       scoped.execute(OPERATIONS.SNAPSHOT, { tabId: 'tab_assigned' })
+    ).resolves.toMatchObject({ ok: true });
+    await expect(
+      scoped.execute(OPERATIONS.SCREENSHOT, { tabId: 'tab_assigned' })
     ).resolves.toMatchObject({ ok: true });
     await expect(
       scoped.execute(OPERATIONS.CLICK, { tabId: 'tab_assigned', ref: 'ref_button' })
