@@ -2325,6 +2325,7 @@ body.agent-first-mode .agent-composer textarea {
 
 .agent-turn-outcome {
   display: flex;
+  min-width: 0;
   gap: 9px;
   align-items: flex-start;
   padding: 9px 10px;
@@ -2436,6 +2437,11 @@ body.agent-first-mode .agent-composer textarea {
   display: grid;
   gap: 2px;
   min-width: 0;
+}
+
+.agent-turn-outcome-copy > * {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .agent-turn-outcome-copy strong {

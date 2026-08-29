@@ -1921,6 +1921,13 @@ test('node request classifier: confidently reads the registry-selected Ant API w
   await expect(window.locator('.agent-turn-outcome').last()).toContainText(
     'Node request completed'
   );
+  const completionLayout = await window.locator('.agent-turn-outcome').last().evaluate((card) => {
+    card.style.width = '220px';
+    const detail = card.querySelector('.agent-turn-outcome-copy > span');
+    detail.textContent = `ant returned 200 for GET /stamps/${'a'.repeat(64)}. Freedom classified its effect as read.`;
+    return { clientWidth: card.clientWidth, scrollWidth: card.scrollWidth };
+  });
+  expect(completionLayout.scrollWidth).toBeLessThanOrEqual(completionLayout.clientWidth);
   expect(operations).toEqual(['node_request']);
 });
 
