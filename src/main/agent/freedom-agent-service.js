@@ -199,6 +199,13 @@ function normalizePiEvent(event, toolOutcome) {
     return null;
   }
 
+  if (event.type === 'turn_start') {
+    return { type: 'run_thinking' };
+  }
+  if (event.type === 'message_start' && event.message?.role === 'assistant') {
+    return { type: 'run_responding' };
+  }
+
   if (
     event.type === 'message_update' &&
     event.assistantMessageEvent?.type === 'text_delta' &&

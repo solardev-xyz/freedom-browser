@@ -992,6 +992,10 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-run-message'].textContent).toBe(
       'The connection to the model provider was interrupted. Retrying automatically (1 of 2) in 2s…'
     );
+    const liveStatus = ctx.elements['agent-transcript'].querySelector('.agent-live-status');
+    expect(liveStatus.hidden).toBe(false);
+    expect(liveStatus.classList.contains('active')).toBe(true);
+    expect(liveStatus.children[1].textContent).toBe('Reconnecting · attempt 1 of 2…');
 
     ctx.emit({
       type: 'run_retry_recovered',
@@ -1002,6 +1006,57 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-run-status'].textContent).toBe('Running');
     expect(ctx.elements['agent-run-message'].textContent).toBe(
       'Model connection restored. Agent is continuing…'
+    );
+    expect(liveStatus.children[1].textContent).toBe('Connection restored. Continuing…');
+  });
+
+  test('shows semantic live activity and replaces it with the completed turn summary', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({
+      type: 'run_started',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      userText: 'Research this',
+    });
+    const turn = ctx.elements['agent-transcript'].querySelector('.agent-turn');
+    const liveStatus = turn.querySelector('.agent-live-status');
+    expect(liveStatus.hidden).toBe(false);
+    expect(liveStatus.children[1].textContent).toBe('Thinking…');
+
+    ctx.emit({ type: 'run_responding', runId: 'run_test' });
+    expect(liveStatus.children[1].textContent).toBe('Responding…');
+
+    ctx.emit({
+      type: 'tool_started',
+      runId: 'run_test',
+      toolCallId: 'call_1',
+      operation: 'browser_snapshot',
+      intent: 'Reading the page…',
+    });
+    expect(liveStatus.children[1].textContent).toBe('Reading the page…');
+
+    ctx.emit({
+      type: 'approval_requested',
+      runId: 'run_test',
+      approvalId: 'approval_1',
+      toolCallId: 'call_1',
+      label: 'Continue',
+    });
+    expect(liveStatus.classList.contains('active')).toBe(false);
+    expect(liveStatus.classList.contains('waiting')).toBe(true);
+    expect(liveStatus.children[1].textContent).toBe('Waiting for your approval');
+
+    ctx.emit({
+      type: 'run_finished',
+      runId: 'run_test',
+      status: 'completed',
+      durationMs: 1_000,
+      actionCount: 1,
+      outcome: { verification: 'actions_recorded' },
+    });
+    expect(liveStatus.hidden).toBe(true);
+    expect(turn.querySelector('.agent-turn-activity').children[0].textContent).toBe(
+      'Worked for 1s · 1 action · Actions recorded'
     );
   });
 

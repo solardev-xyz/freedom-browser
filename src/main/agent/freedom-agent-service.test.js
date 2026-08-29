@@ -1696,6 +1696,13 @@ describe('FreedomAgentService', () => {
   });
 
   test('normalizes only the safe event subset and known tool errors', () => {
+    expect(normalizePiEvent({ type: 'turn_start' })).toEqual({ type: 'run_thinking' });
+    expect(
+      normalizePiEvent({ type: 'message_start', message: { role: 'assistant', secret: true } })
+    ).toEqual({ type: 'run_responding' });
+    expect(
+      normalizePiEvent({ type: 'message_start', message: { role: 'user', secret: true } })
+    ).toBeNull();
     expect(
       normalizePiEvent({
         type: 'tool_execution_start',

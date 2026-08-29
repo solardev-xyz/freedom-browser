@@ -2237,6 +2237,87 @@ body.agent-first-mode .agent-composer textarea {
   font-size: 0.92em;
 }
 
+.agent-live-status {
+  display: inline-flex;
+  width: fit-content;
+  min-height: 20px;
+  align-items: center;
+  gap: 8px;
+  color: color-mix(in srgb, var(--text) 72%, var(--muted));
+  font-size: 11px;
+  line-height: 1.4;
+  animation: agent-live-status-enter 180ms ease-out 160ms both;
+}
+
+.agent-live-status[hidden] {
+  display: none;
+}
+
+.agent-live-status-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.agent-live-status-indicator > span {
+  width: 4px;
+  height: 4px;
+  background: color-mix(in srgb, var(--accent) 72%, var(--text));
+  border-radius: 50%;
+  opacity: 0.42;
+}
+
+.agent-live-status.active .agent-live-status-indicator > span {
+  animation: agent-live-status-pulse 1.35s ease-in-out infinite;
+}
+
+.agent-live-status.active .agent-live-status-indicator > span:nth-child(2) {
+  animation-delay: 150ms;
+}
+
+.agent-live-status.active .agent-live-status-indicator > span:nth-child(3) {
+  animation-delay: 300ms;
+}
+
+.agent-live-status.waiting .agent-live-status-indicator > span {
+  opacity: 0.55;
+}
+
+@keyframes agent-live-status-enter {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes agent-live-status-pulse {
+  0%,
+  70%,
+  100% {
+    opacity: 0.32;
+    transform: translateY(0);
+  }
+  35% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-live-status {
+    animation: none;
+  }
+
+  .agent-live-status.active .agent-live-status-indicator > span {
+    animation: none;
+    opacity: 0.72;
+  }
+}
+
 .agent-turn-activity {
   color: var(--muted);
   font-size: 11px;

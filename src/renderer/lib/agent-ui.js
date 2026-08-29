@@ -1109,12 +1109,28 @@ function createTurnView(turn) {
   activity.appendChild(activitySummary);
   activity.appendChild(toolList);
 
+  const liveStatus = document.createElement('div');
+  liveStatus.className = 'agent-live-status';
+  liveStatus.hidden = true;
+  liveStatus.setAttribute('aria-atomic', 'true');
+  const liveStatusIndicator = document.createElement('span');
+  liveStatusIndicator.className = 'agent-live-status-indicator';
+  liveStatusIndicator.setAttribute('aria-hidden', 'true');
+  for (let index = 0; index < 3; index += 1) {
+    liveStatusIndicator.appendChild(document.createElement('span'));
+  }
+  const liveStatusLabel = document.createElement('span');
+  liveStatusLabel.className = 'agent-live-status-label';
+  liveStatus.appendChild(liveStatusIndicator);
+  liveStatus.appendChild(liveStatusLabel);
+
   section.appendChild(userRow);
   section.appendChild(guidanceList);
   section.appendChild(assistantRow);
   section.appendChild(outcome);
   section.appendChild(artifactList);
   section.appendChild(activity);
+  section.appendChild(liveStatus);
   elements.transcript.appendChild(section);
   elements.transcript.hidden = false;
   elements.emptyState.hidden = true;
@@ -1131,6 +1147,8 @@ function createTurnView(turn) {
     activity,
     activitySummary,
     toolList,
+    liveStatus,
+    liveStatusLabel,
     guidanceList,
     assistantText: turn.assistantText || '',
     actionCount: 0,
@@ -1141,6 +1159,29 @@ function createTurnView(turn) {
   }
   section.scrollIntoView?.({ block: 'end' });
   return view;
+}
+
+function setLiveStatus(runId, label, { active = true } = {}) {
+  const view = turnView(runId);
+  if (!view || typeof label !== 'string' || !label) return;
+  const unchanged =
+    !view.liveStatus.hidden &&
+    view.liveStatusLabel.textContent === label &&
+    view.liveStatus.classList.contains(active ? 'active' : 'waiting');
+  if (unchanged) return;
+  view.liveStatusLabel.textContent = label;
+  view.liveStatus.hidden = false;
+  view.liveStatus.classList.toggle('active', active);
+  view.liveStatus.classList.toggle('waiting', !active);
+  view.section.scrollIntoView?.({ block: 'end' });
+}
+
+function clearLiveStatus(runId) {
+  const view = turnView(runId);
+  if (!view) return;
+  view.liveStatus.hidden = true;
+  view.liveStatus.classList.remove('active', 'waiting');
+  view.liveStatusLabel.textContent = '';
 }
 
 function guidanceStatusLabel(status) {
@@ -1800,6 +1841,7 @@ function updateToolProgress(event) {
 function finishTurnView(runId, event = {}) {
   const view = turnView(runId);
   if (!view) return;
+  clearLiveStatus(runId);
   const actionCount = Number.isSafeInteger(event.actionCount)
     ? event.actionCount
     : view.actionCount;
@@ -1991,6 +2033,7 @@ function handleAgentEvent(event) {
     }
     pendingPromptText = '';
     setRunState('running', 'Running');
+    setLiveStatus(event.runId, 'Thinking…');
     elements.emptyState.hidden = true;
     setMessage(
       elements.runMessage,
@@ -2002,7 +2045,11 @@ function handleAgentEvent(event) {
     return;
   }
   if (!currentRunId) return;
-  if (event.type === 'workspace_changed') {
+  if (event.type === 'run_thinking') {
+    setLiveStatus(event.runId, 'Thinking…');
+  } else if (event.type === 'run_responding') {
+    setLiveStatus(event.runId, 'Responding…');
+  } else if (event.type === 'workspace_changed') {
     void refreshWorkspaceProjection();
   } else if (event.type === 'guidance_queued') {
     createGuidanceView(event.runId, event.guidance);
@@ -2018,12 +2065,16 @@ function handleAgentEvent(event) {
   ) {
     const status = event.type.replace('guidance_', '');
     updateGuidanceView(event.runId, event.guidanceId, status);
-    if (status === 'applying') setMessage(elements.runMessage, 'Applying your guidance…');
+    if (status === 'applying') {
+      setMessage(elements.runMessage, 'Applying your guidance…');
+      setLiveStatus(event.runId, 'Applying your guidance…');
+    }
   } else if (event.type === 'assistant_text_delta' && typeof event.text === 'string') {
     const view = turnView(event.runId);
     if (!view) return;
     view.assistantText += event.text;
     view.output.textContent = view.assistantText;
+    setLiveStatus(event.runId, 'Responding…');
     view.section.scrollIntoView?.({ block: 'end' });
     elements.emptyState.hidden = true;
   } else if (event.type === 'tool_started') {
@@ -2031,6 +2082,7 @@ function handleAgentEvent(event) {
     const view = turnView(event.runId);
     if (view && event.intent) view.activitySummary.textContent = event.intent;
     setMessage(elements.runMessage, event.intent || 'Agent is working in the browser…');
+    setLiveStatus(event.runId, event.intent || 'Working…');
     elements.emptyState.hidden = true;
   } else if (event.type === 'tool_finished') {
     finishToolRow(event);
@@ -2043,18 +2095,24 @@ function handleAgentEvent(event) {
             ? 'File selection cancelled by you. Agent will not retry it unless you ask.'
             : `${formatToolError(event.errorCode)}. Agent is deciding how to recover.`
       );
+      setLiveStatus(event.runId, 'Recovering from an issue…');
     } else if (event.label) {
       setMessage(elements.runMessage, event.label);
+      setLiveStatus(event.runId, 'Checking the result…');
+    } else {
+      setLiveStatus(event.runId, 'Checking the result…');
     }
     void refreshWorkspaceProjection();
   } else if (event.type === 'tool_progress') {
     updateToolProgress(event);
     if (event.state === 'cancelled') {
       setMessage(elements.runMessage, 'Download cancelled by you.');
+      setLiveStatus(event.runId, 'Continuing after the cancelled download…');
     } else {
       const received = formatArtifactBytes(event.receivedBytes);
       const total = event.totalBytes > 0 ? ` of ${formatArtifactBytes(event.totalBytes)}` : '';
       setMessage(elements.runMessage, `Downloading ${received}${total}…`);
+      setLiveStatus(event.runId, `Downloading ${received}${total}…`);
     }
   } else if (event.type === 'run_retrying') {
     const delaySeconds = Math.max(1, Math.ceil((Number(event.delayMs) || 0) / 1_000));
@@ -2063,11 +2121,14 @@ function handleAgentEvent(event) {
       elements.runMessage,
       `${event.message || 'The model provider request failed.'} Retrying automatically (${event.attempt} of ${event.maxAttempts}) in ${delaySeconds}s…`
     );
+    setLiveStatus(event.runId, `Reconnecting · attempt ${event.attempt} of ${event.maxAttempts}…`);
   } else if (event.type === 'run_retry_recovered') {
     setRunState('running', 'Running');
     setMessage(elements.runMessage, 'Model connection restored. Agent is continuing…');
+    setLiveStatus(event.runId, 'Connection restored. Continuing…');
   } else if (event.type === 'context_compaction_started') {
     setMessage(elements.runMessage, 'Making room for more conversation…');
+    setLiveStatus(event.runId, 'Making room for more conversation…');
   } else if (event.type === 'context_compaction_finished') {
     setMessage(
       elements.runMessage,
@@ -2076,10 +2137,15 @@ function handleAgentEvent(event) {
         : 'Conversation compacted. Continuing…',
       event.status === 'failed'
     );
+    setLiveStatus(
+      event.runId,
+      event.status === 'failed' ? 'Continuing with available context…' : 'Continuing…'
+    );
   } else if (event.type === 'approval_requested') {
     updateToolApproval(event.runId, event.toolCallId, 'requested');
     renderApproval(event);
     setRunState('running', 'Approval needed');
+    setLiveStatus(event.runId, 'Waiting for your approval', { active: false });
   } else if (
     event.type === 'approval_resolved' &&
     pendingApproval?.approvalId === event.approvalId
@@ -2087,19 +2153,24 @@ function handleAgentEvent(event) {
     updateToolApproval(event.runId, event.toolCallId, event.decision);
     clearApproval();
     setRunState('running', 'Running');
+    setLiveStatus(event.runId, 'Continuing…');
   } else if (event.type === 'run_pausing') {
     setRunState('pausing', 'Taking over');
     setMessage(elements.runMessage, 'Taking over after the current browser operation settles…');
+    setLiveStatus(event.runId, 'Finishing the current action…');
   } else if (event.type === 'run_paused') {
     clearApproval();
     setRunState('paused', 'You’re in control');
     setMessage(elements.runMessage, 'Agent is waiting while you use its pages.');
+    setLiveStatus(event.runId, 'Waiting while you use the page', { active: false });
   } else if (event.type === 'run_resuming') {
     setRunState('resuming', 'Resuming');
     setMessage(elements.runMessage, 'Checking the page before the agent continues…');
+    setLiveStatus(event.runId, 'Checking the page before continuing…');
   } else if (event.type === 'run_resumed') {
     setRunState('running', 'Running');
     setMessage(elements.runMessage, 'Agent is re-reading the current page before acting.');
+    setLiveStatus(event.runId, 'Reading the page again…');
   } else if (event.type === 'run_finished') {
     const status = event.status || 'finished';
     const wasStopped = status === 'cancelled' && stopRequestedRunId === event.runId;
@@ -2272,16 +2343,19 @@ async function takeOverRun() {
   setTakeoverDialogOpen(false);
   setRunState('pausing', 'Taking over');
   setMessage(elements.runMessage, 'Taking over…');
+  setLiveStatus(runId, 'Finishing the current action…');
   try {
     const response = await window.electronAPI.pauseAgent(runId);
     if ((!response?.ok || response.paused !== true) && currentRunId === runId) {
       setRunState('running', 'Running');
       setMessage(elements.runMessage, responseMessage(response, 'Could not take over'), true);
+      setLiveStatus(runId, 'Continuing…');
     }
   } catch {
     if (currentRunId !== runId) return;
     setRunState('running', 'Running');
     setMessage(elements.runMessage, 'Could not take over', true);
+    setLiveStatus(runId, 'Continuing…');
   }
 }
 
@@ -2292,6 +2366,7 @@ async function resumeRun(instruction = '') {
   if (guidance) elements.prompt.value = '';
   setRunState('resuming', 'Resuming');
   setMessage(elements.runMessage, 'Checking the page before the agent continues…');
+  setLiveStatus(runId, 'Checking the page before continuing…');
   try {
     const response = await window.electronAPI.resumeAgent(runId, guidance || undefined);
     if ((!response?.ok || response.resumed !== true) && currentRunId === runId) {
@@ -2302,12 +2377,14 @@ async function resumeRun(instruction = '') {
         responseMessage(response, 'Could not resume the agent'),
         true
       );
+      setLiveStatus(runId, 'Waiting while you use the page', { active: false });
     }
   } catch {
     if (currentRunId !== runId) return;
     if (guidance && !elements.prompt.value) elements.prompt.value = guidance;
     setRunState('paused', 'You’re in control');
     setMessage(elements.runMessage, 'Could not resume the agent', true);
+    setLiveStatus(runId, 'Waiting while you use the page', { active: false });
   }
 }
 
@@ -2323,6 +2400,7 @@ async function stopRun() {
   setTakeoverDialogOpen(false);
   setRunState('stopping', 'Stopping');
   setMessage(elements.runMessage, 'Stopping Agent…');
+  setLiveStatus(currentRunId, 'Stopping…');
   try {
     const response = await window.electronAPI.stopAgent(currentRunId);
     if (!response?.ok) {
@@ -2333,6 +2411,7 @@ async function stopRun() {
         setMessage(elements.approvalMessage, 'Agent is waiting');
       }
       setMessage(elements.runMessage, responseMessage(response, 'Could not stop the agent'), true);
+      setLiveStatus(currentRunId, 'Continuing…');
     }
   } catch {
     stopRequestedRunId = null;
@@ -2342,6 +2421,7 @@ async function stopRun() {
       setMessage(elements.approvalMessage, 'Agent is waiting');
     }
     setMessage(elements.runMessage, 'Could not stop the agent', true);
+    setLiveStatus(currentRunId, 'Continuing…');
   }
 }
 
@@ -2377,9 +2457,21 @@ async function restoreRunState() {
               : 'Running';
       setRunState(restoredStatus, restoredLabel);
       setMessage(elements.runMessage, 'This run began before the panel was loaded');
+      setLiveStatus(
+        state.runId,
+        restoredStatus === 'paused'
+          ? 'Waiting while you use the page'
+          : restoredStatus === 'pausing'
+            ? 'Finishing the current action…'
+            : restoredStatus === 'resuming'
+              ? 'Checking the page before continuing…'
+              : 'Working…',
+        { active: restoredStatus !== 'paused' }
+      );
       if (state.pendingApproval) {
         renderApproval(state.pendingApproval);
         setRunState('running', 'Approval needed');
+        setLiveStatus(state.runId, 'Waiting for your approval', { active: false });
       }
     } else {
       setRunState('idle', 'Ready');

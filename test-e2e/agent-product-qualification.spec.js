@@ -883,7 +883,10 @@ test('provider recovery: transient failures are explained, retried, and resumed'
     'The model provider is temporarily unavailable. Retrying automatically'
   );
   await expect(window.locator('#agent-run-message')).not.toContainText('provider-private-detail');
+  await expect(window.locator('.agent-live-status')).toContainText('Reconnecting · attempt 1 of 2');
+  await expect(window.locator('.agent-live-status')).toHaveClass(/active/);
   await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 15_000 });
+  await expect(window.locator('.agent-live-status')).toBeHidden();
 
   const result = await recordQualification(
     window,
