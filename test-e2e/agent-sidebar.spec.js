@@ -134,9 +134,15 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
     expect(control.right).toBeLessThanOrEqual(compactComposer.footer.right);
   }
 
+  await window.locator('#agent-sidebar-close').click();
+  await expect(panel).toHaveClass(/collapsed/);
+  await toggle.click();
+  await expect(window.locator('#agent-prompt')).toBeFocused();
+
   const agentFirstToggle = window.locator('[data-test="agent-first-toggle"]');
   await expect(agentFirstToggle).toBeVisible();
   await agentFirstToggle.click();
+  await expect(window.locator('#agent-prompt')).toBeFocused();
   await expect(window.locator('body')).toHaveClass(/agent-first-mode/);
   await expect(window.locator('.toolbar')).toBeHidden();
   await expect(window.locator('#agent-first-titlebar')).toBeVisible();

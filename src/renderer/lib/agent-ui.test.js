@@ -405,6 +405,73 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-run'].disabled).toBe(true);
   });
 
+  test('focuses the composer when Agent opens and keeps it ready after sending', async () => {
+    const ctx = await loadAgentUi();
+    const focus = jest.spyOn(ctx.elements['agent-prompt'], 'focus');
+
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+
+    focus.mockClear();
+    ctx.elements['agent-prompt'].value = 'Summarize this page';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+
+    focus.mockClear();
+    ctx.emit({ type: 'run_finished', runId: 'run_test', status: 'completed' });
+    expect(focus).not.toHaveBeenCalled();
+  });
+
+  test('does not reclaim focus claimed elsewhere while a send is starting', async () => {
+    let resolveStart;
+    const startPending = new Promise((resolve) => {
+      resolveStart = resolve;
+    });
+    const ctx = await loadAgentUi({
+      electronAPI: { startAgent: jest.fn(() => startPending) },
+    });
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    const focus = jest.spyOn(ctx.elements['agent-prompt'], 'focus');
+
+    ctx.elements['agent-prompt'].value = 'Summarize this page';
+    ctx.elements['agent-run'].dispatch('click');
+    ctx.document.activeElement = ctx.elements['agent-sidebar-back'];
+    resolveStart({
+      ok: true,
+      runId: 'run_test',
+      conversationId: 'conversation_test',
+    });
+    await flush();
+
+    expect(focus).not.toHaveBeenCalled();
+  });
+
+  test('focuses the composer on Agent-first entry but not over an approval', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-toggle-btn'].dispatch('click');
+    const focus = jest.spyOn(ctx.elements['agent-prompt'], 'focus');
+
+    ctx.elements['agent-first-toggle'].dispatch('click');
+    expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+
+    ctx.elements['agent-prompt'].value = 'Submit the form';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'approval_requested',
+      runId: 'run_test',
+      approvalId: 'approval_test',
+      action: 'form_submission',
+      label: 'Submit',
+    });
+    focus.mockClear();
+    ctx.elements['agent-first-toggle'].dispatch('click');
+    ctx.elements['agent-first-toggle'].dispatch('click');
+    expect(focus).not.toHaveBeenCalled();
+  });
+
   test('submits a configured task with Enter while Shift+Enter remains multiline', async () => {
     const ctx = await loadAgentUi();
     ctx.elements['agent-prompt'].value = 'Summarize this page';

@@ -511,6 +511,7 @@ function setAgentFirstMode(nextMode) {
     renderSessionSidebar();
     ensureWorkspacePageVisible();
     void refreshWorkspaceProjection();
+    focusComposer();
   }
 }
 
@@ -633,6 +634,7 @@ function initPaneResizer(kind, handle) {
 function showPrimaryView() {
   if (!providerReady) setAgentView('loading');
   else setAgentView(providerStatus?.configured ? 'workspace' : 'setup');
+  focusComposer();
 }
 
 function showProviderSetup() {
@@ -645,6 +647,27 @@ function setPanelOpen(nextOpen) {
   panelOpen = nextOpen;
   elements.panel.classList.toggle('collapsed', !panelOpen);
   elements.toggle.setAttribute('aria-expanded', String(panelOpen));
+}
+
+function focusComposer(options = {}) {
+  const activeElement = document.activeElement;
+  const explicitFocusClaimed =
+    options.preserveExplicitFocus === true &&
+    activeElement &&
+    ![document.body, elements.prompt, elements.run].includes(activeElement);
+  if (
+    !panelOpen ||
+    agentView !== 'workspace' ||
+    elements.prompt.disabled ||
+    pendingApproval ||
+    !elements.takeoverDialog.hidden ||
+    !elements.walletUnlock.hidden ||
+    explicitFocusClaimed
+  ) {
+    return false;
+  }
+  elements.prompt.focus({ preventScroll: true });
+  return true;
 }
 
 function closePanel() {
@@ -2235,6 +2258,7 @@ async function startRun() {
       pendingPromptText = '';
       setRunState('idle', 'Idle');
       setMessage(elements.runMessage, responseMessage(response, 'Could not start the agent'), true);
+      focusComposer({ preserveExplicitFocus: true });
       return;
     }
     if (response.conversationId && response.conversationId !== currentConversationId) {
@@ -2251,6 +2275,7 @@ async function startRun() {
     } else {
       setRunState('idle', elements.runStatus.textContent || 'Complete');
     }
+    focusComposer({ preserveExplicitFocus: true });
   } catch {
     currentRunId = null;
     if (!currentConversationId) {
@@ -2262,6 +2287,7 @@ async function startRun() {
     pendingPromptText = '';
     setRunState('idle', 'Idle');
     setMessage(elements.runMessage, 'Could not start the agent', true);
+    focusComposer({ preserveExplicitFocus: true });
   }
 }
 
@@ -2272,6 +2298,7 @@ async function steerRun() {
   const runId = currentRunId;
   elements.prompt.value = '';
   updateSendAvailability();
+  focusComposer();
   try {
     const response = await window.electronAPI.steerAgent(runId, prompt);
     if (!response?.ok && currentRunId === runId) {
@@ -2378,6 +2405,7 @@ async function resumeRun(instruction = '') {
         true
       );
       setLiveStatus(runId, 'Waiting while you use the page', { active: false });
+      focusComposer({ preserveExplicitFocus: true });
     }
   } catch {
     if (currentRunId !== runId) return;
@@ -2385,6 +2413,7 @@ async function resumeRun(instruction = '') {
     setRunState('paused', 'You’re in control');
     setMessage(elements.runMessage, 'Could not resume the agent', true);
     setLiveStatus(runId, 'Waiting while you use the page', { active: false });
+    focusComposer({ preserveExplicitFocus: true });
   }
 }
 
