@@ -46,6 +46,11 @@ const OPERATION_PROGRESS = Object.freeze({
     intent: 'Reading the current page',
     completed: 'Read the current page',
   },
+  [OPERATIONS.SCREENSHOT]: {
+    effect: ACTIVITY_EFFECTS.OBSERVED,
+    intent: 'Looking at the current page',
+    completed: 'Looked at the current page',
+  },
   [OPERATIONS.NAVIGATE]: {
     effect: ACTIVITY_EFFECTS.CHANGED,
     intent: 'Navigating to another page',
@@ -418,6 +423,7 @@ function activityProgress(operation, receipt = {}) {
       [OPERATIONS.FOCUS_TAB]: ['Switching to', 'Switched to'],
       [OPERATIONS.CLOSE_TAB]: ['Closing', 'Closed'],
       [OPERATIONS.SNAPSHOT]: ['Reading', 'Read'],
+      [OPERATIONS.SCREENSHOT]: ['Looking at', 'Looked at'],
       [OPERATIONS.NAVIGATE]: ['Navigating to', 'Navigated to'],
       [OPERATIONS.CLICK]: ['Clicking on', 'Clicked on'],
       [OPERATIONS.TYPE]: ['Entering information on', 'Entered information on'],

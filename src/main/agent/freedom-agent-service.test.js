@@ -124,6 +124,7 @@ describe('FreedomAgentService', () => {
       sdk: { kind: 'sdk' },
       controller: expect.objectContaining({ execute: dependencies.controller.execute }),
       tabId: 'tab_assigned',
+      visionEnabled: false,
       onToolOutcome: expect.any(Function),
       onToolProgress: expect.any(Function),
     });
@@ -276,6 +277,21 @@ describe('FreedomAgentService', () => {
       expect.stringContaining('You are Freedom Agent inside Freedom Browser')
     );
 
+    fake.prompt.resolve();
+    await service.waitForIdle();
+  });
+
+  test('enables visual page observation only for a model declaring image input', async () => {
+    const fake = createFakeSession();
+    const { service, dependencies } = createService(fake);
+
+    await service.start(
+      startOptions({ model: { id: 'vision_model', provider: 'test', input: ['text', 'image'] } })
+    );
+
+    expect(dependencies.createTools).toHaveBeenCalledWith(
+      expect.objectContaining({ visionEnabled: true })
+    );
     fake.prompt.resolve();
     await service.waitForIdle();
   });

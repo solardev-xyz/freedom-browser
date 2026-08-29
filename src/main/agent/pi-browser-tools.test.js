@@ -5,9 +5,14 @@ const { ERROR_CODES } = require('../automation/contract/errors');
 const { AutomationController } = require('../automation/automation-controller');
 const {
   FreedomBrowserToolError,
+  MAX_AGENT_SCREENSHOT_BYTES,
   TOOL_SPEC_BY_NAME,
   createFreedomBrowserTools,
 } = require('./pi-browser-tools');
+
+const PNG_BASE64 = Buffer.from([
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00,
+]).toString('base64');
 
 function createSdk() {
   const SessionManager = jest.fn();
@@ -93,6 +98,111 @@ describe('Pi browser tool adapter', () => {
     expect(TOOL_SPEC_BY_NAME.get(OPERATIONS.PRESS).parameters.properties.key.enum).toContain(
       'Enter'
     );
+  });
+
+  test('advertises visual observation only to vision-capable models', async () => {
+    const controller = { execute: jest.fn() };
+    const tools = await createFreedomBrowserTools({
+      sdk: createSdk(),
+      controller,
+      tabId: 'tab_assigned',
+      visionEnabled: true,
+    });
+
+    const screenshot = tools.find((tool) => tool.name === OPERATIONS.SCREENSHOT);
+    expect(screenshot).toMatchObject({
+      label: 'Look at page',
+      executionMode: 'sequential',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+    });
+    expect(screenshot.description).toContain('Use a fresh page snapshot');
+  });
+
+  test('returns a bounded page image to Pi without retaining pixels in receipts or details', async () => {
+    const onToolOutcome = jest.fn();
+    const controller = {
+      execute: jest.fn(async (operation) => {
+        if (operation === OPERATIONS.SNAPSHOT) {
+          return successEnvelope({ url: 'https://visual.example/private', text: 'page' });
+        }
+        if (operation === OPERATIONS.SCREENSHOT) {
+          return successEnvelope({ mediaType: 'image/png', base64: PNG_BASE64 });
+        }
+        return successEnvelope();
+      }),
+    };
+    const tools = await createFreedomBrowserTools({
+      sdk: createSdk(),
+      controller,
+      tabId: 'tab_assigned',
+      visionEnabled: true,
+      onToolOutcome,
+    });
+    await tools.find((tool) => tool.name === OPERATIONS.SNAPSHOT).execute('call_snapshot', {});
+
+    const result = await tools
+      .find((tool) => tool.name === OPERATIONS.SCREENSHOT)
+      .execute('call_screenshot', {});
+
+    expect(controller.execute).toHaveBeenLastCalledWith(OPERATIONS.SCREENSHOT, {
+      tabId: 'tab_assigned',
+    });
+    expect(result.content).toEqual([
+      {
+        type: 'text',
+        text: expect.stringContaining('fresh semantic snapshot'),
+      },
+      { type: 'image', data: PNG_BASE64, mimeType: 'image/png' },
+    ]);
+    expect(result.details).toEqual({
+      operation: OPERATIONS.SCREENSHOT,
+      envelope: expect.objectContaining({
+        ok: true,
+        result: { mediaType: 'image/png', bytes: 9 },
+      }),
+    });
+    expect(JSON.stringify(result.details)).not.toContain(PNG_BASE64);
+    expect(onToolOutcome).toHaveBeenLastCalledWith({
+      toolCallId: 'call_screenshot',
+      operation: OPERATIONS.SCREENSHOT,
+      status: 'succeeded',
+      tabId: 'tab_assigned',
+      pageId: 'tab_assigned',
+      origin: 'https://visual.example',
+    });
+    expect(JSON.stringify(onToolOutcome.mock.calls)).not.toContain(PNG_BASE64);
+  });
+
+  test('rejects malformed and oversized page images before they reach Pi', async () => {
+    const controller = {
+      execute: jest
+        .fn()
+        .mockResolvedValueOnce(successEnvelope({ mediaType: 'image/png', base64: 'not-an-image' }))
+        .mockResolvedValueOnce(
+          successEnvelope({
+            mediaType: 'image/png',
+            base64: Buffer.concat([
+              Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+              Buffer.alloc(MAX_AGENT_SCREENSHOT_BYTES),
+            ]).toString('base64'),
+          })
+        ),
+    };
+    const tools = await createFreedomBrowserTools({
+      sdk: createSdk(),
+      controller,
+      tabId: 'tab_assigned',
+      visionEnabled: true,
+    });
+    const screenshot = tools.find((tool) => tool.name === OPERATIONS.SCREENSHOT);
+
+    await expect(screenshot.execute('call_invalid', {})).rejects.toMatchObject({
+      code: ERROR_CODES.CAPABILITY_UNAVAILABLE,
+    });
+    await expect(screenshot.execute('call_large', {})).rejects.toMatchObject({
+      code: ERROR_CODES.CAPABILITY_UNAVAILABLE,
+      suggestedAction: expect.stringContaining('semantic page snapshot'),
+    });
   });
 
   test('describes task tabs as a cross-site workspace capability', async () => {
@@ -750,5 +860,13 @@ describe('Pi browser tool adapter', () => {
         tabId: ' tab_1 ',
       })
     ).rejects.toThrow('cannot contain surrounding whitespace');
+    await expect(
+      createFreedomBrowserTools({
+        sdk: createSdk(),
+        controller: { execute: jest.fn() },
+        tabId: 'tab_1',
+        visionEnabled: 'yes',
+      })
+    ).rejects.toThrow('vision capability must be a boolean');
   });
 });

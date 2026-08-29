@@ -16,6 +16,9 @@ const EMPTY_PARAMETERS = Object.freeze({
   additionalProperties: false,
 });
 
+const MAX_AGENT_SCREENSHOT_BYTES = 8 * 1024 * 1024;
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
 const TOOL_SPECS = Object.freeze([
   {
     operation: OPERATIONS.LIST_TABS,
@@ -76,6 +79,14 @@ const TOOL_SPECS = Object.freeze([
     description:
       'Read a compact accessibility-oriented snapshot of the active task tab. Use returned element references for interaction.',
     parameters: EMPTY_PARAMETERS,
+  },
+  {
+    operation: OPERATIONS.SCREENSHOT,
+    label: 'Look at page',
+    description:
+      'Look at the visible viewport of the active task tab when visual layout or non-semantic content matters. This is observation only. Use a fresh page snapshot and its element references for every interaction; never derive click coordinates from the image.',
+    parameters: EMPTY_PARAMETERS,
+    requiresVision: true,
   },
   {
     operation: OPERATIONS.NAVIGATE,
@@ -381,6 +392,74 @@ function internalError() {
   };
 }
 
+function screenshotError(message, suggestedAction) {
+  return {
+    code: ERROR_CODES.CAPABILITY_UNAVAILABLE,
+    message,
+    retryable: false,
+    ...(suggestedAction && { suggestedAction }),
+  };
+}
+
+function imageContentFromEnvelope(envelope) {
+  const mediaType = envelope?.result?.mediaType;
+  const base64 = envelope?.result?.base64;
+  if (
+    mediaType !== 'image/png' ||
+    typeof base64 !== 'string' ||
+    !base64 ||
+    base64.length % 4 !== 0 ||
+    !/^[A-Za-z0-9+/]+={0,2}$/.test(base64)
+  ) {
+    throw new FreedomBrowserToolError(
+      OPERATIONS.SCREENSHOT,
+      screenshotError('Freedom could not produce a valid page image')
+    );
+  }
+
+  const paddingBytes = base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0;
+  const decodedBytes = (base64.length / 4) * 3 - paddingBytes;
+  if (decodedBytes > MAX_AGENT_SCREENSHOT_BYTES) {
+    throw new FreedomBrowserToolError(
+      OPERATIONS.SCREENSHOT,
+      screenshotError(
+        'The visible page image is too large to send to the selected model',
+        'Resize the Agent browser pane or use the semantic page snapshot instead'
+      )
+    );
+  }
+
+  const image = Buffer.from(base64, 'base64');
+  if (
+    image.byteLength < PNG_SIGNATURE.byteLength ||
+    !image.subarray(0, PNG_SIGNATURE.byteLength).equals(PNG_SIGNATURE)
+  ) {
+    throw new FreedomBrowserToolError(
+      OPERATIONS.SCREENSHOT,
+      screenshotError('Freedom could not produce a valid page image')
+    );
+  }
+
+  const safeEnvelope = {
+    ...envelope,
+    result: { mediaType, bytes: image.byteLength },
+  };
+  return {
+    content: [
+      {
+        type: 'text',
+        text: JSON.stringify({
+          ...safeEnvelope,
+          instruction:
+            'This is the visible viewport only. Take a fresh semantic snapshot before interacting with any element.',
+        }),
+      },
+      { type: 'image', data: base64, mimeType: mediaType },
+    ],
+    details: { operation: OPERATIONS.SCREENSHOT, envelope: safeEnvelope },
+  };
+}
+
 function assertNotAborted(signal, operation) {
   if (signal?.aborted) throw new FreedomBrowserToolError(operation, cancellationError());
 }
@@ -457,6 +536,8 @@ async function executeBrowserTool(controller, tabId, spec, params, signal, execu
     throw new FreedomBrowserToolError(spec.operation, error);
   }
 
+  if (spec.operation === OPERATIONS.SCREENSHOT) return imageContentFromEnvelope(envelope);
+
   return {
     content: [{ type: 'text', text: JSON.stringify(envelope) }],
     details: { operation: spec.operation, envelope },
@@ -486,11 +567,17 @@ async function createFreedomBrowserTools(options = {}) {
   if (typeof options.tabId === 'string' && options.tabId !== options.tabId.trim()) {
     throw new TypeError('Freedom browser tool tabId cannot contain surrounding whitespace');
   }
+  if (options.visionEnabled !== undefined && typeof options.visionEnabled !== 'boolean') {
+    throw new TypeError('Freedom browser tool vision capability must be a boolean');
+  }
 
   const sdk = validatePiSdk(options.sdk || (await loadPiSdk()));
   const tabState = { currentTabId: options.tabId };
   const pageOrigins = new Map();
-  return TOOL_SPECS.map((spec) =>
+  const availableSpecs = TOOL_SPECS.filter(
+    (spec) => spec.requiresVision !== true || options.visionEnabled === true
+  );
+  return availableSpecs.map((spec) =>
     sdk.defineTool({
       name: spec.operation,
       label: spec.label,
@@ -583,6 +670,7 @@ async function createFreedomBrowserTools(options = {}) {
 
 module.exports = {
   FreedomBrowserToolError,
+  MAX_AGENT_SCREENSHOT_BYTES,
   TOOL_SPECS,
   TOOL_SPEC_BY_NAME,
   createFreedomBrowserTools,

@@ -855,6 +855,8 @@ class FreedomAgentService {
           sdk,
           controller: scopedController,
           tabId,
+          visionEnabled:
+            Array.isArray(options.model?.input) && options.model.input.includes('image'),
           onToolOutcome: (outcome) => {
             if (this.activeRun) this.#handleToolOutcome(this.activeRun, outcome);
           },

@@ -30,6 +30,29 @@ describe('Agent progress projection', () => {
     });
   });
 
+  test('projects screenshot observation without retaining image pixels', () => {
+    const pixels = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB';
+    const receipt = createToolReceipt(OPERATIONS.SCREENSHOT, {
+      envelope: {
+        ok: true,
+        tabId: 'tab_visual',
+        result: { mediaType: 'image/png', bytes: 1234, base64: pixels },
+      },
+      origin: 'https://visual.example/private',
+    });
+
+    expect(receipt).toEqual({
+      pageId: 'tab_visual',
+      origin: 'https://visual.example',
+    });
+    expect(JSON.stringify(receipt)).not.toContain(pixels);
+    expect(activityProgress(OPERATIONS.SCREENSHOT, receipt)).toMatchObject({
+      intent: 'Looking at https://visual.example',
+      label: 'Looked at https://visual.example',
+      effect: 'observed',
+    });
+  });
+
   test('summarizes listed tabs without retaining their URLs', () => {
     const receipt = createToolReceipt(OPERATIONS.LIST_TABS, {
       envelope: {
