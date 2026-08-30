@@ -15,6 +15,11 @@ const ACTIVITY_EFFECTS = Object.freeze({
   MANAGED: 'managed',
 });
 
+const ATTACHMENT_OPERATIONS = Object.freeze({
+  LIST: 'attachment_list',
+  READ: 'attachment_read',
+});
+
 const OPERATION_PROGRESS = Object.freeze({
   [OPERATIONS.LIST_TABS]: {
     effect: ACTIVITY_EFFECTS.OBSERVED,
@@ -140,6 +145,16 @@ const OPERATION_PROGRESS = Object.freeze({
     effect: ACTIVITY_EFFECTS.MANAGED,
     intent: 'Stopping page loading',
     completed: 'Stopped page loading',
+  },
+  [ATTACHMENT_OPERATIONS.LIST]: {
+    effect: ACTIVITY_EFFECTS.OBSERVED,
+    intent: 'Inspecting attached sources',
+    completed: 'Inspected attached sources',
+  },
+  [ATTACHMENT_OPERATIONS.READ]: {
+    effect: ACTIVITY_EFFECTS.OBSERVED,
+    intent: 'Reading an attached source',
+    completed: 'Read an attached source',
   },
 });
 
@@ -356,6 +371,65 @@ function normalizeNodeLifecycleReceipt(value) {
   return Object.freeze({ service, action, beforeState, afterState, verified: true });
 }
 
+function normalizeAttachmentReceipt(value, operation) {
+  if (!value || typeof value !== 'object') return null;
+  if (![ATTACHMENT_OPERATIONS.LIST, ATTACHMENT_OPERATIONS.READ].includes(operation)) {
+    return null;
+  }
+  const action = operation === ATTACHMENT_OPERATIONS.READ ? 'read' : 'list';
+  const resourceId = boundedString(value.resourceId, 160);
+  const validResourceId = /^(?:attachment|folder)_[a-f0-9]{20}$/.test(resourceId);
+  const resourceKind = value.resourceKind === 'folder' ? 'folder' : value.resourceKind === 'file' ? 'file' : null;
+  const safeName = (candidate) => {
+    const name = boundedString(candidate, 240);
+    return name && !name.includes('/') && !name.includes('\\') ? name : '';
+  };
+  const name = safeName(value.name);
+  const folderName = safeName(value.folderName);
+  const candidatePath = boundedString(value.relativePath, 512);
+  const pathParts = candidatePath.split(/[\\/]+/);
+  const relativePath =
+    candidatePath &&
+    !/^(?:[A-Za-z]:[\\/]|[\\/])/.test(candidatePath) &&
+    !pathParts.includes('..')
+      ? candidatePath
+      : '';
+  const resourceCount =
+    Number.isSafeInteger(value.resourceCount) && value.resourceCount >= 0
+      ? Math.min(value.resourceCount, 10)
+      : null;
+  const entryCount =
+    Number.isSafeInteger(value.entryCount) && value.entryCount >= 0
+      ? Math.min(value.entryCount, 200)
+      : null;
+  const bytesRead =
+    Number.isSafeInteger(value.bytesRead) && value.bytesRead >= 0
+      ? Math.min(value.bytesRead, 8 * 1024 * 1024)
+      : null;
+  const offset =
+    Number.isSafeInteger(value.offset) && value.offset >= 0 ? value.offset : null;
+  if (action === 'read' && (!validResourceId || !resourceKind || !name || bytesRead === null)) {
+    return null;
+  }
+  if (action === 'list' && resourceId && (!validResourceId || resourceKind !== 'folder')) {
+    return null;
+  }
+  if (action === 'list' && !resourceId && resourceCount === null) return null;
+  return Object.freeze({
+    action,
+    ...(validResourceId && { resourceId }),
+    ...(resourceKind && { resourceKind }),
+    ...(name && { name }),
+    ...(folderName && { folderName }),
+    ...(relativePath && { relativePath }),
+    ...(resourceCount !== null && { resourceCount }),
+    ...(entryCount !== null && { entryCount }),
+    ...(bytesRead !== null && { bytesRead }),
+    ...(offset !== null && { offset }),
+    truncated: value.truncated === true,
+  });
+}
+
 function activityProgress(operation, receipt = {}) {
   const copy = OPERATION_PROGRESS[operation] || {
     effect: ACTIVITY_EFFECTS.MANAGED,
@@ -374,6 +448,7 @@ function activityProgress(operation, receipt = {}) {
   const nodeRequest = normalizeNodeRequestReceipt(receipt.nodeRequest);
   const nodeLifecycle = normalizeNodeLifecycleReceipt(receipt.nodeLifecycle);
   const diagnostic = normalizeDiagnosticReceipt(receipt.diagnostic);
+  const attachment = normalizeAttachmentReceipt(receipt.attachment, operation);
 
   if (operation === OPERATIONS.LIST_TABS && pageCount !== null) {
     const pages = `${pageCount} Agent ${pageCount === 1 ? 'tab' : 'tabs'}`;
@@ -416,6 +491,20 @@ function activityProgress(operation, receipt = {}) {
     const subject = diagnostic.scope === 'node' ? diagnostic.service : 'Freedom';
     intent = `Inspecting ${subject} diagnostics`;
     label = `Inspected ${diagnostic.lineCount} diagnostic ${diagnostic.lineCount === 1 ? 'line' : 'lines'}`;
+  } else if (operation === ATTACHMENT_OPERATIONS.LIST && attachment) {
+    if (attachment.resourceId) {
+      const folder = attachment.folderName || attachment.name || 'attached folder';
+      intent = `Inspecting ${folder}`;
+      label = `Inspected ${folder}`;
+    } else {
+      const resources = `${attachment.resourceCount} attached ${attachment.resourceCount === 1 ? 'source' : 'sources'}`;
+      intent = `Checking ${resources}`;
+      label = `Checked ${resources}`;
+    }
+  } else if (operation === ATTACHMENT_OPERATIONS.READ && attachment) {
+    const source = attachment.relativePath || attachment.name;
+    intent = `Reading ${source}`;
+    label = `Read ${source}`;
   } else if (origin) {
     const originCopy = {
       [OPERATIONS.CREATE_TAB]: ['Opening', 'Opened'],
@@ -460,6 +549,7 @@ function activityProgress(operation, receipt = {}) {
     ...(nodeRequest && { nodeRequest }),
     ...(nodeLifecycle && { nodeLifecycle }),
     ...(diagnostic && { diagnostic }),
+    ...(attachment && { attachment }),
   });
 }
 
@@ -561,6 +651,22 @@ function buildAgentOutcome(activity, status, error) {
     )
     .map((item) => normalizeDiagnosticReceipt(item?.diagnostic))
     .filter(Boolean);
+  const attachmentObservations = succeeded
+    .filter((item) =>
+      [ATTACHMENT_OPERATIONS.LIST, ATTACHMENT_OPERATIONS.READ].includes(item?.operation)
+    )
+    .map((item) => normalizeAttachmentReceipt(item?.attachment, item.operation))
+    .filter(Boolean);
+  const attachmentReads = [
+    ...new Map(
+      attachmentObservations
+        .filter((item) => item.action === 'read')
+        .map((item) => [
+          `${item.resourceId}:${item.relativePath || item.name}`,
+          item,
+        ])
+    ).values(),
+  ];
   const nonBrowserObservations = new Set([
     OPERATIONS.NODE_STATUS,
     OPERATIONS.NODE_REQUEST,
@@ -568,7 +674,12 @@ function buildAgentOutcome(activity, status, error) {
     OPERATIONS.NODE_LIFECYCLE,
     OPERATIONS.NODE_DIAGNOSTICS,
     OPERATIONS.APP_DIAGNOSTICS,
+    ATTACHMENT_OPERATIONS.LIST,
+    ATTACHMENT_OPERATIONS.READ,
   ]);
+  const browserSucceeded = succeeded.filter(
+    (item) => !nonBrowserObservations.has(item?.operation)
+  );
   const browserObserved = observed.filter((item) => !nonBrowserObservations.has(item?.operation));
   const uncertainChanges = items.filter((item) => {
     if (normalizedEffect(item) !== ACTIVITY_EFFECTS.CHANGED || item?.status === 'succeeded') {
@@ -621,9 +732,13 @@ function buildAgentOutcome(activity, status, error) {
     ...(nodeRequests.length && { nodeRequests: nodeRequests.length }),
     ...(nodeLifecycles.length && { nodeLifecycles: nodeLifecycles.length }),
     ...(diagnostics.length && { diagnostics: diagnostics.length }),
+    ...(attachmentReads.length && { attachmentReads: attachmentReads.length }),
+    ...(attachmentObservations.length && {
+      attachmentObservations: attachmentObservations.length,
+    }),
     approvals,
   });
-  const browserActionCopy = `${counts.successful} successful browser ${counts.successful === 1 ? 'action' : 'actions'}${counts.pages ? ` across ${counts.pages} ${counts.pages === 1 ? 'page' : 'pages'}` : ''}`;
+  const browserActionCopy = `${browserSucceeded.length} successful browser ${browserSucceeded.length === 1 ? 'action' : 'actions'}${counts.pages ? ` across ${counts.pages} ${counts.pages === 1 ? 'page' : 'pages'}` : ''}`;
   const recoveryNote = counts.failed
     ? ` Agent recovered from ${counts.failed} failed browser ${counts.failed === 1 ? 'action' : 'actions'}.`
     : '';
@@ -790,6 +905,27 @@ function buildAgentOutcome(activity, status, error) {
         counts,
       });
     }
+    if (attachmentObservations.length && !changed.length && !browserObserved.length) {
+      const folderNames = [
+        ...new Set(
+          attachmentObservations
+            .map((item) => item.folderName)
+            .filter(Boolean)
+        ),
+      ];
+      const detail = attachmentReads.length
+        ? `Freedom recorded reads from ${attachmentReads.length} attached ${attachmentReads.length === 1 ? 'file' : 'files'}${folderNames.length === 1 ? ` in the shared folder “${folderNames[0]}”` : ''}. This confirms the sources were accessed, not that every model conclusion is correct.`
+        : 'Freedom inspected the user-shared attachment inventory. This confirms the sources were accessed, not that every model conclusion is correct.';
+      return Object.freeze({
+        kind: 'completed',
+        verification: 'attachments_inspected',
+        tone: 'success',
+        headline: 'Attached sources inspected',
+        detail,
+        destinations,
+        counts,
+      });
+    }
     if (resultObserved) {
       return Object.freeze({
         kind: 'completed',
@@ -927,11 +1063,13 @@ function buildAgentOutcome(activity, status, error) {
 
 module.exports = {
   ACTIVITY_EFFECTS,
+  ATTACHMENT_OPERATIONS,
   activityProgress,
   buildAgentOutcome,
   createToolReceipt,
   errorExplanation,
   normalizeArtifact,
+  normalizeAttachmentReceipt,
   normalizeDiagnosticReceipt,
   normalizeNodeRequestReceipt,
   normalizeNodeLifecycleReceipt,

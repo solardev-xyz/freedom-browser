@@ -48,6 +48,7 @@ function createService(options = {}) {
     claimTab: options.claimTab || jest.fn(async () => false),
     openConversation: options.openConversation || jest.fn(async () => null),
     renameConversation: options.renameConversation || jest.fn(() => null),
+    revokeAttachment: options.revokeAttachment || jest.fn(async () => null),
     deleteConversation: options.deleteConversation || jest.fn(async () => false),
     decideApproval: options.decideApproval || jest.fn(async () => true),
     handleWalletRequest:
@@ -217,6 +218,37 @@ describe('Freedom agent IPC', () => {
         attachmentOwnerId: '41',
       })
     );
+  });
+
+  test('revokes only an owned conversation folder through trusted chrome', async () => {
+    const conversationId = `conversation_${'a'.repeat(16)}`;
+    const folderId = `folder_${'c'.repeat(20)}`;
+    const revokeAttachment = jest.fn(async () => ({
+      resource: { resourceId: folderId, kind: 'folder', available: false },
+      resources: [],
+    }));
+    const start = jest.fn(async () => ({ runId: 'run_test', conversationId }));
+    const ctx = register({ service: createService({ start, revokeAttachment }) });
+    await ctx.ipcMain.handlers.get(IPC.AGENT_START)(
+      { sender: ctx.sender },
+      { rendererTabId: 7, prompt: 'Review the folder' }
+    );
+
+    await expect(
+      ctx.ipcMain.handlers.get(IPC.AGENT_ATTACHMENTS_REVOKE)(
+        { sender: ctx.sender },
+        { conversationId, resourceId: folderId }
+      )
+    ).resolves.toEqual({ ok: true, revoked: true, resources: [] });
+    expect(revokeAttachment).toHaveBeenCalledWith(conversationId, folderId);
+
+    await expect(
+      ctx.ipcMain.handlers.get(IPC.AGENT_ATTACHMENTS_REVOKE)(
+        { sender: ctx.otherSender },
+        { conversationId, resourceId: folderId }
+      )
+    ).resolves.toMatchObject({ ok: false, error: { code: AGENT_IPC_ERROR_CODES.NOT_OWNER } });
+    expect(revokeAttachment).toHaveBeenCalledTimes(1);
   });
 
   test('does not expose attachment pickers or staged selections to untrusted renderers', async () => {

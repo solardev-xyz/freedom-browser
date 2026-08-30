@@ -340,6 +340,17 @@ class ConversationAttachmentStore {
     await this.fs.rm(this.#conversationDir(conversationId), { recursive: true, force: true });
   }
 
+  async revokeFolder(conversationId, resourceId) {
+    const current = await this.#resourcesFor(conversationId);
+    const resource = current.get(resourceId);
+    if (!resource || resource.kind !== 'folder') return false;
+    const remaining = new Map(current);
+    remaining.delete(resourceId);
+    await this.#writeManifest(conversationId, remaining);
+    this.resources.set(conversationId, remaining);
+    return true;
+  }
+
   #conversationDir(conversationId) {
     if (!/^conversation_[a-f0-9]{16}$/.test(conversationId)) {
       throw new TypeError('Invalid attachment conversation ID');

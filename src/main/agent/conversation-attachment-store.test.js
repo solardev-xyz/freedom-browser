@@ -165,6 +165,39 @@ describe('ConversationAttachmentStore', () => {
     );
   });
 
+  test('revokes a live folder grant and removes it from the persisted manifest', async () => {
+    const folderPath = path.join(sourceDir, 'project');
+    fs.mkdirSync(folderPath);
+    fs.writeFileSync(path.join(folderPath, 'README.md'), '# Private project');
+    const store = createStore([folderPath]);
+    const [selection] = await store.pickFolder({ ownerId: 'window_1' });
+    const [folder] = await store.consume(
+      'window_1',
+      [selection.selectionId],
+      'conversation_ffffffffffffffff'
+    );
+
+    await expect(
+      store.revokeFolder('conversation_ffffffffffffffff', folder.resourceId)
+    ).resolves.toBe(true);
+    await expect(
+      store.read('conversation_ffffffffffffffff', folder.resourceId, { path: 'README.md' })
+    ).rejects.toThrow('not found');
+    await expect(store.listResources('conversation_ffffffffffffffff')).resolves.toEqual([]);
+
+    const manifest = fs.readFileSync(
+      path.join(
+        userDataDir,
+        ATTACHMENTS_DIR,
+        'conversation_ffffffffffffffff',
+        'manifest.json'
+      ),
+      'utf8'
+    );
+    expect(manifest).not.toContain(folder.resourceId);
+    expect(manifest).not.toContain(folderPath);
+  });
+
   test('bounds text reads and recognizes only declared attachment formats', async () => {
     expect(fileClassification('/tmp/a.png')).toMatchObject({ category: 'image' });
     expect(fileClassification('/tmp/a.pdf')).toMatchObject({ category: 'pdf_unsupported' });

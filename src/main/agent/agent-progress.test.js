@@ -2,7 +2,13 @@
 
 const { OPERATIONS } = require('../automation/contract/operations');
 const { ERROR_CODES } = require('../automation/contract/errors');
-const { activityProgress, buildAgentOutcome, createToolReceipt } = require('./agent-progress');
+const {
+  ATTACHMENT_OPERATIONS,
+  activityProgress,
+  buildAgentOutcome,
+  createToolReceipt,
+  normalizeAttachmentReceipt,
+} = require('./agent-progress');
 
 describe('Agent progress projection', () => {
   test('projects only an origin and opaque page identity from browser receipts', () => {
@@ -722,5 +728,79 @@ describe('Agent progress projection', () => {
 
     expect(outcome).toMatchObject({ retrySafety: 'review' });
     expect(outcome.detail).toContain('cannot confirm whether the interrupted browser action');
+  });
+
+  test('treats bounded attachment reads as source evidence rather than browser activity', () => {
+    const firstChunk = normalizeAttachmentReceipt(
+      {
+        resourceId: `folder_${'a'.repeat(20)}`,
+        resourceKind: 'folder',
+        folderName: 'Bug reports',
+        name: 'ant-report.json',
+        relativePath: 'results/ant-report.json',
+        bytesRead: 262_144,
+        offset: 0,
+        truncated: true,
+        sourcePath: '/Users/private/Bug reports/results/ant-report.json',
+      },
+      ATTACHMENT_OPERATIONS.READ
+    );
+    const finalChunk = normalizeAttachmentReceipt(
+      { ...firstChunk, bytesRead: 50, offset: 262_144, truncated: false },
+      ATTACHMENT_OPERATIONS.READ
+    );
+
+    expect(firstChunk).toEqual({
+      action: 'read',
+      resourceId: `folder_${'a'.repeat(20)}`,
+      resourceKind: 'folder',
+      name: 'ant-report.json',
+      folderName: 'Bug reports',
+      relativePath: 'results/ant-report.json',
+      bytesRead: 262_144,
+      offset: 0,
+      truncated: true,
+    });
+    expect(JSON.stringify(firstChunk)).not.toContain('/Users/private');
+    expect(activityProgress(ATTACHMENT_OPERATIONS.READ, { attachment: firstChunk })).toMatchObject({
+      intent: 'Reading results/ant-report.json',
+      label: 'Read results/ant-report.json',
+      effect: 'observed',
+    });
+
+    const outcome = buildAgentOutcome(
+      [firstChunk, finalChunk].map((attachment, index) => ({
+        toolCallId: `call_${index}`,
+        operation: ATTACHMENT_OPERATIONS.READ,
+        status: 'succeeded',
+        effect: 'observed',
+        attachment,
+      })),
+      'completed'
+    );
+    expect(outcome).toMatchObject({
+      verification: 'attachments_inspected',
+      headline: 'Attached sources inspected',
+      counts: { successful: 2, attachmentReads: 1, attachmentObservations: 2 },
+    });
+    expect(outcome.detail).toContain('1 attached file in the shared folder “Bug reports”');
+    expect(outcome.detail).not.toContain('browser evidence');
+  });
+
+  test('drops absolute paths from attachment receipts', () => {
+    expect(
+      normalizeAttachmentReceipt(
+        {
+          resourceId: `folder_${'b'.repeat(20)}`,
+          resourceKind: 'folder',
+          folderName: '/Users/private',
+          name: '/Users/private/secret.txt',
+          relativePath: '/Users/private/secret.txt',
+          bytesRead: 12,
+          offset: 0,
+        },
+        ATTACHMENT_OPERATIONS.READ
+      )
+    ).toBeNull();
   });
 });

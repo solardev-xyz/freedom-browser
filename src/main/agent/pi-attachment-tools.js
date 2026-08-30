@@ -48,21 +48,38 @@ async function createConversationAttachmentTools(options = {}) {
     executionMode: 'sequential',
     execute: async (_toolCallId, params = {}) => {
       try {
-        const value = params.resourceId
-          ? {
-              resourceId: params.resourceId,
-              path: params.path || '',
-              ...(await options.store.listFolder(
-                options.conversationId,
-                params.resourceId,
-                params.path || '',
-                params.offset || 0
-              )),
-            }
-          : { resources: await options.store.listResources(options.conversationId) };
+        const resources = await options.store.listResources(options.conversationId);
+        let value;
+        let details;
+        if (params.resourceId) {
+          const resource = resources.find((item) => item.resourceId === params.resourceId);
+          const listing = await options.store.listFolder(
+            options.conversationId,
+            params.resourceId,
+            params.path || '',
+            params.offset || 0
+          );
+          value = {
+            resourceId: params.resourceId,
+            name: resource?.name || 'Attached folder',
+            path: params.path || '',
+            ...listing,
+          };
+          details = {
+            resourceId: params.resourceId,
+            resourceKind: 'folder',
+            folderName: resource?.name || 'Attached folder',
+            relativePath: params.path || '',
+            entryCount: listing.entries.length,
+            truncated: listing.truncated === true,
+          };
+        } else {
+          value = { resources };
+          details = { resourceCount: resources.length, truncated: false };
+        }
         return {
           content: [{ type: 'text', text: JSON.stringify(value, null, 2) }],
-          details: value,
+          details,
         };
       } catch (error) {
         throw safeAttachmentError(error);
@@ -88,6 +105,9 @@ async function createConversationAttachmentTools(options = {}) {
     executionMode: 'sequential',
     execute: async (_toolCallId, params) => {
       try {
+        const resource = (await options.store.listResources(options.conversationId)).find(
+          (item) => item.resourceId === params.resourceId
+        );
         const result = await options.store.read(options.conversationId, params.resourceId, params);
         if (result.kind === 'image') {
           if (options.visionEnabled !== true) {
@@ -98,13 +118,29 @@ async function createConversationAttachmentTools(options = {}) {
               { type: 'text', text: `Attached image: ${result.name}` },
               { type: 'image', data: result.data.toString('base64'), mimeType: result.mimeType },
             ],
-            details: { kind: 'image', name: result.name, bytes: result.bytes },
+            details: {
+              resourceId: params.resourceId,
+              resourceKind: resource?.kind || 'file',
+              name: result.name,
+              ...(resource?.kind === 'folder' && {
+                folderName: resource.name,
+                relativePath: params.path,
+              }),
+              bytesRead: result.bytes,
+              offset: 0,
+              truncated: false,
+            },
           };
         }
         const details = {
-          kind: 'text',
+          resourceId: params.resourceId,
+          resourceKind: resource?.kind || 'file',
           name: result.name,
-          bytes: result.bytes,
+          ...(resource?.kind === 'folder' && {
+            folderName: resource.name,
+            relativePath: params.path,
+          }),
+          bytesRead: Buffer.byteLength(result.text || '', 'utf8'),
           offset: result.offset,
           truncated: result.truncated,
         };

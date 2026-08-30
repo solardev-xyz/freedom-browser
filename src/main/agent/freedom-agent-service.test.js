@@ -311,6 +311,7 @@ describe('FreedomAgentService', () => {
       ]),
       listResources: jest.fn(async () => []),
       read: jest.fn(),
+      revokeFolder: jest.fn(async () => true),
       deleteConversation: jest.fn(async () => {}),
     };
     const createAttachmentTools = jest.fn(async () => [
@@ -376,6 +377,7 @@ describe('FreedomAgentService', () => {
         mimeType: 'image/png',
         data: Buffer.from('png'),
       })),
+      revokeFolder: jest.fn(async () => true),
       deleteConversation: jest.fn(async () => {}),
     };
     const { service } = createService(fake, {
@@ -401,6 +403,53 @@ describe('FreedomAgentService', () => {
     await service.waitForIdle();
   });
 
+  test('revokes a live folder resource and broadcasts the remaining conversation sources', async () => {
+    const fake = createFakeSession();
+    const folderId = `folder_${'d'.repeat(20)}`;
+    const attachmentStore = {
+      consume: jest.fn(async () => [
+        {
+          resourceId: folderId,
+          kind: 'folder',
+          name: 'Bug reports',
+          category: 'folder',
+          available: true,
+        },
+      ]),
+      listResources: jest.fn(async () => []),
+      read: jest.fn(),
+      revokeFolder: jest.fn(async () => true),
+      deleteConversation: jest.fn(async () => {}),
+    };
+    const { service } = createService(fake, {
+      attachmentStore,
+      createAttachmentTools: jest.fn(async () => []),
+    });
+    const events = [];
+    service.subscribe((event) => events.push(event));
+
+    const started = await service.start(
+      startOptions({
+        attachmentIds: ['selection_dddddddddddddddddddd'],
+        attachmentOwnerId: '41',
+      })
+    );
+    fake.prompt.resolve();
+    await service.waitForIdle();
+
+    await expect(service.revokeAttachment(started.conversationId, folderId)).resolves.toMatchObject({
+      resource: { resourceId: folderId, available: false },
+      resources: [],
+    });
+    expect(attachmentStore.revokeFolder).toHaveBeenCalledWith(started.conversationId, folderId);
+    expect(service.getState().resources).toEqual([]);
+    expect(events.at(-1)).toMatchObject({
+      type: 'conversation_resources_changed',
+      conversationId: started.conversationId,
+      resources: [],
+    });
+  });
+
   test('cleans attachment snapshots if startup fails before a conversation exists', async () => {
     const fake = createFakeSession();
     const attachmentStore = {
@@ -416,6 +465,7 @@ describe('FreedomAgentService', () => {
       ]),
       listResources: jest.fn(async () => []),
       read: jest.fn(),
+      revokeFolder: jest.fn(async () => true),
       deleteConversation: jest.fn(async () => {}),
     };
     const { service } = createService(fake, {
@@ -1924,6 +1974,39 @@ describe('FreedomAgentService', () => {
         { status: 'failed', errorCode: ERROR_CODES.POLICY_DENIED }
       )
     ).toMatchObject({ status: 'failed', errorCode: ERROR_CODES.POLICY_DENIED });
+    expect(
+      normalizePiEvent({
+        type: 'tool_execution_end',
+        toolCallId: 'call_attachment',
+        toolName: 'attachment_read',
+        result: {
+          content: [{ type: 'text', text: 'private attachment contents' }],
+          details: {
+            resourceId: `folder_${'a'.repeat(20)}`,
+            resourceKind: 'folder',
+            folderName: 'Bug reports',
+            name: 'ant-report.json',
+            relativePath: 'ant-report.json',
+            bytesRead: 100,
+            offset: 0,
+            truncated: false,
+            sourcePath: '/Users/private/ant-report.json',
+          },
+        },
+        isError: false,
+      })
+    ).toMatchObject({
+      operation: 'attachment_read',
+      status: 'succeeded',
+      label: 'Read ant-report.json',
+      effect: 'observed',
+      attachment: {
+        action: 'read',
+        name: 'ant-report.json',
+        folderName: 'Bug reports',
+        relativePath: 'ant-report.json',
+      },
+    });
   });
 
   test('isolates subscriber failures', async () => {

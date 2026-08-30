@@ -196,6 +196,7 @@ function registerFreedomAgentIpc(options = {}) {
     typeof service.claimTab !== 'function' ||
     typeof service.openConversation !== 'function' ||
     typeof service.renameConversation !== 'function' ||
+    typeof service.revokeAttachment !== 'function' ||
     typeof service.deleteConversation !== 'function' ||
     typeof service.decideApproval !== 'function' ||
     typeof service.handleWalletRequest !== 'function' ||
@@ -944,6 +945,34 @@ function registerFreedomAgentIpc(options = {}) {
       removed: attachmentStore.removeStaged(String(event.sender.id), payload.selectionId),
     };
   };
+  const handleRevokeAttachment = async (event, payload = {}) => {
+    if (
+      !owner ||
+      owner.sender !== event?.sender ||
+      payload.conversationId !== owner.conversationId ||
+      !/^conversation_[a-f0-9]{16}$/.test(payload.conversationId || '') ||
+      !/^folder_[a-f0-9]{20}$/.test(payload.resourceId || '')
+    ) {
+      return errorEnvelope(
+        AGENT_IPC_ERROR_CODES.NOT_OWNER,
+        'The sender does not own that shared folder'
+      );
+    }
+    try {
+      const result = await service.revokeAttachment(
+        payload.conversationId,
+        payload.resourceId
+      );
+      return result
+        ? { ok: true, revoked: true, resources: result.resources }
+        : errorEnvelope(
+            AGENT_IPC_ERROR_CODES.SESSION_NOT_FOUND,
+            'That shared folder is no longer available'
+          );
+    } catch (error) {
+      return safeServiceError(error);
+    }
+  };
   const handleSelectModel = (event, payload) =>
     handleProviderMutation(event, async () => ({
       status: await providerResolver.selectModel(payload),
@@ -979,6 +1008,7 @@ function registerFreedomAgentIpc(options = {}) {
   ipcMain.handle(IPC.AGENT_ATTACHMENTS_PICK_FILES, handlePickFiles);
   ipcMain.handle(IPC.AGENT_ATTACHMENTS_PICK_FOLDER, handlePickFolder);
   ipcMain.handle(IPC.AGENT_ATTACHMENTS_REMOVE, handleRemoveAttachment);
+  ipcMain.handle(IPC.AGENT_ATTACHMENTS_REVOKE, handleRevokeAttachment);
   ipcMain.handle(IPC.AGENT_TAB_CLAIM, handleTabClaim);
   ipcMain.handle(IPC.AGENT_PROVIDER_GET_STATUS, handleProviderStatus);
   ipcMain.handle(IPC.AGENT_PROVIDER_GET_CATALOG, handleProviderCatalog);
@@ -1007,6 +1037,7 @@ function registerFreedomAgentIpc(options = {}) {
     ipcMain.removeHandler?.(IPC.AGENT_ATTACHMENTS_PICK_FILES);
     ipcMain.removeHandler?.(IPC.AGENT_ATTACHMENTS_PICK_FOLDER);
     ipcMain.removeHandler?.(IPC.AGENT_ATTACHMENTS_REMOVE);
+    ipcMain.removeHandler?.(IPC.AGENT_ATTACHMENTS_REVOKE);
     ipcMain.removeHandler?.(IPC.AGENT_TAB_CLAIM);
     ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_GET_STATUS);
     ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_GET_CATALOG);

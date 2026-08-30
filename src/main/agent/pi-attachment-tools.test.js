@@ -19,6 +19,7 @@ describe('Pi attachment tools', () => {
     const store = {
       listResources: jest.fn(async () => [
         { resourceId: 'attachment_a', kind: 'file', name: 'notes.txt', available: true },
+        { resourceId: 'folder_a', kind: 'folder', name: 'Project', available: true },
       ]),
       listFolder: jest.fn(async () => ({
         entries: [{ name: 'README.md', kind: 'file' }],
@@ -42,12 +43,22 @@ describe('Pi attachment tools', () => {
       path: 'src',
     });
     expect(store.listFolder).toHaveBeenCalledWith('conversation_test', 'folder_a', 'src', 0);
-    expect(folderResult.details.entries).toEqual([{ name: 'README.md', kind: 'file' }]);
+    expect(folderResult.details).toEqual({
+      resourceId: 'folder_a',
+      resourceKind: 'folder',
+      folderName: 'Project',
+      relativePath: 'src',
+      entryCount: 1,
+      truncated: false,
+    });
+    expect(folderResult.content[0].text).toContain('README.md');
   });
 
   test('returns images only to vision models and never exposes storage paths', async () => {
     const store = {
-      listResources: jest.fn(),
+      listResources: jest.fn(async () => [
+        { resourceId: 'attachment_a', kind: 'file', name: 'photo.png', available: true },
+      ]),
       listFolder: jest.fn(),
       read: jest.fn(async () => ({
         kind: 'image',
@@ -81,7 +92,9 @@ describe('Pi attachment tools', () => {
 
   test('returns bounded text metadata', async () => {
     const store = {
-      listResources: jest.fn(),
+      listResources: jest.fn(async () => [
+        { resourceId: 'attachment_a', kind: 'file', name: 'notes.txt', available: true },
+      ]),
       listFolder: jest.fn(),
       read: jest
         .fn()
@@ -109,7 +122,9 @@ describe('Pi attachment tools', () => {
 
   test('does not disclose filesystem paths through attachment read failures', async () => {
     const store = {
-      listResources: jest.fn(),
+      listResources: jest.fn(async () => [
+        { resourceId: 'folder_a', kind: 'folder', name: 'Project', available: true },
+      ]),
       listFolder: jest.fn(async () => {
         const error = new Error(
           "ENOENT: no such file or directory, scandir '/Users/private/Documents'"

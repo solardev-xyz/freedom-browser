@@ -21,6 +21,7 @@ const {
   activityProgress,
   buildAgentOutcome,
   normalizeArtifact,
+  normalizeAttachmentReceipt,
   normalizeDiagnosticReceipt,
   normalizeNodeLifecycleReceipt,
   normalizeNodeRequestReceipt,
@@ -272,7 +273,10 @@ function normalizePiEvent(event, toolOutcome) {
   if (event.type === 'tool_execution_end') {
     const errorCode =
       event.isError && toolOutcome?.status === 'failed' ? toolOutcome.errorCode : undefined;
-    const progress = toolOutcome?.progress || activityProgress(String(event.toolName));
+    const operation = String(event.toolName);
+    const attachment = normalizeAttachmentReceipt(event.result?.details, operation);
+    const progress =
+      toolOutcome?.progress || activityProgress(operation, attachment ? { attachment } : {});
     return {
       type: 'tool_finished',
       toolCallId: String(event.toolCallId),
@@ -287,6 +291,7 @@ function normalizePiEvent(event, toolOutcome) {
       ...(toolOutcome?.nodeLifecycle && { nodeLifecycle: toolOutcome.nodeLifecycle }),
       ...(toolOutcome?.diagnostic && { diagnostic: toolOutcome.diagnostic }),
       ...(toolOutcome?.artifacts && { artifacts: toolOutcome.artifacts }),
+      ...(attachment && { attachment }),
       ...(errorCode && { errorCode }),
     };
   }
@@ -560,7 +565,7 @@ class FreedomAgentService {
     this.attachmentStore = options.attachmentStore || null;
     if (
       this.attachmentStore &&
-      ['consume', 'listResources', 'read', 'deleteConversation'].some(
+      ['consume', 'listResources', 'read', 'revokeFolder', 'deleteConversation'].some(
         (method) => typeof this.attachmentStore[method] !== 'function'
       )
     ) {
@@ -743,6 +748,33 @@ class FreedomAgentService {
       liveConversation.title = renamed.title;
     }
     return renamed;
+  }
+
+  async revokeAttachment(conversationId, resourceId) {
+    if (
+      this.disposed ||
+      !this.attachmentStore ||
+      this.conversation?.conversationId !== conversationId ||
+      !/^folder_[a-f0-9]{20}$/.test(resourceId)
+    ) {
+      return null;
+    }
+    const resource = this.conversation.resources?.find(
+      (item) => item.resourceId === resourceId && item.kind === 'folder'
+    );
+    if (!resource || !(await this.attachmentStore.revokeFolder(conversationId, resourceId))) {
+      return null;
+    }
+    this.conversation.resources = this.conversation.resources.filter(
+      (item) => item.resourceId !== resourceId
+    );
+    const resources = this.conversation.resources.map((item) => ({ ...item }));
+    this.#broadcast({
+      type: 'conversation_resources_changed',
+      conversationId,
+      resources,
+    });
+    return { resource: { ...resource, available: false }, resources };
   }
 
   async deleteConversation(conversationId) {
@@ -1475,6 +1507,7 @@ class FreedomAgentService {
         if (normalized.nodeRequest) item.nodeRequest = normalized.nodeRequest;
         if (normalized.nodeLifecycle) item.nodeLifecycle = normalized.nodeLifecycle;
         if (normalized.diagnostic) item.diagnostic = normalized.diagnostic;
+        if (normalized.attachment) item.attachment = normalized.attachment;
         if (normalized.artifacts) item.artifacts = normalized.artifacts;
         if (item.approval) normalized.approval = item.approval;
       }

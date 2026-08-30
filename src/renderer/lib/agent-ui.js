@@ -78,6 +78,7 @@ let sessionHistory = [];
 let sessionHistoryLoading = false;
 const paneWidths = { session: null, workspace: null };
 const toolRows = new Map();
+const attachmentDisplayRows = new Map();
 const turnViews = new Map();
 const guidanceViews = new Map();
 
@@ -201,7 +202,14 @@ function renderAttachmentContexts() {
     chip.className = 'agent-attachment-chip conversation-resource';
     const label = document.createElement('span');
     label.textContent = attachmentLabel(resource);
+    const revoke = document.createElement('button');
+    revoke.type = 'button';
+    revoke.textContent = '×';
+    revoke.title = 'Stop sharing this folder';
+    revoke.setAttribute('aria-label', `Stop sharing ${resource.name || 'folder'}`);
+    revoke.addEventListener('click', () => revokeConversationFolder(resource));
     chip.appendChild(label);
+    chip.appendChild(revoke);
     chips.push(chip);
   }
   elements.attachmentContexts.replaceChildren(...chips);
@@ -245,6 +253,36 @@ async function removePendingAttachment(selectionId) {
     renderPageContext();
   } catch {
     setMessage(elements.runMessage, 'Could not remove attachment', true);
+  }
+}
+
+async function revokeConversationFolder(resource) {
+  if (
+    !currentConversationId ||
+    resource?.kind !== 'folder' ||
+    typeof resource.resourceId !== 'string'
+  ) {
+    return;
+  }
+  try {
+    const response = await window.electronAPI.revokeAgentAttachment(
+      currentConversationId,
+      resource.resourceId
+    );
+    if (!response?.ok) {
+      setMessage(elements.runMessage, responseMessage(response, 'Could not stop sharing folder'), true);
+      return;
+    }
+    conversationResources = Array.isArray(response.resources)
+      ? response.resources
+      : conversationResources.filter((item) => item.resourceId !== resource.resourceId);
+    renderPageContext();
+    setMessage(
+      elements.runMessage,
+      `Stopped sharing “${resource.name || 'folder'}”. Agent cannot start new reads from it; content already read remains in this conversation.`
+    );
+  } catch {
+    setMessage(elements.runMessage, 'Could not stop sharing folder', true);
   }
 }
 
@@ -1156,6 +1194,7 @@ function updateSendAvailability() {
 
 function resetConversationUi() {
   toolRows.clear();
+  attachmentDisplayRows.clear();
   turnViews.clear();
   guidanceViews.clear();
   elements.transcript.replaceChildren();
@@ -1401,6 +1440,12 @@ function renderAssistantMarkdown(view) {
         'h5',
         'h6',
         'hr',
+        'table',
+        'thead',
+        'tbody',
+        'tr',
+        'th',
+        'td',
       ],
       ALLOWED_ATTR: [],
     });
@@ -1786,7 +1831,7 @@ function formatOperation(operation) {
     .replaceAll('_', ' ');
 }
 
-function formatToolError(code) {
+function formatToolError(code, operation) {
   const labels = {
     TAB_NOT_FOUND: 'Page is no longer open',
     NAVIGATION_FAILED: 'Page could not be opened',
@@ -1803,6 +1848,8 @@ function formatToolError(code) {
     CAPABILITY_UNAVAILABLE: 'Browser capability is unavailable',
     INTERNAL_ERROR: 'Browser action failed unexpectedly',
   };
+  if (operation === 'attachment_list') return 'Attached sources could not be listed';
+  if (operation === 'attachment_read') return 'Attached source could not be read';
   return labels[code] || 'Browser action failed';
 }
 
@@ -1831,6 +1878,7 @@ function outcomeSummaryLabel(outcome) {
   if (outcome?.verification === 'browser_observed') return 'Browser inspected';
   if (outcome?.verification === 'nodes_inspected') return 'Node status checked';
   if (outcome?.verification === 'diagnostics_inspected') return 'Diagnostics inspected';
+  if (outcome?.verification === 'attachments_inspected') return 'Sources inspected';
   if (outcome?.verification === 'model_only') return 'Agent reported';
   if (outcome?.kind === 'recovery') return 'Needs recovery';
   if (outcome?.kind === 'interrupted') return 'Stopped';
@@ -1935,9 +1983,32 @@ function updateToolApproval(runId, toolCallId, decision) {
   record.approval.hidden = !labels[decision];
 }
 
+function attachmentDisplayKey(event) {
+  const receipt = event?.attachment;
+  if (
+    event?.status !== 'succeeded' ||
+    !receipt ||
+    !['list', 'read'].includes(receipt.action)
+  ) {
+    return '';
+  }
+  const target = receipt.resourceId || 'conversation';
+  const path = receipt.relativePath || receipt.name || '';
+  return `${event.runId}:${receipt.action}:${target}:${path}`;
+}
+
 function finishToolRow(event) {
-  const record = toolRows.get(`${event.runId}:${event.toolCallId}`);
+  let record = toolRows.get(`${event.runId}:${event.toolCallId}`);
   if (!record) return;
+  const displayKey = attachmentDisplayKey(event);
+  const existingAttachmentRow = displayKey ? attachmentDisplayRows.get(displayKey) : null;
+  if (existingAttachmentRow && existingAttachmentRow !== record) {
+    record.row.remove();
+    record = existingAttachmentRow;
+    toolRows.set(`${event.runId}:${event.toolCallId}`, record);
+  } else if (displayKey) {
+    attachmentDisplayRows.set(displayKey, record);
+  }
   const downloadCancelled = event.errorCode === 'DOWNLOAD_CANCELLED_BY_USER';
   const uploadCancelled = event.errorCode === 'FILE_UPLOAD_CANCELLED_BY_USER';
   const userCancelled = downloadCancelled || uploadCancelled;
@@ -1946,8 +2017,8 @@ function finishToolRow(event) {
   record.row.classList.toggle('cancelled', userCancelled);
   record.row.classList.toggle('failed', event.status === 'failed' && !userCancelled);
   if (event.status === 'failed') {
-    record.row.title = formatToolError(event.errorCode);
-    record.label.textContent = `${record.label.textContent} — ${formatToolError(event.errorCode)}`;
+    record.row.title = formatToolError(event.errorCode, event.operation);
+    record.label.textContent = `${record.label.textContent} — ${formatToolError(event.errorCode, event.operation)}`;
   }
   updateToolApproval(event.runId, event.toolCallId, event.approval);
   if (userCancelled) {
@@ -2136,6 +2207,13 @@ function handleAgentEvent(event) {
     }
     return;
   }
+  if (event?.type === 'conversation_resources_changed') {
+    if (event.conversationId === currentConversationId && Array.isArray(event.resources)) {
+      conversationResources = event.resources;
+      renderPageContext();
+    }
+    return;
+  }
   if (!event || typeof event.runId !== 'string') return;
   if (
     currentConversationId &&
@@ -2237,7 +2315,7 @@ function handleAgentEvent(event) {
           ? 'Download cancelled by you. Agent will not retry it unless you ask.'
           : event.errorCode === 'FILE_UPLOAD_CANCELLED_BY_USER'
             ? 'File selection cancelled by you. Agent will not retry it unless you ask.'
-            : `${formatToolError(event.errorCode)}. Agent is deciding how to recover.`
+            : `${formatToolError(event.errorCode, event.operation)}. Agent is deciding how to recover.`
       );
       setLiveStatus(event.runId, 'Recovering from an issue…');
     } else if (event.label) {

@@ -208,6 +208,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   pickAgentFolder: () => ipcRenderer.invoke('agent:attachments:pick-folder'),
   removeAgentAttachment: (selectionId) =>
     ipcRenderer.invoke('agent:attachments:remove', { selectionId }),
+  revokeAgentAttachment: (conversationId, resourceId) =>
+    ipcRenderer.invoke('agent:attachments:revoke', { conversationId, resourceId }),
   claimAgentTab: (rendererTabId) =>
     ipcRenderer.invoke('agent:tab:claim', { rendererTabId }),
   getAgentProviderStatus: () => ipcRenderer.invoke('agent:provider:get-status'),

@@ -201,6 +201,7 @@ describe('preload', () => {
       [exposures.electronAPI, 'pickAgentFiles', [], IPC.AGENT_ATTACHMENTS_PICK_FILES, []],
       [exposures.electronAPI, 'pickAgentFolder', [], IPC.AGENT_ATTACHMENTS_PICK_FOLDER, []],
       [exposures.electronAPI, 'removeAgentAttachment', ['selection_123'], IPC.AGENT_ATTACHMENTS_REMOVE, [{ selectionId: 'selection_123' }]],
+      [exposures.electronAPI, 'revokeAgentAttachment', ['conversation_123', 'folder_123'], IPC.AGENT_ATTACHMENTS_REVOKE, [{ conversationId: 'conversation_123', resourceId: 'folder_123' }]],
       [exposures.electronAPI, 'claimAgentTab', [7], IPC.AGENT_TAB_CLAIM, [{ rendererTabId: 7 }]],
       [exposures.electronAPI, 'getAgentProviderStatus', [], IPC.AGENT_PROVIDER_GET_STATUS, []],
       [exposures.electronAPI, 'getAgentProviderCatalog', [], IPC.AGENT_PROVIDER_GET_CATALOG, []],

@@ -290,6 +290,11 @@ async function loadAgentUi(options = {}) {
     pickAgentFiles: jest.fn().mockResolvedValue({ ok: true, selections: [] }),
     pickAgentFolder: jest.fn().mockResolvedValue({ ok: true, selections: [] }),
     removeAgentAttachment: jest.fn().mockResolvedValue({ ok: true, removed: true }),
+    revokeAgentAttachment: jest.fn().mockResolvedValue({
+      ok: true,
+      revoked: true,
+      resources: [],
+    }),
     claimAgentTab: jest.fn(),
     openAgentArtifact: jest.fn().mockResolvedValue({ success: true }),
     showAgentArtifactInFolder: jest.fn().mockResolvedValue({ success: true }),
@@ -616,6 +621,45 @@ describe('Agent UI', () => {
 
     expect(ctx.electronAPI.removeAgentAttachment).toHaveBeenCalledWith(selectionId);
     expect(ctx.elements['agent-attachment-contexts'].children).toHaveLength(0);
+  });
+
+  test('stops sharing a live folder without rewriting the historical turn', async () => {
+    const folderId = `folder_${'f'.repeat(20)}`;
+    const ctx = await loadAgentUi();
+    ctx.emit({
+      type: 'run_started',
+      runId: 'run_test',
+      conversationId: 'conversation_test',
+      userText: 'Review this folder',
+      attachments: [
+        {
+          resourceId: folderId,
+          kind: 'folder',
+          name: 'Bug reports',
+          category: 'folder',
+          available: true,
+        },
+      ],
+    });
+
+    const historicalAttachment = ctx.elements['agent-transcript'].querySelector(
+      '.agent-message-attachment'
+    );
+    const liveChip = ctx.elements['agent-attachment-contexts'].children[0];
+    expect(liveChip.children[1].title).toBe('Stop sharing this folder');
+
+    liveChip.children[1].dispatch('click');
+    await flush();
+
+    expect(ctx.electronAPI.revokeAgentAttachment).toHaveBeenCalledWith(
+      'conversation_test',
+      folderId
+    );
+    expect(ctx.elements['agent-attachment-contexts'].children).toHaveLength(0);
+    expect(historicalAttachment.children[0].textContent).toBe('Bug reports');
+    expect(ctx.elements['agent-run-message'].textContent).toContain(
+      'content already read remains in this conversation'
+    );
   });
 
   test('starts without page access instead of adopting an Agent-owned tab', async () => {
@@ -1251,6 +1295,81 @@ describe('Agent UI', () => {
     );
   });
 
+  test('renders attached-source evidence semantically and consolidates paginated reads', async () => {
+    const ctx = await loadAgentUi();
+    const folderId = `folder_${'a'.repeat(20)}`;
+    ctx.emit({
+      type: 'run_started',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      userText: 'Check the attached folder',
+    });
+
+    for (const [toolCallId, offset] of [
+      ['attachment_read_1', 0],
+      ['attachment_read_2', 65_536],
+    ]) {
+      ctx.emit({
+        type: 'tool_started',
+        conversationId: 'conversation_test',
+        runId: 'run_test',
+        toolCallId,
+        operation: 'attachment_read',
+        intent: 'Reading report.json…',
+        label: 'Read report.json',
+      });
+      ctx.emit({
+        type: 'tool_finished',
+        conversationId: 'conversation_test',
+        runId: 'run_test',
+        toolCallId,
+        operation: 'attachment_read',
+        status: 'succeeded',
+        label: 'Read report.json',
+        attachment: {
+          action: 'read',
+          resourceId: folderId,
+          resourceKind: 'folder',
+          folderName: 'Bug reports',
+          relativePath: 'report.json',
+          name: 'report.json',
+          bytesRead: 65_536,
+          offset,
+          truncated: offset === 0,
+        },
+      });
+    }
+    ctx.emit({
+      type: 'run_finished',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      status: 'completed',
+      durationMs: 2_000,
+      actionCount: 2,
+      outcome: {
+        kind: 'completed',
+        verification: 'attachments_inspected',
+        tone: 'success',
+        headline: 'Attached sources inspected',
+        detail:
+          'Freedom verified access to 1 attached file in the shared folder. This confirms source access, not necessarily the model conclusions.',
+      },
+    });
+
+    const turn = ctx.elements['agent-transcript'].children[0];
+    const toolList = turn.querySelector('.agent-tool-list');
+    expect(toolList.children).toHaveLength(1);
+    expect(toolList.children[0].children[1].textContent).toBe('Read report.json');
+    const outcome = turn.querySelector('.agent-turn-outcome');
+    expect(outcome.children[1].children[0].textContent).toBe('Attached sources inspected');
+    expect(outcome.children[1].children[1].textContent).not.toContain(
+      'browser evidence'
+    );
+    expect(turn.querySelector('.agent-turn-activity').children[0].textContent).toBe(
+      'Worked for 2s · 2 actions · Sources inspected'
+    );
+  });
+
   test('labels a terminal provider failure as a provider issue', async () => {
     const ctx = await loadAgentUi();
     ctx.elements['agent-prompt'].value = 'Continue the task';
@@ -1843,6 +1962,9 @@ describe('Agent UI', () => {
     const allowedTags = sanitize.mock.calls[0][1].ALLOWED_TAGS;
     expect(allowedTags).not.toContain('img');
     expect(allowedTags).not.toContain('a');
+    expect(allowedTags).toEqual(
+      expect.arrayContaining(['table', 'thead', 'tbody', 'tr', 'th', 'td'])
+    );
     expect(ctx.elements['agent-transcript'].querySelector('.agent-output').innerHTML).toBe(
       '<p>Safe response</p>'
     );
