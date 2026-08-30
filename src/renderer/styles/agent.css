@@ -1482,6 +1482,10 @@ body.agent-first-mode .agent-composer textarea {
   border-radius: 8px;
 }
 
+.agent-page-context[hidden] {
+  display: none;
+}
+
 .agent-page-context:hover:not(:disabled) {
   color: var(--text);
   background: color-mix(in srgb, var(--text) 10%, transparent);

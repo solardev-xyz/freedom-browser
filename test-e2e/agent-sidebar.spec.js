@@ -26,6 +26,27 @@ test('Agent, wallet, and menu actions remain on the address-bar row', async ({ w
   expect(geometry.menu.bottom).toBeLessThanOrEqual(geometry.toolbar.bottom);
 });
 
+test('attachments do not reveal a hidden homepage context pill', async ({ window }) => {
+  const state = await window.evaluate(() => {
+    const contexts = document.querySelector('#agent-page-contexts');
+    const page = document.querySelector('#agent-page-context');
+    const attachments = document.querySelector('#agent-attachment-contexts');
+    const attachment = document.createElement('div');
+    attachment.className = 'agent-attachment-chip';
+    attachment.textContent = 'notes.txt';
+    attachments.replaceChildren(attachment);
+    contexts.hidden = false;
+    page.hidden = true;
+    return {
+      pageDisplay: getComputedStyle(page).display,
+      attachmentDisplay: getComputedStyle(attachment).display,
+    };
+  });
+
+  expect(state.pageDisplay).toBe('none');
+  expect(state.attachmentDisplay).not.toBe('none');
+});
+
 test('Agent sidebar configures hosted and local models and reports the run lifecycle', async ({
   electronApp,
   window,

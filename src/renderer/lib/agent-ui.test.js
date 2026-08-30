@@ -699,6 +699,67 @@ describe('Agent UI', () => {
     );
   });
 
+  test('keeps the pristine homepage hidden when file and folder pills expose the context row', async () => {
+    const homeTab = {
+      id: 7,
+      url: 'file:///app/pages/home.html',
+      title: 'New Tab',
+      favicon: '',
+      isLoading: false,
+      isActive: true,
+    };
+    const fileSelectionId = `selection_${'1'.repeat(20)}`;
+    const folderSelectionId = `selection_${'2'.repeat(20)}`;
+    const ctx = await loadAgentUi({
+      getOpenTabs: () => [homeTab],
+      electronAPI: {
+        pickAgentFiles: jest.fn().mockResolvedValue({
+          ok: true,
+          selections: [
+            {
+              selectionId: fileSelectionId,
+              kind: 'file',
+              name: 'notes.txt',
+              category: 'text',
+              bytes: 20,
+            },
+          ],
+        }),
+        pickAgentFolder: jest.fn().mockResolvedValue({
+          ok: true,
+          selections: [
+            {
+              selectionId: folderSelectionId,
+              kind: 'folder',
+              name: 'Reports',
+              category: 'folder',
+              available: true,
+            },
+          ],
+        }),
+      },
+    });
+
+    ctx.elements['agent-attach-files'].dispatch('click');
+    await flush();
+    ctx.elements['agent-attach-folder'].dispatch('click');
+    await flush();
+
+    expect(ctx.elements['agent-page-contexts'].hidden).toBe(false);
+    expect(ctx.elements['agent-page-context'].hidden).toBe(true);
+    expect(ctx.elements['agent-attachment-contexts'].children).toHaveLength(2);
+
+    ctx.elements['agent-prompt'].value = 'Review these';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.startAgent).toHaveBeenCalledWith(
+      null,
+      'Review these',
+      'every_interaction',
+      [fileSelectionId, folderSelectionId]
+    );
+  });
+
   test('shares an ordinary current page visibly and lets the user remove it', async () => {
     const ctx = await loadAgentUi();
 
