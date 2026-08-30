@@ -17,6 +17,13 @@ const EMPTY_PARAMETERS = Object.freeze({
 });
 
 const MAX_AGENT_SCREENSHOT_BYTES = 8 * 1024 * 1024;
+const INTERACTION_INTENT_PROPERTY = Object.freeze({
+  type: 'string',
+  minLength: 1,
+  maxLength: 240,
+  description:
+    'Briefly state what you expect this exact interaction to accomplish. Freedom uses this as untrusted input when deciding whether the user should approve it.',
+});
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 const TOOL_SPECS = Object.freeze([
@@ -108,7 +115,10 @@ const TOOL_SPECS = Object.freeze([
       'Click an element in the active task tab using a reference from the latest page snapshot.',
     parameters: {
       type: 'object',
-      properties: { ref: { type: 'string', minLength: 1 } },
+      properties: {
+        ref: { type: 'string', minLength: 1 },
+        intent: INTERACTION_INTENT_PROPERTY,
+      },
       required: ['ref'],
       additionalProperties: false,
     },
@@ -124,6 +134,7 @@ const TOOL_SPECS = Object.freeze([
         ref: { type: 'string', minLength: 1 },
         text: { type: 'string' },
         replace: { type: 'boolean' },
+        intent: INTERACTION_INTENT_PROPERTY,
       },
       required: ['ref', 'text'],
       additionalProperties: false,
@@ -139,6 +150,7 @@ const TOOL_SPECS = Object.freeze([
       properties: {
         ref: { type: 'string', minLength: 1 },
         value: { type: 'string' },
+        intent: INTERACTION_INTENT_PROPERTY,
       },
       required: ['ref', 'value'],
       additionalProperties: false,
@@ -154,6 +166,7 @@ const TOOL_SPECS = Object.freeze([
       properties: {
         ref: { type: 'string', minLength: 1 },
         key: { type: 'string', enum: PRESS_KEYS },
+        intent: INTERACTION_INTENT_PROPERTY,
       },
       required: ['ref', 'key'],
       additionalProperties: false,

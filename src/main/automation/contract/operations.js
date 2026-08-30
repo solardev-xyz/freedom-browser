@@ -69,6 +69,7 @@ const BLOCKED_NODE_REQUEST_HEADERS = new Set([
   'proxy-authorization',
   'referer',
 ]);
+const MAX_INTERACTION_INTENT_LENGTH = 240;
 
 function requireObject(input) {
   if (input === undefined) return {};
@@ -151,6 +152,19 @@ function validateOperationInput(operation, rawInput) {
     operation === OPERATIONS.WALLET_ACTION
   ) {
     normalized.ref = requireString(input.ref, 'ref').trim();
+  }
+
+  if (
+    [OPERATIONS.CLICK, OPERATIONS.TYPE, OPERATIONS.SELECT, OPERATIONS.PRESS].includes(operation) &&
+    input.intent !== undefined
+  ) {
+    normalized.intent = requireString(input.intent, 'intent').trim();
+    if (normalized.intent.length > MAX_INTERACTION_INTENT_LENGTH) {
+      throw invalidArgument(
+        `intent cannot exceed ${MAX_INTERACTION_INTENT_LENGTH} characters`,
+        { field: 'intent' }
+      );
+    }
   }
 
   if (operation === OPERATIONS.TYPE) {

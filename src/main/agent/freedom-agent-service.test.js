@@ -66,6 +66,14 @@ function createService(fakeSession, overrides = {}) {
     createTools: jest.fn(async () => [{ name: 'browser_snapshot' }]),
     createSession: jest.fn(async () => ({ session: fakeSession.session })),
     effectClassifier: { classify: jest.fn(async () => ({ effect: 'read', confidence: 1 })) },
+    interactionClassifier: {
+      classify: jest.fn(async () => ({
+        kind: 'ordinary',
+        confidence: 1,
+        summary: 'Open details.',
+        uncertainties: [],
+      })),
+    },
     runIdFactory: jest.fn(() => 'run_test'),
     conversationIdFactory: jest.fn(() => 'conversation_test'),
     now: jest.fn(() => 1_000),
@@ -120,6 +128,7 @@ describe('FreedomAgentService', () => {
       onWorkspaceTabCreated: expect.any(Function),
       requestApproval: expect.any(Function),
       classifyEffect: expect.any(Function),
+      classifyInteraction: expect.any(Function),
       transferOwnerId: 'conversation_test',
     });
     expect(dependencies.createTools).toHaveBeenCalledWith({
@@ -276,6 +285,7 @@ describe('FreedomAgentService', () => {
       onWorkspaceTabCreated: expect.any(Function),
       requestApproval: expect.any(Function),
       classifyEffect: expect.any(Function),
+      classifyInteraction: expect.any(Function),
       transferOwnerId: 'conversation_test',
     });
     expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toEqual(
@@ -284,6 +294,78 @@ describe('FreedomAgentService', () => {
     expect(fake.session.prompt.mock.calls[0][0]).toContain(
       'Freedom allows ordinary website interactions without asking each time'
     );
+
+    fake.prompt.resolve();
+    await service.waitForIdle();
+  });
+
+  test('binds consequential-action classification to the current turn and model runtime', async () => {
+    const fake = createFakeSession();
+    const interactionClassifier = {
+      classify: jest.fn(async () => ({
+        kind: 'consequential',
+        confidence: 0.98,
+        summary: 'Publish the comment.',
+        uncertainties: [],
+      })),
+    };
+    const { service, dependencies } = createService(fake, { interactionClassifier });
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    const options = startOptions({
+      prompt: 'Publish my response',
+      approvalMode: 'sensitive_actions',
+      model: { id: 'gpt-test', provider: 'openai' },
+      modelRuntime: { kind: 'isolated-runtime' },
+    });
+
+    await service.start(options);
+    expect(fake.session.prompt.mock.calls[0][0]).toContain(
+      'Freedom will independently classify the intended consequence'
+    );
+    expect(fake.session.prompt.mock.calls[0][0]).toContain(
+      'include a brief literal intent'
+    );
+
+    const classifyInteraction =
+      dependencies.createControllerScope.mock.calls[0][0].classifyInteraction;
+    const proposed = {
+      action: { operation: 'browser_click', intent: 'Publish the comment' },
+      trustedContext: { origin: 'https://community.example' },
+      untrustedContext: { label: 'Publish' },
+    };
+    await expect(classifyInteraction(proposed)).resolves.toMatchObject({
+      kind: 'consequential',
+    });
+    expect(interactionClassifier.classify).toHaveBeenCalledWith(
+      {
+        ...proposed,
+        userRequest: 'Publish my response',
+        guidance: [],
+      },
+      { model: options.model, modelRuntime: options.modelRuntime }
+    );
+
+    const requestApproval = dependencies.createControllerScope.mock.calls[0][0].requestApproval;
+    const decision = requestApproval({
+      action: 'browser_interaction',
+      operation: 'browser_click',
+      origin: 'https://community.example/post/1',
+      label: 'Publish',
+      interaction: await interactionClassifier.classify.mock.results[0].value,
+    });
+    expect(events.at(-1)).toMatchObject({
+      type: 'approval_requested',
+      action: 'browser_interaction',
+      interaction: {
+        kind: 'consequential',
+        confidence: 0.98,
+        summary: 'Publish the comment.',
+        uncertainties: [],
+      },
+    });
+    await service.decideApproval('run_test', events.at(-1).approvalId, true);
+    await expect(decision).resolves.toBe('approved');
 
     fake.prompt.resolve();
     await service.waitForIdle();
@@ -1972,7 +2054,7 @@ describe('FreedomAgentService', () => {
       service.start(startOptions({ prompt: 'x'.repeat(MAX_AGENT_PROMPT_LENGTH + 1) }))
     ).rejects.toMatchObject({ code: AGENT_ERROR_CODES.INVALID_ARGUMENT });
     await expect(
-      service.start(startOptions({ approvalMode: 'sensitive_actions' }))
+      service.start(startOptions({ approvalMode: 'unsafe' }))
     ).rejects.toMatchObject({ code: AGENT_ERROR_CODES.INVALID_ARGUMENT });
     expect(dependencies.loadSdk).not.toHaveBeenCalled();
   });

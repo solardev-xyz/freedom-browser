@@ -13,10 +13,12 @@ const PROVIDER_NAMES = Object.freeze({
 });
 const APPROVAL_MODES = Object.freeze({
   EVERY_INTERACTION: 'every_interaction',
+  SENSITIVE_ACTIONS: 'sensitive_actions',
   ALLOW_WEBSITE_INTERACTIONS: 'allow_website_interactions',
 });
 const APPROVAL_MODE_LABELS = Object.freeze({
   [APPROVAL_MODES.EVERY_INTERACTION]: 'Ask every action',
+  [APPROVAL_MODES.SENSITIVE_ACTIONS]: 'Ask when needed',
   [APPROVAL_MODES.ALLOW_WEBSITE_INTERACTIONS]: 'Allow website actions',
 });
 const PANE_RESIZE_CONFIG = Object.freeze({
@@ -370,17 +372,16 @@ function setApprovalMode(nextMode, options = {}) {
   }
   approvalMode = nextMode;
   elements.activeApprovalModeLabel.textContent = APPROVAL_MODE_LABELS[nextMode];
-  const askEvery = nextMode === APPROVAL_MODES.EVERY_INTERACTION;
-  elements.approvalModeEvery.classList.toggle('active', askEvery);
-  elements.approvalModeEvery.setAttribute('aria-pressed', String(askEvery));
-  elements.approvalModeEvery.querySelector('.agent-approval-mode-check').textContent = askEvery
-    ? '✓'
-    : '';
-  elements.approvalModeAllow.classList.toggle('active', !askEvery);
-  elements.approvalModeAllow.setAttribute('aria-pressed', String(!askEvery));
-  elements.approvalModeAllow.querySelector('.agent-approval-mode-check').textContent = askEvery
-    ? ''
-    : '✓';
+  for (const [mode, element] of [
+    [APPROVAL_MODES.EVERY_INTERACTION, elements.approvalModeEvery],
+    [APPROVAL_MODES.SENSITIVE_ACTIONS, elements.approvalModeSensitive],
+    [APPROVAL_MODES.ALLOW_WEBSITE_INTERACTIONS, elements.approvalModeAllow],
+  ]) {
+    const active = nextMode === mode;
+    element.classList.toggle('active', active);
+    element.setAttribute('aria-pressed', String(active));
+    element.querySelector('.agent-approval-mode-check').textContent = active ? '✓' : '';
+  }
   closeComposerPopovers();
 }
 
@@ -1699,6 +1700,7 @@ function renderApproval(request) {
   const diagnostic = request.diagnostic;
   const nodeRequest = request.nodeRequest;
   const nodeLifecycle = request.nodeLifecycle;
+  const interaction = request.interaction;
   elements.approval.classList.toggle('diagnostic-approval', Boolean(diagnostic));
   const diagnosticSubject =
     diagnostic?.scope === 'node' ? `${diagnostic.service} node` : 'Freedom application';
@@ -1728,9 +1730,14 @@ function renderApproval(request) {
               ? 'Approve this wallet transaction?'
               : request.action === 'wallet_transfer'
                 ? 'Send these funds from your Freedom wallet?'
-              : request.action === 'wallet_signature'
+                : request.action === 'wallet_signature'
                 ? 'Approve this wallet signature?'
-                : interactionCopy[request.operation] || `Let Agent interact with “${label}”?`;
+                : interaction
+                  ? interaction.kind === 'uncertain'
+                    ? interactionCopy[request.operation] ||
+                      `Let Agent interact with “${label}”?`
+                    : `${interaction.summary.replace(/[.?!]+$/, '')}?`
+                  : interactionCopy[request.operation] || `Let Agent interact with “${label}”?`;
   elements.approvalOrigin.textContent = nodeRequest
     ? `${nodeRequest.providerLabel}${nodeRequest.modelId ? ` using ${nodeRequest.modelId}` : ''} independently classified this request as ${effectLabel(nodeRequest.effect).toLowerCase()}. Freedom has not sent it to the node yet.`
     : nodeLifecycle
@@ -1745,7 +1752,11 @@ function renderApproval(request) {
         ? request.wallet.kind === 'transfer'
           ? 'Prepared directly by Freedom. The exact transfer is held until you decide.'
           : 'Requested by the page Agent is controlling. The request is held until you decide.'
-        : approvalOriginSummary(request);
+        : interaction
+          ? interaction.kind === 'uncertain'
+            ? `Freedom could not confidently determine whether this interaction on ${approvalOriginSummary(request)} is consequential.`
+            : `Based on Agent’s stated intent and the visible target on ${approvalOriginSummary(request)}. Freedom has not audited the page’s hidden behavior.`
+          : approvalOriginSummary(request);
   elements.approvalApprove.textContent = diagnostic
     ? 'Share once'
     : request.action === 'file_upload'
@@ -2996,6 +3007,9 @@ export function initAgentUi(options = {}) {
   });
   elements.approvalModeEvery.addEventListener('click', () =>
     void selectApprovalMode(APPROVAL_MODES.EVERY_INTERACTION)
+  );
+  elements.approvalModeSensitive.addEventListener('click', () =>
+    void selectApprovalMode(APPROVAL_MODES.SENSITIVE_ACTIONS)
   );
   elements.approvalModeAllow.addEventListener('click', () =>
     void selectApprovalMode(APPROVAL_MODES.ALLOW_WEBSITE_INTERACTIONS)

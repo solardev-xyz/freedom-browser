@@ -22,6 +22,7 @@ const URLS = Object.freeze({
   wallet: `${PRODUCT_ORIGIN}/wallet/agent-native`,
   walletTransaction: `${PRODUCT_ORIGIN}/wallet/transaction`,
   walletDecline: `${PRODUCT_ORIGIN}/wallet/decline`,
+  consequentialIntent: `${PRODUCT_ORIGIN}/workflow/consequential-intent`,
 });
 
 const CLASSIFICATION = Object.freeze({
@@ -34,6 +35,8 @@ const CLASSIFICATION = Object.freeze({
 
 const EXPECTED_TOOL_NAMES = Object.freeze([
   'read',
+  'attachment_list',
+  'attachment_read',
   'browser_get_tab',
   'browser_list_tabs',
   'browser_create_tab',
@@ -266,8 +269,46 @@ async function handleCompletion(request, response) {
     return;
   }
 
+  if (hasUserMarker(messages, 'FREEDOM_INTERACTION_INTENT_CLASSIFIER_V1')) {
+    const requestText = latestUserText(messages);
+    const consequential = requestText.includes('Publish the comment');
+    emitFinal(
+      response,
+      JSON.stringify({
+        kind: consequential ? 'consequential' : 'ordinary',
+        confidence: 0.99,
+        summary: consequential ? 'Publish the comment.' : 'Open the supporting details.',
+        uncertainties: [],
+      })
+    );
+    return;
+  }
+
   if (hasUserMarker(messages, 'PRODUCT_PROVIDER_RECOVERY')) {
     emitFinal(response, 'The model connection recovered and the task continued.');
+    return;
+  }
+
+  if (hasUserMarker(messages, 'PRODUCT_CONSEQUENTIAL_INTENT')) {
+    switch (toolResults.length) {
+      case 0:
+        emitToolCall(response, 1, 'browser_snapshot', {});
+        break;
+      case 1:
+        emitToolCall(response, 2, 'browser_click', {
+          ref: requireRef(elements, 'Show supporting details'),
+          intent: 'Open the supporting details',
+        });
+        break;
+      case 2:
+        emitToolCall(response, 3, 'browser_click', {
+          ref: requireRef(elements, 'Publish comment'),
+          intent: 'Publish the comment',
+        });
+        break;
+      default:
+        emitFinal(response, 'The supporting details were reviewed and the comment was published.');
+    }
     return;
   }
 
@@ -895,6 +936,64 @@ test('provider recovery: transient failures are explained, retried, and resumed'
   );
   expect(result.assistantOutput).toContain('connection recovered');
   expect(result.modelRequests).toBe(3);
+});
+
+test('consequential-action mode proceeds ordinarily and asks before a meaningful commitment', async ({
+  window,
+  harness,
+}) => {
+  await prepareTask(
+    window,
+    harness,
+    URLS.consequentialIntent,
+    `<!doctype html><title>Community draft</title><main>
+      <h1>Community draft</h1>
+      <button id="details" aria-label="Show supporting details">Show supporting details</button>
+      <p id="details-copy" hidden>Supporting evidence is ready.</p>
+      <button id="publish" aria-label="Publish comment">Publish comment</button>
+      <p id="status">Not published</p>
+    </main>
+    <script>
+      document.querySelector('#details').addEventListener('click', () => {
+        document.querySelector('#details-copy').hidden = false;
+      });
+      document.querySelector('#publish').addEventListener('click', () => {
+        document.querySelector('#status').textContent = 'Published';
+      });
+    </script>`,
+    'sensitive'
+  );
+
+  await window
+    .locator('#agent-prompt')
+    .fill('PRODUCT_CONSEQUENTIAL_INTENT: inspect the supporting details, then publish the comment.');
+  await window.locator('#agent-run').click();
+
+  await expect(window.locator('#agent-approval-action')).toHaveText('Publish the comment?');
+  await expect(window.locator('#agent-approval-origin')).toContainText(
+    'Freedom has not audited the page’s hidden behavior.'
+  );
+  await expect
+    .poll(() => guestValue(window, 'document.querySelector("#details-copy").hidden'))
+    .toBe(false);
+  await expect
+    .poll(() => guestValue(window, 'document.querySelector("#status").textContent'))
+    .toBe('Not published');
+
+  await window.locator('#agent-approval-approve').click();
+  await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 15_000 });
+  const result = await recordQualification(
+    window,
+    'consequential-interaction-intent',
+    CLASSIFICATION.PASS,
+    {
+      status: await guestValue(window, 'document.querySelector("#status").textContent'),
+    }
+  );
+
+  expect(result.assistantOutput).toContain('comment was published');
+  expect(result.status).toBe('Published');
+  expect(operations).toEqual(['browser_snapshot', 'browser_click', 'browser_click']);
 });
 
 async function currentUrl(window) {

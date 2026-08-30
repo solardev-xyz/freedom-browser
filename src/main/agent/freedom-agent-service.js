@@ -17,6 +17,7 @@ const {
 const { createFreedomBrowserTools } = require('./pi-browser-tools');
 const { createConversationAttachmentTools } = require('./pi-attachment-tools');
 const { EffectClassifier } = require('./effect-classifier');
+const { InteractionIntentClassifier } = require('./interaction-intent-classifier');
 const {
   activityProgress,
   buildAgentOutcome,
@@ -169,10 +170,17 @@ function attachmentPrompt(prompt, resources) {
 }
 
 function approvalPolicyPrompt(prompt, approvalMode) {
-  const policy =
-    approvalMode === AGENT_APPROVAL_MODES.EVERY_INTERACTION
-      ? 'Freedom will ask the user before every page interaction. Page reading, navigation, and task-tab management remain available without that interaction approval.'
-      : 'Freedom allows ordinary website interactions without asking each time. Downloads, uploads, wallet actions, node mutations, and other privileged capabilities keep their separate Freedom approval boundaries.';
+  let policy;
+  if (approvalMode === AGENT_APPROVAL_MODES.EVERY_INTERACTION) {
+    policy =
+      'Freedom will ask the user before every page interaction. Page reading, navigation, and task-tab management remain available without that interaction approval.';
+  } else if (approvalMode === AGENT_APPROVAL_MODES.SENSITIVE_ACTIONS) {
+    policy =
+      'Freedom will independently classify the intended consequence of each website interaction. Ordinary browsing may proceed, while consequential or uncertain interactions ask the user. For every browser_click, browser_type, browser_select, and browser_press call, include a brief literal intent describing what you expect that exact interaction to accomplish. Downloads, uploads, wallet actions, node mutations, and other privileged capabilities keep their separate Freedom approval boundaries.';
+  } else {
+    policy =
+      'Freedom allows ordinary website interactions without asking each time. Downloads, uploads, wallet actions, node mutations, and other privileged capabilities keep their separate Freedom approval boundaries.';
+  }
   return `Freedom approval policy for this turn: ${policy} Freedom enforces this policy; do not claim broader authority.\n\nUser request:\n${prompt}`;
 }
 
@@ -363,6 +371,7 @@ function normalizeApprovalRequest(request, recipient) {
   const diagnostic = normalizeDiagnosticApproval(request?.diagnostic, recipient);
   const nodeRequest = normalizeNodeRequestApproval(request?.nodeRequest, recipient);
   const nodeLifecycle = normalizeNodeLifecycleApproval(request?.nodeLifecycle, recipient);
+  const interaction = normalizeInteractionApproval(request?.interaction);
   const origin = wallet
     ? getPermissionKey(request?.origin) || ''
     : originScopeForUrl(request?.origin) || '';
@@ -395,10 +404,34 @@ function normalizeApprovalRequest(request, recipient) {
       ? getPermissionKey(request?.destinationOrigin) || origin
       : originScopeForUrl(request?.destinationOrigin) || '',
     label: typeof request?.label === 'string' ? request.label.slice(0, 160) : '',
+    ...(interaction && { interaction }),
     ...(wallet && { wallet }),
     ...(diagnostic && { diagnostic }),
     ...(nodeRequest && { nodeRequest }),
     ...(nodeLifecycle && { nodeLifecycle }),
+  });
+}
+
+function normalizeInteractionApproval(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const kind = ['ordinary', 'consequential', 'uncertain'].includes(value.kind)
+    ? value.kind
+    : 'uncertain';
+  const confidence = Number(value.confidence);
+  const summary = typeof value.summary === 'string' ? value.summary.trim().slice(0, 240) : '';
+  if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1 || !summary) return null;
+  return Object.freeze({
+    kind,
+    confidence,
+    summary,
+    uncertainties: Object.freeze(
+      Array.isArray(value.uncertainties)
+        ? value.uncertainties
+            .filter((item) => typeof item === 'string' && item.trim())
+            .slice(0, 12)
+            .map((item) => item.trim().slice(0, 240))
+        : []
+    ),
   });
 }
 
@@ -579,6 +612,11 @@ class FreedomAgentService {
     this.effectClassifier = options.effectClassifier || new EffectClassifier();
     if (!this.effectClassifier || typeof this.effectClassifier.classify !== 'function') {
       throw new TypeError('FreedomAgentService requires a valid effect classifier');
+    }
+    this.interactionClassifier =
+      options.interactionClassifier || new InteractionIntentClassifier();
+    if (!this.interactionClassifier || typeof this.interactionClassifier.classify !== 'function') {
+      throw new TypeError('FreedomAgentService requires a valid interaction classifier');
     }
     if (
       options.cancelAgentDownloads !== undefined &&
@@ -1046,6 +1084,20 @@ class FreedomAgentService {
               model: options.model,
               modelRuntime: options.modelRuntime,
             }),
+          classifyInteraction: (input) => {
+            const activeRun = this.activeRun;
+            return this.interactionClassifier.classify(
+              {
+                ...input,
+                userRequest: activeRun?.userText || '',
+                guidance: (activeRun?.guidance || []).map((item) => item.text),
+              },
+              {
+                model: options.model,
+                modelRuntime: options.modelRuntime,
+              }
+            );
+          },
         });
         if (
           !scopedController ||

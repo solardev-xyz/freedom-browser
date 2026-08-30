@@ -9,8 +9,15 @@ describe('automation operation contract', () => {
         tabId: ' tab_1 ',
         ref: ' ref_1 ',
         text: '',
+        intent: ' Draft the response ',
       })
-    ).toEqual({ tabId: 'tab_1', ref: 'ref_1', text: '', replace: true });
+    ).toEqual({
+      tabId: 'tab_1',
+      ref: 'ref_1',
+      text: '',
+      replace: true,
+      intent: 'Draft the response',
+    });
     expect(
       validateOperationInput(OPERATIONS.NAVIGATE, { tabId: 'tab_1', url: 'ipfs://bafy/' })
     ).toEqual({ tabId: 'tab_1', url: 'ipfs://bafy/' });
@@ -40,6 +47,27 @@ describe('automation operation contract', () => {
         key: ' ArrowDown ',
       })
     ).toEqual({ tabId: 'tab_1', ref: 'ref_environment', key: 'ArrowDown' });
+  });
+
+  test('bounds optional website interaction intent', () => {
+    expect(
+      validateOperationInput(OPERATIONS.CLICK, {
+        tabId: 'tab_1',
+        ref: 'ref_publish',
+        intent: 'Publish the comment',
+      })
+    ).toEqual({
+      tabId: 'tab_1',
+      ref: 'ref_publish',
+      intent: 'Publish the comment',
+    });
+    expect(() =>
+      validateOperationInput(OPERATIONS.CLICK, {
+        tabId: 'tab_1',
+        ref: 'ref_publish',
+        intent: 'x'.repeat(241),
+      })
+    ).toThrow('intent cannot exceed 240 characters');
   });
 
   test.each([

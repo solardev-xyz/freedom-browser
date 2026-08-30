@@ -337,14 +337,14 @@ describe('OriginScopedAutomationController', () => {
     ).rejects.toThrow('valid navigation scope');
   });
 
-  test('rejects the unimplemented sensitive-actions approval mode', async () => {
+  test('rejects an unknown approval mode', async () => {
     const controller = createController();
 
     await expect(
       createOriginScopedAutomationController({
         controller,
         tabId: 'tab_assigned',
-        approvalMode: AGENT_APPROVAL_MODES.SENSITIVE_ACTIONS,
+        approvalMode: 'unsafe',
       })
     ).rejects.toThrow('supported approval mode');
   });
@@ -941,6 +941,175 @@ describe('OriginScopedAutomationController', () => {
       scoped.execute(OPERATIONS.CLICK, { tabId: 'tab_assigned', ref: 'ref_submit' })
     ).resolves.toMatchObject({ ok: true });
     expect(controller.inspectAction).not.toHaveBeenCalled();
+  });
+
+  test('lets a confidently ordinary interaction proceed in consequential-actions mode', async () => {
+    const controller = createController();
+    const classifyInteraction = jest.fn(async () => ({
+      kind: 'ordinary',
+      confidence: 0.97,
+      summary: 'Open the article details.',
+      uncertainties: [],
+    }));
+    const requestApproval = jest.fn();
+    const scoped = await createOriginScopedAutomationController({
+      controller,
+      tabId: 'tab_assigned',
+      approvalMode: AGENT_APPROVAL_MODES.SENSITIVE_ACTIONS,
+      classifyInteraction,
+      requestApproval,
+    });
+
+    await expect(
+      scoped.execute(OPERATIONS.CLICK, {
+        tabId: 'tab_assigned',
+        ref: 'ref_ordinary',
+        intent: 'Open the article details',
+      })
+    ).resolves.toMatchObject({ ok: true });
+    expect(classifyInteraction).toHaveBeenCalledWith({
+      action: {
+        operation: OPERATIONS.CLICK,
+        intent: 'Open the article details',
+      },
+      trustedContext: {
+        origin: 'https://trusted.example',
+        mechanism: 'generic_interaction',
+        destinationOrigin: '',
+      },
+      untrustedContext: { label: 'Ordinary action' },
+    });
+    expect(requestApproval).not.toHaveBeenCalled();
+    expect(controller.inspectAction).toHaveBeenCalledTimes(2);
+  });
+
+  test('does not dispatch an ordinary-classified interaction when its target changes', async () => {
+    const controller = createController();
+    controller.inspectAction
+      .mockResolvedValueOnce({
+        ok: true,
+        result: { label: 'Show supporting details' },
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        result: { label: 'Publish comment' },
+      });
+    const scoped = await createOriginScopedAutomationController({
+      controller,
+      tabId: 'tab_assigned',
+      approvalMode: AGENT_APPROVAL_MODES.SENSITIVE_ACTIONS,
+      classifyInteraction: jest.fn(async () => ({
+        kind: 'ordinary',
+        confidence: 0.99,
+        summary: 'Open the supporting details.',
+        uncertainties: [],
+      })),
+    });
+
+    await expect(
+      scoped.execute(OPERATIONS.CLICK, {
+        tabId: 'tab_assigned',
+        ref: 'ref_ordinary',
+        intent: 'Open the supporting details',
+      })
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: ERROR_CODES.STALE_ELEMENT_REFERENCE, retryable: true },
+    });
+    expect(controller.execute).not.toHaveBeenCalledWith(OPERATIONS.CLICK, expect.anything());
+  });
+
+  test('asks for a consequential interaction and binds approval to the live target', async () => {
+    const controller = createController();
+    const classifyInteraction = jest.fn(async () => ({
+      kind: 'consequential',
+      confidence: 0.98,
+      summary: 'Publish the comment.',
+      uncertainties: [],
+    }));
+    const requestApproval = jest.fn(async () => 'approved');
+    const scoped = await createOriginScopedAutomationController({
+      controller,
+      tabId: 'tab_assigned',
+      approvalMode: AGENT_APPROVAL_MODES.SENSITIVE_ACTIONS,
+      classifyInteraction,
+      requestApproval,
+    });
+
+    await expect(
+      scoped.execute(OPERATIONS.CLICK, {
+        tabId: 'tab_assigned',
+        ref: 'ref_ordinary',
+        intent: 'Publish the comment',
+      })
+    ).resolves.toMatchObject({ ok: true });
+    expect(requestApproval).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'browser_interaction',
+        operation: OPERATIONS.CLICK,
+        label: 'Ordinary action',
+        interaction: {
+          kind: 'consequential',
+          confidence: 0.98,
+          summary: 'Publish the comment.',
+          uncertainties: [],
+        },
+      })
+    );
+    expect(controller.inspectAction).toHaveBeenCalledTimes(2);
+  });
+
+  test('asks when consequential-action classification is unavailable', async () => {
+    const controller = createController();
+    const scoped = await createOriginScopedAutomationController({
+      controller,
+      tabId: 'tab_assigned',
+      approvalMode: AGENT_APPROVAL_MODES.SENSITIVE_ACTIONS,
+      classifyInteraction: jest.fn(async () => {
+        throw new Error('provider unavailable');
+      }),
+    });
+
+    await expect(
+      scoped.execute(OPERATIONS.TYPE, {
+        tabId: 'tab_assigned',
+        ref: 'ref_ordinary',
+        text: 'draft',
+        intent: 'Draft a response',
+      })
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: ERROR_CODES.APPROVAL_REQUIRED },
+    });
+    expect(controller.execute).not.toHaveBeenCalledWith(OPERATIONS.TYPE, expect.anything());
+  });
+
+  test('always treats a live form submission as consequential without model classification', async () => {
+    const controller = createController();
+    const classifyInteraction = jest.fn();
+    const requestApproval = jest.fn(async () => 'approved');
+    const scoped = await createOriginScopedAutomationController({
+      controller,
+      tabId: 'tab_assigned',
+      approvalMode: AGENT_APPROVAL_MODES.SENSITIVE_ACTIONS,
+      classifyInteraction,
+      requestApproval,
+    });
+
+    await expect(
+      scoped.execute(OPERATIONS.CLICK, {
+        tabId: 'tab_assigned',
+        ref: 'ref_submit',
+        intent: 'Submit the registration',
+      })
+    ).resolves.toMatchObject({ ok: true });
+    expect(classifyInteraction).not.toHaveBeenCalled();
+    expect(requestApproval).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'form_submission',
+        interaction: expect.objectContaining({ kind: 'consequential', confidence: 1 }),
+      })
+    );
   });
 
   test('applies a validated approval-mode transition to subsequent interactions', async () => {

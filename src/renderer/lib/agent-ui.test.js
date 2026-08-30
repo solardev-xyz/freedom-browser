@@ -208,7 +208,11 @@ function createAgentElements() {
   elements['agent-approval-mode-every'].appendChild(
     createElement('span', { classes: ['agent-approval-mode-check'], textContent: '✓' })
   );
-  elements['agent-approval-mode-sensitive'] = createElement('button', { disabled: true });
+  elements['agent-approval-mode-sensitive'] = createElement('button');
+  elements['agent-approval-mode-sensitive'].appendChild(createElement('span'));
+  elements['agent-approval-mode-sensitive'].appendChild(
+    createElement('span', { classes: ['agent-approval-mode-check'] })
+  );
   elements['agent-approval-mode-allow'] = createElement('button');
   elements['agent-approval-mode-allow'].appendChild(createElement('span'));
   elements['agent-approval-mode-allow'].appendChild(
@@ -834,15 +838,20 @@ describe('Agent UI', () => {
     expect(ctx.setAgentTabCustody).toHaveBeenLastCalledWith([]);
   });
 
-  test('selects website interaction approval behavior while sensitive actions remain a stub', async () => {
+  test('selects each website interaction approval behavior', async () => {
     const ctx = await loadAgentUi();
+    ctx.elements['agent-approval-mode-sensitive'].dispatch('click');
+
+    expect(ctx.elements['agent-active-approval-mode-label'].textContent).toBe('Ask when needed');
+    expect(ctx.elements['agent-approval-mode-sensitive'].getAttribute('aria-pressed')).toBe('true');
+
     ctx.elements['agent-approval-mode-allow'].dispatch('click');
 
     expect(ctx.elements['agent-active-approval-mode-label'].textContent).toBe(
       'Allow website actions'
     );
     expect(ctx.elements['agent-approval-mode-allow'].getAttribute('aria-pressed')).toBe('true');
-    expect(ctx.elements['agent-approval-mode-sensitive'].disabled).toBe(true);
+    expect(ctx.elements['agent-approval-mode-sensitive'].disabled).toBe(false);
 
     ctx.elements['agent-prompt'].value = 'Compare these sources';
     ctx.elements['agent-run'].dispatch('click');
@@ -854,6 +863,37 @@ describe('Agent UI', () => {
       'allow_website_interactions'
     );
     expect(ctx.elements['agent-approval-mode-button'].disabled).toBe(true);
+  });
+
+  test('explains an intent-classified consequential website approval honestly', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Publish my response';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'approval_requested',
+      runId: 'run_test',
+      approvalId: 'approval_consequential',
+      action: 'browser_interaction',
+      operation: 'browser_click',
+      origin: 'https://community.example/post/1',
+      label: 'Publish',
+      interaction: {
+        kind: 'consequential',
+        confidence: 0.98,
+        summary: 'Publish the comment.',
+        uncertainties: [],
+      },
+    });
+
+    expect(ctx.elements['agent-approval-action'].textContent).toBe('Publish the comment?');
+    expect(ctx.elements['agent-approval-origin'].textContent).toContain(
+      'Based on Agent’s stated intent and the visible target on community.example'
+    );
+    expect(ctx.elements['agent-approval-origin'].textContent).toContain(
+      'Freedom has not audited the page’s hidden behavior.'
+    );
   });
 
   test('disconnects a provider through the management view and returns to setup', async () => {

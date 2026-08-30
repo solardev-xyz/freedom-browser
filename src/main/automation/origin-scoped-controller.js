@@ -37,6 +37,12 @@ const ORIGIN_SCOPED_OPERATIONS = new Set([
 ]);
 const SCOPED_SCHEMES = new Set(['http:', 'https:', 'bzz:', 'ipfs:', 'ipns:']);
 const TRUSTED_INPUT_EFFECT_SETTLE_MS = 50;
+const MIN_AUTONOMOUS_INTERACTION_CONFIDENCE = 0.85;
+const INTERACTION_CLASSIFICATION_KINDS = new Set([
+  'ordinary',
+  'consequential',
+  'uncertain',
+]);
 const PAGE_INTERACTION_OPERATIONS = new Set([
   OPERATIONS.CLICK,
   OPERATIONS.TYPE,
@@ -79,11 +85,53 @@ function actionDescriptor(element) {
     effect: ['form_submission', 'file_download', 'file_upload'].includes(element?.effect)
       ? element.effect
       : '',
-    label: typeof element?.label === 'string' ? element.label : '',
+    label: typeof element?.label === 'string' ? element.label.slice(0, 160) : '',
     navigationTarget: typeof element?.navigationTarget === 'string' ? element.navigationTarget : '',
     formPayloadFingerprint:
       typeof element?.formPayloadFingerprint === 'string' ? element.formPayloadFingerprint : '',
   });
+}
+
+function uncertainInteractionClassification(reason = 'classification_unavailable') {
+  return Object.freeze({
+    kind: 'uncertain',
+    confidence: 0,
+    summary: 'The intended consequence could not be classified reliably.',
+    uncertainties: Object.freeze([reason]),
+  });
+}
+
+function normalizeInteractionClassification(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return uncertainInteractionClassification();
+  }
+  const kind = INTERACTION_CLASSIFICATION_KINDS.has(value.kind) ? value.kind : 'uncertain';
+  const confidence = Number(value.confidence);
+  const summary = typeof value.summary === 'string' ? value.summary.trim().slice(0, 240) : '';
+  if (
+    !Number.isFinite(confidence) ||
+    confidence < 0 ||
+    confidence > 1 ||
+    !summary ||
+    !Array.isArray(value.uncertainties)
+  ) {
+    return uncertainInteractionClassification('invalid_classifier_output');
+  }
+  const uncertainties = Object.freeze(
+    value.uncertainties
+      .filter((item) => typeof item === 'string' && item.trim())
+      .slice(0, 12)
+      .map((item) => item.trim().slice(0, 240))
+  );
+  return Object.freeze({ kind, confidence, summary, uncertainties });
+}
+
+function interactionMayProceed(classification) {
+  return (
+    classification.kind === 'ordinary' &&
+    classification.confidence >= MIN_AUTONOMOUS_INTERACTION_CONFIDENCE &&
+    classification.uncertainties.length === 0
+  );
 }
 
 function sameActionDescriptor(left, right) {
@@ -103,6 +151,7 @@ class OriginScopedAutomationController {
     approvalMode,
     requestApproval,
     classifyEffect,
+    classifyInteraction,
     createWorkspacePage,
     onWorkspaceTabCreated,
     transferOwnerId,
@@ -116,6 +165,7 @@ class OriginScopedAutomationController {
     this.lastState = initialState;
     this.requestApproval = requestApproval;
     this.classifyEffect = classifyEffect;
+    this.classifyInteraction = classifyInteraction;
     this.createWorkspacePage = createWorkspacePage;
     this.onWorkspaceTabCreated = onWorkspaceTabCreated;
     this.transferOwnerId = transferOwnerId;
@@ -580,6 +630,54 @@ class OriginScopedAutomationController {
         'The user declined this website interaction'
       );
     }
+    let interaction = null;
+    if (
+      this.approvalMode === AGENT_APPROVAL_MODES.SENSITIVE_ACTIONS &&
+      operation !== OPERATIONS.DOWNLOAD &&
+      operation !== OPERATIONS.UPLOAD
+    ) {
+      if (element.effect === 'form_submission') {
+        interaction = Object.freeze({
+          kind: 'consequential',
+          confidence: 1,
+          summary: `Submit ${element.label ? `“${element.label}”` : 'this form'}.`,
+          uncertainties: Object.freeze([]),
+        });
+      } else {
+        try {
+          interaction = normalizeInteractionClassification(
+            typeof this.classifyInteraction === 'function'
+              ? await this.classifyInteraction({
+                  action: {
+                    operation,
+                    intent:
+                      typeof input.intent === 'string' ? input.intent.trim().slice(0, 240) : '',
+                    ...(operation === OPERATIONS.PRESS && { key: input.key || '' }),
+                    ...(operation === OPERATIONS.TYPE && {
+                      characters: typeof input.text === 'string' ? input.text.length : 0,
+                      replace: input.replace !== false,
+                    }),
+                    ...(operation === OPERATIONS.SELECT && {
+                      value: typeof input.value === 'string' ? input.value.slice(0, 240) : '',
+                    }),
+                  },
+                  trustedContext: {
+                    origin: originScopeForUrl(state?.result?.tab?.url) || '',
+                    mechanism: element.effect || 'generic_interaction',
+                    destinationOrigin: originScopeForUrl(element.navigationTarget) || '',
+                  },
+                  untrustedContext: { label: element.label },
+                })
+              : null
+          );
+        } catch {
+          interaction = uncertainInteractionClassification('classifier_provider_error');
+        }
+      }
+      if (interactionMayProceed(interaction)) {
+        return this.#revalidateAuthorizedAction(operation, input, element);
+      }
+    }
     if (typeof this.requestApproval !== 'function') {
       return errorEnvelope(
         state,
@@ -604,6 +702,7 @@ class OriginScopedAutomationController {
           ? originScopeForUrl(state?.result?.tab?.url) || ''
           : originScopeForUrl(element.navigationTarget) || '',
       label: element.label,
+      ...(interaction && { interaction }),
     });
     if (decision === 'withdrawn') {
       return errorEnvelope(state, ERROR_CODES.USER_CANCELLED, 'Interaction approval was withdrawn');
@@ -617,6 +716,10 @@ class OriginScopedAutomationController {
       );
     }
 
+    return this.#revalidateAuthorizedAction(operation, input, element);
+  }
+
+  async #revalidateAuthorizedAction(operation, input, element) {
     const currentState = await this.#readState(input.tabId);
     if (!currentState.ok) return currentState;
     if (!this.#acceptCurrentOrigin(currentState)) return this.#originDenied(currentState);
@@ -688,6 +791,7 @@ async function createOriginScopedAutomationController(options = {}) {
     approvalMode,
     requestApproval: options.requestApproval,
     classifyEffect: options.classifyEffect,
+    classifyInteraction: options.classifyInteraction,
     createWorkspacePage: options.createWorkspacePage,
     onWorkspaceTabCreated: options.onWorkspaceTabCreated,
     transferOwnerId: options.transferOwnerId,

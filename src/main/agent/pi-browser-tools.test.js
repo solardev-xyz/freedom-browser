@@ -98,6 +98,17 @@ describe('Pi browser tool adapter', () => {
     expect(TOOL_SPEC_BY_NAME.get(OPERATIONS.PRESS).parameters.properties.key.enum).toContain(
       'Enter'
     );
+    for (const operation of [
+      OPERATIONS.CLICK,
+      OPERATIONS.TYPE,
+      OPERATIONS.SELECT,
+      OPERATIONS.PRESS,
+    ]) {
+      expect(TOOL_SPEC_BY_NAME.get(operation).parameters.properties.intent).toMatchObject({
+        type: 'string',
+        maxLength: 240,
+      });
+    }
   });
 
   test('advertises visual observation only to vision-capable models', async () => {

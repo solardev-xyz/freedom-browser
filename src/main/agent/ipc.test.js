@@ -272,7 +272,7 @@ describe('Freedom agent IPC', () => {
     await expect(
       setMode(
         { sender: ctx.sender },
-        { conversationId, approvalMode: 'allow_website_interactions' }
+        { conversationId, approvalMode: 'sensitive_actions' }
       )
     ).resolves.toMatchObject({ ok: false, error: { code: AGENT_ERROR_CODES.BUSY } });
 
@@ -280,16 +280,16 @@ describe('Freedom agent IPC', () => {
     await expect(
       setMode(
         { sender: ctx.sender },
-        { conversationId, approvalMode: 'allow_website_interactions' }
+        { conversationId, approvalMode: 'sensitive_actions' }
       )
     ).resolves.toEqual({
       ok: true,
       conversationId,
-      approvalMode: 'allow_website_interactions',
+      approvalMode: 'sensitive_actions',
     });
     expect(updateApprovalMode).toHaveBeenCalledWith(
       conversationId,
-      'allow_website_interactions'
+      'sensitive_actions'
     );
 
     await expect(
@@ -1173,7 +1173,7 @@ describe('Freedom agent IPC', () => {
     await expect(
       start(
         { sender: ctx.sender },
-        { rendererTabId: 7, prompt: 'Task', approvalMode: 'sensitive_actions' }
+        { rendererTabId: 7, prompt: 'Task', approvalMode: 'unsafe' }
       )
     ).resolves.toMatchObject({
       ok: false,

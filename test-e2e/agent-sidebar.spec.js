@@ -80,8 +80,10 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
   await expect(window.locator('#agent-approval-mode-every')).toContainText(
     'Ask before every interaction'
   );
-  await expect(window.locator('#agent-approval-mode-sensitive')).toBeDisabled();
-  await expect(window.locator('#agent-approval-mode-sensitive')).toContainText('Coming soon');
+  await expect(window.locator('#agent-approval-mode-sensitive')).toBeEnabled();
+  await expect(window.locator('#agent-approval-mode-sensitive')).toContainText(
+    'Ask for consequential actions'
+  );
   await expect(window.locator('#agent-approval-mode-allow')).toContainText(
     'Allow website interactions'
   );
