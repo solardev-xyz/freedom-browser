@@ -64,6 +64,7 @@ let pendingApproval = null;
 let panelOpen = false;
 let agentView = 'loading';
 let approvalMode = APPROVAL_MODES.EVERY_INTERACTION;
+let approvalModeMutationPending = false;
 let agentEventUnsubscribe = null;
 let providerAuthEventUnsubscribe = null;
 let tabPresentationUnsubscribe = null;
@@ -363,7 +364,7 @@ function closeComposerPopovers() {
 function setApprovalMode(nextMode, options = {}) {
   if (
     !Object.hasOwn(APPROVAL_MODE_LABELS, nextMode) ||
-    (!options.force && (currentRunStatus !== 'idle' || currentConversationId))
+    (!options.force && currentRunStatus !== 'idle')
   ) {
     return;
   }
@@ -381,6 +382,55 @@ function setApprovalMode(nextMode, options = {}) {
     ? ''
     : '✓';
   closeComposerPopovers();
+}
+
+async function selectApprovalMode(nextMode) {
+  if (
+    approvalModeMutationPending ||
+    currentRunStatus !== 'idle' ||
+    !Object.hasOwn(APPROVAL_MODE_LABELS, nextMode)
+  ) {
+    return;
+  }
+  if (!currentConversationId) {
+    setApprovalMode(nextMode);
+    return;
+  }
+  if (nextMode === approvalMode) {
+    closeComposerPopovers();
+    return;
+  }
+  approvalModeMutationPending = true;
+  elements.approvalModeButton.disabled = true;
+  elements.attachmentButton.disabled = true;
+  elements.newChat.disabled = true;
+  updateSendAvailability();
+  closeComposerPopovers();
+  try {
+    const response = await window.electronAPI.setAgentApprovalMode(
+      currentConversationId,
+      nextMode
+    );
+    if (!response?.ok) {
+      setMessage(
+        elements.runMessage,
+        responseMessage(response, 'Could not change the approval setting'),
+        true
+      );
+      return;
+    }
+    setApprovalMode(response.approvalMode || nextMode, { force: true });
+    setMessage(elements.runMessage, 'Approval setting updated for the next message.');
+  } catch {
+    setMessage(elements.runMessage, 'Could not change the approval setting', true);
+  } finally {
+    approvalModeMutationPending = false;
+    elements.approvalModeButton.disabled = currentRunStatus !== 'idle';
+    elements.attachmentButton.disabled = currentRunStatus !== 'idle' || Boolean(pendingApproval);
+    elements.newChat.disabled = currentRunStatus !== 'idle';
+    updateSendAvailability();
+    focusComposer({ preserveExplicitFocus: true });
+  }
 }
 
 function setAgentView(nextView) {
@@ -1158,7 +1208,7 @@ function setRunState(status, label) {
         ? 'Add guidance and resume…'
         : 'Message Agent…';
   elements.modelMenuButton.disabled = active || Boolean(currentConversationId);
-  elements.approvalModeButton.disabled = active || Boolean(currentConversationId);
+  elements.approvalModeButton.disabled = active || approvalModeMutationPending;
   elements.attachmentButton.disabled = status !== 'idle' || Boolean(pendingApproval);
   elements.newChat.hidden = !currentConversationId;
   elements.newChat.disabled = active;
@@ -1176,7 +1226,7 @@ function updateSendAvailability() {
   let label = 'Run task';
   let disabled = true;
   if (currentRunStatus === 'idle') {
-    disabled = !hasText || !providerStatus?.configured;
+    disabled = !hasText || !providerStatus?.configured || approvalModeMutationPending;
   } else if (currentRunStatus === 'running') {
     action = hasText ? 'send' : 'stop';
     label = hasText ? 'Send guidance' : 'Stop Agent';
@@ -2214,6 +2264,12 @@ function handleAgentEvent(event) {
     }
     return;
   }
+  if (event?.type === 'conversation_approval_mode_changed') {
+    if (event.conversationId === currentConversationId) {
+      setApprovalMode(event.approvalMode, { force: true });
+    }
+    return;
+  }
   if (!event || typeof event.runId !== 'string') return;
   if (
     currentConversationId &&
@@ -2233,6 +2289,9 @@ function handleAgentEvent(event) {
     ) {
       workspaceProjectionGeneration += 1;
       currentConversationId = event.conversationId;
+    }
+    if (Object.hasOwn(APPROVAL_MODE_LABELS, event.approvalMode)) {
+      setApprovalMode(event.approvalMode, { force: true });
     }
     currentRunId = event.runId;
     lastFinishedRunId = null;
@@ -2936,10 +2995,10 @@ export function initAgentUi(options = {}) {
     elements.approvalModeButton.setAttribute('aria-expanded', String(opening));
   });
   elements.approvalModeEvery.addEventListener('click', () =>
-    setApprovalMode(APPROVAL_MODES.EVERY_INTERACTION)
+    void selectApprovalMode(APPROVAL_MODES.EVERY_INTERACTION)
   );
   elements.approvalModeAllow.addEventListener('click', () =>
-    setApprovalMode(APPROVAL_MODES.ALLOW_WEBSITE_INTERACTIONS)
+    void selectApprovalMode(APPROVAL_MODES.ALLOW_WEBSITE_INTERACTIONS)
   );
   elements.manageProviders.addEventListener('click', showProviderSetup);
   document.addEventListener('click', (event) => {

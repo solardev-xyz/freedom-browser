@@ -71,7 +71,7 @@ class FakeBetterSqlite3AgentHistoryDatabase {
 
     if (query.startsWith('INSERT INTO agent_turns')) {
       return {
-        run: (id, sessionId, position, userText, startedAt, attachmentsJson) => {
+        run: (id, sessionId, position, userText, startedAt, attachmentsJson, approvalMode) => {
           if (this.state.turns.some((row) => row.id === id)) throw new Error('UNIQUE turn');
           this.state.turns.push({
             id,
@@ -85,6 +85,7 @@ class FakeBetterSqlite3AgentHistoryDatabase {
             activity_json: '[]',
             guidance_json: '[]',
             attachments_json: attachmentsJson || '[]',
+            approval_mode: approvalMode || 'every_interaction',
             error_code: null,
             error_message: null,
           });
@@ -143,6 +144,18 @@ class FakeBetterSqlite3AgentHistoryDatabase {
           const row = this.state.sessions.find((candidate) => candidate.id === id);
           if (!row) return { changes: 0 };
           row.status = status;
+          row.updated_at = updatedAt;
+          return { changes: 1 };
+        },
+      };
+    }
+
+    if (query === 'UPDATE agent_sessions SET approval_mode = ?, updated_at = ? WHERE id = ?') {
+      return {
+        run: (approvalMode, updatedAt, id) => {
+          const row = this.state.sessions.find((candidate) => candidate.id === id);
+          if (!row) return { changes: 0 };
+          row.approval_mode = approvalMode;
           row.updated_at = updatedAt;
           return { changes: 1 };
         },

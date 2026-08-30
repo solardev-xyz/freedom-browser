@@ -48,6 +48,9 @@ function createService(options = {}) {
     claimTab: options.claimTab || jest.fn(async () => false),
     openConversation: options.openConversation || jest.fn(async () => null),
     renameConversation: options.renameConversation || jest.fn(() => null),
+    updateApprovalMode:
+      options.updateApprovalMode ||
+      jest.fn(async (conversationId, approvalMode) => ({ conversationId, approvalMode })),
     revokeAttachment: options.revokeAttachment || jest.fn(async () => null),
     deleteConversation: options.deleteConversation || jest.fn(async () => false),
     decideApproval: options.decideApproval || jest.fn(async () => true),
@@ -249,6 +252,52 @@ describe('Freedom agent IPC', () => {
       )
     ).resolves.toMatchObject({ ok: false, error: { code: AGENT_IPC_ERROR_CODES.NOT_OWNER } });
     expect(revokeAttachment).toHaveBeenCalledTimes(1);
+  });
+
+  test('changes approval mode only between turns in the owning conversation', async () => {
+    const conversationId = `conversation_${'b'.repeat(16)}`;
+    const updateApprovalMode = jest.fn(async (_conversationId, approvalMode) => ({
+      conversationId,
+      approvalMode,
+    }));
+    const start = jest.fn(async () => ({ runId: 'run_test', conversationId }));
+    const service = createService({ start, updateApprovalMode });
+    const ctx = register({ service });
+    await ctx.ipcMain.handlers.get(IPC.AGENT_START)(
+      { sender: ctx.sender },
+      { rendererTabId: 7, prompt: 'Review the page' }
+    );
+    const setMode = ctx.ipcMain.handlers.get(IPC.AGENT_APPROVAL_MODE_SET);
+
+    await expect(
+      setMode(
+        { sender: ctx.sender },
+        { conversationId, approvalMode: 'allow_website_interactions' }
+      )
+    ).resolves.toMatchObject({ ok: false, error: { code: AGENT_ERROR_CODES.BUSY } });
+
+    service.emit({ type: 'run_finished', runId: 'run_test', conversationId });
+    await expect(
+      setMode(
+        { sender: ctx.sender },
+        { conversationId, approvalMode: 'allow_website_interactions' }
+      )
+    ).resolves.toEqual({
+      ok: true,
+      conversationId,
+      approvalMode: 'allow_website_interactions',
+    });
+    expect(updateApprovalMode).toHaveBeenCalledWith(
+      conversationId,
+      'allow_website_interactions'
+    );
+
+    await expect(
+      setMode(
+        { sender: ctx.otherSender },
+        { conversationId, approvalMode: 'every_interaction' }
+      )
+    ).resolves.toMatchObject({ ok: false, error: { code: AGENT_IPC_ERROR_CODES.NOT_OWNER } });
   });
 
   test('does not expose attachment pickers or staged selections to untrusted renderers', async () => {

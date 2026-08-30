@@ -481,8 +481,17 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
   await expect(window.locator('#agent-run')).toBeDisabled();
   await expect(window.locator('#agent-new-chat')).toBeEnabled();
   await expect(window.locator('#agent-model-menu-button')).toBeDisabled();
-  await expect(window.locator('#agent-approval-mode-button')).toBeDisabled();
+  await expect(window.locator('#agent-approval-mode-button')).toBeEnabled();
   await expect(window.locator('[data-test="tab"].active')).not.toHaveClass(/agent-controlled/);
+
+  await window.locator('#agent-approval-mode-button').click();
+  await window.locator('#agent-approval-mode-allow').click();
+  await expect(window.locator('#agent-active-approval-mode-label')).toHaveText(
+    'Allow website actions'
+  );
+  await expect(window.locator('#agent-run-message')).toHaveText(
+    'Approval setting updated for the next message.'
+  );
 
   await window.locator('#agent-new-chat').click();
   await expect(window.locator('#agent-empty-state')).toBeVisible();

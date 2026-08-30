@@ -196,6 +196,7 @@ function registerFreedomAgentIpc(options = {}) {
     typeof service.claimTab !== 'function' ||
     typeof service.openConversation !== 'function' ||
     typeof service.renameConversation !== 'function' ||
+    typeof service.updateApprovalMode !== 'function' ||
     typeof service.revokeAttachment !== 'function' ||
     typeof service.deleteConversation !== 'function' ||
     typeof service.decideApproval !== 'function' ||
@@ -973,6 +974,41 @@ function registerFreedomAgentIpc(options = {}) {
       return safeServiceError(error);
     }
   };
+  const handleSetApprovalMode = async (event, payload = {}) => {
+    if (
+      !owner ||
+      owner.sender !== event?.sender ||
+      payload.conversationId !== owner.conversationId ||
+      !/^conversation_[a-f0-9]{16}$/.test(payload.conversationId || '')
+    ) {
+      return errorEnvelope(
+        AGENT_IPC_ERROR_CODES.NOT_OWNER,
+        'The sender does not own that Agent conversation'
+      );
+    }
+    if (owner.runId) {
+      return errorEnvelope(
+        AGENT_ERROR_CODES.BUSY,
+        'Finish the current Agent turn before changing its approval setting'
+      );
+    }
+    const approvalMode = normalizeAgentApprovalMode(payload.approvalMode);
+    if (typeof payload.approvalMode !== 'string' || !approvalMode) {
+      return errorEnvelope(
+        AGENT_ERROR_CODES.INVALID_ARGUMENT,
+        'The requested Agent approval setting is unavailable'
+      );
+    }
+    try {
+      const result = await service.updateApprovalMode(
+        payload.conversationId,
+        approvalMode
+      );
+      return { ok: true, ...result };
+    } catch (error) {
+      return safeServiceError(error);
+    }
+  };
   const handleSelectModel = (event, payload) =>
     handleProviderMutation(event, async () => ({
       status: await providerResolver.selectModel(payload),
@@ -1009,6 +1045,7 @@ function registerFreedomAgentIpc(options = {}) {
   ipcMain.handle(IPC.AGENT_ATTACHMENTS_PICK_FOLDER, handlePickFolder);
   ipcMain.handle(IPC.AGENT_ATTACHMENTS_REMOVE, handleRemoveAttachment);
   ipcMain.handle(IPC.AGENT_ATTACHMENTS_REVOKE, handleRevokeAttachment);
+  ipcMain.handle(IPC.AGENT_APPROVAL_MODE_SET, handleSetApprovalMode);
   ipcMain.handle(IPC.AGENT_TAB_CLAIM, handleTabClaim);
   ipcMain.handle(IPC.AGENT_PROVIDER_GET_STATUS, handleProviderStatus);
   ipcMain.handle(IPC.AGENT_PROVIDER_GET_CATALOG, handleProviderCatalog);
@@ -1038,6 +1075,7 @@ function registerFreedomAgentIpc(options = {}) {
     ipcMain.removeHandler?.(IPC.AGENT_ATTACHMENTS_PICK_FOLDER);
     ipcMain.removeHandler?.(IPC.AGENT_ATTACHMENTS_REMOVE);
     ipcMain.removeHandler?.(IPC.AGENT_ATTACHMENTS_REVOKE);
+    ipcMain.removeHandler?.(IPC.AGENT_APPROVAL_MODE_SET);
     ipcMain.removeHandler?.(IPC.AGENT_TAB_CLAIM);
     ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_GET_STATUS);
     ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_GET_CATALOG);

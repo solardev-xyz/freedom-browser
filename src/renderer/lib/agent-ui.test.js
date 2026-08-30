@@ -295,6 +295,11 @@ async function loadAgentUi(options = {}) {
       revoked: true,
       resources: [],
     }),
+    setAgentApprovalMode: jest.fn(async (conversationId, approvalMode) => ({
+      ok: true,
+      conversationId,
+      approvalMode,
+    })),
     claimAgentTab: jest.fn(),
     openAgentArtifact: jest.fn().mockResolvedValue({ success: true }),
     showAgentArtifactInFolder: jest.fn().mockResolvedValue({ success: true }),
@@ -1007,7 +1012,7 @@ describe('Agent UI', () => {
     expect(firstActivity.open).toBe(false);
     expect(firstActivity.children[0].textContent).toBe('Worked for 1m 12s · 1 action');
     expect(ctx.elements['agent-model-menu-button'].disabled).toBe(true);
-    expect(ctx.elements['agent-approval-mode-button'].disabled).toBe(true);
+    expect(ctx.elements['agent-approval-mode-button'].disabled).toBe(false);
     expect(ctx.elements['agent-new-chat'].hidden).toBe(false);
 
     ctx.elements['agent-prompt'].value = 'Now enable notifications';
@@ -1032,6 +1037,49 @@ describe('Agent UI', () => {
     expect(
       ctx.elements['agent-transcript'].children[1].querySelector('.agent-user-message').textContent
     ).toBe('Now enable notifications');
+  });
+
+  test('changes approval mode between turns while keeping it locked during a run', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({
+      type: 'run_started',
+      conversationId: 'conversation_test',
+      runId: 'run_first',
+      userText: 'Inspect this page',
+      approvalMode: 'every_interaction',
+    });
+    expect(ctx.elements['agent-approval-mode-button'].disabled).toBe(true);
+    ctx.emit({
+      type: 'run_finished',
+      conversationId: 'conversation_test',
+      runId: 'run_first',
+      status: 'completed',
+    });
+    expect(ctx.elements['agent-approval-mode-button'].disabled).toBe(false);
+
+    ctx.elements['agent-approval-mode-button'].dispatch('click');
+    ctx.elements['agent-approval-mode-allow'].dispatch('click');
+    await flush();
+
+    expect(ctx.electronAPI.setAgentApprovalMode).toHaveBeenCalledWith(
+      'conversation_test',
+      'allow_website_interactions'
+    );
+    expect(ctx.elements['agent-active-approval-mode-label'].textContent).toBe(
+      'Allow website actions'
+    );
+    expect(ctx.elements['agent-run-message'].textContent).toBe(
+      'Approval setting updated for the next message.'
+    );
+
+    ctx.elements['agent-prompt'].value = 'Now submit the form';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.startAgent).toHaveBeenLastCalledWith(
+      null,
+      'Now submit the form',
+      'allow_website_interactions'
+    );
   });
 
   test('starts a fresh chat only after clearing the idle conversation', async () => {

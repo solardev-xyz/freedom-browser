@@ -943,6 +943,28 @@ describe('OriginScopedAutomationController', () => {
     expect(controller.inspectAction).not.toHaveBeenCalled();
   });
 
+  test('applies a validated approval-mode transition to subsequent interactions', async () => {
+    const controller = createController();
+    const requestApproval = jest.fn(async () => 'approved');
+    const scoped = await createOriginScopedAutomationController({
+      controller,
+      tabId: 'tab_assigned',
+      requestApproval,
+    });
+
+    await scoped.execute(OPERATIONS.CLICK, { tabId: 'tab_assigned', ref: 'ref_submit' });
+    expect(requestApproval).toHaveBeenCalledTimes(1);
+
+    expect(scoped.setApprovalMode(AGENT_APPROVAL_MODES.ALLOW_WEBSITE_INTERACTIONS)).toBe(
+      AGENT_APPROVAL_MODES.ALLOW_WEBSITE_INTERACTIONS
+    );
+    await scoped.execute(OPERATIONS.CLICK, { tabId: 'tab_assigned', ref: 'ref_submit' });
+    expect(requestApproval).toHaveBeenCalledTimes(1);
+    expect(() => scoped.setApprovalMode('unsafe')).toThrow(
+      'Origin-scoped automation requires a supported approval mode'
+    );
+  });
+
   test('requires explicit approval for a controlled download and scopes its artifact owner', async () => {
     const controller = createController();
     const requestApproval = jest.fn(async () => 'approved');

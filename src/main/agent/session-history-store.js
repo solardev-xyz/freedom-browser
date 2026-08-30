@@ -15,7 +15,7 @@ const {
 } = require('./agent-progress');
 
 const DB_FILE = 'agent-history.sqlite';
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 const MAX_TITLE_LENGTH = 120;
 const MAX_MODEL_FIELD_LENGTH = 240;
 const SESSION_STATUSES = new Set(['running', 'ready', 'interrupted', 'failed', 'cancelled']);
@@ -175,6 +175,7 @@ function rowToTurn(row) {
     userText: row.user_text,
     assistantText: row.assistant_text || '',
     status: row.status,
+    approvalMode: normalizeAgentApprovalMode(row.approval_mode) || 'every_interaction',
     startedAt: row.started_at,
     ...(Number.isFinite(row.duration_ms) && { durationMs: row.duration_ms }),
     activity: normalizeActivity(safeJsonParse(row.activity_json, [])),
@@ -261,6 +262,19 @@ class AgentSessionHistoryStore {
         ALTER TABLE agent_turns
           ADD COLUMN attachments_json TEXT NOT NULL DEFAULT '[]';
       `);
+      this.db.pragma('user_version = 3');
+    }
+    if (version < 4) {
+      this.db.exec(`
+        ALTER TABLE agent_turns
+          ADD COLUMN approval_mode TEXT NOT NULL DEFAULT 'every_interaction';
+        UPDATE agent_turns
+          SET approval_mode = COALESCE(
+            (SELECT approval_mode FROM agent_sessions
+              WHERE agent_sessions.id = agent_turns.session_id),
+            'every_interaction'
+          );
+      `);
       this.db.pragma(`user_version = ${SCHEMA_VERSION}`);
     }
   }
@@ -278,8 +292,9 @@ class AgentSessionHistoryStore {
       insertTurn: db.prepare(`
         INSERT INTO agent_turns (
           id, session_id, position, user_text, assistant_text, status,
-          started_at, duration_ms, activity_json, attachments_json, error_code, error_message
-        ) VALUES (?, ?, ?, ?, '', 'running', ?, NULL, '[]', ?, NULL, NULL)
+          started_at, duration_ms, activity_json, attachments_json, approval_mode,
+          error_code, error_message
+        ) VALUES (?, ?, ?, ?, '', 'running', ?, NULL, '[]', ?, ?, NULL, NULL)
       `),
       finishTurn: db.prepare(`
         UPDATE agent_turns SET
@@ -293,6 +308,9 @@ class AgentSessionHistoryStore {
       `),
       touchSession: db.prepare(`
         UPDATE agent_sessions SET status = ?, updated_at = ? WHERE id = ?
+      `),
+      updateSessionApprovalMode: db.prepare(`
+        UPDATE agent_sessions SET approval_mode = ?, updated_at = ? WHERE id = ?
       `),
       listSessions: db.prepare(`
         SELECT s.*, COUNT(t.id) AS turn_count
@@ -359,13 +377,16 @@ class AgentSessionHistoryStore {
         ? entry.position
         : this.#getStatements().getTurns.all(sessionId).length;
     const attachments = normalizeAttachments(entry?.attachments);
+    const approvalMode = normalizeAgentApprovalMode(entry?.approvalMode);
+    if (!approvalMode) throw new TypeError('Agent turn requires a supported approval mode');
     this.#getStatements().insertTurn.run(
       runId,
       sessionId,
       position,
       userText,
       startedAt,
-      JSON.stringify(attachments)
+      JSON.stringify(attachments),
+      approvalMode
     );
     this.#getStatements().touchSession.run('running', startedAt, sessionId);
   }
@@ -415,6 +436,20 @@ class AgentSessionHistoryStore {
       this.#getStatements().touchSession.run('running', this.now(), sessionId);
     }
     return result.changes > 0;
+  }
+
+  updateApprovalMode(conversationId, value) {
+    const id = requiredString(conversationId, 'Agent conversation ID', 160);
+    const approvalMode = normalizeAgentApprovalMode(value);
+    if (typeof value !== 'string' || !approvalMode) {
+      throw new TypeError('Agent session requires a supported approval mode');
+    }
+    const result = this.#getStatements().updateSessionApprovalMode.run(
+      approvalMode,
+      this.now(),
+      id
+    );
+    return result.changes > 0 ? this.getSession(id) : null;
   }
 
   listSessions() {

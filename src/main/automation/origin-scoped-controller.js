@@ -126,6 +126,15 @@ class OriginScopedAutomationController {
     this.externalApprovalBarriers = new Set();
   }
 
+  setApprovalMode(value) {
+    const approvalMode = normalizeAgentApprovalMode(value);
+    if (typeof value !== 'string' || !approvalMode) {
+      throw new TypeError('Origin-scoped automation requires a supported approval mode');
+    }
+    this.approvalMode = approvalMode;
+    return approvalMode;
+  }
+
   async prepareResume() {
     const state = await this.#readActiveState();
     if (!state) {

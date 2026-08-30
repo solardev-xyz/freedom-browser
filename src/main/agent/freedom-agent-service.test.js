@@ -60,6 +60,7 @@ function createService(fakeSession, overrides = {}) {
         tabIds: ['tab_assigned', 'tab_research'],
         activeTabId: 'tab_research',
       })),
+      setApprovalMode: jest.fn(),
       prepareResume: jest.fn(async () => ({ ok: true })),
     })),
     createTools: jest.fn(async () => [{ name: 'browser_snapshot' }]),
@@ -92,6 +93,7 @@ function createHistoryStore(overrides = {}) {
     updateTurnGuidance: jest.fn(),
     listSessions: jest.fn(() => []),
     getSession: jest.fn(() => null),
+    updateApprovalMode: jest.fn((_conversationId, approvalMode) => ({ approvalMode })),
     renameSession: jest.fn(() => null),
     deleteSession: jest.fn(() => false),
     ...overrides,
@@ -135,16 +137,19 @@ describe('FreedomAgentService', () => {
       thinkingLevel: 'low',
       customTools: [{ name: 'browser_snapshot' }],
       enableBuiltInSkills: true,
-      systemPrompt: expect.stringContaining('requires user approval before every page interaction'),
+      systemPrompt: expect.stringContaining('You are Freedom Agent inside Freedom Browser'),
     });
     expect(service.getWorkspaceState()).toEqual({
       tabIds: ['tab_assigned', 'tab_research'],
       activeTabId: 'tab_research',
     });
-    expect(fake.session.prompt).toHaveBeenCalledWith('Summarize this page', {
+    expect(fake.session.prompt).toHaveBeenCalledWith(expect.stringContaining('Summarize this page'), {
       expandPromptTemplates: false,
       source: 'interactive',
     });
+    expect(fake.session.prompt.mock.calls[0][0]).toContain(
+      'Freedom approval policy for this turn'
+    );
 
     fake.emit({
       type: 'message_update',
@@ -256,7 +261,7 @@ describe('FreedomAgentService', () => {
     });
   });
 
-  test('builds allow-interaction runs without the every-interaction policy prompt', async () => {
+  test('tells Pi about the allow-interaction policy for the current turn', async () => {
     const fake = createFakeSession();
     const { service, dependencies } = createService(fake);
 
@@ -275,6 +280,9 @@ describe('FreedomAgentService', () => {
     });
     expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toEqual(
       expect.stringContaining('You are Freedom Agent inside Freedom Browser')
+    );
+    expect(fake.session.prompt.mock.calls[0][0]).toContain(
+      'Freedom allows ordinary website interactions without asking each time'
     );
 
     fake.prompt.resolve();
@@ -537,10 +545,14 @@ describe('FreedomAgentService', () => {
     expect(dependencies.createSession).toHaveBeenCalledTimes(1);
     expect(dependencies.createControllerScope).toHaveBeenCalledTimes(1);
     expect(scopedController.prepareResume).toHaveBeenCalledTimes(1);
-    expect(fake.session.prompt).toHaveBeenNthCalledWith(2, 'Now put that project name into the form', {
-      expandPromptTemplates: false,
-      source: 'interactive',
-    });
+    expect(fake.session.prompt).toHaveBeenNthCalledWith(
+      2,
+      expect.stringContaining('Now put that project name into the form'),
+      {
+        expandPromptTemplates: false,
+        source: 'interactive',
+      }
+    );
 
     fake.emit({
       type: 'message_update',
@@ -568,6 +580,69 @@ describe('FreedomAgentService', () => {
       ],
     });
     expect(fake.session.dispose).not.toHaveBeenCalled();
+  });
+
+  test('changes approval policy only between turns and records the policy used by each turn', async () => {
+    const fake = createFakeSession();
+    const historyStore = createHistoryStore();
+    const runIdFactory = jest
+      .fn()
+      .mockReturnValueOnce('run_first')
+      .mockReturnValueOnce('run_second');
+    const { service, dependencies } = createService(fake, { historyStore, runIdFactory });
+
+    await service.start(startOptions({ prompt: 'Inspect the page' }));
+    expect(() =>
+      service.updateApprovalMode('conversation_test', 'allow_website_interactions')
+    ).toThrow(
+      expect.objectContaining({
+        code: AGENT_ERROR_CODES.BUSY,
+        message: 'Finish the current Agent turn before changing its approval setting',
+      })
+    );
+    fake.prompt.resolve();
+    await service.waitForIdle();
+
+    const scopedController = dependencies.createTools.mock.calls[0][0].controller;
+    expect(
+      service.updateApprovalMode('conversation_test', 'allow_website_interactions')
+    ).toEqual({
+      conversationId: 'conversation_test',
+      approvalMode: 'allow_website_interactions',
+    });
+    expect(scopedController.setApprovalMode).toHaveBeenCalledWith(
+      'allow_website_interactions'
+    );
+    expect(historyStore.updateApprovalMode).toHaveBeenCalledWith(
+      'conversation_test',
+      'allow_website_interactions'
+    );
+
+    await service.start(
+      startOptions({
+        prompt: 'Submit the form',
+        approvalMode: 'allow_website_interactions',
+      })
+    );
+    expect(fake.session.prompt.mock.calls[1][0]).toContain(
+      'Freedom allows ordinary website interactions without asking each time'
+    );
+    expect(historyStore.startTurn).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        runId: 'run_second',
+        approvalMode: 'allow_website_interactions',
+      })
+    );
+    fake.prompts[1].resolve();
+    await service.waitForIdle();
+
+    expect(service.getState()).toMatchObject({
+      approvalMode: 'allow_website_interactions',
+      transcript: [
+        { runId: 'run_first', approvalMode: 'every_interaction' },
+        { runId: 'run_second', approvalMode: 'allow_website_interactions' },
+      ],
+    });
   });
 
   test('accepts a follow-up after the originally adopted tab closes', async () => {
@@ -777,6 +852,7 @@ describe('FreedomAgentService', () => {
       runId: 'run_test',
       position: 0,
       userText: 'Research this page',
+      approvalMode: 'every_interaction',
       startedAt: 1_000,
     });
     expect(historyStore.finishTurn).toHaveBeenCalledWith({

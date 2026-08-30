@@ -210,6 +210,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('agent:attachments:remove', { selectionId }),
   revokeAgentAttachment: (conversationId, resourceId) =>
     ipcRenderer.invoke('agent:attachments:revoke', { conversationId, resourceId }),
+  setAgentApprovalMode: (conversationId, approvalMode) =>
+    ipcRenderer.invoke('agent:approval-mode:set', { conversationId, approvalMode }),
   claimAgentTab: (rendererTabId) =>
     ipcRenderer.invoke('agent:tab:claim', { rendererTabId }),
   getAgentProviderStatus: () => ipcRenderer.invoke('agent:provider:get-status'),

@@ -43,6 +43,7 @@ describe('AgentSessionHistoryStore', () => {
       runId: 'run_one',
       position: 0,
       userText: 'Research Freedom',
+      approvalMode: 'every_interaction',
       attachments: [
         {
           resourceId: 'attachment_aaaaaaaaaaaaaaaaaaaa',
@@ -199,6 +200,7 @@ describe('AgentSessionHistoryStore', () => {
           userText: 'Research Freedom',
           assistantText: 'Done.',
           status: 'completed',
+          approvalMode: 'every_interaction',
           durationMs: 350,
           attachments: [
             {
@@ -322,6 +324,7 @@ describe('AgentSessionHistoryStore', () => {
       conversationId: 'conversation_one',
       runId: 'run_one',
       userText: 'Task',
+      approvalMode: 'allow_website_interactions',
     });
     now = 2_000;
 
@@ -334,6 +337,42 @@ describe('AgentSessionHistoryStore', () => {
     expect(store.listSessions()).toEqual([]);
   });
 
+  test('updates the conversation policy without rewriting earlier turn policy', () => {
+    store.createSession({
+      conversationId: 'conversation_one',
+      title: 'Policy transition',
+      approvalMode: 'every_interaction',
+    });
+    store.startTurn({
+      conversationId: 'conversation_one',
+      runId: 'run_one',
+      userText: 'First task',
+      approvalMode: 'every_interaction',
+    });
+    now = 2_000;
+
+    expect(
+      store.updateApprovalMode('conversation_one', 'allow_website_interactions')
+    ).toMatchObject({
+      approvalMode: 'allow_website_interactions',
+      updatedAt: 2_000,
+    });
+    store.startTurn({
+      conversationId: 'conversation_one',
+      runId: 'run_two',
+      userText: 'Second task',
+      approvalMode: 'allow_website_interactions',
+    });
+
+    expect(store.getSession('conversation_one')).toMatchObject({
+      approvalMode: 'allow_website_interactions',
+      transcript: [
+        { runId: 'run_one', approvalMode: 'every_interaction' },
+        { runId: 'run_two', approvalMode: 'allow_website_interactions' },
+      ],
+    });
+  });
+
   test('marks crash-left running records interrupted on startup', () => {
     store.createSession({
       conversationId: 'conversation_one',
@@ -344,6 +383,7 @@ describe('AgentSessionHistoryStore', () => {
       conversationId: 'conversation_one',
       runId: 'run_one',
       userText: 'Task',
+      approvalMode: 'every_interaction',
     });
     now = 5_000;
 
