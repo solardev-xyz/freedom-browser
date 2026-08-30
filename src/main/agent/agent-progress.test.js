@@ -622,9 +622,10 @@ describe('Agent progress projection', () => {
       retrySafety: 'review',
       counts: { successful: 1, failed: 1, changed: 1 },
     });
-    expect(outcome.detail).toContain('could not determine whether the problem is transient');
+    expect(outcome.detail).toContain('did not provide a usable failure reason');
     expect(outcome.detail).toContain('earlier browser change remains');
     expect(outcome.nextStep).toContain('Review the Agent tabs');
+    expect(outcome.nextStep).toContain('Try continuing once');
   });
 
   test('marks a retry safe only when Freedom verified no browser changes', () => {
@@ -640,8 +641,9 @@ describe('Agent progress projection', () => {
       message: 'The model provider remained unavailable. Freedom exhausted 2 automatic retries.',
     });
 
-    expect(outcome.detail).toContain('remained unavailable');
-    expect(outcome.detail).toContain('exhausted 2 automatic retries');
+    expect(outcome.detail).toContain('was temporarily unavailable');
+    expect(outcome.detail).toContain('3 attempts total');
+    expect(outcome.detail).toContain('2 automatic retries');
     expect(outcome.nextStep).toContain('Wait a moment');
   });
 
@@ -680,10 +682,50 @@ describe('Agent progress projection', () => {
       retrySafety: 'review',
       nodeRequest,
     });
-    expect(outcome.detail).toContain('exhausted 2 automatic retries');
+    expect(outcome.detail).toContain('3 attempts total');
+    expect(outcome.detail).toContain('2 automatic retries');
     expect(outcome.detail).toContain(nodeRequest.operationId);
     expect(outcome.detail).not.toContain('browser change');
     expect(outcome.nextStep).toContain('check the existing node operation');
+  });
+
+  test('keeps a specific safe provider reason beside partial browser-state recovery', () => {
+    const outcome = buildAgentOutcome(
+      [
+        {
+          operation: OPERATIONS.TYPE,
+          status: 'succeeded',
+          effect: 'changed',
+          pageId: 'tab_1',
+        },
+      ],
+      'failed',
+      {
+        code: 'PROVIDER_ERROR',
+        providerFailure: {
+          category: 'connection',
+          recovery: 'transient',
+          cause: 'response_stream_closed',
+          phase: 'streaming',
+        },
+        providerAttempts: {
+          total: 3,
+          automaticRetries: 2,
+          observedFailures: 3,
+          sameReason: true,
+        },
+        provider: { label: 'ChatGPT (Codex)', modelId: 'gpt-5.6-sol' },
+        retryCount: 2,
+      }
+    );
+
+    expect(outcome.detail).toContain(
+      'ChatGPT (Codex) using gpt-5.6-sol closed the response stream before the model finished'
+    );
+    expect(outcome.detail).toContain('Every attempt failed for the same reason');
+    expect(outcome.detail).toContain('1 earlier browser change remains');
+    expect(outcome.nextStep).toContain('Review the Agent tabs');
+    expect(outcome.nextStep).toContain('Check the connection');
   });
 
   test('retains approval counts without persisting the approval payload', () => {

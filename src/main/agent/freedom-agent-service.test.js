@@ -1885,11 +1885,12 @@ describe('FreedomAgentService', () => {
       status: 'failed',
       error: {
         code: AGENT_ERROR_CODES.PROVIDER_ERROR,
-        message:
-          'The model provider rejected the saved credentials. Reconnect it in Models before continuing.',
+        message: 'test using model_test rejected the saved credentials.',
         providerFailure: {
           category: 'authentication',
           recovery: 'provider_setup',
+          cause: 'credentials_rejected',
+          phase: 'request',
         },
       },
     });
@@ -1922,8 +1923,13 @@ describe('FreedomAgentService', () => {
           attempt: 1,
           maxAttempts: 2,
           delayMs: 2_000,
-          message: 'The model provider is rate-limiting requests.',
-          providerFailure: { category: 'rate_limited', recovery: 'transient' },
+          message: 'test using model_test rate-limited the request.',
+          providerFailure: expect.objectContaining({
+            category: 'rate_limited',
+            recovery: 'transient',
+            cause: 'rate_limited',
+            httpStatus: 429,
+          }),
         }),
         expect.objectContaining({ type: 'run_retry_recovered', attempt: 1 }),
       ])
@@ -1975,10 +1981,20 @@ describe('FreedomAgentService', () => {
       status: 'failed',
       error: {
         code: AGENT_ERROR_CODES.PROVIDER_ERROR,
-        message: 'The model provider remained unavailable. Freedom exhausted 2 automatic retries.',
+        message:
+          'test using model_test returned HTTP 503. Freedom made 3 attempts total: the initial request plus 2 automatic retries. Every attempt failed for the same reason.',
         providerFailure: {
           category: 'service_unavailable',
           recovery: 'transient',
+          cause: 'http_error',
+          phase: 'response',
+          httpStatus: 503,
+        },
+        providerAttempts: {
+          total: 3,
+          automaticRetries: 2,
+          observedFailures: 3,
+          sameReason: true,
         },
         retryCount: 2,
       },
@@ -2096,8 +2112,13 @@ describe('FreedomAgentService', () => {
       attempt: 1,
       maxAttempts: 2,
       delayMs: 500,
-      message: 'The model provider request failed for an unknown reason.',
-      providerFailure: { category: 'unknown', recovery: 'unknown' },
+      message: 'The model provider did not provide a usable failure reason.',
+      providerFailure: {
+        category: 'unknown',
+        recovery: 'unknown',
+        cause: 'unknown',
+        phase: 'unknown',
+      },
     });
     expect(normalizePiEvent({ type: 'auto_retry_end', success: true, attempt: 1 })).toEqual({
       type: 'run_retry_recovered',

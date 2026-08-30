@@ -19,6 +19,49 @@ const PROVIDER_FAILURE_RECOVERY = Object.freeze({
   UNKNOWN: 'unknown',
 });
 
+const PROVIDER_FAILURE_CAUSES = Object.freeze({
+  CREDENTIALS_REJECTED: 'credentials_rejected',
+  USAGE_LIMIT_REACHED: 'usage_limit_reached',
+  MODEL_UNAVAILABLE: 'model_unavailable',
+  REQUEST_TOO_LARGE: 'request_too_large',
+  RATE_LIMITED: 'rate_limited',
+  PROVIDER_UNAVAILABLE: 'provider_unavailable',
+  HTTP_ERROR: 'http_error',
+  TIMEOUT: 'timeout',
+  DNS_FAILED: 'dns_failed',
+  TLS_FAILED: 'tls_failed',
+  CONNECTION_REFUSED: 'connection_refused',
+  CONNECTION_RESET: 'connection_reset',
+  RESPONSE_STREAM_CLOSED: 'response_stream_closed',
+  NETWORK_UNAVAILABLE: 'network_unavailable',
+  UNKNOWN: 'unknown',
+});
+
+const PROVIDER_FAILURE_PHASES = Object.freeze({
+  CONNECTING: 'connecting',
+  WAITING: 'waiting',
+  STREAMING: 'streaming',
+  RESPONSE: 'response',
+  REQUEST: 'request',
+  UNKNOWN: 'unknown',
+});
+
+const SAFE_NETWORK_CODES = new Set([
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'ENETDOWN',
+  'ENETUNREACH',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'ETIMEDOUT',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_BODY_TIMEOUT',
+  'UND_ERR_SOCKET',
+]);
+const FAILURE_CAUSE_SET = new Set(Object.values(PROVIDER_FAILURE_CAUSES));
+const FAILURE_PHASE_SET = new Set(Object.values(PROVIDER_FAILURE_PHASES));
+
 const FAILURE_PRESENTATIONS = Object.freeze({
   [PROVIDER_FAILURE_CATEGORIES.AUTHENTICATION]: Object.freeze({
     recovery: PROVIDER_FAILURE_RECOVERY.PROVIDER_SETUP,
@@ -88,6 +131,151 @@ function failureText(value) {
   return '';
 }
 
+function combinedFailureText(value) {
+  const parts = [];
+  const seen = new Set();
+  let current = value;
+  for (let depth = 0; depth < 4 && current && !seen.has(current); depth += 1) {
+    if ((typeof current === 'object' || typeof current === 'function') && current !== null) {
+      seen.add(current);
+    }
+    const text = failureText(current);
+    if (text) parts.push(text.slice(0, 4_096));
+    current = typeof current === 'object' ? current.cause : null;
+  }
+  return parts.join(' · ').slice(0, 16_384);
+}
+
+function firstSafeInteger(value, keys) {
+  let current = value;
+  const seen = new Set();
+  for (let depth = 0; depth < 4 && current && !seen.has(current); depth += 1) {
+    if (typeof current !== 'object') break;
+    seen.add(current);
+    for (const key of keys) {
+      const candidate = Number(current[key]);
+      if (Number.isSafeInteger(candidate)) return candidate;
+    }
+    if (current.response && typeof current.response === 'object') {
+      for (const key of keys) {
+        const candidate = Number(current.response[key]);
+        if (Number.isSafeInteger(candidate)) return candidate;
+      }
+    }
+    current = current.cause;
+  }
+  return null;
+}
+
+function safeNetworkCode(value, text) {
+  let current = value;
+  const seen = new Set();
+  for (let depth = 0; depth < 4 && current && !seen.has(current); depth += 1) {
+    if (typeof current !== 'object') break;
+    seen.add(current);
+    const candidate = typeof current.code === 'string' ? current.code.toUpperCase() : '';
+    if (SAFE_NETWORK_CODES.has(candidate)) return candidate;
+    current = current.cause;
+  }
+  for (const code of SAFE_NETWORK_CODES) {
+    if (new RegExp(`(?:^|[^A-Z0-9_])${code}(?:$|[^A-Z0-9_])`, 'i').test(text)) return code;
+  }
+  return '';
+}
+
+function safeHttpStatus(value, text) {
+  const structured = firstSafeInteger(value, ['status', 'statusCode']);
+  if (structured >= 400 && structured <= 599) return structured;
+  const match = text.match(/(?:\bhttp(?:\/\d(?:\.\d)?)?\s*)?\b([45]\d{2}|529)\b/i);
+  return match ? Number(match[1]) : null;
+}
+
+function defaultCauseForCategory(category, httpStatus) {
+  if (category === PROVIDER_FAILURE_CATEGORIES.AUTHENTICATION) {
+    return PROVIDER_FAILURE_CAUSES.CREDENTIALS_REJECTED;
+  }
+  if (category === PROVIDER_FAILURE_CATEGORIES.USAGE_LIMIT) {
+    return PROVIDER_FAILURE_CAUSES.USAGE_LIMIT_REACHED;
+  }
+  if (category === PROVIDER_FAILURE_CATEGORIES.MODEL_UNAVAILABLE) {
+    return PROVIDER_FAILURE_CAUSES.MODEL_UNAVAILABLE;
+  }
+  if (category === PROVIDER_FAILURE_CATEGORIES.REQUEST_TOO_LARGE) {
+    return PROVIDER_FAILURE_CAUSES.REQUEST_TOO_LARGE;
+  }
+  if (category === PROVIDER_FAILURE_CATEGORIES.RATE_LIMITED) {
+    return PROVIDER_FAILURE_CAUSES.RATE_LIMITED;
+  }
+  if (category === PROVIDER_FAILURE_CATEGORIES.SERVICE_UNAVAILABLE) {
+    return httpStatus
+      ? PROVIDER_FAILURE_CAUSES.HTTP_ERROR
+      : PROVIDER_FAILURE_CAUSES.PROVIDER_UNAVAILABLE;
+  }
+  if (category === PROVIDER_FAILURE_CATEGORIES.TIMEOUT) {
+    return PROVIDER_FAILURE_CAUSES.TIMEOUT;
+  }
+  if (category === PROVIDER_FAILURE_CATEGORIES.CONNECTION) {
+    return PROVIDER_FAILURE_CAUSES.NETWORK_UNAVAILABLE;
+  }
+  return PROVIDER_FAILURE_CAUSES.UNKNOWN;
+}
+
+function classifyProviderCause(category, text, networkCode, httpStatus) {
+  if (networkCode === 'ENOTFOUND' || networkCode === 'EAI_AGAIN' || /getaddrinfo/i.test(text)) {
+    return PROVIDER_FAILURE_CAUSES.DNS_FAILED;
+  }
+  if (
+    /(?:tls|ssl|certificate|cert[_ -]?(?:has )?expired|self.?signed|unable to verify)/i.test(text)
+  ) {
+    return PROVIDER_FAILURE_CAUSES.TLS_FAILED;
+  }
+  if (networkCode === 'ECONNREFUSED' || /connection refused/i.test(text)) {
+    return PROVIDER_FAILURE_CAUSES.CONNECTION_REFUSED;
+  }
+  if (networkCode === 'ECONNRESET' || /(?:connection reset|socket hang up)/i.test(text)) {
+    return PROVIDER_FAILURE_CAUSES.CONNECTION_RESET;
+  }
+  if (
+    /(?:stream ended|ended without|terminated|other side closed|response stream|premature close|http2 request did not get a response)/i.test(
+      text
+    )
+  ) {
+    return PROVIDER_FAILURE_CAUSES.RESPONSE_STREAM_CLOSED;
+  }
+  return defaultCauseForCategory(category, httpStatus);
+}
+
+function phaseForCause(cause) {
+  if (
+    [
+      PROVIDER_FAILURE_CAUSES.DNS_FAILED,
+      PROVIDER_FAILURE_CAUSES.TLS_FAILED,
+      PROVIDER_FAILURE_CAUSES.CONNECTION_REFUSED,
+      PROVIDER_FAILURE_CAUSES.NETWORK_UNAVAILABLE,
+    ].includes(cause)
+  ) {
+    return PROVIDER_FAILURE_PHASES.CONNECTING;
+  }
+  if (cause === PROVIDER_FAILURE_CAUSES.TIMEOUT) return PROVIDER_FAILURE_PHASES.WAITING;
+  if (
+    [
+      PROVIDER_FAILURE_CAUSES.CONNECTION_RESET,
+      PROVIDER_FAILURE_CAUSES.RESPONSE_STREAM_CLOSED,
+    ].includes(cause)
+  ) {
+    return PROVIDER_FAILURE_PHASES.STREAMING;
+  }
+  if (
+    [PROVIDER_FAILURE_CAUSES.HTTP_ERROR, PROVIDER_FAILURE_CAUSES.PROVIDER_UNAVAILABLE].includes(
+      cause
+    )
+  ) {
+    return PROVIDER_FAILURE_PHASES.RESPONSE;
+  }
+  if (cause !== PROVIDER_FAILURE_CAUSES.UNKNOWN) return PROVIDER_FAILURE_PHASES.REQUEST;
+  return PROVIDER_FAILURE_PHASES.UNKNOWN;
+}
+
 function matches(value, pattern) {
   return pattern.test(value);
 }
@@ -95,12 +283,25 @@ function matches(value, pattern) {
 function classifyProviderFailure(value) {
   if (Object.values(PROVIDER_FAILURE_CATEGORIES).includes(value?.category)) {
     const presentation = FAILURE_PRESENTATIONS[value.category];
+    const httpStatus =
+      Number.isSafeInteger(value.httpStatus) && value.httpStatus >= 400 && value.httpStatus <= 599
+        ? value.httpStatus
+        : null;
+    const networkCode = SAFE_NETWORK_CODES.has(value.networkCode) ? value.networkCode : '';
+    const cause = FAILURE_CAUSE_SET.has(value.cause)
+      ? value.cause
+      : defaultCauseForCategory(value.category, httpStatus);
+    const phase = FAILURE_PHASE_SET.has(value.phase) ? value.phase : phaseForCause(cause);
     return Object.freeze({
       category: value.category,
       recovery: presentation.recovery,
+      cause,
+      phase,
+      ...(httpStatus && { httpStatus }),
+      ...(networkCode && { networkCode }),
     });
   }
-  const text = failureText(value);
+  const text = combinedFailureText(value);
   let category = PROVIDER_FAILURE_CATEGORIES.UNKNOWN;
 
   if (
@@ -152,9 +353,16 @@ function classifyProviderFailure(value) {
   }
 
   const presentation = FAILURE_PRESENTATIONS[category];
+  const httpStatus = safeHttpStatus(value, text);
+  const networkCode = safeNetworkCode(value, text);
+  const cause = classifyProviderCause(category, text, networkCode, httpStatus);
   return Object.freeze({
     category,
     recovery: presentation.recovery,
+    cause,
+    phase: phaseForCause(cause),
+    ...(httpStatus && { httpStatus }),
+    ...(networkCode && { networkCode }),
   });
 }
 
@@ -163,45 +371,188 @@ function normalizeRetryCount(value) {
 }
 
 function providerRetryCount(value) {
-  const match = failureText(value).match(/Freedom exhausted (\d{1,2}) automatic retr(?:y|ies)\./);
+  const match = failureText(value).match(
+    /(?:Freedom exhausted|initial request plus) (\d{1,2}) automatic retr(?:y|ies)\./i
+  );
   return match ? normalizeRetryCount(Number(match[1])) : 0;
 }
 
+function boundedDisplayString(value, maxLength) {
+  if (typeof value !== 'string') return '';
+  let result = '';
+  for (const character of value) {
+    const code = character.codePointAt(0);
+    result += code <= 0x1f || code === 0x7f ? ' ' : character;
+    if (result.length >= maxLength) break;
+  }
+  return result.trim().slice(0, maxLength);
+}
+
+function providerFailureFingerprint(value) {
+  const failure = classifyProviderFailure(value);
+  return JSON.stringify([
+    failure.category,
+    failure.cause,
+    failure.phase,
+    failure.httpStatus || null,
+    failure.networkCode || null,
+  ]);
+}
+
+function summarizeProviderAttempts(failures, retryCount) {
+  const automaticRetries = normalizeRetryCount(retryCount);
+  const total = Math.max(1, automaticRetries + 1);
+  const normalized = Array.isArray(failures)
+    ? failures.slice(-total).map((failure) => classifyProviderFailure(failure))
+    : [];
+  const observedFailures = Math.min(total, normalized.length);
+  const sameReason =
+    total > 1 && observedFailures === total
+      ? normalized.every(
+          (failure) => providerFailureFingerprint(failure) === providerFailureFingerprint(normalized[0])
+        )
+      : null;
+  return Object.freeze({
+    total,
+    automaticRetries,
+    observedFailures,
+    sameReason,
+  });
+}
+
+function normalizeAttemptSummary(value, retryCount) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return summarizeProviderAttempts([], retryCount);
+  }
+  const automaticRetries = normalizeRetryCount(value.automaticRetries ?? retryCount);
+  const total = Math.max(
+    1,
+    Math.min(
+      21,
+      Number.isSafeInteger(value.total) ? value.total : automaticRetries + 1
+    )
+  );
+  const observedFailures = Math.max(
+    0,
+    Math.min(
+      total,
+      Number.isSafeInteger(value.observedFailures) ? value.observedFailures : 0
+    )
+  );
+  return Object.freeze({
+    total,
+    automaticRetries,
+    observedFailures,
+    sameReason: typeof value.sameReason === 'boolean' ? value.sameReason : null,
+  });
+}
+
+function providerSubject(options = {}) {
+  const label = boundedDisplayString(options.providerLabel, 80);
+  const modelId = boundedDisplayString(options.modelId, 120);
+  if (label && modelId) return `${label} using ${modelId}`;
+  return label || modelId || 'The model provider';
+}
+
+function causePresentation(failure, options = {}) {
+  const subject = providerSubject(options);
+  switch (failure.cause) {
+    case PROVIDER_FAILURE_CAUSES.CREDENTIALS_REJECTED:
+      return `${subject} rejected the saved credentials.`;
+    case PROVIDER_FAILURE_CAUSES.USAGE_LIMIT_REACHED:
+      return `${subject} reported a usage or billing limit.`;
+    case PROVIDER_FAILURE_CAUSES.MODEL_UNAVAILABLE:
+      return `${subject} reported that the selected model is unavailable.`;
+    case PROVIDER_FAILURE_CAUSES.REQUEST_TOO_LARGE:
+      return `${subject} rejected the size of this request.`;
+    case PROVIDER_FAILURE_CAUSES.RATE_LIMITED:
+      return `${subject} rate-limited the request.`;
+    case PROVIDER_FAILURE_CAUSES.HTTP_ERROR:
+      return failure.httpStatus
+        ? `${subject} returned HTTP ${failure.httpStatus}.`
+        : `${subject} returned an unsuccessful response.`;
+    case PROVIDER_FAILURE_CAUSES.PROVIDER_UNAVAILABLE:
+      return `${subject} was temporarily unavailable.`;
+    case PROVIDER_FAILURE_CAUSES.TIMEOUT:
+      return `${subject} did not respond in time.`;
+    case PROVIDER_FAILURE_CAUSES.DNS_FAILED:
+      return `Freedom could not resolve the network address for ${subject}${failure.networkCode ? ` (${failure.networkCode})` : ''}.`;
+    case PROVIDER_FAILURE_CAUSES.TLS_FAILED:
+      return `Freedom could not establish a secure connection to ${subject}.`;
+    case PROVIDER_FAILURE_CAUSES.CONNECTION_REFUSED:
+      return `${subject} refused the connection${failure.networkCode ? ` (${failure.networkCode})` : ''}.`;
+    case PROVIDER_FAILURE_CAUSES.CONNECTION_RESET:
+      return `The connection to ${subject} was reset before the response finished${failure.networkCode ? ` (${failure.networkCode})` : ''}.`;
+    case PROVIDER_FAILURE_CAUSES.RESPONSE_STREAM_CLOSED:
+      return `${subject} closed the response stream before the model finished.`;
+    case PROVIDER_FAILURE_CAUSES.NETWORK_UNAVAILABLE:
+      return `Freedom could not reach ${subject}.`;
+    default:
+      return `${subject} did not provide a usable failure reason.`;
+  }
+}
+
+function attemptsPresentation(attempts) {
+  if (attempts.automaticRetries === 0) return '';
+  const retryWord = attempts.automaticRetries === 1 ? 'retry' : 'retries';
+  const sameReason =
+    attempts.sameReason === true
+      ? ' Every attempt failed for the same reason.'
+      : attempts.sameReason === false
+        ? ' The attempts failed for different reasons.'
+        : '';
+  return ` Freedom made ${attempts.total} attempts total: the initial request plus ${attempts.automaticRetries} automatic ${retryWord}.${sameReason}`;
+}
+
 function providerFailurePresentation(failure, options = {}) {
-  const category = Object.values(PROVIDER_FAILURE_CATEGORIES).includes(failure?.category)
-    ? failure.category
-    : PROVIDER_FAILURE_CATEGORIES.UNKNOWN;
+  const normalizedFailure = classifyProviderFailure(failure);
+  const category = normalizedFailure.category;
   const presentation = FAILURE_PRESENTATIONS[category];
   const retryCount = normalizeRetryCount(options.retryCount);
-  const retrySuffix = retryCount
-    ? ` Freedom exhausted ${retryCount} automatic ${retryCount === 1 ? 'retry' : 'retries'}.`
-    : '';
+  const attempts = normalizeAttemptSummary(options.attempts, retryCount);
+  const reason = causePresentation(normalizedFailure, options);
   return Object.freeze({
     category,
     recovery: presentation.recovery,
-    retryMessage: presentation.retryMessage,
-    terminalMessage: `${presentation.terminalMessage}${retrySuffix}`,
+    reason,
+    retryMessage: reason,
+    terminalMessage: `${reason}${attemptsPresentation(attempts)}`,
     nextStep: presentation.nextStep,
+    attempts,
   });
 }
 
 function createProviderTerminalError(value, options = {}) {
   const failure = classifyProviderFailure(value);
   const retryCount = normalizeRetryCount(options.retryCount);
-  const presentation = providerFailurePresentation(failure, { retryCount });
+  const attempts = summarizeProviderAttempts(options.failures, retryCount);
+  const presentation = providerFailurePresentation(failure, {
+    retryCount,
+    attempts,
+    providerLabel: options.providerLabel,
+    modelId: options.modelId,
+  });
   return Object.freeze({
     code: 'PROVIDER_ERROR',
     message: presentation.terminalMessage,
     providerFailure: failure,
+    providerAttempts: attempts,
+    provider: Object.freeze({
+      label: providerSubject({ providerLabel: options.providerLabel }),
+      modelId: boundedDisplayString(options.modelId, 120),
+    }),
     ...(retryCount && { retryCount }),
   });
 }
 
 module.exports = {
   PROVIDER_FAILURE_CATEGORIES,
+  PROVIDER_FAILURE_CAUSES,
+  PROVIDER_FAILURE_PHASES,
   PROVIDER_FAILURE_RECOVERY,
   classifyProviderFailure,
   createProviderTerminalError,
   providerFailurePresentation,
   providerRetryCount,
+  summarizeProviderAttempts,
 };

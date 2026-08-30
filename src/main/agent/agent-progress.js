@@ -1020,7 +1020,12 @@ function buildAgentOutcome(activity, status, error) {
     failureCode === 'PROVIDER_ERROR'
       ? providerFailurePresentation(
           classifyProviderFailure(error?.providerFailure || error?.message),
-          { retryCount: error?.retryCount || providerRetryCount(error?.message) }
+          {
+            retryCount: error?.retryCount || providerRetryCount(error?.message),
+            attempts: error?.providerAttempts,
+            providerLabel: error?.provider?.label,
+            modelId: error?.provider?.modelId,
+          }
         )
       : null;
   const pendingNodeRequest = nodeRequests.findLast((request) => request.state === 'in_flight');
@@ -1054,7 +1059,7 @@ function buildAgentOutcome(activity, status, error) {
     detail: `${failureExplanation} ${browserState}${destinationNote}`,
     destinations,
     nextStep: retryNeedsReview
-      ? 'Review the Agent tabs, then tell Agent what to continue or redo.'
+      ? `Review the Agent tabs, then tell Agent what to continue or redo. ${providerPresentation?.nextStep || ''}`.trim()
       : providerPresentation?.nextStep || 'You can safely try the task again.',
     retrySafety: retryNeedsReview ? 'review' : 'safe',
     counts,

@@ -246,7 +246,7 @@ function validateStartOptions(options) {
   };
 }
 
-function normalizePiEvent(event, toolOutcome) {
+function normalizePiEvent(event, toolOutcome, provider = {}) {
   if (!event || typeof event !== 'object') return null;
   if (
     (event.type === 'tool_execution_start' || event.type === 'tool_execution_end') &&
@@ -316,7 +316,10 @@ function normalizePiEvent(event, toolOutcome) {
       maxAttempts: event.maxAttempts,
       delayMs: event.delayMs,
       providerFailure,
-      message: providerFailurePresentation(providerFailure).retryMessage,
+      message: providerFailurePresentation(providerFailure, {
+        providerLabel: provider.label,
+        modelId: provider.modelId,
+      }).retryMessage,
     };
   }
   if (event.type === 'auto_retry_end' && event.success === true) {
@@ -1008,6 +1011,7 @@ class FreedomAgentService {
       failure: null,
       lastAssistant: null,
       providerFailure: null,
+      providerFailures: [],
       providerRetryCount: 0,
       toolOutcomes: new Map(),
       pendingApproval: null,
@@ -1511,6 +1515,9 @@ class FreedomAgentService {
         status = 'failed';
         error = createProviderTerminalError(run.providerFailure, {
           retryCount: run.providerRetryCount,
+          failures: [...run.providerFailures, run.providerFailure],
+          providerLabel: run.providerLabel,
+          modelId: run.modelId,
         });
       } else if (run.lastAssistant?.stopReason === 'length') {
         status = 'failed';
@@ -1531,6 +1538,9 @@ class FreedomAgentService {
         status = 'failed';
         error = createProviderTerminalError(caughtError, {
           retryCount: run.providerRetryCount,
+          failures: [...run.providerFailures, caughtError],
+          providerLabel: run.providerLabel,
+          modelId: run.modelId,
         });
       }
     }
@@ -1576,14 +1586,20 @@ class FreedomAgentService {
 
     const toolCallId = event?.type === 'tool_execution_end' ? String(event.toolCallId) : null;
     const toolOutcome = toolCallId ? run.toolOutcomes.get(toolCallId) : undefined;
-    const normalized = normalizePiEvent(event, toolOutcome);
+    const normalized = normalizePiEvent(event, toolOutcome, {
+      label: run.providerLabel,
+      modelId: run.modelId,
+    });
     if (toolCallId) run.toolOutcomes.delete(toolCallId);
     if (!normalized) return;
     if (normalized.type === 'run_retrying') {
       run.providerFailure = normalized.providerFailure;
+      run.providerFailures.push(normalized.providerFailure);
+      if (run.providerFailures.length > 20) run.providerFailures.shift();
       run.providerRetryCount = Math.max(run.providerRetryCount, normalized.attempt);
     } else if (normalized.type === 'run_retry_recovered') {
       run.providerFailure = null;
+      run.providerFailures.length = 0;
       run.providerRetryCount = 0;
     } else if (normalized.type === 'assistant_text_delta') {
       run.assistantText += normalized.text;

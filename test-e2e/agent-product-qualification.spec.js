@@ -237,6 +237,21 @@ async function handleCompletion(request, response) {
     );
     return;
   }
+  if (
+    hasUserMarker(messages, 'PRODUCT_PROVIDER_TERMINAL_AFTER_CHANGES') &&
+    toolResults.length >= 3
+  ) {
+    response.writeHead(503, { 'Content-Type': 'application/json' });
+    response.end(
+      JSON.stringify({
+        error: {
+          message: 'Persistent fixture outage with provider-private-detail',
+          type: 'service_unavailable',
+        },
+      })
+    );
+    return;
+  }
   response.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
@@ -286,6 +301,26 @@ async function handleCompletion(request, response) {
 
   if (hasUserMarker(messages, 'PRODUCT_PROVIDER_RECOVERY')) {
     emitFinal(response, 'The model connection recovered and the task continued.');
+    return;
+  }
+
+  if (hasUserMarker(messages, 'PRODUCT_PROVIDER_TERMINAL_AFTER_CHANGES')) {
+    switch (toolResults.length) {
+      case 0:
+        emitToolCall(response, 1, 'browser_snapshot', {});
+        break;
+      case 1:
+        emitToolCall(response, 2, 'browser_type', {
+          ref: requireRef(elements, 'Customer name'),
+          text: 'Freedom test customer',
+        });
+        break;
+      default:
+        emitToolCall(response, 3, 'browser_type', {
+          ref: requireRef(elements, 'Email'),
+          text: 'fixture@example.test',
+        });
+    }
     return;
   }
 
@@ -921,7 +956,7 @@ test('provider recovery: transient failures are explained, retried, and resumed'
     timeout: 5_000,
   });
   await expect(window.locator('#agent-run-message')).toContainText(
-    'The model provider is temporarily unavailable. Retrying automatically'
+    `Ollama using ${MODEL_ID} returned HTTP 503. Retrying automatically`
   );
   await expect(window.locator('#agent-run-message')).not.toContainText('provider-private-detail');
   await expect(window.locator('.agent-live-status')).toContainText('Reconnecting · attempt 1 of 2');
@@ -936,6 +971,63 @@ test('provider recovery: transient failures are explained, retried, and resumed'
   );
   expect(result.assistantOutput).toContain('connection recovered');
   expect(result.modelRequests).toBe(3);
+});
+
+test('provider failure: terminal reason and attempt history survive partial browser work', async ({
+  window,
+  harness,
+}) => {
+  await prepareTask(
+    window,
+    harness,
+    URLS.richForm,
+    `<!doctype html><title>Provider failure fixture</title><main>
+      <h1>Provider failure fixture</h1>
+      <label>Customer name <input aria-label="Customer name" /></label>
+      <label>Email <input aria-label="Email" /></label>
+    </main>`
+  );
+  await window
+    .locator('#agent-prompt')
+    .fill('PRODUCT_PROVIDER_TERMINAL_AFTER_CHANGES: fill the test fields.');
+  await window.locator('#agent-run').click();
+
+  await expect(window.locator('#agent-run-status')).toHaveText('Provider issue', {
+    timeout: 20_000,
+  });
+  await expect(window.locator('#agent-run-message')).toContainText(
+    `Ollama using ${MODEL_ID} returned HTTP 503.`
+  );
+  await expect(window.locator('#agent-run-message')).not.toContainText('provider-private-detail');
+
+  const outcome = window.locator('.agent-turn-outcome').last();
+  await expect(outcome).toContainText(`Ollama using ${MODEL_ID} returned HTTP 503.`);
+  await expect(outcome).toContainText('3 attempts total');
+  await expect(outcome).toContainText('2 automatic retries');
+  await expect(outcome).toContainText('Every attempt failed for the same reason');
+  await expect(outcome).toContainText('2 earlier browser changes remain in place');
+  await expect(outcome).toContainText('Review the Agent tabs');
+  await expect(outcome).toContainText('Wait a moment');
+  await expect(outcome).not.toContainText('provider-private-detail');
+
+  const fieldValues = await window.evaluate(() => {
+    const webview = document.querySelector('webview:not(.hidden)');
+    return webview.executeJavaScript(`({
+      name: document.querySelector('[aria-label="Customer name"]')?.value,
+      email: document.querySelector('[aria-label="Email"]')?.value,
+    })`);
+  });
+  expect(fieldValues).toEqual({
+    name: 'Freedom test customer',
+    email: 'fixture@example.test',
+  });
+
+  const result = await recordQualification(
+    window,
+    'provider-terminal-after-browser-changes',
+    CLASSIFICATION.PASS
+  );
+  expect(result.modelRequests).toBe(6);
 });
 
 test('consequential-action mode proceeds ordinarily and asks before a meaningful commitment', async ({
