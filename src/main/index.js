@@ -450,6 +450,8 @@ async function bootstrap() {
       desktopBindingForAutomationTab,
       subscribeTabLifecycle: subscribeAutomationTabLifecycle,
       cancelAgentDownloads,
+      dialog,
+      getOwnerWindow: (webContents) => BrowserWindow.fromWebContents(webContents),
       isTrustedSender: (sender) =>
         !isPrivateWebContents(sender) &&
         getMainWindows().some((window) => window.webContents === sender),

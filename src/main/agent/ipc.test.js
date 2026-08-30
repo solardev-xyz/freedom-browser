@@ -23,6 +23,7 @@ function createSender() {
   const sender = new EventEmitter();
   sender.send = jest.fn();
   sender.isDestroyed = jest.fn(() => false);
+  sender.id = 41;
   return sender;
 }
 
@@ -113,6 +114,12 @@ function register(overrides = {}) {
   };
   const openExternal = jest.fn(async () => {});
   const isTrustedSender = jest.fn((candidate) => candidate === sender);
+  const attachmentStore = {
+    pickFiles: jest.fn(async () => []),
+    pickFolder: jest.fn(async () => []),
+    removeStaged: jest.fn(() => true),
+    clearStaged: jest.fn(),
+  };
   const dispose = registerFreedomAgentIpc({
     ipcMain,
     service,
@@ -123,6 +130,8 @@ function register(overrides = {}) {
     providerResolver,
     isTrustedSender,
     openExternal,
+    attachmentStore,
+    getOwnerWindow: jest.fn(() => null),
     ...overrides,
   });
   return {
@@ -137,6 +146,7 @@ function register(overrides = {}) {
     providerResolver,
     isTrustedSender,
     openExternal,
+    attachmentStore,
     dispose,
   };
 }
@@ -171,6 +181,70 @@ describe('Freedom agent IPC', () => {
       ctx.sender,
       'https://fresh.example/'
     );
+  });
+
+  test('binds opaque attachment selections to the trusted sender that picked them', async () => {
+    const selectionId = `selection_${'a'.repeat(20)}`;
+    const ctx = register();
+    ctx.attachmentStore.pickFiles.mockResolvedValue([
+      { selectionId, kind: 'file', name: 'notes.txt', category: 'text', bytes: 12 },
+    ]);
+
+    await expect(
+      ctx.ipcMain.handlers.get(IPC.AGENT_ATTACHMENTS_PICK_FILES)({ sender: ctx.sender })
+    ).resolves.toEqual({
+      ok: true,
+      selections: [
+        { selectionId, kind: 'file', name: 'notes.txt', category: 'text', bytes: 12 },
+      ],
+    });
+    expect(ctx.attachmentStore.pickFiles).toHaveBeenCalledWith({
+      ownerId: '41',
+      ownerWindow: null,
+    });
+
+    await ctx.ipcMain.handlers.get(IPC.AGENT_START)(
+      { sender: ctx.sender },
+      {
+        rendererTabId: 7,
+        prompt: 'Review my notes',
+        attachmentIds: [selectionId],
+      }
+    );
+    expect(ctx.service.start).toHaveBeenCalledWith(
+      expect.objectContaining({
+        attachmentIds: [selectionId],
+        attachmentOwnerId: '41',
+      })
+    );
+  });
+
+  test('does not expose attachment pickers or staged selections to untrusted renderers', async () => {
+    const ctx = register();
+    const selectionId = `selection_${'b'.repeat(20)}`;
+
+    await expect(
+      ctx.ipcMain.handlers.get(IPC.AGENT_ATTACHMENTS_PICK_FOLDER)({
+        sender: ctx.otherSender,
+      })
+    ).resolves.toMatchObject({ ok: false, error: { code: AGENT_IPC_ERROR_CODES.NOT_OWNER } });
+    expect(
+      ctx.ipcMain.handlers.get(IPC.AGENT_ATTACHMENTS_REMOVE)(
+        { sender: ctx.otherSender },
+        { selectionId }
+      )
+    ).toMatchObject({ ok: false, error: { code: AGENT_IPC_ERROR_CODES.NOT_OWNER } });
+    expect(ctx.attachmentStore.pickFolder).not.toHaveBeenCalled();
+    expect(ctx.attachmentStore.removeStaged).not.toHaveBeenCalled();
+  });
+
+  test('forgets pending attachment paths when their chrome renderer closes', async () => {
+    const ctx = register();
+    await ctx.ipcMain.handlers.get(IPC.AGENT_ATTACHMENTS_PICK_FILES)({ sender: ctx.sender });
+
+    ctx.sender.emit('destroyed');
+
+    expect(ctx.attachmentStore.clearStaged).toHaveBeenCalledWith('41');
   });
 
   test('starts an empty workspace without binding or exposing an existing user tab', async () => {

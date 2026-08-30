@@ -14,7 +14,7 @@ const {
 } = require('./agent-progress');
 
 const DB_FILE = 'agent-history.sqlite';
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 const MAX_TITLE_LENGTH = 120;
 const MAX_MODEL_FIELD_LENGTH = 240;
 const SESSION_STATUSES = new Set(['running', 'ready', 'interrupted', 'failed', 'cancelled']);
@@ -114,6 +114,33 @@ function normalizeGuidance(guidance) {
     .filter((item) => item.guidanceId && item.text);
 }
 
+function normalizeAttachments(attachments) {
+  if (!Array.isArray(attachments)) return [];
+  return attachments
+    .filter((item) => item && typeof item === 'object')
+    .slice(0, 10)
+    .map((item) => {
+      const kind = item.kind === 'folder' ? 'folder' : item.kind === 'file' ? 'file' : null;
+      const resourceId = optionalString(item.resourceId, 160);
+      const name = optionalString(item.name, 240);
+      if (!kind || !resourceId || !name) return null;
+      return {
+        resourceId,
+        kind,
+        name,
+        ...(Number.isSafeInteger(item.bytes) && item.bytes >= 0 ? { bytes: item.bytes } : {}),
+        ...(typeof item.mimeType === 'string' && item.mimeType.length <= 160
+          ? { mimeType: item.mimeType }
+          : {}),
+        ...(typeof item.category === 'string' && item.category.length <= 40
+          ? { category: item.category }
+          : {}),
+        available: item.available !== false,
+      };
+    })
+    .filter(Boolean);
+}
+
 function rowToSession(row) {
   if (!row) return null;
   return {
@@ -148,6 +175,7 @@ function rowToTurn(row) {
     startedAt: row.started_at,
     ...(Number.isFinite(row.duration_ms) && { durationMs: row.duration_ms }),
     activity: normalizeActivity(safeJsonParse(row.activity_json, [])),
+    attachments: normalizeAttachments(safeJsonParse(row.attachments_json, [])),
     guidance,
     ...(error && { error }),
   };
@@ -223,6 +251,13 @@ class AgentSessionHistoryStore {
         ALTER TABLE agent_turns
           ADD COLUMN guidance_json TEXT NOT NULL DEFAULT '[]';
       `);
+      this.db.pragma('user_version = 2');
+    }
+    if (version < 3) {
+      this.db.exec(`
+        ALTER TABLE agent_turns
+          ADD COLUMN attachments_json TEXT NOT NULL DEFAULT '[]';
+      `);
       this.db.pragma(`user_version = ${SCHEMA_VERSION}`);
     }
   }
@@ -240,8 +275,8 @@ class AgentSessionHistoryStore {
       insertTurn: db.prepare(`
         INSERT INTO agent_turns (
           id, session_id, position, user_text, assistant_text, status,
-          started_at, duration_ms, activity_json, error_code, error_message
-        ) VALUES (?, ?, ?, ?, '', 'running', ?, NULL, '[]', NULL, NULL)
+          started_at, duration_ms, activity_json, attachments_json, error_code, error_message
+        ) VALUES (?, ?, ?, ?, '', 'running', ?, NULL, '[]', ?, NULL, NULL)
       `),
       finishTurn: db.prepare(`
         UPDATE agent_turns SET
@@ -320,7 +355,15 @@ class AgentSessionHistoryStore {
       Number.isSafeInteger(entry.position) && entry.position >= 0
         ? entry.position
         : this.#getStatements().getTurns.all(sessionId).length;
-    this.#getStatements().insertTurn.run(runId, sessionId, position, userText, startedAt);
+    const attachments = normalizeAttachments(entry?.attachments);
+    this.#getStatements().insertTurn.run(
+      runId,
+      sessionId,
+      position,
+      userText,
+      startedAt,
+      JSON.stringify(attachments)
+    );
     this.#getStatements().touchSession.run('running', startedAt, sessionId);
   }
 
@@ -420,6 +463,7 @@ module.exports = {
   MAX_TITLE_LENGTH,
   SCHEMA_VERSION,
   normalizeActivity,
+  normalizeAttachments,
   normalizeGuidance,
   rowToSession,
   rowToTurn,

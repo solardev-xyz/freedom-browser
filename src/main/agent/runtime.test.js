@@ -6,6 +6,7 @@ jest.mock('./provider-resolver');
 jest.mock('./provider-store');
 jest.mock('./session-history-store');
 jest.mock('./node-operation-store');
+jest.mock('./conversation-attachment-store');
 jest.mock('./agent-wallet-controller');
 jest.mock('../node-status-controller');
 jest.mock('../node-request-controller');
@@ -18,6 +19,7 @@ const { AgentProviderResolver } = require('./provider-resolver');
 const { AgentProviderStore } = require('./provider-store');
 const { AgentSessionHistoryStore } = require('./session-history-store');
 const { AgentNodeOperationStore } = require('./node-operation-store');
+const { ConversationAttachmentStore } = require('./conversation-attachment-store');
 const { AgentWalletController } = require('./agent-wallet-controller');
 const { NodeStatusController } = require('../node-status-controller');
 const { NodeRequestController } = require('../node-request-controller');
@@ -42,6 +44,7 @@ describe('Freedom agent runtime', () => {
       markStaleInFlightAsUncertain: jest.fn(),
       close: jest.fn(() => calls.push('node-operations')),
     };
+    const attachmentStore = { dispose: jest.fn(() => calls.push('attachments')) };
     const service = { dispose: jest.fn(async () => calls.push('service')) };
     const walletController = {};
     const nodeController = {};
@@ -53,6 +56,7 @@ describe('Freedom agent runtime', () => {
     AgentProviderResolver.mockImplementation(() => providerResolver);
     AgentSessionHistoryStore.mockImplementation(() => historyStore);
     AgentNodeOperationStore.mockImplementation(() => nodeOperationStore);
+    ConversationAttachmentStore.mockImplementation(() => attachmentStore);
     AgentWalletController.mockImplementation(() => walletController);
     NodeStatusController.mockImplementation(() => nodeController);
     NodeRequestController.mockImplementation(() => nodeRequestController);
@@ -63,6 +67,7 @@ describe('Freedom agent runtime', () => {
     const options = {
       ipcMain: {},
       safeStorage: {},
+      dialog: {},
       profile: { id: 'work', userDataDir: '/profiles/work' },
       dataDir: '/profiles/work/agent',
       controller: {
@@ -79,6 +84,7 @@ describe('Freedom agent runtime', () => {
       subscribeTabLifecycle: jest.fn(() => jest.fn()),
       isTrustedSender: jest.fn(),
       openExternal: jest.fn(),
+      getOwnerWindow: jest.fn(),
       walletControllerOptions: { requestTimeoutMs: 250 },
       nodeControllerOptions: { fixture: true },
       nodeRequestControllerOptions: { timeoutMs: 250 },
@@ -102,6 +108,10 @@ describe('Freedom agent runtime', () => {
       userDataDir: options.profile.userDataDir,
     });
     expect(historyStore.markStaleRunningAsInterrupted).toHaveBeenCalledTimes(1);
+    expect(ConversationAttachmentStore).toHaveBeenCalledWith({
+      userDataDir: options.profile.userDataDir,
+      dialog: options.dialog,
+    });
     expect(AgentNodeOperationStore).toHaveBeenCalledWith({
       userDataDir: options.profile.userDataDir,
     });
@@ -137,6 +147,7 @@ describe('Freedom agent runtime', () => {
       historyStore,
       cancelAgentDownloads: undefined,
       walletController,
+      attachmentStore,
     });
     expect(registerFreedomAgentIpc).toHaveBeenCalledWith({
       ipcMain: options.ipcMain,
@@ -148,6 +159,8 @@ describe('Freedom agent runtime', () => {
       createAutomationPageForHost: options.createAutomationPageForHost,
       isTrustedSender: options.isTrustedSender,
       openExternal: options.openExternal,
+      attachmentStore,
+      getOwnerWindow: options.getOwnerWindow,
     });
 
     const resolveModel = registerFreedomAgentIpc.mock.calls[0][0].resolveModel;
@@ -159,6 +172,7 @@ describe('Freedom agent runtime', () => {
     expect(unregisterIpc).toHaveBeenCalledTimes(1);
     expect(service.dispose).toHaveBeenCalledTimes(1);
     expect(nodeRequestController.dispose).toHaveBeenCalledTimes(1);
+    expect(attachmentStore.dispose).toHaveBeenCalledTimes(1);
     expect(historyStore.close).toHaveBeenCalledTimes(1);
     expect(nodeOperationStore.close).toHaveBeenCalledTimes(1);
     expect(options.controller.setWalletTransferController).toHaveBeenLastCalledWith(null);
@@ -166,6 +180,13 @@ describe('Freedom agent runtime', () => {
     expect(options.controller.setNodeRequestController).toHaveBeenLastCalledWith(null);
     expect(options.controller.setNodeLifecycleController).toHaveBeenLastCalledWith(null);
     expect(options.controller.setDiagnosticsController).toHaveBeenLastCalledWith(null);
-    expect(calls).toEqual(['ipc', 'service', 'node-requests', 'history', 'node-operations']);
+    expect(calls).toEqual([
+      'ipc',
+      'service',
+      'node-requests',
+      'attachments',
+      'history',
+      'node-operations',
+    ]);
   });
 });

@@ -56,6 +56,8 @@ let dismissedPageContextTabId = null;
 let pendingPromptText = '';
 let currentRunId = null;
 let currentRunStatus = 'idle';
+let pendingAttachments = [];
+let conversationResources = [];
 let lastFinishedRunId = null;
 let stopRequestedRunId = null;
 let pendingApproval = null;
@@ -140,7 +142,10 @@ function pageContextLabel(tab) {
 
 function renderPageContext() {
   const tab = pageContextTab();
-  elements.pageContexts.hidden = !tab;
+  elements.pageContext.hidden = !tab;
+  renderAttachmentContexts();
+  elements.pageContexts.hidden =
+    !tab && pendingAttachments.length === 0 && !hasFolderResources();
   if (!tab) return;
   const label = pageContextLabel(tab);
   elements.pageContextLabel.textContent = label;
@@ -154,6 +159,93 @@ function renderPageContext() {
   elements.pageContext.title = currentConversationId
     ? 'Shared with this conversation'
     : 'Remove current page';
+}
+
+function formatAttachmentBytes(bytes) {
+  const value = Math.max(0, Number(bytes) || 0);
+  if (value < 1_024) return `${value} B`;
+  if (value < 1_048_576) return `${(value / 1_024).toFixed(value < 10_240 ? 1 : 0)} KB`;
+  return `${(value / 1_048_576).toFixed(value < 10_485_760 ? 1 : 0)} MB`;
+}
+
+function hasFolderResources() {
+  return conversationResources.some((resource) => resource?.kind === 'folder');
+}
+
+function attachmentLabel(resource) {
+  if (resource.kind === 'folder') {
+    return `${resource.name || 'Folder'} · ${resource.available === false ? 're-add after restart' : 'read only'}`;
+  }
+  return `${resource.name || 'Attachment'}${Number.isSafeInteger(resource.bytes) ? ` · ${formatAttachmentBytes(resource.bytes)}` : ''}`;
+}
+
+function renderAttachmentContexts() {
+  const chips = [];
+  for (const resource of pendingAttachments) {
+    const chip = document.createElement('div');
+    chip.className = 'agent-attachment-chip';
+    chip.dataset.selectionId = resource.selectionId;
+    const label = document.createElement('span');
+    label.textContent = attachmentLabel(resource);
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.textContent = '×';
+    remove.setAttribute('aria-label', `Remove ${resource.name || 'attachment'}`);
+    remove.addEventListener('click', () => removePendingAttachment(resource.selectionId));
+    chip.appendChild(label);
+    chip.appendChild(remove);
+    chips.push(chip);
+  }
+  for (const resource of conversationResources.filter((item) => item?.kind === 'folder')) {
+    const chip = document.createElement('div');
+    chip.className = 'agent-attachment-chip conversation-resource';
+    const label = document.createElement('span');
+    label.textContent = attachmentLabel(resource);
+    chip.appendChild(label);
+    chips.push(chip);
+  }
+  elements.attachmentContexts.replaceChildren(...chips);
+}
+
+async function addAttachments(kind) {
+  if (currentRunStatus !== 'idle') return;
+  closeComposerPopovers();
+  setMessage(elements.runMessage, kind === 'folder' ? 'Choose a folder…' : 'Choose files…');
+  try {
+    const response =
+      kind === 'folder'
+        ? await window.electronAPI.pickAgentFolder()
+        : await window.electronAPI.pickAgentFiles();
+    if (!response?.ok) {
+      setMessage(elements.runMessage, responseMessage(response, 'Could not add attachment'), true);
+      return;
+    }
+    for (const selection of Array.isArray(response.selections) ? response.selections : []) {
+      if (!pendingAttachments.some((item) => item.selectionId === selection.selectionId)) {
+        pendingAttachments.push(selection);
+      }
+    }
+    setMessage(elements.runMessage);
+    renderPageContext();
+    focusComposer();
+  } catch {
+    setMessage(elements.runMessage, 'Could not add attachment', true);
+  }
+}
+
+async function removePendingAttachment(selectionId) {
+  if (!pendingAttachments.some((item) => item.selectionId === selectionId)) return;
+  try {
+    const response = await window.electronAPI.removeAgentAttachment(selectionId);
+    if (!response?.ok) {
+      setMessage(elements.runMessage, responseMessage(response, 'Could not remove attachment'), true);
+      return;
+    }
+    pendingAttachments = pendingAttachments.filter((item) => item.selectionId !== selectionId);
+    renderPageContext();
+  } catch {
+    setMessage(elements.runMessage, 'Could not remove attachment', true);
+  }
 }
 
 function providerPrivacyMessage(providerId) {
@@ -224,8 +316,10 @@ function configuredModels() {
 function closeComposerPopovers() {
   elements.modelMenu.hidden = true;
   elements.approvalModePopover.hidden = true;
+  elements.attachmentMenu.hidden = true;
   elements.modelMenuButton.setAttribute('aria-expanded', 'false');
   elements.approvalModeButton.setAttribute('aria-expanded', 'false');
+  elements.attachmentButton.setAttribute('aria-expanded', 'false');
 }
 
 function setApprovalMode(nextMode, options = {}) {
@@ -1027,6 +1121,7 @@ function setRunState(status, label) {
         : 'Message Agent…';
   elements.modelMenuButton.disabled = active || Boolean(currentConversationId);
   elements.approvalModeButton.disabled = active || Boolean(currentConversationId);
+  elements.attachmentButton.disabled = status !== 'idle' || Boolean(pendingApproval);
   elements.newChat.hidden = !currentConversationId;
   elements.newChat.disabled = active;
   elements.runStatus.textContent = label;
@@ -1086,6 +1181,19 @@ function createTurnView(turn) {
   userMessage.className = 'agent-user-message';
   userMessage.textContent = turn.userText || '';
   userRow.appendChild(userMessage);
+  if (Array.isArray(turn.attachments) && turn.attachments.length) {
+    const attachments = document.createElement('div');
+    attachments.className = 'agent-user-attachments';
+    for (const resource of turn.attachments) {
+      const chip = document.createElement('span');
+      chip.className = 'agent-message-attachment';
+      const label = document.createElement('span');
+      label.textContent = resource.name || 'Attachment';
+      chip.appendChild(label);
+      attachments.appendChild(chip);
+    }
+    userRow.appendChild(attachments);
+  }
 
   const assistantRow = document.createElement('div');
   assistantRow.className = 'agent-message-row assistant';
@@ -1896,12 +2004,14 @@ function applyReadyConversationState(state) {
     : null;
   dismissedPageContextTabId = null;
   const transcript = Array.isArray(state.transcript) ? state.transcript : [];
+  conversationResources = Array.isArray(state.resources) ? state.resources : [];
   setConversationTitle(state.title || transcript[0]?.userText || 'Current task');
   restoreTranscript(transcript);
   setAgentControlledTab(null);
   setRunState('idle', 'Ready');
   renderTaskPages();
   renderSessionSidebar();
+  renderPageContext();
   return true;
 }
 
@@ -2004,6 +2114,7 @@ function applyConversationCleared() {
   conversationRendererTabId = null;
   dismissedPageContextTabId = null;
   pendingPromptText = '';
+  conversationResources = [];
   currentRunId = null;
   lastFinishedRunId = null;
   stopRequestedRunId = null;
@@ -2052,7 +2163,17 @@ function handleAgentEvent(event) {
         runId: event.runId,
         userText: typeof event.userText === 'string' ? event.userText : pendingPromptText,
         assistantText: '',
+        attachments: Array.isArray(event.attachments) ? event.attachments : [],
       });
+    }
+    if (Array.isArray(event.attachments) && event.attachments.length) {
+      const attachedIds = new Set(event.attachments.map((item) => item.resourceId));
+      conversationResources = [
+        ...conversationResources.filter((item) => !attachedIds.has(item.resourceId)),
+        ...event.attachments,
+      ];
+      pendingAttachments = [];
+      renderPageContext();
     }
     pendingPromptText = '';
     setRunState('running', 'Running');
@@ -2246,7 +2367,10 @@ async function startRun() {
   setRunState('starting', 'Starting');
   setMessage(elements.runMessage);
   try {
-    const response = await window.electronAPI.startAgent(rendererTabId, prompt, approvalMode);
+    const attachmentIds = pendingAttachments.map((attachment) => attachment.selectionId);
+    const response = attachmentIds.length
+      ? await window.electronAPI.startAgent(rendererTabId, prompt, approvalMode, attachmentIds)
+      : await window.electronAPI.startAgent(rendererTabId, prompt, approvalMode);
     if (!response?.ok) {
       currentRunId = null;
       if (!currentConversationId) {
@@ -2608,6 +2732,11 @@ export function initAgentUi(options = {}) {
     approvalModeEvery: byId('agent-approval-mode-every'),
     approvalModeSensitive: byId('agent-approval-mode-sensitive'),
     approvalModeAllow: byId('agent-approval-mode-allow'),
+    attachmentButton: byId('agent-attachment-button'),
+    attachmentMenu: byId('agent-attachment-menu'),
+    attachFiles: byId('agent-attach-files'),
+    attachFolder: byId('agent-attach-folder'),
+    attachmentContexts: byId('agent-attachment-contexts'),
   };
   if (Object.values(elements).some((element) => !element)) return;
   getActiveTab = typeof options.getActiveTab === 'function' ? options.getActiveTab : () => null;
@@ -2670,6 +2799,14 @@ export function initAgentUi(options = {}) {
   elements.loginProvider.addEventListener('click', loginSubscriptionProvider);
   elements.cancelProviderLogin.addEventListener('click', cancelProviderLogin);
   elements.run.addEventListener('click', submitComposer);
+  elements.attachmentButton.addEventListener('click', () => {
+    const opening = elements.attachmentMenu.hidden;
+    closeComposerPopovers();
+    elements.attachmentMenu.hidden = !opening;
+    elements.attachmentButton.setAttribute('aria-expanded', String(opening));
+  });
+  elements.attachFiles.addEventListener('click', () => addAttachments('files'));
+  elements.attachFolder.addEventListener('click', () => addAttachments('folder'));
   elements.pageContext.addEventListener('click', () => {
     if (currentConversationId || currentRunStatus !== 'idle') return;
     dismissedPageContextTabId = getActiveTab()?.id || null;
@@ -2742,10 +2879,20 @@ export function initAgentUi(options = {}) {
     ) {
       closeComposerPopovers();
     }
+    if (
+      !elements.attachmentMenu.hidden &&
+      !elements.attachmentMenu.contains(event.target) &&
+      !elements.attachmentButton.contains(event.target)
+    ) {
+      closeComposerPopovers();
+    }
   });
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return;
-    const popoverWasOpen = !elements.modelMenu.hidden || !elements.approvalModePopover.hidden;
+    const popoverWasOpen =
+      !elements.modelMenu.hidden ||
+      !elements.approvalModePopover.hidden ||
+      !elements.attachmentMenu.hidden;
     closeComposerPopovers();
     if (!elements.takeoverDialog.hidden) {
       setTakeoverDialogOpen(false);

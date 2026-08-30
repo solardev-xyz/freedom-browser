@@ -228,7 +228,33 @@ test('Agent sidebar configures hosted and local models and reports the run lifec
   expect(unifiedChrome.conversation).toBe(unifiedChrome.titlebar);
   expect(unifiedChrome.workspace).toBe(unifiedChrome.titlebar);
   expect(unifiedChrome.composer).toBe(unifiedChrome.titlebar);
-  await expect(window.locator('[data-test="agent-attachment"]')).toBeDisabled();
+  await expect(window.locator('[data-test="agent-attachment"]')).toBeEnabled();
+  await window.locator('[data-test="agent-attachment"]').click();
+  await expect(window.locator('#agent-attachment-menu')).toBeVisible();
+  await expect(window.locator('#agent-attachment-menu')).toContainText('Attach files');
+  await expect(window.locator('#agent-attachment-menu')).toContainText('Add folder');
+  const broadAttachmentMenu = await window.evaluate(() => {
+    const composer = document.querySelector('.agent-composer').getBoundingClientRect();
+    const menu = document.querySelector('#agent-attachment-menu').getBoundingClientRect();
+    return { composerWidth: composer.width, menuWidth: menu.width };
+  });
+  expect(Math.abs(broadAttachmentMenu.menuWidth - broadAttachmentMenu.composerWidth)).toBeLessThan(2);
+  await window.locator('[data-test="agent-attachment"]').click();
+  await expect(window.locator('#agent-attachment-menu')).toBeHidden();
+  await window.locator('#agent-approval-mode-button').click();
+  await expect(window.locator('#agent-approval-mode-popover')).toBeVisible();
+  const approvalMenuWidth = await window
+    .locator('#agent-approval-mode-popover')
+    .evaluate((element) => element.getBoundingClientRect().width);
+  expect(approvalMenuWidth).toBeLessThan(broadAttachmentMenu.menuWidth);
+  await window.locator('#agent-approval-mode-button').click();
+  await window.locator('#agent-model-menu-button').click();
+  await expect(window.locator('#agent-model-menu')).toBeVisible();
+  const modelMenuWidth = await window
+    .locator('#agent-model-menu')
+    .evaluate((element) => element.getBoundingClientRect().width);
+  expect(modelMenuWidth).toBeLessThan(broadAttachmentMenu.menuWidth);
+  await window.locator('#agent-model-menu-button').click();
   await expect(window.locator('[data-test="agent-dictation"]')).toBeDisabled();
   const composerLayout = await window.evaluate(() => {
     const rect = (selector) => {

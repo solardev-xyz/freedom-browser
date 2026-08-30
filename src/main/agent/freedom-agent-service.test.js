@@ -296,6 +296,146 @@ describe('FreedomAgentService', () => {
     await service.waitForIdle();
   });
 
+  test('consumes opaque attachment selections and exposes scoped tools without model-visible paths', async () => {
+    const fake = createFakeSession();
+    const attachmentStore = {
+      consume: jest.fn(async () => [
+        {
+          resourceId: 'attachment_aaaaaaaaaaaaaaaaaaaa',
+          kind: 'file',
+          name: 'notes.txt',
+          category: 'text',
+          bytes: 12,
+          available: true,
+        },
+      ]),
+      listResources: jest.fn(async () => []),
+      read: jest.fn(),
+      deleteConversation: jest.fn(async () => {}),
+    };
+    const createAttachmentTools = jest.fn(async () => [
+      { name: 'attachment_list' },
+      { name: 'attachment_read' },
+    ]);
+    const { service, dependencies } = createService(fake, {
+      attachmentStore,
+      createAttachmentTools,
+    });
+
+    await service.start(
+      startOptions({
+        attachmentIds: ['selection_aaaaaaaaaaaaaaaaaaaa'],
+        attachmentOwnerId: '41',
+      })
+    );
+
+    expect(attachmentStore.consume).toHaveBeenCalledWith(
+      '41',
+      ['selection_aaaaaaaaaaaaaaaaaaaa'],
+      'conversation_test'
+    );
+    expect(createAttachmentTools).toHaveBeenCalledWith({
+      sdk: { kind: 'sdk' },
+      store: attachmentStore,
+      conversationId: 'conversation_test',
+      visionEnabled: false,
+    });
+    expect(dependencies.createSession.mock.calls[0][0].customTools).toEqual([
+      { name: 'browser_snapshot' },
+      { name: 'attachment_list' },
+      { name: 'attachment_read' },
+    ]);
+    expect(fake.session.prompt.mock.calls[0][0]).toContain('attachment_aaaaaaaaaaaaaaaaaaaa');
+    expect(fake.session.prompt.mock.calls[0][0]).not.toContain('/Users/');
+    expect(service.getState().resources).toEqual([
+      expect.objectContaining({ name: 'notes.txt', category: 'text' }),
+    ]);
+
+    fake.prompt.resolve();
+    await service.waitForIdle();
+  });
+
+  test('passes selected images natively only to a vision-capable Pi session', async () => {
+    const fake = createFakeSession();
+    const attachmentStore = {
+      consume: jest.fn(async () => [
+        {
+          resourceId: 'attachment_bbbbbbbbbbbbbbbbbbbb',
+          kind: 'file',
+          name: 'diagram.png',
+          category: 'image',
+          mimeType: 'image/png',
+          bytes: 3,
+          available: true,
+        },
+      ]),
+      listResources: jest.fn(async () => []),
+      read: jest.fn(async () => ({
+        kind: 'image',
+        name: 'diagram.png',
+        mimeType: 'image/png',
+        data: Buffer.from('png'),
+      })),
+      deleteConversation: jest.fn(async () => {}),
+    };
+    const { service } = createService(fake, {
+      attachmentStore,
+      createAttachmentTools: jest.fn(async () => []),
+    });
+
+    await service.start(
+      startOptions({
+        model: { id: 'vision_model', provider: 'test', input: ['text', 'image'] },
+        attachmentIds: ['selection_bbbbbbbbbbbbbbbbbbbb'],
+        attachmentOwnerId: '41',
+      })
+    );
+
+    expect(fake.session.prompt).toHaveBeenCalledWith(
+      expect.stringContaining('attachment_bbbbbbbbbbbbbbbbbbbb'),
+      expect.objectContaining({
+        images: [{ type: 'image', data: Buffer.from('png').toString('base64'), mimeType: 'image/png' }],
+      })
+    );
+    fake.prompt.resolve();
+    await service.waitForIdle();
+  });
+
+  test('cleans attachment snapshots if startup fails before a conversation exists', async () => {
+    const fake = createFakeSession();
+    const attachmentStore = {
+      consume: jest.fn(async () => [
+        {
+          resourceId: 'attachment_cccccccccccccccccccc',
+          kind: 'file',
+          name: 'notes.txt',
+          category: 'text',
+          bytes: 12,
+          available: true,
+        },
+      ]),
+      listResources: jest.fn(async () => []),
+      read: jest.fn(),
+      deleteConversation: jest.fn(async () => {}),
+    };
+    const { service } = createService(fake, {
+      attachmentStore,
+      loadSdk: jest.fn(async () => {
+        throw new Error('SDK unavailable');
+      }),
+    });
+
+    await expect(
+      service.start(
+        startOptions({
+          attachmentIds: ['selection_cccccccccccccccccccc'],
+          attachmentOwnerId: '41',
+        })
+      )
+    ).rejects.toMatchObject({ code: 'SESSION_START_FAILED' });
+    expect(attachmentStore.deleteConversation).toHaveBeenCalledWith('conversation_test');
+  });
+
   test('starts with an empty workspace when no user page is shared', async () => {
     const fake = createFakeSession();
     const { service, dependencies } = createService(fake);

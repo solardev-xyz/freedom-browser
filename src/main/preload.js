@@ -165,8 +165,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getWebviewPreloadPath: () => ipcRenderer.invoke('internal:get-webview-preload-path'),
   bindAutomationTab: (rendererTabId, guestWebContentsId) =>
     ipcRenderer.send('automation:bind-tab', { rendererTabId, guestWebContentsId }),
-  startAgent: (rendererTabId, prompt, approvalMode = 'every_interaction') =>
-    ipcRenderer.invoke('agent:start', { rendererTabId, prompt, approvalMode }),
+  startAgent: (
+    rendererTabId,
+    prompt,
+    approvalMode = 'every_interaction',
+    attachmentIds = []
+  ) =>
+    ipcRenderer.invoke('agent:start', {
+      rendererTabId,
+      prompt,
+      approvalMode,
+      ...(attachmentIds.length && { attachmentIds }),
+    }),
   steerAgent: (runId, prompt) => ipcRenderer.invoke('agent:steer', { runId, prompt }),
   pauseAgent: (runId) => ipcRenderer.invoke('agent:pause', { runId }),
   resumeAgent: (runId, prompt) => ipcRenderer.invoke('agent:resume', { runId, prompt }),
@@ -194,6 +204,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('agent:history:rename', { conversationId, title }),
   deleteAgentSession: (conversationId) =>
     ipcRenderer.invoke('agent:history:delete', { conversationId }),
+  pickAgentFiles: () => ipcRenderer.invoke('agent:attachments:pick-files'),
+  pickAgentFolder: () => ipcRenderer.invoke('agent:attachments:pick-folder'),
+  removeAgentAttachment: (selectionId) =>
+    ipcRenderer.invoke('agent:attachments:remove', { selectionId }),
   claimAgentTab: (rendererTabId) =>
     ipcRenderer.invoke('agent:tab:claim', { rendererTabId }),
   getAgentProviderStatus: () => ipcRenderer.invoke('agent:provider:get-status'),

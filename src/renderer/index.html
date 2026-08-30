@@ -1543,6 +1543,28 @@
             </div>
 
             <div class="agent-composer-wrap">
+              <div
+                id="agent-attachment-menu"
+                class="agent-attachment-menu"
+                role="menu"
+                aria-label="Add context"
+                hidden
+              >
+                <div class="agent-attachment-menu-label">Add</div>
+                <button id="agent-attach-files" type="button" role="menuitem">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+                    <path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Z" />
+                    <path d="M14 3v6h6" />
+                  </svg>
+                  <span><strong>Attach files…</strong><small>Text or images</small></span>
+                </button>
+                <button id="agent-attach-folder" type="button" role="menuitem">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+                    <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />
+                  </svg>
+                  <span><strong>Add folder…</strong><small>Read-only for this conversation</small></span>
+                </button>
+              </div>
               <div id="agent-composer" class="agent-composer">
                 <div id="agent-page-contexts" class="agent-composer-contexts" hidden>
                   <button
@@ -1569,6 +1591,7 @@
                     <span id="agent-page-context-label"></span>
                     <span class="agent-page-context-remove" aria-hidden="true">×</span>
                   </button>
+                  <div id="agent-attachment-contexts" class="agent-attachment-contexts"></div>
                 </div>
                 <label class="agent-composer-input">
                   <span class="sr-only">Task for the agent</span>
@@ -1582,12 +1605,15 @@
                 <div class="agent-composer-footer">
                   <div class="agent-composer-tools">
                     <button
+                      id="agent-attachment-button"
                       class="agent-composer-icon-button"
                       type="button"
-                      aria-label="Add attachments (coming soon)"
-                      title="Attachments are coming soon"
+                      aria-label="Add context"
+                      title="Add files or a folder"
+                      aria-haspopup="menu"
+                      aria-expanded="false"
+                      aria-controls="agent-attachment-menu"
                       data-test="agent-attachment"
-                      disabled
                     >
                       <svg
                         viewBox="0 0 24 24"

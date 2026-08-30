@@ -43,6 +43,18 @@ describe('AgentSessionHistoryStore', () => {
       runId: 'run_one',
       position: 0,
       userText: 'Research Freedom',
+      attachments: [
+        {
+          resourceId: 'attachment_aaaaaaaaaaaaaaaaaaaa',
+          kind: 'file',
+          name: 'notes.txt',
+          bytes: 24,
+          mimeType: 'text/plain',
+          category: 'text',
+          available: true,
+          path: '/Users/private/notes.txt',
+        },
+      ],
       startedAt: 900,
     });
     store.updateTurnGuidance({
@@ -169,6 +181,17 @@ describe('AgentSessionHistoryStore', () => {
           assistantText: 'Done.',
           status: 'completed',
           durationMs: 350,
+          attachments: [
+            {
+              resourceId: 'attachment_aaaaaaaaaaaaaaaaaaaa',
+              kind: 'file',
+              name: 'notes.txt',
+              bytes: 24,
+              mimeType: 'text/plain',
+              category: 'text',
+              available: true,
+            },
+          ],
           activity: [
             {
               toolCallId: 'call_1',

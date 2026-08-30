@@ -98,10 +98,25 @@ function validateStartPayload(payload) {
       'Agent input requires a supported approval mode'
     );
   }
+  const attachmentIds = payload.attachmentIds === undefined ? [] : payload.attachmentIds;
+  if (
+    !Array.isArray(attachmentIds) ||
+    attachmentIds.length > 10 ||
+    attachmentIds.some(
+      (selectionId) =>
+        typeof selectionId !== 'string' || !/^selection_[a-f0-9]{20}$/.test(selectionId)
+    )
+  ) {
+    throw new FreedomAgentError(
+      AGENT_ERROR_CODES.INVALID_ARGUMENT,
+      'Agent attachments require valid pending selection IDs'
+    );
+  }
   return {
     rendererTabId: Number.isSafeInteger(payload.rendererTabId) ? payload.rendererTabId : null,
     prompt: payload.prompt,
     approvalMode,
+    attachmentIds: [...new Set(attachmentIds)],
   };
 }
 
@@ -162,6 +177,8 @@ function registerFreedomAgentIpc(options = {}) {
     providerResolver,
     isTrustedSender,
     openExternal,
+    attachmentStore,
+    getOwnerWindow,
   } = options;
   if (!ipcMain || typeof ipcMain.handle !== 'function') {
     throw new TypeError('Freedom agent IPC requires ipcMain');
@@ -219,10 +236,31 @@ function registerFreedomAgentIpc(options = {}) {
   if (typeof openExternal !== 'function') {
     throw new TypeError('Freedom agent IPC requires an external URL opener');
   }
+  if (
+    !attachmentStore ||
+    typeof attachmentStore.pickFiles !== 'function' ||
+    typeof attachmentStore.pickFolder !== 'function' ||
+    typeof attachmentStore.removeStaged !== 'function' ||
+    typeof attachmentStore.clearStaged !== 'function'
+  ) {
+    throw new TypeError('Freedom agent IPC requires an attachment store');
+  }
   let owner = null;
   let startPending = false;
   let providerLogin = null;
   let providerMutationPending = false;
+  const attachmentOwnerCleanup = new Map();
+
+  const trackAttachmentOwner = (sender) => {
+    if (attachmentOwnerCleanup.has(sender)) return;
+    const ownerId = String(sender.id);
+    const onDestroyed = () => {
+      attachmentStore.clearStaged(ownerId);
+      attachmentOwnerCleanup.delete(sender);
+    };
+    attachmentOwnerCleanup.set(sender, onDestroyed);
+    sender.once?.('destroyed', onDestroyed);
+  };
 
   const detachOwner = () => {
     if (!owner) return;
@@ -292,7 +330,7 @@ function registerFreedomAgentIpc(options = {}) {
           'The sender is not trusted browser chrome'
         );
       }
-      const { rendererTabId, prompt, approvalMode } = validateStartPayload(rawPayload);
+      const { rendererTabId, prompt, approvalMode, attachmentIds } = validateStartPayload(rawPayload);
       const continuing = Boolean(owner);
       if (continuing && owner.sender !== event?.sender) {
         return errorEnvelope(
@@ -362,6 +400,10 @@ function registerFreedomAgentIpc(options = {}) {
         started = await service.start({
           prompt,
           approvalMode,
+          ...(attachmentIds.length && {
+            attachmentIds,
+            attachmentOwnerId: String(event.sender.id),
+          }),
           ...(needsRuntime && {
             tabId,
             createWorkspacePage: (url) => createAutomationPageForHost(pendingOwner.sender, url),
@@ -857,6 +899,51 @@ function registerFreedomAgentIpc(options = {}) {
       providerLogin.controller.abort();
       return { cancelled: true };
     });
+  const handleAttachmentRequest = async (event, action) => {
+    if (!isTrustedSender(event?.sender) || event.sender.isDestroyed?.()) {
+      return errorEnvelope(
+        AGENT_IPC_ERROR_CODES.NOT_OWNER,
+        'The sender is not trusted browser chrome'
+      );
+    }
+    try {
+      trackAttachmentOwner(event.sender);
+      return {
+        ok: true,
+        selections: await action({
+          ownerId: String(event.sender.id),
+          ownerWindow: typeof getOwnerWindow === 'function' ? getOwnerWindow(event.sender) : null,
+        }),
+      };
+    } catch (error) {
+      return errorEnvelope(
+        AGENT_ERROR_CODES.INVALID_ARGUMENT,
+        typeof error?.message === 'string' && error.message
+          ? error.message.slice(0, 240)
+          : 'The attachment could not be added'
+      );
+    }
+  };
+  const handlePickFiles = (event) =>
+    handleAttachmentRequest(event, (context) => attachmentStore.pickFiles(context));
+  const handlePickFolder = (event) =>
+    handleAttachmentRequest(event, (context) => attachmentStore.pickFolder(context));
+  const handleRemoveAttachment = (event, payload = {}) => {
+    if (
+      !isTrustedSender(event?.sender) ||
+      typeof payload.selectionId !== 'string' ||
+      !/^selection_[a-f0-9]{20}$/.test(payload.selectionId)
+    ) {
+      return errorEnvelope(
+        AGENT_IPC_ERROR_CODES.NOT_OWNER,
+        'The attachment selection is not owned by this browser window'
+      );
+    }
+    return {
+      ok: true,
+      removed: attachmentStore.removeStaged(String(event.sender.id), payload.selectionId),
+    };
+  };
   const handleSelectModel = (event, payload) =>
     handleProviderMutation(event, async () => ({
       status: await providerResolver.selectModel(payload),
@@ -889,6 +976,9 @@ function registerFreedomAgentIpc(options = {}) {
   ipcMain.handle(IPC.AGENT_HISTORY_OPEN, handleHistoryOpen);
   ipcMain.handle(IPC.AGENT_HISTORY_RENAME, handleHistoryRename);
   ipcMain.handle(IPC.AGENT_HISTORY_DELETE, handleHistoryDelete);
+  ipcMain.handle(IPC.AGENT_ATTACHMENTS_PICK_FILES, handlePickFiles);
+  ipcMain.handle(IPC.AGENT_ATTACHMENTS_PICK_FOLDER, handlePickFolder);
+  ipcMain.handle(IPC.AGENT_ATTACHMENTS_REMOVE, handleRemoveAttachment);
   ipcMain.handle(IPC.AGENT_TAB_CLAIM, handleTabClaim);
   ipcMain.handle(IPC.AGENT_PROVIDER_GET_STATUS, handleProviderStatus);
   ipcMain.handle(IPC.AGENT_PROVIDER_GET_CATALOG, handleProviderCatalog);
@@ -914,6 +1004,9 @@ function registerFreedomAgentIpc(options = {}) {
     ipcMain.removeHandler?.(IPC.AGENT_HISTORY_OPEN);
     ipcMain.removeHandler?.(IPC.AGENT_HISTORY_RENAME);
     ipcMain.removeHandler?.(IPC.AGENT_HISTORY_DELETE);
+    ipcMain.removeHandler?.(IPC.AGENT_ATTACHMENTS_PICK_FILES);
+    ipcMain.removeHandler?.(IPC.AGENT_ATTACHMENTS_PICK_FOLDER);
+    ipcMain.removeHandler?.(IPC.AGENT_ATTACHMENTS_REMOVE);
     ipcMain.removeHandler?.(IPC.AGENT_TAB_CLAIM);
     ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_GET_STATUS);
     ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_GET_CATALOG);
@@ -930,6 +1023,11 @@ function registerFreedomAgentIpc(options = {}) {
       providerLogin.sender.off?.('destroyed', providerLogin.onDestroyed);
       providerLogin = null;
     }
+    for (const [sender, onDestroyed] of attachmentOwnerCleanup) {
+      sender.off?.('destroyed', onDestroyed);
+      attachmentStore.clearStaged(String(sender.id));
+    }
+    attachmentOwnerCleanup.clear();
     if (owner) {
       const runId = owner.runId;
       detachOwner();

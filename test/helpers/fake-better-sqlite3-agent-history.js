@@ -71,7 +71,7 @@ class FakeBetterSqlite3AgentHistoryDatabase {
 
     if (query.startsWith('INSERT INTO agent_turns')) {
       return {
-        run: (id, sessionId, position, userText, startedAt) => {
+        run: (id, sessionId, position, userText, startedAt, attachmentsJson) => {
           if (this.state.turns.some((row) => row.id === id)) throw new Error('UNIQUE turn');
           this.state.turns.push({
             id,
@@ -84,6 +84,7 @@ class FakeBetterSqlite3AgentHistoryDatabase {
             duration_ms: null,
             activity_json: '[]',
             guidance_json: '[]',
+            attachments_json: attachmentsJson || '[]',
             error_code: null,
             error_message: null,
           });

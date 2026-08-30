@@ -11,6 +11,7 @@ const { NodeStatusController } = require('../node-status-controller');
 const { NodeRequestController } = require('../node-request-controller');
 const { NodeLifecycleController } = require('../node-lifecycle-controller');
 const { NodeDiagnosticsController } = require('../node-diagnostics-controller');
+const { ConversationAttachmentStore } = require('./conversation-attachment-store');
 
 function createFreedomAgentRuntime(options = {}) {
   const providerStore = new AgentProviderStore({
@@ -27,6 +28,10 @@ function createFreedomAgentRuntime(options = {}) {
     userDataDir: options.profile?.userDataDir,
   });
   historyStore.markStaleRunningAsInterrupted();
+  const attachmentStore = new ConversationAttachmentStore({
+    userDataDir: options.profile?.userDataDir,
+    dialog: options.dialog,
+  });
   const nodeOperationStore = new AgentNodeOperationStore({
     userDataDir: options.profile?.userDataDir,
   });
@@ -56,6 +61,7 @@ function createFreedomAgentRuntime(options = {}) {
     historyStore,
     cancelAgentDownloads: options.cancelAgentDownloads,
     walletController,
+    attachmentStore,
   });
   const unregisterIpc = registerFreedomAgentIpc({
     ipcMain: options.ipcMain,
@@ -67,12 +73,15 @@ function createFreedomAgentRuntime(options = {}) {
     desktopBindingForAutomationTab: options.desktopBindingForAutomationTab,
     isTrustedSender: options.isTrustedSender,
     openExternal: options.openExternal,
+    attachmentStore,
+    getOwnerWindow: options.getOwnerWindow,
   });
 
   return {
     providerStore,
     providerResolver,
     historyStore,
+    attachmentStore,
     nodeOperationStore,
     walletController,
     nodeController,
@@ -84,6 +93,7 @@ function createFreedomAgentRuntime(options = {}) {
       await unregisterIpc();
       await service.dispose();
       await nodeRequestController.dispose();
+      attachmentStore.dispose();
       historyStore.close();
       nodeOperationStore.close();
       options.controller.setWalletTransferController(null);

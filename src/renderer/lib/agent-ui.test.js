@@ -103,6 +103,11 @@ function createAgentElements() {
     'agent-approval-mode-every',
     'agent-approval-mode-sensitive',
     'agent-approval-mode-allow',
+    'agent-attachment-button',
+    'agent-attachment-menu',
+    'agent-attach-files',
+    'agent-attach-folder',
+    'agent-attachment-contexts',
   ];
   const elements = Object.fromEntries(ids.map((id) => [id, createElement('div')]));
   elements['agent-toggle-btn'] = createElement('button');
@@ -209,6 +214,12 @@ function createAgentElements() {
   elements['agent-approval-mode-allow'].appendChild(
     createElement('span', { classes: ['agent-approval-mode-check'] })
   );
+  elements['agent-attachment-button'] = createElement('button');
+  elements['agent-attachment-menu'] = createElement('div');
+  elements['agent-attachment-menu'].hidden = true;
+  elements['agent-attach-files'] = createElement('button');
+  elements['agent-attach-folder'] = createElement('button');
+  elements['agent-attachment-contexts'] = createElement('div');
   return elements;
 }
 
@@ -276,6 +287,9 @@ async function loadAgentUi(options = {}) {
     openAgentSession: jest.fn(),
     renameAgentSession: jest.fn(),
     deleteAgentSession: jest.fn(),
+    pickAgentFiles: jest.fn().mockResolvedValue({ ok: true, selections: [] }),
+    pickAgentFolder: jest.fn().mockResolvedValue({ ok: true, selections: [] }),
+    removeAgentAttachment: jest.fn().mockResolvedValue({ ok: true, removed: true }),
     claimAgentTab: jest.fn(),
     openAgentArtifact: jest.fn().mockResolvedValue({ success: true }),
     showAgentArtifactInFolder: jest.fn().mockResolvedValue({ success: true }),
@@ -492,6 +506,116 @@ describe('Agent UI', () => {
       'Summarize this page',
       'every_interaction'
     );
+  });
+
+  test('adds opaque file and folder selections through the composer drop-up', async () => {
+    const fileSelectionId = `selection_${'a'.repeat(20)}`;
+    const folderSelectionId = `selection_${'b'.repeat(20)}`;
+    const ctx = await loadAgentUi({
+      electronAPI: {
+        pickAgentFiles: jest.fn().mockResolvedValue({
+          ok: true,
+          selections: [
+            {
+              selectionId: fileSelectionId,
+              kind: 'file',
+              name: 'notes.txt',
+              category: 'text',
+              bytes: 2_048,
+            },
+          ],
+        }),
+        pickAgentFolder: jest.fn().mockResolvedValue({
+          ok: true,
+          selections: [
+            {
+              selectionId: folderSelectionId,
+              kind: 'folder',
+              name: 'Project',
+              category: 'folder',
+              available: true,
+            },
+          ],
+        }),
+      },
+    });
+
+    ctx.elements['agent-attachment-button'].dispatch('click');
+    expect(ctx.elements['agent-attachment-menu'].hidden).toBe(false);
+    ctx.elements['agent-attach-files'].dispatch('click');
+    await flush();
+    ctx.elements['agent-attachment-button'].dispatch('click');
+    ctx.elements['agent-attach-folder'].dispatch('click');
+    await flush();
+
+    expect(ctx.elements['agent-attachment-contexts'].children).toHaveLength(2);
+    expect(ctx.elements['agent-attachment-contexts'].children[0].children[0].textContent).toContain(
+      'notes.txt'
+    );
+    expect(ctx.elements['agent-attachment-contexts'].children[1].children[0].textContent).toContain(
+      'Project'
+    );
+
+    ctx.elements['agent-prompt'].value = 'Review these resources';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.startAgent).toHaveBeenCalledWith(
+      7,
+      'Review these resources',
+      'every_interaction',
+      [fileSelectionId, folderSelectionId]
+    );
+
+    ctx.emit({
+      type: 'run_started',
+      runId: 'run_test',
+      conversationId: 'conversation_test',
+      userText: 'Review these resources',
+      attachments: [
+        {
+          resourceId: `attachment_${'c'.repeat(20)}`,
+          kind: 'file',
+          name: 'notes.txt',
+          category: 'text',
+          bytes: 2_048,
+          available: true,
+        },
+        {
+          resourceId: `folder_${'d'.repeat(20)}`,
+          kind: 'folder',
+          name: 'Project',
+          category: 'folder',
+          available: true,
+        },
+      ],
+    });
+    expect(ctx.elements['agent-transcript'].querySelectorAll('.agent-message-attachment')).toHaveLength(2);
+    expect(ctx.elements['agent-attachment-contexts'].children).toHaveLength(1);
+    expect(ctx.elements['agent-attachment-contexts'].children[0].children[0].textContent).toContain(
+      'Project'
+    );
+  });
+
+  test('removes a pending attachment before it is sent', async () => {
+    const selectionId = `selection_${'e'.repeat(20)}`;
+    const ctx = await loadAgentUi({
+      electronAPI: {
+        pickAgentFiles: jest.fn().mockResolvedValue({
+          ok: true,
+          selections: [
+            { selectionId, kind: 'file', name: 'draft.md', category: 'text', bytes: 10 },
+          ],
+        }),
+      },
+    });
+
+    ctx.elements['agent-attach-files'].dispatch('click');
+    await flush();
+    ctx.elements['agent-attachment-contexts'].children[0].children[1].dispatch('click');
+    await flush();
+
+    expect(ctx.electronAPI.removeAgentAttachment).toHaveBeenCalledWith(selectionId);
+    expect(ctx.elements['agent-attachment-contexts'].children).toHaveLength(0);
   });
 
   test('starts without page access instead of adopting an Agent-owned tab', async () => {
