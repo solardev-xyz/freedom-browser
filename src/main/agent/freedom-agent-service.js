@@ -39,6 +39,7 @@ const {
 const {
   classifyProviderFailure,
   createProviderTerminalError,
+  mostInformativeProviderFailure,
   providerFailurePresentation,
 } = require('./provider-failure');
 
@@ -208,6 +209,28 @@ function piMessageText(message) {
     .filter((part) => part?.type === 'text' && typeof part.text === 'string')
     .map((part) => part.text)
     .join('\n');
+}
+
+function providerFailureFromPiMessage(message) {
+  const evidence = [];
+  if (typeof message?.errorMessage === 'string' && message.errorMessage) {
+    evidence.push(message.errorMessage);
+  }
+  for (const diagnostic of Array.isArray(message?.diagnostics) ? message.diagnostics : []) {
+    if (diagnostic?.type !== 'provider_transport_failure') continue;
+    const errorMessage =
+      typeof diagnostic.error?.message === 'string' ? diagnostic.error.message : '';
+    const phase = diagnostic.details?.phase;
+    const fallback = diagnostic.details?.fallbackTransport;
+    let summary = 'The provider WebSocket transport failed';
+    if (phase === 'after_message_stream_start') {
+      summary = 'The provider WebSocket transport failed after response streaming started';
+    } else if (phase === 'before_message_stream_start' && fallback === 'sse') {
+      summary = 'The provider WebSocket transport failed before the response and fell back to SSE';
+    }
+    evidence.push(errorMessage ? `${summary}: ${errorMessage}` : summary);
+  }
+  return classifyProviderFailure(evidence.join(' · ') || message?.errorMessage);
 }
 
 function collectedProviderFailures(run, fallback) {
@@ -1054,6 +1077,7 @@ class FreedomAgentService {
       failure: null,
       lastAssistant: null,
       providerFailure: null,
+      pendingProviderFailure: null,
       providerFailures: [],
       providerRetryCount: 0,
       toolOutcomes: new Map(),
@@ -1620,7 +1644,10 @@ class FreedomAgentService {
         stopReason: event.message.stopReason,
       };
       if (event.message.stopReason === 'error') {
-        run.providerFailure = classifyProviderFailure(event.message.errorMessage);
+        run.providerFailure = providerFailureFromPiMessage(event.message);
+        run.pendingProviderFailure = run.providerFailure;
+      } else {
+        run.pendingProviderFailure = null;
       }
       for (const guidance of run.guidance.filter((item) => item.status === 'applying')) {
         this.#setGuidanceStatus(run, guidance, 'applied');
@@ -1629,24 +1656,44 @@ class FreedomAgentService {
 
     const toolCallId = event?.type === 'tool_execution_end' ? String(event.toolCallId) : null;
     const toolOutcome = toolCallId ? run.toolOutcomes.get(toolCallId) : undefined;
-    const normalized = normalizePiEvent(event, toolOutcome, {
+    let normalized = normalizePiEvent(event, toolOutcome, {
       label: run.providerLabel,
       modelId: run.modelId,
     });
     if (toolCallId) run.toolOutcomes.delete(toolCallId);
     if (!normalized) return;
     if (normalized.type === 'run_retrying') {
-      run.providerFailure = normalized.providerFailure;
-      run.providerFailures.push(normalized.providerFailure);
+      const providerFailure = mostInformativeProviderFailure(
+        [run.pendingProviderFailure, normalized.providerFailure],
+        normalized.providerFailure
+      );
+      normalized = {
+        ...normalized,
+        providerFailure,
+        message: providerFailurePresentation(providerFailure, {
+          providerLabel: run.providerLabel,
+          modelId: run.modelId,
+        }).retryMessage,
+      };
+      run.pendingProviderFailure = null;
+      run.providerFailure = providerFailure;
+      run.providerFailures.push(providerFailure);
       if (run.providerFailures.length > 20) run.providerFailures.shift();
       run.providerRetryCount = Math.max(run.providerRetryCount, normalized.attempt);
     } else if (normalized.type === 'run_retry_exhausted') {
-      run.providerFailure = normalized.providerFailure;
-      run.providerFailures.push(normalized.providerFailure);
+      const providerFailure = mostInformativeProviderFailure(
+        [run.pendingProviderFailure, normalized.providerFailure],
+        normalized.providerFailure
+      );
+      normalized = { ...normalized, providerFailure };
+      run.pendingProviderFailure = null;
+      run.providerFailure = providerFailure;
+      run.providerFailures.push(providerFailure);
       if (run.providerFailures.length > 20) run.providerFailures.shift();
       run.providerRetryCount = Math.max(run.providerRetryCount, normalized.attempt);
     } else if (normalized.type === 'run_retry_recovered') {
       run.providerFailure = null;
+      run.pendingProviderFailure = null;
       run.providerFailures.length = 0;
       run.providerRetryCount = 0;
     } else if (normalized.type === 'assistant_text_delta') {
@@ -2143,6 +2190,7 @@ module.exports = {
   FreedomAgentError,
   FreedomAgentService,
   normalizePiEvent,
+  providerFailureFromPiMessage,
   validatePromptOptions,
   validateStartOptions,
 };

@@ -5,6 +5,7 @@ const {
   createBuiltInSkillReadTool,
   getBuiltInSkills,
 } = require('./builtin-skills');
+const { classifyProviderFailure } = require('./provider-failure');
 
 const BUILTIN_PI_TOOL_NAMES = new Set(['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls']);
 const VIRTUAL_AGENT_CWD = process.platform === 'win32' ? 'C:\\freedom-agent' : '/freedom-agent';
@@ -122,6 +123,59 @@ function hydrateVisibleTranscript(sessionManager, turns, model) {
   }
 }
 
+function enrichProviderFetchError(error) {
+  const failure = classifyProviderFailure(error);
+  const evidence = [];
+  if (failure.detail) evidence.push(failure.detail);
+  if (failure.networkCode && !failure.detail?.includes(failure.networkCode)) {
+    evidence.push(failure.networkCode);
+  }
+  const message = evidence.join(' · ');
+  if (!message || message === error?.message) return error;
+  const enriched = new Error(message, { cause: error });
+  enriched.name = typeof error?.name === 'string' && error.name ? error.name : 'Error';
+  return enriched;
+}
+
+function createProviderDiagnosticFetch(fetchImpl = globalThis.fetch) {
+  if (typeof fetchImpl !== 'function') {
+    throw new TypeError('Freedom provider diagnostics require a fetch implementation');
+  }
+  return async (...args) => {
+    try {
+      return await fetchImpl(...args);
+    } catch (error) {
+      throw enrichProviderFetchError(error);
+    }
+  };
+}
+
+function createDiagnosticModelRuntime(modelRuntime) {
+  if (!modelRuntime || typeof modelRuntime.streamSimple !== 'function') return modelRuntime;
+  const methods = new Map();
+  return new Proxy(modelRuntime, {
+    get(target, property) {
+      if (property === 'streamSimple') {
+        if (!methods.has(property)) {
+          methods.set(property, (model, context, options = {}) => {
+            const fetchImpl =
+              typeof options.fetch === 'function' ? options.fetch : globalThis.fetch;
+            return target.streamSimple(model, context, {
+              ...options,
+              fetch: createProviderDiagnosticFetch(fetchImpl),
+            });
+          });
+        }
+        return methods.get(property);
+      }
+      const value = Reflect.get(target, property, target);
+      if (typeof value !== 'function') return value;
+      if (!methods.has(property)) methods.set(property, value.bind(target));
+      return methods.get(property);
+    },
+  });
+}
+
 async function createIsolatedPiSession(options = {}) {
   if (!options.model) throw new TypeError('Freedom Pi session requires a model');
   if (!options.modelRuntime) throw new TypeError('Freedom Pi session requires a modelRuntime');
@@ -151,13 +205,14 @@ async function createIsolatedPiSession(options = {}) {
   });
   const sessionManager = sdk.SessionManager.inMemory(VIRTUAL_AGENT_CWD);
   hydrateVisibleTranscript(sessionManager, options.restoredTranscript, options.model);
+  const modelRuntime = createDiagnosticModelRuntime(options.modelRuntime);
 
   const result = await sdk.createAgentSession({
     cwd: VIRTUAL_AGENT_CWD,
     agentDir: VIRTUAL_AGENT_CWD,
     model: options.model,
     thinkingLevel: options.thinkingLevel || 'off',
-    modelRuntime: options.modelRuntime,
+    modelRuntime,
     noTools: 'builtin',
     tools: toolNames,
     customTools: sessionTools,
@@ -179,8 +234,11 @@ module.exports = {
   BUILTIN_PI_TOOL_NAMES,
   DEFAULT_FREEDOM_AGENT_SYSTEM_PROMPT,
   VIRTUAL_AGENT_CWD,
+  createDiagnosticModelRuntime,
   createIsolatedPiSession,
   createNoDiscoveryResourceLoader,
+  createProviderDiagnosticFetch,
+  enrichProviderFetchError,
   hydrateVisibleTranscript,
   validateCustomTools,
 };

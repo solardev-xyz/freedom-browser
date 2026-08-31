@@ -58,6 +58,20 @@ describe('provider failure classification', () => {
     expect(classifyProviderFailure(raw)).toMatchObject({ cause, phase });
   });
 
+  test('finds network evidence nested inside aggregate fetch failures', () => {
+    const socketError = Object.assign(new Error('connection failed'), {
+      code: 'UND_ERR_CONNECT_TIMEOUT',
+    });
+    const aggregate = new AggregateError([socketError], 'multiple connection attempts failed');
+    const error = new TypeError('fetch failed', { cause: aggregate });
+
+    expect(classifyProviderFailure(error)).toMatchObject({
+      category: PROVIDER_FAILURE_CATEGORIES.TIMEOUT,
+      cause: PROVIDER_FAILURE_CAUSES.TIMEOUT,
+      networkCode: 'UND_ERR_CONNECT_TIMEOUT',
+    });
+  });
+
   test('preserves bounded provider detail while redacting credentials', () => {
     const raw = '429 request sk-secret-key Authorization: Bearer private-token';
     const error = createProviderTerminalError(new Error(raw), {
@@ -142,7 +156,9 @@ describe('provider failure classification', () => {
     });
     expect(repeated.message).toContain('Every attempt failed for the same reason');
     expect(mixed.providerAttempts.sameReason).toBe(false);
-    expect(mixed.message).toContain('attempts failed for different reasons');
+    expect(mixed.message).toContain('Attempt details:');
+    expect(mixed.message).toContain('1) “request timed out”');
+    expect(mixed.message).toContain('2) HTTP 503');
   });
 
   test('does not claim an exact repeated reason from broad network classifications', () => {
@@ -175,7 +191,9 @@ describe('provider failure classification', () => {
       detail: 'HTTP 503 overloaded_error',
     });
     expect(error.message).toContain('returned HTTP 503');
-    expect(error.message).toContain('attempts failed for different reasons');
+    expect(error.message).toContain('Attempt details:');
+    expect(error.message).toContain('1) HTTP 503');
+    expect(error.message).toContain('2) “Network error”');
   });
 
   test('preserves an unrecognized provider reason instead of replacing it with vague copy', () => {

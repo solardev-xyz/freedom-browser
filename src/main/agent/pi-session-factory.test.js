@@ -5,8 +5,10 @@ const { execFileSync } = require('child_process');
 const {
   DEFAULT_FREEDOM_AGENT_SYSTEM_PROMPT,
   VIRTUAL_AGENT_CWD,
+  createDiagnosticModelRuntime,
   createIsolatedPiSession,
   createNoDiscoveryResourceLoader,
+  createProviderDiagnosticFetch,
   hydrateVisibleTranscript,
   validateCustomTools,
 } = require('./pi-session-factory');
@@ -36,6 +38,43 @@ function createSdk() {
 }
 
 describe('isolated Pi session factory', () => {
+  test('preserves sanitized nested fetch causes before Pi flattens provider errors', async () => {
+    const cause = Object.assign(
+      new Error('Connect Timeout Error Authorization: Bearer private-provider-token'),
+      { code: 'UND_ERR_CONNECT_TIMEOUT' }
+    );
+    const fetchImpl = jest.fn().mockRejectedValue(new TypeError('fetch failed', { cause }));
+    const diagnosticFetch = createProviderDiagnosticFetch(fetchImpl);
+
+    await expect(diagnosticFetch('https://provider.test')).rejects.toMatchObject({
+      name: 'TypeError',
+      message: expect.stringContaining('UND_ERR_CONNECT_TIMEOUT'),
+    });
+    await diagnosticFetch('https://provider.test').catch((error) => {
+      expect(error.message).toContain('fetch failed');
+      expect(error.message).toContain('Authorization: [redacted]');
+      expect(error.message).not.toContain('private-provider-token');
+      expect(error.cause).toBeInstanceOf(TypeError);
+    });
+  });
+
+  test('injects diagnostic fetch into model streaming without changing other runtime methods', () => {
+    const fetchImpl = jest.fn();
+    const modelRuntime = {
+      kind: 'model-runtime',
+      streamSimple: jest.fn((_model, _context, options) => options),
+      getModels() {
+        return this.kind;
+      },
+    };
+    const runtime = createDiagnosticModelRuntime(modelRuntime);
+    const options = runtime.streamSimple({}, {}, { fetch: fetchImpl, signal: 'signal' });
+
+    expect(options).toMatchObject({ signal: 'signal', fetch: expect.any(Function) });
+    expect(options.fetch).not.toBe(fetchImpl);
+    expect(runtime.getModels()).toBe('model-runtime');
+  });
+
   test('provides no discovered resources or appended instructions', async () => {
     const sdk = createSdk();
     const loader = createNoDiscoveryResourceLoader(sdk, 'Freedom prompt');

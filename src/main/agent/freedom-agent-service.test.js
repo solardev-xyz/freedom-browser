@@ -9,6 +9,7 @@ const {
   FreedomAgentError,
   FreedomAgentService,
   normalizePiEvent,
+  providerFailureFromPiMessage,
 } = require('./freedom-agent-service');
 
 function createDeferred() {
@@ -1979,6 +1980,102 @@ describe('FreedomAgentService', () => {
     );
     expect(events.at(-1)).toMatchObject({ type: 'run_finished', status: 'completed' });
     expect(JSON.stringify(events)).not.toContain('sk-secret-key');
+  });
+
+  test('retains safe Pi WebSocket transport diagnostics without exposing diagnostic stacks', () => {
+    const failure = providerFailureFromPiMessage({
+      errorMessage: 'fetch failed',
+      diagnostics: [
+        {
+          type: 'provider_transport_failure',
+          error: {
+            message: 'WebSocket closed 1006 Authorization: Bearer private-provider-token',
+            stack: 'must-not-be-exposed',
+          },
+          details: {
+            phase: 'before_message_stream_start',
+            fallbackTransport: 'sse',
+            requestBytes: 123456,
+          },
+        },
+      ],
+    });
+
+    expect(failure).toMatchObject({ category: 'connection' });
+    expect(failure.detail).toContain('fell back to SSE');
+    expect(failure.detail).toContain('Authorization: [redacted]');
+    expect(JSON.stringify(failure)).not.toContain('private-provider-token');
+    expect(JSON.stringify(failure)).not.toContain('must-not-be-exposed');
+    expect(JSON.stringify(failure)).not.toContain('123456');
+  });
+
+  test('enumerates distinct sanitized provider reasons from every failed attempt', async () => {
+    const fake = createFakeSession();
+    const { service } = createService(fake);
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+
+    fake.emit({
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        stopReason: 'error',
+        errorMessage: 'fetch failed',
+        diagnostics: [
+          {
+            type: 'provider_transport_failure',
+            error: { message: 'WebSocket closed 1006' },
+            details: { phase: 'after_message_stream_start' },
+          },
+        ],
+      },
+    });
+    fake.emit({
+      type: 'auto_retry_start',
+      attempt: 1,
+      maxAttempts: 2,
+      delayMs: 2_000,
+      errorMessage: 'fetch failed',
+    });
+    fake.emit({
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        stopReason: 'error',
+        errorMessage: 'fetch failed · UND_ERR_CONNECT_TIMEOUT',
+      },
+    });
+    fake.emit({
+      type: 'auto_retry_start',
+      attempt: 2,
+      maxAttempts: 2,
+      delayMs: 4_000,
+      errorMessage: 'fetch failed',
+    });
+    fake.emit({
+      type: 'message_end',
+      message: { role: 'assistant', stopReason: 'error', errorMessage: 'HTTP 503 overloaded' },
+    });
+    fake.emit({
+      type: 'auto_retry_end',
+      success: false,
+      attempt: 2,
+      finalError: 'HTTP 503 overloaded',
+    });
+    fake.prompt.resolve();
+    await service.waitForIdle();
+
+    const error = events.at(-1).error;
+    expect(error.providerAttempts).toMatchObject({
+      total: 3,
+      observedFailures: 3,
+      sameReason: false,
+    });
+    expect(error.message).toContain('Attempt details:');
+    expect(error.message).toContain('WebSocket transport failed after response streaming started');
+    expect(error.message).toContain('UND_ERR_CONNECT_TIMEOUT');
+    expect(error.message).toContain('HTTP 503');
   });
 
   test('explains exhausted automatic retries with sanitized provider detail', async () => {

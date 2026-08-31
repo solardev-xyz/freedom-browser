@@ -139,14 +139,18 @@ function failureText(value) {
 function combinedFailureText(value) {
   const parts = [];
   const seen = new Set();
-  let current = value;
-  for (let depth = 0; depth < 4 && current && !seen.has(current); depth += 1) {
+  const queue = [value];
+  for (let examined = 0; examined < 12 && queue.length; examined += 1) {
+    const current = queue.shift();
+    if (!current || seen.has(current)) continue;
     if ((typeof current === 'object' || typeof current === 'function') && current !== null) {
       seen.add(current);
     }
     const text = failureText(current);
     if (text) parts.push(text.slice(0, 4_096));
-    current = typeof current === 'object' ? current.cause : null;
+    if (typeof current !== 'object') continue;
+    if (current.cause) queue.push(current.cause);
+    if (Array.isArray(current.errors)) queue.push(...current.errors.slice(0, 8));
   }
   return parts.join(' · ').slice(0, 16_384);
 }
@@ -173,14 +177,16 @@ function firstSafeInteger(value, keys) {
 }
 
 function safeNetworkCode(value, text) {
-  let current = value;
   const seen = new Set();
-  for (let depth = 0; depth < 4 && current && !seen.has(current); depth += 1) {
-    if (typeof current !== 'object') break;
+  const queue = [value];
+  for (let examined = 0; examined < 12 && queue.length; examined += 1) {
+    const current = queue.shift();
+    if (!current || seen.has(current) || typeof current !== 'object') continue;
     seen.add(current);
     const candidate = typeof current.code === 'string' ? current.code.toUpperCase() : '';
     if (SAFE_NETWORK_CODES.has(candidate)) return candidate;
-    current = current.cause;
+    if (current.cause) queue.push(current.cause);
+    if (Array.isArray(current.errors)) queue.push(...current.errors.slice(0, 8));
   }
   for (const code of SAFE_NETWORK_CODES) {
     if (new RegExp(`(?:^|[^A-Z0-9_])${code}(?:$|[^A-Z0-9_])`, 'i').test(text)) return code;
@@ -360,9 +366,19 @@ function classifyProviderFailure(value) {
     category = PROVIDER_FAILURE_CATEGORIES.CONNECTION;
   }
 
-  const presentation = FAILURE_PRESENTATIONS[category];
   const httpStatus = safeHttpStatus(value, text);
   const networkCode = safeNetworkCode(value, text);
+  if (
+    [
+      'ETIMEDOUT',
+      'UND_ERR_CONNECT_TIMEOUT',
+      'UND_ERR_HEADERS_TIMEOUT',
+      'UND_ERR_BODY_TIMEOUT',
+    ].includes(networkCode)
+  ) {
+    category = PROVIDER_FAILURE_CATEGORIES.TIMEOUT;
+  }
+  const presentation = FAILURE_PRESENTATIONS[category];
   const cause = classifyProviderCause(category, text, networkCode, httpStatus);
   return Object.freeze({
     category,
@@ -487,6 +503,7 @@ function summarizeProviderAttempts(failures, retryCount) {
     automaticRetries,
     observedFailures,
     sameReason,
+    reasons: Object.freeze(normalized.map((failure) => failure)),
   });
 }
 
@@ -509,11 +526,15 @@ function normalizeAttemptSummary(value, retryCount) {
       Number.isSafeInteger(value.observedFailures) ? value.observedFailures : 0
     )
   );
+  const reasons = Array.isArray(value.reasons)
+    ? value.reasons.slice(-total).map((failure) => classifyProviderFailure(failure))
+    : [];
   return Object.freeze({
     total,
     automaticRetries,
     observedFailures,
     sameReason: typeof value.sameReason === 'boolean' ? value.sameReason : null,
+    reasons: Object.freeze(reasons),
   });
 }
 
@@ -572,9 +593,30 @@ function attemptsPresentation(attempts) {
     attempts.sameReason === true
       ? ' Every attempt failed for the same reason.'
       : attempts.sameReason === false
-        ? ' The attempts failed for different reasons.'
+        ? attemptReasonsPresentation(attempts.reasons)
         : '';
   return ` Freedom made ${attempts.total} attempts total: the initial request plus ${attempts.automaticRetries} automatic ${retryWord}.${sameReason}`;
+}
+
+function attemptReasonPresentation(failure) {
+  const parts = [];
+  if (failure.httpStatus) parts.push(`HTTP ${failure.httpStatus}`);
+  if (failure.networkCode) parts.push(failure.networkCode);
+  if (failure.detail) parts.push(`“${boundedDisplayString(failure.detail, 180)}”`);
+  if (!parts.length && failure.cause && failure.cause !== PROVIDER_FAILURE_CAUSES.UNKNOWN) {
+    parts.push(failure.cause.replaceAll('_', ' '));
+  }
+  return parts.join(' · ') || 'no additional reason supplied';
+}
+
+function attemptReasonsPresentation(reasons) {
+  if (!Array.isArray(reasons) || reasons.length === 0) {
+    return ' Pi reported different failures, but supplied no per-attempt details.';
+  }
+  const details = reasons
+    .map((failure, index) => `${index + 1}) ${attemptReasonPresentation(failure)}`)
+    .join('; ');
+  return ` Attempt details: ${details}.`;
 }
 
 function providerFailurePresentation(failure, options = {}) {
@@ -625,6 +667,7 @@ module.exports = {
   PROVIDER_FAILURE_RECOVERY,
   classifyProviderFailure,
   createProviderTerminalError,
+  mostInformativeProviderFailure,
   providerFailurePresentation,
   providerRetryCount,
   summarizeProviderAttempts,
