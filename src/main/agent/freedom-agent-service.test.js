@@ -1926,7 +1926,8 @@ describe('FreedomAgentService', () => {
       status: 'failed',
       error: {
         code: AGENT_ERROR_CODES.PROVIDER_ERROR,
-        message: 'test using model_test rejected the saved credentials.',
+        message:
+          'test using model_test rejected the saved credentials. Provider detail: “Authorization failed for [redacted credential]”',
         providerFailure: {
           category: 'authentication',
           recovery: 'provider_setup',
@@ -1964,7 +1965,8 @@ describe('FreedomAgentService', () => {
           attempt: 1,
           maxAttempts: 2,
           delayMs: 2_000,
-          message: 'test using model_test rate-limited the request.',
+          message:
+            'test using model_test rate-limited the request. Provider detail: “429 upstream exposed [redacted credential]”',
           providerFailure: expect.objectContaining({
             category: 'rate_limited',
             recovery: 'transient',
@@ -1979,7 +1981,7 @@ describe('FreedomAgentService', () => {
     expect(JSON.stringify(events)).not.toContain('sk-secret-key');
   });
 
-  test('explains exhausted automatic retries without exposing provider detail', async () => {
+  test('explains exhausted automatic retries with sanitized provider detail', async () => {
     const fake = createFakeSession();
     const { service } = createService(fake);
     const events = [];
@@ -2023,7 +2025,7 @@ describe('FreedomAgentService', () => {
       error: {
         code: AGENT_ERROR_CODES.PROVIDER_ERROR,
         message:
-          'test using model_test returned HTTP 503. Freedom made 3 attempts total: the initial request plus 2 automatic retries. Every attempt failed for the same reason.',
+          'test using model_test returned HTTP 503. Provider detail: “503 upstream [redacted credential]” Freedom made 3 attempts total: the initial request plus 2 automatic retries. Every attempt failed for the same reason.',
         providerFailure: {
           category: 'service_unavailable',
           recovery: 'transient',
@@ -2041,6 +2043,48 @@ describe('FreedomAgentService', () => {
       },
     });
     expect(JSON.stringify(events)).not.toContain('sk-secret-key');
+  });
+
+  test('states explicitly when repeated network failures include no status or code', async () => {
+    const fake = createFakeSession();
+    const { service } = createService(fake);
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+
+    for (const attempt of [1, 2]) {
+      fake.emit({
+        type: 'auto_retry_start',
+        attempt,
+        maxAttempts: 2,
+        delayMs: attempt * 2_000,
+        errorMessage: 'Network error',
+      });
+    }
+    fake.emit({
+      type: 'message_end',
+      message: { role: 'assistant', stopReason: 'error', errorMessage: 'Network error' },
+    });
+    fake.emit({
+      type: 'auto_retry_end',
+      success: false,
+      attempt: 2,
+      finalError: 'Network error',
+    });
+    fake.prompt.resolve();
+    await service.waitForIdle();
+
+    const error = events.at(-1).error;
+    expect(error.message).toContain('Provider detail: “Network error”');
+    expect(error.message).toContain(
+      'No HTTP status, network error code, or more specific reason was supplied.'
+    );
+    expect(error.message).not.toContain('same reason');
+    expect(error.providerAttempts).toMatchObject({
+      total: 3,
+      observedFailures: 3,
+      sameReason: null,
+    });
   });
 
   test('redacts prompt rejection details', async () => {
@@ -2153,17 +2197,38 @@ describe('FreedomAgentService', () => {
       attempt: 1,
       maxAttempts: 2,
       delayMs: 500,
-      message: 'The model provider did not provide a usable failure reason.',
+      message:
+        'The model provider reported: “secret provider detail” It supplied no recognized HTTP status or error code.',
       providerFailure: {
         category: 'unknown',
         recovery: 'unknown',
         cause: 'unknown',
         phase: 'unknown',
+        detail: 'secret provider detail',
       },
     });
     expect(normalizePiEvent({ type: 'auto_retry_end', success: true, attempt: 1 })).toEqual({
       type: 'run_retry_recovered',
       attempt: 1,
+    });
+    expect(
+      normalizePiEvent({
+        type: 'auto_retry_end',
+        success: false,
+        attempt: 2,
+        finalError: 'HTTP 503 overloaded_error',
+      })
+    ).toEqual({
+      type: 'run_retry_exhausted',
+      attempt: 2,
+      providerFailure: {
+        category: 'service_unavailable',
+        recovery: 'transient',
+        cause: 'http_error',
+        phase: 'response',
+        httpStatus: 503,
+        detail: 'HTTP 503 overloaded_error',
+      },
     });
     expect(normalizePiEvent({ type: 'message_end', message: { secret: true } })).toBeNull();
     expect(normalizePiEvent({ type: 'compaction_start', reason: 'threshold' })).toEqual({

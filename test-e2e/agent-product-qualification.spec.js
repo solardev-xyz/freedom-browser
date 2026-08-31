@@ -232,7 +232,8 @@ async function handleCompletion(request, response) {
     response.end(
       JSON.stringify({
         error: {
-          message: 'Temporary fixture outage with provider-private-detail',
+          message:
+            'Temporary fixture outage overloaded_error Authorization: Bearer fixture-private-token',
           type: 'service_unavailable',
         },
       })
@@ -247,7 +248,8 @@ async function handleCompletion(request, response) {
     response.end(
       JSON.stringify({
         error: {
-          message: 'Persistent fixture outage with provider-private-detail',
+          message:
+            'Persistent fixture outage overloaded_error Authorization: Bearer fixture-private-token',
           type: 'service_unavailable',
         },
       })
@@ -957,10 +959,13 @@ test('provider recovery: transient failures are explained, retried, and resumed'
   await expect(window.locator('#agent-run-status')).toHaveText('Reconnecting', {
     timeout: 5_000,
   });
-  await expect(window.locator('#agent-run-message')).toContainText(
-    `Ollama using ${MODEL_ID} returned HTTP 503. Retrying automatically`
-  );
-  await expect(window.locator('#agent-run-message')).not.toContainText('provider-private-detail');
+  const retryMessage = window.locator('#agent-run-message');
+  await Promise.all([
+    expect(retryMessage).toContainText(`Ollama using ${MODEL_ID} returned HTTP 503.`),
+    expect(retryMessage).toContainText('overloaded_error'),
+    expect(retryMessage).toContainText('Retrying automatically'),
+  ]);
+  await expect(window.locator('#agent-run-message')).not.toContainText('fixture-private-token');
   await expect(window.locator('.agent-live-status')).toContainText('Reconnecting · attempt 1 of 2');
   await expect(window.locator('.agent-live-status')).toHaveClass(/active/);
   await expect(window.locator('#agent-run-status')).toHaveText('Complete', { timeout: 15_000 });
@@ -1000,7 +1005,8 @@ test('provider failure: terminal reason and attempt history survive partial brow
   await expect(window.locator('#agent-run-message')).toContainText(
     `Ollama using ${MODEL_ID} returned HTTP 503.`
   );
-  await expect(window.locator('#agent-run-message')).not.toContainText('provider-private-detail');
+  await expect(window.locator('#agent-run-message')).toContainText('overloaded_error');
+  await expect(window.locator('#agent-run-message')).not.toContainText('fixture-private-token');
 
   const outcome = window.locator('.agent-turn-outcome').last();
   await expect(outcome).toContainText(`Ollama using ${MODEL_ID} returned HTTP 503.`);
@@ -1010,7 +1016,8 @@ test('provider failure: terminal reason and attempt history survive partial brow
   await expect(outcome).toContainText('2 earlier browser changes remain in place');
   await expect(outcome).toContainText('Review the Agent tabs');
   await expect(outcome).toContainText('Wait a moment');
-  await expect(outcome).not.toContainText('provider-private-detail');
+  await expect(outcome).toContainText('overloaded_error');
+  await expect(outcome).not.toContainText('fixture-private-token');
 
   const fieldValues = await window.evaluate(() => {
     const webview = document.querySelector('webview:not(.hidden)');

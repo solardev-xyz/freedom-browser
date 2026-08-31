@@ -58,7 +58,7 @@ describe('provider failure classification', () => {
     expect(classifyProviderFailure(raw)).toMatchObject({ cause, phase });
   });
 
-  test('returns only fixed copy and bounded counters, never raw provider detail', () => {
+  test('preserves bounded provider detail while redacting credentials', () => {
     const raw = '429 request sk-secret-key Authorization: Bearer private-token';
     const error = createProviderTerminalError(new Error(raw), {
       retryCount: 200,
@@ -86,15 +86,30 @@ describe('provider failure classification', () => {
     });
     expect(error.message).toContain('21 attempts total');
     expect(error.message).toContain('20 automatic retries');
+    expect(error.message).toContain('Provider detail:');
+    expect(error.message).toContain('[redacted credential]');
+    expect(error.message).toContain('Authorization: [redacted]');
     expect(presentation.nextStep).toContain('Wait a moment');
-    expect(JSON.stringify({ error, presentation })).not.toContain('secret');
-    expect(JSON.stringify({ error, presentation })).not.toContain('Bearer');
+    expect(JSON.stringify({ error, presentation })).not.toContain('sk-secret');
+    expect(JSON.stringify({ error, presentation })).not.toContain('private-token');
+  });
+
+  test('redacts common authorization and token shapes from preserved detail', () => {
+    const error = createProviderTerminalError(
+      'fetch failed Authorization: Basic dXNlcjpwYXNz {"client_secret":"private-client-secret","refresh_token":"private-refresh-token"}'
+    );
+    const serialized = JSON.stringify(error);
+
+    expect(serialized).toContain('[redacted');
+    expect(serialized).not.toContain('dXNlcjpwYXNz');
+    expect(serialized).not.toContain('private-client-secret');
+    expect(serialized).not.toContain('private-refresh-token');
   });
 
   test('reconstructs safe category and retry evidence from persisted fixed copy', () => {
     const error = createProviderTerminalError('503 service unavailable', { retryCount: 2 });
 
-    expect(classifyProviderFailure(error.message)).toEqual({
+    expect(classifyProviderFailure(error.message)).toMatchObject({
       category: PROVIDER_FAILURE_CATEGORIES.SERVICE_UNAVAILABLE,
       recovery: PROVIDER_FAILURE_RECOVERY.TRANSIENT,
       cause: PROVIDER_FAILURE_CAUSES.HTTP_ERROR,
@@ -130,15 +145,48 @@ describe('provider failure classification', () => {
     expect(mixed.message).toContain('attempts failed for different reasons');
   });
 
-  test('states honestly when the provider supplied no usable reason', () => {
+  test('does not claim an exact repeated reason from broad network classifications', () => {
+    const error = createProviderTerminalError('Network error', {
+      retryCount: 2,
+      failures: ['Network error', 'Network error', 'Network error'],
+      providerLabel: 'ChatGPT (Codex)',
+      modelId: 'gpt-test',
+    });
+
+    expect(error.providerAttempts.sameReason).toBeNull();
+    expect(error.message).toContain('Provider detail: “Network error”');
+    expect(error.message).toContain(
+      'No HTTP status, network error code, or more specific reason was supplied.'
+    );
+    expect(error.message).not.toContain('same reason');
+  });
+
+  test('prefers concrete evidence from an earlier attempt over a vague final error', () => {
+    const error = createProviderTerminalError('Network error', {
+      retryCount: 2,
+      failures: ['HTTP 503 overloaded_error', 'Network error', 'Network error'],
+      providerLabel: 'ChatGPT (Codex)',
+      modelId: 'gpt-test',
+    });
+
+    expect(error.providerFailure).toMatchObject({
+      cause: PROVIDER_FAILURE_CAUSES.HTTP_ERROR,
+      httpStatus: 503,
+      detail: 'HTTP 503 overloaded_error',
+    });
+    expect(error.message).toContain('returned HTTP 503');
+    expect(error.message).toContain('attempts failed for different reasons');
+  });
+
+  test('preserves an unrecognized provider reason instead of replacing it with vague copy', () => {
     const error = createProviderTerminalError('something entirely novel', {
       providerLabel: 'OpenRouter',
       modelId: 'example/model',
     });
 
     expect(error.message).toBe(
-      'OpenRouter using example/model did not provide a usable failure reason.'
+      'OpenRouter using example/model reported: “something entirely novel” It supplied no recognized HTTP status or error code.'
     );
-    expect(JSON.stringify(error)).not.toContain('entirely novel');
+    expect(error.providerFailure.detail).toBe('something entirely novel');
   });
 });

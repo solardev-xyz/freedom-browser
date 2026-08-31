@@ -210,6 +210,13 @@ function piMessageText(message) {
     .join('\n');
 }
 
+function collectedProviderFailures(run, fallback) {
+  const failures = [...run.providerFailures];
+  const expectedAttempts = Math.max(1, run.providerRetryCount + 1);
+  if (fallback && failures.length < expectedAttempts) failures.push(fallback);
+  return failures;
+}
+
 function validateStartOptions(options) {
   const promptOptions = validatePromptOptions(options);
   if (
@@ -328,6 +335,14 @@ function normalizePiEvent(event, toolOutcome, provider = {}) {
     return {
       type: 'run_retry_recovered',
       attempt: event.attempt,
+    };
+  }
+  if (event.type === 'auto_retry_end' && event.success === false) {
+    const providerFailure = classifyProviderFailure(event.finalError);
+    return {
+      type: 'run_retry_exhausted',
+      attempt: event.attempt,
+      providerFailure,
     };
   }
   if (event.type === 'compaction_start') {
@@ -1543,7 +1558,7 @@ class FreedomAgentService {
         status = 'failed';
         error = createProviderTerminalError(run.providerFailure, {
           retryCount: run.providerRetryCount,
-          failures: [...run.providerFailures, run.providerFailure],
+          failures: collectedProviderFailures(run, run.providerFailure),
           providerLabel: run.providerLabel,
           modelId: run.modelId,
         });
@@ -1566,7 +1581,7 @@ class FreedomAgentService {
         status = 'failed';
         error = createProviderTerminalError(caughtError, {
           retryCount: run.providerRetryCount,
-          failures: [...run.providerFailures, caughtError],
+          failures: collectedProviderFailures(run, caughtError),
           providerLabel: run.providerLabel,
           modelId: run.modelId,
         });
@@ -1621,6 +1636,11 @@ class FreedomAgentService {
     if (toolCallId) run.toolOutcomes.delete(toolCallId);
     if (!normalized) return;
     if (normalized.type === 'run_retrying') {
+      run.providerFailure = normalized.providerFailure;
+      run.providerFailures.push(normalized.providerFailure);
+      if (run.providerFailures.length > 20) run.providerFailures.shift();
+      run.providerRetryCount = Math.max(run.providerRetryCount, normalized.attempt);
+    } else if (normalized.type === 'run_retry_exhausted') {
       run.providerFailure = normalized.providerFailure;
       run.providerFailures.push(normalized.providerFailure);
       if (run.providerFailures.length > 20) run.providerFailures.shift();

@@ -61,6 +61,11 @@ const SAFE_NETWORK_CODES = new Set([
 ]);
 const FAILURE_CAUSE_SET = new Set(Object.values(PROVIDER_FAILURE_CAUSES));
 const FAILURE_PHASE_SET = new Set(Object.values(PROVIDER_FAILURE_PHASES));
+const NON_SPECIFIC_CAUSES = new Set([
+  PROVIDER_FAILURE_CAUSES.UNKNOWN,
+  PROVIDER_FAILURE_CAUSES.NETWORK_UNAVAILABLE,
+]);
+const MAX_PROVIDER_DETAIL_LENGTH = 500;
 
 const FAILURE_PRESENTATIONS = Object.freeze({
   [PROVIDER_FAILURE_CATEGORIES.AUTHENTICATION]: Object.freeze({
@@ -292,6 +297,7 @@ function classifyProviderFailure(value) {
       ? value.cause
       : defaultCauseForCategory(value.category, httpStatus);
     const phase = FAILURE_PHASE_SET.has(value.phase) ? value.phase : phaseForCause(cause);
+    const detail = sanitizeProviderDetail(value.detail);
     return Object.freeze({
       category: value.category,
       recovery: presentation.recovery,
@@ -299,9 +305,11 @@ function classifyProviderFailure(value) {
       phase,
       ...(httpStatus && { httpStatus }),
       ...(networkCode && { networkCode }),
+      ...(detail && { detail }),
     });
   }
   const text = combinedFailureText(value);
+  const detail = sanitizeProviderDetail(value);
   let category = PROVIDER_FAILURE_CATEGORIES.UNKNOWN;
 
   if (
@@ -363,6 +371,7 @@ function classifyProviderFailure(value) {
     phase: phaseForCause(cause),
     ...(httpStatus && { httpStatus }),
     ...(networkCode && { networkCode }),
+    ...(detail && { detail }),
   });
 }
 
@@ -388,6 +397,62 @@ function boundedDisplayString(value, maxLength) {
   return result.trim().slice(0, maxLength);
 }
 
+function sanitizeProviderDetail(value) {
+  const raw = combinedFailureText(value);
+  if (!raw) return '';
+  return boundedDisplayString(
+    raw
+      .replace(/\s+/g, ' ')
+      .replace(
+        /(["'](?:api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|client[_-]?secret|authorization|credential)["']\s*:\s*["'])[^"']*(["'])/gi,
+        '$1[redacted]$2'
+      )
+      .replace(
+        /\bAuthorization\s*:\s*(?:(?:Bearer|Basic|Token)\s+)?[^\s,;}"']+/gi,
+        'Authorization: [redacted]'
+      )
+      .replace(/\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, '[redacted authorization]')
+      .replace(/\b(?:sk|ak)[-_][A-Za-z0-9_-]{6,}\b/gi, '[redacted credential]')
+      .replace(
+        /(["']?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|client[_-]?secret|authorization|credential)["']?\s*[:=]\s*["']?)[^\s,"';}]+/gi,
+        '$1[redacted]'
+      )
+      .replace(
+        /([?&](?:api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|token)=)[^&#\s]+/gi,
+        '$1[redacted]'
+      ),
+    MAX_PROVIDER_DETAIL_LENGTH
+  );
+}
+
+function hasConcreteProviderEvidence(failure) {
+  return Boolean(
+    failure?.httpStatus ||
+      failure?.networkCode ||
+      (failure?.cause && !NON_SPECIFIC_CAUSES.has(failure.cause))
+  );
+}
+
+function providerFailureScore(failure) {
+  let score = 0;
+  if (failure.httpStatus) score += 100;
+  if (failure.networkCode) score += 100;
+  if (failure.cause && !NON_SPECIFIC_CAUSES.has(failure.cause)) score += 50;
+  if (failure.category !== PROVIDER_FAILURE_CATEGORIES.UNKNOWN) score += 20;
+  if (failure.detail) score += Math.min(20, Math.ceil(failure.detail.length / 25));
+  return score;
+}
+
+function mostInformativeProviderFailure(values, fallback) {
+  const candidates = [...(Array.isArray(values) ? values : []), fallback]
+    .filter(Boolean)
+    .map(classifyProviderFailure);
+  if (!candidates.length) return classifyProviderFailure(fallback);
+  return candidates.reduce((best, candidate) =>
+    providerFailureScore(candidate) >= providerFailureScore(best) ? candidate : best
+  );
+}
+
 function providerFailureFingerprint(value) {
   const failure = classifyProviderFailure(value);
   return JSON.stringify([
@@ -396,6 +461,7 @@ function providerFailureFingerprint(value) {
     failure.phase,
     failure.httpStatus || null,
     failure.networkCode || null,
+    failure.detail || null,
   ]);
 }
 
@@ -406,12 +472,16 @@ function summarizeProviderAttempts(failures, retryCount) {
     ? failures.slice(-total).map((failure) => classifyProviderFailure(failure))
     : [];
   const observedFailures = Math.min(total, normalized.length);
-  const sameReason =
-    total > 1 && observedFailures === total
-      ? normalized.every(
-          (failure) => providerFailureFingerprint(failure) === providerFailureFingerprint(normalized[0])
-        )
-      : null;
+  const comparable = normalized.length > 0 && normalized.every(hasConcreteProviderEvidence);
+  const complete = total > 1 && observedFailures === total;
+  const fingerprintsMatch =
+    complete &&
+    normalized.every(
+      (failure) => providerFailureFingerprint(failure) === providerFailureFingerprint(normalized[0])
+    );
+  let sameReason = null;
+  if (complete && !fingerprintsMatch) sameReason = false;
+  if (complete && fingerprintsMatch && comparable) sameReason = true;
   return Object.freeze({
     total,
     automaticRetries,
@@ -456,39 +526,42 @@ function providerSubject(options = {}) {
 
 function causePresentation(failure, options = {}) {
   const subject = providerSubject(options);
+  const detail = failure.detail ? ` Provider detail: “${failure.detail}”` : '';
   switch (failure.cause) {
     case PROVIDER_FAILURE_CAUSES.CREDENTIALS_REJECTED:
-      return `${subject} rejected the saved credentials.`;
+      return `${subject} rejected the saved credentials.${detail}`;
     case PROVIDER_FAILURE_CAUSES.USAGE_LIMIT_REACHED:
-      return `${subject} reported a usage or billing limit.`;
+      return `${subject} reported a usage or billing limit.${detail}`;
     case PROVIDER_FAILURE_CAUSES.MODEL_UNAVAILABLE:
-      return `${subject} reported that the selected model is unavailable.`;
+      return `${subject} reported that the selected model is unavailable.${detail}`;
     case PROVIDER_FAILURE_CAUSES.REQUEST_TOO_LARGE:
-      return `${subject} rejected the size of this request.`;
+      return `${subject} rejected the size of this request.${detail}`;
     case PROVIDER_FAILURE_CAUSES.RATE_LIMITED:
-      return `${subject} rate-limited the request.`;
+      return `${subject} rate-limited the request.${detail}`;
     case PROVIDER_FAILURE_CAUSES.HTTP_ERROR:
       return failure.httpStatus
-        ? `${subject} returned HTTP ${failure.httpStatus}.`
-        : `${subject} returned an unsuccessful response.`;
+        ? `${subject} returned HTTP ${failure.httpStatus}.${detail}`
+        : `${subject} returned an unsuccessful response.${detail}`;
     case PROVIDER_FAILURE_CAUSES.PROVIDER_UNAVAILABLE:
-      return `${subject} was temporarily unavailable.`;
+      return `${subject} was temporarily unavailable.${detail}`;
     case PROVIDER_FAILURE_CAUSES.TIMEOUT:
-      return `${subject} did not respond in time.`;
+      return `${subject} did not respond in time.${detail}`;
     case PROVIDER_FAILURE_CAUSES.DNS_FAILED:
-      return `Freedom could not resolve the network address for ${subject}${failure.networkCode ? ` (${failure.networkCode})` : ''}.`;
+      return `Freedom could not resolve the network address for ${subject}${failure.networkCode ? ` (${failure.networkCode})` : ''}.${detail}`;
     case PROVIDER_FAILURE_CAUSES.TLS_FAILED:
-      return `Freedom could not establish a secure connection to ${subject}.`;
+      return `Freedom could not establish a secure connection to ${subject}.${detail}`;
     case PROVIDER_FAILURE_CAUSES.CONNECTION_REFUSED:
-      return `${subject} refused the connection${failure.networkCode ? ` (${failure.networkCode})` : ''}.`;
+      return `${subject} refused the connection${failure.networkCode ? ` (${failure.networkCode})` : ''}.${detail}`;
     case PROVIDER_FAILURE_CAUSES.CONNECTION_RESET:
-      return `The connection to ${subject} was reset before the response finished${failure.networkCode ? ` (${failure.networkCode})` : ''}.`;
+      return `The connection to ${subject} was reset before the response finished${failure.networkCode ? ` (${failure.networkCode})` : ''}.${detail}`;
     case PROVIDER_FAILURE_CAUSES.RESPONSE_STREAM_CLOSED:
-      return `${subject} closed the response stream before the model finished.`;
+      return `${subject} closed the response stream before the model finished.${detail}`;
     case PROVIDER_FAILURE_CAUSES.NETWORK_UNAVAILABLE:
-      return `Freedom could not reach ${subject}.`;
+      return `${subject} reported a network failure.${detail} No HTTP status, network error code, or more specific reason was supplied.`;
     default:
-      return `${subject} did not provide a usable failure reason.`;
+      return failure.detail
+        ? `${subject} reported: “${failure.detail}” It supplied no recognized HTTP status or error code.`
+        : `${subject} did not provide a usable failure reason or any HTTP status or error code.`;
   }
 }
 
@@ -523,7 +596,7 @@ function providerFailurePresentation(failure, options = {}) {
 }
 
 function createProviderTerminalError(value, options = {}) {
-  const failure = classifyProviderFailure(value);
+  const failure = mostInformativeProviderFailure(options.failures, value);
   const retryCount = normalizeRetryCount(options.retryCount);
   const attempts = summarizeProviderAttempts(options.failures, retryCount);
   const presentation = providerFailurePresentation(failure, {
