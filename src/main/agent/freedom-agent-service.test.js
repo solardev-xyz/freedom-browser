@@ -665,6 +665,64 @@ describe('FreedomAgentService', () => {
     expect(fake.session.dispose).not.toHaveBeenCalled();
   });
 
+  test('rebuilds a failed provider session while preserving its browser workspace', async () => {
+    const failed = createFakeSession();
+    const recovered = createFakeSession();
+    const runIdFactory = jest
+      .fn()
+      .mockReturnValueOnce('run_failed')
+      .mockReturnValueOnce('run_retry');
+    const createSession = jest
+      .fn()
+      .mockResolvedValueOnce({ session: failed.session })
+      .mockResolvedValueOnce({ session: recovered.session });
+    const { service, dependencies } = createService(failed, { createSession, runIdFactory });
+
+    await service.start(startOptions({ prompt: 'Publish this text' }));
+    failed.emit({
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        stopReason: 'error',
+        errorMessage: '503 service unavailable',
+      },
+    });
+    failed.prompt.resolve();
+    await service.waitForIdle();
+
+    expect(failed.unsubscribe).toHaveBeenCalledTimes(1);
+    expect(failed.session.dispose).toHaveBeenCalledTimes(1);
+    expect(service.getState()).toMatchObject({
+      status: 'ready',
+      runtimeAvailable: false,
+      transcript: [{ runId: 'run_failed', status: 'failed' }],
+    });
+
+    await expect(service.start(startOptions({ prompt: 'Publish this text' }))).resolves.toEqual({
+      runId: 'run_retry',
+      conversationId: 'conversation_test',
+    });
+
+    expect(dependencies.createControllerScope).toHaveBeenCalledTimes(1);
+    const scopedController = dependencies.createTools.mock.calls[0][0].controller;
+    expect(scopedController.prepareResume).toHaveBeenCalledTimes(1);
+    expect(createSession).toHaveBeenCalledTimes(2);
+    expect(createSession.mock.calls[1][0]).toMatchObject({
+      restoredTranscript: [expect.objectContaining({ runId: 'run_failed', status: 'failed' })],
+    });
+    expect(recovered.session.prompt).toHaveBeenCalledWith(
+      expect.stringContaining('Publish this text'),
+      {
+        expandPromptTemplates: false,
+        source: 'interactive',
+      }
+    );
+
+    recovered.prompt.resolve();
+    await service.waitForIdle();
+    expect(service.getState()).toMatchObject({ status: 'ready', runtimeAvailable: true });
+  });
+
   test('changes approval policy only between turns and records the policy used by each turn', async () => {
     const fake = createFakeSession();
     const historyStore = createHistoryStore();

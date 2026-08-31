@@ -1207,7 +1207,8 @@ function buildAgentOutcome(activity, status, error) {
       verification: 'swarm_publication_unresolved',
       tone: 'caution',
       headline: 'Model disconnected; publication still needs reconciliation',
-      detail: `${providerPresentation.terminalMessage} Publication ${unresolvedPublication.publicationId} for ${publicationObject(unresolvedPublication)} is ${unresolvedPublication.state.replaceAll('_', ' ')} and must be checked before any repeat.`,
+      detail: `${providerPresentation.summaryMessage} Publication ${unresolvedPublication.publicationId} for ${publicationObject(unresolvedPublication)} is ${unresolvedPublication.state.replaceAll('_', ' ')} and must be checked before any repeat.`,
+      technicalDetails: providerPresentation.technicalDetails,
       publication: unresolvedPublication,
       destinations,
       nextStep: 'Continue this conversation so Agent can check the existing Swarm publication.',
@@ -1224,7 +1225,8 @@ function buildAgentOutcome(activity, status, error) {
       headline: stillRunning
         ? 'Model disconnected; node request still running'
         : 'Model disconnected; node outcome uncertain',
-      detail: `${providerPresentation.terminalMessage} ${unresolvedNodeRequest.service} ${stillRunning ? 'is still processing' : 'may have received'} ${unresolvedNodeRequest.method} ${unresolvedNodeRequest.path}. Freedom operation ${unresolvedNodeRequest.operationId} must be reconciled before any repeat.`,
+      detail: `${providerPresentation.summaryMessage} ${unresolvedNodeRequest.service} ${stillRunning ? 'is still processing' : 'may have received'} ${unresolvedNodeRequest.method} ${unresolvedNodeRequest.path}. Freedom operation ${unresolvedNodeRequest.operationId} must be reconciled before any repeat.`,
+      technicalDetails: providerPresentation.technicalDetails,
       nodeRequest: unresolvedNodeRequest,
       destinations,
       nextStep: 'Continue this conversation so Agent can check the existing node operation.',
@@ -1232,18 +1234,23 @@ function buildAgentOutcome(activity, status, error) {
       counts,
     });
   }
-  const failureExplanation = providerPresentation?.terminalMessage || errorExplanation(failureCode);
+  const failureExplanation = providerPresentation?.summaryMessage || errorExplanation(failureCode);
   return Object.freeze({
     kind: 'recovery',
     verification: counts.successful ? 'partial' : 'none',
     tone: 'danger',
-    headline: 'Agent stopped before completion',
+    headline: providerPresentation ? 'Model connection failed' : 'Agent stopped before completion',
     detail: `${failureExplanation} ${browserState}${destinationNote}`,
+    ...(providerPresentation?.technicalDetails && {
+      technicalDetails: providerPresentation.technicalDetails,
+    }),
     destinations,
     nextStep: retryNeedsReview
       ? `Review the Agent tabs, then tell Agent what to continue or redo. ${providerPresentation?.nextStep || ''}`.trim()
       : providerPresentation?.nextStep || 'You can safely try the task again.',
     retrySafety: retryNeedsReview ? 'review' : 'safe',
+    canRetry:
+      !retryNeedsReview && providerPresentation?.recovery === 'transient',
     counts,
   });
 }

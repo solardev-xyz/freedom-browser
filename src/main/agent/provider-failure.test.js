@@ -16,6 +16,7 @@ describe('provider failure classification', () => {
     ['401 invalid API key sk-secret', PROVIDER_FAILURE_CATEGORIES.AUTHENTICATION],
     ['insufficient_quota: billing limit', PROVIDER_FAILURE_CATEGORIES.USAGE_LIMIT],
     ['model does not exist', PROVIDER_FAILURE_CATEGORIES.MODEL_UNAVAILABLE],
+    ["404: model 'freedom-test' not found", PROVIDER_FAILURE_CATEGORIES.MODEL_UNAVAILABLE],
     ['413 request too large', PROVIDER_FAILURE_CATEGORIES.REQUEST_TOO_LARGE],
     ['429 too many requests', PROVIDER_FAILURE_CATEGORIES.RATE_LIMITED],
     ['529 overloaded_error', PROVIDER_FAILURE_CATEGORIES.SERVICE_UNAVAILABLE],
@@ -70,6 +71,18 @@ describe('provider failure classification', () => {
       cause: PROVIDER_FAILURE_CAUSES.TIMEOUT,
       networkCode: 'UND_ERR_CONNECT_TIMEOUT',
     });
+  });
+
+  test('does not mistake a destination port for an HTTP response status', () => {
+    const failure = classifyProviderFailure(
+      'fetch failed · Connect Timeout Error (attempted address: chatgpt.com:443, timeout: 10000ms) · UND_ERR_CONNECT_TIMEOUT'
+    );
+    expect(failure).toMatchObject({
+      category: PROVIDER_FAILURE_CATEGORIES.TIMEOUT,
+      cause: PROVIDER_FAILURE_CAUSES.TIMEOUT,
+      networkCode: 'UND_ERR_CONNECT_TIMEOUT',
+    });
+    expect(failure).not.toHaveProperty('httpStatus');
   });
 
   test('preserves bounded provider detail while redacting credentials', () => {

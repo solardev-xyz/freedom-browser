@@ -623,7 +623,8 @@ describe('Agent progress projection', () => {
       retrySafety: 'review',
       counts: { successful: 1, failed: 1, changed: 1 },
     });
-    expect(outcome.detail).toContain('did not provide a usable failure reason');
+    expect(outcome.detail).toContain('could not complete the request');
+    expect(outcome.technicalDetails).toContain('did not provide a usable failure reason');
     expect(outcome.detail).toContain('earlier browser change remains');
     expect(outcome.nextStep).toContain('Review the Agent tabs');
     expect(outcome.nextStep).toContain('Try continuing once');
@@ -642,9 +643,11 @@ describe('Agent progress projection', () => {
       message: 'The model provider remained unavailable. Freedom exhausted 2 automatic retries.',
     });
 
-    expect(outcome.detail).toContain('was temporarily unavailable');
-    expect(outcome.detail).toContain('3 attempts total');
-    expect(outcome.detail).toContain('2 automatic retries');
+    expect(outcome.detail).toContain('remained unavailable after 3 attempts');
+    expect(outcome.technicalDetails).toContain('was temporarily unavailable');
+    expect(outcome.technicalDetails).toContain('3 attempts total');
+    expect(outcome.technicalDetails).toContain('2 automatic retries');
+    expect(outcome.canRetry).toBe(true);
     expect(outcome.nextStep).toContain('Wait a moment');
   });
 
@@ -683,8 +686,9 @@ describe('Agent progress projection', () => {
       retrySafety: 'review',
       nodeRequest,
     });
-    expect(outcome.detail).toContain('3 attempts total');
-    expect(outcome.detail).toContain('2 automatic retries');
+    expect(outcome.detail).toContain('after 3 attempts');
+    expect(outcome.technicalDetails).toContain('3 attempts total');
+    expect(outcome.technicalDetails).toContain('2 automatic retries');
     expect(outcome.detail).toContain(nodeRequest.operationId);
     expect(outcome.detail).not.toContain('browser change');
     expect(outcome.nextStep).toContain('check the existing node operation');
@@ -720,10 +724,10 @@ describe('Agent progress projection', () => {
       }
     );
 
-    expect(outcome.detail).toContain(
+    expect(outcome.technicalDetails).toContain(
       'ChatGPT (Codex) using gpt-5.6-sol closed the response stream before the model finished'
     );
-    expect(outcome.detail).toContain('Every attempt failed for the same reason');
+    expect(outcome.technicalDetails).toContain('Every attempt failed for the same reason');
     expect(outcome.detail).toContain('1 earlier browser change remains');
     expect(outcome.nextStep).toContain('Review the Agent tabs');
     expect(outcome.nextStep).toContain('Check the connection');

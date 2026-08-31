@@ -198,6 +198,14 @@ describe('isolated Pi session factory', () => {
             },
           ],
         },
+        {
+          userText: 'Retry the request that never reached the provider',
+          assistantText: 'An incomplete provider response',
+          status: 'failed',
+          startedAt: 2_000,
+          guidance: [],
+          activity: [],
+        },
       ],
     });
 
@@ -218,6 +226,12 @@ describe('isolated Pi session factory', () => {
     ]);
     expect(JSON.stringify(sdk.SessionManager.inMemory().appendMessage.mock.calls)).not.toContain(
       'rawPageContents'
+    );
+    expect(JSON.stringify(sdk.SessionManager.inMemory().appendMessage.mock.calls)).not.toContain(
+      'never reached the provider'
+    );
+    expect(JSON.stringify(sdk.SessionManager.inMemory().appendMessage.mock.calls)).not.toContain(
+      'incomplete provider response'
     );
   });
 

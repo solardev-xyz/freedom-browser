@@ -2614,6 +2614,52 @@ body.agent-first-mode .agent-composer textarea {
   color: var(--text);
 }
 
+.agent-turn-outcome-technical {
+  margin-top: 3px;
+  color: var(--muted);
+}
+
+.agent-turn-outcome-technical[hidden],
+.agent-turn-outcome-actions[hidden] {
+  display: none;
+}
+
+.agent-turn-outcome-technical summary {
+  width: fit-content;
+  cursor: pointer;
+  color: var(--text);
+  user-select: none;
+}
+
+.agent-turn-outcome-technical > span {
+  display: block;
+  padding-top: 4px;
+  overflow-wrap: anywhere;
+}
+
+.agent-turn-outcome-actions {
+  display: flex;
+  margin-top: 5px;
+}
+
+.agent-turn-outcome-actions button {
+  padding: 5px 10px;
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  background: color-mix(in srgb, var(--text) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 42%, transparent);
+  border-radius: 7px;
+}
+
+.agent-turn-outcome-actions button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--text) 16%, transparent);
+}
+
+.agent-turn-outcome-actions button:disabled {
+  opacity: 0.55;
+}
+
 .agent-turn-activity summary {
   width: fit-content;
   cursor: pointer;

@@ -1305,9 +1305,27 @@ function createTurnView(turn) {
   const outcomeDetail = document.createElement('span');
   const outcomeNextStep = document.createElement('span');
   outcomeNextStep.className = 'agent-turn-outcome-next';
+  const outcomeTechnical = document.createElement('details');
+  outcomeTechnical.className = 'agent-turn-outcome-technical';
+  outcomeTechnical.hidden = true;
+  const outcomeTechnicalSummary = document.createElement('summary');
+  outcomeTechnicalSummary.textContent = 'Technical details';
+  const outcomeTechnicalDetail = document.createElement('span');
+  outcomeTechnical.appendChild(outcomeTechnicalSummary);
+  outcomeTechnical.appendChild(outcomeTechnicalDetail);
+  const outcomeActions = document.createElement('div');
+  outcomeActions.className = 'agent-turn-outcome-actions';
+  outcomeActions.hidden = true;
+  const outcomeRetry = document.createElement('button');
+  outcomeRetry.type = 'button';
+  outcomeRetry.textContent = 'Retry';
+  outcomeRetry.addEventListener('click', () => void retryProviderTurn(view));
+  outcomeActions.appendChild(outcomeRetry);
   outcomeCopy.appendChild(outcomeHeadline);
   outcomeCopy.appendChild(outcomeDetail);
   outcomeCopy.appendChild(outcomeNextStep);
+  outcomeCopy.appendChild(outcomeTechnical);
+  outcomeCopy.appendChild(outcomeActions);
   outcome.appendChild(outcomeIcon);
   outcome.appendChild(outcomeCopy);
 
@@ -1364,6 +1382,10 @@ function createTurnView(turn) {
     outcomeHeadline,
     outcomeDetail,
     outcomeNextStep,
+    outcomeTechnical,
+    outcomeTechnicalDetail,
+    outcomeActions,
+    outcomeRetry,
     artifactList,
     activity,
     activitySummary,
@@ -1371,6 +1393,7 @@ function createTurnView(turn) {
     liveStatus,
     liveStatusLabel,
     guidanceList,
+    userText: turn.userText || '',
     assistantText: turn.assistantText || '',
     actionCount: 0,
   };
@@ -1963,7 +1986,7 @@ function formatToolError(code, operation) {
   return labels[code] || 'Browser action failed';
 }
 
-function renderTurnOutcome(view, outcome) {
+function renderTurnOutcome(view, outcome, error) {
   if (!view || !outcome || typeof outcome !== 'object') return;
   if (outcome.verification === 'not_applicable') {
     view.outcome.hidden = true;
@@ -1977,6 +2000,17 @@ function renderTurnOutcome(view, outcome) {
   view.outcomeDetail.textContent = outcome.detail || '';
   view.outcomeNextStep.textContent = outcome.nextStep ? `Next: ${outcome.nextStep}` : '';
   view.outcomeNextStep.hidden = !outcome.nextStep;
+  view.outcomeTechnicalDetail.textContent = outcome.technicalDetails || '';
+  view.outcomeTechnical.hidden = !outcome.technicalDetails;
+  view.outcomeTechnical.open = false;
+  const canRetry =
+    outcome.canRetry === true &&
+    error?.code === 'PROVIDER_ERROR' &&
+    typeof view.userText === 'string' &&
+    Boolean(view.userText.trim());
+  view.outcomeActions.hidden = !canRetry;
+  view.outcomeRetry.hidden = !canRetry;
+  view.outcomeRetry.disabled = false;
   view.outcome.hidden = false;
 }
 
@@ -2240,7 +2274,7 @@ function finishTurnView(runId, event = {}) {
   } else {
     view.activity.hidden = true;
   }
-  renderTurnOutcome(view, event.outcome);
+  renderTurnOutcome(view, event.outcome, event.error);
   if (event.status === 'completed') renderAssistantMarkdown(view);
 }
 
@@ -2613,7 +2647,7 @@ function handleAgentEvent(event) {
     );
     if (wasStopped) {
       setMessage(elements.runMessage, 'Agent stopped.');
-    } else if (event.error?.message) {
+    } else if (event.error?.message && event.error.code !== 'PROVIDER_ERROR') {
       setMessage(elements.runMessage, event.error.message, true);
     } else {
       setMessage(elements.runMessage);
@@ -2628,11 +2662,13 @@ function handleAgentEvent(event) {
   }
 }
 
-async function startRun() {
-  const prompt = elements.prompt.value.trim();
+async function startRun(options = {}) {
+  const explicitPrompt =
+    typeof options.prompt === 'string' && options.prompt.trim() ? options.prompt.trim() : null;
+  const prompt = explicitPrompt || elements.prompt.value.trim();
   if (!prompt) {
     setMessage(elements.runMessage, 'Describe what you want the agent to do', true);
-    return;
+    return false;
   }
   const sharedPage = currentConversationId ? null : pageContextTab();
   const rendererTabId = currentConversationId
@@ -2643,13 +2679,15 @@ async function startRun() {
   const startsConversation = !currentConversationId;
   if (startsConversation) setConversationTitle(prompt);
   pendingPromptText = prompt;
-  elements.prompt.value = '';
+  if (!explicitPrompt) elements.prompt.value = '';
   if (!currentConversationId) conversationRendererTabId = rendererTabId;
   if (conversationRendererTabId) setAgentControlledTab(conversationRendererTabId);
   setRunState('starting', 'Starting');
   setMessage(elements.runMessage);
   try {
-    const attachmentIds = pendingAttachments.map((attachment) => attachment.selectionId);
+    const attachmentIds = explicitPrompt
+      ? []
+      : pendingAttachments.map((attachment) => attachment.selectionId);
     const response = attachmentIds.length
       ? await window.electronAPI.startAgent(rendererTabId, prompt, approvalMode, attachmentIds)
       : await window.electronAPI.startAgent(rendererTabId, prompt, approvalMode);
@@ -2665,7 +2703,7 @@ async function startRun() {
       setRunState('idle', 'Idle');
       setMessage(elements.runMessage, responseMessage(response, 'Could not start the agent'), true);
       focusComposer({ preserveExplicitFocus: true });
-      return;
+      return false;
     }
     if (response.conversationId && response.conversationId !== currentConversationId) {
       workspaceProjectionGeneration += 1;
@@ -2682,6 +2720,7 @@ async function startRun() {
       setRunState('idle', elements.runStatus.textContent || 'Complete');
     }
     focusComposer({ preserveExplicitFocus: true });
+    return true;
   } catch {
     currentRunId = null;
     if (!currentConversationId) {
@@ -2694,6 +2733,26 @@ async function startRun() {
     setRunState('idle', 'Idle');
     setMessage(elements.runMessage, 'Could not start the agent', true);
     focusComposer({ preserveExplicitFocus: true });
+    return false;
+  }
+}
+
+async function retryProviderTurn(view) {
+  if (
+    currentRunStatus !== 'idle' ||
+    !currentConversationId ||
+    !view ||
+    typeof view.userText !== 'string' ||
+    !view.userText.trim()
+  ) {
+    return;
+  }
+  view.outcomeRetry.disabled = true;
+  view.outcomeRetry.textContent = 'Retrying…';
+  const started = await startRun({ prompt: view.userText });
+  if (!started) {
+    view.outcomeRetry.disabled = false;
+    view.outcomeRetry.textContent = 'Retry';
   }
 }
 

@@ -37,6 +37,7 @@ const {
   DEFAULT_FREEDOM_AGENT_SYSTEM_PROMPT,
 } = require('./pi-session-factory');
 const {
+  PROVIDER_FAILURE_RECOVERY,
   classifyProviderFailure,
   createProviderTerminalError,
   mostInformativeProviderFailure,
@@ -1139,37 +1140,50 @@ class FreedomAgentService {
       });
       if (needsRuntime) {
         const sdk = await this.loadSdk();
-        const scopedController = await this.createControllerScope({
-          controller: this.controller,
-          tabId,
-          navigationScope: AGENT_NAVIGATION_SCOPES.WORKSPACE,
-          approvalMode,
-          createWorkspacePage: validated.createWorkspacePage,
-          onWorkspaceTabCreated: (createdTabId) =>
-            this.#registerAgentTab(createdTabId, run.conversationId),
-          transferOwnerId: run.conversationId,
-          requestApproval: (request) =>
-            this.activeRun ? this.#requestApproval(this.activeRun, request) : 'declined',
-          classifyEffect: (input) =>
-            this.effectClassifier.classify(input, {
-              model: options.model,
-              modelRuntime: options.modelRuntime,
-            }),
-          classifyInteraction: (input) => {
-            const activeRun = this.activeRun;
-            return this.interactionClassifier.classify(
-              {
-                ...input,
-                userRequest: activeRun?.userText || '',
-                guidance: (activeRun?.guidance || []).map((item) => item.text),
-              },
-              {
+        let scopedController = existingConversation?.scopedController || null;
+        if (scopedController) {
+          const readiness = await scopedController.prepareResume();
+          if (!readiness?.ok) {
+            throw new FreedomAgentError(
+              readiness?.error?.code === ERROR_CODES.POLICY_DENIED
+                ? AGENT_ERROR_CODES.RESUME_SCOPE_CHANGED
+                : AGENT_ERROR_CODES.TAB_UNAVAILABLE,
+              "The conversation's browser workspace could not be resumed"
+            );
+          }
+        } else {
+          scopedController = await this.createControllerScope({
+            controller: this.controller,
+            tabId,
+            navigationScope: AGENT_NAVIGATION_SCOPES.WORKSPACE,
+            approvalMode,
+            createWorkspacePage: validated.createWorkspacePage,
+            onWorkspaceTabCreated: (createdTabId) =>
+              this.#registerAgentTab(createdTabId, run.conversationId),
+            transferOwnerId: run.conversationId,
+            requestApproval: (request) =>
+              this.activeRun ? this.#requestApproval(this.activeRun, request) : 'declined',
+            classifyEffect: (input) =>
+              this.effectClassifier.classify(input, {
                 model: options.model,
                 modelRuntime: options.modelRuntime,
-              }
-            );
-          },
-        });
+              }),
+            classifyInteraction: (input) => {
+              const activeRun = this.activeRun;
+              return this.interactionClassifier.classify(
+                {
+                  ...input,
+                  userRequest: activeRun?.userText || '',
+                  guidance: (activeRun?.guidance || []).map((item) => item.text),
+                },
+                {
+                  model: options.model,
+                  modelRuntime: options.modelRuntime,
+                }
+              );
+            },
+          });
+        }
         if (
           !scopedController ||
           typeof scopedController.execute !== 'function' ||
@@ -1181,7 +1195,7 @@ class FreedomAgentService {
         const browserTools = await this.createTools({
           sdk,
           controller: scopedController,
-          tabId,
+          tabId: scopedController.getActiveTabId?.() || tabId,
           visionEnabled:
             Array.isArray(options.model?.input) && options.model.input.includes('image'),
           onToolOutcome: (outcome) => {
@@ -2069,7 +2083,33 @@ class FreedomAgentService {
       guidance: run.guidance,
       error,
     });
+    if (
+      error?.code === AGENT_ERROR_CODES.PROVIDER_ERROR &&
+      providerFailurePresentation(error.providerFailure || error.message).recovery ===
+        PROVIDER_FAILURE_RECOVERY.TRANSIENT &&
+      this.conversation?.conversationId === run.conversationId
+    ) {
+      this.#resetConversationProviderSession(this.conversation);
+    }
     run.completion.resolve({ status, error });
+  }
+
+  #resetConversationProviderSession(conversation) {
+    if (conversation.unsubscribe) {
+      try {
+        conversation.unsubscribe();
+      } catch {
+        // Recreating the model session remains safe when event cleanup has already settled.
+      }
+      conversation.unsubscribe = null;
+    }
+    try {
+      conversation.session?.dispose();
+    } catch {
+      // The next turn still receives an independently created provider session.
+    }
+    conversation.session = null;
+    conversation.restored = true;
   }
 
   #emit(run, event) {

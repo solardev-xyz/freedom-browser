@@ -197,7 +197,7 @@ function safeNetworkCode(value, text) {
 function safeHttpStatus(value, text) {
   const structured = firstSafeInteger(value, ['status', 'statusCode']);
   if (structured >= 400 && structured <= 599) return structured;
-  const match = text.match(/(?:\bhttp(?:\/\d(?:\.\d)?)?\s*)?\b([45]\d{2}|529)\b/i);
+  const match = text.match(/(?:^|[^:\d])([45]\d{2}|529)(?=$|[^\d])/i);
   return match ? Number(match[1]) : null;
 }
 
@@ -335,7 +335,7 @@ function classifyProviderFailure(value) {
   } else if (
     matches(
       text,
-      /(?:model (?:is )?(?:not found|unavailable|unsupported|invalid)|unknown model|does not exist.*model|model.*does not exist|no access to model)/i
+      /(?:model\s+(?:(?:'[^']+'|"[^"]+"|\S+)\s+)?(?:is\s+)?(?:not found|unavailable|unsupported|invalid)|unknown model|does not exist.*model|model.*does not exist|no access to model)/i
     )
   ) {
     category = PROVIDER_FAILURE_CATEGORIES.MODEL_UNAVAILABLE;
@@ -626,12 +626,39 @@ function providerFailurePresentation(failure, options = {}) {
   const retryCount = normalizeRetryCount(options.retryCount);
   const attempts = normalizeAttemptSummary(options.attempts, retryCount);
   const reason = causePresentation(normalizedFailure, options);
+  const subject = providerSubject(options);
+  const attemptSuffix = attempts.total > 1 ? ` after ${attempts.total} attempts` : '';
+  const summaryMessage = (() => {
+    switch (category) {
+      case PROVIDER_FAILURE_CATEGORIES.AUTHENTICATION:
+        return `${subject} rejected the saved credentials.`;
+      case PROVIDER_FAILURE_CATEGORIES.USAGE_LIMIT:
+        return `${subject} reported a usage or billing limit.`;
+      case PROVIDER_FAILURE_CATEGORIES.MODEL_UNAVAILABLE:
+        return `${subject} cannot use the selected model.`;
+      case PROVIDER_FAILURE_CATEGORIES.REQUEST_TOO_LARGE:
+        return `${subject} rejected the size of this request.`;
+      case PROVIDER_FAILURE_CATEGORIES.RATE_LIMITED:
+        return `${subject} kept rate-limiting the request${attemptSuffix}.`;
+      case PROVIDER_FAILURE_CATEGORIES.SERVICE_UNAVAILABLE:
+        return `${subject} remained unavailable${attemptSuffix}.`;
+      case PROVIDER_FAILURE_CATEGORIES.TIMEOUT:
+        return `${subject} did not respond in time${attemptSuffix}.`;
+      case PROVIDER_FAILURE_CATEGORIES.CONNECTION:
+        return `Freedom could not restore the connection to ${subject}${attemptSuffix}.`;
+      default:
+        return `${subject} could not complete the request${attemptSuffix}.`;
+    }
+  })();
+  const technicalDetails = `${reason}${attemptsPresentation(attempts)}`;
   return Object.freeze({
     category,
     recovery: presentation.recovery,
     reason,
     retryMessage: reason,
-    terminalMessage: `${reason}${attemptsPresentation(attempts)}`,
+    summaryMessage,
+    technicalDetails,
+    terminalMessage: technicalDetails,
     nextStep: presentation.nextStep,
     attempts,
   });

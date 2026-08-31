@@ -1553,13 +1553,30 @@ describe('Agent UI', () => {
         tone: 'danger',
         headline: 'Agent stopped before completion',
         detail: 'The model provider remained unavailable.',
+        technicalDetails:
+          'The provider returned HTTP 503. Freedom made 3 attempts total: the initial request plus 2 automatic retries.',
         nextStep: 'Wait a moment, then continue this conversation.',
         retrySafety: 'safe',
+        canRetry: true,
       },
     });
 
     expect(ctx.elements['agent-run-status'].textContent).toBe('Provider issue');
-    expect(ctx.elements['agent-run-message'].textContent).toContain('exhausted 2 automatic retries');
+    expect(ctx.elements['agent-run-message'].textContent).toBe('');
+    const outcome = ctx.elements['agent-transcript'].querySelector('.agent-turn-outcome');
+    const technical = outcome.querySelector('.agent-turn-outcome-technical');
+    const retry = outcome.querySelector('.agent-turn-outcome-actions').children[0];
+    expect(technical.hidden).toBe(false);
+    expect(technical.open).toBe(false);
+    expect(technical.children[1].textContent).toContain('HTTP 503');
+    expect(retry.hidden).toBe(false);
+    retry.dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.startAgent).toHaveBeenLastCalledWith(
+      7,
+      'Continue the task',
+      'every_interaction'
+    );
   });
 
   test('does not show a browser-evidence outcome for conversation', async () => {

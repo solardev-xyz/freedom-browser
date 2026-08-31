@@ -95,6 +95,7 @@ function hydrateVisibleTranscript(sessionManager, turns, model) {
 
   for (const turn of turns) {
     if (typeof turn?.userText !== 'string' || !turn.userText.trim()) continue;
+    if (turn.status === 'failed') continue;
     const timestamp = Number.isFinite(turn.startedAt) ? turn.startedAt : Date.now();
     sessionManager.appendMessage({
       role: 'user',
