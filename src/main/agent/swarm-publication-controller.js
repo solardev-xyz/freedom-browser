@@ -150,7 +150,7 @@ class SwarmPublicationController {
       ? await this.attachmentStore.resolvePublicationSource(ownerId, input.resourceId)
       : {
           kind: 'text',
-          name: input.name,
+          name: 'Text',
           text: input.text,
           bytes: Buffer.byteLength(input.text, 'utf8'),
           contentType: input.contentType,
@@ -269,7 +269,6 @@ class SwarmPublicationController {
                 name: source.name,
               })
             : await this.publishData(source.text, {
-                name: source.name,
                 contentType: source.contentType,
               });
       operation.reference = result.reference;

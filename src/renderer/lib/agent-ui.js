@@ -1579,6 +1579,10 @@ function appendPublicationSummary(label, value) {
   elements.publicationSummary.appendChild(description);
 }
 
+function publicationSubject(publication) {
+  return publication?.kind === 'text' ? 'text' : publication?.name || 'content';
+}
+
 function renderPublicationApproval(request) {
   const publication = request.publication;
   elements.publicationDetails.hidden = false;
@@ -1589,9 +1593,9 @@ function renderPublicationApproval(request) {
       ? 'Attached folder · current contents'
       : publication.kind === 'file'
         ? 'Attached file'
-        : 'Text document'
+        : 'Text'
   );
-  appendPublicationSummary('Name', publication.name);
+  if (publication.kind !== 'text') appendPublicationSummary('Name', publication.name);
   if (Number.isSafeInteger(publication.bytes)) {
     appendPublicationSummary('Size', formatArtifactBytes(publication.bytes));
   }
@@ -1746,7 +1750,9 @@ function renderApproval(request) {
     'myotis-gnosis': 'Myotis Gnosis',
   };
   elements.approvalAction.textContent = publication
-    ? `Publish “${publication.name}” to Swarm?`
+    ? publication.kind === 'text'
+      ? 'Publish this text to Swarm?'
+      : `Publish “${publication.name}” to Swarm?`
     : nodeRequest
     ? `Allow this ${nodeLabels[nodeRequest.service] || nodeRequest.service} node request?`
     : nodeLifecycle
@@ -2073,7 +2079,7 @@ function renderPublication(runId, publication) {
   const copy = document.createElement('div');
   copy.className = 'agent-artifact-copy';
   const name = document.createElement('strong');
-  name.textContent = publication.name;
+  name.textContent = publication.kind === 'text' ? 'Text' : publication.name;
   const meta = document.createElement('span');
   meta.textContent = publication.verified
     ? 'Swarm · retrieval verified'
@@ -2198,14 +2204,15 @@ function updateToolProgress(event) {
   if (!record) return;
   if (event.operation === 'swarm_publish' && event.publication) {
     const publication = event.publication;
+    const subject = publicationSubject(publication);
     record.label.textContent =
       publication.state === 'verifying'
-        ? `Verifying ${publication.name}`
+        ? `Verifying ${subject}`
         : publication.state === 'completed'
-          ? `Published ${publication.name} to Swarm`
+          ? `Published ${subject} to Swarm`
           : publication.state === 'failed'
-            ? `Publication failed for ${publication.name}`
-            : `Publishing ${publication.name}${Number.isSafeInteger(event.progress) ? ` · ${event.progress}%` : ''}`;
+            ? `Publication failed for ${subject}`
+            : `Publishing ${subject}${Number.isSafeInteger(event.progress) ? ` · ${event.progress}%` : ''}`;
     if (publication.state === 'completed') renderPublication(event.runId, publication);
     return;
   }
@@ -2515,7 +2522,7 @@ function handleAgentEvent(event) {
   } else if (event.type === 'tool_progress') {
     updateToolProgress(event);
     if (event.operation === 'swarm_publish') {
-      const name = event.publication?.name || 'content';
+      const name = publicationSubject(event.publication);
       const label =
         event.state === 'verifying'
           ? `Verifying ${name} on Swarm…`

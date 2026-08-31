@@ -927,4 +927,30 @@ describe('Agent progress projection', () => {
       publication: expect.objectContaining({ state: 'uploading' }),
     });
   });
+
+  test('describes inline Swarm data as text rather than as a file', () => {
+    const publication = normalizePublicationReceipt({
+      publicationId: `swarm_pub_${'c'.repeat(24)}`,
+      state: 'completed',
+      applicationState: 'applied',
+      kind: 'text',
+      name: 'Text',
+      public: true,
+      reference: 'd'.repeat(64),
+      bzzUrl: `bzz://${'d'.repeat(64)}`,
+      verified: true,
+    });
+
+    expect(activityProgress(OPERATIONS.SWARM_PUBLISH, { publication })).toMatchObject({
+      intent: 'Checking text',
+      label: 'Published text to Swarm',
+    });
+    const outcome = buildAgentOutcome(
+      [{ operation: OPERATIONS.SWARM_PUBLISH, status: 'succeeded', publication }],
+      'completed'
+    );
+    expect(outcome.detail).toContain('Freedom published the text');
+    expect(outcome.detail).not.toContain('“Text”');
+    expect(outcome.detail).not.toContain('.txt');
+  });
 });

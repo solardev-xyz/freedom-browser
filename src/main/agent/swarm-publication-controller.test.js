@@ -151,23 +151,38 @@ describe('SwarmPublicationController', () => {
   });
 
   test('reports a completed publication honestly when retrieval verification lags', async () => {
-    const { controller } = createController({
+    const { controller, dependencies } = createController({
       verifyPublication: jest.fn(async () => {
         throw new Error('reference not retrievable yet');
       }),
     });
+    const requestApproval = jest.fn(async () => 'approved');
     const result = await controller.publish(
-      { text: 'hello', name: 'hello.txt', contentType: 'text/plain' },
+      { text: 'hello', contentType: 'text/plain' },
       {
         conversationId: 'conversation_test',
-        requestApproval: jest.fn(async () => 'approved'),
+        requestApproval,
       }
+    );
+    expect(requestApproval).toHaveBeenCalledWith(
+      expect.objectContaining({
+        label: 'Text',
+        publication: expect.objectContaining({ kind: 'text', name: 'Text' }),
+      })
     );
     expect(result.publication).toMatchObject({
       state: PUBLICATION_STATES.COMPLETED,
       applicationState: 'applied',
       verified: false,
       error: 'reference not retrievable yet',
+      kind: 'text',
+      name: 'Text',
+    });
+    expect(dependencies.addHistoryEntry).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'data', name: 'Text' })
+    );
+    expect(dependencies.publishData).toHaveBeenCalledWith('hello', {
+      contentType: 'text/plain',
     });
   });
 });

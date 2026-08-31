@@ -72,7 +72,6 @@ const BLOCKED_NODE_REQUEST_HEADERS = new Set([
 ]);
 const MAX_INTERACTION_INTENT_LENGTH = 240;
 const ATTACHMENT_RESOURCE_ID = /^(?:attachment|folder)_[a-f0-9]{20}$/;
-const SWARM_PUBLICATION_NAME_MAX_LENGTH = 240;
 
 function validateRelativePublicationPath(value, field) {
   const relativePath = requireString(value, field).trim();
@@ -431,16 +430,6 @@ function validateOperationInput(operation, rawInput) {
         throw invalidArgument(
           `text cannot exceed ${MAX_SWARM_PUBLISH_TEXT_BYTES} UTF-8 bytes`,
           { field: 'text' }
-        );
-      }
-      normalized.name = requireString(input.name, 'name').trim();
-      if (
-        normalized.name.length > SWARM_PUBLICATION_NAME_MAX_LENGTH ||
-        containsControlCharacters(normalized.name)
-      ) {
-        throw invalidArgument(
-          `name cannot exceed ${SWARM_PUBLICATION_NAME_MAX_LENGTH} characters or contain controls`,
-          { field: 'name' }
         );
       }
       normalized.contentType =

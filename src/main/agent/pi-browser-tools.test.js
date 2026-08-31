@@ -100,6 +100,9 @@ describe('Pi browser tool adapter', () => {
     expect(TOOL_SPEC_BY_NAME.get(OPERATIONS.PRESS).parameters.properties.key.enum).toContain(
       'Enter'
     );
+    expect(
+      TOOL_SPEC_BY_NAME.get(OPERATIONS.SWARM_PUBLISH).parameters.properties
+    ).not.toHaveProperty('name');
     for (const operation of [
       OPERATIONS.CLICK,
       OPERATIONS.TYPE,

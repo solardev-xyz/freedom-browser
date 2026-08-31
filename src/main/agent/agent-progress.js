@@ -429,6 +429,14 @@ function normalizePublicationReceipt(value) {
   });
 }
 
+function publicationSubject(publication) {
+  return publication?.kind === 'text' ? 'text' : publication?.name || 'content';
+}
+
+function publicationObject(publication) {
+  return publication?.kind === 'text' ? 'the text' : `“${publication?.name || 'content'}”`;
+}
+
 function normalizeAttachmentReceipt(value, operation) {
   if (!value || typeof value !== 'object') return null;
   if (![ATTACHMENT_OPERATIONS.LIST, ATTACHMENT_OPERATIONS.READ].includes(operation)) {
@@ -555,20 +563,21 @@ function activityProgress(operation, receipt = {}) {
       operation === OPERATIONS.SWARM_PUBLICATION_STATUS) &&
     publication
   ) {
+    const subject = publicationSubject(publication);
     intent =
       publication.state === 'verifying'
-        ? `Verifying ${publication.name}`
+        ? `Verifying ${subject}`
         : publication.state === 'completed'
-          ? `Checking ${publication.name}`
-          : `Publishing ${publication.name}`;
+          ? `Checking ${subject}`
+          : `Publishing ${subject}`;
     label =
       publication.state === 'completed'
-        ? `Published ${publication.name} to Swarm`
+        ? `Published ${subject} to Swarm`
         : publication.state === 'failed'
-          ? `Publication failed for ${publication.name}`
+          ? `Publication failed for ${subject}`
           : publication.state === 'outcome_unknown'
-            ? `Publication outcome uncertain for ${publication.name}`
-            : `Publishing ${publication.name}${Number.isSafeInteger(publication.progress) ? ` — ${publication.progress}%` : ''}`;
+            ? `Publication outcome uncertain for ${subject}`
+            : `Publishing ${subject}${Number.isSafeInteger(publication.progress) ? ` — ${publication.progress}%` : ''}`;
   } else if (operation === ATTACHMENT_OPERATIONS.LIST && attachment) {
     if (attachment.resourceId) {
       const folder = attachment.folderName || attachment.name || 'attached folder';
@@ -942,8 +951,8 @@ function buildAgentOutcome(activity, status, error) {
           tone: publication.verified ? 'success' : 'caution',
           headline: publication.verified ? 'Published and verified on Swarm' : 'Published to Swarm',
           detail: publication.verified
-            ? `Freedom published “${publication.name}” and verified retrieval at ${publication.bzzUrl}.`
-            : `Freedom published “${publication.name}” at ${publication.bzzUrl}, but retrieval was not verified yet.`,
+            ? `Freedom published ${publicationObject(publication)} and verified retrieval at ${publication.bzzUrl}.`
+            : `Freedom published ${publicationObject(publication)} at ${publication.bzzUrl}, but retrieval was not verified yet.`,
           publication,
           destinations,
           counts,
@@ -955,7 +964,7 @@ function buildAgentOutcome(activity, status, error) {
           verification: 'swarm_publication_in_flight',
           tone: 'caution',
           headline: 'Swarm publication still running',
-          detail: `Freedom is still ${publication.state === 'verifying' ? 'verifying' : 'publishing'} “${publication.name}”. Publication ${publication.publicationId} must be checked before any repeat.`,
+          detail: `Freedom is still ${publication.state === 'verifying' ? 'verifying' : 'publishing'} ${publicationObject(publication)}. Publication ${publication.publicationId} must be checked before any repeat.`,
           publication,
           destinations,
           counts,
@@ -1198,7 +1207,7 @@ function buildAgentOutcome(activity, status, error) {
       verification: 'swarm_publication_unresolved',
       tone: 'caution',
       headline: 'Model disconnected; publication still needs reconciliation',
-      detail: `${providerPresentation.terminalMessage} Publication ${unresolvedPublication.publicationId} for “${unresolvedPublication.name}” is ${unresolvedPublication.state.replaceAll('_', ' ')} and must be checked before any repeat.`,
+      detail: `${providerPresentation.terminalMessage} Publication ${unresolvedPublication.publicationId} for ${publicationObject(unresolvedPublication)} is ${unresolvedPublication.state.replaceAll('_', ' ')} and must be checked before any repeat.`,
       publication: unresolvedPublication,
       destinations,
       nextStep: 'Continue this conversation so Agent can check the existing Swarm publication.',

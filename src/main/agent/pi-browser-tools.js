@@ -321,7 +321,7 @@ const TOOL_SPECS = Object.freeze([
     operation: OPERATIONS.SWARM_PUBLISH,
     label: 'Publish to Swarm',
     description:
-      'Publish one attached file, the current contents of one attached folder, or a bounded text document to the public Swarm network through Freedom. Pass an opaque resourceId from attachment_list, never a local path. Content is public and unencrypted, and Freedom always asks the user before dispatch. A folder is read live when the approved upload begins. If the result is still uploading or verifying, preserve its publicationId and use swarm_publication_status; never blindly repeat a possibly applied publication.',
+      'Publish one attached file, the current contents of one attached folder, or bounded inline text to the public Swarm network through Freedom. Pass an opaque resourceId from attachment_list, never a local path. Inline text is data, not a named file. Content is public and unencrypted, and Freedom always asks the user before dispatch. A folder is read live when the approved upload begins. If the result is still uploading or verifying, preserve its publicationId and use swarm_publication_status; never blindly repeat a possibly applied publication.',
     parameters: {
       type: 'object',
       properties: {
@@ -334,13 +334,8 @@ const TOOL_SPECS = Object.freeze([
           type: 'string',
           minLength: 1,
           maxLength: 262_144,
-          description: 'Text content to publish instead of an attached resource.',
-        },
-        name: {
-          type: 'string',
-          minLength: 1,
-          maxLength: 240,
-          description: 'Required filename when publishing text.',
+          description:
+            'Text content to publish as text data instead of an attached resource. Do not invent a filename.',
         },
         contentType: {
           type: 'string',

@@ -2964,6 +2964,62 @@ describe('Agent UI', () => {
     expect(ctx.electronAPI.openAgentPublication).toHaveBeenCalledWith(publication.bzzUrl);
   });
 
+  test('presents inline Swarm text as text rather than inventing a file', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'approval_requested',
+      runId: 'run_test',
+      approvalId: 'approval_text',
+      action: 'swarm_publish',
+      operation: 'swarm_publish',
+      label: 'Text',
+      publication: {
+        kind: 'text',
+        name: 'Text',
+        public: true,
+        contentType: 'text/plain; charset=utf-8',
+      },
+    });
+
+    expect(ctx.elements['agent-approval-action'].textContent).toBe(
+      'Publish this text to Swarm?'
+    );
+    expect(ctx.elements['agent-publication-summary'].textContent).not.toContain('.txt');
+
+    const publication = {
+      publicationId: `swarm_pub_${'c'.repeat(24)}`,
+      state: 'completed',
+      applicationState: 'applied',
+      kind: 'text',
+      name: 'Text',
+      public: true,
+      reference: 'd'.repeat(64),
+      bzzUrl: `bzz://${'d'.repeat(64)}`,
+      verified: true,
+    };
+    ctx.emit({
+      type: 'tool_started',
+      runId: 'run_test',
+      toolCallId: 'publish_text',
+      operation: 'swarm_publish',
+      intent: 'Publishing text',
+    });
+    ctx.emit({
+      type: 'tool_finished',
+      runId: 'run_test',
+      toolCallId: 'publish_text',
+      operation: 'swarm_publish',
+      status: 'succeeded',
+      label: 'Published text to Swarm',
+      publication,
+    });
+
+    const card = ctx.elements['agent-transcript'].children[0].children[4].children[0];
+    expect(card.children[0].children[0].textContent).toBe('Text');
+    expect(card.textContent).not.toContain('.txt');
+  });
+
   test('keeps the conversation reusable after a failed run', async () => {
     const ctx = await loadAgentUi();
     ctx.elements['agent-prompt'].value = 'Complete the task';

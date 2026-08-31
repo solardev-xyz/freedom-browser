@@ -130,11 +130,9 @@ describe('automation operation contract', () => {
     expect(
       validateOperationInput(OPERATIONS.SWARM_PUBLISH, {
         text: 'hello',
-        name: 'hello.txt',
       })
     ).toEqual({
       text: 'hello',
-      name: 'hello.txt',
       contentType: 'text/plain; charset=utf-8',
     });
     expect(() =>

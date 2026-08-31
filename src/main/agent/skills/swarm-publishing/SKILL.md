@@ -14,7 +14,7 @@ Use this skill when the user wants to publish a file, folder, static site, or te
 - An attached file is the conversation's stored attachment. An attached folder is a live read-only grant: Freedom publishes the folder's current contents when the user approves and execution begins.
 - Do not copy, stage, fingerprint, or compare a folder. The user controls its contents until the upload begins.
 - For a static site, publish the whole attached folder. Prefer `index.html` as `indexDocument`; specify a different safe relative document only when the user or project clearly identifies one.
-- Use bounded text publication only for text you already have authority to publish. Supply a meaningful filename and content type.
+- Use bounded text publication only for text you already have authority to publish. Inline text remains a text/data publication like the manual `freedom://publish` flow; do not invent or report a filename. Supply a content type only when it is useful.
 
 ## Preflight
 
@@ -33,4 +33,4 @@ Use this skill when the user wants to publish a file, folder, static site, or te
 
 ## Completion report
 
-Report the published name, content kind, `bzz://` URL, reference, and whether Freedom verified retrieval. Distinguish a completed but not-yet-verified publication from a verified publication. Never expose a local filesystem path.
+Report the published filename or folder name only for an attached file or folder. For inline text, say that the text was published without inventing a filename. Always report the content kind, `bzz://` URL, reference, and whether Freedom verified retrieval. Distinguish a completed but not-yet-verified publication from a verified publication. Never expose a local filesystem path.
