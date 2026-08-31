@@ -31,6 +31,8 @@ const ORIGIN_SCOPED_OPERATIONS = new Set([
   OPERATIONS.NODE_LIFECYCLE,
   OPERATIONS.NODE_DIAGNOSTICS,
   OPERATIONS.APP_DIAGNOSTICS,
+  OPERATIONS.SWARM_PUBLISH,
+  OPERATIONS.SWARM_PUBLICATION_STATUS,
   OPERATIONS.LIST_DOWNLOADS,
   OPERATIONS.WAIT,
   OPERATIONS.STOP_LOADING,
@@ -255,6 +257,15 @@ class OriginScopedAutomationController {
       });
     }
     if (operation === OPERATIONS.NODE_OPERATION_STATUS) {
+      return this.#executeController(operation, input, execution);
+    }
+    if (operation === OPERATIONS.SWARM_PUBLISH) {
+      return this.#executeController(operation, input, {
+        ...execution,
+        requestApproval: this.requestApproval,
+      });
+    }
+    if (operation === OPERATIONS.SWARM_PUBLICATION_STATUS) {
       return this.#executeController(operation, input, execution);
     }
     if (operation === OPERATIONS.NODE_LIFECYCLE) {

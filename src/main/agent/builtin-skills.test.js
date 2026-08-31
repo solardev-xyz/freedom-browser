@@ -19,9 +19,25 @@ describe('Freedom built-in Agent skills', () => {
         baseDir: skillVirtualPath('swarm-postage', ''),
         disableModelInvocation: false,
       }),
+      expect.objectContaining({
+        name: 'swarm-publishing',
+        filePath: skillVirtualPath('swarm-publishing', 'SKILL.md'),
+        baseDir: skillVirtualPath('swarm-publishing', ''),
+        disableModelInvocation: false,
+      }),
     ]);
     expect(getBuiltInSkills()[0].filePath).toContain(VIRTUAL_SKILLS_ROOT);
     expect(getBuiltInSkills()[0].filePath).not.toContain(__dirname);
+  });
+
+  test('ships the Swarm publishing procedure without granting host filesystem reads', async () => {
+    const operations = createBuiltInSkillReadOperations();
+    const content = await operations.readFile(
+      skillVirtualPath('swarm-publishing', 'SKILL.md')
+    );
+    expect(content.toString('utf8')).toContain('swarm_publish');
+    expect(content.toString('utf8')).toContain('current contents');
+    expect(content.toString('utf8')).toContain('public and unencrypted');
   });
 
   test('reads only exact allowlisted bundled skill files', async () => {

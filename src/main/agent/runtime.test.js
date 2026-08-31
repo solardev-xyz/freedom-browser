@@ -12,6 +12,7 @@ jest.mock('../node-status-controller');
 jest.mock('../node-request-controller');
 jest.mock('../node-lifecycle-controller');
 jest.mock('../node-diagnostics-controller');
+jest.mock('./swarm-publication-controller');
 
 const { FreedomAgentService } = require('./freedom-agent-service');
 const { registerFreedomAgentIpc } = require('./ipc');
@@ -25,6 +26,7 @@ const { NodeStatusController } = require('../node-status-controller');
 const { NodeRequestController } = require('../node-request-controller');
 const { NodeLifecycleController } = require('../node-lifecycle-controller');
 const { NodeDiagnosticsController } = require('../node-diagnostics-controller');
+const { SwarmPublicationController } = require('./swarm-publication-controller');
 const { createFreedomAgentRuntime } = require('./runtime');
 
 describe('Freedom agent runtime', () => {
@@ -44,13 +46,17 @@ describe('Freedom agent runtime', () => {
       markStaleInFlightAsUncertain: jest.fn(),
       close: jest.fn(() => calls.push('node-operations')),
     };
-    const attachmentStore = { dispose: jest.fn(() => calls.push('attachments')) };
+    const attachmentStore = {
+      resolvePublicationSource: jest.fn(),
+      dispose: jest.fn(() => calls.push('attachments')),
+    };
     const service = { dispose: jest.fn(async () => calls.push('service')) };
     const walletController = {};
     const nodeController = {};
     const nodeRequestController = { dispose: jest.fn(async () => calls.push('node-requests')) };
     const nodeLifecycleController = {};
     const diagnosticsController = {};
+    const publicationController = { dispose: jest.fn(() => calls.push('publications')) };
     const unregisterIpc = jest.fn(async () => calls.push('ipc'));
     AgentProviderStore.mockImplementation(() => providerStore);
     AgentProviderResolver.mockImplementation(() => providerResolver);
@@ -62,6 +68,7 @@ describe('Freedom agent runtime', () => {
     NodeRequestController.mockImplementation(() => nodeRequestController);
     NodeLifecycleController.mockImplementation(() => nodeLifecycleController);
     NodeDiagnosticsController.mockImplementation(() => diagnosticsController);
+    SwarmPublicationController.mockImplementation(() => publicationController);
     FreedomAgentService.mockImplementation(() => service);
     registerFreedomAgentIpc.mockReturnValue(unregisterIpc);
     const options = {
@@ -77,6 +84,7 @@ describe('Freedom agent runtime', () => {
         setNodeRequestController: jest.fn(),
         setNodeLifecycleController: jest.fn(),
         setDiagnosticsController: jest.fn(),
+        setPublicationController: jest.fn(),
       },
       automationTabIdForRenderer: jest.fn(),
       desktopBindingForAutomationTab: jest.fn(),
@@ -141,6 +149,10 @@ describe('Freedom agent runtime', () => {
     expect(options.controller.setDiagnosticsController).toHaveBeenCalledWith(
       diagnosticsController
     );
+    expect(SwarmPublicationController).toHaveBeenCalledWith({ attachmentStore });
+    expect(options.controller.setPublicationController).toHaveBeenCalledWith(
+      publicationController
+    );
     expect(FreedomAgentService).toHaveBeenCalledWith({
       controller: options.controller,
       subscribeTabLifecycle: options.subscribeTabLifecycle,
@@ -172,6 +184,7 @@ describe('Freedom agent runtime', () => {
     expect(unregisterIpc).toHaveBeenCalledTimes(1);
     expect(service.dispose).toHaveBeenCalledTimes(1);
     expect(nodeRequestController.dispose).toHaveBeenCalledTimes(1);
+    expect(publicationController.dispose).toHaveBeenCalledTimes(1);
     expect(attachmentStore.dispose).toHaveBeenCalledTimes(1);
     expect(historyStore.close).toHaveBeenCalledTimes(1);
     expect(nodeOperationStore.close).toHaveBeenCalledTimes(1);
@@ -180,10 +193,12 @@ describe('Freedom agent runtime', () => {
     expect(options.controller.setNodeRequestController).toHaveBeenLastCalledWith(null);
     expect(options.controller.setNodeLifecycleController).toHaveBeenLastCalledWith(null);
     expect(options.controller.setDiagnosticsController).toHaveBeenLastCalledWith(null);
+    expect(options.controller.setPublicationController).toHaveBeenLastCalledWith(null);
     expect(calls).toEqual([
       'ipc',
       'service',
       'node-requests',
+      'publications',
       'attachments',
       'history',
       'node-operations',

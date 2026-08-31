@@ -133,6 +133,17 @@ describe('ConversationAttachmentStore', () => {
     await expect(
       store.read('conversation_bbbbbbbbbbbbbbbb', folder.resourceId, { path: 'escape.txt' })
     ).rejects.toThrow('escapes its grant');
+
+    const publicationSource = await store.resolvePublicationSource(
+      'conversation_bbbbbbbbbbbbbbbb',
+      folder.resourceId
+    );
+    expect(publicationSource).toEqual({
+      kind: 'folder',
+      name: 'project',
+      path: fs.realpathSync(path.join(sourceDir, 'project')),
+    });
+    expect(JSON.stringify(folder)).not.toContain(sourceDir);
   });
 
   test('restores file snapshots but requires folders to be explicitly re-added', async () => {

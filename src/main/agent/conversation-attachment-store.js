@@ -335,6 +335,41 @@ class ConversationAttachmentStore {
     }
   }
 
+  async resolvePublicationSource(conversationId, resourceId) {
+    const resource = await this.#resource(conversationId, resourceId);
+    if (resource.kind === 'folder') {
+      if (!resource.available || !resource.sourcePath) {
+        throw new Error('That folder is no longer available; ask the user to add it again');
+      }
+      const folderPath = await this.fs.realpath(resource.sourcePath);
+      const stat = await this.fs.lstat(folderPath);
+      if (!stat.isDirectory() || stat.isSymbolicLink()) {
+        throw new Error('That folder is no longer available; ask the user to add it again');
+      }
+      return {
+        kind: 'folder',
+        name: resource.name,
+        path: folderPath,
+      };
+    }
+
+    if (!resource.storagePath) {
+      throw new Error('That attachment is no longer available; ask the user to attach it again');
+    }
+    const filePath = await this.fs.realpath(resource.storagePath);
+    const stat = await this.fs.lstat(filePath);
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      throw new Error('That attachment is no longer available; ask the user to attach it again');
+    }
+    return {
+      kind: 'file',
+      name: resource.name,
+      path: filePath,
+      bytes: stat.size,
+      mimeType: resource.mimeType,
+    };
+  }
+
   async deleteConversation(conversationId) {
     this.resources.delete(conversationId);
     await this.fs.rm(this.#conversationDir(conversationId), { recursive: true, force: true });

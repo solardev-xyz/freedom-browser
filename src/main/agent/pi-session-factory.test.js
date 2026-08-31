@@ -107,7 +107,10 @@ describe('isolated Pi session factory', () => {
 
     expect(created.toolNames).toEqual(['node_request', 'read']);
     expect(created.resourceLoader.getSkills()).toEqual({
-      skills: [expect.objectContaining({ name: 'swarm-postage' })],
+      skills: [
+        expect.objectContaining({ name: 'swarm-postage' }),
+        expect.objectContaining({ name: 'swarm-publishing' }),
+      ],
       diagnostics: [],
     });
     expect(sdk.createAgentSession).toHaveBeenCalledWith(
@@ -260,7 +263,7 @@ describe('isolated Pi session factory', () => {
       ],
       extensions: 0,
       sessionFile: null,
-      skills: 1,
+      skills: 2,
       contextFiles: 0,
     });
     expect(result.prompt).toContain('swarm-postage');

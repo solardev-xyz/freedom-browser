@@ -318,6 +318,66 @@ const TOOL_SPECS = Object.freeze([
     tabMode: 'none',
   },
   {
+    operation: OPERATIONS.SWARM_PUBLISH,
+    label: 'Publish to Swarm',
+    description:
+      'Publish one attached file, the current contents of one attached folder, or a bounded text document to the public Swarm network through Freedom. Pass an opaque resourceId from attachment_list, never a local path. Content is public and unencrypted, and Freedom always asks the user before dispatch. A folder is read live when the approved upload begins. If the result is still uploading or verifying, preserve its publicationId and use swarm_publication_status; never blindly repeat a possibly applied publication.',
+    parameters: {
+      type: 'object',
+      properties: {
+        resourceId: {
+          type: 'string',
+          pattern: '^(attachment|folder)_[a-f0-9]{20}$',
+          description: 'Opaque ID of one file or folder already attached to this conversation.',
+        },
+        text: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 262_144,
+          description: 'Text content to publish instead of an attached resource.',
+        },
+        name: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 240,
+          description: 'Required filename when publishing text.',
+        },
+        contentType: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 255,
+          description: 'Optional media type for text content.',
+        },
+        indexDocument: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 1_024,
+          description: 'Optional relative default document within an attached folder.',
+        },
+      },
+      additionalProperties: false,
+    },
+    tabMode: 'none',
+    cancellable: true,
+  },
+  {
+    operation: OPERATIONS.SWARM_PUBLICATION_STATUS,
+    label: 'Check Swarm publication',
+    description:
+      'Check a Swarm publication by its Freedom publication ID. Omit publicationId after an interrupted model run to list this conversation’s recent publications. Use this to reconcile uploading, verifying, or outcome_unknown work before considering another publish.',
+    parameters: {
+      type: 'object',
+      properties: {
+        publicationId: {
+          type: 'string',
+          pattern: '^swarm_pub_[a-f0-9]{24}$',
+        },
+      },
+      additionalProperties: false,
+    },
+    tabMode: 'none',
+  },
+  {
     operation: OPERATIONS.WALLET_TRANSFER,
     label: 'Send wallet funds',
     description:
@@ -484,7 +544,8 @@ async function executeCancellable(controller, operation, input, signal, executio
     operation === OPERATIONS.UPLOAD ||
     operation === OPERATIONS.WALLET_TRANSFER ||
     operation === OPERATIONS.NODE_REQUEST ||
-    operation === OPERATIONS.NODE_LIFECYCLE
+    operation === OPERATIONS.NODE_LIFECYCLE ||
+    operation === OPERATIONS.SWARM_PUBLISH
   ) {
     return controller.execute(operation, input, { ...execution, signal });
   }

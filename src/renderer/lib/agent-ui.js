@@ -1539,6 +1539,8 @@ function clearApproval() {
   elements.walletApprovalSummary.replaceChildren();
   elements.nodeRequestDetails.hidden = true;
   elements.nodeRequestSummary.replaceChildren();
+  elements.publicationDetails.hidden = true;
+  elements.publicationSummary.replaceChildren();
   elements.walletAccountField.hidden = true;
   elements.walletAccount.replaceChildren();
   elements.walletUnlock.hidden = true;
@@ -1565,6 +1567,36 @@ function appendNodeRequestSummary(label, value) {
   description.textContent = value;
   elements.nodeRequestSummary.appendChild(term);
   elements.nodeRequestSummary.appendChild(description);
+}
+
+function appendPublicationSummary(label, value) {
+  if (!value) return;
+  const term = document.createElement('dt');
+  term.textContent = label;
+  const description = document.createElement('dd');
+  description.textContent = value;
+  elements.publicationSummary.appendChild(term);
+  elements.publicationSummary.appendChild(description);
+}
+
+function renderPublicationApproval(request) {
+  const publication = request.publication;
+  elements.publicationDetails.hidden = false;
+  elements.publicationSummary.replaceChildren();
+  appendPublicationSummary(
+    'Content',
+    publication.kind === 'folder'
+      ? 'Attached folder · current contents'
+      : publication.kind === 'file'
+        ? 'Attached file'
+        : 'Text document'
+  );
+  appendPublicationSummary('Name', publication.name);
+  if (Number.isSafeInteger(publication.bytes)) {
+    appendPublicationSummary('Size', formatArtifactBytes(publication.bytes));
+  }
+  appendPublicationSummary('Default document', publication.indexDocument);
+  appendPublicationSummary('Network', 'Public Swarm network');
 }
 
 function effectLabel(value) {
@@ -1701,6 +1733,7 @@ function renderApproval(request) {
   const nodeRequest = request.nodeRequest;
   const nodeLifecycle = request.nodeLifecycle;
   const interaction = request.interaction;
+  const publication = request.publication;
   elements.approval.classList.toggle('diagnostic-approval', Boolean(diagnostic));
   const diagnosticSubject =
     diagnostic?.scope === 'node' ? `${diagnostic.service} node` : 'Freedom application';
@@ -1712,7 +1745,9 @@ function renderApproval(request) {
     'myotis-ethereum': 'Myotis Ethereum',
     'myotis-gnosis': 'Myotis Gnosis',
   };
-  elements.approvalAction.textContent = nodeRequest
+  elements.approvalAction.textContent = publication
+    ? `Publish “${publication.name}” to Swarm?`
+    : nodeRequest
     ? `Allow this ${nodeLabels[nodeRequest.service] || nodeRequest.service} node request?`
     : nodeLifecycle
       ? `${nodeLifecycle.action[0].toUpperCase()}${nodeLifecycle.action.slice(1)} the ${nodeLabels[nodeLifecycle.service] || nodeLifecycle.service} node?`
@@ -1738,7 +1773,11 @@ function renderApproval(request) {
                       `Let Agent interact with “${label}”?`
                     : `${interaction.summary.replace(/[.?!]+$/, '')}?`
                   : interactionCopy[request.operation] || `Let Agent interact with “${label}”?`;
-  elements.approvalOrigin.textContent = nodeRequest
+  elements.approvalOrigin.textContent = publication
+    ? publication.kind === 'folder'
+      ? 'This publishes the attached folder’s current contents using an existing postage batch. The content is public, unencrypted, and may remain retrievable.'
+      : 'This publishes the attached content using an existing postage batch. The content is public, unencrypted, and may remain retrievable.'
+    : nodeRequest
     ? `${nodeRequest.providerLabel}${nodeRequest.modelId ? ` using ${nodeRequest.modelId}` : ''} independently classified this request as ${effectLabel(nodeRequest.effect).toLowerCase()}. Freedom has not sent it to the node yet.`
     : nodeLifecycle
       ? `${nodeLifecycle.providerLabel}${nodeLifecycle.modelId ? ` using ${nodeLifecycle.modelId}` : ''} classified this as ${effectLabel(nodeLifecycle.effect).toLowerCase()}. Freedom will run it through the node manager and verify the resulting state.`
@@ -1757,7 +1796,9 @@ function renderApproval(request) {
             ? `Freedom could not confidently determine whether this interaction on ${approvalOriginSummary(request)} is consequential.`
             : `Based on Agent’s stated intent and the visible target on ${approvalOriginSummary(request)}. Freedom has not audited the page’s hidden behavior.`
           : approvalOriginSummary(request);
-  elements.approvalApprove.textContent = diagnostic
+  elements.approvalApprove.textContent = publication
+    ? 'Publish'
+    : diagnostic
     ? 'Share once'
     : request.action === 'file_upload'
       ? 'Choose file…'
@@ -1774,12 +1815,14 @@ function renderApproval(request) {
   elements.approvalApprove.classList.toggle('secondary', Boolean(diagnostic));
   elements.walletApprovalDetails.hidden = true;
   elements.nodeRequestDetails.hidden = true;
+  elements.publicationDetails.hidden = true;
   elements.walletUnlock.hidden = true;
   elements.approvalAllowConversation.hidden = !diagnostic;
   if (diagnostic) elements.approvalAllowConversation.textContent = 'Share for conversation';
   if (request.wallet) renderWalletApproval(request);
   if (nodeRequest) renderNodeRequestApproval(request);
   if (nodeLifecycle) renderNodeLifecycleApproval(request);
+  if (publication) renderPublicationApproval(request);
   setApprovalControlsDisabled(false);
   setMessage(elements.approvalMessage, 'Agent is waiting');
   elements.composer.classList.add('approval-pending');
@@ -1940,6 +1983,9 @@ function outcomeSummaryLabel(outcome) {
   if (outcome?.verification === 'nodes_inspected') return 'Node status checked';
   if (outcome?.verification === 'diagnostics_inspected') return 'Diagnostics inspected';
   if (outcome?.verification === 'attachments_inspected') return 'Sources inspected';
+  if (outcome?.verification === 'swarm_publication_verified') return 'Publication verified';
+  if (outcome?.verification === 'swarm_publication_completed') return 'Published to Swarm';
+  if (outcome?.verification === 'swarm_publication_in_flight') return 'Publication still running';
   if (outcome?.verification === 'model_only') return 'Agent reported';
   if (outcome?.kind === 'recovery') return 'Needs recovery';
   if (outcome?.kind === 'interrupted') return 'Stopped';
@@ -1996,6 +2042,62 @@ function renderArtifact(runId, artifact) {
         }
       } finally {
         button.disabled = artifact.available !== true;
+      }
+    });
+    actions.appendChild(button);
+  }
+  card.appendChild(copy);
+  card.appendChild(actions);
+  view.artifactList.appendChild(card);
+  view.artifactList.hidden = false;
+}
+
+function renderPublication(runId, publication) {
+  const view = turnView(runId);
+  if (
+    !view ||
+    !publication ||
+    !/^swarm_pub_[a-f0-9]{24}$/.test(publication.publicationId) ||
+    publication.state !== 'completed' ||
+    typeof publication.name !== 'string' ||
+    !/^bzz:\/\/[a-f0-9]{64}$/.test(publication.bzzUrl)
+  ) {
+    return;
+  }
+  if (view.artifactList.querySelector(`[data-publication-id="${publication.publicationId}"]`)) {
+    return;
+  }
+  const card = document.createElement('div');
+  card.className = 'agent-artifact agent-publication';
+  card.dataset.publicationId = publication.publicationId;
+  const copy = document.createElement('div');
+  copy.className = 'agent-artifact-copy';
+  const name = document.createElement('strong');
+  name.textContent = publication.name;
+  const meta = document.createElement('span');
+  meta.textContent = publication.verified
+    ? 'Swarm · retrieval verified'
+    : 'Swarm · published, verification pending';
+  copy.appendChild(name);
+  copy.appendChild(meta);
+  const actions = document.createElement('div');
+  actions.className = 'agent-artifact-actions';
+  for (const [label, action] of [
+    ['Open', () => window.electronAPI.openAgentPublication(publication.bzzUrl)],
+    ['Copy URL', () => window.electronAPI.copyText(publication.bzzUrl)],
+  ]) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = label;
+    button.addEventListener('click', async () => {
+      button.disabled = true;
+      try {
+        const result = await action();
+        if (result?.success === false) {
+          setMessage(elements.runMessage, result.error || 'Publication unavailable', true);
+        }
+      } finally {
+        button.disabled = false;
       }
     });
     actions.appendChild(button);
@@ -2072,7 +2174,8 @@ function finishToolRow(event) {
   }
   const downloadCancelled = event.errorCode === 'DOWNLOAD_CANCELLED_BY_USER';
   const uploadCancelled = event.errorCode === 'FILE_UPLOAD_CANCELLED_BY_USER';
-  const userCancelled = downloadCancelled || uploadCancelled;
+  const publicationCancelled = event.errorCode === 'SWARM_PUBLICATION_CANCELLED_BY_USER';
+  const userCancelled = downloadCancelled || uploadCancelled || publicationCancelled;
   record.label.textContent = event.label || record.label.textContent;
   record.state.textContent = userCancelled ? '•' : event.status === 'failed' ? '×' : '✓';
   record.row.classList.toggle('cancelled', userCancelled);
@@ -2087,11 +2190,25 @@ function finishToolRow(event) {
     record.approval.hidden = false;
   }
   if (event.artifact) renderArtifact(event.runId, event.artifact);
+  if (event.publication) renderPublication(event.runId, event.publication);
 }
 
 function updateToolProgress(event) {
   const record = toolRows.get(`${event.runId}:${event.toolCallId}`);
   if (!record) return;
+  if (event.operation === 'swarm_publish' && event.publication) {
+    const publication = event.publication;
+    record.label.textContent =
+      publication.state === 'verifying'
+        ? `Verifying ${publication.name}`
+        : publication.state === 'completed'
+          ? `Published ${publication.name} to Swarm`
+          : publication.state === 'failed'
+            ? `Publication failed for ${publication.name}`
+            : `Publishing ${publication.name}${Number.isSafeInteger(event.progress) ? ` · ${event.progress}%` : ''}`;
+    if (publication.state === 'completed') renderPublication(event.runId, publication);
+    return;
+  }
   const received = Math.max(0, Number(event.receivedBytes) || 0);
   const total = Math.max(0, Number(event.totalBytes) || 0);
   const progress = total > 0 ? ` · ${Math.min(100, Math.round((received / total) * 100))}%` : '';
@@ -2397,7 +2514,17 @@ function handleAgentEvent(event) {
     void refreshWorkspaceProjection();
   } else if (event.type === 'tool_progress') {
     updateToolProgress(event);
-    if (event.state === 'cancelled') {
+    if (event.operation === 'swarm_publish') {
+      const name = event.publication?.name || 'content';
+      const label =
+        event.state === 'verifying'
+          ? `Verifying ${name} on Swarm…`
+          : event.state === 'completed'
+            ? `Published ${name} to Swarm.`
+            : `Publishing ${name}${Number.isSafeInteger(event.progress) ? ` · ${event.progress}%` : ''}…`;
+      setMessage(elements.runMessage, label);
+      setLiveStatus(event.runId, label);
+    } else if (event.state === 'cancelled') {
       setMessage(elements.runMessage, 'Download cancelled by you.');
       setLiveStatus(event.runId, 'Continuing after the cancelled download…');
     } else {
@@ -2862,6 +2989,8 @@ export function initAgentUi(options = {}) {
     walletApprovalSummary: byId('agent-wallet-approval-summary'),
     nodeRequestDetails: byId('agent-node-request-details'),
     nodeRequestSummary: byId('agent-node-request-summary'),
+    publicationDetails: byId('agent-publication-details'),
+    publicationSummary: byId('agent-publication-summary'),
     walletAccountField: byId('agent-wallet-account-field'),
     walletAccount: byId('agent-wallet-account'),
     walletUnlock: byId('agent-wallet-unlock'),

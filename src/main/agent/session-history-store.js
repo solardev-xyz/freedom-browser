@@ -10,6 +10,7 @@ const {
   normalizeAttachmentReceipt,
   normalizeNodeLifecycleReceipt,
   normalizeNodeRequestReceipt,
+  normalizePublicationReceipt,
   normalizeUpload,
   normalizeWalletReceipt,
 } = require('./agent-progress');
@@ -72,6 +73,7 @@ function normalizeActivity(activity) {
       const nodeLifecycle = normalizeNodeLifecycleReceipt(item.nodeLifecycle);
       const nodeRequest = normalizeNodeRequestReceipt(item.nodeRequest);
       const attachment = normalizeAttachmentReceipt(item.attachment, item.operation);
+      const publication = normalizePublicationReceipt(item.publication);
       const artifacts = Array.isArray(item.artifacts)
         ? item.artifacts.map(normalizeArtifact).filter(Boolean).slice(0, 100)
         : [];
@@ -92,6 +94,7 @@ function normalizeActivity(activity) {
         ...(nodeLifecycle && { nodeLifecycle }),
         ...(nodeRequest && { nodeRequest }),
         ...(attachment && { attachment }),
+        ...(publication && { publication }),
         ...(artifacts.length && { artifacts }),
         ...(Number.isSafeInteger(item.pageCount) && item.pageCount >= 0
           ? { pageCount: item.pageCount }

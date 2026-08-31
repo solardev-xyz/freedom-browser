@@ -27,6 +27,7 @@ const {
   normalizeNodeLifecycleReceipt,
   normalizeNodeRequestReceipt,
   normalizeNodeStatusReceipt,
+  normalizePublicationReceipt,
   normalizeUpload,
   normalizeWalletReceipt,
 } = require('./agent-progress');
@@ -303,6 +304,7 @@ function normalizePiEvent(event, toolOutcome, provider = {}) {
       ...(toolOutcome?.nodeRequest && { nodeRequest: toolOutcome.nodeRequest }),
       ...(toolOutcome?.nodeLifecycle && { nodeLifecycle: toolOutcome.nodeLifecycle }),
       ...(toolOutcome?.diagnostic && { diagnostic: toolOutcome.diagnostic }),
+      ...(toolOutcome?.publication && { publication: toolOutcome.publication }),
       ...(toolOutcome?.artifacts && { artifacts: toolOutcome.artifacts }),
       ...(attachment && { attachment }),
       ...(errorCode && { errorCode }),
@@ -369,17 +371,42 @@ function normalizeDiagnosticApproval(value, recipient = {}) {
   });
 }
 
+function normalizePublicationApproval(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const kind = ['file', 'folder', 'text'].includes(value.kind) ? value.kind : null;
+  const name = typeof value.name === 'string'
+    // eslint-disable-next-line no-control-regex
+    ? value.name.slice(0, 240).replace(/[\u0000-\u001f\u007f]/g, '')
+    : '';
+  if (!kind || !name || value.public !== true) return null;
+  return Object.freeze({
+    kind,
+    name,
+    public: true,
+    ...(Number.isSafeInteger(value.bytes) && value.bytes >= 0 ? { bytes: value.bytes } : {}),
+    ...(typeof value.contentType === 'string' && value.contentType
+      ? { contentType: value.contentType.slice(0, 255) }
+      : {}),
+    ...(typeof value.indexDocument === 'string' && value.indexDocument
+      ? { indexDocument: value.indexDocument.slice(0, 1_024) }
+      : {}),
+  });
+}
+
 function normalizeApprovalRequest(request, recipient) {
   const wallet = normalizeWalletApproval(request?.wallet);
   const diagnostic = normalizeDiagnosticApproval(request?.diagnostic, recipient);
   const nodeRequest = normalizeNodeRequestApproval(request?.nodeRequest, recipient);
   const nodeLifecycle = normalizeNodeLifecycleApproval(request?.nodeLifecycle, recipient);
   const interaction = normalizeInteractionApproval(request?.interaction);
+  const publication = normalizePublicationApproval(request?.publication);
   const origin = wallet
     ? getPermissionKey(request?.origin) || ''
     : originScopeForUrl(request?.origin) || '';
   return Object.freeze({
-    action: nodeLifecycle
+    action: publication
+      ? 'swarm_publish'
+      : nodeLifecycle
       ? 'node_lifecycle'
       : nodeRequest
       ? 'node_request'
@@ -412,6 +439,7 @@ function normalizeApprovalRequest(request, recipient) {
     ...(diagnostic && { diagnostic }),
     ...(nodeRequest && { nodeRequest }),
     ...(nodeLifecycle && { nodeLifecycle }),
+    ...(publication && { publication }),
   });
 }
 
@@ -1635,6 +1663,7 @@ class FreedomAgentService {
         if (normalized.nodeRequest) item.nodeRequest = normalized.nodeRequest;
         if (normalized.nodeLifecycle) item.nodeLifecycle = normalized.nodeLifecycle;
         if (normalized.diagnostic) item.diagnostic = normalized.diagnostic;
+        if (normalized.publication) item.publication = normalized.publication;
         if (normalized.attachment) item.attachment = normalized.attachment;
         if (normalized.artifacts) item.artifacts = normalized.artifacts;
         if (item.approval) normalized.approval = item.approval;
@@ -1679,6 +1708,9 @@ class FreedomAgentService {
       ...(normalizeDiagnosticReceipt(outcome.diagnostic) && {
         diagnostic: normalizeDiagnosticReceipt(outcome.diagnostic),
       }),
+      ...(normalizePublicationReceipt(outcome.publication) && {
+        publication: normalizePublicationReceipt(outcome.publication),
+      }),
       ...(Array.isArray(outcome.artifacts) && {
         artifacts: outcome.artifacts.map(normalizeArtifact).filter(Boolean).slice(0, 100),
       }),
@@ -1693,6 +1725,7 @@ class FreedomAgentService {
         nodeRequest: outcome.nodeRequest,
         nodeLifecycle: outcome.nodeLifecycle,
         diagnostic: outcome.diagnostic,
+        publication: outcome.publication,
       }),
     });
     run.toolOutcomes.set(normalized.toolCallId, normalized);
@@ -1704,12 +1737,34 @@ class FreedomAgentService {
       this.activeRun !== run ||
       !outcome ||
       typeof outcome.toolCallId !== 'string' ||
-      outcome.operation !== OPERATIONS.DOWNLOAD
+      ![OPERATIONS.DOWNLOAD, OPERATIONS.SWARM_PUBLISH].includes(outcome.operation)
     ) {
       return;
     }
     const progress = outcome.progress;
     if (!progress || typeof progress !== 'object') return;
+    if (outcome.operation === OPERATIONS.SWARM_PUBLISH) {
+      const publication = normalizePublicationReceipt(progress.publication);
+      if (!publication) return;
+      const item = run.activity.find((candidate) => candidate.toolCallId === outcome.toolCallId);
+      if (item) {
+        item.publication = publication;
+        const copy = activityProgress(OPERATIONS.SWARM_PUBLISH, { publication });
+        item.label = copy.label;
+        item.intent = copy.intent;
+      }
+      this.#emit(run, {
+        type: 'tool_progress',
+        toolCallId: outcome.toolCallId,
+        operation: OPERATIONS.SWARM_PUBLISH,
+        state: publication.state,
+        ...(Number.isSafeInteger(publication.progress) && {
+          progress: publication.progress,
+        }),
+        publication,
+      });
+      return;
+    }
     const receivedBytes = Math.max(0, Number(progress.receivedBytes) || 0);
     const totalBytes = Math.max(0, Number(progress.totalBytes) || 0);
     const normalizedArtifact = normalizeArtifact(progress.receipt);

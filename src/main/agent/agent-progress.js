@@ -131,6 +131,16 @@ const OPERATION_PROGRESS = Object.freeze({
     intent: 'Inspecting Freedom diagnostics',
     completed: 'Inspected Freedom diagnostics',
   },
+  [OPERATIONS.SWARM_PUBLISH]: {
+    effect: ACTIVITY_EFFECTS.CHANGED,
+    intent: 'Publishing to Swarm',
+    completed: 'Published to Swarm',
+  },
+  [OPERATIONS.SWARM_PUBLICATION_STATUS]: {
+    effect: ACTIVITY_EFFECTS.OBSERVED,
+    intent: 'Checking a Swarm publication',
+    completed: 'Checked a Swarm publication',
+  },
   [OPERATIONS.LIST_DOWNLOADS]: {
     effect: ACTIVITY_EFFECTS.OBSERVED,
     intent: 'Checking task downloads',
@@ -172,6 +182,7 @@ const ERROR_LABELS = Object.freeze({
   [ERROR_CODES.FILE_UPLOAD_CANCELLED_BY_USER]: 'The user cancelled file selection.',
   [ERROR_CODES.DOWNLOAD_CANCELLED_BY_USER]: 'The user cancelled the download.',
   [ERROR_CODES.WALLET_REQUEST_CANCELLED_BY_USER]: 'The user declined the wallet request.',
+  [ERROR_CODES.SWARM_PUBLICATION_CANCELLED_BY_USER]: 'The user declined the Swarm publication.',
   [ERROR_CODES.CAPABILITY_UNAVAILABLE]: 'This browser capability is unavailable.',
   [ERROR_CODES.INTERNAL_ERROR]: 'The browser action failed unexpectedly.',
   SESSION_START_FAILED: 'The agent session could not start.',
@@ -193,6 +204,7 @@ const CONFIRMED_NOT_APPLIED_ERRORS = new Set([
   ERROR_CODES.FILE_UPLOAD_CANCELLED_BY_USER,
   ERROR_CODES.DOWNLOAD_CANCELLED_BY_USER,
   ERROR_CODES.WALLET_REQUEST_CANCELLED_BY_USER,
+  ERROR_CODES.SWARM_PUBLICATION_CANCELLED_BY_USER,
   ERROR_CODES.CAPABILITY_UNAVAILABLE,
 ]);
 
@@ -371,6 +383,52 @@ function normalizeNodeLifecycleReceipt(value) {
   return Object.freeze({ service, action, beforeState, afterState, verified: true });
 }
 
+function normalizePublicationReceipt(value) {
+  if (!value || typeof value !== 'object') return null;
+  const publicationId = boundedString(value.publicationId, 160);
+  const states = new Set(['uploading', 'verifying', 'completed', 'failed', 'outcome_unknown']);
+  const applicationStates = new Set(['not_applied', 'possibly_applied', 'applied']);
+  const kind = ['file', 'folder', 'text'].includes(value.kind) ? value.kind : null;
+  // eslint-disable-next-line no-control-regex
+  const name = boundedString(value.name, 240).replace(/[\u0000-\u001f\u007f]/g, '');
+  if (
+    !/^swarm_pub_[a-f0-9]{24}$/.test(publicationId) ||
+    !states.has(value.state) ||
+    !applicationStates.has(value.applicationState) ||
+    !kind ||
+    !name ||
+    value.public !== true
+  ) {
+    return null;
+  }
+  const reference = boundedString(value.reference, 128).toLowerCase();
+  const validReference = /^[a-f0-9]{64}$/.test(reference);
+  const bzzUrl = validReference && value.bzzUrl === `bzz://${reference}` ? value.bzzUrl : '';
+  const progress =
+    Number.isSafeInteger(value.progress) && value.progress >= 0 && value.progress <= 100
+      ? value.progress
+      : null;
+  const bytes = Number.isSafeInteger(value.bytes) && value.bytes >= 0 ? value.bytes : null;
+  const indexDocument = boundedString(value.indexDocument, 1_024);
+  const error = boundedString(value.error, 500);
+  if (value.state === 'completed' && (!validReference || !bzzUrl)) return null;
+  return Object.freeze({
+    publicationId,
+    state: value.state,
+    applicationState: value.applicationState,
+    kind,
+    name,
+    public: true,
+    ...(bytes !== null && { bytes }),
+    ...(progress !== null && { progress }),
+    ...(indexDocument && { indexDocument }),
+    ...(validReference && { reference }),
+    ...(bzzUrl && { bzzUrl }),
+    ...(typeof value.verified === 'boolean' && { verified: value.verified }),
+    ...(error && { error }),
+  });
+}
+
 function normalizeAttachmentReceipt(value, operation) {
   if (!value || typeof value !== 'object') return null;
   if (![ATTACHMENT_OPERATIONS.LIST, ATTACHMENT_OPERATIONS.READ].includes(operation)) {
@@ -449,6 +507,7 @@ function activityProgress(operation, receipt = {}) {
   const nodeLifecycle = normalizeNodeLifecycleReceipt(receipt.nodeLifecycle);
   const diagnostic = normalizeDiagnosticReceipt(receipt.diagnostic);
   const attachment = normalizeAttachmentReceipt(receipt.attachment, operation);
+  const publication = normalizePublicationReceipt(receipt.publication);
 
   if (operation === OPERATIONS.LIST_TABS && pageCount !== null) {
     const pages = `${pageCount} Agent ${pageCount === 1 ? 'tab' : 'tabs'}`;
@@ -491,6 +550,25 @@ function activityProgress(operation, receipt = {}) {
     const subject = diagnostic.scope === 'node' ? diagnostic.service : 'Freedom';
     intent = `Inspecting ${subject} diagnostics`;
     label = `Inspected ${diagnostic.lineCount} diagnostic ${diagnostic.lineCount === 1 ? 'line' : 'lines'}`;
+  } else if (
+    (operation === OPERATIONS.SWARM_PUBLISH ||
+      operation === OPERATIONS.SWARM_PUBLICATION_STATUS) &&
+    publication
+  ) {
+    intent =
+      publication.state === 'verifying'
+        ? `Verifying ${publication.name}`
+        : publication.state === 'completed'
+          ? `Checking ${publication.name}`
+          : `Publishing ${publication.name}`;
+    label =
+      publication.state === 'completed'
+        ? `Published ${publication.name} to Swarm`
+        : publication.state === 'failed'
+          ? `Publication failed for ${publication.name}`
+          : publication.state === 'outcome_unknown'
+            ? `Publication outcome uncertain for ${publication.name}`
+            : `Publishing ${publication.name}${Number.isSafeInteger(publication.progress) ? ` — ${publication.progress}%` : ''}`;
   } else if (operation === ATTACHMENT_OPERATIONS.LIST && attachment) {
     if (attachment.resourceId) {
       const folder = attachment.folderName || attachment.name || 'attached folder';
@@ -550,6 +628,7 @@ function activityProgress(operation, receipt = {}) {
     ...(nodeLifecycle && { nodeLifecycle }),
     ...(diagnostic && { diagnostic }),
     ...(attachment && { attachment }),
+    ...(publication && { publication }),
   });
 }
 
@@ -577,6 +656,12 @@ function createToolReceipt(operation, options = {}) {
   const nodeRequest = normalizeNodeRequestReceipt(result?.summary);
   const nodeLifecycle = normalizeNodeLifecycleReceipt(result?.summary);
   const diagnostic = normalizeDiagnosticReceipt(result?.summary);
+  const publication = normalizePublicationReceipt(
+    result?.summary?.publication ||
+      result?.publication ||
+      result?.summary?.publications?.[0] ||
+      result?.publications?.[0]
+  );
   const artifacts = Array.isArray(result?.artifacts)
     ? result.artifacts.map(normalizeArtifact).filter(Boolean).slice(0, 100)
     : [];
@@ -592,6 +677,7 @@ function createToolReceipt(operation, options = {}) {
     ...(nodeRequest && { nodeRequest }),
     ...(nodeLifecycle && { nodeLifecycle }),
     ...(diagnostic && { diagnostic }),
+    ...(publication && { publication }),
     ...(artifacts.length && { artifacts }),
   });
 }
@@ -617,12 +703,16 @@ function buildAgentOutcome(activity, status, error) {
   const declinedWalletRequests = items.filter(
     (item) => item?.errorCode === ERROR_CODES.WALLET_REQUEST_CANCELLED_BY_USER
   );
+  const declinedPublications = items.filter(
+    (item) => item?.errorCode === ERROR_CODES.SWARM_PUBLICATION_CANCELLED_BY_USER
+  );
   const failed = items.filter(
     (item) =>
       item?.status === 'failed' &&
       item?.errorCode !== ERROR_CODES.DOWNLOAD_CANCELLED_BY_USER &&
       item?.errorCode !== ERROR_CODES.FILE_UPLOAD_CANCELLED_BY_USER &&
-      item?.errorCode !== ERROR_CODES.WALLET_REQUEST_CANCELLED_BY_USER
+      item?.errorCode !== ERROR_CODES.WALLET_REQUEST_CANCELLED_BY_USER &&
+      item?.errorCode !== ERROR_CODES.SWARM_PUBLICATION_CANCELLED_BY_USER
   );
   const changed = succeeded.filter((item) => normalizedEffect(item) === ACTIVITY_EFFECTS.CHANGED);
   const observed = succeeded.filter((item) => normalizedEffect(item) === ACTIVITY_EFFECTS.OBSERVED);
@@ -667,6 +757,12 @@ function buildAgentOutcome(activity, status, error) {
         ])
     ).values(),
   ];
+  const publications = succeeded
+    .filter((item) =>
+      [OPERATIONS.SWARM_PUBLISH, OPERATIONS.SWARM_PUBLICATION_STATUS].includes(item?.operation)
+    )
+    .map((item) => normalizePublicationReceipt(item?.publication))
+    .filter(Boolean);
   const nonBrowserObservations = new Set([
     OPERATIONS.NODE_STATUS,
     OPERATIONS.NODE_REQUEST,
@@ -674,6 +770,8 @@ function buildAgentOutcome(activity, status, error) {
     OPERATIONS.NODE_LIFECYCLE,
     OPERATIONS.NODE_DIAGNOSTICS,
     OPERATIONS.APP_DIAGNOSTICS,
+    OPERATIONS.SWARM_PUBLISH,
+    OPERATIONS.SWARM_PUBLICATION_STATUS,
     ATTACHMENT_OPERATIONS.LIST,
     ATTACHMENT_OPERATIONS.READ,
   ]);
@@ -727,6 +825,7 @@ function buildAgentOutcome(activity, status, error) {
     ...(declinedWalletRequests.length && {
       declinedWalletRequests: declinedWalletRequests.length,
     }),
+    ...(declinedPublications.length && { declinedPublications: declinedPublications.length }),
     ...(walletTransfers.length && { walletTransfers: walletTransfers.length }),
     ...(nodeChecks.length && { nodeChecks: nodeChecks.length }),
     ...(nodeRequests.length && { nodeRequests: nodeRequests.length }),
@@ -736,6 +835,7 @@ function buildAgentOutcome(activity, status, error) {
     ...(attachmentObservations.length && {
       attachmentObservations: attachmentObservations.length,
     }),
+    ...(publications.length && { publications: publications.length }),
     approvals,
   });
   const browserActionCopy = `${browserSucceeded.length} successful browser ${browserSucceeded.length === 1 ? 'action' : 'actions'}${counts.pages ? ` across ${counts.pages} ${counts.pages === 1 ? 'page' : 'pages'}` : ''}`;
@@ -816,6 +916,62 @@ function buildAgentOutcome(activity, status, error) {
         headline: 'Wallet transfer broadcast',
         detail: `${transfer} was sent through Freedom Wallet on chain ${wallet.chainId}. Transaction: ${wallet.transactionHash}.`,
         wallet,
+        destinations,
+        counts,
+      });
+    }
+    if (declinedPublications.length) {
+      return Object.freeze({
+        kind: 'completed',
+        verification: 'swarm_publication_declined',
+        tone: 'neutral',
+        headline: 'Swarm publication declined',
+        detail: 'You declined the publication. Freedom did not dispatch it to Swarm.',
+        destinations,
+        counts,
+      });
+    }
+    if (publications.length && !browserObserved.length) {
+      const publication = publications.at(-1);
+      if (publication.state === 'completed') {
+        return Object.freeze({
+          kind: 'completed',
+          verification: publication.verified
+            ? 'swarm_publication_verified'
+            : 'swarm_publication_completed',
+          tone: publication.verified ? 'success' : 'caution',
+          headline: publication.verified ? 'Published and verified on Swarm' : 'Published to Swarm',
+          detail: publication.verified
+            ? `Freedom published “${publication.name}” and verified retrieval at ${publication.bzzUrl}.`
+            : `Freedom published “${publication.name}” at ${publication.bzzUrl}, but retrieval was not verified yet.`,
+          publication,
+          destinations,
+          counts,
+        });
+      }
+      if (publication.state === 'uploading' || publication.state === 'verifying') {
+        return Object.freeze({
+          kind: 'completed',
+          verification: 'swarm_publication_in_flight',
+          tone: 'caution',
+          headline: 'Swarm publication still running',
+          detail: `Freedom is still ${publication.state === 'verifying' ? 'verifying' : 'publishing'} “${publication.name}”. Publication ${publication.publicationId} must be checked before any repeat.`,
+          publication,
+          destinations,
+          counts,
+        });
+      }
+      return Object.freeze({
+        kind: 'completed',
+        verification: publication.state === 'failed'
+          ? 'swarm_publication_failed'
+          : 'swarm_publication_outcome_unknown',
+        tone: 'caution',
+        headline: publication.state === 'failed'
+          ? 'Swarm publication failed'
+          : 'Swarm publication outcome uncertain',
+        detail: publication.error || `Publication ${publication.publicationId} requires reconciliation before any repeat.`,
+        publication,
         destinations,
         counts,
       });
@@ -1033,6 +1189,23 @@ function buildAgentOutcome(activity, status, error) {
     (request) => request.state === 'delivery_uncertain'
   );
   const unresolvedNodeRequest = pendingNodeRequest || uncertainNodeRequest;
+  const unresolvedPublication = publications.findLast((publication) =>
+    ['uploading', 'verifying', 'outcome_unknown'].includes(publication.state)
+  );
+  if (providerPresentation && unresolvedPublication) {
+    return Object.freeze({
+      kind: 'recovery',
+      verification: 'swarm_publication_unresolved',
+      tone: 'caution',
+      headline: 'Model disconnected; publication still needs reconciliation',
+      detail: `${providerPresentation.terminalMessage} Publication ${unresolvedPublication.publicationId} for “${unresolvedPublication.name}” is ${unresolvedPublication.state.replaceAll('_', ' ')} and must be checked before any repeat.`,
+      publication: unresolvedPublication,
+      destinations,
+      nextStep: 'Continue this conversation so Agent can check the existing Swarm publication.',
+      retrySafety: 'review',
+      counts,
+    });
+  }
   if (providerPresentation && unresolvedNodeRequest) {
     const stillRunning = unresolvedNodeRequest.state === 'in_flight';
     return Object.freeze({
@@ -1079,6 +1252,7 @@ module.exports = {
   normalizeNodeRequestReceipt,
   normalizeNodeLifecycleReceipt,
   normalizeNodeStatusReceipt,
+  normalizePublicationReceipt,
   normalizeUpload,
   normalizeWalletReceipt,
 };

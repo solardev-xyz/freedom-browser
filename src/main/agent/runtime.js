@@ -12,6 +12,7 @@ const { NodeRequestController } = require('../node-request-controller');
 const { NodeLifecycleController } = require('../node-lifecycle-controller');
 const { NodeDiagnosticsController } = require('../node-diagnostics-controller');
 const { ConversationAttachmentStore } = require('./conversation-attachment-store');
+const { SwarmPublicationController } = require('./swarm-publication-controller');
 
 function createFreedomAgentRuntime(options = {}) {
   const providerStore = new AgentProviderStore({
@@ -50,11 +51,16 @@ function createFreedomAgentRuntime(options = {}) {
     nodeStatusController: nodeController,
     ...options.nodeDiagnosticsControllerOptions,
   });
+  const publicationController = new SwarmPublicationController({
+    attachmentStore,
+    ...options.swarmPublicationControllerOptions,
+  });
   options.controller.setWalletTransferController(walletController);
   options.controller.setNodeController(nodeController);
   options.controller.setNodeRequestController(nodeRequestController);
   options.controller.setNodeLifecycleController(nodeLifecycleController);
   options.controller.setDiagnosticsController(diagnosticsController);
+  options.controller.setPublicationController(publicationController);
   const service = new FreedomAgentService({
     controller: options.controller,
     subscribeTabLifecycle: options.subscribeTabLifecycle,
@@ -88,11 +94,13 @@ function createFreedomAgentRuntime(options = {}) {
     nodeRequestController,
     nodeLifecycleController,
     diagnosticsController,
+    publicationController,
     service,
     async dispose() {
       await unregisterIpc();
       await service.dispose();
       await nodeRequestController.dispose();
+      publicationController.dispose();
       attachmentStore.dispose();
       historyStore.close();
       nodeOperationStore.close();
@@ -101,6 +109,7 @@ function createFreedomAgentRuntime(options = {}) {
       options.controller.setNodeRequestController(null);
       options.controller.setNodeLifecycleController(null);
       options.controller.setDiagnosticsController(null);
+      options.controller.setPublicationController(null);
     },
   };
 }

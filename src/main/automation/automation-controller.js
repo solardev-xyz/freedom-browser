@@ -38,6 +38,8 @@ class AutomationController {
     }
     this.diagnosticsController = null;
     if (options.diagnosticsController) this.setDiagnosticsController(options.diagnosticsController);
+    this.publicationController = null;
+    if (options.publicationController) this.setPublicationController(options.publicationController);
   }
 
   setPageLifecycle(pageLifecycle) {
@@ -142,6 +144,21 @@ class AutomationController {
       throw new TypeError('Automation diagnostics controller requires node() and app()');
     }
     this.diagnosticsController = diagnosticsController;
+  }
+
+  setPublicationController(publicationController) {
+    if (publicationController === null) {
+      this.publicationController = null;
+      return;
+    }
+    if (
+      !publicationController ||
+      typeof publicationController.publish !== 'function' ||
+      typeof publicationController.status !== 'function'
+    ) {
+      throw new TypeError('Automation publication controller requires publish() and status()');
+    }
+    this.publicationController = publicationController;
   }
 
   registerPage(adapter, metadata) {
@@ -351,6 +368,17 @@ class AutomationController {
         return this.#requireDiagnosticsController().app(input, {
           requestApproval: execution?.requestApproval,
         });
+      case OPERATIONS.SWARM_PUBLISH:
+        return this.#requirePublicationController().publish(input, {
+          conversationId: execution?.conversationId,
+          onProgress: execution?.onProgress,
+          requestApproval: execution?.requestApproval,
+          signal: execution?.signal,
+        });
+      case OPERATIONS.SWARM_PUBLICATION_STATUS:
+        return this.#requirePublicationController().status(input, {
+          conversationId: execution?.conversationId,
+        });
       case OPERATIONS.LIST_DOWNLOADS:
         return { artifacts: this.#requireDownloadController().list(execution?.conversationId) };
       case OPERATIONS.SCREENSHOT:
@@ -458,6 +486,16 @@ class AutomationController {
       );
     }
     return this.diagnosticsController;
+  }
+
+  #requirePublicationController() {
+    if (!this.publicationController) {
+      throw new AutomationError(
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        'Swarm publishing is unavailable in this runtime'
+      );
+    }
+    return this.publicationController;
   }
 
   #errorEnvelope(tabId, entry, error) {

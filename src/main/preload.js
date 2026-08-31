@@ -214,6 +214,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('agent:approval-mode:set', { conversationId, approvalMode }),
   claimAgentTab: (rendererTabId) =>
     ipcRenderer.invoke('agent:tab:claim', { rendererTabId }),
+  openAgentPublication: (bzzUrl) =>
+    ipcRenderer.invoke('agent:publication:open', { bzzUrl }),
   getAgentProviderStatus: () => ipcRenderer.invoke('agent:provider:get-status'),
   getAgentProviderCatalog: () => ipcRenderer.invoke('agent:provider:get-catalog'),
   configureHostedAgentProvider: (providerId, modelId, apiKey) =>

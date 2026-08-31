@@ -66,6 +66,8 @@ describe('Pi browser tool adapter', () => {
       OPERATIONS.NODE_LIFECYCLE,
       OPERATIONS.NODE_DIAGNOSTICS,
       OPERATIONS.APP_DIAGNOSTICS,
+      OPERATIONS.SWARM_PUBLISH,
+      OPERATIONS.SWARM_PUBLICATION_STATUS,
       OPERATIONS.WALLET_TRANSFER,
       OPERATIONS.WAIT,
       OPERATIONS.STOP_LOADING,
@@ -569,6 +571,74 @@ describe('Pi browser tool adapter', () => {
       status: 'succeeded',
       nodeStatus: result.summary,
     });
+  });
+
+  test('publishes through a tabless cancellable tool and exposes only the safe receipt to UI', async () => {
+    const onToolOutcome = jest.fn();
+    const onToolProgress = jest.fn();
+    const signal = new AbortController().signal;
+    const publication = {
+      publicationId: `swarm_pub_${'a'.repeat(24)}`,
+      state: 'completed',
+      applicationState: 'applied',
+      kind: 'folder',
+      name: 'website',
+      public: true,
+      progress: 100,
+      reference: 'b'.repeat(64),
+      bzzUrl: `bzz://${'b'.repeat(64)}`,
+      verified: true,
+    };
+    const controller = {
+      execute: jest.fn(async (_operation, _input, execution) => {
+        execution.onProgress({ state: 'uploading', progress: 25, publication: {
+          ...publication,
+          state: 'uploading',
+          applicationState: 'possibly_applied',
+          progress: 25,
+          reference: undefined,
+          bzzUrl: undefined,
+          verified: undefined,
+        } });
+        return { ok: true, result: { publication, summary: { publication } } };
+      }),
+    };
+    const tools = await createFreedomBrowserTools({
+      sdk: createSdk(),
+      controller,
+      tabId: null,
+      onToolOutcome,
+      onToolProgress,
+    });
+    const publish = tools.find((tool) => tool.name === OPERATIONS.SWARM_PUBLISH);
+
+    await publish.execute(
+      'call_publish',
+      { resourceId: `folder_${'c'.repeat(20)}`, indexDocument: 'index.html' },
+      signal
+    );
+
+    expect(controller.execute).toHaveBeenCalledWith(
+      OPERATIONS.SWARM_PUBLISH,
+      { resourceId: `folder_${'c'.repeat(20)}`, indexDocument: 'index.html' },
+      expect.objectContaining({ signal, onProgress: expect.any(Function) })
+    );
+    expect(onToolProgress).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toolCallId: 'call_publish',
+        operation: OPERATIONS.SWARM_PUBLISH,
+        progress: expect.objectContaining({ progress: 25 }),
+      })
+    );
+    expect(onToolOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toolCallId: 'call_publish',
+        operation: OPERATIONS.SWARM_PUBLISH,
+        status: 'succeeded',
+        publication,
+      })
+    );
+    expect(JSON.stringify(onToolOutcome.mock.calls)).not.toContain('resourceId');
   });
 
   test('gives Pi raw diagnostic evidence while progress receives only its summary', async () => {

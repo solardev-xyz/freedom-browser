@@ -10,6 +10,7 @@ const {
   MAX_DIAGNOSTIC_LINES,
   MAX_NODE_REQUEST_BODY_BYTES,
   MAX_NODE_RESPONSE_BYTES,
+  MAX_SWARM_PUBLISH_TEXT_BYTES,
   MAX_WAIT_TIMEOUT_MS,
   NODE_LIFECYCLE_SERVICES,
   NODE_REQUEST_SERVICES,
@@ -70,6 +71,23 @@ const BLOCKED_NODE_REQUEST_HEADERS = new Set([
   'referer',
 ]);
 const MAX_INTERACTION_INTENT_LENGTH = 240;
+const ATTACHMENT_RESOURCE_ID = /^(?:attachment|folder)_[a-f0-9]{20}$/;
+const SWARM_PUBLICATION_NAME_MAX_LENGTH = 240;
+
+function validateRelativePublicationPath(value, field) {
+  const relativePath = requireString(value, field).trim();
+  const segments = relativePath.split('/');
+  if (
+    relativePath.length > 1_024 ||
+    relativePath.startsWith('/') ||
+    relativePath.includes('\\') ||
+    containsControlCharacters(relativePath) ||
+    segments.some((segment) => !segment || segment === '.' || segment === '..')
+  ) {
+    throw invalidArgument(`${field} must be a safe relative path`, { field });
+  }
+  return relativePath;
+}
 
 function requireObject(input) {
   if (input === undefined) return {};
@@ -392,6 +410,71 @@ function validateOperationInput(operation, rawInput) {
     }
   }
 
+  if (operation === OPERATIONS.SWARM_PUBLISH) {
+    const hasResourceId = input.resourceId !== undefined;
+    const hasText = input.text !== undefined;
+    if (hasResourceId === hasText) {
+      throw invalidArgument('Swarm publication requires exactly one resourceId or text field', {
+        field: 'resourceId',
+      });
+    }
+    if (hasResourceId) {
+      normalized.resourceId = requireString(input.resourceId, 'resourceId').trim();
+      if (!ATTACHMENT_RESOURCE_ID.test(normalized.resourceId)) {
+        throw invalidArgument('resourceId must identify an attached file or folder', {
+          field: 'resourceId',
+        });
+      }
+    } else {
+      normalized.text = requireString(input.text, 'text');
+      if (Buffer.byteLength(normalized.text, 'utf8') > MAX_SWARM_PUBLISH_TEXT_BYTES) {
+        throw invalidArgument(
+          `text cannot exceed ${MAX_SWARM_PUBLISH_TEXT_BYTES} UTF-8 bytes`,
+          { field: 'text' }
+        );
+      }
+      normalized.name = requireString(input.name, 'name').trim();
+      if (
+        normalized.name.length > SWARM_PUBLICATION_NAME_MAX_LENGTH ||
+        containsControlCharacters(normalized.name)
+      ) {
+        throw invalidArgument(
+          `name cannot exceed ${SWARM_PUBLICATION_NAME_MAX_LENGTH} characters or contain controls`,
+          { field: 'name' }
+        );
+      }
+      normalized.contentType =
+        input.contentType === undefined
+          ? 'text/plain; charset=utf-8'
+          : requireString(input.contentType, 'contentType').trim();
+      if (normalized.contentType.length > 255 || containsControlCharacters(normalized.contentType)) {
+        throw invalidArgument('contentType must be a bounded media type', {
+          field: 'contentType',
+        });
+      }
+    }
+    if (input.indexDocument !== undefined) {
+      if (!hasResourceId) {
+        throw invalidArgument('indexDocument can only be used with an attached folder', {
+          field: 'indexDocument',
+        });
+      }
+      normalized.indexDocument = validateRelativePublicationPath(
+        input.indexDocument,
+        'indexDocument'
+      );
+    }
+  }
+
+  if (operation === OPERATIONS.SWARM_PUBLICATION_STATUS && input.publicationId !== undefined) {
+    normalized.publicationId = requireString(input.publicationId, 'publicationId').trim();
+    if (!/^swarm_pub_[a-f0-9]{24}$/.test(normalized.publicationId)) {
+      throw invalidArgument('publicationId must be a Freedom Swarm publication ID', {
+        field: 'publicationId',
+      });
+    }
+  }
+
   return normalized;
 }
 
@@ -404,6 +487,7 @@ module.exports = {
   MAX_DIAGNOSTIC_LINES,
   MAX_NODE_REQUEST_BODY_BYTES,
   MAX_NODE_RESPONSE_BYTES,
+  MAX_SWARM_PUBLISH_TEXT_BYTES,
   MAX_WAIT_TIMEOUT_MS,
   NODE_LIFECYCLE_ACTIONS,
   NODE_LIFECYCLE_SERVICES,

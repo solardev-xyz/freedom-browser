@@ -15,6 +15,12 @@ const BUILTIN_SKILL_DEFINITIONS = Object.freeze([
       'Plan, price, purchase, monitor, and verify Swarm postage stamp batches through Freedom’s Ant node tools.',
     files: Object.freeze(['SKILL.md']),
   }),
+  Object.freeze({
+    name: 'swarm-publishing',
+    description:
+      'Publish attached files, live folders, static sites, and bounded text to Swarm through Freedom.',
+    files: Object.freeze(['SKILL.md']),
+  }),
 ]);
 
 function skillVirtualPath(skillName, relativeFile) {

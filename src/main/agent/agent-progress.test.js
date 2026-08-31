@@ -8,6 +8,7 @@ const {
   buildAgentOutcome,
   createToolReceipt,
   normalizeAttachmentReceipt,
+  normalizePublicationReceipt,
 } = require('./agent-progress');
 
 describe('Agent progress projection', () => {
@@ -844,5 +845,86 @@ describe('Agent progress projection', () => {
         ATTACHMENT_OPERATIONS.READ
       )
     ).toBeNull();
+  });
+
+  test('projects verified Swarm publications without local paths and recovers in-flight work', () => {
+    const publication = normalizePublicationReceipt({
+      publicationId: `swarm_pub_${'a'.repeat(24)}`,
+      state: 'completed',
+      applicationState: 'applied',
+      kind: 'folder',
+      name: 'My site',
+      public: true,
+      progress: 100,
+      reference: 'b'.repeat(64),
+      bzzUrl: `bzz://${'b'.repeat(64)}`,
+      verified: true,
+      sourcePath: '/Users/private/My site',
+    });
+    expect(publication).toEqual({
+      publicationId: `swarm_pub_${'a'.repeat(24)}`,
+      state: 'completed',
+      applicationState: 'applied',
+      kind: 'folder',
+      name: 'My site',
+      public: true,
+      progress: 100,
+      reference: 'b'.repeat(64),
+      bzzUrl: `bzz://${'b'.repeat(64)}`,
+      verified: true,
+    });
+    expect(JSON.stringify(publication)).not.toContain('/Users/private');
+    expect(activityProgress(OPERATIONS.SWARM_PUBLISH, { publication })).toMatchObject({
+      label: 'Published My site to Swarm',
+      effect: 'changed',
+    });
+    expect(
+      buildAgentOutcome(
+        [
+          {
+            operation: OPERATIONS.SWARM_PUBLISH,
+            status: 'succeeded',
+            effect: 'changed',
+            publication,
+          },
+        ],
+        'completed'
+      )
+    ).toMatchObject({
+      verification: 'swarm_publication_verified',
+      headline: 'Published and verified on Swarm',
+      publication,
+    });
+
+    const inFlight = {
+      ...publication,
+      state: 'uploading',
+      applicationState: 'possibly_applied',
+      progress: 30,
+      verified: undefined,
+      reference: undefined,
+      bzzUrl: undefined,
+    };
+    const recovery = buildAgentOutcome(
+      [
+        {
+          operation: OPERATIONS.SWARM_PUBLISH,
+          status: 'succeeded',
+          effect: 'changed',
+          publication: inFlight,
+        },
+      ],
+      'failed',
+      {
+        code: 'PROVIDER_ERROR',
+        providerFailure: { category: 'connection', recovery: 'transient' },
+        retryCount: 2,
+      }
+    );
+    expect(recovery).toMatchObject({
+      verification: 'swarm_publication_unresolved',
+      retrySafety: 'review',
+      publication: expect.objectContaining({ state: 'uploading' }),
+    });
   });
 });

@@ -1168,6 +1168,47 @@ describe('FreedomAgentService', () => {
     await service.waitForIdle();
   });
 
+  test('projects a path-free Agent-native approval for public Swarm publishing', async () => {
+    const fake = createFakeSession();
+    const { service, dependencies } = createService(fake);
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+
+    const requestApproval = dependencies.createControllerScope.mock.calls[0][0].requestApproval;
+    const decision = requestApproval({
+      action: 'swarm_publish',
+      operation: OPERATIONS.SWARM_PUBLISH,
+      label: 'website',
+      publication: {
+        kind: 'folder',
+        name: 'website',
+        public: true,
+        indexDocument: 'index.html',
+        sourcePath: '/Users/private/website',
+      },
+    });
+    const approval = events.at(-1);
+
+    expect(approval).toMatchObject({
+      type: 'approval_requested',
+      action: 'swarm_publish',
+      operation: OPERATIONS.SWARM_PUBLISH,
+      publication: {
+        kind: 'folder',
+        name: 'website',
+        public: true,
+        indexDocument: 'index.html',
+      },
+    });
+    expect(JSON.stringify(approval)).not.toContain('/Users/private');
+    await service.decideApproval('run_test', approval.approvalId, true);
+    await expect(decision).resolves.toBe('approved');
+
+    await service.stop('run_test');
+    await service.waitForIdle();
+  });
+
   test('classifies an exact node request in the isolated model context and exposes a bounded approval', async () => {
     const fake = createFakeSession();
     const effectClassifier = {

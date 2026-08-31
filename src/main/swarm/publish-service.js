@@ -96,7 +96,7 @@ async function publishFile(filePath, options = {}) {
   }
 
   const stream = fs.createReadStream(filePath);
-  const name = path.basename(filePath);
+  const name = options.name || path.basename(filePath);
   const contentType = options.contentType || undefined;
 
   const result = await bee.uploadFile(batchId, stream, name, {

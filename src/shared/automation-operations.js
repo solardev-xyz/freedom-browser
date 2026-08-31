@@ -22,6 +22,8 @@ const OPERATIONS = Object.freeze({
   NODE_LIFECYCLE: 'node_lifecycle',
   NODE_DIAGNOSTICS: 'node_diagnostics',
   APP_DIAGNOSTICS: 'app_diagnostics',
+  SWARM_PUBLISH: 'swarm_publish',
+  SWARM_PUBLICATION_STATUS: 'swarm_publication_status',
   LIST_DOWNLOADS: 'browser_list_downloads',
   SCREENSHOT: 'browser_screenshot',
   WAIT: 'browser_wait',
@@ -35,6 +37,7 @@ const DEFAULT_DIAGNOSTIC_MAX_BYTES = 49_152;
 const MAX_DIAGNOSTIC_BYTES = 65_536;
 const MAX_NODE_REQUEST_BODY_BYTES = 65_536;
 const MAX_NODE_RESPONSE_BYTES = 65_536;
+const MAX_SWARM_PUBLISH_TEXT_BYTES = 262_144;
 const NODE_REQUEST_SERVICES = Object.freeze(['ant', 'radicle', 'ipfs']);
 const NODE_LIFECYCLE_SERVICES = Object.freeze([
   'ant',
@@ -62,6 +65,7 @@ module.exports = {
   MAX_DIAGNOSTIC_LINES,
   MAX_NODE_REQUEST_BODY_BYTES,
   MAX_NODE_RESPONSE_BYTES,
+  MAX_SWARM_PUBLISH_TEXT_BYTES,
   MAX_WAIT_TIMEOUT_MS,
   NODE_LIFECYCLE_SERVICES,
   NODE_REQUEST_SERVICES,

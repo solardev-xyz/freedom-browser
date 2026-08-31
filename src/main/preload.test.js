@@ -263,6 +263,7 @@ describe('preload', () => {
       [exposures.payments, 'getRecent', [{ limit: 10 }], IPC.PAYMENTS_GET_RECENT, [{ limit: 10 }]],
       [exposures.payments, 'getById', [7], IPC.PAYMENTS_GET_BY_ID, [7]],
       [exposures.payments, 'getCount', [{ kind: 'x402' }], IPC.PAYMENTS_GET_COUNT, [{ kind: 'x402' }]],
+      [exposures.electronAPI, 'openAgentPublication', [`bzz://${'a'.repeat(64)}`], IPC.AGENT_PUBLICATION_OPEN, [{ bzzUrl: `bzz://${'a'.repeat(64)}` }]],
     ];
 
     for (const [target, method, args, channel, expectedArgs] of invokeCases) {

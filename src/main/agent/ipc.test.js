@@ -156,6 +156,24 @@ function register(overrides = {}) {
 }
 
 describe('Freedom agent IPC', () => {
+  test('opens only canonical Swarm publication receipts in a browser tab', async () => {
+    const ctx = register();
+    const openPublication = ctx.ipcMain.handlers.get(IPC.AGENT_PUBLICATION_OPEN);
+    const bzzUrl = `bzz://${'a'.repeat(64)}`;
+
+    await expect(openPublication({ sender: ctx.sender }, { bzzUrl })).resolves.toEqual({
+      ok: true,
+      opened: true,
+    });
+    expect(ctx.sender.send).toHaveBeenCalledWith('tab:new-with-url', bzzUrl);
+    await expect(
+      openPublication({ sender: ctx.sender }, { bzzUrl: 'file:///Users/private' })
+    ).resolves.toMatchObject({ ok: false, error: { code: AGENT_ERROR_CODES.INVALID_ARGUMENT } });
+    await expect(
+      openPublication({ sender: ctx.otherSender }, { bzzUrl })
+    ).resolves.toMatchObject({ ok: false, error: { code: AGENT_IPC_ERROR_CODES.NOT_OWNER } });
+  });
+
   test('resolves a renderer tab through its exact chrome sender and keeps models in main', async () => {
     const ctx = register();
     const start = ctx.ipcMain.handlers.get(IPC.AGENT_START);

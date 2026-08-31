@@ -117,6 +117,50 @@ describe('automation operation contract', () => {
     );
   });
 
+  test('accepts only opaque attachment resources or bounded text for Swarm publishing', () => {
+    expect(
+      validateOperationInput(OPERATIONS.SWARM_PUBLISH, {
+        resourceId: 'folder_aaaaaaaaaaaaaaaaaaaa',
+        indexDocument: 'site/index.html',
+      })
+    ).toEqual({
+      resourceId: 'folder_aaaaaaaaaaaaaaaaaaaa',
+      indexDocument: 'site/index.html',
+    });
+    expect(
+      validateOperationInput(OPERATIONS.SWARM_PUBLISH, {
+        text: 'hello',
+        name: 'hello.txt',
+      })
+    ).toEqual({
+      text: 'hello',
+      name: 'hello.txt',
+      contentType: 'text/plain; charset=utf-8',
+    });
+    expect(() =>
+      validateOperationInput(OPERATIONS.SWARM_PUBLISH, {
+        resourceId: '/Users/example/private-folder',
+      })
+    ).toThrow('attached file or folder');
+    expect(() =>
+      validateOperationInput(OPERATIONS.SWARM_PUBLISH, {
+        resourceId: 'folder_aaaaaaaaaaaaaaaaaaaa',
+        text: 'ambiguous',
+      })
+    ).toThrow('exactly one');
+    expect(() =>
+      validateOperationInput(OPERATIONS.SWARM_PUBLISH, {
+        resourceId: 'folder_aaaaaaaaaaaaaaaaaaaa',
+        indexDocument: '../index.html',
+      })
+    ).toThrow('safe relative path');
+    expect(
+      validateOperationInput(OPERATIONS.SWARM_PUBLICATION_STATUS, {
+        publicationId: 'swarm_pub_aaaaaaaaaaaaaaaaaaaaaaaa',
+      })
+    ).toEqual({ publicationId: 'swarm_pub_aaaaaaaaaaaaaaaaaaaaaaaa' });
+  });
+
   test('validates bounded declarative waits', () => {
     expect(
       validateOperationInput(OPERATIONS.WAIT, {

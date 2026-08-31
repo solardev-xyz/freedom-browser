@@ -792,6 +792,30 @@ function registerFreedomAgentIpc(options = {}) {
     }
   };
 
+  const handleOpenPublication = async (event, payload) => {
+    let trusted;
+    try {
+      trusted = isTrustedSender(event?.sender);
+    } catch {
+      trusted = false;
+    }
+    if (!trusted) {
+      return errorEnvelope(
+        AGENT_IPC_ERROR_CODES.NOT_OWNER,
+        'The sender is not trusted browser chrome'
+      );
+    }
+    const bzzUrl = typeof payload?.bzzUrl === 'string' ? payload.bzzUrl.trim() : '';
+    if (!/^bzz:\/\/[a-f0-9]{64}$/.test(bzzUrl)) {
+      return errorEnvelope(
+        AGENT_ERROR_CODES.INVALID_ARGUMENT,
+        'Opening a publication requires a valid Swarm URL'
+      );
+    }
+    event.sender.send('tab:new-with-url', bzzUrl);
+    return { ok: true, opened: true };
+  };
+
   const handleProviderRequest = async (event, action) => {
     let trusted;
     try {
@@ -1047,6 +1071,7 @@ function registerFreedomAgentIpc(options = {}) {
   ipcMain.handle(IPC.AGENT_ATTACHMENTS_REVOKE, handleRevokeAttachment);
   ipcMain.handle(IPC.AGENT_APPROVAL_MODE_SET, handleSetApprovalMode);
   ipcMain.handle(IPC.AGENT_TAB_CLAIM, handleTabClaim);
+  ipcMain.handle(IPC.AGENT_PUBLICATION_OPEN, handleOpenPublication);
   ipcMain.handle(IPC.AGENT_PROVIDER_GET_STATUS, handleProviderStatus);
   ipcMain.handle(IPC.AGENT_PROVIDER_GET_CATALOG, handleProviderCatalog);
   ipcMain.handle(IPC.AGENT_PROVIDER_CONFIGURE_HOSTED, handleConfigureHosted);
@@ -1077,6 +1102,7 @@ function registerFreedomAgentIpc(options = {}) {
     ipcMain.removeHandler?.(IPC.AGENT_ATTACHMENTS_REVOKE);
     ipcMain.removeHandler?.(IPC.AGENT_APPROVAL_MODE_SET);
     ipcMain.removeHandler?.(IPC.AGENT_TAB_CLAIM);
+    ipcMain.removeHandler?.(IPC.AGENT_PUBLICATION_OPEN);
     ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_GET_STATUS);
     ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_GET_CATALOG);
     ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_CONFIGURE_HOSTED);

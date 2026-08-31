@@ -361,6 +361,40 @@ describe('AutomationController', () => {
     );
   });
 
+  test('routes Swarm publication and recovery through the privileged publication boundary', async () => {
+    const { controller, authorize } = createController();
+    const publicationController = {
+      publish: jest.fn(async () => ({
+        publication: { publicationId: 'swarm_pub_aaaaaaaaaaaaaaaaaaaaaaaa' },
+      })),
+      status: jest.fn(async () => ({ publications: [] })),
+    };
+    controller.setPublicationController(publicationController);
+    const requestApproval = jest.fn();
+    const onProgress = jest.fn();
+    const signal = new AbortController().signal;
+
+    await controller.execute(
+      OPERATIONS.SWARM_PUBLISH,
+      { resourceId: 'folder_aaaaaaaaaaaaaaaaaaaa' },
+      { conversationId: 'conversation_test', requestApproval, onProgress, signal }
+    );
+    expect(authorize).toHaveBeenCalledWith(
+      expect.objectContaining({ operation: OPERATIONS.SWARM_PUBLISH, tab: null })
+    );
+    expect(publicationController.publish).toHaveBeenCalledWith(
+      { resourceId: 'folder_aaaaaaaaaaaaaaaaaaaa' },
+      { conversationId: 'conversation_test', requestApproval, onProgress, signal }
+    );
+
+    await controller.execute(OPERATIONS.SWARM_PUBLICATION_STATUS, {}, {
+      conversationId: 'conversation_test',
+    });
+    expect(publicationController.status).toHaveBeenCalledWith({}, {
+      conversationId: 'conversation_test',
+    });
+  });
+
   test('does not echo an unvalidated tab ID into error envelopes', async () => {
     const { controller } = createController();
     const failure = await controller.execute(OPERATIONS.SNAPSHOT, {

@@ -58,6 +58,8 @@ const EXPECTED_TOOL_NAMES = Object.freeze([
   'node_lifecycle',
   'node_diagnostics',
   'app_diagnostics',
+  'swarm_publish',
+  'swarm_publication_status',
   'browser_wait',
   'browser_stop_loading',
 ]);

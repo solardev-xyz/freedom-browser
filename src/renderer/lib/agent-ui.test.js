@@ -85,6 +85,8 @@ function createAgentElements() {
     'agent-wallet-approval-summary',
     'agent-node-request-details',
     'agent-node-request-summary',
+    'agent-publication-details',
+    'agent-publication-summary',
     'agent-wallet-account-field',
     'agent-wallet-account',
     'agent-wallet-unlock',
@@ -187,6 +189,8 @@ function createAgentElements() {
   elements['agent-wallet-approval-summary'] = createElement('dl');
   elements['agent-node-request-details'].hidden = true;
   elements['agent-node-request-summary'] = createElement('dl');
+  elements['agent-publication-details'].hidden = true;
+  elements['agent-publication-summary'] = createElement('dl');
   elements['agent-wallet-account-field'].hidden = true;
   elements['agent-wallet-account'] = createElement('select');
   elements['agent-wallet-unlock'].hidden = true;
@@ -307,6 +311,8 @@ async function loadAgentUi(options = {}) {
     claimAgentTab: jest.fn(),
     openAgentArtifact: jest.fn().mockResolvedValue({ success: true }),
     showAgentArtifactInFolder: jest.fn().mockResolvedValue({ success: true }),
+    openAgentPublication: jest.fn().mockResolvedValue({ ok: true, opened: true }),
+    copyText: jest.fn().mockResolvedValue({ success: true }),
     pauseAgent: jest.fn().mockResolvedValue({ ok: true, paused: true }),
     resumeAgent: jest.fn().mockResolvedValue({ ok: true, resumed: true }),
     stopAgent: jest.fn().mockResolvedValue({ ok: true, stopped: true }),
@@ -2883,6 +2889,79 @@ describe('Agent UI', () => {
       decision: 'approved',
     });
     expect(ctx.elements['agent-approval-approve'].textContent).toBe('Allow once');
+  });
+
+  test('renders a public Swarm publication as an Agent-native decision and receipt', async () => {
+    const ctx = await loadAgentUi();
+    ctx.elements['agent-prompt'].value = 'Publish the attached site';
+    ctx.elements['agent-run'].dispatch('click');
+    await flush();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'approval_requested',
+      runId: 'run_test',
+      approvalId: 'approval_publish',
+      action: 'swarm_publish',
+      operation: 'swarm_publish',
+      label: 'website',
+      publication: {
+        kind: 'folder',
+        name: 'website',
+        public: true,
+        indexDocument: 'index.html',
+      },
+    });
+
+    expect(ctx.elements['agent-approval-action'].textContent).toBe(
+      'Publish “website” to Swarm?'
+    );
+    expect(ctx.elements['agent-approval-origin'].textContent).toContain('current contents');
+    expect(ctx.elements['agent-approval-origin'].textContent).toContain('public, unencrypted');
+    expect(ctx.elements['agent-publication-details'].hidden).toBe(false);
+    expect(ctx.elements['agent-publication-summary'].textContent).not.toContain('/Users/');
+    expect(ctx.elements['agent-approval-approve'].textContent).toBe('Publish');
+
+    ctx.elements['agent-approval-approve'].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.decideAgentApproval).toHaveBeenCalledWith(
+      'run_test',
+      'approval_publish',
+      true
+    );
+
+    const publication = {
+      publicationId: `swarm_pub_${'a'.repeat(24)}`,
+      state: 'completed',
+      applicationState: 'applied',
+      kind: 'folder',
+      name: 'website',
+      public: true,
+      progress: 100,
+      reference: 'b'.repeat(64),
+      bzzUrl: `bzz://${'b'.repeat(64)}`,
+      verified: true,
+    };
+    ctx.emit({
+      type: 'tool_started',
+      runId: 'run_test',
+      toolCallId: 'publish_call',
+      operation: 'swarm_publish',
+      intent: 'Publishing website',
+    });
+    ctx.emit({
+      type: 'tool_finished',
+      runId: 'run_test',
+      toolCallId: 'publish_call',
+      operation: 'swarm_publish',
+      status: 'succeeded',
+      label: 'Published website to Swarm',
+      publication,
+    });
+    const card = ctx.elements['agent-transcript'].children[0].children[4].children[0];
+    expect(card.dataset.publicationId).toBe(publication.publicationId);
+    card.children[1].children[0].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.openAgentPublication).toHaveBeenCalledWith(publication.bzzUrl);
   });
 
   test('keeps the conversation reusable after a failed run', async () => {
