@@ -2,33 +2,95 @@
 
 'use strict';
 
+const path = require('path');
 const {
-  detectSeatbeltCapabilities,
-} = require('../src/main/agent/workspace-execution/seatbelt-backend');
+  createWorkspaceExecutionPolicy,
+} = require('../src/main/agent/workspace-execution/execution-policy');
+const { SeatbeltExecutor } = require('../src/main/agent/workspace-execution/seatbelt-backend');
+
+const workspaceRoot = path.resolve(__dirname, '..');
 
 async function main() {
   if (process.platform !== 'darwin' || process.env.FREEDOM_REQUIRE_SEATBELT !== '1') {
     throw new Error('macOS qualification requires darwin and FREEDOM_REQUIRE_SEATBELT=1');
   }
-  const capabilities = await detectSeatbeltCapabilities();
+  const executor = new SeatbeltExecutor();
+  const capabilities = await executor.detectCapabilities({ force: true });
   process.stdout.write(`${JSON.stringify({ type: 'capabilities', ...capabilities })}\n`);
-  if (
-    capabilities.available ||
-    capabilities.denial?.code !== 'DESCENDANT_CANCELLATION_UNAVAILABLE' ||
-    capabilities.diagnostics?.setsidEscape !== 'confirmed'
-  ) {
-    throw new Error('The qualified macOS blocker did not reproduce exactly; refusing to proceed');
+  if (!capabilities.available) {
+    throw new Error(capabilities.denial?.code || 'Seatbelt is unavailable');
   }
-  for (const name of ['focused-jest', 'lint', 'babel-transform', 'shell-node-python-git']) {
+  const policy = await createWorkspaceExecutionPolicy({
+    workspaceRoot,
+    protectedWorkspacePaths: ['.git', 'node_modules'],
+    limits: {
+      timeoutMs: 5 * 60 * 1_000,
+      stdoutBytes: 1024 * 1024,
+      stderrBytes: 1024 * 1024,
+    },
+  });
+  const workloads = [
+    {
+      name: 'focused-jest',
+      command: 'npm',
+      args: [
+        'run',
+        'test:unit',
+        '--',
+        '--runInBand',
+        'src/main/agent/workspace-execution/seatbelt-backend.test.js',
+      ],
+    },
+    { name: 'lint', command: 'npm', args: ['run', 'lint'] },
+    {
+      name: 'babel-transform',
+      command: 'node',
+      args: [
+        '-e',
+        [
+          "const babel = require('@babel/core');",
+          "const fs = require('fs');",
+          "const result = babel.transformFileSync('src/main/agent/workspace-execution/seatbelt-backend.js', { ast: false, babelrc: false, configFile: false });",
+          "fs.writeFileSync(process.env.TMPDIR + '/freedom-seatbelt-build.js', result.code);",
+        ].join(' '),
+      ],
+    },
+    {
+      name: 'shell-python-git',
+      command: '/bin/sh',
+      args: [
+        '-c',
+        [
+          'python3 -c "print(\'python-ok\')" >/dev/null',
+          'git status --short >/dev/null',
+          'git diff -- src/main/agent/workspace-execution/seatbelt-backend.js >/dev/null',
+          'git log -1 --oneline >/dev/null',
+          "printf 'positive-ok'",
+        ].join(' && '),
+      ],
+    },
+  ];
+  for (const workload of workloads) {
+    const receipt = await executor.execute(policy, workload);
     process.stdout.write(
       `${JSON.stringify({
         type: 'workload',
-        name,
-        state: 'sandbox_denied',
-        reason: capabilities.denial.code,
-        commandStarted: false,
+        name: workload.name,
+        state: receipt.state,
+        exitCode: receipt.exitCode,
+        durationMs: receipt.durationMs,
+        stdoutBytes: Buffer.byteLength(receipt.stdout),
+        stderrBytes: Buffer.byteLength(receipt.stderr),
+        stdoutTruncated: receipt.stdoutTruncated,
+        stderrTruncated: receipt.stderrTruncated,
+        terminationGuarantee: receipt.terminationGuarantee,
       })}\n`
     );
+    if (receipt.state !== 'completed') {
+      process.stderr.write(receipt.stderr || receipt.error?.message || 'Sandbox workload failed\n');
+      process.exitCode = 1;
+      return;
+    }
   }
 }
 

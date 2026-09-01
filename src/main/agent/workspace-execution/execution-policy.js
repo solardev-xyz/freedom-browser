@@ -665,7 +665,11 @@ async function createWorkspaceExecutionPolicy(options = {}) {
       stderrBytes,
       aggregate: resolveAggregateLimits(limitsInput),
     }),
-    cancellation: Object.freeze({ supported: true, scope: 'descendant_tree' }),
+    cancellation: Object.freeze({
+      supported: true,
+      scope: 'descendant_tree',
+      guarantee: 'backend_reported',
+    }),
     seccomp: Object.freeze({ requireCustomFilter: options.requireCustomSeccomp === true }),
   });
   validatedPolicies.add(policy);

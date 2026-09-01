@@ -4,11 +4,15 @@ const { spawnSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { PassThrough } = require('stream');
 const { createWorkspaceExecutionPolicy } = require('./execution-policy');
 const {
-  SeatbeltExecutor,
+  PRIVATE_DIRECTORY_PREFIX,
   buildSeatbeltProfile,
+  collectStream,
+  createPrivateDirectory,
   detectSeatbeltCapabilities,
+  hostWorkingDirectory,
   seatbeltString,
 } = require('./seatbelt-backend');
 
@@ -18,6 +22,7 @@ async function createFixture() {
   await fs.promises.mkdir(workspaceRoot, { mode: 0o700 });
   const git = spawnSync('git', ['init', '--quiet', workspaceRoot], { encoding: 'utf8' });
   if (git.status !== 0) throw new Error(git.stderr || 'git init failed');
+  await fs.promises.mkdir(path.join(workspaceRoot, 'nested'));
   await fs.promises.writeFile(path.join(workspaceRoot, 'source.txt'), 'source\n');
   return { fixtureRoot, workspaceRoot };
 }
@@ -35,115 +40,93 @@ describe('macOS Seatbelt backend contract', () => {
     expect(seatbeltString('/tmp/a"b\\c')).toBe('"/tmp/a\\"b\\\\c"');
   });
 
-  test('constructs a default-deny profile with exact workspace authority and Git precedence', async () => {
+  test('constructs a default-deny profile with exact canonical authority and Git precedence', async () => {
     const fixture = await createFixture();
     fixtureRoots.push(fixture.fixtureRoot);
     const policy = await createWorkspaceExecutionPolicy({
       workspaceRoot: fixture.workspaceRoot,
-      nodeRuntimeRoot: null,
+      nodeRuntimeRoot: '/usr',
+      workingDirectory: 'nested',
     });
-    const privateDirectory = path.join(fixture.fixtureRoot, 'private');
+    const privateDirectory = await createPrivateDirectory();
+    fixtureRoots.push(privateDirectory);
+    const workspace = policy.filesystem.writableRoots.find((root) => root.id === 'workspace');
+    const gitMetadata = policy.filesystem.protectedPaths.find(
+      (protectedPath) => protectedPath.relativePath === '.git'
+    );
     const profile = buildSeatbeltProfile(policy, privateDirectory);
 
     expect(profile).toContain('(deny default)');
     expect(profile).toContain('(deny network*)');
-    expect(profile).toContain(`(allow file-write* (subpath "${fixture.workspaceRoot}"))`);
-    expect(profile).toContain(
-      `(deny file-write* (subpath "${path.join(fixture.workspaceRoot, '.git')}"))`
-    );
+    expect(profile).toContain(`(allow file-write* (subpath "${workspace.sourcePath}"))`);
+    expect(profile).toContain(`(deny file-write* (subpath "${gitMetadata.sourcePath}"))`);
     expect(profile).toContain(`(allow file-write* (subpath "${privateDirectory}"))`);
     expect(profile).not.toContain(os.homedir());
-    expect(profile).not.toContain('/Library');
     expect(profile).not.toContain('/Applications');
+    expect(hostWorkingDirectory(policy, workspace)).toBe(path.join(workspace.sourcePath, 'nested'));
   });
 
-  test('rejects forged policy objects', () => {
-    expect(() => buildSeatbeltProfile({}, '/tmp/freedom-private')).toThrow(
+  test('creates canonical mode-0700 private storage with isolated subdirectories', async () => {
+    const directory = await createPrivateDirectory();
+    fixtureRoots.push(directory);
+    expect(path.basename(directory)).toMatch(new RegExp(`^${PRIVATE_DIRECTORY_PREFIX}`));
+    expect((await fs.promises.stat(directory)).mode & 0o777).toBe(0o700);
+    for (const name of ['home', 'tmp', 'cache', 'config', 'data']) {
+      await expect(fs.promises.stat(path.join(directory, name))).resolves.toMatchObject({});
+    }
+  });
+
+  test('rejects forged policy objects and unvalidated private paths', async () => {
+    expect(() => buildSeatbeltProfile({}, '/tmp/freedom-seatbelt-forged')).toThrow(
       expect.objectContaining({ code: 'INVALID_POLICY' })
+    );
+    const fixture = await createFixture();
+    fixtureRoots.push(fixture.fixtureRoot);
+    const policy = await createWorkspaceExecutionPolicy({ workspaceRoot: fixture.workspaceRoot });
+    expect(() => buildSeatbeltProfile(policy, '/tmp/not-freedom-storage')).toThrow(
+      expect.objectContaining({ code: 'INVALID_PRIVATE_DIRECTORY' })
     );
   });
 
-  test('treats non-macOS and unqualified builds as unavailable', async () => {
+  test('uses capability-based detection and fails closed on initialization errors', async () => {
     await expect(
       detectSeatbeltCapabilities({ platform: 'linux', binary: '/usr/bin/true' })
     ).resolves.toMatchObject({
       available: false,
       denial: { code: 'SEATBELT_PLATFORM_UNAVAILABLE' },
     });
-
-    const run = async (binary, args) => ({
-      exitCode: 0,
-      stdout: args[0] === '-productVersion' ? '15.5\n' : '24F74\n',
-      stderr: '',
+    await expect(
+      detectSeatbeltCapabilities({
+        platform: 'darwin',
+        architecture: 'future-arch',
+        release: 'future-release',
+        binary: '/usr/bin/true',
+        run: async () => ({ exitCode: 0, signal: null, stdout: '', stderr: '' }),
+      })
+    ).resolves.toMatchObject({
+      available: true,
+      diagnostics: { architecture: 'future-arch', release: 'future-release' },
+      enforcement: { cancellationGuarantee: 'best_effort' },
     });
     await expect(
       detectSeatbeltCapabilities({
         platform: 'darwin',
-        architecture: 'arm64',
         binary: '/usr/bin/true',
-        run,
+        run: async () => ({ exitCode: 1, signal: null, stdout: '', stderr: 'denied' }),
       })
     ).resolves.toMatchObject({
       available: false,
-      denial: { code: 'UNQUALIFIED_MACOS_BUILD' },
+      denial: { code: 'SEATBELT_INITIALIZATION_FAILED' },
+      diagnostics: { initializationDiagnostic: 'denied' },
     });
   });
 
-  test('reports confirmed setsid escape as a mandatory cancellation blocker', async () => {
-    const run = async (binary, args) => {
-      if (binary === '/usr/bin/sw_vers') {
-        return {
-          exitCode: 0,
-          stdout: args[0] === '-productVersion' ? '15.6\n' : '24G84\n',
-          stderr: '',
-        };
-      }
-      return { exitCode: 0, stdout: '', stderr: '' };
-    };
-    await expect(
-      detectSeatbeltCapabilities({
-        platform: 'darwin',
-        architecture: 'arm64',
-        binary: '/usr/bin/true',
-        run,
-      })
-    ).resolves.toMatchObject({
-      available: false,
-      denial: { code: 'DESCENDANT_CANCELLATION_UNAVAILABLE' },
-      diagnostics: { profileInitialization: 'passed', setsidEscape: 'confirmed' },
-      enforcement: { cancellation: false },
-    });
-  });
-
-  test('never launches an untrusted command when the mandatory boundary is unavailable', async () => {
-    const fixture = await createFixture();
-    fixtureRoots.push(fixture.fixtureRoot);
-    const policy = await createWorkspaceExecutionPolicy({ workspaceRoot: fixture.workspaceRoot });
-    const executor = new SeatbeltExecutor({
-      platform: 'darwin',
-      architecture: 'arm64',
-      binary: '/usr/bin/true',
-      run: async (binary, args) => {
-        if (binary === '/usr/bin/sw_vers') {
-          return {
-            exitCode: 0,
-            stdout: args[0] === '-productVersion' ? '15.6\n' : '24G84\n',
-            stderr: '',
-          };
-        }
-        return { exitCode: 0, stdout: '', stderr: '' };
-      },
-    });
-    const canary = path.join(fixture.workspaceRoot, 'must-not-exist');
-    const receipt = await executor.execute(policy, {
-      command: '/usr/bin/touch',
-      args: [canary],
-    });
-
-    expect(receipt).toMatchObject({
-      state: 'sandbox_denied',
-      error: { code: 'DESCENDANT_CANCELLATION_UNAVAILABLE' },
-    });
-    await expect(fs.promises.stat(canary)).rejects.toMatchObject({ code: 'ENOENT' });
+  test('continues draining output after the visible limit', () => {
+    const stream = new PassThrough();
+    const collection = collectStream(stream, 5);
+    stream.write('hello');
+    stream.write(' discarded');
+    stream.end();
+    expect(collection.result()).toEqual({ text: 'hello', truncated: true });
   });
 });

@@ -49,6 +49,7 @@ describe('workspace execution policy', () => {
         SSH_AUTH_SOCK: '/tmp/agent.sock',
       },
     });
+    const canonicalWorkspace = await fs.promises.realpath(fixture.workspaceRoot);
 
     expect(policy).toMatchObject({
       kind: 'freedom.workspace-execution-policy',
@@ -61,7 +62,7 @@ describe('workspace execution policy', () => {
         stderrBytes: DEFAULT_OUTPUT_BYTES,
       },
       filesystem: {
-        writableRoots: [{ sourcePath: fixture.workspaceRoot, mountPath: '/workspace' }],
+        writableRoots: [{ sourcePath: canonicalWorkspace, mountPath: '/workspace' }],
         privateTemporaryStorage: { mountPath: '/tmp', lifecycle: 'execution' },
         protectedPaths: [
           expect.objectContaining({
@@ -74,6 +75,11 @@ describe('workspace execution policy', () => {
       environment: {
         values: { LANG: 'C.UTF-8' },
         sensitiveValuesScrubbed: true,
+      },
+      cancellation: {
+        supported: true,
+        scope: 'descendant_tree',
+        guarantee: 'backend_reported',
       },
     });
     expect(policy.environment.values).not.toHaveProperty('AWS_SECRET_ACCESS_KEY');

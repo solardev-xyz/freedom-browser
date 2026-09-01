@@ -1,6 +1,7 @@
 'use strict';
 
-const { execFile } = require('child_process');
+const { execFile, execFileSync, spawn } = require('child_process');
+const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -12,10 +13,21 @@ const {
 } = require('./execution-policy');
 
 const DEFAULT_SEATBELT_PATH = '/usr/bin/sandbox-exec';
-const QUALIFIED_MACOS_VERSION = '15.6';
-const QUALIFIED_MACOS_BUILD = '24G84';
-const QUALIFIED_ARCHITECTURE = 'arm64';
 const PROBE_TIMEOUT_MS = 5_000;
+const TERMINATION_GRACE_MS = 1_000;
+const FORCED_RECEIPT_DELAY_MS = 250;
+const PRIVATE_DIRECTORY_PREFIX = 'freedom-seatbelt-';
+const SYSTEM_READ_PATHS = Object.freeze(['/System', '/usr', '/bin', '/sbin']);
+const OPTIONAL_SYSTEM_READ_PATHS = Object.freeze([
+  '/Library/Apple',
+  '/Library/Developer/CommandLineTools',
+  '/private/etc/hosts',
+  '/private/etc/passwd',
+  '/private/etc/group',
+  '/private/etc/protocols',
+  '/private/etc/services',
+  '/private/etc/ssl/cert.pem',
+]);
 
 function boundedText(value, maximum = 512) {
   return String(value || '').slice(0, maximum);
@@ -27,6 +39,7 @@ function execFileResult(binary, args, options = {}) {
       resolve({
         error,
         exitCode: typeof error?.code === 'number' ? error.code : error ? null : 0,
+        signal: error?.signal || null,
         stdout: boundedText(stdout),
         stderr: boundedText(stderr),
       });
@@ -38,8 +51,81 @@ function seatbeltString(value) {
   return `"${String(value).replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`;
 }
 
-function addPathRule(lines, operation, filter, candidate) {
-  lines.push(`(allow ${operation} (${filter} ${seatbeltString(candidate)}))`);
+function pathRule(action, operation, filter, candidate) {
+  return `(${action} ${operation} (${filter} ${seatbeltString(candidate)}))`;
+}
+
+function protectedPathFilter(protectedPath) {
+  return protectedPath.kind === 'file' || protectedPath.kind === 'git_pointer'
+    ? 'literal'
+    : 'subpath';
+}
+
+function systemReadPaths() {
+  return [
+    ...SYSTEM_READ_PATHS,
+    ...OPTIONAL_SYSTEM_READ_PATHS.filter((value) => fs.existsSync(value)),
+  ];
+}
+
+function capabilityProbeProfile() {
+  const lines = [
+    '(version 1)',
+    '(deny default)',
+    '(allow process-exec)',
+    '(allow process-fork)',
+    '(allow signal (target same-sandbox))',
+    '(allow process-info* (target same-sandbox))',
+    '(allow sysctl-read)',
+    '(allow file-read-metadata)',
+    pathRule('allow', 'file-read-data', 'literal', '/'),
+  ];
+  for (const systemPath of systemReadPaths()) {
+    const filter = fs.statSync(systemPath).isDirectory() ? 'subpath' : 'literal';
+    lines.push(pathRule('allow', 'file-read*', filter, systemPath));
+  }
+  lines.push('(deny network*)');
+  return lines.join('');
+}
+
+function discoverRuntimeReadPaths(runtimeRoots) {
+  const paths = new Set();
+  for (const runtimeRoot of runtimeRoots) {
+    const executable = path.join(runtimeRoot.sourcePath, 'bin', 'node');
+    if (!fs.existsSync(executable)) continue;
+    let output;
+    try {
+      output = execFileSync('/usr/bin/otool', ['-L', executable], {
+        encoding: 'utf8',
+        timeout: PROBE_TIMEOUT_MS,
+      });
+    } catch {
+      continue;
+    }
+    for (const line of output.split('\n').slice(1)) {
+      const dependency = line.trim().split(/\s+/)[0];
+      if (
+        !dependency?.startsWith('/') ||
+        dependency.startsWith('/System/') ||
+        dependency.startsWith('/usr/')
+      ) {
+        continue;
+      }
+      const homebrewMatch = /^(\/opt\/homebrew\/opt\/[^/]+)/.exec(dependency);
+      const exposedPath = homebrewMatch?.[1] || dependency;
+      paths.add(exposedPath);
+      if (homebrewMatch) {
+        const configurationPath = path.join('/opt/homebrew/etc', path.basename(homebrewMatch[1]));
+        if (fs.existsSync(configurationPath)) paths.add(configurationPath);
+      }
+      try {
+        paths.add(fs.realpathSync(exposedPath));
+      } catch {
+        // The dynamic loader will fail closed if a declared dependency disappears.
+      }
+    }
+  }
+  return [...paths];
 }
 
 function buildSeatbeltProfile(policy, privateDirectory) {
@@ -67,13 +153,24 @@ function buildSeatbeltProfile(policy, privateDirectory) {
       'Requested aggregate descendant-tree resource limits are unavailable on macOS'
     );
   }
-  if (typeof privateDirectory !== 'string' || !path.isAbsolute(privateDirectory)) {
+  let canonicalPrivateDirectory;
+  try {
+    canonicalPrivateDirectory = fs.realpathSync(privateDirectory);
+  } catch {
+    canonicalPrivateDirectory = null;
+  }
+  const temporaryRoot = fs.realpathSync(os.tmpdir());
+  if (
+    typeof privateDirectory !== 'string' ||
+    canonicalPrivateDirectory !== privateDirectory ||
+    path.dirname(canonicalPrivateDirectory || '') !== temporaryRoot ||
+    path.basename(canonicalPrivateDirectory || '').startsWith(PRIVATE_DIRECTORY_PREFIX) === false
+  ) {
     throw new ExecutionPolicyError(
       'INVALID_PRIVATE_DIRECTORY',
-      'Seatbelt private storage must be an absolute path'
+      'Seatbelt private storage must be a validated absolute execution directory'
     );
   }
-
   const workspace = policy.filesystem.writableRoots.find((root) => root.id === 'workspace');
   if (!workspace) {
     throw new ExecutionPolicyError('INVALID_POLICY', 'Policy has no writable workspace root');
@@ -83,29 +180,46 @@ function buildSeatbeltProfile(policy, privateDirectory) {
     '(deny default)',
     '(allow process-exec)',
     '(allow process-fork)',
-    '(allow signal (target self))',
+    '(allow signal (target same-sandbox))',
+    '(allow process-info* (target same-sandbox))',
     '(allow sysctl-read)',
+    // dyld and common command-line runtimes probe parent directories before opening allowed files.
+    // This reveals pathname metadata, not file contents; the residual disclosure is documented.
+    '(allow file-read-metadata)',
+    pathRule('allow', 'file-read-data', 'literal', '/'),
+    pathRule('allow', 'file-read*', 'literal', '/dev/null'),
+    pathRule('allow', 'file-write*', 'literal', '/dev/null'),
+    pathRule('allow', 'file-read*', 'literal', '/dev/urandom'),
+    pathRule('allow', 'file-read*', 'literal', '/dev/random'),
   ];
   if (policy.filesystem.exposeSystemToolchain) {
-    for (const systemPath of ['/System', '/usr', '/bin', '/sbin']) {
-      addPathRule(lines, 'file-read*', 'subpath', systemPath);
+    for (const systemPath of systemReadPaths()) {
+      const filter = fs.statSync(systemPath).isDirectory() ? 'subpath' : 'literal';
+      lines.push(pathRule('allow', 'file-read*', filter, systemPath));
     }
   }
   for (const runtimeRoot of policy.filesystem.runtimeRoots) {
-    addPathRule(lines, 'file-read*', 'subpath', runtimeRoot.sourcePath);
+    lines.push(pathRule('allow', 'file-read*', 'subpath', runtimeRoot.sourcePath));
   }
-  addPathRule(lines, 'file-read*', 'subpath', workspace.sourcePath);
-  addPathRule(lines, 'file-write*', 'subpath', workspace.sourcePath);
-  addPathRule(lines, 'file-read*', 'subpath', privateDirectory);
-  addPathRule(lines, 'file-write*', 'subpath', privateDirectory);
+  for (const runtimePath of discoverRuntimeReadPaths(policy.filesystem.runtimeRoots)) {
+    const filter = fs.statSync(runtimePath).isDirectory() ? 'subpath' : 'literal';
+    lines.push(pathRule('allow', 'file-read*', filter, runtimePath));
+  }
+  lines.push(pathRule('allow', 'file-read*', 'subpath', workspace.sourcePath));
+  lines.push(pathRule('allow', 'file-write*', 'subpath', workspace.sourcePath));
+  lines.push(pathRule('allow', 'file-read*', 'subpath', privateDirectory));
+  lines.push(pathRule('allow', 'file-write*', 'subpath', privateDirectory));
   for (const protectedPath of policy.filesystem.protectedPaths) {
-    addPathRule(lines, 'file-write*', 'subpath', protectedPath.sourcePath);
-    lines[lines.length - 1] = lines[lines.length - 1].replace('(allow ', '(deny ');
+    lines.push(
+      pathRule('deny', 'file-write*', protectedPathFilter(protectedPath), protectedPath.sourcePath)
+    );
     if (protectedPath.kind === 'git_pointer') {
-      for (const metadataPath of [protectedPath.gitDirectory, protectedPath.commonDirectory]) {
-        addPathRule(lines, 'file-read*', 'subpath', metadataPath);
-        addPathRule(lines, 'file-write*', 'subpath', metadataPath);
-        lines[lines.length - 1] = lines[lines.length - 1].replace('(allow ', '(deny ');
+      for (const metadataPath of new Set([
+        protectedPath.gitDirectory,
+        protectedPath.commonDirectory,
+      ])) {
+        lines.push(pathRule('allow', 'file-read*', 'subpath', metadataPath));
+        lines.push(pathRule('deny', 'file-write*', 'subpath', metadataPath));
       }
     }
   }
@@ -122,16 +236,25 @@ function unavailableCapabilities(denial, diagnostics = {}) {
     enforcement: Object.freeze({
       filesystem: false,
       networkNone: false,
-      processIsolation: false,
-      descendantInheritance: true,
+      descendantInheritance: false,
       privateTemporaryStorage: false,
       closedFileDescriptors: false,
-      wallTimeout: true,
-      outputLimits: true,
+      wallTimeout: false,
+      outputLimits: false,
       cancellation: false,
+      cancellationGuarantee: 'best_effort',
       aggregateResourceLimits: false,
     }),
   });
+}
+
+async function createPrivateDirectory() {
+  const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), PRIVATE_DIRECTORY_PREFIX));
+  await fs.promises.chmod(directory, 0o700);
+  for (const name of ['home', 'tmp', 'cache', 'config', 'data']) {
+    await fs.promises.mkdir(path.join(directory, name), { mode: 0o700 });
+  }
+  return fs.promises.realpath(directory);
 }
 
 async function detectSeatbeltCapabilities(options = {}) {
@@ -161,68 +284,71 @@ async function detectSeatbeltCapabilities(options = {}) {
       { platform, architecture, release }
     );
   }
-  const [versionResult, buildResult] = await Promise.all([
-    run('/usr/bin/sw_vers', ['-productVersion'], { timeout: PROBE_TIMEOUT_MS }),
-    run('/usr/bin/sw_vers', ['-buildVersion'], { timeout: PROBE_TIMEOUT_MS }),
-  ]);
-  const version = versionResult.stdout.trim();
-  const build = buildResult.stdout.trim();
-  const diagnostics = { platform, architecture, release, version, build, binary };
-  if (
-    architecture !== QUALIFIED_ARCHITECTURE ||
-    version !== QUALIFIED_MACOS_VERSION ||
-    build !== QUALIFIED_MACOS_BUILD
-  ) {
-    return unavailableCapabilities(
-      {
-        code: 'UNQUALIFIED_MACOS_BUILD',
-        message: 'This macOS build has not been qualified for the experimental Seatbelt backend',
-      },
-      diagnostics
-    );
-  }
-  const initialization = await run(
+  const initialization = await run(binary, ['-p', capabilityProbeProfile(), '/usr/bin/true'], {
+    timeout: PROBE_TIMEOUT_MS,
+  });
+  const diagnostics = {
+    platform,
+    architecture,
+    release,
     binary,
-    [
-      '-p',
-      '(version 1)(allow default)(deny network*)',
-      '/usr/bin/true',
-    ],
-    { timeout: PROBE_TIMEOUT_MS }
-  );
+    deprecatedPublicInterface: true,
+  };
   if (initialization.exitCode !== 0) {
     return unavailableCapabilities(
       {
         code: 'SEATBELT_INITIALIZATION_FAILED',
         message: 'Freedom could not initialize a representative Seatbelt profile',
       },
-      { ...diagnostics, initializationDiagnostic: boundedText(initialization.stderr) }
+      {
+        ...diagnostics,
+        initializationDiagnostic: boundedText(initialization.stderr),
+        initializationSignal: initialization.signal,
+      }
     );
   }
-  const sessionEscape = await run(
+  return Object.freeze({
+    backend: 'macos-seatbelt',
+    available: true,
     binary,
-    [
-      '-p',
-      '(version 1)(allow default)(deny process-info-setcontrol)',
-      '/usr/bin/python3',
-      '-c',
-      'import os; os.setsid()',
-    ],
-    { timeout: PROBE_TIMEOUT_MS }
-  );
-  return unavailableCapabilities(
-    {
-      code: 'DESCENDANT_CANCELLATION_UNAVAILABLE',
-      message:
-        'Seatbelt cannot prevent descendants from escaping process-group ownership, so complete cancellation cannot be guaranteed',
-    },
-    {
-      ...diagnostics,
-      profileInitialization: 'passed',
-      setsidEscape: sessionEscape.exitCode === 0 ? 'confirmed' : 'not_confirmed',
-      setsidDiagnostic: boundedText(sessionEscape.stderr),
+    diagnostics: Object.freeze({ ...diagnostics, profileInitialization: 'passed' }),
+    enforcement: Object.freeze({
+      filesystem: true,
+      networkNone: true,
+      descendantInheritance: true,
+      privateTemporaryStorage: true,
+      closedFileDescriptors: true,
+      wallTimeout: true,
+      outputLimits: true,
+      cancellation: true,
+      cancellationGuarantee: 'best_effort',
+      aggregateResourceLimits: false,
+    }),
+  });
+}
+
+function collectStream(stream, limit) {
+  const chunks = [];
+  let bytes = 0;
+  let truncated = false;
+  stream?.on('data', (chunk) => {
+    const buffer = Buffer.from(chunk);
+    const available = Math.max(0, limit - bytes);
+    if (available > 0) {
+      const accepted = buffer.subarray(0, available);
+      chunks.push(accepted);
+      bytes += accepted.length;
     }
-  );
+    if (buffer.length > available) truncated = true;
+  });
+  return Object.freeze({
+    result() {
+      return Object.freeze({ text: Buffer.concat(chunks).toString('utf8'), truncated });
+    },
+    stop() {
+      stream?.destroy();
+    },
+  });
 }
 
 function deniedReceipt(startedAt, finishedAt, code, message, diagnostics = {}) {
@@ -242,20 +368,48 @@ function deniedReceipt(startedAt, finishedAt, code, message, diagnostics = {}) {
   });
 }
 
+function hostWorkingDirectory(policy, workspace) {
+  const relative = path.posix.relative('/workspace', policy.workingDirectory);
+  return path.join(workspace.sourcePath, ...relative.split('/').filter(Boolean));
+}
+
 class SeatbeltExecutor {
   constructor(options = {}) {
-    this.options = options;
+    this.binary = options.binary || DEFAULT_SEATBELT_PATH;
+    this.spawnProcess = options.spawnProcess || spawn;
     this.now = options.now || Date.now;
+    this.setTimeout = options.setTimeout || setTimeout;
+    this.clearTimeout = options.clearTimeout || clearTimeout;
+    this.removePrivateDirectory =
+      options.removePrivateDirectory ||
+      ((directory) => fs.promises.rm(directory, { recursive: true, force: true }));
+    this.capabilityOptions = options.capabilityOptions || {};
     this.capabilities = null;
   }
 
   async detectCapabilities(options = {}) {
     if (this.capabilities && !options.force) return this.capabilities;
-    this.capabilities = await detectSeatbeltCapabilities({ ...this.options, ...options });
+    this.capabilities = await detectSeatbeltCapabilities({
+      binary: this.binary,
+      ...this.capabilityOptions,
+      ...options,
+    });
     return this.capabilities;
   }
 
-  async execute(policy, request = {}) {
+  async cleanupPrivateDirectory(directory) {
+    try {
+      await this.removePrivateDirectory(directory);
+      return null;
+    } catch (error) {
+      return Object.freeze({
+        privateDirectoryCleanupFailed: true,
+        cause: boundedText(error?.code || 'UNKNOWN', 64),
+      });
+    }
+  }
+
+  async execute(policy, rawRequest = {}) {
     const startedAt = this.now();
     if (!isValidatedWorkspaceExecutionPolicy(policy)) {
       return deniedReceipt(
@@ -265,30 +419,250 @@ class SeatbeltExecutor {
         'Execution policy was not issued by the trusted Freedom policy validator'
       );
     }
+    let request;
     try {
-      validateExecutionRequest(request);
+      request = validateExecutionRequest(rawRequest);
     } catch (error) {
       return deniedReceipt(startedAt, this.now(), error.code, error.message);
     }
     const capabilities = await this.detectCapabilities();
-    return deniedReceipt(
-      startedAt,
-      this.now(),
-      capabilities.denial.code,
-      capabilities.denial.message,
-      capabilities.diagnostics
+    if (!capabilities.available) {
+      return deniedReceipt(
+        startedAt,
+        this.now(),
+        capabilities.denial.code,
+        capabilities.denial.message,
+        capabilities.diagnostics
+      );
+    }
+    let privateDirectory;
+    let profile;
+    const readinessMarker = `freedom-seatbelt-ready-${crypto.randomUUID()}`;
+    try {
+      privateDirectory = await createPrivateDirectory();
+      profile = buildSeatbeltProfile(policy, privateDirectory);
+      await fs.promises.writeFile(path.join(privateDirectory, 'profile.sb'), profile, {
+        mode: 0o600,
+      });
+    } catch (error) {
+      if (privateDirectory) await this.cleanupPrivateDirectory(privateDirectory);
+      const code = error instanceof ExecutionPolicyError ? error.code : 'POLICY_PREPARATION_FAILED';
+      return deniedReceipt(
+        startedAt,
+        this.now(),
+        code,
+        error instanceof ExecutionPolicyError
+          ? error.message
+          : 'Freedom could not prepare the macOS sandbox policy'
+      );
+    }
+    if (request.signal?.aborted) {
+      const cleanup = await this.cleanupPrivateDirectory(privateDirectory);
+      const finishedAt = this.now();
+      return Object.freeze({
+        state: EXECUTION_STATES.CANCELLED,
+        startedAt,
+        finishedAt,
+        durationMs: Math.max(0, finishedAt - startedAt),
+        exitCode: null,
+        signal: null,
+        stdout: '',
+        stderr: '',
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        terminationGuarantee: 'best_effort',
+        ...(cleanup ? { diagnostics: cleanup } : {}),
+      });
+    }
+
+    const workspace = policy.filesystem.writableRoots.find((root) => root.id === 'workspace');
+    const runtimePath = policy.filesystem.runtimeRoots.map((root) =>
+      path.join(root.sourcePath, 'bin')
     );
+    const environment = {
+      ...policy.environment.values,
+      GIT_OPTIONAL_LOCKS: '0',
+      HOME: path.join(privateDirectory, 'home'),
+      LOGNAME: 'sandbox',
+      PATH: [...runtimePath, '/usr/local/bin', '/usr/bin', '/bin'].join(':'),
+      SHELL: '/bin/sh',
+      TMP: path.join(privateDirectory, 'tmp'),
+      TMPDIR: path.join(privateDirectory, 'tmp'),
+      TEMP: path.join(privateDirectory, 'tmp'),
+      USER: 'sandbox',
+      XDG_CACHE_HOME: path.join(privateDirectory, 'cache'),
+      XDG_CONFIG_HOME: path.join(privateDirectory, 'config'),
+      XDG_DATA_HOME: path.join(privateDirectory, 'data'),
+    };
+    const markerPrefix = `${readinessMarker}\n`;
+    const args = [
+      '-f',
+      path.join(privateDirectory, 'profile.sb'),
+      '/bin/sh',
+      '-c',
+      'printf "%s\\n" "$1"; shift; exec "$@"',
+      'freedom-seatbelt-supervisor',
+      readinessMarker,
+      request.command,
+      ...request.args,
+    ];
+
+    return new Promise((resolve) => {
+      let child;
+      try {
+        child = this.spawnProcess(this.binary, args, {
+          cwd: hostWorkingDirectory(policy, workspace),
+          detached: true,
+          env: environment,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+      } catch {
+        this.cleanupPrivateDirectory(privateDirectory).then((cleanup) => {
+          resolve(
+            deniedReceipt(
+              startedAt,
+              this.now(),
+              'SEATBELT_LAUNCH_FAILED',
+              'Freedom could not launch the macOS sandbox',
+              cleanup || {}
+            )
+          );
+        });
+        return;
+      }
+
+      const stdout = collectStream(
+        child.stdout,
+        policy.limits.stdoutBytes + Buffer.byteLength(markerPrefix)
+      );
+      const stderr = collectStream(child.stderr, policy.limits.stderrBytes);
+      let requestedState = null;
+      let spawnError = null;
+      let terminationTimer = null;
+      let forcedReceiptTimer = null;
+      let wallTimer = null;
+      let abortListener = null;
+      let settled = false;
+
+      const signalGroup = (signal) => {
+        try {
+          process.kill(-child.pid, signal);
+        } catch {
+          // The original process group may already have exited.
+        }
+      };
+      const finalize = async (exitCode, signal, forced = false) => {
+        if (settled) return;
+        settled = true;
+        if (wallTimer) this.clearTimeout(wallTimer);
+        if (terminationTimer) this.clearTimeout(terminationTimer);
+        if (forcedReceiptTimer) this.clearTimeout(forcedReceiptTimer);
+        request.signal?.removeEventListener('abort', abortListener);
+        if (forced) {
+          stdout.stop();
+          stderr.stop();
+          child.unref?.();
+        }
+        const rawOutput = stdout.result();
+        const errorOutput = stderr.result();
+        const sandboxStarted = rawOutput.text.startsWith(markerPrefix);
+        const cleanup = await this.cleanupPrivateDirectory(privateDirectory);
+        const finishedAt = this.now();
+        if (!sandboxStarted && !requestedState) {
+          resolve(
+            deniedReceipt(
+              startedAt,
+              finishedAt,
+              spawnError ? 'SEATBELT_LAUNCH_FAILED' : 'SEATBELT_INITIALIZATION_FAILED',
+              'Freedom refused to run the command because Seatbelt initialization failed',
+              {
+                cause: spawnError?.code || null,
+                signal,
+                ...(cleanup || {}),
+              }
+            )
+          );
+          return;
+        }
+        const state =
+          requestedState || (exitCode === 0 ? EXECUTION_STATES.COMPLETED : EXECUTION_STATES.FAILED);
+        const receipt = {
+          state,
+          startedAt,
+          finishedAt,
+          durationMs: Math.max(0, finishedAt - startedAt),
+          exitCode:
+            state === EXECUTION_STATES.COMPLETED || state === EXECUTION_STATES.FAILED
+              ? exitCode
+              : null,
+          signal: signal || (requestedState ? 'SIGTERM' : null),
+          stdout: sandboxStarted ? rawOutput.text.slice(markerPrefix.length) : '',
+          stderr: errorOutput.text,
+          stdoutTruncated: rawOutput.truncated,
+          stderrTruncated: errorOutput.truncated,
+          terminationGuarantee: 'best_effort',
+          capabilities: Object.freeze({
+            aggregateResourceLimits: false,
+            cancellationGuarantee: 'best_effort',
+          }),
+        };
+        if (state === EXECUTION_STATES.FAILED) {
+          receipt.error = Object.freeze({
+            code: 'COMMAND_FAILED',
+            message: 'The sandboxed command exited unsuccessfully',
+          });
+        }
+        if (forced || cleanup) {
+          receipt.diagnostics = Object.freeze({
+            ...(forced ? { processGroupCleanupBoundExpired: true } : {}),
+            ...(cleanup || {}),
+          });
+        }
+        resolve(Object.freeze(receipt));
+      };
+      const terminate = (state) => {
+        if (requestedState) return;
+        requestedState = state;
+        signalGroup('SIGTERM');
+        terminationTimer = this.setTimeout(() => {
+          signalGroup('SIGKILL');
+          forcedReceiptTimer = this.setTimeout(
+            () => finalize(null, 'SIGKILL', true),
+            FORCED_RECEIPT_DELAY_MS
+          );
+        }, TERMINATION_GRACE_MS);
+      };
+
+      wallTimer = this.setTimeout(
+        () => terminate(EXECUTION_STATES.TIMED_OUT),
+        policy.limits.timeoutMs
+      );
+      abortListener = () => terminate(EXECUTION_STATES.CANCELLED);
+      request.signal?.addEventListener('abort', abortListener, { once: true });
+      if (request.signal?.aborted) terminate(EXECUTION_STATES.CANCELLED);
+      child.once('error', (error) => {
+        spawnError = error;
+      });
+      child.once('close', (exitCode, signal) => finalize(exitCode, signal));
+    });
   }
 }
 
 module.exports = {
   DEFAULT_SEATBELT_PATH,
+  FORCED_RECEIPT_DELAY_MS,
+  OPTIONAL_SYSTEM_READ_PATHS,
+  PRIVATE_DIRECTORY_PREFIX,
   PROBE_TIMEOUT_MS,
-  QUALIFIED_ARCHITECTURE,
-  QUALIFIED_MACOS_BUILD,
-  QUALIFIED_MACOS_VERSION,
+  SYSTEM_READ_PATHS,
   SeatbeltExecutor,
+  TERMINATION_GRACE_MS,
   buildSeatbeltProfile,
+  capabilityProbeProfile,
+  collectStream,
+  createPrivateDirectory,
   detectSeatbeltCapabilities,
+  discoverRuntimeReadPaths,
+  hostWorkingDirectory,
   seatbeltString,
 };
