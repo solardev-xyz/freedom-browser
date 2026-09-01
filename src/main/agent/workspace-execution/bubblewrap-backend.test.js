@@ -10,6 +10,7 @@ const {
   buildBubblewrapArguments,
   collectStream,
   detectBubblewrapCapabilities,
+  selectInitialSandboxPid,
 } = require('./bubblewrap-backend');
 const { createWorkspaceExecutionPolicy } = require('./execution-policy');
 
@@ -70,7 +71,7 @@ describe('Bubblewrap backend contract', () => {
     expect(launch.exposedSystemPaths).not.toContain('/etc/ssl');
     expect(launch.args.slice(-3)).toEqual(['/bin/sh', '-c', 'printf ok']);
     expect(joined).toContain('freedom-sandbox-supervisor');
-    expect(joined).toContain('printf "%s\\n" "$1"; shift; exec "$@"');
+    expect(joined).toContain('printf "%s\\n" "$1"; shift; exec 3>&-; exec "$@"');
   });
 
   test('refuses unsupported network, seccomp, and required aggregate-limit policies', async () => {
@@ -101,6 +102,28 @@ describe('Bubblewrap backend contract', () => {
     ).rejects.toMatchObject({ code: 'RESOURCE_LIMIT_UNAVAILABLE' });
   });
 
+  test('refuses a forged policy object even when its public fields look valid', async () => {
+    const forged = {
+      kind: 'freedom.workspace-execution-policy',
+      version: 1,
+      network: 'none',
+      filesystem: {
+        exposeSystemToolchain: true,
+        runtimeRoots: [],
+        writableRoots: [{ id: 'workspace', sourcePath: '/tmp', mountPath: '/workspace' }],
+        protectedPaths: [],
+      },
+      environment: { values: {} },
+      limits: { aggregate: { required: false } },
+      seccomp: { requireCustomFilter: false },
+      workingDirectory: '/workspace',
+    };
+
+    await expect(
+      buildBubblewrapArguments(forged, { command: '/usr/bin/true' })
+    ).rejects.toMatchObject({ code: 'INVALID_POLICY' });
+  });
+
   test('continues draining after a visible output limit', async () => {
     const stream = new PassThrough();
     const collection = collectStream(stream, 5);
@@ -109,6 +132,13 @@ describe('Bubblewrap backend contract', () => {
     stream.end();
     await collection.done;
     expect(collection.result()).toEqual({ bytes: 5, text: 'hello', truncated: true });
+  });
+
+  test('accepts only the first valid Bubblewrap child PID status', () => {
+    const initial = selectInitialSandboxPid(null, { 'child-pid': 1234 });
+    expect(initial).toBe(1234);
+    expect(selectInitialSandboxPid(initial, { 'child-pid': 1 })).toBe(1234);
+    expect(selectInitialSandboxPid(null, { 'child-pid': -1 })).toBeNull();
   });
 
   test('reports an absent backend and never executes without Bubblewrap', async () => {

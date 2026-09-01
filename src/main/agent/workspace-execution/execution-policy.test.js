@@ -91,13 +91,33 @@ describe('workspace execution policy', () => {
     );
     expect(result.status).toBe(0);
 
-    const policy = await createWorkspaceExecutionPolicy({ workspaceRoot: fixture.workspaceRoot });
+    await expect(
+      createWorkspaceExecutionPolicy({ workspaceRoot: fixture.workspaceRoot })
+    ).rejects.toMatchObject({ code: 'EXTERNAL_GIT_METADATA_DENIED' });
+
+    const policy = await createWorkspaceExecutionPolicy({
+      workspaceRoot: fixture.workspaceRoot,
+      authorizedGitMetadataPaths: [gitDirectory],
+    });
     expect(policy.filesystem.protectedPaths[0]).toMatchObject({
       kind: 'git_pointer',
       gitDirectory: await fs.promises.realpath(gitDirectory),
       commonDirectory: await fs.promises.realpath(gitDirectory),
       mountPath: '/workspace/.git',
     });
+
+    const unauthorizedCommonDirectory = path.join(fixture.fixtureRoot, 'host-secret');
+    await fs.promises.mkdir(unauthorizedCommonDirectory);
+    await fs.promises.writeFile(
+      path.join(gitDirectory, 'commondir'),
+      `${path.relative(gitDirectory, unauthorizedCommonDirectory)}\n`
+    );
+    await expect(
+      createWorkspaceExecutionPolicy({
+        workspaceRoot: fixture.workspaceRoot,
+        authorizedGitMetadataPaths: [gitDirectory],
+      })
+    ).rejects.toMatchObject({ code: 'EXTERNAL_GIT_METADATA_DENIED' });
   });
 
   test('rejects missing or ambiguous protected metadata instead of relying on mount ordering', async () => {

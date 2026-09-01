@@ -9,6 +9,7 @@ const {
   EXECUTION_STATES,
   ExecutionPolicyError,
   NETWORK_POSTURES,
+  isValidatedWorkspaceExecutionPolicy,
   validateExecutionRequest,
 } = require('./execution-policy');
 
@@ -324,10 +325,10 @@ async function addProtectedMounts(args, policy, stagingDirectory) {
 }
 
 async function buildBubblewrapArguments(policy, request) {
-  if (policy?.kind !== 'freedom.workspace-execution-policy' || policy.version !== 1) {
+  if (!isValidatedWorkspaceExecutionPolicy(policy)) {
     throw new ExecutionPolicyError(
       'INVALID_POLICY',
-      'Execution policy is not a supported Freedom policy'
+      'Execution policy was not issued by the trusted Freedom policy validator'
     );
   }
   if (policy.network !== NETWORK_POSTURES.NONE) {
@@ -439,7 +440,7 @@ async function buildBubblewrapArguments(policy, request) {
       '--',
       '/bin/sh',
       '-c',
-      'printf "%s\\n" "$1"; shift; exec "$@"',
+      'printf "%s\\n" "$1"; shift; exec 3>&-; exec "$@"',
       'freedom-sandbox-supervisor',
       readinessMarker,
       normalizedRequest.command,
@@ -459,7 +460,11 @@ async function buildBubblewrapArguments(policy, request) {
       ),
     });
   } catch (error) {
-    await fs.promises.rm(stagingDirectory, { recursive: true, force: true });
+    try {
+      await fs.promises.rm(stagingDirectory, { recursive: true, force: true });
+    } catch {
+      // Preserve the policy-preparation failure that prevented command execution.
+    }
     throw error;
   }
 }
@@ -497,6 +502,12 @@ function parseStatusStream(stream, onStatus) {
   });
 }
 
+function selectInitialSandboxPid(currentPid, status) {
+  if (currentPid !== null) return currentPid;
+  const reportedPid = status?.['child-pid'];
+  return Number.isSafeInteger(reportedPid) && reportedPid > 0 ? reportedPid : null;
+}
+
 function deniedReceipt(startedAt, now, code, message, diagnostics = {}) {
   return Object.freeze({
     state: EXECUTION_STATES.SANDBOX_DENIED,
@@ -521,7 +532,22 @@ class BubblewrapExecutor {
     this.now = options.now || Date.now;
     this.setTimeout = options.setTimeout || setTimeout;
     this.clearTimeout = options.clearTimeout || clearTimeout;
+    this.removeStagingDirectory =
+      options.removeStagingDirectory ||
+      ((directory) => fs.promises.rm(directory, { recursive: true, force: true }));
     this.capabilities = null;
+  }
+
+  async cleanupStagingDirectory(directory) {
+    try {
+      await this.removeStagingDirectory(directory);
+      return null;
+    } catch (error) {
+      return Object.freeze({
+        stagingCleanupFailed: true,
+        cause: boundedText(error?.code || 'UNKNOWN', 64),
+      });
+    }
   }
 
   async detectCapabilities(options = {}) {
@@ -570,9 +596,9 @@ class BubblewrapExecutor {
       );
     }
     if (launch.request.signal?.aborted) {
-      await fs.promises.rm(launch.stagingDirectory, { recursive: true, force: true });
+      const cleanupDiagnostics = await this.cleanupStagingDirectory(launch.stagingDirectory);
       const finishedAt = this.now();
-      return Object.freeze({
+      const receipt = {
         state: EXECUTION_STATES.CANCELLED,
         startedAt,
         finishedAt,
@@ -583,7 +609,9 @@ class BubblewrapExecutor {
         stderr: '',
         stdoutTruncated: false,
         stderrTruncated: false,
-      });
+      };
+      if (cleanupDiagnostics) receipt.diagnostics = cleanupDiagnostics;
+      return Object.freeze(receipt);
     }
 
     return new Promise((resolve) => {
@@ -594,13 +622,14 @@ class BubblewrapExecutor {
           stdio: ['ignore', 'pipe', 'pipe', 'pipe'],
         });
       } catch {
-        fs.promises.rm(launch.stagingDirectory, { recursive: true, force: true }).finally(() => {
+        this.cleanupStagingDirectory(launch.stagingDirectory).then((cleanupDiagnostics) => {
           resolve(
             deniedReceipt(
               startedAt,
               this.now(),
               'BUBBLEWRAP_LAUNCH_FAILED',
-              'Freedom could not launch Bubblewrap'
+              'Freedom could not launch Bubblewrap',
+              cleanupDiagnostics || {}
             )
           );
         });
@@ -622,9 +651,10 @@ class BubblewrapExecutor {
       let abortListener = null;
 
       const statusDone = parseStatusStream(child.stdio?.[3], (status) => {
-        if (Number.isSafeInteger(status?.['child-pid']) && status['child-pid'] > 0) {
+        const reportedPid = selectInitialSandboxPid(sandboxPid, status);
+        if (sandboxPid === null && reportedPid !== null) {
           namespaceCreated = true;
-          sandboxPid = status['child-pid'];
+          sandboxPid = reportedPid;
         }
       });
 
@@ -663,7 +693,7 @@ class BubblewrapExecutor {
         if (terminationTimer) this.clearTimeout(terminationTimer);
         launch.request.signal?.removeEventListener('abort', abortListener);
         await Promise.allSettled([stdout.done, stderr.done, statusDone]);
-        await fs.promises.rm(launch.stagingDirectory, { recursive: true, force: true });
+        const cleanupDiagnostics = await this.cleanupStagingDirectory(launch.stagingDirectory);
         const finishedAt = this.now();
         const rawOutput = stdout.result();
         const sandboxStarted = rawOutput.text.startsWith(markerPrefix);
@@ -677,6 +707,7 @@ class BubblewrapExecutor {
               {
                 cause: spawnError?.code || null,
                 namespaceCreated,
+                ...(cleanupDiagnostics || {}),
               }
             )
           );
@@ -714,6 +745,7 @@ class BubblewrapExecutor {
             message: 'The sandboxed command exited unsuccessfully',
           });
         }
+        if (cleanupDiagnostics) receipt.diagnostics = cleanupDiagnostics;
         resolve(Object.freeze(receipt));
       });
     });
@@ -731,4 +763,5 @@ module.exports = {
   capabilityProbeArguments,
   collectStream,
   detectBubblewrapCapabilities,
+  selectInitialSandboxPid,
 };

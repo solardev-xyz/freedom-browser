@@ -38,7 +38,7 @@ Trusted components are the caller that selects the workspace, the normalized pol
 - Leave `/home`, `/root`, `/run`, `/sys`, the host `/tmp`, session/display buses, and arbitrary host paths absent.
 - Provide no external network, host loopback, DNS, or host-local abstract Unix sockets.
 - Construct the environment from an allowlist after `--clearenv`.
-- Close inherited file descriptors other than the launcher-owned status pipe, which Bubblewrap closes before command execution.
+- Close inherited file descriptors, including the launcher-owned status pipe, in trusted setup before command execution.
 - Fail closed when Bubblewrap, user namespaces, a protected mount, a required limit, or another requested policy property cannot be enforced.
 - Distinguish completed, failed, cancelled, timed-out, and sandbox-denied receipts.
 
@@ -55,22 +55,24 @@ Trusted components are the caller that selects the workspace, the normalized pol
 
 `createWorkspaceExecutionPolicy()` resolves and freezes this small contract:
 
-| Policy area          | Current contract and semantics                                                                                                                                                                                                                 |
-| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Readable roots       | Exact canonical workspace root plus backend-selected system/toolchain roots. The capability/launch plan records the concrete Linux paths.                                                                                                      |
-| Writable roots       | Exactly one canonical Freedom-managed workspace mounted as `/workspace`.                                                                                                                                                                       |
-| Protected carve-outs | Relative workspace paths with deny/read-only precedence. `.git` is required, resolved, and mounted read-only after the writable workspace mount. Nested or ambiguous carve-outs fail validation.                                               |
-| Temporary storage    | Fresh tmpfs `/tmp` for every execution, with private home/config/cache directories beneath it. Nothing persists to the host.                                                                                                                   |
-| Working directory    | An existing relative directory whose canonical target remains inside the workspace. The sandbox path is rooted at `/workspace`.                                                                                                                |
-| Environment          | `--clearenv`, safe locale/terminal inheritance, bounded trusted explicit values, and fixed private `HOME`, `TMP*`, and XDG locations. Loader, language injection, socket, display, Git override, and credential-shaped variables are rejected. |
-| Network              | `none` only. `brokered` is reserved and currently denied.                                                                                                                                                                                      |
-| Wall/output limits   | Five-minute default wall timeout, thirty-minute maximum, and independent 1 MiB stdout/stderr defaults. Output is continuously drained after the visible cap and marked truncated.                                                              |
-| Aggregate limits     | CPU time, memory, process count, and maximum file size are represented as optional requirements. Any required value is denied because this backend cannot yet enforce it.                                                                      |
-| Cancellation         | An `AbortSignal` terminates the PID-namespace init/Bubblewrap supervisor; namespace teardown kills descendants.                                                                                                                                |
-| System toolchain     | Explicit boolean. The first backend currently requires the read-only platform toolchain view and fails if it is disabled.                                                                                                                      |
-| Seccomp              | A required-custom-filter flag exists. It fails closed because no reviewed general filter ships in this spike.                                                                                                                                  |
+| Policy area          | Current contract and semantics                                                                                                                                                                                                                   |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Readable roots       | Exact canonical workspace root plus backend-selected system/toolchain roots. The capability/launch plan records the concrete Linux paths.                                                                                                        |
+| Writable roots       | Exactly one canonical Freedom-managed workspace mounted as `/workspace`.                                                                                                                                                                         |
+| Protected carve-outs | Relative workspace paths with deny/read-only precedence. `.git` is required, resolved, and mounted read-only after the writable workspace mount. External metadata is denied unless trusted lifecycle state authorizes its exact canonical path. |
+| Temporary storage    | Fresh tmpfs `/tmp` for every execution, with private home/config/cache directories beneath it. Nothing persists to the host.                                                                                                                     |
+| Working directory    | An existing relative directory whose canonical target remains inside the workspace. The sandbox path is rooted at `/workspace`.                                                                                                                  |
+| Environment          | `--clearenv`, safe locale/terminal inheritance, bounded trusted explicit values, and fixed private `HOME`, `TMP*`, and XDG locations. Loader, language injection, socket, display, Git override, and credential-shaped variables are rejected.   |
+| Network              | `none` only. `brokered` is reserved and currently denied.                                                                                                                                                                                        |
+| Wall/output limits   | Five-minute default wall timeout, thirty-minute maximum, and independent 1 MiB stdout/stderr defaults. Output is continuously drained after the visible cap and marked truncated.                                                                |
+| Aggregate limits     | CPU time, memory, process count, and maximum file size are represented as optional requirements. Any required value is denied because this backend cannot yet enforce it.                                                                        |
+| Cancellation         | An `AbortSignal` terminates the PID-namespace init/Bubblewrap supervisor; namespace teardown kills descendants.                                                                                                                                  |
+| System toolchain     | Explicit boolean. The first backend currently requires the read-only platform toolchain view and fails if it is disabled.                                                                                                                        |
+| Seccomp              | A required-custom-filter flag exists. It fails closed because no reviewed general filter ships in this spike.                                                                                                                                    |
 
 Protected/denied paths cannot be reopened, and read-only paths override their writable parent. The validator rejects nested protected entries instead of relying on Bubblewrap argument order to resolve ambiguity.
+
+Validated policy objects carry private in-process provenance in a module-scoped `WeakSet`. The backend refuses lookalike plain objects even when their public kind, version, and fields are structurally plausible. A future IPC surface must resolve an opaque workspace ID and invoke this validator in trusted main-process code; serialized policy objects are intentionally not executable authority.
 
 ## Path and metadata handling
 
@@ -81,7 +83,7 @@ Pre-existing hardlinks are different: a writable path and a hidden outside path 
 `.git` behavior is explicit:
 
 - An ordinary `.git` directory is over-mounted read-only.
-- A `.git` pointer file is parsed and replaced in the sandbox with a path-neutral pointer under `/freedom-git-*`; linked-worktree `gitdir` and `commondir` control files are also replaced with sandbox paths.
+- A `.git` pointer file is parsed only after trusted lifecycle state supplies the exact canonical external gitdir and common-directory paths. Workspace-controlled pointer text cannot authorize a mount. Authorized pointers are replaced with path-neutral sandbox pointers under `/freedom-git-*`.
 - The resolved gitdir and, when present, common directory are mounted read-only.
 - A missing `.git`, a symlink, malformed pointer, nested protected path, or missing resolved directory fails closed. A future Freedom project creator can satisfy this invariant by initializing the managed project before shell authority is granted.
 - Git configuration is bounded and rejected if it contains includes, credential sections, embedded URL credentials, HTTP credential-bearing files/headers, TLS key paths, or a worktree-controlled hooks path.
@@ -99,7 +101,7 @@ The launcher uses:
 - read-only `/usr`, `/bin`, `/sbin`, required `/lib*`, selected loader/public-certificate configuration, and an exact neutral mount for the active Node installation when it is outside system paths;
 - no `/run`, host `/tmp`, host home, display, session bus, or socket mount;
 - a sanitized passwd/group/NSS/hosts view rather than the host identity database; and
-- one JSON status descriptor used by Bubblewrap and closed before the command starts.
+- one JSON status descriptor used by Bubblewrap, accepted only for the first valid child PID, and explicitly closed by the trusted readiness wrapper before the command starts.
 
 Bubblewrap's child-PID status occurs before every mount has necessarily succeeded. The executor therefore launches a trusted positional-argument shell wrapper that emits a random readiness marker only after Bubblewrap has completed setup and reached the final command environment. The parent strips this marker from stdout. Without it, a bind failure is `sandbox_denied`, never an ordinary command failure and never a reason to retry unsandboxed.
 
@@ -114,6 +116,8 @@ No command string parser exists. Callers supply an executable and argument vecto
 - `sandbox_denied`: capability detection, policy preparation, protected mounts, or sandbox initialization failed. The command was not started.
 
 Stdout and stderr are separately capped and continuously drained. The receipt includes independent truncation flags. Raw Bubblewrap initialization diagnostics are retained only in internal capability diagnostics; execution denial receipts do not return host workspace paths.
+
+Launcher staging cleanup is best-effort after the sandbox has stopped. A cleanup rejection is reduced to a bounded error code in `diagnostics.stagingCleanupFailed` and never prevents the execution receipt from resolving.
 
 ## Qualification results
 
@@ -143,7 +147,7 @@ The ordinary focused suite uses only validated temporary fixture roots and cover
 - rejection of pre-existing writable hardlinks;
 - hidden host processes and failed signaling;
 - sensitive environment scrubbing;
-- inherited descriptor closure;
+- inherited descriptor closure, including explicit `fstat(3)` and `write(3)` denial for the Bubblewrap status descriptor;
 - pathname and abstract host Unix sockets, with descendant-only Unix IPC still working;
 - rejection of host IPC endpoints pre-positioned inside the writable workspace;
 - host loopback, external networking, and DNS denial;
@@ -151,7 +155,9 @@ The ordinary focused suite uses only validated temporary fixture roots and cover
 - output truncation without pipe blockage;
 - ordinary nonzero command failure;
 - descendant cleanup after timeout and explicit cancellation;
-- protected ordinary and external `.git` metadata; and
+- protected ordinary and explicitly authorized external `.git` metadata, with workspace-controlled external pointers denied by default;
+- rejection of forged lookalike policy objects and later child-PID status replacements;
+- receipt completion when synthetic staging cleanup fails; and
 - sandbox initialization failure with proof that the command never ran outside Bubblewrap.
 
 The VM-only destructive test requires `FREEDOM_SANDBOX_DESTRUCTIVE=1`, validates a fresh direct child of the system temporary directory with a fixed prefix, deletes only synthetic workspace content, and proves an outside sibling canary survives. It never targets the VM root, home, checkout, or another broad path.
@@ -160,11 +166,11 @@ The repository-local qualification command runs a focused Jest policy suite, `np
 
 Final VM validation results:
 
-- `npm run test:agent-sandbox`: 23 passed; the single destructive test skipped by default.
+- `npm run test:agent-sandbox`: 27 passed; the single destructive test skipped by default.
 - `npm run test:agent-sandbox:destructive` with the explicit gate: 1 passed.
 - `npm run test:agent-sandbox:qualification`: focused Jest, full lint, and Babel transform all completed inside Bubblewrap.
 - `npm run lint`: passed on the host and inside Bubblewrap.
-- Full `npm test`: 203 suites and 3,745 tests passed; seven unrelated suites failed because this pre-provisioned checkout lacks declared Ghostery, embedded Pi SDK, OpenLV, and Ledger packages. No dependency was installed or changed to hide that environmental limitation.
+- Full `npm test`: 203 suites and 3,750 tests passed; seven unrelated suites failed because this pre-provisioned checkout lacks declared Ghostery, embedded Pi SDK, OpenLV, and Ledger packages. No dependency was installed or changed to hide that environmental limitation.
 
 ## Seccomp assessment
 

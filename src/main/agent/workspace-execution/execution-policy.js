@@ -74,6 +74,7 @@ const SAFE_DEFAULT_INHERITANCE = Object.freeze([
   'TERM',
   'TZ',
 ]);
+const validatedPolicies = new WeakSet();
 
 class ExecutionPolicyError extends Error {
   constructor(code, message, details = {}) {
@@ -255,7 +256,22 @@ async function validateGitConfiguration(gitDirectory) {
   }
 }
 
-async function resolveGitMetadata(workspaceRoot, relativePath) {
+function assertAuthorizedGitMetadataPath(workspaceRoot, candidate, authorizedGitMetadataPaths) {
+  if (insidePath(workspaceRoot, candidate)) {
+    throw new ExecutionPolicyError(
+      'AMBIGUOUS_PROTECTED_PATH',
+      'Git pointer metadata cannot remain reachable through the writable workspace'
+    );
+  }
+  if (!authorizedGitMetadataPaths.has(candidate)) {
+    throw new ExecutionPolicyError(
+      'EXTERNAL_GIT_METADATA_DENIED',
+      'External Git metadata was not explicitly authorized by trusted workspace state'
+    );
+  }
+}
+
+async function resolveGitMetadata(workspaceRoot, relativePath, authorizedGitMetadataPaths) {
   const candidate = path.join(workspaceRoot, relativePath);
   let entry;
   try {
@@ -313,6 +329,7 @@ async function resolveGitMetadata(workspaceRoot, relativePath) {
   }
   const unresolvedGitDirectory = path.resolve(workspaceRoot, match[1]);
   const gitDirectory = await canonicalDirectory(unresolvedGitDirectory, 'Git metadata directory');
+  assertAuthorizedGitMetadataPath(workspaceRoot, gitDirectory, authorizedGitMetadataPaths);
   let commonDirectory = gitDirectory;
   const commonPointer = path.join(gitDirectory, 'commondir');
   let hasCommonDirectoryPointer = false;
@@ -336,6 +353,7 @@ async function resolveGitMetadata(workspaceRoot, relativePath) {
       path.resolve(gitDirectory, commonValue),
       'Git common metadata directory'
     );
+    assertAuthorizedGitMetadataPath(workspaceRoot, commonDirectory, authorizedGitMetadataPaths);
   } catch (error) {
     if (error.code !== 'ENOENT') throw error;
   }
@@ -367,8 +385,10 @@ async function resolveGitMetadata(workspaceRoot, relativePath) {
   });
 }
 
-async function resolveProtectedPath(workspaceRoot, relativePath) {
-  if (relativePath === '.git') return resolveGitMetadata(workspaceRoot, relativePath);
+async function resolveProtectedPath(workspaceRoot, relativePath, authorizedGitMetadataPaths) {
+  if (relativePath === '.git') {
+    return resolveGitMetadata(workspaceRoot, relativePath, authorizedGitMetadataPaths);
+  }
   const candidate = path.join(workspaceRoot, relativePath);
   let entry;
   try {
@@ -482,6 +502,19 @@ function inferNodeRuntimeRoot(execPath = process.execPath) {
 
 async function createWorkspaceExecutionPolicy(options = {}) {
   const workspaceRoot = await canonicalDirectory(options.workspaceRoot, 'workspaceRoot');
+  const authorizedInput = options.authorizedGitMetadataPaths ?? [];
+  if (!Array.isArray(authorizedInput) || authorizedInput.length > 16) {
+    throw new ExecutionPolicyError(
+      'INVALID_POLICY',
+      'authorizedGitMetadataPaths must be a short trusted array'
+    );
+  }
+  const authorizedGitMetadataPaths = new Set();
+  for (const authorizedPath of authorizedInput) {
+    authorizedGitMetadataPaths.add(
+      await canonicalDirectory(authorizedPath, 'authorized Git metadata path')
+    );
+  }
   const workingDirectory = validateWorkspaceRelativePath(
     options.workingDirectory ?? '.',
     'workingDirectory',
@@ -539,7 +572,9 @@ async function createWorkspaceExecutionPolicy(options = {}) {
   }
   const protectedPaths = [];
   for (const relativePath of protectedWorkspacePaths) {
-    protectedPaths.push(await resolveProtectedPath(workspaceRoot, relativePath));
+    protectedPaths.push(
+      await resolveProtectedPath(workspaceRoot, relativePath, authorizedGitMetadataPaths)
+    );
   }
   if (options.rejectWritableHardlinks !== false) {
     await rejectWritableHardlinks(workspaceRoot, protectedWorkspacePaths);
@@ -585,7 +620,7 @@ async function createWorkspaceExecutionPolicy(options = {}) {
     );
   }
 
-  return Object.freeze({
+  const policy = Object.freeze({
     kind: 'freedom.workspace-execution-policy',
     version: POLICY_VERSION,
     filesystem: Object.freeze({
@@ -630,6 +665,12 @@ async function createWorkspaceExecutionPolicy(options = {}) {
     cancellation: Object.freeze({ supported: true, scope: 'descendant_tree' }),
     seccomp: Object.freeze({ requireCustomFilter: options.requireCustomSeccomp === true }),
   });
+  validatedPolicies.add(policy);
+  return policy;
+}
+
+function isValidatedWorkspaceExecutionPolicy(policy) {
+  return Boolean(policy && typeof policy === 'object' && validatedPolicies.has(policy));
 }
 
 function validateExecutionRequest(request = {}) {
@@ -688,6 +729,7 @@ module.exports = {
   createWorkspaceExecutionPolicy,
   inferNodeRuntimeRoot,
   insidePath,
+  isValidatedWorkspaceExecutionPolicy,
   validateEnvironmentName,
   validateExecutionRequest,
   validateGitConfiguration,

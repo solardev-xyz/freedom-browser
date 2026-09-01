@@ -246,6 +246,32 @@ describe('Bubblewrap execution boundary', () => {
     expect(result.dns).not.toBe('unexpected');
   });
 
+  test('closes the launcher status descriptor before the command starts', async () => {
+    if (!available()) return;
+    const script = [
+      'import errno, json, os',
+      'result = {}',
+      'try:',
+      '    os.fstat(3)',
+      "    result['fstat'] = 'unexpected'",
+      'except OSError as error:',
+      "    result['fstat'] = errno.errorcode.get(error.errno, str(error.errno))",
+      'try:',
+      '    os.write(3, b\'{"child-pid":1}\\n\')',
+      "    result['write'] = 'unexpected'",
+      'except OSError as error:',
+      "    result['write'] = errno.errorcode.get(error.errno, str(error.errno))",
+      'print(json.dumps(result), end="")',
+    ].join('\n');
+    const receipt = await executor.execute(await policy(), {
+      command: 'python3',
+      args: ['-c', script],
+    });
+
+    expect(receipt).toMatchObject({ state: 'completed', exitCode: 0 });
+    expect(JSON.parse(receipt.stdout)).toEqual({ fstat: 'EBADF', write: 'EBADF' });
+  });
+
   test('keeps Git metadata read-only and gives every command a fresh private home and tmp', async () => {
     if (!available()) return;
     const gitConfig = path.join(fixture.workspaceRoot, '.git', 'config');
@@ -369,6 +395,32 @@ describe('Bubblewrap execution boundary', () => {
     });
   });
 
+  test('returns the command receipt when launcher staging cleanup fails', async () => {
+    if (!available()) return;
+    let stagingDirectory = null;
+    const cleanupExecutor = new BubblewrapExecutor({
+      removeStagingDirectory: async (directory) => {
+        stagingDirectory = directory;
+        const error = new Error('synthetic cleanup refusal');
+        error.code = 'EACCES';
+        throw error;
+      },
+    });
+    let receipt;
+    try {
+      receipt = await cleanupExecutor.execute(await policy(), { command: '/usr/bin/true' });
+    } finally {
+      if (stagingDirectory) {
+        await fs.promises.rm(stagingDirectory, { recursive: true, force: true });
+      }
+    }
+    expect(receipt).toMatchObject({
+      state: 'completed',
+      exitCode: 0,
+      diagnostics: { stagingCleanupFailed: true, cause: 'EACCES' },
+    });
+  });
+
   test('sanitizes and protects a separate external Git directory', async () => {
     if (!available()) return;
     await fs.promises.rm(path.join(fixture.workspaceRoot, '.git'), {
@@ -386,13 +438,16 @@ describe('Bubblewrap execution boundary', () => {
       path.join(gitDirectory, 'gitdir'),
       `${path.join(fixture.workspaceRoot, '.git')}\n`
     );
-    const receipt = await executor.execute(await policy(), {
-      command: '/bin/sh',
-      args: [
-        '-c',
-        'cat .git; cat /freedom-git-1/gitdir/gitdir; git status --short >/dev/null; if printf x >> .git 2>/dev/null; then exit 9; fi',
-      ],
-    });
+    const receipt = await executor.execute(
+      await policy({ authorizedGitMetadataPaths: [gitDirectory] }),
+      {
+        command: '/bin/sh',
+        args: [
+          '-c',
+          'cat .git; cat /freedom-git-1/gitdir/gitdir; git status --short >/dev/null; if printf x >> .git 2>/dev/null; then exit 9; fi',
+        ],
+      }
+    );
     expect(receipt.state).toBe('completed');
     expect(receipt.stdout).toBe('gitdir: /freedom-git-1/gitdir\n/workspace/.git\n');
     expect(receipt.stdout).not.toContain(fixture.fixtureRoot);
