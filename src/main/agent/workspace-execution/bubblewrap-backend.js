@@ -379,7 +379,7 @@ async function buildBubblewrapArguments(policy, request) {
     for (const runtimeRoot of policy.filesystem.runtimeRoots) {
       args.push('--dir', path.posix.dirname(runtimeRoot.mountPath));
       addReadOnlyMount(args, runtimeRoot.sourcePath, runtimeRoot.mountPath);
-      pathEntries.push(`${runtimeRoot.mountPath}/bin`);
+      if (runtimeRoot.id === 'node') pathEntries.push(`${runtimeRoot.mountPath}/bin`);
     }
     if (policy.filesystem.exposeSystemToolchain) {
       for (const sourcePath of SYSTEM_RUNTIME_PATHS) {
@@ -408,7 +408,9 @@ async function buildBubblewrapArguments(policy, request) {
       '--dir',
       '/tmp/cache',
       '--dir',
-      '/tmp/config'
+      '/tmp/config',
+      '--dir',
+      '/tmp/data'
     );
     const workspace = policy.filesystem.writableRoots.find((root) => root.id === 'workspace');
     if (!workspace) {
@@ -428,6 +430,7 @@ async function buildBubblewrapArguments(policy, request) {
       USER: 'sandbox',
       XDG_CACHE_HOME: '/tmp/cache',
       XDG_CONFIG_HOME: '/tmp/config',
+      XDG_DATA_HOME: '/tmp/data',
     };
     for (const [name, value] of Object.entries({
       ...policy.environment.values,
@@ -744,6 +747,7 @@ class BubblewrapExecutor {
           capabilities: Object.freeze({
             backend: 'linux-bubblewrap',
             aggregateResourceLimits: false,
+            cancellationGuarantee: 'namespace_scoped',
             customSeccomp: false,
           }),
         };

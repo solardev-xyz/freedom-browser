@@ -645,6 +645,60 @@ async function canonicalElectronRuntimeRoot(input) {
   return runtimeRoot;
 }
 
+async function canonicalElectronRuntime(input) {
+  const descriptor = requirePlainObject(input, 'electronRuntime');
+  const sourcePath = await canonicalDirectory(descriptor.rootPath, 'electronRuntime.rootPath');
+  if (
+    typeof descriptor.executablePath !== 'string' ||
+    !path.isAbsolute(descriptor.executablePath) ||
+    descriptor.executablePath.includes('\0')
+  ) {
+    throw new ExecutionPolicyError(
+      'INVALID_ELECTRON_RUNTIME',
+      'electronRuntime.executablePath must be one trusted absolute path'
+    );
+  }
+  let executablePath;
+  let executableStats;
+  try {
+    executablePath = await fs.promises.realpath(descriptor.executablePath);
+    executableStats = await fs.promises.stat(executablePath);
+  } catch (error) {
+    throw new ExecutionPolicyError(
+      'INVALID_ELECTRON_RUNTIME',
+      'electronRuntime.executablePath is unavailable',
+      { cause: error.code }
+    );
+  }
+  if (!executableStats.isFile() || !insidePath(sourcePath, executablePath)) {
+    throw new ExecutionPolicyError(
+      'INVALID_ELECTRON_RUNTIME',
+      'electronRuntime executable must be a regular file inside its runtime root'
+    );
+  }
+  if (descriptor.platform === 'darwin') {
+    await canonicalElectronRuntimeRoot(sourcePath);
+  } else if (descriptor.platform !== 'linux') {
+    throw new ExecutionPolicyError(
+      'INVALID_ELECTRON_RUNTIME',
+      'electronRuntime platform must be linux or darwin'
+    );
+  }
+  const relativeExecutablePath = path.relative(sourcePath, executablePath);
+  return Object.freeze({
+    id: 'electron',
+    sourcePath,
+    mountPath: '/opt/freedom-toolchain/electron',
+    access: 'read_only',
+    executablePath,
+    relativeExecutablePath,
+    sandboxExecutablePath: path.posix.join(
+      '/opt/freedom-toolchain/electron',
+      ...relativeExecutablePath.split(path.sep)
+    ),
+  });
+}
+
 async function createWorkspaceExecutionPolicy(options = {}) {
   const workspaceRoot = await canonicalDirectory(options.workspaceRoot, 'workspaceRoot');
   const authorizedInput = options.authorizedGitMetadataPaths ?? [];
@@ -772,6 +826,15 @@ async function createWorkspaceExecutionPolicy(options = {}) {
         access: 'read_only',
       })
     );
+  }
+  if (options.electronRuntime) {
+    if (options.electronRuntimeRoot) {
+      throw new ExecutionPolicyError(
+        'INVALID_ELECTRON_RUNTIME',
+        'Use either electronRuntime or electronRuntimeRoot, not both'
+      );
+    }
+    runtimeRoots.push(await canonicalElectronRuntime(options.electronRuntime));
   }
 
   const policy = Object.freeze({

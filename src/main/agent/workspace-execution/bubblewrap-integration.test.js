@@ -102,7 +102,10 @@ describe('Bubblewrap execution boundary', () => {
       state: 'completed',
       exitCode: 0,
       terminationGuarantee: 'namespace_scoped',
-      capabilities: { backend: 'linux-bubblewrap' },
+      capabilities: {
+        backend: 'linux-bubblewrap',
+        cancellationGuarantee: 'namespace_scoped',
+      },
     });
     expect(receipt.stdout).toContain('positive-ok');
     await expect(

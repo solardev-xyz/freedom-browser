@@ -7,6 +7,7 @@ const path = require('path');
 
 const ELECTRON_RUNTIME_PROBE_TIMEOUT_MS = 5_000;
 const ELECTRON_RUNTIME_PROBE_MARKER = 'freedom-electron-node-runtime-v1';
+const ELECTRON_SANDBOX_MOUNT_PATH = '/opt/freedom-toolchain/electron';
 
 function boundedText(value, maximum = 512) {
   return String(value || '').slice(0, maximum);
@@ -35,6 +36,75 @@ function findApplicationBundle(executablePath) {
   return null;
 }
 
+async function deriveLinuxRuntimeRoot(
+  executablePath,
+  resourcesPath,
+  packaged,
+  archiveFileSystem = fs
+) {
+  if (typeof resourcesPath !== 'string' || !path.isAbsolute(resourcesPath)) return null;
+  let canonicalResources;
+  try {
+    canonicalResources = await fs.promises.realpath(resourcesPath);
+  } catch {
+    return null;
+  }
+  if (path.basename(canonicalResources) !== 'resources') return null;
+  const runtimeRoot = path.dirname(canonicalResources);
+  if (!insidePath(runtimeRoot, executablePath) || executablePath === runtimeRoot) return null;
+  if (packaged) {
+    try {
+      const archive = await archiveFileSystem.promises.stat(
+        path.join(canonicalResources, 'app.asar')
+      );
+      if (!archive.isFile()) return null;
+    } catch {
+      return null;
+    }
+  }
+  const relativeExecutablePath = path.relative(runtimeRoot, executablePath);
+  if (
+    !relativeExecutablePath ||
+    path.isAbsolute(relativeExecutablePath) ||
+    relativeExecutablePath.startsWith('..')
+  ) {
+    return null;
+  }
+  return { runtimeRoot, canonicalResources, relativeExecutablePath };
+}
+
+function insidePath(root, candidate) {
+  const relative = path.relative(root, candidate);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+async function inspectAppImageEnvironment(environment, runtimeRoot) {
+  const diagnostics = {
+    appImageEnvironmentPresent: typeof environment.APPIMAGE === 'string',
+    appDirEnvironmentPresent: typeof environment.APPDIR === 'string',
+    appImagePath: null,
+    appDirMatchesRuntimeRoot: false,
+  };
+  if (diagnostics.appImageEnvironmentPresent) {
+    try {
+      const appImagePath = await fs.promises.realpath(environment.APPIMAGE);
+      const stats = await fs.promises.stat(appImagePath);
+      if (stats.isFile()) diagnostics.appImagePath = appImagePath;
+    } catch {
+      // Environment hints are diagnostic only and never runtime authority.
+    }
+  }
+  if (diagnostics.appDirEnvironmentPresent) {
+    try {
+      diagnostics.appDirMatchesRuntimeRoot =
+        (await fs.promises.realpath(environment.APPDIR)) === runtimeRoot;
+    } catch {
+      // A forged or stale APPDIR cannot redirect discovery.
+    }
+  }
+  return diagnostics;
+}
+
 function unavailableRuntime(code, message, diagnostics) {
   return Object.freeze({
     available: false,
@@ -47,6 +117,11 @@ async function detectElectronJavaScriptRuntime(options = {}) {
   const platform = options.platform || process.platform;
   const versions = options.versions || process.versions;
   const configuredExecutable = options.execPath || process.execPath;
+  const configuredResources = options.resourcesPath || process.resourcesPath;
+  const environment = options.environment || process.env;
+  const archiveFileSystem =
+    options.archiveFileSystem ||
+    (platform === 'linux' && process.versions.electron ? require('original-fs') : fs);
   const run = options.run || runElectronProbe;
   const diagnostics = {
     platform,
@@ -56,10 +131,10 @@ async function detectElectronJavaScriptRuntime(options = {}) {
     freedomVersion: options.freedomVersion || null,
     packaged: options.packaged === true,
   };
-  if (platform !== 'darwin') {
+  if (platform !== 'darwin' && platform !== 'linux') {
     return unavailableRuntime(
       'ELECTRON_RUNTIME_PLATFORM_UNAVAILABLE',
-      'The Electron JavaScript runtime qualifier requires macOS',
+      'The Electron JavaScript runtime qualifier requires macOS or Linux',
       diagnostics
     );
   }
@@ -83,12 +158,27 @@ async function detectElectronJavaScriptRuntime(options = {}) {
       { ...diagnostics, cause: error.code }
     );
   }
-  const applicationBundleRoot = findApplicationBundle(executablePath);
-  if (!executableStats.isFile() || !applicationBundleRoot) {
+  const applicationBundleRoot =
+    platform === 'darwin' ? findApplicationBundle(executablePath) : null;
+  const linuxLayout =
+    platform === 'linux'
+      ? await deriveLinuxRuntimeRoot(
+          executablePath,
+          configuredResources,
+          options.packaged === true,
+          archiveFileSystem
+        )
+      : null;
+  if (
+    !executableStats.isFile() ||
+    (platform === 'darwin' ? !applicationBundleRoot : !linuxLayout)
+  ) {
     return unavailableRuntime(
       'ELECTRON_BUNDLE_UNAVAILABLE',
-      'The active Electron executable is not contained in one macOS application bundle',
-      { ...diagnostics, executablePath }
+      platform === 'darwin'
+        ? 'The active Electron executable is not contained in one macOS application bundle'
+        : 'The active Electron executable and resources do not identify one packaged Linux runtime tree',
+      { ...diagnostics, executablePath, resourcesPath: configuredResources || null }
     );
   }
 
@@ -129,16 +219,43 @@ async function detectElectronJavaScriptRuntime(options = {}) {
     );
   }
 
+  const runtimeRoot = applicationBundleRoot || linuxLayout.runtimeRoot;
+  const relativeExecutablePath = applicationBundleRoot
+    ? path.relative(applicationBundleRoot, executablePath)
+    : linuxLayout.relativeExecutablePath;
+  const appImage =
+    platform === 'linux' ? await inspectAppImageEnvironment(environment, runtimeRoot) : null;
+  const layout =
+    platform === 'darwin'
+      ? 'macos-app-bundle'
+      : appImage.appImagePath && appImage.appDirMatchesRuntimeRoot
+        ? 'linux-appimage'
+        : 'linux-packaged-directory';
+  const sandboxExecutablePath =
+    platform === 'linux'
+      ? path.posix.join(ELECTRON_SANDBOX_MOUNT_PATH, ...relativeExecutablePath.split(path.sep))
+      : executablePath;
+
   return Object.freeze({
     available: true,
     kind: 'electron-run-as-node',
+    platform,
+    layout,
     executablePath,
+    runtimeRoot,
+    relativeExecutablePath,
+    sandboxExecutablePath,
     applicationBundleRoot,
     invocationEnvironment: Object.freeze({ ELECTRON_RUN_AS_NODE: '1' }),
     diagnostics: Object.freeze({
       ...diagnostics,
       executablePath,
+      runtimeRoot,
+      relativeExecutablePath,
+      sandboxExecutablePath,
       applicationBundleRoot,
+      resourcesPath: linuxLayout?.canonicalResources || null,
+      appImage,
       helperNodeVersion: result.node,
       runtimeProbe: 'passed',
     }),
@@ -146,9 +263,11 @@ async function detectElectronJavaScriptRuntime(options = {}) {
 }
 
 module.exports = {
+  ELECTRON_SANDBOX_MOUNT_PATH,
   ELECTRON_RUNTIME_PROBE_MARKER,
   ELECTRON_RUNTIME_PROBE_TIMEOUT_MS,
   detectElectronJavaScriptRuntime,
+  deriveLinuxRuntimeRoot,
   findApplicationBundle,
   runElectronProbe,
 };

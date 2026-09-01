@@ -116,6 +116,44 @@ describe('workspace execution policy', () => {
     ).rejects.toMatchObject({ code: 'INVALID_ELECTRON_RUNTIME' });
   });
 
+  test('maps one trusted Linux Electron executable beneath its read-only runtime root', async () => {
+    const fixture = await createFixture();
+    fixtureRoots.push(fixture.fixtureRoot);
+    const runtimeRoot = path.join(fixture.fixtureRoot, 'linux-unpacked');
+    const executable = path.join(runtimeRoot, 'freedom');
+    await fs.promises.mkdir(runtimeRoot);
+    await fs.promises.writeFile(executable, 'fixture', { mode: 0o700 });
+
+    const policy = await createWorkspaceExecutionPolicy({
+      workspaceRoot: fixture.workspaceRoot,
+      nodeRuntimeRoot: null,
+      electronRuntime: { platform: 'linux', rootPath: runtimeRoot, executablePath: executable },
+    });
+    expect(policy.filesystem.runtimeRoots).toEqual([
+      {
+        id: 'electron',
+        sourcePath: await fs.promises.realpath(runtimeRoot),
+        mountPath: '/opt/freedom-toolchain/electron',
+        access: 'read_only',
+        executablePath: await fs.promises.realpath(executable),
+        relativeExecutablePath: 'freedom',
+        sandboxExecutablePath: '/opt/freedom-toolchain/electron/freedom',
+      },
+    ]);
+
+    await expect(
+      createWorkspaceExecutionPolicy({
+        workspaceRoot: fixture.workspaceRoot,
+        nodeRuntimeRoot: null,
+        electronRuntime: {
+          platform: 'linux',
+          rootPath: runtimeRoot,
+          executablePath: path.join(fixture.fixtureRoot, 'source.js'),
+        },
+      })
+    ).rejects.toMatchObject({ code: 'INVALID_ELECTRON_RUNTIME' });
+  });
+
   test('resolves an external Git directory without treating its host path as the mount identity', async () => {
     const fixture = await createFixture({ git: false });
     fixtureRoots.push(fixture.fixtureRoot);
@@ -304,16 +342,18 @@ describe('workspace execution policy', () => {
 
     const originalLstat = fs.promises.lstat.bind(fs.promises);
     let secondPathCalls = 0;
-    const lstat = jest.spyOn(fs.promises, 'lstat').mockImplementation(async (candidate, options) => {
-      const stats = await originalLstat(candidate, options);
-      if (candidate !== secondPath || ++secondPathCalls !== 2) return stats;
-      return new Proxy(stats, {
-        get(target, property, receiver) {
-          if (property === 'nlink') return target.nlink + 1n;
-          return Reflect.get(target, property, receiver);
-        },
+    const lstat = jest
+      .spyOn(fs.promises, 'lstat')
+      .mockImplementation(async (candidate, options) => {
+        const stats = await originalLstat(candidate, options);
+        if (candidate !== secondPath || ++secondPathCalls !== 2) return stats;
+        return new Proxy(stats, {
+          get(target, property, receiver) {
+            if (property === 'nlink') return target.nlink + 1n;
+            return Reflect.get(target, property, receiver);
+          },
+        });
       });
-    });
     try {
       await expect(
         createWorkspaceExecutionPolicy({ workspaceRoot: fixture.workspaceRoot })
@@ -329,12 +369,14 @@ describe('workspace execution policy', () => {
     const sourcePath = path.join(fixture.workspaceRoot, 'source.js');
     const originalLstat = fs.promises.lstat.bind(fs.promises);
     let rootCalls = 0;
-    const lstat = jest.spyOn(fs.promises, 'lstat').mockImplementation(async (candidate, options) => {
-      if (candidate === fixture.workspaceRoot && ++rootCalls === 3) {
-        await fs.promises.appendFile(sourcePath, '// changed during validation\n');
-      }
-      return originalLstat(candidate, options);
-    });
+    const lstat = jest
+      .spyOn(fs.promises, 'lstat')
+      .mockImplementation(async (candidate, options) => {
+        if (candidate === fixture.workspaceRoot && ++rootCalls === 3) {
+          await fs.promises.appendFile(sourcePath, '// changed during validation\n');
+        }
+        return originalLstat(candidate, options);
+      });
     try {
       await expect(
         createWorkspaceExecutionPolicy({ workspaceRoot: fixture.workspaceRoot })

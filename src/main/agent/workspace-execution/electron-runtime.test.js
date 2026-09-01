@@ -32,6 +32,22 @@ describe('Electron JavaScript runtime discovery', () => {
     };
   }
 
+  async function linuxFixture() {
+    const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'freedom-electron-linux-'));
+    roots.push(root);
+    const runtimeRoot = path.join(root, 'linux-unpacked');
+    const resourcesPath = path.join(runtimeRoot, 'resources');
+    const executable = path.join(runtimeRoot, 'freedom');
+    await fs.promises.mkdir(resourcesPath, { recursive: true });
+    await fs.promises.writeFile(path.join(resourcesPath, 'app.asar'), 'fixture');
+    await fs.promises.writeFile(executable, 'fixture', { mode: 0o700 });
+    return {
+      runtimeRoot: await fs.promises.realpath(runtimeRoot),
+      resourcesPath: await fs.promises.realpath(resourcesPath),
+      executable: await fs.promises.realpath(executable),
+    };
+  }
+
   test('finds only the application bundle containing the active executable', () => {
     expect(findApplicationBundle('/Applications/Freedom.app/Contents/MacOS/Freedom')).toBe(
       '/Applications/Freedom.app'
@@ -101,6 +117,73 @@ describe('Electron JavaScript runtime discovery', () => {
         freedomVersion: '0.8.1-dev',
         packaged: false,
       },
+    });
+  });
+
+  test('derives one packaged Linux runtime and an explicit sandbox executable', async () => {
+    const fixture = await linuxFixture();
+    const forgedAppDir = await fs.promises.mkdtemp(
+      path.join(os.tmpdir(), '.mount_Freedom-forged-')
+    );
+    roots.push(forgedAppDir);
+    const forgedAppImage = path.join(forgedAppDir, 'Freedom.AppImage');
+    await fs.promises.writeFile(forgedAppImage, 'forged');
+    const runtime = await detectElectronJavaScriptRuntime({
+      platform: 'linux',
+      versions: { electron: '43.0.0', node: '24.17.0', chrome: '142.0.0' },
+      execPath: fixture.executable,
+      resourcesPath: fixture.resourcesPath,
+      freedomVersion: '0.8.1-dev',
+      packaged: true,
+      environment: { APPDIR: forgedAppDir, APPIMAGE: forgedAppImage },
+      run: async (binary) => {
+        expect(binary).toBe(fixture.executable);
+        return {
+          exitCode: 0,
+          signal: null,
+          stdout: JSON.stringify({
+            marker: ELECTRON_RUNTIME_PROBE_MARKER,
+            electron: '43.0.0',
+            node: '24.17.0',
+          }),
+          stderr: '',
+        };
+      },
+    });
+
+    expect(runtime).toMatchObject({
+      available: true,
+      platform: 'linux',
+      layout: 'linux-packaged-directory',
+      executablePath: fixture.executable,
+      runtimeRoot: fixture.runtimeRoot,
+      relativeExecutablePath: 'freedom',
+      sandboxExecutablePath: '/opt/freedom-toolchain/electron/freedom',
+      diagnostics: {
+        resourcesPath: fixture.resourcesPath,
+        appImage: {
+          appDirEnvironmentPresent: true,
+          appDirMatchesRuntimeRoot: false,
+          appImagePath: await fs.promises.realpath(forgedAppImage),
+        },
+      },
+    });
+  });
+
+  test('fails closed for Linux resources outside the active executable tree', async () => {
+    const fixture = await linuxFixture();
+    const other = await linuxFixture();
+    await expect(
+      detectElectronJavaScriptRuntime({
+        platform: 'linux',
+        versions: { electron: '43.0.0', node: '24.17.0' },
+        execPath: fixture.executable,
+        resourcesPath: other.resourcesPath,
+        packaged: true,
+      })
+    ).resolves.toMatchObject({
+      available: false,
+      denial: { code: 'ELECTRON_BUNDLE_UNAVAILABLE' },
     });
   });
 });
