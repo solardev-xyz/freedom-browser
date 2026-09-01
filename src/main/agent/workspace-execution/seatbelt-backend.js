@@ -33,6 +33,19 @@ function boundedText(value, maximum = 512) {
   return String(value || '').slice(0, maximum);
 }
 
+function signalProcessGroup(processGroupId, signal, killProcess = process.kill) {
+  try {
+    killProcess(-processGroupId, signal);
+    return null;
+  } catch (error) {
+    if (error?.code === 'ESRCH') return null;
+    return Object.freeze({
+      signal,
+      code: boundedText(error?.code || 'UNKNOWN', 64),
+    });
+  }
+}
+
 function execFileResult(binary, args, options = {}) {
   return new Promise((resolve) => {
     execFile(binary, args, options, (error, stdout, stderr) => {
@@ -311,7 +324,11 @@ async function detectSeatbeltCapabilities(options = {}) {
     backend: 'macos-seatbelt',
     available: true,
     binary,
-    diagnostics: Object.freeze({ ...diagnostics, profileInitialization: 'passed' }),
+    diagnostics: Object.freeze({
+      ...diagnostics,
+      profileApplicationReadiness: 'passed',
+      denialSemanticsProbe: 'not_run',
+    }),
     enforcement: Object.freeze({
       filesystem: true,
       networkNone: true,
@@ -377,6 +394,7 @@ class SeatbeltExecutor {
   constructor(options = {}) {
     this.binary = options.binary || DEFAULT_SEATBELT_PATH;
     this.spawnProcess = options.spawnProcess || spawn;
+    this.killProcess = options.killProcess || process.kill;
     this.now = options.now || Date.now;
     this.setTimeout = options.setTimeout || setTimeout;
     this.clearTimeout = options.clearTimeout || clearTimeout;
@@ -543,17 +561,25 @@ class SeatbeltExecutor {
       let wallTimer = null;
       let abortListener = null;
       let settled = false;
+      const processGroupSignalErrors = [];
 
-      const signalGroup = (signal) => {
-        try {
-          process.kill(-child.pid, signal);
-        } catch {
-          // The original process group may already have exited.
+      const signalGroup = (signal, phase) => {
+        const error = signalProcessGroup(child.pid, signal, this.killProcess);
+        if (error) {
+          processGroupSignalErrors.push(
+            Object.freeze({
+              phase,
+              ...error,
+            })
+          );
         }
       };
       const finalize = async (exitCode, signal, forced = false) => {
         if (settled) return;
         settled = true;
+        // Direct-child close does not imply that every member of its process group exited.
+        // Make cleanup an invariant of every spawned receipt before clearing escalation timers.
+        signalGroup('SIGKILL', 'finalization');
         if (wallTimer) this.clearTimeout(wallTimer);
         if (terminationTimer) this.clearTimeout(terminationTimer);
         if (forcedReceiptTimer) this.clearTimeout(forcedReceiptTimer);
@@ -578,6 +604,10 @@ class SeatbeltExecutor {
               {
                 cause: spawnError?.code || null,
                 signal,
+                processGroupFinalKillAttempted: true,
+                ...(processGroupSignalErrors.length > 0
+                  ? { processGroupSignalErrors: Object.freeze([...processGroupSignalErrors]) }
+                  : {}),
                 ...(cleanup || {}),
               }
             )
@@ -612,20 +642,22 @@ class SeatbeltExecutor {
             message: 'The sandboxed command exited unsuccessfully',
           });
         }
-        if (forced || cleanup) {
-          receipt.diagnostics = Object.freeze({
-            ...(forced ? { processGroupCleanupBoundExpired: true } : {}),
-            ...(cleanup || {}),
-          });
-        }
+        receipt.diagnostics = Object.freeze({
+          processGroupFinalKillAttempted: true,
+          ...(processGroupSignalErrors.length > 0
+            ? { processGroupSignalErrors: Object.freeze([...processGroupSignalErrors]) }
+            : {}),
+          ...(forced ? { processGroupCleanupBoundExpired: true } : {}),
+          ...(cleanup || {}),
+        });
         resolve(Object.freeze(receipt));
       };
       const terminate = (state) => {
         if (requestedState) return;
         requestedState = state;
-        signalGroup('SIGTERM');
+        signalGroup('SIGTERM', 'termination_requested');
         terminationTimer = this.setTimeout(() => {
-          signalGroup('SIGKILL');
+          signalGroup('SIGKILL', 'termination_grace_expired');
           forcedReceiptTimer = this.setTimeout(
             () => finalize(null, 'SIGKILL', true),
             FORCED_RECEIPT_DELAY_MS
@@ -665,4 +697,5 @@ module.exports = {
   discoverRuntimeReadPaths,
   hostWorkingDirectory,
   seatbeltString,
+  signalProcessGroup,
 };

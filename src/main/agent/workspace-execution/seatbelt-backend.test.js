@@ -14,6 +14,7 @@ const {
   detectSeatbeltCapabilities,
   hostWorkingDirectory,
   seatbeltString,
+  signalProcessGroup,
 } = require('./seatbelt-backend');
 
 async function createFixture() {
@@ -105,7 +106,12 @@ describe('macOS Seatbelt backend contract', () => {
       })
     ).resolves.toMatchObject({
       available: true,
-      diagnostics: { architecture: 'future-arch', release: 'future-release' },
+      diagnostics: {
+        architecture: 'future-arch',
+        release: 'future-release',
+        profileApplicationReadiness: 'passed',
+        denialSemanticsProbe: 'not_run',
+      },
       enforcement: { cancellationGuarantee: 'best_effort' },
     });
     await expect(
@@ -119,6 +125,28 @@ describe('macOS Seatbelt backend contract', () => {
       denial: { code: 'SEATBELT_INITIALIZATION_FAILED' },
       diagnostics: { initializationDiagnostic: 'denied' },
     });
+  });
+
+  test('records process-group signal failures other than an exited group', () => {
+    const success = jest.fn();
+    expect(signalProcessGroup(123, 'SIGKILL', success)).toBeNull();
+    expect(success).toHaveBeenCalledWith(-123, 'SIGKILL');
+
+    expect(
+      signalProcessGroup(123, 'SIGKILL', () => {
+        const error = new Error('gone');
+        error.code = 'ESRCH';
+        throw error;
+      })
+    ).toBeNull();
+
+    expect(
+      signalProcessGroup(123, 'SIGKILL', () => {
+        const error = new Error('not permitted');
+        error.code = 'EPERM';
+        throw error;
+      })
+    ).toEqual({ signal: 'SIGKILL', code: 'EPERM' });
   });
 
   test('continues draining output after the visible limit', () => {

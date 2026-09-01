@@ -9,7 +9,7 @@ Qualified host: macOS 15.6 build 24G84, Apple Silicon arm64
 
 The revised macOS boundary is credible enough for continued isolated backend research, but it is not product-ready. Seatbelt is the authority boundary for filesystem and network access. A dedicated process group provides operational timeout and cancellation with an explicitly **best-effort** guarantee.
 
-Ordinary descendants remain in the launch process group and are terminated with `SIGTERM`, followed after a bounded grace period by `SIGKILL`. A hostile descendant can call `setsid()` and escape that group. It remains subject to the inherited Seatbelt profile, so it still cannot read or write forbidden filesystem paths or use external, localhost or DNS networking. It can continue using the selected writable workspace until separately terminated.
+Ordinary descendants remain in the launch process group. Cancellation and timeout send `SIGTERM`, followed after a bounded grace period by `SIGKILL`. Before resolving any spawned execution receipt, including normal completion, the backend also makes a final best-effort `SIGKILL` attempt against the original process group. A hostile descendant can call `setsid()` and escape that group. It remains subject to the inherited Seatbelt profile, so it still cannot read or write forbidden filesystem paths or use external, localhost or DNS networking. It can continue using the selected writable workspace until separately terminated.
 
 This is intentionally the same architectural split demonstrated by the commit-pinned open-source Codex implementation: Seatbelt constrains authority, while process-group cleanup is best-effort lifecycle management. This is an inference from source, not a claim that OpenAI formally guarantees detached-descendant behavior.
 
@@ -65,11 +65,11 @@ The child environment is built from the validated allowlist. Loader injection, l
 
 ### Launch, readiness and receipts
 
-`/usr/bin/sandbox-exec` is invoked by absolute path with a generated profile file. The final trusted shell wrapper prints an unguessable readiness marker after Seatbelt application and before executing the requested argv. If the marker is absent, the result is `sandbox_denied`; there is no unsandboxed retry.
+`/usr/bin/sandbox-exec` is invoked by absolute path with a generated profile file. The final trusted shell wrapper prints an unguessable marker after Seatbelt application and before executing the requested argv. If the marker is absent, the result is `sandbox_denied`; there is no unsandboxed retry. This marker proves profile application readiness, not the profile's filesystem or network denial semantics. Enforcement evidence comes from the qualified integration corpus.
 
 Stdout and stderr are continuously drained and independently bounded. Receipts distinguish completed, failed, cancelled, timed-out and sandbox-denied states. All runnable receipts expose `terminationGuarantee: best_effort`.
 
-The launcher starts `sandbox-exec` in a dedicated process group/session. Cancellation and timeout send `SIGTERM` to the original group, wait one second, send `SIGKILL`, then resolve within another bounded interval even if a detached descendant retains resources. PID/PGID reuse remains a small signaling race and is documented rather than hidden.
+The launcher starts `sandbox-exec` in a dedicated process group/session. Cancellation and timeout send `SIGTERM` to the original group, wait one second, send `SIGKILL`, then resolve within another bounded interval even if a detached descendant retains resources. Direct-child close no longer cancels cleanup: finalization first makes an additional best-effort group `SIGKILL` attempt, so an ordinary same-group background child cannot silently become untracked merely because the root exited. Non-`ESRCH` signal errors are retained in receipt diagnostics. PID/PGID reuse remains a small signaling race and is documented rather than hidden.
 
 ## Capability detection
 
@@ -79,9 +79,15 @@ The exact OS-build allowlist was removed. Runtime detection now checks:
 - `/usr/bin/sandbox-exec` exists as a regular file; and
 - a harmless deny-default representative profile using the required profile operations successfully launches `/usr/bin/true`.
 
-Architecture and kernel release are diagnostics, not allowlist keys. Every real execution still has its own readiness proof, so an unsupported or changed profile fails closed before the requested command is classified as started.
+Architecture and kernel release are diagnostics, not allowlist keys. The probe and per-run marker establish profile application readiness. They do not synthetically retest denial semantics on every launch; those semantics are established by the qualification corpus. An unsupported profile or failed Seatbelt application still fails closed before the requested command is classified as started.
 
-`sandbox-exec` remains deprecated and its profile language unsupported as a stable public interface. Capability probing reduces, but does not eliminate, cross-release risk.
+`sandbox-exec` remains deprecated and its profile language unsupported as a stable public interface. Capability probing reduces application failures, but qualified integration tests on each supported macOS/runtime layout remain necessary for enforcement confidence.
+
+### Qualified toolchain scope
+
+The recorded qualification runs from standalone Node and now supplies its canonical runtime root explicitly. This is not packaged-Electron evidence. `inferNodeRuntimeRoot()` intentionally recognizes only an executable named `node`; a packaged Freedom process has an Electron application executable and will not infer that root. The restricted `PATH` also intentionally does not grant the broad Apple Silicon Homebrew directory `/opt/homebrew/bin`.
+
+Before product integration, trusted main-process code must resolve and pass exact approved CLI/runtime roots rather than infer them from Electron or add broad package-manager directories. Qualification must then run from the packaged application. Python also needs layout-specific qualification: `/usr/bin/python3` can delegate into paths under `/Applications/Xcode.app` on some Macs, which this profile does not currently grant.
 
 ## Qualification evidence
 
@@ -96,7 +102,8 @@ The ordinary focused corpus covers:
 - `.git` write denial and fixed optional-lock behavior;
 - fresh HOME and temporary storage per execution;
 - localhost, external-address and DNS denial;
-- best-effort cancellation of ordinary descendants in the original group; and
+- final group cleanup of redirected background descendants after normal root exit;
+- cancellation cleanup of a same-group descendant that ignores `SIGTERM`;
 - continuous output draining and truncation.
 
 The repository qualification runs focused Jest, full lint, a Babel transform and shell/Python/Git checks inside Seatbelt with installed `node_modules` protected read-only. No network or dependency download is available inside the sandbox.
@@ -104,12 +111,12 @@ The repository qualification runs focused Jest, full lint, a Babel transform and
 Recorded results on the qualified host:
 
 - `npm ci`: completed from the existing lockfile; npm reported 21 dependency audit findings (7 low, 5 moderate, 9 high), unrelated to this dependency-free spike.
-- `npm run test:agent-sandbox:macos`: 2 suites, 12 tests passed.
+- `npm run test:agent-sandbox:macos`: 2 suites, 14 tests passed, including normal-exit and cancellation same-group survivor regressions.
 - Doubly gated `npm run test:agent-sandbox:macos:destructive`: 1 test passed and cleaned the recorded detached PID.
 - `npm run test:agent-sandbox:macos:qualification`: capability probe, focused Jest, full lint, Babel and shell/Python/Git workloads all completed inside Seatbelt.
 - Shared execution-policy suite: 11 tests passed.
 - Host `npm run lint`: passed.
-- Full `npm test` outside the outer Codex sandbox: 210 suites and 3,818 tests passed; one Linux-only Bubblewrap unit suite had two pre-existing macOS expectation failures because it expects missing/setuid-binary denial codes before the backend's `UNSUPPORTED_PLATFORM` check. Eight suites and 25 tests skipped normally. The reviewed Linux implementation was not changed.
+- Full `npm test` outside the outer Codex sandbox: 210 suites and 3,819 tests passed; one Linux-only Bubblewrap unit suite had two pre-existing macOS expectation failures because it expects missing/setuid-binary denial codes before the backend's `UNSUPPORTED_PLATFORM` check. Eight suites and 26 tests skipped normally. The reviewed Linux implementation was not changed.
 
 The destructive/VM-only corpus requires both `FREEDOM_SANDBOX_DESTRUCTIVE=1` and `FREEDOM_REQUIRE_SEATBELT=1`. It validates a fresh canonical direct child of the system temporary directory with the fixed `freedom-seatbelt-destructive-` prefix. The test:
 
@@ -126,7 +133,7 @@ The destructive/VM-only corpus requires both `FREEDOM_SANDBOX_DESTRUCTIVE=1` and
 
 | Capability | Result | Notes |
 | --- | ---: | --- |
-| Seatbelt application | yes | Per-launch readiness marker; initialization failure is sandbox-denied. |
+| Seatbelt profile application readiness | yes | Representative launch probe plus per-launch marker; application failure is sandbox-denied. |
 | Exact workspace read/write | yes | Canonical host path; no neutral mount path on macOS. |
 | `.git` and authorized metadata read-only | yes | Explicit deny-write precedence; common and worktree config prevalidated. |
 | Outside file contents denied | yes | Shell/Python/generated/symlink corpus passes. |
@@ -136,7 +143,7 @@ The destructive/VM-only corpus requires both `FREEDOM_SANDBOX_DESTRUCTIVE=1` and
 | Closed unrelated descriptors | yes | Node spawn exposes only configured standard streams. |
 | Bounded output | yes | Streams remain drained after visible caps. |
 | Wall timeout | yes | Same best-effort process-group semantics as cancellation. |
-| Ordinary process-group cancellation | yes | TERM, bounded grace, KILL. |
+| Ordinary process-group cleanup | yes | TERM/grace/KILL for cancellation; final KILL attempt before every spawned receipt. |
 | Complete descendant termination | **no** | `setsid()` escape is expected and explicitly qualified. |
 | Aggregate CPU/memory/PID/disk containment | **no** | Per-process mechanisms are not represented as aggregate controls. |
 
@@ -161,10 +168,12 @@ The concepts adapted are deny-default Seatbelt confinement, same-sandbox process
 3. There is no aggregate memory, CPU, PID-count or disk containment.
 4. Host-backed private storage can consume host disk; cleanup can fail.
 5. Canonical workspace/runtime/temp paths, pathname metadata and root directory entries are visible.
-6. Exact runtime dependency discovery currently targets the active Node Mach-O/Homebrew layout; other package managers and runtimes need qualification.
-7. Broad read-only Apple system paths remain part of the trusted runtime surface; the qualified workloads require no explicit Mach-service grants.
-8. `sandbox-exec` and SBPL are deprecated/private interfaces and can change between macOS releases.
-9. This is not protection against a Seatbelt or kernel escape.
+6. Exact runtime dependency discovery currently targets the active standalone Node Mach-O/Homebrew layout; packaged Electron is not qualified and must use explicit trusted toolchain/runtime roots.
+7. Python resolution is host-layout-specific; system Python may delegate into ungranted Xcode application paths.
+8. Broad read-only Apple system paths remain part of the trusted runtime surface; the qualified workloads require no explicit Mach-service grants.
+9. The capability probe proves profile application readiness, while enforcement confidence depends on the qualified integration corpus for each supported host layout.
+10. `sandbox-exec` and SBPL are deprecated/private interfaces and can change between macOS releases.
+11. This is not protection against a Seatbelt or kernel escape.
 
 ## Recommendation
 

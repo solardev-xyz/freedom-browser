@@ -60,6 +60,20 @@ function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+async function waitForFile(filePath, timeoutMs = 2_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const stats = await fs.promises.stat(filePath);
+      if (stats.size > 0) return stats;
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+    await delay(20);
+  }
+  throw new Error(`Timed out waiting for ${path.basename(filePath)}`);
+}
+
 const requiredDescribe =
   process.platform === 'darwin' && process.env.FREEDOM_REQUIRE_SEATBELT === '1'
     ? describe
@@ -119,7 +133,6 @@ requiredDescribe('macOS Seatbelt execution boundary', () => {
         ].join(' && '),
       ],
     });
-
     expect(receipt).toMatchObject({
       state: 'completed',
       exitCode: 0,
@@ -244,20 +257,56 @@ requiredDescribe('macOS Seatbelt execution boundary', () => {
     expect(result.lookup).not.toBe('unexpected');
   });
 
-  test('cancels ordinary descendants in the original process group', async () => {
-    const heartbeat = path.join(fixture.workspaceRoot, 'heartbeat');
+  test('final-kills same-group background descendants after normal root exit', async () => {
+    const heartbeat = path.join(fixture.workspaceRoot, 'normal-exit-heartbeat');
+    const receipt = await executor.execute(await policy(), {
+      command: '/bin/sh',
+      args: [
+        '-c',
+        [
+          '(trap \'\' TERM; count=0; while [ "$count" -lt 100 ]; do printf x >> normal-exit-heartbeat; count=$((count + 1)); sleep 0.03; done) </dev/null >/dev/null 2>&1 &',
+          'printf \'%s\' "$!" > normal-exit.pid',
+          'while [ ! -s normal-exit-heartbeat ]; do sleep 0.02; done',
+        ].join('\n'),
+      ],
+    });
+
+    expect(receipt).toMatchObject({
+      state: 'completed',
+      terminationGuarantee: 'best_effort',
+      diagnostics: { processGroupFinalKillAttempted: true },
+    });
+    await waitForFile(path.join(fixture.workspaceRoot, 'normal-exit.pid'));
+    const size = (await waitForFile(heartbeat)).size;
+    await delay(300);
+    expect((await fs.promises.stat(heartbeat)).size).toBe(size);
+  });
+
+  test('final-kills SIGTERM-resistant same-group descendants during cancellation', async () => {
+    const heartbeat = path.join(fixture.workspaceRoot, 'cancellation-heartbeat');
     const controller = new AbortController();
     const execution = executor.execute(await policy(), {
       command: '/bin/sh',
-      args: ['-c', '(while true; do printf x >> heartbeat; sleep 0.03; done) & wait'],
+      args: [
+        '-c',
+        [
+          '(trap \'\' TERM; count=0; while [ "$count" -lt 100 ]; do printf x >> cancellation-heartbeat; count=$((count + 1)); sleep 0.03; done) </dev/null >/dev/null 2>&1 &',
+          'printf \'%s\' "$!" > cancellation.pid',
+          'wait',
+        ].join('\n'),
+      ],
       signal: controller.signal,
     });
-    await delay(200);
+    await Promise.all([
+      waitForFile(heartbeat),
+      waitForFile(path.join(fixture.workspaceRoot, 'cancellation.pid')),
+    ]);
     controller.abort();
     const receipt = await execution;
     expect(receipt).toMatchObject({
       state: 'cancelled',
       terminationGuarantee: 'best_effort',
+      diagnostics: { processGroupFinalKillAttempted: true },
     });
     const size = (await fs.promises.stat(heartbeat)).size;
     await delay(300);

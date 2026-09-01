@@ -2,6 +2,7 @@
 
 'use strict';
 
+const fs = require('fs');
 const path = require('path');
 const {
   createWorkspaceExecutionPolicy,
@@ -14,6 +15,11 @@ async function main() {
   if (process.platform !== 'darwin' || process.env.FREEDOM_REQUIRE_SEATBELT !== '1') {
     throw new Error('macOS qualification requires darwin and FREEDOM_REQUIRE_SEATBELT=1');
   }
+  const nodeExecutable = fs.realpathSync(process.execPath);
+  if (path.basename(nodeExecutable) !== 'node') {
+    throw new Error('macOS qualification must run from a standalone trusted Node runtime');
+  }
+  const nodeRuntimeRoot = path.dirname(path.dirname(nodeExecutable));
   const executor = new SeatbeltExecutor();
   const capabilities = await executor.detectCapabilities({ force: true });
   process.stdout.write(`${JSON.stringify({ type: 'capabilities', ...capabilities })}\n`);
@@ -22,6 +28,7 @@ async function main() {
   }
   const policy = await createWorkspaceExecutionPolicy({
     workspaceRoot,
+    nodeRuntimeRoot,
     protectedWorkspacePaths: ['.git', 'node_modules'],
     limits: {
       timeoutMs: 5 * 60 * 1_000,
@@ -29,6 +36,14 @@ async function main() {
       stderrBytes: 1024 * 1024,
     },
   });
+  process.stdout.write(
+    `${JSON.stringify({
+      type: 'qualification-context',
+      hostProcess: 'standalone_node',
+      nodeRuntimeRoot,
+      packagedElectronQualified: false,
+    })}\n`
+  );
   const workloads = [
     {
       name: 'focused-jest',
