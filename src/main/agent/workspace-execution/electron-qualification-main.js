@@ -10,10 +10,12 @@ const { app } = require('electron');
 const { version: freedomVersion } = require('../../../../package.json');
 const { detectElectronJavaScriptRuntime } = require('./electron-runtime');
 const { createWorkspaceExecutionPolicy, insidePath } = require('./execution-policy');
+const { configurePackagedQualificationUserData } = require('./qualification-user-data');
 const { createWorkspaceExecutor } = require('./workspace-executor');
 
 const QUALIFICATION_PREFIX = 'freedom-electron-sandbox-qualification-';
 const DESTRUCTIVE_PREFIX = 'freedom-electron-sandbox-destructive-';
+const packagedUserDataRoot = configurePackagedQualificationUserData(app);
 
 function emit(type, value = {}) {
   process.stdout.write(`${JSON.stringify({ type, ...value })}\n`);
@@ -270,13 +272,16 @@ async function qualifyBoundary(executor, policy, runtime, fixture) {
   const socketPath = path.join(ipcRoot, 'host.sock');
   const socketServer = net.createServer((socket) => socket.end('host-ipc'));
   const outsideWrite = path.join(fixture.outsideRoot, 'written.txt');
+  const forbiddenNode =
+    process.env.FREEDOM_QUALIFICATION_FORBIDDEN_NODE || process.env.npm_node_execpath;
+  assertCondition(forbiddenNode, 'Qualification did not identify a forbidden host Node runtime');
   const script = [
     "const dns = require('dns');",
     "const fs = require('fs');",
     "const net = require('net');",
     "const { spawnSync } = require('child_process');",
-    'const [outside, outsideWrite, socketPath, port] = process.argv.slice(1);',
-    'const result = { environment: {} };',
+    'const [outside, outsideWrite, socketPath, port, forbiddenNode] = process.argv.slice(1);',
+    'const result = { environment: {}, path: process.env.PATH };',
     "for (const [name, target] of [['directRead', outside], ['symlinkRead', 'escape-link']]) {",
     "  try { fs.readFileSync(target); result[name] = 'unexpected'; } catch (error) { result[name] = error.code; }",
     '}',
@@ -284,6 +289,8 @@ async function qualifyBoundary(executor, policy, runtime, fixture) {
     "try { fs.linkSync(outside, 'dynamic-hardlink'); result.hardlink = 'unexpected'; } catch (error) { result.hardlink = error.code; }",
     "const subprocess = spawnSync('/bin/sh', ['-c', 'cat \"$1\" >/dev/null', 'sh', outside]);",
     "result.subprocessRead = subprocess.status === 0 ? 'unexpected' : (subprocess.error?.code || subprocess.status);",
+    "const fallbackNode = spawnSync(forbiddenNode, ['-e', 'process.stdout.write(\"unexpected\")']);",
+    "result.fallbackNode = fallbackNode.status === 0 ? 'unexpected' : (fallbackNode.error?.code || fallbackNode.signal || 'not-started');",
     "for (const name of ['HOME', 'TMPDIR', 'XDG_CACHE_HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME']) {",
     '  result.environment[name] = process.env[name];',
     "  fs.writeFileSync(require('path').join(process.env[name], 'qualification-private'), name);",
@@ -315,6 +322,7 @@ async function qualifyBoundary(executor, policy, runtime, fixture) {
         outsideWrite,
         socketPath,
         String(tcpServer.address().port),
+        forbiddenNode,
       ],
     });
   } finally {
@@ -330,6 +338,7 @@ async function qualifyBoundary(executor, policy, runtime, fixture) {
     'outsideWrite',
     'hardlink',
     'subprocessRead',
+    'fallbackNode',
     'localhost',
     'external',
     'unixSocket',
@@ -337,6 +346,10 @@ async function qualifyBoundary(executor, policy, runtime, fixture) {
   ]) {
     assertCondition(result[field] !== 'unexpected', `${field} escaped the Seatbelt boundary`);
   }
+  assertCondition(
+    result.path === '/usr/bin:/bin',
+    `Electron qualification received an unexpected toolchain PATH: ${result.path}`
+  );
   assertCondition(
     (await fs.promises.readFile(fixture.outsideCanary, 'utf8')) === 'outside-canary\n',
     'Outside canary changed'
@@ -594,6 +607,25 @@ async function runQualification() {
   });
   emit('electron-runtime', runtime);
   if (!runtime.available) throw new Error(runtime.denial.code);
+  const entryPath = await fs.promises.realpath(__filename);
+  if (app.isPackaged) {
+    assertCondition(
+      entryPath.includes(`${path.sep}app.asar${path.sep}`),
+      'Packaged entry did not load from app.asar'
+    );
+    assertCondition(
+      runtime.applicationBundleRoot ===
+        (await fs.promises.realpath(path.dirname(path.dirname(path.dirname(process.execPath))))),
+      'Runtime detector did not select the packaged Freedom application'
+    );
+  }
+  emit('qualification-context', {
+    packaged: app.isPackaged,
+    entryPath,
+    processExecPath: process.execPath,
+    applicationBundleRoot: runtime.applicationBundleRoot,
+    userDataRoot: packagedUserDataRoot,
+  });
 
   const executor = createWorkspaceExecutor({ platform: process.platform });
   const capabilities = await executor.detectCapabilities({ force: true });
@@ -609,6 +641,12 @@ async function runQualification() {
   const fixture = await createWebsiteFixture();
   try {
     const policy = await createPolicy(fixture, runtime);
+    assertCondition(
+      policy.filesystem.runtimeRoots.length === 1 &&
+        policy.filesystem.runtimeRoots[0].id === 'electron' &&
+        policy.filesystem.runtimeRoots[0].sourcePath === runtime.applicationBundleRoot,
+      'Electron qualification exposed a fallback JavaScript runtime'
+    );
     await qualifyWebsiteWorkload(executor, policy, runtime, fixture);
     await qualifyBoundary(executor, policy, runtime, fixture);
     await qualifyLifecycle(executor, runtime, fixture);

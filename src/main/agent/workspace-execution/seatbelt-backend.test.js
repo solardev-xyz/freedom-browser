@@ -65,6 +65,9 @@ describe('macOS Seatbelt backend contract', () => {
     expect(profile).toContain(`(allow file-write* (subpath "${privateDirectory}"))`);
     expect(profile).not.toContain(os.homedir());
     expect(profile).not.toContain('/Applications');
+    if (fs.existsSync('/usr/local')) {
+      expect(profile).toContain('(deny file-read* (subpath "/usr/local"))');
+    }
     expect(hostWorkingDirectory(policy, workspace)).toBe(path.join(workspace.sourcePath, 'nested'));
   });
 

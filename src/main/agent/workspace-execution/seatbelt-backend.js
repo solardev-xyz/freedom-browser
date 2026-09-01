@@ -8,6 +8,7 @@ const path = require('path');
 const {
   EXECUTION_STATES,
   ExecutionPolicyError,
+  insidePath,
   isValidatedWorkspaceExecutionPolicy,
   validateExecutionRequest,
 } = require('./execution-policy');
@@ -210,6 +211,12 @@ function buildSeatbeltProfile(policy, privateDirectory) {
       const filter = fs.statSync(systemPath).isDirectory() ? 'subpath' : 'literal';
       lines.push(pathRule('allow', 'file-read*', filter, systemPath));
     }
+  }
+  if (
+    fs.existsSync('/usr/local') &&
+    !policy.filesystem.runtimeRoots.some((root) => insidePath('/usr/local', root.sourcePath))
+  ) {
+    lines.push(pathRule('deny', 'file-read*', 'subpath', '/usr/local'));
   }
   for (const runtimeRoot of policy.filesystem.runtimeRoots) {
     lines.push(pathRule('allow', 'file-read*', 'subpath', runtimeRoot.sourcePath));
@@ -505,7 +512,7 @@ class SeatbeltExecutor {
       GIT_OPTIONAL_LOCKS: '0',
       HOME: path.join(privateDirectory, 'home'),
       LOGNAME: 'sandbox',
-      PATH: [...runtimePath, '/usr/local/bin', '/usr/bin', '/bin'].join(':'),
+      PATH: [...runtimePath, '/usr/bin', '/bin'].join(':'),
       SHELL: '/bin/sh',
       TMP: path.join(privateDirectory, 'tmp'),
       TMPDIR: path.join(privateDirectory, 'tmp'),

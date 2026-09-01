@@ -1,9 +1,10 @@
 # Freedom Agent macOS Seatbelt workspace sandbox spike
 
 Date: 2026-09-01
-Status: isolated runnable feasibility and Electron-main qualification spike on `experiment/agent-workspace-sandbox-electron-macos`
+Status: isolated runnable, Electron-main and unsigned packaged-Electron qualification spike on `experiment/agent-workspace-sandbox-packaged-macos`
 Starting point: `b6582dce214df15904a4b965e57df689294ca683`
 Electron qualification starting point: `576903a553d88920ce3bc0ef3a41d9c50e8bb488`
+Packaged qualification starting point: `bce8c7a16e7d620936f0de2038aec3de460510fb`
 Qualified host: macOS 15.6 build 24G84, Apple Silicon arm64
 
 ## Decision summary
@@ -14,7 +15,7 @@ Ordinary descendants remain in the launch process group. Cancellation and timeou
 
 This is intentionally the same architectural split demonstrated by the commit-pinned open-source Codex implementation: Seatbelt constrains authority, while process-group cleanup is best-effort lifecycle management. This is an inference from source, not a claim that OpenAI formally guarantees detached-descendant behavior.
 
-The spike remains backend-only. It adds no Pi tools, IPC channels, Agent UI, static preview, project creation, approval flow or Swarm publishing.
+The ordinary corpus now also passes from an actual unsigned, unpacked `Freedom.app` with `app.isPackaged === true` and application code loaded from `app.asar`. The spike remains backend-only. It adds no Pi tools, IPC channels, Agent UI, static preview, project creation, approval flow or Swarm publishing.
 
 ## Threat model
 
@@ -48,9 +49,10 @@ The generated profile is deny-by-default and allows:
 - read-only `/System`, `/usr`, `/bin`, `/sbin`;
 - exact Apple and Command Line Tools paths that exist on the host;
 - exact system account/network database and certificate files needed by command-line runtimes;
-- the exact active Node runtime root;
-- exact Homebrew runtime dependency subtrees discovered from the active Node binary with `/usr/bin/otool`; and
-- the exact OpenSSL configuration subtree required by that Node runtime.
+- the exact active standalone Node runtime root for the standalone corpus, including only its discovered dynamic dependencies; or
+- the exact active Electron application bundle for Electron-main qualification.
+
+Electron qualification adds no standalone-Node runtime root. Its child `PATH` is exactly `/usr/bin:/bin`; `/usr/local` receives an explicit read denial unless it is itself an authorized runtime root. The packaged corpus also attempts the canonical host Homebrew Node directly and confirms that it cannot start under the profile.
 
 `.git`, configured protected paths and authorized external Git metadata receive explicit deny-write rules that take precedence over the writable workspace. The launcher fixes `GIT_OPTIONAL_LOCKS=0` and does not let the caller override it.
 
@@ -86,17 +88,33 @@ Architecture and kernel release are diagnostics, not allowlist keys. The probe a
 
 ### Qualified toolchain scope
 
-The standalone qualification supplies its canonical Node runtime root explicitly. A second production-equivalent development harness now runs inside the actual Electron main process for Freedom `0.8.1-dev`, Electron `43.0.0`, embedded Node `24.17.0`, Chromium `150.0.7871.46`, with `app.isPackaged === false`.
+The standalone qualification supplies its canonical Node runtime root explicitly. A second development harness runs inside the actual Electron main process for Freedom `0.8.1-dev`, Electron `43.0.0`, embedded Node `24.17.0`, Chromium `150.0.7871.46`, with `app.isPackaged === false`. The same corpus now also runs from the unpacked packaged app with `app.isPackaged === true`:
 
-The Electron harness discovers and probes the active application executable, then uses Electron's `ELECTRON_RUN_AS_NODE=1` helper mode for JavaScript workloads. The only additional runtime authority is the exact active bundle:
+- application: `/Users/flobot/Git/freedom-dev/freedom-browser/out/agent-sandbox-packaged/mac-arm64/Freedom.app`
+- executable: `/Users/flobot/Git/freedom-dev/freedom-browser/out/agent-sandbox-packaged/mac-arm64/Freedom.app/Contents/MacOS/Freedom`
+- entry: `Contents/Resources/app.asar/src/main/agent/workspace-execution/electron-qualification-main.js`
+- packaged versions: Freedom `0.8.1-dev`, Electron `43.0.0`, embedded/helper Node `24.17.0`, Chromium `150.0.7871.46`
+
+The Electron harness discovers and probes the active application executable, then uses Electron's `ELECTRON_RUN_AS_NODE=1` helper mode for JavaScript workloads. The only additional runtime authority is the exact active bundle for the current mode:
 
 - `/Users/flobot/Git/freedom-dev/freedom-browser/node_modules/electron/dist/Electron.app` — read-only, required for the active Electron executable, frameworks and resources.
+- `/Users/flobot/Git/freedom-dev/freedom-browser/out/agent-sandbox-packaged/mac-arm64/Freedom.app` — read-only, required for the packaged executable, frameworks, resources and `app.asar`.
 
-The policy explicitly disables standalone-Node inference for this path. It does not grant `/opt/homebrew`, `/usr/local`, the repository, the user home or arbitrary host toolchains. The executable is invoked by its canonical path rather than added to a broad `PATH`.
+The policy explicitly disables standalone-Node inference. It adds neither Homebrew nor a host Node root, uses only `/usr/bin:/bin` in `PATH`, explicitly denies `/usr/local`, and invokes the exact active Electron executable by canonical path. The packaged corpus directly attempts the launcher's `/opt/homebrew/Cellar/node@22/22.22.0/bin/node`; Seatbelt terminates it with `SIGABRT` rather than allowing a host-runtime fallback. The exact packaged app happens to live below the user's home on this throwaway checkout and is deliberately exposed read-only; no other home subtree is granted.
 
-This is production-equivalent Electron-main evidence, not a signed packaged-Freedom result. A packaged build must rerun the same discovery and qualification because its executable/bundle path changes and an Electron fuse may disable `ELECTRON_RUN_AS_NODE`. That condition fails with `ELECTRON_NODE_RUNTIME_UNAVAILABLE`; there is no broad-host fallback. Python remains layout-specific: `/usr/bin/python3` can delegate into paths under `/Applications/Xcode.app` on some Macs, which this profile does not currently grant.
+Read-only `@electron/fuses` inspection reported fuse wire v1 with `RunAsNode` enabled. The package therefore used its own `Freedom` executable successfully for every JavaScript workload. If that fuse is disabled in a future build, discovery fails with `ELECTRON_NODE_RUNTIME_UNAVAILABLE`; there is no broad-host fallback. Python remains layout-specific: `/usr/bin/python3` can delegate into paths under `/Applications/Xcode.app` on some Macs, which this profile does not currently grant.
 
-The development Electron helper writes a bounded `task_name_for_pid: (os/kern) failure (5)` code-signature diagnostic to stderr under Seatbelt. Its JavaScript workloads still complete and validate. The profile was not widened to grant task inspection; a signed packaged run must determine whether this diagnostic or behavior changes.
+Both the development and unsigned packaged Electron helpers write the same bounded `task_name_for_pid: (os/kern) failure (5)` code-signature diagnostic to stderr under Seatbelt. Their JavaScript workloads still complete and validate. The profile was not widened to grant task inspection.
+
+The qualification-only Builder config inherits the real macOS packaging settings, overrides `main` to the harness, selects only the unpacked `dir` target, and sets `identity: null` plus `notarize: false`. The throwaway checkout does not contain the optional Ant, native IPFS, Myotis, Radicle or Arti payloads, so only those unrelated `extraResources` are omitted in the isolated config. The normal release configuration is unchanged. Electron Builder reported `skipped macOS code signing`; `codesign` identifies only the Electron binary's linker/ad-hoc signature, no Team ID, and strict deep verification fails as expected. No DMG, ZIP, signing identity, notarization or publication was used.
+
+Exact commands:
+
+- build: `npm run build:agent-sandbox:macos:packaged` (expands to `CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --dir --config config/electron-builder.agent-sandbox-macos.js`)
+- qualification: `npm run test:agent-sandbox:macos:packaged`
+- fuse inspection: `node_modules/.bin/electron-fuses read --app /Users/flobot/Git/freedom-dev/freedom-browser/out/agent-sandbox-packaged/mac-arm64/Freedom.app`
+
+The packaged launcher creates a fresh, canonical, mode-0700 direct child of the system temporary directory, requires it to be empty, sets it as Electron `userData` before `app.whenReady()`, and removes it after exit. It never resolves or opens an existing Freedom profile.
 
 ### Backend-neutral executor contract
 
@@ -119,6 +137,8 @@ Ordinary qualification additionally verifies:
 - completed and failed exit states, bounded stdout/stderr, timeout and cancellation receipts;
 - final same-group cleanup after normal root exit; and
 - bounded `SIGTERM` to `SIGKILL` escalation when the root and child ignore `SIGTERM`.
+
+Packaged qualification additionally asserts `app.isPackaged`, `app.asar` entry loading, exact `Freedom.app` runtime selection, exact packaged-executable helper use, the single Electron runtime root, `/usr/bin:/bin` child `PATH`, forbidden host-Node denial and packaged user-data cleanup.
 
 The separate Electron destructive command remains doubly gated. It records a token-bearing `setsid()` PID, demonstrates that the child survives group cancellation while file/network restrictions persist, and performs bounded token-checked cleanup in `finally`.
 
@@ -150,11 +170,16 @@ Recorded results on the qualified host:
 - Doubly gated `npm run test:agent-sandbox:macos:destructive`: 1 test passed and cleaned the recorded detached PID.
 - `npm run test:agent-sandbox:macos:qualification`: capability probe, focused Jest, full lint, Babel and shell/Python/Git workloads all completed inside Seatbelt.
 - `npm run test:agent-sandbox:macos:electron`: production-equivalent Electron-main website, boundary and lifecycle qualification passed.
+- `npm run build:agent-sandbox:macos:packaged`: produced the unsigned unpacked arm64 `Freedom.app`; signing and notarization were explicitly skipped.
+- `npm run test:agent-sandbox:macos:packaged`: packaged website, boundary and lifecycle corpus passed with `app.isPackaged === true`; cancellation escalated in 1,005 ms and the fresh Electron user-data directory was removed.
+- Read-only `electron-fuses read`: fuse v1, `RunAsNode` enabled. The installed inspector prints one additional Electron 43 fuse as `undefined`; this does not affect the identified `RunAsNode` state.
 - Doubly gated `npm run test:agent-sandbox:macos:electron:destructive`: detached `setsid()` child survived cancellation, remained confined, and was explicitly cleaned.
-- Electron runtime/policy/backend-neutral focused contract: 4 suites and 24 tests passed.
+- Electron runtime/policy/backend-neutral and Seatbelt focused contract: 6 suites and 33 tests passed.
 - Shared execution-policy suite: 11 tests passed.
 - Host `npm run lint`: passed.
-- Full `npm test` outside the outer Codex sandbox: 212 suites and 3,825 tests passed; one Linux-only Bubblewrap unit suite had two pre-existing macOS expectation failures because it expects missing/setuid-binary denial codes before the backend's `UNSUPPORTED_PLATFORM` check. Eight suites and 26 tests skipped normally. The Linux execution behavior was not changed; only backend-neutral receipt metadata was added.
+- Full `npm test` outside the outer Codex sandbox: 213 suites and 3,827 tests passed; one Linux-only Bubblewrap unit suite had two pre-existing macOS expectation failures because it expects missing/setuid-binary denial codes before the backend's `UNSUPPORTED_PLATFORM` check. Eight suites and 26 tests skipped normally. The Linux execution behavior was not changed.
+
+Launching the packaged GUI binary from inside Codex's outer host sandbox aborted in AppKit `_RegisterApplication` before JavaScript startup. The same command passed in the normal host context, as did the development Electron comparison. This was a qualification-runner environment restriction, not a Freedom Seatbelt receipt or a packaged policy failure.
 
 The destructive/VM-only corpus requires both `FREEDOM_SANDBOX_DESTRUCTIVE=1` and `FREEDOM_REQUIRE_SEATBELT=1`. It validates a fresh canonical direct child of the system temporary directory with the fixed `freedom-seatbelt-destructive-` prefix. The test:
 
@@ -172,9 +197,11 @@ The destructive/VM-only corpus requires both `FREEDOM_SANDBOX_DESTRUCTIVE=1` and
 | Capability | Result | Notes |
 | --- | ---: | --- |
 | Seatbelt profile application readiness | yes | Representative launch probe plus per-launch marker; application failure is sandbox-denied. |
-| Electron main-process invocation | yes | Freedom 0.8.1-dev under Electron 43.0.0 development bundle. |
+| Electron main-process invocation | yes | Freedom 0.8.1-dev under Electron 43.0.0 development and packaged bundles. |
 | Electron JavaScript helper | yes, constrained | Active canonical executable in `ELECTRON_RUN_AS_NODE` mode; exact `.app` bundle read-only. |
-| Packaged signed Freedom | **not yet** | Must rerun; disabled run-as-node fuse fails closed without host fallback. |
+| Arbitrary host JavaScript runtime fallback | denied | No standalone-Node root, `/usr/bin:/bin` only, `/usr/local` denied; canonical Homebrew Node launch rejected. |
+| Unsigned unpacked packaged Freedom | yes | `app.isPackaged`, `app.asar`, packaged executable and fresh user data qualified; `RunAsNode` enabled. |
+| Signed/notarized Freedom | **not yet** | Would add release-integrity, Gatekeeper, hardened-runtime and entitlement evidence, not stronger child Seatbelt or process-tree semantics. |
 | Exact workspace read/write | yes | Canonical host path; no neutral mount path on macOS. |
 | `.git` and authorized metadata read-only | yes | Explicit deny-write precedence; common and worktree config prevalidated. |
 | Outside file contents denied | yes | Shell/Python/generated/symlink corpus passes. |
@@ -209,7 +236,7 @@ The concepts adapted are deny-default Seatbelt confinement, same-sandbox process
 3. There is no aggregate memory, CPU, PID-count or disk containment.
 4. Host-backed private storage can consume host disk; cleanup can fail.
 5. Canonical workspace/runtime/temp paths, pathname metadata and root directory entries are visible.
-6. The production-equivalent Electron development bundle is qualified, but a signed packaged Freedom bundle is not. Packaging can change paths, code-signing behavior and the run-as-node fuse.
+6. The unsigned unpacked package is qualified, but a signed/notarized Freedom bundle is not. Signing can still change launch, entitlement, hardened-runtime and task-inspection behavior even though it does not strengthen this child Seatbelt boundary.
 7. Python resolution is host-layout-specific; system Python may delegate into ungranted Xcode application paths.
 8. Broad read-only Apple system paths remain part of the trusted runtime surface; the qualified workloads require no explicit Mach-service grants.
 9. The capability probe proves profile application readiness, while enforcement confidence depends on the qualified integration corpus for each supported host layout.
@@ -218,6 +245,6 @@ The concepts adapted are deny-default Seatbelt confinement, same-sandbox process
 
 ## Recommendation
 
-**Proceed with constraints.** The filesystem/network boundary, Electron-main runtime path and explicit best-effort lifecycle model are credible enough to begin narrow managed-workspace product integration behind an experimental gate. Keep command authority in trusted main-process code and retain opaque managed workspace identities.
+**Proceed with constraints.** The filesystem/network boundary, packaged Electron runtime path and explicit best-effort lifecycle model are sufficiently qualified to begin narrow managed-workspace product integration behind an experimental gate. Keep command authority in trusted main-process code and retain opaque managed workspace identities.
 
-Do not expose general shell execution to Pi or user-facing Agent surfaces until the same corpus passes from a signed packaged Freedom build and product/security decisions cover aggregate resource containment, detached-process policy, supported macOS/runtime layouts and same-UID workspace lifecycle races. Do not represent process-group cleanup as a security boundary.
+Before wider or release-facing exposure, rerun a smoke/corpus from the real signed/notarized artifact to cover its code-signing, Gatekeeper, hardened-runtime and entitlement behavior. That run would add distribution-integrity evidence but would not provide a stronger filesystem/network boundary or complete descendant teardown. Product/security decisions must still cover aggregate resource containment, detached-process policy, supported macOS/runtime layouts and same-UID workspace lifecycle races. Do not represent process-group cleanup as a security boundary.
