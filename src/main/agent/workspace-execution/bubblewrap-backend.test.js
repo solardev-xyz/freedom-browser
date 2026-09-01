@@ -7,12 +7,19 @@ const os = require('os');
 const path = require('path');
 const {
   BubblewrapExecutor,
+  PRIVATE_TEMP_SIZE_BYTES,
+  SHARED_MEMORY_SIZE_BYTES,
   buildBubblewrapArguments,
+  capabilityProbeArguments,
   collectStream,
   detectBubblewrapCapabilities,
   selectInitialSandboxPid,
 } = require('./bubblewrap-backend');
 const { createWorkspaceExecutionPolicy } = require('./execution-policy');
+
+function expectArgumentSequence(args, sequence) {
+  expect(args.join('\0')).toContain(sequence.join('\0'));
+}
 
 async function createFixture() {
   const fixtureRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'freedom-backend-test-'));
@@ -69,9 +76,68 @@ describe('Bubblewrap backend contract', () => {
     expect(joined).not.toContain(`${os.tmpdir()}\n${os.tmpdir()}`);
     expect(launch.exposedSystemPaths).toContain('/etc/ssl/certs');
     expect(launch.exposedSystemPaths).not.toContain('/etc/ssl');
+    if (fs.existsSync('/etc/alternatives')) {
+      expect(launch.exposedSystemPaths).toContain('/etc/alternatives');
+    }
+    expectArgumentSequence(launch.args, [
+      '--ro-bind',
+      path.join(launch.stagingDirectory, 'empty'),
+      '/usr/local',
+    ]);
+    expectArgumentSequence(launch.args, [
+      '--size',
+      String(SHARED_MEMORY_SIZE_BYTES),
+      '--perms',
+      '1777',
+      '--tmpfs',
+      '/dev/shm',
+      '--remount-ro',
+      '/dev',
+    ]);
+    expectArgumentSequence(launch.args, [
+      '--size',
+      String(PRIVATE_TEMP_SIZE_BYTES),
+      '--perms',
+      '1777',
+      '--tmpfs',
+      '/tmp',
+    ]);
+    expectArgumentSequence(launch.args, ['--remount-ro', '/proc', '--remount-ro', '/']);
+    const pathIndex = launch.args.findIndex(
+      (value, index) => value === '--setenv' && launch.args[index + 1] === 'PATH'
+    );
+    expect(launch.args[pathIndex + 2]).toMatch(/(?:^|:)\/usr\/bin:\/bin$/);
+    expect(launch.args[pathIndex + 2]).not.toContain('/usr/local');
+    expect(joined).toContain('XDG_DATA_HOME\n/tmp/data');
     expect(launch.args.slice(-3)).toEqual(['/bin/sh', '-c', 'printf ok']);
     expect(joined).toContain('freedom-sandbox-supervisor');
     expect(joined).toContain('printf "%s\\n" "$1"; shift; exec 3>&-; exec "$@"');
+  });
+
+  test('probes every Bubblewrap primitive used for bounded writable mounts', () => {
+    const args = capabilityProbeArguments();
+    expectArgumentSequence(args, [
+      '--size',
+      String(SHARED_MEMORY_SIZE_BYTES),
+      '--perms',
+      '1777',
+      '--tmpfs',
+      '/dev/shm',
+      '--remount-ro',
+      '/dev',
+    ]);
+    expectArgumentSequence(args, [
+      '--size',
+      String(PRIVATE_TEMP_SIZE_BYTES),
+      '--perms',
+      '1777',
+      '--tmpfs',
+      '/tmp',
+      '--remount-ro',
+      '/proc',
+      '--remount-ro',
+      '/',
+    ]);
   });
 
   test('refuses unsupported network, seccomp, and required aggregate-limit policies', async () => {
