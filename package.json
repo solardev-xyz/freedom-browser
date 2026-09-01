@@ -33,7 +33,7 @@
     "test:e2e:onboarding": "playwright test --project=live test-e2e/live/onboarding-identity.spec.js",
     "test:e2e:tor": "FREEDOM_LIVE_E2E_DISABLE_DEFAULT_NODES=1 playwright test --project=live test-e2e/live/tor-onion.spec.js",
     "test:agent-sandbox": "FREEDOM_REQUIRE_BWRAP=1 jest --runInBand src/main/agent/workspace-execution",
-    "test:agent-sandbox:qualification": "node scripts/qualify-agent-sandbox.js",
+    "test:agent-sandbox:qualification": "FREEDOM_REQUIRE_BWRAP=1 node scripts/qualify-agent-sandbox.js",
     "test:agent-sandbox:destructive": "test \"$FREEDOM_SANDBOX_DESTRUCTIVE\" = 1 && FREEDOM_REQUIRE_BWRAP=1 jest --runInBand src/main/agent/workspace-execution/bubblewrap-destructive.test.js",
     "test:agent-sandbox:macos": "FREEDOM_REQUIRE_SEATBELT=1 jest --runInBand src/main/agent/workspace-execution/seatbelt-backend.test.js src/main/agent/workspace-execution/seatbelt-integration.test.js",
     "test:agent-sandbox:macos:qualification": "FREEDOM_REQUIRE_SEATBELT=1 node scripts/qualify-agent-sandbox-macos.js",

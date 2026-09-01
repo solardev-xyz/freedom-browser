@@ -14,8 +14,13 @@ async function main() {
   const executor = new BubblewrapExecutor();
   const capabilities = await executor.detectCapabilities({ force: true });
   process.stdout.write(`${JSON.stringify({ type: 'capabilities', ...capabilities })}\n`);
-  if (!capabilities.available) process.exitCode = 1;
-  if (!capabilities.available) return;
+  if (!capabilities.available) {
+    process.stderr.write(
+      `Required Bubblewrap qualification is unavailable: ${capabilities.denial.code}\n`
+    );
+    process.exitCode = 1;
+    return;
+  }
 
   const policy = await createWorkspaceExecutionPolicy({
     workspaceRoot,

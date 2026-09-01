@@ -14,10 +14,12 @@ const {
 } = require('./execution-policy');
 
 const DEFAULT_BUBBLEWRAP_PATH = '/usr/bin/bwrap';
-const TERMINATION_GRACE_MS = 1_000;
 const CAPABILITY_PROBE_TIMEOUT_MS = 5_000;
+const PRIVATE_TEMP_SIZE_BYTES = 256 * 1024 * 1024;
+const SHARED_MEMORY_SIZE_BYTES = 64 * 1024 * 1024;
 const SYSTEM_RUNTIME_PATHS = Object.freeze(['/usr', '/bin', '/sbin', '/lib', '/lib64']);
 const SYSTEM_CONFIGURATION_PATHS = Object.freeze([
+  '/etc/alternatives',
   '/etc/ca-certificates',
   '/etc/ld.so.cache',
   '/etc/ld.so.conf',
@@ -144,8 +146,24 @@ function capabilityProbeArguments() {
     '/proc',
     '--dev',
     '/dev',
+    '--size',
+    String(SHARED_MEMORY_SIZE_BYTES),
+    '--perms',
+    '1777',
+    '--tmpfs',
+    '/dev/shm',
+    '--remount-ro',
+    '/dev',
+    '--size',
+    String(PRIVATE_TEMP_SIZE_BYTES),
+    '--perms',
+    '1777',
     '--tmpfs',
     '/tmp',
+    '--remount-ro',
+    '/proc',
+    '--remount-ro',
+    '/',
     '--clearenv',
     '--setenv',
     'PATH',
@@ -264,6 +282,7 @@ async function detectBubblewrapCapabilities(options = {}) {
 async function createLauncherStagingDirectory() {
   const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'freedom-bwrap-'));
   await fs.promises.chmod(directory, 0o700);
+  await fs.promises.mkdir(path.join(directory, 'empty'), { mode: 0o755 });
   const uid = typeof process.getuid === 'function' ? process.getuid() : 65_534;
   const gid = typeof process.getgid === 'function' ? process.getgid() : 65_534;
   await Promise.all([
@@ -386,12 +405,13 @@ async function buildBubblewrapArguments(policy, request) {
         if (!fs.existsSync(sourcePath)) continue;
         addReadOnlyMount(args, sourcePath, sourcePath);
       }
+      addReadOnlyMount(args, path.join(stagingDirectory, 'empty'), '/usr/local');
       args.push('--dir', '/etc');
       for (const sourcePath of SYSTEM_CONFIGURATION_PATHS) {
         if (!fs.existsSync(sourcePath)) continue;
         addReadOnlyMount(args, sourcePath, sourcePath);
       }
-      pathEntries.push('/usr/local/bin', '/usr/bin', '/bin');
+      pathEntries.push('/usr/bin', '/bin');
     }
     for (const name of ['passwd', 'group', 'nsswitch.conf', 'hosts']) {
       addReadOnlyMount(args, path.join(stagingDirectory, name), `/etc/${name}`);
@@ -401,6 +421,18 @@ async function buildBubblewrapArguments(policy, request) {
       '/proc',
       '--dev',
       '/dev',
+      '--size',
+      String(SHARED_MEMORY_SIZE_BYTES),
+      '--perms',
+      '1777',
+      '--tmpfs',
+      '/dev/shm',
+      '--remount-ro',
+      '/dev',
+      '--size',
+      String(PRIVATE_TEMP_SIZE_BYTES),
+      '--perms',
+      '1777',
       '--tmpfs',
       '/tmp',
       '--dir',
@@ -408,7 +440,9 @@ async function buildBubblewrapArguments(policy, request) {
       '--dir',
       '/tmp/cache',
       '--dir',
-      '/tmp/config'
+      '/tmp/config',
+      '--dir',
+      '/tmp/data'
     );
     const workspace = policy.filesystem.writableRoots.find((root) => root.id === 'workspace');
     if (!workspace) {
@@ -416,6 +450,7 @@ async function buildBubblewrapArguments(policy, request) {
     }
     args.push('--bind', workspace.sourcePath, workspace.mountPath);
     await addProtectedMounts(args, policy, stagingDirectory);
+    args.push('--remount-ro', '/proc', '--remount-ro', '/');
 
     const fixedEnvironment = {
       HOME: '/tmp/home',
@@ -428,6 +463,7 @@ async function buildBubblewrapArguments(policy, request) {
       USER: 'sandbox',
       XDG_CACHE_HOME: '/tmp/cache',
       XDG_CONFIG_HOME: '/tmp/config',
+      XDG_DATA_HOME: '/tmp/data',
     };
     for (const [name, value] of Object.entries({
       ...policy.environment.values,
@@ -651,7 +687,6 @@ class BubblewrapExecutor {
       let sandboxPid = null;
       let requestedState = null;
       let spawnError = null;
-      let terminationTimer = null;
       let wallTimer = null;
       let abortListener = null;
 
@@ -680,8 +715,9 @@ class BubblewrapExecutor {
       const terminate = (state) => {
         if (requestedState) return;
         requestedState = state;
-        sendSignal('SIGTERM');
-        terminationTimer = this.setTimeout(() => sendSignal('SIGKILL'), TERMINATION_GRACE_MS);
+        // Killing Bubblewrap's namespace init tears down every descendant immediately. A TERM
+        // sent to that init is not a graceful TERM delivery contract for the sandboxed command.
+        sendSignal('SIGKILL');
       };
 
       wallTimer = this.setTimeout(
@@ -695,7 +731,6 @@ class BubblewrapExecutor {
       });
       child.once('close', async (exitCode, signal) => {
         if (wallTimer) this.clearTimeout(wallTimer);
-        if (terminationTimer) this.clearTimeout(terminationTimer);
         launch.request.signal?.removeEventListener('abort', abortListener);
         await Promise.allSettled([stdout.done, stderr.done, statusDone]);
         const cleanupDiagnostics = await this.cleanupStagingDirectory(launch.stagingDirectory);
@@ -735,7 +770,7 @@ class BubblewrapExecutor {
             state === EXECUTION_STATES.COMPLETED || state === EXECUTION_STATES.FAILED
               ? exitCode
               : null,
-          signal: signal || (requestedState ? 'SIGTERM' : null),
+          signal: requestedState ? 'SIGKILL' : signal,
           stdout: output.text,
           stderr: errorOutput.text,
           stdoutTruncated: output.truncated,
@@ -764,9 +799,10 @@ module.exports = {
   BubblewrapExecutor,
   CAPABILITY_PROBE_TIMEOUT_MS,
   DEFAULT_BUBBLEWRAP_PATH,
+  PRIVATE_TEMP_SIZE_BYTES,
+  SHARED_MEMORY_SIZE_BYTES,
   SYSTEM_CONFIGURATION_PATHS,
   SYSTEM_RUNTIME_PATHS,
-  TERMINATION_GRACE_MS,
   buildBubblewrapArguments,
   capabilityProbeArguments,
   collectStream,

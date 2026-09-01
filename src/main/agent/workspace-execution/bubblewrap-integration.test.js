@@ -5,7 +5,13 @@ const fs = require('fs');
 const net = require('net');
 const os = require('os');
 const path = require('path');
-const { BubblewrapExecutor } = require('./bubblewrap-backend');
+const {
+  BubblewrapExecutor,
+  DEFAULT_BUBBLEWRAP_PATH,
+  PRIVATE_TEMP_SIZE_BYTES,
+  SHARED_MEMORY_SIZE_BYTES,
+  capabilityProbeArguments,
+} = require('./bubblewrap-backend');
 const { createWorkspaceExecutionPolicy } = require('./execution-policy');
 
 jest.setTimeout(30_000);
@@ -41,14 +47,48 @@ function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-describe('Bubblewrap execution boundary', () => {
+async function waitForFile(file, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      await fs.promises.access(file);
+      return;
+    } catch {
+      await delay(20);
+    }
+  }
+  throw new Error(`Timed out waiting for sandbox fixture ${path.basename(file)}`);
+}
+
+function preflightBubblewrap() {
+  if (process.platform !== 'linux') {
+    return { available: false, reason: `unsupported platform ${process.platform}` };
+  }
+  const result = spawnSync(DEFAULT_BUBBLEWRAP_PATH, capabilityProbeArguments(), {
+    encoding: 'utf8',
+    env: { PATH: '/usr/bin:/bin' },
+    timeout: 5_000,
+  });
+  if (result.status === 0) return { available: true, reason: null };
+  const reason = result.error?.code || result.stderr?.trim() || `exit ${String(result.status)}`;
+  return { available: false, reason };
+}
+
+const bubblewrapPreflight = preflightBubblewrap();
+const bubblewrapRequired = process.env.FREEDOM_REQUIRE_BWRAP === '1';
+const describeBubblewrap = bubblewrapPreflight.available || bubblewrapRequired ? describe : describe.skip;
+const bubblewrapDescription = bubblewrapPreflight.available
+  ? 'Bubblewrap execution boundary'
+  : `Bubblewrap execution boundary (skipped: ${bubblewrapPreflight.reason})`;
+
+describeBubblewrap(bubblewrapDescription, () => {
   const executor = new BubblewrapExecutor();
   let capabilities;
   let fixture;
 
   beforeAll(async () => {
     capabilities = await executor.detectCapabilities({ force: true });
-    if (!capabilities.available && process.env.FREEDOM_REQUIRE_BWRAP === '1') {
+    if (!capabilities.available) {
       throw new Error(
         `Bubblewrap qualification is required but unavailable: ${capabilities.denial.code}`
       );
@@ -66,10 +106,6 @@ describe('Bubblewrap execution boundary', () => {
     }
   });
 
-  function available() {
-    return capabilities.available;
-  }
-
   async function policy(options = {}) {
     return createWorkspaceExecutionPolicy({
       workspaceRoot: fixture.workspaceRoot,
@@ -79,7 +115,6 @@ describe('Bubblewrap execution boundary', () => {
   }
 
   test('runs useful shell, Node, Python, Git, and descendant workloads in the workspace', async () => {
-    if (!available()) return;
     const receipt = await executor.execute(await policy(), {
       command: '/bin/sh',
       args: [
@@ -91,6 +126,7 @@ describe('Bubblewrap execution boundary', () => {
           './generated.sh',
           "node -e \"require('fs').writeFileSync('node.txt', 'node')\"",
           "python3 -c \"from pathlib import Path; Path('python.txt').write_text('python')\"",
+          "awk 'BEGIN { print \"awk-ok\" }'",
           'git status --short',
           "printf 'positive-ok'",
         ].join(' && '),
@@ -105,6 +141,7 @@ describe('Bubblewrap execution boundary', () => {
       capabilities: { backend: 'linux-bubblewrap' },
     });
     expect(receipt.stdout).toContain('positive-ok');
+    expect(receipt.stdout).toContain('awk-ok');
     await expect(
       fs.promises.readFile(path.join(fixture.workspaceRoot, 'generated.txt'), 'utf8')
     ).resolves.toBe('generated');
@@ -120,7 +157,6 @@ describe('Bubblewrap execution boundary', () => {
   });
 
   test('denies direct, encoded, generated-script, and symlink reads and writes outside the workspace', async () => {
-    if (!available()) return;
     const outsideCanary = path.join(fixture.outsideRoot, 'canary.txt');
     const outsideWrite = path.join(fixture.outsideRoot, 'written.txt');
     await fs.promises.symlink(outsideCanary, path.join(fixture.workspaceRoot, 'escape-link'));
@@ -135,6 +171,8 @@ describe('Bubblewrap execution boundary', () => {
       '}',
       "try { fs.writeFileSync(outsideWrite, 'escaped'); results.write = 'unexpected'; }",
       'catch (error) { results.write = error.code; }',
+      "try { fs.linkSync(outside, '/workspace/dynamic-hardlink'); results.hardlink = 'unexpected'; }",
+      'catch (error) { results.hardlink = error.code; }',
       "fs.writeFileSync('/workspace/generated-reader.js', `require('fs').readFileSync(${JSON.stringify(outside)})`);",
       "try { require('/workspace/generated-reader.js'); results.generated = 'unexpected'; }",
       'catch (error) { results.generated = error.code; }',
@@ -155,6 +193,7 @@ describe('Bubblewrap execution boundary', () => {
       direct: 'ENOENT',
       symlink: 'ENOENT',
       write: 'ENOENT',
+      hardlink: 'ENOENT',
       generated: 'ENOENT',
     });
     await expect(fs.promises.readFile(outsideCanary, 'utf8')).resolves.toBe('outside-canary\n');
@@ -162,7 +201,6 @@ describe('Bubblewrap execution boundary', () => {
   });
 
   test('hides host processes, environment, descriptors, sockets, loopback services, and DNS', async () => {
-    if (!available()) return;
     const tcpServer = net.createServer((socket) => socket.end('host-tcp'));
     await listen(tcpServer, { host: '127.0.0.1', port: 0 });
     const tcpPort = tcpServer.address().port;
@@ -194,6 +232,7 @@ describe('Bubblewrap execution boundary', () => {
       "  try { process.kill(Number(hostPid), 0); result.process = 'unexpected'; } catch (error) { result.process = error.code; }",
       "  try { fs.readFileSync(`/proc/self/fd/${hostFd}`); result.fd = 'unexpected'; } catch (error) { result.fd = error.code; }",
       "  await connect({ host: '127.0.0.1', port: Number(tcpPort), label: 'tcp' });",
+      "  await connect({ host: '1.1.1.1', port: 53, label: 'internet' });",
       "  await connect({ path: socketPath, label: 'unix' });",
       "  await connect({ path: `\\0${abstractName}`, label: 'abstract' });",
       "  result.dns = await new Promise((resolve) => dns.lookup('example.com', (error) => resolve(error ? error.code : 'unexpected')));",
@@ -244,16 +283,16 @@ describe('Bubblewrap execution boundary', () => {
       secret: 'absent',
       process: 'ESRCH',
       fd: 'ENOENT',
+      tcp: 'ECONNREFUSED',
+      internet: 'ENETUNREACH',
+      unix: 'ENOENT',
+      abstract: 'ECONNREFUSED',
+      dns: 'ENOTFOUND',
       internal: 'inside',
     });
-    expect(result.tcp).not.toBe('unexpected');
-    expect(result.unix).not.toBe('unexpected');
-    expect(result.abstract).not.toBe('unexpected');
-    expect(result.dns).not.toBe('unexpected');
   });
 
   test('closes the launcher status descriptor before the command starts', async () => {
-    if (!available()) return;
     const script = [
       'import errno, json, os',
       'result = {}',
@@ -279,7 +318,6 @@ describe('Bubblewrap execution boundary', () => {
   });
 
   test('keeps Git metadata read-only and gives every command a fresh private home and tmp', async () => {
-    if (!available()) return;
     const gitConfig = path.join(fixture.workspaceRoot, '.git', 'config');
     const originalConfig = await fs.promises.readFile(gitConfig, 'utf8');
     const first = await executor.execute(await policy(), {
@@ -312,8 +350,77 @@ describe('Bubblewrap execution boundary', () => {
     expect(second).toMatchObject({ state: 'completed', stdout: 'fresh-private-storage' });
   });
 
+  test('bounds writable tmpfs mounts and keeps the remaining root view read-only', async () => {
+    const script = [
+      'import errno, json, os',
+      'result = {"mounts": {}, "writes": {}, "usrLocal": os.listdir("/usr/local")}',
+      'for target in ["/", "/etc", "/dev", "/proc", "/tmp", "/dev/shm", "/workspace"]:',
+      '    stats = os.statvfs(target)',
+      '    result["mounts"][target] = {',
+      '        "bytes": stats.f_frsize * stats.f_blocks,',
+      '        "readOnly": bool(stats.f_flag & os.ST_RDONLY),',
+      '    }',
+      'for name, target in {',
+      '    "root": "/freedom-write-test",',
+      '    "etc": "/etc/freedom-write-test",',
+      '    "dev": "/dev/freedom-write-test",',
+      '    "usrLocal": "/usr/local/freedom-write-test",',
+      '}.items():',
+      '    try:',
+      '        open(target, "wb").write(b"unexpected")',
+      '        result["writes"][name] = "unexpected"',
+      '    except OSError as error:',
+      '        result["writes"][name] = errno.errorcode.get(error.errno, str(error.errno))',
+      'for target in ["/tmp/bounded", "/dev/shm/bounded", os.environ["HOME"] + "/home-file",',
+      '               os.environ["XDG_CACHE_HOME"] + "/cache-file",',
+      '               os.environ["XDG_CONFIG_HOME"] + "/config-file",',
+      '               os.environ["XDG_DATA_HOME"] + "/data-file", "/workspace/workspace-file"]:',
+      '    open(target, "wb").write(b"x" * 1024 * 1024)',
+      'print(json.dumps(result), end="")',
+    ].join('\n');
+    const receipt = await executor.execute(await policy(), {
+      command: 'python3',
+      args: ['-c', script],
+    });
+
+    expect(receipt).toMatchObject({ state: 'completed', exitCode: 0 });
+    const result = JSON.parse(receipt.stdout);
+    expect(result.mounts['/'].readOnly).toBe(true);
+    expect(result.mounts['/etc'].readOnly).toBe(true);
+    expect(result.mounts['/dev'].readOnly).toBe(true);
+    expect(result.mounts['/proc'].readOnly).toBe(true);
+    expect(result.mounts['/tmp'].readOnly).toBe(false);
+    expect(result.mounts['/dev/shm'].readOnly).toBe(false);
+    expect(result.mounts['/workspace'].readOnly).toBe(false);
+    expect(result.mounts['/tmp'].bytes).toBeGreaterThan(0);
+    expect(result.mounts['/tmp'].bytes).toBeLessThanOrEqual(PRIVATE_TEMP_SIZE_BYTES);
+    expect(result.mounts['/dev/shm'].bytes).toBeGreaterThan(0);
+    expect(result.mounts['/dev/shm'].bytes).toBeLessThanOrEqual(SHARED_MEMORY_SIZE_BYTES);
+    expect(result.writes).toEqual({
+      root: 'EROFS',
+      etc: 'EROFS',
+      dev: 'EROFS',
+      usrLocal: 'EROFS',
+    });
+    expect(result.usrLocal).toEqual([]);
+  });
+
+  test('denies creation of nested user namespaces', async () => {
+    const receipt = await executor.execute(await policy(), {
+      command: '/bin/sh',
+      args: [
+        '-c',
+        'if /usr/bin/unshare --user /usr/bin/true 2>userns-error; then exit 9; else printf userns-denied; fi',
+      ],
+    });
+
+    expect(receipt).toMatchObject({ state: 'completed', exitCode: 0, stdout: 'userns-denied' });
+    await expect(
+      fs.promises.readFile(path.join(fixture.workspaceRoot, 'userns-error'), 'utf8')
+    ).resolves.toBe('unshare: unshare failed: No space left on device\n');
+  });
+
   test('bounds output without killing a successful command and distinguishes ordinary failure', async () => {
-    if (!available()) return;
     const boundedPolicy = await policy({
       limits: { timeoutMs: 10_000, stdoutBytes: 1_024, stderrBytes: 1_024 },
     });
@@ -346,7 +453,6 @@ describe('Bubblewrap execution boundary', () => {
   });
 
   test('times out and cancels the complete descendant process tree', async () => {
-    if (!available()) return;
     const heartbeat = path.join(fixture.workspaceRoot, 'heartbeat');
     const timedPolicy = await policy({
       limits: { timeoutMs: 250, stdoutBytes: 4_096, stderrBytes: 4_096 },
@@ -355,28 +461,52 @@ describe('Bubblewrap execution boundary', () => {
       command: '/bin/sh',
       args: ['-c', '(while true; do printf x >> heartbeat; sleep 0.03; done) & wait'],
     });
-    expect(timedOut.state).toBe('timed_out');
+    expect(timedOut).toMatchObject({
+      state: 'timed_out',
+      signal: 'SIGKILL',
+      terminationGuarantee: 'namespace_scoped',
+    });
     const timedSize = (await fs.promises.stat(heartbeat)).size;
     await delay(300);
     expect((await fs.promises.stat(heartbeat)).size).toBe(timedSize);
 
     const controller = new AbortController();
+    const cancellationReady = path.join(fixture.workspaceRoot, 'cancellation-ready');
     const cancellation = executor.execute(await policy(), {
       command: '/bin/sh',
-      args: ['-c', '(while true; do printf y >> cancelled-heartbeat; sleep 0.03; done) & wait'],
+      args: [
+        '-c',
+        [
+          "trap 'printf term > term-trap' TERM",
+          '(while true; do printf y >> cancelled-heartbeat; sleep 0.03; done) &',
+          "/usr/bin/setsid /bin/sh -c 'while true; do printf z >> detached-heartbeat; sleep 0.03; done' &",
+          'printf ready > cancellation-ready',
+          'wait',
+        ].join('\n'),
+      ],
       signal: controller.signal,
     });
-    setTimeout(() => controller.abort(), 150);
+    await waitForFile(cancellationReady);
+    controller.abort();
     const cancelled = await cancellation;
-    expect(cancelled.state).toBe('cancelled');
+    expect(cancelled).toMatchObject({
+      state: 'cancelled',
+      signal: 'SIGKILL',
+      terminationGuarantee: 'namespace_scoped',
+    });
     const cancelledPath = path.join(fixture.workspaceRoot, 'cancelled-heartbeat');
+    const detachedPath = path.join(fixture.workspaceRoot, 'detached-heartbeat');
     const cancelledSize = (await fs.promises.stat(cancelledPath)).size;
+    const detachedSize = (await fs.promises.stat(detachedPath)).size;
+    await expect(fs.promises.stat(path.join(fixture.workspaceRoot, 'term-trap'))).rejects.toMatchObject(
+      { code: 'ENOENT' }
+    );
     await delay(300);
     expect((await fs.promises.stat(cancelledPath)).size).toBe(cancelledSize);
+    expect((await fs.promises.stat(detachedPath)).size).toBe(detachedSize);
   });
 
   test('reports sandbox initialization failure without running the command unsandboxed', async () => {
-    if (!available()) return;
     const preparedPolicy = await policy();
     const movedWorkspace = `${fixture.workspaceRoot}-moved`;
     await fs.promises.rename(fixture.workspaceRoot, movedWorkspace);
@@ -402,7 +532,6 @@ describe('Bubblewrap execution boundary', () => {
   });
 
   test('returns the command receipt when launcher staging cleanup fails', async () => {
-    if (!available()) return;
     let stagingDirectory = null;
     const cleanupExecutor = new BubblewrapExecutor({
       removeStagingDirectory: async (directory) => {
@@ -428,7 +557,6 @@ describe('Bubblewrap execution boundary', () => {
   });
 
   test('sanitizes and protects a separate external Git directory', async () => {
-    if (!available()) return;
     await fs.promises.rm(path.join(fixture.workspaceRoot, '.git'), {
       recursive: true,
       force: true,

@@ -34,7 +34,7 @@ Trusted components are the caller that selects the workspace, the normalized pol
 ### Security goals
 
 - Apply isolation before any untrusted command begins and retain it for every descendant.
-- Expose only the selected workspace read/write, protected metadata read-only, a fresh private `/tmp`, a minimal host toolchain read-only, a fresh `/proc`, and a minimal `/dev`.
+- Expose only the selected workspace read/write, protected metadata read-only, a fresh bounded private `/tmp`, a bounded `/dev/shm`, a minimal host toolchain read-only, a fresh read-only `/proc`, and a minimal read-only `/dev` root.
 - Leave `/home`, `/root`, `/run`, `/sys`, the host `/tmp`, session/display buses, and arbitrary host paths absent.
 - Provide no external network, host loopback, DNS, or host-local abstract Unix sockets.
 - Construct the environment from an allowlist after `--clearenv`.
@@ -46,7 +46,7 @@ Trusted components are the caller that selects the workspace, the normalized pol
 
 - This is not a kernel-escape boundary against a vulnerability in Linux namespaces, mount handling, or another exposed syscall.
 - It does not protect against a separate, same-UID trusted host process concurrently changing the workspace. Freedom-managed workspace ownership and lifecycle must exclude that race in the product design.
-- CPU, memory, PID-count, and file-size limits are represented but not yet enforced. Required requests fail closed. Disk exhaustion and fork/memory bombs are not qualified in the ordinary corpus.
+- Aggregate CPU, memory, PID-count, workspace-disk, and file-size limits are represented but not yet enforced. Required requests fail closed. The two writable tmpfs mounts have fixed capacity limits, but those limits are not an aggregate memory controller; workspace disk exhaustion and fork/memory bombs remain outside the ordinary corpus.
 - There is no network-enabled posture. Reserved `brokered` requests fail as unsupported.
 - There is no setuid Bubblewrap path or unsandboxed fallback.
 - Linux `/proc/*/mountinfo` reveals the backing path of bind mounts, including the canonical workspace path. Opaque IDs keep that path out of the API, but they do not make it confidential from a command already running inside the workspace. Avoid placing secrets in managed-project path components; eliminating this disclosure would require a different storage/mount design or a materially reduced `/proc` view.
@@ -60,14 +60,14 @@ Trusted components are the caller that selects the workspace, the normalized pol
 | Readable roots       | Exact canonical workspace root plus backend-selected system/toolchain roots. The capability/launch plan records the concrete Linux paths.                                                                                                        |
 | Writable roots       | Exactly one canonical Freedom-managed workspace mounted as `/workspace`.                                                                                                                                                                         |
 | Protected carve-outs | Relative workspace paths with deny/read-only precedence. `.git` is required, resolved, and mounted read-only after the writable workspace mount. External metadata is denied unless trusted lifecycle state authorizes its exact canonical path. |
-| Temporary storage    | Fresh tmpfs `/tmp` for every execution, with private home/config/cache directories beneath it. Nothing persists to the host.                                                                                                                     |
+| Temporary storage    | Fresh 256 MiB tmpfs `/tmp` for every execution, with private home/config/cache/data directories beneath it, plus a separate 64 MiB `/dev/shm`. Nothing persists to the host.                                                                          |
 | Working directory    | An existing relative directory whose canonical target remains inside the workspace. The sandbox path is rooted at `/workspace`.                                                                                                                  |
 | Environment          | `--clearenv`, safe locale/terminal inheritance, bounded trusted explicit values, and fixed private `HOME`, `TMP*`, and XDG locations. Loader, language injection, socket, display, Git override, and credential-shaped variables are rejected.   |
 | Network              | `none` only. `brokered` is reserved and currently denied.                                                                                                                                                                                        |
 | Wall/output limits   | Five-minute default wall timeout, thirty-minute maximum, and independent 1 MiB stdout/stderr defaults. Output is continuously drained after the visible cap and marked truncated.                                                                |
 | Aggregate limits     | CPU time, memory, process count, and maximum file size are represented as optional requirements. Any required value is denied because this backend cannot yet enforce it.                                                                        |
-| Cancellation         | An `AbortSignal` terminates the PID-namespace init/Bubblewrap supervisor; namespace teardown kills descendants.                                                                                                                                  |
-| System toolchain     | Explicit boolean. The first backend currently requires the read-only platform toolchain view and fails if it is disabled.                                                                                                                        |
+| Cancellation         | An `AbortSignal` immediately kills the PID-namespace init/Bubblewrap supervisor with `SIGKILL`; namespace teardown kills descendants. The receipt reports `SIGKILL`, not a graceful `SIGTERM` delivery that did not occur.                          |
+| System toolchain     | Explicit boolean. The first backend requires the read-only distro toolchain view and fails if it is disabled. Host `/usr/local` is masked, `/etc/alternatives` is exposed read-only when present, and `PATH` names only mounted runtime/system bins. |
 | Seccomp              | A required-custom-filter flag exists. It fails closed because no reviewed general filter ships in this spike.                                                                                                                                    |
 
 Protected/denied paths cannot be reopened, and read-only paths override their writable parent. The validator rejects nested protected entries instead of relying on Bubblewrap argument order to resolve ambiguity.
@@ -101,6 +101,9 @@ The launcher uses:
 - `--cap-drop ALL`, `--new-session`, `--die-with-parent`, and a private hostname;
 - a new PID namespace and `/proc`, IPC/network/UTS/cgroup namespaces, and minimal `/dev`;
 - read-only `/usr`, `/bin`, `/sbin`, required `/lib*`, selected loader/public-certificate configuration, and an exact neutral mount for the active Node installation when it is outside system paths;
+- an empty read-only mount over `/usr/local`, a read-only `/etc/alternatives` when it exists, and a `PATH` containing only the mounted runtime `bin` plus `/usr/bin:/bin`;
+- a 256 MiB `/tmp` and 64 MiB `/dev/shm`, created with Bubblewrap's `--size` before their corresponding tmpfs mounts;
+- non-recursive read-only remounts of `/`, `/proc`, and `/dev` after mount construction, leaving only `/workspace`, `/tmp`, and `/dev/shm` writable;
 - no `/run`, host `/tmp`, host home, display, session bus, or socket mount;
 - a sanitized passwd/group/NSS/hosts view rather than the host identity database; and
 - one JSON status descriptor used by Bubblewrap, accepted only for the first valid child PID, and explicitly closed by the trusted readiness wrapper before the command starts.
@@ -120,6 +123,8 @@ No command string parser exists. Callers supply an executable and argument vecto
 Stdout and stderr are separately capped and continuously drained. The receipt includes independent truncation flags. Raw Bubblewrap initialization diagnostics are retained only in internal capability diagnostics; execution denial receipts do not return host workspace paths.
 
 Launcher staging cleanup is best-effort after the sandbox has stopped. A cleanup rejection is reduced to a bounded error code in `diagnostics.stagingCleanupFailed` and never prevents the execution receipt from resolving.
+
+Cancellation and timeout deliberately use immediate namespace teardown in this checkpoint. Sending `SIGTERM` to Bubblewrap's PID-namespace init does not establish graceful TERM delivery to the requested command; killing the outer monitor tears down the namespace and the kernel kills its remaining members. Requested cancellation and timeout receipts therefore contain `signal: SIGKILL` and retain `terminationGuarantee: namespace_scoped`. A TERM-trap regression proves that no TERM handler runs, while ordinary and detached heartbeat descendants stop before receipt resolution and remain stopped afterward. A future graceful mode would need a separately reviewed in-namespace supervisor rather than host `/proc` PID discovery.
 
 ## Qualification results
 
@@ -189,6 +194,43 @@ Recorded stabilization results:
 - Full `npm test`: 214 suites and 3,835 tests passed; 8 suites and 26 tests skipped normally.
 - A direct receipt/teardown probe retained `backend: linux-bubblewrap` and `terminationGuarantee: namespace_scoped` for completed, timed-out, and cancelled executions. Timeout and cancellation heartbeat files remained unchanged after receipt resolution, with no namespace survivor observed.
 
+### Linux audit-hardening qualification
+
+The hardening rerun used the same designated disposable Ubuntu server:
+
+- Ubuntu 24.04.3 LTS, kernel `6.8.0-90-generic`, x86-64;
+- distribution Bubblewrap `0.9.0-1ubuntu0.1` (`bubblewrap 0.9.0`);
+- AppArmor `4.0.1really4.0.1-0ubuntu0.24.04.7`, with the `bwrap` profile loaded in enforce mode;
+- `kernel.unprivileged_userns_clone=1`, `kernel.apparmor_restrict_unprivileged_userns=1`, and `user.max_user_namespaces=30830`;
+- unified cgroup v2 with `cpu`, `memory`, and `pids` controllers available but not delegated to this backend; and
+- Node `v24.15.0` and npm `11.12.1`.
+
+The 256 MiB `/tmp` limit leaves room for the qualified npm/Jest/lint/Babel workloads while forcing private home and XDG writes into one explicit finite store. The separate 64 MiB `/dev/shm` matches a conservative conventional container default and avoids an unbounded shared-memory mount. These are capacity ceilings, not reservations; the deterministic test writes only 1 MiB to each mount and checks `statvfs`, so it does not pressure the host toward OOM. The combined 320 MiB possible tmpfs use is still host memory/swap consumption until cgroup containment exists.
+
+The following commands were run from the repository at this branch head:
+
+```sh
+npm ci
+npx jest --runInBand src/main/agent/workspace-execution/bubblewrap-backend.test.js src/main/agent/workspace-execution/bubblewrap-integration.test.js
+npm run test:agent-sandbox
+npm run test:agent-sandbox:qualification
+FREEDOM_SANDBOX_DESTRUCTIVE=1 npm run test:agent-sandbox:destructive
+npm run lint
+npm test
+```
+
+Results:
+
+- `npm ci`: passed; 1,167 packages installed and the unchanged dependency audit reported 22 findings (7 low, 5 moderate, 10 high).
+- Focused Bubblewrap backend/integration: 2 suites and 20 tests passed.
+- `npm run test:agent-sandbox`: 7 suites and 52 tests passed; 3 macOS-only suites and 9 tests skipped.
+- `npm run test:agent-sandbox:qualification`: capability detection plus focused Jest, full lint, and Babel transform completed inside Bubblewrap.
+- Doubly gated destructive qualification: 1 suite and 1 test passed against its validated temporary fixture.
+- Host `npm run lint`: passed.
+- Full `npm test`: 214 suites and 3,838 tests passed; 8 suites and 26 tests skipped. Jest printed pre-existing late MQTT/WebSocket console warnings but returned success.
+
+The hardening corpus verified that `/`, `/etc`, `/proc`, and the `/dev` root report read-only; `/usr/local` is empty and read-only; `/tmp` and `/dev/shm` report no more than their configured capacities; and only their intended submounts plus `/workspace` accept writes. Distro-symlinked `awk` works through the read-only alternatives view. Exact denial results were `ECONNREFUSED` for a proven-live host loopback service and host abstract socket, `ENETUNREACH` for external IPv4, `ENOENT` for the host pathname socket, and `ENOTFOUND` for DNS. Descriptor 3 remained `EBADF`, nested user namespaces failed closed, `.git` stayed read-only, and direct/symlink/dynamic-hardlink escape attempts failed. Timeout and cancellation reported `SIGKILL`; no TERM trap ran, and neither normal nor detached heartbeat descendants survived receipt resolution.
+
 ## Seccomp assessment
 
 No general syscall filter is installed, and capability reports say so. `--disable-userns` does apply Bubblewrap's narrow nested-user-namespace prevention, and `--new-session` addresses the terminal-injection concern called out by Bubblewrap, but neither is represented as a general seccomp profile.
@@ -233,8 +275,8 @@ Bundling should be reconsidered only with an update strategy, exact executable-p
 4. Move Freedom-managed projects onto a lifecycle that prevents same-UID host races after path/hardlink validation.
 5. Decide whether every managed project is initialized with protected Git metadata or whether another mechanism can protect a nonexistent `.git` name inside a writable root.
 6. Expand distro coverage to Debian, Fedora, ARM64 Ubuntu, WSL2, and representative nested/container failures.
-7. Add disk/quota handling and reconcile OOM/PID-limit termination into stable receipts.
-8. Review which `/usr` and TLS/loader paths packaged builds actually need; reduce the system view where positive evidence allows.
+7. Add workspace disk/quota handling and reconcile OOM/PID-limit termination into stable receipts. The bounded tmpfs mounts do not replace aggregate cgroup accounting.
+8. Review which `/usr` and TLS/loader paths packaged builds actually need; reduce the system view where positive evidence allows. Host `/usr/local` is now hidden, but the remaining distro `/usr` view is broad.
 9. Decide whether the canonical workspace path disclosed by `/proc/*/mountinfo` is acceptable metadata or requires a different project-storage/mount design.
 
 Recommendation: this is serious enough to continue toward a non-destructive macOS Seatbelt feasibility spike using the same contract. It is not serious enough to merge into the feature branch or expose to Pi until Linux cgroup containment, seccomp posture, and packaging diagnostics are resolved.
