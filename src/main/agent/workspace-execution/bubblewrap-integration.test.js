@@ -97,7 +97,13 @@ describe('Bubblewrap execution boundary', () => {
       ],
     });
 
-    expect(receipt).toMatchObject({ state: 'completed', exitCode: 0 });
+    expect(receipt).toMatchObject({
+      backend: 'linux-bubblewrap',
+      state: 'completed',
+      exitCode: 0,
+      terminationGuarantee: 'namespace_scoped',
+      capabilities: { backend: 'linux-bubblewrap' },
+    });
     expect(receipt.stdout).toContain('positive-ok');
     await expect(
       fs.promises.readFile(path.join(fixture.workspaceRoot, 'generated.txt'), 'utf8')

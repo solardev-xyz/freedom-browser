@@ -86,6 +86,36 @@ describe('workspace execution policy', () => {
     expect(policy.environment.values).not.toHaveProperty('SSH_AUTH_SOCK');
   });
 
+  test('adds only one validated Electron application bundle as a read-only runtime root', async () => {
+    const fixture = await createFixture();
+    fixtureRoots.push(fixture.fixtureRoot);
+    const electronRoot = path.join(fixture.fixtureRoot, 'Freedom.app');
+    await fs.promises.mkdir(path.join(electronRoot, 'Contents', 'MacOS'), { recursive: true });
+    const canonicalElectronRoot = await fs.promises.realpath(electronRoot);
+
+    const policy = await createWorkspaceExecutionPolicy({
+      workspaceRoot: fixture.workspaceRoot,
+      nodeRuntimeRoot: null,
+      electronRuntimeRoot: electronRoot,
+    });
+    expect(policy.filesystem.runtimeRoots).toEqual([
+      {
+        id: 'electron',
+        sourcePath: canonicalElectronRoot,
+        mountPath: '/opt/freedom-toolchain/electron',
+        access: 'read_only',
+      },
+    ]);
+
+    await expect(
+      createWorkspaceExecutionPolicy({
+        workspaceRoot: fixture.workspaceRoot,
+        nodeRuntimeRoot: null,
+        electronRuntimeRoot: fixture.fixtureRoot,
+      })
+    ).rejects.toMatchObject({ code: 'INVALID_ELECTRON_RUNTIME' });
+  });
+
   test('resolves an external Git directory without treating its host path as the mount identity', async () => {
     const fixture = await createFixture({ git: false });
     fixtureRoots.push(fixture.fixtureRoot);

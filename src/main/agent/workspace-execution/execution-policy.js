@@ -503,6 +503,33 @@ function inferNodeRuntimeRoot(execPath = process.execPath) {
   return path.dirname(path.dirname(real));
 }
 
+async function canonicalElectronRuntimeRoot(input) {
+  const runtimeRoot = await canonicalDirectory(input, 'electronRuntimeRoot');
+  if (path.extname(runtimeRoot) !== '.app') {
+    throw new ExecutionPolicyError(
+      'INVALID_ELECTRON_RUNTIME',
+      'electronRuntimeRoot must identify one canonical macOS application bundle'
+    );
+  }
+  let executableDirectory;
+  try {
+    executableDirectory = await fs.promises.stat(path.join(runtimeRoot, 'Contents', 'MacOS'));
+  } catch (error) {
+    throw new ExecutionPolicyError(
+      'INVALID_ELECTRON_RUNTIME',
+      'electronRuntimeRoot does not contain a macOS executable directory',
+      { cause: error.code }
+    );
+  }
+  if (!executableDirectory.isDirectory()) {
+    throw new ExecutionPolicyError(
+      'INVALID_ELECTRON_RUNTIME',
+      'electronRuntimeRoot does not contain a macOS executable directory'
+    );
+  }
+  return runtimeRoot;
+}
+
 async function createWorkspaceExecutionPolicy(options = {}) {
   const workspaceRoot = await canonicalDirectory(options.workspaceRoot, 'workspaceRoot');
   const authorizedInput = options.authorizedGitMetadataPaths ?? [];
@@ -611,13 +638,24 @@ async function createWorkspaceExecutionPolicy(options = {}) {
   }
 
   const runtimeRoots = [];
-  const nodeRuntimeRoot = options.nodeRuntimeRoot ?? inferNodeRuntimeRoot();
+  const nodeRuntimeRoot =
+    options.nodeRuntimeRoot === undefined ? inferNodeRuntimeRoot() : options.nodeRuntimeRoot;
   if (nodeRuntimeRoot) {
     runtimeRoots.push(
       Object.freeze({
         id: 'node',
         sourcePath: await canonicalDirectory(nodeRuntimeRoot, 'nodeRuntimeRoot'),
         mountPath: '/opt/freedom-toolchain/node',
+        access: 'read_only',
+      })
+    );
+  }
+  if (options.electronRuntimeRoot) {
+    runtimeRoots.push(
+      Object.freeze({
+        id: 'electron',
+        sourcePath: await canonicalElectronRuntimeRoot(options.electronRuntimeRoot),
+        mountPath: '/opt/freedom-toolchain/electron',
         access: 'read_only',
       })
     );
@@ -733,6 +771,7 @@ module.exports = {
   PRIVATE_TEMP_PATH,
   SAFE_DEFAULT_INHERITANCE,
   WORKSPACE_MOUNT_PATH,
+  canonicalElectronRuntimeRoot,
   createWorkspaceExecutionPolicy,
   inferNodeRuntimeRoot,
   insidePath,

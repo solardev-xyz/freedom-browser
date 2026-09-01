@@ -253,6 +253,7 @@ async function detectBubblewrapCapabilities(options = {}) {
       wallTimeout: true,
       outputLimits: true,
       cancellation: true,
+      cancellationGuarantee: 'namespace_scoped',
       customSeccomp: false,
       nestedUserNamespacesDisabled: true,
       aggregateResourceLimits: false,
@@ -510,6 +511,7 @@ function selectInitialSandboxPid(currentPid, status) {
 
 function deniedReceipt(startedAt, now, code, message, diagnostics = {}) {
   return Object.freeze({
+    backend: 'linux-bubblewrap',
     state: EXECUTION_STATES.SANDBOX_DENIED,
     startedAt,
     finishedAt: now,
@@ -520,6 +522,7 @@ function deniedReceipt(startedAt, now, code, message, diagnostics = {}) {
     stderr: '',
     stdoutTruncated: false,
     stderrTruncated: false,
+    terminationGuarantee: 'not_applicable',
     error: Object.freeze({ code, message }),
     diagnostics: Object.freeze(diagnostics),
   });
@@ -599,6 +602,7 @@ class BubblewrapExecutor {
       const cleanupDiagnostics = await this.cleanupStagingDirectory(launch.stagingDirectory);
       const finishedAt = this.now();
       const receipt = {
+        backend: 'linux-bubblewrap',
         state: EXECUTION_STATES.CANCELLED,
         startedAt,
         finishedAt,
@@ -609,6 +613,7 @@ class BubblewrapExecutor {
         stderr: '',
         stdoutTruncated: false,
         stderrTruncated: false,
+        terminationGuarantee: 'not_applicable',
       };
       if (cleanupDiagnostics) receipt.diagnostics = cleanupDiagnostics;
       return Object.freeze(receipt);
@@ -721,6 +726,7 @@ class BubblewrapExecutor {
         const state =
           requestedState || (exitCode === 0 ? EXECUTION_STATES.COMPLETED : EXECUTION_STATES.FAILED);
         const receipt = {
+          backend: 'linux-bubblewrap',
           state,
           startedAt,
           finishedAt,
@@ -734,7 +740,9 @@ class BubblewrapExecutor {
           stderr: errorOutput.text,
           stdoutTruncated: output.truncated,
           stderrTruncated: errorOutput.truncated,
+          terminationGuarantee: 'namespace_scoped',
           capabilities: Object.freeze({
+            backend: 'linux-bubblewrap',
             aggregateResourceLimits: false,
             customSeccomp: false,
           }),

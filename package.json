@@ -38,6 +38,8 @@
     "test:agent-sandbox:macos": "FREEDOM_REQUIRE_SEATBELT=1 jest --runInBand src/main/agent/workspace-execution/seatbelt-backend.test.js src/main/agent/workspace-execution/seatbelt-integration.test.js",
     "test:agent-sandbox:macos:qualification": "FREEDOM_REQUIRE_SEATBELT=1 node scripts/qualify-agent-sandbox-macos.js",
     "test:agent-sandbox:macos:destructive": "test \"$FREEDOM_SANDBOX_DESTRUCTIVE\" = 1 && test \"$FREEDOM_REQUIRE_SEATBELT\" = 1 && jest --runInBand src/main/agent/workspace-execution/seatbelt-destructive.test.js",
+    "test:agent-sandbox:macos:electron": "FREEDOM_REQUIRE_SEATBELT=1 electron src/main/agent/workspace-execution/electron-qualification-main.js",
+    "test:agent-sandbox:macos:electron:destructive": "test \"$FREEDOM_SANDBOX_DESTRUCTIVE\" = 1 && test \"$FREEDOM_REQUIRE_SEATBELT\" = 1 && electron src/main/agent/workspace-execution/electron-qualification-main.js",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",

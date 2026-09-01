@@ -8,6 +8,7 @@ const { PassThrough } = require('stream');
 const { createWorkspaceExecutionPolicy } = require('./execution-policy');
 const {
   PRIVATE_DIRECTORY_PREFIX,
+  SeatbeltExecutor,
   buildSeatbeltProfile,
   collectStream,
   createPrivateDirectory,
@@ -124,6 +125,20 @@ describe('macOS Seatbelt backend contract', () => {
       available: false,
       denial: { code: 'SEATBELT_INITIALIZATION_FAILED' },
       diagnostics: { initializationDiagnostic: 'denied' },
+    });
+
+    const fixture = await createFixture();
+    fixtureRoots.push(fixture.fixtureRoot);
+    const policy = await createWorkspaceExecutionPolicy({ workspaceRoot: fixture.workspaceRoot });
+    const executor = new SeatbeltExecutor({
+      binary: '/usr/bin/true',
+      capabilityOptions: { platform: 'linux' },
+    });
+    await expect(executor.execute(policy, { command: '/usr/bin/true' })).resolves.toMatchObject({
+      backend: 'macos-seatbelt',
+      state: 'sandbox_denied',
+      terminationGuarantee: 'not_applicable',
+      error: { code: 'SEATBELT_PLATFORM_UNAVAILABLE' },
     });
   });
 

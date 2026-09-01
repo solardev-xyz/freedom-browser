@@ -134,10 +134,15 @@ requiredDescribe('macOS Seatbelt execution boundary', () => {
       ],
     });
     expect(receipt).toMatchObject({
+      backend: 'macos-seatbelt',
       state: 'completed',
       exitCode: 0,
       stdout: 'positive-ok',
       terminationGuarantee: 'best_effort',
+      capabilities: {
+        backend: 'macos-seatbelt',
+        cancellationGuarantee: 'best_effort',
+      },
     });
     for (const [name, value] of [
       ['nested.txt', 'nested'],

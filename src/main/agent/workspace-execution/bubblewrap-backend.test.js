@@ -155,8 +155,10 @@ describe('Bubblewrap backend contract', () => {
     const policy = await createWorkspaceExecutionPolicy({ workspaceRoot: fixture.workspaceRoot });
     const executor = new BubblewrapExecutor({ binary: missingBinary });
     await expect(executor.execute(policy, { command: '/usr/bin/true' })).resolves.toMatchObject({
+      backend: 'linux-bubblewrap',
       state: 'sandbox_denied',
       exitCode: null,
+      terminationGuarantee: 'not_applicable',
       error: { code: 'BUBBLEWRAP_NOT_FOUND' },
     });
   });

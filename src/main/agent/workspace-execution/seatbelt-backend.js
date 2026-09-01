@@ -370,6 +370,7 @@ function collectStream(stream, limit) {
 
 function deniedReceipt(startedAt, finishedAt, code, message, diagnostics = {}) {
   return Object.freeze({
+    backend: 'macos-seatbelt',
     state: EXECUTION_STATES.SANDBOX_DENIED,
     startedAt,
     finishedAt,
@@ -380,6 +381,7 @@ function deniedReceipt(startedAt, finishedAt, code, message, diagnostics = {}) {
     stderr: '',
     stdoutTruncated: false,
     stderrTruncated: false,
+    terminationGuarantee: 'not_applicable',
     error: Object.freeze({ code, message }),
     diagnostics: Object.freeze(diagnostics),
   });
@@ -478,6 +480,7 @@ class SeatbeltExecutor {
       const cleanup = await this.cleanupPrivateDirectory(privateDirectory);
       const finishedAt = this.now();
       return Object.freeze({
+        backend: 'macos-seatbelt',
         state: EXECUTION_STATES.CANCELLED,
         startedAt,
         finishedAt,
@@ -494,9 +497,9 @@ class SeatbeltExecutor {
     }
 
     const workspace = policy.filesystem.writableRoots.find((root) => root.id === 'workspace');
-    const runtimePath = policy.filesystem.runtimeRoots.map((root) =>
-      path.join(root.sourcePath, 'bin')
-    );
+    const runtimePath = policy.filesystem.runtimeRoots
+      .filter((root) => root.id === 'node')
+      .map((root) => path.join(root.sourcePath, 'bin'));
     const environment = {
       ...policy.environment.values,
       GIT_OPTIONAL_LOCKS: '0',
@@ -617,6 +620,7 @@ class SeatbeltExecutor {
         const state =
           requestedState || (exitCode === 0 ? EXECUTION_STATES.COMPLETED : EXECUTION_STATES.FAILED);
         const receipt = {
+          backend: 'macos-seatbelt',
           state,
           startedAt,
           finishedAt,
@@ -632,6 +636,7 @@ class SeatbeltExecutor {
           stderrTruncated: errorOutput.truncated,
           terminationGuarantee: 'best_effort',
           capabilities: Object.freeze({
+            backend: 'macos-seatbelt',
             aggregateResourceLimits: false,
             cancellationGuarantee: 'best_effort',
           }),
