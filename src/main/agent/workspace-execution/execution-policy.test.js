@@ -154,6 +154,39 @@ describe('workspace execution policy', () => {
     ).rejects.toMatchObject({ code: 'INVALID_ELECTRON_RUNTIME' });
   });
 
+  test('keeps the canonical macOS Electron executable identity inside its application bundle', async () => {
+    const fixture = await createFixture();
+    fixtureRoots.push(fixture.fixtureRoot);
+    const runtimeRoot = path.join(fixture.fixtureRoot, 'Freedom.app');
+    const executable = path.join(runtimeRoot, 'Contents', 'MacOS', 'Freedom');
+    await fs.promises.mkdir(path.dirname(executable), { recursive: true });
+    await fs.promises.writeFile(executable, 'fixture', { mode: 0o700 });
+    const canonicalRuntimeRoot = await fs.promises.realpath(runtimeRoot);
+    const canonicalExecutable = await fs.promises.realpath(executable);
+
+    const policy = await createWorkspaceExecutionPolicy({
+      workspaceRoot: fixture.workspaceRoot,
+      nodeRuntimeRoot: null,
+      electronRuntime: {
+        platform: 'darwin',
+        rootPath: runtimeRoot,
+        executablePath: executable,
+      },
+    });
+
+    expect(policy.filesystem.runtimeRoots).toEqual([
+      {
+        id: 'electron',
+        sourcePath: canonicalRuntimeRoot,
+        mountPath: '/opt/freedom-toolchain/electron',
+        access: 'read_only',
+        executablePath: canonicalExecutable,
+        relativeExecutablePath: path.join('Contents', 'MacOS', 'Freedom'),
+        sandboxExecutablePath: canonicalExecutable,
+      },
+    ]);
+  });
+
   test('resolves an external Git directory without treating its host path as the mount identity', async () => {
     const fixture = await createFixture({ git: false });
     fixtureRoots.push(fixture.fixtureRoot);

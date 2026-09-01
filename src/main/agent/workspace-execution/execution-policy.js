@@ -702,6 +702,13 @@ async function canonicalElectronRuntime(input) {
     );
   }
   const relativeExecutablePath = path.relative(sourcePath, executablePath);
+  const sandboxExecutablePath =
+    descriptor.platform === 'linux'
+      ? path.posix.join(
+          '/opt/freedom-toolchain/electron',
+          ...relativeExecutablePath.split(path.sep)
+        )
+      : executablePath;
   return Object.freeze({
     id: 'electron',
     sourcePath,
@@ -709,10 +716,7 @@ async function canonicalElectronRuntime(input) {
     access: 'read_only',
     executablePath,
     relativeExecutablePath,
-    sandboxExecutablePath: path.posix.join(
-      '/opt/freedom-toolchain/electron',
-      ...relativeExecutablePath.split(path.sep)
-    ),
+    sandboxExecutablePath,
   });
 }
 
