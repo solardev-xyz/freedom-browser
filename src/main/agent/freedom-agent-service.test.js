@@ -402,6 +402,7 @@ describe('FreedomAgentService', () => {
       ]),
       listResources: jest.fn(async () => []),
       read: jest.fn(),
+      renderPdfPage: jest.fn(),
       revokeFolder: jest.fn(async () => true),
       deleteConversation: jest.fn(async () => {}),
     };
@@ -468,6 +469,7 @@ describe('FreedomAgentService', () => {
         mimeType: 'image/png',
         data: Buffer.from('png'),
       })),
+      renderPdfPage: jest.fn(),
       revokeFolder: jest.fn(async () => true),
       deleteConversation: jest.fn(async () => {}),
     };
@@ -509,6 +511,7 @@ describe('FreedomAgentService', () => {
       ]),
       listResources: jest.fn(async () => []),
       read: jest.fn(),
+      renderPdfPage: jest.fn(),
       revokeFolder: jest.fn(async () => true),
       deleteConversation: jest.fn(async () => {}),
     };
@@ -556,6 +559,7 @@ describe('FreedomAgentService', () => {
       ]),
       listResources: jest.fn(async () => []),
       read: jest.fn(),
+      renderPdfPage: jest.fn(),
       revokeFolder: jest.fn(async () => true),
       deleteConversation: jest.fn(async () => {}),
     };

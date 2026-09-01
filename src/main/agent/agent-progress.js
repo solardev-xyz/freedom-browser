@@ -18,6 +18,7 @@ const ACTIVITY_EFFECTS = Object.freeze({
 const ATTACHMENT_OPERATIONS = Object.freeze({
   LIST: 'attachment_list',
   READ: 'attachment_read',
+  RENDER_PAGE: 'attachment_render_page',
 });
 
 const OPERATION_PROGRESS = Object.freeze({
@@ -165,6 +166,11 @@ const OPERATION_PROGRESS = Object.freeze({
     effect: ACTIVITY_EFFECTS.OBSERVED,
     intent: 'Reading an attached source',
     completed: 'Read an attached source',
+  },
+  [ATTACHMENT_OPERATIONS.RENDER_PAGE]: {
+    effect: ACTIVITY_EFFECTS.OBSERVED,
+    intent: 'Looking at an attached PDF page',
+    completed: 'Looked at an attached PDF page',
   },
 });
 
@@ -439,10 +445,16 @@ function publicationObject(publication) {
 
 function normalizeAttachmentReceipt(value, operation) {
   if (!value || typeof value !== 'object') return null;
-  if (![ATTACHMENT_OPERATIONS.LIST, ATTACHMENT_OPERATIONS.READ].includes(operation)) {
+  if (
+    ![
+      ATTACHMENT_OPERATIONS.LIST,
+      ATTACHMENT_OPERATIONS.READ,
+      ATTACHMENT_OPERATIONS.RENDER_PAGE,
+    ].includes(operation)
+  ) {
     return null;
   }
-  const action = operation === ATTACHMENT_OPERATIONS.READ ? 'read' : 'list';
+  const action = operation === ATTACHMENT_OPERATIONS.LIST ? 'list' : 'read';
   const resourceId = boundedString(value.resourceId, 160);
   const validResourceId = /^(?:attachment|folder)_[a-f0-9]{20}$/.test(resourceId);
   const resourceKind = value.resourceKind === 'folder' ? 'folder' : value.resourceKind === 'file' ? 'file' : null;
@@ -474,6 +486,15 @@ function normalizeAttachmentReceipt(value, operation) {
       : null;
   const offset =
     Number.isSafeInteger(value.offset) && value.offset >= 0 ? value.offset : null;
+  const page = Number.isSafeInteger(value.page) && value.page >= 1 ? Math.min(value.page, 500) : null;
+  const pagesRead =
+    Number.isSafeInteger(value.pagesRead) && value.pagesRead >= 1
+      ? Math.min(value.pagesRead, 4)
+      : null;
+  const pdfPageCount =
+    Number.isSafeInteger(value.pageCount) && value.pageCount >= 1
+      ? Math.min(value.pageCount, 500)
+      : null;
   if (action === 'read' && (!validResourceId || !resourceKind || !name || bytesRead === null)) {
     return null;
   }
@@ -492,6 +513,9 @@ function normalizeAttachmentReceipt(value, operation) {
     ...(entryCount !== null && { entryCount }),
     ...(bytesRead !== null && { bytesRead }),
     ...(offset !== null && { offset }),
+    ...(page !== null && { page }),
+    ...(pagesRead !== null && { pagesRead }),
+    ...(pdfPageCount !== null && { pageCount: pdfPageCount }),
     truncated: value.truncated === true,
   });
 }
@@ -590,8 +614,19 @@ function activityProgress(operation, receipt = {}) {
     }
   } else if (operation === ATTACHMENT_OPERATIONS.READ && attachment) {
     const source = attachment.relativePath || attachment.name;
-    intent = `Reading ${source}`;
-    label = `Read ${source}`;
+    const pages = attachment.page && attachment.pageCount
+      ? ` — ${attachment.pagesRead > 1 ? `pages ${attachment.page}–${attachment.page + attachment.pagesRead - 1}` : `page ${attachment.page}`} of ${attachment.pageCount}`
+      : '';
+    intent = `Reading ${source}${pages}`;
+    label = `Read ${source}${pages}`;
+  } else if (operation === ATTACHMENT_OPERATIONS.RENDER_PAGE && attachment) {
+    const source = attachment.relativePath || attachment.name;
+    const page =
+      attachment.page && attachment.pageCount
+        ? ` — page ${attachment.page} of ${attachment.pageCount}`
+        : '';
+    intent = `Looking at ${source}${page}`;
+    label = `Looked at ${source}${page}`;
   } else if (origin) {
     const originCopy = {
       [OPERATIONS.CREATE_TAB]: ['Opening', 'Opened'],
@@ -752,7 +787,11 @@ function buildAgentOutcome(activity, status, error) {
     .filter(Boolean);
   const attachmentObservations = succeeded
     .filter((item) =>
-      [ATTACHMENT_OPERATIONS.LIST, ATTACHMENT_OPERATIONS.READ].includes(item?.operation)
+      [
+        ATTACHMENT_OPERATIONS.LIST,
+        ATTACHMENT_OPERATIONS.READ,
+        ATTACHMENT_OPERATIONS.RENDER_PAGE,
+      ].includes(item?.operation)
     )
     .map((item) => normalizeAttachmentReceipt(item?.attachment, item.operation))
     .filter(Boolean);
@@ -783,6 +822,7 @@ function buildAgentOutcome(activity, status, error) {
     OPERATIONS.SWARM_PUBLICATION_STATUS,
     ATTACHMENT_OPERATIONS.LIST,
     ATTACHMENT_OPERATIONS.READ,
+    ATTACHMENT_OPERATIONS.RENDER_PAGE,
   ]);
   const browserSucceeded = succeeded.filter(
     (item) => !nonBrowserObservations.has(item?.operation)

@@ -56,6 +56,7 @@ async function loadDocument(data) {
     standardFontDataUrl: assetUrl('standard_fonts/'),
     wasmUrl: assetUrl('wasm/'),
     iccUrl: assetUrl('iccs/'),
+    enableScripting: false,
     isEvalSupported: false,
     stopAtErrors: true,
     disableAutoFetch: true,
@@ -64,10 +65,17 @@ async function loadDocument(data) {
     maxImageSize: MAX_RENDER_PIXELS,
     useWorkerFetch: true,
   });
+  let rejectPassword;
+  const passwordRequest = new Promise((_resolve, reject) => {
+    rejectPassword = reject;
+  });
   loadingTask.onPassword = () => {
-    loadingTask.destroy();
+    const error = new Error('Password-protected PDFs are not supported');
+    error.code = 'PDF_PASSWORD_REQUIRED';
+    rejectPassword(error);
+    void loadingTask.destroy();
   };
-  const document = await loadingTask.promise;
+  const document = await Promise.race([loadingTask.promise, passwordRequest]);
   if (document.numPages > MAX_PAGES) {
     await document.destroy();
     const error = new Error(`PDFs may contain at most ${MAX_PAGES} pages`);
@@ -88,8 +96,15 @@ function pageText(items) {
   return text.replace(/[ \t]+\n/g, '\n').replace(/[ \t]{2,}/g, ' ').trim();
 }
 
+function assertPageInRange(document, page) {
+  if (page <= document.numPages) return;
+  const error = new Error(`The PDF has ${document.numPages} pages; page ${page} is out of range`);
+  error.code = 'PDF_PAGE_OUT_OF_RANGE';
+  throw error;
+}
+
 async function extractText(document, request) {
-  if (request.page > document.numPages) throw new Error('PDF page is out of range');
+  assertPageInRange(document, request.page);
   const lastPage = Math.min(document.numPages, request.page + request.pageCount - 1);
   const pages = [];
   let remaining = MAX_TEXT_CHARS;
@@ -132,7 +147,7 @@ async function canvasPng(canvas) {
 }
 
 async function renderPage(document, request) {
-  if (request.page > document.numPages) throw new Error('PDF page is out of range');
+  assertPageInRange(document, request.page);
   const page = await document.getPage(request.page);
   try {
     const baseViewport = page.getViewport({ scale: 1 });

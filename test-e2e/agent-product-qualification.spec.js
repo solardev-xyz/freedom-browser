@@ -1002,11 +1002,7 @@ test('provider failure: terminal reason and attempt history survive partial brow
   await expect(window.locator('#agent-run-status')).toHaveText('Provider issue', {
     timeout: 20_000,
   });
-  await expect(window.locator('#agent-run-message')).toContainText(
-    `Ollama using ${MODEL_ID} returned HTTP 503.`
-  );
-  await expect(window.locator('#agent-run-message')).toContainText('overloaded_error');
-  await expect(window.locator('#agent-run-message')).not.toContainText('fixture-private-token');
+  await expect(window.locator('#agent-run-message')).toHaveText('');
 
   const outcome = window.locator('.agent-turn-outcome').last();
   await expect(outcome).toContainText(`Ollama using ${MODEL_ID} returned HTTP 503.`);

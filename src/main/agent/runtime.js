@@ -13,6 +13,7 @@ const { NodeLifecycleController } = require('../node-lifecycle-controller');
 const { NodeDiagnosticsController } = require('../node-diagnostics-controller');
 const { ConversationAttachmentStore } = require('./conversation-attachment-store');
 const { SwarmPublicationController } = require('./swarm-publication-controller');
+const { PdfProcessor } = require('./pdf-processor');
 
 function createFreedomAgentRuntime(options = {}) {
   const providerStore = new AgentProviderStore({
@@ -29,9 +30,14 @@ function createFreedomAgentRuntime(options = {}) {
     userDataDir: options.profile?.userDataDir,
   });
   historyStore.markStaleRunningAsInterrupted();
+  const pdfProcessor = new PdfProcessor({
+    BrowserWindow: options.BrowserWindow,
+    ipcMain: options.ipcMain,
+  });
   const attachmentStore = new ConversationAttachmentStore({
     userDataDir: options.profile?.userDataDir,
     dialog: options.dialog,
+    pdfProcessor,
   });
   const nodeOperationStore = new AgentNodeOperationStore({
     userDataDir: options.profile?.userDataDir,
@@ -102,6 +108,7 @@ function createFreedomAgentRuntime(options = {}) {
       await nodeRequestController.dispose();
       publicationController.dispose();
       attachmentStore.dispose();
+      pdfProcessor.dispose();
       historyStore.close();
       nodeOperationStore.close();
       options.controller.setWalletTransferController(null);

@@ -44,7 +44,7 @@ function fileClassification(filePath) {
     return { category: 'image', mimeType: IMAGE_MIME_TYPES[extension] };
   }
   if (extension === '.pdf') {
-    return { category: 'pdf_unsupported', mimeType: 'application/pdf' };
+    return { category: 'pdf', mimeType: 'application/pdf' };
   }
   if (TEXT_EXTENSIONS.has(extension)) return { category: 'text', mimeType: 'text/plain' };
   return { category: 'unsupported', mimeType: 'application/octet-stream' };
@@ -77,6 +77,14 @@ class ConversationAttachmentStore {
     }
     this.rootDir = path.join(options.userDataDir, ATTACHMENTS_DIR);
     this.dialog = options.dialog;
+    this.pdfProcessor = options.pdfProcessor || null;
+    if (
+      this.pdfProcessor &&
+      (typeof this.pdfProcessor.extractText !== 'function' ||
+        typeof this.pdfProcessor.renderPage !== 'function')
+    ) {
+      throw new TypeError('Conversation attachments require a valid PDF processor');
+    }
     this.fs = options.fs || fs.promises;
     this.staged = new Map();
     this.resources = new Map();
@@ -114,11 +122,8 @@ class ConversationAttachmentStore {
       selectedBytes += stat.size;
       if (selectedBytes > MAX_TOTAL_BYTES) throw new Error('Attachments cannot exceed 50 MB total');
       const classification = fileClassification(filePath);
-      if (classification.category === 'pdf_unsupported') {
-        throw new Error('PDF attachments are not supported yet; attach text or images instead');
-      }
       if (classification.category === 'unsupported') {
-        throw new Error(`${path.basename(filePath)} is not a supported text or image file`);
+        throw new Error(`${path.basename(filePath)} is not a supported text, image, or PDF file`);
       }
       const resource = {
         selectionId: opaqueId('selection'),
@@ -292,9 +297,6 @@ class ConversationAttachmentStore {
     } else {
       filePath = resource.storagePath;
     }
-    if (classification.category === 'pdf_unsupported') {
-      throw new Error('PDF files are not supported yet; ask the user for text or page images');
-    }
     if (!filePath || classification.category === 'unsupported') {
       throw new Error('That attachment type cannot be read by Agent');
     }
@@ -302,6 +304,21 @@ class ConversationAttachmentStore {
     try {
       const stat = await handle.stat();
       if (!stat.isFile()) throw new Error('The requested attachment is not a file');
+      if (classification.category === 'pdf') {
+        if (!this.pdfProcessor) throw new Error('PDF processing is unavailable');
+        if (stat.size > MAX_FILE_BYTES) throw new Error('The PDF is larger than the 20 MB limit');
+        const data = await handle.readFile();
+        try {
+          const result = await this.pdfProcessor.extractText(data, {
+            page: options.page,
+            pageCount: options.pageCount,
+            signal: options.signal,
+          });
+          return { ...result, name: displayName, bytes: stat.size };
+        } finally {
+          data.fill(0);
+        }
+      }
       if (classification.category === 'image') {
         if (stat.size > MAX_IMAGE_BYTES) {
           throw new Error('The image is larger than the 8 MB model limit');
@@ -330,6 +347,43 @@ class ConversationAttachmentStore {
         text: buffer.subarray(0, bytesRead).toString('utf8'),
         truncated: offset + bytesRead < stat.size,
       };
+    } finally {
+      await handle.close();
+    }
+  }
+
+  async renderPdfPage(conversationId, resourceId, options = {}) {
+    if (!this.pdfProcessor) throw new Error('PDF processing is unavailable');
+    const resource = await this.#resource(conversationId, resourceId);
+    let filePath;
+    let displayName = resource.name;
+    let classification = resource;
+    if (resource.kind === 'folder') {
+      if (!options.path) throw new Error('Reading a folder resource requires a relative file path');
+      filePath = await this.#resolveFolderPath(resource, options.path, false);
+      displayName = cleanName(path.basename(filePath));
+      classification = fileClassification(filePath);
+    } else {
+      filePath = resource.storagePath;
+    }
+    if (!filePath || classification.category !== 'pdf') {
+      throw new Error('Only PDF attachments can be rendered as PDF pages');
+    }
+    const handle = await this.fs.open(filePath, SAFE_READ_FLAGS);
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile()) throw new Error('The requested attachment is not a file');
+      if (stat.size > MAX_FILE_BYTES) throw new Error('The PDF is larger than the 20 MB limit');
+      const data = await handle.readFile();
+      try {
+        const result = await this.pdfProcessor.renderPage(data, {
+          page: options.page,
+          signal: options.signal,
+        });
+        return { ...result, name: displayName, bytes: stat.size };
+      } finally {
+        data.fill(0);
+      }
     } finally {
       await handle.close();
     }
@@ -410,10 +464,7 @@ class ConversationAttachmentStore {
           item.storageName.startsWith(item.resourceId)
         ) {
           const classification = fileClassification(item.storageName);
-          if (
-            classification.category === 'unsupported' ||
-            classification.category === 'pdf_unsupported'
-          ) {
+          if (classification.category === 'unsupported') {
             continue;
           }
           resources.set(item.resourceId, {

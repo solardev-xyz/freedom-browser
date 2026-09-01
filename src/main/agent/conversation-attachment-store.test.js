@@ -25,9 +25,10 @@ describe('ConversationAttachmentStore', () => {
     fs.rmSync(sourceDir, { recursive: true, force: true });
   });
 
-  function createStore(filePaths) {
+  function createStore(filePaths, pdfProcessor) {
     return new ConversationAttachmentStore({
       userDataDir,
+      ...(pdfProcessor && { pdfProcessor }),
       dialog: {
         showOpenDialog: jest.fn(async () => ({ canceled: false, filePaths })),
       },
@@ -86,26 +87,99 @@ describe('ConversationAttachmentStore', () => {
     ).rejects.toThrow('changed after it was selected');
   });
 
-  test('rejects PDFs before creating a pending conversation resource', async () => {
+  test('snapshots PDFs and delegates bounded text extraction without exposing paths', async () => {
     const sourcePath = path.join(sourceDir, 'report.pdf');
     fs.writeFileSync(sourcePath, '%PDF-1.7');
-    const store = createStore([sourcePath]);
+    const pdfProcessor = {
+      extractText: jest.fn(async () => ({
+        kind: 'pdf_text',
+        pageCount: 2,
+        pages: [{ page: 1, text: 'Report heading' }],
+        truncated: true,
+      })),
+      renderPage: jest.fn(),
+    };
+    const store = createStore([sourcePath], pdfProcessor);
 
-    await expect(store.pickFiles({ ownerId: 'window_1' })).rejects.toThrow(
-      'PDF attachments are not supported yet'
+    const [selection] = await store.pickFiles({ ownerId: 'window_1' });
+    expect(selection).toMatchObject({ category: 'pdf', mimeType: 'application/pdf' });
+    const [resource] = await store.consume(
+      'window_1',
+      [selection.selectionId],
+      'conversation_1212121212121212'
     );
-    expect(store.staged.size).toBe(0);
+    await expect(
+      store.read('conversation_1212121212121212', resource.resourceId, {
+        page: 1,
+        pageCount: 1,
+      })
+    ).resolves.toMatchObject({
+      kind: 'pdf_text',
+      name: 'report.pdf',
+      pageCount: 2,
+      pages: [{ page: 1, text: 'Report heading' }],
+    });
+    expect(pdfProcessor.extractText).toHaveBeenCalledWith(
+      expect.any(Buffer),
+      expect.objectContaining({ page: 1, pageCount: 1 })
+    );
+    expect(JSON.stringify(resource)).not.toContain(sourceDir);
+    const restored = createStore([]);
+    await expect(restored.listResources('conversation_1212121212121212')).resolves.toEqual([
+      expect.objectContaining({ name: 'report.pdf', category: 'pdf', available: true }),
+    ]);
+  });
+
+  test('renders a requested PDF page from a live folder grant', async () => {
+    const folderPath = path.join(sourceDir, 'reports');
+    fs.mkdirSync(folderPath);
+    fs.writeFileSync(path.join(folderPath, 'layout.pdf'), '%PDF-1.7');
+    const pdfProcessor = {
+      extractText: jest.fn(),
+      renderPage: jest.fn(async () => ({
+        kind: 'pdf_page',
+        page: 2,
+        pageCount: 3,
+        width: 600,
+        height: 800,
+        mimeType: 'image/png',
+        data: Buffer.from('png'),
+      })),
+    };
+    const store = createStore([folderPath], pdfProcessor);
+    const [selection] = await store.pickFolder({ ownerId: 'window_1' });
+    const [folder] = await store.consume(
+      'window_1',
+      [selection.selectionId],
+      'conversation_3434343434343434'
+    );
+
+    await expect(
+      store.renderPdfPage('conversation_3434343434343434', folder.resourceId, {
+        path: 'layout.pdf',
+        page: 2,
+      })
+    ).resolves.toMatchObject({
+      kind: 'pdf_page',
+      name: 'layout.pdf',
+      page: 2,
+      pageCount: 3,
+    });
+    expect(pdfProcessor.renderPage).toHaveBeenCalledWith(
+      expect.any(Buffer),
+      expect.objectContaining({ page: 2 })
+    );
   });
 
   test('rejects a mixed file selection transactionally', async () => {
     const textPath = path.join(sourceDir, 'notes.txt');
-    const pdfPath = path.join(sourceDir, 'report.pdf');
+    const unsupportedPath = path.join(sourceDir, 'program.exe');
     fs.writeFileSync(textPath, 'notes');
-    fs.writeFileSync(pdfPath, '%PDF-1.7');
-    const store = createStore([textPath, pdfPath]);
+    fs.writeFileSync(unsupportedPath, 'binary');
+    const store = createStore([textPath, unsupportedPath]);
 
     await expect(store.pickFiles({ ownerId: 'window_1' })).rejects.toThrow(
-      'PDF attachments are not supported yet'
+      'not a supported text, image, or PDF file'
     );
     expect(store.staged.size).toBe(0);
   });
@@ -211,7 +285,7 @@ describe('ConversationAttachmentStore', () => {
 
   test('bounds text reads and recognizes only declared attachment formats', async () => {
     expect(fileClassification('/tmp/a.png')).toMatchObject({ category: 'image' });
-    expect(fileClassification('/tmp/a.pdf')).toMatchObject({ category: 'pdf_unsupported' });
+    expect(fileClassification('/tmp/a.pdf')).toMatchObject({ category: 'pdf' });
     expect(fileClassification('/tmp/a.exe')).toMatchObject({ category: 'unsupported' });
     expect(pathInside('/safe/root', '/safe/root/file')).toBe(true);
     expect(pathInside('/safe/root', '/safe/other')).toBe(false);

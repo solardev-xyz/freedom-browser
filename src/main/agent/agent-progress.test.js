@@ -851,6 +851,61 @@ describe('Agent progress projection', () => {
     ).toBeNull();
   });
 
+  test('projects PDF page reads and renders without retaining text or pixels', () => {
+    const attachment = normalizeAttachmentReceipt(
+      {
+        resourceId: `attachment_${'c'.repeat(20)}`,
+        resourceKind: 'file',
+        name: 'report.pdf',
+        bytesRead: 10_000,
+        page: 7,
+        pagesRead: 1,
+        pageCount: 20,
+        width: 900,
+        height: 1200,
+        pixels: 'private-image-data',
+        text: 'private extracted text',
+      },
+      ATTACHMENT_OPERATIONS.RENDER_PAGE
+    );
+    expect(attachment).toEqual({
+      action: 'read',
+      resourceId: `attachment_${'c'.repeat(20)}`,
+      resourceKind: 'file',
+      name: 'report.pdf',
+      bytesRead: 10_000,
+      page: 7,
+      pagesRead: 1,
+      pageCount: 20,
+      truncated: false,
+    });
+    expect(JSON.stringify(attachment)).not.toMatch(/private-image|private extracted/);
+    expect(
+      activityProgress(ATTACHMENT_OPERATIONS.RENDER_PAGE, { attachment })
+    ).toMatchObject({
+      intent: 'Looking at report.pdf — page 7 of 20',
+      label: 'Looked at report.pdf — page 7 of 20',
+      effect: 'observed',
+    });
+    expect(
+      buildAgentOutcome(
+        [
+          {
+            toolCallId: 'pdf_page',
+            operation: ATTACHMENT_OPERATIONS.RENDER_PAGE,
+            status: 'succeeded',
+            effect: 'observed',
+            attachment,
+          },
+        ],
+        'completed'
+      )
+    ).toMatchObject({
+      verification: 'attachments_inspected',
+      counts: { attachmentReads: 1, attachmentObservations: 1 },
+    });
+  });
+
   test('projects verified Swarm publications without local paths and recovers in-flight work', () => {
     const publication = normalizePublicationReceipt({
       publicationId: `swarm_pub_${'a'.repeat(24)}`,

@@ -440,6 +440,7 @@ async function bootstrap() {
       focusPage: focusDesktopAutomationPage,
     });
     agentRuntime = createFreedomAgentRuntime({
+      BrowserWindow,
       ipcMain,
       safeStorage,
       profile: activeProfile,

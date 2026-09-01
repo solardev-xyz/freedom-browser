@@ -13,6 +13,7 @@ jest.mock('../node-request-controller');
 jest.mock('../node-lifecycle-controller');
 jest.mock('../node-diagnostics-controller');
 jest.mock('./swarm-publication-controller');
+jest.mock('./pdf-processor');
 
 const { FreedomAgentService } = require('./freedom-agent-service');
 const { registerFreedomAgentIpc } = require('./ipc');
@@ -27,6 +28,7 @@ const { NodeRequestController } = require('../node-request-controller');
 const { NodeLifecycleController } = require('../node-lifecycle-controller');
 const { NodeDiagnosticsController } = require('../node-diagnostics-controller');
 const { SwarmPublicationController } = require('./swarm-publication-controller');
+const { PdfProcessor } = require('./pdf-processor');
 const { createFreedomAgentRuntime } = require('./runtime');
 
 describe('Freedom agent runtime', () => {
@@ -50,6 +52,7 @@ describe('Freedom agent runtime', () => {
       resolvePublicationSource: jest.fn(),
       dispose: jest.fn(() => calls.push('attachments')),
     };
+    const pdfProcessor = { dispose: jest.fn(() => calls.push('pdf')) };
     const service = { dispose: jest.fn(async () => calls.push('service')) };
     const walletController = {};
     const nodeController = {};
@@ -63,6 +66,7 @@ describe('Freedom agent runtime', () => {
     AgentSessionHistoryStore.mockImplementation(() => historyStore);
     AgentNodeOperationStore.mockImplementation(() => nodeOperationStore);
     ConversationAttachmentStore.mockImplementation(() => attachmentStore);
+    PdfProcessor.mockImplementation(() => pdfProcessor);
     AgentWalletController.mockImplementation(() => walletController);
     NodeStatusController.mockImplementation(() => nodeController);
     NodeRequestController.mockImplementation(() => nodeRequestController);
@@ -72,6 +76,7 @@ describe('Freedom agent runtime', () => {
     FreedomAgentService.mockImplementation(() => service);
     registerFreedomAgentIpc.mockReturnValue(unregisterIpc);
     const options = {
+      BrowserWindow: jest.fn(),
       ipcMain: {},
       safeStorage: {},
       dialog: {},
@@ -116,9 +121,14 @@ describe('Freedom agent runtime', () => {
       userDataDir: options.profile.userDataDir,
     });
     expect(historyStore.markStaleRunningAsInterrupted).toHaveBeenCalledTimes(1);
+    expect(PdfProcessor).toHaveBeenCalledWith({
+      BrowserWindow: options.BrowserWindow,
+      ipcMain: options.ipcMain,
+    });
     expect(ConversationAttachmentStore).toHaveBeenCalledWith({
       userDataDir: options.profile.userDataDir,
       dialog: options.dialog,
+      pdfProcessor,
     });
     expect(AgentNodeOperationStore).toHaveBeenCalledWith({
       userDataDir: options.profile.userDataDir,
@@ -186,6 +196,7 @@ describe('Freedom agent runtime', () => {
     expect(nodeRequestController.dispose).toHaveBeenCalledTimes(1);
     expect(publicationController.dispose).toHaveBeenCalledTimes(1);
     expect(attachmentStore.dispose).toHaveBeenCalledTimes(1);
+    expect(pdfProcessor.dispose).toHaveBeenCalledTimes(1);
     expect(historyStore.close).toHaveBeenCalledTimes(1);
     expect(nodeOperationStore.close).toHaveBeenCalledTimes(1);
     expect(options.controller.setWalletTransferController).toHaveBeenLastCalledWith(null);
@@ -200,6 +211,7 @@ describe('Freedom agent runtime', () => {
       'node-requests',
       'publications',
       'attachments',
+      'pdf',
       'history',
       'node-operations',
     ]);
