@@ -189,6 +189,68 @@ Recorded stabilization results:
 - Full `npm test`: 214 suites and 3,835 tests passed; 8 suites and 26 tests skipped normally.
 - A direct receipt/teardown probe retained `backend: linux-bubblewrap` and `terminationGuarantee: namespace_scoped` for completed, timed-out, and cancelled executions. Timeout and cancellation heartbeat files remained unchanged after receipt resolution, with no namespace survivor observed.
 
+### Packaged Electron runtime qualification
+
+The packaged-runtime pass used the same Ubuntu 24.04.3 x86-64 host and kernel `6.8.0-90-generic`. Freedom `0.8.1-dev` was packaged with Electron `43.0.0`, embedded Node `24.17.0`, and Chromium `150.0.7871.46`. Host npm/Node were used to build and drive repository tests only. Every sandboxed JavaScript workload invoked `/opt/freedom-toolchain/electron/freedom`, and its in-sandbox `process.execPath` reported that exact path. No NVM, Linuxbrew, home-directory runtime, separately mounted Node root, or host executable path was used as a command fallback.
+
+Trusted main-process discovery canonicalizes `process.execPath` and `process.resourcesPath`. On Linux, `resourcesPath` must be the `resources` child of one runtime tree, the active executable must remain inside that tree, and packaged discovery confirms `app.asar` with Electron's unpatched `original-fs` view. The resulting descriptor carries separate canonical host executable, runtime root, relative executable, and policy-derived sandbox executable identities. `APPIMAGE` and `APPDIR` are diagnostics only: matching canonical values identify the AppImage layout, but forged or similarly named temporary paths cannot redirect authority. The policy re-canonicalizes the root/executable containment and derives the neutral mount mapping itself.
+
+The qualification-only builder configuration inherits normal Linux metadata, replaces `main` with the Electron qualification harness, excludes unrelated optional node payloads, and never publishes. It also preserves the Chromium helper's upstream-required mode in generated artifacts; the Debian post-install script selects either its installed AppArmor `userns` profile or the helper according to host posture. Normal release configuration is unchanged.
+
+Build and package commands:
+
+```sh
+npm ci
+npm run build:agent-sandbox:linux:packaged
+dpkg -i out/agent-sandbox-packaged-linux/freedom-browser_0.8.1-dev_amd64.deb
+```
+
+The three non-root launches used fresh validated HOME/XDG/user-data roots and Xvfb:
+
+```sh
+runuser -u freedomqual -- xvfb-run -a env ELECTRON_RUN_AS_NODE=1 \
+  /tmp/freedom-unpacked-qualified-Lvwm33/freedom \
+  /tmp/qualify-agent-sandbox-packaged-linux.js \
+  /tmp/freedom-unpacked-qualified-Lvwm33/freedom
+
+runuser -u freedomqual -- xvfb-run -a env ELECTRON_RUN_AS_NODE=1 \
+  /opt/Freedom/freedom \
+  /tmp/qualify-agent-sandbox-packaged-linux.js \
+  /opt/Freedom/freedom
+
+runuser -u freedomqual -- aa-exec -p freedom-appimage-qualification -- \
+  xvfb-run -a env ELECTRON_RUN_AS_NODE=1 \
+  /tmp/Freedom-0.8.1-dev-qualified.AppImage \
+  /tmp/qualify-agent-sandbox-packaged-linux.js \
+  /tmp/Freedom-0.8.1-dev-qualified.AppImage
+```
+
+Observed layouts and results:
+
+| Layout | Artifact or installed path | Canonical runtime root observed by Electron | Host executable | Sandbox executable | Result |
+| --- | --- | --- | --- | --- | --- |
+| unpacked baseline | `out/agent-sandbox-packaged-linux/linux-unpacked` (root-owned qualification copy used for non-root launch) | `/tmp/freedom-unpacked-qualified-Lvwm33` | `/tmp/freedom-unpacked-qualified-Lvwm33/freedom` | `/opt/freedom-toolchain/electron/freedom` | passed |
+| Debian package | `out/agent-sandbox-packaged-linux/freedom-browser_0.8.1-dev_amd64.deb` | `/opt/Freedom` | `/opt/Freedom/freedom` | `/opt/freedom-toolchain/electron/freedom` | passed |
+| AppImage | `out/agent-sandbox-packaged-linux/Freedom-0.8.1-dev.AppImage` | `/tmp/freedom-packaged-linux-launch-1gwyKu/.mount_FreedojW6oZ7` | `/tmp/freedom-packaged-linux-launch-1gwyKu/.mount_FreedojW6oZ7/freedom` | `/opt/freedom-toolchain/electron/freedom` | conditionally passed with dedicated AppArmor launch profile |
+
+The AppImage used its normal FUSE mount, not extract-and-run. The Electron parent remained alive for each Bubblewrap child; an active cancellation probe proved the transient canonical root and executable remained available until the child receipt completed. The mount disappeared after application exit. A SHA-256 recheck proved the AppImage file was unchanged; the sandbox's private `/tmp` hid the host file, so a same-named write created and removed only a private tmpfs shadow. A forged-`APPDIR`/`APPIMAGE` unit fixture and a user-created `.mount_Freedom-*` directory did not redirect the selected runtime.
+
+The unpacked, installed Debian, and profiled AppImage runs each passed the website build, workspace and `.git` behavior, direct/symlink/hardlink/subprocess denials, filesystem and abstract Unix socket denials, internet/DNS/localhost denials, private storage, output truncation, nonzero failure, timeout, cancellation, and descendant teardown checks. Receipts consistently reported `backend: linux-bubblewrap` and `terminationGuarantee: namespace_scoped`; no heartbeat or process survived receipt completion.
+
+Host-only qualification additions were `libfuse2t64` plus the already installed `xvfb`, `libudev-dev`, Bubblewrap, and AppArmor utilities/profiles. A dedicated throwaway user `freedomqual` was created. The Debian package installed its generated `/etc/apparmor.d/freedom` profile. AppImage required a qualification-only `freedom-appimage-qualification` AppArmor profile granting `userns` to the explicitly wrapped process.
+
+That AppImage condition is important. On this Ubuntu host, an ordinary unprofiled AppImage launch makes Electron Builder's generated AppRun detect a failed user-namespace probe and inject `--no-sandbox`. This qualification rejected that path. The actual FUSE AppImage passed without `--no-sandbox` only under the explicit AppArmor profile. A standalone product AppImage therefore remains unsupported on restricted Ubuntu until Freedom supplies a reviewed, usable profile/launcher design or Electron Builder changes its fail-open behavior. The Debian layout is the credible first packaged path.
+
+Final recorded test results after the packaged changes:
+
+- `npm ci`: passed; 1,167 packages installed, with 22 existing audit findings.
+- Focused runtime/policy/Bubblewrap/Seatbelt/executor tests: 5 suites, 40 tests passed.
+- `npm run test:agent-sandbox`: 7 suites and 52 tests passed; 3 suites and 9 tests skipped normally.
+- `npm run test:agent-sandbox:qualification`: capability detection, focused Jest, lint, and Babel transform passed inside Bubblewrap.
+- `FREEDOM_SANDBOX_DESTRUCTIVE=1 npm run test:agent-sandbox:destructive`: 1 test passed inside validated synthetic fixtures.
+- `npm run lint`: passed.
+- `npm test`: 214 suites and 3,838 tests passed; 8 suites and 26 tests skipped normally. Jest emitted known late OpenLV MQTT connection logging, but exited zero.
+
 ## Seccomp assessment
 
 No general syscall filter is installed, and capability reports say so. `--disable-userns` does apply Bubblewrap's narrow nested-user-namespace prevention, and `--new-session` addresses the terminal-injection concern called out by Bubblewrap, but neither is represented as a general seccomp profile.
