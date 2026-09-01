@@ -86,7 +86,7 @@ Pre-existing hardlinks are different: a writable path and a hidden outside path 
 - A `.git` pointer file is parsed only after trusted lifecycle state supplies the exact canonical external gitdir and common-directory paths. Workspace-controlled pointer text cannot authorize a mount. Authorized pointers are replaced with path-neutral sandbox pointers under `/freedom-git-*`.
 - The resolved gitdir and, when present, common directory are mounted read-only.
 - A missing `.git`, a symlink, malformed pointer, nested protected path, or missing resolved directory fails closed. A future Freedom project creator can satisfy this invariant by initializing the managed project before shell authority is granted.
-- Git configuration is bounded and rejected if it contains includes, credential sections, embedded URL credentials, HTTP credential-bearing files/headers, TLS key paths, or a worktree-controlled hooks path.
+- Common and linked-worktree-specific Git configuration is bounded and rejected if it contains includes, credential sections, embedded URL credentials, HTTP credential-bearing files/headers, TLS key paths, or a worktree-controlled hooks path.
 
 This allows `git status`, `diff`, `log`, and version inspection while preventing commits, ref/object/config mutation, checkout metadata changes, and hook installation.
 
@@ -156,6 +156,7 @@ The ordinary focused suite uses only validated temporary fixture roots and cover
 - ordinary nonzero command failure;
 - descendant cleanup after timeout and explicit cancellation;
 - protected ordinary and explicitly authorized external `.git` metadata, with workspace-controlled external pointers denied by default;
+- rejection of unsafe `config.worktree` in an otherwise authorized linked-worktree layout;
 - rejection of forged lookalike policy objects and later child-PID status replacements;
 - receipt completion when synthetic staging cleanup fails; and
 - sandbox initialization failure with proof that the command never ran outside Bubblewrap.
@@ -166,11 +167,11 @@ The repository-local qualification command runs a focused Jest policy suite, `np
 
 Final VM validation results:
 
-- `npm run test:agent-sandbox`: 27 passed; the single destructive test skipped by default.
+- `npm run test:agent-sandbox`: 28 passed; the single destructive test skipped by default.
 - `npm run test:agent-sandbox:destructive` with the explicit gate: 1 passed.
 - `npm run test:agent-sandbox:qualification`: focused Jest, full lint, and Babel transform all completed inside Bubblewrap.
 - `npm run lint`: passed on the host and inside Bubblewrap.
-- Full `npm test`: 203 suites and 3,750 tests passed; seven unrelated suites failed because this pre-provisioned checkout lacks declared Ghostery, embedded Pi SDK, OpenLV, and Ledger packages. No dependency was installed or changed to hide that environmental limitation.
+- Full `npm test`: 203 suites and 3,751 tests passed; seven unrelated suites failed because this pre-provisioned checkout lacks declared Ghostery, embedded Pi SDK, OpenLV, and Ledger packages. No dependency was installed or changed to hide that environmental limitation.
 
 ## Seccomp assessment
 

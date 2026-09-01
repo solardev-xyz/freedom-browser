@@ -120,6 +120,63 @@ describe('workspace execution policy', () => {
     ).rejects.toMatchObject({ code: 'EXTERNAL_GIT_METADATA_DENIED' });
   });
 
+  test('rejects unsafe worktree-specific configuration in a linked Git worktree', async () => {
+    const fixture = await createFixture();
+    fixtureRoots.push(fixture.fixtureRoot);
+    const runGit = (args) => {
+      const result = spawnSync('git', args, { encoding: 'utf8' });
+      expect(result.status).toBe(0);
+      return result.stdout.trim();
+    };
+    runGit(['-C', fixture.workspaceRoot, 'config', 'user.name', 'Freedom Test']);
+    runGit(['-C', fixture.workspaceRoot, 'config', 'user.email', 'freedom@example.invalid']);
+    runGit(['-C', fixture.workspaceRoot, 'add', 'source.js']);
+    runGit(['-C', fixture.workspaceRoot, 'commit', '--quiet', '-m', 'fixture']);
+    runGit(['-C', fixture.workspaceRoot, 'config', 'extensions.worktreeConfig', 'true']);
+
+    const linkedWorkspace = path.join(fixture.fixtureRoot, 'linked-worktree');
+    runGit([
+      '-C',
+      fixture.workspaceRoot,
+      'worktree',
+      'add',
+      '--quiet',
+      '--detach',
+      linkedWorkspace,
+    ]);
+    const pointer = await fs.promises.readFile(path.join(linkedWorkspace, '.git'), 'utf8');
+    const gitDirectory = await fs.promises.realpath(
+      path.resolve(linkedWorkspace, /^gitdir:\s*(.+)\s*$/i.exec(pointer)[1])
+    );
+    const commonPointer = (
+      await fs.promises.readFile(path.join(gitDirectory, 'commondir'), 'utf8')
+    ).trim();
+    const commonDirectory = await fs.promises.realpath(path.resolve(gitDirectory, commonPointer));
+    const authorizedGitMetadataPaths = [gitDirectory, commonDirectory];
+
+    await expect(
+      createWorkspaceExecutionPolicy({
+        workspaceRoot: linkedWorkspace,
+        authorizedGitMetadataPaths,
+      })
+    ).resolves.toMatchObject({ kind: 'freedom.workspace-execution-policy' });
+
+    runGit([
+      '-C',
+      linkedWorkspace,
+      'config',
+      '--worktree',
+      'http.extraHeader',
+      'Authorization: Bearer must-not-cross',
+    ]);
+    await expect(
+      createWorkspaceExecutionPolicy({
+        workspaceRoot: linkedWorkspace,
+        authorizedGitMetadataPaths,
+      })
+    ).rejects.toMatchObject({ code: 'UNSAFE_GIT_CONFIGURATION' });
+  });
+
   test('rejects missing or ambiguous protected metadata instead of relying on mount ordering', async () => {
     const missing = await createFixture({ git: false });
     fixtureRoots.push(missing.fixtureRoot);

@@ -372,6 +372,9 @@ async function resolveGitMetadata(workspaceRoot, relativePath, authorizedGitMeta
     if (error.code !== 'ENOENT') throw error;
   }
   await validateGitConfiguration(commonDirectory);
+  if (gitDirectory !== commonDirectory) {
+    await validateGitConfiguration(gitDirectory);
+  }
   return Object.freeze({
     relativePath,
     access: 'read_only',
