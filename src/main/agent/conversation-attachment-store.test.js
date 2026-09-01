@@ -98,6 +98,7 @@ describe('ConversationAttachmentStore', () => {
         truncated: true,
       })),
       renderPage: jest.fn(),
+      renderPreview: jest.fn(),
     };
     const store = createStore([sourcePath], pdfProcessor);
 
@@ -145,6 +146,7 @@ describe('ConversationAttachmentStore', () => {
         mimeType: 'image/png',
         data: Buffer.from('png'),
       })),
+      renderPreview: jest.fn(),
     };
     const store = createStore([folderPath], pdfProcessor);
     const [selection] = await store.pickFolder({ ownerId: 'window_1' });
@@ -182,6 +184,48 @@ describe('ConversationAttachmentStore', () => {
       'not a supported text, image, or PDF file'
     );
     expect(store.staged.size).toBe(0);
+  });
+
+  test('renders and memory-caches bounded previews for snapshotted images', async () => {
+    const sourcePath = path.join(sourceDir, 'diagram.png');
+    fs.writeFileSync(sourcePath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    const pdfProcessor = {
+      extractText: jest.fn(),
+      renderPage: jest.fn(),
+      renderPreview: jest.fn(async () => ({
+        kind: 'attachment_preview',
+        sourceKind: 'image',
+        width: 64,
+        height: 48,
+        mimeType: 'image/png',
+        data: Buffer.from('preview'),
+      })),
+    };
+    const store = createStore([sourcePath], pdfProcessor);
+    const [selection] = await store.pickFiles({ ownerId: 'window_1' });
+    const [resource] = await store.consume(
+      'window_1',
+      [selection.selectionId],
+      'conversation_5656565656565656'
+    );
+
+    const first = await store.renderPreview(
+      'conversation_5656565656565656',
+      resource.resourceId
+    );
+    const second = await store.renderPreview(
+      'conversation_5656565656565656',
+      resource.resourceId
+    );
+
+    expect(first).toMatchObject({ sourceKind: 'image', width: 64, height: 48 });
+    expect(Buffer.isBuffer(first.data)).toBe(true);
+    expect(second.data).not.toBe(first.data);
+    expect(pdfProcessor.renderPreview).toHaveBeenCalledTimes(1);
+    expect(pdfProcessor.renderPreview).toHaveBeenCalledWith(
+      expect.any(Buffer),
+      expect.objectContaining({ category: 'image', mimeType: 'image/png', page: 1 })
+    );
   });
 
   test('grants a live read-only folder while preventing path and symlink escape', async () => {

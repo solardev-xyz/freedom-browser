@@ -7,9 +7,14 @@ const { pathToFileURL, fileURLToPath } = require('url');
 const REQUEST_CHANNEL = 'agent:pdf-processor:request';
 const RESULT_CHANNEL = 'agent:pdf-processor:result';
 const MAX_PDF_BYTES = 20 * 1024 * 1024;
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 const MAX_TEXT_PAGES = 4;
+const MAX_PREVIEW_BYTES = 256 * 1024;
+const MAX_PREVIEW_DIMENSION = 192;
 const TEXT_TIMEOUT_MS = 15_000;
 const RENDER_TIMEOUT_MS = 30_000;
+const PREVIEW_OPERATIONS = new Set(['renderPdfPreview', 'renderImagePreview']);
+const PREVIEW_IMAGE_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 
 function insidePath(root, candidate) {
   const relative = path.relative(root, candidate);
@@ -18,10 +23,21 @@ function insidePath(root, candidate) {
 
 function validateInput(data, options, operation) {
   if (!Buffer.isBuffer(data) && !(data instanceof Uint8Array)) {
-    throw new TypeError('PDF processing requires PDF bytes');
+    throw new TypeError('Attachment processing requires file bytes');
   }
-  if (data.byteLength === 0 || data.byteLength > MAX_PDF_BYTES) {
-    throw new Error('PDF files must be between 1 byte and 20 MB');
+  const maximumBytes = operation === 'renderImagePreview' ? MAX_IMAGE_BYTES : MAX_PDF_BYTES;
+  if (data.byteLength === 0 || data.byteLength > maximumBytes) {
+    throw new Error(
+      operation === 'renderImagePreview'
+        ? 'Image previews require between 1 byte and 8 MB'
+        : 'PDF files must be between 1 byte and 20 MB'
+    );
+  }
+  if (operation === 'renderImagePreview') {
+    if (!PREVIEW_IMAGE_MIME_TYPES.has(options.mimeType)) {
+      throw new Error('Image previews require a supported image type');
+    }
+    return { mimeType: options.mimeType };
   }
   const page = options.page ?? 1;
   if (!Number.isSafeInteger(page) || page < 1 || page > 500) {
@@ -77,13 +93,31 @@ function installSessionLockdown(targetSession, { allowedFiles = [], allowedRoots
 }
 
 function validateResult(result, operation) {
-  if (!result || typeof result !== 'object') throw new Error('PDF processor returned no result');
+  if (!result || typeof result !== 'object') throw new Error('Attachment processor returned no result');
   if (result.ok !== true) {
     const error = new Error(result.error?.message || 'The PDF could not be processed safely');
     error.code = result.error?.code || 'PDF_PROCESSING_FAILED';
     throw error;
   }
   const value = result.value;
+  if (PREVIEW_OPERATIONS.has(operation)) {
+    if (
+      value?.kind !== 'attachment_preview' ||
+      value.sourceKind !== (operation === 'renderPdfPreview' ? 'pdf' : 'image') ||
+      value.mimeType !== 'image/png' ||
+      !Number.isSafeInteger(value.width) ||
+      !Number.isSafeInteger(value.height) ||
+      value.width < 1 ||
+      value.height < 1 ||
+      value.width > MAX_PREVIEW_DIMENSION ||
+      value.height > MAX_PREVIEW_DIMENSION ||
+      !(value.data instanceof Uint8Array) ||
+      value.data.byteLength > MAX_PREVIEW_BYTES
+    ) {
+      throw new Error('Attachment processor returned invalid preview output');
+    }
+    return { ...value, data: Buffer.from(value.data) };
+  }
   if (operation === 'extractText') {
     if (
       value?.kind !== 'pdf_text' ||
@@ -139,6 +173,11 @@ class PdfProcessor {
 
   renderPage(data, options = {}) {
     return this.#process('renderPage', data, options);
+  }
+
+  renderPreview(data, options = {}) {
+    const operation = options.category === 'pdf' ? 'renderPdfPreview' : 'renderImagePreview';
+    return this.#process(operation, data, options);
   }
 
   dispose() {
@@ -214,7 +253,10 @@ class PdfProcessor {
 }
 
 module.exports = {
+  MAX_IMAGE_BYTES,
   MAX_PDF_BYTES,
+  MAX_PREVIEW_BYTES,
+  MAX_PREVIEW_DIMENSION,
   MAX_TEXT_PAGES,
   PdfProcessor,
   RENDER_TIMEOUT_MS,

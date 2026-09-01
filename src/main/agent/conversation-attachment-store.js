@@ -12,6 +12,7 @@ const MAX_TOTAL_BYTES = 50 * 1024 * 1024;
 const MAX_TEXT_READ_BYTES = 256 * 1024;
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 const MAX_FOLDER_ENTRIES = 200;
+const MAX_PREVIEW_CACHE_ENTRIES = 64;
 const SAFE_READ_FLAGS =
   fs.constants.O_RDONLY |
   (fs.constants.O_NOFOLLOW || 0) |
@@ -81,13 +82,15 @@ class ConversationAttachmentStore {
     if (
       this.pdfProcessor &&
       (typeof this.pdfProcessor.extractText !== 'function' ||
-        typeof this.pdfProcessor.renderPage !== 'function')
+        typeof this.pdfProcessor.renderPage !== 'function' ||
+        typeof this.pdfProcessor.renderPreview !== 'function')
     ) {
       throw new TypeError('Conversation attachments require a valid PDF processor');
     }
     this.fs = options.fs || fs.promises;
     this.staged = new Map();
     this.resources = new Map();
+    this.previewCache = new Map();
   }
 
   async pickFiles({ ownerId, ownerWindow } = {}) {
@@ -194,6 +197,7 @@ class ConversationAttachmentStore {
   dispose() {
     this.staged.clear();
     this.resources.clear();
+    this.previewCache.clear();
   }
 
   async consume(ownerId, selectionIds, conversationId) {
@@ -389,6 +393,52 @@ class ConversationAttachmentStore {
     }
   }
 
+  async renderPreview(conversationId, resourceId) {
+    if (!this.pdfProcessor) throw new Error('Attachment previews are unavailable');
+    const cacheKey = `${conversationId}:${resourceId}`;
+    const cached = this.previewCache.get(cacheKey);
+    if (cached) {
+      this.previewCache.delete(cacheKey);
+      this.previewCache.set(cacheKey, cached);
+      return { ...cached, data: Buffer.from(cached.data) };
+    }
+    const resource = await this.#resource(conversationId, resourceId);
+    if (
+      resource.kind !== 'file' ||
+      !resource.storagePath ||
+      !['image', 'pdf'].includes(resource.category)
+    ) {
+      throw new Error('Only attached images and PDFs have visual previews');
+    }
+    const handle = await this.fs.open(resource.storagePath, SAFE_READ_FLAGS);
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile()) throw new Error('The requested attachment is not a file');
+      const maximumBytes = resource.category === 'image' ? MAX_IMAGE_BYTES : MAX_FILE_BYTES;
+      if (stat.size < 1 || stat.size > maximumBytes) {
+        throw new Error('The attachment exceeds the preview limit');
+      }
+      const data = await handle.readFile();
+      try {
+        const preview = await this.pdfProcessor.renderPreview(data, {
+          category: resource.category,
+          mimeType: resource.mimeType,
+          page: 1,
+        });
+        const cachedPreview = { ...preview, data: Buffer.from(preview.data) };
+        this.previewCache.set(cacheKey, cachedPreview);
+        while (this.previewCache.size > MAX_PREVIEW_CACHE_ENTRIES) {
+          this.previewCache.delete(this.previewCache.keys().next().value);
+        }
+        return { ...cachedPreview, data: Buffer.from(cachedPreview.data) };
+      } finally {
+        data.fill(0);
+      }
+    } finally {
+      await handle.close();
+    }
+  }
+
   async resolvePublicationSource(conversationId, resourceId) {
     const resource = await this.#resource(conversationId, resourceId);
     if (resource.kind === 'folder') {
@@ -426,6 +476,9 @@ class ConversationAttachmentStore {
 
   async deleteConversation(conversationId) {
     this.resources.delete(conversationId);
+    for (const key of this.previewCache.keys()) {
+      if (key.startsWith(`${conversationId}:`)) this.previewCache.delete(key);
+    }
     await this.fs.rm(this.#conversationDir(conversationId), { recursive: true, force: true });
   }
 

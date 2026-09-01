@@ -243,7 +243,8 @@ function registerFreedomAgentIpc(options = {}) {
     typeof attachmentStore.pickFiles !== 'function' ||
     typeof attachmentStore.pickFolder !== 'function' ||
     typeof attachmentStore.removeStaged !== 'function' ||
-    typeof attachmentStore.clearStaged !== 'function'
+    typeof attachmentStore.clearStaged !== 'function' ||
+    typeof attachmentStore.renderPreview !== 'function'
   ) {
     throw new TypeError('Freedom agent IPC requires an attachment store');
   }
@@ -998,6 +999,37 @@ function registerFreedomAgentIpc(options = {}) {
       return safeServiceError(error);
     }
   };
+  const handleAttachmentPreview = async (event, payload = {}) => {
+    if (
+      !owner ||
+      owner.sender !== event?.sender ||
+      payload.conversationId !== owner.conversationId ||
+      !/^conversation_[a-f0-9]{16}$/.test(payload.conversationId || '') ||
+      !/^attachment_[a-f0-9]{20}$/.test(payload.resourceId || '')
+    ) {
+      return errorEnvelope(
+        AGENT_IPC_ERROR_CODES.NOT_OWNER,
+        'The sender does not own that attachment preview'
+      );
+    }
+    try {
+      const preview = await attachmentStore.renderPreview(
+        payload.conversationId,
+        payload.resourceId
+      );
+      return {
+        ok: true,
+        preview: {
+          sourceKind: preview.sourceKind,
+          width: preview.width,
+          height: preview.height,
+          dataUrl: `data:image/png;base64,${preview.data.toString('base64')}`,
+        },
+      };
+    } catch (error) {
+      return safeServiceError(error);
+    }
+  };
   const handleSetApprovalMode = async (event, payload = {}) => {
     if (
       !owner ||
@@ -1069,6 +1101,7 @@ function registerFreedomAgentIpc(options = {}) {
   ipcMain.handle(IPC.AGENT_ATTACHMENTS_PICK_FOLDER, handlePickFolder);
   ipcMain.handle(IPC.AGENT_ATTACHMENTS_REMOVE, handleRemoveAttachment);
   ipcMain.handle(IPC.AGENT_ATTACHMENTS_REVOKE, handleRevokeAttachment);
+  ipcMain.handle(IPC.AGENT_ATTACHMENTS_PREVIEW, handleAttachmentPreview);
   ipcMain.handle(IPC.AGENT_APPROVAL_MODE_SET, handleSetApprovalMode);
   ipcMain.handle(IPC.AGENT_TAB_CLAIM, handleTabClaim);
   ipcMain.handle(IPC.AGENT_PUBLICATION_OPEN, handleOpenPublication);
@@ -1100,6 +1133,7 @@ function registerFreedomAgentIpc(options = {}) {
     ipcMain.removeHandler?.(IPC.AGENT_ATTACHMENTS_PICK_FOLDER);
     ipcMain.removeHandler?.(IPC.AGENT_ATTACHMENTS_REMOVE);
     ipcMain.removeHandler?.(IPC.AGENT_ATTACHMENTS_REVOKE);
+    ipcMain.removeHandler?.(IPC.AGENT_ATTACHMENTS_PREVIEW);
     ipcMain.removeHandler?.(IPC.AGENT_APPROVAL_MODE_SET);
     ipcMain.removeHandler?.(IPC.AGENT_TAB_CLAIM);
     ipcMain.removeHandler?.(IPC.AGENT_PUBLICATION_OPEN);

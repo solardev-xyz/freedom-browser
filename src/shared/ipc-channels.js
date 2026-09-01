@@ -193,6 +193,7 @@ module.exports = {
   AGENT_ATTACHMENTS_PICK_FOLDER: 'agent:attachments:pick-folder',
   AGENT_ATTACHMENTS_REMOVE: 'agent:attachments:remove',
   AGENT_ATTACHMENTS_REVOKE: 'agent:attachments:revoke',
+  AGENT_ATTACHMENTS_PREVIEW: 'agent:attachments:preview',
   AGENT_APPROVAL_MODE_SET: 'agent:approval-mode:set',
   AGENT_TAB_CLAIM: 'agent:tab:claim',
   AGENT_PUBLICATION_OPEN: 'agent:publication:open',

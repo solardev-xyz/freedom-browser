@@ -29,7 +29,7 @@ function testPdf() {
   return Buffer.from(body, 'ascii');
 }
 
-test('sandboxed PDF processor extracts text and renders one bounded PNG page', async ({
+test('sandboxed attachment processor extracts PDF text and renders bounded pages and previews', async ({
   electronApp,
 }) => {
   const processorPath = path.resolve(__dirname, '..', 'src', 'main', 'agent', 'pdf-processor.js');
@@ -41,18 +41,33 @@ test('sandboxed PDF processor extracts text and renders one bounded PNG page', a
         const data = Buffer.from(pdfBase64, 'base64');
         const text = await processor.extractText(data, { page: 1, pageCount: 2 });
         const image = await processor.renderPage(data, { page: 2 });
+        const pdfPreview = await processor.renderPreview(data, {
+          category: 'pdf',
+          mimeType: 'application/pdf',
+        });
+        const imagePreview = await processor.renderPreview(image.data, {
+          category: 'image',
+          mimeType: 'image/png',
+        });
         return {
           text,
           image: {
             ...image,
             data: Buffer.from(image.data).toString('base64'),
           },
+          previews: [pdfPreview, imagePreview].map((preview) => ({
+            ...preview,
+            data: Buffer.from(preview.data).toString('base64'),
+          })),
         };
       } finally {
         processor.dispose();
       }
     },
-    { modulePath: processorPath, pdfBase64: testPdf().toString('base64') }
+    {
+      modulePath: processorPath,
+      pdfBase64: testPdf().toString('base64'),
+    }
   );
 
   expect(result.text).toMatchObject({
@@ -72,5 +87,22 @@ test('sandboxed PDF processor extracts text and renders one bounded PNG page', a
   expect(Buffer.from(result.image.data, 'base64').subarray(0, 8)).toEqual(
     Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
   );
+  expect(result.previews).toHaveLength(2);
+  expect(result.previews[0]).toMatchObject({
+    kind: 'attachment_preview',
+    sourceKind: 'pdf',
+    mimeType: 'image/png',
+  });
+  expect(result.previews[1]).toMatchObject({
+    kind: 'attachment_preview',
+    sourceKind: 'image',
+    mimeType: 'image/png',
+  });
+  for (const preview of result.previews) {
+    expect(preview.width).toBeLessThanOrEqual(192);
+    expect(preview.height).toBeLessThanOrEqual(192);
+    expect(Buffer.from(preview.data, 'base64').subarray(0, 8)).toEqual(
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+    );
+  }
 });
-

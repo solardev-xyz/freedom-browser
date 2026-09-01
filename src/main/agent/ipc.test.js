@@ -123,6 +123,12 @@ function register(overrides = {}) {
     pickFolder: jest.fn(async () => []),
     removeStaged: jest.fn(() => true),
     clearStaged: jest.fn(),
+    renderPreview: jest.fn(async () => ({
+      sourceKind: 'image',
+      width: 64,
+      height: 48,
+      data: Buffer.from('preview'),
+    })),
   };
   const dispose = registerFreedomAgentIpc({
     ipcMain,
@@ -270,6 +276,40 @@ describe('Freedom agent IPC', () => {
       )
     ).resolves.toMatchObject({ ok: false, error: { code: AGENT_IPC_ERROR_CODES.NOT_OWNER } });
     expect(revokeAttachment).toHaveBeenCalledTimes(1);
+  });
+
+  test('returns a bounded preview only to the browser window owning that conversation', async () => {
+    const conversationId = `conversation_${'a'.repeat(16)}`;
+    const resourceId = `attachment_${'b'.repeat(20)}`;
+    const start = jest.fn(async () => ({ runId: 'run_test', conversationId }));
+    const ctx = register({ service: createService({ start }) });
+    await ctx.ipcMain.handlers.get(IPC.AGENT_START)(
+      { sender: ctx.sender },
+      { rendererTabId: 7, prompt: 'Review the image' }
+    );
+    const preview = ctx.ipcMain.handlers.get(IPC.AGENT_ATTACHMENTS_PREVIEW);
+
+    await expect(
+      preview({ sender: ctx.sender }, { conversationId, resourceId })
+    ).resolves.toEqual({
+      ok: true,
+      preview: {
+        sourceKind: 'image',
+        width: 64,
+        height: 48,
+        dataUrl: `data:image/png;base64,${Buffer.from('preview').toString('base64')}`,
+      },
+    });
+    await expect(
+      preview({ sender: ctx.otherSender }, { conversationId, resourceId })
+    ).resolves.toMatchObject({ ok: false, error: { code: AGENT_IPC_ERROR_CODES.NOT_OWNER } });
+    await expect(
+      preview(
+        { sender: ctx.sender },
+        { conversationId, resourceId: `attachment_${'z'.repeat(20)}` }
+      )
+    ).resolves.toMatchObject({ ok: false, error: { code: AGENT_IPC_ERROR_CODES.NOT_OWNER } });
+    expect(ctx.attachmentStore.renderPreview).toHaveBeenCalledTimes(1);
   });
 
   test('changes approval mode only between turns in the owning conversation', async () => {

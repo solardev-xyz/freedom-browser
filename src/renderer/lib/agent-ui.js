@@ -121,6 +121,8 @@ const toolRows = new Map();
 const attachmentDisplayRows = new Map();
 const turnViews = new Map();
 const guidanceViews = new Map();
+const attachmentPreviewLoaders = new WeakMap();
+let attachmentPreviewObserver = null;
 
 function byId(id) {
   return document.getElementById(id);
@@ -273,6 +275,88 @@ function createMessageAttachment(resource) {
   tile.appendChild(visual);
   tile.appendChild(filename);
   return tile;
+}
+
+async function loadMessageAttachmentPreview(tile, resource, conversationId) {
+  if (
+    !conversationId ||
+    currentConversationId !== conversationId ||
+    typeof window.electronAPI.getAgentAttachmentPreview !== 'function'
+  ) {
+    return;
+  }
+  try {
+    const response = await window.electronAPI.getAgentAttachmentPreview(
+      conversationId,
+      resource.resourceId
+    );
+    const preview = response?.preview;
+    if (
+      !response?.ok ||
+      currentConversationId !== conversationId ||
+      !tile.parentNode ||
+      typeof preview?.dataUrl !== 'string' ||
+      !preview.dataUrl.startsWith('data:image/png;base64,') ||
+      preview.dataUrl.length > 400_000 ||
+      !Number.isSafeInteger(preview.width) ||
+      !Number.isSafeInteger(preview.height) ||
+      preview.width < 1 ||
+      preview.height < 1 ||
+      preview.width > 192 ||
+      preview.height > 192
+    ) {
+      return;
+    }
+    const visual = tile.querySelector('.agent-message-attachment-visual');
+    if (!visual) return;
+    const image = document.createElement('img');
+    image.className = 'agent-message-attachment-preview';
+    image.alt = '';
+    image.decoding = 'async';
+    image.draggable = false;
+    image.addEventListener('load', () => visual.classList.add('has-preview'), { once: true });
+    image.addEventListener(
+      'error',
+      () => {
+        visual.classList.remove('has-preview');
+        image.remove();
+      },
+      { once: true }
+    );
+    image.src = preview.dataUrl;
+    visual.appendChild(image);
+  } catch {
+    // The type-aware icon is the intentional fallback for unavailable previews.
+  }
+}
+
+function queueMessageAttachmentPreview(tile, resource) {
+  if (
+    !['image', 'pdf'].includes(resource?.category) ||
+    typeof resource.resourceId !== 'string' ||
+    !currentConversationId
+  ) {
+    return;
+  }
+  const conversationId = currentConversationId;
+  const load = () => loadMessageAttachmentPreview(tile, resource, conversationId);
+  if (typeof window.IntersectionObserver !== 'function') {
+    void load();
+    return;
+  }
+  if (!attachmentPreviewObserver) {
+    attachmentPreviewObserver = new window.IntersectionObserver((entries, observer) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        observer.unobserve(entry.target);
+        const loader = attachmentPreviewLoaders.get(entry.target);
+        attachmentPreviewLoaders.delete(entry.target);
+        if (loader) void loader();
+      }
+    });
+  }
+  attachmentPreviewLoaders.set(tile, load);
+  attachmentPreviewObserver.observe(tile);
 }
 
 function renderAttachmentContexts() {
@@ -1340,6 +1424,8 @@ function resetConversationUi() {
   attachmentDisplayRows.clear();
   turnViews.clear();
   guidanceViews.clear();
+  attachmentPreviewObserver?.disconnect();
+  attachmentPreviewObserver = null;
   elements.transcript.replaceChildren();
   elements.transcript.hidden = true;
   elements.emptyState.hidden = false;
@@ -1370,7 +1456,9 @@ function createTurnView(turn) {
     attachments.setAttribute('aria-label', 'Attached files and folders');
     attachments.tabIndex = 0;
     for (const resource of turn.attachments) {
-      attachments.appendChild(createMessageAttachment(resource));
+      const tile = createMessageAttachment(resource);
+      attachments.appendChild(tile);
+      queueMessageAttachmentPreview(tile, resource);
     }
     userRow.appendChild(attachments);
   }

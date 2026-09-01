@@ -303,6 +303,7 @@ async function loadAgentUi(options = {}) {
       revoked: true,
       resources: [],
     }),
+    getAgentAttachmentPreview: jest.fn().mockResolvedValue({ ok: false }),
     setAgentApprovalMode: jest.fn(async (conversationId, approvalMode) => ({
       ok: true,
       conversationId,
@@ -732,6 +733,55 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-run-message'].textContent).toContain(
       'content already read remains in this conversation'
     );
+  });
+
+  test('loads bounded image and PDF previews without replacing the fallback icon', async () => {
+    const previewDataUrl = `data:image/png;base64,${Buffer.from('preview').toString('base64')}`;
+    const getAgentAttachmentPreview = jest.fn().mockResolvedValue({
+      ok: true,
+      preview: {
+        sourceKind: 'image',
+        width: 64,
+        height: 48,
+        dataUrl: previewDataUrl,
+      },
+    });
+    const ctx = await loadAgentUi({ electronAPI: { getAgentAttachmentPreview } });
+    ctx.emit({
+      type: 'run_started',
+      runId: 'run_preview',
+      conversationId: 'conversation_preview',
+      userText: 'Review these',
+      attachments: [
+        {
+          resourceId: `attachment_${'a'.repeat(20)}`,
+          kind: 'file',
+          name: 'diagram.png',
+          category: 'image',
+          available: true,
+        },
+        {
+          resourceId: `attachment_${'b'.repeat(20)}`,
+          kind: 'file',
+          name: 'report.pdf',
+          category: 'pdf',
+          available: true,
+        },
+      ],
+    });
+    await flush();
+
+    expect(getAgentAttachmentPreview).toHaveBeenCalledTimes(2);
+    const tiles = ctx.elements['agent-transcript'].querySelectorAll('.agent-message-attachment');
+    const image = tiles[0].querySelector('.agent-message-attachment-preview');
+    const pdf = tiles[1].querySelector('.agent-message-attachment-preview');
+    expect(image.src).toBe(previewDataUrl);
+    expect(pdf.src).toBe(previewDataUrl);
+    expect(tiles[0].querySelector('.agent-message-attachment-icon')).not.toBeNull();
+    image.dispatch('load');
+    expect(
+      tiles[0].querySelector('.agent-message-attachment-visual').classList.contains('has-preview')
+    ).toBe(true);
   });
 
   test('starts without page access instead of adopting an Agent-owned tab', async () => {

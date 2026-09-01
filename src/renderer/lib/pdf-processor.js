@@ -6,6 +6,11 @@ const MAX_TEXT_CHARS = 128 * 1024;
 const MAX_RENDER_DIMENSION = 2048;
 const MAX_RENDER_PIXELS = 4_000_000;
 const MAX_RENDER_BYTES = 8 * 1024 * 1024;
+const MAX_PREVIEW_BYTES = 256 * 1024;
+const MAX_PREVIEW_DIMENSION = 192;
+const MAX_IMAGE_DIMENSION = 32_768;
+const MAX_IMAGE_PIXELS = 100_000_000;
+const PREVIEW_IMAGE_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
   '../../../node_modules/pdfjs-dist/build/pdf.worker.min.mjs',
@@ -32,12 +37,23 @@ function safeError(error) {
 }
 
 function validateRequest(request) {
-  if (!request || typeof request.jobId !== 'string') throw new Error('Invalid PDF job');
-  if (!(request.data instanceof Uint8Array)) throw new Error('Invalid PDF bytes');
-  if (!['extractText', 'renderPage'].includes(request.operation)) {
-    throw new Error('Invalid PDF operation');
+  if (!request || typeof request.jobId !== 'string') throw new Error('Invalid attachment job');
+  if (!(request.data instanceof Uint8Array)) throw new Error('Invalid attachment bytes');
+  if (!['extractText', 'renderPage', 'renderPdfPreview', 'renderImagePreview'].includes(request.operation)) {
+    throw new Error('Invalid attachment operation');
   }
-  if (!Number.isSafeInteger(request.page) || request.page < 1) throw new Error('Invalid PDF page');
+  if (
+    request.operation !== 'renderImagePreview' &&
+    (!Number.isSafeInteger(request.page) || request.page < 1)
+  ) {
+    throw new Error('Invalid PDF page');
+  }
+  if (
+    request.operation === 'renderImagePreview' &&
+    !PREVIEW_IMAGE_MIME_TYPES.has(request.mimeType)
+  ) {
+    throw new Error('Invalid image preview type');
+  }
   if (
     request.operation === 'extractText' &&
     (!Number.isSafeInteger(request.pageCount) ||
@@ -127,31 +143,39 @@ async function extractText(document, request) {
   };
 }
 
-function renderScale(viewport) {
+function renderScale(viewport, maximumDimension = MAX_RENDER_DIMENSION, maximumPixels = MAX_RENDER_PIXELS) {
   const dimensionScale = Math.min(
-    MAX_RENDER_DIMENSION / Math.max(1, viewport.width),
-    MAX_RENDER_DIMENSION / Math.max(1, viewport.height)
+    maximumDimension / Math.max(1, viewport.width),
+    maximumDimension / Math.max(1, viewport.height)
   );
   const pixelScale = Math.sqrt(
-    MAX_RENDER_PIXELS / Math.max(1, viewport.width * viewport.height)
+    maximumPixels / Math.max(1, viewport.width * viewport.height)
   );
   return Math.min(2, dimensionScale, pixelScale);
 }
 
-async function canvasPng(canvas) {
+async function canvasPng(canvas, maximumBytes = MAX_RENDER_BYTES) {
   const blob = await new Promise((resolve, reject) => {
     canvas.toBlob((value) => (value ? resolve(value) : reject(new Error('PNG encoding failed'))), 'image/png');
   });
-  if (blob.size > MAX_RENDER_BYTES) throw new Error('Rendered PDF page exceeds the image limit');
+  if (blob.size > maximumBytes) throw new Error('Rendered image exceeds the output limit');
   return new Uint8Array(await blob.arrayBuffer());
 }
 
-async function renderPage(document, request) {
+async function renderPage(document, request, preview = false) {
   assertPageInRange(document, request.page);
   const page = await document.getPage(request.page);
   try {
     const baseViewport = page.getViewport({ scale: 1 });
-    const viewport = page.getViewport({ scale: renderScale(baseViewport) });
+    const viewport = page.getViewport({
+      scale: preview
+        ? renderScale(
+            baseViewport,
+            MAX_PREVIEW_DIMENSION,
+            MAX_PREVIEW_DIMENSION * MAX_PREVIEW_DIMENSION
+          )
+        : renderScale(baseViewport),
+    });
     const canvas = globalThis.document.createElement('canvas');
     canvas.width = Math.max(1, Math.floor(viewport.width));
     canvas.height = Math.max(1, Math.floor(viewport.height));
@@ -162,13 +186,12 @@ async function renderPage(document, request) {
       annotationMode: pdfjsLib.AnnotationMode.DISABLE,
       intent: 'display',
     }).promise;
-    const data = await canvasPng(canvas);
+    const data = await canvasPng(canvas, preview ? MAX_PREVIEW_BYTES : MAX_RENDER_BYTES);
     canvas.width = 1;
     canvas.height = 1;
     return {
-      kind: 'pdf_page',
-      page: request.page,
-      pageCount: document.numPages,
+      kind: preview ? 'attachment_preview' : 'pdf_page',
+      ...(preview ? { sourceKind: 'pdf' } : { page: request.page, pageCount: document.numPages }),
       width: Math.floor(viewport.width),
       height: Math.floor(viewport.height),
       mimeType: 'image/png',
@@ -179,15 +202,61 @@ async function renderPage(document, request) {
   }
 }
 
+async function renderImagePreview(request) {
+  const blob = new Blob([request.data], { type: request.mimeType });
+  const bitmap = await createImageBitmap(blob, { imageOrientation: 'from-image' });
+  try {
+    if (
+      bitmap.width < 1 ||
+      bitmap.height < 1 ||
+      bitmap.width > MAX_IMAGE_DIMENSION ||
+      bitmap.height > MAX_IMAGE_DIMENSION ||
+      bitmap.width * bitmap.height > MAX_IMAGE_PIXELS
+    ) {
+      throw new Error('Image dimensions exceed the preview limit');
+    }
+    const scale = Math.min(
+      1,
+      MAX_PREVIEW_DIMENSION / bitmap.width,
+      MAX_PREVIEW_DIMENSION / bitmap.height
+    );
+    const width = Math.max(1, Math.round(bitmap.width * scale));
+    const height = Math.max(1, Math.round(bitmap.height * scale));
+    const canvas = globalThis.document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext('2d', { alpha: true });
+    context.drawImage(bitmap, 0, 0, width, height);
+    const data = await canvasPng(canvas, MAX_PREVIEW_BYTES);
+    canvas.width = 1;
+    canvas.height = 1;
+    return {
+      kind: 'attachment_preview',
+      sourceKind: 'image',
+      width,
+      height,
+      mimeType: 'image/png',
+      data,
+    };
+  } finally {
+    bitmap.close();
+  }
+}
+
 window.freedomPdfProcessor.onRequest(async (request) => {
   let document;
   try {
     validateRequest(request);
-    document = await loadDocument(request.data);
-    const value =
-      request.operation === 'extractText'
-        ? await extractText(document, request)
-        : await renderPage(document, request);
+    let value;
+    if (request.operation === 'renderImagePreview') {
+      value = await renderImagePreview(request);
+    } else {
+      document = await loadDocument(request.data);
+      value =
+        request.operation === 'extractText'
+          ? await extractText(document, request)
+          : await renderPage(document, request, request.operation === 'renderPdfPreview');
+    }
     window.freedomPdfProcessor.respond({ jobId: request.jobId, ok: true, value });
   } catch (error) {
     const safe = error?.code

@@ -4,6 +4,7 @@ const { EventEmitter } = require('events');
 const path = require('path');
 const {
   MAX_PDF_BYTES,
+  MAX_PREVIEW_DIMENSION,
   PdfProcessor,
   RESULT_CHANNEL,
   installSessionLockdown,
@@ -26,6 +27,12 @@ describe('PdfProcessor', () => {
     expect(() => validateInput(Buffer.from('%PDF'), { page: 0 }, 'renderPage')).toThrow(
       'between 1 and 500'
     );
+    expect(
+      validateInput(Buffer.from('png'), { mimeType: 'image/png' }, 'renderImagePreview')
+    ).toEqual({ mimeType: 'image/png' });
+    expect(() =>
+      validateInput(Buffer.from('gif'), { mimeType: 'image/gif' }, 'renderImagePreview')
+    ).toThrow('supported image type');
   });
 
   test('validates and converts only bounded processor output', () => {
@@ -76,6 +83,21 @@ describe('PdfProcessor', () => {
         'renderPage'
       )
     ).toThrow('invalid page output');
+    const preview = validateResult(
+      {
+        ok: true,
+        value: {
+          kind: 'attachment_preview',
+          sourceKind: 'pdf',
+          width: MAX_PREVIEW_DIMENSION,
+          height: 128,
+          mimeType: 'image/png',
+          data: new Uint8Array([1, 2, 3]),
+        },
+      },
+      'renderPdfPreview'
+    );
+    expect(Buffer.isBuffer(preview.data)).toBe(true);
   });
 
   test('locks the parser session to explicit local assets and denies permissions', () => {
@@ -159,4 +181,3 @@ describe('PdfProcessor', () => {
     expect(ipcMain.listenerCount(RESULT_CHANNEL)).toBe(0);
   });
 });
-
