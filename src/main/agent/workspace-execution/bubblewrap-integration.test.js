@@ -145,7 +145,10 @@ describeBubblewrap(bubblewrapDescription, () => {
       terminationScope: 'pid_namespace',
       capabilities: {
         backend: 'linux-bubblewrap',
+        cancellationGuarantee: 'namespace_scoped',
         loopbackNetworking: 'private_namespace',
+        survivorsPossible: false,
+        completeDescendantTermination: true,
       },
     });
     expect(receipt.stdout).toContain('positive-ok');

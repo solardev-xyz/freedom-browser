@@ -49,7 +49,7 @@ function validateFixtureRoot(fixtureRoot, prefix) {
 }
 
 function validateShortIpcRoot(ipcRoot) {
-  const temporaryRoot = fs.realpathSync('/private/tmp');
+  const temporaryRoot = fs.realpathSync(os.tmpdir());
   const canonical = fs.realpathSync(ipcRoot);
   if (
     canonical === temporaryRoot ||
@@ -118,44 +118,60 @@ function receiptEvidence(name, receipt) {
   });
 }
 
-function assertSeatbeltReceipt(name, receipt, state) {
+function assertExecutionReceipt(name, receipt, state) {
   receiptEvidence(name, receipt);
-  assertCondition(receipt.backend === 'macos-seatbelt', `${name} did not report Seatbelt backend`);
+  const expectedBackend = process.platform === 'linux' ? 'linux-bubblewrap' : 'macos-seatbelt';
+  const expectedGuarantee = process.platform === 'linux' ? 'namespace_scoped' : 'best_effort';
+  assertCondition(receipt.backend === expectedBackend, `${name} reported the wrong backend`);
   assertCondition(
     receipt.state === state,
     `${name} finished as ${receipt.state}: ${receipt.stderr}`
   );
   assertCondition(
-    receipt.terminationGuarantee === 'best_effort',
-    `${name} overstated or omitted the macOS termination guarantee`
+    receipt.terminationGuarantee === expectedGuarantee,
+    `${name} reported the wrong termination guarantee`
   );
   assertCondition(
     receipt.sideEffects === 'unknown',
     `${name} overstated the side effects of a spawned command`
   );
   assertCondition(
-    receipt.survivorsPossible === true &&
-      receipt.completeDescendantTermination === false &&
-      receipt.terminationScope === 'original_process_group',
-    `${name} omitted the machine-readable surviving-descendant warning`
-  );
-  assertCondition(
-    receipt.capabilities?.backend === 'macos-seatbelt',
+    receipt.capabilities?.backend === expectedBackend,
     `${name} omitted backend capability metadata`
   );
   assertCondition(
-    receipt.capabilities?.cancellationGuarantee === 'best_effort',
-    `${name} omitted best-effort cancellation capability metadata`
+    receipt.capabilities?.cancellationGuarantee === expectedGuarantee,
+    `${name} omitted cancellation capability metadata`
   );
-  assertCondition(
-    receipt.capabilities?.survivorsPossible === true &&
-      receipt.capabilities?.completeDescendantTermination === false,
-    `${name} omitted surviving-descendant capability metadata`
-  );
-  assertCondition(
-    receipt.diagnostics?.processGroupFinalKillAttempted === true,
-    `${name} omitted final process-group cleanup diagnostics`
-  );
+  if (process.platform === 'linux') {
+    assertCondition(
+      receipt.survivorsPossible === false &&
+        receipt.completeDescendantTermination === true &&
+        receipt.terminationScope === 'pid_namespace',
+      `${name} omitted namespace-scoped descendant termination metadata`
+    );
+    assertCondition(
+      receipt.capabilities?.survivorsPossible === false &&
+        receipt.capabilities?.completeDescendantTermination === true,
+      `${name} omitted namespace-scoped capability metadata`
+    );
+  } else {
+    assertCondition(
+      receipt.survivorsPossible === true &&
+        receipt.completeDescendantTermination === false &&
+        receipt.terminationScope === 'original_process_group',
+      `${name} omitted the machine-readable surviving-descendant warning`
+    );
+    assertCondition(
+      receipt.capabilities?.survivorsPossible === true &&
+        receipt.capabilities?.completeDescendantTermination === false,
+      `${name} omitted surviving-descendant capability metadata`
+    );
+    assertCondition(
+      receipt.diagnostics?.processGroupFinalKillAttempted === true,
+      `${name} omitted final process-group cleanup diagnostics`
+    );
+  }
 }
 
 async function createWebsiteFixture(prefix = QUALIFICATION_PREFIX) {
@@ -235,11 +251,15 @@ function createPolicy(fixture, runtime, limits = {}) {
   return createWorkspaceExecutionPolicy({
     workspaceRoot: fixture.workspaceRoot,
     nodeRuntimeRoot: null,
-    electronRuntimeRoot: runtime.applicationBundleRoot,
+    electronRuntime: {
+      platform: runtime.platform,
+      rootPath: runtime.runtimeRoot,
+      executablePath: runtime.executablePath,
+    },
     environment: {
       set: {
         ELECTRON_RUN_AS_NODE: '1',
-        FREEDOM_JAVASCRIPT_RUNTIME: runtime.executablePath,
+        FREEDOM_JAVASCRIPT_RUNTIME: runtime.sandboxExecutablePath,
       },
     },
     limits: {
@@ -254,10 +274,10 @@ async function qualifyWebsiteWorkload(executor, policy, runtime, fixture) {
   const gitConfig = path.join(fixture.workspaceRoot, '.git', 'config');
   const originalGitConfig = await fs.promises.readFile(gitConfig, 'utf8');
   const receipt = await executor.execute(policy, {
-    command: runtime.executablePath,
+    command: runtime.sandboxExecutablePath,
     args: ['build.js'],
   });
-  assertSeatbeltReceipt('website-build', receipt, 'completed');
+  assertExecutionReceipt('website-build', receipt, 'completed');
   const result = JSON.parse(receipt.stdout);
   assertCondition(
     result.modified && result.built && result.validated,
@@ -275,7 +295,7 @@ async function qualifyWebsiteWorkload(executor, policy, runtime, fixture) {
       'git status --short >/dev/null; if printf mutation >> .git/config 2>/dev/null; then printf unexpected; else printf protected; fi',
     ],
   });
-  assertSeatbeltReceipt('git-protection', gitReceipt, 'completed');
+  assertExecutionReceipt('git-protection', gitReceipt, 'completed');
   assertCondition(gitReceipt.stdout === 'protected', 'Git metadata write unexpectedly succeeded');
   assertCondition(
     (await fs.promises.readFile(gitConfig, 'utf8')) === originalGitConfig,
@@ -286,11 +306,15 @@ async function qualifyWebsiteWorkload(executor, policy, runtime, fixture) {
 
 async function qualifyBoundary(executor, policy, runtime, fixture) {
   const tcpServer = net.createServer((socket) => socket.end('host-service'));
-  const ipcRoot = await fs.promises.mkdtemp('/private/tmp/freedom-e-ipc-');
+  const ipcRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'freedom-e-ipc-'));
   validateShortIpcRoot(ipcRoot);
   const socketPath = path.join(ipcRoot, 'host.sock');
   const socketServer = net.createServer((socket) => socket.end('host-ipc'));
+  const abstractName = `freedom-electron-${crypto.randomUUID()}`;
+  const abstractServer = net.createServer((socket) => socket.end('host-abstract-ipc'));
   const outsideWrite = path.join(fixture.outsideRoot, 'written.txt');
+  const appImagePath = runtime.diagnostics.appImage?.appImagePath;
+  const appImageBefore = appImagePath ? await fs.promises.stat(appImagePath) : null;
   const forbiddenNode =
     process.env.FREEDOM_QUALIFICATION_FORBIDDEN_NODE || process.env.npm_node_execpath;
   assertCondition(forbiddenNode, 'Qualification did not identify a forbidden host Node runtime');
@@ -299,13 +323,16 @@ async function qualifyBoundary(executor, policy, runtime, fixture) {
     "const fs = require('fs');",
     "const net = require('net');",
     "const { spawnSync } = require('child_process');",
-    'const [outside, outsideWrite, socketPath, port, forbiddenNode] = process.argv.slice(1);',
-    'const result = { environment: {}, path: process.env.PATH };',
+    'const [outside, outsideWrite, socketPath, port, forbiddenNode, runtimePath, packageFile, abstractName] = process.argv.slice(1);',
+    'const result = { environment: {}, path: process.env.PATH, activeRuntime: process.execPath };',
     "for (const [name, target] of [['directRead', outside], ['symlinkRead', 'escape-link']]) {",
     "  try { fs.readFileSync(target); result[name] = 'unexpected'; } catch (error) { result[name] = error.code; }",
     '}',
     "try { fs.writeFileSync(outsideWrite, 'escaped'); result.outsideWrite = 'unexpected'; } catch (error) { result.outsideWrite = error.code; }",
     "try { fs.linkSync(outside, 'dynamic-hardlink'); result.hardlink = 'unexpected'; } catch (error) { result.hardlink = error.code; }",
+    "try { fs.appendFileSync(runtimePath, 'mutation'); result.runtimeWrite = 'unexpected'; } catch (error) { result.runtimeWrite = error.code; }",
+    'result.packageVisible = fs.existsSync(packageFile);',
+    "try { fs.appendFileSync(packageFile, 'mutation'); result.packageWrite = result.packageVisible ? 'unexpected' : 'private-shadow'; if (!result.packageVisible) fs.unlinkSync(packageFile); } catch (error) { result.packageWrite = error.code; }",
     "const subprocess = spawnSync('/bin/sh', ['-c', 'cat \"$1\" >/dev/null', 'sh', outside]);",
     "result.subprocessRead = subprocess.status === 0 ? 'unexpected' : (subprocess.error?.code || subprocess.status);",
     "const fallbackNode = spawnSync(forbiddenNode, ['-e', 'process.stdout.write(\"unexpected\")']);",
@@ -324,6 +351,7 @@ async function qualifyBoundary(executor, policy, runtime, fixture) {
     "  result.localhost = await connect({ host: '127.0.0.1', port: Number(port) });",
     "  result.external = await connect({ host: '1.1.1.1', port: 53 });",
     '  result.unixSocket = await connect(socketPath);',
+    "  result.abstractSocket = abstractName ? await connect('\\0' + abstractName) : 'not-applicable';",
     "  result.dns = await new Promise((resolve) => dns.lookup('example.com', (error) => resolve(error ? error.code : 'unexpected')));",
     '  process.stdout.write(JSON.stringify(result));',
     '})();',
@@ -332,8 +360,9 @@ async function qualifyBoundary(executor, policy, runtime, fixture) {
   try {
     await listen(tcpServer, { host: '127.0.0.1', port: 0 });
     await listen(socketServer, socketPath);
+    if (process.platform === 'linux') await listen(abstractServer, `\0${abstractName}`);
     receipt = await executor.execute(policy, {
-      command: runtime.executablePath,
+      command: runtime.sandboxExecutablePath,
       args: [
         '-e',
         script,
@@ -342,20 +371,29 @@ async function qualifyBoundary(executor, policy, runtime, fixture) {
         socketPath,
         String(tcpServer.address().port),
         forbiddenNode,
+        runtime.sandboxExecutablePath,
+        runtime.diagnostics.appImage?.appImagePath || fixture.outsideCanary,
+        process.platform === 'linux' ? abstractName : '',
       ],
     });
   } finally {
-    await Promise.all([closeServer(tcpServer), closeServer(socketServer)]);
+    await Promise.all([
+      closeServer(tcpServer),
+      closeServer(socketServer),
+      closeServer(abstractServer),
+    ]);
     validateShortIpcRoot(ipcRoot);
     await fs.promises.rm(ipcRoot, { recursive: true, force: true });
   }
-  assertSeatbeltReceipt('boundary-denials', receipt, 'completed');
+  assertExecutionReceipt('boundary-denials', receipt, 'completed');
   const result = JSON.parse(receipt.stdout);
   for (const field of [
     'directRead',
     'symlinkRead',
     'outsideWrite',
     'hardlink',
+    'runtimeWrite',
+    'packageWrite',
     'subprocessRead',
     'fallbackNode',
     'localhost',
@@ -363,10 +401,27 @@ async function qualifyBoundary(executor, policy, runtime, fixture) {
     'unixSocket',
     'dns',
   ]) {
-    assertCondition(result[field] !== 'unexpected', `${field} escaped the Seatbelt boundary`);
+    assertCondition(result[field] !== 'unexpected', `${field} escaped the workspace boundary`);
+  }
+  if (process.platform === 'linux') {
+    assertCondition(result.abstractSocket !== 'unexpected', 'abstractSocket escaped the boundary');
   }
   assertCondition(
-    result.path === '/usr/bin:/bin',
+    result.activeRuntime === runtime.sandboxExecutablePath,
+    `JavaScript used ${result.activeRuntime} instead of the mounted packaged runtime`
+  );
+  if (appImageBefore) {
+    const appImageAfter = await fs.promises.stat(appImagePath);
+    assertCondition(
+      result.packageVisible === false &&
+        appImageAfter.size === appImageBefore.size &&
+        appImageAfter.mtimeMs === appImageBefore.mtimeMs,
+      'Host AppImage was visible or changed through the sandbox'
+    );
+  }
+  assertCondition(
+    result.path ===
+      (process.platform === 'linux' ? '/usr/local/bin:/usr/bin:/bin' : '/usr/bin:/bin'),
     `Electron qualification received an unexpected toolchain PATH: ${result.path}`
   );
   assertCondition(
@@ -379,24 +434,35 @@ async function qualifyBoundary(executor, policy, runtime, fixture) {
     },
     (error) => assertCondition(error.code === 'ENOENT', 'Outside write check failed')
   );
-  const privateRoots = new Set(
-    Object.values(result.environment).map((value) => path.dirname(value))
-  );
-  assertCondition(
-    privateRoots.size === 1,
-    'Private environment paths did not share one execution root'
-  );
-  const [privateRoot] = privateRoots;
-  assertCondition(
-    !insidePath(os.homedir(), privateRoot),
-    'Private environment reused the host home'
-  );
-  await fs.promises.stat(privateRoot).then(
-    () => {
-      throw new Error('Private execution root survived receipt cleanup');
-    },
-    (error) => assertCondition(error.code === 'ENOENT', 'Private execution cleanup check failed')
-  );
+  if (process.platform === 'darwin') {
+    const privateRoots = new Set(
+      Object.values(result.environment).map((value) => path.dirname(value))
+    );
+    assertCondition(
+      privateRoots.size === 1,
+      'Private environment paths did not share one execution root'
+    );
+    const [privateRoot] = privateRoots;
+    assertCondition(
+      !insidePath(os.homedir(), privateRoot),
+      'Private environment reused the host home'
+    );
+    await fs.promises.stat(privateRoot).then(
+      () => {
+        throw new Error('Private execution root survived receipt cleanup');
+      },
+      (error) => assertCondition(error.code === 'ENOENT', 'Private execution cleanup check failed')
+    );
+  } else {
+    assertCondition(
+      result.environment.HOME === '/tmp/home' &&
+        result.environment.TMPDIR === '/tmp' &&
+        result.environment.XDG_CACHE_HOME === '/tmp/cache' &&
+        result.environment.XDG_CONFIG_HOME === '/tmp/config' &&
+        result.environment.XDG_DATA_HOME === '/tmp/data',
+      'Bubblewrap did not use its private temporary mount'
+    );
+  }
   emit('boundary-denials', { result });
 }
 
@@ -406,20 +472,20 @@ async function qualifyLifecycle(executor, runtime, fixture) {
     stderrBytes: 512,
   });
   const outputReceipt = await executor.execute(outputPolicy, {
-    command: runtime.executablePath,
+    command: runtime.sandboxExecutablePath,
     args: ['-e', "process.stdout.write('o'.repeat(4096)); process.stderr.write('e'.repeat(4096));"],
   });
-  assertSeatbeltReceipt('bounded-output', outputReceipt, 'completed');
+  assertExecutionReceipt('bounded-output', outputReceipt, 'completed');
   assertCondition(outputReceipt.stdoutTruncated, 'stdout was not truncated');
   assertCondition(outputReceipt.stderrTruncated, 'stderr was not truncated');
   assertCondition(Buffer.byteLength(outputReceipt.stdout) === 512, 'stdout limit was inaccurate');
   assertCondition(Buffer.byteLength(outputReceipt.stderr) === 512, 'stderr limit was inaccurate');
 
   const failedReceipt = await executor.execute(await createPolicy(fixture, runtime), {
-    command: runtime.executablePath,
+    command: runtime.sandboxExecutablePath,
     args: ['-e', 'process.exit(7)'],
   });
-  assertSeatbeltReceipt('failed-command', failedReceipt, 'failed');
+  assertExecutionReceipt('failed-command', failedReceipt, 'failed');
   assertCondition(failedReceipt.exitCode === 7, 'Failed command exit code was inaccurate');
   assertCondition(
     failedReceipt.error?.code === 'COMMAND_FAILED',
@@ -428,10 +494,34 @@ async function qualifyLifecycle(executor, runtime, fixture) {
 
   const timeoutPolicy = await createPolicy(fixture, runtime, { timeoutMs: 250 });
   const timeoutReceipt = await executor.execute(timeoutPolicy, {
-    command: runtime.executablePath,
+    command: runtime.sandboxExecutablePath,
     args: ['-e', 'setInterval(() => {}, 1000)'],
   });
-  assertSeatbeltReceipt('timeout', timeoutReceipt, 'timed_out');
+  assertExecutionReceipt('timeout', timeoutReceipt, 'timed_out');
+
+  const runtimeLifetimeMarker = path.join(fixture.workspaceRoot, 'runtime-lifetime-ready');
+  const runtimeController = new AbortController();
+  const runtimeExecution = executor.execute(await createPolicy(fixture, runtime), {
+    command: runtime.sandboxExecutablePath,
+    args: [
+      '-e',
+      "require('fs').writeFileSync('runtime-lifetime-ready', process.execPath); setInterval(() => {}, 1000)",
+    ],
+    signal: runtimeController.signal,
+  });
+  await waitForFile(runtimeLifetimeMarker);
+  assertCondition(
+    (await fs.promises.realpath(runtime.executablePath)) === runtime.executablePath,
+    'Packaged runtime disappeared during sandbox execution'
+  );
+  runtimeController.abort();
+  const runtimeLifetimeReceipt = await runtimeExecution;
+  assertExecutionReceipt('runtime-mount-lifetime', runtimeLifetimeReceipt, 'cancelled');
+  await fs.promises.stat(runtime.runtimeRoot);
+  emit('runtime-mount-lifetime', {
+    remainedAvailableThroughChildCompletion: true,
+    observedSandboxExecutable: await fs.promises.readFile(runtimeLifetimeMarker, 'utf8'),
+  });
 
   const normalHeartbeat = path.join(fixture.workspaceRoot, 'electron-normal-heartbeat');
   const normalReceipt = await executor.execute(await createPolicy(fixture, runtime), {
@@ -445,7 +535,7 @@ async function qualifyLifecycle(executor, runtime, fixture) {
       ].join('\n'),
     ],
   });
-  assertSeatbeltReceipt('normal-descendant-cleanup', normalReceipt, 'completed');
+  assertExecutionReceipt('normal-descendant-cleanup', normalReceipt, 'completed');
   const normalSize = (await waitForFile(normalHeartbeat)).size;
   await delay(300);
   assertCondition(
@@ -475,11 +565,13 @@ async function qualifyLifecycle(executor, runtime, fixture) {
   const abortedAt = Date.now();
   controller.abort();
   const cancellationReceipt = await cancellation;
-  assertSeatbeltReceipt('cancellation', cancellationReceipt, 'cancelled');
+  assertExecutionReceipt('cancellation', cancellationReceipt, 'cancelled');
   const cancellationDuration = Date.now() - abortedAt;
   assertCondition(
-    cancellationDuration >= 800 && cancellationDuration < 2_500,
-    `Cancellation escalation took ${cancellationDuration}ms instead of the bounded grace interval`
+    process.platform === 'linux'
+      ? cancellationDuration < 2_500
+      : cancellationDuration >= 800 && cancellationDuration < 2_500,
+    `Cancellation took ${cancellationDuration}ms outside its backend bound`
   );
   emit('cancellation-escalation', { durationMs: cancellationDuration });
   const cancellationSize = (await fs.promises.stat(cancellationHeartbeat)).size;
@@ -579,22 +671,31 @@ async function runDetachedQualification(executor, runtime) {
     const result = JSON.parse(await fs.promises.readFile(resultFile, 'utf8'));
     controller.abort();
     const receipt = await execution;
-    assertSeatbeltReceipt('detached-setsid-cancellation', receipt, 'cancelled');
-    assertCondition(
-      processCommand(detachedPid).includes(token),
-      'setsid descendant did not survive'
-    );
+    assertExecutionReceipt('detached-setsid-cancellation', receipt, 'cancelled');
+    if (process.platform === 'darwin') {
+      assertCondition(
+        processCommand(detachedPid).includes(token),
+        'setsid descendant did not survive best-effort group cancellation'
+      );
+    }
     assertCondition(result.outsideRead !== 'unexpected', 'Detached child read outside boundary');
     assertCondition(result.localhost !== 0, 'Detached child reached localhost');
     assertCondition(result.external !== 0, 'Detached child reached external network');
     assertCondition(result.dns !== 'unexpected', 'Detached child resolved DNS');
     const size = (await waitForFile(heartbeat)).size;
     await delay(150);
+    const laterSize = (await fs.promises.stat(heartbeat)).size;
     assertCondition(
-      (await fs.promises.stat(heartbeat)).size > size,
-      'Detached descendant did not remain operational after group cancellation'
+      process.platform === 'linux' ? laterSize === size : laterSize > size,
+      process.platform === 'linux'
+        ? 'Detached descendant continued after namespace teardown'
+        : 'Detached descendant did not remain operational after group cancellation'
     );
-    emit('detached-descendant', { survived: true, containment: result, pidRecorded: true });
+    emit('detached-descendant', {
+      survived: process.platform !== 'linux',
+      containment: result,
+      pidRecorded: true,
+    });
   } finally {
     controller?.abort();
     if (execution) {
@@ -609,7 +710,9 @@ async function runDetachedQualification(executor, runtime) {
         watchdogError = error;
       }
     }
-    if (detachedPid) await cleanupRecordedProcess(detachedPid, token);
+    if (detachedPid && process.platform === 'darwin') {
+      await cleanupRecordedProcess(detachedPid, token);
+    }
     validateFixtureRoot(fixture.fixtureRoot, DESTRUCTIVE_PREFIX);
     await fs.promises.rm(fixture.fixtureRoot, { recursive: true, force: true });
   }
@@ -617,8 +720,14 @@ async function runDetachedQualification(executor, runtime) {
 }
 
 async function runQualification() {
-  if (process.platform !== 'darwin' || process.env.FREEDOM_REQUIRE_SEATBELT !== '1') {
-    throw new Error('Electron qualification requires macOS and FREEDOM_REQUIRE_SEATBELT=1');
+  const requiredGate =
+    process.platform === 'linux'
+      ? process.env.FREEDOM_REQUIRE_BWRAP === '1'
+      : process.platform === 'darwin' && process.env.FREEDOM_REQUIRE_SEATBELT === '1';
+  if (!requiredGate) {
+    throw new Error(
+      'Electron qualification requires Linux/Bubblewrap or macOS/Seatbelt with its explicit gate'
+    );
   }
   const runtime = await detectElectronJavaScriptRuntime({
     freedomVersion,
@@ -632,17 +741,27 @@ async function runQualification() {
       entryPath.includes(`${path.sep}app.asar${path.sep}`),
       'Packaged entry did not load from app.asar'
     );
-    assertCondition(
-      runtime.applicationBundleRoot ===
-        (await fs.promises.realpath(path.dirname(path.dirname(path.dirname(process.execPath))))),
-      'Runtime detector did not select the packaged Freedom application'
-    );
+    if (process.platform === 'darwin') {
+      assertCondition(
+        runtime.applicationBundleRoot ===
+          (await fs.promises.realpath(path.dirname(path.dirname(path.dirname(process.execPath))))),
+        'Runtime detector did not select the packaged Freedom application'
+      );
+    } else {
+      assertCondition(
+        runtime.runtimeRoot === (await fs.promises.realpath(path.dirname(process.resourcesPath))),
+        'Runtime detector did not select the packaged Linux application tree'
+      );
+    }
   }
   emit('qualification-context', {
     packaged: app.isPackaged,
     entryPath,
     processExecPath: process.execPath,
+    runtimeRoot: runtime.runtimeRoot,
     applicationBundleRoot: runtime.applicationBundleRoot,
+    sandboxExecutablePath: runtime.sandboxExecutablePath,
+    layout: runtime.layout,
     userDataRoot: packagedUserDataRoot,
   });
 
@@ -663,7 +782,8 @@ async function runQualification() {
     assertCondition(
       policy.filesystem.runtimeRoots.length === 1 &&
         policy.filesystem.runtimeRoots[0].id === 'electron' &&
-        policy.filesystem.runtimeRoots[0].sourcePath === runtime.applicationBundleRoot,
+        policy.filesystem.runtimeRoots[0].sourcePath === runtime.runtimeRoot &&
+        policy.filesystem.runtimeRoots[0].sandboxExecutablePath === runtime.sandboxExecutablePath,
       'Electron qualification exposed a fallback JavaScript runtime'
     );
     await qualifyWebsiteWorkload(executor, policy, runtime, fixture);
@@ -672,7 +792,7 @@ async function runQualification() {
     emit('capability-matrix', {
       electronMainProcess: true,
       electronRunAsNode: true,
-      exactApplicationBundleReadOnly: true,
+      exactPackagedRuntimeReadOnly: true,
       workspaceReadWrite: true,
       gitMetadataReadOnly: true,
       outsideFilesystemDenied: true,
@@ -681,9 +801,9 @@ async function runQualification() {
       unixSocketDenied: true,
       outputLimits: true,
       wallTimeout: true,
-      processGroupCleanup: 'best_effort',
-      completeDescendantTermination: false,
-      survivorsPossible: true,
+      descendantCleanup: process.platform === 'linux' ? 'namespace_scoped' : 'best_effort',
+      completeDescendantTermination: process.platform === 'linux',
+      survivorsPossible: process.platform !== 'linux',
     });
     emit('qualification-complete', { mode: 'ordinary', passed: true });
   } finally {

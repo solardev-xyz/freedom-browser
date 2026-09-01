@@ -401,7 +401,7 @@ async function buildBubblewrapArguments(policy, request) {
     for (const runtimeRoot of policy.filesystem.runtimeRoots) {
       args.push('--dir', path.posix.dirname(runtimeRoot.mountPath));
       addReadOnlyMount(args, runtimeRoot.sourcePath, runtimeRoot.mountPath);
-      pathEntries.push(`${runtimeRoot.mountPath}/bin`);
+      if (runtimeRoot.id === 'node') pathEntries.push(`${runtimeRoot.mountPath}/bin`);
     }
     if (policy.filesystem.exposeSystemToolchain) {
       for (const sourcePath of SYSTEM_RUNTIME_PATHS) {

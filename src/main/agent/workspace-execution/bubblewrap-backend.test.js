@@ -74,6 +74,8 @@ describe('Bubblewrap backend contract', () => {
     expect(joined).not.toContain(`${os.homedir()}\n${os.homedir()}`);
     expect(joined).not.toContain('\n/run\n');
     expect(joined).not.toContain(`${os.tmpdir()}\n${os.tmpdir()}`);
+    expect(joined).toContain('/tmp/data');
+    expect(joined).toContain('XDG_DATA_HOME\n/tmp/data');
     expect(launch.exposedSystemPaths).toContain('/etc/ssl/certs');
     expect(launch.exposedSystemPaths).not.toContain('/etc/ssl');
     if (fs.existsSync('/etc/alternatives')) {

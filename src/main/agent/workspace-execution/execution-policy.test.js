@@ -116,6 +116,44 @@ describe('workspace execution policy', () => {
     ).rejects.toMatchObject({ code: 'INVALID_ELECTRON_RUNTIME' });
   });
 
+  test('maps one trusted Linux Electron executable beneath its read-only runtime root', async () => {
+    const fixture = await createFixture();
+    fixtureRoots.push(fixture.fixtureRoot);
+    const runtimeRoot = path.join(fixture.fixtureRoot, 'linux-unpacked');
+    const executable = path.join(runtimeRoot, 'freedom');
+    await fs.promises.mkdir(runtimeRoot);
+    await fs.promises.writeFile(executable, 'fixture', { mode: 0o700 });
+
+    const policy = await createWorkspaceExecutionPolicy({
+      workspaceRoot: fixture.workspaceRoot,
+      nodeRuntimeRoot: null,
+      electronRuntime: { platform: 'linux', rootPath: runtimeRoot, executablePath: executable },
+    });
+    expect(policy.filesystem.runtimeRoots).toEqual([
+      {
+        id: 'electron',
+        sourcePath: await fs.promises.realpath(runtimeRoot),
+        mountPath: '/opt/freedom-toolchain/electron',
+        access: 'read_only',
+        executablePath: await fs.promises.realpath(executable),
+        relativeExecutablePath: 'freedom',
+        sandboxExecutablePath: '/opt/freedom-toolchain/electron/freedom',
+      },
+    ]);
+
+    await expect(
+      createWorkspaceExecutionPolicy({
+        workspaceRoot: fixture.workspaceRoot,
+        nodeRuntimeRoot: null,
+        electronRuntime: {
+          platform: 'linux',
+          rootPath: runtimeRoot,
+          executablePath: path.join(fixture.fixtureRoot, 'source.js'),
+        },
+      })
+    ).rejects.toMatchObject({ code: 'INVALID_ELECTRON_RUNTIME' });
+  });
+
   test('resolves an external Git directory without treating its host path as the mount identity', async () => {
     const fixture = await createFixture({ git: false });
     fixtureRoots.push(fixture.fixtureRoot);
