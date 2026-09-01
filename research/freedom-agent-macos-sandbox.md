@@ -1,7 +1,7 @@
 # Freedom Agent macOS Seatbelt workspace sandbox spike
 
 Date: 2026-09-01
-Status: isolated runnable, audit-hardened Electron-main and unsigned packaged-Electron qualification spike on `experiment/agent-workspace-sandbox-hardening-macos`
+Status: isolated runnable, audit-hardened Electron-main and unsigned packaged-Electron qualification spike on `experiment/agent-workspace-sandbox-hardening`
 Starting point: `b6582dce214df15904a4b965e57df689294ca683`
 Electron qualification starting point: `576903a553d88920ce3bc0ef3a41d9c50e8bb488`
 Packaged qualification starting point: `bce8c7a16e7d620936f0de2038aec3de460510fb`
@@ -264,7 +264,7 @@ The later Linux stabilization rerun exercised the platform-neutral Seatbelt cont
 
 Launching the packaged GUI binary from inside Codex's outer host sandbox aborted in AppKit `_RegisterApplication` before JavaScript startup. The same command passed in the normal host context, as did the development Electron comparison. This was a qualification-runner environment restriction, not a Freedom Seatbelt receipt or a packaged policy failure.
 
-The destructive/VM-only corpus requires both `FREEDOM_SANDBOX_DESTRUCTIVE=1` and `FREEDOM_REQUIRE_SEATBELT=1`. It validates a fresh canonical direct child of the system temporary directory with the fixed `freedom-seatbelt-destructive-` prefix. The test:
+The destructive/VM-only corpus requires both user-facing gates, `FREEDOM_SANDBOX_DESTRUCTIVE=1` and `FREEDOM_SANDBOX_VM_ONLY=1`; the npm scripts then set the internal `FREEDOM_REQUIRE_SEATBELT=1` capability requirement themselves. It validates a fresh canonical direct child of the system temporary directory with the fixed `freedom-seatbelt-destructive-` prefix. The test:
 
 1. records the detached child's PID and unique ownership token;
 2. calls `setsid()` in that child;
