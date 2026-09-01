@@ -253,7 +253,7 @@
     "electron-updater": "^6.8.3",
     "ethers": "^6.16.0",
     "micro-key-producer": "^0.9.0",
-    "pdfjs-dist": "6.2.108",
+    "pdfjs-dist": "6.3.289",
     "proper-lockfile": "^4.1.2",
     "qrcode": "^1.5.4"
   },
