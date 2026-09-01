@@ -244,7 +244,31 @@ describe('workspace execution policy', () => {
     ).rejects.toMatchObject({ code: 'INVALID_WORKSPACE' });
   });
 
-  test('rejects writable hardlinks because mount isolation cannot contain their inode', async () => {
+  test('allows fully accounted internal hardlinks including native-module output layouts', async () => {
+    const fixture = await createFixture();
+    fixtureRoots.push(fixture.fixtureRoot);
+    const releaseDirectory = path.join(
+      fixture.workspaceRoot,
+      'node_modules',
+      'native-addon',
+      'build',
+      'Release'
+    );
+    const objectDirectory = path.join(releaseDirectory, 'obj.target');
+    await fs.promises.mkdir(objectDirectory, { recursive: true });
+    const objectPath = path.join(objectDirectory, 'addon.node');
+    const outputPath = path.join(releaseDirectory, 'addon.node');
+    await fs.promises.writeFile(objectPath, 'native-module-fixture');
+    await fs.promises.link(objectPath, outputPath);
+
+    await expect(
+      createWorkspaceExecutionPolicy({ workspaceRoot: fixture.workspaceRoot })
+    ).resolves.toMatchObject({ kind: 'freedom.workspace-execution-policy' });
+    await expect(fs.promises.stat(objectPath)).resolves.toMatchObject({ nlink: 2 });
+    await expect(fs.promises.stat(outputPath)).resolves.toMatchObject({ nlink: 2 });
+  });
+
+  test('rejects a workspace hardlink with an unaccounted link outside the workspace', async () => {
     const fixture = await createFixture();
     fixtureRoots.push(fixture.fixtureRoot);
     const outsideFile = path.join(fixture.fixtureRoot, 'outside-canary');
@@ -257,6 +281,79 @@ describe('workspace execution policy', () => {
       details: { relativePath: 'linked-canary' },
     });
     await expect(fs.promises.readFile(outsideFile, 'utf8')).resolves.toBe('outside');
+  });
+
+  test('rejects an inode shared by protected and writable workspace paths', async () => {
+    const fixture = await createFixture();
+    fixtureRoots.push(fixture.fixtureRoot);
+    const protectedConfig = path.join(fixture.workspaceRoot, '.git', 'config');
+    await fs.promises.link(protectedConfig, path.join(fixture.workspaceRoot, 'writable-config'));
+
+    await expect(
+      createWorkspaceExecutionPolicy({ workspaceRoot: fixture.workspaceRoot })
+    ).rejects.toMatchObject({ code: 'WORKSPACE_HARDLINK_DENIED' });
+  });
+
+  test('rejects inconsistent link counts observed while the workspace is being scanned', async () => {
+    const fixture = await createFixture();
+    fixtureRoots.push(fixture.fixtureRoot);
+    const firstPath = path.join(fixture.workspaceRoot, 'native-output.node');
+    const secondPath = path.join(fixture.workspaceRoot, 'native-object.node');
+    await fs.promises.writeFile(firstPath, 'native-module-fixture');
+    await fs.promises.link(firstPath, secondPath);
+
+    const originalLstat = fs.promises.lstat.bind(fs.promises);
+    let secondPathCalls = 0;
+    const lstat = jest.spyOn(fs.promises, 'lstat').mockImplementation(async (candidate, options) => {
+      const stats = await originalLstat(candidate, options);
+      if (candidate !== secondPath || ++secondPathCalls !== 2) return stats;
+      return new Proxy(stats, {
+        get(target, property, receiver) {
+          if (property === 'nlink') return target.nlink + 1n;
+          return Reflect.get(target, property, receiver);
+        },
+      });
+    });
+    try {
+      await expect(
+        createWorkspaceExecutionPolicy({ workspaceRoot: fixture.workspaceRoot })
+      ).rejects.toMatchObject({ code: 'WORKSPACE_HARDLINK_DENIED' });
+    } finally {
+      lstat.mockRestore();
+    }
+  });
+
+  test('rejects workspace metadata that changes between identity scans', async () => {
+    const fixture = await createFixture();
+    fixtureRoots.push(fixture.fixtureRoot);
+    const sourcePath = path.join(fixture.workspaceRoot, 'source.js');
+    const originalLstat = fs.promises.lstat.bind(fs.promises);
+    let rootCalls = 0;
+    const lstat = jest.spyOn(fs.promises, 'lstat').mockImplementation(async (candidate, options) => {
+      if (candidate === fixture.workspaceRoot && ++rootCalls === 3) {
+        await fs.promises.appendFile(sourcePath, '// changed during validation\n');
+      }
+      return originalLstat(candidate, options);
+    });
+    try {
+      await expect(
+        createWorkspaceExecutionPolicy({ workspaceRoot: fixture.workspaceRoot })
+      ).rejects.toMatchObject({ code: 'WORKSPACE_CHANGED_DURING_VALIDATION' });
+    } finally {
+      lstat.mockRestore();
+    }
+  });
+
+  test('does not follow workspace symlinks during hardlink accounting', async () => {
+    const fixture = await createFixture();
+    fixtureRoots.push(fixture.fixtureRoot);
+    const outsideFile = path.join(fixture.fixtureRoot, 'outside-symlink-target');
+    await fs.promises.writeFile(outsideFile, 'outside');
+    await fs.promises.symlink(outsideFile, path.join(fixture.workspaceRoot, 'outside-link'));
+
+    await expect(
+      createWorkspaceExecutionPolicy({ workspaceRoot: fixture.workspaceRoot })
+    ).resolves.toMatchObject({ kind: 'freedom.workspace-execution-policy' });
   });
 
   test('rejects host IPC endpoints already present in the writable workspace', async () => {

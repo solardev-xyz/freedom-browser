@@ -35,7 +35,7 @@ Process availability is a separate operational concern. The backend does not cla
 
 ### Policy and provenance
 
-`createWorkspaceExecutionPolicy()` still performs canonical workspace and working-directory validation, bounded hardlink/special-file scanning, Git pointer/commondir authorization, `config` and `config.worktree` validation, environment scrubbing, request bounding and private WeakSet provenance.
+`createWorkspaceExecutionPolicy()` still performs canonical workspace and working-directory validation, bounded hardlink/special-file scanning, Git pointer/commondir authorization, `config` and `config.worktree` validation, environment scrubbing, request bounding and private WeakSet provenance. Hardlinks use the shared two-pass `(device, inode)` accounting rule: all reported links must be observed inside the workspace under one writable/protected authority, while unaccounted, mixed-count or protected/writable aliases fail closed. This permits ordinary internal native-build output without granting an inode path outside the selected workspace.
 
 The cancellation contract now records `guarantee: backend_reported`. Linux Bubblewrap still provides its stronger PID-namespace teardown behavior. The macOS receipt and capability report say `cancellationGuarantee: best_effort`; neither backend's actual behavior is weakened or overstated.
 
@@ -51,6 +51,8 @@ The generated profile is deny-by-default and allows:
 - exact system account/network database and certificate files needed by command-line runtimes;
 - the exact active standalone Node runtime root for the standalone corpus, including only its discovered dynamic dependencies; or
 - the exact active Electron application bundle for Electron-main qualification.
+
+Profile generation filters both required and optional system-path candidates through the live filesystem before calling `stat`. Every required path that exists on macOS retains its previous read permission; absent macOS paths are simply omitted so platform-neutral profile-construction tests can run on Linux. Runtime capability detection still rejects every non-Darwin platform before launch.
 
 Electron qualification adds no standalone-Node runtime root. Its child `PATH` is exactly `/usr/bin:/bin`; `/usr/local` receives an explicit read denial unless it is itself an authorized runtime root. The packaged corpus also attempts the canonical host Homebrew Node directly and confirms that it cannot start under the profile.
 
@@ -178,6 +180,8 @@ Recorded results on the qualified host:
 - Shared execution-policy suite: 11 tests passed.
 - Host `npm run lint`: passed.
 - Full `npm test` outside the outer Codex sandbox: 213 suites and 3,827 tests passed; one Linux-only Bubblewrap unit suite had two pre-existing macOS expectation failures because it expects missing/setuid-binary denial codes before the backend's `UNSUPPORTED_PLATFORM` check. Eight suites and 26 tests skipped normally. The Linux execution behavior was not changed.
+
+The later Linux stabilization rerun exercised the platform-neutral Seatbelt contract without making Seatbelt available on Linux. Profile construction omitted absent `/System` and other missing candidates, retained the expected rule for existing `/usr`, and the focused Seatbelt unit suite passed 8 tests. Receipt assertions continue to distinguish `backend: macos-seatbelt` with `best_effort` runnable semantics from pre-launch `not_applicable` denial semantics; no macOS enforcement rule was widened.
 
 Launching the packaged GUI binary from inside Codex's outer host sandbox aborted in AppKit `_RegisterApplication` before JavaScript startup. The same command passed in the normal host context, as did the development Electron comparison. This was a qualification-runner environment restriction, not a Freedom Seatbelt receipt or a packaged policy failure.
 

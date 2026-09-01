@@ -71,6 +71,29 @@ describe('macOS Seatbelt backend contract', () => {
     expect(hostWorkingDirectory(policy, workspace)).toBe(path.join(workspace.sourcePath, 'nested'));
   });
 
+  test('omits absent platform system paths without dropping permissions for existing paths', async () => {
+    const fixture = await createFixture();
+    fixtureRoots.push(fixture.fixtureRoot);
+    const policy = await createWorkspaceExecutionPolicy({
+      workspaceRoot: fixture.workspaceRoot,
+      nodeRuntimeRoot: null,
+    });
+    const privateDirectory = await createPrivateDirectory();
+    fixtureRoots.push(privateDirectory);
+    const exists = jest.spyOn(fs, 'existsSync').mockImplementation((candidate) => candidate === '/usr');
+    let profile;
+    try {
+      profile = buildSeatbeltProfile(policy, privateDirectory);
+    } finally {
+      exists.mockRestore();
+    }
+
+    expect(profile).toContain('(allow file-read* (subpath "/usr"))');
+    expect(profile).not.toContain('"/System"');
+    expect(profile).not.toContain('"/bin"');
+    expect(profile).not.toContain('"/sbin"');
+  });
+
   test('creates canonical mode-0700 private storage with isolated subdirectories', async () => {
     const directory = await createPrivateDirectory();
     fixtureRoots.push(directory);

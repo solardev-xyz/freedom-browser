@@ -430,14 +430,68 @@ async function resolveProtectedPath(workspaceRoot, relativePath, authorizedGitMe
   });
 }
 
-async function rejectWritableHardlinks(workspaceRoot, protectedPaths) {
+function workspaceAccess(relativePath, protectedPaths, protectedPrefixes) {
+  return protectedPaths.includes(relativePath) ||
+    protectedPrefixes.some((prefix) => relativePath.startsWith(prefix))
+    ? 'protected'
+    : 'writable';
+}
+
+function workspaceEntryKind(stats) {
+  if (stats.isSymbolicLink()) return 'symlink';
+  if (stats.isDirectory()) return 'directory';
+  if (stats.isFile()) return 'file';
+  return 'special';
+}
+
+function workspaceEntrySignature(stats, kind) {
+  return [
+    kind,
+    stats.dev,
+    stats.ino,
+    stats.mode,
+    stats.nlink,
+    stats.size,
+    stats.mtimeNs,
+    stats.ctimeNs,
+  ].join(':');
+}
+
+function workspaceChanged(relativePath, cause = null) {
+  return new ExecutionPolicyError(
+    'WORKSPACE_CHANGED_DURING_VALIDATION',
+    'Workspace entries changed while filesystem identity was being validated',
+    { relativePath, ...(cause ? { cause } : {}) }
+  );
+}
+
+async function scanWorkspaceIdentities(workspaceRoot, protectedPaths) {
   const protectedPrefixes = protectedPaths.map((value) => `${value}/`);
-  const directories = [workspaceRoot];
+  const directories = [{ candidate: workspaceRoot, expectedSignature: null, relativePath: '.' }];
+  const entriesByPath = new Map();
+  const regularFilesByIdentity = new Map();
   let inspectedEntries = 0;
   while (directories.length) {
     const directory = directories.pop();
-    const entries = await fs.promises.readdir(directory, { withFileTypes: true });
-    for (const entry of entries) {
+    let before;
+    let names;
+    try {
+      before = await fs.promises.lstat(directory.candidate, { bigint: true });
+      names = await fs.promises.readdir(directory.candidate);
+    } catch (error) {
+      throw workspaceChanged(directory.relativePath, error.code);
+    }
+    const beforeKind = workspaceEntryKind(before);
+    const beforeSignature = workspaceEntrySignature(before, beforeKind);
+    if (
+      beforeKind !== 'directory' ||
+      (directory.expectedSignature !== null && beforeSignature !== directory.expectedSignature)
+    ) {
+      throw workspaceChanged(directory.relativePath);
+    }
+    if (directory.relativePath === '.') entriesByPath.set('.', beforeSignature);
+
+    for (const name of names.sort()) {
       inspectedEntries += 1;
       if (inspectedEntries > 500_000) {
         throw new ExecutionPolicyError(
@@ -445,35 +499,96 @@ async function rejectWritableHardlinks(workspaceRoot, protectedPaths) {
           'Workspace contains too many entries for safe hardlink validation'
         );
       }
-      const candidate = path.join(directory, entry.name);
+      const candidate = path.join(directory.candidate, name);
       const relative = path.relative(workspaceRoot, candidate).split(path.sep).join('/');
-      if (
-        protectedPaths.includes(relative) ||
-        protectedPrefixes.some((prefix) => relative.startsWith(prefix))
-      ) {
+      let stats;
+      try {
+        stats = await fs.promises.lstat(candidate, { bigint: true });
+      } catch (error) {
+        throw workspaceChanged(relative, error.code);
+      }
+      const kind = workspaceEntryKind(stats);
+      const signature = workspaceEntrySignature(stats, kind);
+      entriesByPath.set(relative, signature);
+      const access = workspaceAccess(relative, protectedPaths, protectedPrefixes);
+
+      if (kind === 'symlink') continue;
+      if (kind === 'directory') {
+        directories.push({ candidate, expectedSignature: signature, relativePath: relative });
         continue;
       }
-      if (entry.isSymbolicLink()) continue;
-      if (entry.isDirectory()) {
-        directories.push(candidate);
-        continue;
-      }
-      if (!entry.isFile()) {
+      if (kind === 'special') {
+        if (access === 'protected') continue;
         throw new ExecutionPolicyError(
           'WORKSPACE_SPECIAL_FILE_DENIED',
           'Writable workspaces must not contain sockets, devices, or other special files',
           { relativePath: relative }
         );
       }
-      const stats = await fs.promises.lstat(candidate);
-      if (stats.nlink > 1) {
-        throw new ExecutionPolicyError(
-          'WORKSPACE_HARDLINK_DENIED',
-          'Writable workspace files must not have additional hard links',
-          { relativePath: relative }
-        );
+
+      const identity = `${stats.dev}:${stats.ino}`;
+      let group = regularFilesByIdentity.get(identity);
+      if (!group) {
+        group = { accesses: new Set(), paths: [], reportedLinkCounts: new Set() };
+        regularFilesByIdentity.set(identity, group);
       }
+      group.accesses.add(access);
+      group.paths.push(relative);
+      group.reportedLinkCounts.add(stats.nlink.toString());
     }
+
+    let after;
+    try {
+      after = await fs.promises.lstat(directory.candidate, { bigint: true });
+    } catch (error) {
+      throw workspaceChanged(directory.relativePath, error.code);
+    }
+    if (workspaceEntrySignature(after, workspaceEntryKind(after)) !== beforeSignature) {
+      throw workspaceChanged(directory.relativePath);
+    }
+  }
+
+  for (const group of regularFilesByIdentity.values()) {
+    const relativePath = group.paths[0];
+    if (group.reportedLinkCounts.size !== 1) {
+      throw new ExecutionPolicyError(
+        'WORKSPACE_HARDLINK_DENIED',
+        'Workspace hardlink identity reported inconsistent link counts',
+        { relativePath }
+      );
+    }
+    const reportedLinks = BigInt([...group.reportedLinkCounts][0]);
+    if (reportedLinks < 1n || reportedLinks !== BigInt(group.paths.length)) {
+      throw new ExecutionPolicyError(
+        'WORKSPACE_HARDLINK_DENIED',
+        'Workspace hardlink identity has links outside the accounted workspace tree',
+        {
+          relativePath,
+          observedLinks: group.paths.length,
+          reportedLinks: reportedLinks.toString(),
+        }
+      );
+    }
+    if (group.accesses.size !== 1) {
+      throw new ExecutionPolicyError(
+        'WORKSPACE_HARDLINK_DENIED',
+        'Workspace hardlink identity crosses protected and writable paths',
+        { relativePath }
+      );
+    }
+  }
+
+  return entriesByPath;
+}
+
+async function validateWorkspaceHardlinks(workspaceRoot, protectedPaths) {
+  // Repeating the bounded identity scan detects changes during validation. A separate same-UID
+  // host process can still race after this check; managed-workspace lifecycle must close that gap.
+  const firstScan = await scanWorkspaceIdentities(workspaceRoot, protectedPaths);
+  const secondScan = await scanWorkspaceIdentities(workspaceRoot, protectedPaths);
+  if (firstScan.size !== secondScan.size) throw workspaceChanged('.');
+  for (const [relativePath, signature] of firstScan) {
+    if (secondScan.get(relativePath) !== signature) throw workspaceChanged(relativePath);
   }
 }
 
@@ -606,9 +721,7 @@ async function createWorkspaceExecutionPolicy(options = {}) {
       await resolveProtectedPath(workspaceRoot, relativePath, authorizedGitMetadataPaths)
     );
   }
-  if (options.rejectWritableHardlinks !== false) {
-    await rejectWritableHardlinks(workspaceRoot, protectedWorkspacePaths);
-  }
+  await validateWorkspaceHardlinks(workspaceRoot, protectedWorkspacePaths);
 
   const limitsInput = requirePlainObject(options.limits, 'limits');
   const timeoutMs = requireBoundedInteger(

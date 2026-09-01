@@ -78,7 +78,9 @@ Validated policy objects carry private in-process provenance in a module-scoped 
 
 The launcher mounts the host workspace at the neutral `/workspace` path. Absolute or relative symlinks that leave it resolve into an absent sandbox path; symlinks into an exposed system path reach only its read-only view.
 
-Pre-existing hardlinks are different: a writable path and a hidden outside path can name the same inode. Pathname Unix sockets, FIFOs, and devices already placed in the workspace can also cross or distort the intended boundary. The policy therefore scans the writable tree, rejects special files, and rejects regular files with a link count greater than one. This intentionally sacrifices legitimate workspace hardlinks and special build artifacts until a stronger workspace-storage design exists. The scan is bounded to 500,000 entries. A same-UID host race after validation remains an unresolved product-lifecycle risk.
+Pre-existing hardlinks are different: a writable path and a hidden outside path can name the same inode. The policy therefore performs two complete, bounded `lstat` scans without following symbolic links. Regular files are grouped by stable filesystem identity `(device, inode)`, and every observed path records its reported link count and whether it is writable or protected. An internal hardlink group is accepted only when every path reports one consistent link count, the number of paths found inside the workspace exactly equals that count, and the inode does not cross protected and writable authority. Native-build layouts such as `Release/addon.node` plus `Release/obj.target/addon.node` therefore work when both names are internal. An unaccounted link outside the workspace, a mixed link count, or a protected/writable alias fails closed with `WORKSPACE_HARDLINK_DENIED`.
+
+Pathname Unix sockets, FIFOs, and devices in writable paths remain denied. Protected paths are traversed for identity accounting but retain their previous special-file treatment. Symbolic links are recorded for scan stability but never followed. Each pass remains bounded to 500,000 entries, and the complete entry identity/metadata snapshot must match a second pass; disappearance, replacement, metadata changes, or directory changes fail closed. The repeated scan narrows validation-time races but cannot eliminate the interval between validation and backend launch. A separate same-UID host process could still mutate or replace workspace entries after validation. Freedom-managed workspace ownership and lifecycle must prevent that race before product exposure; the sandboxed process itself cannot create a hardlink to an inaccessible outside file because the outside path is absent from its filesystem view.
 
 `.git` behavior is explicit:
 
@@ -144,7 +146,7 @@ The ordinary focused suite uses only validated temporary fixture roots and cover
 - shell, generated scripts, nested children, Node, Python, workspace writes, and read-only Git inspection;
 - direct and encoded forbidden reads/writes;
 - symlinks leaving the workspace;
-- rejection of pre-existing writable hardlinks;
+- acceptance of fully accounted internal native-build hardlinks and rejection of unaccounted external or protected/writable aliases;
 - hidden host processes and failed signaling;
 - sensitive environment scrubbing;
 - inherited descriptor closure, including explicit `fstat(3)` and `write(3)` denial for the Bubblewrap status descriptor;
@@ -172,6 +174,20 @@ Final VM validation results:
 - `npm run test:agent-sandbox:qualification`: focused Jest, full lint, and Babel transform all completed inside Bubblewrap.
 - `npm run lint`: passed on the host and inside Bubblewrap.
 - Full `npm test`: 203 suites and 3,751 tests passed; seven unrelated suites failed because this pre-provisioned checkout lacks declared Ghostery, embedded Pi SDK, OpenLV, and Ledger packages. No dependency was installed or changed to hide that environmental limitation.
+
+### Cross-platform stabilization rerun
+
+The shared policy was requalified on the same Ubuntu 24.04.3 x86-64 server after installing the explicitly approved host-only `libudev-dev` package. `npm ci` then rebuilt all Electron native dependencies, including `keccak` and `usb`, without changing the repository dependency graph. The real `keccak` output and object paths reported the same device/inode with `nlink=2`, and repository policy construction plus the Bubblewrap qualification accepted the fully accounted pair. A focused external-link fixture still returned `WORKSPACE_HARDLINK_DENIED`; protected/writable aliases and synthetic inconsistent link counts were also denied.
+
+Recorded stabilization results:
+
+- `npm ci`: passed; 1,167 packages installed and 22 existing audit findings reported (7 low, 5 moderate, 10 high).
+- `npm run test:agent-sandbox`: 7 suites and 49 tests passed; 3 suites and 9 tests skipped normally.
+- `npm run test:agent-sandbox:qualification`: capability detection plus focused Jest, full lint, and Babel transform completed inside Bubblewrap.
+- Doubly gated `FREEDOM_SANDBOX_DESTRUCTIVE=1 npm run test:agent-sandbox:destructive`: 1 test passed.
+- Host `npm run lint`: passed.
+- Full `npm test`: 214 suites and 3,835 tests passed; 8 suites and 26 tests skipped normally.
+- A direct receipt/teardown probe retained `backend: linux-bubblewrap` and `terminationGuarantee: namespace_scoped` for completed, timed-out, and cancelled executions. Timeout and cancellation heartbeat files remained unchanged after receipt resolution, with no namespace survivor observed.
 
 ## Seccomp assessment
 

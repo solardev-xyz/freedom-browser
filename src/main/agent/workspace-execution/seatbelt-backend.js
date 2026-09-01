@@ -76,10 +76,9 @@ function protectedPathFilter(protectedPath) {
 }
 
 function systemReadPaths() {
-  return [
-    ...SYSTEM_READ_PATHS,
-    ...OPTIONAL_SYSTEM_READ_PATHS.filter((value) => fs.existsSync(value)),
-  ];
+  return [...SYSTEM_READ_PATHS, ...OPTIONAL_SYSTEM_READ_PATHS].filter((value) =>
+    fs.existsSync(value)
+  );
 }
 
 function capabilityProbeProfile() {
