@@ -207,7 +207,9 @@ describe('Bubblewrap backend contract', () => {
     expect(selectInitialSandboxPid(null, { 'child-pid': -1 })).toBeNull();
   });
 
-  test('reports an absent backend and never executes without Bubblewrap', async () => {
+  const linuxOnlyTest = process.platform === 'linux' ? test : test.skip;
+
+  linuxOnlyTest('reports an absent backend and never executes without Bubblewrap', async () => {
     const missingBinary = path.join(os.tmpdir(), 'freedom-definitely-missing-bwrap');
     const capabilities = await detectBubblewrapCapabilities({ binary: missingBinary });
     expect(capabilities).toMatchObject({
@@ -225,11 +227,12 @@ describe('Bubblewrap backend contract', () => {
       state: 'sandbox_denied',
       exitCode: null,
       terminationGuarantee: 'not_applicable',
+      sideEffects: 'none',
       error: { code: 'BUBBLEWRAP_NOT_FOUND' },
     });
   });
 
-  test('does not accept a setuid executable as a Bubblewrap fallback', async () => {
+  linuxOnlyTest('does not accept a setuid executable as a Bubblewrap fallback', async () => {
     const fixture = await createFixture();
     fixtureRoots.push(fixture.fixtureRoot);
     const fakeBinary = path.join(fixture.fixtureRoot, 'bwrap');

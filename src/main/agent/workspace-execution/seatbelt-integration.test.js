@@ -156,6 +156,7 @@ requiredDescribe('macOS Seatbelt execution boundary', () => {
       exitCode: 0,
       stdout: 'positive-ok',
       terminationGuarantee: 'best_effort',
+      sideEffects: 'unknown',
       capabilities: {
         backend: 'macos-seatbelt',
         cancellationGuarantee: 'best_effort',
@@ -259,9 +260,7 @@ requiredDescribe('macOS Seatbelt execution boundary', () => {
     });
     expect(ordinaryReceipt).toMatchObject({ state: 'completed', exitCode: 0, stderr: '' });
     const source = await fs.promises.stat(path.join(fixture.workspaceRoot, 'source.txt'));
-    const alias = await fs.promises.stat(
-      path.join(fixture.workspaceRoot, 'ordinary-source-alias')
-    );
+    const alias = await fs.promises.stat(path.join(fixture.workspaceRoot, 'ordinary-source-alias'));
     expect({ dev: alias.dev, ino: alias.ino }).toEqual({ dev: source.dev, ino: source.ino });
   });
 
@@ -301,11 +300,9 @@ requiredDescribe('macOS Seatbelt execution boundary', () => {
 
   test('cannot enumerate a uniquely identified host-side sentinel process', async () => {
     const token = `freedom-host-process-sentinel-${Date.now()}-${process.pid}`;
-    const sentinel = spawn(
-      process.execPath,
-      ['-e', 'setInterval(() => {}, 1000)', token],
-      { stdio: 'ignore' }
-    );
+    const sentinel = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', token], {
+      stdio: 'ignore',
+    });
     try {
       await delay(50);
       expect(processCommand(sentinel.pid)).toContain(token);
@@ -378,6 +375,7 @@ requiredDescribe('macOS Seatbelt execution boundary', () => {
     expect(receipt).toMatchObject({
       state: 'completed',
       terminationGuarantee: 'best_effort',
+      sideEffects: 'unknown',
       survivorsPossible: true,
       completeDescendantTermination: false,
       terminationScope: 'original_process_group',
@@ -413,6 +411,7 @@ requiredDescribe('macOS Seatbelt execution boundary', () => {
     expect(receipt).toMatchObject({
       state: 'cancelled',
       terminationGuarantee: 'best_effort',
+      sideEffects: 'unknown',
       survivorsPossible: true,
       completeDescendantTermination: false,
       terminationScope: 'original_process_group',
@@ -449,6 +448,7 @@ requiredDescribe('macOS Seatbelt execution boundary', () => {
     expect(receipt).toMatchObject({
       state: 'timed_out',
       terminationGuarantee: 'best_effort',
+      sideEffects: 'unknown',
       survivorsPossible: true,
       completeDescendantTermination: false,
       terminationScope: 'original_process_group',

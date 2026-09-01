@@ -333,6 +333,7 @@ function unavailableCapabilities(denial, diagnostics = {}) {
     enforcement: Object.freeze({
       filesystem: false,
       networkNone: false,
+      loopbackNetworking: 'unavailable',
       descendantInheritance: false,
       privateTemporaryStorage: false,
       closedFileDescriptors: false,
@@ -418,6 +419,7 @@ async function detectSeatbeltCapabilities(options = {}) {
     enforcement: Object.freeze({
       filesystem: true,
       networkNone: true,
+      loopbackNetworking: 'denied',
       descendantInheritance: true,
       privateTemporaryStorage: true,
       closedFileDescriptors: true,
@@ -471,6 +473,7 @@ function deniedReceipt(startedAt, finishedAt, code, message, diagnostics = {}) {
     stdoutTruncated: false,
     stderrTruncated: false,
     terminationGuarantee: 'not_applicable',
+    sideEffects: 'none',
     error: Object.freeze({ code, message }),
     diagnostics: Object.freeze(diagnostics),
   });
@@ -580,9 +583,10 @@ class SeatbeltExecutor {
         stderr: '',
         stdoutTruncated: false,
         stderrTruncated: false,
-        terminationGuarantee: 'best_effort',
+        terminationGuarantee: 'not_applicable',
+        sideEffects: 'none',
         survivorsPossible: false,
-        completeDescendantTermination: false,
+        completeDescendantTermination: true,
         ...(cleanup ? { diagnostics: cleanup } : {}),
       });
     }
@@ -726,6 +730,7 @@ class SeatbeltExecutor {
           stdoutTruncated: rawOutput.truncated,
           stderrTruncated: errorOutput.truncated,
           terminationGuarantee: 'best_effort',
+          sideEffects: 'unknown',
           survivorsPossible: true,
           completeDescendantTermination: false,
           terminationScope: 'original_process_group',
@@ -733,6 +738,7 @@ class SeatbeltExecutor {
             backend: 'macos-seatbelt',
             aggregateResourceLimits: false,
             cancellationGuarantee: 'best_effort',
+            loopbackNetworking: 'denied',
             survivorsPossible: true,
             completeDescendantTermination: false,
           }),

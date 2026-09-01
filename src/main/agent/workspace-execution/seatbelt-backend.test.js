@@ -104,7 +104,9 @@ describe('macOS Seatbelt backend contract', () => {
     });
     const privateDirectory = await createPrivateDirectory();
     fixtureRoots.push(privateDirectory);
-    const exists = jest.spyOn(fs, 'existsSync').mockImplementation((candidate) => candidate === '/usr');
+    const exists = jest
+      .spyOn(fs, 'existsSync')
+      .mockImplementation((candidate) => candidate === '/usr');
     let profile;
     try {
       profile = buildSeatbeltProfile(policy, privateDirectory);
@@ -193,6 +195,7 @@ describe('macOS Seatbelt backend contract', () => {
       backend: 'macos-seatbelt',
       state: 'sandbox_denied',
       terminationGuarantee: 'not_applicable',
+      sideEffects: 'none',
       error: { code: 'SEATBELT_PLATFORM_UNAVAILABLE' },
     });
   });

@@ -76,7 +76,8 @@ function preflightBubblewrap() {
 
 const bubblewrapPreflight = preflightBubblewrap();
 const bubblewrapRequired = process.env.FREEDOM_REQUIRE_BWRAP === '1';
-const describeBubblewrap = bubblewrapPreflight.available || bubblewrapRequired ? describe : describe.skip;
+const describeBubblewrap =
+  bubblewrapPreflight.available || bubblewrapRequired ? describe : describe.skip;
 const bubblewrapDescription = bubblewrapPreflight.available
   ? 'Bubblewrap execution boundary'
   : `Bubblewrap execution boundary (skipped: ${bubblewrapPreflight.reason})`;
@@ -126,7 +127,7 @@ describeBubblewrap(bubblewrapDescription, () => {
           './generated.sh',
           "node -e \"require('fs').writeFileSync('node.txt', 'node')\"",
           "python3 -c \"from pathlib import Path; Path('python.txt').write_text('python')\"",
-          "awk 'BEGIN { print \"awk-ok\" }'",
+          'awk \'BEGIN { print "awk-ok" }\'',
           'git status --short',
           "printf 'positive-ok'",
         ].join(' && '),
@@ -138,7 +139,14 @@ describeBubblewrap(bubblewrapDescription, () => {
       state: 'completed',
       exitCode: 0,
       terminationGuarantee: 'namespace_scoped',
-      capabilities: { backend: 'linux-bubblewrap' },
+      sideEffects: 'unknown',
+      survivorsPossible: false,
+      completeDescendantTermination: true,
+      terminationScope: 'pid_namespace',
+      capabilities: {
+        backend: 'linux-bubblewrap',
+        loopbackNetworking: 'private_namespace',
+      },
     });
     expect(receipt.stdout).toContain('positive-ok');
     expect(receipt.stdout).toContain('awk-ok');
@@ -465,6 +473,7 @@ describeBubblewrap(bubblewrapDescription, () => {
       state: 'timed_out',
       signal: 'SIGKILL',
       terminationGuarantee: 'namespace_scoped',
+      sideEffects: 'unknown',
     });
     const timedSize = (await fs.promises.stat(heartbeat)).size;
     await delay(300);
@@ -493,14 +502,15 @@ describeBubblewrap(bubblewrapDescription, () => {
       state: 'cancelled',
       signal: 'SIGKILL',
       terminationGuarantee: 'namespace_scoped',
+      sideEffects: 'unknown',
     });
     const cancelledPath = path.join(fixture.workspaceRoot, 'cancelled-heartbeat');
     const detachedPath = path.join(fixture.workspaceRoot, 'detached-heartbeat');
     const cancelledSize = (await fs.promises.stat(cancelledPath)).size;
     const detachedSize = (await fs.promises.stat(detachedPath)).size;
-    await expect(fs.promises.stat(path.join(fixture.workspaceRoot, 'term-trap'))).rejects.toMatchObject(
-      { code: 'ENOENT' }
-    );
+    await expect(
+      fs.promises.stat(path.join(fixture.workspaceRoot, 'term-trap'))
+    ).rejects.toMatchObject({ code: 'ENOENT' });
     await delay(300);
     expect((await fs.promises.stat(cancelledPath)).size).toBe(cancelledSize);
     expect((await fs.promises.stat(detachedPath)).size).toBe(detachedSize);

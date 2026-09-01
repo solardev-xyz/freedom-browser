@@ -109,6 +109,7 @@ function receiptEvidence(name, receipt) {
     stdoutTruncated: receipt.stdoutTruncated,
     stderrTruncated: receipt.stderrTruncated,
     terminationGuarantee: receipt.terminationGuarantee,
+    sideEffects: receipt.sideEffects,
     survivorsPossible: receipt.survivorsPossible,
     completeDescendantTermination: receipt.completeDescendantTermination,
     terminationScope: receipt.terminationScope || null,
@@ -127,6 +128,10 @@ function assertSeatbeltReceipt(name, receipt, state) {
   assertCondition(
     receipt.terminationGuarantee === 'best_effort',
     `${name} overstated or omitted the macOS termination guarantee`
+  );
+  assertCondition(
+    receipt.sideEffects === 'unknown',
+    `${name} overstated the side effects of a spawned command`
   );
   assertCondition(
     receipt.survivorsPossible === true &&

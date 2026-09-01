@@ -263,6 +263,7 @@ async function detectBubblewrapCapabilities(options = {}) {
     enforcement: Object.freeze({
       filesystem: true,
       networkNone: true,
+      loopbackNetworking: 'private_namespace',
       processNamespace: true,
       ipcNamespace: true,
       descendantInheritance: true,
@@ -272,6 +273,8 @@ async function detectBubblewrapCapabilities(options = {}) {
       outputLimits: true,
       cancellation: true,
       cancellationGuarantee: 'namespace_scoped',
+      survivorsPossible: false,
+      completeDescendantTermination: true,
       customSeccomp: false,
       nestedUserNamespacesDisabled: true,
       aggregateResourceLimits: false,
@@ -559,6 +562,7 @@ function deniedReceipt(startedAt, now, code, message, diagnostics = {}) {
     stdoutTruncated: false,
     stderrTruncated: false,
     terminationGuarantee: 'not_applicable',
+    sideEffects: 'none',
     error: Object.freeze({ code, message }),
     diagnostics: Object.freeze(diagnostics),
   });
@@ -650,6 +654,9 @@ class BubblewrapExecutor {
         stdoutTruncated: false,
         stderrTruncated: false,
         terminationGuarantee: 'not_applicable',
+        sideEffects: 'none',
+        survivorsPossible: false,
+        completeDescendantTermination: true,
       };
       if (cleanupDiagnostics) receipt.diagnostics = cleanupDiagnostics;
       return Object.freeze(receipt);
@@ -699,17 +706,20 @@ class BubblewrapExecutor {
       });
 
       const sendSignal = (signal) => {
-        if (sandboxPid) {
+        const supervisorActive = child.exitCode === null && child.signalCode === null;
+        if (supervisorActive && sandboxPid) {
           try {
             process.kill(sandboxPid, signal);
           } catch {
             // The namespace init may already have exited.
           }
         }
-        try {
-          child.kill(signal);
-        } catch {
-          // The Bubblewrap supervisor may already have exited.
+        if (supervisorActive) {
+          try {
+            child.kill(signal);
+          } catch {
+            // The Bubblewrap supervisor may already have exited.
+          }
         }
       };
       const terminate = (state) => {
@@ -776,9 +786,17 @@ class BubblewrapExecutor {
           stdoutTruncated: output.truncated,
           stderrTruncated: errorOutput.truncated,
           terminationGuarantee: 'namespace_scoped',
+          sideEffects: 'unknown',
+          survivorsPossible: false,
+          completeDescendantTermination: true,
+          terminationScope: 'pid_namespace',
           capabilities: Object.freeze({
             backend: 'linux-bubblewrap',
             aggregateResourceLimits: false,
+            cancellationGuarantee: 'namespace_scoped',
+            loopbackNetworking: 'private_namespace',
+            survivorsPossible: false,
+            completeDescendantTermination: true,
             customSeccomp: false,
           }),
         };

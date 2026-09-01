@@ -63,7 +63,8 @@ const FORBIDDEN_ENVIRONMENT_NAMES = new Set([
   'XDG_RUNTIME_DIR',
 ]);
 const SENSITIVE_ENVIRONMENT_NAME =
-  /(?:^|_)(?:AUTH|COOKIE|CREDENTIAL|KEY|PASS(?:WORD)?|SECRET|SESSION|TOKEN)(?:_|$)/i;
+  /(?:AUTH|AUTHTOKEN|COOKIE|CREDENTIAL|PASS|PASSWD|PASSWORD|PWD|SECRET|SESSION|TOKEN|(?:^|_)KEY(?:_|$))/i;
+const FORBIDDEN_ENVIRONMENT_PREFIXES = Object.freeze(['DYLD_', 'LD_']);
 const SAFE_DEFAULT_INHERITANCE = Object.freeze([
   'COLORTERM',
   'FORCE_COLOR',
@@ -130,6 +131,7 @@ function validateEnvironmentName(name) {
     typeof name !== 'string' ||
     !ENVIRONMENT_NAME.test(name) ||
     FORBIDDEN_ENVIRONMENT_NAMES.has(name) ||
+    FORBIDDEN_ENVIRONMENT_PREFIXES.some((prefix) => name.startsWith(prefix)) ||
     SENSITIVE_ENVIRONMENT_NAME.test(name)
   ) {
     throw new ExecutionPolicyError(
@@ -426,6 +428,13 @@ async function resolveProtectedPath(workspaceRoot, relativePath, authorizedGitMe
     throw new ExecutionPolicyError(
       'AMBIGUOUS_PROTECTED_PATH',
       `${relativePath} resolves outside the workspace`,
+      { relativePath }
+    );
+  }
+  if (sourcePath !== candidate) {
+    throw new ExecutionPolicyError(
+      'AMBIGUOUS_PROTECTED_PATH',
+      `${relativePath} must not resolve through a symbolic-link or case-folded parent`,
       { relativePath }
     );
   }

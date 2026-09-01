@@ -70,6 +70,11 @@ async function main() {
         stderrBytes: Buffer.byteLength(receipt.stderr),
         stdoutTruncated: receipt.stdoutTruncated,
         stderrTruncated: receipt.stderrTruncated,
+        terminationGuarantee: receipt.terminationGuarantee,
+        sideEffects: receipt.sideEffects,
+        survivorsPossible: receipt.survivorsPossible,
+        completeDescendantTermination: receipt.completeDescendantTermination,
+        terminationScope: receipt.terminationScope,
       })}\n`
     );
     if (receipt.state !== 'completed') {

@@ -21,6 +21,7 @@ describe('backend-neutral workspace executor selection', () => {
       backend: 'unavailable',
       state: 'sandbox_denied',
       terminationGuarantee: 'not_applicable',
+      sideEffects: 'none',
       error: { code: 'WORKSPACE_EXECUTION_PLATFORM_UNAVAILABLE' },
     });
   });

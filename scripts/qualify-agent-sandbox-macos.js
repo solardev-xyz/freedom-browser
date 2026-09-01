@@ -99,6 +99,7 @@ async function main() {
         stdoutTruncated: receipt.stdoutTruncated,
         stderrTruncated: receipt.stderrTruncated,
         terminationGuarantee: receipt.terminationGuarantee,
+        sideEffects: receipt.sideEffects,
         survivorsPossible: receipt.survivorsPossible,
         completeDescendantTermination: receipt.completeDescendantTermination,
         terminationScope: receipt.terminationScope,

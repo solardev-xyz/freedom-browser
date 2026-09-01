@@ -230,6 +230,21 @@ describe('workspace execution policy', () => {
     ).rejects.toMatchObject({ code: 'AMBIGUOUS_PROTECTED_PATH' });
   });
 
+  test('rejects a protected path reached through a symbolic-link parent', async () => {
+    const fixture = await createFixture();
+    fixtureRoots.push(fixture.fixtureRoot);
+    const realParent = path.join(fixture.workspaceRoot, 'real-parent');
+    await fs.promises.mkdir(path.join(realParent, 'vendor'), { recursive: true });
+    await fs.promises.symlink(realParent, path.join(fixture.workspaceRoot, 'linked-parent'));
+
+    await expect(
+      createWorkspaceExecutionPolicy({
+        workspaceRoot: fixture.workspaceRoot,
+        protectedWorkspacePaths: ['.git', 'linked-parent/vendor'],
+      })
+    ).rejects.toMatchObject({ code: 'AMBIGUOUS_PROTECTED_PATH' });
+  });
+
   test('rejects a working directory that resolves through a symlink outside the workspace', async () => {
     const fixture = await createFixture();
     fixtureRoots.push(fixture.fixtureRoot);
@@ -305,16 +320,18 @@ describe('workspace execution policy', () => {
 
     const originalLstat = fs.promises.lstat.bind(fs.promises);
     let secondPathCalls = 0;
-    const lstat = jest.spyOn(fs.promises, 'lstat').mockImplementation(async (candidate, options) => {
-      const stats = await originalLstat(candidate, options);
-      if (candidate !== canonicalSecondPath || ++secondPathCalls !== 2) return stats;
-      return new Proxy(stats, {
-        get(target, property, receiver) {
-          if (property === 'nlink') return target.nlink + 1n;
-          return Reflect.get(target, property, receiver);
-        },
+    const lstat = jest
+      .spyOn(fs.promises, 'lstat')
+      .mockImplementation(async (candidate, options) => {
+        const stats = await originalLstat(candidate, options);
+        if (candidate !== canonicalSecondPath || ++secondPathCalls !== 2) return stats;
+        return new Proxy(stats, {
+          get(target, property, receiver) {
+            if (property === 'nlink') return target.nlink + 1n;
+            return Reflect.get(target, property, receiver);
+          },
+        });
       });
-    });
     try {
       await expect(
         createWorkspaceExecutionPolicy({ workspaceRoot: fixture.workspaceRoot })
@@ -332,12 +349,14 @@ describe('workspace execution policy', () => {
     const canonicalSourcePath = await fs.promises.realpath(sourcePath);
     const originalLstat = fs.promises.lstat.bind(fs.promises);
     let rootCalls = 0;
-    const lstat = jest.spyOn(fs.promises, 'lstat').mockImplementation(async (candidate, options) => {
-      if (candidate === canonicalWorkspaceRoot && ++rootCalls === 3) {
-        await fs.promises.appendFile(canonicalSourcePath, '// changed during validation\n');
-      }
-      return originalLstat(candidate, options);
-    });
+    const lstat = jest
+      .spyOn(fs.promises, 'lstat')
+      .mockImplementation(async (candidate, options) => {
+        if (candidate === canonicalWorkspaceRoot && ++rootCalls === 3) {
+          await fs.promises.appendFile(canonicalSourcePath, '// changed during validation\n');
+        }
+        return originalLstat(candidate, options);
+      });
     try {
       await expect(
         createWorkspaceExecutionPolicy({ workspaceRoot: fixture.workspaceRoot })
@@ -440,6 +459,10 @@ describe('workspace execution policy', () => {
     expect(validateEnvironmentName('LANG')).toBe('LANG');
     expect(() => validateEnvironmentName('AWS_SECRET_ACCESS_KEY')).toThrow('not eligible');
     expect(() => validateEnvironmentName('LD_PRELOAD')).toThrow('not eligible');
+    expect(() => validateEnvironmentName('DYLD_INSERT_LIBRARIES')).toThrow('not eligible');
+    expect(() => validateEnvironmentName('PGPASSWORD')).toThrow('not eligible');
+    expect(() => validateEnvironmentName('MYSQL_PWD')).toThrow('not eligible');
+    expect(() => validateEnvironmentName('NPM_CONFIG__AUTHTOKEN')).toThrow('not eligible');
   });
 
   test('uses path containment and Node runtime inference without widening a home directory', () => {

@@ -50,6 +50,7 @@ Trusted components are the caller that selects the workspace, the normalized pol
 - There is no network-enabled posture. Reserved `brokered` requests fail as unsupported.
 - There is no setuid Bubblewrap path or unsandboxed fallback.
 - Linux `/proc/*/mountinfo` reveals the backing path of bind mounts, including the canonical workspace path. Opaque IDs keep that path out of the API, but they do not make it confidential from a command already running inside the workspace. Avoid placing secrets in managed-project path components; eliminating this disclosure would require a different storage/mount design or a materially reduced `/proc` view.
+- Workspace contents remain hostile after execution. Trusted preview, publication, indexing, attachment, and VCS consumers must use bounded `lstat`-first traversal, reject symlinks and special files, and never execute workspace-controlled hooks. The sandbox boundary does not make later host-side traversal safe.
 
 ## Backend-neutral policy contract
 
@@ -63,7 +64,7 @@ Trusted components are the caller that selects the workspace, the normalized pol
 | Temporary storage    | Fresh 256 MiB tmpfs `/tmp` for every execution, with private home/config/cache/data directories beneath it, plus a separate 64 MiB `/dev/shm`. Nothing persists to the host.                                                                          |
 | Working directory    | An existing relative directory whose canonical target remains inside the workspace. The sandbox path is rooted at `/workspace`.                                                                                                                  |
 | Environment          | `--clearenv`, safe locale/terminal inheritance, bounded trusted explicit values, and fixed private `HOME`, `TMP*`, and XDG locations. Loader, language injection, socket, display, Git override, and credential-shaped variables are rejected.   |
-| Network              | `none` only. `brokered` is reserved and currently denied.                                                                                                                                                                                        |
+| Network              | `none` only. External and host networking are absent, while a private loopback interface remains available inside the network namespace. Capability metadata reports `loopbackNetworking: private_namespace`. `brokered` is reserved and currently denied. |
 | Wall/output limits   | Five-minute default wall timeout, thirty-minute maximum, and independent 1 MiB stdout/stderr defaults. Output is continuously drained after the visible cap and marked truncated.                                                                |
 | Aggregate limits     | CPU time, memory, process count, and maximum file size are represented as optional requirements. Any required value is denied because this backend cannot yet enforce it.                                                                        |
 | Cancellation         | An `AbortSignal` immediately kills the PID-namespace init/Bubblewrap supervisor with `SIGKILL`; namespace teardown kills descendants. The receipt reports `SIGKILL`, not a graceful `SIGTERM` delivery that did not occur.                          |
@@ -124,7 +125,7 @@ Stdout and stderr are separately capped and continuously drained. The receipt in
 
 Launcher staging cleanup is best-effort after the sandbox has stopped. A cleanup rejection is reduced to a bounded error code in `diagnostics.stagingCleanupFailed` and never prevents the execution receipt from resolving.
 
-Cancellation and timeout deliberately use immediate namespace teardown in this checkpoint. Sending `SIGTERM` to Bubblewrap's PID-namespace init does not establish graceful TERM delivery to the requested command; killing the outer monitor tears down the namespace and the kernel kills its remaining members. Requested cancellation and timeout receipts therefore contain `signal: SIGKILL` and retain `terminationGuarantee: namespace_scoped`. A TERM-trap regression proves that no TERM handler runs, while ordinary and detached heartbeat descendants stop before receipt resolution and remain stopped afterward. A future graceful mode would need a separately reviewed in-namespace supervisor rather than host `/proc` PID discovery.
+Cancellation and timeout deliberately use immediate namespace teardown in this checkpoint. Sending `SIGTERM` to Bubblewrap's PID-namespace init does not establish graceful TERM delivery to the requested command; killing the outer monitor tears down the namespace and the kernel kills its remaining members. Requested cancellation and timeout receipts therefore contain `signal: SIGKILL` and retain `terminationGuarantee: namespace_scoped`. Every spawned receipt says `sideEffects: unknown`; sandbox denial and cancellation before launch say `sideEffects: none`. A TERM-trap regression proves that no TERM handler runs, while ordinary and detached heartbeat descendants stop before receipt resolution and remain stopped afterward. A future graceful mode would need a separately reviewed in-namespace supervisor rather than host `/proc` PID discovery.
 
 ## Qualification results
 
@@ -278,5 +279,6 @@ Bundling should be reconsidered only with an update strategy, exact executable-p
 7. Add workspace disk/quota handling and reconcile OOM/PID-limit termination into stable receipts. The bounded tmpfs mounts do not replace aggregate cgroup accounting.
 8. Review which `/usr` and TLS/loader paths packaged builds actually need; reduce the system view where positive evidence allows. Host `/usr/local` is now hidden, but the remaining distro `/usr` view is broad.
 9. Decide whether the canonical workspace path disclosed by `/proc/*/mountinfo` is acceptable metadata or requires a different project-storage/mount design.
+10. Document and surface that local hard-linked Git clones and pnpm/bun global-store layouts fail the complete-link accounting rule; Freedom-created projects should avoid those layouts rather than silently weakening validation.
 
-Recommendation: this is serious enough to continue toward a non-destructive macOS Seatbelt feasibility spike using the same contract. It is not serious enough to merge into the feature branch or expose to Pi until Linux cgroup containment, seccomp posture, and packaging diagnostics are resolved.
+Recommendation: the audit-hardened filesystem/network/namespace boundary is sufficiently qualified for a narrowly gated Freedom-created managed-workspace integration. It is not unrestricted shell authority: aggregate resource containment, seccomp posture, packaging support, hostile-consumer rules, and same-UID workspace lifecycle remain explicit constraints.

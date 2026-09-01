@@ -37,6 +37,7 @@ class UnavailableWorkspaceExecutor {
       stdoutTruncated: false,
       stderrTruncated: false,
       terminationGuarantee: 'not_applicable',
+      sideEffects: 'none',
       error: Object.freeze({
         code: 'WORKSPACE_EXECUTION_PLATFORM_UNAVAILABLE',
         message: 'No workspace execution backend is available on this platform',

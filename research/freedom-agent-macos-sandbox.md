@@ -145,7 +145,7 @@ The child environment is built from the validated allowlist. Loader injection, l
 
 `/usr/bin/sandbox-exec` is invoked by absolute path with a generated profile file. The final trusted shell wrapper prints an unguessable marker after Seatbelt application and before executing the requested argv. If the marker is absent, the result is `sandbox_denied`; there is no unsandboxed retry. This marker proves profile application readiness, not the profile's filesystem or network denial semantics. Enforcement evidence comes from the qualified integration corpus.
 
-Stdout and stderr are continuously drained and independently bounded. Receipts distinguish completed, failed, cancelled, timed-out and sandbox-denied states. All spawned receipts expose `terminationGuarantee: best_effort`, `survivorsPossible: true`, `completeDescendantTermination: false` and `terminationScope: original_process_group`.
+Stdout and stderr are continuously drained and independently bounded. Receipts distinguish completed, failed, cancelled, timed-out and sandbox-denied states. All spawned receipts expose `terminationGuarantee: best_effort`, `sideEffects: unknown`, `survivorsPossible: true`, `completeDescendantTermination: false` and `terminationScope: original_process_group`. Sandbox denial and cancellation before launch expose `terminationGuarantee: not_applicable` and `sideEffects: none`.
 
 The launcher starts `sandbox-exec` in a dedicated process group/session. Cancellation and timeout send `SIGTERM` to the original group, wait one second, send `SIGKILL`, then resolve within another bounded interval even if a detached descendant retains resources. Direct-child close no longer cancels cleanup: finalization first makes an additional best-effort group `SIGKILL` attempt, so an ordinary same-group background child cannot silently become untracked merely because the root exited. Non-`ESRCH` signal errors are retained in receipt diagnostics. PID/PGID reuse remains a small signaling race and is documented rather than hidden.
 
@@ -160,6 +160,10 @@ The exact OS-build allowlist was removed. Runtime detection now checks:
 Architecture and kernel release are diagnostics, not allowlist keys. The probe and per-run marker establish profile application readiness. They do not synthetically retest denial semantics on every launch; those semantics are established by the qualification corpus. An unsupported profile or failed Seatbelt application still fails closed before the requested command is classified as started.
 
 `sandbox-exec` remains deprecated and its profile language unsupported as a stable public interface. Capability probing reduces application failures, but qualified integration tests on each supported macOS/runtime layout remain necessary for enforcement confidence.
+
+The `none` network posture denies loopback and in-sandbox Unix sockets on macOS; capability metadata reports `loopbackNetworking: denied`. Linux's private network namespace retains private loopback, so callers must not treat the two backends as behaviorally identical merely because neither can reach host or external networks.
+
+Workspace contents remain hostile after execution. Trusted preview, publication, indexing, attachment, and VCS consumers must use bounded `lstat`-first traversal, reject symlinks and special files, and never execute workspace-controlled hooks. Seatbelt confinement of the producing command does not make later host-side traversal safe.
 
 ### Qualified toolchain scope
 
