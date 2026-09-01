@@ -6,6 +6,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const {
+  BUBBLEWRAP_SYSTEM_TOOLCHAIN_PATH,
   BubblewrapExecutor,
   PRIVATE_TEMP_SIZE_BYTES,
   SHARED_MEMORY_SIZE_BYTES,
@@ -108,7 +109,9 @@ describe('Bubblewrap backend contract', () => {
     const pathIndex = launch.args.findIndex(
       (value, index) => value === '--setenv' && launch.args[index + 1] === 'PATH'
     );
-    expect(launch.args[pathIndex + 2]).toMatch(/(?:^|:)\/usr\/bin:\/bin$/);
+    expect(launch.args[pathIndex + 2]).toEqual(
+      expect.stringMatching(new RegExp(`(?:^|:)${BUBBLEWRAP_SYSTEM_TOOLCHAIN_PATH}$`))
+    );
     expect(launch.args[pathIndex + 2]).not.toContain('/usr/local');
     expect(joined).toContain('XDG_DATA_HOME\n/tmp/data');
     expect(launch.args.slice(-3)).toEqual(['/bin/sh', '-c', 'printf ok']);

@@ -17,6 +17,7 @@ const DEFAULT_BUBBLEWRAP_PATH = '/usr/bin/bwrap';
 const CAPABILITY_PROBE_TIMEOUT_MS = 5_000;
 const PRIVATE_TEMP_SIZE_BYTES = 256 * 1024 * 1024;
 const SHARED_MEMORY_SIZE_BYTES = 64 * 1024 * 1024;
+const BUBBLEWRAP_SYSTEM_TOOLCHAIN_PATH = '/usr/bin:/bin';
 const SYSTEM_RUNTIME_PATHS = Object.freeze(['/usr', '/bin', '/sbin', '/lib', '/lib64']);
 const SYSTEM_CONFIGURATION_PATHS = Object.freeze([
   '/etc/alternatives',
@@ -95,7 +96,7 @@ function runBoundedProcess(binary, args, options = {}) {
     let child;
     try {
       child = spawnProcess(binary, args, {
-        env: { PATH: '/usr/bin:/bin' },
+        env: { PATH: BUBBLEWRAP_SYSTEM_TOOLCHAIN_PATH },
         stdio: ['ignore', 'pipe', 'pipe'],
       });
     } catch (error) {
@@ -167,7 +168,7 @@ function capabilityProbeArguments() {
     '--clearenv',
     '--setenv',
     'PATH',
-    '/usr/bin:/bin',
+    BUBBLEWRAP_SYSTEM_TOOLCHAIN_PATH,
     '--chdir',
     '/tmp',
     '--',
@@ -414,7 +415,7 @@ async function buildBubblewrapArguments(policy, request) {
         if (!fs.existsSync(sourcePath)) continue;
         addReadOnlyMount(args, sourcePath, sourcePath);
       }
-      pathEntries.push('/usr/bin', '/bin');
+      pathEntries.push(...BUBBLEWRAP_SYSTEM_TOOLCHAIN_PATH.split(':'));
     }
     for (const name of ['passwd', 'group', 'nsswitch.conf', 'hosts']) {
       addReadOnlyMount(args, path.join(stagingDirectory, name), `/etc/${name}`);
@@ -666,7 +667,7 @@ class BubblewrapExecutor {
       let child;
       try {
         child = this.spawnProcess(this.binary, launch.args, {
-          env: { PATH: '/usr/bin:/bin' },
+          env: { PATH: BUBBLEWRAP_SYSTEM_TOOLCHAIN_PATH },
           stdio: ['ignore', 'pipe', 'pipe', 'pipe'],
         });
       } catch {
@@ -814,6 +815,7 @@ class BubblewrapExecutor {
 }
 
 module.exports = {
+  BUBBLEWRAP_SYSTEM_TOOLCHAIN_PATH,
   BubblewrapExecutor,
   CAPABILITY_PROBE_TIMEOUT_MS,
   DEFAULT_BUBBLEWRAP_PATH,
