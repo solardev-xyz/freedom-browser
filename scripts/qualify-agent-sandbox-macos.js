@@ -99,6 +99,9 @@ async function main() {
         stdoutTruncated: receipt.stdoutTruncated,
         stderrTruncated: receipt.stderrTruncated,
         terminationGuarantee: receipt.terminationGuarantee,
+        survivorsPossible: receipt.survivorsPossible,
+        completeDescendantTermination: receipt.completeDescendantTermination,
+        terminationScope: receipt.terminationScope,
       })}\n`
     );
     if (receipt.state !== 'completed') {

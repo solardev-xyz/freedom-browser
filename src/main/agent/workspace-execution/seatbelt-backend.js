@@ -29,6 +29,76 @@ const OPTIONAL_SYSTEM_READ_PATHS = Object.freeze([
   '/private/etc/services',
   '/private/etc/ssl/cert.pem',
 ]);
+// Keep this list explicit. In particular, do not admit kern.proc.*, net.routetable.*,
+// vm.loadavg or a hw.optional.arm.* prefix: those disclose host process/network state or
+// grant substantially more authority than the qualified Node/Electron workloads require.
+const SEATBELT_SYSCTL_READ_NAMES = Object.freeze([
+  'hw.activecpu',
+  'hw.byteorder',
+  'hw.cacheconfig',
+  'hw.cachelinesize_compat',
+  'hw.cpufamily',
+  'hw.cputype',
+  'hw.l1dcachesize_compat',
+  'hw.l1icachesize_compat',
+  'hw.l2cachesize_compat',
+  'hw.l3cachesize_compat',
+  'hw.logicalcpu',
+  'hw.logicalcpu_max',
+  'hw.machine',
+  'hw.ncpu',
+  'hw.nperflevels',
+  'hw.optional.arm.FEAT_BF16',
+  'hw.optional.arm.FEAT_DotProd',
+  'hw.optional.arm.FEAT_FCMA',
+  'hw.optional.arm.FEAT_FHM',
+  'hw.optional.arm.FEAT_FP16',
+  'hw.optional.arm.FEAT_I8MM',
+  'hw.optional.arm.FEAT_JSCVT',
+  'hw.optional.arm.FEAT_LSE',
+  'hw.optional.arm.FEAT_RDM',
+  'hw.optional.arm.FEAT_SHA512',
+  'hw.optional.armv8_2_sha512',
+  'hw.packages',
+  'hw.pagesize',
+  'hw.pagesize_compat',
+  'hw.perflevel0.cpusperl2',
+  'hw.perflevel0.l1dcachesize',
+  'hw.perflevel0.l1icachesize',
+  'hw.perflevel0.l2cachesize',
+  'hw.perflevel0.logicalcpu',
+  'hw.perflevel0.logicalcpu_max',
+  'hw.perflevel0.name',
+  'hw.perflevel0.physicalcpu',
+  'hw.perflevel0.physicalcpu_max',
+  'hw.perflevel1.cpusperl2',
+  'hw.perflevel1.l1dcachesize',
+  'hw.perflevel1.l1icachesize',
+  'hw.perflevel1.l2cachesize',
+  'hw.perflevel1.logicalcpu',
+  'hw.perflevel1.logicalcpu_max',
+  'hw.perflevel1.name',
+  'hw.perflevel1.physicalcpu',
+  'hw.perflevel1.physicalcpu_max',
+  'hw.physicalcpu',
+  'hw.physicalcpu_max',
+  'hw.vectorunit',
+  'kern.argmax',
+  'kern.hostname',
+  'kern.maxfilesperproc',
+  'kern.osproductversion',
+  'kern.osrelease',
+  'kern.ostype',
+  'kern.osvariant_status',
+  'kern.osversion',
+  'kern.secure_kernel',
+  'kern.sysv.semmns',
+  'kern.tcsm_available',
+  'kern.tcsm_enable',
+  'kern.usrstack64',
+  'kern.version',
+  'sysctl.proc_cputype',
+]);
 
 function boundedText(value, maximum = 512) {
   return String(value || '').slice(0, maximum);
@@ -69,6 +139,14 @@ function pathRule(action, operation, filter, candidate) {
   return `(${action} ${operation} (${filter} ${seatbeltString(candidate)}))`;
 }
 
+function sysctlReadRule() {
+  return [
+    '(allow sysctl-read',
+    ...SEATBELT_SYSCTL_READ_NAMES.map((name) => `  (sysctl-name ${seatbeltString(name)})`),
+    ')',
+  ].join('\n');
+}
+
 function protectedPathFilter(protectedPath) {
   return protectedPath.kind === 'file' || protectedPath.kind === 'git_pointer'
     ? 'literal'
@@ -88,8 +166,8 @@ function capabilityProbeProfile() {
     '(allow process-exec)',
     '(allow process-fork)',
     '(allow signal (target same-sandbox))',
-    '(allow process-info* (target same-sandbox))',
-    '(allow sysctl-read)',
+    '(allow process-info-pidinfo (target same-sandbox))',
+    sysctlReadRule(),
     '(allow file-read-metadata)',
     pathRule('allow', 'file-read-data', 'literal', '/'),
   ];
@@ -194,8 +272,8 @@ function buildSeatbeltProfile(policy, privateDirectory) {
     '(allow process-exec)',
     '(allow process-fork)',
     '(allow signal (target same-sandbox))',
-    '(allow process-info* (target same-sandbox))',
-    '(allow sysctl-read)',
+    '(allow process-info-pidinfo (target same-sandbox))',
+    sysctlReadRule(),
     // dyld and common command-line runtimes probe parent directories before opening allowed files.
     // This reveals pathname metadata, not file contents; the residual disclosure is documented.
     '(allow file-read-metadata)',
@@ -262,6 +340,8 @@ function unavailableCapabilities(denial, diagnostics = {}) {
       outputLimits: false,
       cancellation: false,
       cancellationGuarantee: 'best_effort',
+      survivorsPossible: false,
+      completeDescendantTermination: false,
       aggregateResourceLimits: false,
     }),
   });
@@ -345,6 +425,9 @@ async function detectSeatbeltCapabilities(options = {}) {
       outputLimits: true,
       cancellation: true,
       cancellationGuarantee: 'best_effort',
+      survivorsPossible: true,
+      completeDescendantTermination: false,
+      processVisibility: 'same_sandbox_only',
       aggregateResourceLimits: false,
     }),
   });
@@ -498,6 +581,8 @@ class SeatbeltExecutor {
         stdoutTruncated: false,
         stderrTruncated: false,
         terminationGuarantee: 'best_effort',
+        survivorsPossible: false,
+        completeDescendantTermination: false,
         ...(cleanup ? { diagnostics: cleanup } : {}),
       });
     }
@@ -641,10 +726,15 @@ class SeatbeltExecutor {
           stdoutTruncated: rawOutput.truncated,
           stderrTruncated: errorOutput.truncated,
           terminationGuarantee: 'best_effort',
+          survivorsPossible: true,
+          completeDescendantTermination: false,
+          terminationScope: 'original_process_group',
           capabilities: Object.freeze({
             backend: 'macos-seatbelt',
             aggregateResourceLimits: false,
             cancellationGuarantee: 'best_effort',
+            survivorsPossible: true,
+            completeDescendantTermination: false,
           }),
         };
         if (state === EXECUTION_STATES.FAILED) {
@@ -697,6 +787,7 @@ module.exports = {
   OPTIONAL_SYSTEM_READ_PATHS,
   PRIVATE_DIRECTORY_PREFIX,
   PROBE_TIMEOUT_MS,
+  SEATBELT_SYSCTL_READ_NAMES,
   SYSTEM_READ_PATHS,
   SeatbeltExecutor,
   TERMINATION_GRACE_MS,
@@ -709,4 +800,5 @@ module.exports = {
   hostWorkingDirectory,
   seatbeltString,
   signalProcessGroup,
+  sysctlReadRule,
 };

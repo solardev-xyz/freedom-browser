@@ -171,6 +171,9 @@ describe('gated detached-descendant macOS Seatbelt qualification', () => {
       expect(receipt).toMatchObject({
         state: 'cancelled',
         terminationGuarantee: 'best_effort',
+        survivorsPossible: true,
+        completeDescendantTermination: false,
+        terminationScope: 'original_process_group',
       });
       expect(processCommand(detachedPid)).toContain(token);
       expect(result.outsideRead).not.toBe('unexpected');
@@ -184,6 +187,81 @@ describe('gated detached-descendant macOS Seatbelt qualification', () => {
     } finally {
       await closeServer(server);
       if (detachedPid) await cleanupRecordedProcess(detachedPid, token);
+      validateDestructiveFixtureRoot(fixtureRoot);
+      await fs.promises.rm(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  destructiveTest('records and cleans a job-control process-group survivor', async () => {
+    const fixtureRoot = await fs.promises.mkdtemp(
+      path.join(os.tmpdir(), 'freedom-seatbelt-destructive-')
+    );
+    validateDestructiveFixtureRoot(fixtureRoot);
+    const workspaceRoot = path.join(fixtureRoot, 'workspace');
+    await fs.promises.mkdir(workspaceRoot, { mode: 0o700 });
+    const git = spawnSync('git', ['init', '--quiet', workspaceRoot], { encoding: 'utf8' });
+    if (git.status !== 0) throw new Error(git.stderr || 'git init failed');
+    const pidFile = path.join(workspaceRoot, 'job-control.pid');
+    const heartbeat = path.join(workspaceRoot, 'job-control-heartbeat');
+    const token = `freedom-job-control-${crypto.randomUUID()}`;
+    let survivorPid = null;
+
+    try {
+      const policy = await createWorkspaceExecutionPolicy({
+        workspaceRoot,
+        limits: { timeoutMs: 10_000, stdoutBytes: 16_384, stderrBytes: 16_384 },
+      });
+      const survivorScript = [
+        'import os, pathlib, signal, sys, time',
+        'pid_file, heartbeat, token = sys.argv[1:]',
+        'signal.signal(signal.SIGTERM, signal.SIG_IGN)',
+        'pathlib.Path(pid_file).write_text(str(os.getpid()))',
+        'while True:',
+        "    with open(heartbeat, 'a') as stream: stream.write('x')",
+        '    time.sleep(0.03)',
+      ].join('\n');
+      const controller = new AbortController();
+      const execution = new SeatbeltExecutor().execute(policy, {
+        command: '/bin/sh',
+        args: [
+          '-c',
+          [
+            'set -m',
+            'python3 -c "$1" "$2" "$3" "$4" </dev/null >/dev/null 2>&1 &',
+            'wait',
+          ].join('\n'),
+          'freedom-job-control-root',
+          survivorScript,
+          pidFile,
+          heartbeat,
+          token,
+        ],
+        signal: controller.signal,
+      });
+      survivorPid = Number.parseInt(await waitForFile(pidFile), 10);
+      if (!Number.isSafeInteger(survivorPid) || survivorPid <= 1) {
+        throw new Error('Job-control qualification produced an invalid PID');
+      }
+      const processGroup = spawnSync('/bin/ps', ['-p', String(survivorPid), '-o', 'pgid='], {
+        encoding: 'utf8',
+      });
+      expect(processGroup.status).toBe(0);
+      expect(Number.parseInt(processGroup.stdout, 10)).toBe(survivorPid);
+      controller.abort();
+      const receipt = await execution;
+      expect(receipt).toMatchObject({
+        state: 'cancelled',
+        terminationGuarantee: 'best_effort',
+        survivorsPossible: true,
+        completeDescendantTermination: false,
+        terminationScope: 'original_process_group',
+      });
+      expect(processCommand(survivorPid)).toContain(token);
+      const heartbeatSize = (await fs.promises.stat(heartbeat)).size;
+      await delay(150);
+      expect((await fs.promises.stat(heartbeat)).size).toBeGreaterThan(heartbeatSize);
+    } finally {
+      if (survivorPid) await cleanupRecordedProcess(survivorPid, token);
       validateDestructiveFixtureRoot(fixtureRoot);
       await fs.promises.rm(fixtureRoot, { recursive: true, force: true });
     }

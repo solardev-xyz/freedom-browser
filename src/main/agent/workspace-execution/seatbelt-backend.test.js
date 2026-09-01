@@ -8,8 +8,10 @@ const { PassThrough } = require('stream');
 const { createWorkspaceExecutionPolicy } = require('./execution-policy');
 const {
   PRIVATE_DIRECTORY_PREFIX,
+  SEATBELT_SYSCTL_READ_NAMES,
   SeatbeltExecutor,
   buildSeatbeltProfile,
+  capabilityProbeProfile,
   collectStream,
   createPrivateDirectory,
   detectSeatbeltCapabilities,
@@ -60,6 +62,16 @@ describe('macOS Seatbelt backend contract', () => {
 
     expect(profile).toContain('(deny default)');
     expect(profile).toContain('(deny network*)');
+    expect(profile).toContain('(allow process-info-pidinfo (target same-sandbox))');
+    expect(profile).not.toContain('process-info*');
+    expect(profile).not.toContain('(allow sysctl-read)');
+    expect(profile).not.toContain('sysctl-name-prefix');
+    expect(profile).not.toContain('kern.proc');
+    expect(profile).not.toContain('net.routetable');
+    expect(profile).not.toContain('vm.loadavg');
+    for (const name of SEATBELT_SYSCTL_READ_NAMES) {
+      expect(profile).toContain(`(sysctl-name "${name}")`);
+    }
     expect(profile).toContain(`(allow file-write* (subpath "${workspace.sourcePath}"))`);
     expect(profile).toContain(`(deny file-write* (subpath "${gitMetadata.sourcePath}"))`);
     expect(profile).toContain(`(allow file-write* (subpath "${privateDirectory}"))`);
@@ -69,6 +81,18 @@ describe('macOS Seatbelt backend contract', () => {
       expect(profile).toContain('(deny file-read* (subpath "/usr/local"))');
     }
     expect(hostWorkingDirectory(policy, workspace)).toBe(path.join(workspace.sourcePath, 'nested'));
+  });
+
+  test('uses the same narrow sysctl and process visibility posture in the capability probe', () => {
+    const profile = capabilityProbeProfile();
+    expect(profile).toContain('(allow process-info-pidinfo (target same-sandbox))');
+    expect(profile).not.toContain('process-info*');
+    expect(profile).not.toContain('(allow sysctl-read)');
+    expect(profile).not.toContain('sysctl-name-prefix');
+    expect(profile).not.toContain('kern.proc');
+    expect(profile).not.toContain('net.routetable');
+    expect(profile).not.toContain('vm.loadavg');
+    expect(profile.match(/\(sysctl-name /g)).toHaveLength(SEATBELT_SYSCTL_READ_NAMES.length);
   });
 
   test('omits absent platform system paths without dropping permissions for existing paths', async () => {
@@ -139,7 +163,12 @@ describe('macOS Seatbelt backend contract', () => {
         profileApplicationReadiness: 'passed',
         denialSemanticsProbe: 'not_run',
       },
-      enforcement: { cancellationGuarantee: 'best_effort' },
+      enforcement: {
+        cancellationGuarantee: 'best_effort',
+        survivorsPossible: true,
+        completeDescendantTermination: false,
+        processVisibility: 'same_sandbox_only',
+      },
     });
     await expect(
       detectSeatbeltCapabilities({

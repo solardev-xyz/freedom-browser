@@ -293,15 +293,23 @@ async function resolveGitMetadata(workspaceRoot, relativePath, authorizedGitMeta
       { relativePath }
     );
   }
+  const sourcePath = await fs.promises.realpath(candidate);
+  if (!insidePath(workspaceRoot, sourcePath)) {
+    throw new ExecutionPolicyError(
+      'AMBIGUOUS_PROTECTED_PATH',
+      `${relativePath} resolved outside the workspace unexpectedly`,
+      { relativePath }
+    );
+  }
+  const resolvedRelativePath = path.relative(workspaceRoot, sourcePath).split(path.sep).join('/');
+  if (resolvedRelativePath !== relativePath) {
+    throw new ExecutionPolicyError(
+      'PROTECTED_PATH_CASE_MISMATCH',
+      `${relativePath} must use its canonical on-disk casing`,
+      { relativePath, resolvedRelativePath }
+    );
+  }
   if (entry.isDirectory()) {
-    const sourcePath = await fs.promises.realpath(candidate);
-    if (!insidePath(workspaceRoot, sourcePath)) {
-      throw new ExecutionPolicyError(
-        'AMBIGUOUS_PROTECTED_PATH',
-        `${relativePath} resolved outside the workspace unexpectedly`,
-        { relativePath }
-      );
-    }
     await validateGitConfiguration(sourcePath);
     return Object.freeze({
       relativePath,
@@ -379,7 +387,7 @@ async function resolveGitMetadata(workspaceRoot, relativePath, authorizedGitMeta
     relativePath,
     access: 'read_only',
     kind: 'git_pointer',
-    sourcePath: candidate,
+    sourcePath,
     gitDirectory,
     commonDirectory,
     hasCommonDirectoryPointer,
