@@ -109,6 +109,9 @@ function receiptEvidence(name, receipt) {
     stdoutTruncated: receipt.stdoutTruncated,
     stderrTruncated: receipt.stderrTruncated,
     terminationGuarantee: receipt.terminationGuarantee,
+    survivorsPossible: receipt.survivorsPossible,
+    completeDescendantTermination: receipt.completeDescendantTermination,
+    terminationScope: receipt.terminationScope || null,
     capabilities: receipt.capabilities || null,
     diagnostics: receipt.diagnostics || null,
   });
@@ -126,12 +129,23 @@ function assertSeatbeltReceipt(name, receipt, state) {
     `${name} overstated or omitted the macOS termination guarantee`
   );
   assertCondition(
+    receipt.survivorsPossible === true &&
+      receipt.completeDescendantTermination === false &&
+      receipt.terminationScope === 'original_process_group',
+    `${name} omitted the machine-readable surviving-descendant warning`
+  );
+  assertCondition(
     receipt.capabilities?.backend === 'macos-seatbelt',
     `${name} omitted backend capability metadata`
   );
   assertCondition(
     receipt.capabilities?.cancellationGuarantee === 'best_effort',
     `${name} omitted best-effort cancellation capability metadata`
+  );
+  assertCondition(
+    receipt.capabilities?.survivorsPossible === true &&
+      receipt.capabilities?.completeDescendantTermination === false,
+    `${name} omitted surviving-descendant capability metadata`
   );
   assertCondition(
     receipt.diagnostics?.processGroupFinalKillAttempted === true,
@@ -664,6 +678,7 @@ async function runQualification() {
       wallTimeout: true,
       processGroupCleanup: 'best_effort',
       completeDescendantTermination: false,
+      survivorsPossible: true,
     });
     emit('qualification-complete', { mode: 'ordinary', passed: true });
   } finally {

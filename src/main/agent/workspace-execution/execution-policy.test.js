@@ -301,12 +301,13 @@ describe('workspace execution policy', () => {
     const secondPath = path.join(fixture.workspaceRoot, 'native-object.node');
     await fs.promises.writeFile(firstPath, 'native-module-fixture');
     await fs.promises.link(firstPath, secondPath);
+    const canonicalSecondPath = await fs.promises.realpath(secondPath);
 
     const originalLstat = fs.promises.lstat.bind(fs.promises);
     let secondPathCalls = 0;
     const lstat = jest.spyOn(fs.promises, 'lstat').mockImplementation(async (candidate, options) => {
       const stats = await originalLstat(candidate, options);
-      if (candidate !== secondPath || ++secondPathCalls !== 2) return stats;
+      if (candidate !== canonicalSecondPath || ++secondPathCalls !== 2) return stats;
       return new Proxy(stats, {
         get(target, property, receiver) {
           if (property === 'nlink') return target.nlink + 1n;
@@ -327,11 +328,13 @@ describe('workspace execution policy', () => {
     const fixture = await createFixture();
     fixtureRoots.push(fixture.fixtureRoot);
     const sourcePath = path.join(fixture.workspaceRoot, 'source.js');
+    const canonicalWorkspaceRoot = await fs.promises.realpath(fixture.workspaceRoot);
+    const canonicalSourcePath = await fs.promises.realpath(sourcePath);
     const originalLstat = fs.promises.lstat.bind(fs.promises);
     let rootCalls = 0;
     const lstat = jest.spyOn(fs.promises, 'lstat').mockImplementation(async (candidate, options) => {
-      if (candidate === fixture.workspaceRoot && ++rootCalls === 3) {
-        await fs.promises.appendFile(sourcePath, '// changed during validation\n');
+      if (candidate === canonicalWorkspaceRoot && ++rootCalls === 3) {
+        await fs.promises.appendFile(canonicalSourcePath, '// changed during validation\n');
       }
       return originalLstat(candidate, options);
     });

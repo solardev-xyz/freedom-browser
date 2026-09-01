@@ -1,6 +1,6 @@
 'use strict';
 
-const { spawnSync } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 const net = require('net');
 const os = require('os');
@@ -58,6 +58,23 @@ function closeServer(server) {
 
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function processCommand(pid) {
+  const result = spawnSync('/bin/ps', ['-p', String(pid), '-o', 'command='], {
+    encoding: 'utf8',
+  });
+  return result.status === 0 ? result.stdout.trim() : '';
+}
+
+async function cleanupSentinel(child, token) {
+  const command = processCommand(child.pid);
+  if (!command) return;
+  if (!command.includes(token)) {
+    throw new Error('Refusing to signal a process without the sentinel ownership token');
+  }
+  child.kill('SIGKILL');
+  await new Promise((resolve) => child.once('exit', resolve));
 }
 
 async function waitForFile(filePath, timeoutMs = 2_000) {
@@ -225,6 +242,88 @@ requiredDescribe('macOS Seatbelt execution boundary', () => {
     expect(second).toMatchObject({ state: 'completed', exitCode: 0 });
   });
 
+  test('denies protected hard links but permits ordinary workspace hard links', async () => {
+    const protectedReceipt = await executor.execute(await policy(), {
+      command: '/bin/ln',
+      args: ['.git/HEAD', 'protected-head-alias'],
+    });
+    expect(protectedReceipt).toMatchObject({ state: 'failed', exitCode: 1 });
+    expect(protectedReceipt.stderr).toMatch(/^ln: .*Operation not permitted\n$/);
+    await expect(
+      fs.promises.stat(path.join(fixture.workspaceRoot, 'protected-head-alias'))
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+
+    const ordinaryReceipt = await executor.execute(await policy(), {
+      command: '/bin/ln',
+      args: ['source.txt', 'ordinary-source-alias'],
+    });
+    expect(ordinaryReceipt).toMatchObject({ state: 'completed', exitCode: 0, stderr: '' });
+    const source = await fs.promises.stat(path.join(fixture.workspaceRoot, 'source.txt'));
+    const alias = await fs.promises.stat(
+      path.join(fixture.workspaceRoot, 'ordinary-source-alias')
+    );
+    expect({ dev: alias.dev, ino: alias.ino }).toEqual({ dev: source.dev, ino: source.ino });
+  });
+
+  test('denies case-folded Git writes and rejects differently cased metadata', async () => {
+    const canonicalGit = await fs.promises.stat(path.join(fixture.workspaceRoot, '.git'));
+    const foldedGit = await fs.promises.stat(path.join(fixture.workspaceRoot, '.GIT'));
+    expect({ dev: foldedGit.dev, ino: foldedGit.ino }).toEqual({
+      dev: canonicalGit.dev,
+      ino: canonicalGit.ino,
+    });
+
+    const script = [
+      "const fs = require('fs');",
+      'const result = {};',
+      "for (const candidate of ['.GIT/config', '.GiT/config']) {",
+      "  try { fs.appendFileSync(candidate, 'mutation'); result[candidate] = 'unexpected'; }",
+      '  catch (error) { result[candidate] = error.code; }',
+      '}',
+      'process.stdout.write(JSON.stringify(result));',
+    ].join('\n');
+    const receipt = await executor.execute(await policy(), {
+      command: 'node',
+      args: ['-e', script],
+    });
+    expect(receipt).toMatchObject({ state: 'completed', exitCode: 0 });
+    expect(JSON.parse(receipt.stdout)).toEqual({
+      '.GIT/config': 'EPERM',
+      '.GiT/config': 'EPERM',
+    });
+
+    await fs.promises.rename(
+      path.join(fixture.workspaceRoot, '.git'),
+      path.join(fixture.workspaceRoot, '.GIT')
+    );
+    await expect(policy()).rejects.toMatchObject({ code: 'PROTECTED_PATH_CASE_MISMATCH' });
+  });
+
+  test('cannot enumerate a uniquely identified host-side sentinel process', async () => {
+    const token = `freedom-host-process-sentinel-${Date.now()}-${process.pid}`;
+    const sentinel = spawn(
+      process.execPath,
+      ['-e', 'setInterval(() => {}, 1000)', token],
+      { stdio: 'ignore' }
+    );
+    try {
+      await delay(50);
+      expect(processCommand(sentinel.pid)).toContain(token);
+      const receipt = await executor.execute(await policy(), {
+        command: '/bin/ps',
+        args: ['-p', String(sentinel.pid), '-o', 'pid=,command='],
+      });
+      expect(receipt).toMatchObject({ state: 'failed', exitCode: 1, stdout: '' });
+      expect(receipt.stderr).toBe(
+        'freedom-seatbelt-supervisor: /bin/ps: Operation not permitted\n' +
+          'freedom-seatbelt-supervisor: /bin/ps: Undefined error: 0\n'
+      );
+      expect(receipt.stderr).not.toContain(token);
+    } finally {
+      await cleanupSentinel(sentinel, token);
+    }
+  });
+
   test('denies localhost, external network and DNS', async () => {
     const server = net.createServer((socket) => socket.end('host-service'));
     await listen(server);
@@ -279,6 +378,9 @@ requiredDescribe('macOS Seatbelt execution boundary', () => {
     expect(receipt).toMatchObject({
       state: 'completed',
       terminationGuarantee: 'best_effort',
+      survivorsPossible: true,
+      completeDescendantTermination: false,
+      terminationScope: 'original_process_group',
       diagnostics: { processGroupFinalKillAttempted: true },
     });
     await waitForFile(path.join(fixture.workspaceRoot, 'normal-exit.pid'));
@@ -311,6 +413,45 @@ requiredDescribe('macOS Seatbelt execution boundary', () => {
     expect(receipt).toMatchObject({
       state: 'cancelled',
       terminationGuarantee: 'best_effort',
+      survivorsPossible: true,
+      completeDescendantTermination: false,
+      terminationScope: 'original_process_group',
+      diagnostics: { processGroupFinalKillAttempted: true },
+    });
+    const size = (await fs.promises.stat(heartbeat)).size;
+    await delay(300);
+    expect((await fs.promises.stat(heartbeat)).size).toBe(size);
+  });
+
+  test('final-kills SIGTERM-resistant same-group descendants during timeout', async () => {
+    const heartbeat = path.join(fixture.workspaceRoot, 'timeout-heartbeat');
+    const execution = executor.execute(
+      await policy({
+        limits: { timeoutMs: 250, stdoutBytes: 64 * 1024, stderrBytes: 64 * 1024 },
+      }),
+      {
+        command: '/bin/sh',
+        args: [
+          '-c',
+          [
+            '(trap \'\' TERM; count=0; while [ "$count" -lt 100 ]; do printf x >> timeout-heartbeat; count=$((count + 1)); sleep 0.03; done) </dev/null >/dev/null 2>&1 &',
+            'printf \'%s\' "$!" > timeout.pid',
+            'wait',
+          ].join('\n'),
+        ],
+      }
+    );
+    await Promise.all([
+      waitForFile(heartbeat),
+      waitForFile(path.join(fixture.workspaceRoot, 'timeout.pid')),
+    ]);
+    const receipt = await execution;
+    expect(receipt).toMatchObject({
+      state: 'timed_out',
+      terminationGuarantee: 'best_effort',
+      survivorsPossible: true,
+      completeDescendantTermination: false,
+      terminationScope: 'original_process_group',
       diagnostics: { processGroupFinalKillAttempted: true },
     });
     const size = (await fs.promises.stat(heartbeat)).size;
