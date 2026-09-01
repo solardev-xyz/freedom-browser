@@ -607,9 +607,64 @@ describe('Agent UI', () => {
           category: 'folder',
           available: true,
         },
+        {
+          resourceId: `attachment_${'e'.repeat(20)}`,
+          kind: 'file',
+          name: 'founding-document.pdf',
+          category: 'pdf',
+          bytes: 4_096,
+          available: true,
+        },
+        {
+          resourceId: `attachment_${'f'.repeat(20)}`,
+          kind: 'file',
+          name: 'diagram.png',
+          category: 'image',
+          bytes: 8_192,
+          available: true,
+        },
+        {
+          resourceId: `attachment_${'1'.repeat(20)}`,
+          kind: 'file',
+          name: 'worker.ts',
+          category: 'text',
+          bytes: 1_024,
+          available: true,
+        },
       ],
     });
-    expect(ctx.elements['agent-transcript'].querySelectorAll('.agent-message-attachment')).toHaveLength(2);
+    const sentAttachments = ctx.elements['agent-transcript'].querySelectorAll(
+      '.agent-message-attachment'
+    );
+    expect(sentAttachments).toHaveLength(5);
+    expect(sentAttachments[0].dataset.kind).toBe('text');
+    expect(sentAttachments[0].querySelector('.agent-message-attachment-badge').textContent).toBe(
+      'TXT'
+    );
+    expect(sentAttachments[0].querySelector('.agent-message-attachment-name').textContent).toBe(
+      'notes.txt'
+    );
+    expect(sentAttachments[1].dataset.kind).toBe('folder');
+    expect(sentAttachments[1].querySelector('.agent-message-attachment-badge').textContent).toBe(
+      'Folder'
+    );
+    expect(sentAttachments[2].dataset.kind).toBe('pdf');
+    expect(sentAttachments[2].querySelector('.agent-message-attachment-badge').textContent).toBe(
+      'PDF'
+    );
+    expect(sentAttachments[3].dataset.kind).toBe('image');
+    expect(sentAttachments[3].querySelector('.agent-message-attachment-badge').textContent).toBe(
+      'PNG'
+    );
+    expect(sentAttachments[4].dataset.kind).toBe('code');
+    expect(sentAttachments[4].querySelector('.agent-message-attachment-badge').textContent).toBe(
+      'TS'
+    );
+    const attachmentShelf = ctx.elements['agent-transcript'].querySelector(
+      '.agent-user-attachments'
+    );
+    expect(attachmentShelf.getAttribute('role')).toBe('list');
+    expect(attachmentShelf.getAttribute('aria-label')).toBe('Attached files and folders');
     expect(ctx.elements['agent-attachment-contexts'].children).toHaveLength(1);
     expect(ctx.elements['agent-attachment-contexts'].children[0].children[0].textContent).toContain(
       'Project'
@@ -671,7 +726,9 @@ describe('Agent UI', () => {
       folderId
     );
     expect(ctx.elements['agent-attachment-contexts'].children).toHaveLength(0);
-    expect(historicalAttachment.children[0].textContent).toBe('Bug reports');
+    expect(
+      historicalAttachment.querySelector('.agent-message-attachment-name').textContent
+    ).toBe('Bug reports');
     expect(ctx.elements['agent-run-message'].textContent).toContain(
       'content already read remains in this conversation'
     );

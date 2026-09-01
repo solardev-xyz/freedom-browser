@@ -47,6 +47,53 @@ test('attachments do not reveal a hidden homepage context pill', async ({ window
   expect(state.attachmentDisplay).not.toBe('none');
 });
 
+test('sent attachments form a compact horizontally scrollable shelf', async ({ window }) => {
+  await window.locator('[data-test="agent-toggle-btn"]').click();
+  const geometry = await window.evaluate(() => {
+    document.querySelector('#agent-setup-view').hidden = true;
+    document.querySelector('#agent-workspace-view').hidden = false;
+    const transcript = document.querySelector('#agent-transcript');
+    transcript.hidden = false;
+    const row = document.createElement('div');
+    row.className = 'agent-message-row user';
+    const shelf = document.createElement('div');
+    shelf.className = 'agent-user-attachments';
+    shelf.setAttribute('role', 'list');
+    for (let index = 0; index < 8; index += 1) {
+      const tile = document.createElement('div');
+      tile.className = 'agent-message-attachment';
+      tile.dataset.kind = index === 0 ? 'pdf' : index === 1 ? 'folder' : 'text';
+      const visual = document.createElement('span');
+      visual.className = 'agent-message-attachment-visual';
+      const name = document.createElement('span');
+      name.className = 'agent-message-attachment-name';
+      name.textContent = `long-attachment-filename-${index}.txt`;
+      tile.append(visual, name);
+      shelf.appendChild(tile);
+    }
+    row.appendChild(shelf);
+    transcript.replaceChildren(row);
+    const shelfRect = shelf.getBoundingClientRect();
+    const tileRect = shelf.firstElementChild.getBoundingClientRect();
+    const shelfStyle = getComputedStyle(shelf);
+    const nameStyle = getComputedStyle(shelf.querySelector('.agent-message-attachment-name'));
+    return {
+      clientWidth: shelf.clientWidth,
+      scrollWidth: shelf.scrollWidth,
+      shelfWidth: shelfRect.width,
+      tileWidth: tileRect.width,
+      overflowX: shelfStyle.overflowX,
+      lineClamp: nameStyle.webkitLineClamp,
+    };
+  });
+
+  expect(geometry.shelfWidth).toBeGreaterThan(0);
+  expect(geometry.tileWidth).toBeGreaterThanOrEqual(80);
+  expect(geometry.scrollWidth).toBeGreaterThan(geometry.clientWidth);
+  expect(geometry.overflowX).toBe('auto');
+  expect(geometry.lineClamp).toBe('2');
+});
+
 test('Agent sidebar configures hosted and local models and reports the run lifecycle', async ({
   electronApp,
   window,

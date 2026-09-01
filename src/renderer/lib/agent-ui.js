@@ -35,6 +35,43 @@ const PANE_RESIZE_CONFIG = Object.freeze({
     maxWidth: 760,
   }),
 });
+const CODE_ATTACHMENT_EXTENSIONS = new Set([
+  'c',
+  'cc',
+  'cpp',
+  'css',
+  'go',
+  'graphql',
+  'h',
+  'hpp',
+  'html',
+  'java',
+  'js',
+  'jsx',
+  'mjs',
+  'py',
+  'rb',
+  'rs',
+  'sh',
+  'sql',
+  'ts',
+  'tsx',
+  'xml',
+]);
+const ATTACHMENT_ICON_MARKUP = Object.freeze({
+  folder:
+    '<svg viewBox="0 0 32 32" aria-hidden="true"><path d="M3.75 9.5h9l2.5 3h13v11.75a2.5 2.5 0 0 1-2.5 2.5h-19a2.5 2.5 0 0 1-2.5-2.5V8a2.5 2.5 0 0 1 2.5-2.5h5.5l2.5 4"/></svg>',
+  image:
+    '<svg viewBox="0 0 32 32" aria-hidden="true"><rect x="4" y="5" width="24" height="22" rx="3"/><circle cx="11.25" cy="12" r="2.25"/><path d="m6.5 24 7-7 4.25 4.25 3-3L27 24.5"/></svg>',
+  pdf:
+    '<svg viewBox="0 0 32 32" aria-hidden="true"><path d="M8 3.75h10l6 6v18.5H8z"/><path d="M18 3.75v6h6M11.5 21.5h9M11.5 17h9"/></svg>',
+  code:
+    '<svg viewBox="0 0 32 32" aria-hidden="true"><path d="m12.25 9-7 7 7 7M19.75 9l7 7-7 7M18 5.5l-4 21"/></svg>',
+  text:
+    '<svg viewBox="0 0 32 32" aria-hidden="true"><path d="M8 3.75h10l6 6v18.5H8z"/><path d="M18 3.75v6h6M11.5 15.5h9M11.5 20h9M11.5 24.5h6"/></svg>',
+  file:
+    '<svg viewBox="0 0 32 32" aria-hidden="true"><path d="M8 3.75h10l6 6v18.5H8z"/><path d="M18 3.75v6h6"/></svg>',
+});
 
 let elements = {};
 let getActiveTab = () => null;
@@ -181,6 +218,61 @@ function attachmentLabel(resource) {
     return `${resource.name || 'Folder'} · ${resource.available === false ? 're-add after restart' : 'read only'}`;
   }
   return `${resource.name || 'Attachment'}${Number.isSafeInteger(resource.bytes) ? ` · ${formatAttachmentBytes(resource.bytes)}` : ''}`;
+}
+
+function attachmentExtension(resource) {
+  const name = typeof resource?.name === 'string' ? resource.name : '';
+  const index = name.lastIndexOf('.');
+  return index > -1 && index < name.length - 1 ? name.slice(index + 1).toLowerCase() : '';
+}
+
+function attachmentPresentation(resource) {
+  if (resource?.kind === 'folder') {
+    return { kind: 'folder', badge: 'Folder' };
+  }
+  const extension = attachmentExtension(resource);
+  if (resource?.category === 'pdf' || extension === 'pdf') {
+    return { kind: 'pdf', badge: 'PDF' };
+  }
+  if (resource?.category === 'image') {
+    return { kind: 'image', badge: extension ? extension.toUpperCase() : 'Image' };
+  }
+  if (CODE_ATTACHMENT_EXTENSIONS.has(extension)) {
+    return { kind: 'code', badge: extension.toUpperCase() };
+  }
+  if (resource?.category === 'text') {
+    return { kind: 'text', badge: extension ? extension.toUpperCase() : 'Text' };
+  }
+  return { kind: 'file', badge: extension ? extension.toUpperCase() : 'File' };
+}
+
+function createMessageAttachment(resource) {
+  const presentation = attachmentPresentation(resource);
+  const name = resource?.name || (resource?.kind === 'folder' ? 'Folder' : 'Attachment');
+  const tile = document.createElement('div');
+  tile.className = 'agent-message-attachment';
+  tile.dataset.kind = presentation.kind;
+  tile.setAttribute('role', 'listitem');
+  tile.setAttribute('aria-label', attachmentLabel(resource));
+  tile.title = attachmentLabel(resource);
+
+  const visual = document.createElement('span');
+  visual.className = 'agent-message-attachment-visual';
+  const icon = document.createElement('span');
+  icon.className = 'agent-message-attachment-icon';
+  icon.innerHTML = ATTACHMENT_ICON_MARKUP[presentation.kind] || ATTACHMENT_ICON_MARKUP.file;
+  const badge = document.createElement('span');
+  badge.className = 'agent-message-attachment-badge';
+  badge.textContent = presentation.badge;
+  visual.appendChild(icon);
+  visual.appendChild(badge);
+
+  const filename = document.createElement('span');
+  filename.className = 'agent-message-attachment-name';
+  filename.textContent = name;
+  tile.appendChild(visual);
+  tile.appendChild(filename);
+  return tile;
 }
 
 function renderAttachmentContexts() {
@@ -1274,13 +1366,11 @@ function createTurnView(turn) {
   if (Array.isArray(turn.attachments) && turn.attachments.length) {
     const attachments = document.createElement('div');
     attachments.className = 'agent-user-attachments';
+    attachments.setAttribute('role', 'list');
+    attachments.setAttribute('aria-label', 'Attached files and folders');
+    attachments.tabIndex = 0;
     for (const resource of turn.attachments) {
-      const chip = document.createElement('span');
-      chip.className = 'agent-message-attachment';
-      const label = document.createElement('span');
-      label.textContent = resource.name || 'Attachment';
-      chip.appendChild(label);
-      attachments.appendChild(chip);
+      attachments.appendChild(createMessageAttachment(resource));
     }
     userRow.appendChild(attachments);
   }

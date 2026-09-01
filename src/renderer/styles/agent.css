@@ -1415,8 +1415,7 @@ body.agent-first-mode .agent-composer textarea {
   display: contents;
 }
 
-.agent-attachment-chip,
-.agent-message-attachment {
+.agent-attachment-chip {
   display: inline-flex;
   min-width: 0;
   max-width: 100%;
@@ -1430,8 +1429,7 @@ body.agent-first-mode .agent-composer textarea {
   border-radius: 8px;
 }
 
-.agent-attachment-chip > span,
-.agent-message-attachment > span {
+.agent-attachment-chip > span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1457,9 +1455,130 @@ body.agent-first-mode .agent-composer textarea {
 
 .agent-user-attachments {
   display: flex;
-  justify-content: flex-end;
-  gap: 5px;
-  margin-top: 5px;
+  width: max-content;
+  max-width: min(88%, 480px);
+  justify-content: flex-start;
+  gap: 7px;
+  padding: 2px 1px 5px;
+  margin-top: 7px;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  scrollbar-color: color-mix(in srgb, var(--text) 20%, transparent) transparent;
+  scrollbar-width: thin;
+  scroll-snap-type: x proximity;
+}
+
+.agent-user-attachments:focus-visible {
+  outline: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  outline-offset: 2px;
+  border-radius: 12px;
+}
+
+.agent-user-attachments::-webkit-scrollbar {
+  height: 4px;
+}
+
+.agent-user-attachments::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.agent-user-attachments::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text) 20%, transparent);
+  border-radius: 999px;
+}
+
+.agent-message-attachment {
+  display: flex;
+  width: 86px;
+  min-width: 86px;
+  padding: 6px;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--text) 6%, var(--bg));
+  border: 1px solid color-mix(in srgb, var(--text) 9%, transparent);
+  border-radius: 11px;
+  scroll-snap-align: end;
+}
+
+.agent-message-attachment-visual {
+  position: relative;
+  display: flex;
+  height: 56px;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  color: color-mix(in srgb, var(--text) 72%, var(--muted));
+  background: color-mix(in srgb, var(--text) 7%, transparent);
+  border-radius: 7px;
+}
+
+.agent-message-attachment[data-kind='folder'] .agent-message-attachment-visual {
+  color: color-mix(in srgb, #e3ad51 78%, var(--text));
+  background: color-mix(in srgb, #e3ad51 13%, transparent);
+}
+
+.agent-message-attachment[data-kind='pdf'] .agent-message-attachment-visual {
+  color: color-mix(in srgb, #ef726d 82%, var(--text));
+  background: color-mix(in srgb, #ef726d 12%, transparent);
+}
+
+.agent-message-attachment[data-kind='image'] .agent-message-attachment-visual {
+  color: color-mix(in srgb, #8f8ce7 78%, var(--text));
+  background: color-mix(in srgb, #8f8ce7 13%, transparent);
+}
+
+.agent-message-attachment[data-kind='code'] .agent-message-attachment-visual {
+  color: color-mix(in srgb, var(--accent) 78%, var(--text));
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.agent-message-attachment-icon,
+.agent-message-attachment-icon svg {
+  display: block;
+  width: 31px;
+  height: 31px;
+}
+
+.agent-message-attachment-icon svg {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.agent-message-attachment-badge {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  max-width: calc(100% - 8px);
+  padding: 2px 4px;
+  overflow: hidden;
+  color: color-mix(in srgb, var(--text) 82%, var(--muted));
+  font-size: 7px;
+  font-weight: 750;
+  line-height: 1;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
+  border-radius: 4px;
+  backdrop-filter: blur(4px);
+}
+
+.agent-message-attachment-name {
+  display: -webkit-box;
+  min-height: 27px;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 10px;
+  font-weight: 550;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+  text-align: center;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .agent-composer-contexts[hidden] {
