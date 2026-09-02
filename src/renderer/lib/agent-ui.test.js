@@ -661,9 +661,8 @@ describe('Agent UI', () => {
     expect(sentAttachments[4].querySelector('.agent-message-attachment-badge').textContent).toBe(
       'TS'
     );
-    const attachmentShelf = ctx.elements['agent-transcript'].querySelector(
-      '.agent-user-attachments'
-    );
+    const attachmentShelf =
+      ctx.elements['agent-transcript'].querySelector('.agent-user-attachments');
     expect(attachmentShelf.getAttribute('role')).toBe('list');
     expect(attachmentShelf.getAttribute('aria-label')).toBe('Attached files and folders');
     expect(ctx.elements['agent-attachment-contexts'].children).toHaveLength(1);
@@ -727,9 +726,9 @@ describe('Agent UI', () => {
       folderId
     );
     expect(ctx.elements['agent-attachment-contexts'].children).toHaveLength(0);
-    expect(
-      historicalAttachment.querySelector('.agent-message-attachment-name').textContent
-    ).toBe('Bug reports');
+    expect(historicalAttachment.querySelector('.agent-message-attachment-name').textContent).toBe(
+      'Bug reports'
+    );
     expect(ctx.elements['agent-run-message'].textContent).toContain(
       'content already read remains in this conversation'
     );
@@ -1624,9 +1623,7 @@ describe('Agent UI', () => {
     expect(toolList.children[0].children[1].textContent).toBe('Read report.json');
     const outcome = turn.querySelector('.agent-turn-outcome');
     expect(outcome.children[1].children[0].textContent).toBe('Attached sources inspected');
-    expect(outcome.children[1].children[1].textContent).not.toContain(
-      'browser evidence'
-    );
+    expect(outcome.children[1].children[1].textContent).not.toContain('browser evidence');
     expect(turn.querySelector('.agent-turn-activity').children[0].textContent).toBe(
       'Worked for 2s · 2 actions · Sources inspected'
     );
@@ -2646,9 +2643,7 @@ describe('Agent UI', () => {
       },
     });
 
-    expect(ctx.elements['agent-approval-action'].textContent).toBe(
-      'Allow this Ant node request?'
-    );
+    expect(ctx.elements['agent-approval-action'].textContent).toBe('Allow this Ant node request?');
     expect(ctx.elements['agent-approval-origin'].textContent).toContain(
       'OpenAI using gpt-5.6-sol independently classified this request as persistent change.'
     );
@@ -3036,9 +3031,7 @@ describe('Agent UI', () => {
       },
     });
 
-    expect(ctx.elements['agent-approval-action'].textContent).toBe(
-      'Publish “website” to Swarm?'
-    );
+    expect(ctx.elements['agent-approval-action'].textContent).toBe('Publish “website” to Swarm?');
     expect(ctx.elements['agent-approval-origin'].textContent).toContain('current contents');
     expect(ctx.elements['agent-approval-origin'].textContent).toContain('public, unencrypted');
     expect(ctx.elements['agent-publication-details'].hidden).toBe(false);
@@ -3088,6 +3081,48 @@ describe('Agent UI', () => {
     expect(ctx.electronAPI.openAgentPublication).toHaveBeenCalledWith(publication.bzzUrl);
   });
 
+  test('renders managed workspace enablement as one Agent-native disclosure', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'approval_requested',
+      runId: 'run_test',
+      approvalId: 'approval_workspace',
+      action: 'workspace_execution',
+      operation: 'workspace_run',
+      workspace: {
+        available: true,
+        backend: 'macos-seatbelt',
+        network: 'disabled',
+        filesystem: 'managed_workspace_only',
+        cancellationGuarantee: 'best_effort',
+        survivorsPossible: true,
+        completeDescendantTermination: false,
+      },
+    });
+
+    expect(ctx.elements['agent-approval-action'].textContent).toBe(
+      'Enable a private project workspace for this conversation?'
+    );
+    expect(ctx.elements['agent-approval-origin'].textContent).toContain(
+      'only inside this Freedom-managed workspace'
+    );
+    expect(ctx.elements['agent-approval-origin'].textContent).toContain(
+      'Network access is disabled'
+    );
+    expect(ctx.elements['agent-approval-origin'].textContent).toContain('best-effort');
+    expect(ctx.elements['agent-approval-origin'].textContent).not.toContain('/Users/');
+    expect(ctx.elements['agent-approval-approve'].textContent).toBe('Enable workspace');
+
+    ctx.elements['agent-approval-approve'].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.decideAgentApproval).toHaveBeenCalledWith(
+      'run_test',
+      'approval_workspace',
+      true
+    );
+  });
+
   test('presents inline Swarm text as text rather than inventing a file', async () => {
     const ctx = await loadAgentUi();
     ctx.emit({ type: 'run_started', runId: 'run_test' });
@@ -3106,9 +3141,7 @@ describe('Agent UI', () => {
       },
     });
 
-    expect(ctx.elements['agent-approval-action'].textContent).toBe(
-      'Publish this text to Swarm?'
-    );
+    expect(ctx.elements['agent-approval-action'].textContent).toBe('Publish this text to Swarm?');
     expect(ctx.elements['agent-publication-summary'].textContent).not.toContain('.txt');
 
     const publication = {

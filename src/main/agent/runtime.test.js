@@ -14,6 +14,8 @@ jest.mock('../node-lifecycle-controller');
 jest.mock('../node-diagnostics-controller');
 jest.mock('./swarm-publication-controller');
 jest.mock('./pdf-processor');
+jest.mock('./managed-workspace-store');
+jest.mock('./managed-workspace-controller');
 
 const { FreedomAgentService } = require('./freedom-agent-service');
 const { registerFreedomAgentIpc } = require('./ipc');
@@ -29,6 +31,8 @@ const { NodeLifecycleController } = require('../node-lifecycle-controller');
 const { NodeDiagnosticsController } = require('../node-diagnostics-controller');
 const { SwarmPublicationController } = require('./swarm-publication-controller');
 const { PdfProcessor } = require('./pdf-processor');
+const { AgentManagedWorkspaceStore } = require('./managed-workspace-store');
+const { ManagedWorkspaceController } = require('./managed-workspace-controller');
 const { createFreedomAgentRuntime } = require('./runtime');
 
 describe('Freedom agent runtime', () => {
@@ -60,6 +64,11 @@ describe('Freedom agent runtime', () => {
     const nodeLifecycleController = {};
     const diagnosticsController = {};
     const publicationController = { dispose: jest.fn(() => calls.push('publications')) };
+    const workspaceStore = {
+      markStaleRunningAsInterrupted: jest.fn(),
+      close: jest.fn(() => calls.push('workspaces')),
+    };
+    const workspaceController = { dispose: jest.fn(() => calls.push('workspace-controller')) };
     const unregisterIpc = jest.fn(async () => calls.push('ipc'));
     AgentProviderStore.mockImplementation(() => providerStore);
     AgentProviderResolver.mockImplementation(() => providerResolver);
@@ -73,6 +82,8 @@ describe('Freedom agent runtime', () => {
     NodeLifecycleController.mockImplementation(() => nodeLifecycleController);
     NodeDiagnosticsController.mockImplementation(() => diagnosticsController);
     SwarmPublicationController.mockImplementation(() => publicationController);
+    AgentManagedWorkspaceStore.mockImplementation(() => workspaceStore);
+    ManagedWorkspaceController.mockImplementation(() => workspaceController);
     FreedomAgentService.mockImplementation(() => service);
     registerFreedomAgentIpc.mockReturnValue(unregisterIpc);
     const options = {
@@ -103,6 +114,7 @@ describe('Freedom agent runtime', () => {
       nodeRequestControllerOptions: { timeoutMs: 250 },
       nodeLifecycleControllerOptions: { verifyTimeoutMs: 250 },
       nodeDiagnosticsControllerOptions: { logBuffer: {} },
+      workspaceRuntimeOptions: { packaged: true, freedomVersion: '0.8.1-dev' },
     };
 
     const runtime = createFreedomAgentRuntime(options);
@@ -134,6 +146,14 @@ describe('Freedom agent runtime', () => {
       userDataDir: options.profile.userDataDir,
     });
     expect(nodeOperationStore.markStaleInFlightAsUncertain).toHaveBeenCalledTimes(1);
+    expect(AgentManagedWorkspaceStore).toHaveBeenCalledWith({
+      userDataDir: options.profile.userDataDir,
+    });
+    expect(workspaceStore.markStaleRunningAsInterrupted).toHaveBeenCalledTimes(1);
+    expect(ManagedWorkspaceController).toHaveBeenCalledWith({
+      store: workspaceStore,
+      runtimeOptions: options.workspaceRuntimeOptions,
+    });
     expect(AgentWalletController).toHaveBeenCalledWith(options.walletControllerOptions);
     expect(NodeStatusController).toHaveBeenCalledWith(options.nodeControllerOptions);
     expect(NodeRequestController).toHaveBeenCalledWith({
@@ -150,19 +170,13 @@ describe('Freedom agent runtime', () => {
     });
     expect(options.controller.setWalletTransferController).toHaveBeenCalledWith(walletController);
     expect(options.controller.setNodeController).toHaveBeenCalledWith(nodeController);
-    expect(options.controller.setNodeRequestController).toHaveBeenCalledWith(
-      nodeRequestController
-    );
+    expect(options.controller.setNodeRequestController).toHaveBeenCalledWith(nodeRequestController);
     expect(options.controller.setNodeLifecycleController).toHaveBeenCalledWith(
       nodeLifecycleController
     );
-    expect(options.controller.setDiagnosticsController).toHaveBeenCalledWith(
-      diagnosticsController
-    );
+    expect(options.controller.setDiagnosticsController).toHaveBeenCalledWith(diagnosticsController);
     expect(SwarmPublicationController).toHaveBeenCalledWith({ attachmentStore });
-    expect(options.controller.setPublicationController).toHaveBeenCalledWith(
-      publicationController
-    );
+    expect(options.controller.setPublicationController).toHaveBeenCalledWith(publicationController);
     expect(FreedomAgentService).toHaveBeenCalledWith({
       controller: options.controller,
       subscribeTabLifecycle: options.subscribeTabLifecycle,
@@ -170,6 +184,7 @@ describe('Freedom agent runtime', () => {
       cancelAgentDownloads: undefined,
       walletController,
       attachmentStore,
+      workspaceController,
     });
     expect(registerFreedomAgentIpc).toHaveBeenCalledWith({
       ipcMain: options.ipcMain,
@@ -195,10 +210,12 @@ describe('Freedom agent runtime', () => {
     expect(service.dispose).toHaveBeenCalledTimes(1);
     expect(nodeRequestController.dispose).toHaveBeenCalledTimes(1);
     expect(publicationController.dispose).toHaveBeenCalledTimes(1);
+    expect(workspaceController.dispose).toHaveBeenCalledTimes(1);
     expect(attachmentStore.dispose).toHaveBeenCalledTimes(1);
     expect(pdfProcessor.dispose).toHaveBeenCalledTimes(1);
     expect(historyStore.close).toHaveBeenCalledTimes(1);
     expect(nodeOperationStore.close).toHaveBeenCalledTimes(1);
+    expect(workspaceStore.close).toHaveBeenCalledTimes(1);
     expect(options.controller.setWalletTransferController).toHaveBeenLastCalledWith(null);
     expect(options.controller.setNodeController).toHaveBeenLastCalledWith(null);
     expect(options.controller.setNodeRequestController).toHaveBeenLastCalledWith(null);
@@ -210,10 +227,12 @@ describe('Freedom agent runtime', () => {
       'service',
       'node-requests',
       'publications',
+      'workspace-controller',
       'attachments',
       'pdf',
       'history',
       'node-operations',
+      'workspaces',
     ]);
   });
 });

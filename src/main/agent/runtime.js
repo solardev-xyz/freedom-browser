@@ -14,6 +14,8 @@ const { NodeDiagnosticsController } = require('../node-diagnostics-controller');
 const { ConversationAttachmentStore } = require('./conversation-attachment-store');
 const { SwarmPublicationController } = require('./swarm-publication-controller');
 const { PdfProcessor } = require('./pdf-processor');
+const { AgentManagedWorkspaceStore } = require('./managed-workspace-store');
+const { ManagedWorkspaceController } = require('./managed-workspace-controller');
 
 function createFreedomAgentRuntime(options = {}) {
   const providerStore = new AgentProviderStore({
@@ -43,6 +45,14 @@ function createFreedomAgentRuntime(options = {}) {
     userDataDir: options.profile?.userDataDir,
   });
   nodeOperationStore.markStaleInFlightAsUncertain();
+  const workspaceStore = new AgentManagedWorkspaceStore({
+    userDataDir: options.profile?.userDataDir,
+  });
+  workspaceStore.markStaleRunningAsInterrupted();
+  const workspaceController = new ManagedWorkspaceController({
+    store: workspaceStore,
+    runtimeOptions: options.workspaceRuntimeOptions,
+  });
   const walletController = new AgentWalletController(options.walletControllerOptions);
   const nodeController = new NodeStatusController(options.nodeControllerOptions);
   const nodeRequestController = new NodeRequestController({
@@ -74,6 +84,7 @@ function createFreedomAgentRuntime(options = {}) {
     cancelAgentDownloads: options.cancelAgentDownloads,
     walletController,
     attachmentStore,
+    workspaceController,
   });
   const unregisterIpc = registerFreedomAgentIpc({
     ipcMain: options.ipcMain,
@@ -95,6 +106,8 @@ function createFreedomAgentRuntime(options = {}) {
     historyStore,
     attachmentStore,
     nodeOperationStore,
+    workspaceStore,
+    workspaceController,
     walletController,
     nodeController,
     nodeRequestController,
@@ -107,10 +120,12 @@ function createFreedomAgentRuntime(options = {}) {
       await service.dispose();
       await nodeRequestController.dispose();
       publicationController.dispose();
+      workspaceController.dispose();
       attachmentStore.dispose();
       pdfProcessor.dispose();
       historyStore.close();
       nodeOperationStore.close();
+      workspaceStore.close();
       options.controller.setWalletTransferController(null);
       options.controller.setNodeController(null);
       options.controller.setNodeRequestController(null);

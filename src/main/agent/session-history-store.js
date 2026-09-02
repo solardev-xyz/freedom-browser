@@ -13,6 +13,7 @@ const {
   normalizePublicationReceipt,
   normalizeUpload,
   normalizeWalletReceipt,
+  normalizeWorkspaceReceipt,
 } = require('./agent-progress');
 
 const DB_FILE = 'agent-history.sqlite';
@@ -74,6 +75,7 @@ function normalizeActivity(activity) {
       const nodeRequest = normalizeNodeRequestReceipt(item.nodeRequest);
       const attachment = normalizeAttachmentReceipt(item.attachment, item.operation);
       const publication = normalizePublicationReceipt(item.publication);
+      const workspace = normalizeWorkspaceReceipt(item.workspace);
       const artifacts = Array.isArray(item.artifacts)
         ? item.artifacts.map(normalizeArtifact).filter(Boolean).slice(0, 100)
         : [];
@@ -95,6 +97,7 @@ function normalizeActivity(activity) {
         ...(nodeRequest && { nodeRequest }),
         ...(attachment && { attachment }),
         ...(publication && { publication }),
+        ...(workspace && { workspace }),
         ...(artifacts.length && { artifacts }),
         ...(Number.isSafeInteger(item.pageCount) && item.pageCount >= 0
           ? { pageCount: item.pageCount }

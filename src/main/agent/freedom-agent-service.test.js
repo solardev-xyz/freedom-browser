@@ -153,13 +153,14 @@ describe('FreedomAgentService', () => {
       tabIds: ['tab_assigned', 'tab_research'],
       activeTabId: 'tab_research',
     });
-    expect(fake.session.prompt).toHaveBeenCalledWith(expect.stringContaining('Summarize this page'), {
-      expandPromptTemplates: false,
-      source: 'interactive',
-    });
-    expect(fake.session.prompt.mock.calls[0][0]).toContain(
-      'Freedom approval policy for this turn'
+    expect(fake.session.prompt).toHaveBeenCalledWith(
+      expect.stringContaining('Summarize this page'),
+      {
+        expandPromptTemplates: false,
+        source: 'interactive',
+      }
     );
+    expect(fake.session.prompt.mock.calls[0][0]).toContain('Freedom approval policy for this turn');
 
     fake.emit({
       type: 'message_update',
@@ -324,9 +325,7 @@ describe('FreedomAgentService', () => {
     expect(fake.session.prompt.mock.calls[0][0]).toContain(
       'Freedom will independently classify the intended consequence'
     );
-    expect(fake.session.prompt.mock.calls[0][0]).toContain(
-      'include a brief literal intent'
-    );
+    expect(fake.session.prompt.mock.calls[0][0]).toContain('include a brief literal intent');
 
     const classifyInteraction =
       dependencies.createControllerScope.mock.calls[0][0].classifyInteraction;
@@ -448,6 +447,50 @@ describe('FreedomAgentService', () => {
     await service.waitForIdle();
   });
 
+  test('exposes the managed workspace tool and state without a host path', async () => {
+    const fake = createFakeSession();
+    const workspaceController = {
+      getWorkspace: jest.fn(() => ({
+        workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa',
+        enabled: true,
+        backend: 'linux-bubblewrap',
+        commands: [],
+      })),
+      disclosure: jest.fn(),
+      enable: jest.fn(),
+      execute: jest.fn(),
+      cancelConversation: jest.fn(),
+      deleteConversation: jest.fn(async () => true),
+      dispose: jest.fn(),
+    };
+    const createWorkspaceTools = jest.fn(async () => [{ name: 'workspace_run' }]);
+    const { service, dependencies } = createService(fake, {
+      workspaceController,
+      createWorkspaceTools,
+    });
+
+    await service.start(startOptions());
+
+    expect(createWorkspaceTools).toHaveBeenCalledWith({
+      sdk: { kind: 'sdk' },
+      controller: workspaceController,
+      conversationId: 'conversation_test',
+      requestApproval: expect.any(Function),
+      onToolOutcome: expect.any(Function),
+    });
+    expect(dependencies.createSession.mock.calls[0][0]).toMatchObject({
+      customTools: [{ name: 'browser_snapshot' }, { name: 'workspace_run' }],
+      systemPrompt: expect.stringContaining('private Freedom-managed project workspace'),
+    });
+    expect(service.getState().workspace).toEqual(
+      expect.objectContaining({ workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa' })
+    );
+    expect(JSON.stringify(service.getState())).not.toContain('/Users/');
+
+    fake.prompt.resolve();
+    await service.waitForIdle();
+  });
+
   test('passes selected images natively only to a vision-capable Pi session', async () => {
     const fake = createFakeSession();
     const attachmentStore = {
@@ -489,7 +532,9 @@ describe('FreedomAgentService', () => {
     expect(fake.session.prompt).toHaveBeenCalledWith(
       expect.stringContaining('attachment_bbbbbbbbbbbbbbbbbbbb'),
       expect.objectContaining({
-        images: [{ type: 'image', data: Buffer.from('png').toString('base64'), mimeType: 'image/png' }],
+        images: [
+          { type: 'image', data: Buffer.from('png').toString('base64'), mimeType: 'image/png' },
+        ],
       })
     );
     fake.prompt.resolve();
@@ -531,10 +576,12 @@ describe('FreedomAgentService', () => {
     fake.prompt.resolve();
     await service.waitForIdle();
 
-    await expect(service.revokeAttachment(started.conversationId, folderId)).resolves.toMatchObject({
-      resource: { resourceId: folderId, available: false },
-      resources: [],
-    });
+    await expect(service.revokeAttachment(started.conversationId, folderId)).resolves.toMatchObject(
+      {
+        resource: { resourceId: folderId, available: false },
+        resources: [],
+      }
+    );
     expect(attachmentStore.revokeFolder).toHaveBeenCalledWith(started.conversationId, folderId);
     expect(service.getState().resources).toEqual([]);
     expect(events.at(-1)).toMatchObject({
@@ -590,9 +637,7 @@ describe('FreedomAgentService', () => {
     expect(dependencies.createControllerScope).toHaveBeenCalledWith(
       expect.objectContaining({ tabId: null })
     );
-    expect(dependencies.createTools).toHaveBeenCalledWith(
-      expect.objectContaining({ tabId: null })
-    );
+    expect(dependencies.createTools).toHaveBeenCalledWith(expect.objectContaining({ tabId: null }));
     expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toContain(
       'No existing browser page was shared with this conversation'
     );
@@ -620,9 +665,7 @@ describe('FreedomAgentService', () => {
 
     const scopedController = dependencies.createTools.mock.calls[0][0].controller;
     await expect(
-      service.start(
-        startOptions({ prompt: 'Now put that project name into the form' })
-      )
+      service.start(startOptions({ prompt: 'Now put that project name into the form' }))
     ).resolves.toEqual({
       runId: 'run_follow_up',
       conversationId: 'conversation_test',
@@ -749,15 +792,11 @@ describe('FreedomAgentService', () => {
     await service.waitForIdle();
 
     const scopedController = dependencies.createTools.mock.calls[0][0].controller;
-    expect(
-      service.updateApprovalMode('conversation_test', 'allow_website_interactions')
-    ).toEqual({
+    expect(service.updateApprovalMode('conversation_test', 'allow_website_interactions')).toEqual({
       conversationId: 'conversation_test',
       approvalMode: 'allow_website_interactions',
     });
-    expect(scopedController.setApprovalMode).toHaveBeenCalledWith(
-      'allow_website_interactions'
-    );
+    expect(scopedController.setApprovalMode).toHaveBeenCalledWith('allow_website_interactions');
     expect(historyStore.updateApprovalMode).toHaveBeenCalledWith(
       'conversation_test',
       'allow_website_interactions'
@@ -893,10 +932,7 @@ describe('FreedomAgentService', () => {
         .fn()
         .mockReturnValueOnce('conversation_first')
         .mockReturnValueOnce('conversation_second'),
-      runIdFactory: jest
-        .fn()
-        .mockReturnValueOnce('run_first')
-        .mockReturnValueOnce('run_second'),
+      runIdFactory: jest.fn().mockReturnValueOnce('run_first').mockReturnValueOnce('run_second'),
     });
     const events = [];
     service.subscribe((event) => events.push(event));
@@ -1019,9 +1055,7 @@ describe('FreedomAgentService', () => {
       guidance: [],
       error: undefined,
     });
-    expect(JSON.stringify(historyStore.finishTurn.mock.calls)).not.toContain(
-      'pageContents'
-    );
+    expect(JSON.stringify(historyStore.finishTurn.mock.calls)).not.toContain('pageContents');
   });
 
   test('opens a stored conversation dormant and rebuilds safe Pi context on follow-up', async () => {
@@ -1059,9 +1093,7 @@ describe('FreedomAgentService', () => {
     });
     expect(service.getWorkspaceState()).toEqual({ tabIds: [], activeTabId: null });
 
-    await service.start(
-      startOptions({ prompt: 'Continue from there', tabId: 'tab_new' })
-    );
+    await service.start(startOptions({ prompt: 'Continue from there', tabId: 'tab_new' }));
     expect(dependencies.createSession).toHaveBeenCalledWith(
       expect.objectContaining({
         restoredTranscript: [
@@ -1071,7 +1103,7 @@ describe('FreedomAgentService', () => {
             assistantText: 'I found three sources.',
           }),
         ],
-        systemPrompt: expect.stringContaining('restored from Freedom\'s saved session history'),
+        systemPrompt: expect.stringContaining("restored from Freedom's saved session history"),
       })
     );
     expect(historyStore.createSession).not.toHaveBeenCalled();
@@ -1141,10 +1173,12 @@ describe('FreedomAgentService', () => {
     expect(service.getState()).toMatchObject({
       pendingApproval: { approvalId: approval.approvalId },
     });
-    await expect(service.steer('run_test', 'Do not submit until I confirm')).resolves.toMatchObject({
-      text: 'Do not submit until I confirm',
-      status: 'queued',
-    });
+    await expect(service.steer('run_test', 'Do not submit until I confirm')).resolves.toMatchObject(
+      {
+        text: 'Do not submit until I confirm',
+        status: 'queued',
+      }
+    );
     expect(fake.session.steer).toHaveBeenCalledWith('Do not submit until I confirm');
     expect(service.getState()).toMatchObject({
       pendingApproval: { approvalId: approval.approvalId },
@@ -1625,10 +1659,7 @@ describe('FreedomAgentService', () => {
     expect(fake.session.prompt).toHaveBeenCalledTimes(2);
     expect(fake.session.prompt.mock.calls[1][0]).toContain('browser workspace');
     expect(fake.session.prompt.mock.calls[1][0]).toContain('If no task tab remains');
-    expect(events.slice(-2).map((event) => event.type)).toEqual([
-      'run_resuming',
-      'run_resumed',
-    ]);
+    expect(events.slice(-2).map((event) => event.type)).toEqual(['run_resuming', 'run_resumed']);
     expect(service.getState()).toMatchObject({ status: 'running' });
 
     fake.prompts[1].resolve();
@@ -2313,9 +2344,9 @@ describe('FreedomAgentService', () => {
     await expect(
       service.start(startOptions({ prompt: 'x'.repeat(MAX_AGENT_PROMPT_LENGTH + 1) }))
     ).rejects.toMatchObject({ code: AGENT_ERROR_CODES.INVALID_ARGUMENT });
-    await expect(
-      service.start(startOptions({ approvalMode: 'unsafe' }))
-    ).rejects.toMatchObject({ code: AGENT_ERROR_CODES.INVALID_ARGUMENT });
+    await expect(service.start(startOptions({ approvalMode: 'unsafe' }))).rejects.toMatchObject({
+      code: AGENT_ERROR_CODES.INVALID_ARGUMENT,
+    });
     expect(dependencies.loadSdk).not.toHaveBeenCalled();
   });
 

@@ -445,6 +445,10 @@ async function bootstrap() {
       safeStorage,
       profile: activeProfile,
       dataDir: getAgentDataDir(),
+      workspaceRuntimeOptions: {
+        packaged: app.isPackaged === true,
+        freedomVersion: app.getVersion(),
+      },
       controller: automationController,
       automationTabIdForRenderer,
       createAutomationPageForHost: createDesktopAutomationPageForHost,

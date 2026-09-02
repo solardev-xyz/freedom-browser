@@ -63,14 +63,10 @@ const ATTACHMENT_ICON_MARKUP = Object.freeze({
     '<svg viewBox="0 0 32 32" aria-hidden="true"><path d="M3.75 9.5h9l2.5 3h13v11.75a2.5 2.5 0 0 1-2.5 2.5h-19a2.5 2.5 0 0 1-2.5-2.5V8a2.5 2.5 0 0 1 2.5-2.5h5.5l2.5 4"/></svg>',
   image:
     '<svg viewBox="0 0 32 32" aria-hidden="true"><rect x="4" y="5" width="24" height="22" rx="3"/><circle cx="11.25" cy="12" r="2.25"/><path d="m6.5 24 7-7 4.25 4.25 3-3L27 24.5"/></svg>',
-  pdf:
-    '<svg viewBox="0 0 32 32" aria-hidden="true"><path d="M8 3.75h10l6 6v18.5H8z"/><path d="M18 3.75v6h6M11.5 21.5h9M11.5 17h9"/></svg>',
-  code:
-    '<svg viewBox="0 0 32 32" aria-hidden="true"><path d="m12.25 9-7 7 7 7M19.75 9l7 7-7 7M18 5.5l-4 21"/></svg>',
-  text:
-    '<svg viewBox="0 0 32 32" aria-hidden="true"><path d="M8 3.75h10l6 6v18.5H8z"/><path d="M18 3.75v6h6M11.5 15.5h9M11.5 20h9M11.5 24.5h6"/></svg>',
-  file:
-    '<svg viewBox="0 0 32 32" aria-hidden="true"><path d="M8 3.75h10l6 6v18.5H8z"/><path d="M18 3.75v6h6"/></svg>',
+  pdf: '<svg viewBox="0 0 32 32" aria-hidden="true"><path d="M8 3.75h10l6 6v18.5H8z"/><path d="M18 3.75v6h6M11.5 21.5h9M11.5 17h9"/></svg>',
+  code: '<svg viewBox="0 0 32 32" aria-hidden="true"><path d="m12.25 9-7 7 7 7M19.75 9l7 7-7 7M18 5.5l-4 21"/></svg>',
+  text: '<svg viewBox="0 0 32 32" aria-hidden="true"><path d="M8 3.75h10l6 6v18.5H8z"/><path d="M18 3.75v6h6M11.5 15.5h9M11.5 20h9M11.5 24.5h6"/></svg>',
+  file: '<svg viewBox="0 0 32 32" aria-hidden="true"><path d="M8 3.75h10l6 6v18.5H8z"/><path d="M18 3.75v6h6"/></svg>',
 });
 
 let elements = {};
@@ -187,8 +183,7 @@ function renderPageContext() {
   const tab = pageContextTab();
   elements.pageContext.hidden = !tab;
   renderAttachmentContexts();
-  elements.pageContexts.hidden =
-    !tab && pendingAttachments.length === 0 && !hasFolderResources();
+  elements.pageContexts.hidden = !tab && pendingAttachments.length === 0 && !hasFolderResources();
   if (!tab) return;
   const label = pageContextLabel(tab);
   elements.pageContextLabel.textContent = label;
@@ -425,7 +420,11 @@ async function removePendingAttachment(selectionId) {
   try {
     const response = await window.electronAPI.removeAgentAttachment(selectionId);
     if (!response?.ok) {
-      setMessage(elements.runMessage, responseMessage(response, 'Could not remove attachment'), true);
+      setMessage(
+        elements.runMessage,
+        responseMessage(response, 'Could not remove attachment'),
+        true
+      );
       return;
     }
     pendingAttachments = pendingAttachments.filter((item) => item.selectionId !== selectionId);
@@ -449,7 +448,11 @@ async function revokeConversationFolder(resource) {
       resource.resourceId
     );
     if (!response?.ok) {
-      setMessage(elements.runMessage, responseMessage(response, 'Could not stop sharing folder'), true);
+      setMessage(
+        elements.runMessage,
+        responseMessage(response, 'Could not stop sharing folder'),
+        true
+      );
       return;
     }
     conversationResources = Array.isArray(response.resources)
@@ -584,10 +587,7 @@ async function selectApprovalMode(nextMode) {
   updateSendAvailability();
   closeComposerPopovers();
   try {
-    const response = await window.electronAPI.setAgentApprovalMode(
-      currentConversationId,
-      nextMode
-    );
+    const response = await window.electronAPI.setAgentApprovalMode(currentConversationId, nextMode);
     if (!response?.ok) {
       setMessage(
         elements.runMessage,
@@ -1805,14 +1805,16 @@ function renderPublicationApproval(request) {
 }
 
 function effectLabel(value) {
-  return {
-    read: 'Read-only',
-    reversible_admin: 'Reversible admin change',
-    persistent_change: 'Persistent change',
-    financial: 'Financial action',
-    destructive: 'Destructive action',
-    unknown: 'Uncertain effect',
-  }[value] || 'Uncertain effect';
+  return (
+    {
+      read: 'Read-only',
+      reversible_admin: 'Reversible admin change',
+      persistent_change: 'Persistent change',
+      financial: 'Financial action',
+      destructive: 'Destructive action',
+      unknown: 'Uncertain effect',
+    }[value] || 'Uncertain effect'
+  );
 }
 
 function renderNodeRequestApproval(request) {
@@ -1939,6 +1941,7 @@ function renderApproval(request) {
   const nodeLifecycle = request.nodeLifecycle;
   const interaction = request.interaction;
   const publication = request.publication;
+  const workspace = request.workspace;
   elements.approval.classList.toggle('diagnostic-approval', Boolean(diagnostic));
   const diagnosticSubject =
     diagnostic?.scope === 'node' ? `${diagnostic.service} node` : 'Freedom application';
@@ -1950,74 +1953,83 @@ function renderApproval(request) {
     'myotis-ethereum': 'Myotis Ethereum',
     'myotis-gnosis': 'Myotis Gnosis',
   };
-  elements.approvalAction.textContent = publication
-    ? publication.kind === 'text'
-      ? 'Publish this text to Swarm?'
-      : `Publish “${publication.name}” to Swarm?`
-    : nodeRequest
-    ? `Allow this ${nodeLabels[nodeRequest.service] || nodeRequest.service} node request?`
-    : nodeLifecycle
-      ? `${nodeLifecycle.action[0].toUpperCase()}${nodeLifecycle.action.slice(1)} the ${nodeLabels[nodeLifecycle.service] || nodeLifecycle.service} node?`
-    : diagnostic
-    ? `Share recent ${diagnosticSubject} diagnostics with ${diagnostic.providerLabel}?`
-    : request.action === 'form_submission'
-      ? `Submit this form using “${label}”?`
-      : request.action === 'file_download'
-        ? `Download ${label.replace(/^download\s+/i, '').trim() || 'this file'}?`
-        : request.action === 'file_upload'
-          ? `Choose a file to share with ${describeApprovalOrigin(request.destinationOrigin)?.label || 'this site'}?`
-          : request.action === 'wallet_connection'
-            ? 'Connect this site to a wallet account?'
-            : request.action === 'wallet_transaction'
-              ? 'Approve this wallet transaction?'
-              : request.action === 'wallet_transfer'
-                ? 'Send these funds from your Freedom wallet?'
-                : request.action === 'wallet_signature'
-                ? 'Approve this wallet signature?'
+  elements.approvalAction.textContent = workspace
+    ? 'Enable a private project workspace for this conversation?'
+    : publication
+      ? publication.kind === 'text'
+        ? 'Publish this text to Swarm?'
+        : `Publish “${publication.name}” to Swarm?`
+      : nodeRequest
+        ? `Allow this ${nodeLabels[nodeRequest.service] || nodeRequest.service} node request?`
+        : nodeLifecycle
+          ? `${nodeLifecycle.action[0].toUpperCase()}${nodeLifecycle.action.slice(1)} the ${nodeLabels[nodeLifecycle.service] || nodeLifecycle.service} node?`
+          : diagnostic
+            ? `Share recent ${diagnosticSubject} diagnostics with ${diagnostic.providerLabel}?`
+            : request.action === 'form_submission'
+              ? `Submit this form using “${label}”?`
+              : request.action === 'file_download'
+                ? `Download ${label.replace(/^download\s+/i, '').trim() || 'this file'}?`
+                : request.action === 'file_upload'
+                  ? `Choose a file to share with ${describeApprovalOrigin(request.destinationOrigin)?.label || 'this site'}?`
+                  : request.action === 'wallet_connection'
+                    ? 'Connect this site to a wallet account?'
+                    : request.action === 'wallet_transaction'
+                      ? 'Approve this wallet transaction?'
+                      : request.action === 'wallet_transfer'
+                        ? 'Send these funds from your Freedom wallet?'
+                        : request.action === 'wallet_signature'
+                          ? 'Approve this wallet signature?'
+                          : interaction
+                            ? interaction.kind === 'uncertain'
+                              ? interactionCopy[request.operation] ||
+                                `Let Agent interact with “${label}”?`
+                              : `${interaction.summary.replace(/[.?!]+$/, '')}?`
+                            : interactionCopy[request.operation] ||
+                              `Let Agent interact with “${label}”?`;
+  elements.approvalOrigin.textContent = workspace
+    ? workspace.backend === 'macos-seatbelt'
+      ? 'Agent may create and modify files only inside this Freedom-managed workspace. Network access is disabled. On macOS, stopping detached subprocesses is best-effort, but they remain inside the same filesystem and network boundary.'
+      : 'Agent may create and modify files only inside this Freedom-managed workspace. Network access is disabled, and Linux tears down the complete sandbox process namespace when a command stops.'
+    : publication
+      ? publication.kind === 'folder'
+        ? 'This publishes the attached folder’s current contents using an existing postage batch. The content is public, unencrypted, and may remain retrievable.'
+        : 'This publishes the attached content using an existing postage batch. The content is public, unencrypted, and may remain retrievable.'
+      : nodeRequest
+        ? `${nodeRequest.providerLabel}${nodeRequest.modelId ? ` using ${nodeRequest.modelId}` : ''} independently classified this request as ${effectLabel(nodeRequest.effect).toLowerCase()}. Freedom has not sent it to the node yet.`
+        : nodeLifecycle
+          ? `${nodeLifecycle.providerLabel}${nodeLifecycle.modelId ? ` using ${nodeLifecycle.modelId}` : ''} classified this as ${effectLabel(nodeLifecycle.effect).toLowerCase()}. Freedom will run it through the node manager and verify the resulting state.`
+          : diagnostic
+            ? diagnostic.local
+              ? `Raw diagnostic logs will be added to this conversation with ${diagnostic.providerLabel}${diagnostic.modelId ? ` using ${diagnostic.modelId}` : ''}. They remain on this device, but may include peer IDs, network or wallet addresses, local paths, and requested resources.`
+              : `This sends raw diagnostic logs to ${diagnostic.providerLabel}${diagnostic.modelId ? ` using ${diagnostic.modelId}` : ''}. They may include peer IDs, network or wallet addresses, local paths, and requested resources.`
+            : request.action === 'file_upload'
+              ? `For “${label}” · Freedom shares only the file you choose and never shows Agent its local path.`
+              : request.wallet
+                ? request.wallet.kind === 'transfer'
+                  ? 'Prepared directly by Freedom. The exact transfer is held until you decide.'
+                  : 'Requested by the page Agent is controlling. The request is held until you decide.'
                 : interaction
                   ? interaction.kind === 'uncertain'
-                    ? interactionCopy[request.operation] ||
-                      `Let Agent interact with “${label}”?`
-                    : `${interaction.summary.replace(/[.?!]+$/, '')}?`
-                  : interactionCopy[request.operation] || `Let Agent interact with “${label}”?`;
-  elements.approvalOrigin.textContent = publication
-    ? publication.kind === 'folder'
-      ? 'This publishes the attached folder’s current contents using an existing postage batch. The content is public, unencrypted, and may remain retrievable.'
-      : 'This publishes the attached content using an existing postage batch. The content is public, unencrypted, and may remain retrievable.'
-    : nodeRequest
-    ? `${nodeRequest.providerLabel}${nodeRequest.modelId ? ` using ${nodeRequest.modelId}` : ''} independently classified this request as ${effectLabel(nodeRequest.effect).toLowerCase()}. Freedom has not sent it to the node yet.`
-    : nodeLifecycle
-      ? `${nodeLifecycle.providerLabel}${nodeLifecycle.modelId ? ` using ${nodeLifecycle.modelId}` : ''} classified this as ${effectLabel(nodeLifecycle.effect).toLowerCase()}. Freedom will run it through the node manager and verify the resulting state.`
-    : diagnostic
-    ? diagnostic.local
-      ? `Raw diagnostic logs will be added to this conversation with ${diagnostic.providerLabel}${diagnostic.modelId ? ` using ${diagnostic.modelId}` : ''}. They remain on this device, but may include peer IDs, network or wallet addresses, local paths, and requested resources.`
-      : `This sends raw diagnostic logs to ${diagnostic.providerLabel}${diagnostic.modelId ? ` using ${diagnostic.modelId}` : ''}. They may include peer IDs, network or wallet addresses, local paths, and requested resources.`
-    : request.action === 'file_upload'
-      ? `For “${label}” · Freedom shares only the file you choose and never shows Agent its local path.`
-      : request.wallet
-        ? request.wallet.kind === 'transfer'
-          ? 'Prepared directly by Freedom. The exact transfer is held until you decide.'
-          : 'Requested by the page Agent is controlling. The request is held until you decide.'
-        : interaction
-          ? interaction.kind === 'uncertain'
-            ? `Freedom could not confidently determine whether this interaction on ${approvalOriginSummary(request)} is consequential.`
-            : `Based on Agent’s stated intent and the visible target on ${approvalOriginSummary(request)}. Freedom has not audited the page’s hidden behavior.`
-          : approvalOriginSummary(request);
-  elements.approvalApprove.textContent = publication
-    ? 'Publish'
-    : diagnostic
-    ? 'Share once'
-    : request.action === 'file_upload'
-      ? 'Choose file…'
-      : request.wallet
-        ? request.wallet.kind === 'signature'
-          ? 'Sign once'
-          : request.wallet.kind === 'transaction'
-            ? 'Confirm transaction'
-            : request.wallet.kind === 'transfer'
-              ? 'Send once'
-            : 'Connect once'
-        : 'Allow once';
+                    ? `Freedom could not confidently determine whether this interaction on ${approvalOriginSummary(request)} is consequential.`
+                    : `Based on Agent’s stated intent and the visible target on ${approvalOriginSummary(request)}. Freedom has not audited the page’s hidden behavior.`
+                  : approvalOriginSummary(request);
+  elements.approvalApprove.textContent = workspace
+    ? 'Enable workspace'
+    : publication
+      ? 'Publish'
+      : diagnostic
+        ? 'Share once'
+        : request.action === 'file_upload'
+          ? 'Choose file…'
+          : request.wallet
+            ? request.wallet.kind === 'signature'
+              ? 'Sign once'
+              : request.wallet.kind === 'transaction'
+                ? 'Confirm transaction'
+                : request.wallet.kind === 'transfer'
+                  ? 'Send once'
+                  : 'Connect once'
+            : 'Allow once';
   elements.approvalApprove.classList.toggle('primary', !diagnostic);
   elements.approvalApprove.classList.toggle('secondary', Boolean(diagnostic));
   elements.walletApprovalDetails.hidden = true;
@@ -2366,11 +2378,7 @@ function updateToolApproval(runId, toolCallId, decision) {
 
 function attachmentDisplayKey(event) {
   const receipt = event?.attachment;
-  if (
-    event?.status !== 'succeeded' ||
-    !receipt ||
-    !['list', 'read'].includes(receipt.action)
-  ) {
+  if (event?.status !== 'succeeded' || !receipt || !['list', 'read'].includes(receipt.action)) {
     return '';
   }
   const target = receipt.resourceId || 'conversation';
@@ -3378,14 +3386,17 @@ export function initAgentUi(options = {}) {
     elements.approvalModePopover.hidden = !opening;
     elements.approvalModeButton.setAttribute('aria-expanded', String(opening));
   });
-  elements.approvalModeEvery.addEventListener('click', () =>
-    void selectApprovalMode(APPROVAL_MODES.EVERY_INTERACTION)
+  elements.approvalModeEvery.addEventListener(
+    'click',
+    () => void selectApprovalMode(APPROVAL_MODES.EVERY_INTERACTION)
   );
-  elements.approvalModeSensitive.addEventListener('click', () =>
-    void selectApprovalMode(APPROVAL_MODES.SENSITIVE_ACTIONS)
+  elements.approvalModeSensitive.addEventListener(
+    'click',
+    () => void selectApprovalMode(APPROVAL_MODES.SENSITIVE_ACTIONS)
   );
-  elements.approvalModeAllow.addEventListener('click', () =>
-    void selectApprovalMode(APPROVAL_MODES.ALLOW_WEBSITE_INTERACTIONS)
+  elements.approvalModeAllow.addEventListener(
+    'click',
+    () => void selectApprovalMode(APPROVAL_MODES.ALLOW_WEBSITE_INTERACTIONS)
   );
   elements.manageProviders.addEventListener('click', showProviderSetup);
   document.addEventListener('click', (event) => {

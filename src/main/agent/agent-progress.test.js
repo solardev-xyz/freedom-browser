@@ -9,9 +9,61 @@ const {
   createToolReceipt,
   normalizeAttachmentReceipt,
   normalizePublicationReceipt,
+  normalizeWorkspaceReceipt,
 } = require('./agent-progress');
 
 describe('Agent progress projection', () => {
+  test('projects bounded workspace activity without command output or host paths', () => {
+    const workspace = normalizeWorkspaceReceipt({
+      workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa',
+      commandId: 'workspace_cmd_bbbbbbbbbbbbbbbbbbbbbbbb',
+      command: 'npm test\n--runInBand',
+      workingDirectory: '.',
+      backend: 'linux-bubblewrap',
+      state: 'completed',
+      durationMs: 120,
+      exitCode: 0,
+      stdout: 'private output from /Users/private',
+      stderr: 'private diagnostics',
+      terminationGuarantee: 'namespace_scoped',
+      sideEffects: 'unknown',
+      completeDescendantTermination: true,
+    });
+
+    expect(workspace).toEqual({
+      workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa',
+      commandId: 'workspace_cmd_bbbbbbbbbbbbbbbbbbbbbbbb',
+      command: 'npm test --runInBand',
+      workingDirectory: '.',
+      backend: 'linux-bubblewrap',
+      state: 'completed',
+      durationMs: 120,
+      exitCode: 0,
+      stdoutTruncated: false,
+      stderrTruncated: false,
+      terminationGuarantee: 'namespace_scoped',
+      sideEffects: 'unknown',
+      survivorsPossible: false,
+      completeDescendantTermination: true,
+    });
+    expect(JSON.stringify(workspace)).not.toMatch(/private output|private diagnostics|\/Users/);
+    expect(activityProgress('workspace_run', { workspace })).toMatchObject({
+      intent: 'Running npm test --runInBand',
+      label: 'Ran npm test --runInBand',
+      effect: 'changed',
+    });
+    expect(
+      buildAgentOutcome(
+        [{ operation: 'workspace_run', status: 'succeeded', workspace }],
+        'completed'
+      )
+    ).toMatchObject({
+      verification: 'workspace_execution_recorded',
+      headline: 'Project command completed',
+      counts: { workspaceCommands: 1 },
+    });
+  });
+
   test('projects only an origin and opaque page identity from browser receipts', () => {
     const receipt = createToolReceipt(OPERATIONS.SNAPSHOT, {
       envelope: {
@@ -880,9 +932,7 @@ describe('Agent progress projection', () => {
       truncated: false,
     });
     expect(JSON.stringify(attachment)).not.toMatch(/private-image|private extracted/);
-    expect(
-      activityProgress(ATTACHMENT_OPERATIONS.RENDER_PAGE, { attachment })
-    ).toMatchObject({
+    expect(activityProgress(ATTACHMENT_OPERATIONS.RENDER_PAGE, { attachment })).toMatchObject({
       intent: 'Looking at report.pdf — page 7 of 20',
       label: 'Looked at report.pdf — page 7 of 20',
       effect: 'observed',

@@ -20,6 +20,7 @@ const ATTACHMENT_OPERATIONS = Object.freeze({
   READ: 'attachment_read',
   RENDER_PAGE: 'attachment_render_page',
 });
+const WORKSPACE_OPERATION = 'workspace_run';
 
 const OPERATION_PROGRESS = Object.freeze({
   [OPERATIONS.LIST_TABS]: {
@@ -172,6 +173,11 @@ const OPERATION_PROGRESS = Object.freeze({
     intent: 'Looking at an attached PDF page',
     completed: 'Looked at an attached PDF page',
   },
+  [WORKSPACE_OPERATION]: {
+    effect: ACTIVITY_EFFECTS.CHANGED,
+    intent: 'Running a project command',
+    completed: 'Ran a project command',
+  },
 });
 
 const ERROR_LABELS = Object.freeze({
@@ -268,9 +274,7 @@ function normalizeWalletReceipt(value) {
     action: 'broadcast',
     transactionHash,
     ...(boundedString(value.paymentId, 100) && { paymentId: value.paymentId.slice(0, 100) }),
-    ...(Number.isSafeInteger(value.chainId) && value.chainId > 0
-      ? { chainId: value.chainId }
-      : {}),
+    ...(Number.isSafeInteger(value.chainId) && value.chainId > 0 ? { chainId: value.chainId } : {}),
     ...(boundedString(value.recipient, 80) && { recipient: value.recipient.slice(0, 80) }),
     ...(boundedString(value.amount, 100) && { amount: value.amount.slice(0, 100) }),
     ...(boundedString(value.asset, 80) && { asset: value.asset.slice(0, 80) }),
@@ -435,6 +439,58 @@ function normalizePublicationReceipt(value) {
   });
 }
 
+function normalizeWorkspaceReceipt(value) {
+  if (!value || typeof value !== 'object') return null;
+  const states = new Set([
+    'running',
+    'completed',
+    'failed',
+    'cancelled',
+    'timed_out',
+    'sandbox_denied',
+    'interrupted',
+  ]);
+  const workspaceId = boundedString(value.workspaceId, 160);
+  const commandId = boundedString(value.commandId, 160);
+  const command = boundedString(
+    // eslint-disable-next-line no-control-regex
+    typeof value.command === 'string' ? value.command.replace(/[\u0000-\u001f\u007f]+/g, ' ') : '',
+    160
+  );
+  const workingDirectory = boundedString(value.workingDirectory, 1_024);
+  const backend = boundedString(value.backend, 80);
+  const state = boundedString(value.state, 40);
+  if (
+    (workspaceId && !/^workspace_[a-f0-9]{20}$/.test(workspaceId)) ||
+    (commandId && !/^workspace_cmd_[a-f0-9]{24}$/.test(commandId)) ||
+    !command ||
+    !workingDirectory ||
+    !backend ||
+    !states.has(state)
+  ) {
+    return null;
+  }
+  return Object.freeze({
+    ...(workspaceId && { workspaceId }),
+    ...(commandId && { commandId }),
+    command,
+    workingDirectory,
+    backend,
+    state,
+    ...(Number.isSafeInteger(value.durationMs) && value.durationMs >= 0
+      ? { durationMs: value.durationMs }
+      : {}),
+    ...(Number.isInteger(value.exitCode) ? { exitCode: value.exitCode } : {}),
+    ...(boundedString(value.signal, 40) && { signal: value.signal.slice(0, 40) }),
+    stdoutTruncated: value.stdoutTruncated === true,
+    stderrTruncated: value.stderrTruncated === true,
+    terminationGuarantee: boundedString(value.terminationGuarantee, 80) || 'not_applicable',
+    sideEffects: value.sideEffects === 'none' ? 'none' : 'unknown',
+    survivorsPossible: value.survivorsPossible === true,
+    completeDescendantTermination: value.completeDescendantTermination === true,
+  });
+}
+
 function publicationSubject(publication) {
   return publication?.kind === 'text' ? 'text' : publication?.name || 'content';
 }
@@ -457,7 +513,8 @@ function normalizeAttachmentReceipt(value, operation) {
   const action = operation === ATTACHMENT_OPERATIONS.LIST ? 'list' : 'read';
   const resourceId = boundedString(value.resourceId, 160);
   const validResourceId = /^(?:attachment|folder)_[a-f0-9]{20}$/.test(resourceId);
-  const resourceKind = value.resourceKind === 'folder' ? 'folder' : value.resourceKind === 'file' ? 'file' : null;
+  const resourceKind =
+    value.resourceKind === 'folder' ? 'folder' : value.resourceKind === 'file' ? 'file' : null;
   const safeName = (candidate) => {
     const name = boundedString(candidate, 240);
     return name && !name.includes('/') && !name.includes('\\') ? name : '';
@@ -467,9 +524,7 @@ function normalizeAttachmentReceipt(value, operation) {
   const candidatePath = boundedString(value.relativePath, 512);
   const pathParts = candidatePath.split(/[\\/]+/);
   const relativePath =
-    candidatePath &&
-    !/^(?:[A-Za-z]:[\\/]|[\\/])/.test(candidatePath) &&
-    !pathParts.includes('..')
+    candidatePath && !/^(?:[A-Za-z]:[\\/]|[\\/])/.test(candidatePath) && !pathParts.includes('..')
       ? candidatePath
       : '';
   const resourceCount =
@@ -484,9 +539,9 @@ function normalizeAttachmentReceipt(value, operation) {
     Number.isSafeInteger(value.bytesRead) && value.bytesRead >= 0
       ? Math.min(value.bytesRead, 8 * 1024 * 1024)
       : null;
-  const offset =
-    Number.isSafeInteger(value.offset) && value.offset >= 0 ? value.offset : null;
-  const page = Number.isSafeInteger(value.page) && value.page >= 1 ? Math.min(value.page, 500) : null;
+  const offset = Number.isSafeInteger(value.offset) && value.offset >= 0 ? value.offset : null;
+  const page =
+    Number.isSafeInteger(value.page) && value.page >= 1 ? Math.min(value.page, 500) : null;
   const pagesRead =
     Number.isSafeInteger(value.pagesRead) && value.pagesRead >= 1
       ? Math.min(value.pagesRead, 4)
@@ -540,6 +595,7 @@ function activityProgress(operation, receipt = {}) {
   const diagnostic = normalizeDiagnosticReceipt(receipt.diagnostic);
   const attachment = normalizeAttachmentReceipt(receipt.attachment, operation);
   const publication = normalizePublicationReceipt(receipt.publication);
+  const workspace = normalizeWorkspaceReceipt(receipt.workspace);
 
   if (operation === OPERATIONS.LIST_TABS && pageCount !== null) {
     const pages = `${pageCount} Agent ${pageCount === 1 ? 'tab' : 'tabs'}`;
@@ -583,8 +639,7 @@ function activityProgress(operation, receipt = {}) {
     intent = `Inspecting ${subject} diagnostics`;
     label = `Inspected ${diagnostic.lineCount} diagnostic ${diagnostic.lineCount === 1 ? 'line' : 'lines'}`;
   } else if (
-    (operation === OPERATIONS.SWARM_PUBLISH ||
-      operation === OPERATIONS.SWARM_PUBLICATION_STATUS) &&
+    (operation === OPERATIONS.SWARM_PUBLISH || operation === OPERATIONS.SWARM_PUBLICATION_STATUS) &&
     publication
   ) {
     const subject = publicationSubject(publication);
@@ -614,9 +669,10 @@ function activityProgress(operation, receipt = {}) {
     }
   } else if (operation === ATTACHMENT_OPERATIONS.READ && attachment) {
     const source = attachment.relativePath || attachment.name;
-    const pages = attachment.page && attachment.pageCount
-      ? ` — ${attachment.pagesRead > 1 ? `pages ${attachment.page}–${attachment.page + attachment.pagesRead - 1}` : `page ${attachment.page}`} of ${attachment.pageCount}`
-      : '';
+    const pages =
+      attachment.page && attachment.pageCount
+        ? ` — ${attachment.pagesRead > 1 ? `pages ${attachment.page}–${attachment.page + attachment.pagesRead - 1}` : `page ${attachment.page}`} of ${attachment.pageCount}`
+        : '';
     intent = `Reading ${source}${pages}`;
     label = `Read ${source}${pages}`;
   } else if (operation === ATTACHMENT_OPERATIONS.RENDER_PAGE && attachment) {
@@ -627,6 +683,18 @@ function activityProgress(operation, receipt = {}) {
         : '';
     intent = `Looking at ${source}${page}`;
     label = `Looked at ${source}${page}`;
+  } else if (operation === WORKSPACE_OPERATION && workspace) {
+    intent = `Running ${workspace.command}`;
+    label =
+      workspace.state === 'completed'
+        ? `Ran ${workspace.command}`
+        : workspace.state === 'timed_out'
+          ? `Command timed out — ${workspace.command}`
+          : workspace.state === 'cancelled'
+            ? `Command stopped — ${workspace.command}`
+            : workspace.state === 'sandbox_denied'
+              ? `Command blocked — ${workspace.command}`
+              : `Command failed — ${workspace.command}`;
   } else if (origin) {
     const originCopy = {
       [OPERATIONS.CREATE_TAB]: ['Opening', 'Opened'],
@@ -673,6 +741,7 @@ function activityProgress(operation, receipt = {}) {
     ...(diagnostic && { diagnostic }),
     ...(attachment && { attachment }),
     ...(publication && { publication }),
+    ...(workspace && { workspace }),
   });
 }
 
@@ -799,10 +868,7 @@ function buildAgentOutcome(activity, status, error) {
     ...new Map(
       attachmentObservations
         .filter((item) => item.action === 'read')
-        .map((item) => [
-          `${item.resourceId}:${item.relativePath || item.name}`,
-          item,
-        ])
+        .map((item) => [`${item.resourceId}:${item.relativePath || item.name}`, item])
     ).values(),
   ];
   const publications = succeeded
@@ -810,6 +876,10 @@ function buildAgentOutcome(activity, status, error) {
       [OPERATIONS.SWARM_PUBLISH, OPERATIONS.SWARM_PUBLICATION_STATUS].includes(item?.operation)
     )
     .map((item) => normalizePublicationReceipt(item?.publication))
+    .filter(Boolean);
+  const workspaceCommands = items
+    .filter((item) => item?.operation === WORKSPACE_OPERATION)
+    .map((item) => normalizeWorkspaceReceipt(item?.workspace))
     .filter(Boolean);
   const nonBrowserObservations = new Set([
     OPERATIONS.NODE_STATUS,
@@ -823,10 +893,9 @@ function buildAgentOutcome(activity, status, error) {
     ATTACHMENT_OPERATIONS.LIST,
     ATTACHMENT_OPERATIONS.READ,
     ATTACHMENT_OPERATIONS.RENDER_PAGE,
+    WORKSPACE_OPERATION,
   ]);
-  const browserSucceeded = succeeded.filter(
-    (item) => !nonBrowserObservations.has(item?.operation)
-  );
+  const browserSucceeded = succeeded.filter((item) => !nonBrowserObservations.has(item?.operation));
   const browserObserved = observed.filter((item) => !nonBrowserObservations.has(item?.operation));
   const uncertainChanges = items.filter((item) => {
     if (normalizedEffect(item) !== ACTIVITY_EFFECTS.CHANGED || item?.status === 'succeeded') {
@@ -885,6 +954,7 @@ function buildAgentOutcome(activity, status, error) {
       attachmentObservations: attachmentObservations.length,
     }),
     ...(publications.length && { publications: publications.length }),
+    ...(workspaceCommands.length && { workspaceCommands: workspaceCommands.length }),
     approvals,
   });
   const browserActionCopy = `${browserSucceeded.length} successful browser ${browserSucceeded.length === 1 ? 'action' : 'actions'}${counts.pages ? ` across ${counts.pages} ${counts.pages === 1 ? 'page' : 'pages'}` : ''}`;
@@ -1012,14 +1082,18 @@ function buildAgentOutcome(activity, status, error) {
       }
       return Object.freeze({
         kind: 'completed',
-        verification: publication.state === 'failed'
-          ? 'swarm_publication_failed'
-          : 'swarm_publication_outcome_unknown',
+        verification:
+          publication.state === 'failed'
+            ? 'swarm_publication_failed'
+            : 'swarm_publication_outcome_unknown',
         tone: 'caution',
-        headline: publication.state === 'failed'
-          ? 'Swarm publication failed'
-          : 'Swarm publication outcome uncertain',
-        detail: publication.error || `Publication ${publication.publicationId} requires reconciliation before any repeat.`,
+        headline:
+          publication.state === 'failed'
+            ? 'Swarm publication failed'
+            : 'Swarm publication outcome uncertain',
+        detail:
+          publication.error ||
+          `Publication ${publication.publicationId} requires reconciliation before any repeat.`,
         publication,
         destinations,
         counts,
@@ -1112,11 +1186,7 @@ function buildAgentOutcome(activity, status, error) {
     }
     if (attachmentObservations.length && !changed.length && !browserObserved.length) {
       const folderNames = [
-        ...new Set(
-          attachmentObservations
-            .map((item) => item.folderName)
-            .filter(Boolean)
-        ),
+        ...new Set(attachmentObservations.map((item) => item.folderName).filter(Boolean)),
       ];
       const detail = attachmentReads.length
         ? `Freedom recorded reads from ${attachmentReads.length} attached ${attachmentReads.length === 1 ? 'file' : 'files'}${folderNames.length === 1 ? ` in the shared folder “${folderNames[0]}”` : ''}. This confirms the sources were accessed, not that every model conclusion is correct.`
@@ -1127,6 +1197,25 @@ function buildAgentOutcome(activity, status, error) {
         tone: 'success',
         headline: 'Attached sources inspected',
         detail,
+        destinations,
+        counts,
+      });
+    }
+    if (workspaceCommands.length) {
+      const completedCommands = workspaceCommands.filter((item) => item.state === 'completed');
+      const lastCommand = workspaceCommands.at(-1);
+      return Object.freeze({
+        kind: 'completed',
+        verification: 'workspace_execution_recorded',
+        tone: completedCommands.length ? 'success' : 'neutral',
+        headline:
+          completedCommands.length === 1
+            ? 'Project command completed'
+            : completedCommands.length > 1
+              ? 'Project commands completed'
+              : 'Project command recorded',
+        detail: `${workspaceCommands.length} sandboxed project ${workspaceCommands.length === 1 ? 'command was' : 'commands were'} recorded. The latest command ${lastCommand.state === 'completed' ? 'completed successfully' : `ended as ${lastCommand.state.replaceAll('_', ' ')}`}. Command side effects inside the workspace remain unknown.`,
+        workspace: lastCommand,
         destinations,
         counts,
       });
@@ -1289,8 +1378,7 @@ function buildAgentOutcome(activity, status, error) {
       ? `Review the Agent tabs, then tell Agent what to continue or redo. ${providerPresentation?.nextStep || ''}`.trim()
       : providerPresentation?.nextStep || 'You can safely try the task again.',
     retrySafety: retryNeedsReview ? 'review' : 'safe',
-    canRetry:
-      !retryNeedsReview && providerPresentation?.recovery === 'transient',
+    canRetry: !retryNeedsReview && providerPresentation?.recovery === 'transient',
     counts,
   });
 }
@@ -1311,4 +1399,5 @@ module.exports = {
   normalizePublicationReceipt,
   normalizeUpload,
   normalizeWalletReceipt,
+  normalizeWorkspaceReceipt,
 };
