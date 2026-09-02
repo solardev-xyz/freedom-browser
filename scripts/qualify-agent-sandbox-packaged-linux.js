@@ -38,6 +38,22 @@ function run(executablePath, environment) {
   });
 }
 
+function qualificationModeEnvironment(source = process.env) {
+  const destructive = source.FREEDOM_SANDBOX_DESTRUCTIVE === '1';
+  const vmOnly = source.FREEDOM_SANDBOX_VM_ONLY === '1';
+  if (destructive !== vmOnly) {
+    throw new Error(
+      'Packaged destructive qualification requires both FREEDOM_SANDBOX_DESTRUCTIVE=1 and FREEDOM_SANDBOX_VM_ONLY=1'
+    );
+  }
+  return destructive
+    ? Object.freeze({
+        FREEDOM_SANDBOX_DESTRUCTIVE: '1',
+        FREEDOM_SANDBOX_VM_ONLY: '1',
+      })
+    : Object.freeze({});
+}
+
 async function main() {
   if (process.platform !== 'linux') {
     throw new Error('Packaged Linux workspace-sandbox qualification requires Linux');
@@ -69,6 +85,7 @@ async function main() {
     XDG_DATA_HOME: directories.data,
     XDG_RUNTIME_DIR: directories.runtime,
     ...(process.env.XAUTHORITY ? { XAUTHORITY: process.env.XAUTHORITY } : {}),
+    ...qualificationModeEnvironment(),
     [PACKAGED_USER_DATA_ENV]: userDataRoot,
   };
   process.stdout.write(
@@ -98,7 +115,11 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  process.stderr.write(`Packaged Linux sandbox qualification failed: ${error.message}\n`);
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  main().catch((error) => {
+    process.stderr.write(`Packaged Linux sandbox qualification failed: ${error.message}\n`);
+    process.exitCode = 1;
+  });
+}
+
+module.exports = { qualificationModeEnvironment, validateQualificationUserData };

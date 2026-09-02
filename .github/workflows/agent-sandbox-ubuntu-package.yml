@@ -1,0 +1,234 @@
+name: Agent sandbox Ubuntu package qualification
+
+on:
+  push:
+    branches:
+      - codex/agent-workspace-product-gates
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-sandbox-ubuntu-package-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  qualify-debian-package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Create evidence directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence_dir="$RUNNER_TEMP/agent-sandbox-evidence"
+          mkdir -p "$evidence_dir"
+          printf 'EVIDENCE_DIR=%s\n' "$evidence_dir" >> "$GITHUB_ENV"
+
+      - name: Assert clean restrictive Ubuntu baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$EVIDENCE_DIR/01-baseline.log") 2>&1
+
+          uname -a
+          cat /etc/os-release
+          id
+          dpkg-query -W apparmor 2>/dev/null || true
+          sudo aa-status
+          sysctl kernel.apparmor_restrict_unprivileged_userns
+          sysctl kernel.unprivileged_userns_clone
+          sysctl user.max_user_namespaces
+          stat -fc '%T' /sys/fs/cgroup
+          cat /sys/fs/cgroup/cgroup.controllers
+
+          test "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns)" = 1
+          test "$(sysctl -n kernel.unprivileged_userns_clone)" = 1
+          test "$(stat -fc '%T' /sys/fs/cgroup)" = cgroup2fs
+
+          if dpkg-query -W -f='${Status}\n' bubblewrap 2>/dev/null | grep -qx 'install ok installed'; then
+            echo 'The runner already contains Bubblewrap; dependency-install evidence would be invalid.' >&2
+            exit 1
+          fi
+          if command -v bwrap >/dev/null 2>&1; then
+            echo 'The runner exposes bwrap without an installed bubblewrap package.' >&2
+            exit 1
+          fi
+          if sudo aa-status 2>/dev/null | grep -Eiq '(^|[/ ])(freedom|bwrap|bubblewrap)([ /]|$)'; then
+            echo 'The runner already has a relevant loaded AppArmor profile.' >&2
+            exit 1
+          fi
+          if sudo find /etc/apparmor.d /usr/share/apparmor/extra-profiles \
+            -maxdepth 1 -type f \( -iname '*freedom*' -o -iname '*bwrap*' -o -iname '*bubblewrap*' \) \
+            -print 2>/dev/null | grep -q .; then
+            echo 'The runner already has a relevant AppArmor policy file.' >&2
+            exit 1
+          fi
+          if unshare -Ur true; then
+            echo 'Unprofiled user-namespace creation unexpectedly succeeded.' >&2
+            exit 1
+          fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install build and display prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$EVIDENCE_DIR/02-prerequisites.log") 2>&1
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev libusb-1.0-0-dev xvfb
+          if dpkg-query -W -f='${Status}\n' bubblewrap 2>/dev/null | grep -qx 'install ok installed'; then
+            echo 'A build-only prerequisite unexpectedly installed Bubblewrap.' >&2
+            exit 1
+          fi
+
+      - name: Install repository dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$EVIDENCE_DIR/03-npm-ci.log") 2>&1
+          npm ci
+
+      - name: Validate repository before packaging
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$EVIDENCE_DIR/04-repository-validation.log") 2>&1
+          npm run lint
+          npm test
+
+      - name: Build Linux qualification packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$EVIDENCE_DIR/05-package-build.log") 2>&1
+          npm run build:agent-sandbox:linux:packaged
+
+      - name: Inspect Debian package metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$EVIDENCE_DIR/06-package-metadata.log") 2>&1
+
+          mapfile -t packages < <(find "$GITHUB_WORKSPACE/out/agent-sandbox-packaged-linux" \
+            -maxdepth 1 -type f -name 'freedom-browser_*_amd64.deb' -print)
+          test "${#packages[@]}" -eq 1
+          deb_path="${packages[0]}"
+          printf 'DEB_PATH=%s\n' "$deb_path" >> "$GITHUB_ENV"
+          sha256sum "$deb_path" | tee "$EVIDENCE_DIR/debian-package.sha256"
+          dpkg-deb --info "$deb_path"
+          dpkg-deb --contents "$deb_path"
+          dependencies="$(dpkg-deb -f "$deb_path" Depends)"
+          printf 'Depends: %s\n' "$dependencies"
+          for dependency in \
+            libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 xdg-utils \
+            libatspi2.0-0 libuuid1 libsecret-1-0 bubblewrap; do
+            if ! tr ',' '\n' <<<"$dependencies" | sed 's/^[[:space:]]*//' | \
+              grep -Eq "^${dependency}([[:space:](]|$)"; then
+              echo "Missing Debian runtime dependency: $dependency" >&2
+              exit 1
+            fi
+          done
+
+      - name: Install Debian package normally
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$EVIDENCE_DIR/07-package-install.log") 2>&1
+          sudo apt-get install -y "$DEB_PATH"
+
+      - name: Verify package-installed runtime and AppArmor policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$EVIDENCE_DIR/08-installed-state.log") 2>&1
+
+          dpkg-query -W bubblewrap freedom-browser
+          dpkg -L freedom-browser
+          sudo aa-status
+          stat -c '%U:%G %a %n' /opt/Freedom/freedom /opt/Freedom/chrome-sandbox
+          test -x /usr/bin/bwrap
+          test -x /opt/Freedom/freedom
+          test -f /etc/apparmor.d/freedom
+          grep -Eq '^[[:space:]]*userns,' /etc/apparmor.d/freedom
+          sudo aa-status 2>/dev/null | grep -Eq '(^|[/ ])freedom([ /]|$)'
+
+          packaged_label="$(env ELECTRON_RUN_AS_NODE=1 /opt/Freedom/freedom \
+            -e "process.stdout.write(require('fs').readFileSync('/proc/self/attr/current','utf8'))")"
+          printf 'Packaged executable AppArmor label: %s\n' "$packaged_label"
+          case "$packaged_label" in
+            freedom*) ;;
+            *) echo 'Packaged Freedom did not enter its installed AppArmor profile.' >&2; exit 1 ;;
+          esac
+
+      - name: Run packaged non-root qualification
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$EVIDENCE_DIR/09-packaged-qualification.log") 2>&1
+          test "$(id -u)" -ne 0
+          xvfb-run -a npm run test:agent-sandbox:linux:packaged -- /opt/Freedom/freedom
+          node -e '
+            const fs = require("fs");
+            const events = fs.readFileSync(process.env.EVIDENCE_DIR + "/09-packaged-qualification.log", "utf8")
+              .split("\n").filter(Boolean).flatMap((line) => { try { return [JSON.parse(line)]; } catch { return []; } });
+            const boundary = events.find((event) => event.type === "boundary-denials");
+            if (!boundary?.result?.securityLabel?.startsWith("freedom")) {
+              throw new Error("Bubblewrap child did not retain the package-installed Freedom AppArmor label");
+            }
+            process.stdout.write("Sandboxed AppArmor label: " + boundary.result.securityLabel + "\n");
+          '
+
+      - name: Run packaged destructive qualification
+        shell: bash
+        env:
+          FREEDOM_SANDBOX_DESTRUCTIVE: '1'
+          FREEDOM_SANDBOX_VM_ONLY: '1'
+        run: |
+          set -euo pipefail
+          exec > >(tee "$EVIDENCE_DIR/10-packaged-destructive.log") 2>&1
+          test "$(id -u)" -ne 0
+          xvfb-run -a npm run test:agent-sandbox:linux:packaged -- /opt/Freedom/freedom
+
+      - name: Remove package and verify cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee "$EVIDENCE_DIR/11-package-removal.log") 2>&1
+          sudo apt-get remove -y freedom-browser
+          test ! -e /etc/apparmor.d/freedom
+          if sudo aa-status 2>/dev/null | grep -Eq '(^|[/ ])freedom([ /]|$)'; then
+            echo 'Freedom AppArmor profile remained loaded after package removal.' >&2
+            exit 1
+          fi
+          if pgrep -af '[/]opt/Freedom|[b]wrap|freedom-electron-sandbox' | grep -v pgrep; then
+            echo 'Sandbox-related processes survived qualification.' >&2
+            exit 1
+          fi
+          if mount | grep -E 'Freedom|freedom-electron-sandbox'; then
+            echo 'Sandbox-related mounts survived qualification.' >&2
+            exit 1
+          fi
+          dpkg-query -W bubblewrap
+          sudo apt-get autoremove --dry-run
+
+      - name: Upload qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-sandbox-ubuntu-package-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/agent-sandbox-evidence/
+          if-no-files-found: error
+          retention-days: 30

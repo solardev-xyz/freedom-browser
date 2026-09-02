@@ -409,6 +409,7 @@ async function qualifyBoundary(executor, policy, runtime, fixture) {
     "const { spawnSync } = require('child_process');",
     'const [outside, outsideWrite, socketPath, port, forbiddenNode, runtimePath, packageFile, abstractName] = process.argv.slice(1);',
     'const result = { environment: {}, path: process.env.PATH, activeRuntime: process.execPath };',
+    "if (process.platform === 'linux') result.securityLabel = fs.readFileSync('/proc/self/attr/current', 'utf8').trim();",
     "for (const [name, target] of [['directRead', outside], ['symlinkRead', 'escape-link']]) {",
     "  try { fs.readFileSync(target); result[name] = 'unexpected'; } catch (error) { result[name] = error.code; }",
     '}',
