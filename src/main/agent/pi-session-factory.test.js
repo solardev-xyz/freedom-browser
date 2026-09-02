@@ -12,6 +12,7 @@ const {
   hydrateVisibleTranscript,
   validateCustomTools,
 } = require('./pi-session-factory');
+const { trustBuiltInToolOverride } = require('./pi-trusted-tools');
 
 const repositoryRoot = path.resolve(__dirname, '../../..');
 
@@ -28,8 +29,11 @@ function createSdk() {
       session: { dispose: jest.fn() },
       extensionsResult: { extensions: [], errors: [], runtime: extensionRuntime },
     }),
+    createBashTool: jest.fn(),
+    createEditTool: jest.fn(),
     createExtensionRuntime: jest.fn(() => extensionRuntime),
     createReadTool: jest.fn(() => ({ name: 'read', execute: jest.fn() })),
+    createWriteTool: jest.fn(),
     defineTool: jest.fn(),
     ModelRuntime: jest.fn(),
     SessionManager,
@@ -158,6 +162,26 @@ describe('isolated Pi session factory', () => {
         customTools: [browserTool, expect.objectContaining({ name: 'read' })],
       })
     );
+  });
+
+  test('uses a trusted standard read override for both workspace files and built-in skills', async () => {
+    const sdk = createSdk();
+    const readOverride = trustBuiltInToolOverride({ name: 'read', execute: jest.fn() });
+
+    const created = await createIsolatedPiSession({
+      sdk,
+      model: { id: 'test-model', provider: 'test' },
+      modelRuntime: {},
+      customTools: [readOverride],
+      enableBuiltInSkills: true,
+    });
+
+    expect(created.toolNames).toEqual(['read']);
+    expect(sdk.createAgentSession).toHaveBeenCalledWith(
+      expect.objectContaining({ customTools: [readOverride], tools: ['read'] })
+    );
+    expect(sdk.createReadTool).not.toHaveBeenCalled();
+    expect(created.resourceLoader.getSkills().skills).toHaveLength(2);
   });
 
   test('rejects built-in, unnamed, and duplicate tool names', () => {

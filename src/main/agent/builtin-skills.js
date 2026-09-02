@@ -2,10 +2,9 @@
 
 const fs = require('fs');
 const path = require('path');
+const { VIRTUAL_AGENT_CWD, VIRTUAL_SKILLS_ROOT } = require('./pi-virtual-paths');
 
 const MAX_BUILTIN_SKILL_BYTES = 64 * 1024;
-const VIRTUAL_AGENT_ROOT = process.platform === 'win32' ? 'C:\\freedom-agent' : '/freedom-agent';
-const VIRTUAL_SKILLS_ROOT = path.join(VIRTUAL_AGENT_ROOT, 'skills');
 const BUNDLED_SKILLS_ROOT = path.join(__dirname, 'skills');
 
 const BUILTIN_SKILL_DEFINITIONS = Object.freeze([
@@ -95,6 +94,10 @@ function getBuiltInSkillResource(filePath) {
   return Buffer.from(content);
 }
 
+function isBuiltInSkillResourcePath(filePath) {
+  return BUILTIN_SKILL_BUNDLE.resources.has(normalizeRequestedPath(filePath));
+}
+
 function createBuiltInSkillReadOperations() {
   return Object.freeze({
     access: async (filePath) => {
@@ -109,7 +112,7 @@ function createBuiltInSkillReadTool(sdk) {
   if (!sdk || typeof sdk.createReadTool !== 'function') {
     throw new TypeError('Freedom built-in skills require Pi createReadTool');
   }
-  const readTool = sdk.createReadTool(VIRTUAL_AGENT_ROOT, {
+  const readTool = sdk.createReadTool(VIRTUAL_AGENT_CWD, {
     autoResizeImages: false,
     operations: createBuiltInSkillReadOperations(),
   });
@@ -133,5 +136,6 @@ module.exports = {
   createBuiltInSkillReadTool,
   getBuiltInSkillResource,
   getBuiltInSkills,
+  isBuiltInSkillResourcePath,
   skillVirtualPath,
 };

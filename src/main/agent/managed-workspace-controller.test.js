@@ -1,10 +1,14 @@
 'use strict';
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
+const { execFileSync } = require('child_process');
 const {
   ManagedWorkspaceController,
+  WORKSPACE_FILE_HELPER,
   validateCommand,
+  validateWorkspacePath,
   validateWorkingDirectory,
 } = require('./managed-workspace-controller');
 
@@ -154,6 +158,72 @@ describe('ManagedWorkspaceController', () => {
     );
   });
 
+  test('runs bounded file reads through the same OS sandbox policy', async () => {
+    const { controller, dependencies } = createController();
+
+    await expect(controller.readFile('conversation_one', 'src/index.js')).resolves.toEqual(
+      Buffer.from('hello')
+    );
+    expect(dependencies.executor.execute).toHaveBeenCalledWith(
+      { kind: 'test-policy' },
+      expect.objectContaining({
+        command: '/bin/sh',
+        args: expect.arrayContaining(['/workspace', 'read', 'src/index.js']),
+        signal: expect.any(AbortSignal),
+      })
+    );
+  });
+
+  test('runs exact bounded writes through the sandbox and refuses protected Git metadata', async () => {
+    const { controller, dependencies } = createController();
+    await controller.writeFile('conversation_one', 'src/index.js', 'hello');
+    expect(dependencies.executor.execute).toHaveBeenCalledWith(
+      { kind: 'test-policy' },
+      expect.objectContaining({
+        args: expect.arrayContaining([
+          'write',
+          'src/index.js',
+          Buffer.from('hello').toString('base64'),
+        ]),
+      })
+    );
+    await expect(
+      controller.writeFile('conversation_one', '.git/config', 'unsafe')
+    ).rejects.toMatchObject({ code: 'WORKSPACE_PROTECTED_PATH' });
+  });
+
+  test('the sandbox file helper rejects symlink and hardlink escapes', () => {
+    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-workspace-helper-'));
+    const workspace = path.join(fixture, 'workspace');
+    const outside = path.join(fixture, 'outside.txt');
+    fs.mkdirSync(workspace, { mode: 0o700 });
+    fs.writeFileSync(outside, 'outside secret', { mode: 0o600 });
+    fs.symlinkSync(outside, path.join(workspace, 'symlink.txt'));
+    fs.linkSync(outside, path.join(workspace, 'hardlink.txt'));
+    const run = (operation, relative, content = '') =>
+      execFileSync(process.execPath, ['-e', WORKSPACE_FILE_HELPER, operation, relative, content], {
+        cwd: workspace,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+
+    try {
+      expect(() => run('read', 'symlink.txt')).toThrow(
+        expect.objectContaining({ stderr: expect.stringContaining('WORKSPACE_FILE_UNSAFE') })
+      );
+      expect(() => run('read', 'hardlink.txt')).toThrow(
+        expect.objectContaining({ stderr: expect.stringContaining('WORKSPACE_FILE_UNSAFE') })
+      );
+      expect(() => run('write', '.git/config', Buffer.from('unsafe').toString('base64'))).toThrow(
+        expect.objectContaining({ stderr: expect.stringContaining('WORKSPACE_PROTECTED_PATH') })
+      );
+      expect(run('write', 'src/index.js', Buffer.from('hello').toString('base64'))).toBe('');
+      expect(run('read', 'src/index.js')).toBe('hello');
+    } finally {
+      fs.rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+
   test('cancels every active command owned by the conversation', async () => {
     const pending = {};
     pending.promise = new Promise((resolve) => {
@@ -189,7 +259,7 @@ describe('ManagedWorkspaceController', () => {
       attempt < 10 && dependencies.executor.execute.mock.calls.length === 0;
       attempt += 1
     ) {
-      await Promise.resolve();
+      await new Promise((resolve) => setImmediate(resolve));
     }
     expect(controller.cancelConversation('conversation_one')).toBe(1);
     await expect(execution).resolves.toMatchObject({ state: 'cancelled', signal: 'SIGKILL' });
@@ -245,9 +315,12 @@ describe('ManagedWorkspaceController', () => {
     expect(JSON.stringify(receipt)).not.toContain('/Users/private');
   });
 
-  test('rejects absolute, parent, and empty command requests before execution', () => {
+  test('rejects absolute, parent, and empty command or file requests before execution', () => {
     expect(() => validateWorkingDirectory('/tmp')).toThrow('workspace-relative');
     expect(() => validateWorkingDirectory('../outside')).toThrow('safe workspace-relative');
     expect(() => validateCommand('')).toThrow('command must be non-empty');
+    expect(validateWorkspacePath('src/index.js')).toBe('src/index.js');
+    expect(() => validateWorkspacePath('../outside')).toThrow('inside the managed workspace');
+    expect(() => validateWorkspacePath('/absolute')).toThrow('workspace-relative');
   });
 });

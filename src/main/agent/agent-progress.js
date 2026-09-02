@@ -20,7 +20,13 @@ const ATTACHMENT_OPERATIONS = Object.freeze({
   READ: 'attachment_read',
   RENDER_PAGE: 'attachment_render_page',
 });
-const WORKSPACE_OPERATION = 'workspace_run';
+const WORKSPACE_OPERATIONS = Object.freeze({
+  BASH: 'bash',
+  READ: 'read',
+  WRITE: 'write',
+  EDIT: 'edit',
+});
+const WORKSPACE_OPERATION_SET = new Set(Object.values(WORKSPACE_OPERATIONS));
 
 const OPERATION_PROGRESS = Object.freeze({
   [OPERATIONS.LIST_TABS]: {
@@ -173,10 +179,25 @@ const OPERATION_PROGRESS = Object.freeze({
     intent: 'Looking at an attached PDF page',
     completed: 'Looked at an attached PDF page',
   },
-  [WORKSPACE_OPERATION]: {
+  [WORKSPACE_OPERATIONS.BASH]: {
     effect: ACTIVITY_EFFECTS.CHANGED,
     intent: 'Running a project command',
     completed: 'Ran a project command',
+  },
+  [WORKSPACE_OPERATIONS.READ]: {
+    effect: ACTIVITY_EFFECTS.OBSERVED,
+    intent: 'Reading a project file',
+    completed: 'Read a project file',
+  },
+  [WORKSPACE_OPERATIONS.WRITE]: {
+    effect: ACTIVITY_EFFECTS.CHANGED,
+    intent: 'Writing a project file',
+    completed: 'Wrote a project file',
+  },
+  [WORKSPACE_OPERATIONS.EDIT]: {
+    effect: ACTIVITY_EFFECTS.CHANGED,
+    intent: 'Editing a project file',
+    completed: 'Edited a project file',
   },
 });
 
@@ -460,6 +481,7 @@ function normalizeWorkspaceReceipt(value) {
   const workingDirectory = boundedString(value.workingDirectory, 1_024);
   const backend = boundedString(value.backend, 80);
   const state = boundedString(value.state, 40);
+  const kind = boundedString(value.kind, 40);
   if (
     (workspaceId && !/^workspace_[a-f0-9]{20}$/.test(workspaceId)) ||
     (commandId && !/^workspace_cmd_[a-f0-9]{24}$/.test(commandId)) ||
@@ -473,6 +495,7 @@ function normalizeWorkspaceReceipt(value) {
   return Object.freeze({
     ...(workspaceId && { workspaceId }),
     ...(commandId && { commandId }),
+    kind: ['command', 'file_read', 'file_write', 'file_edit'].includes(kind) ? kind : 'command',
     command,
     workingDirectory,
     backend,
@@ -683,18 +706,28 @@ function activityProgress(operation, receipt = {}) {
         : '';
     intent = `Looking at ${source}${page}`;
     label = `Looked at ${source}${page}`;
-  } else if (operation === WORKSPACE_OPERATION && workspace) {
-    intent = `Running ${workspace.command}`;
+  } else if (WORKSPACE_OPERATION_SET.has(operation) && workspace) {
+    const action = workspace.command;
+    intent =
+      operation === WORKSPACE_OPERATIONS.BASH
+        ? `Running ${action}`
+        : operation === WORKSPACE_OPERATIONS.READ
+          ? `Reading ${action.replace(/^Read /, '')}`
+          : operation === WORKSPACE_OPERATIONS.WRITE
+            ? `Writing ${action.replace(/^Write /, '')}`
+            : `Editing ${action.replace(/^Edit /, '')}`;
     label =
       workspace.state === 'completed'
-        ? `Ran ${workspace.command}`
+        ? operation === WORKSPACE_OPERATIONS.BASH
+          ? `Ran ${action}`
+          : action
         : workspace.state === 'timed_out'
-          ? `Command timed out — ${workspace.command}`
+          ? `Command timed out — ${action}`
           : workspace.state === 'cancelled'
-            ? `Command stopped — ${workspace.command}`
+            ? `Command stopped — ${action}`
             : workspace.state === 'sandbox_denied'
-              ? `Command blocked — ${workspace.command}`
-              : `Command failed — ${workspace.command}`;
+              ? `Workspace operation blocked — ${action}`
+              : `Workspace operation failed — ${action}`;
   } else if (origin) {
     const originCopy = {
       [OPERATIONS.CREATE_TAB]: ['Opening', 'Opened'],
@@ -878,7 +911,7 @@ function buildAgentOutcome(activity, status, error) {
     .map((item) => normalizePublicationReceipt(item?.publication))
     .filter(Boolean);
   const workspaceCommands = items
-    .filter((item) => item?.operation === WORKSPACE_OPERATION)
+    .filter((item) => WORKSPACE_OPERATION_SET.has(item?.operation))
     .map((item) => normalizeWorkspaceReceipt(item?.workspace))
     .filter(Boolean);
   const nonBrowserObservations = new Set([
@@ -893,7 +926,7 @@ function buildAgentOutcome(activity, status, error) {
     ATTACHMENT_OPERATIONS.LIST,
     ATTACHMENT_OPERATIONS.READ,
     ATTACHMENT_OPERATIONS.RENDER_PAGE,
-    WORKSPACE_OPERATION,
+    ...WORKSPACE_OPERATION_SET,
   ]);
   const browserSucceeded = succeeded.filter((item) => !nonBrowserObservations.has(item?.operation));
   const browserObserved = observed.filter((item) => !nonBrowserObservations.has(item?.operation));
@@ -1202,20 +1235,27 @@ function buildAgentOutcome(activity, status, error) {
       });
     }
     if (workspaceCommands.length) {
-      const completedCommands = workspaceCommands.filter((item) => item.state === 'completed');
-      const lastCommand = workspaceCommands.at(-1);
+      const completedOperations = workspaceCommands.filter((item) => item.state === 'completed');
+      const changedFiles = workspaceCommands.filter(
+        (item) => ['file_write', 'file_edit'].includes(item.kind) && item.state === 'completed'
+      );
+      const shellCommands = workspaceCommands.filter((item) => item.kind === 'command');
+      const lastOperation = workspaceCommands.at(-1);
       return Object.freeze({
         kind: 'completed',
         verification: 'workspace_execution_recorded',
-        tone: completedCommands.length ? 'success' : 'neutral',
-        headline:
-          completedCommands.length === 1
-            ? 'Project command completed'
-            : completedCommands.length > 1
-              ? 'Project commands completed'
-              : 'Project command recorded',
-        detail: `${workspaceCommands.length} sandboxed project ${workspaceCommands.length === 1 ? 'command was' : 'commands were'} recorded. The latest command ${lastCommand.state === 'completed' ? 'completed successfully' : `ended as ${lastCommand.state.replaceAll('_', ' ')}`}. Command side effects inside the workspace remain unknown.`,
-        workspace: lastCommand,
+        tone: completedOperations.length ? 'success' : 'neutral',
+        headline: changedFiles.length
+          ? changedFiles.length === 1
+            ? 'Project file updated'
+            : 'Project files updated'
+          : shellCommands.length
+            ? shellCommands.length === 1
+              ? 'Project command completed'
+              : 'Project commands completed'
+            : 'Project files inspected',
+        detail: `${workspaceCommands.length} project ${workspaceCommands.length === 1 ? 'operation was' : 'operations were'} recorded. The latest operation ${lastOperation.state === 'completed' ? 'completed successfully' : `ended as ${lastOperation.state.replaceAll('_', ' ')}`}.${shellCommands.length ? ' Shell-command side effects inside the workspace remain unknown.' : ''}`,
+        workspace: lastOperation,
         destinations,
         counts,
       });
@@ -1386,6 +1426,7 @@ function buildAgentOutcome(activity, status, error) {
 module.exports = {
   ACTIVITY_EFFECTS,
   ATTACHMENT_OPERATIONS,
+  WORKSPACE_OPERATIONS,
   activityProgress,
   buildAgentOutcome,
   createToolReceipt,

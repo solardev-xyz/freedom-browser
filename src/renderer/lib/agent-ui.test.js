@@ -3089,7 +3089,7 @@ describe('Agent UI', () => {
       runId: 'run_test',
       approvalId: 'approval_workspace',
       action: 'workspace_execution',
-      operation: 'workspace_run',
+      operation: 'bash',
       workspace: {
         available: true,
         backend: 'macos-seatbelt',

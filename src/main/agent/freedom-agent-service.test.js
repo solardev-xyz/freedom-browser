@@ -459,11 +459,20 @@ describe('FreedomAgentService', () => {
       disclosure: jest.fn(),
       enable: jest.fn(),
       execute: jest.fn(),
+      accessFile: jest.fn(),
+      readFile: jest.fn(),
+      createDirectory: jest.fn(),
+      writeFile: jest.fn(),
       cancelConversation: jest.fn(),
       deleteConversation: jest.fn(async () => true),
       dispose: jest.fn(),
     };
-    const createWorkspaceTools = jest.fn(async () => [{ name: 'workspace_run' }]);
+    const createWorkspaceTools = jest.fn(async () => [
+      { name: 'bash' },
+      { name: 'read' },
+      { name: 'write' },
+      { name: 'edit' },
+    ]);
     const { service, dependencies } = createService(fake, {
       workspaceController,
       createWorkspaceTools,
@@ -479,7 +488,13 @@ describe('FreedomAgentService', () => {
       onToolOutcome: expect.any(Function),
     });
     expect(dependencies.createSession.mock.calls[0][0]).toMatchObject({
-      customTools: [{ name: 'browser_snapshot' }, { name: 'workspace_run' }],
+      customTools: [
+        { name: 'browser_snapshot' },
+        { name: 'bash' },
+        { name: 'read' },
+        { name: 'write' },
+        { name: 'edit' },
+      ],
       systemPrompt: expect.stringContaining('private Freedom-managed project workspace'),
     });
     expect(service.getState().workspace).toEqual(

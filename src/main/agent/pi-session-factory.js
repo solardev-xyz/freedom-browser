@@ -1,14 +1,12 @@
 'use strict';
 
 const { loadPiSdk, validatePiSdk } = require('./pi-sdk');
-const {
-  createBuiltInSkillReadTool,
-  getBuiltInSkills,
-} = require('./builtin-skills');
+const { createBuiltInSkillReadTool, getBuiltInSkills } = require('./builtin-skills');
+const { isTrustedBuiltInToolOverride } = require('./pi-trusted-tools');
+const { VIRTUAL_AGENT_CWD } = require('./pi-virtual-paths');
 const { classifyProviderFailure } = require('./provider-failure');
 
 const BUILTIN_PI_TOOL_NAMES = new Set(['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls']);
-const VIRTUAL_AGENT_CWD = process.platform === 'win32' ? 'C:\\freedom-agent' : '/freedom-agent';
 const ZERO_USAGE = Object.freeze({
   input: 0,
   output: 0,
@@ -54,7 +52,7 @@ function validateCustomTools(customTools) {
         `Pi custom tool names cannot contain surrounding whitespace: ${tool.name}`
       );
     }
-    if (BUILTIN_PI_TOOL_NAMES.has(name)) {
+    if (BUILTIN_PI_TOOL_NAMES.has(name) && !isTrustedBuiltInToolOverride(tool)) {
       throw new TypeError(`Freedom cannot enable the built-in Pi tool name: ${name}`);
     }
     if (names.has(name)) throw new TypeError(`Duplicate Pi custom tool name: ${name}`);
@@ -189,9 +187,13 @@ async function createIsolatedPiSession(options = {}) {
   const sdk = validatePiSdk(options.sdk || (await loadPiSdk()));
   const toolNames = validateCustomTools(customTools);
   const enableBuiltInSkills = options.enableBuiltInSkills === true;
-  const builtInSkillTools = enableBuiltInSkills ? [createBuiltInSkillReadTool(sdk)] : [];
+  const hasTrustedReadOverride = customTools.some(
+    (tool) => tool?.name === 'read' && isTrustedBuiltInToolOverride(tool)
+  );
+  const builtInSkillTools =
+    enableBuiltInSkills && !hasTrustedReadOverride ? [createBuiltInSkillReadTool(sdk)] : [];
   const sessionTools = [...customTools, ...builtInSkillTools];
-  if (enableBuiltInSkills) toolNames.push('read');
+  if (enableBuiltInSkills && !hasTrustedReadOverride) toolNames.push('read');
   const resourceLoader = createNoDiscoveryResourceLoader(sdk, systemPrompt, {
     enableBuiltInSkills,
   });

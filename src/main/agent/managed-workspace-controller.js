@@ -11,9 +11,109 @@ const {
 const { createWorkspaceExecutor } = require('./workspace-execution/workspace-executor');
 const { detectElectronJavaScriptRuntime } = require('./workspace-execution/electron-runtime');
 
-const WORKSPACE_TOOL_NAME = 'workspace_run';
 const DEFAULT_COMMAND_TIMEOUT_MS = 5 * 60 * 1_000;
+const DEFAULT_FILE_OPERATION_TIMEOUT_MS = 10_000;
 const MAX_COMMAND_LENGTH = 32_000;
+const MAX_WORKSPACE_READ_BYTES = 512 * 1024;
+const MAX_WORKSPACE_WRITE_BYTES = 64 * 1024;
+const MAX_WORKSPACE_PATH_LENGTH = 1_024;
+const WORKSPACE_FILE_HELPER = String.raw`
+const fs = require('fs');
+const path = require('path');
+const READ_LIMIT = 524288;
+const WRITE_LIMIT = 65536;
+const [operation, relative, encoded = ''] = process.argv.slice(1);
+const root = fs.realpathSync(process.cwd());
+
+function fail(code) {
+  const error = new Error(code);
+  error.code = code;
+  throw error;
+}
+
+function checkedRelative(value, allowRoot = false) {
+  if (typeof value !== 'string' || !value || value.includes('\0') || value.includes('\\') || path.posix.isAbsolute(value)) fail('INVALID_WORKSPACE_REQUEST');
+  if (value === '.' && allowRoot) return value;
+  const parts = value.split('/');
+  if (parts.some((part) => !part || part === '.' || part === '..')) fail('INVALID_WORKSPACE_REQUEST');
+  return parts.join('/');
+}
+
+function targetPath(value, allowRoot = false) {
+  const safe = checkedRelative(value, allowRoot);
+  const target = safe === '.' ? root : path.resolve(root, ...safe.split('/'));
+  const relation = path.relative(root, target);
+  if (relation === '..' || relation.startsWith('..' + path.sep) || path.isAbsolute(relation)) fail('INVALID_WORKSPACE_REQUEST');
+  return { safe, target };
+}
+
+function regularFile(target) {
+  const stats = fs.lstatSync(target);
+  if (stats.isSymbolicLink() || !stats.isFile() || stats.nlink !== 1) fail('WORKSPACE_FILE_UNSAFE');
+  return stats;
+}
+
+function ensureDirectory(relativeDirectory) {
+  const { safe } = targetPath(relativeDirectory, true);
+  if (safe === '.') return root;
+  let current = root;
+  for (const part of safe.split('/')) {
+    current = path.join(current, part);
+    try {
+      const stats = fs.lstatSync(current);
+      if (stats.isSymbolicLink() || !stats.isDirectory()) fail('WORKSPACE_FILE_UNSAFE');
+    } catch (error) {
+      if (!error || error.code !== 'ENOENT') throw error;
+      fs.mkdirSync(current, { mode: 0o700 });
+    }
+  }
+  return current;
+}
+
+function writablePath(value) {
+  const safe = checkedRelative(value);
+  if (safe === '.git' || safe.startsWith('.git/')) fail('WORKSPACE_PROTECTED_PATH');
+  return safe;
+}
+
+try {
+  if (operation === 'access' || operation === 'read') {
+    const { target } = targetPath(relative);
+    const stats = regularFile(target);
+    if (stats.size > READ_LIMIT) fail('WORKSPACE_FILE_TOO_LARGE');
+    if (operation === 'read') process.stdout.write(fs.readFileSync(target));
+  } else if (operation === 'mkdir') {
+    ensureDirectory(relative === '.' ? '.' : writablePath(relative));
+  } else if (operation === 'write') {
+    const safe = writablePath(relative);
+    const content = Buffer.from(encoded, 'base64');
+    if (content.byteLength > WRITE_LIMIT) fail('WORKSPACE_FILE_TOO_LARGE');
+    const parent = ensureDirectory(path.posix.dirname(safe));
+    const target = path.join(parent, path.posix.basename(safe));
+    try {
+      regularFile(target);
+    } catch (error) {
+      if (!error || error.code !== 'ENOENT') throw error;
+    }
+    const fd = fs.openSync(target, fs.constants.O_WRONLY | fs.constants.O_CREAT | (fs.constants.O_NOFOLLOW || 0), 0o600);
+    try {
+      const stats = fs.fstatSync(fd);
+      if (!stats.isFile() || stats.nlink !== 1) fail('WORKSPACE_FILE_UNSAFE');
+      fs.ftruncateSync(fd, 0);
+      fs.writeFileSync(fd, content);
+    } finally {
+      fs.closeSync(fd);
+    }
+  } else {
+    fail('INVALID_WORKSPACE_REQUEST');
+  }
+} catch (error) {
+  const allowed = new Set(['INVALID_WORKSPACE_REQUEST', 'WORKSPACE_FILE_TOO_LARGE', 'WORKSPACE_FILE_UNSAFE', 'WORKSPACE_PROTECTED_PATH']);
+  const fallback = operation === 'read' || operation === 'access' ? 'WORKSPACE_FILE_UNAVAILABLE' : 'WORKSPACE_WRITE_FAILED';
+  process.stderr.write('FREEDOM_FILE_ERROR:' + (allowed.has(error && error.code) ? error.code : fallback));
+  process.exit(73);
+}
+`;
 
 class ManagedWorkspaceError extends Error {
   constructor(code, message) {
@@ -60,6 +160,59 @@ function validateCommand(value) {
     );
   }
   return value;
+}
+
+function validateWorkspacePath(value, options = {}) {
+  if (
+    typeof value !== 'string' ||
+    !value ||
+    value.length > MAX_WORKSPACE_PATH_LENGTH ||
+    value.includes('\0') ||
+    value.includes('\\') ||
+    path.posix.isAbsolute(value)
+  ) {
+    throw new ManagedWorkspaceError(
+      'INVALID_WORKSPACE_REQUEST',
+      'File paths must be bounded workspace-relative paths'
+    );
+  }
+  if (value === '.' && options.allowRoot === true) return value;
+  const segments = value.split('/');
+  if (segments.some((segment) => !segment || segment === '.' || segment === '..')) {
+    throw new ManagedWorkspaceError(
+      'INVALID_WORKSPACE_REQUEST',
+      'File paths must remain inside the managed workspace'
+    );
+  }
+  return segments.join('/');
+}
+
+function assertWritableWorkspacePath(value) {
+  const relative = validateWorkspacePath(value);
+  if (relative === '.git' || relative.startsWith('.git/')) {
+    throw new ManagedWorkspaceError(
+      'WORKSPACE_PROTECTED_PATH',
+      'Git metadata is read-only inside the managed workspace'
+    );
+  }
+  return relative;
+}
+
+function validateWorkspaceContent(content) {
+  if (typeof content !== 'string') {
+    throw new ManagedWorkspaceError(
+      'INVALID_WORKSPACE_REQUEST',
+      'Workspace file content must be text'
+    );
+  }
+  const buffer = Buffer.from(content, 'utf8');
+  if (buffer.byteLength > MAX_WORKSPACE_WRITE_BYTES) {
+    throw new ManagedWorkspaceError(
+      'WORKSPACE_FILE_TOO_LARGE',
+      `Workspace writes are limited to ${MAX_WORKSPACE_WRITE_BYTES} bytes`
+    );
+  }
+  return buffer;
 }
 
 function commandSummary(command) {
@@ -280,7 +433,7 @@ class ManagedWorkspaceController {
     };
   }
 
-  async execute(conversationId, request = {}) {
+  async #enabledLease(conversationId) {
     const workspace = this.store.getForConversation(conversationId);
     if (!workspace?.enabled) {
       throw new ManagedWorkspaceError(
@@ -288,12 +441,109 @@ class ManagedWorkspaceController {
         'The managed workspace has not been enabled for this conversation'
       );
     }
+    return { workspace, lease: await this.#lease(workspace) };
+  }
+
+  async #fileOperation(conversationId, operation, relativePath, content = null) {
+    const relative =
+      operation === 'mkdir'
+        ? relativePath === '.'
+          ? '.'
+          : assertWritableWorkspacePath(relativePath)
+        : operation === 'write'
+          ? assertWritableWorkspacePath(relativePath)
+          : validateWorkspacePath(relativePath);
+    const capabilities = await this.getCapabilities();
+    if (!capabilities.available) {
+      throw new ManagedWorkspaceError(capabilities.denial.code, capabilities.denial.message);
+    }
+    const { lease } = await this.#enabledLease(conversationId);
+    const executionRoot =
+      capabilities.backend === 'linux-bubblewrap' ? '/workspace' : lease.workspaceRoot;
+    const controller = new AbortController();
+    const activeToken = {};
+    const timeout = setTimeout(() => controller.abort(), DEFAULT_FILE_OPERATION_TIMEOUT_MS);
+    this.activeCommands.set(activeToken, { conversationId, controller });
+    let receipt;
+    try {
+      receipt = await this.executor.execute(lease.policy, {
+        command: '/bin/sh',
+        args: [
+          '-c',
+          'cd "$1" && exec "$FREEDOM_JAVASCRIPT_RUNTIME" -e "$2" "$3" "$4" "$5"',
+          'freedom-workspace-file',
+          executionRoot,
+          WORKSPACE_FILE_HELPER,
+          operation,
+          relative,
+          content ? content.toString('base64') : '',
+        ],
+        signal: controller.signal,
+      });
+    } catch {
+      throw new ManagedWorkspaceError(
+        operation === 'read' || operation === 'access'
+          ? 'WORKSPACE_FILE_UNAVAILABLE'
+          : 'WORKSPACE_WRITE_FAILED',
+        'Freedom could not complete the workspace file operation'
+      );
+    } finally {
+      clearTimeout(timeout);
+      this.activeCommands.delete(activeToken);
+    }
+    if (receipt.state !== EXECUTION_STATES.COMPLETED || receipt.exitCode !== 0) {
+      const reported = /FREEDOM_FILE_ERROR:([A-Z0-9_]{1,120})/.exec(receipt.stderr || '')?.[1];
+      const allowed = new Set([
+        'INVALID_WORKSPACE_REQUEST',
+        'WORKSPACE_FILE_TOO_LARGE',
+        'WORKSPACE_FILE_UNAVAILABLE',
+        'WORKSPACE_FILE_UNSAFE',
+        'WORKSPACE_PROTECTED_PATH',
+        'WORKSPACE_WRITE_FAILED',
+      ]);
+      const code = allowed.has(reported)
+        ? reported
+        : operation === 'read' || operation === 'access'
+          ? 'WORKSPACE_FILE_UNAVAILABLE'
+          : 'WORKSPACE_WRITE_FAILED';
+      throw new ManagedWorkspaceError(
+        code,
+        'Freedom could not complete the workspace file operation'
+      );
+    }
+    if (receipt.stdoutTruncated) {
+      throw new ManagedWorkspaceError(
+        'WORKSPACE_FILE_TOO_LARGE',
+        `Workspace reads are limited to ${MAX_WORKSPACE_READ_BYTES} bytes`
+      );
+    }
+    return Buffer.from(receipt.stdout || '', 'utf8');
+  }
+
+  async accessFile(conversationId, relativePath) {
+    await this.#fileOperation(conversationId, 'access', relativePath);
+  }
+
+  async readFile(conversationId, relativePath) {
+    return this.#fileOperation(conversationId, 'read', relativePath);
+  }
+
+  async createDirectory(conversationId, relativePath) {
+    await this.#fileOperation(conversationId, 'mkdir', relativePath);
+  }
+
+  async writeFile(conversationId, relativePath, content) {
+    const buffer = validateWorkspaceContent(content);
+    await this.#fileOperation(conversationId, 'write', relativePath, buffer);
+  }
+
+  async execute(conversationId, request = {}) {
+    const { workspace, lease } = await this.#enabledLease(conversationId);
     const command = validateCommand(request.command);
     const capabilities = await this.getCapabilities();
     if (!capabilities.available) {
       throw new ManagedWorkspaceError(capabilities.denial.code, capabilities.denial.message);
     }
-    const lease = await this.#lease(workspace);
     const workingDirectory = await this.#workingDirectory(
       lease,
       request.workingDirectory || '.',
@@ -304,6 +554,14 @@ class ManagedWorkspaceController {
     const abort = () => controller.abort();
     externalSignal?.addEventListener?.('abort', abort, { once: true });
     if (externalSignal?.aborted) controller.abort();
+    const requestedTimeoutMs = Number.isFinite(request.timeoutMs)
+      ? Math.max(1, Math.min(DEFAULT_COMMAND_TIMEOUT_MS, Math.floor(request.timeoutMs)))
+      : DEFAULT_COMMAND_TIMEOUT_MS;
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, requestedTimeoutMs);
     const startedAt = this.now();
     const commandId = this.store.startCommand({
       workspaceId: workspace.workspaceId,
@@ -349,6 +607,7 @@ class ManagedWorkspaceController {
         }),
       });
     } finally {
+      clearTimeout(timeout);
       externalSignal?.removeEventListener?.('abort', abort);
       this.activeCommands.delete(commandId);
     }
@@ -359,7 +618,10 @@ class ManagedWorkspaceController {
       command: commandSummary(command),
       workingDirectory: workingDirectory.relative,
       backend: receipt.backend || capabilities.backend,
-      state: receipt.state,
+      state:
+        timedOut && receipt.state === EXECUTION_STATES.CANCELLED
+          ? EXECUTION_STATES.TIMED_OUT
+          : receipt.state,
       startedAt: receipt.startedAt,
       finishedAt: receipt.finishedAt,
       durationMs: receipt.durationMs,
@@ -406,13 +668,17 @@ class ManagedWorkspaceController {
 
 module.exports = {
   DEFAULT_COMMAND_TIMEOUT_MS,
+  DEFAULT_FILE_OPERATION_TIMEOUT_MS,
   MAX_COMMAND_LENGTH,
+  MAX_WORKSPACE_READ_BYTES,
+  MAX_WORKSPACE_WRITE_BYTES,
+  WORKSPACE_FILE_HELPER,
   ManagedWorkspaceController,
   ManagedWorkspaceError,
-  WORKSPACE_TOOL_NAME,
   commandSummary,
   publicCapabilities,
   safeReceiptError,
   validateCommand,
+  validateWorkspacePath,
   validateWorkingDirectory,
 };

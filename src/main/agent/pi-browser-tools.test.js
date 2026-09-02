@@ -19,8 +19,11 @@ function createSdk() {
   const SettingsManager = jest.fn();
   return {
     createAgentSession: jest.fn(),
+    createBashTool: jest.fn(),
+    createEditTool: jest.fn(),
     createExtensionRuntime: jest.fn(),
     createReadTool: jest.fn(),
+    createWriteTool: jest.fn(),
     defineTool: jest.fn((tool) => tool),
     ModelRuntime: jest.fn(),
     SessionManager,

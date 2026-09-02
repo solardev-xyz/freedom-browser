@@ -4,6 +4,7 @@ const { OPERATIONS } = require('../automation/contract/operations');
 const { ERROR_CODES } = require('../automation/contract/errors');
 const {
   ATTACHMENT_OPERATIONS,
+  WORKSPACE_OPERATIONS,
   activityProgress,
   buildAgentOutcome,
   createToolReceipt,
@@ -17,6 +18,7 @@ describe('Agent progress projection', () => {
     const workspace = normalizeWorkspaceReceipt({
       workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa',
       commandId: 'workspace_cmd_bbbbbbbbbbbbbbbbbbbbbbbb',
+      kind: 'command',
       command: 'npm test\n--runInBand',
       workingDirectory: '.',
       backend: 'linux-bubblewrap',
@@ -33,6 +35,7 @@ describe('Agent progress projection', () => {
     expect(workspace).toEqual({
       workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa',
       commandId: 'workspace_cmd_bbbbbbbbbbbbbbbbbbbbbbbb',
+      kind: 'command',
       command: 'npm test --runInBand',
       workingDirectory: '.',
       backend: 'linux-bubblewrap',
@@ -47,14 +50,14 @@ describe('Agent progress projection', () => {
       completeDescendantTermination: true,
     });
     expect(JSON.stringify(workspace)).not.toMatch(/private output|private diagnostics|\/Users/);
-    expect(activityProgress('workspace_run', { workspace })).toMatchObject({
+    expect(activityProgress(WORKSPACE_OPERATIONS.BASH, { workspace })).toMatchObject({
       intent: 'Running npm test --runInBand',
       label: 'Ran npm test --runInBand',
       effect: 'changed',
     });
     expect(
       buildAgentOutcome(
-        [{ operation: 'workspace_run', status: 'succeeded', workspace }],
+        [{ operation: WORKSPACE_OPERATIONS.BASH, status: 'succeeded', workspace }],
         'completed'
       )
     ).toMatchObject({
