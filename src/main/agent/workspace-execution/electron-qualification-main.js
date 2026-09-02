@@ -97,6 +97,25 @@ function closeServer(server) {
   });
 }
 
+function enumerateProcessDescriptors() {
+  if (process.platform !== 'linux') return [];
+  const descriptors = [];
+  for (const name of fs.readdirSync('/proc/self/fd')) {
+    if (!/^\d+$/.test(name)) continue;
+    const descriptor = Number.parseInt(name, 10);
+    if (!Number.isSafeInteger(descriptor) || descriptor <= 2) continue;
+    try {
+      descriptors.push({
+        descriptor,
+        target: fs.readlinkSync(`/proc/self/fd/${descriptor}`),
+      });
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+  }
+  return descriptors.sort((left, right) => left.descriptor - right.descriptor);
+}
+
 function receiptEvidence(name, receipt) {
   emit('receipt', {
     name,
@@ -305,6 +324,74 @@ async function qualifyWebsiteWorkload(executor, policy, runtime, fixture) {
   emit('website-workload', { result, validation });
 }
 
+async function qualifyInheritedDescriptorClosure(executor, policy) {
+  if (process.platform !== 'linux') return;
+  const electronMainDescriptors = enumerateProcessDescriptors();
+  assertCondition(
+    electronMainDescriptors.length > 0,
+    'Electron main did not expose any Chromium descriptors to the qualification probe'
+  );
+  emit('electron-main-descriptors', { descriptors: electronMainDescriptors });
+
+  const shellScript = [
+    'for descriptor_path in /proc/self/fd/*; do',
+    '  descriptor=${descriptor_path##*/}',
+    '  case "$descriptor" in',
+    "    ''|*[!0-9]*) continue ;;",
+    '  esac',
+    '  if [ "$descriptor" -gt 2 ] && target=$(readlink "$descriptor_path" 2>/dev/null); then',
+    '    printf "%s\\t%s\\n" "$descriptor" "$target"',
+    '  fi',
+    'done',
+  ].join('\n');
+  const shellReceipt = await executor.execute(policy, {
+    command: '/bin/bash',
+    args: ['-c', shellScript],
+  });
+  assertExecutionReceipt('inherited-descriptor-closure-shell', shellReceipt, 'completed');
+  const shellDescriptors = shellReceipt.stdout
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => {
+      const [descriptor, ...target] = line.split('\t');
+      return { descriptor: Number.parseInt(descriptor, 10), target: target.join('\t') };
+    });
+  assertCondition(
+    shellDescriptors.length === 0,
+    `Electron qualification shell inherited host descriptors: ${JSON.stringify(shellDescriptors).slice(0, 512)}`
+  );
+
+  const pythonScript = [
+    'import json, os',
+    'descriptors = []',
+    "for name in os.listdir('/proc/self/fd'):",
+    '    descriptor = int(name)',
+    '    if descriptor <= 2:',
+    '        continue',
+    '    try:',
+    "        target = os.readlink(f'/proc/self/fd/{descriptor}')",
+    '    except FileNotFoundError:',
+    '        continue',
+    "    descriptors.append({'descriptor': descriptor, 'target': target})",
+    'print(json.dumps(descriptors), end="")',
+  ].join('\n');
+  const pythonReceipt = await executor.execute(policy, {
+    command: '/usr/bin/python3',
+    args: ['-c', pythonScript],
+  });
+  assertExecutionReceipt('inherited-descriptor-closure-python', pythonReceipt, 'completed');
+  const pythonDescriptors = JSON.parse(pythonReceipt.stdout);
+  assertCondition(
+    Array.isArray(pythonDescriptors) && pythonDescriptors.length === 0,
+    `Electron qualification Python inherited host descriptors: ${JSON.stringify(pythonDescriptors).slice(0, 512)}`
+  );
+  emit('inherited-descriptor-closure', {
+    electronMainDescriptors,
+    shellDescriptors,
+    pythonDescriptors,
+  });
+}
+
 async function qualifyBoundary(executor, policy, runtime, fixture) {
   const tcpServer = net.createServer((socket) => socket.end('host-service'));
   const ipcRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'freedom-e-ipc-'));
@@ -362,33 +449,6 @@ async function qualifyBoundary(executor, policy, runtime, fixture) {
     await listen(tcpServer, { host: '127.0.0.1', port: 0 });
     await listen(socketServer, socketPath);
     if (process.platform === 'linux') await listen(abstractServer, `\0${abstractName}`);
-    if (process.platform === 'linux') {
-      const descriptorScript = [
-        'import json, os',
-        'descriptors = []',
-        "for name in os.listdir('/proc/self/fd'):",
-        '    descriptor = int(name)',
-        '    if descriptor <= 2:',
-        '        continue',
-        '    try:',
-        "        target = os.readlink(f'/proc/self/fd/{descriptor}')",
-        '    except FileNotFoundError:',
-        '        continue',
-        "    descriptors.append({'descriptor': descriptor, 'target': target})",
-        'print(json.dumps(descriptors), end="")',
-      ].join('\n');
-      const descriptorReceipt = await executor.execute(policy, {
-        command: '/usr/bin/python3',
-        args: ['-c', descriptorScript],
-      });
-      assertExecutionReceipt('inherited-descriptor-closure', descriptorReceipt, 'completed');
-      const inheritedDescriptors = JSON.parse(descriptorReceipt.stdout);
-      assertCondition(
-        Array.isArray(inheritedDescriptors) && inheritedDescriptors.length === 0,
-        `Electron qualification inherited host descriptors: ${JSON.stringify(inheritedDescriptors).slice(0, 512)}`
-      );
-      emit('inherited-descriptor-closure', { descriptors: inheritedDescriptors });
-    }
     receipt = await executor.execute(policy, {
       command: runtime.sandboxExecutablePath,
       args: [
@@ -511,10 +571,11 @@ async function qualifyLifecycle(executor, runtime, fixture) {
 
   const failedReceipt = await executor.execute(await createPolicy(fixture, runtime), {
     command: runtime.sandboxExecutablePath,
-    args: ['-e', 'process.exit(7)'],
+    args: ['-e', "process.stderr.write('ordinary-failure'); process.exit(7)"],
   });
   assertExecutionReceipt('failed-command', failedReceipt, 'failed');
   assertCondition(failedReceipt.exitCode === 7, 'Failed command exit code was inaccurate');
+  assertCondition(failedReceipt.stderr === 'ordinary-failure', 'Failed command stderr was lost');
   assertCondition(
     failedReceipt.error?.code === 'COMMAND_FAILED',
     'Failed command error was omitted'
@@ -814,6 +875,7 @@ async function runQualification() {
         policy.filesystem.runtimeRoots[0].sandboxExecutablePath === runtime.sandboxExecutablePath,
       'Electron qualification exposed a fallback JavaScript runtime'
     );
+    await qualifyInheritedDescriptorClosure(executor, policy);
     await qualifyWebsiteWorkload(executor, policy, runtime, fixture);
     await qualifyBoundary(executor, policy, runtime, fixture);
     await qualifyLifecycle(executor, runtime, fixture);

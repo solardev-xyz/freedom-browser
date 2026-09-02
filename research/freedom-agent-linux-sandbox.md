@@ -107,9 +107,11 @@ The launcher uses:
 - non-recursive read-only remounts of `/`, `/proc`, and `/dev` after mount construction, leaving only `/workspace`, `/tmp`, and `/dev/shm` writable;
 - no `/run`, host `/tmp`, host home, display, session bus, or socket mount;
 - a sanitized passwd/group/NSS/hosts view rather than the host identity database; and
-- one JSON status descriptor used by Bubblewrap, accepted only for the first valid child PID. Before command execution, the trusted readiness wrapper enumerates `/proc/self/fd`, validates numeric descriptor names, and closes every descriptor above standard error, including the status pipe and any Electron/Chromium descriptors inherited by the launcher.
+- one JSON status descriptor used by Bubblewrap, accepted only for the first valid child PID. Before command execution, a trusted wrapper invoked through canonical `/bin/bash` requires `/proc/self/fd/0`, enumerates `/proc/self/fd`, validates every descriptor name as numeric, and closes every descriptor above standard error. A close failure exits 98, missing procfs exits 97, and stderr is not redirected around this setup. The wrapper emits readiness only after closure succeeds, then executes the requested command.
 
 Bubblewrap's child-PID status occurs before every mount has necessarily succeeded. The executor therefore launches a trusted positional-argument shell wrapper that emits a random readiness marker only after Bubblewrap has completed setup and reached the final command environment. The parent strips this marker from stdout. Without it, a bind failure is `sandbox_denied`, never an ordinary command failure and never a reason to retry unsandboxed.
+
+Capability detection runs a second probe inside the same namespace, read-only system, procfs, device, and bounded-tmpfs environment used by the backend. It invokes `/bin/bash`, explicitly opens descriptors 4, 5, 10, and 37, runs the production closure wrapper, and requires the child to find no persistent descriptor above standard error. Missing Bash, missing procfs, unsupported multi-digit closure, unexpected probe output, or any close failure makes the backend unavailable with `closedFileDescriptors: false`. The available capability reports the canonical Bash path, probe descriptor set, and successful closure result before it may report `closedFileDescriptors: true`.
 
 No command string parser exists. Callers supply an executable and argument vector; a general shell request deliberately invokes `/bin/sh -c` as its executable/arguments.
 
@@ -155,7 +157,7 @@ The ordinary focused suite uses only validated temporary fixture roots and cover
 - acceptance of fully accounted internal native-build hardlinks and rejection of unaccounted external or protected/writable aliases;
 - hidden host processes and failed signaling;
 - sensitive environment scrubbing;
-- inherited descriptor closure, including enumeration from a non-Node child that must find no persistent descriptor above standard error;
+- inherited descriptor closure, including explicit descriptors 4, 5, 10, and 37 plus enumeration from Bash and non-Node Python children that must find no persistent descriptor above standard error;
 - pathname and abstract host Unix sockets, with descendant-only Unix IPC still working;
 - rejection of host IPC endpoints pre-positioned inside the writable workspace;
 - host loopback, external networking, and DNS denial;
@@ -293,6 +295,26 @@ Final recorded test results after the packaged changes:
 - `FREEDOM_SANDBOX_DESTRUCTIVE=1 npm run test:agent-sandbox:destructive`: 1 test passed inside validated synthetic fixtures.
 - `npm run lint`: passed.
 - `npm test`: 214 suites and 3,838 tests passed; 8 suites and 26 tests skipped normally. Jest emitted known late OpenLV MQTT connection logging, but exited zero.
+
+### Inherited-descriptor remediation qualification
+
+The 2026-09-02 corrective rerun used the same disposable Ubuntu 24.04.3 host, kernel `6.8.0-90-generic`, x86-64, Bubblewrap `0.9.0`, and AppArmor-restricted unprivileged-user-namespace posture. Every Bubblewrap and packaged Electron launch ran as `freedomqual` UID/GID 1001. The original Dash-based wrapper at `380593b17348c776c72e80f33393cfbca52b35ce` exited 127 on multi-digit descriptors; the corrective implementation uses canonical `/bin/bash` and does not emit readiness until closure has succeeded.
+
+Capability evidence reported `bashPath: /bin/bash`, `descriptorClosureProbe: passed`, and `descriptorClosureProbeDescriptors: [4, 5, 10, 37]`. The development qualification's non-Node Python child emitted `descriptors: []`. A missing-stdin/procfs wrapper regression exited 97 without a readiness marker, a simulated pre-readiness close failure was classified `sandbox_denied` with `sideEffects: none`, and an unavailable closure probe reported `closedFileDescriptors: false`. Successful capability output reported `closedFileDescriptors: true` only after both namespace and descriptor probes passed.
+
+Electron 43 main-process evidence was recorded before each packaged sandbox launch. The inventories contained runtime resource files, Chromium `/dev/shm` files, Mojo/other sockets, pipes, eventfds, epoll descriptors, inotify, io_uring, memfd, and application resources. The profiled AppImage additionally held its transient FUSE runtime root at descriptor 1023. The exact inventories were emitted as `electron-main-descriptors`; the subsequent Bash and Python children both emitted empty descriptor arrays for unpacked, installed Debian, and profiled real-FUSE AppImage layouts.
+
+All three packaged layouts then completed website build, protected Git, boundary denial, output truncation, ordinary failure, timeout, cancellation, runtime-lifetime, and descendant-cleanup checks. Ordinary failure preserved the exact `ordinary-failure` stderr text. Timeout and cancellation retained `SIGKILL`, `terminationGuarantee: namespace_scoped`, `terminationScope: pid_namespace`, `survivorsPossible: false`, and `completeDescendantTermination: true`. No heartbeat, descendant, qualification process, or FUSE mount survived receipt resolution.
+
+Corrective rerun results:
+
+- focused Bubblewrap backend/integration: 2 suites and 23 tests passed;
+- `npm run test:agent-sandbox`: 7 suites and 61 tests passed; 3 suites and 14 platform tests skipped;
+- `npm run test:agent-sandbox:qualification`: descriptor closure, focused Jest, lint, and Babel transform completed inside Bubblewrap;
+- `FREEDOM_SANDBOX_DESTRUCTIVE=1 npm run test:agent-sandbox:destructive`: 1 test passed;
+- packaged unpacked-directory, installed Debian, and profiled real-FUSE AppImage corpora: passed;
+- `npm run lint`: passed; and
+- `npm test`: 214 suites and 3,847 tests passed; 8 suites and 31 tests skipped. Jest emitted the known late OpenLV MQTT connection logging but exited zero.
 
 ## Seccomp assessment
 

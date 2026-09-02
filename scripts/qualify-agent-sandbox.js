@@ -32,6 +32,28 @@ async function main() {
   });
   const workloads = [
     {
+      name: 'inherited-descriptor-closure',
+      command: '/usr/bin/python3',
+      args: [
+        '-c',
+        [
+          'import json, os',
+          'descriptors = []',
+          "for name in os.listdir('/proc/self/fd'):",
+          '    descriptor = int(name)',
+          '    if descriptor <= 2:',
+          '        continue',
+          '    try:',
+          "        target = os.readlink(f'/proc/self/fd/{descriptor}')",
+          '    except FileNotFoundError:',
+          '        continue',
+          "    descriptors.append({'descriptor': descriptor, 'target': target})",
+          'print(json.dumps(descriptors), end="")',
+        ].join('\n'),
+      ],
+      expectEmptyDescriptorArray: true,
+    },
+    {
       name: 'focused-jest',
       command: 'npm',
       args: [
@@ -59,6 +81,13 @@ async function main() {
   ];
   for (const workload of workloads) {
     const receipt = await executor.execute(policy, workload);
+    let descriptors;
+    if (workload.expectEmptyDescriptorArray && receipt.state === 'completed') {
+      descriptors = JSON.parse(receipt.stdout);
+      if (!Array.isArray(descriptors) || descriptors.length !== 0) {
+        throw new Error(`Sandbox inherited descriptors: ${JSON.stringify(descriptors)}`);
+      }
+    }
     process.stdout.write(
       `${JSON.stringify({
         type: 'workload',
@@ -75,6 +104,7 @@ async function main() {
         survivorsPossible: receipt.survivorsPossible,
         completeDescendantTermination: receipt.completeDescendantTermination,
         terminationScope: receipt.terminationScope,
+        ...(descriptors ? { descriptors } : {}),
       })}\n`
     );
     if (receipt.state !== 'completed') {

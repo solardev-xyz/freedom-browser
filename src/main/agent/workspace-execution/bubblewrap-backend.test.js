@@ -1,5 +1,6 @@
 'use strict';
 
+const { EventEmitter } = require('events');
 const { PassThrough } = require('stream');
 const { spawnSync } = require('child_process');
 const fs = require('fs');
@@ -8,7 +9,10 @@ const path = require('path');
 const {
   BUBBLEWRAP_SYSTEM_TOOLCHAIN_PATH,
   BUBBLEWRAP_SUPERVISOR_SCRIPT,
+  BUBBLEWRAP_SUPERVISOR_SHELL,
   BubblewrapExecutor,
+  DESCRIPTOR_CLOSURE_PROBE_DESCRIPTORS,
+  DESCRIPTOR_CLOSURE_PROBE_MARKER,
   PRIVATE_TEMP_SIZE_BYTES,
   SHARED_MEMORY_SIZE_BYTES,
   buildBubblewrapArguments,
@@ -21,6 +25,26 @@ const { createWorkspaceExecutionPolicy } = require('./execution-policy');
 
 function expectArgumentSequence(args, sequence) {
   expect(args.join('\0')).toContain(sequence.join('\0'));
+}
+
+function completedChildProcess({ stdout = '', stderr = '', code = 0, status = null } = {}) {
+  const child = new EventEmitter();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  const statusStream = new PassThrough();
+  child.stdio = [null, child.stdout, child.stderr, statusStream];
+  child.exitCode = null;
+  child.signalCode = null;
+  child.kill = jest.fn();
+  process.nextTick(() => {
+    if (status) statusStream.write(`${JSON.stringify(status)}\n`);
+    statusStream.end();
+    child.stdout.end(stdout);
+    child.stderr.end(stderr);
+    child.exitCode = code;
+    child.emit('close', code, null);
+  });
+  return child;
 }
 
 async function createFixture() {
@@ -118,13 +142,31 @@ describe('Bubblewrap backend contract', () => {
     expect(launch.args.slice(-3)).toEqual(['/bin/sh', '-c', 'printf ok']);
     expect(joined).toContain('freedom-sandbox-supervisor');
     expect(joined).toContain(BUBBLEWRAP_SUPERVISOR_SCRIPT);
+    expectArgumentSequence(launch.args, [
+      '--',
+      BUBBLEWRAP_SUPERVISOR_SHELL,
+      '-c',
+      BUBBLEWRAP_SUPERVISOR_SCRIPT,
+    ]);
+    expect(BUBBLEWRAP_SUPERVISOR_SCRIPT).toContain('[ -e /proc/self/fd/0 ] || exit 97');
     expect(BUBBLEWRAP_SUPERVISOR_SCRIPT).toContain('case "$descriptor" in');
     expect(BUBBLEWRAP_SUPERVISOR_SCRIPT).toContain("''|*[!0-9]*) continue");
-    expect(BUBBLEWRAP_SUPERVISOR_SCRIPT).toContain('eval "exec ${descriptor}>&-"');
+    expect(BUBBLEWRAP_SUPERVISOR_SCRIPT).toContain(
+      'eval "exec ${descriptor}>&-" || exit 98'
+    );
+    expect(BUBBLEWRAP_SUPERVISOR_SCRIPT).not.toContain('done 2>/dev/null');
+    expect(BUBBLEWRAP_SUPERVISOR_SCRIPT.indexOf('done')).toBeLessThan(
+      BUBBLEWRAP_SUPERVISOR_SCRIPT.indexOf('printf "%s\\n" "$1"')
+    );
   });
 
   test('probes every Bubblewrap primitive used for bounded writable mounts', () => {
     const args = capabilityProbeArguments();
+    expectArgumentSequence(args, ['--', BUBBLEWRAP_SUPERVISOR_SHELL, '-c']);
+    for (const descriptor of DESCRIPTOR_CLOSURE_PROBE_DESCRIPTORS) {
+      expect(args.join('\n')).toContain(String(descriptor));
+    }
+    expect(args).toContain(DESCRIPTOR_CLOSURE_PROBE_MARKER);
     expectArgumentSequence(args, [
       '--size',
       String(SHARED_MEMORY_SIZE_BYTES),
@@ -251,6 +293,74 @@ describe('Bubblewrap backend contract', () => {
     expect(capabilities).toMatchObject({
       available: false,
       denial: { code: 'SETUID_BUBBLEWRAP_DENIED' },
+    });
+  });
+
+  linuxOnlyTest('fails closed when Bash cannot complete the descriptor probe', async () => {
+    const results = [
+      { stdout: 'bubblewrap 0.test\n' },
+      {},
+      { code: 98, stderr: 'synthetic descriptor close failure\n' },
+    ];
+    const spawnProcess = jest.fn(() => completedChildProcess(results.shift()));
+    const capabilities = await detectBubblewrapCapabilities({
+      binary: '/usr/bin/true',
+      spawnProcess,
+    });
+
+    expect(capabilities).toMatchObject({
+      available: false,
+      denial: { code: 'BASH_DESCRIPTOR_CLOSURE_UNAVAILABLE' },
+      enforcement: { closedFileDescriptors: false },
+      diagnostics: {
+        bashPath: BUBBLEWRAP_SUPERVISOR_SHELL,
+        descriptorClosureProbeDescriptors: DESCRIPTOR_CLOSURE_PROBE_DESCRIPTORS,
+        diagnostic: 'synthetic descriptor close failure\n',
+      },
+    });
+  });
+
+  linuxOnlyTest('emits no readiness marker when wrapper setup fails', () => {
+    const readinessMarker = 'synthetic-readiness-marker';
+    const result = spawnSync(
+      BUBBLEWRAP_SUPERVISOR_SHELL,
+      [
+        '-c',
+        'exec 0<&-; exec "$1" -c "$2" freedom-sandbox-supervisor "$3" /usr/bin/true',
+        'freedom-wrapper-failure-test',
+        BUBBLEWRAP_SUPERVISOR_SHELL,
+        BUBBLEWRAP_SUPERVISOR_SCRIPT,
+        readinessMarker,
+      ],
+      { encoding: 'utf8' }
+    );
+
+    expect(result.status).toBe(97);
+    expect(result.stdout).toBe('');
+    expect(result.stdout).not.toContain(readinessMarker);
+  });
+
+  linuxOnlyTest('classifies a wrapper failure before readiness as sandbox denied', async () => {
+    const fixture = await createFixture();
+    fixtureRoots.push(fixture.fixtureRoot);
+    const policy = await createWorkspaceExecutionPolicy({ workspaceRoot: fixture.workspaceRoot });
+    const executor = new BubblewrapExecutor({
+      spawnProcess: () =>
+        completedChildProcess({
+          code: 98,
+          stderr: 'descriptor setup failed\n',
+          status: { 'child-pid': 1234 },
+        }),
+    });
+    executor.capabilities = Object.freeze({ available: true });
+
+    await expect(executor.execute(policy, { command: '/usr/bin/true' })).resolves.toMatchObject({
+      state: 'sandbox_denied',
+      exitCode: null,
+      stdout: '',
+      sideEffects: 'none',
+      error: { code: 'SANDBOX_INITIALIZATION_FAILED' },
+      diagnostics: { namespaceCreated: true },
     });
   });
 });

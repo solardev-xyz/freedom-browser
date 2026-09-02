@@ -18,22 +18,48 @@ const CAPABILITY_PROBE_TIMEOUT_MS = 5_000;
 const PRIVATE_TEMP_SIZE_BYTES = 256 * 1024 * 1024;
 const SHARED_MEMORY_SIZE_BYTES = 64 * 1024 * 1024;
 const BUBBLEWRAP_SYSTEM_TOOLCHAIN_PATH = '/usr/bin:/bin';
+const BUBBLEWRAP_SUPERVISOR_SHELL = '/bin/bash';
+const DESCRIPTOR_CLOSURE_PROBE_DESCRIPTORS = Object.freeze([4, 5, 10, 37]);
 const BUBBLEWRAP_SUPERVISOR_SCRIPT = Object.freeze(
   [
-    'printf "%s\\n" "$1"',
-    'shift',
+    '[ -e /proc/self/fd/0 ] || exit 97',
     'for descriptor_path in /proc/self/fd/*; do',
     '  descriptor=${descriptor_path##*/}',
     '  case "$descriptor" in',
     "    ''|*[!0-9]*) continue ;;",
     '  esac',
     '  if [ "$descriptor" -gt 2 ]; then',
-    '    eval "exec ${descriptor}>&-"',
+    '    eval "exec ${descriptor}>&-" || exit 98',
     '  fi',
-    'done 2>/dev/null',
+    'done',
+    'printf "%s\\n" "$1"',
+    'shift',
     'exec "$@"',
   ].join('\n')
 );
+const DESCRIPTOR_CLOSURE_PROBE_LAUNCHER_SCRIPT = Object.freeze(
+  [
+    `for descriptor in ${DESCRIPTOR_CLOSURE_PROBE_DESCRIPTORS.join(' ')}; do`,
+    '  eval "exec ${descriptor}</dev/null" || exit 96',
+    'done',
+    `exec ${BUBBLEWRAP_SUPERVISOR_SHELL} -c "$1" freedom-sandbox-supervisor "$2" ${BUBBLEWRAP_SUPERVISOR_SHELL} -c "$3"`,
+  ].join('\n')
+);
+const DESCRIPTOR_CLOSURE_ASSERTION_SCRIPT = Object.freeze(
+  [
+    'for descriptor_path in /proc/self/fd/*; do',
+    '  descriptor=${descriptor_path##*/}',
+    '  case "$descriptor" in',
+    "    ''|*[!0-9]*) continue ;;",
+    '  esac',
+    '  if [ "$descriptor" -gt 2 ] && target=$(readlink "$descriptor_path" 2>/dev/null); then',
+    '    printf "unexpected descriptor %s: %s\\n" "$descriptor" "$target" >&2',
+    '    exit 99',
+    '  fi',
+    'done',
+  ].join('\n')
+);
+const DESCRIPTOR_CLOSURE_PROBE_MARKER = 'freedom-bash-descriptor-closure-ready';
 const SYSTEM_RUNTIME_PATHS = Object.freeze(['/usr', '/bin', '/sbin', '/lib', '/lib64']);
 const SYSTEM_CONFIGURATION_PATHS = Object.freeze([
   '/etc/alternatives',
@@ -140,7 +166,7 @@ function runBoundedProcess(binary, args, options = {}) {
   });
 }
 
-function capabilityProbeArguments() {
+function baseCapabilityProbeArguments() {
   return [
     '--unshare-all',
     '--unshare-user',
@@ -153,6 +179,12 @@ function capabilityProbeArguments() {
     '--ro-bind',
     '/usr',
     '/usr',
+    '--ro-bind-try',
+    '/bin',
+    '/bin',
+    '--ro-bind-try',
+    '/sbin',
+    '/sbin',
     '--ro-bind-try',
     '/lib',
     '/lib',
@@ -187,8 +219,24 @@ function capabilityProbeArguments() {
     BUBBLEWRAP_SYSTEM_TOOLCHAIN_PATH,
     '--chdir',
     '/tmp',
+  ];
+}
+
+function namespaceCapabilityProbeArguments() {
+  return [...baseCapabilityProbeArguments(), '--', '/usr/bin/true'];
+}
+
+function capabilityProbeArguments() {
+  return [
+    ...baseCapabilityProbeArguments(),
     '--',
-    '/usr/bin/true',
+    BUBBLEWRAP_SUPERVISOR_SHELL,
+    '-c',
+    DESCRIPTOR_CLOSURE_PROBE_LAUNCHER_SCRIPT,
+    'freedom-descriptor-probe-launcher',
+    BUBBLEWRAP_SUPERVISOR_SCRIPT,
+    DESCRIPTOR_CLOSURE_PROBE_MARKER,
+    DESCRIPTOR_CLOSURE_ASSERTION_SCRIPT,
   ];
 }
 
@@ -215,6 +263,7 @@ async function detectBubblewrapCapabilities(options = {}) {
         networkNone: false,
         processNamespace: false,
         ipcNamespace: false,
+        closedFileDescriptors: false,
         customSeccomp: false,
         aggregateResourceLimits: false,
       }),
@@ -257,8 +306,12 @@ async function detectBubblewrapCapabilities(options = {}) {
     });
   }
   const version = /bubblewrap\s+([^\s]+)/i.exec(versionResult.stdout)?.[1] || 'unknown';
-  const probe = await runBoundedProcess(binary, capabilityProbeArguments(), options);
-  if (probe.code !== 0) {
+  const namespaceProbe = await runBoundedProcess(
+    binary,
+    namespaceCapabilityProbeArguments(),
+    options
+  );
+  if (namespaceProbe.code !== 0) {
     return unavailable(
       'BUBBLEWRAP_PROBE_FAILED',
       diagnostics.appArmorRestrictsUnprivilegedUserNamespaces
@@ -267,10 +320,30 @@ async function detectBubblewrapCapabilities(options = {}) {
       {
         binary,
         version,
-        diagnostic: boundedText(probe.stderr),
+        diagnostic: boundedText(namespaceProbe.stderr),
       }
     );
   }
+  const descriptorProbe = await runBoundedProcess(binary, capabilityProbeArguments(), options);
+  if (
+    descriptorProbe.code !== 0 ||
+    descriptorProbe.stdout !== `${DESCRIPTOR_CLOSURE_PROBE_MARKER}\n`
+  ) {
+    return unavailable(
+      'BASH_DESCRIPTOR_CLOSURE_UNAVAILABLE',
+      'Bubblewrap could not prove canonical Bash descriptor closure inside the sandbox',
+      {
+        binary,
+        version,
+        bashPath: BUBBLEWRAP_SUPERVISOR_SHELL,
+        descriptorClosureProbeDescriptors: DESCRIPTOR_CLOSURE_PROBE_DESCRIPTORS,
+        diagnostic: boundedText(descriptorProbe.stderr),
+      }
+    );
+  }
+  diagnostics.bashPath = BUBBLEWRAP_SUPERVISOR_SHELL;
+  diagnostics.descriptorClosureProbe = 'passed';
+  diagnostics.descriptorClosureProbeDescriptors = DESCRIPTOR_CLOSURE_PROBE_DESCRIPTORS;
   return Object.freeze({
     backend: 'linux-bubblewrap',
     available: true,
@@ -495,7 +568,7 @@ async function buildBubblewrapArguments(policy, request) {
       '--chdir',
       policy.workingDirectory,
       '--',
-      '/bin/sh',
+      BUBBLEWRAP_SUPERVISOR_SHELL,
       '-c',
       BUBBLEWRAP_SUPERVISOR_SCRIPT,
       'freedom-sandbox-supervisor',
@@ -833,9 +906,13 @@ class BubblewrapExecutor {
 module.exports = {
   BUBBLEWRAP_SYSTEM_TOOLCHAIN_PATH,
   BUBBLEWRAP_SUPERVISOR_SCRIPT,
+  BUBBLEWRAP_SUPERVISOR_SHELL,
   BubblewrapExecutor,
   CAPABILITY_PROBE_TIMEOUT_MS,
   DEFAULT_BUBBLEWRAP_PATH,
+  DESCRIPTOR_CLOSURE_PROBE_DESCRIPTORS,
+  DESCRIPTOR_CLOSURE_PROBE_LAUNCHER_SCRIPT,
+  DESCRIPTOR_CLOSURE_PROBE_MARKER,
   PRIVATE_TEMP_SIZE_BYTES,
   SHARED_MEMORY_SIZE_BYTES,
   SYSTEM_CONFIGURATION_PATHS,

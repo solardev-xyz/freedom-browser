@@ -8,6 +8,7 @@ const path = require('path');
 const {
   BubblewrapExecutor,
   DEFAULT_BUBBLEWRAP_PATH,
+  DESCRIPTOR_CLOSURE_PROBE_DESCRIPTORS,
   PRIVATE_TEMP_SIZE_BYTES,
   SHARED_MEMORY_SIZE_BYTES,
   capabilityProbeArguments,
@@ -304,7 +305,33 @@ describeBubblewrap(bubblewrapDescription, () => {
   });
 
   test('closes every inherited descriptor above stderr before the command starts', async () => {
-    const script = [
+    expect(capabilities).toMatchObject({
+      available: true,
+      diagnostics: {
+        bashPath: '/bin/bash',
+        descriptorClosureProbe: 'passed',
+        descriptorClosureProbeDescriptors: DESCRIPTOR_CLOSURE_PROBE_DESCRIPTORS,
+      },
+      enforcement: { closedFileDescriptors: true },
+    });
+    const shellScript = [
+      'for descriptor_path in /proc/self/fd/*; do',
+      '  descriptor=${descriptor_path##*/}',
+      '  case "$descriptor" in',
+      "    ''|*[!0-9]*) continue ;;",
+      '  esac',
+      '  if [ "$descriptor" -gt 2 ] && target=$(readlink "$descriptor_path" 2>/dev/null); then',
+      '    printf "%s=%s\\n" "$descriptor" "$target"',
+      '  fi',
+      'done',
+    ].join('\n');
+    const shellReceipt = await executor.execute(await policy(), {
+      command: '/bin/bash',
+      args: ['-c', shellScript],
+    });
+    expect(shellReceipt).toMatchObject({ state: 'completed', exitCode: 0, stdout: '' });
+
+    const pythonScript = [
       'import json, os',
       'descriptors = []',
       "for name in os.listdir('/proc/self/fd'):",
@@ -318,13 +345,13 @@ describeBubblewrap(bubblewrapDescription, () => {
       "    descriptors.append({'descriptor': descriptor, 'target': target})",
       'print(json.dumps(descriptors), end="")',
     ].join('\n');
-    const receipt = await executor.execute(await policy(), {
+    const pythonReceipt = await executor.execute(await policy(), {
       command: 'python3',
-      args: ['-c', script],
+      args: ['-c', pythonScript],
     });
 
-    expect(receipt).toMatchObject({ state: 'completed', exitCode: 0 });
-    expect(JSON.parse(receipt.stdout)).toEqual([]);
+    expect(pythonReceipt).toMatchObject({ state: 'completed', exitCode: 0 });
+    expect(JSON.parse(pythonReceipt.stdout)).toEqual([]);
   });
 
   test('keeps Git metadata read-only and gives every command a fresh private home and tmp', async () => {
@@ -458,6 +485,7 @@ describeBubblewrap(bubblewrapDescription, () => {
       state: 'failed',
       exitCode: 7,
       stderr: 'ordinary-failure',
+      stderrTruncated: false,
       error: { code: 'COMMAND_FAILED' },
     });
   });
