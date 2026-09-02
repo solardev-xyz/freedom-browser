@@ -18,6 +18,9 @@ const completeSdk = () => ({
   createBashTool: jest.fn(),
   createEditTool: jest.fn(),
   createExtensionRuntime: jest.fn(),
+  createFindTool: jest.fn(),
+  createGrepTool: jest.fn(),
+  createLsTool: jest.fn(),
   createReadTool: jest.fn(),
   createWriteTool: jest.fn(),
   defineTool: jest.fn(),
@@ -76,7 +79,7 @@ describe('Pi SDK loader', () => {
   test('rejects an incompatible module namespace', () => {
     expect(() => validatePiSdk({ createAgentSession: () => {} })).toThrow(
       new PiSdkLoadError(
-        'Pi SDK is missing required exports: createBashTool, createEditTool, createExtensionRuntime, createReadTool, createWriteTool, defineTool, ModelRuntime, SessionManager, SettingsManager'
+        'Pi SDK is missing required exports: createBashTool, createEditTool, createExtensionRuntime, createFindTool, createGrepTool, createLsTool, createReadTool, createWriteTool, defineTool, ModelRuntime, SessionManager, SettingsManager'
       )
     );
   });
@@ -86,11 +89,13 @@ describe('Pi SDK loader', () => {
       process.execPath,
       [
         '-e',
-        'require("./src/main/agent/pi-sdk").loadPiSdk().then((sdk) => process.stdout.write([typeof sdk.createAgentSession, typeof sdk.createBashTool, typeof sdk.createReadTool, typeof sdk.createWriteTool, typeof sdk.createEditTool, typeof sdk.defineTool, typeof sdk.ModelRuntime].join(",")))',
+        'require("./src/main/agent/pi-sdk").loadPiSdk().then((sdk) => process.stdout.write([typeof sdk.createAgentSession, typeof sdk.createBashTool, typeof sdk.createReadTool, typeof sdk.createWriteTool, typeof sdk.createEditTool, typeof sdk.createGrepTool, typeof sdk.createFindTool, typeof sdk.createLsTool, typeof sdk.defineTool, typeof sdk.ModelRuntime].join(",")))',
       ],
       { cwd: repositoryRoot, encoding: 'utf8' }
     );
 
-    expect(output).toBe('function,function,function,function,function,function,function');
+    expect(output).toBe(
+      'function,function,function,function,function,function,function,function,function,function'
+    );
   });
 });

@@ -25,6 +25,9 @@ const WORKSPACE_OPERATIONS = Object.freeze({
   READ: 'read',
   WRITE: 'write',
   EDIT: 'edit',
+  GREP: 'grep',
+  FIND: 'find',
+  LS: 'ls',
 });
 const WORKSPACE_OPERATION_SET = new Set(Object.values(WORKSPACE_OPERATIONS));
 
@@ -198,6 +201,21 @@ const OPERATION_PROGRESS = Object.freeze({
     effect: ACTIVITY_EFFECTS.CHANGED,
     intent: 'Editing a project file',
     completed: 'Edited a project file',
+  },
+  [WORKSPACE_OPERATIONS.GREP]: {
+    effect: ACTIVITY_EFFECTS.OBSERVED,
+    intent: 'Searching project files',
+    completed: 'Searched project files',
+  },
+  [WORKSPACE_OPERATIONS.FIND]: {
+    effect: ACTIVITY_EFFECTS.OBSERVED,
+    intent: 'Finding project files',
+    completed: 'Found project files',
+  },
+  [WORKSPACE_OPERATIONS.LS]: {
+    effect: ACTIVITY_EFFECTS.OBSERVED,
+    intent: 'Listing a project directory',
+    completed: 'Listed a project directory',
   },
 });
 
@@ -495,7 +513,17 @@ function normalizeWorkspaceReceipt(value) {
   return Object.freeze({
     ...(workspaceId && { workspaceId }),
     ...(commandId && { commandId }),
-    kind: ['command', 'file_read', 'file_write', 'file_edit'].includes(kind) ? kind : 'command',
+    kind: [
+      'command',
+      'file_read',
+      'file_write',
+      'file_edit',
+      'file_search',
+      'file_find',
+      'directory_list',
+    ].includes(kind)
+      ? kind
+      : 'command',
     command,
     workingDirectory,
     backend,
@@ -708,19 +736,28 @@ function activityProgress(operation, receipt = {}) {
     label = `Looked at ${source}${page}`;
   } else if (WORKSPACE_OPERATION_SET.has(operation) && workspace) {
     const action = workspace.command;
-    intent =
-      operation === WORKSPACE_OPERATIONS.BASH
-        ? `Running ${action}`
-        : operation === WORKSPACE_OPERATIONS.READ
-          ? `Reading ${action.replace(/^Read /, '')}`
-          : operation === WORKSPACE_OPERATIONS.WRITE
-            ? `Writing ${action.replace(/^Write /, '')}`
-            : `Editing ${action.replace(/^Edit /, '')}`;
+    const activeLabels = {
+      [WORKSPACE_OPERATIONS.BASH]: `Running ${action}`,
+      [WORKSPACE_OPERATIONS.READ]: `Reading ${action.replace(/^Read /, '')}`,
+      [WORKSPACE_OPERATIONS.WRITE]: `Writing ${action.replace(/^Write /, '')}`,
+      [WORKSPACE_OPERATIONS.EDIT]: `Editing ${action.replace(/^Edit /, '')}`,
+      [WORKSPACE_OPERATIONS.GREP]: `Searching ${action.replace(/^Search /, '')}`,
+      [WORKSPACE_OPERATIONS.FIND]: `Finding ${action.replace(/^Find /, '')}`,
+      [WORKSPACE_OPERATIONS.LS]: `Listing ${action.replace(/^List /, '')}`,
+    };
+    const completedLabels = {
+      [WORKSPACE_OPERATIONS.BASH]: `Ran ${action}`,
+      [WORKSPACE_OPERATIONS.READ]: action,
+      [WORKSPACE_OPERATIONS.WRITE]: action,
+      [WORKSPACE_OPERATIONS.EDIT]: action,
+      [WORKSPACE_OPERATIONS.GREP]: action.replace(/^Search /, 'Searched '),
+      [WORKSPACE_OPERATIONS.FIND]: action.replace(/^Find /, 'Found '),
+      [WORKSPACE_OPERATIONS.LS]: action.replace(/^List /, 'Listed '),
+    };
+    intent = activeLabels[operation];
     label =
       workspace.state === 'completed'
-        ? operation === WORKSPACE_OPERATIONS.BASH
-          ? `Ran ${action}`
-          : action
+        ? completedLabels[operation]
         : workspace.state === 'timed_out'
           ? `Command timed out — ${action}`
           : workspace.state === 'cancelled'

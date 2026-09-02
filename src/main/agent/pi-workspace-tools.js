@@ -2,14 +2,21 @@
 
 const path = require('path');
 const { getBuiltInSkillResource, isBuiltInSkillResourcePath } = require('./builtin-skills');
+const {
+  MAX_WORKSPACE_DIRECTORY_ENTRIES,
+  MAX_WORKSPACE_FIND_RESULTS,
+  MAX_WORKSPACE_GREP_MATCHES,
+} = require('./managed-workspace-controller');
 const { loadPiSdk, validatePiSdk } = require('./pi-sdk');
 const { trustBuiltInToolOverride } = require('./pi-trusted-tools');
 const { VIRTUAL_AGENT_CWD } = require('./pi-virtual-paths');
 
-const WORKSPACE_TOOL_NAMES = Object.freeze(['bash', 'read', 'write', 'edit']);
+const WORKSPACE_TOOL_NAMES = Object.freeze(['bash', 'read', 'write', 'edit', 'grep', 'find', 'ls']);
+const READ_ONLY_WORKSPACE_OPERATIONS = new Set(['read', 'grep', 'find', 'ls']);
 const MAX_MODEL_BASH_OUTPUT_BYTES = 48 * 1024;
 const MAX_MODEL_READ_BYTES = 50 * 1024;
 const MAX_MODEL_READ_LINES = 2_000;
+const MAX_MODEL_DISCOVERY_OUTPUT_BYTES = 50 * 1024;
 
 function decisionApproved(value) {
   return value === 'approved' || value?.status === 'approved';
@@ -93,7 +100,7 @@ function modelPathLabel(filePath) {
     return 'requested path';
   }
   try {
-    return virtualPathToWorkspaceRelative(resolveVirtualToolPath(filePath));
+    return virtualPathToWorkspaceRelative(resolveVirtualToolPath(filePath), { allowRoot: true });
   } catch {
     return 'requested path';
   }
@@ -112,16 +119,41 @@ function workspaceAction(operation, params = {}) {
     const summary = command.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim();
     return summary.length > 160 ? `${summary.slice(0, 157)}…` : summary || 'shell command';
   }
+  const target = modelPathLabel(params.path || '.');
+  if (operation === 'grep') {
+    const pattern = typeof params.pattern === 'string' ? params.pattern.slice(0, 120) : 'pattern';
+    return `Search for ${pattern} in ${target}`;
+  }
+  if (operation === 'find') {
+    const pattern = typeof params.pattern === 'string' ? params.pattern.slice(0, 120) : 'pattern';
+    return `Find ${pattern} in ${target}`;
+  }
+  if (operation === 'ls') return `List ${target}`;
   const verb = { read: 'Read', write: 'Write', edit: 'Edit' }[operation] || 'Access';
-  return `${verb} ${modelPathLabel(params.path)}`;
+  return `${verb} ${target}`;
+}
+
+function workspaceOperationKind(operation) {
+  return {
+    bash: 'command',
+    read: 'file_read',
+    write: 'file_write',
+    edit: 'file_edit',
+    grep: 'file_search',
+    find: 'file_find',
+    ls: 'directory_list',
+  }[operation];
+}
+
+function workspaceOperationIsReadOnly(operation) {
+  return READ_ONLY_WORKSPACE_OPERATIONS.has(operation);
 }
 
 function fileWorkspaceReceipt(controller, conversationId, operation, params, state) {
   const workspace = controller.getWorkspace(conversationId);
   return Object.freeze({
     ...(workspace?.workspaceId && { workspaceId: workspace.workspaceId }),
-    kind:
-      operation === 'bash' ? 'command' : operation === 'read' ? 'file_read' : `file_${operation}`,
+    kind: workspaceOperationKind(operation),
     command: workspaceAction(operation, params),
     workingDirectory: '.',
     backend: 'freedom-workspace-files',
@@ -129,7 +161,7 @@ function fileWorkspaceReceipt(controller, conversationId, operation, params, sta
     stdoutTruncated: false,
     stderrTruncated: false,
     terminationGuarantee: 'not_applicable',
-    sideEffects: operation === 'read' ? 'none' : 'unknown',
+    sideEffects: workspaceOperationIsReadOnly(operation) ? 'none' : 'unknown',
     survivorsPossible: false,
     completeDescendantTermination: true,
   });
@@ -297,6 +329,155 @@ function createStandardReadTool(sdk, options) {
   });
 }
 
+function boundedDiscoveryLimit(value, fallback, maximum) {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(1, Math.min(maximum, Math.floor(value)));
+}
+
+function discoveryRelativePath(value) {
+  return virtualPathToWorkspaceRelative(resolveVirtualToolPath(value || '.'), { allowRoot: true });
+}
+
+function boundedDiscoveryOutput(value) {
+  const buffer = Buffer.from(value, 'utf8');
+  if (buffer.byteLength <= MAX_MODEL_DISCOVERY_OUTPUT_BYTES) {
+    return { content: value, truncated: false };
+  }
+  return {
+    content: buffer.subarray(0, MAX_MODEL_DISCOVERY_OUTPUT_BYTES).toString('utf8'),
+    truncated: true,
+  };
+}
+
+function createStandardLsTool(template, options) {
+  return {
+    ...template,
+    async execute(_toolCallId, params = {}, signal) {
+      if (signal?.aborted) throw new Error('Operation aborted');
+      const limit = boundedDiscoveryLimit(
+        params.limit,
+        MAX_WORKSPACE_DIRECTORY_ENTRIES,
+        MAX_WORKSPACE_DIRECTORY_ENTRIES
+      );
+      const result = await options.controller.listDirectory(
+        options.conversationId,
+        discoveryRelativePath(params.path),
+        { limit, signal }
+      );
+      if (signal?.aborted) throw new Error('Operation aborted');
+      const lines = result.entries.map(
+        (entry) => `${entry.name}${entry.type === 'directory' ? '/' : ''}`
+      );
+      const bounded = boundedDiscoveryOutput(lines.length ? lines.join('\n') : '(empty directory)');
+      let output = bounded.content;
+      const details = {};
+      if (bounded.truncated) {
+        output += '\n\n[Output byte limit reached. Narrow the directory to continue.]';
+        details.outputTruncated = true;
+      }
+      if (result.limitReached) {
+        output += `\n\n[${limit} entries limit reached. Narrow the directory to continue.]`;
+        details.entryLimitReached = limit;
+      }
+      return {
+        content: [{ type: 'text', text: output }],
+        details: Object.keys(details).length ? details : undefined,
+      };
+    },
+  };
+}
+
+function createStandardFindTool(template, options) {
+  return {
+    ...template,
+    async execute(_toolCallId, params, signal) {
+      if (signal?.aborted) throw new Error('Operation aborted');
+      const limit = boundedDiscoveryLimit(
+        params.limit,
+        MAX_WORKSPACE_FIND_RESULTS,
+        MAX_WORKSPACE_FIND_RESULTS
+      );
+      const result = await options.controller.findFiles(
+        options.conversationId,
+        discoveryRelativePath(params.path),
+        { pattern: params.pattern, limit, signal }
+      );
+      if (signal?.aborted) throw new Error('Operation aborted');
+      const bounded = boundedDiscoveryOutput(
+        result.results.length ? result.results.join('\n') : 'No files found matching pattern'
+      );
+      let output = bounded.content;
+      const details = {};
+      const notices = [];
+      if (bounded.truncated) {
+        details.outputTruncated = true;
+        notices.push('output byte limit reached; narrow the path or pattern');
+      }
+      if (result.limitReached) {
+        details.resultLimitReached = limit;
+        notices.push(`${limit} results limit reached`);
+      }
+      if (result.scanLimitReached) {
+        details.scanLimitReached = true;
+        notices.push('workspace scan limit reached; narrow the path or pattern');
+      }
+      if (notices.length) output += `\n\n[${notices.join('. ')}]`;
+      return {
+        content: [{ type: 'text', text: output }],
+        details: Object.keys(details).length ? details : undefined,
+      };
+    },
+  };
+}
+
+function createStandardGrepTool(template, options) {
+  return {
+    ...template,
+    async execute(_toolCallId, params, signal) {
+      if (signal?.aborted) throw new Error('Operation aborted');
+      const limit = boundedDiscoveryLimit(params.limit, 100, MAX_WORKSPACE_GREP_MATCHES);
+      const result = await options.controller.grepFiles(
+        options.conversationId,
+        discoveryRelativePath(params.path),
+        {
+          pattern: params.pattern,
+          ...(params.glob !== undefined && { glob: params.glob }),
+          ignoreCase: params.ignoreCase === true,
+          literal: params.literal === true,
+          context: params.context,
+          limit,
+          signal,
+        }
+      );
+      if (signal?.aborted) throw new Error('Operation aborted');
+      let output = result.matchCount ? result.output : 'No matches found';
+      const details = {};
+      const notices = [];
+      if (result.limitReached) {
+        details.matchLimitReached = limit;
+        notices.push(`${limit} matches limit reached`);
+      }
+      if (result.linesTruncated) {
+        details.linesTruncated = true;
+        notices.push('long lines truncated; use read for the complete line');
+      }
+      if (result.outputTruncated) {
+        details.outputTruncated = true;
+        notices.push('output byte limit reached');
+      }
+      if (result.scanLimitReached) {
+        details.scanLimitReached = true;
+        notices.push('workspace scan limit reached; narrow the path or pattern');
+      }
+      if (notices.length) output += `\n\n[${notices.join('. ')}]`;
+      return {
+        content: [{ type: 'text', text: output }],
+        details: Object.keys(details).length ? details : undefined,
+      };
+    },
+  };
+}
+
 function bashOperations(options, captureReceipt) {
   return Object.freeze({
     exec: async (command, cwd, execution = {}) => {
@@ -380,9 +561,16 @@ async function createWorkspaceTools(options = {}) {
   const controller = options.controller;
   if (
     !controller ||
-    ['execute', 'accessFile', 'readFile', 'createDirectory', 'writeFile'].some(
-      (method) => typeof controller[method] !== 'function'
-    )
+    [
+      'execute',
+      'accessFile',
+      'readFile',
+      'createDirectory',
+      'writeFile',
+      'listDirectory',
+      'findFiles',
+      'grepFiles',
+    ].some((method) => typeof controller[method] !== 'function')
   ) {
     throw new TypeError('Workspace tools require a managed workspace controller');
   }
@@ -405,6 +593,9 @@ async function createWorkspaceTools(options = {}) {
   const editTemplate = sdk.createEditTool(VIRTUAL_AGENT_CWD, {
     operations: editOperations(options),
   });
+  const grepTemplate = sdk.createGrepTool(VIRTUAL_AGENT_CWD);
+  const findTemplate = sdk.createFindTool(VIRTUAL_AGENT_CWD);
+  const lsTemplate = sdk.createLsTool(VIRTUAL_AGENT_CWD);
 
   return [
     wrapWorkspaceTool(bashTemplate, 'bash', options, (capture) =>
@@ -420,19 +611,32 @@ async function createWorkspaceTools(options = {}) {
     wrapWorkspaceTool(editTemplate, 'edit', options, () =>
       sdk.createEditTool(VIRTUAL_AGENT_CWD, { operations: editOperations(options) })
     ),
+    wrapWorkspaceTool(grepTemplate, 'grep', options, () =>
+      createStandardGrepTool(grepTemplate, options)
+    ),
+    wrapWorkspaceTool(findTemplate, 'find', options, () =>
+      createStandardFindTool(findTemplate, options)
+    ),
+    wrapWorkspaceTool(lsTemplate, 'ls', options, () => createStandardLsTool(lsTemplate, options)),
   ];
 }
 
 module.exports = {
   MAX_MODEL_BASH_OUTPUT_BYTES,
+  MAX_MODEL_DISCOVERY_OUTPUT_BYTES,
   MAX_MODEL_READ_BYTES,
   MAX_MODEL_READ_LINES,
   WORKSPACE_TOOL_NAMES,
   boundedBashOutput,
+  createStandardFindTool,
+  createStandardGrepTool,
+  createStandardLsTool,
   createWorkspaceTools,
   decisionApproved,
   isSkillReadPath,
   safeWorkspaceError,
   virtualPathToWorkspaceRelative,
   workspaceAction,
+  workspaceOperationIsReadOnly,
+  workspaceOperationKind,
 };

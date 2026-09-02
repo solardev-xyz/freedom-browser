@@ -60,6 +60,9 @@ function createSdk() {
       return { content: [{ type: 'text', text: 'edited' }] };
     },
   }));
+  base.createGrepTool = jest.fn(() => ({ name: 'grep', parameters: {} }));
+  base.createFindTool = jest.fn(() => ({ name: 'find', parameters: {} }));
+  base.createLsTool = jest.fn(() => ({ name: 'ls', parameters: {} }));
   return base;
 }
 
@@ -100,6 +103,26 @@ function createController() {
     readFile: jest.fn(async () => Buffer.from('hello workspace')),
     createDirectory: jest.fn(async () => {}),
     writeFile: jest.fn(async () => {}),
+    listDirectory: jest.fn(async () => ({
+      entries: [
+        { name: 'src', type: 'directory' },
+        { name: 'README.md', type: 'file' },
+      ],
+      limitReached: false,
+    })),
+    findFiles: jest.fn(async () => ({
+      results: ['src/index.js'],
+      limitReached: false,
+      scanLimitReached: false,
+    })),
+    grepFiles: jest.fn(async () => ({
+      output: 'src/index.js:1: hello workspace',
+      matchCount: 1,
+      limitReached: false,
+      linesTruncated: false,
+      outputTruncated: false,
+      scanLimitReached: false,
+    })),
   };
 }
 
@@ -122,7 +145,15 @@ describe('Pi managed workspace tools', () => {
       onToolOutcome,
     });
 
-    expect(tools.map((tool) => tool.name)).toEqual(['bash', 'read', 'write', 'edit']);
+    expect(tools.map((tool) => tool.name)).toEqual([
+      'bash',
+      'read',
+      'write',
+      'edit',
+      'grep',
+      'find',
+      'ls',
+    ]);
     await expect(tools[0].execute('call_one', { command: 'pwd' })).resolves.toEqual({
       content: [{ type: 'text', text: '/workspace\n' }],
     });
@@ -166,6 +197,47 @@ describe('Pi managed workspace tools', () => {
       'conversation_one',
       'src/index.js',
       'goodbye workspace'
+    );
+  });
+
+  test('delegates grep, glob discovery, and directory listing without host tools', async () => {
+    const controller = createController();
+    const tools = await createWorkspaceTools({
+      sdk: createSdk(),
+      controller,
+      conversationId: 'conversation_one',
+      requestApproval: jest.fn(),
+    });
+
+    await expect(
+      tools[4].execute('grep_one', { pattern: 'hello', path: 'src', glob: '*.js' })
+    ).resolves.toEqual({
+      content: [{ type: 'text', text: 'src/index.js:1: hello workspace' }],
+      details: undefined,
+    });
+    await expect(tools[5].execute('find_one', { pattern: '*.js', path: 'src' })).resolves.toEqual({
+      content: [{ type: 'text', text: 'src/index.js' }],
+      details: undefined,
+    });
+    await expect(tools[6].execute('ls_one', { path: '.' })).resolves.toEqual({
+      content: [{ type: 'text', text: 'src/\nREADME.md' }],
+      details: undefined,
+    });
+
+    expect(controller.grepFiles).toHaveBeenCalledWith(
+      'conversation_one',
+      'src',
+      expect.objectContaining({ pattern: 'hello', glob: '*.js', signal: undefined })
+    );
+    expect(controller.findFiles).toHaveBeenCalledWith(
+      'conversation_one',
+      'src',
+      expect.objectContaining({ pattern: '*.js', signal: undefined })
+    );
+    expect(controller.listDirectory).toHaveBeenCalledWith(
+      'conversation_one',
+      '.',
+      expect.objectContaining({ signal: undefined })
     );
   });
 

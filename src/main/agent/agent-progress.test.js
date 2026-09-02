@@ -67,6 +67,36 @@ describe('Agent progress projection', () => {
     });
   });
 
+  test('treats workspace discovery as read-only project evidence', () => {
+    const workspace = normalizeWorkspaceReceipt({
+      workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa',
+      kind: 'file_search',
+      command: 'Search for TODO in src',
+      workingDirectory: '.',
+      backend: 'freedom-workspace-files',
+      state: 'completed',
+      terminationGuarantee: 'not_applicable',
+      sideEffects: 'none',
+      completeDescendantTermination: true,
+    });
+
+    expect(activityProgress(WORKSPACE_OPERATIONS.GREP, { workspace })).toMatchObject({
+      intent: 'Searching for TODO in src',
+      label: 'Searched for TODO in src',
+      effect: 'observed',
+    });
+    expect(
+      buildAgentOutcome(
+        [{ operation: WORKSPACE_OPERATIONS.GREP, status: 'succeeded', workspace }],
+        'completed'
+      )
+    ).toMatchObject({
+      verification: 'workspace_execution_recorded',
+      headline: 'Project files inspected',
+      counts: { workspaceCommands: 1 },
+    });
+  });
+
   test('projects only an origin and opaque page identity from browser receipts', () => {
     const receipt = createToolReceipt(OPERATIONS.SNAPSHOT, {
       envelope: {

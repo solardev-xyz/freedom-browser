@@ -74,6 +74,26 @@ function createController(overrides = {}) {
   return { controller: new ManagedWorkspaceController(dependencies), dependencies, workspace };
 }
 
+function completedExecution(stdout) {
+  return {
+    backend: 'linux-bubblewrap',
+    state: 'completed',
+    startedAt: 1_000,
+    finishedAt: 1_010,
+    durationMs: 10,
+    exitCode: 0,
+    signal: null,
+    stdout,
+    stderr: '',
+    stdoutTruncated: false,
+    stderrTruncated: false,
+    terminationGuarantee: 'namespace_scoped',
+    sideEffects: 'none',
+    survivorsPossible: false,
+    completeDescendantTermination: true,
+  };
+}
+
 describe('ManagedWorkspaceController', () => {
   beforeEach(() => {
     jest
@@ -192,6 +212,71 @@ describe('ManagedWorkspaceController', () => {
     ).rejects.toMatchObject({ code: 'WORKSPACE_PROTECTED_PATH' });
   });
 
+  test('returns bounded structured directory, glob, and content-search results', async () => {
+    const { controller, dependencies } = createController();
+    dependencies.executor.execute
+      .mockResolvedValueOnce(
+        completedExecution(
+          JSON.stringify({
+            entries: [{ name: 'src', type: 'directory' }],
+            limitReached: false,
+          })
+        )
+      )
+      .mockResolvedValueOnce(
+        completedExecution(
+          JSON.stringify({
+            results: ['src/index.js'],
+            limitReached: false,
+            scanLimitReached: false,
+          })
+        )
+      )
+      .mockResolvedValueOnce(
+        completedExecution(
+          JSON.stringify({
+            output: 'src/index.js:1: hello',
+            matchCount: 1,
+            limitReached: false,
+            linesTruncated: false,
+            outputTruncated: false,
+            scanLimitReached: false,
+          })
+        )
+      );
+
+    await expect(controller.listDirectory('conversation_one', '.')).resolves.toEqual({
+      entries: [{ name: 'src', type: 'directory' }],
+      limitReached: false,
+    });
+    await expect(
+      controller.findFiles('conversation_one', '.', { pattern: '*.js' })
+    ).resolves.toEqual({
+      results: ['src/index.js'],
+      limitReached: false,
+      scanLimitReached: false,
+    });
+    await expect(
+      controller.grepFiles('conversation_one', '.', { pattern: 'hello' })
+    ).resolves.toMatchObject({ output: 'src/index.js:1: hello', matchCount: 1 });
+
+    expect(dependencies.executor.execute).toHaveBeenNthCalledWith(
+      1,
+      { kind: 'test-policy' },
+      expect.objectContaining({ args: expect.arrayContaining(['list', '.']) })
+    );
+    expect(dependencies.executor.execute).toHaveBeenNthCalledWith(
+      2,
+      { kind: 'test-policy' },
+      expect.objectContaining({ args: expect.arrayContaining(['find', '.']) })
+    );
+    expect(dependencies.executor.execute).toHaveBeenNthCalledWith(
+      3,
+      { kind: 'test-policy' },
+      expect.objectContaining({ args: expect.arrayContaining(['grep', '.']) })
+    );
+  });
+
   test('the sandbox file helper rejects symlink and hardlink escapes', () => {
     const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-workspace-helper-'));
     const workspace = path.join(fixture, 'workspace');
@@ -199,6 +284,7 @@ describe('ManagedWorkspaceController', () => {
     fs.mkdirSync(workspace, { mode: 0o700 });
     fs.writeFileSync(outside, 'outside secret', { mode: 0o600 });
     fs.symlinkSync(outside, path.join(workspace, 'symlink.txt'));
+    fs.symlinkSync(fixture, path.join(workspace, 'parent-link'));
     fs.linkSync(outside, path.join(workspace, 'hardlink.txt'));
     const run = (operation, relative, content = '') =>
       execFileSync(process.execPath, ['-e', WORKSPACE_FILE_HELPER, operation, relative, content], {
@@ -211,6 +297,18 @@ describe('ManagedWorkspaceController', () => {
       expect(() => run('read', 'symlink.txt')).toThrow(
         expect.objectContaining({ stderr: expect.stringContaining('WORKSPACE_FILE_UNSAFE') })
       );
+      expect(() => run('read', 'parent-link/outside.txt')).toThrow(
+        expect.objectContaining({ stderr: expect.stringContaining('WORKSPACE_FILE_UNSAFE') })
+      );
+      expect(() =>
+        run(
+          'grep',
+          'parent-link',
+          Buffer.from(JSON.stringify({ pattern: 'outside', limit: 100 })).toString('base64')
+        )
+      ).toThrow(
+        expect.objectContaining({ stderr: expect.stringContaining('WORKSPACE_FILE_UNSAFE') })
+      );
       expect(() => run('read', 'hardlink.txt')).toThrow(
         expect.objectContaining({ stderr: expect.stringContaining('WORKSPACE_FILE_UNSAFE') })
       );
@@ -219,6 +317,49 @@ describe('ManagedWorkspaceController', () => {
       );
       expect(run('write', 'src/index.js', Buffer.from('hello').toString('base64'))).toBe('');
       expect(run('read', 'src/index.js')).toBe('hello');
+      fs.writeFileSync(path.join(workspace, 'src', 'other.txt'), 'goodbye\nhello again');
+      const list = JSON.parse(
+        run('list', '.', Buffer.from(JSON.stringify({ limit: 500 })).toString('base64'))
+      );
+      expect(list).toEqual({
+        entries: expect.arrayContaining([
+          { name: 'src', type: 'directory' },
+          { name: 'hardlink.txt', type: 'file' },
+          { name: 'symlink.txt', type: 'other' },
+        ]),
+        limitReached: false,
+      });
+      const found = JSON.parse(
+        run(
+          'find',
+          '.',
+          Buffer.from(JSON.stringify({ pattern: '*.js', limit: 1000 })).toString('base64')
+        )
+      );
+      expect(found).toMatchObject({ results: ['src/index.js'], limitReached: false });
+      const searched = JSON.parse(
+        run(
+          'grep',
+          '.',
+          Buffer.from(JSON.stringify({ pattern: 'hello', limit: 100 })).toString('base64')
+        )
+      );
+      expect(searched).toMatchObject({
+        matchCount: 2,
+        limitReached: false,
+        linesTruncated: false,
+      });
+      expect(searched.output).toContain('src/index.js:1: hello');
+      expect(searched.output).toContain('src/other.txt:2: hello again');
+      const regexSearch = JSON.parse(
+        run(
+          'grep',
+          '.',
+          Buffer.from(JSON.stringify({ pattern: 'hello\\s+again', limit: 100 })).toString('base64')
+        )
+      );
+      expect(regexSearch).toMatchObject({ matchCount: 1 });
+      expect(regexSearch.output).toContain('src/other.txt:2: hello again');
     } finally {
       fs.rmSync(fixture, { recursive: true, force: true });
     }

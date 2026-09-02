@@ -463,6 +463,9 @@ describe('FreedomAgentService', () => {
       readFile: jest.fn(),
       createDirectory: jest.fn(),
       writeFile: jest.fn(),
+      listDirectory: jest.fn(),
+      findFiles: jest.fn(),
+      grepFiles: jest.fn(),
       cancelConversation: jest.fn(),
       deleteConversation: jest.fn(async () => true),
       dispose: jest.fn(),
@@ -472,6 +475,9 @@ describe('FreedomAgentService', () => {
       { name: 'read' },
       { name: 'write' },
       { name: 'edit' },
+      { name: 'grep' },
+      { name: 'find' },
+      { name: 'ls' },
     ]);
     const { service, dependencies } = createService(fake, {
       workspaceController,
@@ -494,6 +500,9 @@ describe('FreedomAgentService', () => {
         { name: 'read' },
         { name: 'write' },
         { name: 'edit' },
+        { name: 'grep' },
+        { name: 'find' },
+        { name: 'ls' },
       ],
       systemPrompt: expect.stringContaining('private Freedom-managed project workspace'),
     });
