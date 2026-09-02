@@ -16,6 +16,8 @@ const { createWorkspaceExecutor } = require('./workspace-executor');
 
 const QUALIFICATION_PREFIX = 'freedom-electron-sandbox-qualification-';
 const DESTRUCTIVE_PREFIX = 'freedom-electron-sandbox-destructive-';
+const DETACHED_STARTUP_TIMEOUT_MS = 10_000;
+const DETACHED_EXECUTION_TIMEOUT_MS = 30_000;
 const packagedUserDataRoot = configurePackagedQualificationUserData(app);
 
 function emit(type, value = {}) {
@@ -749,15 +751,28 @@ async function runDetachedQualification(executor, runtime) {
       'while True: time.sleep(1)',
     ].join('\n');
     controller = new AbortController();
-    execution = executor.execute(await createPolicy(fixture, runtime), {
-      command: '/usr/bin/python3',
-      args: ['-c', script, fixture.outsideCanary, pidFile, resultFile, heartbeat, token],
-      signal: controller.signal,
-    });
-    await waitForFile(pidFile);
+    execution = executor.execute(
+      await createPolicy(fixture, runtime, { timeoutMs: DETACHED_EXECUTION_TIMEOUT_MS }),
+      {
+        command: '/usr/bin/python3',
+        args: ['-c', script, fixture.outsideCanary, pidFile, resultFile, heartbeat, token],
+        signal: controller.signal,
+      }
+    );
+    try {
+      await waitForFile(pidFile, DETACHED_STARTUP_TIMEOUT_MS);
+    } catch (error) {
+      controller.abort();
+      const receipt = await execution;
+      receiptEvidence('detached-startup-failure', receipt);
+      throw new Error(
+        `${error.message}; sandbox command finished as ${receipt.state}: ${receipt.stderr || 'no stderr'}`,
+        { cause: error }
+      );
+    }
     detachedPid = Number.parseInt(await fs.promises.readFile(pidFile, 'utf8'), 10);
     assertCondition(Number.isSafeInteger(detachedPid) && detachedPid > 1, 'Invalid detached PID');
-    await waitForFile(resultFile);
+    await waitForFile(resultFile, DETACHED_STARTUP_TIMEOUT_MS);
     const result = JSON.parse(await fs.promises.readFile(resultFile, 'utf8'));
     controller.abort();
     const receipt = await execution;
@@ -772,7 +787,7 @@ async function runDetachedQualification(executor, runtime) {
     assertCondition(result.localhost !== 0, 'Detached child reached localhost');
     assertCondition(result.external !== 0, 'Detached child reached external network');
     assertCondition(result.dns !== 'unexpected', 'Detached child resolved DNS');
-    const size = (await waitForFile(heartbeat)).size;
+    const size = (await waitForFile(heartbeat, DETACHED_STARTUP_TIMEOUT_MS)).size;
     await delay(150);
     const laterSize = (await fs.promises.stat(heartbeat)).size;
     assertCondition(
