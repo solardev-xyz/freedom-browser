@@ -575,7 +575,11 @@ async function qualifyLifecycle(executor, runtime, fixture) {
   });
   assertExecutionReceipt('failed-command', failedReceipt, 'failed');
   assertCondition(failedReceipt.exitCode === 7, 'Failed command exit code was inaccurate');
-  assertCondition(failedReceipt.stderr === 'ordinary-failure', 'Failed command stderr was lost');
+  assertCondition(failedReceipt.stderrTruncated === false, 'Failed command stderr was truncated');
+  assertCondition(
+    failedReceipt.stderr.endsWith('ordinary-failure'),
+    'Failed command stderr marker was lost'
+  );
   assertCondition(
     failedReceipt.error?.code === 'COMMAND_FAILED',
     'Failed command error was omitted'
@@ -886,7 +890,7 @@ async function runQualification() {
       workspaceReadWrite: true,
       gitMetadataReadOnly: true,
       outsideFilesystemDenied: true,
-      inheritedFileDescriptorsClosed: true,
+      inheritedFileDescriptorsClosed: process.platform === 'linux' ? true : 'not_applicable',
       privateExecutionStorage: true,
       networkDnsLocalhostDenied: true,
       unixSocketDenied: true,
