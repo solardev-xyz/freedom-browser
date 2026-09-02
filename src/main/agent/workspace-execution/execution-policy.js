@@ -3,7 +3,10 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { isValidatedElectronJavaScriptRuntime } = require('./electron-runtime');
+const {
+  isValidatedElectronJavaScriptRuntime,
+  statValidatedElectronPackageArchive,
+} = require('./electron-runtime');
 
 const POLICY_VERSION = 1;
 const WORKSPACE_MOUNT_PATH = '/workspace';
@@ -738,7 +741,7 @@ async function canonicalElectronRuntime(input) {
     if (descriptor.packaged) {
       let archiveStats;
       try {
-        archiveStats = await fs.promises.stat(path.join(resourcesPath, 'app.asar'));
+        archiveStats = await statValidatedElectronPackageArchive(input);
       } catch (error) {
         throw new ExecutionPolicyError(
           'INVALID_ELECTRON_RUNTIME',

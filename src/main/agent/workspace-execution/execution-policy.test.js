@@ -26,6 +26,7 @@ async function attestElectronRuntime({
   executablePath,
   resourcesPath,
   packaged = false,
+  archiveFileSystem,
 }) {
   const runtime = await detectElectronJavaScriptRuntime({
     platform,
@@ -33,6 +34,7 @@ async function attestElectronRuntime({
     execPath: executablePath,
     resourcesPath,
     packaged,
+    archiveFileSystem,
     run: async () => ({
       exitCode: 0,
       signal: null,
@@ -170,6 +172,53 @@ describe('workspace execution policy', () => {
         electronRuntime: { ...runtime },
       })
     ).rejects.toMatchObject({ code: 'UNTRUSTED_ELECTRON_RUNTIME' });
+  });
+
+  test('revalidates packaged Linux app.asar through the attested physical filesystem', async () => {
+    const fixture = await createFixture();
+    fixtureRoots.push(fixture.fixtureRoot);
+    const runtimeRoot = path.join(fixture.fixtureRoot, 'linux-packaged');
+    const resourcesPath = path.join(runtimeRoot, 'resources');
+    const archivePath = path.join(resourcesPath, 'app.asar');
+    const executable = path.join(runtimeRoot, 'freedom');
+    await fs.promises.mkdir(archivePath, { recursive: true });
+    await fs.promises.writeFile(executable, 'fixture', { mode: 0o700 });
+    const canonicalArchivePath = await fs.promises.realpath(archivePath);
+    let archiveInspections = 0;
+    const physicalArchiveFileSystem = {
+      promises: {
+        stat: async (candidate) => {
+          expect(candidate).toBe(canonicalArchivePath);
+          archiveInspections += 1;
+          return { isFile: () => true };
+        },
+      },
+    };
+    const runtime = await attestElectronRuntime({
+      platform: 'linux',
+      executablePath: executable,
+      resourcesPath,
+      packaged: true,
+      archiveFileSystem: physicalArchiveFileSystem,
+    });
+
+    await expect(
+      createWorkspaceExecutionPolicy({
+        workspaceRoot: fixture.workspaceRoot,
+        nodeRuntimeRoot: null,
+        electronRuntime: runtime,
+      })
+    ).resolves.toMatchObject({
+      filesystem: {
+        runtimeRoots: [
+          expect.objectContaining({
+            sourcePath: await fs.promises.realpath(runtimeRoot),
+            executablePath: await fs.promises.realpath(executable),
+          }),
+        ],
+      },
+    });
+    expect(archiveInspections).toBe(2);
   });
 
   test('keeps the canonical macOS Electron executable identity inside its application bundle', async () => {

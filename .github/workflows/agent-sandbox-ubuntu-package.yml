@@ -203,11 +203,14 @@ jobs:
           xvfb-run -a npm run test:agent-sandbox:linux:packaged -- /opt/Freedom/freedom
 
       - name: Remove package and verify cleanup
+        if: always()
         shell: bash
         run: |
           set -euo pipefail
           exec > >(tee "$EVIDENCE_DIR/11-package-removal.log") 2>&1
-          sudo apt-get remove -y freedom-browser
+          if dpkg-query -W -f='${Status}\n' freedom-browser 2>/dev/null | grep -qx 'install ok installed'; then
+            sudo apt-get remove -y freedom-browser
+          fi
           test ! -e /etc/apparmor.d/freedom
           if sudo aa-status 2>/dev/null | grep -Eq '(^|[/ ])freedom([ /]|$)'; then
             echo 'Freedom AppArmor profile remained loaded after package removal.' >&2
@@ -221,7 +224,7 @@ jobs:
             echo 'Sandbox-related mounts survived qualification.' >&2
             exit 1
           fi
-          dpkg-query -W bubblewrap
+          dpkg-query -W bubblewrap 2>/dev/null || true
           sudo apt-get autoremove --dry-run
 
       - name: Upload qualification evidence

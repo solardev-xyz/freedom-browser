@@ -9,6 +9,7 @@ const ELECTRON_RUNTIME_PROBE_TIMEOUT_MS = 5_000;
 const ELECTRON_RUNTIME_PROBE_MARKER = 'freedom-electron-node-runtime-v1';
 const ELECTRON_SANDBOX_MOUNT_PATH = '/opt/freedom-toolchain/electron';
 const validatedElectronRuntimes = new WeakSet();
+const validatedElectronRuntimeArchiveFileSystems = new WeakMap();
 
 function boundedText(value, maximum = 512) {
   return String(value || '').slice(0, maximum);
@@ -116,6 +117,17 @@ function unavailableRuntime(code, message, diagnostics) {
 
 function isValidatedElectronJavaScriptRuntime(value) {
   return Boolean(value && typeof value === 'object' && validatedElectronRuntimes.has(value));
+}
+
+async function statValidatedElectronPackageArchive(value) {
+  if (!isValidatedElectronJavaScriptRuntime(value)) {
+    throw new TypeError('Electron runtime must be attested before inspecting its package archive');
+  }
+  const archiveFileSystem = validatedElectronRuntimeArchiveFileSystems.get(value);
+  if (!archiveFileSystem || value.platform !== 'linux' || value.packaged !== true) {
+    throw new TypeError('Electron runtime does not identify a packaged Linux archive');
+  }
+  return archiveFileSystem.promises.stat(path.join(value.resourcesPath, 'app.asar'));
 }
 
 async function detectElectronJavaScriptRuntime(options = {}) {
@@ -268,6 +280,9 @@ async function detectElectronJavaScriptRuntime(options = {}) {
     }),
   });
   validatedElectronRuntimes.add(runtime);
+  if (platform === 'linux' && runtime.packaged) {
+    validatedElectronRuntimeArchiveFileSystems.set(runtime, archiveFileSystem);
+  }
   return runtime;
 }
 
@@ -280,4 +295,5 @@ module.exports = {
   findApplicationBundle,
   isValidatedElectronJavaScriptRuntime,
   runElectronProbe,
+  statValidatedElectronPackageArchive,
 };
