@@ -714,6 +714,11 @@ async function runDetachedQualification(executor, runtime) {
   const pidFile = path.join(fixture.workspaceRoot, 'detached.pid');
   const resultFile = path.join(fixture.workspaceRoot, 'detached-result.json');
   const heartbeat = path.join(fixture.workspaceRoot, 'detached-heartbeat');
+  const commandPidFile = process.platform === 'linux' ? '/workspace/detached.pid' : pidFile;
+  const commandResultFile =
+    process.platform === 'linux' ? '/workspace/detached-result.json' : resultFile;
+  const commandHeartbeat =
+    process.platform === 'linux' ? '/workspace/detached-heartbeat' : heartbeat;
   let detachedPid = null;
   let controller = null;
   let execution = null;
@@ -755,7 +760,15 @@ async function runDetachedQualification(executor, runtime) {
       await createPolicy(fixture, runtime, { timeoutMs: DETACHED_EXECUTION_TIMEOUT_MS }),
       {
         command: '/usr/bin/python3',
-        args: ['-c', script, fixture.outsideCanary, pidFile, resultFile, heartbeat, token],
+        args: [
+          '-c',
+          script,
+          fixture.outsideCanary,
+          commandPidFile,
+          commandResultFile,
+          commandHeartbeat,
+          token,
+        ],
         signal: controller.signal,
       }
     );
