@@ -362,6 +362,33 @@ async function qualifyBoundary(executor, policy, runtime, fixture) {
     await listen(tcpServer, { host: '127.0.0.1', port: 0 });
     await listen(socketServer, socketPath);
     if (process.platform === 'linux') await listen(abstractServer, `\0${abstractName}`);
+    if (process.platform === 'linux') {
+      const descriptorScript = [
+        'import json, os',
+        'descriptors = []',
+        "for name in os.listdir('/proc/self/fd'):",
+        '    descriptor = int(name)',
+        '    if descriptor <= 2:',
+        '        continue',
+        '    try:',
+        "        target = os.readlink(f'/proc/self/fd/{descriptor}')",
+        '    except FileNotFoundError:',
+        '        continue',
+        "    descriptors.append({'descriptor': descriptor, 'target': target})",
+        'print(json.dumps(descriptors), end="")',
+      ].join('\n');
+      const descriptorReceipt = await executor.execute(policy, {
+        command: '/usr/bin/python3',
+        args: ['-c', descriptorScript],
+      });
+      assertExecutionReceipt('inherited-descriptor-closure', descriptorReceipt, 'completed');
+      const inheritedDescriptors = JSON.parse(descriptorReceipt.stdout);
+      assertCondition(
+        Array.isArray(inheritedDescriptors) && inheritedDescriptors.length === 0,
+        `Electron qualification inherited host descriptors: ${JSON.stringify(inheritedDescriptors).slice(0, 512)}`
+      );
+      emit('inherited-descriptor-closure', { descriptors: inheritedDescriptors });
+    }
     receipt = await executor.execute(policy, {
       command: runtime.sandboxExecutablePath,
       args: [
@@ -797,6 +824,7 @@ async function runQualification() {
       workspaceReadWrite: true,
       gitMetadataReadOnly: true,
       outsideFilesystemDenied: true,
+      inheritedFileDescriptorsClosed: true,
       privateExecutionStorage: true,
       networkDnsLocalhostDenied: true,
       unixSocketDenied: true,

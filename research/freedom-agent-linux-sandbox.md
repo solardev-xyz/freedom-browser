@@ -107,7 +107,7 @@ The launcher uses:
 - non-recursive read-only remounts of `/`, `/proc`, and `/dev` after mount construction, leaving only `/workspace`, `/tmp`, and `/dev/shm` writable;
 - no `/run`, host `/tmp`, host home, display, session bus, or socket mount;
 - a sanitized passwd/group/NSS/hosts view rather than the host identity database; and
-- one JSON status descriptor used by Bubblewrap, accepted only for the first valid child PID, and explicitly closed by the trusted readiness wrapper before the command starts.
+- one JSON status descriptor used by Bubblewrap, accepted only for the first valid child PID. Before command execution, the trusted readiness wrapper enumerates `/proc/self/fd`, validates numeric descriptor names, and closes every descriptor above standard error, including the status pipe and any Electron/Chromium descriptors inherited by the launcher.
 
 Bubblewrap's child-PID status occurs before every mount has necessarily succeeded. The executor therefore launches a trusted positional-argument shell wrapper that emits a random readiness marker only after Bubblewrap has completed setup and reached the final command environment. The parent strips this marker from stdout. Without it, a bind failure is `sandbox_denied`, never an ordinary command failure and never a reason to retry unsandboxed.
 
@@ -155,7 +155,7 @@ The ordinary focused suite uses only validated temporary fixture roots and cover
 - acceptance of fully accounted internal native-build hardlinks and rejection of unaccounted external or protected/writable aliases;
 - hidden host processes and failed signaling;
 - sensitive environment scrubbing;
-- inherited descriptor closure, including explicit `fstat(3)` and `write(3)` denial for the Bubblewrap status descriptor;
+- inherited descriptor closure, including enumeration from a non-Node child that must find no persistent descriptor above standard error;
 - pathname and abstract host Unix sockets, with descendant-only Unix IPC still working;
 - rejection of host IPC endpoints pre-positioned inside the writable workspace;
 - host loopback, external networking, and DNS denial;

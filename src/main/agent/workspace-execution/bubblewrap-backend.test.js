@@ -7,6 +7,7 @@ const os = require('os');
 const path = require('path');
 const {
   BUBBLEWRAP_SYSTEM_TOOLCHAIN_PATH,
+  BUBBLEWRAP_SUPERVISOR_SCRIPT,
   BubblewrapExecutor,
   PRIVATE_TEMP_SIZE_BYTES,
   SHARED_MEMORY_SIZE_BYTES,
@@ -116,7 +117,10 @@ describe('Bubblewrap backend contract', () => {
     expect(joined).toContain('XDG_DATA_HOME\n/tmp/data');
     expect(launch.args.slice(-3)).toEqual(['/bin/sh', '-c', 'printf ok']);
     expect(joined).toContain('freedom-sandbox-supervisor');
-    expect(joined).toContain('printf "%s\\n" "$1"; shift; exec 3>&-; exec "$@"');
+    expect(joined).toContain(BUBBLEWRAP_SUPERVISOR_SCRIPT);
+    expect(BUBBLEWRAP_SUPERVISOR_SCRIPT).toContain('case "$descriptor" in');
+    expect(BUBBLEWRAP_SUPERVISOR_SCRIPT).toContain("''|*[!0-9]*) continue");
+    expect(BUBBLEWRAP_SUPERVISOR_SCRIPT).toContain('eval "exec ${descriptor}>&-"');
   });
 
   test('probes every Bubblewrap primitive used for bounded writable mounts', () => {

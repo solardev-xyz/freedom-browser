@@ -303,21 +303,20 @@ describeBubblewrap(bubblewrapDescription, () => {
     });
   });
 
-  test('closes the launcher status descriptor before the command starts', async () => {
+  test('closes every inherited descriptor above stderr before the command starts', async () => {
     const script = [
-      'import errno, json, os',
-      'result = {}',
-      'try:',
-      '    os.fstat(3)',
-      "    result['fstat'] = 'unexpected'",
-      'except OSError as error:',
-      "    result['fstat'] = errno.errorcode.get(error.errno, str(error.errno))",
-      'try:',
-      '    os.write(3, b\'{"child-pid":1}\\n\')',
-      "    result['write'] = 'unexpected'",
-      'except OSError as error:',
-      "    result['write'] = errno.errorcode.get(error.errno, str(error.errno))",
-      'print(json.dumps(result), end="")',
+      'import json, os',
+      'descriptors = []',
+      "for name in os.listdir('/proc/self/fd'):",
+      '    descriptor = int(name)',
+      '    if descriptor <= 2:',
+      '        continue',
+      '    try:',
+      "        target = os.readlink(f'/proc/self/fd/{descriptor}')",
+      '    except FileNotFoundError:',
+      '        continue',
+      "    descriptors.append({'descriptor': descriptor, 'target': target})",
+      'print(json.dumps(descriptors), end="")',
     ].join('\n');
     const receipt = await executor.execute(await policy(), {
       command: 'python3',
@@ -325,7 +324,7 @@ describeBubblewrap(bubblewrapDescription, () => {
     });
 
     expect(receipt).toMatchObject({ state: 'completed', exitCode: 0 });
-    expect(JSON.parse(receipt.stdout)).toEqual({ fstat: 'EBADF', write: 'EBADF' });
+    expect(JSON.parse(receipt.stdout)).toEqual([]);
   });
 
   test('keeps Git metadata read-only and gives every command a fresh private home and tmp', async () => {

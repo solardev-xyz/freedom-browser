@@ -18,6 +18,22 @@ const CAPABILITY_PROBE_TIMEOUT_MS = 5_000;
 const PRIVATE_TEMP_SIZE_BYTES = 256 * 1024 * 1024;
 const SHARED_MEMORY_SIZE_BYTES = 64 * 1024 * 1024;
 const BUBBLEWRAP_SYSTEM_TOOLCHAIN_PATH = '/usr/bin:/bin';
+const BUBBLEWRAP_SUPERVISOR_SCRIPT = Object.freeze(
+  [
+    'printf "%s\\n" "$1"',
+    'shift',
+    'for descriptor_path in /proc/self/fd/*; do',
+    '  descriptor=${descriptor_path##*/}',
+    '  case "$descriptor" in',
+    "    ''|*[!0-9]*) continue ;;",
+    '  esac',
+    '  if [ "$descriptor" -gt 2 ]; then',
+    '    eval "exec ${descriptor}>&-"',
+    '  fi',
+    'done 2>/dev/null',
+    'exec "$@"',
+  ].join('\n')
+);
 const SYSTEM_RUNTIME_PATHS = Object.freeze(['/usr', '/bin', '/sbin', '/lib', '/lib64']);
 const SYSTEM_CONFIGURATION_PATHS = Object.freeze([
   '/etc/alternatives',
@@ -481,7 +497,7 @@ async function buildBubblewrapArguments(policy, request) {
       '--',
       '/bin/sh',
       '-c',
-      'printf "%s\\n" "$1"; shift; exec 3>&-; exec "$@"',
+      BUBBLEWRAP_SUPERVISOR_SCRIPT,
       'freedom-sandbox-supervisor',
       readinessMarker,
       normalizedRequest.command,
@@ -816,6 +832,7 @@ class BubblewrapExecutor {
 
 module.exports = {
   BUBBLEWRAP_SYSTEM_TOOLCHAIN_PATH,
+  BUBBLEWRAP_SUPERVISOR_SCRIPT,
   BubblewrapExecutor,
   CAPABILITY_PROBE_TIMEOUT_MS,
   DEFAULT_BUBBLEWRAP_PATH,
