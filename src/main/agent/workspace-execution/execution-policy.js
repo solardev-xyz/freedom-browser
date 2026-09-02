@@ -1,7 +1,9 @@
 'use strict';
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
+const { isValidatedElectronJavaScriptRuntime } = require('./electron-runtime');
 
 const POLICY_VERSION = 1;
 const WORKSPACE_MOUNT_PATH = '/workspace';
@@ -635,12 +637,12 @@ function inferNodeRuntimeRoot(execPath = process.execPath) {
   return path.dirname(path.dirname(real));
 }
 
-async function canonicalElectronRuntimeRoot(input) {
-  const runtimeRoot = await canonicalDirectory(input, 'electronRuntimeRoot');
+async function canonicalMacElectronRuntimeRoot(input) {
+  const runtimeRoot = await canonicalDirectory(input, 'electronRuntime.runtimeRoot');
   if (path.extname(runtimeRoot) !== '.app') {
     throw new ExecutionPolicyError(
       'INVALID_ELECTRON_RUNTIME',
-      'electronRuntimeRoot must identify one canonical macOS application bundle'
+      'electronRuntime.runtimeRoot must identify one canonical macOS application bundle'
     );
   }
   let executableDirectory;
@@ -649,22 +651,31 @@ async function canonicalElectronRuntimeRoot(input) {
   } catch (error) {
     throw new ExecutionPolicyError(
       'INVALID_ELECTRON_RUNTIME',
-      'electronRuntimeRoot does not contain a macOS executable directory',
+      'electronRuntime.runtimeRoot does not contain a macOS executable directory',
       { cause: error.code }
     );
   }
   if (!executableDirectory.isDirectory()) {
     throw new ExecutionPolicyError(
       'INVALID_ELECTRON_RUNTIME',
-      'electronRuntimeRoot does not contain a macOS executable directory'
+      'electronRuntime.runtimeRoot does not contain a macOS executable directory'
     );
   }
   return runtimeRoot;
 }
 
 async function canonicalElectronRuntime(input) {
+  if (!isValidatedElectronJavaScriptRuntime(input)) {
+    throw new ExecutionPolicyError(
+      'UNTRUSTED_ELECTRON_RUNTIME',
+      'electronRuntime must be the active runtime attested by Freedom'
+    );
+  }
   const descriptor = requirePlainObject(input, 'electronRuntime');
-  const sourcePath = await canonicalDirectory(descriptor.rootPath, 'electronRuntime.rootPath');
+  const sourcePath = await canonicalDirectory(
+    descriptor.runtimeRoot,
+    'electronRuntime.runtimeRoot'
+  );
   if (
     typeof descriptor.executablePath !== 'string' ||
     !path.isAbsolute(descriptor.executablePath) ||
@@ -694,12 +705,60 @@ async function canonicalElectronRuntime(input) {
     );
   }
   if (descriptor.platform === 'darwin') {
-    await canonicalElectronRuntimeRoot(sourcePath);
+    await canonicalMacElectronRuntimeRoot(sourcePath);
+    if (
+      descriptor.applicationBundleRoot !== sourcePath ||
+      path.dirname(executablePath) !== path.join(sourcePath, 'Contents', 'MacOS')
+    ) {
+      throw new ExecutionPolicyError(
+        'INVALID_ELECTRON_RUNTIME',
+        'electronRuntime does not match its attested macOS application bundle'
+      );
+    }
   } else if (descriptor.platform !== 'linux') {
     throw new ExecutionPolicyError(
       'INVALID_ELECTRON_RUNTIME',
       'electronRuntime platform must be linux or darwin'
     );
+  } else {
+    const resourcesPath = await canonicalDirectory(
+      descriptor.resourcesPath,
+      'electronRuntime.resourcesPath'
+    );
+    if (
+      path.basename(resourcesPath) !== 'resources' ||
+      path.dirname(resourcesPath) !== sourcePath ||
+      path.dirname(executablePath) !== sourcePath
+    ) {
+      throw new ExecutionPolicyError(
+        'INVALID_ELECTRON_RUNTIME',
+        'electronRuntime does not match one Linux executable and resources tree'
+      );
+    }
+    if (descriptor.packaged) {
+      let archiveStats;
+      try {
+        archiveStats = await fs.promises.stat(path.join(resourcesPath, 'app.asar'));
+      } catch (error) {
+        throw new ExecutionPolicyError(
+          'INVALID_ELECTRON_RUNTIME',
+          'Packaged electronRuntime does not contain resources/app.asar',
+          { cause: error.code }
+        );
+      }
+      if (!archiveStats.isFile()) {
+        throw new ExecutionPolicyError(
+          'INVALID_ELECTRON_RUNTIME',
+          'Packaged electronRuntime does not contain resources/app.asar'
+        );
+      }
+      if (insidePath(os.homedir(), sourcePath)) {
+        throw new ExecutionPolicyError(
+          'INVALID_ELECTRON_RUNTIME',
+          'Packaged Linux electronRuntime cannot grant access to a home-directory tree'
+        );
+      }
+    }
   }
   const relativeExecutablePath = path.relative(sourcePath, executablePath);
   const sandboxExecutablePath =
@@ -760,7 +819,7 @@ async function createWorkspaceExecutionPolicy(options = {}) {
     throw new ExecutionPolicyError('INVALID_WORKSPACE', 'workingDirectory must be a directory');
   }
 
-  const protectedInput = options.protectedWorkspacePaths ?? DEFAULT_PROTECTED_PATHS;
+  const protectedInput = options.protectedWorkspacePaths ?? [];
   if (!Array.isArray(protectedInput) || protectedInput.length > 32) {
     throw new ExecutionPolicyError(
       'INVALID_POLICY',
@@ -769,8 +828,10 @@ async function createWorkspaceExecutionPolicy(options = {}) {
   }
   const protectedWorkspacePaths = [
     ...new Set(
-      protectedInput.map((value) =>
-        validateWorkspaceRelativePath(value, 'protectedWorkspacePaths entry')
+      DEFAULT_PROTECTED_PATHS.concat(
+        protectedInput.map((value) =>
+          validateWorkspaceRelativePath(value, 'protectedWorkspacePaths entry')
+        )
       )
     ),
   ].sort();
@@ -838,23 +899,7 @@ async function createWorkspaceExecutionPolicy(options = {}) {
       })
     );
   }
-  if (options.electronRuntimeRoot) {
-    runtimeRoots.push(
-      Object.freeze({
-        id: 'electron',
-        sourcePath: await canonicalElectronRuntimeRoot(options.electronRuntimeRoot),
-        mountPath: '/opt/freedom-toolchain/electron',
-        access: 'read_only',
-      })
-    );
-  }
   if (options.electronRuntime) {
-    if (options.electronRuntimeRoot) {
-      throw new ExecutionPolicyError(
-        'INVALID_ELECTRON_RUNTIME',
-        'Use either electronRuntime or electronRuntimeRoot, not both'
-      );
-    }
     runtimeRoots.push(await canonicalElectronRuntime(options.electronRuntime));
   }
 
@@ -968,7 +1013,6 @@ module.exports = {
   PRIVATE_TEMP_PATH,
   SAFE_DEFAULT_INHERITANCE,
   WORKSPACE_MOUNT_PATH,
-  canonicalElectronRuntimeRoot,
   createWorkspaceExecutionPolicy,
   inferNodeRuntimeRoot,
   insidePath,

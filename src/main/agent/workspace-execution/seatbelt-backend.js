@@ -163,7 +163,6 @@ function capabilityProbeProfile() {
   const lines = [
     '(version 1)',
     '(deny default)',
-    '(allow process-exec)',
     '(allow process-fork)',
     '(allow signal (target same-sandbox))',
     '(allow process-info-pidinfo (target same-sandbox))',
@@ -172,8 +171,10 @@ function capabilityProbeProfile() {
     pathRule('allow', 'file-read-data', 'literal', '/'),
   ];
   for (const systemPath of systemReadPaths()) {
-    const filter = fs.statSync(systemPath).isDirectory() ? 'subpath' : 'literal';
+    const directory = fs.statSync(systemPath).isDirectory();
+    const filter = directory ? 'subpath' : 'literal';
     lines.push(pathRule('allow', 'file-read*', filter, systemPath));
+    if (directory) lines.push(pathRule('allow', 'process-exec', filter, systemPath));
   }
   lines.push('(deny network*)');
   return lines.join('');
@@ -269,7 +270,6 @@ function buildSeatbeltProfile(policy, privateDirectory) {
   const lines = [
     '(version 1)',
     '(deny default)',
-    '(allow process-exec)',
     '(allow process-fork)',
     '(allow signal (target same-sandbox))',
     '(allow process-info-pidinfo (target same-sandbox))',
@@ -285,8 +285,10 @@ function buildSeatbeltProfile(policy, privateDirectory) {
   ];
   if (policy.filesystem.exposeSystemToolchain) {
     for (const systemPath of systemReadPaths()) {
-      const filter = fs.statSync(systemPath).isDirectory() ? 'subpath' : 'literal';
+      const directory = fs.statSync(systemPath).isDirectory();
+      const filter = directory ? 'subpath' : 'literal';
       lines.push(pathRule('allow', 'file-read*', filter, systemPath));
+      if (directory) lines.push(pathRule('allow', 'process-exec', filter, systemPath));
     }
   }
   if (
@@ -297,6 +299,7 @@ function buildSeatbeltProfile(policy, privateDirectory) {
   }
   for (const runtimeRoot of policy.filesystem.runtimeRoots) {
     lines.push(pathRule('allow', 'file-read*', 'subpath', runtimeRoot.sourcePath));
+    lines.push(pathRule('allow', 'process-exec', 'subpath', runtimeRoot.sourcePath));
   }
   for (const runtimePath of discoverRuntimeReadPaths(policy.filesystem.runtimeRoots)) {
     const filter = fs.statSync(runtimePath).isDirectory() ? 'subpath' : 'literal';
@@ -304,8 +307,10 @@ function buildSeatbeltProfile(policy, privateDirectory) {
   }
   lines.push(pathRule('allow', 'file-read*', 'subpath', workspace.sourcePath));
   lines.push(pathRule('allow', 'file-write*', 'subpath', workspace.sourcePath));
+  lines.push(pathRule('allow', 'process-exec', 'subpath', workspace.sourcePath));
   lines.push(pathRule('allow', 'file-read*', 'subpath', privateDirectory));
   lines.push(pathRule('allow', 'file-write*', 'subpath', privateDirectory));
+  lines.push(pathRule('allow', 'process-exec', 'subpath', privateDirectory));
   for (const protectedPath of policy.filesystem.protectedPaths) {
     lines.push(
       pathRule('deny', 'file-write*', protectedPathFilter(protectedPath), protectedPath.sourcePath)
@@ -337,6 +342,7 @@ function unavailableCapabilities(denial, diagnostics = {}) {
       descendantInheritance: false,
       privateTemporaryStorage: false,
       closedFileDescriptors: false,
+      executableRootsScoped: false,
       wallTimeout: false,
       outputLimits: false,
       cancellation: false,
@@ -423,6 +429,7 @@ async function detectSeatbeltCapabilities(options = {}) {
       descendantInheritance: true,
       privateTemporaryStorage: true,
       closedFileDescriptors: true,
+      executableRootsScoped: true,
       wallTimeout: true,
       outputLimits: true,
       cancellation: true,
@@ -738,6 +745,7 @@ class SeatbeltExecutor {
             backend: 'macos-seatbelt',
             aggregateResourceLimits: false,
             cancellationGuarantee: 'best_effort',
+            executableRootsScoped: true,
             loopbackNetworking: 'denied',
             survivorsPossible: true,
             completeDescendantTermination: false,

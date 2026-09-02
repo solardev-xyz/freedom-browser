@@ -354,10 +354,10 @@ describeBubblewrap(bubblewrapDescription, () => {
     expect(JSON.parse(pythonReceipt.stdout)).toEqual([]);
   });
 
-  test('keeps Git metadata read-only and gives every command a fresh private home and tmp', async () => {
+  test('keeps mandatory Git metadata read-only when the caller supplies no additions', async () => {
     const gitConfig = path.join(fixture.workspaceRoot, '.git', 'config');
     const originalConfig = await fs.promises.readFile(gitConfig, 'utf8');
-    const first = await executor.execute(await policy(), {
+    const first = await executor.execute(await policy({ protectedWorkspacePaths: [] }), {
       command: '/bin/sh',
       args: [
         '-c',

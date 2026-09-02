@@ -271,11 +271,7 @@ function createPolicy(fixture, runtime, limits = {}) {
   return createWorkspaceExecutionPolicy({
     workspaceRoot: fixture.workspaceRoot,
     nodeRuntimeRoot: null,
-    electronRuntime: {
-      platform: runtime.platform,
-      rootPath: runtime.runtimeRoot,
-      executablePath: runtime.executablePath,
-    },
+    electronRuntime: runtime,
     environment: {
       set: {
         ELECTRON_RUN_AS_NODE: '1',

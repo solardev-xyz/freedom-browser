@@ -8,6 +8,7 @@ const path = require('path');
 const ELECTRON_RUNTIME_PROBE_TIMEOUT_MS = 5_000;
 const ELECTRON_RUNTIME_PROBE_MARKER = 'freedom-electron-node-runtime-v1';
 const ELECTRON_SANDBOX_MOUNT_PATH = '/opt/freedom-toolchain/electron';
+const validatedElectronRuntimes = new WeakSet();
 
 function boundedText(value, maximum = 512) {
   return String(value || '').slice(0, maximum);
@@ -111,6 +112,10 @@ function unavailableRuntime(code, message, diagnostics) {
     denial: Object.freeze({ code, message }),
     diagnostics: Object.freeze(diagnostics),
   });
+}
+
+function isValidatedElectronJavaScriptRuntime(value) {
+  return Boolean(value && typeof value === 'object' && validatedElectronRuntimes.has(value));
 }
 
 async function detectElectronJavaScriptRuntime(options = {}) {
@@ -236,13 +241,15 @@ async function detectElectronJavaScriptRuntime(options = {}) {
       ? path.posix.join(ELECTRON_SANDBOX_MOUNT_PATH, ...relativeExecutablePath.split(path.sep))
       : executablePath;
 
-  return Object.freeze({
+  const runtime = Object.freeze({
     available: true,
     kind: 'electron-run-as-node',
     platform,
     layout,
+    packaged: options.packaged === true,
     executablePath,
     runtimeRoot,
+    resourcesPath: linuxLayout?.canonicalResources || null,
     relativeExecutablePath,
     sandboxExecutablePath,
     applicationBundleRoot,
@@ -260,6 +267,8 @@ async function detectElectronJavaScriptRuntime(options = {}) {
       runtimeProbe: 'passed',
     }),
   });
+  validatedElectronRuntimes.add(runtime);
+  return runtime;
 }
 
 module.exports = {
@@ -269,5 +278,6 @@ module.exports = {
   detectElectronJavaScriptRuntime,
   deriveLinuxRuntimeRoot,
   findApplicationBundle,
+  isValidatedElectronJavaScriptRuntime,
   runElectronProbe,
 };

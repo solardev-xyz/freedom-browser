@@ -61,6 +61,10 @@ describe('macOS Seatbelt backend contract', () => {
     const profile = buildSeatbeltProfile(policy, privateDirectory);
 
     expect(profile).toContain('(deny default)');
+    expect(profile).not.toContain('(allow process-exec)');
+    expect(profile).toContain('(allow process-exec (subpath "/usr"))');
+    expect(profile).toContain(`(allow process-exec (subpath "${workspace.sourcePath}"))`);
+    expect(profile).toContain(`(allow process-exec (subpath "${privateDirectory}"))`);
     expect(profile).toContain('(deny network*)');
     expect(profile).toContain('(allow process-info-pidinfo (target same-sandbox))');
     expect(profile).not.toContain('process-info*');
@@ -85,6 +89,8 @@ describe('macOS Seatbelt backend contract', () => {
 
   test('uses the same narrow sysctl and process visibility posture in the capability probe', () => {
     const profile = capabilityProbeProfile();
+    expect(profile).not.toContain('(allow process-exec)');
+    expect(profile).toContain('(allow process-exec (subpath "/usr"))');
     expect(profile).toContain('(allow process-info-pidinfo (target same-sandbox))');
     expect(profile).not.toContain('process-info*');
     expect(profile).not.toContain('(allow sysctl-read)');
@@ -167,6 +173,7 @@ describe('macOS Seatbelt backend contract', () => {
       },
       enforcement: {
         cancellationGuarantee: 'best_effort',
+        executableRootsScoped: true,
         survivorsPossible: true,
         completeDescendantTermination: false,
         processVisibility: 'same_sandbox_only',

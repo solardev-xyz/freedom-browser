@@ -217,10 +217,32 @@ requiredDescribe('macOS Seatbelt execution boundary', () => {
     await expect(fs.promises.stat(outsideWrite)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
-  test('keeps Git metadata read-only and uses fresh private storage', async () => {
+  test('denies execution outside the system, runtime, workspace and private roots', async () => {
+    const outsideExecutable = path.join(fixture.outsideRoot, 'outside-tool.sh');
+    const marker = path.join(fixture.workspaceRoot, 'outside-tool-ran');
+    await fs.promises.writeFile(
+      outsideExecutable,
+      `#!/bin/sh\nprintf escaped > ${JSON.stringify(marker)}\n`,
+      { mode: 0o700 }
+    );
+
+    const receipt = await executor.execute(await policy(), {
+      command: outsideExecutable,
+      args: [],
+    });
+
+    expect(receipt).toMatchObject({
+      state: 'failed',
+      sideEffects: 'unknown',
+      capabilities: { executableRootsScoped: true },
+    });
+    await expect(fs.promises.stat(marker)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  test('keeps mandatory Git metadata read-only when the caller supplies no additions', async () => {
     const gitConfig = path.join(fixture.workspaceRoot, '.git', 'config');
     const original = await fs.promises.readFile(gitConfig, 'utf8');
-    const first = await executor.execute(await policy(), {
+    const first = await executor.execute(await policy({ protectedWorkspacePaths: [] }), {
       command: '/bin/sh',
       args: [
         '-c',

@@ -7,6 +7,7 @@ const {
   ELECTRON_RUNTIME_PROBE_MARKER,
   detectElectronJavaScriptRuntime,
   findApplicationBundle,
+  isValidatedElectronJavaScriptRuntime,
 } = require('./electron-runtime');
 
 describe('Electron JavaScript runtime discovery', () => {
@@ -118,6 +119,8 @@ describe('Electron JavaScript runtime discovery', () => {
         packaged: false,
       },
     });
+    expect(isValidatedElectronJavaScriptRuntime(runtime)).toBe(true);
+    expect(isValidatedElectronJavaScriptRuntime({ ...runtime })).toBe(false);
   });
 
   test('derives one packaged Linux runtime and an explicit sandbox executable', async () => {
@@ -155,8 +158,10 @@ describe('Electron JavaScript runtime discovery', () => {
       available: true,
       platform: 'linux',
       layout: 'linux-packaged-directory',
+      packaged: true,
       executablePath: fixture.executable,
       runtimeRoot: fixture.runtimeRoot,
+      resourcesPath: fixture.resourcesPath,
       relativeExecutablePath: 'freedom',
       sandboxExecutablePath: '/opt/freedom-toolchain/electron/freedom',
       diagnostics: {
