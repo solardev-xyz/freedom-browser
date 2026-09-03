@@ -10,6 +10,19 @@
 
 const { TypedDataEncoder } = require('ethers');
 
+/** 0x-hex dApp messages are signatures over the bytes, not the hex text. */
+function normalizeMessage(message) {
+  if (typeof message === 'string' && message.startsWith('0x')) {
+    return Buffer.from(message.slice(2), 'hex');
+  }
+  return message;
+}
+
+/** dApps send typed data either as an object or a JSON string. */
+function normalizeTypedData(typedData) {
+  return typeof typedData === 'string' ? JSON.parse(typedData) : typedData;
+}
+
 /** Types with EIP712Domain stripped, as ethers' hashing helpers expect. */
 function withoutDomainType(types) {
   const stripped = { ...types };
@@ -37,4 +50,10 @@ function messageToBytes(message) {
   return Buffer.isBuffer(message) ? message : Buffer.from(String(message), 'utf8');
 }
 
-module.exports = { withoutDomainType, getEip712WirePayload, messageToBytes };
+module.exports = {
+  normalizeMessage,
+  normalizeTypedData,
+  withoutDomainType,
+  getEip712WirePayload,
+  messageToBytes,
+};

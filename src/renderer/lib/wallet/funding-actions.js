@@ -9,8 +9,9 @@ import { walletState } from './wallet-state.js';
 import { openSend } from './send.js';
 import { openReceive } from './receive.js';
 import { createTab } from '../tabs.js';
+import { GNOSIS_CHAIN_ID } from './wallet-utils.js';
 
-export const GNOSIS_CHAIN_ID = 100;
+export { GNOSIS_CHAIN_ID };
 export const XDAI_TOKEN_KEY = '100:native';
 export const XBZZ_TOKEN_KEY = normalizeTokenKey('100:0xdBF3Ea6F5beE45c02255B2c26a16F300502F68da');
 

@@ -7,6 +7,7 @@
 import { walletState } from './wallet-state.js';
 import { escapeHtml } from './wallet-utils.js';
 import { refreshBalances } from './balance-display.js';
+import { refreshSafeStatusCard } from './safe-status.js';
 
 // DOM references
 let walletSelectorBtn;
@@ -17,14 +18,16 @@ let walletSelectorList;
 let walletCreateBtn;
 let walletConnectLedgerBtn;
 let walletConnectPhoneBtn;
+let walletCreateSafeBtn;
 let walletHeadlineName;
 
 // Callbacks for opening subscreens (set by coordinator)
 let openCreateWalletFn = null;
 let openConnectLedgerFn = null;
 let openConnectPhoneFn = null;
+let openCreateSafeFn = null;
 
-export function initWalletSelector(openCreateWallet, openConnectLedger, openConnectPhone) {
+export function initWalletSelector(openCreateWallet, openConnectLedger, openConnectPhone, openCreateSafe) {
   walletSelectorBtn = document.getElementById('wallet-selector-btn');
   walletSelectorName = document.getElementById('wallet-selector-name');
   walletSelectorAddress = document.getElementById('wallet-selector-address');
@@ -33,11 +36,13 @@ export function initWalletSelector(openCreateWallet, openConnectLedger, openConn
   walletCreateBtn = document.getElementById('wallet-create-btn');
   walletConnectLedgerBtn = document.getElementById('wallet-connect-ledger-btn');
   walletConnectPhoneBtn = document.getElementById('wallet-connect-phone-btn');
+  walletCreateSafeBtn = document.getElementById('wallet-create-safe-btn');
   walletHeadlineName = document.getElementById('wallet-headline-name');
 
   openCreateWalletFn = openCreateWallet;
   openConnectLedgerFn = openConnectLedger;
   openConnectPhoneFn = openConnectPhone;
+  openCreateSafeFn = openCreateSafe;
 
   setupWalletSelector();
 }
@@ -74,6 +79,13 @@ function setupWalletSelector() {
       if (openConnectPhoneFn) openConnectPhoneFn();
     });
   }
+
+  if (walletCreateSafeBtn) {
+    walletCreateSafeBtn.addEventListener('click', () => {
+      closeWalletDropdown();
+      if (openCreateSafeFn) openCreateSafeFn();
+    });
+  }
 }
 
 function toggleWalletDropdown() {
@@ -101,9 +113,9 @@ function closeWalletDropdown() {
   }
 }
 
-/** Badge label for device account types (mnemonic accounts get none). */
+/** Badge label for non-mnemonic account types (mnemonic accounts get none). */
 function walletTypeBadge(type) {
-  const label = { ledger: 'Ledger', remote: 'Phone' }[type];
+  const label = { ledger: 'Ledger', remote: 'Phone', safe: 'Safe' }[type];
   return label ? `<span class="wallet-selector-item-badge">${label}</span>` : '';
 }
 
@@ -232,6 +244,9 @@ export function updateWalletSelectorDisplay(wallet) {
   if (walletHeadlineName) {
     walletHeadlineName.textContent = wallet.name.toUpperCase();
   }
+  // Runs on every active-account change (select/add/load) — shows the
+  // activation / needs-funds card for Safe accounts, hides it otherwise.
+  refreshSafeStatusCard();
 }
 
 /**

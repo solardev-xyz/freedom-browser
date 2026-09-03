@@ -60,7 +60,7 @@ async function withVaultPrivateKey(walletIndex, callback) {
     throw new Error('Invalid wallet index');
   }
   // Hard stop for non-mnemonic accounts at the key-derivation chokepoint:
-  // deriving a mnemonic key at a hardware/phone account's index would silently
+  // deriving a mnemonic key at a device/smart account's index would silently
   // sign with a key whose address the user has never seen.
   //
   // The index-range half of the check stands on its own and must come

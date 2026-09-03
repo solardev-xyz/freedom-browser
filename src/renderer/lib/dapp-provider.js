@@ -12,6 +12,8 @@
 
 import { showDappConnect, getSelectedChainId, setSelectedChainId, updateConnectionBanner, showDappTxApproval, showDappSignApproval, showVaultUnlock, updateSwarmConnectionBanner, updateX402ConnectionBanner } from './wallet-ui.js';
 import { buildDappTxContext, extractSelector } from './wallet/dapp-tx.js';
+import { isSafeAccount, GNOSIS_CHAIN_ID } from './wallet/wallet-utils.js';
+import { openSafeMessageBoard, abandonSafeMessageBoard } from './wallet/safe-signing.js';
 import { getPermissionKey } from './origin-utils.js';
 
 // Feature flag state
@@ -27,6 +29,17 @@ window.addEventListener('settings:updated', (event) => {
 
 // Provider state per webview (keyed by webview ID or reference)
 const providerStates = new WeakMap();
+
+// Per-webview navigation generation, bumped on every committed navigation
+// and on webview destruction (mirrors radicle-provider.js). Requests capture
+// the generation on arrival and responses are only delivered while it still
+// matches: provider request ids restart per document, so a result or error
+// that lands after a navigation could otherwise satisfy a reused id in the
+// replacement document. Main already drops Safe signing sessions on
+// navigation; this closes the same gap on the renderer's delivery side.
+const navigationGenerations = new WeakMap();
+
+const getNavigationGeneration = (webview) => navigationGenerations.get(webview) ?? 0;
 
 // Current active webview reference (set by tabs.js)
 let activeWebview = null;
@@ -140,6 +153,12 @@ async function handleProviderRequest(webview, request) {
 
   console.log('[DappProvider] Using permissionKey:', permissionKey);
 
+  // Captured at request arrival; if the webview navigates (or is destroyed)
+  // before the async path below settles, neither the result nor the error
+  // may be delivered — the reply would land in a replacement document that
+  // never made this request.
+  const generation = getNavigationGeneration(webview);
+
   try {
     let result;
 
@@ -195,8 +214,12 @@ async function handleProviderRequest(webview, request) {
 
       const chainId = permission.chainId || parseInt(await getCurrentChainId(), 16);
 
-      // Auto-approve only for contract calls with a matching rule (never plain ETH transfers)
-      if (selector && txParams?.to
+      assertSafeOnGnosis(permission, chainId, 'transact');
+
+      // Auto-approve only for contract calls with a matching rule (never
+      // plain ETH transfers, never Safes — their sends are a multi-step
+      // signature ceremony, not a background signature)
+      if (!isSafeAccount(permission.walletIndex) && selector && txParams?.to
         && await window.dappPermissions.isTransactionAutoApproved(permissionKey, txParams.to, selector, chainId)
       ) {
         const vaultStatus = await window.identity?.getStatus?.();
@@ -213,12 +236,15 @@ async function handleProviderRequest(webview, request) {
         throw { ...ERRORS.UNAUTHORIZED, message: 'Not connected. Call eth_requestAccounts first.' };
       }
 
+      const chainId = permission.chainId || parseInt(await getCurrentChainId(), 16);
+      assertSafeOnGnosis(permission, chainId, 'sign');
+
       if (permission.autoApprove?.signing) {
         const vaultStatus = await window.identity?.getStatus?.();
         if (!vaultStatus?.isUnlocked) {
           await showVaultUnlock(permissionKey);
         }
-        result = await autoApproveSign(permission, method, params, permissionKey);
+        result = await autoApproveSign(permission, method, params, permissionKey, webview);
       } else {
         result = await showDappSignApproval(webview, permissionKey, method, params);
       }
@@ -230,9 +256,13 @@ async function handleProviderRequest(webview, request) {
       throw ERRORS.UNSUPPORTED_METHOD;
     }
 
-    // Send success response
+    // Send success response — unless the requesting document is gone
+    if (getNavigationGeneration(webview) !== generation) return;
     sendProviderResponse(webview, id, result, null);
   } catch (error) {
+    // Never deliver a stale response (success or error) into a replacement
+    // document — request ids can be reused across navigations.
+    if (getNavigationGeneration(webview) !== generation) return;
     // Send error response
     const err = {
       code: error.code || ERRORS.INTERNAL_ERROR.code,
@@ -240,6 +270,20 @@ async function handleProviderRequest(webview, request) {
       data: error.data,
     };
     sendProviderResponse(webview, id, null, err);
+  }
+}
+
+/**
+ * v1 Safes live on Gnosis only: a SafeTx for another chain could never
+ * execute, and an EIP-1271 signature only verifies where the contract
+ * lives — a clear refusal beats an answer the dApp can't use.
+ */
+function assertSafeOnGnosis(permission, chainId, verb) {
+  if (isSafeAccount(permission.walletIndex) && chainId !== GNOSIS_CHAIN_ID) {
+    throw {
+      ...ERRORS.INTERNAL_ERROR,
+      message: `This multi-owner account can only ${verb} on Gnosis Chain — switch the app to Gnosis first.`,
+    };
   }
 }
 
@@ -309,17 +353,21 @@ async function autoApproveTx(permission, txParams, chainId, permissionKey) {
  * Sign a message without showing the approval UI (auto-approved).
  * Accepts the already-fetched permission object to avoid redundant IPC.
  */
-async function autoApproveSign(permission, method, params, permissionKey) {
-  const signature = await executeSign(method, params, permission.walletIndex);
+async function autoApproveSign(permission, method, params, permissionKey, webview) {
+  const signature = await executeSign(method, params, permission.walletIndex, permissionKey, webview);
   window.dappPermissions.updateLastUsed(permissionKey);
   return signature;
 }
 
 /**
  * Execute a signing operation via the wallet IPC bridge.
- * Shared by both auto-approve and manual approval paths.
+ * Shared by both auto-approve and manual approval paths. `webview` is
+ * the requesting page's webview — Safe message sessions are bound to it.
  */
-async function executeSign(method, params, walletIndex) {
+async function executeSign(method, params, walletIndex, site, webview) {
+  if (isSafeAccount(walletIndex)) {
+    return signViaSafeAccount(method, params, walletIndex, site, webview);
+  }
   let result;
   if (method === 'personal_sign') {
     result = await window.wallet.signMessage(params[0], walletIndex);
@@ -330,6 +378,46 @@ async function executeSign(method, params, walletIndex) {
   }
   if (!result.success) throw new Error(result.error || 'Signing failed');
   return result.signature;
+}
+
+/**
+ * A Safe account signs as a smart contract (EIP-1271): owner signatures
+ * are collected over the SafeMessage wrap and concatenated; the dApp
+ * verifies via isValidSignature on the Safe. Free vault signatures may
+ * satisfy the threshold on their own — the signing board only opens
+ * when a device signature is actually needed. Rejects with EIP-1193
+ * code 4001 when the user closes the board.
+ *
+ * The session is bound main-side to this page (site + webview
+ * webContents) and guarded by the returned state.token — another tab
+ * can neither resume nor replace it, and it dies with the page.
+ */
+async function signViaSafeAccount(method, params, walletIndex, site, webview) {
+  const display = { kind: 'message', site, method };
+  const requester = { origin: site || null, webContentsId: webviewContentsId(webview) };
+  const started = await window.wallet.safeMessageStart(
+    walletIndex,
+    { method, params },
+    display,
+    requester
+  );
+  if (!started.success) throw new Error(started.error || 'Signing failed');
+
+  if (started.state?.complete) {
+    const done = await window.wallet.safeMessageComplete(walletIndex, started.state.token);
+    if (!done.success) throw new Error(done.error || 'Signing failed');
+    return done.signature;
+  }
+  return openSafeMessageBoard(walletIndex, started.state, webview);
+}
+
+/** The webview's webContents id, or null when it isn't attached (yet). */
+function webviewContentsId(webview) {
+  try {
+    return webview?.getWebContentsId?.() ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -444,6 +532,17 @@ export function setupWebviewProvider(webview) {
       handleProviderRequest(webview, request);
     }
   });
+
+  // Invalidate in-flight requests when their document goes away, so their
+  // responses can never reach the replacement document — and withdraw the
+  // Safe signing board it may have opened (its session is gone main-side;
+  // the board is owner-scoped, so a successor document's board survives).
+  const invalidateDocument = () => {
+    navigationGenerations.set(webview, getNavigationGeneration(webview) + 1);
+    abandonSafeMessageBoard(webview);
+  };
+  webview.addEventListener('did-navigate', invalidateDocument);
+  webview.addEventListener('destroyed', invalidateDocument);
 
   // Initialize provider state for this webview
   getProviderState(webview);

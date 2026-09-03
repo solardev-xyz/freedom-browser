@@ -226,6 +226,10 @@
         background: rgba(245, 158, 11, 0.18);
         color: #f0b65d;
       }
+      .kind-safe {
+        background: rgba(46, 187, 137, 0.18);
+        color: #5ad2a8;
+      }
       .status-pill {
         display: inline-flex;
         align-items: center;
@@ -326,6 +330,7 @@
         .kind-x402 { background: rgba(39, 117, 202, 0.12); color: #1f5fa8; }
         .kind-wallet-send { background: rgba(140, 90, 220, 0.12); color: #6e3ba8; }
         .kind-dapp-send { background: rgba(217, 119, 6, 0.12); color: #9a5a04; }
+        .kind-safe { background: rgba(16, 150, 100, 0.12); color: #0d7a52; }
         .status-confirmed, .status-settled { color: #1f7a34; }
         .status-pending { color: #8a5a07; }
         .status-failed { color: #b3261e; }
@@ -366,6 +371,8 @@
         <option value="x402">x402</option>
         <option value="wallet-send">Wallet send</option>
         <option value="dapp-send">Dapp send</option>
+        <option value="safe-send">Safe send</option>
+        <option value="safe-deploy">Safe setup</option>
       </select>
       <select class="filter-select" id="chain-select">
         <option value="">All chains</option>
@@ -412,6 +419,8 @@
         'x402':        { label: 'x402', cls: 'kind-x402',        anonLabel: '—' },
         'wallet-send': { label: 'send', cls: 'kind-wallet-send', anonLabel: 'wallet send' },
         'dapp-send':   { label: 'dapp', cls: 'kind-dapp-send',   anonLabel: 'dapp send' },
+        'safe-send':   { label: 'safe', cls: 'kind-safe',        anonLabel: 'safe send' },
+        'safe-deploy': { label: 'safe setup', cls: 'kind-safe',  anonLabel: 'safe activation' },
       };
       const KIND_FALLBACK = { label: '', cls: '', anonLabel: '—' };
 

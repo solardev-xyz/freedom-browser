@@ -24,6 +24,10 @@ function toAtomicDecimal(value) {
  * @param {object} context
  * @param {string} context.kind         paymentHistory.KINDS member
  * @param {string} [context.origin]     normalised origin (dapp sends only)
+ * @param {string} [context.fromAddress] human-visible sender; defaults to the
+ *                                      signer's address (which is the *executor*
+ *                                      for Safe txs, not the paying account —
+ *                                      pass the safe address explicitly there)
  * @param {string} [context.asset]      ERC-20 contract address (null = native)
  * @param {string} [context.amount]     atomic units; defaults to params.value
  *                                      (which is 0 for ERC-20 transfers — pass
@@ -45,7 +49,7 @@ async function signAndRecord(params, signer, context) {
       kind: context.kind,
       chainId: params.chainId,
       txHash: response.hash,
-      fromAddress: response.from,
+      fromAddress: context.fromAddress ?? response.from,
       toAddress: context.toAddress ?? params.to,
       asset: context.asset ?? null,
       amount: toAtomicDecimal(context.amount ?? params.value),

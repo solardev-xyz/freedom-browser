@@ -25,7 +25,7 @@ const { withVaultPrivateKey, isValidWalletIndex } = require('./vault-access');
 const { getWalletRecord, isHardwareWalletIndex, WALLET_TYPES } = require('../identity-manager');
 const { createLedgerBackend } = require('./ledger/signer');
 const { createRemoteBackend } = require('./remote/signer');
-const { withoutDomainType } = require('./signing-utils');
+const { normalizeMessage, normalizeTypedData, withoutDomainType } = require('./signing-utils');
 
 /**
  * @typedef {Object} Signer
@@ -45,19 +45,6 @@ const { withoutDomainType } = require('./signing-utils');
  *   produce a raw signed tx (phone wallets expose eth_sendTransaction
  *   only); callers must prefer it over signTransaction+broadcast.
  */
-
-/** 0x-hex dApp messages are signatures over the bytes, not the hex text. */
-function normalizeMessage(message) {
-  if (typeof message === 'string' && message.startsWith('0x')) {
-    return Buffer.from(message.slice(2), 'hex');
-  }
-  return message;
-}
-
-/** dApps send typed data either as an object or a JSON string. */
-function normalizeTypedData(typedData) {
-  return typeof typedData === 'string' ? JSON.parse(typedData) : typedData;
-}
 
 function createVaultBackend(walletIndex) {
   return {
@@ -114,6 +101,12 @@ function getSigner(walletIndex) {
   const record = getWalletRecord(walletIndex);
   if (!record && isHardwareWalletIndex(walletIndex)) {
     throw new Error('Hardware wallet account no longer exists; reconnect the device');
+  }
+  if (record && record.type === WALLET_TYPES.SAFE) {
+    // A Safe is a smart-contract account whose owners are other wallet
+    // records — it has no key of its own. Execution goes through the
+    // SafeExecutor (./safe/), which signs with the owners' signers.
+    throw new Error('Safe accounts cannot sign directly — execute through the Safe flow');
   }
   let backend;
   if (record && record.type === WALLET_TYPES.LEDGER) {

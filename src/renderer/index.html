@@ -1264,6 +1264,12 @@
                         </svg>
                         <span>Connect Phone / Other Device</span>
                       </button>
+                      <button type="button" class="wallet-selector-action" id="wallet-create-safe-btn">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                        </svg>
+                        <span>Create Multi-Owner Account</span>
+                      </button>
                     </div>
                   </div>
 
@@ -1291,12 +1297,27 @@
                     </button>
                   </div>
 
+                  <!-- Safe account status (activation / needs-funds blocking states) -->
+                  <div id="safe-status-card" class="safe-status-card hidden"></div>
+
                   <!-- Asset Balances (dynamically populated from chain registry) -->
                   <div id="asset-list" class="asset-list"></div>
 
                   <div class="balance-error hidden" id="balance-error">
                     <span class="balance-error-text" id="balance-error-text"></span>
                   </div>
+
+                  <!-- Unfinished Safe transactions (waiting for signatures) -->
+                  <button type="button" id="safe-pending-row" class="safe-pending-row hidden">
+                    <span class="safe-pending-row-label">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="10"/>
+                        <polyline points="12 6 12 12 16 14"/>
+                      </svg>
+                      Unfinished transactions
+                    </span>
+                    <span class="safe-pending-badge" id="safe-pending-count"></span>
+                  </button>
 
                   <!-- Recent payments (5 most recent; full list at freedom://payments) -->
                   <div class="recent-payments">
@@ -1996,6 +2017,115 @@
               </div>
             </div>
 
+            <!-- Create Safe (multi-owner account) sub-screen -->
+            <div id="sidebar-create-safe" class="sidebar-subscreen hidden">
+              <div class="subscreen-header">
+                <button type="button" class="subscreen-back-btn" id="create-safe-back">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="15 18 9 12 15 6"/>
+                  </svg>
+                  <span>Back</span>
+                </button>
+                <h3 class="subscreen-title">Multi-Owner Account</h3>
+              </div>
+
+              <!-- Step 1: Configure -->
+              <div id="create-safe-configure-step" class="subscreen-content hidden">
+                <p class="create-wallet-message">
+                  A multi-owner account (Safe) is controlled by your existing
+                  accounts together — lose one device and your funds stay safe.
+                </p>
+
+                <div class="safe-preset-row">
+                  <button type="button" class="safe-preset selected" id="safe-preset-backup"
+                          data-threshold="1" data-owners="2">
+                    <span class="safe-preset-title">Backup</span>
+                    <span class="safe-preset-detail">1 of 2 owners signs</span>
+                  </button>
+                  <button type="button" class="safe-preset" id="safe-preset-resilient"
+                          data-threshold="2" data-owners="3">
+                    <span class="safe-preset-title">Resilient</span>
+                    <span class="safe-preset-detail">2 of 3 owners sign</span>
+                  </button>
+                </div>
+
+                <p class="create-wallet-message" id="create-safe-owner-hint">Choose 2 owner accounts.</p>
+                <div id="create-safe-owner-list" class="connect-ledger-account-list"></div>
+
+                <input type="text" id="create-safe-name-input"
+                       class="create-wallet-input"
+                       placeholder="Name (e.g. Joint Account)"
+                       maxlength="32"
+                       autocomplete="off">
+
+                <button type="button" id="create-safe-submit" class="create-wallet-submit-btn" disabled>
+                  Create Account
+                </button>
+
+                <div id="create-safe-error" class="unlock-error hidden"></div>
+              </div>
+
+              <!-- Step 2: Success -->
+              <div id="create-safe-success" class="subscreen-content hidden">
+                <div class="create-wallet-success-icon">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                    <circle cx="12" cy="12" r="10"/>
+                    <polyline points="8 12 11 15 16 9"/>
+                  </svg>
+                </div>
+                <h4 class="create-wallet-success-title">Multi-Owner Account Created!</h4>
+
+                <div class="create-wallet-result">
+                  <span class="create-wallet-result-name" id="create-safe-result-name"></span>
+                  <code class="create-wallet-result-address" id="create-safe-result-address"></code>
+                </div>
+
+                <p class="create-wallet-message">
+                  This address can receive funds right away. Before it can
+                  send, it needs a one-time activation on Gnosis — you'll
+                  see an Activate button on the account.
+                </p>
+
+                <button type="button" id="create-safe-done" class="create-wallet-done-btn">
+                  Done
+                </button>
+              </div>
+            </div>
+
+            <!-- Safe signing board sub-screen -->
+            <div id="sidebar-safe-signing" class="sidebar-subscreen hidden">
+              <div class="subscreen-header">
+                <button type="button" class="subscreen-back-btn" id="safe-signing-back">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="15 18 9 12 15 6"/>
+                  </svg>
+                  <span>Back</span>
+                </button>
+                <h3 class="subscreen-title" id="safe-signing-title">Collect signatures</h3>
+              </div>
+              <div class="subscreen-content" id="safe-signing-content"></div>
+            </div>
+
+            <!-- Unfinished Safe transactions sub-screen -->
+            <div id="sidebar-safe-pending" class="sidebar-subscreen hidden">
+              <div class="subscreen-header">
+                <button type="button" class="subscreen-back-btn" id="safe-pending-back">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="15 18 9 12 15 6"/>
+                  </svg>
+                  <span>Back</span>
+                </button>
+                <h3 class="subscreen-title">Unfinished Transactions</h3>
+              </div>
+              <div class="subscreen-content">
+                <p class="create-wallet-message">
+                  These transactions are waiting for owner signatures.
+                  Pick one to continue signing or discard it.
+                </p>
+                <div id="safe-pending-list" class="connect-ledger-account-list"></div>
+              </div>
+            </div>
+
             <!-- Receive sub-screen -->
             <div id="sidebar-receive" class="sidebar-subscreen hidden">
               <div class="subscreen-header">
@@ -2465,6 +2595,16 @@
                   </div>
                 </div>
 
+                <!-- Multi-owner (Safe) caveat -->
+                <div class="dapp-sign-warning hidden" id="dapp-connect-safe-note">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10"/>
+                    <line x1="12" y1="16" x2="12" y2="12"/>
+                    <line x1="12" y1="8" x2="12.01" y2="8"/>
+                  </svg>
+                  <span>Multi-owner account: works on Gnosis Chain and signs as a smart contract. Some apps can't verify contract signatures.</span>
+                </div>
+
                 <!-- Permissions info -->
                 <div class="dapp-connect-permissions">
                   <div class="dapp-connect-permissions-title">This will allow the site to:</div>
@@ -2652,6 +2792,16 @@
                     >Only sign messages from sites you trust. Signing can authorize actions on your
                     behalf.</span
                   >
+                </div>
+
+                <!-- Multi-owner (Safe) caveat -->
+                <div class="dapp-sign-warning hidden" id="dapp-sign-safe-note">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10"/>
+                    <line x1="12" y1="16" x2="12" y2="12"/>
+                    <line x1="12" y1="8" x2="12.01" y2="8"/>
+                  </svg>
+                  <span>This multi-owner account signs as a smart contract. Some apps can't verify contract signatures — if the site rejects the signature, that's why.</span>
                 </div>
 
                 <!-- Unlock section -->

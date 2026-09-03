@@ -142,7 +142,16 @@ async function handleWalletSettingsDelete() {
     return;
   }
 
-  if (!confirm(`Delete "${activeWallet.name}"?\n\nThe wallet can be recovered from your mnemonic phrase, but any custom name will be lost.`)) {
+  // Deleting a Safe discards its half-signed state with it — say so.
+  let pendingNote = '';
+  if (activeWallet.type === 'safe') {
+    const pending = await window.wallet.safeState(activeWallet.index).catch(() => null);
+    if (pending?.state) {
+      pendingNote = '\n\nIts waiting transaction and all collected signatures will be discarded.';
+    }
+  }
+
+  if (!confirm(`Delete "${activeWallet.name}"?\n\nThe wallet can be recovered from your mnemonic phrase, but any custom name will be lost.${pendingNote}`)) {
     return;
   }
 

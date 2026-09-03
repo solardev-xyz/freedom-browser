@@ -69,6 +69,12 @@ const matchesSingleSelector = (element, selector) => {
     return element.dataset[dataAttr.key] === dataAttr.value;
   }
 
+  const bareDataAttr = selector.match(/^\[data-([a-z-]+)\]$/);
+  if (bareDataAttr) {
+    const key = bareDataAttr[1].replace(/-([a-z])/g, (_, char) => char.toUpperCase());
+    return element.dataset[key] !== undefined;
+  }
+
   return false;
 };
 

@@ -479,6 +479,33 @@ contextBridge.exposeInMainWorld('wallet', {
     ipcRenderer.invoke('wallet:proxy-rpc', { rpcUrl, method, params }),
   requestChain: (chainId, method, params) =>
     ipcRenderer.invoke('wallet:chain-request', { chainId, method, params }),
+
+  // Safe multisig accounts
+  createSafe: (name, ownerIndexes, threshold) =>
+    ipcRenderer.invoke('wallet:create-safe', name, ownerIndexes, threshold),
+  getSafeStatus: (index) => ipcRenderer.invoke('wallet:get-safe-status', index),
+  activateSafe: (index) => ipcRenderer.invoke('wallet:activate-safe', index),
+  // Safe sends (the signing board): every call returns {success, state}
+  // where state is the board's render model (null when nothing pending).
+  safeSend: (safeIndex, tx, display) => ipcRenderer.invoke('wallet:safe-send', safeIndex, tx, display),
+  safeSign: (safeIndex, ownerIndex) => ipcRenderer.invoke('wallet:safe-sign', safeIndex, ownerIndex),
+  safeExecute: (safeIndex) => ipcRenderer.invoke('wallet:safe-execute', safeIndex),
+  safeState: (safeIndex) => ipcRenderer.invoke('wallet:safe-state', safeIndex),
+  safeCancelPending: (index) => ipcRenderer.invoke('wallet:safe-cancel-pending', index),
+  safePendingList: () => ipcRenderer.invoke('wallet:safe-pending-list'),
+  // SafeMessage sessions (dApp message signing via EIP-1271). start
+  // binds the session to the requesting page ({origin, webContentsId})
+  // and returns state.token — required by every other call.
+  safeMessageStart: (safeIndex, request, display, requester) =>
+    ipcRenderer.invoke('wallet:safe-message-start', safeIndex, request, display, requester),
+  safeMessageSign: (safeIndex, ownerIndex, token) =>
+    ipcRenderer.invoke('wallet:safe-message-sign', safeIndex, ownerIndex, token),
+  safeMessageState: (safeIndex, token) =>
+    ipcRenderer.invoke('wallet:safe-message-state', safeIndex, token),
+  safeMessageCancel: (safeIndex, token) =>
+    ipcRenderer.invoke('wallet:safe-message-cancel', safeIndex, token),
+  safeMessageComplete: (safeIndex, token) =>
+    ipcRenderer.invoke('wallet:safe-message-complete', safeIndex, token),
 });
 
 contextBridge.exposeInMainWorld('ledger', {

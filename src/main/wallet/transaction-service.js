@@ -78,6 +78,21 @@ async function getGasPrices(chainId) {
 }
 
 /**
+ * getGasPrices result → the fee fields buildTransaction / send params
+ * expect, so callers don't re-derive the eip1559-vs-legacy branch.
+ * @param {Object} gasPrices - Result of getGasPrices
+ * @returns {{maxFeePerGas: string, maxPriorityFeePerGas: string}|{gasPrice: string}}
+ */
+function toFeeFields(gasPrices) {
+  return gasPrices.type === 'eip1559'
+    ? {
+        maxFeePerGas: gasPrices.maxFeePerGas,
+        maxPriorityFeePerGas: gasPrices.maxPriorityFeePerGas,
+      }
+    : { gasPrice: gasPrices.gasPrice };
+}
+
+/**
  * Build ERC-20 transfer calldata
  * @param {string} to - Recipient address
  * @param {string} amount - Amount in token's smallest unit (as string)
@@ -455,6 +470,7 @@ async function waitForTransaction(txHash, chainId, confirmations = 1) {
 module.exports = {
   estimateGas,
   getGasPrices,
+  toFeeFields,
   buildErc20TransferData,
   parseAmount,
   formatAmount,

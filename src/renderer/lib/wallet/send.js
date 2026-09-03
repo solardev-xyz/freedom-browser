@@ -10,7 +10,8 @@ import {
   beginSignatureFlight,
   endSignatureFlight,
 } from './signature-flight.js';
-import { escapeHtml, accountType, bypassUnlockGateForDevice } from './wallet-utils.js';
+import { escapeHtml, accountType, walletRecord, bypassUnlockGateForDevice, renderSafeFeePayer, isSafeDeployed } from './wallet-utils.js';
+import { openSafeSigningBoard } from './safe-signing.js';
 import { refreshBalances, getTokensWithBalance, getChainsWithBalance, sortTokens } from './balance-display.js';
 import {
   getTrustStatusSentence,
@@ -252,10 +253,55 @@ function setupSendScreen() {
   }
 }
 
-export function openSend(options = {}) {
+/** The active account's record when it is a Safe, else null. */
+function activeSafeWallet() {
+  const wallet = walletRecord();
+  return wallet?.type === 'safe' ? wallet : null;
+}
+
+/** Whether the active account can send at all (Safes need activation). */
+function sendBlockedReason() {
+  const safe = activeSafeWallet();
+  if (safe && !isSafeDeployed(safe)) {
+    return 'Activate this account on Gnosis before sending';
+  }
+  return null;
+}
+
+/**
+ * Send owns its button; the active-account refresh (safe-status.js)
+ * calls this whenever the account changes.
+ */
+export function updateSendAvailability() {
+  const sendBtn = document.getElementById('wallet-send-btn');
+  if (!sendBtn) return;
+  const reason = sendBlockedReason();
+  sendBtn.disabled = Boolean(reason);
+  sendBtn.title = reason || '';
+}
+
+export async function openSend(options = {}) {
   if (!walletState.fullAddresses.wallet) {
     console.error('[WalletUI] No wallet address available');
     return;
+  }
+  // Guards the programmatic openers (x402 top-up links etc.) — the
+  // Send button itself is disabled via updateSendAvailability.
+  const blockedReason = sendBlockedReason();
+  if (blockedReason) {
+    console.warn('[WalletUI] Send is not available:', blockedReason);
+    return;
+  }
+
+  // One pending SafeTx per Safe: while one is waiting for signatures,
+  // Send routes to its board instead of starting a second one.
+  const safe = activeSafeWallet();
+  if (safe) {
+    const pending = await window.wallet.safeState(safe.index);
+    if (pending.success && pending.state) {
+      openSafeSigningBoard(safe.index);
+      return;
+    }
   }
 
   // The send screen takes over the sidebar directly (it predates
@@ -297,6 +343,11 @@ export function closeSend() {
   sendScreen?.classList.add('hidden');
   walletState.identityView?.classList.remove('hidden');
   resetSendState();
+  if (activeSafeWallet()) {
+    // A safe send may have left (or consumed) a half-signed transaction —
+    // let the status card re-evaluate without a module cycle.
+    window.dispatchEvent(new CustomEvent('wallet:send-closed'));
+  }
 }
 
 function resetSendState() {
@@ -779,6 +830,14 @@ function isEnsLikeName(value) {
 function validateAmount() {
   const amount = sendAmountInput?.value?.trim() || '';
 
+  // Without a selected asset there is nothing to send. (Vault-account
+  // sends fail this later in gas estimation, but the Safe path skips
+  // that — enforce it where the validation belongs.)
+  if (!sendTxState.selectedToken) {
+    showSendError('amount', 'Select an asset to send');
+    return false;
+  }
+
   if (!amount) {
     showSendError('amount', 'Amount is required');
     return false;
@@ -874,7 +933,10 @@ async function handleSendContinue() {
     }
 
     if (sendContinueBtn) sendContinueBtn.textContent = 'Loading...';
-    const [, reverseResult] = await Promise.all([estimateTransactionGas(), reverseLookup]);
+    // Safe sends: the executor pays the (execTransaction) fee, quoted
+    // after signatures exist — there is no meaningful estimate here.
+    const gasEstimate = activeSafeWallet() ? Promise.resolve() : estimateTransactionGas();
+    const [, reverseResult] = await Promise.all([gasEstimate, reverseLookup]);
     if (reverseResult && !sendTxState.recipientResolution) {
       sendTxState.recipientResolution = reverseResult;
     }
@@ -1020,6 +1082,14 @@ function populateSendReview() {
 
   if (sendReviewNetwork) {
     sendReviewNetwork.textContent = chain?.name || `Chain ${sendTxState.chainId}`;
+  }
+
+  const safe = activeSafeWallet();
+  if (safe) {
+    // The executor EOA pays the execution fee, quoted after signing.
+    renderSafeFeePayer(sendReviewFee, safe.index);
+    if (sendReviewTotal) sendReviewTotal.textContent = `${sendTxState.amount} ${token?.symbol || ''}`;
+    return;
   }
 
   if (sendReviewFee && sendTxState.estimatedFee) {
@@ -1256,11 +1326,37 @@ async function handleSendConfirm() {
     // History captures the *user-visible* counterparty + amount: the real
     // recipient (not the ERC-20 contract address) and the atomic amount
     // (not txParams.value which is 0 for token transfers).
-    const result = await window.wallet.sendTransaction(txParams, {
+    const display = {
       asset: token.address,
       toAddress: sendTxState.recipient,
       amount: amountResult.value,
-    });
+    };
+
+    const safe = activeSafeWallet();
+    if (safe) {
+      // Safe path: create the SafeTx (main silently adds the free vault
+      // signatures) and hand over to the signing board — collecting the
+      // remaining signatures is the user's task, at their pace.
+      const created = await window.wallet.safeSend(
+        safe.index,
+        { to: txParams.to, value: txParams.value, data: txParams.data },
+        {
+          ...display,
+          recipientName: sendTxState.recipientResolution?.name || null,
+          symbol: token.symbol,
+          decimals: token.decimals,
+          formattedAmount: sendTxState.amount,
+        }
+      );
+      if (!created.success) {
+        throw new Error(created.error || 'Failed to create the transaction');
+      }
+      closeSend();
+      await openSafeSigningBoard(safe.index, created.state);
+      return;
+    }
+
+    const result = await window.wallet.sendTransaction(txParams, display);
 
     if (!result.success) {
       throw new Error(result.error || 'Transaction failed');

@@ -66,6 +66,9 @@ async function startBroker(harness) {
   const broker = createRemoteSessionBroker({
     openlv: harness.openlv,
     remoteSigner: harness.remoteSigner,
+    // Explicit relay: without it the broker PROBES the public brokers
+    // with a real WebSocket — a unit test must never touch the network.
+    signaling: { p: 'mqtt', s: 'wss://relay.test/mqtt' },
     bridgeOrigin: 'https://bridge.test',
   });
   broker.start();

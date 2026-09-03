@@ -6484,3 +6484,337 @@
 [data-theme="light"] .dapp-sign-reject-btn:hover:not(:disabled) {
   background: rgba(0, 0, 0, 0.06);
 }
+
+/* ============================================
+   Safe (multi-owner) accounts
+   ============================================ */
+
+/* Preset choice: backup 1/2 · resilient 2/3 */
+.safe-preset-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.safe-preset {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text);
+}
+
+.safe-preset:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.safe-preset.selected {
+  border-color: var(--accent);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.safe-preset-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.safe-preset-detail {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+[data-theme="light"] .safe-preset {
+  background: rgba(0, 0, 0, 0.03);
+}
+
+[data-theme="light"] .safe-preset:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+[data-theme="light"] .safe-preset.selected {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+/* Status card: activation / needs-funds blocking states */
+.safe-status-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 0;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.safe-status-text {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.safe-status-text strong {
+  color: var(--text);
+}
+
+.safe-status-text code {
+  font-size: 11px;
+}
+
+.safe-status-btn {
+  align-self: flex-start;
+  padding: 6px 14px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.safe-status-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.safe-status-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.safe-status-btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.safe-status-btn.primary:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+[data-theme="light"] .safe-status-card {
+  background: rgba(0, 0, 0, 0.03);
+}
+
+[data-theme="light"] .safe-status-btn {
+  background: rgba(0, 0, 0, 0.03);
+}
+
+[data-theme="light"] .safe-status-btn:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.wallet-action-primary:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.safe-status-btn-row {
+  display: flex;
+  gap: 8px;
+}
+
+/* Safe signing board: per-owner rows with actions the user drives */
+.safe-signing-summary {
+  margin-bottom: 12px;
+}
+
+.safe-signing-what {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.safe-signing-meta {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.safe-signing-counter {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 12px;
+}
+
+.safe-signing-counter strong {
+  color: var(--text);
+}
+
+.safe-signing-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.safe-signing-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.safe-signing-row.signing {
+  border-color: var(--accent);
+}
+
+.safe-signing-row-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.safe-signing-row-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.safe-signing-row-type {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.safe-signing-row-note {
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+.safe-signing-row-note.error {
+  color: var(--danger);
+}
+
+.safe-signing-row-note.info {
+  color: var(--muted);
+}
+
+.safe-signing-row-state {
+  font-size: 12px;
+  color: var(--text);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.safe-signing-row-state.signed {
+  color: var(--secure-fg);
+  font-weight: 600;
+}
+
+.safe-signing-row-state.muted {
+  color: var(--muted);
+}
+
+.safe-signing-executing {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text);
+  padding: 12px 0;
+}
+
+.safe-signing-note {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.5;
+  margin-bottom: 8px;
+}
+
+.safe-signing-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  background: rgba(229, 83, 75, 0.08);
+  border: 1px solid rgba(229, 83, 75, 0.35);
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.safe-signing-banner-hint {
+  color: var(--muted);
+}
+
+.safe-signing-discard {
+  align-self: flex-start;
+  color: var(--danger);
+}
+
+[data-theme="light"] .safe-signing-row {
+  background: rgba(0, 0, 0, 0.03);
+}
+
+/* Unfinished Safe transactions: entry row above Recent payments */
+.safe-pending-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.safe-pending-row:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.safe-pending-row-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.safe-pending-row-label svg {
+  width: 15px;
+  height: 15px;
+  color: var(--muted);
+}
+
+.safe-pending-badge {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent);
+  border-radius: 9px;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.safe-pending-item-chevron {
+  color: var(--muted);
+  font-size: 16px;
+}
+
+[data-theme="light"] .safe-pending-row {
+  background: rgba(0, 0, 0, 0.03);
+}
+
+[data-theme="light"] .safe-pending-row:hover {
+  background: rgba(0, 0, 0, 0.06);
+}

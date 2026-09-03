@@ -60,11 +60,16 @@ async function loadDappSign() {
   jest.doMock('../dapp-provider.js', () => ({ executeSign }));
   // The Ledger account bypasses the vault-unlock gate, the same as in the app.
   jest.doMock('./wallet-utils.js', () => ({
-    bypassUnlockGateForHardware: jest.fn((_index, _unlockEl, confirmBtn) => {
+    bypassUnlockGateForDevice: jest.fn((_index, _unlockEl, confirmBtn) => {
       if (confirmBtn) confirmBtn.disabled = false;
       return true;
     }),
+    bypassUnlockGateForSafe: jest.fn(() => false),
+    isSafeAccount: jest.fn(() => false),
     signingButtonLabel: jest.fn(() => 'Confirm on your Ledger…'),
+  }));
+  jest.doMock('./safe-signing.js', () => ({
+    isSafeSigningBoardOpen: jest.fn(() => false),
   }));
   jest.doMock('./wallet-state.js', () => ({
     walletState: { identityView: createElement('div') },

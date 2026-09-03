@@ -14,9 +14,47 @@
  * error states and calls cancelJob when the user closes the dialog.
  */
 
-// Default signaling relay (spec default). Carries only encrypted
-// handshake/negotiation frames — never wallet data in the clear.
-const DEFAULT_SIGNALING = { p: 'mqtt', s: 'wss://test.mosquitto.org:8081/mqtt' };
+// Public signaling relays, in preference order (the spec default
+// first). They carry only encrypted handshake/negotiation frames —
+// never wallet data in the clear — and the chosen relay rides inside
+// the QR, so the phone always joins the same one. Public test brokers
+// go down routinely; the broker probes for the first reachable one.
+const SIGNALING_CANDIDATES = [
+  'wss://test.mosquitto.org:8081/mqtt',
+  'wss://broker.emqx.io:8084/mqtt',
+  'wss://broker.hivemq.com:8884/mqtt',
+];
+
+// How long a probed relay is trusted before re-probing. Short: a relay
+// can die between sessions, and the probe is one WebSocket handshake.
+const RELAY_CACHE_MS = 60_000;
+
+/** One WebSocket handshake as a reachability check. */
+function probeRelay(url, timeoutMs = 4000) {
+  return new Promise((resolve) => {
+    let socket;
+    const timer = setTimeout(() => {
+      try { socket?.close(); } catch { /* already dead */ }
+      resolve(false);
+    }, timeoutMs);
+    try {
+      socket = new WebSocket(url, ['mqtt']);
+    } catch {
+      clearTimeout(timer);
+      resolve(false);
+      return;
+    }
+    socket.onopen = () => {
+      clearTimeout(timer);
+      socket.close();
+      resolve(true);
+    };
+    socket.onerror = () => {
+      clearTimeout(timer);
+      resolve(false);
+    };
+  });
+}
 
 // Where the dual-purpose QR sends phones without an openlv-native wallet
 // (solardev-xyz/freedom-bridge must be deployed at this origin). The
@@ -64,7 +102,7 @@ export function createRemoteSessionBroker({
   remoteSigner = window.remoteSigner,
   signaling = globalThis.window?.nodeConfig?.openlvSignaling
     ? { p: 'mqtt', s: globalThis.window.nodeConfig.openlvSignaling }
-    : DEFAULT_SIGNALING,
+    : null, // null → probe SIGNALING_CANDIDATES per session
   bridgeOrigin = BRIDGE_ORIGIN,
 } = {}) {
   /** jobId → { session, settled, respond } */
@@ -143,6 +181,45 @@ export function createRemoteSessionBroker({
     return switchChain();
   }
 
+  // Probed-relay cache: {signaling, at}
+  let cachedRelay = null;
+
+  /**
+   * The signaling relay for a new session: the explicit override when
+   * one was injected (env/tests), else the first reachable public
+   * candidate (cached briefly — these brokers go down routinely).
+   */
+  async function resolveSignaling() {
+    if (signaling) return signaling;
+    if (cachedRelay && Date.now() - cachedRelay.at < RELAY_CACHE_MS) {
+      return cachedRelay.signaling;
+    }
+    for (const url of SIGNALING_CANDIDATES) {
+      if (await probeRelay(url)) {
+        cachedRelay = { signaling: { p: 'mqtt', s: url }, at: Date.now() };
+        return cachedRelay.signaling;
+      }
+    }
+    throw new Error('No signaling relay reachable — check your internet connection and try again');
+  }
+
+  /**
+   * Typed-data signature belonging to the user's own Safe (an owner
+   * co-signing) — 'safe' for a SafeTx, 'safe-message' for the EIP-1271
+   * SafeMessage wrap, null for ordinary dApp requests.
+   */
+  function safeSignatureContext(method, params) {
+    if (method !== 'eth_signTypedData_v4') return null;
+    try {
+      const { primaryType } = JSON.parse(params[1]);
+      if (primaryType === 'SafeTx') return 'safe';
+      if (primaryType === 'SafeMessage') return 'safe-message';
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
   /**
    * Host a session for one request and deliver the outcome via `respond`
    * — main's IPC reply for signing jobs, a local promise for the
@@ -178,8 +255,10 @@ export function createRemoteSessionBroker({
 
     try {
       const sdk = openlv || (await loadVendorOpenlv());
+      const relay = await resolveSignaling();
+      if (stale()) return;
       const session = await sdk.createSession(
-        signaling,
+        relay,
         sdk.mqtt,
         [sdk.webrtc()],
         onIncomingMessage,
@@ -197,6 +276,9 @@ export function createRemoteSessionBroker({
         kind,
         phase: 'qr',
         method,
+        // A Safe signature is the user's own multi-owner account at
+        // work, not a dApp request — the panel words it accordingly.
+        context: safeSignatureContext(method, params) || 'dapp',
         uri,
         bridgeUrl: `${bridgeOrigin}/#${uri}`,
       });
@@ -242,8 +324,11 @@ export function createRemoteSessionBroker({
     } catch (err) {
       if (stale()) return; // failures of a torn-down session are noise
       console.error('[RemoteSession] job failed:', err);
-      emit({ jobId, kind, phase: 'error', method, error: { message: err.message } });
-      settle(jobId, { error: { code: 'REMOTE_UNKNOWN', message: err.message } });
+      // Non-Error rejections (SDK internals) must not collapse into the
+      // generic registry text — surface what actually happened.
+      const message = err?.message || String(err);
+      emit({ jobId, kind, phase: 'error', method, error: { message } });
+      settle(jobId, { error: { code: 'REMOTE_UNKNOWN', message } });
     }
   }
 
