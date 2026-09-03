@@ -17,7 +17,7 @@ const { EventEmitter } = require('events');
 
 jest.mock('https');
 
-const { fetchReleaseOnce, releaseUrl, ANT_REPO } = require('./fetch-ant');
+const { fetchReleaseOnce, releaseUrl, ANT_REPO, PINNED_RELEASE_TAG } = require('./fetch-ant');
 
 // Build a fake `https.get` that replays scripted responses in order and
 // records the (url, options) each call was made with.
@@ -49,7 +49,10 @@ function mockResponses(responses) {
   return calls;
 }
 
-const RELEASE = { tag_name: 'v0.5.43', assets: [] };
+// Mirrors the tag pinned in fetch-ant.js; the first test below asserts the two
+// still agree, so a pin bump that leaves these fixtures stale fails the suite.
+const PINNED_TAG = 'v0.5.44';
+const RELEASE = { tag_name: PINNED_TAG, assets: [] };
 
 afterEach(() => {
   jest.resetAllMocks();
@@ -61,6 +64,7 @@ describe('fetch-ant release lookup', () => {
   test('points at the current upstream repo, freedom-hq/ant', () => {
     expect(ANT_REPO).toBe('freedom-hq/ant');
     expect(releaseUrl()).toMatch('https://api.github.com/repos/freedom-hq/ant/releases/');
+    expect(PINNED_TAG).toBe(PINNED_RELEASE_TAG);
   });
 
   test('resolves a 200 without redirecting', async () => {
@@ -75,25 +79,25 @@ describe('fetch-ant release lookup', () => {
       {
         statusCode: 301,
         headers: {
-          location: 'https://api.github.com/repositories/1220484552/releases/tags/v0.5.43',
+          location: 'https://api.github.com/repositories/1220484552/releases/tags/v0.5.44',
         },
       },
       { statusCode: 200, body: JSON.stringify(RELEASE) },
     ]);
 
     await expect(
-      fetchReleaseOnce('https://api.github.com/repos/solardev-xyz/ant/releases/tags/v0.5.43')
+      fetchReleaseOnce('https://api.github.com/repos/solardev-xyz/ant/releases/tags/v0.5.44')
     ).resolves.toEqual(RELEASE);
 
     expect(calls.map((c) => c.url)).toEqual([
-      'https://api.github.com/repos/solardev-xyz/ant/releases/tags/v0.5.43',
-      'https://api.github.com/repositories/1220484552/releases/tags/v0.5.43',
+      'https://api.github.com/repos/solardev-xyz/ant/releases/tags/v0.5.44',
+      'https://api.github.com/repositories/1220484552/releases/tags/v0.5.44',
     ]);
   });
 
   test.each([302, 303, 307, 308])('follows a %i redirect', async (statusCode) => {
     mockResponses([
-      { statusCode, headers: { location: '/repos/freedom-hq/ant/releases/tags/v0.5.43' } },
+      { statusCode, headers: { location: '/repos/freedom-hq/ant/releases/tags/v0.5.44' } },
       { statusCode: 200, body: JSON.stringify(RELEASE) },
     ]);
     await expect(fetchReleaseOnce()).resolves.toEqual(RELEASE);

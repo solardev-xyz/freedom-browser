@@ -16,7 +16,7 @@ const ANT_REPO = process.env.ANT_REPO || 'freedom-hq/ant';
 // could ship a different Ant than CI validated. Override via ANT_RELEASE_TAG
 // for local testing of newer releases; set it to `latest` to resolve the
 // repo's most recent published release.
-const PINNED_RELEASE_TAG = 'v0.5.43';
+const PINNED_RELEASE_TAG = 'v0.5.44';
 // In-repo trust root for the pinned release: the sha256 of its SHA256SUMS
 // asset, recorded at pin time (trust-on-first-use by the author). The release
 // downloads its SHA256SUMS from the same GitHub release as the binaries, so
@@ -25,7 +25,7 @@ const PINNED_RELEASE_TAG = 'v0.5.43';
 // that tampering detectable. Update alongside PINNED_RELEASE_TAG on every
 // deliberate bump: `shasum -a 256` the freshly downloaded SHA256SUMS.
 const PINNED_SHA256SUMS_DIGEST =
-  'ba9d97564a0e8631371bf036bdb33e0a9c7986493a7dca2406907f30e9bb900d';
+  '8b29de81c31ec267ed53cdeb4eefb11e23b819f5c1abb76837060632986427ff';
 const ANT_RELEASE_TAG = process.env.ANT_RELEASE_TAG || PINNED_RELEASE_TAG;
 
 const API_HOST = 'api.github.com';
@@ -404,4 +404,4 @@ if (require.main === module) {
 }
 
 // Exported for unit tests; `npm run ant:download` still runs main() above.
-module.exports = { fetchReleaseOnce, releaseUrl, parseChecksums, ANT_REPO };
+module.exports = { fetchReleaseOnce, releaseUrl, parseChecksums, ANT_REPO, PINNED_RELEASE_TAG };
