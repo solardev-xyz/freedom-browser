@@ -14,6 +14,11 @@ const {
   capabilityProbeArguments,
 } = require('./bubblewrap-backend');
 const { createWorkspaceExecutionPolicy } = require('./execution-policy');
+const { resolveExecutableAccess } = require('./executable-access');
+const {
+  approvedCommandPath,
+  resolveProcessRuntimeAccess,
+} = require('./qualification-runtime-access');
 
 jest.setTimeout(30_000);
 
@@ -95,6 +100,7 @@ const bubblewrapDescription = bubblewrapPreflight.available
 describeBubblewrap(bubblewrapDescription, () => {
   const executor = new BubblewrapExecutor();
   let capabilities;
+  let runtimeAccess;
   let fixture;
 
   beforeAll(async () => {
@@ -104,6 +110,7 @@ describeBubblewrap(bubblewrapDescription, () => {
         `Bubblewrap qualification is required but unavailable: ${capabilities.denial.code}`
       );
     }
+    runtimeAccess = await resolveProcessRuntimeAccess();
   });
 
   beforeEach(async () => {
@@ -125,7 +132,13 @@ describeBubblewrap(bubblewrapDescription, () => {
     });
   }
 
-  test('runs useful shell, Node, Python, Git, and descendant workloads in the workspace', async () => {
+  // Node workloads run the test process's own runtime through approved runtime roots. The
+  // baseline system toolchain never has to provide node or npm.
+  async function runtimePolicy(options = {}) {
+    return policy({ runtimeRoots: runtimeAccess.runtimeRoots, ...options });
+  }
+
+  test('runs useful shell, Python, Git, and descendant workloads on the system toolchain', async () => {
     const receipt = await executor.execute(await policy(), {
       command: '/bin/sh',
       args: [
@@ -135,7 +148,6 @@ describeBubblewrap(bubblewrapDescription, () => {
           "printf '#!/bin/sh\\nprintf nested > nested.txt\\n' > generated.sh",
           'chmod +x generated.sh',
           './generated.sh',
-          "node -e \"require('fs').writeFileSync('node.txt', 'node')\"",
           "python3 -c \"from pathlib import Path; Path('python.txt').write_text('python')\"",
           'awk \'BEGIN { print "awk-ok" }\'',
           'git status --short',
@@ -170,11 +182,69 @@ describeBubblewrap(bubblewrapDescription, () => {
       fs.promises.readFile(path.join(fixture.workspaceRoot, 'nested.txt'), 'utf8')
     ).resolves.toBe('nested');
     await expect(
-      fs.promises.readFile(path.join(fixture.workspaceRoot, 'node.txt'), 'utf8')
-    ).resolves.toBe('node');
-    await expect(
       fs.promises.readFile(path.join(fixture.workspaceRoot, 'python.txt'), 'utf8')
     ).resolves.toBe('python');
+  });
+
+  test('runs Node workloads only through the approved process runtime', async () => {
+    const receipt = await executor.execute(await runtimePolicy(), {
+      command: 'node',
+      args: ['-e', "require('fs').writeFileSync('node.txt', process.execPath)"],
+    });
+
+    expect(receipt).toMatchObject({ state: 'completed', exitCode: 0 });
+    const sandboxNodePath = await fs.promises.readFile(
+      path.join(fixture.workspaceRoot, 'node.txt'),
+      'utf8'
+    );
+    const approvedNodePath = approvedCommandPath(runtimeAccess, 'node');
+    if (approvedNodePath) {
+      expect(sandboxNodePath).toBe(approvedNodePath);
+    } else {
+      expect(sandboxNodePath.startsWith('/usr/')).toBe(true);
+      expect(sandboxNodePath).not.toContain('/opt/freedom-toolchain/');
+    }
+  });
+
+  test('resolves approved runtime commands ahead of the system toolchain without a system Node', async () => {
+    const binDirectory = path.join(fixture.fixtureRoot, 'runtime', 'bin');
+    await fs.promises.mkdir(binDirectory, { recursive: true });
+    for (const name of ['node', 'npm']) {
+      await fs.promises.writeFile(
+        path.join(binDirectory, name),
+        `#!/bin/sh\nprintf 'approved-${name}:%s\\n' "$0"\n`,
+        { mode: 0o700 }
+      );
+    }
+    const access = await resolveExecutableAccess(['node', 'npm'], {
+      hostEnvironment: { PATH: binDirectory },
+    });
+    expect(access.runtimeRoots).toHaveLength(1);
+    const [root] = access.runtimeRoots;
+
+    const approved = await executor.execute(await policy({ runtimeRoots: access.runtimeRoots }), {
+      command: '/bin/sh',
+      args: ['-c', 'node; npm; command -v node; command -v npm; printf "%s" "$PATH"'],
+    });
+    expect(approved).toMatchObject({ state: 'completed', exitCode: 0 });
+    expect(approved.stdout).toBe(
+      [
+        `approved-node:${root.mountPath}/bin/node`,
+        `approved-npm:${root.mountPath}/bin/npm`,
+        `${root.mountPath}/bin/node`,
+        `${root.mountPath}/bin/npm`,
+        `${root.mountPath}/bin:/usr/bin:/bin`,
+      ].join('\n')
+    );
+
+    const baseline = await executor.execute(await policy(), {
+      command: '/bin/sh',
+      args: [
+        '-c',
+        `test ! -e ${root.mountPath} && test ! -e /opt/freedom-toolchain && printf "%s" "$PATH"`,
+      ],
+    });
+    expect(baseline).toMatchObject({ state: 'completed', exitCode: 0, stdout: '/usr/bin:/bin' });
   });
 
   test('denies direct, encoded, generated-script, and symlink reads and writes outside the workspace', async () => {
@@ -199,7 +269,7 @@ describeBubblewrap(bubblewrapDescription, () => {
       'catch (error) { results.generated = error.code; }',
       'process.stdout.write(JSON.stringify(results));',
     ].join('\n');
-    const receipt = await executor.execute(await policy(), {
+    const receipt = await executor.execute(await runtimePolicy(), {
       command: 'node',
       args: [
         '-e',
@@ -279,7 +349,7 @@ describeBubblewrap(bubblewrapDescription, () => {
     let receipt;
     try {
       receipt = await executor.execute(
-        await policy({
+        await runtimePolicy({
           hostEnvironment: { LANG: 'C.UTF-8', AWS_SECRET_ACCESS_KEY: 'must-not-leak' },
         }),
         {
@@ -366,7 +436,7 @@ describeBubblewrap(bubblewrapDescription, () => {
     let fullReceipt;
     let offlineReceipt;
     try {
-      fullReceipt = await executor.execute(await policy({ network: 'full' }), {
+      fullReceipt = await executor.execute(await runtimePolicy({ network: 'full' }), {
         command: 'node',
         args: [
           '-e',
@@ -380,7 +450,7 @@ describeBubblewrap(bubblewrapDescription, () => {
           socketPath,
         ],
       });
-      offlineReceipt = await executor.execute(await policy(), {
+      offlineReceipt = await executor.execute(await runtimePolicy(), {
         command: 'node',
         args: [
           '-e',
@@ -572,7 +642,7 @@ describeBubblewrap(bubblewrapDescription, () => {
   });
 
   test('bounds output without killing a successful command and distinguishes ordinary failure', async () => {
-    const boundedPolicy = await policy({
+    const boundedPolicy = await runtimePolicy({
       limits: { timeoutMs: 10_000, stdoutBytes: 1_024, stderrBytes: 1_024 },
     });
     const output = await executor.execute(boundedPolicy, {

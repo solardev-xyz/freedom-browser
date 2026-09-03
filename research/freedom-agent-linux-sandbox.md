@@ -326,16 +326,18 @@ Observed from a descendant Node process under `full`: host `127.0.0.1` service `
 
 The offline boundary was reconfirmed in the same session: `ENETUNREACH` to the public internet, `ENOTFOUND` for DNS, `ECONNREFUSED` for host loopback and host abstract sockets, `ENOENT` for the pathname socket, working in-namespace loopback TCP and Unix sockets, `ESRCH` for host PIDs, an unreadable inherited descriptor, a scrubbed credential-shaped variable, and `EROFS` on `.git`. Timeout and cancellation retained `SIGKILL`, `terminationGuarantee: namespace_scoped`, `terminationScope: pid_namespace`, `survivorsPossible: false`, and `completeDescendantTermination: true`; no Bubblewrap process, mount, staging directory, or fixture survived.
 
-Host limitation: the server no longer provides a distribution Node or npm under `/usr/bin`, so the five integration tests and the repository qualification workload that invoke `node` or `npm` from the fixed sandbox toolchain `PATH` exited 127 there. The network evidence above was therefore reproduced with the corpus' exact descendant script through an approved read-only executable root for a root-owned Node `24.15.0` installation under `/opt`, resolved by `resolveExecutableAccess()` and mounted at its `/opt/freedom-toolchain/approved/<id>` path. A host that ships a system Node is required before the unmodified Jest corpus can pass again; the tests were not changed to work around the host.
+Corpus runtime provenance: the server provides no distribution Node or npm under `/usr/bin`, and the integration corpus and repository qualification previously assumed one on the fixed sandbox toolchain `PATH`, so their Node workloads exited 127 there. That ambient assumption was removed rather than satisfied. `qualification-runtime-access.js` resolves the test or qualification process's own runtime (`process.execPath` and the `npm` beside it) through the generic `resolveExecutableAccess()` contract, searching only that executable's directory, and hands the resulting validated read-only runtime roots to the policies of the workloads that need them. Baseline system-toolchain tests (shell, Python, Git, descriptor closure, tmpfs bounds, nested-userns denial, timeout and cancellation) stay on the untouched toolchain view and no longer claim that Node is universally installed. Regressions prove the derivation for a fake non-system prefix, the rejection of ambient `PATH` entries and of a runtime without `npm`, the qualification's baseline/runtime policy selection, and, inside a real sandbox, that `node` and `npm` resolve from the approved mount ahead of `/usr/bin:/bin` while the baseline policy exposes no approved mount at all. The full-network descendant test runs through that approved runtime and is otherwise unchanged.
 
-Results:
+Results after the corpus correction, all as the ordinary non-root user with `FREEDOM_SANDBOX_LAN_HOST` set to the server's assigned non-loopback IPv4 address:
 
-- focused execution-policy, Bubblewrap backend, and Bubblewrap integration suites with `FREEDOM_SANDBOX_LAN_HOST` set: 25, 14, and 8 tests passed; the 5 integration tests that need a system Node failed with exit 127;
-- `npm run test:agent-sandbox`: 9 suites and 78 tests passed; 3 suites and 16 macOS tests skipped; the same 5 tests failed;
-- `npm run test:agent-sandbox:qualification`: descriptor closure completed inside Bubblewrap; the focused Jest workload exited 127 because `npm` is absent from the sandbox toolchain;
-- `FREEDOM_SANDBOX_DESTRUCTIVE=1 npm run test:agent-sandbox:destructive`: 1 passed;
+- focused execution-policy, Bubblewrap backend, and Bubblewrap integration suites: 25, 14, and 15 tests passed, 54 of 54;
+- `npm run test:agent-sandbox`: 11 suites and 90 tests passed; 3 suites and 16 macOS tests skipped; exit 0;
+- `npm run test:agent-sandbox:qualification`: descriptor closure (`descriptors: []`), focused Jest, full lint, and the Babel transform all completed inside Bubblewrap with node and npm from the approved runtime roots; exit 0;
+- `FREEDOM_SANDBOX_DESTRUCTIVE=1 npm run test:agent-sandbox:destructive`: 1 passed; exit 0;
 - `npm run lint`: passed; and
-- `npm test`: 223 suites and 3,939 tests passed; 8 suites and 33 tests skipped; the same 5 Bubblewrap integration tests failed on the missing system Node, so the command exited non-zero on this host.
+- `npm test`: 226 suites and 3,953 tests passed; 8 suites and 33 tests skipped; exit 0.
+
+The full-network descendant observations, the immediate offline revocation, the receipt metadata, and the namespace-scoped teardown with no survivors were unchanged from the run above. No reachable off-host LAN peer exists on this server (its neighbours are the provider gateway and on-host container bridges), so LAN connectivity remains proven only against the server's own non-loopback address.
 
 ## Seccomp assessment
 
