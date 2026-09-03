@@ -113,6 +113,58 @@ export const SHORTCUTS = [
     category: 'Page',
     editable: true,
   },
+  // Zoom acts on the active <webview>, not the chrome — hence custom View
+  // items rather than Electron's zoomIn/zoomOut/resetZoom roles, which
+  // step zoomLevel on the focused webContents and would bypass both this
+  // registry and the hamburger menu's zoom readout.
+  //
+  // Zoom is the first binding to sit on punctuation that is not reachable
+  // unshifted on every layout, so it carries the aliases mainstream
+  // browsers bind (see the alias notes on each entry). Aliases are hidden
+  // View-menu rows, so the visible menu still shows one row per action.
+  {
+    id: 'page.zoomIn',
+    description: 'Zoom In',
+    defaultAccelerator: 'CmdOrCtrl+=',
+    // `=` is a shifted key on many layouts (German, Spanish, Italian, Swiss
+    // and the Nordic ones all put it on Shift+0 — French does not: there `=`
+    // is unshifted and the *digits* are shifted, which `Digit0` already
+    // covers), and
+    // eventMatchesAccelerator demands an exact modifier match, so the bare
+    // `CmdOrCtrl+=` binding can never fire there. `CmdOrCtrl+Shift+=` is
+    // also the chord a US-layout user presses for a literal `+`. `Plus`
+    // covers layouts where `+` is unshifted (Nordic), and `numadd` the
+    // numeric keypad, which Electron treats as a distinct key.
+    aliases: [
+      { accelerator: 'CmdOrCtrl+Shift+=' },
+      { accelerator: 'CmdOrCtrl+Plus' },
+      { accelerator: 'CmdOrCtrl+numadd' },
+    ],
+    context: 'both',
+    category: 'Page',
+    editable: true,
+  },
+  {
+    id: 'page.zoomOut',
+    description: 'Zoom Out',
+    defaultAccelerator: 'CmdOrCtrl+-',
+    // Keypad minus is a distinct key to Electron's accelerator parser, so
+    // the main-row binding above does not cover it.
+    aliases: [{ accelerator: 'CmdOrCtrl+numsub' }],
+    context: 'both',
+    category: 'Page',
+    editable: true,
+  },
+  {
+    id: 'page.zoomReset',
+    description: 'Actual Size',
+    defaultAccelerator: 'CmdOrCtrl+0',
+    // Keypad zero, for the same reason as Zoom Out's keypad alias.
+    aliases: [{ accelerator: 'CmdOrCtrl+num0' }],
+    context: 'both',
+    category: 'Page',
+    editable: true,
+  },
 
   // Navigation
   {
@@ -224,6 +276,29 @@ const MODIFIER_TOKENS = {
   super: 'meta',
 };
 
+// Numeric-keypad KeyboardEvent.code → Electron's own accelerator spelling
+// for that key. The keypad is a separate physical key set as far as the
+// accelerator parser is concerned: a `CmdOrCtrl+-` menu accelerator never
+// fires for keypad minus, so bindings that want both carry a `num*` alias
+// next to the main-row one.
+const NUMPAD_CODE_KEYS = {
+  NumpadAdd: 'numadd',
+  NumpadSubtract: 'numsub',
+  NumpadMultiply: 'nummult',
+  NumpadDivide: 'numdiv',
+  NumpadDecimal: 'numdec',
+  Numpad0: 'num0',
+  Numpad1: 'num1',
+  Numpad2: 'num2',
+  Numpad3: 'num3',
+  Numpad4: 'num4',
+  Numpad5: 'num5',
+  Numpad6: 'num6',
+  Numpad7: 'num7',
+  Numpad8: 'num8',
+  Numpad9: 'num9',
+};
+
 const KEY_ALIASES = {
   esc: 'Escape',
   escape: 'Escape',
@@ -249,6 +324,9 @@ const KEY_ALIASES = {
   right: 'Right',
   arrowright: 'Right',
   plus: 'Plus',
+  // Keypad keys keep Electron's own spelling; listed here so canonicalKey
+  // normalizes their case and isRecognizedKey accepts them.
+  ...Object.fromEntries(Object.values(NUMPAD_CODE_KEYS).map((key) => [key, key])),
 };
 
 const CODE_BASE_KEYS = {
@@ -321,6 +399,8 @@ export function eventKeyCandidates(event) {
       candidates.add(code.slice(3).toLowerCase());
     } else if (/^Digit\d$/.test(code)) {
       candidates.add(code.slice(5));
+    } else if (NUMPAD_CODE_KEYS[code]) {
+      candidates.add(NUMPAD_CODE_KEYS[code]);
     }
   }
   return candidates;

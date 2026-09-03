@@ -7,6 +7,7 @@ import { startRadicleInfoUpdates, stopRadicleInfoUpdates } from './radicle-ui.js
 import { hideTabContextMenu, getActiveWebview } from './tabs.js';
 import { hideBookmarkContextMenu, hideOverflowMenu } from './bookmarks-ui.js';
 import { showMenuBackdrop, hideMenuBackdrop } from './menu-backdrop.js';
+import { matchesShortcut } from './shortcuts.js';
 
 const electronAPI = window.electronAPI;
 
@@ -127,6 +128,32 @@ export const updateZoomDisplay = () => {
   }
 };
 
+// Zoom bounds and step, matching the hamburger menu's − / + buttons.
+const ZOOM_STEP = 0.1;
+const ZOOM_MIN = 0.25;
+const ZOOM_MAX = 5;
+
+// Single zoom code path shared by the hamburger buttons, the View-menu
+// accelerators and the renderer keydown fallback, so the zoom-level readout
+// never drifts from the webview's real factor. getZoomFactor throws on a
+// webview that is not yet dom-ready — reachable now that a keystroke can
+// zoom a tab the moment it opens — so the read is guarded the same way
+// updateZoomDisplay guards it.
+const applyZoomFactor = (next) => {
+  const webview = getActiveWebview();
+  if (!webview) return;
+  try {
+    webview.setZoomFactor(next(webview.getZoomFactor()));
+  } catch {
+    return;
+  }
+  updateZoomDisplay();
+};
+
+export const zoomIn = () => applyZoomFactor((current) => Math.min(ZOOM_MAX, current + ZOOM_STEP));
+export const zoomOut = () => applyZoomFactor((current) => Math.max(ZOOM_MIN, current - ZOOM_STEP));
+export const zoomReset = () => applyZoomFactor(() => 1);
+
 // Format keyboard shortcuts for the current platform
 const formatShortcut = (shortcut, isMac) => {
   if (!shortcut) return '';
@@ -142,9 +169,15 @@ const formatShortcut = (shortcut, isMac) => {
 // Initialize keyboard shortcuts based on platform.
 //
 // A hint here must name a binding the app actually implements — an item
-// with no shortcut (Print, Zoom) carries no hint at all. Where the two
-// platforms differ (History is Cmd+Y on macOS, Ctrl+H elsewhere, per
+// with no shortcut (Print) carries no hint at all. Where the two platforms
+// differ (History is Cmd+Y on macOS, Ctrl+H elsewhere, per
 // src/shared/shortcuts.js), `data-shortcut-other` carries the non-mac form.
+//
+// The zoom row is the one bound item deliberately left hintless: it is a
+// − / readout / + stepper, not a labelled menu item, so it has no
+// `.menu-item-shortcut` slot to fill and three bindings to name rather than
+// one. Its accelerators are surfaced in the View menu and remain remappable
+// under Settings > Shortcuts.
 const initKeyboardShortcuts = async () => {
   const platform = await electronAPI?.getPlatform?.();
   const isMac = platform === 'darwin';
@@ -217,22 +250,49 @@ export const initMenus = () => {
 
   // Zoom controls
   zoomOutBtn?.addEventListener('click', () => {
-    const webview = getActiveWebview();
-    if (webview) {
-      const currentZoom = webview.getZoomFactor();
-      const newZoom = Math.max(0.25, currentZoom - 0.1);
-      webview.setZoomFactor(newZoom);
-      updateZoomDisplay();
-    }
+    zoomOut();
   });
 
   zoomInBtn?.addEventListener('click', () => {
-    const webview = getActiveWebview();
-    if (webview) {
-      const currentZoom = webview.getZoomFactor();
-      const newZoom = Math.min(5, currentZoom + 0.1);
-      webview.setZoomFactor(newZoom);
-      updateZoomDisplay();
+    zoomIn();
+  });
+
+  // View-menu zoom accelerators arrive here so all entry points share one
+  // code path (issue #88 — the shortcuts README documents were never wired).
+  electronAPI?.onZoomIn?.(() => {
+    zoomIn();
+  });
+
+  electronAPI?.onZoomOut?.(() => {
+    zoomOut();
+  });
+
+  electronAPI?.onZoomReset?.(() => {
+    zoomReset();
+  });
+
+  // Keyboard fallback for the zoom accelerators, resolved through the shared
+  // shortcut registry so user remaps apply live. Needed on the Linux
+  // frameless setups where menu accelerators never reach the app — the same
+  // reason tabs.js and navigation.js carry keydown fallbacks.
+  //
+  // The order of this chain is load-bearing, and it must stay one if/else-if
+  // chain rather than independent ifs: on the Nordic layouts (Swedish,
+  // Norwegian, Danish, Finnish) `+` is the unshifted key at the US `Minus`
+  // position, so Ctrl+`+` arrives as { key: '+', code: 'Minus' } and matches
+  // *both* page.zoomIn (via the `CmdOrCtrl+Plus` alias) and page.zoomOut (via
+  // the `-` its physical code implies). Zoom In is tested first so those
+  // users zoom in, which is what they pressed. menus.test.js pins it.
+  window.addEventListener('keydown', (event) => {
+    if (matchesShortcut(event, 'page.zoomIn')) {
+      event.preventDefault();
+      zoomIn();
+    } else if (matchesShortcut(event, 'page.zoomOut')) {
+      event.preventDefault();
+      zoomOut();
+    } else if (matchesShortcut(event, 'page.zoomReset')) {
+      event.preventDefault();
+      zoomReset();
     }
   });
 

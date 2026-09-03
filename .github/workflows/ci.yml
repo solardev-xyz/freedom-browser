@@ -460,6 +460,49 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  # The keyboard shortcut registry is the only source of truth for menu
+  # accelerators, the renderer keydown fallback and the Settings > Shortcuts
+  # remap flow, and unit tests can only prove the three agree on paper. These
+  # two specs drive the real main → preload → renderer round trip, so a
+  # regression in it cannot pass unit-only CI (previously they ran locally
+  # only — see #180).
+  e2e-shortcuts-zoom:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Linux native USB build dependency
+        uses: ./.github/actions/install-linux-native-deps
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright system dependencies
+        uses: ./.github/actions/install-playwright-deps
+
+      - name: Run zoom + shortcuts E2E
+        run: xvfb-run -a npm run test:e2e -- test-e2e/zoom.spec.js test-e2e/shortcuts.spec.js
+
+      - name: Upload Playwright traces and screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-shortcuts-zoom-traces
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
   # Onboarding wizard must create node identities while a real Swarm node (now
   # antd) is running. Drives the full password wizard end-to-end against a real
   # antd spawn across all three desktop platforms — the cross-platform proof

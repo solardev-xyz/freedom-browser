@@ -56,12 +56,24 @@ const loadMenusModule = async ({ platform = 'darwin', webview } = {}) => {
 
   const documentHandlers = {};
   const windowHandlers = {};
+  // Captures the View-menu zoom subscriptions so tests can fire them the way
+  // the main process would.
+  const zoomCallbacks = {};
   const electronAPI = {
     getPlatform: jest.fn().mockResolvedValue(platform),
     newWindow: jest.fn(),
     toggleFullscreen: jest.fn(),
     showAbout: jest.fn(),
     checkForUpdates: jest.fn(),
+    onZoomIn: jest.fn((callback) => {
+      zoomCallbacks.in = callback;
+    }),
+    onZoomOut: jest.fn((callback) => {
+      zoomCallbacks.out = callback;
+    }),
+    onZoomReset: jest.fn((callback) => {
+      zoomCallbacks.reset = callback;
+    }),
   };
   const tabsMocks = {
     hideTabContextMenu: jest.fn(),
@@ -143,9 +155,14 @@ const loadMenusModule = async ({ platform = 'darwin', webview } = {}) => {
 
   const menus = await import('./menus.js');
   const stateModule = await import('./state.js');
+  // Same module instance menus.js resolves matchesShortcut through, so the
+  // platform can be pinned instead of sniffed from a jsdom-less navigator.
+  const shortcuts = await import('./shortcuts.js');
+  shortcuts.configureShortcuts({ platform, overrides: {} });
 
   return {
     menus,
+    shortcuts,
     state: stateModule.state,
     elements: {
       menuButton,
@@ -176,6 +193,7 @@ const loadMenusModule = async ({ platform = 'darwin', webview } = {}) => {
     },
     mocks: {
       electronAPI,
+      zoomCallbacks,
       tabsMocks,
       bookmarkMocks,
       backdropMocks,
@@ -278,6 +296,153 @@ describe('menus', () => {
     expect(webview.closeDevTools).toHaveBeenCalled();
     expect(mocks.electronAPI.showAbout).toHaveBeenCalled();
     expect(mocks.electronAPI.checkForUpdates).toHaveBeenCalled();
+  });
+
+  test('zoom shortcuts share the hamburger buttons code path and keep the readout in sync', async () => {
+    let zoomFactor = 1;
+    const webview = {
+      getZoomFactor: jest.fn(() => zoomFactor),
+      setZoomFactor: jest.fn((next) => {
+        zoomFactor = next;
+      }),
+    };
+    const { menus, elements, handlers, mocks } = await loadMenusModule({
+      platform: 'darwin',
+      webview,
+    });
+
+    menus.initMenus();
+    await Promise.resolve();
+
+    // View-menu accelerator → main → renderer.
+    mocks.zoomCallbacks.in();
+    expect(webview.setZoomFactor).toHaveBeenLastCalledWith(1.1);
+    expect(elements.zoomLevelDisplay.textContent).toBe('110%');
+
+    mocks.zoomCallbacks.out();
+    expect(webview.setZoomFactor).toHaveBeenLastCalledWith(1);
+
+    mocks.zoomCallbacks.in();
+    mocks.zoomCallbacks.reset();
+    expect(webview.setZoomFactor).toHaveBeenLastCalledWith(1);
+    expect(elements.zoomLevelDisplay.textContent).toBe('100%');
+
+    // Keydown fallback — the only path on the Linux frameless setups where
+    // menu accelerators never reach the app.
+    const preventDefault = jest.fn();
+    handlers.windowHandlers.keydown({
+      key: '=',
+      code: 'Equal',
+      metaKey: true,
+      preventDefault,
+    });
+    expect(preventDefault).toHaveBeenCalled();
+    expect(webview.setZoomFactor).toHaveBeenLastCalledWith(1.1);
+
+    handlers.windowHandlers.keydown({
+      key: '-',
+      code: 'Minus',
+      metaKey: true,
+      preventDefault: jest.fn(),
+    });
+    expect(webview.setZoomFactor).toHaveBeenLastCalledWith(1);
+
+    handlers.windowHandlers.keydown({
+      key: '0',
+      code: 'Digit0',
+      metaKey: true,
+      preventDefault: jest.fn(),
+    });
+    expect(webview.setZoomFactor).toHaveBeenLastCalledWith(1);
+
+    // An unrelated chord must not move the zoom.
+    webview.setZoomFactor.mockClear();
+    handlers.windowHandlers.keydown({
+      key: '=',
+      code: 'Equal',
+      preventDefault: jest.fn(),
+    });
+    expect(webview.setZoomFactor).not.toHaveBeenCalled();
+  });
+
+  test('a Nordic Ctrl++ zooms in, not out (the fallback chain order is load-bearing)', async () => {
+    // Swedish/Norwegian/Danish/Finnish layouts have `+` unshifted at the US
+    // `Minus` position, so Ctrl+`+` arrives as { key: '+', code: 'Minus' }
+    // and matches page.zoomIn (via the CmdOrCtrl+Plus alias) *and*
+    // page.zoomOut (via the `-` its code implies). The if/else-if order in
+    // menus.js decides which wins; reordering it, or splitting the chain
+    // into independent ifs, turns Nordic zoom-in into zoom-out. Fail here
+    // if that happens.
+    let zoomFactor = 1;
+    const webview = {
+      getZoomFactor: jest.fn(() => zoomFactor),
+      setZoomFactor: jest.fn((next) => {
+        zoomFactor = next;
+      }),
+    };
+    const { menus, elements, handlers } = await loadMenusModule({ platform: 'linux', webview });
+
+    menus.initMenus();
+    await Promise.resolve();
+
+    const preventDefault = jest.fn();
+    handlers.windowHandlers.keydown({
+      key: '+',
+      code: 'Minus',
+      ctrlKey: true,
+      preventDefault,
+    });
+
+    expect(preventDefault).toHaveBeenCalled();
+    expect(webview.setZoomFactor).toHaveBeenCalledTimes(1);
+    expect(webview.setZoomFactor).toHaveBeenLastCalledWith(1.1);
+    expect(elements.zoomLevelDisplay.textContent).toBe('110%');
+    // Belt and braces: zoom out would have produced 0.9.
+    expect(webview.setZoomFactor).not.toHaveBeenCalledWith(0.9);
+
+    // The unambiguous Nordic zoom-out chord (Shift+`+` types `?` there, so
+    // users reach it via the keypad or a plain `-` on other layouts) still
+    // zooms out — the ordering fix must not swallow zoom out entirely.
+    handlers.windowHandlers.keydown({
+      key: '-',
+      code: 'NumpadSubtract',
+      ctrlKey: true,
+      preventDefault: jest.fn(),
+    });
+    expect(webview.setZoomFactor).toHaveBeenLastCalledWith(1);
+  });
+
+  test('zoom clamps at both ends and tolerates a webview that is not dom-ready', async () => {
+    let zoomFactor = 5;
+    const webview = {
+      getZoomFactor: jest.fn(() => zoomFactor),
+      setZoomFactor: jest.fn((next) => {
+        zoomFactor = next;
+      }),
+    };
+    const { menus, elements, mocks } = await loadMenusModule({ platform: 'darwin', webview });
+
+    menus.initMenus();
+    await Promise.resolve();
+
+    elements.zoomInBtn.handlers.click();
+    expect(webview.setZoomFactor).toHaveBeenLastCalledWith(5);
+
+    zoomFactor = 0.25;
+    elements.zoomOutBtn.handlers.click();
+    expect(webview.setZoomFactor).toHaveBeenLastCalledWith(0.25);
+
+    // getZoomFactor throws until the webview is attached and dom-ready.
+    webview.getZoomFactor.mockImplementationOnce(() => {
+      throw new Error('The WebView must be attached to the DOM');
+    });
+    webview.setZoomFactor.mockClear();
+    expect(() => mocks.zoomCallbacks.in()).not.toThrow();
+    expect(webview.setZoomFactor).not.toHaveBeenCalled();
+
+    // No active webview at all is a no-op, not a crash.
+    mocks.tabsMocks.getActiveWebview.mockReturnValueOnce(null);
+    expect(() => mocks.zoomCallbacks.reset()).not.toThrow();
   });
 
   test('opens and closes the bee menu while managing polling and backdrop state', async () => {

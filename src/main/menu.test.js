@@ -16,6 +16,11 @@ function loadMenuModule(platform, options = {}) {
   const settings = { shortcutOverrides: options.shortcutOverrides || {} };
   const settingsListeners = [];
 
+  // Tests that invoke an item's click() need getTargetWindow() to resolve;
+  // without a targetWindow the electron mock has no getFocusedWindow and
+  // clicking throws, so the default stays the window-less template build.
+  const targetWindow = options.targetWindow || null;
+
   const { mod, dialog } = loadMainModule(require.resolve('./menu'), {
     electronOverrides: {
       Menu: {
@@ -26,11 +31,17 @@ function loadMenuModule(platform, options = {}) {
         setApplicationMenu: jest.fn(),
         getApplicationMenu: jest.fn(() => menuInstance),
       },
+      ...(targetWindow && {
+        BrowserWindow: {
+          getFocusedWindow: jest.fn(() => targetWindow),
+          getAllWindows: jest.fn(() => [targetWindow]),
+        },
+      }),
     },
     extraMocks: {
       [require.resolve('./windows/mainWindow')]: () => ({
         isMainBrowserWindow: () => true,
-        getMainWindows: () => [],
+        getMainWindows: () => (targetWindow ? [targetWindow] : []),
         createMainWindow: jest.fn(),
       }),
       [require.resolve('./updater')]: () => ({
@@ -254,6 +265,82 @@ describe('menu', () => {
       expect(find.accelerator).toBe('CmdOrCtrl+F');
       expect(typeof find.click).toBe('function');
     }
+  });
+
+  test('View menu carries the zoom group ahead of Full Screen on every platform', () => {
+    for (const platform of ['darwin', 'win32', 'linux']) {
+      const send = jest.fn();
+      const { capturedTemplate } = loadMenuModule(platform, {
+        targetWindow: { webContents: { send } },
+      });
+      const view = findTopLabel(capturedTemplate, 'View');
+
+      const cases = [
+        ['zoom-in', 'Zoom In', 'CmdOrCtrl+=', 'page:zoom-in'],
+        ['zoom-out', 'Zoom Out', 'CmdOrCtrl+-', 'page:zoom-out'],
+        ['zoom-reset', 'Actual Size', 'CmdOrCtrl+0', 'page:zoom-reset'],
+      ];
+
+      for (const [id, label, accelerator, channel] of cases) {
+        const item = view.submenu.find((entry) => entry.id === id);
+        expect(item).toEqual(expect.objectContaining({ label, accelerator }));
+
+        send.mockClear();
+        item.click();
+        expect(send).toHaveBeenCalledWith(channel);
+      }
+
+      // Chromium order: zoom sits directly above the fullscreen toggle.
+      const ids = view.submenu.map((entry) => entry.id);
+      expect(ids.indexOf('zoom-reset')).toBeLessThan(ids.indexOf('fullscreen'));
+      expect(ids.indexOf('zoom-in')).toBeLessThan(ids.indexOf('zoom-out'));
+    }
+  });
+
+  test('zoom aliases get hidden rows, so no action is duplicated in the View menu', () => {
+    for (const platform of ['darwin', 'win32', 'linux']) {
+      const send = jest.fn();
+      const { capturedTemplate } = loadMenuModule(platform, {
+        targetWindow: { webContents: { send } },
+      });
+      const view = findTopLabel(capturedTemplate, 'View');
+
+      const cases = [
+        ['Zoom In', 'page.zoomIn', 'page:zoom-in'],
+        ['Zoom Out', 'page.zoomOut', 'page:zoom-out'],
+        ['Actual Size', 'page.zoomReset', 'page:zoom-reset'],
+      ];
+
+      for (const [label, id, channel] of cases) {
+        const rows = view.submenu.filter((entry) => entry.label === label);
+        const aliases = getAliasAccelerators(id, platform);
+        expect(aliases.length).toBeGreaterThan(0);
+        expect(rows).toHaveLength(1 + aliases.length);
+
+        // Exactly one visible row per action; every alias is hidden but
+        // still carries its accelerator and the same click target.
+        const visible = rows.filter((row) => row.visible !== false);
+        expect(visible).toHaveLength(1);
+        const hidden = rows.filter((row) => row.visible === false);
+        expect(hidden.map((row) => row.accelerator)).toEqual(aliases);
+
+        for (const row of hidden) {
+          send.mockClear();
+          row.click();
+          expect(send).toHaveBeenCalledWith(channel);
+        }
+      }
+    }
+  });
+
+  test('zoom accelerators follow a user remap', () => {
+    const { capturedTemplate } = loadMenuModule('linux', {
+      shortcutOverrides: { 'page.zoomIn': 'Ctrl+Shift+Up' },
+    });
+    const view = findTopLabel(capturedTemplate, 'View');
+
+    expect(view.submenu.find((entry) => entry.id === 'zoom-in').accelerator).toBe('Ctrl+Shift+Up');
+    expect(view.submenu.find((entry) => entry.id === 'zoom-out').accelerator).toBe('CmdOrCtrl+-');
   });
 
   test('macOS places editMenu immediately after File', () => {

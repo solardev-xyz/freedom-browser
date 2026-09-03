@@ -124,6 +124,58 @@ const SHORTCUTS = [
     category: 'Page',
     editable: true,
   },
+  // Zoom acts on the active <webview>, not the chrome — hence custom View
+  // items rather than Electron's zoomIn/zoomOut/resetZoom roles, which
+  // step zoomLevel on the focused webContents and would bypass both this
+  // registry and the hamburger menu's zoom readout.
+  //
+  // Zoom is the first binding to sit on punctuation that is not reachable
+  // unshifted on every layout, so it carries the aliases mainstream
+  // browsers bind (see the alias notes on each entry). Aliases are hidden
+  // View-menu rows, so the visible menu still shows one row per action.
+  {
+    id: 'page.zoomIn',
+    description: 'Zoom In',
+    defaultAccelerator: 'CmdOrCtrl+=',
+    // `=` is a shifted key on many layouts (German, Spanish, Italian, Swiss
+    // and the Nordic ones all put it on Shift+0 — French does not: there `=`
+    // is unshifted and the *digits* are shifted, which `Digit0` already
+    // covers), and
+    // eventMatchesAccelerator demands an exact modifier match, so the bare
+    // `CmdOrCtrl+=` binding can never fire there. `CmdOrCtrl+Shift+=` is
+    // also the chord a US-layout user presses for a literal `+`. `Plus`
+    // covers layouts where `+` is unshifted (Nordic), and `numadd` the
+    // numeric keypad, which Electron treats as a distinct key.
+    aliases: [
+      { accelerator: 'CmdOrCtrl+Shift+=' },
+      { accelerator: 'CmdOrCtrl+Plus' },
+      { accelerator: 'CmdOrCtrl+numadd' },
+    ],
+    context: 'both',
+    category: 'Page',
+    editable: true,
+  },
+  {
+    id: 'page.zoomOut',
+    description: 'Zoom Out',
+    defaultAccelerator: 'CmdOrCtrl+-',
+    // Keypad minus is a distinct key to Electron's accelerator parser, so
+    // the main-row binding above does not cover it.
+    aliases: [{ accelerator: 'CmdOrCtrl+numsub' }],
+    context: 'both',
+    category: 'Page',
+    editable: true,
+  },
+  {
+    id: 'page.zoomReset',
+    description: 'Actual Size',
+    defaultAccelerator: 'CmdOrCtrl+0',
+    // Keypad zero, for the same reason as Zoom Out's keypad alias.
+    aliases: [{ accelerator: 'CmdOrCtrl+num0' }],
+    context: 'both',
+    category: 'Page',
+    editable: true,
+  },
 
   // Navigation
   {
@@ -237,6 +289,29 @@ const MODIFIER_TOKENS = {
   super: 'meta',
 };
 
+// Numeric-keypad KeyboardEvent.code → Electron's own accelerator spelling
+// for that key. The keypad is a separate physical key set as far as the
+// accelerator parser is concerned: a `CmdOrCtrl+-` menu accelerator never
+// fires for keypad minus, so bindings that want both carry a `num*` alias
+// next to the main-row one.
+const NUMPAD_CODE_KEYS = {
+  NumpadAdd: 'numadd',
+  NumpadSubtract: 'numsub',
+  NumpadMultiply: 'nummult',
+  NumpadDivide: 'numdiv',
+  NumpadDecimal: 'numdec',
+  Numpad0: 'num0',
+  Numpad1: 'num1',
+  Numpad2: 'num2',
+  Numpad3: 'num3',
+  Numpad4: 'num4',
+  Numpad5: 'num5',
+  Numpad6: 'num6',
+  Numpad7: 'num7',
+  Numpad8: 'num8',
+  Numpad9: 'num9',
+};
+
 // Electron/legacy key spellings → canonical names used for comparison.
 const KEY_ALIASES = {
   esc: 'Escape',
@@ -263,6 +338,9 @@ const KEY_ALIASES = {
   right: 'Right',
   arrowright: 'Right',
   plus: 'Plus',
+  // Keypad keys keep Electron's own spelling; listed here so canonicalKey
+  // normalizes their case and isRecognizedKey accepts them.
+  ...Object.fromEntries(Object.values(NUMPAD_CODE_KEYS).map((key) => [key, key])),
 };
 
 // KeyboardEvent.code → the base (unshifted, US-layout) character. Used both
@@ -346,6 +424,8 @@ function eventKeyCandidates(event) {
       candidates.add(code.slice(3).toLowerCase());
     } else if (/^Digit\d$/.test(code)) {
       candidates.add(code.slice(5));
+    } else if (NUMPAD_CODE_KEYS[code]) {
+      candidates.add(NUMPAD_CODE_KEYS[code]);
     }
   }
   return candidates;
@@ -581,8 +661,18 @@ function findConflict(entryOrId, accelerator, overrides, platform) {
  * modifier-less typing/editing keys, and no-op overrides equal to the
  * default. Values are normalized. Never throws — malformed input
  * yields {}.
+ *
+ * A second pass then applies the same conflict rule Settings > Shortcuts
+ * enforces interactively (see setOverride in src/main/shortcuts-ipc.js): a
+ * binding already taken by another entry's effective accelerator or fixed
+ * alias is refused, and a fixed-alias collision can never be swapped away.
+ * Without it, an override recorded while a chord was free — legal then —
+ * survives a release that gives that chord to a new default and both fire
+ * on one press (e.g. a `Ctrl+0` remap made before `page.zoomReset` existed).
+ * Pass `onDrop({ id, accelerator, conflict })` to observe those drops; the
+ * settings store logs them and surfaces them as reverted.
  */
-function sanitizeOverrides(raw, platform) {
+function sanitizeOverrides(raw, platform, { onDrop } = {}) {
   const clean = {};
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return clean;
   for (const [id, value] of Object.entries(raw)) {
@@ -598,6 +688,35 @@ function sanitizeOverrides(raw, platform) {
     }
     clean[id] = normalized;
   }
+
+  // Conflict pass, walked in registry order so the result never depends on
+  // the key order of the stored JSON. Each override is checked against the
+  // bindings still standing at that point, and a dropped one falls back to
+  // its default straight away — so two overrides that collide only with
+  // each other (hand-edited file; the UI cannot produce it) lose exactly
+  // one side, not both. A legitimate swap pair, where each override sits on
+  // the other entry's freed default, matches nothing and is left alone.
+  //
+  // Repeated to a fixpoint: a drop reverts that entry to its default, which
+  // can collide with an override on an entry *earlier* in registry order
+  // that was already checked against the pre-drop state (remap A onto B's
+  // chord, then B onto a chord a later release claims — dropping B hands
+  // its default back and A now doubles it). Each pass only removes
+  // overrides, so at most one pass per override runs before it settles.
+  for (let pass = Object.keys(clean).length; pass > 0; pass -= 1) {
+    let dropped = false;
+    for (const entry of SHORTCUTS) {
+      const accelerator = clean[entry.id];
+      if (!accelerator) continue;
+      const conflict = findConflict(entry, accelerator, clean, platform);
+      if (!conflict) continue;
+      delete clean[entry.id];
+      dropped = true;
+      if (typeof onDrop === 'function') onDrop({ id: entry.id, accelerator, conflict });
+    }
+    if (!dropped) break;
+  }
+
   return clean;
 }
 
@@ -617,6 +736,15 @@ const MAC_KEY_GLYPHS = {
   Plus: '+',
 };
 
+// Electron's `num*` key codes read like internals in Settings > Shortcuts,
+// so show them the way keyboards label them: 'Num +', 'Num 0', …
+const NUMPAD_SYMBOLS = { add: '+', sub: '-', mult: '*', div: '/', dec: '.' };
+function numpadKeyLabel(key) {
+  const match = /^num(\d|add|sub|mult|div|dec)$/.exec(key);
+  if (!match) return null;
+  return `Num ${NUMPAD_SYMBOLS[match[1]] || match[1]}`;
+}
+
 /**
  * Human-readable binding: mac-style glyph run ('⌘⇧K') on darwin,
  * 'Ctrl+Shift+K' elsewhere. Returns '' for unparsable input.
@@ -624,7 +752,8 @@ const MAC_KEY_GLYPHS = {
 function formatAccelerator(accelerator, platform) {
   const parsed = parseAccelerator(accelerator, platform);
   if (!parsed) return '';
-  const key = parsed.key.length === 1 ? parsed.key.toUpperCase() : parsed.key;
+  const key =
+    numpadKeyLabel(parsed.key) || (parsed.key.length === 1 ? parsed.key.toUpperCase() : parsed.key);
 
   if (platform === 'darwin') {
     let out = '';

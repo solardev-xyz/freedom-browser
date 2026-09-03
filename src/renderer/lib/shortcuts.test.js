@@ -66,6 +66,15 @@ describe('shared ↔ renderer mirror equivalence', () => {
       keyEvent({ key: 'i', code: 'KeyI', metaKey: true, altKey: true }),
       keyEvent({ key: 'I', code: 'KeyI', ctrlKey: true, shiftKey: true }),
       keyEvent({ key: 'Shift', code: 'ShiftLeft', shiftKey: true }),
+      // Shifted `=` (German Shift+0 and the US `+` chord) and the keypad —
+      // the zoom aliases' reason for existing.
+      keyEvent({ key: '=', code: 'Digit0', ctrlKey: true, shiftKey: true }),
+      keyEvent({ key: '=', code: 'Digit0', metaKey: true, shiftKey: true }),
+      keyEvent({ key: '+', code: 'Equal', ctrlKey: true, shiftKey: true }),
+      keyEvent({ key: '+', code: 'NumpadAdd', ctrlKey: true }),
+      keyEvent({ key: '-', code: 'NumpadSubtract', ctrlKey: true }),
+      keyEvent({ key: '0', code: 'Numpad0', ctrlKey: true }),
+      keyEvent({ key: 'Insert', code: 'Numpad0', ctrlKey: true }),
       { key: 'f', metaKey: true, ctrlKey: false, altKey: false, shiftKey: false },
     ];
 
@@ -180,6 +189,52 @@ describe('renderer live bindings', () => {
     expect(
       mirror.matchesShortcut(keyEvent({ key: 'Tab', code: 'Tab', ctrlKey: true }), 'tab.next')
     ).toBe(true);
+  });
+
+  test('the keydown fallback zooms on shifted-= layouts and on the keypad', async () => {
+    const mirror = await loadMirror();
+    mirror.configureShortcuts({ platform: 'linux', overrides: {} });
+
+    // German layout: `=` is Shift+0, so the primary CmdOrCtrl+= can never
+    // match (exact modifiers) — the Ctrl+Shift+= alias is what fires.
+    const germanEquals = keyEvent({ key: '=', code: 'Digit0', ctrlKey: true, shiftKey: true });
+    expect(mirror.matchesShortcut(germanEquals, 'page.zoomIn')).toBe(true);
+    expect(mirror.matchesShortcut(germanEquals, 'page.zoomReset')).toBe(false);
+
+    // US layout: the same chord types a literal '+'.
+    expect(
+      mirror.matchesShortcut(
+        keyEvent({ key: '+', code: 'Equal', ctrlKey: true, shiftKey: true }),
+        'page.zoomIn'
+      )
+    ).toBe(true);
+
+    // Keypad +, - and 0.
+    expect(
+      mirror.matchesShortcut(
+        keyEvent({ key: '+', code: 'NumpadAdd', ctrlKey: true }),
+        'page.zoomIn'
+      )
+    ).toBe(true);
+    expect(
+      mirror.matchesShortcut(
+        keyEvent({ key: '-', code: 'NumpadSubtract', ctrlKey: true }),
+        'page.zoomOut'
+      )
+    ).toBe(true);
+    expect(
+      mirror.matchesShortcut(
+        keyEvent({ key: '0', code: 'Numpad0', ctrlKey: true }),
+        'page.zoomReset'
+      )
+    ).toBe(true);
+
+    // Aliases outlive a remap of the primary binding.
+    mirror.configureShortcuts({ overrides: { 'page.zoomIn': 'Ctrl+Shift+U' } });
+    expect(
+      mirror.matchesShortcut(keyEvent({ key: '=', code: 'Equal', ctrlKey: true }), 'page.zoomIn')
+    ).toBe(false);
+    expect(mirror.matchesShortcut(germanEquals, 'page.zoomIn')).toBe(true);
   });
 
   test('getEffectiveAccelerator resolves override ?? default', async () => {

@@ -397,6 +397,215 @@ describe('override resolution', () => {
     expect(sanitizeOverrides([], 'linux')).toEqual({});
     expect(sanitizeOverrides('junk', 'linux')).toEqual({});
   });
+
+  // A remap is recorded against the registry of the release that recorded
+  // it. When a later release binds that chord to a new default (the zoom
+  // entries took CmdOrCtrl+0 / += / +- , all free before), the stored
+  // override is still "valid" on its own terms and both bindings then fire
+  // on one press. sanitizeOverrides applies the same rule the interactive
+  // remap path does: a taken chord is refused, so the override reverts.
+  describe('conflict pruning of stored overrides', () => {
+    // Every registry entry a single keypress would fire, primaries and fixed
+    // aliases alike — more than one means the double-fire bug is back.
+    const matchingIds = (event, overrides, platform = 'linux') =>
+      SHORTCUTS.filter((entry) =>
+        [
+          getEffectiveAccelerator(entry, overrides, platform),
+          ...getAliasAccelerators(entry, platform),
+        ].some((accelerator) => eventMatchesAccelerator(event, accelerator, platform))
+      ).map((entry) => entry.id);
+
+    test('drops an override that a newer default has since claimed', () => {
+      const drops = [];
+      const cleaned = sanitizeOverrides({ 'view.focusAddressBar': 'Ctrl+0' }, 'linux', {
+        onDrop: (drop) => drops.push(drop),
+      });
+      expect(cleaned).toEqual({});
+      expect(drops).toEqual([
+        {
+          id: 'view.focusAddressBar',
+          accelerator: 'Ctrl+0',
+          conflict: { id: 'page.zoomReset', description: 'Actual Size', fixed: false },
+        },
+      ]);
+      // The other two chords this PR's zoom entries took, same story.
+      expect(sanitizeOverrides({ 'view.focusAddressBar': 'Ctrl+=' }, 'linux')).toEqual({});
+      expect(sanitizeOverrides({ 'view.focusAddressBar': 'Ctrl+-' }, 'linux')).toEqual({});
+      expect(sanitizeOverrides({ 'view.focusAddressBar': 'Cmd+0' }, 'darwin')).toEqual({});
+    });
+
+    test('drops an override sitting on another entry’s fixed alias', () => {
+      const drops = [];
+      // CmdOrCtrl+Plus and CmdOrCtrl+numadd are Zoom In aliases: fixed, so
+      // the interactive path cannot even swap them away.
+      const cleaned = sanitizeOverrides({ 'tab.new': 'Ctrl+Plus' }, 'linux', {
+        onDrop: (drop) => drops.push(drop),
+      });
+      expect(cleaned).toEqual({});
+      expect(drops[0].conflict).toEqual({
+        id: 'page.zoomIn',
+        description: 'Zoom In',
+        fixed: true,
+      });
+      expect(sanitizeOverrides({ 'tab.new': 'Ctrl+numadd' }, 'linux')).toEqual({});
+    });
+
+    test('keeps free remaps and legitimate swap pairs untouched', () => {
+      const drops = [];
+      const cleaned = sanitizeOverrides(
+        {
+          'tab.new': 'Ctrl+Shift+U', // free chord
+          'page.reload': 'CmdOrCtrl+F', // swapped with…
+          'page.findInPage': 'CmdOrCtrl+R', // …its partner
+        },
+        'linux',
+        { onDrop: (drop) => drops.push(drop) }
+      );
+      expect(cleaned).toEqual({
+        'tab.new': 'Ctrl+Shift+U',
+        'page.reload': 'Ctrl+F',
+        'page.findInPage': 'Ctrl+R',
+      });
+      expect(drops).toEqual([]);
+      // An override on an entry whose old chord was freed by another
+      // override is fine too: conflicts are judged on effective bindings.
+      expect(
+        sanitizeOverrides({ 'page.reload': 'Ctrl+Shift+U', 'tab.new': 'Ctrl+R' }, 'linux')
+      ).toEqual({ 'page.reload': 'Ctrl+Shift+U', 'tab.new': 'Ctrl+R' });
+    });
+
+    test('two overrides colliding only with each other lose exactly one side', () => {
+      // Only reachable by hand-editing the file — the UI refuses it. Walked
+      // in registry order, so the outcome does not depend on JSON key order.
+      const forward = sanitizeOverrides(
+        { 'tab.new': 'Ctrl+Shift+U', 'tab.close': 'Ctrl+Shift+U' },
+        'linux'
+      );
+      const reversed = sanitizeOverrides(
+        { 'tab.close': 'Ctrl+Shift+U', 'tab.new': 'Ctrl+Shift+U' },
+        'linux'
+      );
+      expect(forward).toEqual({ 'tab.close': 'Ctrl+Shift+U' });
+      expect(reversed).toEqual(forward);
+    });
+
+    test('a pre-PR Ctrl+0 remap cannot leave two handlers on one press', () => {
+      // The user-visible symptom: one Ctrl+0 press focusing the address bar
+      // *and* resetting zoom, because two window keydown fallbacks matched.
+      const platform = 'linux';
+      const event = keyEvent({ key: '0', code: 'Digit0', ctrlKey: true });
+
+      // Stored as-is (what the app did before this fix): two actions fire.
+      expect(matchingIds(event, { 'view.focusAddressBar': 'Ctrl+0' })).toEqual([
+        'page.zoomReset',
+        'view.focusAddressBar',
+      ]);
+      // Loaded through sanitizeOverrides: exactly one.
+      expect(
+        matchingIds(event, sanitizeOverrides({ 'view.focusAddressBar': 'Ctrl+0' }, platform))
+      ).toEqual(['page.zoomReset']);
+    });
+
+    test('a revert cascading onto an earlier-registry override drops that one too', () => {
+      // Interactively legal before the zoom defaults existed: remap
+      // view.focusAddressBar (registry 13) onto the then-free Ctrl+0, then
+      // tab.new (registry 0) onto the Ctrl+L it freed. Dropping the first
+      // hands Ctrl+L back, so a single pass — which checked tab.new before
+      // the drop — would leave two handlers on one Ctrl+L press.
+      const drops = [];
+      const cleaned = sanitizeOverrides(
+        { 'tab.new': 'Ctrl+L', 'view.focusAddressBar': 'Ctrl+0' },
+        'linux',
+        { onDrop: (drop) => drops.push(drop) }
+      );
+      expect(cleaned).toEqual({});
+      expect(drops).toEqual([
+        {
+          id: 'view.focusAddressBar',
+          accelerator: 'Ctrl+0',
+          conflict: { id: 'page.zoomReset', description: 'Actual Size', fixed: false },
+        },
+        {
+          id: 'tab.new',
+          accelerator: 'Ctrl+L',
+          conflict: {
+            id: 'view.focusAddressBar',
+            description: 'Focus Address Bar',
+            fixed: false,
+          },
+        },
+      ]);
+      // Exactly one action left on the freed chord.
+      expect(matchingIds(keyEvent({ key: 'l', code: 'KeyL', ctrlKey: true }), cleaned)).toEqual([
+        'view.focusAddressBar',
+      ]);
+      // Registry order, not JSON key order, decides — the other key order
+      // gives the identical result.
+      expect(
+        sanitizeOverrides({ 'view.focusAddressBar': 'Ctrl+0', 'tab.new': 'Ctrl+L' }, 'linux')
+      ).toEqual(cleaned);
+    });
+
+    test('the mirror direction (collider later in the registry) also settles', () => {
+      // page.reload (7) drops and reverts to Ctrl+R, which view.focusAddressBar
+      // (13) was remapped onto — the ordering the single pass already handled.
+      const drops = [];
+      const cleaned = sanitizeOverrides(
+        { 'page.reload': 'Ctrl+0', 'view.focusAddressBar': 'Ctrl+R' },
+        'linux',
+        { onDrop: (drop) => drops.push(drop) }
+      );
+      expect(cleaned).toEqual({});
+      expect(drops.map((drop) => drop.id)).toEqual(['page.reload', 'view.focusAddressBar']);
+      expect(matchingIds(keyEvent({ key: 'r', code: 'KeyR', ctrlKey: true }), cleaned)).toEqual([
+        'page.reload',
+      ]);
+      expect(
+        sanitizeOverrides({ 'view.focusAddressBar': 'Ctrl+R', 'page.reload': 'Ctrl+0' }, 'linux')
+      ).toEqual(cleaned);
+    });
+
+    test('a three-entry cascade runs to a fixpoint', () => {
+      // Each drop frees a default the next-earlier entry sits on:
+      // view.focusAddressBar (13) → Ctrl+L → page.reload (7) → Ctrl+R →
+      // tab.new (0). Three registry walks are needed, one per link.
+      const drops = [];
+      const cleaned = sanitizeOverrides(
+        {
+          'tab.new': 'Ctrl+R',
+          'page.reload': 'Ctrl+L',
+          'view.focusAddressBar': 'Ctrl+0',
+        },
+        'linux',
+        { onDrop: (drop) => drops.push(drop) }
+      );
+      expect(cleaned).toEqual({});
+      expect(drops.map((drop) => drop.id)).toEqual([
+        'view.focusAddressBar',
+        'page.reload',
+        'tab.new',
+      ]);
+      for (const [event, id] of [
+        [keyEvent({ key: '0', code: 'Digit0', ctrlKey: true }), 'page.zoomReset'],
+        [keyEvent({ key: 'l', code: 'KeyL', ctrlKey: true }), 'view.focusAddressBar'],
+        [keyEvent({ key: 'r', code: 'KeyR', ctrlKey: true }), 'page.reload'],
+        [keyEvent({ key: 't', code: 'KeyT', ctrlKey: true }), 'tab.new'],
+      ]) {
+        expect(matchingIds(event, cleaned)).toEqual([id]);
+      }
+      // Same result from the reversed JSON key order.
+      expect(
+        sanitizeOverrides(
+          {
+            'view.focusAddressBar': 'Ctrl+0',
+            'page.reload': 'Ctrl+L',
+            'tab.new': 'Ctrl+R',
+          },
+          'linux'
+        )
+      ).toEqual(cleaned);
+    });
+  });
 });
 
 describe('findConflict', () => {
@@ -571,5 +780,113 @@ describe('formatAccelerator', () => {
     expect(formatAccelerator('Ctrl+Tab', 'win32')).toBe('Ctrl+Tab');
     expect(formatAccelerator('F11', 'win32')).toBe('F11');
     expect(formatAccelerator('', 'win32')).toBe('');
+  });
+
+  test('labels keypad keys the way keyboards do, not with Electron key codes', () => {
+    expect(formatAccelerator('CmdOrCtrl+numadd', 'win32')).toBe('Ctrl+Num +');
+    expect(formatAccelerator('CmdOrCtrl+numsub', 'linux')).toBe('Ctrl+Num -');
+    expect(formatAccelerator('CmdOrCtrl+num0', 'darwin')).toBe('⌘Num 0');
+    expect(formatAccelerator('CmdOrCtrl+Plus', 'win32')).toBe('Ctrl++');
+  });
+});
+
+describe('zoom binding reachability across layouts and the keypad', () => {
+  // Regression cover for the alias set on page.zoom*: `=` is a shifted key on
+  // several common layouts, and eventMatchesAccelerator is deliberately strict
+  // about modifiers, so the bare `CmdOrCtrl+=` default can never fire there.
+  // The keypad is a separate physical key set for the same reason.
+  const bindings = (id, platform) => [
+    getDefaultAccelerator(id, platform),
+    ...getAliasAccelerators(id, platform),
+  ];
+  const fires = (event, id, platform) =>
+    bindings(id, platform).some((accelerator) =>
+      eventMatchesAccelerator(event, accelerator, platform)
+    );
+
+  // German layout: `=` is Shift+0, so the browser reports key '=' with
+  // shiftKey true on the physical Digit0 key.
+  const germanEquals = (modifier) =>
+    keyEvent({ key: '=', code: 'Digit0', shiftKey: true, ...modifier });
+  // US layout: the same chord types a literal '+'.
+  const usPlus = (modifier) => keyEvent({ key: '+', code: 'Equal', shiftKey: true, ...modifier });
+
+  test('the primary CmdOrCtrl+= binding alone cannot fire on a shifted-= layout', () => {
+    // The gap the aliases exist to close — assert it directly so a future
+    // change that drops them fails here rather than silently regressing.
+    expect(eventMatchesAccelerator(germanEquals({ ctrlKey: true }), 'CmdOrCtrl+=', 'linux')).toBe(
+      false
+    );
+    expect(eventMatchesAccelerator(usPlus({ ctrlKey: true }), 'CmdOrCtrl+=', 'win32')).toBe(false);
+  });
+
+  test('zoom in fires for a shifted = on every platform', () => {
+    expect(fires(germanEquals({ ctrlKey: true }), 'page.zoomIn', 'linux')).toBe(true);
+    expect(fires(germanEquals({ ctrlKey: true }), 'page.zoomIn', 'win32')).toBe(true);
+    expect(fires(germanEquals({ metaKey: true }), 'page.zoomIn', 'darwin')).toBe(true);
+    expect(fires(usPlus({ ctrlKey: true }), 'page.zoomIn', 'win32')).toBe(true);
+    expect(fires(usPlus({ metaKey: true }), 'page.zoomIn', 'darwin')).toBe(true);
+  });
+
+  test('a shifted = without the Cmd/Ctrl modifier still zooms nothing', () => {
+    expect(fires(germanEquals(), 'page.zoomIn', 'linux')).toBe(false);
+    expect(fires(germanEquals({ altKey: true, ctrlKey: true }), 'page.zoomIn', 'linux')).toBe(
+      false
+    );
+  });
+
+  test('the keypad drives all three zoom actions', () => {
+    const cases = [
+      ['page.zoomIn', { key: '+', code: 'NumpadAdd' }],
+      ['page.zoomOut', { key: '-', code: 'NumpadSubtract' }],
+      ['page.zoomReset', { key: '0', code: 'Numpad0' }],
+    ];
+    for (const [id, key] of cases) {
+      expect(fires(keyEvent({ ...key, ctrlKey: true }), id, 'linux')).toBe(true);
+      expect(fires(keyEvent({ ...key, metaKey: true }), id, 'darwin')).toBe(true);
+    }
+    // NumLock off relabels the keypad keys; the physical code still matches.
+    expect(
+      fires(keyEvent({ key: 'Insert', code: 'Numpad0', ctrlKey: true }), 'page.zoomReset', 'linux')
+    ).toBe(true);
+  });
+
+  test('the keypad aliases do not collide with the main-row bindings', () => {
+    for (const platform of PLATFORMS) {
+      expect(normalizeAccelerator('CmdOrCtrl+numsub', platform)).not.toBe(
+        normalizeAccelerator('CmdOrCtrl+-', platform)
+      );
+      expect(findConflict('page.zoomOut', 'CmdOrCtrl+numsub', {}, platform)).toBeNull();
+      // …but they are real registry bindings, so nothing else may take them.
+      expect(findConflict('tab.new', 'CmdOrCtrl+numsub', {}, platform)).toEqual({
+        id: 'page.zoomOut',
+        description: 'Zoom Out',
+        fixed: true,
+      });
+    }
+  });
+
+  test('a Nordic Ctrl++ matches zoom in and zoom out, so handler order decides', () => {
+    // Swedish/Norwegian/Danish/Finnish put `+` unshifted on the key the US
+    // layout uses for `-`, so Ctrl+`+` reports { key: '+', code: 'Minus' }:
+    // it matches page.zoomIn through the `CmdOrCtrl+Plus` alias *and*
+    // page.zoomOut through the `-` its physical code implies. Nothing here
+    // can tell them apart — the dispatcher does, by checking zoom in first
+    // (menus.js, pinned by menus.test.js). Documented here so the ambiguity
+    // is visible from the registry side too.
+    const nordicPlus = keyEvent({ key: '+', code: 'Minus', ctrlKey: true });
+    expect(fires(nordicPlus, 'page.zoomIn', 'linux')).toBe(true);
+    expect(fires(nordicPlus, 'page.zoomOut', 'linux')).toBe(true);
+    expect(fires(nordicPlus, 'page.zoomReset', 'linux')).toBe(false);
+  });
+
+  test('aliases survive a user remap of the primary binding', () => {
+    const overrides = { 'page.zoomIn': 'Ctrl+Shift+U' };
+    expect(getEffectiveAccelerator('page.zoomIn', overrides, 'linux')).toBe('Ctrl+Shift+U');
+    expect(getAliasAccelerators('page.zoomIn', 'linux')).toEqual([
+      'CmdOrCtrl+Shift+=',
+      'CmdOrCtrl+Plus',
+      'CmdOrCtrl+numadd',
+    ]);
   });
 });

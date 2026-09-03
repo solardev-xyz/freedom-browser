@@ -2721,6 +2721,13 @@
           const aliasLine = entry.aliases.length
             ? `<p class="row-help">Also ${entry.aliases.map(kbd).join(' ')}</p>`
             : '';
+          // A remap the store reverted — at load because a newer default or
+          // fixed alias took its combination, or on a save (a Reset restoring
+          // a default that claims this row's chord) — say so on the row
+          // instead of letting the binding silently snap back to the default.
+          const revertedLine = entry.reverted
+            ? `<p class="shortcut-note">Your ${kbd(entry.reverted.formatted)} remap was reset — that combination is now used by “${esc(entry.reverted.conflict)}”.</p>`
+            : '';
           const warnLine =
             isRecording && entry.warnOnEdit
               ? '<p class="shortcut-note">Heads up: this is a common close gesture across apps — remapping it changes deep muscle memory.</p>'
@@ -2741,6 +2748,7 @@
               <div class="row-body">
                 <p class="row-label">${esc(entry.description)}</p>
                 ${aliasLine}
+                ${revertedLine}
                 ${warnLine}
                 ${notice ? `<p class="shortcut-note">${esc(notice)}</p>` : ''}
               </div>

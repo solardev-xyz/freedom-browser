@@ -9,15 +9,15 @@ const {
 } = require('../../test/helpers/main-process-test-utils');
 
 function loadSettingsStore(options = {}) {
-  return loadMainModule(require.resolve('./settings-store'), {
+  const logger = { error: jest.fn(), warn: jest.fn() };
+  const loaded = loadMainModule(require.resolve('./settings-store'), {
     ...options,
     extraMocks: {
       ...(options.extraMocks || {}),
-      [require.resolve('./logger')]: () => ({
-        error: jest.fn(),
-      }),
+      [require.resolve('./logger')]: () => logger,
     },
   });
+  return { ...loaded, logger };
 }
 
 describe('settings-store', () => {
@@ -388,6 +388,86 @@ describe('settings-store', () => {
     const { mod } = loadSettingsStore({ userDataDir });
 
     expect(mod.loadSettings().shortcutOverrides).toEqual({ 'tab.new': 'Ctrl+Shift+U' });
+    expect(mod.getRevertedShortcutOverrides()).toEqual({});
+  });
+
+  test('reverts a stored remap whose chord a newer default has claimed', () => {
+    // Recorded when Ctrl+0 was free — the zoom entries claimed it later, so
+    // keeping it would fire two actions on one press.
+    fs.writeFileSync(
+      path.join(userDataDir, 'settings.json'),
+      JSON.stringify({
+        shortcutOverrides: { 'view.focusAddressBar': 'Ctrl+0', 'tab.new': 'Ctrl+Shift+U' },
+      }),
+      'utf-8'
+    );
+
+    const { mod, logger } = loadSettingsStore({ userDataDir });
+
+    expect(mod.loadSettings().shortcutOverrides).toEqual({ 'tab.new': 'Ctrl+Shift+U' });
+    expect(mod.getRevertedShortcutOverrides()).toEqual({
+      'view.focusAddressBar': {
+        accelerator: 'Ctrl+0',
+        conflictId: 'page.zoomReset',
+        conflict: 'Actual Size',
+      },
+    });
+    // One log line, at load, naming both sides.
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.warn.mock.calls[0][0]).toContain('view.focusAddressBar');
+    expect(logger.warn.mock.calls[0][0]).toContain('Actual Size');
+    // Cached: a second read does not re-log.
+    mod.loadSettings();
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+
+    // The next settings write persists the sanitized map, so the stale
+    // override leaves the file for good, and the notice stops once the user
+    // rebinds something.
+    expect(mod.saveSettings({ shortcutOverrides: { 'tab.new': 'Ctrl+Shift+X' } })).toBe(true);
+    const persisted = JSON.parse(fs.readFileSync(path.join(userDataDir, 'settings.json'), 'utf-8'));
+    expect(persisted.shortcutOverrides).toEqual({ 'tab.new': 'Ctrl+Shift+X' });
+    expect(mod.getRevertedShortcutOverrides()).toEqual({});
+  });
+
+  test('a Reset that hands a default back never drops a sibling remap silently', () => {
+    const { mod, logger } = loadSettingsStore({ userDataDir });
+
+    // Two remaps the interactive path allows: Reload moves off Ctrl+R and
+    // New Tab takes the freed chord.
+    expect(
+      mod.saveSettings({
+        shortcutOverrides: { 'page.reload': 'Ctrl+Shift+U', 'tab.new': 'Ctrl+R' },
+      })
+    ).toBe(true);
+    expect(mod.loadSettings().shortcutOverrides).toEqual({
+      'page.reload': 'Ctrl+Shift+U',
+      'tab.new': 'Ctrl+R',
+    });
+    expect(mod.getRevertedShortcutOverrides()).toEqual({});
+    logger.warn.mockClear();
+
+    // Reset on Reload's row — resetOverride saves the map minus that entry.
+    // Ctrl+R goes back to Reload, so New Tab's remap cannot stay.
+    expect(mod.saveSettings({ shortcutOverrides: { 'tab.new': 'Ctrl+R' } })).toBe(true);
+
+    const persisted = JSON.parse(fs.readFileSync(path.join(userDataDir, 'settings.json'), 'utf-8'));
+    expect(persisted.shortcutOverrides).toEqual({});
+    // Not silent: same record and same log line as the load path, so
+    // getShortcutState puts the notice on the New Tab row.
+    expect(mod.getRevertedShortcutOverrides()).toEqual({
+      'tab.new': {
+        accelerator: 'Ctrl+R',
+        conflictId: 'page.reload',
+        conflict: 'Reload This Page',
+      },
+    });
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.warn.mock.calls[0][0]).toContain('tab.new');
+    expect(logger.warn.mock.calls[0][0]).toContain('Reload This Page');
+
+    // The next conflict-free save clears the notice again.
+    expect(mod.saveSettings({ shortcutOverrides: { 'tab.new': 'Ctrl+Shift+U' } })).toBe(true);
+    expect(mod.getRevertedShortcutOverrides()).toEqual({});
   });
 
   test('registers IPC handlers for loading and saving settings', async () => {

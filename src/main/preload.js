@@ -237,6 +237,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('page:hard-reload', handler);
     return () => ipcRenderer.removeListener('page:hard-reload', handler);
   },
+  onZoomIn: (callback) => {
+    const handler = () => callback();
+    ipcRenderer.on('page:zoom-in', handler);
+    return () => ipcRenderer.removeListener('page:zoom-in', handler);
+  },
+  onZoomOut: (callback) => {
+    const handler = () => callback();
+    ipcRenderer.on('page:zoom-out', handler);
+    return () => ipcRenderer.removeListener('page:zoom-out', handler);
+  },
+  onZoomReset: (callback) => {
+    const handler = () => callback();
+    ipcRenderer.on('page:zoom-reset', handler);
+    return () => ipcRenderer.removeListener('page:zoom-reset', handler);
+  },
   onNextTab: (callback) => {
     const handler = () => callback();
     ipcRenderer.on('tab:next', handler);

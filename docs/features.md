@@ -162,6 +162,9 @@ See [contract-hosted applications](protocols/onchain-apps.md) for the origin mod
   - `Cmd+R` / `Ctrl+R`: Reload (from cache)
   - `Cmd+Shift+R` / `Ctrl+Shift+R`: Hard reload (bypass cache)
   - `Cmd+F` / `Ctrl+F`: Find in page
+  - `Cmd+=` / `Ctrl+=` / `Cmd+Shift+=` / `Ctrl+Shift+=` / `Cmd+Plus` / `Ctrl+Plus`: Zoom in (steps the active page 10% up to 500%)
+  - `Cmd+-` / `Ctrl+-`: Zoom out (steps the active page 10% down to 25%)
+  - `Cmd+0` / `Ctrl+0`: Actual size (resets the active page to 100%)
   - `Cmd+L` / `Ctrl+L`: Focus address bar
   - `Cmd+Y` / `Ctrl+H`: Show all history
   - `Cmd+Shift+J` / `Ctrl+Shift+J`: Downloads
@@ -170,7 +173,8 @@ See [contract-hosted applications](protocols/onchain-apps.md) for the origin mod
   - `F11`: Toggle fullscreen
   - `Cmd+Alt+I` / `Ctrl+Shift+I` / `F12`: Developer Tools (listed for reference; all three are locked, not remappable)
 - **Fixed Keys**: Not part of the registry above and not remappable — `Escape` stops loading or restores the address bar, and in the find bar `Enter` jumps to the next match, `Shift+Enter` to the previous, and `Esc` closes it.
-- **No Keyboard Binding**: Zoom and Print have no shortcuts; use the hamburger menu's zoom controls and its Print entry.
+- **Zoom**: The zoom bindings above act on the active page (the same target and 10% step as the hamburger menu's − / + controls, which stay in sync with them), not on the browser chrome. Only the first binding on each row is remappable; the rest are fixed aliases that always stay active, listed as "Also …" in Settings > Shortcuts. Zoom In carries them because `=` sits behind Shift on many layouts (German, Spanish, Italian, Swiss and the Nordic ones all put it on `Shift+0`), where `Cmd`/`Ctrl` + `=` alone can never fire. All three actions additionally answer to the numeric keypad — `Num +`, `Num -` and `Num 0` — which the accelerator parser treats as keys distinct from the main row. Each action appears once under View > Zoom In / Zoom Out / Actual Size; the alias rows are hidden.
+- **No Keyboard Binding**: Print has no shortcut; use the hamburger menu's Print entry.
 
 ## Bookmarks
 
