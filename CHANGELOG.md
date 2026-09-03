@@ -34,7 +34,13 @@ All notable changes to Freedom will be documented in this file.
 
 ### Changed
 
-- Updated bundled [Ant](https://github.com/freedom-hq/ant) to 0.5.36: fixes the ~250 MiB upload stall, adds upload-side Reed-Solomon encoding, end-to-end Swarm content encryption, local pinning, and ACT access control
+- Updated bundled [Ant](https://github.com/freedom-hq/ant) 0.5.33 to 0.5.44:
+  - Fixes the ~250 MiB upload stall
+  - Upload-side Reed-Solomon encoding, end-to-end Swarm content encryption, local pinning, and ACT access control
+  - Fewer intermittent upload failures under feed workloads, faster feed resolution
+  - Expired or invalid postage batches fail fast with a clear error instead of stalling uploads
+  - Freshly bought batches rejected by peers during propagation now recover on their own
+  - Encrypted point-to-point and broadcast messaging on the light node
 - The Swarm node's API now comes up instantly on start, so the node menu shows peers counting up live instead of sitting at 0 during startup
 - Radicle now runs as an embedded libradicle 0.7.1 addon instead of separate daemon, HTTP, and CLI processes:
   - Native browsing, seeding, synchronization, unseeding, GitHub imports, and provider writes
