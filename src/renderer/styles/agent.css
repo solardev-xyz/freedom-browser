@@ -2190,6 +2190,31 @@ body.agent-first-mode .agent-composer textarea {
   white-space: pre-wrap;
 }
 
+.agent-workspace-permission-details summary {
+  width: max-content;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 560;
+  cursor: pointer;
+  list-style-position: inside;
+}
+
+.agent-workspace-permission-details summary:hover,
+.agent-workspace-permission-details summary:focus-visible {
+  color: var(--text);
+}
+
+.agent-workspace-permission-details p {
+  max-height: 180px;
+  margin-top: 9px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  white-space: pre-line;
+}
+
 .agent-wallet-account-field {
   display: grid;
   gap: 6px;
@@ -2303,26 +2328,26 @@ body.agent-first-mode .agent-composer textarea {
   gap: 7px;
 }
 
-.agent-approval.diagnostic-approval .agent-approval-footer {
+.agent-approval.conversation-approval .agent-approval-footer {
   flex-direction: column;
   align-items: stretch;
   gap: 12px;
 }
 
-.agent-approval.diagnostic-approval .agent-approval-actions {
+.agent-approval.conversation-approval .agent-approval-actions {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   order: 1;
   width: 100%;
 }
 
-.agent-approval.diagnostic-approval .agent-approval-allow-conversation {
+.agent-approval.conversation-approval .agent-approval-allow-conversation {
   grid-column: 1 / -1;
   grid-row: 1;
   min-height: 38px;
 }
 
-.agent-approval.diagnostic-approval .agent-approval-status {
+.agent-approval.conversation-approval .agent-approval-status {
   order: 2;
   width: 100%;
   flex: none;

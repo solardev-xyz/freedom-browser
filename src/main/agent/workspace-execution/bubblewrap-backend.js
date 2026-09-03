@@ -353,7 +353,9 @@ async function detectBubblewrapCapabilities(options = {}) {
     enforcement: Object.freeze({
       filesystem: true,
       networkNone: true,
+      networkFull: 'host_namespace',
       loopbackNetworking: 'private_namespace',
+      fullNetworkIncludesHostAbstractUnixSockets: true,
       processNamespace: true,
       ipcNamespace: true,
       descendantInheritance: true,
@@ -444,10 +446,10 @@ async function buildBubblewrapArguments(policy, request) {
       'Execution policy was not issued by the trusted Freedom policy validator'
     );
   }
-  if (policy.network !== NETWORK_POSTURES.NONE) {
+  if (![NETWORK_POSTURES.NONE, NETWORK_POSTURES.FULL].includes(policy.network)) {
     throw new ExecutionPolicyError(
       'UNSUPPORTED_NETWORK_POSTURE',
-      'The Linux spike supports only network: none'
+      'The Linux backend supports only offline or full host networking'
     );
   }
   if (policy.seccomp.requireCustomFilter) {
@@ -474,6 +476,7 @@ async function buildBubblewrapArguments(policy, request) {
   try {
     const args = [
       '--unshare-all',
+      ...(policy.network === NETWORK_POSTURES.FULL ? ['--share-net'] : []),
       '--unshare-user',
       '--disable-userns',
       '--assert-userns-disabled',
@@ -491,7 +494,16 @@ async function buildBubblewrapArguments(policy, request) {
     for (const runtimeRoot of policy.filesystem.runtimeRoots) {
       args.push('--dir', path.posix.dirname(runtimeRoot.mountPath));
       addReadOnlyMount(args, runtimeRoot.sourcePath, runtimeRoot.mountPath);
-      if (runtimeRoot.id === 'node') pathEntries.push(`${runtimeRoot.mountPath}/bin`);
+      for (const relativePath of runtimeRoot.pathEntries || []) {
+        pathEntries.push(
+          relativePath === '.'
+            ? runtimeRoot.mountPath
+            : path.posix.join(
+                runtimeRoot.mountPath,
+                ...relativePath.split(path.sep).filter(Boolean)
+              )
+        );
+      }
     }
     if (policy.filesystem.exposeSystemToolchain) {
       for (const sourcePath of SYSTEM_RUNTIME_PATHS) {
@@ -508,6 +520,9 @@ async function buildBubblewrapArguments(policy, request) {
     }
     for (const name of ['passwd', 'group', 'nsswitch.conf', 'hosts']) {
       addReadOnlyMount(args, path.join(stagingDirectory, name), `/etc/${name}`);
+    }
+    if (policy.network === NETWORK_POSTURES.FULL && fs.existsSync('/etc/resolv.conf')) {
+      addReadOnlyMount(args, fs.realpathSync('/etc/resolv.conf'), '/etc/resolv.conf');
     }
     args.push(
       '--proc',
@@ -884,7 +899,15 @@ class BubblewrapExecutor {
             backend: 'linux-bubblewrap',
             aggregateResourceLimits: false,
             cancellationGuarantee: 'namespace_scoped',
-            loopbackNetworking: 'private_namespace',
+            networkPosture: policy.network,
+            publicNetworking:
+              policy.network === NETWORK_POSTURES.FULL ? 'host_network' : 'denied',
+            loopbackNetworking:
+              policy.network === NETWORK_POSTURES.FULL ? 'host_network' : 'private_namespace',
+            privateNetworking:
+              policy.network === NETWORK_POSTURES.FULL ? 'host_network' : 'denied',
+            hostAbstractUnixSockets:
+              policy.network === NETWORK_POSTURES.FULL ? 'reachable' : 'isolated',
             survivorsPossible: false,
             completeDescendantTermination: true,
             customSeccomp: false,

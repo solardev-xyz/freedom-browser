@@ -7,6 +7,9 @@ const path = require('path');
 const {
   createWorkspaceExecutionPolicy,
 } = require('../src/main/agent/workspace-execution/execution-policy');
+const {
+  resolveExecutableAccess,
+} = require('../src/main/agent/workspace-execution/executable-access');
 const { SeatbeltExecutor } = require('../src/main/agent/workspace-execution/seatbelt-backend');
 
 const workspaceRoot = path.resolve(__dirname, '..');
@@ -19,7 +22,10 @@ async function main() {
   if (path.basename(nodeExecutable) !== 'node') {
     throw new Error('macOS qualification must run from a standalone trusted Node runtime');
   }
-  const nodeRuntimeRoot = path.dirname(path.dirname(nodeExecutable));
+  const executableAccess = await resolveExecutableAccess(['node', 'npm']);
+  if (executableAccess.commands.some((command) => command.status === 'unavailable')) {
+    throw new Error('macOS qualification could not resolve its Node/npm toolchain');
+  }
   const executor = new SeatbeltExecutor();
   const capabilities = await executor.detectCapabilities({ force: true });
   process.stdout.write(`${JSON.stringify({ type: 'capabilities', ...capabilities })}\n`);
@@ -28,7 +34,7 @@ async function main() {
   }
   const policy = await createWorkspaceExecutionPolicy({
     workspaceRoot,
-    nodeRuntimeRoot,
+    runtimeRoots: executableAccess.runtimeRoots,
     protectedWorkspacePaths: ['.git', 'node_modules'],
     limits: {
       timeoutMs: 5 * 60 * 1_000,
@@ -40,7 +46,7 @@ async function main() {
     `${JSON.stringify({
       type: 'qualification-context',
       hostProcess: 'standalone_node',
-      nodeRuntimeRoot,
+      executableRoots: executableAccess.runtimeRoots.map((root) => root.sourcePath),
       packagedElectronQualified: false,
     })}\n`
   );

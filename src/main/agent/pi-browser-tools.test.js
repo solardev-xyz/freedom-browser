@@ -10,9 +10,9 @@ const {
   createFreedomBrowserTools,
 } = require('./pi-browser-tools');
 
-const PNG_BASE64 = Buffer.from([
-  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00,
-]).toString('base64');
+const PNG_BASE64 = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]).toString(
+  'base64'
+);
 
 function createSdk() {
   const SessionManager = jest.fn();
@@ -109,6 +109,13 @@ describe('Pi browser tool adapter', () => {
     expect(
       TOOL_SPEC_BY_NAME.get(OPERATIONS.SWARM_PUBLISH).parameters.properties
     ).not.toHaveProperty('name');
+    expect(
+      TOOL_SPEC_BY_NAME.get(OPERATIONS.SWARM_PUBLISH).parameters.properties.workspacePath
+    ).toMatchObject({
+      type: 'string',
+      minLength: 1,
+      maxLength: 1_024,
+    });
     for (const operation of [
       OPERATIONS.CLICK,
       OPERATIONS.TYPE,
@@ -467,12 +474,14 @@ describe('Pi browser tool adapter', () => {
     });
     const download = tools.find((tool) => tool.name === OPERATIONS.DOWNLOAD);
 
-    await expect(download.execute('call_cancelled', { ref: 'ref_download' })).rejects.toMatchObject({
-      code: ERROR_CODES.DOWNLOAD_CANCELLED_BY_USER,
-      retryable: false,
-      suggestedAction: expect.stringContaining('Acknowledge'),
-      message: expect.stringContaining('Do not retry'),
-    });
+    await expect(download.execute('call_cancelled', { ref: 'ref_download' })).rejects.toMatchObject(
+      {
+        code: ERROR_CODES.DOWNLOAD_CANCELLED_BY_USER,
+        retryable: false,
+        suggestedAction: expect.stringContaining('Acknowledge'),
+        message: expect.stringContaining('Do not retry'),
+      }
+    );
     expect(onToolOutcome).toHaveBeenCalledWith(
       expect.objectContaining({
         toolCallId: 'call_cancelled',
@@ -600,15 +609,19 @@ describe('Pi browser tool adapter', () => {
     };
     const controller = {
       execute: jest.fn(async (_operation, _input, execution) => {
-        execution.onProgress({ state: 'uploading', progress: 25, publication: {
-          ...publication,
+        execution.onProgress({
           state: 'uploading',
-          applicationState: 'possibly_applied',
           progress: 25,
-          reference: undefined,
-          bzzUrl: undefined,
-          verified: undefined,
-        } });
+          publication: {
+            ...publication,
+            state: 'uploading',
+            applicationState: 'possibly_applied',
+            progress: 25,
+            reference: undefined,
+            bzzUrl: undefined,
+            verified: undefined,
+          },
+        });
         return { ok: true, result: { publication, summary: { publication } } };
       }),
     };
@@ -893,7 +906,11 @@ describe('Pi browser tool adapter', () => {
         if (operation === OPERATIONS.STOP_LOADING) {
           settleWait({
             ok: false,
-            error: { code: ERROR_CODES.USER_CANCELLED, message: 'Wait cancelled', retryable: false },
+            error: {
+              code: ERROR_CODES.USER_CANCELLED,
+              message: 'Wait cancelled',
+              retryable: false,
+            },
           });
           return Promise.resolve(successEnvelope({ stopped: true }));
         }
@@ -908,7 +925,11 @@ describe('Pi browser tool adapter', () => {
     const wait = tools.find((tool) => tool.name === OPERATIONS.WAIT);
     const abortController = new AbortController();
 
-    const execution = wait.execute('call_1', { condition: 'text', text: 'Ready' }, abortController.signal);
+    const execution = wait.execute(
+      'call_1',
+      { condition: 'text', text: 'Ready' },
+      abortController.signal
+    );
     abortController.abort();
 
     await expect(execution).rejects.toMatchObject({ code: ERROR_CODES.USER_CANCELLED });

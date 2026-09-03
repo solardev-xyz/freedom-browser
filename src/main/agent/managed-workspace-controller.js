@@ -7,13 +7,27 @@ const {
   EXECUTION_STATES,
   insidePath,
   NETWORK_POSTURES,
+  restrictWorkspaceExecutionPolicy,
 } = require('./workspace-execution/execution-policy');
 const { createWorkspaceExecutor } = require('./workspace-execution/workspace-executor');
 const { detectElectronJavaScriptRuntime } = require('./workspace-execution/electron-runtime');
+const {
+  isValidatedExecutableAccessRequest,
+  resolveExecutableAccess,
+} = require('./workspace-execution/executable-access');
+const { captureHostCommandEnvironment } = require('./workspace-execution/host-command-environment');
+const {
+  WorkspaceCapabilityGrantStore,
+  createExecutableRootCapability,
+  createWorkspaceCapabilityRequest,
+  executableRootForCapability,
+  isTrustedWorkspaceCapabilityRequest,
+} = require('./workspace-execution/workspace-capabilities');
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 5 * 60 * 1_000;
 const DEFAULT_FILE_OPERATION_TIMEOUT_MS = 10_000;
 const MAX_COMMAND_LENGTH = 32_000;
+const MAX_PERMISSION_COMMAND_LENGTH = 4_096;
 const MAX_WORKSPACE_READ_BYTES = 512 * 1024;
 const MAX_WORKSPACE_WRITE_BYTES = 64 * 1024;
 const MAX_WORKSPACE_PATH_LENGTH = 1_024;
@@ -62,20 +76,23 @@ function targetPath(value, allowRoot = false) {
     target = path.join(target, parts[index]);
     const stats = fs.lstatSync(target);
     if (stats.isSymbolicLink()) fail('WORKSPACE_FILE_UNSAFE');
-    if (index < parts.length - 1 && !stats.isDirectory()) fail('WORKSPACE_FILE_UNSAFE');
+    if (index < parts.length - 1 && !stats.isDirectory()) fail('WORKSPACE_PATH_TYPE_MISMATCH');
   }
   return { safe, target };
 }
 
 function regularFile(target) {
   const stats = fs.lstatSync(target);
-  if (stats.isSymbolicLink() || !stats.isFile() || stats.nlink !== 1) fail('WORKSPACE_FILE_UNSAFE');
+  if (stats.isSymbolicLink()) fail('WORKSPACE_FILE_UNSAFE');
+  if (!stats.isFile()) fail('WORKSPACE_PATH_TYPE_MISMATCH');
+  if (stats.nlink !== 1) fail('WORKSPACE_FILE_UNSAFE');
   return stats;
 }
 
 function directory(target) {
   const stats = fs.lstatSync(target);
-  if (stats.isSymbolicLink() || !stats.isDirectory()) fail('WORKSPACE_FILE_UNSAFE');
+  if (stats.isSymbolicLink()) fail('WORKSPACE_FILE_UNSAFE');
+  if (!stats.isDirectory()) fail('WORKSPACE_PATH_TYPE_MISMATCH');
   return stats;
 }
 
@@ -362,10 +379,16 @@ try {
     fail('INVALID_WORKSPACE_REQUEST');
   }
 } catch (error) {
-  const allowed = new Set(['INVALID_WORKSPACE_REQUEST', 'WORKSPACE_FILE_TOO_LARGE', 'WORKSPACE_FILE_UNSAFE', 'WORKSPACE_PROTECTED_PATH']);
+  const allowed = new Set(['INVALID_WORKSPACE_REQUEST', 'WORKSPACE_FILE_TOO_LARGE', 'WORKSPACE_FILE_UNSAFE', 'WORKSPACE_PATH_TYPE_MISMATCH', 'WORKSPACE_PROTECTED_PATH']);
+  const native = new Map([
+    ['ENOENT', 'WORKSPACE_PATH_NOT_FOUND'],
+    ['ENOTDIR', 'WORKSPACE_PATH_TYPE_MISMATCH'],
+    ['EISDIR', 'WORKSPACE_PATH_TYPE_MISMATCH'],
+  ]);
   const readOnly = new Set(['read', 'access', 'list', 'find', 'grep']);
   const fallback = readOnly.has(operation) ? 'WORKSPACE_FILE_UNAVAILABLE' : 'WORKSPACE_WRITE_FAILED';
-  process.stderr.write('FREEDOM_FILE_ERROR:' + (allowed.has(error && error.code) ? error.code : fallback));
+  const code = allowed.has(error && error.code) ? error.code : native.get(error && error.code) || fallback;
+  process.stderr.write('FREEDOM_FILE_ERROR:' + code);
   process.exit(73);
 }
 `;
@@ -376,6 +399,62 @@ class ManagedWorkspaceError extends Error {
     this.name = 'ManagedWorkspaceError';
     this.code = code;
   }
+}
+
+function workspaceCancelledError() {
+  return new ManagedWorkspaceError(
+    'WORKSPACE_OPERATION_CANCELLED',
+    'The workspace operation was stopped'
+  );
+}
+
+function throwIfWorkspaceAborted(signal) {
+  if (signal?.aborted) throw workspaceCancelledError();
+}
+
+function reportWorkspacePhase(request, phase) {
+  if (typeof request?.onPhase !== 'function') return;
+  try {
+    request.onPhase(phase);
+  } catch {
+    // Workspace authority and execution cannot depend on a progress observer.
+  }
+}
+
+function awaitWorkspaceStep(value, signal) {
+  throwIfWorkspaceAborted(signal);
+  if (!signal?.addEventListener) return Promise.resolve(value);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (callback, result) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener?.('abort', abort);
+      callback(result);
+    };
+    const abort = () => finish(reject, workspaceCancelledError());
+    signal.addEventListener('abort', abort, { once: true });
+    Promise.resolve(value).then(
+      (result) => finish(resolve, result),
+      (error) => finish(reject, error)
+    );
+    if (signal.aborted) abort();
+  });
+}
+
+function workspaceFileErrorMessage(code) {
+  return (
+    {
+      INVALID_WORKSPACE_REQUEST: 'The workspace request is invalid',
+      WORKSPACE_FILE_TOO_LARGE: 'The requested workspace file exceeds the supported size limit',
+      WORKSPACE_FILE_UNAVAILABLE: 'The requested workspace file could not be accessed',
+      WORKSPACE_FILE_UNSAFE: 'The requested workspace path is not a safe regular file or directory',
+      WORKSPACE_PATH_NOT_FOUND: 'The requested workspace path does not exist',
+      WORKSPACE_PATH_TYPE_MISMATCH: 'The requested workspace path has the wrong file type',
+      WORKSPACE_PROTECTED_PATH: 'The requested workspace path is protected',
+      WORKSPACE_WRITE_FAILED: 'Freedom could not write the requested workspace file',
+    }[code] || 'Freedom could not complete the workspace file operation'
+  );
 }
 
 function validateWorkingDirectory(value = '.') {
@@ -415,6 +494,17 @@ function validateCommand(value) {
     );
   }
   return value;
+}
+
+function validatePermissionCommand(value) {
+  const command = validateCommand(value);
+  if (command.length > MAX_PERMISSION_COMMAND_LENGTH) {
+    throw new ManagedWorkspaceError(
+      'INVALID_EXECUTABLE_REQUEST',
+      `Permission-bound commands cannot exceed ${MAX_PERMISSION_COMMAND_LENGTH} characters`
+    );
+  }
+  return command;
 }
 
 function validateWorkspacePath(value, options = {}) {
@@ -559,31 +649,50 @@ class ManagedWorkspaceController {
     this.executor = options.executor || createWorkspaceExecutor();
     this.detectRuntime = options.detectRuntime || detectElectronJavaScriptRuntime;
     this.createPolicy = options.createPolicy || createWorkspaceExecutionPolicy;
+    this.restrictPolicy = options.restrictPolicy || restrictWorkspaceExecutionPolicy;
+    this.resolveExecutableAccess = options.resolveExecutableAccess || resolveExecutableAccess;
+    this.captureHostCommandEnvironment =
+      options.captureHostCommandEnvironment || captureHostCommandEnvironment;
+    this.executableAccessOptions = options.executableAccessOptions || {};
     this.runtimeOptions = options.runtimeOptions || {};
     this.now = options.now || Date.now;
     this.capabilities = null;
+    this.capabilitiesPromise = null;
     this.runtime = null;
+    this.runtimePromise = null;
     this.leases = new Map();
+    this.leasePromises = new Map();
     this.activeCommands = new Map();
+    this.capabilityGrants = options.capabilityGrants || new WorkspaceCapabilityGrantStore();
+    this.hostCommandEnvironment = null;
+    this.hostCommandEnvironmentPromise = null;
   }
 
-  async getCapabilities() {
+  async getCapabilities(request = {}) {
+    throwIfWorkspaceAborted(request.signal);
     if (this.capabilities) return this.capabilities;
-    let capabilities;
-    try {
-      capabilities = await this.executor.detectCapabilities();
-    } catch {
-      capabilities = {
-        backend: 'unavailable',
-        available: false,
-        denial: {
-          code: 'WORKSPACE_CAPABILITY_DETECTION_FAILED',
-          message: 'Freedom could not verify the workspace sandbox',
-        },
-      };
+    if (!this.capabilitiesPromise) {
+      this.capabilitiesPromise = (async () => {
+        let capabilities;
+        try {
+          capabilities = await this.executor.detectCapabilities();
+        } catch {
+          capabilities = {
+            backend: 'unavailable',
+            available: false,
+            denial: {
+              code: 'WORKSPACE_CAPABILITY_DETECTION_FAILED',
+              message: 'Freedom could not verify the workspace sandbox',
+            },
+          };
+        }
+        this.capabilities = publicCapabilities(capabilities);
+        return this.capabilities;
+      })().finally(() => {
+        this.capabilitiesPromise = null;
+      });
     }
-    this.capabilities = publicCapabilities(capabilities);
-    return this.capabilities;
+    return awaitWorkspaceStep(this.capabilitiesPromise, request.signal);
   }
 
   getWorkspace(conversationId) {
@@ -614,22 +723,50 @@ class ManagedWorkspaceController {
       : null;
   }
 
-  async disclosure(conversationId) {
+  async resolveWorkspacePath(conversationId) {
+    const workspace = this.store.getForConversation(conversationId);
+    if (!workspace?.enabled) {
+      throw new ManagedWorkspaceError(
+        'WORKSPACE_EXECUTION_NOT_ENABLED',
+        'Managed workspace execution is not enabled for this conversation'
+      );
+    }
+    return Object.freeze({
+      workspace,
+      path: await this.store.resolvePath(workspace.workspaceId),
+    });
+  }
+
+  async disclosure(conversationId, request = {}) {
     if (typeof conversationId !== 'string' || !conversationId) {
       throw new ManagedWorkspaceError('INVALID_WORKSPACE_REQUEST', 'Conversation ID is required');
     }
-    const capabilities = await this.getCapabilities();
+    throwIfWorkspaceAborted(request.signal);
+    reportWorkspacePhase(request, 'checking_capabilities');
+    const capabilities = await this.getCapabilities(request);
     if (!capabilities.available) {
       throw new ManagedWorkspaceError(capabilities.denial.code, capabilities.denial.message);
     }
-    await this.#attestedRuntime();
+    reportWorkspacePhase(request, 'checking_runtime');
+    await this.#attestedRuntime(request);
+    throwIfWorkspaceAborted(request.signal);
+    reportWorkspacePhase(request, 'ready_for_approval');
     return capabilities;
   }
 
-  async enable(conversationId) {
-    const capabilities = await this.disclosure(conversationId);
-    const workspace = await this.store.ensureForConversation(conversationId);
-    await this.#lease(workspace);
+  async enable(conversationId, request = {}) {
+    const capabilities = request.disclosureVerified
+      ? await this.getCapabilities(request)
+      : await this.disclosure(conversationId, request);
+    reportWorkspacePhase(request, 'creating_workspace');
+    const workspace = await awaitWorkspaceStep(
+      this.store.ensureForConversation(conversationId),
+      request.signal
+    );
+    reportWorkspacePhase(request, 'validating_boundary');
+    await this.#lease(workspace, request);
+    throwIfWorkspaceAborted(request.signal);
+    reportWorkspacePhase(request, 'enabling_workspace');
     const enabled = this.store.enable(workspace.workspaceId, conversationId, capabilities.backend);
     if (!enabled) {
       throw new ManagedWorkspaceError(
@@ -637,38 +774,57 @@ class ManagedWorkspaceController {
         'Freedom could not enable the managed workspace'
       );
     }
+    reportWorkspacePhase(request, 'workspace_ready');
     return enabled;
   }
 
-  async #attestedRuntime() {
+  async #attestedRuntime(request = {}) {
+    throwIfWorkspaceAborted(request.signal);
     if (this.runtime) return this.runtime;
-    const runtime = await this.detectRuntime(this.runtimeOptions);
-    if (!runtime?.available) {
-      throw new ManagedWorkspaceError(
-        runtime?.denial?.code || 'WORKSPACE_RUNTIME_UNAVAILABLE',
-        runtime?.denial?.message || 'Freedom could not verify its sandboxed JavaScript runtime'
-      );
+    if (!this.runtimePromise) {
+      this.runtimePromise = (async () => {
+        const runtime = await this.detectRuntime(this.runtimeOptions);
+        if (!runtime?.available) {
+          throw new ManagedWorkspaceError(
+            runtime?.denial?.code || 'WORKSPACE_RUNTIME_UNAVAILABLE',
+            runtime?.denial?.message || 'Freedom could not verify its sandboxed JavaScript runtime'
+          );
+        }
+        this.runtime = runtime;
+        return runtime;
+      })().finally(() => {
+        this.runtimePromise = null;
+      });
     }
-    this.runtime = runtime;
-    return runtime;
+    return awaitWorkspaceStep(this.runtimePromise, request.signal);
   }
 
-  async #lease(workspace) {
+  async #lease(workspace, request = {}) {
+    throwIfWorkspaceAborted(request.signal);
     const existing = this.leases.get(workspace.workspaceId);
     if (existing) return existing;
+    let pending = this.leasePromises.get(workspace.workspaceId);
+    if (!pending) {
+      pending = this.#createLease(workspace).finally(() => {
+        this.leasePromises.delete(workspace.workspaceId);
+      });
+      this.leasePromises.set(workspace.workspaceId, pending);
+    }
+    return awaitWorkspaceStep(pending, request.signal);
+  }
+
+  async #createLease(workspace) {
     const workspaceRoot = await this.store.resolvePath(workspace.workspaceId);
     const runtime = await this.#attestedRuntime();
     let policy;
     try {
-      policy = await this.createPolicy({
+      const helperPolicy = await this.createPolicy({
         workspaceRoot,
-        nodeRuntimeRoot: null,
         electronRuntime: runtime,
         network: NETWORK_POSTURES.NONE,
         environment: {
           set: {
             ELECTRON_RUN_AS_NODE: '1',
-            FREEDOM_JAVASCRIPT_RUNTIME: runtime.sandboxExecutablePath,
           },
         },
         limits: {
@@ -677,13 +833,18 @@ class ManagedWorkspaceController {
           stderrBytes: 1024 * 1024,
         },
       });
+      const agentPolicy = this.restrictPolicy(helperPolicy, {
+        omitRuntimeRootIds: ['electron'],
+        omitEnvironmentNames: ['ELECTRON_RUN_AS_NODE'],
+      });
+      policy = { helperPolicy, agentPolicy };
     } catch (error) {
       throw new ManagedWorkspaceError(
         typeof error?.code === 'string' ? error.code : 'WORKSPACE_POLICY_FAILED',
         'Freedom could not establish the managed workspace boundary'
       );
     }
-    const lease = Object.freeze({ workspaceRoot, runtime, policy });
+    const lease = Object.freeze({ workspaceRoot, runtime, ...policy });
     this.leases.set(workspace.workspaceId, lease);
     return lease;
   }
@@ -724,7 +885,8 @@ class ManagedWorkspaceController {
     };
   }
 
-  async #enabledLease(conversationId) {
+  async #enabledLease(conversationId, request = {}) {
+    throwIfWorkspaceAborted(request.signal);
     const workspace = this.store.getForConversation(conversationId);
     if (!workspace?.enabled) {
       throw new ManagedWorkspaceError(
@@ -732,7 +894,150 @@ class ManagedWorkspaceController {
         'The managed workspace has not been enabled for this conversation'
       );
     }
-    return { workspace, lease: await this.#lease(workspace) };
+    return { workspace, lease: await this.#lease(workspace, request) };
+  }
+
+  async prepareExecutableAccess(conversationId, executables, request = {}) {
+    throwIfWorkspaceAborted(request.signal);
+    let prepared;
+    try {
+      const command = validatePermissionCommand(request.command);
+      const capabilities = await this.getCapabilities(request);
+      if (!capabilities.available) {
+        throw new ManagedWorkspaceError(capabilities.denial.code, capabilities.denial.message);
+      }
+      const { lease } = await this.#enabledLease(conversationId, request);
+      const workingDirectory = await this.#workingDirectory(
+        lease,
+        request.workingDirectory || '.',
+        capabilities.backend
+      );
+      let hostEnvironment = this.executableAccessOptions.hostEnvironment;
+      if (!hostEnvironment && this.resolveExecutableAccess === resolveExecutableAccess) {
+        if (!this.hostCommandEnvironment) {
+          if (!this.hostCommandEnvironmentPromise) {
+            this.hostCommandEnvironmentPromise = this.captureHostCommandEnvironment(
+              this.executableAccessOptions
+            )
+              .then((environment) => {
+                this.hostCommandEnvironment = environment;
+                return environment;
+              })
+              .finally(() => {
+                this.hostCommandEnvironmentPromise = null;
+              });
+          }
+          await this.hostCommandEnvironmentPromise;
+        }
+        hostEnvironment = this.hostCommandEnvironment;
+      }
+      const executableAccess = await this.resolveExecutableAccess(executables, {
+        ...this.executableAccessOptions,
+        ...(hostEnvironment && { hostEnvironment }),
+      });
+      const capabilityRequest = executableAccess.runtimeRoots.length
+        ? createWorkspaceCapabilityRequest({
+            conversationId,
+            command,
+            workingDirectory: workingDirectory.relative,
+            capabilities: executableAccess.runtimeRoots.map(createExecutableRootCapability),
+          })
+        : null;
+      prepared = Object.freeze({
+        kind: 'freedom.command-executable-access',
+        executableAccess,
+        capabilityRequest,
+        command,
+        workingDirectory: workingDirectory.relative,
+      });
+    } catch (error) {
+      throw new ManagedWorkspaceError(
+        typeof error?.code === 'string' ? error.code : 'EXECUTABLE_RESOLUTION_FAILED',
+        typeof error?.message === 'string'
+          ? error.message
+          : 'Freedom could not resolve the requested executables'
+      );
+    }
+    return Object.freeze({
+      prepared,
+      publicRequest: Object.freeze({
+        kind: 'command_access',
+        command: prepared.command,
+        workingDirectory: prepared.workingDirectory,
+        commands: prepared.executableAccess.commands,
+      }),
+      approvalRequired: prepared.executableAccess.runtimeRoots.length > 0,
+      unavailable: Object.freeze(
+        prepared.executableAccess.commands
+          .filter((command) => command.status === 'unavailable')
+          .map((command) => command.name)
+      ),
+      available: Object.freeze(
+        prepared.executableAccess.commands
+          .filter((command) => command.status !== 'unavailable')
+          .map((command) => command.name)
+      ),
+    });
+  }
+
+  grantExecutableAccess(conversationId, prepared, scope = 'once') {
+    const workspace = this.store.getForConversation(conversationId);
+    if (
+      typeof conversationId !== 'string' ||
+      !conversationId ||
+      !workspace?.enabled ||
+      prepared?.kind !== 'freedom.command-executable-access' ||
+      !isValidatedExecutableAccessRequest(prepared.executableAccess) ||
+      !isTrustedWorkspaceCapabilityRequest(prepared.capabilityRequest) ||
+      !['once', 'conversation'].includes(scope)
+    ) {
+      throw new ManagedWorkspaceError(
+        'INVALID_EXECUTABLE_GRANT',
+        'Freedom refused an invalid executable grant'
+      );
+    }
+    try {
+      this.capabilityGrants.grant(conversationId, prepared.capabilityRequest, scope);
+    } catch {
+      throw new ManagedWorkspaceError(
+        'INVALID_EXECUTABLE_GRANT',
+        'Freedom refused an invalid executable grant'
+      );
+    }
+    return Object.freeze({
+      scope,
+      commands: Object.freeze(
+        prepared.executableAccess.commands
+          .filter((command) => command.status !== 'unavailable')
+          .map((command) => command.name)
+      ),
+      command: prepared.command,
+      workingDirectory: prepared.workingDirectory,
+    });
+  }
+
+  clearTurnPermissions(conversationId) {
+    return this.capabilityGrants.clearOnce(conversationId);
+  }
+
+  #agentPolicy(conversationId, lease, command, workingDirectory) {
+    const roots = this.capabilityGrants
+      .resolve(conversationId, { command, workingDirectory })
+      .map((capability) => {
+        const root = executableRootForCapability(capability);
+        if (root) return root;
+        throw new ManagedWorkspaceError(
+          'UNSUPPORTED_WORKSPACE_CAPABILITY',
+          'Freedom refused a workspace capability without a qualified enforcement adapter'
+        );
+      });
+    if (!roots.length) return lease.agentPolicy;
+    const unique = [...new Map(roots.map((root) => [root.id, root])).values()];
+    return this.restrictPolicy(lease.helperPolicy, {
+      omitRuntimeRootIds: ['electron'],
+      omitEnvironmentNames: ['ELECTRON_RUN_AS_NODE'],
+      addRuntimeRoots: unique,
+    });
   }
 
   async #fileOperation(conversationId, operation, relativePath, content = null, request = {}) {
@@ -746,11 +1051,12 @@ class ManagedWorkspaceController {
         : operation === 'write'
           ? assertWritableWorkspacePath(relativePath)
           : validateWorkspacePath(relativePath, { allowRoot: rootOperations.has(operation) });
-    const capabilities = await this.getCapabilities();
+    const capabilities = await this.getCapabilities(request);
     if (!capabilities.available) {
       throw new ManagedWorkspaceError(capabilities.denial.code, capabilities.denial.message);
     }
-    const { lease } = await this.#enabledLease(conversationId);
+    const { lease } = await this.#enabledLease(conversationId, request);
+    reportWorkspacePhase(request, 'executing_operation');
     const executionRoot =
       capabilities.backend === 'linux-bubblewrap' ? '/workspace' : lease.workspaceRoot;
     const controller = new AbortController();
@@ -763,13 +1069,14 @@ class ManagedWorkspaceController {
     this.activeCommands.set(activeToken, { conversationId, controller });
     let receipt;
     try {
-      receipt = await this.executor.execute(lease.policy, {
+      receipt = await this.executor.execute(lease.helperPolicy, {
         command: '/bin/sh',
         args: [
           '-c',
-          'cd "$1" && exec "$FREEDOM_JAVASCRIPT_RUNTIME" -e "$2" "$3" "$4" "$5"',
+          'cd "$1" && exec "$2" -e "$3" "$4" "$5" "$6"',
           'freedom-workspace-file',
           executionRoot,
+          lease.runtime.sandboxExecutablePath,
           WORKSPACE_FILE_HELPER,
           operation,
           relative,
@@ -788,12 +1095,17 @@ class ManagedWorkspaceController {
       this.activeCommands.delete(activeToken);
     }
     if (receipt.state !== EXECUTION_STATES.COMPLETED || receipt.exitCode !== 0) {
+      if (externalSignal?.aborted || receipt.state === EXECUTION_STATES.CANCELLED) {
+        throw workspaceCancelledError();
+      }
       const reported = /FREEDOM_FILE_ERROR:([A-Z0-9_]{1,120})/.exec(receipt.stderr || '')?.[1];
       const allowed = new Set([
         'INVALID_WORKSPACE_REQUEST',
         'WORKSPACE_FILE_TOO_LARGE',
         'WORKSPACE_FILE_UNAVAILABLE',
         'WORKSPACE_FILE_UNSAFE',
+        'WORKSPACE_PATH_NOT_FOUND',
+        'WORKSPACE_PATH_TYPE_MISMATCH',
         'WORKSPACE_PROTECTED_PATH',
         'WORKSPACE_WRITE_FAILED',
       ]);
@@ -802,10 +1114,7 @@ class ManagedWorkspaceController {
         : readOnlyOperations.has(operation)
           ? 'WORKSPACE_FILE_UNAVAILABLE'
           : 'WORKSPACE_WRITE_FAILED';
-      throw new ManagedWorkspaceError(
-        code,
-        'Freedom could not complete the workspace file operation'
-      );
+      throw new ManagedWorkspaceError(code, workspaceFileErrorMessage(code));
     }
     if (receipt.stdoutTruncated) {
       throw new ManagedWorkspaceError(
@@ -844,13 +1153,13 @@ class ManagedWorkspaceController {
     return this.#fileOperation(conversationId, 'read', relativePath, null, request);
   }
 
-  async createDirectory(conversationId, relativePath) {
-    await this.#fileOperation(conversationId, 'mkdir', relativePath);
+  async createDirectory(conversationId, relativePath, request = {}) {
+    await this.#fileOperation(conversationId, 'mkdir', relativePath, null, request);
   }
 
-  async writeFile(conversationId, relativePath, content) {
+  async writeFile(conversationId, relativePath, content, request = {}) {
     const buffer = validateWorkspaceContent(content);
-    await this.#fileOperation(conversationId, 'write', relativePath, buffer);
+    await this.#fileOperation(conversationId, 'write', relativePath, buffer, request);
   }
 
   async listDirectory(conversationId, relativePath = '.', options = {}) {
@@ -959,9 +1268,9 @@ class ManagedWorkspaceController {
   }
 
   async execute(conversationId, request = {}) {
-    const { workspace, lease } = await this.#enabledLease(conversationId);
+    const { workspace, lease } = await this.#enabledLease(conversationId, request);
     const command = validateCommand(request.command);
-    const capabilities = await this.getCapabilities();
+    const capabilities = await this.getCapabilities(request);
     if (!capabilities.available) {
       throw new ManagedWorkspaceError(capabilities.denial.code, capabilities.denial.message);
     }
@@ -969,6 +1278,13 @@ class ManagedWorkspaceController {
       lease,
       request.workingDirectory || '.',
       capabilities.backend
+    );
+    throwIfWorkspaceAborted(request.signal);
+    const agentPolicy = this.#agentPolicy(
+      conversationId,
+      lease,
+      command,
+      workingDirectory.relative
     );
     const controller = new AbortController();
     const externalSignal = request.signal;
@@ -995,11 +1311,11 @@ class ManagedWorkspaceController {
     this.activeCommands.set(commandId, { conversationId, controller });
     let receipt;
     try {
-      receipt = await this.executor.execute(lease.policy, {
+      receipt = await this.executor.execute(agentPolicy, {
         command: '/bin/sh',
         args: [
           '-c',
-          'cd "$1" && exec /bin/sh -lc "$2"',
+          'cd "$1" && exec /bin/sh -c "$2"',
           'freedom-workspace',
           workingDirectory.executionPath,
           command,
@@ -1010,7 +1326,7 @@ class ManagedWorkspaceController {
       const finishedAt = this.now();
       receipt = Object.freeze({
         backend: capabilities.backend,
-        state: EXECUTION_STATES.SANDBOX_DENIED,
+        state: EXECUTION_STATES.FAILED,
         startedAt,
         finishedAt,
         durationMs: Math.max(0, finishedAt - startedAt),
@@ -1020,8 +1336,10 @@ class ManagedWorkspaceController {
         stderr: '',
         stdoutTruncated: false,
         stderrTruncated: false,
-        terminationGuarantee: 'not_applicable',
-        sideEffects: 'none',
+        terminationGuarantee: 'unknown',
+        sideEffects: 'unknown',
+        survivorsPossible: true,
+        completeDescendantTermination: false,
         error: Object.freeze({
           code: 'WORKSPACE_EXECUTION_FAILED',
           message: 'Freedom could not execute the command inside the verified sandbox',
@@ -1077,6 +1395,8 @@ class ManagedWorkspaceController {
     const workspace = this.store.getForConversation(conversationId);
     if (!workspace) return false;
     this.leases.delete(workspace.workspaceId);
+    this.leasePromises.delete(workspace.workspaceId);
+    this.capabilityGrants.deleteConversation(conversationId);
     return this.store.deleteConversation(conversationId);
   }
 
@@ -1084,6 +1404,8 @@ class ManagedWorkspaceController {
     for (const active of this.activeCommands.values()) active.controller.abort();
     this.activeCommands.clear();
     this.leases.clear();
+    this.leasePromises.clear();
+    this.capabilityGrants.clear();
   }
 }
 
@@ -1091,6 +1413,7 @@ module.exports = {
   DEFAULT_COMMAND_TIMEOUT_MS,
   DEFAULT_FILE_OPERATION_TIMEOUT_MS,
   MAX_COMMAND_LENGTH,
+  MAX_PERMISSION_COMMAND_LENGTH,
   MAX_WORKSPACE_DIRECTORY_ENTRIES,
   MAX_WORKSPACE_FIND_RESULTS,
   MAX_WORKSPACE_GREP_MATCHES,
@@ -1106,6 +1429,7 @@ module.exports = {
   publicCapabilities,
   safeReceiptError,
   validateCommand,
+  validatePermissionCommand,
   validateWorkspaceSearchPattern,
   validateWorkspacePath,
   validateWorkingDirectory,

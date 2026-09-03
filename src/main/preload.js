@@ -165,12 +165,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getWebviewPreloadPath: () => ipcRenderer.invoke('internal:get-webview-preload-path'),
   bindAutomationTab: (rendererTabId, guestWebContentsId) =>
     ipcRenderer.send('automation:bind-tab', { rendererTabId, guestWebContentsId }),
-  startAgent: (
-    rendererTabId,
-    prompt,
-    approvalMode = 'every_interaction',
-    attachmentIds = []
-  ) =>
+  startAgent: (rendererTabId, prompt, approvalMode = 'every_interaction', attachmentIds = []) =>
     ipcRenderer.invoke('agent:start', {
       rendererTabId,
       prompt,
@@ -189,8 +184,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ...(Number.isSafeInteger(options.walletIndex) && options.walletIndex >= 0
         ? { walletIndex: options.walletIndex }
         : {}),
-      ...(options.diagnosticScope === 'conversation'
-        ? { diagnosticScope: 'conversation' }
+      ...(options.diagnosticScope === 'conversation' ? { diagnosticScope: 'conversation' } : {}),
+      ...(options.workspacePermissionScope === 'conversation'
+        ? { workspacePermissionScope: 'conversation' }
         : {}),
     }),
   handleAgentWalletRequest: (rendererTabId, request) =>
@@ -214,10 +210,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('agent:attachments:preview', { conversationId, resourceId }),
   setAgentApprovalMode: (conversationId, approvalMode) =>
     ipcRenderer.invoke('agent:approval-mode:set', { conversationId, approvalMode }),
-  claimAgentTab: (rendererTabId) =>
-    ipcRenderer.invoke('agent:tab:claim', { rendererTabId }),
-  openAgentPublication: (bzzUrl) =>
-    ipcRenderer.invoke('agent:publication:open', { bzzUrl }),
+  claimAgentTab: (rendererTabId) => ipcRenderer.invoke('agent:tab:claim', { rendererTabId }),
+  openAgentPublication: (bzzUrl) => ipcRenderer.invoke('agent:publication:open', { bzzUrl }),
   getAgentProviderStatus: () => ipcRenderer.invoke('agent:provider:get-status'),
   getAgentProviderCatalog: () => ipcRenderer.invoke('agent:provider:get-catalog'),
   configureHostedAgentProvider: (providerId, modelId, apiKey) =>
@@ -229,8 +223,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   cancelAgentProviderLogin: () => ipcRenderer.invoke('agent:provider:cancel-login'),
   selectAgentModel: (providerId, modelId) =>
     ipcRenderer.invoke('agent:provider:select-model', { providerId, modelId }),
-  removeAgentProvider: (providerId) =>
-    ipcRenderer.invoke('agent:provider:remove', { providerId }),
+  removeAgentProvider: (providerId) => ipcRenderer.invoke('agent:provider:remove', { providerId }),
   clearAgentProvider: () => ipcRenderer.invoke('agent:provider:clear'),
   onAgentProviderAuthEvent: (callback) => {
     const handler = (_event, payload) => callback(payload);
@@ -498,21 +491,27 @@ contextBridge.exposeInMainWorld('ant', {
 });
 
 contextBridge.exposeInMainWorld('myotis', {
-  start: (chainId) => chainId == null
-    ? ipcRenderer.invoke('myotis:start')
-    : ipcRenderer.invoke('myotis:start', chainId),
-  stop: (chainId) => chainId == null
-    ? ipcRenderer.invoke('myotis:stop')
-    : ipcRenderer.invoke('myotis:stop', chainId),
-  getStatus: (chainId) => chainId == null
-    ? ipcRenderer.invoke('myotis:getStatus')
-    : ipcRenderer.invoke('myotis:getStatus', chainId),
+  start: (chainId) =>
+    chainId == null
+      ? ipcRenderer.invoke('myotis:start')
+      : ipcRenderer.invoke('myotis:start', chainId),
+  stop: (chainId) =>
+    chainId == null
+      ? ipcRenderer.invoke('myotis:stop')
+      : ipcRenderer.invoke('myotis:stop', chainId),
+  getStatus: (chainId) =>
+    chainId == null
+      ? ipcRenderer.invoke('myotis:getStatus')
+      : ipcRenderer.invoke('myotis:getStatus', chainId),
   onStatusUpdate: (callback) => {
     const handler = (_event, value) => callback(value);
     ipcRenderer.on('myotis:statusUpdate', handler);
     // The eager snapshot is best-effort; live status events continue to work
     // if startup races handler registration or the window is already closing.
-    ipcRenderer.invoke('myotis:getStatus').then(callback).catch(() => {});
+    ipcRenderer
+      .invoke('myotis:getStatus')
+      .then(callback)
+      .catch(() => {});
     return () => ipcRenderer.removeListener('myotis:statusUpdate', handler);
   },
 });
@@ -665,7 +664,8 @@ contextBridge.exposeInMainWorld('wallet', {
 
 contextBridge.exposeInMainWorld('ledger', {
   getAccounts: (options) => ipcRenderer.invoke('ledger:get-accounts', options),
-  addAccount: (name, address, path) => ipcRenderer.invoke('wallet:add-ledger-wallet', name, address, path),
+  addAccount: (name, address, path) =>
+    ipcRenderer.invoke('wallet:add-ledger-wallet', name, address, path),
 });
 
 // Remote (phone) signing: main publishes signing jobs here; the renderer
@@ -816,7 +816,8 @@ contextBridge.exposeInMainWorld('swarmManifest', {
   check: (request) => ipcRenderer.invoke('swarm:manifest-check', request),
   decide: (token, outcome) => ipcRenderer.invoke('swarm:manifest-decide', { token, outcome }),
   get: (origin) => ipcRenderer.invoke('swarm:manifest-get', origin),
-  useIndividual: (origin, capability) => ipcRenderer.invoke('swarm:manifest-use-individual', { origin, capability }),
+  useIndividual: (origin, capability) =>
+    ipcRenderer.invoke('swarm:manifest-use-individual', { origin, capability }),
   disconnect: (origin) => ipcRenderer.invoke('swarm:manifest-disconnect', origin),
 });
 

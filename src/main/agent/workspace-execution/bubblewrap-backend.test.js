@@ -22,6 +22,7 @@ const {
   selectInitialSandboxPid,
 } = require('./bubblewrap-backend');
 const { createWorkspaceExecutionPolicy } = require('./execution-policy');
+const { resolveExecutableAccess } = require('./executable-access');
 
 function expectArgumentSequence(args, sequence) {
   expect(args.join('\0')).toContain(sequence.join('\0'));
@@ -95,6 +96,7 @@ describe('Bubblewrap backend contract', () => {
         '/tmp',
       ])
     );
+    expect(launch.args).not.toContain('--share-net');
     expect(joined).toContain(`${fixture.workspaceRoot}\n/workspace`);
     expect(joined).toContain(`${path.join(fixture.workspaceRoot, '.git')}\n/workspace/.git`);
     expect(joined).not.toContain(`${os.homedir()}\n${os.homedir()}`);
@@ -151,13 +153,59 @@ describe('Bubblewrap backend contract', () => {
     expect(BUBBLEWRAP_SUPERVISOR_SCRIPT).toContain('[ -e /proc/self/fd/0 ] || exit 97');
     expect(BUBBLEWRAP_SUPERVISOR_SCRIPT).toContain('case "$descriptor" in');
     expect(BUBBLEWRAP_SUPERVISOR_SCRIPT).toContain("''|*[!0-9]*) continue");
-    expect(BUBBLEWRAP_SUPERVISOR_SCRIPT).toContain(
-      'eval "exec ${descriptor}>&-" || exit 98'
-    );
+    expect(BUBBLEWRAP_SUPERVISOR_SCRIPT).toContain('eval "exec ${descriptor}>&-" || exit 98');
     expect(BUBBLEWRAP_SUPERVISOR_SCRIPT).not.toContain('done 2>/dev/null');
     expect(BUBBLEWRAP_SUPERVISOR_SCRIPT.indexOf('done')).toBeLessThan(
       BUBBLEWRAP_SUPERVISOR_SCRIPT.indexOf('printf "%s\\n" "$1"')
     );
+  });
+
+  test('mounts approved executable roots read-only and adds only their declared PATH entries', async () => {
+    const fixture = await createFixture();
+    fixtureRoots.push(fixture.fixtureRoot);
+    const packageRoot = path.join(fixture.fixtureRoot, 'toolchain');
+    const bin = path.join(packageRoot, 'bin');
+    await fs.promises.mkdir(bin, { recursive: true });
+    await fs.promises.writeFile(path.join(bin, 'tool'), '#!/bin/sh\n', { mode: 0o700 });
+    const access = await resolveExecutableAccess(['tool'], {
+      platform: 'linux',
+      hostEnvironment: { PATH: bin },
+    });
+    const policy = await createWorkspaceExecutionPolicy({
+      workspaceRoot: fixture.workspaceRoot,
+      runtimeRoots: access.runtimeRoots,
+    });
+
+    const launch = await buildBubblewrapArguments(policy, { command: '/bin/sh' });
+    fixtureRoots.push(launch.stagingDirectory);
+    const root = access.runtimeRoots[0];
+    expectArgumentSequence(launch.args, ['--ro-bind', root.sourcePath, root.mountPath]);
+    const pathIndex = launch.args.findIndex(
+      (value, index) => value === '--setenv' && launch.args[index + 1] === 'PATH'
+    );
+    expect(launch.args[pathIndex + 2].split(':')[0]).toBe(`${root.mountPath}/bin`);
+    expect(launch.args.join('\n')).not.toContain(`${root.sourcePath}\n${root.sourcePath}`);
+  });
+
+  test('shares the host network only for an explicit full-network policy', async () => {
+    const fixture = await createFixture();
+    fixtureRoots.push(fixture.fixtureRoot);
+    const policy = await createWorkspaceExecutionPolicy({
+      workspaceRoot: fixture.workspaceRoot,
+      network: 'full',
+    });
+
+    const launch = await buildBubblewrapArguments(policy, { command: '/usr/bin/true' });
+    fixtureRoots.push(launch.stagingDirectory);
+
+    expectArgumentSequence(launch.args, ['--unshare-all', '--share-net', '--unshare-user']);
+    if (fs.existsSync('/etc/resolv.conf')) {
+      expectArgumentSequence(launch.args, [
+        '--ro-bind',
+        fs.realpathSync('/etc/resolv.conf'),
+        '/etc/resolv.conf',
+      ]);
+    }
   });
 
   test('probes every Bubblewrap primitive used for bounded writable mounts', () => {

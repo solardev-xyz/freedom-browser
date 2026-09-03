@@ -221,6 +221,37 @@ describe('webcontents-setup', () => {
     expect(ctx.log.warn).toHaveBeenCalledWith('[webcontents:33:webview] responsive again');
   });
 
+  test('confines isolated preview pages to their exact origin and denies popups', () => {
+    const parentWindow = { webContents: { id: 2, send: jest.fn() } };
+    const ctx = loadWebContentsSetupModule({ windows: [parentWindow] });
+    const token = 'a'.repeat(40);
+    const contents = createContentsMock({
+      id: 34,
+      type: 'webview',
+      url: `freedom-preview://${token}/index.html`,
+    });
+
+    ctx.mod.registerWebContentsHandlers();
+    ctx.app.emit('web-contents-created', {}, contents);
+
+    expect(
+      contents.windowOpenHandler({ url: 'https://example.com/', frameName: '_blank' })
+    ).toEqual({ action: 'deny' });
+    expect(parentWindow.webContents.send).not.toHaveBeenCalled();
+
+    const sameOrigin = { preventDefault: jest.fn() };
+    contents.emit('will-navigate', sameOrigin, `freedom-preview://${token}/about.html`);
+    expect(sameOrigin.preventDefault).not.toHaveBeenCalled();
+
+    for (const url of ['https://example.com/', `freedom-preview://${'b'.repeat(40)}/index.html`]) {
+      const event = { preventDefault: jest.fn() };
+      contents.emit('will-navigate', event, url);
+      expect(event.preventDefault).toHaveBeenCalled();
+    }
+    expect(parentWindow.webContents.send).not.toHaveBeenCalled();
+    expect(ctx.log.info.mock.calls.flat().join(' ')).not.toContain(token);
+  });
+
   // PRIVATE MODE GUARD (navigation logging): log.info is written to the
   // persistent <userData>/logs/main.log, which outlives the private window.
   // Neither an intercepted custom-protocol URL nor a new-window target may

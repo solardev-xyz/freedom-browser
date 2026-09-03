@@ -11,6 +11,7 @@ const {
   validateWorkspacePath,
   validateWorkingDirectory,
 } = require('./managed-workspace-controller');
+const { resolveExecutableAccess } = require('./workspace-execution/executable-access');
 
 function createController(overrides = {}) {
   const workspace = {
@@ -62,16 +63,24 @@ function createController(overrides = {}) {
     available: true,
     sandboxExecutablePath: '/opt/freedom-toolchain/electron/freedom',
   };
-  const policy = { kind: 'test-policy' };
+  const helperPolicy = { kind: 'test-helper-policy' };
+  const agentPolicy = { kind: 'test-agent-policy' };
   const dependencies = {
     store,
     executor,
     detectRuntime: jest.fn(async () => runtime),
-    createPolicy: jest.fn(async () => policy),
+    createPolicy: jest.fn(async () => helperPolicy),
+    restrictPolicy: jest.fn(() => agentPolicy),
     now: jest.fn(() => 1_000),
     ...overrides,
   };
-  return { controller: new ManagedWorkspaceController(dependencies), dependencies, workspace };
+  return {
+    controller: new ManagedWorkspaceController(dependencies),
+    dependencies,
+    workspace,
+    helperPolicy,
+    agentPolicy,
+  };
 }
 
 function completedExecution(stdout) {
@@ -107,7 +116,7 @@ describe('ManagedWorkspaceController', () => {
   });
 
   test('discloses only public enforcement properties and establishes one policy lease', async () => {
-    const { controller, dependencies } = createController();
+    const { controller, dependencies, helperPolicy } = createController();
 
     await expect(controller.disclosure('conversation_one')).resolves.toEqual({
       available: true,
@@ -122,19 +131,67 @@ describe('ManagedWorkspaceController', () => {
     expect(dependencies.createPolicy).toHaveBeenCalledWith(
       expect.objectContaining({
         workspaceRoot: '/managed/workspace_aaaaaaaaaaaaaaaaaaaa',
-        nodeRuntimeRoot: null,
         electronRuntime: expect.objectContaining({ available: true }),
         environment: {
           set: {
             ELECTRON_RUN_AS_NODE: '1',
-            FREEDOM_JAVASCRIPT_RUNTIME: '/opt/freedom-toolchain/electron/freedom',
           },
         },
       })
     );
+    expect(dependencies.restrictPolicy).toHaveBeenCalledWith(helperPolicy, {
+      omitRuntimeRootIds: ['electron'],
+      omitEnvironmentNames: ['ELECTRON_RUN_AS_NODE'],
+    });
     expect(JSON.stringify(await controller.disclosure('conversation_one'))).not.toContain(
       '/managed/'
     );
+  });
+
+  test('reports workspace startup phases without exposing host paths', async () => {
+    const { controller } = createController();
+    const phases = [];
+
+    await controller.enable('conversation_one', { onPhase: (phase) => phases.push(phase) });
+
+    expect(phases).toEqual([
+      'checking_capabilities',
+      'checking_runtime',
+      'ready_for_approval',
+      'creating_workspace',
+      'validating_boundary',
+      'enabling_workspace',
+      'workspace_ready',
+    ]);
+    expect(JSON.stringify(phases)).not.toContain('/managed/');
+  });
+
+  test('cancels a workspace enablement wait even when policy construction never settles', async () => {
+    let resolvePolicy;
+    const policy = new Promise((resolve) => {
+      resolvePolicy = resolve;
+    });
+    const { controller, dependencies, helperPolicy } = createController({
+      createPolicy: jest.fn(() => policy),
+    });
+    const abortController = new AbortController();
+    const enablement = controller.enable('conversation_one', {
+      signal: abortController.signal,
+    });
+    for (
+      let attempt = 0;
+      attempt < 10 && dependencies.createPolicy.mock.calls.length === 0;
+      attempt += 1
+    ) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+
+    abortController.abort();
+    await expect(enablement).rejects.toMatchObject({ code: 'WORKSPACE_OPERATION_CANCELLED' });
+    expect(dependencies.store.enable).not.toHaveBeenCalled();
+
+    resolvePolicy(helperPolicy);
+    await new Promise((resolve) => setImmediate(resolve));
   });
 
   test('executes in a relative directory, returns a structured receipt, and persists it', async () => {
@@ -149,12 +206,12 @@ describe('ManagedWorkspaceController', () => {
     });
 
     expect(dependencies.executor.execute).toHaveBeenCalledWith(
-      { kind: 'test-policy' },
+      { kind: 'test-agent-policy' },
       expect.objectContaining({
         command: '/bin/sh',
         args: [
           '-c',
-          'cd "$1" && exec /bin/sh -lc "$2"',
+          'cd "$1" && exec /bin/sh -c "$2"',
           'freedom-workspace',
           '/workspace/site',
           'printf hello',
@@ -178,6 +235,158 @@ describe('ManagedWorkspaceController', () => {
     );
   });
 
+  test('binds one-shot executable access to one exact command and working directory', async () => {
+    fs.promises.realpath.mockRestore();
+    fs.promises.stat.mockRestore();
+    const fixture = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'freedom-controller-tool-'));
+    const packageRoot = path.join(fixture, 'runtime');
+    const bin = path.join(packageRoot, 'bin');
+    await fs.promises.mkdir(bin, { recursive: true });
+    await fs.promises.writeFile(path.join(bin, 'tool'), '#!/bin/sh\n', { mode: 0o700 });
+    const prepared = await resolveExecutableAccess(['tool'], {
+      platform: 'darwin',
+      hostEnvironment: { PATH: bin },
+    });
+    jest
+      .spyOn(fs.promises, 'realpath')
+      .mockImplementation(async (value) => path.resolve(String(value)));
+    jest.spyOn(fs.promises, 'stat').mockResolvedValue({ isDirectory: () => true });
+    const grantedPolicy = { kind: 'test-granted-policy' };
+    const { controller, dependencies, helperPolicy } = createController({
+      resolveExecutableAccess: jest.fn(async () => prepared),
+      restrictPolicy: jest
+        .fn()
+        .mockReturnValueOnce({ kind: 'test-agent-policy' })
+        .mockReturnValue(grantedPolicy),
+    });
+
+    try {
+      const resolved = await controller.prepareExecutableAccess('conversation_one', ['tool'], {
+        command: 'tool --version',
+        workingDirectory: '.',
+      });
+      expect(resolved.publicRequest).toMatchObject({
+        kind: 'command_access',
+        command: 'tool --version',
+        workingDirectory: '.',
+        commands: [expect.objectContaining({ name: 'tool', status: 'requires_permission' })],
+      });
+      expect(
+        controller.grantExecutableAccess('conversation_one', resolved.prepared, 'once')
+      ).toEqual({
+        scope: 'once',
+        commands: ['tool'],
+        command: 'tool --version',
+        workingDirectory: '.',
+      });
+      expect(() =>
+        controller.grantExecutableAccess('conversation_one', resolved.prepared, 'once')
+      ).toThrow(expect.objectContaining({ code: 'INVALID_EXECUTABLE_GRANT' }));
+
+      await controller.execute('conversation_one', { command: 'tool --help' });
+      expect(dependencies.executor.execute).toHaveBeenLastCalledWith(
+        { kind: 'test-agent-policy' },
+        expect.objectContaining({ command: '/bin/sh' })
+      );
+
+      await controller.execute('conversation_one', { command: 'tool --version' });
+      expect(dependencies.restrictPolicy).toHaveBeenLastCalledWith(helperPolicy, {
+        omitRuntimeRootIds: ['electron'],
+        omitEnvironmentNames: ['ELECTRON_RUN_AS_NODE'],
+        addRuntimeRoots: prepared.runtimeRoots,
+      });
+      expect(dependencies.executor.execute).toHaveBeenCalledWith(
+        grantedPolicy,
+        expect.objectContaining({ command: '/bin/sh' })
+      );
+
+      await controller.execute('conversation_one', { command: 'tool --version' });
+      expect(dependencies.executor.execute).toHaveBeenLastCalledWith(
+        { kind: 'test-agent-policy' },
+        expect.objectContaining({ command: '/bin/sh' })
+      );
+      expect(controller.clearTurnPermissions('conversation_one')).toBe(false);
+
+      const conversationPermission = await controller.prepareExecutableAccess(
+        'conversation_one',
+        ['tool'],
+        { command: 'tool later', workingDirectory: '.' }
+      );
+      controller.grantExecutableAccess(
+        'conversation_one',
+        conversationPermission.prepared,
+        'conversation'
+      );
+      await controller.execute('conversation_one', { command: 'tool --different' });
+      expect(dependencies.executor.execute).toHaveBeenLastCalledWith(
+        grantedPolicy,
+        expect.objectContaining({ command: '/bin/sh' })
+      );
+      expect(controller.clearTurnPermissions('conversation_one')).toBe(false);
+    } finally {
+      await fs.promises.rm(fixture, { recursive: true, force: true });
+    }
+  });
+
+  test('captures and caches the user command PATH for the default resolver', async () => {
+    fs.promises.realpath.mockRestore();
+    fs.promises.stat.mockRestore();
+    const fixture = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'freedom-controller-path-'));
+    const packageRoot = path.join(fixture, 'runtime');
+    const bin = path.join(packageRoot, 'bin');
+    await fs.promises.mkdir(bin, { recursive: true });
+    await fs.promises.writeFile(path.join(bin, 'tool'), '#!/bin/sh\n', { mode: 0o700 });
+    jest
+      .spyOn(fs.promises, 'realpath')
+      .mockImplementation(async (value) => path.resolve(String(value)));
+    jest.spyOn(fs.promises, 'stat').mockImplementation(async (value) => ({
+      isDirectory: () =>
+        [path.resolve(packageRoot), path.resolve('/managed/workspace_aaaaaaaaaaaaaaaaaaaa')].includes(
+          path.resolve(String(value))
+        ),
+      isFile: () => path.resolve(String(value)) === path.resolve(path.join(bin, 'tool')),
+    }));
+    const capture = jest.fn(async () => ({ PATH: bin, source: 'login_shell' }));
+    const { controller } = createController({
+      resolveExecutableAccess,
+      captureHostCommandEnvironment: capture,
+    });
+
+    try {
+      await controller.prepareExecutableAccess('conversation_one', ['tool'], {
+        command: 'tool --version',
+      });
+      await controller.prepareExecutableAccess('conversation_one', ['tool'], {
+        command: 'tool --help',
+      });
+      expect(capture).toHaveBeenCalledTimes(1);
+    } finally {
+      await fs.promises.rm(fixture, { recursive: true, force: true });
+      fs.promises.realpath.mockRestore();
+      fs.promises.stat.mockRestore();
+    }
+  });
+
+  test('fails closed when a granted capability has no policy enforcement adapter', async () => {
+    const capabilityGrants = {
+      clear: jest.fn(),
+      clearOnce: jest.fn(() => false),
+      deleteConversation: jest.fn(() => false),
+      grant: jest.fn(),
+      resolve: jest.fn(() => [Object.freeze({ kind: 'network_public', version: 1 })]),
+    };
+    const { controller, dependencies } = createController({ capabilityGrants });
+
+    await expect(
+      controller.execute('conversation_one', {
+        command: 'printf hello',
+        workingDirectory: '.',
+      })
+    ).rejects.toMatchObject({ code: 'UNSUPPORTED_WORKSPACE_CAPABILITY' });
+    expect(dependencies.executor.execute).not.toHaveBeenCalled();
+    expect(dependencies.store.startCommand).not.toHaveBeenCalled();
+  });
+
   test('runs bounded file reads through the same OS sandbox policy', async () => {
     const { controller, dependencies } = createController();
 
@@ -185,12 +394,20 @@ describe('ManagedWorkspaceController', () => {
       Buffer.from('hello')
     );
     expect(dependencies.executor.execute).toHaveBeenCalledWith(
-      { kind: 'test-policy' },
+      { kind: 'test-helper-policy' },
       expect.objectContaining({
         command: '/bin/sh',
-        args: expect.arrayContaining(['/workspace', 'read', 'src/index.js']),
+        args: expect.arrayContaining([
+          '/workspace',
+          '/opt/freedom-toolchain/electron/freedom',
+          'read',
+          'src/index.js',
+        ]),
         signal: expect.any(AbortSignal),
       })
+    );
+    expect(JSON.stringify(dependencies.executor.execute.mock.calls[0][1])).not.toContain(
+      'FREEDOM_JAVASCRIPT_RUNTIME'
     );
   });
 
@@ -198,7 +415,7 @@ describe('ManagedWorkspaceController', () => {
     const { controller, dependencies } = createController();
     await controller.writeFile('conversation_one', 'src/index.js', 'hello');
     expect(dependencies.executor.execute).toHaveBeenCalledWith(
-      { kind: 'test-policy' },
+      { kind: 'test-helper-policy' },
       expect.objectContaining({
         args: expect.arrayContaining([
           'write',
@@ -262,17 +479,17 @@ describe('ManagedWorkspaceController', () => {
 
     expect(dependencies.executor.execute).toHaveBeenNthCalledWith(
       1,
-      { kind: 'test-policy' },
+      { kind: 'test-helper-policy' },
       expect.objectContaining({ args: expect.arrayContaining(['list', '.']) })
     );
     expect(dependencies.executor.execute).toHaveBeenNthCalledWith(
       2,
-      { kind: 'test-policy' },
+      { kind: 'test-helper-policy' },
       expect.objectContaining({ args: expect.arrayContaining(['find', '.']) })
     );
     expect(dependencies.executor.execute).toHaveBeenNthCalledWith(
       3,
-      { kind: 'test-policy' },
+      { kind: 'test-helper-policy' },
       expect.objectContaining({ args: expect.arrayContaining(['grep', '.']) })
     );
   });
@@ -282,6 +499,7 @@ describe('ManagedWorkspaceController', () => {
     const workspace = path.join(fixture, 'workspace');
     const outside = path.join(fixture, 'outside.txt');
     fs.mkdirSync(workspace, { mode: 0o700 });
+    fs.mkdirSync(path.join(workspace, 'directory'), { mode: 0o700 });
     fs.writeFileSync(outside, 'outside secret', { mode: 0o600 });
     fs.symlinkSync(outside, path.join(workspace, 'symlink.txt'));
     fs.symlinkSync(fixture, path.join(workspace, 'parent-link'));
@@ -311,6 +529,12 @@ describe('ManagedWorkspaceController', () => {
       );
       expect(() => run('read', 'hardlink.txt')).toThrow(
         expect.objectContaining({ stderr: expect.stringContaining('WORKSPACE_FILE_UNSAFE') })
+      );
+      expect(() => run('read', 'missing.txt')).toThrow(
+        expect.objectContaining({ stderr: expect.stringContaining('WORKSPACE_PATH_NOT_FOUND') })
+      );
+      expect(() => run('read', 'directory')).toThrow(
+        expect.objectContaining({ stderr: expect.stringContaining('WORKSPACE_PATH_TYPE_MISMATCH') })
       );
       expect(() => run('write', '.git/config', Buffer.from('unsafe').toString('base64'))).toThrow(
         expect.objectContaining({ stderr: expect.stringContaining('WORKSPACE_PROTECTED_PATH') })
@@ -454,6 +678,41 @@ describe('ManagedWorkspaceController', () => {
       expect.objectContaining({ error: receipt.error })
     );
     expect(JSON.stringify(receipt)).not.toContain('/Users/private');
+  });
+
+  test('reports an executor exception as an uncertain launch failure rather than policy denial', async () => {
+    const { controller, dependencies } = createController();
+    dependencies.executor.execute.mockRejectedValueOnce(new Error('spawn failed'));
+
+    const receipt = await controller.execute('conversation_one', { command: 'pwd' });
+
+    expect(receipt).toMatchObject({
+      state: 'failed',
+      exitCode: null,
+      terminationGuarantee: 'unknown',
+      sideEffects: 'unknown',
+      survivorsPossible: true,
+      completeDescendantTermination: false,
+      error: {
+        code: 'WORKSPACE_EXECUTION_FAILED',
+        message: 'Freedom could not execute the command inside the verified sandbox',
+      },
+    });
+  });
+
+  test('preserves safe missing-path semantics from the private file helper', async () => {
+    const { controller, dependencies } = createController();
+    dependencies.executor.execute.mockResolvedValue({
+      ...completedExecution(''),
+      state: 'failed',
+      exitCode: 73,
+      stderr: 'FREEDOM_FILE_ERROR:WORKSPACE_PATH_NOT_FOUND',
+    });
+
+    await expect(controller.readFile('conversation_one', 'missing.txt')).rejects.toMatchObject({
+      code: 'WORKSPACE_PATH_NOT_FOUND',
+      message: 'The requested workspace path does not exist',
+    });
   });
 
   test('rejects absolute, parent, and empty command or file requests before execution', () => {

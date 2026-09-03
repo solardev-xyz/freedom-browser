@@ -7,6 +7,7 @@ const {
   isValidatedElectronJavaScriptRuntime,
   statValidatedElectronPackageArchive,
 } = require('./electron-runtime');
+const { isValidatedExecutableRoot } = require('./executable-access');
 
 const POLICY_VERSION = 1;
 const WORKSPACE_MOUNT_PATH = '/workspace';
@@ -18,6 +19,7 @@ const MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 const DEFAULT_PROTECTED_PATHS = Object.freeze(['.git']);
 const NETWORK_POSTURES = Object.freeze({
   NONE: 'none',
+  FULL: 'full',
   BROKERED: 'brokered',
 });
 const EXECUTION_STATES = Object.freeze({
@@ -632,12 +634,41 @@ function resolveAggregateLimits(limits) {
   return Object.freeze(normalized);
 }
 
-function inferNodeRuntimeRoot(execPath = process.execPath) {
-  if (typeof execPath !== 'string') return null;
-  const real = fs.realpathSync.native?.(execPath) || fs.realpathSync(execPath);
-  if (path.basename(real) !== 'node' || path.basename(path.dirname(real)) !== 'bin') return null;
-  if (insidePath('/usr', real) || insidePath('/bin', real)) return null;
-  return path.dirname(path.dirname(real));
+async function canonicalExecutableRuntimeRoot(input) {
+  if (!isValidatedExecutableRoot(input)) {
+    throw new ExecutionPolicyError(
+      'UNTRUSTED_EXECUTABLE_ROOT',
+      'Executable roots must come from Freedom executable resolution'
+    );
+  }
+  const sourcePath = await canonicalDirectory(input.sourcePath, 'runtimeRoots sourcePath');
+  if (sourcePath !== input.sourcePath) {
+    throw new ExecutionPolicyError(
+      'EXECUTABLE_ROOT_CHANGED',
+      'The approved executable root changed before policy construction'
+    );
+  }
+  for (const executablePath of input.executablePaths) {
+    let canonical;
+    let stats;
+    try {
+      canonical = await fs.promises.realpath(executablePath);
+      stats = await fs.promises.stat(canonical);
+    } catch (error) {
+      throw new ExecutionPolicyError(
+        'EXECUTABLE_ROOT_CHANGED',
+        'An approved executable is no longer available',
+        { cause: error.code }
+      );
+    }
+    if (canonical !== executablePath || !stats.isFile() || !insidePath(sourcePath, canonical)) {
+      throw new ExecutionPolicyError(
+        'EXECUTABLE_ROOT_CHANGED',
+        'An approved executable no longer belongs to its approved package root'
+      );
+    }
+  }
+  return input;
 }
 
 async function canonicalMacElectronRuntimeRoot(input) {
@@ -889,21 +920,19 @@ async function createWorkspaceExecutionPolicy(options = {}) {
     throw new ExecutionPolicyError('INVALID_POLICY', 'network posture is not recognized');
   }
 
+  const runtimeRootsInput = options.runtimeRoots ?? [];
+  if (!Array.isArray(runtimeRootsInput) || runtimeRootsInput.length > 16) {
+    throw new ExecutionPolicyError('INVALID_POLICY', 'runtimeRoots must be a short trusted array');
+  }
   const runtimeRoots = [];
-  const nodeRuntimeRoot =
-    options.nodeRuntimeRoot === undefined ? inferNodeRuntimeRoot() : options.nodeRuntimeRoot;
-  if (nodeRuntimeRoot) {
-    runtimeRoots.push(
-      Object.freeze({
-        id: 'node',
-        sourcePath: await canonicalDirectory(nodeRuntimeRoot, 'nodeRuntimeRoot'),
-        mountPath: '/opt/freedom-toolchain/node',
-        access: 'read_only',
-      })
-    );
+  for (const runtimeRoot of runtimeRootsInput) {
+    runtimeRoots.push(await canonicalExecutableRuntimeRoot(runtimeRoot));
   }
   if (options.electronRuntime) {
     runtimeRoots.push(await canonicalElectronRuntime(options.electronRuntime));
+  }
+  if (new Set(runtimeRoots.map((root) => root.id)).size !== runtimeRoots.length) {
+    throw new ExecutionPolicyError('INVALID_POLICY', 'Runtime root IDs must be unique');
   }
 
   const policy = Object.freeze({
@@ -957,6 +986,78 @@ async function createWorkspaceExecutionPolicy(options = {}) {
   });
   validatedPolicies.add(policy);
   return policy;
+}
+
+function restrictWorkspaceExecutionPolicy(policy, options = {}) {
+  if (!isValidatedWorkspaceExecutionPolicy(policy)) {
+    throw new ExecutionPolicyError(
+      'INVALID_POLICY',
+      'Only a trusted Freedom workspace policy can be restricted'
+    );
+  }
+  const requested = requirePlainObject(options, 'restrictions');
+  const omittedRuntimeRootIds = requested.omitRuntimeRootIds ?? [];
+  const addedRuntimeRoots = requested.addRuntimeRoots ?? [];
+  const omittedEnvironmentNames = requested.omitEnvironmentNames ?? [];
+  if (!Array.isArray(omittedRuntimeRootIds) || omittedRuntimeRootIds.length > 16) {
+    throw new ExecutionPolicyError('INVALID_POLICY', 'omitRuntimeRootIds must be a short array');
+  }
+  if (!Array.isArray(omittedEnvironmentNames) || omittedEnvironmentNames.length > 64) {
+    throw new ExecutionPolicyError('INVALID_POLICY', 'omitEnvironmentNames must be a short array');
+  }
+  if (
+    !Array.isArray(addedRuntimeRoots) ||
+    addedRuntimeRoots.length > 16 ||
+    addedRuntimeRoots.some((root) => !isValidatedExecutableRoot(root))
+  ) {
+    throw new ExecutionPolicyError(
+      'UNTRUSTED_EXECUTABLE_ROOT',
+      'Added runtime roots must come from Freedom executable resolution'
+    );
+  }
+  const runtimeRootIds = new Set();
+  for (const value of omittedRuntimeRootIds) {
+    if (typeof value !== 'string' || !/^[a-z][a-z0-9_-]{0,63}$/.test(value)) {
+      throw new ExecutionPolicyError('INVALID_POLICY', 'Runtime root IDs must be bounded names');
+    }
+    runtimeRootIds.add(value);
+  }
+  const environmentNames = new Set();
+  for (const value of omittedEnvironmentNames) {
+    if (typeof value !== 'string' || !ENVIRONMENT_NAME.test(value)) {
+      throw new ExecutionPolicyError(
+        'INVALID_POLICY',
+        'Environment names to omit must be bounded names'
+      );
+    }
+    environmentNames.add(value);
+  }
+  const environmentValues = Object.fromEntries(
+    Object.entries(policy.environment.values).filter(([name]) => !environmentNames.has(name))
+  );
+  const retainedRuntimeRoots = policy.filesystem.runtimeRoots.filter(
+    (root) => !runtimeRootIds.has(root.id)
+  );
+  const combinedRuntimeRoots = retainedRuntimeRoots.concat(addedRuntimeRoots);
+  if (
+    combinedRuntimeRoots.length > 17 ||
+    new Set(combinedRuntimeRoots.map((root) => root.id)).size !== combinedRuntimeRoots.length
+  ) {
+    throw new ExecutionPolicyError('INVALID_POLICY', 'Derived runtime roots must be unique');
+  }
+  const restricted = Object.freeze({
+    ...policy,
+    filesystem: Object.freeze({
+      ...policy.filesystem,
+      runtimeRoots: Object.freeze(combinedRuntimeRoots),
+    }),
+    environment: Object.freeze({
+      ...policy.environment,
+      values: Object.freeze(environmentValues),
+    }),
+  });
+  validatedPolicies.add(restricted);
+  return restricted;
 }
 
 function isValidatedWorkspaceExecutionPolicy(policy) {
@@ -1017,9 +1118,9 @@ module.exports = {
   SAFE_DEFAULT_INHERITANCE,
   WORKSPACE_MOUNT_PATH,
   createWorkspaceExecutionPolicy,
-  inferNodeRuntimeRoot,
   insidePath,
   isValidatedWorkspaceExecutionPolicy,
+  restrictWorkspaceExecutionPolicy,
   validateEnvironmentName,
   validateExecutionRequest,
   validateGitConfiguration,

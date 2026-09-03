@@ -296,6 +296,9 @@ export const resolveProtocolIconType = ({
   // is disabled) so the address bar always carries some leading mark
   // and never reuses the trust shield from a previous ENS page.
   if (normalizedValue.startsWith('freedom://')) return 'http';
+  if (normalizedValue.startsWith('freedom-preview://') || normalizedValue === 'workspace preview') {
+    return 'http';
+  }
 
   // Bare ENS / legacy `ens://` falls back to the cached resolved protocol.
   const ensName = extractEnsName(normalizedValue);
@@ -386,6 +389,7 @@ export const deriveDisplayAddress = ({
   radicleApiPrefix = null,
   knownEnsNames = new Map(),
 } = {}) => {
+  if (url.startsWith('freedom-preview://')) return 'Workspace preview';
   const display = deriveDisplayValue(
     url,
     bzzRoutePrefix,

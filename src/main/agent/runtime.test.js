@@ -16,6 +16,8 @@ jest.mock('./swarm-publication-controller');
 jest.mock('./pdf-processor');
 jest.mock('./managed-workspace-store');
 jest.mock('./managed-workspace-controller');
+jest.mock('./managed-workspace-source-reader');
+jest.mock('./workspace-preview-controller');
 
 const { FreedomAgentService } = require('./freedom-agent-service');
 const { registerFreedomAgentIpc } = require('./ipc');
@@ -33,6 +35,8 @@ const { SwarmPublicationController } = require('./swarm-publication-controller')
 const { PdfProcessor } = require('./pdf-processor');
 const { AgentManagedWorkspaceStore } = require('./managed-workspace-store');
 const { ManagedWorkspaceController } = require('./managed-workspace-controller');
+const { ManagedWorkspaceSourceReader } = require('./managed-workspace-source-reader');
+const { WorkspacePreviewController } = require('./workspace-preview-controller');
 const { createFreedomAgentRuntime } = require('./runtime');
 
 describe('Freedom agent runtime', () => {
@@ -69,6 +73,10 @@ describe('Freedom agent runtime', () => {
       close: jest.fn(() => calls.push('workspaces')),
     };
     const workspaceController = { dispose: jest.fn(() => calls.push('workspace-controller')) };
+    const workspaceSourceReader = {};
+    const workspacePreviewController = {
+      dispose: jest.fn(() => calls.push('workspace-preview-controller')),
+    };
     const unregisterIpc = jest.fn(async () => calls.push('ipc'));
     AgentProviderStore.mockImplementation(() => providerStore);
     AgentProviderResolver.mockImplementation(() => providerResolver);
@@ -84,6 +92,8 @@ describe('Freedom agent runtime', () => {
     SwarmPublicationController.mockImplementation(() => publicationController);
     AgentManagedWorkspaceStore.mockImplementation(() => workspaceStore);
     ManagedWorkspaceController.mockImplementation(() => workspaceController);
+    ManagedWorkspaceSourceReader.mockImplementation(() => workspaceSourceReader);
+    WorkspacePreviewController.mockImplementation(() => workspacePreviewController);
     FreedomAgentService.mockImplementation(() => service);
     registerFreedomAgentIpc.mockReturnValue(unregisterIpc);
     const options = {
@@ -154,6 +164,8 @@ describe('Freedom agent runtime', () => {
       store: workspaceStore,
       runtimeOptions: options.workspaceRuntimeOptions,
     });
+    expect(ManagedWorkspaceSourceReader).toHaveBeenCalledWith({ workspaceController });
+    expect(WorkspacePreviewController).toHaveBeenCalledWith({ workspaceController });
     expect(AgentWalletController).toHaveBeenCalledWith(options.walletControllerOptions);
     expect(NodeStatusController).toHaveBeenCalledWith(options.nodeControllerOptions);
     expect(NodeRequestController).toHaveBeenCalledWith({
@@ -175,7 +187,10 @@ describe('Freedom agent runtime', () => {
       nodeLifecycleController
     );
     expect(options.controller.setDiagnosticsController).toHaveBeenCalledWith(diagnosticsController);
-    expect(SwarmPublicationController).toHaveBeenCalledWith({ attachmentStore });
+    expect(SwarmPublicationController).toHaveBeenCalledWith({
+      attachmentStore,
+      workspaceSourceReader,
+    });
     expect(options.controller.setPublicationController).toHaveBeenCalledWith(publicationController);
     expect(FreedomAgentService).toHaveBeenCalledWith({
       controller: options.controller,
@@ -185,6 +200,7 @@ describe('Freedom agent runtime', () => {
       walletController,
       attachmentStore,
       workspaceController,
+      workspacePreviewController,
     });
     expect(registerFreedomAgentIpc).toHaveBeenCalledWith({
       ipcMain: options.ipcMain,
@@ -210,6 +226,7 @@ describe('Freedom agent runtime', () => {
     expect(service.dispose).toHaveBeenCalledTimes(1);
     expect(nodeRequestController.dispose).toHaveBeenCalledTimes(1);
     expect(publicationController.dispose).toHaveBeenCalledTimes(1);
+    expect(workspacePreviewController.dispose).toHaveBeenCalledTimes(1);
     expect(workspaceController.dispose).toHaveBeenCalledTimes(1);
     expect(attachmentStore.dispose).toHaveBeenCalledTimes(1);
     expect(pdfProcessor.dispose).toHaveBeenCalledTimes(1);
@@ -227,6 +244,7 @@ describe('Freedom agent runtime', () => {
       'service',
       'node-requests',
       'publications',
+      'workspace-preview-controller',
       'workspace-controller',
       'attachments',
       'pdf',

@@ -17,7 +17,7 @@ const BUILTIN_SKILL_DEFINITIONS = Object.freeze([
   Object.freeze({
     name: 'swarm-publishing',
     description:
-      'Publish attached files, live folders, static sites, and bounded text to Swarm through Freedom.',
+      'Publish managed project output, attached files, live folders, static sites, and bounded text to Swarm through Freedom.',
     files: Object.freeze(['SKILL.md']),
   }),
 ]);

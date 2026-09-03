@@ -32,10 +32,10 @@ describe('Freedom built-in Agent skills', () => {
 
   test('ships the Swarm publishing procedure without granting host filesystem reads', async () => {
     const operations = createBuiltInSkillReadOperations();
-    const content = await operations.readFile(
-      skillVirtualPath('swarm-publishing', 'SKILL.md')
-    );
+    const content = await operations.readFile(skillVirtualPath('swarm-publishing', 'SKILL.md'));
     expect(content.toString('utf8')).toContain('swarm_publish');
+    expect(content.toString('utf8')).toContain('workspacePath');
+    expect(content.toString('utf8')).toContain('Do not read project files into the model context');
     expect(content.toString('utf8')).toContain('current contents');
     expect(content.toString('utf8')).toContain('public and unencrypted');
   });

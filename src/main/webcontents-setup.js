@@ -16,7 +16,8 @@ const sanitizeUrlForLog = (rawUrl) => {
       parsed.protocol === 'bzz:' ||
       parsed.protocol === 'ipfs:' ||
       parsed.protocol === 'ipns:' ||
-      parsed.protocol === 'freedom:'
+      parsed.protocol === 'freedom:' ||
+      parsed.protocol === 'freedom-preview:'
     ) {
       return `${parsed.protocol}//<redacted>`;
     }
@@ -26,7 +27,8 @@ const sanitizeUrlForLog = (rawUrl) => {
       rawUrl.startsWith('bzz://') ||
       rawUrl.startsWith('ipfs://') ||
       rawUrl.startsWith('ipns://') ||
-      rawUrl.startsWith('freedom://')
+      rawUrl.startsWith('freedom://') ||
+      rawUrl.startsWith('freedom-preview://')
     ) {
       return `${rawUrl.split('://')[0]}://<redacted>`;
     }
@@ -141,6 +143,10 @@ function registerWebContentsHandlers() {
       });
 
       contents.setWindowOpenHandler(({ url, frameName }) => {
+        if (contents.getURL().startsWith('freedom-preview://')) {
+          log.info(`${tag} blocked an isolated preview window request`);
+          return { action: 'deny' };
+        }
         log.info(
           `${tag} intercepted new window request: ${navUrlForLog(contents, url)} (target: ${frameName || 'none'})`
         );
@@ -161,6 +167,23 @@ function registerWebContentsHandlers() {
       // of failing as an unknown scheme — bookmarks created before the
       // transport-aware migration still carry the legacy prefix.
       contents.on('will-navigate', (event, url) => {
+        const currentUrl = contents.getURL();
+        if (currentUrl.startsWith('freedom-preview://')) {
+          let samePreviewOrigin;
+          try {
+            const current = new URL(currentUrl);
+            const destination = new URL(url);
+            samePreviewOrigin =
+              current.protocol === destination.protocol && current.host === destination.host;
+          } catch {
+            samePreviewOrigin = false;
+          }
+          if (!samePreviewOrigin) {
+            log.info(`${tag} blocked isolated preview navigation`);
+            event.preventDefault();
+          }
+          return;
+        }
         if (
           url.startsWith('freedom://') ||
           url.startsWith('bzz://') ||

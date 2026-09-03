@@ -59,7 +59,7 @@ Electron qualification adds no standalone-Node runtime root. Its child `PATH` is
 
 `.git`, configured protected paths and authorized external Git metadata receive explicit deny-write rules that take precedence over the writable workspace. `.git` is an immutable baseline protection, so an empty caller list cannot disable it. Electron execution additionally requires the frozen runtime descriptor attested by the active Electron main process; serialized path-bearing lookalikes are rejected before profile construction. The launcher fixes `GIT_OPTIONAL_LOCKS=0` and does not let the caller override it.
 
-Networking is denied by the default posture and an explicit `deny network*`. Qualification covers localhost, an external address and DNS.
+Networking is denied by the default posture and an explicit `deny network*`. Qualification covers localhost, an external address and DNS. An experimental `full` posture now grants IP inbound/outbound plus the narrow macOS DNS, routing, and TLS platform services used by Codex's open-source Seatbelt policy. It deliberately adds no general Unix-socket rule. A live macOS run proves descendant access to host loopback, public TCP, and DNS, followed by an offline execution that cannot reuse the grant. The host's own LAN address accepted the Seatbelt socket operation but refused the self-connection; a remote LAN endpoint remains required for complete LAN qualification before product exposure.
 
 The previous blanket `(allow sysctl-read)` was removed from both the capability probe and execution profile. The qualified allowlist is exact-name-only; it contains no `sysctl-name-prefix`, `kern.proc.*`, `net.routetable.*` or `vm.loadavg` rule:
 
@@ -161,7 +161,7 @@ Architecture and kernel release are diagnostics, not allowlist keys. The probe a
 
 `sandbox-exec` remains deprecated and its profile language unsupported as a stable public interface. Capability probing reduces application failures, but qualified integration tests on each supported macOS/runtime layout remain necessary for enforcement confidence.
 
-The `none` network posture denies loopback and in-sandbox Unix sockets on macOS; capability metadata reports `loopbackNetworking: denied`. Linux's private network namespace retains private loopback, so callers must not treat the two backends as behaviorally identical merely because neither can reach host or external networks.
+The `none` network posture denies loopback and in-sandbox Unix sockets on macOS; capability metadata reports `loopbackNetworking: denied`. Linux's private network namespace retains private loopback, so callers must not treat the two backends as behaviorally identical merely because neither can reach host or external networks. The experimental `full` posture is intentionally broad: public internet, host loopback, and private/LAN IP connectivity are one indivisible grant. Partial direct-network postures remain unsupported rather than being simulated through misleading policy labels.
 
 Workspace contents remain hostile after execution. Trusted preview, publication, indexing, attachment, and VCS consumers must use bounded `lstat`-first traversal, reject symlinks and special files, and never execute workspace-controlled hooks. Seatbelt confinement of the producing command does not make later host-side traversal safe.
 

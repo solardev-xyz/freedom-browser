@@ -321,7 +321,7 @@ const TOOL_SPECS = Object.freeze([
     operation: OPERATIONS.SWARM_PUBLISH,
     label: 'Publish to Swarm',
     description:
-      'Publish one attached file, the current contents of one attached folder, or bounded inline text to the public Swarm network through Freedom. Pass an opaque resourceId from attachment_list, never a local path. Inline text is data, not a named file. Content is public and unencrypted, and Freedom always asks the user before dispatch. A folder is read live when the approved upload begins. If the result is still uploading or verifying, preserve its publicationId and use swarm_publication_status; never blindly repeat a possibly applied publication.',
+      "Publish one attached resource, one file or folder from this conversation's managed project workspace, or bounded inline text to the public Swarm network through Freedom. Pass an opaque resourceId from attachment_list or a workspace-relative workspacePath; never pass a host filesystem path. Use workspacePath for project output so exact files and relative paths bypass the model context. Inline text is data, not a named file. Content is public and unencrypted, and Freedom always asks the user before dispatch. If the result is still uploading or verifying, preserve its publicationId and use swarm_publication_status; never blindly repeat a possibly applied publication.",
     parameters: {
       type: 'object',
       properties: {
@@ -329,6 +329,13 @@ const TOOL_SPECS = Object.freeze([
           type: 'string',
           pattern: '^(attachment|folder)_[a-f0-9]{20}$',
           description: 'Opaque ID of one file or folder already attached to this conversation.',
+        },
+        workspacePath: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 1_024,
+          description:
+            'A path inside this conversation\'s managed project workspace, such as "." or "dist". Never pass a host path.',
         },
         text: {
           type: 'string',
@@ -347,7 +354,7 @@ const TOOL_SPECS = Object.freeze([
           type: 'string',
           minLength: 1,
           maxLength: 1_024,
-          description: 'Optional relative default document within an attached folder.',
+          description: 'Optional relative default document within a published folder.',
         },
       },
       additionalProperties: false,
@@ -591,8 +598,7 @@ async function executeBrowserTool(controller, tabId, spec, params, signal, execu
   try {
     envelope = spec.cancellable
       ? await executeCancellable(controller, spec.operation, input, signal, execution)
-      : spec.operation === OPERATIONS.DOWNLOAD ||
-          spec.operation === OPERATIONS.UPLOAD
+      : spec.operation === OPERATIONS.DOWNLOAD || spec.operation === OPERATIONS.UPLOAD
         ? await controller.execute(spec.operation, input, execution)
         : await controller.execute(spec.operation, input);
   } catch (error) {

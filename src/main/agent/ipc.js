@@ -333,7 +333,8 @@ function registerFreedomAgentIpc(options = {}) {
           'The sender is not trusted browser chrome'
         );
       }
-      const { rendererTabId, prompt, approvalMode, attachmentIds } = validateStartPayload(rawPayload);
+      const { rendererTabId, prompt, approvalMode, attachmentIds } =
+        validateStartPayload(rawPayload);
       const continuing = Boolean(owner);
       if (continuing && owner.sender !== event?.sender) {
         return errorEnvelope(
@@ -542,13 +543,15 @@ function registerFreedomAgentIpc(options = {}) {
         Number.isSafeInteger(payload.walletIndex) && payload.walletIndex >= 0
           ? payload.walletIndex
           : null;
-      const diagnosticScope =
-        payload.diagnosticScope === 'conversation' ? 'conversation' : null;
-      if (walletIndex !== null || diagnosticScope) {
+      const diagnosticScope = payload.diagnosticScope === 'conversation' ? 'conversation' : null;
+      const workspacePermissionScope =
+        payload.workspacePermissionScope === 'conversation' ? 'conversation' : null;
+      if (walletIndex !== null || diagnosticScope || workspacePermissionScope) {
         decision = {
           approved: true,
           ...(walletIndex !== null && { walletIndex }),
           ...(diagnosticScope && { diagnosticScope }),
+          ...(workspacePermissionScope && { workspacePermissionScope }),
         };
       }
     }
@@ -985,10 +988,7 @@ function registerFreedomAgentIpc(options = {}) {
       );
     }
     try {
-      const result = await service.revokeAttachment(
-        payload.conversationId,
-        payload.resourceId
-      );
+      const result = await service.revokeAttachment(payload.conversationId, payload.resourceId);
       return result
         ? { ok: true, revoked: true, resources: result.resources }
         : errorEnvelope(
@@ -1056,10 +1056,7 @@ function registerFreedomAgentIpc(options = {}) {
       );
     }
     try {
-      const result = await service.updateApprovalMode(
-        payload.conversationId,
-        approvalMode
-      );
+      const result = await service.updateApprovalMode(payload.conversationId, approvalMode);
       return { ok: true, ...result };
     } catch (error) {
       return safeServiceError(error);

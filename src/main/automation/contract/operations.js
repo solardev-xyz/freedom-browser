@@ -35,7 +35,14 @@ const TAB_OPERATIONS = new Set([
   OPERATIONS.WAIT,
   OPERATIONS.STOP_LOADING,
 ]);
-const ALLOWED_NAVIGATION_SCHEMES = new Set(['http:', 'https:', 'bzz:', 'ipfs:', 'ipns:']);
+const ALLOWED_NAVIGATION_SCHEMES = new Set([
+  'http:',
+  'https:',
+  'bzz:',
+  'ipfs:',
+  'ipns:',
+  'freedom-preview:',
+]);
 const WAIT_CONDITIONS = new Set(['load', 'navigation', 'text', 'url']);
 const PRESS_KEYS = Object.freeze([
   'Enter',
@@ -86,6 +93,18 @@ function validateRelativePublicationPath(value, field) {
     throw invalidArgument(`${field} must be a safe relative path`, { field });
   }
   return relativePath;
+}
+
+function validateWorkspacePublicationPath(value) {
+  const relativePath = requireString(value, 'workspacePath').trim();
+  if (relativePath === '.') return relativePath;
+  const normalized = validateRelativePublicationPath(relativePath, 'workspacePath');
+  if (normalized.split('/').some((segment) => segment.toLowerCase() === '.git')) {
+    throw invalidArgument('workspacePath must remain outside protected workspace metadata', {
+      field: 'workspacePath',
+    });
+  }
+  return normalized;
 }
 
 function requireObject(input) {
@@ -177,10 +196,9 @@ function validateOperationInput(operation, rawInput) {
   ) {
     normalized.intent = requireString(input.intent, 'intent').trim();
     if (normalized.intent.length > MAX_INTERACTION_INTENT_LENGTH) {
-      throw invalidArgument(
-        `intent cannot exceed ${MAX_INTERACTION_INTENT_LENGTH} characters`,
-        { field: 'intent' }
-      );
+      throw invalidArgument(`intent cannot exceed ${MAX_INTERACTION_INTENT_LENGTH} characters`, {
+        field: 'intent',
+      });
     }
   }
 
@@ -403,19 +421,26 @@ function validateOperationInput(operation, rawInput) {
       normalized.maxBytes < 1_024 ||
       normalized.maxBytes > MAX_DIAGNOSTIC_BYTES
     ) {
-      throw invalidArgument(`maxBytes must be an integer between 1024 and ${MAX_DIAGNOSTIC_BYTES}`, {
-        field: 'maxBytes',
-      });
+      throw invalidArgument(
+        `maxBytes must be an integer between 1024 and ${MAX_DIAGNOSTIC_BYTES}`,
+        {
+          field: 'maxBytes',
+        }
+      );
     }
   }
 
   if (operation === OPERATIONS.SWARM_PUBLISH) {
     const hasResourceId = input.resourceId !== undefined;
     const hasText = input.text !== undefined;
-    if (hasResourceId === hasText) {
-      throw invalidArgument('Swarm publication requires exactly one resourceId or text field', {
-        field: 'resourceId',
-      });
+    const hasWorkspacePath = input.workspacePath !== undefined;
+    if ([hasResourceId, hasText, hasWorkspacePath].filter(Boolean).length !== 1) {
+      throw invalidArgument(
+        'Swarm publication requires exactly one resourceId, workspacePath, or text field',
+        {
+          field: 'resourceId',
+        }
+      );
     }
     if (hasResourceId) {
       normalized.resourceId = requireString(input.resourceId, 'resourceId').trim();
@@ -424,27 +449,31 @@ function validateOperationInput(operation, rawInput) {
           field: 'resourceId',
         });
       }
+    } else if (hasWorkspacePath) {
+      normalized.workspacePath = validateWorkspacePublicationPath(input.workspacePath);
     } else {
       normalized.text = requireString(input.text, 'text');
       if (Buffer.byteLength(normalized.text, 'utf8') > MAX_SWARM_PUBLISH_TEXT_BYTES) {
-        throw invalidArgument(
-          `text cannot exceed ${MAX_SWARM_PUBLISH_TEXT_BYTES} UTF-8 bytes`,
-          { field: 'text' }
-        );
+        throw invalidArgument(`text cannot exceed ${MAX_SWARM_PUBLISH_TEXT_BYTES} UTF-8 bytes`, {
+          field: 'text',
+        });
       }
       normalized.contentType =
         input.contentType === undefined
           ? 'text/plain; charset=utf-8'
           : requireString(input.contentType, 'contentType').trim();
-      if (normalized.contentType.length > 255 || containsControlCharacters(normalized.contentType)) {
+      if (
+        normalized.contentType.length > 255 ||
+        containsControlCharacters(normalized.contentType)
+      ) {
         throw invalidArgument('contentType must be a bounded media type', {
           field: 'contentType',
         });
       }
     }
     if (input.indexDocument !== undefined) {
-      if (!hasResourceId) {
-        throw invalidArgument('indexDocument can only be used with an attached folder', {
+      if (!hasResourceId && !hasWorkspacePath) {
+        throw invalidArgument('indexDocument can only be used with a folder publication', {
           field: 'indexDocument',
         });
       }

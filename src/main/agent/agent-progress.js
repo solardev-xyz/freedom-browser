@@ -28,6 +28,7 @@ const WORKSPACE_OPERATIONS = Object.freeze({
   GREP: 'grep',
   FIND: 'find',
   LS: 'ls',
+  PREVIEW: 'workspace_preview',
 });
 const WORKSPACE_OPERATION_SET = new Set(Object.values(WORKSPACE_OPERATIONS));
 
@@ -216,6 +217,11 @@ const OPERATION_PROGRESS = Object.freeze({
     effect: ACTIVITY_EFFECTS.OBSERVED,
     intent: 'Listing a project directory',
     completed: 'Listed a project directory',
+  },
+  [WORKSPACE_OPERATIONS.PREVIEW]: {
+    effect: ACTIVITY_EFFECTS.MANAGED,
+    intent: 'Opening a static preview',
+    completed: 'Opened a static preview',
   },
 });
 
@@ -500,6 +506,18 @@ function normalizeWorkspaceReceipt(value) {
   const backend = boundedString(value.backend, 80);
   const state = boundedString(value.state, 40);
   const kind = boundedString(value.kind, 40);
+  const entryCount =
+    Number.isSafeInteger(value.entryCount) && value.entryCount >= 0
+      ? Math.min(value.entryCount, 500)
+      : null;
+  const resultCount =
+    Number.isSafeInteger(value.resultCount) && value.resultCount >= 0
+      ? Math.min(value.resultCount, 1_000)
+      : null;
+  const matchCount =
+    Number.isSafeInteger(value.matchCount) && value.matchCount >= 0
+      ? Math.min(value.matchCount, 200)
+      : null;
   if (
     (workspaceId && !/^workspace_[a-f0-9]{20}$/.test(workspaceId)) ||
     (commandId && !/^workspace_cmd_[a-f0-9]{24}$/.test(commandId)) ||
@@ -521,6 +539,7 @@ function normalizeWorkspaceReceipt(value) {
       'file_search',
       'file_find',
       'directory_list',
+      'static_preview',
     ].includes(kind)
       ? kind
       : 'command',
@@ -539,6 +558,9 @@ function normalizeWorkspaceReceipt(value) {
     sideEffects: value.sideEffects === 'none' ? 'none' : 'unknown',
     survivorsPossible: value.survivorsPossible === true,
     completeDescendantTermination: value.completeDescendantTermination === true,
+    ...(entryCount !== null && { entryCount }),
+    ...(resultCount !== null && { resultCount }),
+    ...(matchCount !== null && { matchCount }),
   });
 }
 
@@ -632,7 +654,8 @@ function activityProgress(operation, receipt = {}) {
     intent: 'Working in the browser',
     completed: 'Used the browser',
   };
-  const origin = originScopeForUrl(receipt.origin) || '';
+  const scopedOrigin = originScopeForUrl(receipt.origin) || '';
+  const origin = scopedOrigin.startsWith('freedom-preview://') ? 'workspace preview' : scopedOrigin;
   const pageCount =
     Number.isSafeInteger(receipt.pageCount) && receipt.pageCount >= 0 ? receipt.pageCount : null;
   let intent = copy.intent;
@@ -744,15 +767,26 @@ function activityProgress(operation, receipt = {}) {
       [WORKSPACE_OPERATIONS.GREP]: `Searching ${action.replace(/^Search /, '')}`,
       [WORKSPACE_OPERATIONS.FIND]: `Finding ${action.replace(/^Find /, '')}`,
       [WORKSPACE_OPERATIONS.LS]: `Listing ${action.replace(/^List /, '')}`,
+      [WORKSPACE_OPERATIONS.PREVIEW]: `Opening ${action.replace(/^Preview /, '')}`,
     };
     const completedLabels = {
       [WORKSPACE_OPERATIONS.BASH]: `Ran ${action}`,
       [WORKSPACE_OPERATIONS.READ]: action,
       [WORKSPACE_OPERATIONS.WRITE]: action,
       [WORKSPACE_OPERATIONS.EDIT]: action,
-      [WORKSPACE_OPERATIONS.GREP]: action.replace(/^Search /, 'Searched '),
-      [WORKSPACE_OPERATIONS.FIND]: action.replace(/^Find /, 'Found '),
-      [WORKSPACE_OPERATIONS.LS]: action.replace(/^List /, 'Listed '),
+      [WORKSPACE_OPERATIONS.GREP]:
+        workspace.matchCount === 0
+          ? action.replace(/^Search for /, 'No matches for ')
+          : action.replace(/^Search /, 'Searched '),
+      [WORKSPACE_OPERATIONS.FIND]:
+        workspace.resultCount === 0
+          ? action.replace(/^Find /, 'No files matched ')
+          : action.replace(/^Find /, 'Found '),
+      [WORKSPACE_OPERATIONS.LS]:
+        workspace.entryCount === 0
+          ? `${action.replace(/^List /, 'Listed ')} — empty`
+          : action.replace(/^List /, 'Listed '),
+      [WORKSPACE_OPERATIONS.PREVIEW]: action.replace(/^Preview /, 'Opened preview for '),
     };
     intent = activeLabels[operation];
     label =
@@ -1278,20 +1312,26 @@ function buildAgentOutcome(activity, status, error) {
       );
       const shellCommands = workspaceCommands.filter((item) => item.kind === 'command');
       const lastOperation = workspaceCommands.at(-1);
+      const previewOpened =
+        lastOperation.kind === 'static_preview' && lastOperation.state === 'completed';
       return Object.freeze({
         kind: 'completed',
-        verification: 'workspace_execution_recorded',
+        verification: previewOpened ? 'workspace_preview_opened' : 'workspace_execution_recorded',
         tone: completedOperations.length ? 'success' : 'neutral',
-        headline: changedFiles.length
-          ? changedFiles.length === 1
-            ? 'Project file updated'
-            : 'Project files updated'
-          : shellCommands.length
-            ? shellCommands.length === 1
-              ? 'Project command completed'
-              : 'Project commands completed'
-            : 'Project files inspected',
-        detail: `${workspaceCommands.length} project ${workspaceCommands.length === 1 ? 'operation was' : 'operations were'} recorded. The latest operation ${lastOperation.state === 'completed' ? 'completed successfully' : `ended as ${lastOperation.state.replaceAll('_', ' ')}`}.${shellCommands.length ? ' Shell-command side effects inside the workspace remain unknown.' : ''}`,
+        headline: previewOpened
+          ? 'Static preview opened'
+          : changedFiles.length
+            ? changedFiles.length === 1
+              ? 'Project file updated'
+              : 'Project files updated'
+            : shellCommands.length
+              ? shellCommands.length === 1
+                ? 'Project command completed'
+                : 'Project commands completed'
+              : 'Project files inspected',
+        detail: previewOpened
+          ? `Freedom opened the current workspace HTML in an isolated, no-network Agent tab.${workspaceCommands.length > 1 ? ` ${workspaceCommands.length - 1} earlier project ${workspaceCommands.length === 2 ? 'operation was' : 'operations were'} also recorded.` : ''}`
+          : `${workspaceCommands.length} project ${workspaceCommands.length === 1 ? 'operation was' : 'operations were'} recorded. The latest operation ${lastOperation.state === 'completed' ? 'completed successfully' : `ended as ${lastOperation.state.replaceAll('_', ' ')}`}.${shellCommands.length ? ' Shell-command side effects inside the workspace remain unknown.' : ''}`,
         workspace: lastOperation,
         destinations,
         counts,

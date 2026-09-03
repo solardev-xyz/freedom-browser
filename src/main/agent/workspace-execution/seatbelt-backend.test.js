@@ -6,9 +6,11 @@ const os = require('os');
 const path = require('path');
 const { PassThrough } = require('stream');
 const { createWorkspaceExecutionPolicy } = require('./execution-policy');
+const { resolveExecutableAccess } = require('./executable-access');
 const {
   PRIVATE_DIRECTORY_PREFIX,
   SEATBELT_SYSCTL_READ_NAMES,
+  SEATBELT_NETWORK_MACH_SERVICES,
   SeatbeltExecutor,
   buildSeatbeltProfile,
   capabilityProbeProfile,
@@ -49,7 +51,6 @@ describe('macOS Seatbelt backend contract', () => {
     fixtureRoots.push(fixture.fixtureRoot);
     const policy = await createWorkspaceExecutionPolicy({
       workspaceRoot: fixture.workspaceRoot,
-      nodeRuntimeRoot: '/usr',
       workingDirectory: 'nested',
     });
     const privateDirectory = await createPrivateDirectory();
@@ -87,6 +88,55 @@ describe('macOS Seatbelt backend contract', () => {
     expect(hostWorkingDirectory(policy, workspace)).toBe(path.join(workspace.sourcePath, 'nested'));
   });
 
+  test('adds read and execute authority only for a Freedom-resolved executable root', async () => {
+    const fixture = await createFixture();
+    fixtureRoots.push(fixture.fixtureRoot);
+    const packageRoot = path.join(fixture.fixtureRoot, 'toolchain');
+    const bin = path.join(packageRoot, 'bin');
+    await fs.promises.mkdir(bin, { recursive: true });
+    await fs.promises.writeFile(path.join(bin, 'tool'), '#!/bin/sh\n', { mode: 0o700 });
+    const access = await resolveExecutableAccess(['tool'], {
+      platform: 'darwin',
+      hostEnvironment: { PATH: bin },
+    });
+    const policy = await createWorkspaceExecutionPolicy({
+      workspaceRoot: fixture.workspaceRoot,
+      runtimeRoots: access.runtimeRoots,
+    });
+    const privateDirectory = await createPrivateDirectory();
+    fixtureRoots.push(privateDirectory);
+    const root = access.runtimeRoots[0];
+
+    const profile = buildSeatbeltProfile(policy, privateDirectory);
+
+    expect(profile).toContain(`(allow file-read* (subpath "${root.sourcePath}"))`);
+    expect(profile).toContain(`(allow process-exec (subpath "${root.sourcePath}"))`);
+    expect(profile).not.toContain(`(allow file-write* (subpath "${root.sourcePath}"))`);
+  });
+
+  test('adds full IP networking without granting general Unix-socket authority', async () => {
+    const fixture = await createFixture();
+    fixtureRoots.push(fixture.fixtureRoot);
+    const policy = await createWorkspaceExecutionPolicy({
+      workspaceRoot: fixture.workspaceRoot,
+      network: 'full',
+    });
+    const privateDirectory = await createPrivateDirectory();
+    fixtureRoots.push(privateDirectory);
+
+    const profile = buildSeatbeltProfile(policy, privateDirectory);
+
+    expect(profile).toContain('(allow network-outbound)');
+    expect(profile).toContain('(allow network-inbound)');
+    expect(profile).not.toContain('(deny network*)');
+    expect(profile).not.toContain('remote unix-socket');
+    expect(profile).not.toContain('local unix-socket');
+    expect(profile).toContain('(sysctl-name-regex #"^net\\.routetable")');
+    for (const service of SEATBELT_NETWORK_MACH_SERVICES) {
+      expect(profile).toContain(`(global-name "${service}")`);
+    }
+  });
+
   test('uses the same narrow sysctl and process visibility posture in the capability probe', () => {
     const profile = capabilityProbeProfile();
     expect(profile).not.toContain('(allow process-exec)');
@@ -106,7 +156,6 @@ describe('macOS Seatbelt backend contract', () => {
     fixtureRoots.push(fixture.fixtureRoot);
     const policy = await createWorkspaceExecutionPolicy({
       workspaceRoot: fixture.workspaceRoot,
-      nodeRuntimeRoot: null,
     });
     const privateDirectory = await createPrivateDirectory();
     fixtureRoots.push(privateDirectory);

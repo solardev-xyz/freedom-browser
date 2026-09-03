@@ -33,12 +33,14 @@ function createService(options = {}) {
     start:
       options.start ||
       jest.fn(async () => ({ runId: 'run_test', conversationId: 'conversation_test' })),
-    steer: options.steer || jest.fn(async (_runId, prompt) => ({
-      guidanceId: 'guidance_test',
-      text: prompt,
-      status: 'queued',
-      createdAt: 1_000,
-    })),
+    steer:
+      options.steer ||
+      jest.fn(async (_runId, prompt) => ({
+        guidanceId: 'guidance_test',
+        text: prompt,
+        status: 'queued',
+        createdAt: 1_000,
+      })),
     pause: options.pause || jest.fn(async () => true),
     resume: options.resume || jest.fn(async () => true),
     stop: options.stop || jest.fn(async () => true),
@@ -54,8 +56,7 @@ function createService(options = {}) {
     revokeAttachment: options.revokeAttachment || jest.fn(async () => null),
     deleteConversation: options.deleteConversation || jest.fn(async () => false),
     decideApproval: options.decideApproval || jest.fn(async () => true),
-    handleWalletRequest:
-      options.handleWalletRequest || jest.fn(async () => ({ handled: false })),
+    handleWalletRequest: options.handleWalletRequest || jest.fn(async () => ({ handled: false })),
     getState: jest.fn(() => ({
       status: 'running',
       conversationId: 'conversation_test',
@@ -175,9 +176,10 @@ describe('Freedom agent IPC', () => {
     await expect(
       openPublication({ sender: ctx.sender }, { bzzUrl: 'file:///Users/private' })
     ).resolves.toMatchObject({ ok: false, error: { code: AGENT_ERROR_CODES.INVALID_ARGUMENT } });
-    await expect(
-      openPublication({ sender: ctx.otherSender }, { bzzUrl })
-    ).resolves.toMatchObject({ ok: false, error: { code: AGENT_IPC_ERROR_CODES.NOT_OWNER } });
+    await expect(openPublication({ sender: ctx.otherSender }, { bzzUrl })).resolves.toMatchObject({
+      ok: false,
+      error: { code: AGENT_IPC_ERROR_CODES.NOT_OWNER },
+    });
   });
 
   test('resolves a renderer tab through its exact chrome sender and keeps models in main', async () => {
@@ -222,9 +224,7 @@ describe('Freedom agent IPC', () => {
       ctx.ipcMain.handlers.get(IPC.AGENT_ATTACHMENTS_PICK_FILES)({ sender: ctx.sender })
     ).resolves.toEqual({
       ok: true,
-      selections: [
-        { selectionId, kind: 'file', name: 'notes.txt', category: 'text', bytes: 12 },
-      ],
+      selections: [{ selectionId, kind: 'file', name: 'notes.txt', category: 'text', bytes: 12 }],
     });
     expect(ctx.attachmentStore.pickFiles).toHaveBeenCalledWith({
       ownerId: '41',
@@ -289,9 +289,7 @@ describe('Freedom agent IPC', () => {
     );
     const preview = ctx.ipcMain.handlers.get(IPC.AGENT_ATTACHMENTS_PREVIEW);
 
-    await expect(
-      preview({ sender: ctx.sender }, { conversationId, resourceId })
-    ).resolves.toEqual({
+    await expect(preview({ sender: ctx.sender }, { conversationId, resourceId })).resolves.toEqual({
       ok: true,
       preview: {
         sourceKind: 'image',
@@ -328,33 +326,21 @@ describe('Freedom agent IPC', () => {
     const setMode = ctx.ipcMain.handlers.get(IPC.AGENT_APPROVAL_MODE_SET);
 
     await expect(
-      setMode(
-        { sender: ctx.sender },
-        { conversationId, approvalMode: 'sensitive_actions' }
-      )
+      setMode({ sender: ctx.sender }, { conversationId, approvalMode: 'sensitive_actions' })
     ).resolves.toMatchObject({ ok: false, error: { code: AGENT_ERROR_CODES.BUSY } });
 
     service.emit({ type: 'run_finished', runId: 'run_test', conversationId });
     await expect(
-      setMode(
-        { sender: ctx.sender },
-        { conversationId, approvalMode: 'sensitive_actions' }
-      )
+      setMode({ sender: ctx.sender }, { conversationId, approvalMode: 'sensitive_actions' })
     ).resolves.toEqual({
       ok: true,
       conversationId,
       approvalMode: 'sensitive_actions',
     });
-    expect(updateApprovalMode).toHaveBeenCalledWith(
-      conversationId,
-      'sensitive_actions'
-    );
+    expect(updateApprovalMode).toHaveBeenCalledWith(conversationId, 'sensitive_actions');
 
     await expect(
-      setMode(
-        { sender: ctx.otherSender },
-        { conversationId, approvalMode: 'every_interaction' }
-      )
+      setMode({ sender: ctx.otherSender }, { conversationId, approvalMode: 'every_interaction' })
     ).resolves.toMatchObject({ ok: false, error: { code: AGENT_IPC_ERROR_CODES.NOT_OWNER } });
   });
 
@@ -391,10 +377,7 @@ describe('Freedom agent IPC', () => {
     const start = ctx.ipcMain.handlers.get(IPC.AGENT_START);
 
     await expect(
-      start(
-        { sender: ctx.sender },
-        { rendererTabId: null, prompt: 'Research five sources' }
-      )
+      start({ sender: ctx.sender }, { rendererTabId: null, prompt: 'Research five sources' })
     ).resolves.toEqual({
       ok: true,
       runId: 'run_test',
@@ -649,10 +632,7 @@ describe('Freedom agent IPC', () => {
       },
     });
     await expect(
-      ctx.ipcMain.handlers.get(IPC.AGENT_TAB_CLAIM)(
-        { sender: ctx.sender },
-        { rendererTabId: 7 }
-      )
+      ctx.ipcMain.handlers.get(IPC.AGENT_TAB_CLAIM)({ sender: ctx.sender }, { rendererTabId: 7 })
     ).resolves.toMatchObject({ ok: true, claimed: true, state: { agentTabs: [] } });
     expect(service.claimTab).toHaveBeenCalledWith('tab_bound');
     await expect(
@@ -776,12 +756,14 @@ describe('Freedom agent IPC', () => {
     const resume = ctx.ipcMain.handlers.get(IPC.AGENT_RESUME);
     await start({ sender: ctx.sender }, { rendererTabId: 7, prompt: 'Task' });
 
-    await expect(
-      pause({ sender: ctx.otherSender }, { runId: 'run_test' })
-    ).resolves.toMatchObject({ ok: false, error: { code: AGENT_IPC_ERROR_CODES.NOT_OWNER } });
-    await expect(
-      resume({ sender: ctx.sender }, { runId: 'run_stale' })
-    ).resolves.toMatchObject({ ok: false, error: { code: AGENT_IPC_ERROR_CODES.NOT_OWNER } });
+    await expect(pause({ sender: ctx.otherSender }, { runId: 'run_test' })).resolves.toMatchObject({
+      ok: false,
+      error: { code: AGENT_IPC_ERROR_CODES.NOT_OWNER },
+    });
+    await expect(resume({ sender: ctx.sender }, { runId: 'run_stale' })).resolves.toMatchObject({
+      ok: false,
+      error: { code: AGENT_IPC_ERROR_CODES.NOT_OWNER },
+    });
     await expect(pause({ sender: ctx.sender }, { runId: 'run_test' })).resolves.toEqual({
       ok: true,
       paused: true,
@@ -801,10 +783,7 @@ describe('Freedom agent IPC', () => {
     await start({ sender: ctx.sender }, { rendererTabId: 7, prompt: 'Task' });
 
     await expect(
-      steer(
-        { sender: ctx.otherSender },
-        { runId: 'run_test', prompt: 'Change direction' }
-      )
+      steer({ sender: ctx.otherSender }, { runId: 'run_test', prompt: 'Change direction' })
     ).resolves.toMatchObject({
       ok: false,
       error: { code: AGENT_IPC_ERROR_CODES.NOT_OWNER },
@@ -824,19 +803,18 @@ describe('Freedom agent IPC', () => {
       resume: jest.fn(async () => {
         throw new FreedomAgentError(
           AGENT_ERROR_CODES.RESUME_SCOPE_CHANGED,
-          'The controlled tab left the task\'s starting site. Start a new task to continue there.'
+          "The controlled tab left the task's starting site. Start a new task to continue there."
         );
       }),
     });
     const ctx = register({ service });
-    await ctx.ipcMain.handlers
-      .get(IPC.AGENT_START)({ sender: ctx.sender }, { rendererTabId: 7, prompt: 'Task' });
+    await ctx.ipcMain.handlers.get(IPC.AGENT_START)(
+      { sender: ctx.sender },
+      { rendererTabId: 7, prompt: 'Task' }
+    );
 
     await expect(
-      ctx.ipcMain.handlers.get(IPC.AGENT_RESUME)(
-        { sender: ctx.sender },
-        { runId: 'run_test' }
-      )
+      ctx.ipcMain.handlers.get(IPC.AGENT_RESUME)({ sender: ctx.sender }, { runId: 'run_test' })
     ).resolves.toMatchObject({
       ok: false,
       error: { code: AGENT_ERROR_CODES.RESUME_SCOPE_CHANGED },
@@ -867,11 +845,7 @@ describe('Freedom agent IPC', () => {
         { runId: 'run_test', approvalId: 'approval_test', approved: true }
       )
     ).resolves.toEqual({ ok: true, decided: true });
-    expect(ctx.service.decideApproval).toHaveBeenCalledWith(
-      'run_test',
-      'approval_test',
-      true
-    );
+    expect(ctx.service.decideApproval).toHaveBeenCalledWith('run_test', 'approval_test', true);
   });
 
   test('routes only trusted, exactly bound wallet requests to the active Agent service', async () => {
@@ -935,10 +909,33 @@ describe('Freedom agent IPC', () => {
         }
       )
     ).resolves.toEqual({ ok: true, decided: true });
+    expect(ctx.service.decideApproval).toHaveBeenCalledWith('run_test', 'approval_diagnostics', {
+      approved: true,
+      diagnosticScope: 'conversation',
+    });
+  });
+
+  test('passes only the supported conversation workspace-permission grant', async () => {
+    const ctx = register();
+    const start = ctx.ipcMain.handlers.get(IPC.AGENT_START);
+    const decide = ctx.ipcMain.handlers.get(IPC.AGENT_APPROVAL_DECIDE);
+    await start({ sender: ctx.sender }, { rendererTabId: 7, prompt: 'Run Node' });
+
+    await expect(
+      decide(
+        { sender: ctx.sender },
+        {
+          runId: 'run_test',
+          approvalId: 'approval_workspace_permission',
+          approved: true,
+          workspacePermissionScope: 'conversation',
+        }
+      )
+    ).resolves.toEqual({ ok: true, decided: true });
     expect(ctx.service.decideApproval).toHaveBeenCalledWith(
       'run_test',
-      'approval_diagnostics',
-      { approved: true, diagnosticScope: 'conversation' }
+      'approval_workspace_permission',
+      { approved: true, workspacePermissionScope: 'conversation' }
     );
   });
 
@@ -1021,17 +1018,15 @@ describe('Freedom agent IPC', () => {
     const remove = ctx.ipcMain.handlers.get(IPC.AGENT_PROVIDER_REMOVE);
 
     await expect(
-      select(
-        { sender: ctx.otherSender },
-        { providerId: 'openai', modelId: 'gpt-test' }
-      )
+      select({ sender: ctx.otherSender }, { providerId: 'openai', modelId: 'gpt-test' })
     ).resolves.toMatchObject({ ok: false, error: { code: AGENT_IPC_ERROR_CODES.NOT_OWNER } });
     await expect(
       select({ sender: ctx.sender }, { providerId: 'openai', modelId: 'gpt-test' })
     ).resolves.toMatchObject({ ok: true, status: { modelId: 'gpt-test' } });
-    await expect(
-      remove({ sender: ctx.sender }, { providerId: 'openai' })
-    ).resolves.toMatchObject({ ok: true, status: { configured: false } });
+    await expect(remove({ sender: ctx.sender }, { providerId: 'openai' })).resolves.toMatchObject({
+      ok: true,
+      status: { configured: false },
+    });
 
     expect(ctx.providerResolver.selectModel).toHaveBeenCalledWith({
       providerId: 'openai',
@@ -1167,8 +1162,10 @@ describe('Freedom agent IPC', () => {
       ),
     });
     const ctx = register({ service });
-    const pending = ctx.ipcMain.handlers
-      .get(IPC.AGENT_START)({ sender: ctx.sender }, { rendererTabId: 7, prompt: 'Task' });
+    const pending = ctx.ipcMain.handlers.get(IPC.AGENT_START)(
+      { sender: ctx.sender },
+      { rendererTabId: 7, prompt: 'Task' }
+    );
     await Promise.resolve();
 
     ctx.sender.emit('destroyed');
@@ -1187,11 +1184,10 @@ describe('Freedom agent IPC', () => {
       }),
     });
     await expect(
-      modelFailure.ipcMain.handlers
-        .get(IPC.AGENT_START)(
-          { sender: modelFailure.sender },
-          { rendererTabId: 7, prompt: 'Task' }
-        )
+      modelFailure.ipcMain.handlers.get(IPC.AGENT_START)(
+        { sender: modelFailure.sender },
+        { rendererTabId: 7, prompt: 'Task' }
+      )
     ).resolves.toMatchObject({
       ok: false,
       error: { code: AGENT_IPC_ERROR_CODES.MODEL_UNAVAILABLE },
@@ -1203,11 +1199,10 @@ describe('Freedom agent IPC', () => {
       }),
     });
     const serviceContext = register({ service: serviceFailure });
-    const response = await serviceContext.ipcMain.handlers
-      .get(IPC.AGENT_START)(
-        { sender: serviceContext.sender },
-        { rendererTabId: 7, prompt: 'Task' }
-      );
+    const response = await serviceContext.ipcMain.handlers.get(IPC.AGENT_START)(
+      { sender: serviceContext.sender },
+      { rendererTabId: 7, prompt: 'Task' }
+    );
     expect(response).toMatchObject({
       ok: false,
       error: { code: AGENT_IPC_ERROR_CODES.INTERNAL_ERROR },
@@ -1229,23 +1224,25 @@ describe('Freedom agent IPC', () => {
       error: { code: AGENT_ERROR_CODES.INVALID_ARGUMENT },
     });
     await expect(
-      start(
-        { sender: ctx.sender },
-        { rendererTabId: 7, prompt: 'Task', approvalMode: 'unsafe' }
-      )
+      start({ sender: ctx.sender }, { rendererTabId: 7, prompt: 'Task', approvalMode: 'unsafe' })
     ).resolves.toMatchObject({
       ok: false,
       error: { code: AGENT_ERROR_CODES.INVALID_ARGUMENT },
     });
     await expect(
       start({ sender: ctx.sender }, { rendererTabId: 7, prompt: 'Task' })
-    ).resolves.toEqual({ ok: false, error: { code: AGENT_ERROR_CODES.BUSY, message: 'Agent is busy' } });
+    ).resolves.toEqual({
+      ok: false,
+      error: { code: AGENT_ERROR_CODES.BUSY, message: 'Agent is busy' },
+    });
   });
 
   test('removes handlers and stops an owned run on disposal', async () => {
     const ctx = register();
-    await ctx.ipcMain.handlers
-      .get(IPC.AGENT_START)({ sender: ctx.sender }, { rendererTabId: 7, prompt: 'Task' });
+    await ctx.ipcMain.handlers.get(IPC.AGENT_START)(
+      { sender: ctx.sender },
+      { rendererTabId: 7, prompt: 'Task' }
+    );
 
     await ctx.dispose();
 

@@ -188,6 +188,15 @@ const DWEB_PROTOCOL_PRIVILEGES = {
   allowServiceWorkers: true,
 };
 protocol.registerSchemesAsPrivileged([
+  {
+    scheme: 'freedom-preview',
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      stream: true,
+    },
+  },
   { scheme: 'bzz', privileges: DWEB_PROTOCOL_PRIVILEGES },
   { scheme: 'ipfs', privileges: DWEB_PROTOCOL_PRIVILEGES },
   { scheme: 'ipns', privileges: DWEB_PROTOCOL_PRIVILEGES },
@@ -444,6 +453,7 @@ async function bootstrap() {
       ipcMain,
       safeStorage,
       profile: activeProfile,
+      protocolSession: defaultSession,
       dataDir: getAgentDataDir(),
       workspaceRuntimeOptions: {
         packaged: app.isPackaged === true,

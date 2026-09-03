@@ -76,6 +76,8 @@ function createAgentElements() {
     'agent-approval',
     'agent-approval-action',
     'agent-approval-origin',
+    'agent-workspace-permission-details',
+    'agent-workspace-permission-summary',
     'agent-approval-approve',
     'agent-approval-allow-conversation',
     'agent-approval-decline',
@@ -1554,6 +1556,67 @@ describe('Agent UI', () => {
     expect(turn.querySelector('.agent-turn-activity').children[0].textContent).toBe(
       'Worked for 1s · 1 action · Actions recorded'
     );
+  });
+
+  test('uses explicit reasoning progress until verified activity or response takes over', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({
+      type: 'run_started',
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      userText: 'Build a page',
+    });
+    const turn = ctx.elements['agent-transcript'].querySelector('.agent-turn');
+    const liveStatus = turn.querySelector('.agent-live-status');
+    expect(liveStatus.children[1].textContent).toBe('Thinking…');
+
+    ctx.emit({
+      type: 'run_progress',
+      runId: 'run_test',
+      source: 'reasoning_heading',
+      message: 'Planning basic landing page creation…',
+    });
+    expect(liveStatus.children[1].textContent).toBe('Planning basic landing page creation…');
+
+    ctx.emit({
+      type: 'tool_started',
+      runId: 'run_test',
+      toolCallId: 'write_1',
+      operation: 'write',
+      intent: 'Writing index.html…',
+    });
+    expect(liveStatus.children[1].textContent).toBe('Writing index.html…');
+
+    ctx.emit({
+      type: 'workspace_phase',
+      runId: 'run_test',
+      toolCallId: 'write_1',
+      operation: 'write',
+      phase: 'creating_workspace',
+      message: 'Creating the project workspace…',
+    });
+    expect(liveStatus.children[1].textContent).toBe('Creating the project workspace…');
+
+    ctx.emit({
+      type: 'tool_finished',
+      runId: 'run_test',
+      toolCallId: 'write_1',
+      operation: 'write',
+      status: 'succeeded',
+      label: 'Wrote index.html',
+    });
+    expect(liveStatus.children[1].textContent).toBe('Checking the result…');
+
+    ctx.emit({
+      type: 'run_progress',
+      runId: 'run_test',
+      source: 'reasoning_heading',
+      message: 'Verifying workspace snapshot…',
+    });
+    expect(liveStatus.children[1].textContent).toBe('Verifying workspace snapshot…');
+
+    ctx.emit({ type: 'assistant_text_delta', runId: 'run_test', text: 'Done.' });
+    expect(liveStatus.children[1].textContent).toBe('Responding…');
   });
 
   test('renders attached-source evidence semantically and consolidates paginated reads', async () => {
@@ -3081,6 +3144,37 @@ describe('Agent UI', () => {
     expect(ctx.electronAPI.openAgentPublication).toHaveBeenCalledWith(publication.bzzUrl);
   });
 
+  test('identifies a managed project source in the Swarm approval without a host path', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'approval_requested',
+      runId: 'run_test',
+      approvalId: 'approval_workspace_publish',
+      action: 'swarm_publish',
+      operation: 'swarm_publish',
+      label: 'dist',
+      publication: {
+        kind: 'folder',
+        name: 'dist',
+        workspacePath: 'apps/site/dist',
+        public: true,
+        indexDocument: 'index.html',
+      },
+    });
+
+    expect(ctx.elements['agent-approval-action'].textContent).toBe('Publish “dist” to Swarm?');
+    expect(ctx.elements['agent-approval-origin'].textContent).toContain(
+      'managed project source’s current files'
+    );
+    const summaryText = ctx.elements['agent-publication-summary'].children
+      .map((child) => child.textContent)
+      .join(' ');
+    expect(summaryText).toContain('Managed project folder');
+    expect(summaryText).toContain('apps/site/dist');
+    expect(summaryText).not.toContain('/Users/');
+  });
+
   test('renders managed workspace enablement as one Agent-native disclosure', async () => {
     const ctx = await loadAgentUi();
     ctx.emit({ type: 'run_started', runId: 'run_test' });
@@ -3102,16 +3196,29 @@ describe('Agent UI', () => {
     });
 
     expect(ctx.elements['agent-approval-action'].textContent).toBe(
-      'Enable a private project workspace for this conversation?'
+      'Enable a managed project workspace for this conversation?'
     );
-    expect(ctx.elements['agent-approval-origin'].textContent).toContain(
-      'only inside this Freedom-managed workspace'
+    expect(ctx.elements['agent-approval-origin'].textContent).toBe(
+      'Agent can create, edit, and delete files inside a Freedom-managed project workspace.'
     );
-    expect(ctx.elements['agent-approval-origin'].textContent).toContain(
-      'Network access is disabled'
+    expect(ctx.elements['agent-approval-origin'].textContent).not.toContain('Network');
+    expect(ctx.elements['agent-approval-origin'].textContent).not.toContain('best-effort');
+    expect(ctx.elements['agent-workspace-permission-details'].hidden).toBe(false);
+    expect(ctx.elements['agent-workspace-permission-details'].open).toBe(false);
+    expect(ctx.elements['agent-workspace-permission-summary'].textContent).toContain(
+      'removes it when the conversation is deleted'
     );
-    expect(ctx.elements['agent-approval-origin'].textContent).toContain('best-effort');
-    expect(ctx.elements['agent-approval-origin'].textContent).not.toContain('/Users/');
+    expect(ctx.elements['agent-workspace-permission-summary'].textContent).toContain(
+      'protected .git metadata remains read-only'
+    );
+    expect(ctx.elements['agent-workspace-permission-summary'].textContent).toContain(
+      'separately approved executable packages'
+    );
+    expect(ctx.elements['agent-workspace-permission-summary'].textContent).toContain(
+      'does not grant internet, localhost, or LAN access'
+    );
+    expect(ctx.elements['agent-workspace-permission-summary'].textContent).toContain('best-effort');
+    expect(ctx.elements['agent-workspace-permission-summary'].textContent).not.toContain('/Users/');
     expect(ctx.elements['agent-approval-approve'].textContent).toBe('Enable workspace');
 
     ctx.elements['agent-approval-approve'].dispatch('click');
@@ -3120,6 +3227,71 @@ describe('Agent UI', () => {
       'run_test',
       'approval_workspace',
       true
+    );
+  });
+
+  test('renders exact executable access and can grant it for the conversation', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'approval_requested',
+      runId: 'run_test',
+      approvalId: 'approval_executable',
+      action: 'workspace_permission',
+      operation: 'request_permissions',
+      label: 'Run the project validation script',
+      workspacePermission: {
+        kind: 'command_access',
+        command: 'node validate.js',
+        workingDirectory: 'site',
+        commands: [
+          {
+            name: 'node',
+            status: 'requires_permission',
+            executablePath: '/opt/homebrew/Cellar/node/24/bin/node',
+            rootPath: '/opt/homebrew/Cellar/node/24',
+          },
+        ],
+      },
+    });
+
+    expect(ctx.elements['agent-approval-action'].textContent).toBe(
+      'Run “node validate.js”?'
+    );
+    expect(ctx.elements['agent-approval-origin'].textContent).toBe('');
+    expect(ctx.elements['agent-workspace-permission-details'].hidden).toBe(false);
+    expect(ctx.elements['agent-workspace-permission-details'].open).toBe(false);
+    expect(ctx.elements['agent-workspace-permission-summary'].textContent).toContain(
+      'Working directory: site'
+    );
+    expect(ctx.elements['agent-workspace-permission-summary'].textContent).toContain(
+      '/opt/homebrew/Cellar/node/24'
+    );
+    expect(ctx.elements['agent-workspace-permission-summary'].textContent).toContain(
+      'cannot write there'
+    );
+    expect(ctx.elements['agent-workspace-permission-summary'].textContent).toContain(
+      'Network access is not part of this request'
+    );
+    expect(ctx.elements['agent-workspace-permission-summary'].textContent).toContain(
+      'Agent says: Run the project validation script'
+    );
+    expect(ctx.elements['agent-approval-approve'].textContent).toBe('Allow once');
+    expect(ctx.elements['agent-approval'].classList.contains('conversation-approval')).toBe(true);
+    expect(ctx.elements['agent-approval-approve'].classList.contains('secondary')).toBe(true);
+    expect(ctx.elements['agent-approval-approve'].classList.contains('primary')).toBe(false);
+    expect(ctx.elements['agent-approval-allow-conversation'].textContent).toBe(
+      'Allow for conversation'
+    );
+    expect(ctx.elements['agent-approval-allow-conversation'].hidden).toBe(false);
+
+    ctx.elements['agent-approval-allow-conversation'].dispatch('click');
+    await flush();
+    expect(ctx.electronAPI.decideAgentApproval).toHaveBeenCalledWith(
+      'run_test',
+      'approval_executable',
+      true,
+      { workspacePermissionScope: 'conversation' }
     );
   });
 
@@ -3203,6 +3375,37 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-run'].disabled).toBe(false);
     expect(ctx.elements['agent-run'].dataset.action).toBe('send');
     expect(ctx.setAgentControlledTab).toHaveBeenLastCalledWith(null);
+  });
+
+  test('renders workspace failures as workspace errors rather than browser failures', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'tool_started',
+      runId: 'run_test',
+      toolCallId: 'bash_missing',
+      operation: 'bash',
+      intent: 'Running missing-tool',
+      label: 'Ran missing-tool',
+    });
+    ctx.emit({
+      type: 'tool_finished',
+      runId: 'run_test',
+      toolCallId: 'bash_missing',
+      operation: 'bash',
+      status: 'failed',
+      errorCode: 'WORKSPACE_COMMAND_NOT_FOUND',
+      label: 'Workspace operation failed — missing-tool',
+    });
+
+    const row = ctx.elements['agent-transcript'].querySelector('.agent-tool-list').children[0];
+    expect(row.children[1].textContent).toContain(
+      'A required command is not available in the workspace shell'
+    );
+    expect(row.children[1].textContent).not.toContain('Browser action failed');
+    expect(ctx.elements['agent-run-message'].textContent).toContain(
+      'A required command is not available in the workspace shell'
+    );
   });
 
   test('connects a ChatGPT subscription without exposing OAuth credentials', async () => {

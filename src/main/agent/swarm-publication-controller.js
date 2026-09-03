@@ -104,6 +104,7 @@ class SwarmPublicationController {
       (options.publishData &&
       options.publishFile &&
       options.publishDirectory &&
+      options.publishCollection &&
       options.getUploadStatus
         ? {}
         : require('../swarm/publish-service'));
@@ -113,17 +114,21 @@ class SwarmPublicationController {
         ? {}
         : require('../swarm/publish-history'));
     this.attachmentStore = options.attachmentStore;
+    this.workspaceSourceReader = options.workspaceSourceReader || null;
     this.publishData = options.publishData || publishService.publishData;
     this.publishFile = options.publishFile || publishService.publishFile;
     this.publishDirectory = options.publishDirectory || publishService.publishDirectory;
+    this.publishCollection = options.publishCollection || publishService.publishCollection;
     this.getUploadStatus = options.getUploadStatus || publishService.getUploadStatus;
     this.addHistoryEntry = options.addHistoryEntry || publishHistory.addEntry;
     this.updateHistoryEntry = options.updateHistoryEntry || publishHistory.updateEntry;
-    this.verifyPublication = options.verifyPublication || (async (reference) => {
-      const { getBee } = require('../swarm/swarm-service');
-      await getBee().downloadData(reference);
-      return true;
-    });
+    this.verifyPublication =
+      options.verifyPublication ||
+      (async (reference) => {
+        const { getBee } = require('../swarm/swarm-service');
+        await getBee().downloadData(reference);
+        return true;
+      });
     this.publicationIdFactory = options.publicationIdFactory || opaquePublicationId;
     this.sleep = options.sleep || delay;
     this.interactiveTimeoutMs = options.interactiveTimeoutMs || DEFAULT_INTERACTIVE_TIMEOUT_MS;
@@ -146,19 +151,21 @@ class SwarmPublicationController {
       throw new AutomationError(ERROR_CODES.USER_CANCELLED, 'The publication was cancelled');
     }
     const ownerId = context.conversationId || 'local';
-    const source = input.resourceId
+    const sourceDescriptor = input.resourceId
       ? await this.attachmentStore.resolvePublicationSource(ownerId, input.resourceId)
-      : {
-          kind: 'text',
-          name: 'Text',
-          text: input.text,
-          bytes: Buffer.byteLength(input.text, 'utf8'),
-          contentType: input.contentType,
-        };
-    if (input.indexDocument && source.kind !== 'folder') {
+      : input.workspacePath
+        ? await this.#describeWorkspaceSource(ownerId, input.workspacePath)
+        : {
+            kind: 'text',
+            name: 'Text',
+            text: input.text,
+            bytes: Buffer.byteLength(input.text, 'utf8'),
+            contentType: input.contentType,
+          };
+    if (input.indexDocument && sourceDescriptor.kind !== 'folder') {
       throw new AutomationError(
         ERROR_CODES.INVALID_ARGUMENT,
-        'indexDocument can only be used with an attached folder'
+        'indexDocument can only be used with a folder publication'
       );
     }
     if (typeof context.requestApproval !== 'function') {
@@ -170,13 +177,16 @@ class SwarmPublicationController {
     const decision = await context.requestApproval({
       action: 'swarm_publish',
       operation: OPERATIONS.SWARM_PUBLISH,
-      label: source.name,
+      label: sourceDescriptor.name,
       publication: {
-        kind: source.kind,
-        name: source.name,
+        kind: sourceDescriptor.kind,
+        name: sourceDescriptor.name,
         public: true,
-        ...(Number.isSafeInteger(source.bytes) && { bytes: source.bytes }),
-        ...(source.contentType && { contentType: source.contentType }),
+        ...(Number.isSafeInteger(sourceDescriptor.bytes) && { bytes: sourceDescriptor.bytes }),
+        ...(sourceDescriptor.contentType && { contentType: sourceDescriptor.contentType }),
+        ...(sourceDescriptor.sourceType === 'workspace' && {
+          workspacePath: sourceDescriptor.workspacePath,
+        }),
         ...(input.indexDocument && { indexDocument: input.indexDocument }),
       },
     });
@@ -188,6 +198,20 @@ class SwarmPublicationController {
     }
     if (context.signal?.aborted) {
       throw new AutomationError(ERROR_CODES.USER_CANCELLED, 'The publication was cancelled');
+    }
+    const source = input.workspacePath
+      ? await this.#readWorkspaceSource(ownerId, input.workspacePath)
+      : sourceDescriptor;
+    if (
+      source.sourceType === 'workspace' &&
+      source.kind === 'folder' &&
+      input.indexDocument &&
+      !source.files.some((file) => file.path === input.indexDocument)
+    ) {
+      throw new AutomationError(
+        ERROR_CODES.INVALID_ARGUMENT,
+        'indexDocument does not identify a file in the selected workspace folder'
+      );
     }
 
     const publicationId = this.publicationIdFactory();
@@ -259,18 +283,63 @@ class SwarmPublicationController {
     }
   }
 
+  async #describeWorkspaceSource(ownerId, workspacePath) {
+    if (typeof this.workspaceSourceReader?.describe !== 'function') {
+      throw new AutomationError(
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        'Managed workspace publication is unavailable'
+      );
+    }
+    try {
+      return await this.workspaceSourceReader.describe(ownerId, workspacePath);
+    } catch (error) {
+      throw new AutomationError(
+        error?.code === 'INVALID_WORKSPACE_PUBLICATION_PATH'
+          ? ERROR_CODES.INVALID_ARGUMENT
+          : ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        safeMessage(error, 'The requested managed workspace source is unavailable')
+      );
+    }
+  }
+
+  async #readWorkspaceSource(ownerId, workspacePath) {
+    if (typeof this.workspaceSourceReader?.read !== 'function') {
+      throw new AutomationError(
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        'Managed workspace publication is unavailable'
+      );
+    }
+    try {
+      return await this.workspaceSourceReader.read(ownerId, workspacePath);
+    } catch (error) {
+      throw new AutomationError(
+        error?.code === 'INVALID_WORKSPACE_PUBLICATION_PATH'
+          ? ERROR_CODES.INVALID_ARGUMENT
+          : ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        safeMessage(error, 'Freedom could not read the managed workspace publication source')
+      );
+    }
+  }
+
   async #run(operation, source, input, onProgress) {
     try {
       const result =
-        source.kind === 'folder'
-          ? await this.publishDirectory(source.path, { indexDocument: input.indexDocument })
-          : source.kind === 'file'
-            ? await this.publishFile(source.path, {
+        source.sourceType === 'workspace' && source.kind === 'folder'
+          ? await this.publishCollection(source.files, { indexDocument: input.indexDocument })
+          : source.sourceType === 'workspace' && source.kind === 'file'
+            ? await this.publishData(source.data, {
                 name: source.name,
-              })
-            : await this.publishData(source.text, {
                 contentType: source.contentType,
-              });
+              })
+            : source.kind === 'folder'
+              ? await this.publishDirectory(source.path, { indexDocument: input.indexDocument })
+              : source.kind === 'file'
+                ? await this.publishFile(source.path, {
+                    name: source.name,
+                  })
+                : await this.publishData(source.text, {
+                    contentType: source.contentType,
+                  });
       operation.reference = result.reference;
       operation.bzzUrl = result.bzzUrl;
       if (Number.isSafeInteger(result.bytesSize)) operation.bytes = result.bytesSize;

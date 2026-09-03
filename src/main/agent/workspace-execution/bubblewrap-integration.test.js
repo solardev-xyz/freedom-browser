@@ -48,6 +48,15 @@ function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+function privateIpv4Address() {
+  for (const addresses of Object.values(os.networkInterfaces())) {
+    for (const address of addresses || []) {
+      if (address.family === 'IPv4' && !address.internal) return address.address;
+    }
+  }
+  return null;
+}
+
 async function waitForFile(file, timeoutMs = 5_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -213,14 +222,20 @@ describeBubblewrap(bubblewrapDescription, () => {
   });
 
   test('hides host processes, environment, descriptors, sockets, loopback services, and DNS', async () => {
-    const tcpServer = net.createServer((socket) => socket.end('host-tcp'));
+    const tcpServer = net.createServer((socket) => {
+      socket.on('error', () => {});
+      socket.end('host-tcp');
+    });
     await listen(tcpServer, { host: '127.0.0.1', port: 0 });
     const tcpPort = tcpServer.address().port;
     const socketPath = path.join(fixture.outsideRoot, 'host.sock');
     const unixServer = net.createServer((socket) => socket.end('host-unix'));
     await listen(unixServer, socketPath);
     const abstractName = `freedom-host-${process.pid}-${Date.now()}`;
-    const abstractServer = net.createServer((socket) => socket.end('host-abstract'));
+    const abstractServer = net.createServer((socket) => {
+      socket.on('error', () => {});
+      socket.end('host-abstract');
+    });
     await listen(abstractServer, `\0${abstractName}`);
     const descriptors = [];
     for (let index = 0; index < 48; index += 1) {
@@ -302,6 +317,86 @@ describeBubblewrap(bubblewrapDescription, () => {
       dns: 'ENOTFOUND',
       internal: 'inside',
     });
+  });
+
+  test('full networking exposes public, host-loopback, LAN, and host abstract sockets only for that policy', async () => {
+    const lanAddress = process.env.FREEDOM_SANDBOX_LAN_HOST || privateIpv4Address();
+    expect(lanAddress).toBeTruthy();
+    const tcpServer = net.createServer((socket) => socket.end('host-tcp'));
+    await listen(tcpServer, { host: '0.0.0.0', port: 0 });
+    const tcpPort = tcpServer.address().port;
+    const lanPort = process.env.FREEDOM_SANDBOX_LAN_PORT || String(tcpPort);
+    const abstractName = `freedom-full-network-${process.pid}-${Date.now()}`;
+    const abstractServer = net.createServer((socket) => socket.end('host-abstract'));
+    await listen(abstractServer, `\0${abstractName}`);
+    const publicHost = process.env.FREEDOM_SANDBOX_PUBLIC_HOST || '1.1.1.1';
+    const publicPort = process.env.FREEDOM_SANDBOX_PUBLIC_PORT || '443';
+    const childScript = [
+      "const dns = require('dns');",
+      "const net = require('net');",
+      'const [loopPort, lanHost, lanPort, publicHost, publicPort, abstractName] = process.argv.slice(1);',
+      'const connect = (target) => new Promise((resolve) => {',
+      '  const socket = net.createConnection(target);',
+      "  socket.setTimeout(5000, () => socket.destroy(new Error('timeout')));",
+      "  socket.once('connect', () => { socket.end(); resolve('connected'); });",
+      "  socket.once('error', (error) => resolve(error.code || error.message));",
+      '});',
+      '(async () => {',
+      "  const loopback = await connect({ host: '127.0.0.1', port: Number(loopPort) });",
+      '  const lan = await connect({ host: lanHost, port: Number(lanPort) });',
+      '  const internet = await connect({ host: publicHost, port: Number(publicPort) });',
+      '  const abstract = await connect({ path: `\\0${abstractName}` });',
+      "  const dnsResult = await new Promise((resolve) => dns.lookup('example.com', (error) => resolve(error ? error.code : 'resolved')));",
+      '  process.stdout.write(JSON.stringify({ loopback, lan, internet, abstract, dns: dnsResult }));',
+      '})();',
+    ].join('\n');
+    let fullReceipt;
+    let offlineReceipt;
+    try {
+      fullReceipt = await executor.execute(await policy({ network: 'full' }), {
+        command: 'node',
+        args: [
+          '-e',
+          `const { spawnSync } = require('child_process'); const result = spawnSync(process.execPath, ['-e', ${JSON.stringify(childScript)}, ...process.argv.slice(1)], { encoding: 'utf8' }); process.stdout.write(result.stdout); process.stderr.write(result.stderr); process.exit(result.status ?? 1);`,
+          String(tcpPort),
+          lanAddress,
+          lanPort,
+          publicHost,
+          publicPort,
+          abstractName,
+        ],
+      });
+      offlineReceipt = await executor.execute(await policy(), {
+        command: 'node',
+        args: [
+          '-e',
+          `const net = require('net'); const socket = net.createConnection({ host: '127.0.0.1', port: ${tcpPort} }); socket.once('connect', () => process.exit(9)); socket.once('error', () => process.exit(0));`,
+        ],
+      });
+    } finally {
+      await Promise.all([closeServer(tcpServer), closeServer(abstractServer)]);
+    }
+
+    expect(fullReceipt).toMatchObject({
+      state: 'completed',
+      capabilities: {
+        networkPosture: 'full',
+        publicNetworking: 'host_network',
+        loopbackNetworking: 'host_network',
+        privateNetworking: 'host_network',
+        hostAbstractUnixSockets: 'reachable',
+      },
+    });
+    const result = JSON.parse(fullReceipt.stdout);
+    expect(result).toMatchObject({
+      loopback: 'connected',
+      internet: 'connected',
+      abstract: 'connected',
+      dns: 'resolved',
+    });
+    if (process.env.FREEDOM_SANDBOX_LAN_HOST) expect(result.lan).toBe('connected');
+    else expect(result.lan).not.toBe('ENETUNREACH');
+    expect(offlineReceipt).toMatchObject({ state: 'completed', exitCode: 0 });
   });
 
   test('closes every inherited descriptor above stderr before the command starts', async () => {

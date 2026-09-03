@@ -37,7 +37,7 @@ const ORIGIN_SCOPED_OPERATIONS = new Set([
   OPERATIONS.WAIT,
   OPERATIONS.STOP_LOADING,
 ]);
-const SCOPED_SCHEMES = new Set(['http:', 'https:', 'bzz:', 'ipfs:', 'ipns:']);
+const SCOPED_SCHEMES = new Set(['http:', 'https:', 'bzz:', 'ipfs:', 'ipns:', 'freedom-preview:']);
 const TRUSTED_INPUT_EFFECT_SETTLE_MS = 50;
 const MIN_AUTONOMOUS_INTERACTION_CONFIDENCE = 0.85;
 const INTERACTION_CLASSIFICATION_KINDS = new Set([

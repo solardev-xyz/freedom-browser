@@ -10,6 +10,7 @@ const {
   FreedomAgentService,
   normalizePiEvent,
   providerFailureFromPiMessage,
+  reasoningProgressFromPiText,
 } = require('./freedom-agent-service');
 
 function createDeferred() {
@@ -447,7 +448,7 @@ describe('FreedomAgentService', () => {
     await service.waitForIdle();
   });
 
-  test('exposes the managed workspace tool and state without a host path', async () => {
+  test('keeps persistent workspace tools bound to the active conversation turn without a host path', async () => {
     const fake = createFakeSession();
     const workspaceController = {
       getWorkspace: jest.fn(() => ({
@@ -479,19 +480,30 @@ describe('FreedomAgentService', () => {
       { name: 'find' },
       { name: 'ls' },
     ]);
+    const runIdFactory = jest
+      .fn()
+      .mockReturnValueOnce('run_workspace_first')
+      .mockReturnValueOnce('run_workspace_second');
     const { service, dependencies } = createService(fake, {
       workspaceController,
       createWorkspaceTools,
+      runIdFactory,
     });
+    const events = [];
+    service.subscribe((event) => events.push(event));
 
     await service.start(startOptions());
 
     expect(createWorkspaceTools).toHaveBeenCalledWith({
       sdk: { kind: 'sdk' },
       controller: workspaceController,
+      previewController: null,
+      scopedController: expect.objectContaining({ execute: expect.any(Function) }),
       conversationId: 'conversation_test',
       requestApproval: expect.any(Function),
+      getRunSignal: expect.any(Function),
       onToolOutcome: expect.any(Function),
+      onToolPhase: expect.any(Function),
     });
     expect(dependencies.createSession.mock.calls[0][0]).toMatchObject({
       customTools: [
@@ -506,12 +518,65 @@ describe('FreedomAgentService', () => {
       ],
       systemPrompt: expect.stringContaining('private Freedom-managed project workspace'),
     });
+    expect(dependencies.createSession.mock.calls[0][0].systemPrompt).not.toContain(
+      'FREEDOM_JAVASCRIPT_RUNTIME'
+    );
     expect(service.getState().workspace).toEqual(
       expect.objectContaining({ workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa' })
     );
     expect(JSON.stringify(service.getState())).not.toContain('/Users/');
 
+    const workspaceOptions = createWorkspaceTools.mock.calls[0][0];
+    const firstRunSignal = workspaceOptions.getRunSignal();
+    workspaceOptions.onToolPhase({
+      toolCallId: 'write_one',
+      operation: 'write',
+      phase: 'creating_workspace',
+    });
+    expect(events.at(-1)).toMatchObject({
+      type: 'workspace_phase',
+      operation: 'write',
+      phase: 'creating_workspace',
+      message: 'Creating the project workspace…',
+    });
+
     fake.prompt.resolve();
+    await service.waitForIdle();
+
+    await service.start(startOptions({ prompt: 'Create a Node.js script' }));
+    const secondRunSignal = workspaceOptions.getRunSignal();
+    expect(secondRunSignal).toEqual(expect.any(AbortSignal));
+    expect(secondRunSignal).not.toBe(firstRunSignal);
+    workspaceOptions.onToolPhase({
+      toolCallId: 'write_two',
+      operation: 'write',
+      phase: 'waiting_for_approval',
+    });
+    expect(events.at(-1)).toMatchObject({
+      type: 'workspace_phase',
+      runId: 'run_workspace_second',
+      phase: 'waiting_for_approval',
+    });
+    const approvalDecision = workspaceOptions.requestApproval({
+      action: 'workspace_execution',
+      operation: 'write',
+      workspace: {
+        available: true,
+        backend: 'macos-seatbelt',
+        cancellationGuarantee: 'best_effort',
+        survivorsPossible: true,
+        completeDescendantTermination: false,
+      },
+    });
+    const approval = events.at(-1);
+    expect(approval).toMatchObject({
+      type: 'approval_requested',
+      runId: 'run_workspace_second',
+      action: 'workspace_execution',
+    });
+    await service.decideApproval('run_workspace_second', approval.approvalId, true);
+    await expect(approvalDecision).resolves.toBe('approved');
+    fake.prompts[1].resolve();
     await service.waitForIdle();
   });
 
@@ -1028,8 +1093,25 @@ describe('FreedomAgentService', () => {
     const fake = createFakeSession();
     const historyStore = createHistoryStore();
     const { service } = createService(fake, { historyStore });
+    const events = [];
+    service.subscribe((event) => events.push(event));
 
     await service.start(startOptions({ prompt: 'Research this page' }));
+    fake.emit({
+      type: 'message_update',
+      assistantMessageEvent: { type: 'thinking_start' },
+    });
+    fake.emit({
+      type: 'message_update',
+      assistantMessageEvent: {
+        type: 'thinking_delta',
+        delta: '**Planning ephemeral work that must not be persisted**',
+      },
+    });
+    fake.emit({
+      type: 'message_update',
+      assistantMessageEvent: { type: 'thinking_end', content: 'private complete content' },
+    });
     fake.emit({
       type: 'tool_execution_start',
       toolCallId: 'call_1',
@@ -1080,6 +1162,16 @@ describe('FreedomAgentService', () => {
       error: undefined,
     });
     expect(JSON.stringify(historyStore.finishTurn.mock.calls)).not.toContain('pageContents');
+    expect(JSON.stringify(historyStore.finishTurn.mock.calls)).not.toContain(
+      'Planning ephemeral work that must not be persisted'
+    );
+    expect(events.filter((event) => event.type === 'run_progress')).toEqual([
+      expect.objectContaining({
+        type: 'run_progress',
+        source: 'reasoning_heading',
+        message: 'Planning ephemeral work that must not be persisted…',
+      }),
+    ]);
   });
 
   test('opens a stored conversation dormant and rebuilds safe Pi context on follow-up', async () => {
@@ -1289,6 +1381,80 @@ describe('FreedomAgentService', () => {
     await service.waitForIdle();
   });
 
+  test('projects exact executable authority and returns a conversation-scoped grant', async () => {
+    const fake = createFakeSession();
+    const { service, dependencies } = createService(fake);
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+
+    const requestApproval = dependencies.createControllerScope.mock.calls[0][0].requestApproval;
+    const decision = requestApproval({
+      action: 'workspace_permission',
+      operation: 'request_permissions',
+      label: 'Run the project tests',
+      workspacePermission: {
+        kind: 'command_access',
+        command: 'npm test',
+        workingDirectory: 'site',
+        commands: [
+          {
+            name: 'node',
+            status: 'requires_permission',
+            executablePath: '/opt/homebrew/Cellar/node/24/bin/node',
+            rootPath: '/opt/homebrew/Cellar/node/24',
+          },
+        ],
+      },
+    });
+    const approval = events.at(-1);
+
+    expect(approval).toMatchObject({
+      type: 'approval_requested',
+      action: 'workspace_permission',
+      operation: 'request_permissions',
+      label: 'Run the project tests',
+      workspacePermission: {
+        kind: 'command_access',
+        command: 'npm test',
+        workingDirectory: 'site',
+        commands: [expect.objectContaining({ name: 'node', status: 'requires_permission' })],
+      },
+    });
+    await service.decideApproval('run_test', approval.approvalId, {
+      approved: true,
+      workspacePermissionScope: 'conversation',
+    });
+    await expect(decision).resolves.toEqual({
+      status: 'approved',
+      workspacePermissionScope: 'conversation',
+    });
+
+    await expect(
+      requestApproval({
+        action: 'workspace_permission',
+        operation: 'request_permissions',
+        label: 'Escape the project',
+        workspacePermission: {
+          kind: 'command_access',
+          command: 'node validate.js',
+          workingDirectory: '../outside',
+          commands: [
+            {
+              name: 'node',
+              status: 'requires_permission',
+              executablePath: '/opt/homebrew/Cellar/node/24/bin/node',
+              rootPath: '/opt/homebrew/Cellar/node/24',
+            },
+          ],
+        },
+      })
+    ).rejects.toMatchObject({ code: AGENT_ERROR_CODES.INVALID_ARGUMENT });
+
+    await service.stop('run_test');
+    await service.waitForIdle();
+  });
+
   test('projects a path-free Agent-native approval for public Swarm publishing', async () => {
     const fake = createFakeSession();
     const { service, dependencies } = createService(fake);
@@ -1305,6 +1471,7 @@ describe('FreedomAgentService', () => {
         kind: 'folder',
         name: 'website',
         public: true,
+        workspacePath: 'dist/site',
         indexDocument: 'index.html',
         sourcePath: '/Users/private/website',
       },
@@ -1319,12 +1486,29 @@ describe('FreedomAgentService', () => {
         kind: 'folder',
         name: 'website',
         public: true,
+        workspacePath: 'dist/site',
         indexDocument: 'index.html',
       },
     });
     expect(JSON.stringify(approval)).not.toContain('/Users/private');
     await service.decideApproval('run_test', approval.approvalId, true);
     await expect(decision).resolves.toBe('approved');
+
+    const invalidDecision = requestApproval({
+      action: 'swarm_publish',
+      operation: OPERATIONS.SWARM_PUBLISH,
+      label: 'private',
+      publication: {
+        kind: 'folder',
+        name: 'private',
+        public: true,
+        workspacePath: '/Users/private/website',
+      },
+    });
+    const invalidApproval = events.at(-1);
+    expect(invalidApproval.publication).not.toHaveProperty('workspacePath');
+    await service.decideApproval('run_test', invalidApproval.approvalId, false);
+    await expect(invalidDecision).resolves.toBe('declined');
 
     await service.stop('run_test');
     await service.waitForIdle();
@@ -1805,6 +1989,23 @@ describe('FreedomAgentService', () => {
     expect(fake.session.abort).toHaveBeenCalledTimes(1);
     expect(cancelAgentDownloads).toHaveBeenCalledWith('conversation_test');
     expect(events.at(-1)).toMatchObject({ type: 'run_finished', status: 'cancelled' });
+  });
+
+  test('finishes Stop at its deadline when both Pi abort and execution remain wedged', async () => {
+    const fake = createFakeSession();
+    fake.session.abort.mockImplementation(() => new Promise(() => {}));
+    const { service } = createService(fake, { stopGraceMs: 10 });
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+
+    await expect(service.stop('run_test')).resolves.toBe(true);
+    await service.waitForIdle();
+
+    expect(events.at(-1)).toMatchObject({ type: 'run_finished', status: 'cancelled' });
+    expect(fake.unsubscribe).toHaveBeenCalledTimes(1);
+    expect(fake.session.dispose).toHaveBeenCalledTimes(1);
+    expect(service.getState()).toMatchObject({ status: 'ready', runtimeAvailable: false });
   });
 
   test('returns a missing-tab tool failure to the model without killing the conversation', async () => {
@@ -2384,6 +2585,12 @@ describe('FreedomAgentService', () => {
     ).toBeNull();
     expect(
       normalizePiEvent({
+        type: 'message_update',
+        assistantMessageEvent: { type: 'thinking_delta', delta: 'private' },
+      })
+    ).toBeNull();
+    expect(
+      normalizePiEvent({
         type: 'tool_execution_start',
         toolCallId: 'call_skill',
         toolName: 'read',
@@ -2506,6 +2713,26 @@ describe('FreedomAgentService', () => {
         relativePath: 'ant-report.json',
       },
     });
+  });
+
+  test('extracts only explicit bounded reasoning headings for live progress', () => {
+    expect(reasoningProgressFromPiText('private free-form reasoning')).toBeNull();
+    expect(
+      reasoningProgressFromPiText('This merely emphasizes **one phrase** in prose.')
+    ).toBeNull();
+    expect(reasoningProgressFromPiText('**Planning the implementation**')).toBe(
+      'Planning the implementation…'
+    );
+    expect(
+      reasoningProgressFromPiText(
+        '**Planning the implementation**\nSome prose.\n### Verifying [the result](https://example.test)'
+      )
+    ).toBe('Verifying the result…');
+    expect(reasoningProgressFromPiText('**Checking\u202ethe result\u0000now**')).toBe(
+      'Checking the result now…'
+    );
+    expect(reasoningProgressFromPiText('**still streaming')).toBeNull();
+    expect(reasoningProgressFromPiText(`**${'x'.repeat(220)}**`)).toHaveLength(140);
   });
 
   test('isolates subscriber failures', async () => {

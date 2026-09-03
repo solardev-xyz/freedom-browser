@@ -9,13 +9,15 @@ const {
   ELECTRON_RUNTIME_PROBE_MARKER,
   detectElectronJavaScriptRuntime,
 } = require('./electron-runtime');
+const { resolveExecutableAccess } = require('./executable-access');
 const {
   DEFAULT_OUTPUT_BYTES,
   DEFAULT_TIMEOUT_MS,
   ExecutionPolicyError,
   createWorkspaceExecutionPolicy,
-  inferNodeRuntimeRoot,
   insidePath,
+  isValidatedWorkspaceExecutionPolicy,
+  restrictWorkspaceExecutionPolicy,
   validateEnvironmentName,
   validateExecutionRequest,
   validateGitConfiguration,
@@ -119,6 +121,23 @@ describe('workspace execution policy', () => {
     expect(policy.environment.values).not.toHaveProperty('SSH_AUTH_SOCK');
   });
 
+  test('recognizes explicit offline, full, and reserved brokered network postures', async () => {
+    const fixture = await createFixture();
+    fixtureRoots.push(fixture.fixtureRoot);
+
+    for (const network of ['none', 'full', 'brokered']) {
+      await expect(
+        createWorkspaceExecutionPolicy({ workspaceRoot: fixture.workspaceRoot, network })
+      ).resolves.toMatchObject({ network });
+    }
+    await expect(
+      createWorkspaceExecutionPolicy({
+        workspaceRoot: fixture.workspaceRoot,
+        network: 'public_only',
+      })
+    ).rejects.toMatchObject({ code: 'INVALID_POLICY' });
+  });
+
   test('cannot remove mandatory Git protection with an empty caller list', async () => {
     const fixture = await createFixture();
     fixtureRoots.push(fixture.fixtureRoot);
@@ -150,7 +169,6 @@ describe('workspace execution policy', () => {
 
     const policy = await createWorkspaceExecutionPolicy({
       workspaceRoot: fixture.workspaceRoot,
-      nodeRuntimeRoot: null,
       electronRuntime: runtime,
     });
     expect(policy.filesystem.runtimeRoots).toEqual([
@@ -168,10 +186,75 @@ describe('workspace execution policy', () => {
     await expect(
       createWorkspaceExecutionPolicy({
         workspaceRoot: fixture.workspaceRoot,
-        nodeRuntimeRoot: null,
         electronRuntime: { ...runtime },
       })
     ).rejects.toMatchObject({ code: 'UNTRUSTED_ELECTRON_RUNTIME' });
+  });
+
+  test('derives a trusted narrower policy without repeating or weakening workspace validation', async () => {
+    const fixture = await createFixture();
+    fixtureRoots.push(fixture.fixtureRoot);
+    const runtimeRoot = path.join(fixture.fixtureRoot, 'linux-unpacked');
+    const resourcesPath = path.join(runtimeRoot, 'resources');
+    const executable = path.join(runtimeRoot, 'freedom');
+    await fs.promises.mkdir(resourcesPath, { recursive: true });
+    await fs.promises.writeFile(path.join(resourcesPath, 'app.asar'), 'fixture');
+    await fs.promises.writeFile(executable, 'fixture', { mode: 0o700 });
+    const runtime = await attestElectronRuntime({
+      platform: 'linux',
+      executablePath: executable,
+      resourcesPath,
+      packaged: true,
+    });
+    const helperPolicy = await createWorkspaceExecutionPolicy({
+      workspaceRoot: fixture.workspaceRoot,
+      electronRuntime: runtime,
+      environment: { set: { ELECTRON_RUN_AS_NODE: '1' } },
+    });
+
+    const agentPolicy = restrictWorkspaceExecutionPolicy(helperPolicy, {
+      omitRuntimeRootIds: ['electron'],
+      omitEnvironmentNames: ['ELECTRON_RUN_AS_NODE'],
+    });
+
+    expect(isValidatedWorkspaceExecutionPolicy(agentPolicy)).toBe(true);
+    expect(agentPolicy.filesystem.runtimeRoots).toEqual([]);
+    expect(agentPolicy.environment.values).not.toHaveProperty('ELECTRON_RUN_AS_NODE');
+    expect(agentPolicy.filesystem.writableRoots).toBe(helperPolicy.filesystem.writableRoots);
+    expect(agentPolicy.filesystem.protectedPaths).toBe(helperPolicy.filesystem.protectedPaths);
+    expect(helperPolicy.filesystem.runtimeRoots).toHaveLength(1);
+    expect(helperPolicy.environment.values).toHaveProperty('ELECTRON_RUN_AS_NODE', '1');
+    expect(() =>
+      restrictWorkspaceExecutionPolicy({ ...helperPolicy }, { omitRuntimeRootIds: ['electron'] })
+    ).toThrow('trusted Freedom workspace policy');
+  });
+
+  test('adds only Freedom-resolved executable roots to a derived agent policy', async () => {
+    const fixture = await createFixture();
+    fixtureRoots.push(fixture.fixtureRoot);
+    const packageRoot = path.join(fixture.fixtureRoot, 'toolchain');
+    const bin = path.join(packageRoot, 'bin');
+    await fs.promises.mkdir(bin, { recursive: true });
+    await fs.promises.writeFile(path.join(bin, 'formatter'), '#!/bin/sh\n', { mode: 0o700 });
+    const access = await resolveExecutableAccess(['formatter'], {
+      platform: 'linux',
+      hostEnvironment: { PATH: bin },
+    });
+    const basePolicy = await createWorkspaceExecutionPolicy({
+      workspaceRoot: fixture.workspaceRoot,
+    });
+
+    const grantedPolicy = restrictWorkspaceExecutionPolicy(basePolicy, {
+      addRuntimeRoots: access.runtimeRoots,
+    });
+
+    expect(grantedPolicy.filesystem.runtimeRoots).toEqual(access.runtimeRoots);
+    expect(isValidatedWorkspaceExecutionPolicy(grantedPolicy)).toBe(true);
+    expect(() =>
+      restrictWorkspaceExecutionPolicy(basePolicy, {
+        addRuntimeRoots: access.runtimeRoots.map((root) => ({ ...root })),
+      })
+    ).toThrow(expect.objectContaining({ code: 'UNTRUSTED_EXECUTABLE_ROOT' }));
   });
 
   test('revalidates packaged Linux app.asar through the attested physical filesystem', async () => {
@@ -205,7 +288,6 @@ describe('workspace execution policy', () => {
     await expect(
       createWorkspaceExecutionPolicy({
         workspaceRoot: fixture.workspaceRoot,
-        nodeRuntimeRoot: null,
         electronRuntime: runtime,
       })
     ).resolves.toMatchObject({
@@ -237,7 +319,6 @@ describe('workspace execution policy', () => {
 
     const policy = await createWorkspaceExecutionPolicy({
       workspaceRoot: fixture.workspaceRoot,
-      nodeRuntimeRoot: null,
       electronRuntime: runtime,
     });
 
@@ -276,7 +357,6 @@ describe('workspace execution policy', () => {
     await expect(
       createWorkspaceExecutionPolicy({
         workspaceRoot: fixture.workspaceRoot,
-        nodeRuntimeRoot: null,
         electronRuntime: serializedRuntime,
       })
     ).rejects.toMatchObject({ code: 'UNTRUSTED_ELECTRON_RUNTIME' });
@@ -631,14 +711,8 @@ describe('workspace execution policy', () => {
     expect(() => validateEnvironmentName('NPM_CONFIG__AUTHTOKEN')).toThrow('not eligible');
   });
 
-  test('uses path containment and Node runtime inference without widening a home directory', () => {
+  test('uses path containment without prefix confusion', () => {
     expect(insidePath('/workspace', '/workspace/project/file')).toBe(true);
     expect(insidePath('/workspace', '/workspace-other/file')).toBe(false);
-    const runtimeRoot = inferNodeRuntimeRoot(process.execPath);
-    if (process.execPath.startsWith('/usr/') || process.execPath.startsWith('/bin/')) {
-      expect(runtimeRoot).toBeNull();
-    } else {
-      expect(runtimeRoot).toBe(path.dirname(path.dirname(fs.realpathSync(process.execPath))));
-    }
   });
 });

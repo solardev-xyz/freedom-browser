@@ -38,6 +38,7 @@ describe('page-urls', () => {
     expect(mod.detectProtocol('ipfs://cid')).toBe('ipfs');
     expect(mod.detectProtocol('ipns://name')).toBe('ipns');
     expect(mod.detectProtocol('rad://rid')).toBe('radicle');
+    expect(mod.detectProtocol(`freedom-preview://${'a'.repeat(40)}/`)).toBe('preview');
     expect(mod.detectProtocol('https://example.com')).toBe('https');
     expect(mod.detectProtocol('http://example.com')).toBe('http');
     expect(mod.detectProtocol('')).toBe('unknown');
@@ -48,6 +49,10 @@ describe('page-urls', () => {
 
     expect(mod.isHistoryRecordable('', 'https://example.com')).toBe(false);
     expect(mod.isHistoryRecordable('freedom://history', 'file:///app/pages/history.html')).toBe(false);
+    expect(mod.isHistoryRecordable(`freedom-preview://${'a'.repeat(40)}/index.html`, '')).toBe(
+      false
+    );
+    expect(mod.isHistoryRecordable('Workspace preview', '')).toBe(false);
     expect(mod.isHistoryRecordable('view-source:https://example.com', 'view-source:https://example.com')).toBe(false);
     expect(mod.isHistoryRecordable('https://example.com', 'file:///app/pages/error.html')).toBe(false);
     expect(mod.isHistoryRecordable('https://example.com', mod.homeUrl)).toBe(false);

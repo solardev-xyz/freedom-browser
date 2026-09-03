@@ -864,4 +864,26 @@ describe('webview-preload private windows', () => {
     // ethereum, swarm and radicle page→host bridges.
     expect(messageListeners).toHaveLength(3);
   });
+
+  test('isolated workspace preview: no providers or provider bridges are installed', () => {
+    const { ipcRenderer, document } = loadWebviewPreloadModule({
+      location: {
+        href: `freedom-preview://${'a'.repeat(40)}/index.html`,
+        protocol: 'freedom-preview:',
+        pathname: '/index.html',
+      },
+    });
+
+    const onChannels = ipcRenderer.on.mock.calls.map(([channel]) => channel);
+    for (const channel of providerChannels) expect(onChannels).not.toContain(channel);
+    expect(
+      global.window.addEventListener.mock.calls.filter(([event]) => event === 'message')
+    ).toHaveLength(0);
+    expect(document.addEventListener.mock.calls.map(([event]) => event)).not.toContain(
+      'DOMContentLoaded'
+    );
+    expect(consoleLogSpy).toHaveBeenCalledWith(
+      '[webview-preload] Loaded (context menu — isolated preview, providers disabled)'
+    );
+  });
 });

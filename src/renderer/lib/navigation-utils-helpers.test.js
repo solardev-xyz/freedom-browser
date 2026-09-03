@@ -80,6 +80,12 @@ describe('navigation-utils extracted helpers', () => {
         radicleApiPrefix: 'http://127.0.0.1:8780/api/v1/repos/',
       })
     ).toBe('rad://zabc123/tree/main');
+
+    expect(
+      mod.deriveDisplayAddress({
+        url: `freedom-preview://${'a'.repeat(40)}/index.html`,
+      })
+    ).toBe('Workspace preview');
   });
 
   test('builds view-source navigation for dweb and gateway urls', async () => {

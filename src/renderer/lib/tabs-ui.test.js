@@ -385,6 +385,26 @@ describe('tabs ui behavior', () => {
     }
   });
 
+  test('createTab loads only well-formed isolated preview URLs directly', async () => {
+    const { mod, createdWebviews } = await loadTabsModule({
+      homeUrl: 'file:///app/pages/home.html',
+    });
+    const onLoadTarget = jest.fn();
+    mod.setLoadTargetHandler(onLoadTarget);
+    const previewUrl = `freedom-preview://${'a'.repeat(40)}/index.html`;
+
+    jest.useFakeTimers();
+    try {
+      await mod.initTabs();
+      mod.createTab(previewUrl);
+      expect(createdWebviews.at(-1).getAttribute('src')).toBe(previewUrl);
+      jest.runAllTimers();
+      expect(onLoadTarget).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   test('createTab never loads hostile schemes directly into the webview', async () => {
     // Security regression: after tightening the indirect-protocol
     // allowlist to fix the GUEST_VIEW_MANAGER_CALL noise, the inverse

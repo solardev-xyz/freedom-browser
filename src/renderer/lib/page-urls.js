@@ -43,6 +43,7 @@ export const detectProtocol = (url) => {
   if (url.startsWith('ipfs://')) return 'ipfs';
   if (url.startsWith('ipns://')) return 'ipns';
   if (url.startsWith('rad:')) return 'radicle';
+  if (url.startsWith('freedom-preview://')) return 'preview';
   if (url.startsWith('https://')) return 'https';
   if (url.startsWith('http://')) return 'http';
   return 'unknown';
@@ -52,6 +53,8 @@ export const detectProtocol = (url) => {
 export const isHistoryRecordable = (displayUrl, internalUrl) => {
   if (!displayUrl || displayUrl === '') return false;
   if (displayUrl.startsWith('freedom://')) return false;
+  if (displayUrl.startsWith('freedom-preview://') || displayUrl === 'Workspace preview')
+    return false;
   if (displayUrl.startsWith('view-source:')) return false;
   if (internalUrl?.includes('/error.html')) return false;
   if (internalUrl === homeUrl || internalUrl === homeUrlNormalized) return false;

@@ -1731,6 +1731,7 @@ function clearApproval() {
   pendingApproval = null;
   elements.approval.hidden = true;
   elements.approval.classList.remove('diagnostic-approval');
+  elements.approval.classList.remove('conversation-approval');
   elements.composer.classList.remove('approval-pending');
   elements.approvalApprove.textContent = 'Allow once';
   elements.approvalApprove.classList.add('primary');
@@ -1742,6 +1743,9 @@ function clearApproval() {
   elements.nodeRequestSummary.replaceChildren();
   elements.publicationDetails.hidden = true;
   elements.publicationSummary.replaceChildren();
+  elements.workspacePermissionDetails.hidden = true;
+  elements.workspacePermissionDetails.open = false;
+  elements.workspacePermissionSummary.textContent = '';
   elements.walletAccountField.hidden = true;
   elements.walletAccount.replaceChildren();
   elements.walletUnlock.hidden = true;
@@ -1790,13 +1794,18 @@ function renderPublicationApproval(request) {
   elements.publicationSummary.replaceChildren();
   appendPublicationSummary(
     'Content',
-    publication.kind === 'folder'
-      ? 'Attached folder · current contents'
-      : publication.kind === 'file'
-        ? 'Attached file'
-        : 'Text'
+    publication.workspacePath
+      ? publication.kind === 'folder'
+        ? 'Managed project folder'
+        : 'Managed project file'
+      : publication.kind === 'folder'
+        ? 'Attached folder · current contents'
+        : publication.kind === 'file'
+          ? 'Attached file'
+          : 'Text'
   );
   if (publication.kind !== 'text') appendPublicationSummary('Name', publication.name);
+  appendPublicationSummary('Project path', publication.workspacePath);
   if (Number.isSafeInteger(publication.bytes)) {
     appendPublicationSummary('Size', formatArtifactBytes(publication.bytes));
   }
@@ -1925,6 +1934,14 @@ function approvalOriginSummary(request) {
   return `${source.label} → ${destination.label}`;
 }
 
+function workspaceEnablementDetails(workspace) {
+  const lifecycle =
+    workspace?.backend === 'macos-seatbelt'
+      ? 'On macOS, stopping detached subprocesses is best-effort. Any survivor remains inside the same filesystem and network boundary.'
+      : 'On Linux, Freedom tears down the complete sandbox process namespace when a command stops.';
+  return `Freedom stores one local workspace for this conversation and removes it when the conversation is deleted. Agent may write only inside that workspace; protected .git metadata remains read-only. Workspace commands may read and execute required system tools and separately approved executable packages, but cannot write to them. This approval does not grant internet, localhost, or LAN access; those require a separate capability.\n\n${lifecycle}`;
+}
+
 function renderApproval(request) {
   if (!request || typeof request.approvalId !== 'string') return;
   pendingApproval = request;
@@ -1942,7 +1959,12 @@ function renderApproval(request) {
   const interaction = request.interaction;
   const publication = request.publication;
   const workspace = request.workspace;
+  const workspacePermission = request.workspacePermission;
   elements.approval.classList.toggle('diagnostic-approval', Boolean(diagnostic));
+  elements.approval.classList.toggle(
+    'conversation-approval',
+    Boolean(diagnostic || workspacePermission)
+  );
   const diagnosticSubject =
     diagnostic?.scope === 'node' ? `${diagnostic.service} node` : 'Freedom application';
   const nodeLabels = {
@@ -1953,91 +1975,122 @@ function renderApproval(request) {
     'myotis-ethereum': 'Myotis Ethereum',
     'myotis-gnosis': 'Myotis Gnosis',
   };
-  elements.approvalAction.textContent = workspace
-    ? 'Enable a private project workspace for this conversation?'
-    : publication
-      ? publication.kind === 'text'
-        ? 'Publish this text to Swarm?'
-        : `Publish “${publication.name}” to Swarm?`
-      : nodeRequest
-        ? `Allow this ${nodeLabels[nodeRequest.service] || nodeRequest.service} node request?`
-        : nodeLifecycle
-          ? `${nodeLifecycle.action[0].toUpperCase()}${nodeLifecycle.action.slice(1)} the ${nodeLabels[nodeLifecycle.service] || nodeLifecycle.service} node?`
-          : diagnostic
-            ? `Share recent ${diagnosticSubject} diagnostics with ${diagnostic.providerLabel}?`
-            : request.action === 'form_submission'
-              ? `Submit this form using “${label}”?`
-              : request.action === 'file_download'
-                ? `Download ${label.replace(/^download\s+/i, '').trim() || 'this file'}?`
-                : request.action === 'file_upload'
-                  ? `Choose a file to share with ${describeApprovalOrigin(request.destinationOrigin)?.label || 'this site'}?`
-                  : request.action === 'wallet_connection'
-                    ? 'Connect this site to a wallet account?'
-                    : request.action === 'wallet_transaction'
-                      ? 'Approve this wallet transaction?'
-                      : request.action === 'wallet_transfer'
-                        ? 'Send these funds from your Freedom wallet?'
-                        : request.action === 'wallet_signature'
-                          ? 'Approve this wallet signature?'
-                          : interaction
-                            ? interaction.kind === 'uncertain'
-                              ? interactionCopy[request.operation] ||
-                                `Let Agent interact with “${label}”?`
-                              : `${interaction.summary.replace(/[.?!]+$/, '')}?`
-                            : interactionCopy[request.operation] ||
-                              `Let Agent interact with “${label}”?`;
-  elements.approvalOrigin.textContent = workspace
-    ? workspace.backend === 'macos-seatbelt'
-      ? 'Agent may create and modify files only inside this Freedom-managed workspace. Network access is disabled. On macOS, stopping detached subprocesses is best-effort, but they remain inside the same filesystem and network boundary.'
-      : 'Agent may create and modify files only inside this Freedom-managed workspace. Network access is disabled, and Linux tears down the complete sandbox process namespace when a command stops.'
-    : publication
-      ? publication.kind === 'folder'
-        ? 'This publishes the attached folder’s current contents using an existing postage batch. The content is public, unencrypted, and may remain retrievable.'
-        : 'This publishes the attached content using an existing postage batch. The content is public, unencrypted, and may remain retrievable.'
-      : nodeRequest
-        ? `${nodeRequest.providerLabel}${nodeRequest.modelId ? ` using ${nodeRequest.modelId}` : ''} independently classified this request as ${effectLabel(nodeRequest.effect).toLowerCase()}. Freedom has not sent it to the node yet.`
-        : nodeLifecycle
-          ? `${nodeLifecycle.providerLabel}${nodeLifecycle.modelId ? ` using ${nodeLifecycle.modelId}` : ''} classified this as ${effectLabel(nodeLifecycle.effect).toLowerCase()}. Freedom will run it through the node manager and verify the resulting state.`
-          : diagnostic
-            ? diagnostic.local
-              ? `Raw diagnostic logs will be added to this conversation with ${diagnostic.providerLabel}${diagnostic.modelId ? ` using ${diagnostic.modelId}` : ''}. They remain on this device, but may include peer IDs, network or wallet addresses, local paths, and requested resources.`
-              : `This sends raw diagnostic logs to ${diagnostic.providerLabel}${diagnostic.modelId ? ` using ${diagnostic.modelId}` : ''}. They may include peer IDs, network or wallet addresses, local paths, and requested resources.`
-            : request.action === 'file_upload'
-              ? `For “${label}” · Freedom shares only the file you choose and never shows Agent its local path.`
-              : request.wallet
-                ? request.wallet.kind === 'transfer'
-                  ? 'Prepared directly by Freedom. The exact transfer is held until you decide.'
-                  : 'Requested by the page Agent is controlling. The request is held until you decide.'
-                : interaction
-                  ? interaction.kind === 'uncertain'
-                    ? `Freedom could not confidently determine whether this interaction on ${approvalOriginSummary(request)} is consequential.`
-                    : `Based on Agent’s stated intent and the visible target on ${approvalOriginSummary(request)}. Freedom has not audited the page’s hidden behavior.`
-                  : approvalOriginSummary(request);
-  elements.approvalApprove.textContent = workspace
-    ? 'Enable workspace'
-    : publication
-      ? 'Publish'
-      : diagnostic
-        ? 'Share once'
-        : request.action === 'file_upload'
-          ? 'Choose file…'
-          : request.wallet
-            ? request.wallet.kind === 'signature'
-              ? 'Sign once'
-              : request.wallet.kind === 'transaction'
-                ? 'Confirm transaction'
-                : request.wallet.kind === 'transfer'
-                  ? 'Send once'
-                  : 'Connect once'
-            : 'Allow once';
-  elements.approvalApprove.classList.toggle('primary', !diagnostic);
-  elements.approvalApprove.classList.toggle('secondary', Boolean(diagnostic));
+  const requestedExecutables = workspacePermission?.commands
+    ?.filter((command) => command.status === 'requires_permission')
+    .map((command) => command.name);
+  const requestedExecutableRoots = workspacePermission
+    ? [
+        ...new Set(
+          workspacePermission.commands
+            .filter((command) => command.status === 'requires_permission')
+            .map((command) => command.rootPath)
+        ),
+      ]
+    : [];
+  elements.approvalAction.textContent = workspacePermission
+    ? `Run “${workspacePermission.command}”?`
+    : workspace
+      ? 'Enable a managed project workspace for this conversation?'
+      : publication
+        ? publication.kind === 'text'
+          ? 'Publish this text to Swarm?'
+          : `Publish “${publication.name}” to Swarm?`
+        : nodeRequest
+          ? `Allow this ${nodeLabels[nodeRequest.service] || nodeRequest.service} node request?`
+          : nodeLifecycle
+            ? `${nodeLifecycle.action[0].toUpperCase()}${nodeLifecycle.action.slice(1)} the ${nodeLabels[nodeLifecycle.service] || nodeLifecycle.service} node?`
+            : diagnostic
+              ? `Share recent ${diagnosticSubject} diagnostics with ${diagnostic.providerLabel}?`
+              : request.action === 'form_submission'
+                ? `Submit this form using “${label}”?`
+                : request.action === 'file_download'
+                  ? `Download ${label.replace(/^download\s+/i, '').trim() || 'this file'}?`
+                  : request.action === 'file_upload'
+                    ? `Choose a file to share with ${describeApprovalOrigin(request.destinationOrigin)?.label || 'this site'}?`
+                    : request.action === 'wallet_connection'
+                      ? 'Connect this site to a wallet account?'
+                      : request.action === 'wallet_transaction'
+                        ? 'Approve this wallet transaction?'
+                        : request.action === 'wallet_transfer'
+                          ? 'Send these funds from your Freedom wallet?'
+                          : request.action === 'wallet_signature'
+                            ? 'Approve this wallet signature?'
+                            : interaction
+                              ? interaction.kind === 'uncertain'
+                                ? interactionCopy[request.operation] ||
+                                  `Let Agent interact with “${label}”?`
+                                : `${interaction.summary.replace(/[.?!]+$/, '')}?`
+                              : interactionCopy[request.operation] ||
+                                `Let Agent interact with “${label}”?`;
+  elements.approvalOrigin.textContent = workspacePermission
+    ? ''
+    : workspace
+      ? 'Agent can create, edit, and delete files inside a Freedom-managed project workspace.'
+      : publication
+        ? publication.workspacePath
+          ? 'This publishes the managed project source’s current files using an existing postage batch. The content is public, unencrypted, and may remain retrievable.'
+          : publication.kind === 'folder'
+            ? 'This publishes the attached folder’s current contents using an existing postage batch. The content is public, unencrypted, and may remain retrievable.'
+            : 'This publishes the attached content using an existing postage batch. The content is public, unencrypted, and may remain retrievable.'
+        : nodeRequest
+          ? `${nodeRequest.providerLabel}${nodeRequest.modelId ? ` using ${nodeRequest.modelId}` : ''} independently classified this request as ${effectLabel(nodeRequest.effect).toLowerCase()}. Freedom has not sent it to the node yet.`
+          : nodeLifecycle
+            ? `${nodeLifecycle.providerLabel}${nodeLifecycle.modelId ? ` using ${nodeLifecycle.modelId}` : ''} classified this as ${effectLabel(nodeLifecycle.effect).toLowerCase()}. Freedom will run it through the node manager and verify the resulting state.`
+            : diagnostic
+              ? diagnostic.local
+                ? `Raw diagnostic logs will be added to this conversation with ${diagnostic.providerLabel}${diagnostic.modelId ? ` using ${diagnostic.modelId}` : ''}. They remain on this device, but may include peer IDs, network or wallet addresses, local paths, and requested resources.`
+                : `This sends raw diagnostic logs to ${diagnostic.providerLabel}${diagnostic.modelId ? ` using ${diagnostic.modelId}` : ''}. They may include peer IDs, network or wallet addresses, local paths, and requested resources.`
+              : request.action === 'file_upload'
+                ? `For “${label}” · Freedom shares only the file you choose and never shows Agent its local path.`
+                : request.wallet
+                  ? request.wallet.kind === 'transfer'
+                    ? 'Prepared directly by Freedom. The exact transfer is held until you decide.'
+                    : 'Requested by the page Agent is controlling. The request is held until you decide.'
+                  : interaction
+                    ? interaction.kind === 'uncertain'
+                      ? `Freedom could not confidently determine whether this interaction on ${approvalOriginSummary(request)} is consequential.`
+                      : `Based on Agent’s stated intent and the visible target on ${approvalOriginSummary(request)}. Freedom has not audited the page’s hidden behavior.`
+                    : approvalOriginSummary(request);
+  elements.approvalApprove.textContent = workspacePermission
+    ? 'Allow once'
+    : workspace
+      ? 'Enable workspace'
+      : publication
+        ? 'Publish'
+        : diagnostic
+          ? 'Share once'
+          : request.action === 'file_upload'
+            ? 'Choose file…'
+            : request.wallet
+              ? request.wallet.kind === 'signature'
+                ? 'Sign once'
+                : request.wallet.kind === 'transaction'
+                  ? 'Confirm transaction'
+                  : request.wallet.kind === 'transfer'
+                    ? 'Send once'
+                    : 'Connect once'
+              : 'Allow once';
+  elements.approvalApprove.classList.toggle('primary', !diagnostic && !workspacePermission);
+  elements.approvalApprove.classList.toggle(
+    'secondary',
+    Boolean(diagnostic || workspacePermission)
+  );
   elements.walletApprovalDetails.hidden = true;
   elements.nodeRequestDetails.hidden = true;
   elements.publicationDetails.hidden = true;
+  elements.workspacePermissionDetails.hidden = !workspacePermission && !workspace;
+  elements.workspacePermissionDetails.open = false;
+  elements.workspacePermissionSummary.textContent = workspacePermission
+    ? `Working directory: ${workspacePermission.workingDirectory === '.' ? 'Project workspace' : workspacePermission.workingDirectory}\n\nRequires read and execute access to ${requestedExecutableRoots.join(', ')}. Agent may read and execute within ${requestedExecutables.length === 1 ? 'this package' : 'these packages'}, but cannot write there. “Allow once” applies only to this exact command and directory; conversation access keeps the disclosed package access available for later commands. Network access is not part of this request.${request.label ? `\n\nAgent says: ${request.label}` : ''}`
+    : workspace
+      ? workspaceEnablementDetails(workspace)
+      : '';
   elements.walletUnlock.hidden = true;
-  elements.approvalAllowConversation.hidden = !diagnostic;
+  elements.approvalAllowConversation.hidden = !diagnostic && !workspacePermission;
   if (diagnostic) elements.approvalAllowConversation.textContent = 'Share for conversation';
+  if (workspacePermission) {
+    elements.approvalAllowConversation.textContent = 'Allow for conversation';
+  }
   if (request.wallet) renderWalletApproval(request);
   if (nodeRequest) renderNodeRequestApproval(request);
   if (nodeLifecycle) renderNodeLifecycleApproval(request);
@@ -2100,6 +2153,9 @@ async function decideApproval(approved, options = {}) {
             : {}),
           ...(request.diagnostic && options.diagnosticScope === 'conversation'
             ? { diagnosticScope: 'conversation' }
+            : {}),
+          ...(request.workspacePermission && options.workspacePermissionScope === 'conversation'
+            ? { workspacePermissionScope: 'conversation' }
             : {}),
         }
       : null;
@@ -2170,9 +2226,31 @@ function formatToolError(code, operation) {
     WALLET_REQUEST_CANCELLED_BY_USER: 'Wallet request declined by you',
     CAPABILITY_UNAVAILABLE: 'Browser capability is unavailable',
     INTERNAL_ERROR: 'Browser action failed unexpectedly',
+    INVALID_WORKSPACE_REQUEST: 'Workspace request is invalid',
+    WORKSPACE_COMMAND_CANCELLED: 'Workspace command was stopped',
+    WORKSPACE_COMMAND_FAILED: 'Workspace command exited unsuccessfully',
+    WORKSPACE_COMMAND_NOT_FOUND: 'A required command is not available in the workspace shell',
+    WORKSPACE_COMMAND_TIMED_OUT: 'Workspace command timed out',
+    WORKSPACE_DIRECTORY_UNAVAILABLE: 'Workspace directory does not exist',
+    WORKSPACE_EXECUTION_FAILED: 'Workspace command could not be executed',
+    WORKSPACE_FILE_TOO_LARGE: 'Workspace file exceeds the supported size limit',
+    WORKSPACE_FILE_UNAVAILABLE: 'Workspace file could not be accessed',
+    WORKSPACE_FILE_UNSAFE: 'Blocked unsafe workspace path',
+    WORKSPACE_PATH_NOT_FOUND: 'Workspace path does not exist',
+    WORKSPACE_PATH_TYPE_MISMATCH: 'Workspace path has the wrong file type',
+    WORKSPACE_POLICY_FAILED: 'Workspace boundary could not be established',
+    WORKSPACE_PROTECTED_PATH: 'Blocked protected workspace path',
+    WORKSPACE_RUNTIME_UNAVAILABLE: 'Workspace runtime is unavailable',
+    WORKSPACE_SANDBOX_DENIED: 'Blocked by workspace sandbox policy',
+    WORKSPACE_WRITE_FAILED: 'Workspace file could not be written',
   };
   if (operation === 'attachment_list') return 'Attached sources could not be listed';
   if (operation === 'attachment_read') return 'Attached source could not be read';
+  if (
+    ['bash', 'read', 'write', 'edit', 'grep', 'find', 'ls', 'workspace_preview'].includes(operation)
+  ) {
+    return labels[code] || 'Workspace operation failed';
+  }
   return labels[code] || 'Browser action failed';
 }
 
@@ -2685,6 +2763,18 @@ function handleAgentEvent(event) {
     setLiveStatus(event.runId, 'Thinking…');
   } else if (event.type === 'run_responding') {
     setLiveStatus(event.runId, 'Responding…');
+  } else if (
+    event.type === 'run_progress' &&
+    event.source === 'reasoning_heading' &&
+    typeof event.message === 'string'
+  ) {
+    setLiveStatus(event.runId, event.message);
+  } else if (
+    event.type === 'workspace_phase' &&
+    currentRunStatus === 'running' &&
+    typeof event.message === 'string'
+  ) {
+    setLiveStatus(event.runId, event.message);
   } else if (event.type === 'workspace_changed') {
     void refreshWorkspaceProjection();
   } else if (event.type === 'guidance_queued') {
@@ -3232,6 +3322,8 @@ export function initAgentUi(options = {}) {
     approval: byId('agent-approval'),
     approvalAction: byId('agent-approval-action'),
     approvalOrigin: byId('agent-approval-origin'),
+    workspacePermissionDetails: byId('agent-workspace-permission-details'),
+    workspacePermissionSummary: byId('agent-workspace-permission-summary'),
     approvalApprove: byId('agent-approval-approve'),
     approvalAllowConversation: byId('agent-approval-allow-conversation'),
     approvalDecline: byId('agent-approval-decline'),
@@ -3366,7 +3458,10 @@ export function initAgentUi(options = {}) {
   });
   elements.approvalApprove.addEventListener('click', () => decideApproval(true));
   elements.approvalAllowConversation.addEventListener('click', () =>
-    decideApproval(true, { diagnosticScope: 'conversation' })
+    decideApproval(true, {
+      diagnosticScope: 'conversation',
+      workspacePermissionScope: 'conversation',
+    })
   );
   elements.approvalDecline.addEventListener('click', () => decideApproval(false));
   elements.approvalStop.addEventListener('click', () => stopRun());

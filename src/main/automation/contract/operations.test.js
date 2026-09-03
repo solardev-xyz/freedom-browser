@@ -92,6 +92,7 @@ describe('automation operation contract', () => {
     'bzz://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/',
     'ipfs://bafybeiaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/',
     'ipns://docs.ipfs.tech/',
+    `freedom-preview://${'a'.repeat(40)}/index.html`,
   ])('accepts supported navigation URL %s', (url) => {
     expect(validateOperationInput(OPERATIONS.NAVIGATE, { tabId: 'tab_1', url })).toEqual({
       tabId: 'tab_1',
@@ -117,7 +118,7 @@ describe('automation operation contract', () => {
     );
   });
 
-  test('accepts only opaque attachment resources or bounded text for Swarm publishing', () => {
+  test('accepts only one bounded attachment, workspace, or text source for Swarm publishing', () => {
     expect(
       validateOperationInput(OPERATIONS.SWARM_PUBLISH, {
         resourceId: 'folder_aaaaaaaaaaaaaaaaaaaa',
@@ -127,6 +128,20 @@ describe('automation operation contract', () => {
       resourceId: 'folder_aaaaaaaaaaaaaaaaaaaa',
       indexDocument: 'site/index.html',
     });
+    expect(
+      validateOperationInput(OPERATIONS.SWARM_PUBLISH, {
+        workspacePath: '.',
+        indexDocument: 'index.html',
+      })
+    ).toEqual({
+      workspacePath: '.',
+      indexDocument: 'index.html',
+    });
+    expect(
+      validateOperationInput(OPERATIONS.SWARM_PUBLISH, {
+        workspacePath: 'dist/site',
+      })
+    ).toEqual({ workspacePath: 'dist/site' });
     expect(
       validateOperationInput(OPERATIONS.SWARM_PUBLISH, {
         text: 'hello',
@@ -146,6 +161,22 @@ describe('automation operation contract', () => {
         text: 'ambiguous',
       })
     ).toThrow('exactly one');
+    expect(() =>
+      validateOperationInput(OPERATIONS.SWARM_PUBLISH, {
+        resourceId: 'folder_aaaaaaaaaaaaaaaaaaaa',
+        workspacePath: '.',
+      })
+    ).toThrow('exactly one');
+    expect(() =>
+      validateOperationInput(OPERATIONS.SWARM_PUBLISH, {
+        workspacePath: '../outside',
+      })
+    ).toThrow('safe relative path');
+    expect(() =>
+      validateOperationInput(OPERATIONS.SWARM_PUBLISH, {
+        workspacePath: '.git/config',
+      })
+    ).toThrow('protected workspace metadata');
     expect(() =>
       validateOperationInput(OPERATIONS.SWARM_PUBLISH, {
         resourceId: 'folder_aaaaaaaaaaaaaaaaaaaa',
@@ -245,13 +276,38 @@ describe('automation operation contract', () => {
   });
 
   test.each([
-    ['wrong IPFS transport', { service: 'ipfs', transport: 'http', request: { method: 'GET', path: '/' } }],
-    ['mutating IPFS gateway request', { service: 'ipfs', transport: 'gateway', request: { method: 'POST', path: '/ipfs/bafy' } }],
-    ['unsupported service', { service: 'tor', transport: 'http', request: { method: 'GET', path: '/' } }],
-    ['absolute URL', { service: 'ant', transport: 'http', request: { method: 'GET', path: 'https://evil.test/' } }],
-    ['authority path', { service: 'ant', transport: 'http', request: { method: 'GET', path: '//evil.test/' } }],
-    ['authorization header', { service: 'ant', transport: 'http', request: { method: 'GET', path: '/', headers: { authorization: 'secret' } } }],
-    ['GET body', { service: 'ant', transport: 'http', request: { method: 'GET', path: '/', body: 'x' } }],
+    [
+      'wrong IPFS transport',
+      { service: 'ipfs', transport: 'http', request: { method: 'GET', path: '/' } },
+    ],
+    [
+      'mutating IPFS gateway request',
+      { service: 'ipfs', transport: 'gateway', request: { method: 'POST', path: '/ipfs/bafy' } },
+    ],
+    [
+      'unsupported service',
+      { service: 'tor', transport: 'http', request: { method: 'GET', path: '/' } },
+    ],
+    [
+      'absolute URL',
+      { service: 'ant', transport: 'http', request: { method: 'GET', path: 'https://evil.test/' } },
+    ],
+    [
+      'authority path',
+      { service: 'ant', transport: 'http', request: { method: 'GET', path: '//evil.test/' } },
+    ],
+    [
+      'authorization header',
+      {
+        service: 'ant',
+        transport: 'http',
+        request: { method: 'GET', path: '/', headers: { authorization: 'secret' } },
+      },
+    ],
+    [
+      'GET body',
+      { service: 'ant', transport: 'http', request: { method: 'GET', path: '/', body: 'x' } },
+    ],
   ])('rejects unsafe node request input: %s', (_label, input) => {
     expect(() => validateOperationInput(OPERATIONS.NODE_REQUEST, input)).toThrow();
   });
@@ -347,8 +403,8 @@ describe('automation operation contract', () => {
     expect(() =>
       validateOperationInput(OPERATIONS.NODE_DIAGNOSTICS, { service: 'arbitrary-process' })
     ).toThrow('service must be one of');
-    expect(() =>
-      validateOperationInput(OPERATIONS.APP_DIAGNOSTICS, { maxBytes: 65_537 })
-    ).toThrow('maxBytes must be an integer');
+    expect(() => validateOperationInput(OPERATIONS.APP_DIAGNOSTICS, { maxBytes: 65_537 })).toThrow(
+      'maxBytes must be an integer'
+    );
   });
 });

@@ -168,6 +168,9 @@ describe('OriginScopedAutomationController', () => {
   test('normalizes web and dweb origins without retaining paths', () => {
     expect(originScopeForUrl('https://Example.test:443/path?q=1')).toBe('https://example.test');
     expect(originScopeForUrl('ipfs://BAFY/path')).toBe('ipfs://bafy');
+    expect(originScopeForUrl(`freedom-preview://${'a'.repeat(40)}/index.html`)).toBe(
+      `freedom-preview://${'a'.repeat(40)}`
+    );
     expect(originScopeForUrl('file:///tmp/secret')).toBeNull();
     expect(originScopeForUrl('not a url')).toBeNull();
   });

@@ -97,6 +97,78 @@ describe('Agent progress projection', () => {
     });
   });
 
+  test('reports empty workspace discovery without claiming that it found results', () => {
+    const find = normalizeWorkspaceReceipt({
+      workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa',
+      kind: 'file_find',
+      command: 'Find **/*swarm* in .',
+      workingDirectory: '.',
+      backend: 'freedom-workspace-files',
+      state: 'completed',
+      resultCount: 0,
+      terminationGuarantee: 'not_applicable',
+      sideEffects: 'none',
+      completeDescendantTermination: true,
+    });
+    const grep = normalizeWorkspaceReceipt({
+      workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa',
+      kind: 'file_search',
+      command: 'Search for TODO in .',
+      workingDirectory: '.',
+      backend: 'freedom-workspace-files',
+      state: 'completed',
+      matchCount: 0,
+      terminationGuarantee: 'not_applicable',
+      sideEffects: 'none',
+      completeDescendantTermination: true,
+    });
+
+    expect(activityProgress(WORKSPACE_OPERATIONS.FIND, { workspace: find }).label).toBe(
+      'No files matched **/*swarm* in .'
+    );
+    expect(activityProgress(WORKSPACE_OPERATIONS.GREP, { workspace: grep }).label).toBe(
+      'No matches for TODO in .'
+    );
+  });
+
+  test('presents static preview activity without exposing its opaque origin', () => {
+    const workspace = normalizeWorkspaceReceipt({
+      workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa',
+      kind: 'static_preview',
+      command: 'Preview site',
+      workingDirectory: '.',
+      backend: 'freedom-workspace-files',
+      state: 'completed',
+      terminationGuarantee: 'not_applicable',
+      sideEffects: 'unknown',
+      completeDescendantTermination: true,
+    });
+
+    expect(activityProgress(WORKSPACE_OPERATIONS.PREVIEW, { workspace })).toMatchObject({
+      intent: 'Opening site',
+      label: 'Opened preview for site',
+      effect: 'managed',
+    });
+    expect(
+      activityProgress(OPERATIONS.SNAPSHOT, {
+        origin: `freedom-preview://${'a'.repeat(40)}`,
+      })
+    ).toMatchObject({
+      intent: 'Reading workspace preview',
+      label: 'Read workspace preview',
+      origin: 'workspace preview',
+    });
+    expect(
+      buildAgentOutcome(
+        [{ operation: WORKSPACE_OPERATIONS.PREVIEW, status: 'succeeded', workspace }],
+        'completed'
+      )
+    ).toMatchObject({
+      verification: 'workspace_preview_opened',
+      headline: 'Static preview opened',
+    });
+  });
+
   test('projects only an origin and opaque page identity from browser receipts', () => {
     const receipt = createToolReceipt(OPERATIONS.SNAPSHOT, {
       envelope: {

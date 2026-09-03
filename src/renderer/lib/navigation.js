@@ -1666,6 +1666,19 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
     return;
   }
 
+  // Reload a trusted isolated workspace preview without turning its opaque
+  // origin into an address-bar or history entry.
+  if (/^freedom-preview:\/\/[a-f0-9]{20,128}\//i.test(value)) {
+    setAddressDisplayForTab('Workspace preview', targetTabId);
+    navState.pendingTitleForUrl = value;
+    navState.pendingNavigationUrl = value;
+    navState.hasNavigatedDuringCurrentLoad = false;
+    webview.loadURL(value);
+    syncBzzBase(null);
+    syncRadBase(null);
+    return;
+  }
+
   // Try HTTP/HTTPS URLs
   if (value.startsWith('http://') || value.startsWith('https://')) {
     const httpDisplayValue = displayOverride || value;

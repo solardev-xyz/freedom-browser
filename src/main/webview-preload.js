@@ -8,8 +8,8 @@
 
 const { contextBridge, ipcRenderer } = require('electron');
 
-// PRIVATE MODE GUARD (providers): webviews in private windows never get
-// the wallet providers. `window.ethereum` / `window.swarm` are not
+// PRIVATE MODE / ISOLATED PREVIEW GUARD (providers): private webviews and
+// workspace previews never get the wallet providers. `window.ethereum` / `window.swarm` are not
 // injected and the request/response bridges are not installed, so a dApp
 // probing for a wallet sees nothing and EIP-6963's requestProvider gets
 // no announcement (silent). Resolved synchronously, before any page
@@ -17,6 +17,8 @@ const { contextBridge, ipcRenderer } = require('electron');
 // checks this webContents' session/window against the private-window
 // registry (src/main/private/private-windows.js).
 const IS_PRIVATE_WINDOW = ipcRenderer.sendSync('private:is-private') === true;
+const IS_ISOLATED_PREVIEW = location.protocol === 'freedom-preview:';
+const PROVIDERS_ENABLED = !IS_PRIVATE_WINDOW && !IS_ISOLATED_PREVIEW;
 
 // The webview preload runs in a sandbox — require() is restricted to a small
 // whitelist (electron, events, timers, url), so we cannot read provider
@@ -658,7 +660,7 @@ ipcRenderer.on('context-menu-action', (_event, action, data) => {
 //
 // PRIVATE MODE GUARD (providers): skipped entirely in private windows —
 // no injection, no bridges. Nothing announces via EIP-6963.
-if (!IS_PRIVATE_WINDOW) {
+if (PROVIDERS_ENABLED) {
   try {
     const script = document.createElement('script');
     script.textContent = ETHEREUM_INJECT_SOURCE;
@@ -836,7 +838,7 @@ try {
 
   // PRIVATE MODE GUARD (providers): window.swarm is not injected in
   // private windows — same policy as window.ethereum above.
-  if (!IS_PRIVATE_WINDOW) {
+  if (PROVIDERS_ENABLED) {
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', injectSwarm, { once: true });
     } else {
@@ -847,7 +849,7 @@ try {
   console.error('[webview-preload] Failed to inject swarm provider:', err);
 }
 
-if (!IS_PRIVATE_WINDOW) {
+if (PROVIDERS_ENABLED) {
   // Bridge postMessage from page to IPC (Swarm)
   window.addEventListener('message', (event) => {
     if (event.source !== window) return;
@@ -999,7 +1001,7 @@ try {
 
   // PRIVATE MODE GUARD (providers): window.radicle is not injected in
   // private windows — same policy as window.ethereum / window.swarm above.
-  if (!IS_PRIVATE_WINDOW) {
+  if (PROVIDERS_ENABLED) {
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', injectRadicle, { once: true });
     } else {
@@ -1010,7 +1012,7 @@ try {
   console.error('[webview-preload] Failed to inject radicle provider:', err);
 }
 
-if (!IS_PRIVATE_WINDOW) {
+if (PROVIDERS_ENABLED) {
   // Bridge postMessage from page to IPC (Radicle)
   window.addEventListener('message', (event) => {
     if (event.source !== window) return;
@@ -1239,5 +1241,7 @@ if (!IS_PRIVATE_WINDOW) {
 console.log(
   IS_PRIVATE_WINDOW
     ? '[webview-preload] Loaded (freedomAPI + context menu — private window, providers disabled)'
-    : '[webview-preload] Loaded (freedomAPI + context menu + ethereum + swarm + radicle providers)'
+    : IS_ISOLATED_PREVIEW
+      ? '[webview-preload] Loaded (context menu — isolated preview, providers disabled)'
+      : '[webview-preload] Loaded (freedomAPI + context menu + ethereum + swarm + radicle providers)'
 );

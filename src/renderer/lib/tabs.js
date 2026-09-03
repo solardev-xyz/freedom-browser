@@ -1197,7 +1197,8 @@ export const setTabStripProjection = ({ container = null, tabIds = null } = {}) 
 };
 
 // URLs `createTab` is allowed to load directly as the initial webview
-// `src`. Everything else — dweb schemes, hostile `file://`/`data:`/
+// `src`. The opaque Freedom preview form is generated only by the trusted
+// workspace controller. Everything else — dweb schemes, hostile `file://`/`data:`/
 // `javascript:`, anything we don't recognise — is parked on
 // `about:blank` and dispatched to `loadTarget`, which routes the
 // schemes it understands and silently drops the rest. This narrow
@@ -1208,6 +1209,7 @@ const isDirectLoadUrl = (url) => {
   if (!url) return true;
   if (url === 'about:blank') return true;
   if (url === homeUrl) return true;
+  if (/^freedom-preview:\/\/[a-f0-9]{20,128}\//i.test(url)) return true;
   return /^https?:\/\//i.test(url);
 };
 
@@ -1231,7 +1233,8 @@ const resolveInternalPageUrl = (url) => {
 // Create a new tab
 export const createTab = (url = null) => {
   const tabId = tabState.nextTabId++;
-  // Direct loads: empty/null (use homeUrl), http(s), about:blank, and
+  // Direct loads: empty/null (use homeUrl), http(s), isolated workspace preview,
+  // about:blank, and
   // the app's own `homeUrl` (production: file:///…/pages/home.html).
   // Anything else parks on about:blank while `onLoadTarget` resolves
   // it — this keeps dweb URLs working (their resolution pipeline takes

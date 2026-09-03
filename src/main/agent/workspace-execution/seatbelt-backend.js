@@ -8,6 +8,7 @@ const path = require('path');
 const {
   EXECUTION_STATES,
   ExecutionPolicyError,
+  NETWORK_POSTURES,
   insidePath,
   isValidatedWorkspaceExecutionPolicy,
   validateExecutionRequest,
@@ -99,6 +100,14 @@ const SEATBELT_SYSCTL_READ_NAMES = Object.freeze([
   'kern.version',
   'sysctl.proc_cputype',
 ]);
+const SEATBELT_NETWORK_MACH_SERVICES = Object.freeze([
+  'com.apple.SecurityServer',
+  'com.apple.SystemConfiguration.DNSConfiguration',
+  'com.apple.SystemConfiguration.configd',
+  'com.apple.networkd',
+  'com.apple.ocspd',
+  'com.apple.trustd.agent',
+]);
 
 function boundedText(value, maximum = 512) {
   return String(value || '').slice(0, maximum);
@@ -147,6 +156,29 @@ function sysctlReadRule() {
   ].join('\n');
 }
 
+function fullNetworkRules() {
+  return [
+    '(allow network-outbound)',
+    '(allow network-inbound)',
+    [
+      '(allow system-socket',
+      '  (require-all',
+      '    (socket-domain AF_SYSTEM)',
+      '    (socket-protocol 2)',
+      '  )',
+      ')',
+    ].join('\n'),
+    [
+      '(allow mach-lookup',
+      ...SEATBELT_NETWORK_MACH_SERVICES.map(
+        (service) => `  (global-name ${seatbeltString(service)})`
+      ),
+      ')',
+    ].join('\n'),
+    '(allow sysctl-read (sysctl-name-regex #"^net\\.routetable"))',
+  ];
+}
+
 function protectedPathFilter(protectedPath) {
   return protectedPath.kind === 'file' || protectedPath.kind === 'git_pointer'
     ? 'literal'
@@ -157,6 +189,12 @@ function systemReadPaths() {
   return [...SYSTEM_READ_PATHS, ...OPTIONAL_SYSTEM_READ_PATHS].filter((value) =>
     fs.existsSync(value)
   );
+}
+
+function systemToolchainPath() {
+  return ['/Library/Developer/CommandLineTools/usr/bin', '/usr/bin', '/bin']
+    .filter((value) => fs.existsSync(value))
+    .join(':');
 }
 
 function capabilityProbeProfile() {
@@ -183,37 +221,38 @@ function capabilityProbeProfile() {
 function discoverRuntimeReadPaths(runtimeRoots) {
   const paths = new Set();
   for (const runtimeRoot of runtimeRoots) {
-    const executable = path.join(runtimeRoot.sourcePath, 'bin', 'node');
-    if (!fs.existsSync(executable)) continue;
-    let output;
-    try {
-      output = execFileSync('/usr/bin/otool', ['-L', executable], {
-        encoding: 'utf8',
-        timeout: PROBE_TIMEOUT_MS,
-      });
-    } catch {
-      continue;
-    }
-    for (const line of output.split('\n').slice(1)) {
-      const dependency = line.trim().split(/\s+/)[0];
-      if (
-        !dependency?.startsWith('/') ||
-        dependency.startsWith('/System/') ||
-        dependency.startsWith('/usr/')
-      ) {
+    for (const executable of runtimeRoot.executablePaths || []) {
+      if (!fs.existsSync(executable)) continue;
+      let output;
+      try {
+        output = execFileSync('/usr/bin/otool', ['-L', executable], {
+          encoding: 'utf8',
+          timeout: PROBE_TIMEOUT_MS,
+        });
+      } catch {
         continue;
       }
-      const homebrewMatch = /^(\/opt\/homebrew\/opt\/[^/]+)/.exec(dependency);
-      const exposedPath = homebrewMatch?.[1] || dependency;
-      paths.add(exposedPath);
-      if (homebrewMatch) {
-        const configurationPath = path.join('/opt/homebrew/etc', path.basename(homebrewMatch[1]));
-        if (fs.existsSync(configurationPath)) paths.add(configurationPath);
-      }
-      try {
-        paths.add(fs.realpathSync(exposedPath));
-      } catch {
-        // The dynamic loader will fail closed if a declared dependency disappears.
+      for (const line of output.split('\n').slice(1)) {
+        const dependency = line.trim().split(/\s+/)[0];
+        if (
+          !dependency?.startsWith('/') ||
+          dependency.startsWith('/System/') ||
+          dependency.startsWith('/usr/')
+        ) {
+          continue;
+        }
+        const homebrewMatch = /^(\/opt\/homebrew\/opt\/[^/]+)/.exec(dependency);
+        const exposedPath = homebrewMatch?.[1] || dependency;
+        paths.add(exposedPath);
+        if (homebrewMatch) {
+          const configurationPath = path.join('/opt/homebrew/etc', path.basename(homebrewMatch[1]));
+          if (fs.existsSync(configurationPath)) paths.add(configurationPath);
+        }
+        try {
+          paths.add(fs.realpathSync(exposedPath));
+        } catch {
+          // The dynamic loader will fail closed if a declared dependency disappears.
+        }
       }
     }
   }
@@ -227,10 +266,10 @@ function buildSeatbeltProfile(policy, privateDirectory) {
       'Execution policy was not issued by the trusted Freedom policy validator'
     );
   }
-  if (policy.network !== 'none') {
+  if (![NETWORK_POSTURES.NONE, NETWORK_POSTURES.FULL].includes(policy.network)) {
     throw new ExecutionPolicyError(
       'UNSUPPORTED_NETWORK_POSTURE',
-      'The macOS spike supports only network: none'
+      'The macOS backend supports only offline or full IP networking'
     );
   }
   if (policy.seccomp.requireCustomFilter) {
@@ -325,7 +364,11 @@ function buildSeatbeltProfile(policy, privateDirectory) {
       }
     }
   }
-  lines.push('(deny network*)');
+  if (policy.network === NETWORK_POSTURES.FULL) {
+    lines.push(...fullNetworkRules());
+  } else {
+    lines.push('(deny network*)');
+  }
   return `${lines.join('\n')}\n`;
 }
 
@@ -425,7 +468,9 @@ async function detectSeatbeltCapabilities(options = {}) {
     enforcement: Object.freeze({
       filesystem: true,
       networkNone: true,
+      networkFull: 'seatbelt_ip',
       loopbackNetworking: 'denied',
+      fullNetworkIncludesHostUnixSockets: false,
       descendantInheritance: true,
       privateTemporaryStorage: true,
       closedFileDescriptors: true,
@@ -599,15 +644,17 @@ class SeatbeltExecutor {
     }
 
     const workspace = policy.filesystem.writableRoots.find((root) => root.id === 'workspace');
-    const runtimePath = policy.filesystem.runtimeRoots
-      .filter((root) => root.id === 'node')
-      .map((root) => path.join(root.sourcePath, 'bin'));
+    const runtimePath = policy.filesystem.runtimeRoots.flatMap((root) =>
+      (root.pathEntries || []).map((relativePath) =>
+        relativePath === '.' ? root.sourcePath : path.join(root.sourcePath, relativePath)
+      )
+    );
     const environment = {
       ...policy.environment.values,
       GIT_OPTIONAL_LOCKS: '0',
       HOME: path.join(privateDirectory, 'home'),
       LOGNAME: 'sandbox',
-      PATH: [...runtimePath, '/usr/bin', '/bin'].join(':'),
+      PATH: [...runtimePath, systemToolchainPath()].join(':'),
       SHELL: '/bin/sh',
       TMP: path.join(privateDirectory, 'tmp'),
       TMPDIR: path.join(privateDirectory, 'tmp'),
@@ -746,7 +793,16 @@ class SeatbeltExecutor {
             aggregateResourceLimits: false,
             cancellationGuarantee: 'best_effort',
             executableRootsScoped: true,
-            loopbackNetworking: 'denied',
+            networkPosture: policy.network,
+            publicNetworking:
+              policy.network === NETWORK_POSTURES.FULL ? 'host_network' : 'denied',
+            loopbackNetworking:
+              policy.network === NETWORK_POSTURES.FULL ? 'host_network' : 'denied',
+            privateNetworking:
+              policy.network === NETWORK_POSTURES.FULL ? 'host_network' : 'denied',
+            hostUnixSockets: 'denied_unless_filesystem_authorized',
+            platformNetworkServices:
+              policy.network === NETWORK_POSTURES.FULL ? 'dns_tls_configuration' : 'denied',
             survivorsPossible: true,
             completeDescendantTermination: false,
           }),
@@ -802,6 +858,7 @@ module.exports = {
   PRIVATE_DIRECTORY_PREFIX,
   PROBE_TIMEOUT_MS,
   SEATBELT_SYSCTL_READ_NAMES,
+  SEATBELT_NETWORK_MACH_SERVICES,
   SYSTEM_READ_PATHS,
   SeatbeltExecutor,
   TERMINATION_GRACE_MS,

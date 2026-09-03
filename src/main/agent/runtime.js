@@ -16,6 +16,8 @@ const { SwarmPublicationController } = require('./swarm-publication-controller')
 const { PdfProcessor } = require('./pdf-processor');
 const { AgentManagedWorkspaceStore } = require('./managed-workspace-store');
 const { ManagedWorkspaceController } = require('./managed-workspace-controller');
+const { ManagedWorkspaceSourceReader } = require('./managed-workspace-source-reader');
+const { WorkspacePreviewController } = require('./workspace-preview-controller');
 
 function createFreedomAgentRuntime(options = {}) {
   const providerStore = new AgentProviderStore({
@@ -53,6 +55,9 @@ function createFreedomAgentRuntime(options = {}) {
     store: workspaceStore,
     runtimeOptions: options.workspaceRuntimeOptions,
   });
+  const workspaceSourceReader = new ManagedWorkspaceSourceReader({ workspaceController });
+  const workspacePreviewController = new WorkspacePreviewController({ workspaceController });
+  if (options.protocolSession) workspacePreviewController.register(options.protocolSession);
   const walletController = new AgentWalletController(options.walletControllerOptions);
   const nodeController = new NodeStatusController(options.nodeControllerOptions);
   const nodeRequestController = new NodeRequestController({
@@ -69,6 +74,7 @@ function createFreedomAgentRuntime(options = {}) {
   });
   const publicationController = new SwarmPublicationController({
     attachmentStore,
+    workspaceSourceReader,
     ...options.swarmPublicationControllerOptions,
   });
   options.controller.setWalletTransferController(walletController);
@@ -85,6 +91,7 @@ function createFreedomAgentRuntime(options = {}) {
     walletController,
     attachmentStore,
     workspaceController,
+    workspacePreviewController,
   });
   const unregisterIpc = registerFreedomAgentIpc({
     ipcMain: options.ipcMain,
@@ -108,6 +115,8 @@ function createFreedomAgentRuntime(options = {}) {
     nodeOperationStore,
     workspaceStore,
     workspaceController,
+    workspaceSourceReader,
+    workspacePreviewController,
     walletController,
     nodeController,
     nodeRequestController,
@@ -120,6 +129,7 @@ function createFreedomAgentRuntime(options = {}) {
       await service.dispose();
       await nodeRequestController.dispose();
       publicationController.dispose();
+      await workspacePreviewController.dispose();
       workspaceController.dispose();
       attachmentStore.dispose();
       pdfProcessor.dispose();

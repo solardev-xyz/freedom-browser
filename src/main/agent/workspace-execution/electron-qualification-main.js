@@ -272,12 +272,10 @@ async function createWebsiteFixture(prefix = QUALIFICATION_PREFIX) {
 function createPolicy(fixture, runtime, limits = {}) {
   return createWorkspaceExecutionPolicy({
     workspaceRoot: fixture.workspaceRoot,
-    nodeRuntimeRoot: null,
     electronRuntime: runtime,
     environment: {
       set: {
         ELECTRON_RUN_AS_NODE: '1',
-        FREEDOM_JAVASCRIPT_RUNTIME: runtime.sandboxExecutablePath,
       },
     },
     limits: {

@@ -6,6 +6,8 @@ const net = require('net');
 const os = require('os');
 const path = require('path');
 const { createWorkspaceExecutionPolicy } = require('./execution-policy');
+const { resolveExecutableAccess } = require('./executable-access');
+const { captureHostCommandEnvironment } = require('./host-command-environment');
 const { SeatbeltExecutor } = require('./seatbelt-backend');
 
 jest.setTimeout(30_000);
@@ -60,6 +62,15 @@ function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+function privateIpv4Address() {
+  for (const addresses of Object.values(os.networkInterfaces())) {
+    for (const address of addresses || []) {
+      if (address.family === 'IPv4' && !address.internal) return address.address;
+    }
+  }
+  return null;
+}
+
 function processCommand(pid) {
   const result = spawnSync('/bin/ps', ['-p', String(pid), '-o', 'command='], {
     encoding: 'utf8',
@@ -99,6 +110,7 @@ const requiredDescribe =
 requiredDescribe('macOS Seatbelt execution boundary', () => {
   const executor = new SeatbeltExecutor();
   let fixture;
+  let runtimeRoots;
 
   beforeAll(async () => {
     const capabilities = await executor.detectCapabilities({ force: true });
@@ -111,6 +123,14 @@ requiredDescribe('macOS Seatbelt execution boundary', () => {
         cancellationGuarantee: 'best_effort',
       },
     });
+    const hostEnvironment = await captureHostCommandEnvironment();
+    const executableAccess = await resolveExecutableAccess(['node', 'python3'], {
+      hostEnvironment,
+    });
+    expect(executableAccess.commands).not.toContainEqual(
+      expect.objectContaining({ status: 'unavailable' })
+    );
+    runtimeRoots = executableAccess.runtimeRoots;
   });
 
   beforeEach(async () => {
@@ -127,6 +147,7 @@ requiredDescribe('macOS Seatbelt execution boundary', () => {
   function policy(options = {}) {
     return createWorkspaceExecutionPolicy({
       workspaceRoot: fixture.workspaceRoot,
+      runtimeRoots,
       limits: { timeoutMs: 10_000, stdoutBytes: 64 * 1024, stderrBytes: 64 * 1024 },
       ...options,
     });
@@ -378,6 +399,93 @@ requiredDescribe('macOS Seatbelt execution boundary', () => {
     expect(result.localhost).not.toBe('unexpected');
     expect(result.external).not.toBe('unexpected');
     expect(result.lookup).not.toBe('unexpected');
+  });
+
+  test('full networking exposes public and host IP networking without general Unix sockets', async () => {
+    const lanAddress = process.env.FREEDOM_SANDBOX_LAN_HOST || privateIpv4Address();
+    expect(lanAddress).toBeTruthy();
+    const tcpServer = net.createServer((socket) => {
+      socket.on('error', () => {});
+      socket.end('host-tcp');
+    });
+    await listen(tcpServer, { host: '0.0.0.0', port: 0 });
+    const tcpPort = tcpServer.address().port;
+    const lanPort = process.env.FREEDOM_SANDBOX_LAN_PORT || String(tcpPort);
+    const socketPath = path.join(fixture.outsideRoot, 'host.sock');
+    const unixServer = net.createServer((socket) => {
+      socket.on('error', () => {});
+      socket.end('host-unix');
+    });
+    await listen(unixServer, socketPath);
+    const publicHost = process.env.FREEDOM_SANDBOX_PUBLIC_HOST || '1.1.1.1';
+    const publicPort = process.env.FREEDOM_SANDBOX_PUBLIC_PORT || '443';
+    const childScript = [
+      "const dns = require('dns');",
+      "const net = require('net');",
+      'const [loopPort, lanHost, lanPort, publicHost, publicPort, socketPath] = process.argv.slice(1);',
+      'const connect = (target) => new Promise((resolve) => {',
+      '  const socket = net.createConnection(target);',
+      "  socket.setTimeout(5000, () => socket.destroy(new Error('timeout')));",
+      "  socket.once('connect', () => { socket.end(); resolve('connected'); });",
+      "  socket.once('error', (error) => resolve(error.code || error.message));",
+      '});',
+      '(async () => {',
+      "  const loopback = await connect({ host: '127.0.0.1', port: Number(loopPort) });",
+      '  const lan = await connect({ host: lanHost, port: Number(lanPort) });',
+      '  const internet = await connect({ host: publicHost, port: Number(publicPort) });',
+      '  const unix = await connect({ path: socketPath });',
+      "  const dnsResult = await new Promise((resolve) => dns.lookup('example.com', (error) => resolve(error ? error.code : 'resolved')));",
+      '  process.stdout.write(JSON.stringify({ loopback, lan, internet, unix, dns: dnsResult }));',
+      '})();',
+    ].join('\n');
+    let fullReceipt;
+    let offlineReceipt;
+    try {
+      fullReceipt = await executor.execute(await policy({ network: 'full' }), {
+        command: 'node',
+        args: [
+          '-e',
+          `const { spawnSync } = require('child_process'); const result = spawnSync(process.execPath, ['-e', ${JSON.stringify(childScript)}, ...process.argv.slice(1)], { encoding: 'utf8' }); process.stdout.write(result.stdout); process.stderr.write(result.stderr); process.exit(result.status ?? 1);`,
+          String(tcpPort),
+          lanAddress,
+          lanPort,
+          publicHost,
+          publicPort,
+          socketPath,
+        ],
+      });
+      offlineReceipt = await executor.execute(await policy(), {
+        command: 'node',
+        args: [
+          '-e',
+          `const net = require('net'); const socket = net.createConnection({ host: '127.0.0.1', port: ${tcpPort} }); socket.once('connect', () => process.exit(9)); socket.once('error', () => process.exit(0));`,
+        ],
+      });
+    } finally {
+      await Promise.all([closeServer(tcpServer), closeServer(unixServer)]);
+    }
+
+    expect(fullReceipt).toMatchObject({
+      state: 'completed',
+      capabilities: {
+        networkPosture: 'full',
+        publicNetworking: 'host_network',
+        loopbackNetworking: 'host_network',
+        privateNetworking: 'host_network',
+        hostUnixSockets: 'denied_unless_filesystem_authorized',
+        platformNetworkServices: 'dns_tls_configuration',
+      },
+    });
+    const result = JSON.parse(fullReceipt.stdout);
+    expect(result).toMatchObject({
+      loopback: 'connected',
+      internet: 'connected',
+      dns: 'resolved',
+    });
+    if (process.env.FREEDOM_SANDBOX_LAN_HOST) expect(result.lan).toBe('connected');
+    else expect(result.lan).not.toBe('EPERM');
+    expect(result.unix).not.toBe('connected');
+    expect(offlineReceipt).toMatchObject({ state: 'completed', exitCode: 0 });
   });
 
   test('final-kills same-group background descendants after normal root exit', async () => {
