@@ -1264,6 +1264,13 @@
                         </svg>
                         <span>Connect Phone / Other Device</span>
                       </button>
+                      <button type="button" class="wallet-selector-action" id="wallet-connect-vaughan-btn">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <rect x="3" y="4" width="18" height="16" rx="2"/>
+                          <path d="M7 8h10M7 12h6M7 16h8"/>
+                        </svg>
+                        <span>Connect Vaughan Wallet</span>
+                      </button>
                     </div>
                   </div>
 
@@ -1991,6 +1998,80 @@
                 </p>
 
                 <button type="button" id="connect-phone-done" class="create-wallet-done-btn">
+                  Done
+                </button>
+              </div>
+            </div>
+
+            <!-- Connect Vaughan sub-screen -->
+            <div id="sidebar-connect-vaughan" class="sidebar-subscreen hidden">
+              <div class="subscreen-header">
+                <button type="button" class="subscreen-back-btn" id="connect-vaughan-back">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="15 18 9 12 15 6"/>
+                  </svg>
+                  <span>Back</span>
+                </button>
+                <h3 class="subscreen-title">Connect Vaughan</h3>
+              </div>
+
+              <!-- Step 1: Detect local Vaughan provider -->
+              <div id="connect-vaughan-detect" class="subscreen-content hidden">
+                <div class="connect-ledger-illustration">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <rect x="3" y="4" width="18" height="16" rx="2"/>
+                    <path d="M7 8h10M7 12h6M7 16h8"/>
+                  </svg>
+                </div>
+                <p class="create-wallet-message">
+                  Start <strong>Vaughan</strong> on this machine and unlock your wallet.
+                  Freedom connects to Vaughan over the local bridge (<code>ws://127.0.0.1:8745</code>).
+                </p>
+                <div id="connect-vaughan-status" class="connect-ledger-status">
+                  <span class="connect-ledger-status-spinner"></span>
+                  <span id="connect-vaughan-status-text">Looking for Vaughan…</span>
+                </div>
+              </div>
+
+              <!-- Step 2: Pick account -->
+              <div id="connect-vaughan-accounts-step" class="subscreen-content hidden">
+                <p class="create-wallet-message">Choose the Vaughan account to add.</p>
+
+                <div id="connect-vaughan-account-list" class="connect-ledger-account-list"></div>
+
+                <input type="text" id="connect-vaughan-name-input"
+                       class="create-wallet-input"
+                       placeholder="Name (e.g. Vaughan Pulse)"
+                       maxlength="32"
+                       autocomplete="off">
+
+                <button type="button" id="connect-vaughan-submit" class="create-wallet-submit-btn" disabled>
+                  Add Account
+                </button>
+
+                <div id="connect-vaughan-error" class="unlock-error hidden"></div>
+              </div>
+
+              <!-- Step 3: Success -->
+              <div id="connect-vaughan-success" class="subscreen-content hidden">
+                <div class="create-wallet-success-icon">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                    <circle cx="12" cy="12" r="10"/>
+                    <polyline points="8 12 11 15 16 9"/>
+                  </svg>
+                </div>
+                <h4 class="create-wallet-success-title">Vaughan Account Added!</h4>
+
+                <div class="create-wallet-result">
+                  <span class="create-wallet-result-name" id="connect-vaughan-result-name"></span>
+                  <code class="create-wallet-result-address" id="connect-vaughan-result-address"></code>
+                </div>
+
+                <p class="create-wallet-message">
+                  Signing requests are approved in the Vaughan TUI — keys never leave Vaughan.
+                </p>
+
+                <button type="button" id="connect-vaughan-done" class="create-wallet-done-btn">
                   Done
                 </button>
               </div>

@@ -11,7 +11,7 @@ export function truncateAddress(address, startChars = 6, endChars = 4) {
   return `${address.slice(0, startChars)}...${address.slice(-endChars)}`;
 }
 
-/** Account type ('mnemonic' | 'ledger' | 'remote') for a wallet index. */
+/** Account type ('mnemonic' | 'ledger' | 'remote' | 'vaughan') for a wallet index. */
 export function accountType(walletIndex) {
   return walletState.derivedWallets?.find((wallet) => wallet.index === walletIndex)?.type;
 }
@@ -31,7 +31,17 @@ export function isLedgerAccount(walletIndex) {
  */
 export function isDeviceAccount(walletIndex) {
   const type = accountType(walletIndex);
-  return type === 'ledger' || type === 'remote';
+  return type === 'ledger' || type === 'remote' || type === 'vaughan';
+}
+
+/** Whether a wallet index is a Vaughan external signer (keys stay in Vaughan). */
+export function isVaughanAccount(walletIndex) {
+  return accountType(walletIndex) === 'vaughan';
+}
+
+/** External signers (Ledger / Vaughan / phone) never use Freedom's vault key material. */
+export function isExternalSignerAccount(walletIndex) {
+  return isDeviceAccount(walletIndex);
 }
 
 /**
@@ -40,11 +50,16 @@ export function isDeviceAccount(walletIndex) {
  * build their copy from.
  */
 export function deviceLabel(walletIndex) {
-  return { ledger: 'your Ledger', remote: 'your phone' }[accountType(walletIndex)] || null;
+  return {
+    ledger: 'your Ledger',
+    remote: 'your phone',
+    vaughan: 'Vaughan',
+  }[accountType(walletIndex)] || null;
 }
 
 /** Pending label for approve buttons while a signature is in flight. */
 export function signingButtonLabel(walletIndex) {
+  if (isVaughanAccount(walletIndex)) return 'Confirm in Vaughan…';
   const label = deviceLabel(walletIndex);
   return label ? `Confirm on ${label}…` : 'Signing…';
 }
@@ -70,6 +85,10 @@ export function generateScannableQr(text) {
  * @param {HTMLButtonElement|null} confirmBtn - the approve/confirm button
  * @returns {boolean}
  */
+export function bypassUnlockGateForHardware(walletIndex, unlockEl, confirmBtn) {
+  return bypassUnlockGateForDevice(walletIndex, unlockEl, confirmBtn);
+}
+
 export function bypassUnlockGateForDevice(walletIndex, unlockEl, confirmBtn) {
   if (!isDeviceAccount(walletIndex)) return false;
   unlockEl?.classList.add('hidden');

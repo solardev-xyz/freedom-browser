@@ -26,6 +26,13 @@ const mockRemoteBackend = {
   sendTransaction: jest.fn(),
 };
 const mockCreateRemoteBackend = jest.fn(() => mockRemoteBackend);
+const mockVaughanBackend = {
+  getAddress: jest.fn(),
+  signTransaction: jest.fn(),
+  signMessage: jest.fn(),
+  signTypedData: jest.fn(),
+};
+const mockCreateVaughanBackend = jest.fn(() => mockVaughanBackend);
 
 jest.mock('../identity-manager', () => ({
   loadIdentityModule: jest.fn(async () => mockIdentity),
@@ -33,7 +40,12 @@ jest.mock('../identity-manager', () => ({
   // Mirrors identity-manager's HARDWARE_INDEX_BASE (inlined: jest.mock
   // factories may not close over out-of-scope constants).
   isHardwareWalletIndex: (index) => Number.isInteger(index) && index >= 1000000,
-  WALLET_TYPES: { MNEMONIC: 'mnemonic', LEDGER: 'ledger', REMOTE: 'remote' },
+  WALLET_TYPES: {
+    MNEMONIC: 'mnemonic',
+    LEDGER: 'ledger',
+    REMOTE: 'remote',
+    VAUGHAN: 'vaughan',
+  },
 }));
 jest.mock('../vault-timer', () => ({
   resetVaultAutoLockTimer: mockResetVaultAutoLockTimer,
@@ -43,6 +55,9 @@ jest.mock('./ledger/signer', () => ({
 }));
 jest.mock('./remote/signer', () => ({
   createRemoteBackend: (...args) => mockCreateRemoteBackend(...args),
+}));
+jest.mock('./vaughan/signer', () => ({
+  createVaughanBackend: (...args) => mockCreateVaughanBackend(...args),
 }));
 
 const { getSigner } = require('./signers');
@@ -245,5 +260,38 @@ describe('getSigner (remote-backed dispatch)', () => {
     const signer = getSigner(4);
     await signer.signMessage('0x48656c6c6f');
     expect(mockRemoteBackend.signMessage).toHaveBeenCalledWith(Buffer.from('Hello', 'utf8'));
+  });
+});
+
+describe('getSigner (vaughan-backed dispatch)', () => {
+  const VAUGHAN_RECORD = {
+    index: 1000005,
+    name: 'Vaughan Wallet',
+    address: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+    type: 'vaughan',
+  };
+
+  beforeEach(() => {
+    mockGetWalletRecord.mockReturnValue(VAUGHAN_RECORD);
+    mockVaughanBackend.getAddress.mockReset().mockResolvedValue(VAUGHAN_RECORD.address);
+    mockVaughanBackend.signMessage.mockReset().mockResolvedValue('0xvsig');
+    mockVaughanBackend.signTransaction.mockReset().mockResolvedValue('0xvtx');
+    mockVaughanBackend.signTypedData.mockReset().mockResolvedValue('0xv712');
+    mockCreateVaughanBackend.mockClear();
+  });
+
+  test('routes to the vaughan backend and never touches the vault', async () => {
+    const signer = getSigner(VAUGHAN_RECORD.index);
+    await expect(signer.getAddress()).resolves.toBe(VAUGHAN_RECORD.address);
+    await expect(signer.signMessage('hello')).resolves.toBe('0xvsig');
+    expect(mockCreateVaughanBackend).toHaveBeenCalledWith(VAUGHAN_RECORD);
+    expect(mockIdentity.isUnlocked).not.toHaveBeenCalled();
+    expect(mockIdentity.exportPrivateKey).not.toHaveBeenCalled();
+  });
+
+  test('factory normalization applies to vaughan messages', async () => {
+    const signer = getSigner(VAUGHAN_RECORD.index);
+    await signer.signMessage('0x48656c6c6f');
+    expect(mockVaughanBackend.signMessage).toHaveBeenCalledWith(Buffer.from('Hello', 'utf8'));
   });
 });

@@ -449,6 +449,74 @@ describe('identity-manager ledger accounts', () => {
   });
 });
 
+describe('identity-manager vaughan accounts', () => {
+  let tmpDir;
+  let envSnapshot;
+  let identityManager;
+
+  const VAUGHAN_ADDRESS = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
+  const HARDWARE_INDEX_BASE = 1000000;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'identity-manager-vaughan-'));
+    envSnapshot = snapshotEnv();
+    process.env.FREEDOM_IDENTITY_DATA = tmpDir;
+    identityManager = loadMainModule(require.resolve('./identity-manager'), {
+      userDataDir: tmpDir,
+      extraMocks: {
+        [require.resolve('./identity')]: () => ({
+          getMnemonic: jest.fn(() => null),
+          isUnlocked: jest.fn(() => false),
+        }),
+      },
+    }).mod;
+  });
+
+  afterEach(() => {
+    restoreEnv(envSnapshot);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function writeVaultMeta(meta) {
+    fs.writeFileSync(path.join(tmpDir, 'vault-meta.json'), JSON.stringify(meta, null, 2), 'utf-8');
+  }
+
+  function readVaultMeta() {
+    return JSON.parse(fs.readFileSync(path.join(tmpDir, 'vault-meta.json'), 'utf-8'));
+  }
+
+  function seedMainWallet() {
+    writeVaultMeta({
+      activeWalletIndex: 0,
+      addresses: { userWallet: '0x0000000000000000000000000000000000000001' },
+      derivedWallets: [
+        { index: 0, name: 'Main Wallet', address: '0x0000000000000000000000000000000000000001' },
+      ],
+    });
+  }
+
+  test('addVaughanWallet appends a typed record and auto-names', async () => {
+    seedMainWallet();
+    const wallet = await identityManager.addVaughanWallet('', VAUGHAN_ADDRESS);
+    expect(wallet).toEqual({
+      index: HARDWARE_INDEX_BASE,
+      name: 'Vaughan 1',
+      address: VAUGHAN_ADDRESS,
+      type: 'vaughan',
+    });
+    expect(readVaultMeta().derivedWallets[1]).toMatchObject({ type: 'vaughan', address: VAUGHAN_ADDRESS });
+  });
+
+  test('addVaughanWallet rejects duplicates and bad addresses', async () => {
+    seedMainWallet();
+    await identityManager.addVaughanWallet('Primary Vaughan', VAUGHAN_ADDRESS);
+    await expect(identityManager.addVaughanWallet('Again', VAUGHAN_ADDRESS.toLowerCase()))
+      .rejects.toThrow(/already in your wallet list/);
+    await expect(identityManager.addVaughanWallet('Bad', '0x123'))
+      .rejects.toThrow('Invalid Vaughan account address');
+  });
+});
+
 /**
  * A wallet's `index` is both the account id every persisted reference
  * stores (dApp permissions, Swarm publisher identities, activeWalletIndex)

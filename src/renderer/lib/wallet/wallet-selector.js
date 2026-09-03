@@ -17,14 +17,16 @@ let walletSelectorList;
 let walletCreateBtn;
 let walletConnectLedgerBtn;
 let walletConnectPhoneBtn;
+let walletConnectVaughanBtn;
 let walletHeadlineName;
 
 // Callbacks for opening subscreens (set by coordinator)
 let openCreateWalletFn = null;
 let openConnectLedgerFn = null;
 let openConnectPhoneFn = null;
+let openConnectVaughanFn = null;
 
-export function initWalletSelector(openCreateWallet, openConnectLedger, openConnectPhone) {
+export function initWalletSelector(openCreateWallet, openConnectLedger, openConnectPhone, openConnectVaughan) {
   walletSelectorBtn = document.getElementById('wallet-selector-btn');
   walletSelectorName = document.getElementById('wallet-selector-name');
   walletSelectorAddress = document.getElementById('wallet-selector-address');
@@ -33,11 +35,13 @@ export function initWalletSelector(openCreateWallet, openConnectLedger, openConn
   walletCreateBtn = document.getElementById('wallet-create-btn');
   walletConnectLedgerBtn = document.getElementById('wallet-connect-ledger-btn');
   walletConnectPhoneBtn = document.getElementById('wallet-connect-phone-btn');
+  walletConnectVaughanBtn = document.getElementById('wallet-connect-vaughan-btn');
   walletHeadlineName = document.getElementById('wallet-headline-name');
 
   openCreateWalletFn = openCreateWallet;
   openConnectLedgerFn = openConnectLedger;
   openConnectPhoneFn = openConnectPhone;
+  openConnectVaughanFn = openConnectVaughan;
 
   setupWalletSelector();
 }
@@ -74,6 +78,13 @@ function setupWalletSelector() {
       if (openConnectPhoneFn) openConnectPhoneFn();
     });
   }
+
+  if (walletConnectVaughanBtn) {
+    walletConnectVaughanBtn.addEventListener('click', () => {
+      closeWalletDropdown();
+      if (openConnectVaughanFn) openConnectVaughanFn();
+    });
+  }
 }
 
 function toggleWalletDropdown() {
@@ -103,7 +114,7 @@ function closeWalletDropdown() {
 
 /** Badge label for device account types (mnemonic accounts get none). */
 function walletTypeBadge(type) {
-  const label = { ledger: 'Ledger', remote: 'Phone' }[type];
+  const label = { ledger: 'Ledger', remote: 'Phone', vaughan: 'Vaughan' }[type];
   return label ? `<span class="wallet-selector-item-badge">${label}</span>` : '';
 }
 

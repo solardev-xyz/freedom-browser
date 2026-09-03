@@ -794,12 +794,14 @@ const WALLET_TYPES = {
   MNEMONIC: 'mnemonic',
   LEDGER: 'ledger',
   REMOTE: 'remote', // phone / other device signing over openlv
+  VAUGHAN: 'vaughan', // local Vaughan-CLI EIP-1193 signer
 };
 
 /** User-facing labels for device account types (auto-names, error text). */
 const DEVICE_LABELS = {
   [WALLET_TYPES.LEDGER]: 'Ledger',
   [WALLET_TYPES.REMOTE]: 'Phone',
+  [WALLET_TYPES.VAUGHAN]: 'Vaughan',
 };
 
 /**
@@ -1045,6 +1047,20 @@ async function addLedgerWallet(name, address, path) {
  */
 async function addRemoteWallet(name, address) {
   return addDeviceWallet(WALLET_TYPES.REMOTE, name, address);
+}
+
+/**
+ * Add a Vaughan account record to the wallet list.
+ *
+ * The address is discovered from the local Vaughan provider and persisted; it
+ * is not derivable from this vault.
+ *
+ * @param {string} name - Display name ('' → auto "Vaughan N")
+ * @param {string} address - Checksummed address reported by Vaughan
+ * @returns {Promise<{index: number, name: string, address: string, type: string}>}
+ */
+async function addVaughanWallet(name, address) {
+  return addDeviceWallet(WALLET_TYPES.VAUGHAN, name, address);
 }
 
 /**
@@ -1530,6 +1546,17 @@ function registerIdentityIpc() {
     }
   });
 
+  // Add a Vaughan account (address read from the local Vaughan provider)
+  ipcMain.handle('wallet:add-vaughan-wallet', async (_event, name, address) => {
+    try {
+      const wallet = await addVaughanWallet(name, address);
+      return { success: true, wallet };
+    } catch (error) {
+      console.error('Failed to add Vaughan wallet:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
   // Rename wallet
   ipcMain.handle('wallet:rename-wallet', async (_event, index, newName) => {
     try {
@@ -1595,6 +1622,7 @@ module.exports = {
   createDerivedWallet,
   addLedgerWallet,
   addRemoteWallet,
+  addVaughanWallet,
   renameDerivedWallet,
   deleteDerivedWallet,
   getActiveWalletAddress,
