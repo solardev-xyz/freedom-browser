@@ -374,7 +374,15 @@ async function detectBubblewrapCapabilities(options = {}) {
   });
 }
 
-async function createLauncherStagingDirectory() {
+function nameServiceSwitchConfiguration(network) {
+  // Only the explicit full posture names glibc's dns module, which reads the read-only
+  // /etc/resolv.conf mounted for that posture. Every other posture resolves from the
+  // staged hosts file alone, so no resolver ever consults DNS from the private namespace.
+  const hosts = network === NETWORK_POSTURES.FULL ? 'files dns' : 'files';
+  return `passwd: files\ngroup: files\nhosts: ${hosts}\n`;
+}
+
+async function createLauncherStagingDirectory(network) {
   const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'freedom-bwrap-'));
   await fs.promises.chmod(directory, 0o700);
   await fs.promises.mkdir(path.join(directory, 'empty'), { mode: 0o755 });
@@ -389,10 +397,8 @@ async function createLauncherStagingDirectory() {
     fs.promises.writeFile(path.join(directory, 'group'), `sandbox:x:${gid}:\n`, { mode: 0o600 }),
     fs.promises.writeFile(
       path.join(directory, 'nsswitch.conf'),
-      'passwd: files\ngroup: files\nhosts: files\n',
-      {
-        mode: 0o600,
-      }
+      nameServiceSwitchConfiguration(network),
+      { mode: 0o600 }
     ),
     fs.promises.writeFile(path.join(directory, 'hosts'), '127.0.0.1 localhost\n::1 localhost\n', {
       mode: 0o600,
@@ -472,7 +478,7 @@ async function buildBubblewrapArguments(policy, request) {
   }
   const normalizedRequest = validateExecutionRequest(request);
   const readinessMarker = `freedom-sandbox-ready-${crypto.randomUUID()}`;
-  const stagingDirectory = await createLauncherStagingDirectory();
+  const stagingDirectory = await createLauncherStagingDirectory(policy.network);
   try {
     const args = [
       '--unshare-all',

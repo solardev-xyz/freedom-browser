@@ -64,7 +64,7 @@ Trusted components are the caller that selects the workspace, the normalized pol
 | Temporary storage    | Fresh 256 MiB tmpfs `/tmp` for every execution, with private home/config/cache/data directories beneath it, plus a separate 64 MiB `/dev/shm`. Nothing persists to the host.                                                                          |
 | Working directory    | An existing relative directory whose canonical target remains inside the workspace. The sandbox path is rooted at `/workspace`.                                                                                                                  |
 | Environment          | `--clearenv`, safe locale/terminal inheritance, bounded trusted explicit values, and fixed private `HOME`, `TMP*`, and XDG locations. Loader, language injection, socket, display, Git override, and credential-shaped variables are rejected.   |
-| Network              | `none` remains the product default: external and host networking are absent, while a private loopback interface remains inside the network namespace. Experimental `full` adds `--share-net`, a canonical read-only resolver configuration, and honest receipt metadata for public/loopback/LAN plus host abstract Unix sockets. `brokered` is reserved and denied. |
+| Network              | `none` remains the product default: external and host networking are absent, while a private loopback interface remains inside the network namespace. Experimental `full` adds `--share-net`, the host `resolv.conf` read-only, a staged `nsswitch.conf` that names glibc's `dns` module only for that posture, and honest receipt metadata for public/loopback/LAN plus host abstract Unix sockets. `brokered` is reserved and denied. |
 | Wall/output limits   | Five-minute default wall timeout, thirty-minute maximum, and independent 1 MiB stdout/stderr defaults. Output is continuously drained after the visible cap and marked truncated.                                                                |
 | Aggregate limits     | CPU time, memory, process count, and maximum file size are represented as optional requirements. Any required value is denied because this backend cannot yet enforce it.                                                                        |
 | Cancellation         | An `AbortSignal` immediately kills the PID-namespace init/Bubblewrap supervisor with `SIGKILL`; namespace teardown kills descendants. The receipt reports `SIGKILL`, not a graceful `SIGTERM` delivery that did not occur.                          |
@@ -315,6 +315,27 @@ Corrective rerun results:
 - packaged unpacked-directory, installed Debian, and profiled real-FUSE AppImage corpora: passed;
 - `npm run lint`: passed; and
 - `npm test`: 214 suites and 3,847 tests passed; 8 suites and 31 tests skipped. Jest emitted the known late OpenLV MQTT connection logging but exited zero.
+
+### Full-network posture qualification — 2026-09-03
+
+The experimental `full` posture was qualified on the disposable Ubuntu 24.04.3 server (kernel `6.8.0-90-generic`, x86-64, Bubblewrap `0.9.0`, AppArmor `4.0.1really4.0.1-0ubuntu0.24.04.7`, `kernel.apparmor_restrict_unprivileged_userns=1`, the distribution `bwrap` profile loaded as runtime state, Node `24.18.0` and npm `11.16.0` on the host) as an ordinary non-root user. Every sandboxed process reported the `bwrap//&unpriv_bwrap (enforce)` label. The LAN target was the server's assigned non-loopback IPv4 address, verified by binding and connecting to it on the host before the run; the public target was the default `1.1.1.1:443`.
+
+The first run exposed a code defect: the staged `nsswitch.conf` named only the `files` module for `hosts`, so `--share-net` plus the mounted host `resolv.conf` still left `dns.lookup('example.com')` at `ENOTFOUND`. The correction names glibc's `dns` module only when the policy posture is `full`; every other posture keeps `hosts: files`, and a backend regression pins both staged files and the absence of `--share-net` and `resolv.conf` for offline launches.
+
+Observed from a descendant Node process under `full`: host `127.0.0.1` service `connected`, the same service on the server's non-loopback address `connected`, `1.1.1.1:443` `connected`, `example.com` `resolved`, host abstract Unix socket `connected`, host pathname socket outside the workspace `ENOENT`. The receipt reported `backend: linux-bubblewrap`, `networkPosture: full`, `publicNetworking`, `loopbackNetworking`, and `privateNetworking` as `host_network`, and `hostAbstractUnixSockets: reachable`. The immediately following `none` execution failed to reach the same host loopback service with `ECONNREFUSED` and reported `networkPosture: none`, `loopbackNetworking: private_namespace`, and `hostAbstractUnixSockets: isolated`. `brokered` was refused as `UNSUPPORTED_NETWORK_POSTURE`, and unrecognized partial postures were rejected as `INVALID_POLICY` before any launch.
+
+The offline boundary was reconfirmed in the same session: `ENETUNREACH` to the public internet, `ENOTFOUND` for DNS, `ECONNREFUSED` for host loopback and host abstract sockets, `ENOENT` for the pathname socket, working in-namespace loopback TCP and Unix sockets, `ESRCH` for host PIDs, an unreadable inherited descriptor, a scrubbed credential-shaped variable, and `EROFS` on `.git`. Timeout and cancellation retained `SIGKILL`, `terminationGuarantee: namespace_scoped`, `terminationScope: pid_namespace`, `survivorsPossible: false`, and `completeDescendantTermination: true`; no Bubblewrap process, mount, staging directory, or fixture survived.
+
+Host limitation: the server no longer provides a distribution Node or npm under `/usr/bin`, so the five integration tests and the repository qualification workload that invoke `node` or `npm` from the fixed sandbox toolchain `PATH` exited 127 there. The network evidence above was therefore reproduced with the corpus' exact descendant script through an approved read-only executable root for a root-owned Node `24.15.0` installation under `/opt`, resolved by `resolveExecutableAccess()` and mounted at its `/opt/freedom-toolchain/approved/<id>` path. A host that ships a system Node is required before the unmodified Jest corpus can pass again; the tests were not changed to work around the host.
+
+Results:
+
+- focused execution-policy, Bubblewrap backend, and Bubblewrap integration suites with `FREEDOM_SANDBOX_LAN_HOST` set: 25, 14, and 8 tests passed; the 5 integration tests that need a system Node failed with exit 127;
+- `npm run test:agent-sandbox`: 9 suites and 78 tests passed; 3 suites and 16 macOS tests skipped; the same 5 tests failed;
+- `npm run test:agent-sandbox:qualification`: descriptor closure completed inside Bubblewrap; the focused Jest workload exited 127 because `npm` is absent from the sandbox toolchain;
+- `FREEDOM_SANDBOX_DESTRUCTIVE=1 npm run test:agent-sandbox:destructive`: 1 passed;
+- `npm run lint`: passed; and
+- `npm test`: 223 suites and 3,939 tests passed; 8 suites and 33 tests skipped; the same 5 Bubblewrap integration tests failed on the missing system Node, so the command exited non-zero on this host.
 
 ## Seccomp assessment
 

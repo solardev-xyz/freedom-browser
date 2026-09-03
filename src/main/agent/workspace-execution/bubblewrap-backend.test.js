@@ -208,6 +208,34 @@ describe('Bubblewrap backend contract', () => {
     }
   });
 
+  test('enables name-service DNS resolution only for the full-network posture', async () => {
+    const fixture = await createFixture();
+    fixtureRoots.push(fixture.fixtureRoot);
+    const offline = await createWorkspaceExecutionPolicy({ workspaceRoot: fixture.workspaceRoot });
+    const full = await createWorkspaceExecutionPolicy({
+      workspaceRoot: fixture.workspaceRoot,
+      network: 'full',
+    });
+
+    const offlineLaunch = await buildBubblewrapArguments(offline, { command: '/usr/bin/true' });
+    fixtureRoots.push(offlineLaunch.stagingDirectory);
+    const fullLaunch = await buildBubblewrapArguments(full, { command: '/usr/bin/true' });
+    fixtureRoots.push(fullLaunch.stagingDirectory);
+
+    const offlineSwitch = path.join(offlineLaunch.stagingDirectory, 'nsswitch.conf');
+    const fullSwitch = path.join(fullLaunch.stagingDirectory, 'nsswitch.conf');
+    expectArgumentSequence(offlineLaunch.args, ['--ro-bind', offlineSwitch, '/etc/nsswitch.conf']);
+    expectArgumentSequence(fullLaunch.args, ['--ro-bind', fullSwitch, '/etc/nsswitch.conf']);
+    await expect(fs.promises.readFile(offlineSwitch, 'utf8')).resolves.toBe(
+      'passwd: files\ngroup: files\nhosts: files\n'
+    );
+    await expect(fs.promises.readFile(fullSwitch, 'utf8')).resolves.toBe(
+      'passwd: files\ngroup: files\nhosts: files dns\n'
+    );
+    expect(offlineLaunch.args).not.toContain('/etc/resolv.conf');
+    expect(offlineLaunch.args).not.toContain('--share-net');
+  });
+
   test('probes every Bubblewrap primitive used for bounded writable mounts', () => {
     const args = capabilityProbeArguments();
     expectArgumentSequence(args, ['--', BUBBLEWRAP_SUPERVISOR_SHELL, '-c']);
