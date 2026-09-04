@@ -195,12 +195,12 @@ Windows arm64 is intentionally not built (never shipped on `freedom.baby`, no My
 
 ## 6. Manual cross-platform smoke testing
 
-CI now launches every artifact it packages (steps 1, 2, 3, 5 and 6 below), but only on a runner and only through those checks. Smoke testing each artifact on a real instance of its target OS still catches packaging-class bugs that `npm test`, the on-host `npm start` spot check (§4) and the automated legs cannot:
+CI now launches every artifact it packages (steps 1, 2, 3, 5 and 6 below), but only on a runner and only through those checks. The automated legs already block a wrong native-module ABI (the launch leg fails), a missing or wrong-arch bundled binary or addon (`antd`, freedom-ipfs, `libradicle.node`, and Arti where bundled — the node legs fail naming the node), and the `extraResources` / asar-unpack mistakes those imply. Smoke testing each artifact on a real instance of its target OS still catches what a runner cannot:
 
-- Wrong native-module ABI for the target arch (e.g. `better-sqlite3.node` linked for the wrong NODE_MODULE_VERSION, or a x64 binary in an arm64 package)
-- Missing or wrong-arch bundled binary/addon in `extraResources` (`antd.exe`, freedom-ipfs, `libradicle.node`, Arti)
-- `electron-builder` configuration mistakes (asar unpack rules, `extraResources` paths, NSIS installer flags, Gatekeeper / SmartScreen interaction)
-- Platform-specific code paths (file system paths, native menus, IPC permissions, system trust store, default-browser hooks)
+- Gatekeeper and SmartScreen interaction on a real first launch (the runner only asks `spctl`; Windows is unsigned and prompts)
+- Platform-specific code paths the specs do not exercise (native menus, system trust store, default-browser and URL-scheme hooks, file dialogs)
+- Real-network retrieval over the bundled nodes (`bzz://`, `ipfs://`, `rad://`, onion) — CI asserts the nodes start, not that they fetch
+- Upgrade in place from the previous final with a real profile
 
 Test the **candidate** pre-releases in full; re-check the **final** draft in short form (launch + version on each platform), since it is the same tree plus the version and changelog commits.
 
