@@ -91,7 +91,7 @@ Playwright has three projects:
 | `live`     | `npm run test:e2e:live`     | Uses real nodes, protocols, and network resolution; requires downloaded binaries                               |
 | `packaged` | `npm run test:e2e:packaged` | Runs the release smoke checks (launch, version, persistence) against a built binary instead of the source tree |
 
-The `packaged` project needs `FREEDOM_E2E_EXECUTABLE` pointing at that binary and refuses to run without it; add `FREEDOM_E2E_NO_SANDBOX=1` on a headless machine. After `npm run build -- --linux --x64`, that is `FREEDOM_E2E_EXECUTABLE="$PWD/dist/linux-unpacked/freedom" FREEDOM_E2E_NO_SANDBOX=1 xvfb-run -a npm run test:e2e:packaged`. The release workflow runs the same suite against the `.deb` and AppImage it just built (see `agent-playbooks/release-process.md` §6).
+The `packaged` project needs `FREEDOM_E2E_EXECUTABLE` pointing at that binary and refuses to run without it; add `FREEDOM_E2E_NO_SANDBOX=1` on a headless machine. After `npm run build -- --linux --x64`, that is `FREEDOM_E2E_EXECUTABLE="$PWD/dist/linux-unpacked/freedom" FREEDOM_E2E_NO_SANDBOX=1 xvfb-run -a npm run test:e2e:packaged`. The release workflow runs the same suite against every artifact it just built — the macOS `.dmg` and `-mac.zip`, the Linux x64/arm64 `.deb` and AppImage, the Windows installer and portable zip (see `agent-playbooks/release-process.md` §6).
 
 All three suites use a temporary Electron `userData` directory and run sequentially. The full CI matrix covers the operating-system-specific and native-node checks that most contributors cannot reproduce locally.
 

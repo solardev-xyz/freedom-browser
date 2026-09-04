@@ -28,6 +28,8 @@ test('the packaged app reports the expected version', async ({ electronApp }) =>
   }));
 
   expect(app.version).toBe(expectedVersion);
-  expect(app.appPath).toContain('resources');
+  // Case-insensitive: the directory is `resources` on Linux and Windows but
+  // `Freedom.app/Contents/Resources` on macOS.
+  expect(app.appPath.toLowerCase()).toContain('resources');
   expect(app.name).toBe(process.platform === 'linux' ? 'freedom' : 'Freedom');
 });
