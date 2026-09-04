@@ -44,6 +44,7 @@ All notable changes to Freedom will be documented in this file.
 - Encrypted point-to-point and broadcast messaging for Swarm apps through `window.swarm`, behind its own consent tier
 - Swarm apps can ship a `freedom-manifest.json` so their permissions are one decision instead of a stream of prompts
 - Tor for `.onion` addresses through a bundled Arti client, off by default under Settings > Experimental (clearnet traffic keeps connecting directly)
+  - A system Tor client found on its default port, such as Tor Browser, can be adopted instead of the bundled Arti
 - Myotis, a fully peer-to-peer Ethereum and Gnosis light client, as an experimental verified source, off by default:
   - Draggable read and verification order per chain under Settings > Chains, alongside Colibri, RPC quorum and direct RPC
 - `.tez` name resolution from the Tezos Domains contracts, for bare names and `ipfs://` / `ipns://` targets
