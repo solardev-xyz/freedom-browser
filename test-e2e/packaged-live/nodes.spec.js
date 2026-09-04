@@ -20,7 +20,9 @@
 // What is asserted is deliberately only "the manager reports running, within a
 // bounded time" (plus, for Ant, that its local HTTP API answers /health on the
 // port the app itself published). Peer counts and content retrieval depend on
-// peer discovery, which is slow and nondeterministic on a CI runner.
+// peer discovery, which is slow and nondeterministic on a CI runner. Tor is the
+// one node whose "running" itself depends on reaching the network; see the
+// comment in its test for how that is kept out of the release gate.
 
 const fs = require('fs');
 const os = require('os');
@@ -82,11 +84,11 @@ const NODES_OFF = {
   startTorAtLaunch: false,
 };
 
-// Poll until the manager reaches a state it will not leave on its own, then
-// assert it is the right one. Waiting for 'running' directly would spend the
-// whole budget on a node that already reported 'error' and then fail with a
-// bare timeout instead of the manager's own message.
-async function expectNodeRunning(window, api, { label, timeout }) {
+// Poll until the manager reaches a state it will not leave on its own —
+// 'running' or 'error'. Waiting for 'running' directly would spend the whole
+// budget on a node that already reported 'error' and then fail with a bare
+// timeout instead of the manager's own message.
+async function waitForNodeToSettle(window, api, { label, timeout }) {
   let last = null;
 
   await expect
@@ -103,11 +105,17 @@ async function expectNodeRunning(window, api, { label, timeout }) {
     )
     .toBe(true);
 
-  expect(last.status, `${label} did not start: ${last.error || 'no error reported'}`).toBe(
+  return last;
+}
+
+async function expectNodeRunning(window, api, { label, timeout }) {
+  const status = await waitForNodeToSettle(window, api, { label, timeout });
+
+  expect(status.status, `${label} did not start: ${status.error || 'no error reported'}`).toBe(
     'running'
   );
 
-  return last;
+  return status;
 }
 
 // The address the app itself published for a service, e.g.
@@ -222,7 +230,40 @@ test.describe('packaged bundled nodes', () => {
         'This build bundles no Arti binary (expected on Windows and on builds made without `npm run tor:download`)'
       );
 
-      await expectNodeRunning(window, 'tor', { label: 'Tor', timeout: TOR_START_TIMEOUT_MS });
+      // Executes resources/arti-bin/arti --version through the manager's own
+      // path resolution. This is the packaging half of the check and it is
+      // fully deterministic: a binary built for the wrong arch, or missing a
+      // shared library, fails here rather than as a startup timeout.
+      const version = await window.evaluate(() => window.tor.getVersion());
+      expect(version, `arti --version failed: ${JSON.stringify(version)}`).toMatchObject({
+        success: true,
+        name: 'Arti',
+      });
+      expect(version.version).toMatch(/^\d+\.\d+/);
+
+      const status = await waitForNodeToSettle(window, 'tor', {
+        label: 'Tor',
+        timeout: TOR_START_TIMEOUT_MS,
+      });
+
+      // Unlike the other three, Arti only reports running once it has
+      // bootstrapped a circuit *through the Tor network*, and tor-manager gives
+      // that ~120s before it kills the process with "Startup timed out". On a
+      // GitHub runner that budget is occasionally not enough (observed once in
+      // eight smoke legs on 2026-09-04, alongside successful bootstraps of
+      // 7.7s–38.4s), which is a property of the network path, not of the
+      // artifact — and the artifact is what this suite gates. So that one
+      // error, and only that one, degrades to a visible skip; every other
+      // failure (spawn error, wrong-arch binary, unexpected exit code) still
+      // fails the leg. Real onion retrieval stays in live/tor-onion.spec.js.
+      test.skip(
+        status.status === 'error' && /startup timed out/i.test(status.error || ''),
+        `Arti did not finish bootstrapping inside tor-manager's own budget on this runner (${status.error}). The bundled binary is present and runs (Arti ${version.version}); reaching the Tor network is not this suite's assertion.`
+      );
+
+      expect(status.status, `Tor did not start: ${status.error || 'no error reported'}`).toBe(
+        'running'
+      );
 
       // Running means Arti's SOCKS proxy is listening — that address is what
       // the session proxy routes .onion traffic through.
