@@ -134,6 +134,7 @@ function createController() {
       outputTruncated: false,
       scanLimitReached: false,
     })),
+    inspectProcess: jest.fn(),
     prepareCommandPermissions: jest.fn(async () => ({
       prepared: { kind: 'trusted-test-request' },
       publicRequest: {
@@ -227,6 +228,7 @@ describe('Pi managed workspace tools', () => {
       'request_permissions',
       'write_stdin',
     ]);
+    expect(tools[0].parameters.properties).not.toHaveProperty('previewPort');
     await expect(tools[0].execute('call_one', { command: 'pwd' })).resolves.toEqual({
       content: [{ type: 'text', text: '/workspace\n' }],
     });
@@ -582,6 +584,109 @@ describe('Pi managed workspace tools', () => {
         operation: 'workspace_preview',
         status: 'succeeded',
         pageId: 'tab_preview',
+      })
+    );
+  });
+
+  test('declares and opens a gated managed server preview through one process identity', async () => {
+    const processId = 'workspace_process_dddddddddddddddddddddddd';
+    const previewUrl = `freedom-preview://${'b'.repeat(40)}/`;
+    const controller = createController();
+    controller.fullNetworkPermissionsEnabled.mockReturnValue(true);
+    controller.startProcess.mockResolvedValue({
+      processId,
+      state: 'running',
+      output: 'ready\n',
+      workspace: {
+        workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa',
+        processId,
+        command: 'node server.js',
+        workingDirectory: '.',
+        backend: 'linux-bubblewrap',
+        networkPosture: 'full',
+        previewPort: 4_173,
+        state: 'running',
+        terminationGuarantee: 'pending',
+        terminationScope: 'pending',
+        sideEffects: 'unknown',
+        survivorsPossible: false,
+        completeDescendantTermination: false,
+      },
+    });
+    const previewController = {
+      createPreview: jest.fn(),
+      createProcessPreview: jest.fn(() => ({
+        kind: 'server',
+        url: previewUrl,
+        entryPath: 'server on port 4173',
+        processId,
+        port: 4_173,
+      })),
+    };
+    const scopedController = {
+      execute: jest
+        .fn()
+        .mockResolvedValueOnce({ ok: true, result: { tabs: [], activeTabId: null } })
+        .mockResolvedValueOnce({
+          ok: true,
+          result: { activeTabId: 'tab_server', tab: { tabId: 'tab_server', url: previewUrl } },
+        }),
+    };
+    const onToolOutcome = jest.fn();
+    const tools = await createWorkspaceTools({
+      sdk: createSdk(),
+      controller,
+      previewController,
+      scopedController,
+      conversationId: 'conversation_one',
+      requestApproval: jest.fn(async () => 'approved'),
+      onToolOutcome,
+    });
+    const bash = tools.find((tool) => tool.name === 'bash');
+    const preview = tools.find((tool) => tool.name === 'workspace_preview');
+    expect(bash.parameters.properties.previewPort).toMatchObject({
+      minimum: 1_024,
+      maximum: 65_535,
+    });
+    expect(preview.parameters.properties.processId).toBeDefined();
+
+    await expect(
+      bash.execute('call_server', {
+        command: 'node server.js',
+        previewPort: 4_173,
+        yield_time_ms: 250,
+      })
+    ).resolves.toMatchObject({ content: [expect.objectContaining({ type: 'text' })] });
+    expect(controller.startProcess).toHaveBeenCalledWith(
+      'conversation_one',
+      expect.objectContaining({
+        command: 'node server.js',
+        previewPort: 4_173,
+        yieldMs: 250,
+      })
+    );
+
+    await expect(preview.execute('call_preview_server', { processId })).resolves.toMatchObject({
+      content: [
+        {
+          type: 'text',
+          text: 'Opened the managed server preview on port 4173 in an Agent tab.',
+        },
+      ],
+      details: { kind: 'server', processId, port: 4_173, pageId: 'tab_server' },
+    });
+    expect(previewController.createProcessPreview).toHaveBeenCalledWith(
+      'conversation_one',
+      processId
+    );
+    expect(onToolOutcome).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        operation: 'workspace_preview',
+        status: 'succeeded',
+        workspace: expect.objectContaining({
+          kind: 'server_preview',
+          networkPosture: 'full',
+        }),
       })
     );
   });

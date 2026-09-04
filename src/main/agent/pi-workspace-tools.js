@@ -41,6 +41,7 @@ const WORKSPACE_POLICY_ERROR_CODES = new Set([
   'WORKSPACE_EXECUTION_PLATFORM_UNAVAILABLE',
   'WORKSPACE_FILE_UNSAFE',
   'WORKSPACE_POLICY_FAILED',
+  'WORKSPACE_PREVIEW_NETWORK_REQUIRED',
   'WORKSPACE_PROTECTED_PATH',
   'WORKSPACE_RUNTIME_UNAVAILABLE',
   'WORKSPACE_SANDBOX_DENIED',
@@ -73,6 +74,11 @@ const WORKSPACE_ERROR_MESSAGES = Object.freeze({
   WORKSPACE_PROCESS_LIMIT_REACHED: 'Too many workspace commands are still running',
   WORKSPACE_PROCESS_NOT_FOUND: 'The workspace process is no longer available',
   INVALID_WORKSPACE_PROCESS_REQUEST: 'The workspace process request is invalid',
+  WORKSPACE_PREVIEW_NETWORK_REQUIRED:
+    'A managed server preview requires explicit network permission for its launch command',
+  WORKSPACE_PREVIEW_UNAVAILABLE: 'The requested workspace preview is unavailable',
+  WORKSPACE_PREVIEW_UNSAFE: 'Freedom blocked an unsafe workspace preview request',
+  WORKSPACE_PREVIEW_TOO_LARGE: 'The workspace preview exceeded its bounded size limit',
   WORKSPACE_EXECUTION_FAILED: 'Freedom could not start the workspace command',
   WORKSPACE_FILE_TOO_LARGE: 'The requested workspace file exceeds the supported size limit',
   WORKSPACE_FILE_UNAVAILABLE: 'The requested workspace file could not be accessed',
@@ -126,6 +132,7 @@ function safeWorkspaceError(error, options = {}) {
     'WORKSPACE_PREVIEW_UNAVAILABLE',
     'WORKSPACE_PREVIEW_UNSAFE',
     'WORKSPACE_PREVIEW_TOO_LARGE',
+    'WORKSPACE_PREVIEW_NETWORK_REQUIRED',
     'WORKSPACE_PROTECTED_PATH',
     'WORKSPACE_RUNTIME_UNAVAILABLE',
     'WORKSPACE_SANDBOX_DENIED',
@@ -263,7 +270,9 @@ function workspaceAction(operation, params = {}) {
     const names = Array.isArray(params.executables) ? params.executables.slice(0, 16) : [];
     return `Use ${names.join(', ') || 'requested executables'}`;
   }
-  if (operation === 'workspace_preview') return `Preview ${target}`;
+  if (operation === 'workspace_preview') {
+    return params.processId ? 'Preview managed server' : `Preview ${target}`;
+  }
   const verb = { read: 'Read', write: 'Write', edit: 'Edit' }[operation] || 'Access';
   return `${verb} ${target}`;
 }
@@ -285,34 +294,55 @@ function workspaceOperationKind(operation) {
 
 function assertBrowserEnvelope(envelope) {
   if (envelope?.ok === true) return envelope;
-  const error = new Error('Freedom could not open the static preview tab');
+  const error = new Error('Freedom could not open the workspace preview tab');
   error.code = 'WORKSPACE_PREVIEW_UNAVAILABLE';
   throw error;
 }
 
 function createWorkspacePreviewTool(sdk, options) {
+  const serverPreviewEnabled = options.serverPreviewEnabled === true;
   return sdk.defineTool({
     name: 'workspace_preview',
     label: 'Preview website',
-    description:
-      'Open a workspace HTML file, or a directory containing index.html, in a visible isolated Agent tab. The preview reads current workspace files and has no external network access. Call again after edits to refresh it.',
+    description: serverPreviewEnabled
+      ? 'Open either a static workspace HTML path or a running managed server in a visible isolated Agent tab. For a server, pass the opaque processId returned by bash after launching it with previewPort and explicit full-network permission. Preview pages remain isolated from external network destinations.'
+      : 'Open a workspace HTML file, or a directory containing index.html, in a visible isolated Agent tab. The preview reads current workspace files and has no external network access. Call again after edits to refresh it.',
     parameters: {
       type: 'object',
       properties: {
         path: { type: 'string', minLength: 1, maxLength: 1_024 },
+        ...(serverPreviewEnabled && {
+          processId: {
+            type: 'string',
+            pattern: '^workspace_process_[a-f0-9]{24}$',
+          },
+        }),
       },
       additionalProperties: false,
     },
     executionMode: 'sequential',
     execute: async (toolCallId, params = {}, signal) => {
       const operation = 'workspace_preview';
-      const toolParams = { path: params.path || '.' };
+      const conflictingTargets = Boolean(params.processId && params.path);
+      const toolParams = params.processId
+        ? { processId: params.processId }
+        : { path: params.path || '.' };
       const operationAbort = combinedAbortSignal(signal, options.getRunSignal?.());
       const operationSignal = operationAbort.signal;
       const operationPhase = (phase) =>
         notify(options.onToolPhase, { toolCallId, operation, phase });
       let receipt;
       try {
+        if (conflictingTargets) {
+          const invalid = new Error('Choose either a static path or a managed process preview');
+          invalid.code = 'INVALID_WORKSPACE_REQUEST';
+          throw invalid;
+        }
+        if (toolParams.processId && !serverPreviewEnabled) {
+          const unavailable = new Error('Managed server previews are unavailable');
+          unavailable.code = 'WORKSPACE_PREVIEW_UNAVAILABLE';
+          throw unavailable;
+        }
         if (operationSignal?.aborted) {
           const cancelled = new Error('The workspace operation was stopped');
           cancelled.code = 'WORKSPACE_OPERATION_CANCELLED';
@@ -320,10 +350,15 @@ function createWorkspacePreviewTool(sdk, options) {
         }
         await ensureWorkspaceEnabled(options, operation, toolCallId, operationSignal);
         operationPhase('executing_operation');
-        const preview = await options.previewController.createPreview(
-          options.conversationId,
-          toolParams.path
-        );
+        const preview = toolParams.processId
+          ? options.previewController.createProcessPreview(
+              options.conversationId,
+              toolParams.processId
+            )
+          : await options.previewController.createPreview(
+              options.conversationId,
+              toolParams.path
+            );
         if (operationSignal?.aborted) {
           const cancelled = new Error('The workspace operation was stopped');
           cancelled.code = 'WORKSPACE_OPERATION_CANCELLED';
@@ -357,7 +392,15 @@ function createWorkspacePreviewTool(sdk, options) {
           options.conversationId,
           operation,
           toolParams,
-          'completed'
+          'completed',
+          preview.kind === 'server'
+            ? {
+                kind: 'server_preview',
+                command: `Preview server on port ${preview.port}`,
+                backend: 'freedom-workspace-server-preview',
+                networkPosture: 'full',
+              }
+            : {}
         );
         notify(options.onToolOutcome, {
           toolCallId,
@@ -370,10 +413,19 @@ function createWorkspacePreviewTool(sdk, options) {
           content: [
             {
               type: 'text',
-              text: `Opened the static preview for ${preview.entryPath} in an Agent tab.`,
+              text:
+                preview.kind === 'server'
+                  ? `Opened the managed server preview on port ${preview.port} in an Agent tab.`
+                  : `Opened the static preview for ${preview.entryPath} in an Agent tab.`,
             },
           ],
-          details: { entryPath: preview.entryPath, ...(pageId && { pageId }) },
+          details: {
+            kind: preview.kind || 'static',
+            entryPath: preview.entryPath,
+            ...(preview.processId && { processId: preview.processId }),
+            ...(Number.isSafeInteger(preview.port) && { port: preview.port }),
+            ...(pageId && { pageId }),
+          },
         };
       } catch (error) {
         const safe = safeWorkspaceError(error, { operation, receipt });
@@ -408,11 +460,11 @@ function fileWorkspaceReceipt(controller, conversationId, operation, params, sta
   const workspace = controller.getWorkspace(conversationId);
   return Object.freeze({
     ...(workspace?.workspaceId && { workspaceId: workspace.workspaceId }),
-    kind: workspaceOperationKind(operation),
-    command: workspaceAction(operation, params),
+    kind: result.kind || workspaceOperationKind(operation),
+    command: result.command || workspaceAction(operation, params),
     workingDirectory: '.',
-    backend: 'freedom-workspace-files',
-    networkPosture: 'none',
+    backend: result.backend || 'freedom-workspace-files',
+    networkPosture: result.networkPosture === 'full' ? 'full' : 'none',
     state,
     stdoutTruncated: false,
     stderrTruncated: false,
@@ -432,7 +484,7 @@ function fileWorkspaceReceipt(controller, conversationId, operation, params, sta
   });
 }
 
-function workspaceBashTemplate(template) {
+function workspaceBashTemplate(template, options = {}) {
   return {
     ...template,
     description:
@@ -458,6 +510,15 @@ function workspaceBashTemplate(template) {
           description:
             'Wait before returning a session ID for a command that is still running (optional; defaults to 10000 ms)',
         },
+        ...(options.serverPreviewEnabled === true && {
+          previewPort: {
+            type: 'integer',
+            minimum: 1_024,
+            maximum: 65_535,
+            description:
+              'Port declared before launch for a managed server preview. Requires full-network permission for this exact command.',
+          },
+        }),
       },
       additionalProperties: false,
     },
@@ -1019,6 +1080,9 @@ function bashOperations(options, captureReceipt, toolParams = {}) {
         signal: execution.signal,
         ...(Number.isFinite(execution.timeout) && { timeoutMs: execution.timeout * 1_000 }),
         ...(Number.isFinite(toolParams.yield_time_ms) && { yieldMs: toolParams.yield_time_ms }),
+        ...(Number.isSafeInteger(toolParams.previewPort) && {
+          previewPort: toolParams.previewPort,
+        }),
         ...(options.operationPhase && { onPhase: options.operationPhase }),
         ...(options.onProcessTerminal && {
           onTerminal: (terminal) =>
@@ -1277,6 +1341,8 @@ async function createWorkspaceTools(options = {}) {
     throw new TypeError('Workspace tools require an Agent-native approval boundary');
   }
   const sdk = validatePiSdk(options.sdk || (await loadPiSdk()));
+  const serverPreviewEnabled = controller.fullNetworkPermissionsEnabled?.() === true;
+  const toolOptions = { ...options, serverPreviewEnabled };
   const previewEnabled = options.previewController || options.scopedController;
   if (
     previewEnabled &&
@@ -1285,12 +1351,21 @@ async function createWorkspaceTools(options = {}) {
   ) {
     throw new TypeError('Static previews require preview and scoped browser controllers');
   }
+  if (
+    previewEnabled &&
+    serverPreviewEnabled &&
+    (typeof controller.inspectProcess !== 'function' ||
+      typeof options.previewController?.createProcessPreview !== 'function')
+  ) {
+    throw new TypeError('Managed server previews require process inspection support');
+  }
 
   const bashTemplate = workspaceBashTemplate(
     sdk.createBashTool(VIRTUAL_AGENT_CWD, {
       operations: bashOperations(options, () => {}),
       exposeSessionEnvironment: false,
-    })
+    }),
+    { serverPreviewEnabled }
   );
   const readTemplate = createStandardReadTool(sdk, options);
   const writeTemplate = sdk.createWriteTool(VIRTUAL_AGENT_CWD, {
@@ -1331,7 +1406,7 @@ async function createWorkspaceTools(options = {}) {
     createRequestPermissionsTool(sdk, options),
     createWriteStdinTool(sdk, options),
   ];
-  if (previewEnabled) tools.push(createWorkspacePreviewTool(sdk, options));
+  if (previewEnabled) tools.push(createWorkspacePreviewTool(sdk, toolOptions));
   return tools;
 }
 

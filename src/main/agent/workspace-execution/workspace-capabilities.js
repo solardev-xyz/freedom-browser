@@ -302,6 +302,24 @@ class WorkspaceCapabilityGrantStore {
     return uniqueCapabilities(capabilities);
   }
 
+  inspect(conversationId, operation = {}) {
+    const ownerId = requiredConversationId(conversationId);
+    const command = requiredBoundedString(operation.command, 'Command', 4_096);
+    const workingDirectory = requiredBoundedString(
+      operation.workingDirectory,
+      'Working directory',
+      1_024
+    );
+    const grants = this.grants.get(ownerId);
+    if (!grants) return Object.freeze([]);
+    const capabilities = [...grants.conversation.values()];
+    const request = grants.once.find((candidate) =>
+      matchingOperation(candidate, { command, workingDirectory })
+    );
+    if (request) capabilities.push(...request.capabilities);
+    return uniqueCapabilities(capabilities);
+  }
+
   clearOnce(conversationId) {
     const ownerId = requiredConversationId(conversationId);
     const grants = this.grants.get(ownerId);

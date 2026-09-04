@@ -537,6 +537,12 @@ function normalizeWorkspaceReceipt(value) {
     Number.isSafeInteger(value.matchCount) && value.matchCount >= 0
       ? Math.min(value.matchCount, 200)
       : null;
+  const previewPort =
+    Number.isSafeInteger(value.previewPort) &&
+    value.previewPort >= 1_024 &&
+    value.previewPort <= 65_535
+      ? value.previewPort
+      : null;
   if (
     (workspaceId && !/^workspace_[a-f0-9]{20}$/.test(workspaceId)) ||
     (commandId && !/^workspace_cmd_[a-f0-9]{24}$/.test(commandId)) ||
@@ -561,6 +567,7 @@ function normalizeWorkspaceReceipt(value) {
       'file_find',
       'directory_list',
       'static_preview',
+      'server_preview',
       'process',
     ].includes(kind)
       ? kind
@@ -579,6 +586,7 @@ function normalizeWorkspaceReceipt(value) {
     stderrTruncated: value.stderrTruncated === true,
     terminationGuarantee: boundedString(value.terminationGuarantee, 80) || 'not_applicable',
     ...(terminationScope && { terminationScope }),
+    ...(previewPort !== null && { previewPort }),
     sideEffects: value.sideEffects === 'none' ? 'none' : 'unknown',
     survivorsPossible: value.survivorsPossible === true,
     completeDescendantTermination: value.completeDescendantTermination === true,
@@ -1348,13 +1356,17 @@ function buildAgentOutcome(activity, status, error) {
       const shellCommands = workspaceCommands.filter((item) => item.kind === 'command');
       const lastOperation = workspaceCommands.at(-1);
       const previewOpened =
-        lastOperation.kind === 'static_preview' && lastOperation.state === 'completed';
+        ['static_preview', 'server_preview'].includes(lastOperation.kind) &&
+        lastOperation.state === 'completed';
+      const serverPreviewOpened = previewOpened && lastOperation.kind === 'server_preview';
       return Object.freeze({
         kind: 'completed',
         verification: previewOpened ? 'workspace_preview_opened' : 'workspace_execution_recorded',
         tone: completedOperations.length ? 'success' : 'neutral',
         headline: previewOpened
-          ? 'Static preview opened'
+          ? serverPreviewOpened
+            ? 'Server preview opened'
+            : 'Static preview opened'
           : changedFiles.length
             ? changedFiles.length === 1
               ? 'Project file updated'
@@ -1365,7 +1377,7 @@ function buildAgentOutcome(activity, status, error) {
                 : 'Project commands completed'
               : 'Project files inspected',
         detail: previewOpened
-          ? `Freedom opened the current workspace HTML in an isolated, no-network Agent tab.${workspaceCommands.length > 1 ? ` ${workspaceCommands.length - 1} earlier project ${workspaceCommands.length === 2 ? 'operation was' : 'operations were'} also recorded.` : ''}`
+          ? `Freedom opened ${serverPreviewOpened ? 'a managed workspace server' : 'the current workspace HTML'} in an isolated Agent tab${serverPreviewOpened ? ' through its approved localhost port' : ' without network access'}.${workspaceCommands.length > 1 ? ` ${workspaceCommands.length - 1} earlier project ${workspaceCommands.length === 2 ? 'operation was' : 'operations were'} also recorded.` : ''}`
           : `${workspaceCommands.length} project ${workspaceCommands.length === 1 ? 'operation was' : 'operations were'} recorded. The latest operation ${lastOperation.state === 'completed' ? 'completed successfully' : `ended as ${lastOperation.state.replaceAll('_', ' ')}`}.${shellCommands.length ? ' Shell-command side effects inside the workspace remain unknown.' : ''}`,
         workspace: lastOperation,
         destinations,

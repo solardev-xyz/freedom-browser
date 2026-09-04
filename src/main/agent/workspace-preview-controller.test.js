@@ -6,6 +6,7 @@ const path = require('path');
 const {
   MAX_PREVIEW_FILE_BYTES,
   PREVIEW_CSP,
+  SERVER_PREVIEW_CSP,
   WorkspacePreviewController,
 } = require('./workspace-preview-controller');
 
@@ -87,6 +88,141 @@ describe('WorkspacePreviewController', () => {
     expect(await (await controller.handleRequest({ method: 'GET', url: first.url })).text()).toBe(
       '<h1>App</h1>'
     );
+  });
+
+  test('proxies a declared running server through an isolated same-origin preview', async () => {
+    const processId = 'workspace_process_bbbbbbbbbbbbbbbbbbbbbbbb';
+    workspaceController.inspectProcess = jest.fn(() => ({
+      processId,
+      state: 'running',
+      workspace: {
+        workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa',
+        processId,
+        state: 'running',
+        networkPosture: 'full',
+        previewPort: 4_173,
+      },
+    }));
+    const fetch = jest.fn(async () =>
+      new Response('<h1>Live server</h1>', {
+        status: 200,
+        headers: {
+          'content-type': 'text/html; charset=utf-8',
+          'set-cookie': 'secret=value',
+        },
+      })
+    );
+    const controller = new WorkspacePreviewController({
+      workspaceController,
+      fetch,
+      tokenFactory: () => '1'.repeat(40),
+    });
+
+    const preview = controller.createProcessPreview('conversation_one', processId);
+    expect(preview).toEqual({
+      kind: 'server',
+      url: `freedom-preview://${'1'.repeat(40)}/`,
+      processId,
+      port: 4_173,
+      entryPath: 'server on port 4173',
+    });
+    expect(controller.createProcessPreview('conversation_one', processId)).toEqual(preview);
+
+    const response = await controller.handleRequest({
+      method: 'GET',
+      url: `${preview.url}api/items?q=one`,
+      headers: new Headers({
+        accept: 'application/json',
+        authorization: 'Bearer secret',
+        cookie: 'private=value',
+      }),
+    });
+    expect(fetch).toHaveBeenCalledWith(
+      new URL('http://127.0.0.1:4173/api/items?q=one'),
+      expect.objectContaining({ method: 'GET', redirect: 'manual', signal: expect.any(AbortSignal) })
+    );
+    const upstreamHeaders = fetch.mock.calls[0][1].headers;
+    expect(upstreamHeaders.get('accept')).toBe('application/json');
+    expect(upstreamHeaders.has('authorization')).toBe(false);
+    expect(upstreamHeaders.has('cookie')).toBe(false);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-security-policy')).toBe(SERVER_PREVIEW_CSP);
+    expect(response.headers.has('set-cookie')).toBe(false);
+    expect(await response.text()).toContain('Live server');
+  });
+
+  test('bounds server traffic, blocks external redirects, and revokes a stopped process', async () => {
+    const processId = 'workspace_process_cccccccccccccccccccccccc';
+    const workspace = {
+      workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa',
+      processId,
+      state: 'running',
+      networkPosture: 'full',
+      previewPort: 4_174,
+    };
+    workspaceController.inspectProcess = jest.fn(() => ({
+      processId,
+      state: workspace.state,
+      workspace: { ...workspace },
+    }));
+    const fetch = jest
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(null, { status: 302, headers: { location: 'https://example.com/private' } })
+      )
+      .mockResolvedValueOnce(
+        new Response('small', {
+          headers: { 'content-length': String(MAX_PREVIEW_FILE_BYTES + 1) },
+        })
+      );
+    const controller = new WorkspacePreviewController({
+      workspaceController,
+      fetch,
+      tokenFactory: () => '2'.repeat(40),
+    });
+    const preview = controller.createProcessPreview('conversation_one', processId);
+
+    expect((await controller.handleRequest({ method: 'GET', url: preview.url })).status).toBe(403);
+    expect((await controller.handleRequest({ method: 'GET', url: preview.url })).status).toBe(413);
+    expect(
+      (
+        await controller.handleRequest({
+          method: 'POST',
+          url: preview.url,
+          headers: new Headers({ 'content-length': String(1024 * 1024 + 1) }),
+          body: new Blob(['x']).stream(),
+        })
+      ).status
+    ).toBe(413);
+
+    workspace.state = 'cancelled';
+    expect((await controller.handleRequest({ method: 'GET', url: preview.url })).status).toBe(410);
+    expect((await controller.handleRequest({ method: 'GET', url: preview.url })).status).toBe(404);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  test('refuses server previews without a conversation-owned full-network process', () => {
+    const processId = 'workspace_process_dddddddddddddddddddddddd';
+    workspaceController.inspectProcess = jest.fn(() => ({
+      processId,
+      state: 'running',
+      workspace: {
+        workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa',
+        processId,
+        state: 'running',
+        networkPosture: 'none',
+        previewPort: 4_173,
+      },
+    }));
+    const controller = new WorkspacePreviewController({ workspaceController, fetch: jest.fn() });
+
+    let error;
+    try {
+      controller.createProcessPreview('conversation_one', processId);
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toMatchObject({ code: 'WORKSPACE_PREVIEW_UNAVAILABLE' });
   });
 
   test('rejects traversal, Git metadata, symlinks, hard links, and oversized files', async () => {

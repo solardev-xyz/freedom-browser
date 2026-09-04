@@ -10,6 +10,8 @@ const MAX_PROCESS_LOG_BYTES = 256 * 1024;
 const MAX_PROCESS_INPUT_BYTES = 16 * 1024;
 const MAX_ACTIVE_PROCESSES_PER_CONVERSATION = 4;
 const TERMINAL_PROCESS_RETENTION_MS = 5 * 60 * 1_000;
+const MIN_PREVIEW_PORT = 1_024;
+const MAX_PREVIEW_PORT = 65_535;
 
 class ManagedWorkspaceProcessError extends Error {
   constructor(code, message) {
@@ -53,6 +55,17 @@ function validProcessId(value) {
     throw new ManagedWorkspaceProcessError(
       'WORKSPACE_PROCESS_NOT_FOUND',
       'The requested workspace process is unavailable'
+    );
+  }
+  return value;
+}
+
+function validPreviewPort(value) {
+  if (value === undefined || value === null) return null;
+  if (!Number.isSafeInteger(value) || value < MIN_PREVIEW_PORT || value > MAX_PREVIEW_PORT) {
+    throw new ManagedWorkspaceProcessError(
+      'INVALID_WORKSPACE_PROCESS_REQUEST',
+      `Workspace preview ports must be integers from ${MIN_PREVIEW_PORT} through ${MAX_PREVIEW_PORT}`
     );
   }
   return value;
@@ -125,6 +138,7 @@ class ManagedWorkspaceProcessManager {
       command: entry.workspace?.command || entry.command,
       workingDirectory: entry.workspace?.workingDirectory || entry.workingDirectory,
       backend: entry.workspace?.backend || 'unavailable',
+      ...(entry.previewPort && { previewPort: entry.previewPort }),
       state: 'failed',
       exitCode: null,
       signal: null,
@@ -162,6 +176,7 @@ class ManagedWorkspaceProcessManager {
       command: entry.command,
       workingDirectory: entry.workingDirectory,
       ...(entry.workspace && { workspace: entry.workspace }),
+      ...(entry.previewPort && { previewPort: entry.previewPort }),
       receipt: entry.receipt,
     });
     try {
@@ -182,6 +197,7 @@ class ManagedWorkspaceProcessManager {
       output: pending.toString('utf8'),
       outputTruncated: entry.outputTruncated,
       ...(entry.workspace && { workspace: entry.workspace }),
+      ...(entry.previewPort && { previewPort: entry.previewPort }),
       ...(entry.receipt && { receipt: entry.receipt }),
     };
     entry.outputTruncated = false;
@@ -233,6 +249,7 @@ class ManagedWorkspaceProcessManager {
 
   async start(conversationId, request = {}) {
     const owner = validConversationId(conversationId);
+    const requestedPreviewPort = validPreviewPort(request.previewPort);
     if (request.onTerminal !== undefined && typeof request.onTerminal !== 'function') {
       throw new ManagedWorkspaceProcessError(
         'INVALID_WORKSPACE_PROCESS_REQUEST',
@@ -274,6 +291,7 @@ class ManagedWorkspaceProcessManager {
       exposed: false,
       terminalNotified: false,
       onTerminal: request.onTerminal || null,
+      previewPort: requestedPreviewPort,
     };
     this.entries.set(processKey(owner, id), entry);
 
@@ -369,6 +387,19 @@ class ManagedWorkspaceProcessManager {
     return snapshot;
   }
 
+  inspect(conversationId, id) {
+    const entry = this.#entry(conversationId, id);
+    return Object.freeze({
+      processId: entry.processId,
+      state: entry.state,
+      command: entry.command,
+      workingDirectory: entry.workingDirectory,
+      ...(entry.previewPort && { previewPort: entry.previewPort }),
+      ...(entry.workspace && { workspace: entry.workspace }),
+      ...(entry.receipt && { receipt: entry.receipt }),
+    });
+  }
+
   cancelConversation(conversationId) {
     const owner = validConversationId(conversationId);
     let count = 0;
@@ -408,6 +439,8 @@ module.exports = {
   MAX_PROCESS_LOG_BYTES,
   MAX_PROCESS_POLL_MS,
   MAX_PROCESS_YIELD_MS,
+  MAX_PREVIEW_PORT,
+  MIN_PREVIEW_PORT,
   ManagedWorkspaceProcessError,
   ManagedWorkspaceProcessManager,
   TERMINAL_PROCESS_RETENTION_MS,

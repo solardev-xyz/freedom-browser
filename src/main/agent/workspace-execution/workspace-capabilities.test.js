@@ -121,6 +121,18 @@ describe('workspace capability contract', () => {
         })
       ).toEqual([]);
       expect(
+        grants.inspect('conversation_one', {
+          command: 'tool --version',
+          workingDirectory: 'site',
+        })
+      ).toEqual([capability]);
+      expect(
+        grants.inspect('conversation_one', {
+          command: 'tool --version',
+          workingDirectory: 'site',
+        })
+      ).toEqual([capability]);
+      expect(
         grants.resolve('conversation_one', {
           command: 'tool --version',
           workingDirectory: '.',

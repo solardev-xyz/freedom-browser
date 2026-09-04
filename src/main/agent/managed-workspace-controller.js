@@ -17,7 +17,11 @@ const {
   resolveExecutableAccess,
 } = require('./workspace-execution/executable-access');
 const { captureHostCommandEnvironment } = require('./workspace-execution/host-command-environment');
-const { ManagedWorkspaceProcessManager } = require('./managed-workspace-process-manager');
+const {
+  MAX_PREVIEW_PORT,
+  MIN_PREVIEW_PORT,
+  ManagedWorkspaceProcessManager,
+} = require('./managed-workspace-process-manager');
 const {
   CAPABILITY_KINDS,
   WorkspaceCapabilityGrantStore,
@@ -503,6 +507,17 @@ function validateCommand(value) {
     throw new ManagedWorkspaceError(
       'INVALID_WORKSPACE_REQUEST',
       `command must be non-empty text of at most ${MAX_COMMAND_LENGTH} characters`
+    );
+  }
+  return value;
+}
+
+function validatePreviewPort(value) {
+  if (value === undefined || value === null) return null;
+  if (!Number.isSafeInteger(value) || value < MIN_PREVIEW_PORT || value > MAX_PREVIEW_PORT) {
+    throw new ManagedWorkspaceError(
+      'INVALID_WORKSPACE_PROCESS_REQUEST',
+      `Workspace preview ports must be integers from ${MIN_PREVIEW_PORT} through ${MAX_PREVIEW_PORT}`
     );
   }
   return value;
@@ -1408,6 +1423,29 @@ class ManagedWorkspaceController {
       capabilities.backend
     );
     throwIfWorkspaceAborted(request.signal);
+    const previewPort = validatePreviewPort(request.previewPort);
+    if (previewPort) {
+      let previewNetworkPosture;
+      try {
+        previewNetworkPosture = fullNetworkPostureForCapabilities(
+          this.capabilityGrants.inspect(conversationId, {
+            command,
+            workingDirectory: workingDirectory.relative,
+          })
+        );
+      } catch (error) {
+        throw new ManagedWorkspaceError(
+          typeof error?.code === 'string' ? error.code : 'UNSUPPORTED_WORKSPACE_CAPABILITY',
+          'Freedom refused an unsupported workspace capability combination'
+        );
+      }
+      if (previewNetworkPosture !== NETWORK_POSTURES.FULL) {
+        throw new ManagedWorkspaceError(
+          'WORKSPACE_PREVIEW_NETWORK_REQUIRED',
+          'A managed server preview requires explicit full-network permission for its launch command'
+        );
+      }
+    }
     const agentPolicy = this.#agentPolicy(
       conversationId,
       lease,
@@ -1449,6 +1487,7 @@ class ManagedWorkspaceController {
             workingDirectory: workingDirectory.relative,
             backend: capabilities.backend,
             networkPosture: agentPolicy.networkPosture,
+            ...(previewPort && { previewPort }),
             state: 'running',
             stdoutTruncated: false,
             stderrTruncated: false,
@@ -1515,6 +1554,7 @@ class ManagedWorkspaceController {
       workingDirectory: workingDirectory.relative,
       backend: receipt.backend || capabilities.backend,
       networkPosture: agentPolicy.networkPosture,
+      ...(previewPort && { previewPort }),
       state:
         timedOut && receipt.state === EXECUTION_STATES.CANCELLED
           ? EXECUTION_STATES.TIMED_OUT
@@ -1560,6 +1600,13 @@ class ManagedWorkspaceController {
     );
   }
 
+  inspectProcess(conversationId, processId) {
+    return this.#processResult(
+      conversationId,
+      this.processManager.inspect(conversationId, processId)
+    );
+  }
+
   #processResult(conversationId, process) {
     if (process.receipt) {
       return Object.freeze({
@@ -1584,6 +1631,7 @@ class ManagedWorkspaceController {
         workingDirectory: workspace?.workingDirectory || process.workingDirectory || '.',
         backend: workspace?.backend || 'pending',
         ...(workspace?.networkPosture && { networkPosture: workspace.networkPosture }),
+        ...(process.previewPort && { previewPort: process.previewPort }),
         state: 'running',
         stdoutTruncated: process.outputTruncated === true,
         stderrTruncated: false,

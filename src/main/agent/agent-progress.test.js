@@ -197,6 +197,40 @@ describe('Agent progress projection', () => {
     });
   });
 
+  test('presents a managed server preview without exposing its opaque origin', () => {
+    const workspace = normalizeWorkspaceReceipt({
+      workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa',
+      processId: 'workspace_process_cccccccccccccccccccccccc',
+      kind: 'server_preview',
+      command: 'Preview server on port 4173',
+      workingDirectory: '.',
+      backend: 'freedom-workspace-server-preview',
+      networkPosture: 'full',
+      previewPort: 4_173,
+      state: 'completed',
+      terminationGuarantee: 'not_applicable',
+      sideEffects: 'unknown',
+      completeDescendantTermination: true,
+    });
+
+    expect(workspace).toMatchObject({
+      kind: 'server_preview',
+      processId: 'workspace_process_cccccccccccccccccccccccc',
+      networkPosture: 'full',
+      previewPort: 4_173,
+    });
+    expect(
+      buildAgentOutcome(
+        [{ operation: WORKSPACE_OPERATIONS.PREVIEW, status: 'succeeded', workspace }],
+        'completed'
+      )
+    ).toMatchObject({
+      verification: 'workspace_preview_opened',
+      headline: 'Server preview opened',
+      detail: expect.stringContaining('approved localhost port'),
+    });
+  });
+
   test('projects only an origin and opaque page identity from browser receipts', () => {
     const receipt = createToolReceipt(OPERATIONS.SNAPSHOT, {
       envelope: {

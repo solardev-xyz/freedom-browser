@@ -89,6 +89,7 @@ describe('ManagedWorkspaceProcessManager', () => {
     const started = await manager.start('conversation_one', {
       command: 'node server.js',
       yieldMs: 1,
+      previewPort: 4_173,
       onTerminal,
     });
     expect(started).toEqual(
@@ -96,12 +97,22 @@ describe('ManagedWorkspaceProcessManager', () => {
         processId: 'workspace_process_bbbbbbbbbbbbbbbbbbbbbbbb',
         state: 'running',
         output: 'ready\n',
+        previewPort: 4_173,
         workspace: expect.objectContaining({
           commandId: 'workspace_cmd_bbbbbbbbbbbbbbbbbbbbbbbb',
           state: 'running',
         }),
       })
     );
+    expect(manager.inspect('conversation_one', started.processId)).toEqual(
+      expect.objectContaining({
+        processId: started.processId,
+        state: 'running',
+        previewPort: 4_173,
+        workspace: expect.objectContaining({ state: 'running' }),
+      })
+    );
+    expect(manager.inspect('conversation_one', started.processId)).not.toHaveProperty('output');
 
     request.onOutput('stderr', Buffer.from('request\n'));
     const interaction = manager.interact('conversation_one', started.processId, {
@@ -124,6 +135,19 @@ describe('ManagedWorkspaceProcessManager', () => {
         receipt: expect.objectContaining({ terminationScope: 'pid_namespace' }),
       })
     );
+  });
+
+  test('rejects invalid preview ports before starting execution', async () => {
+    const execute = jest.fn();
+    const manager = new ManagedWorkspaceProcessManager({ execute });
+
+    await expect(
+      manager.start('conversation_one', { command: 'node server.js', previewPort: 80 })
+    ).rejects.toMatchObject({ code: 'INVALID_WORKSPACE_PROCESS_REQUEST' });
+    await expect(
+      manager.start('conversation_one', { command: 'node server.js', previewPort: 4_173.5 })
+    ).rejects.toMatchObject({ code: 'INVALID_WORKSPACE_PROCESS_REQUEST' });
+    expect(execute).not.toHaveBeenCalled();
   });
 
   test('binds process access to its conversation and terminates through the retained signal', async () => {

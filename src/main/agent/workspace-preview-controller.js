@@ -8,7 +8,9 @@ const PREVIEW_SCHEME = 'freedom-preview';
 const MAX_PREVIEWS = 32;
 const MAX_CONCURRENT_PREVIEW_REQUESTS = 8;
 const MAX_PREVIEW_FILE_BYTES = 16 * 1024 * 1024;
+const MAX_PREVIEW_REQUEST_BYTES = 1024 * 1024;
 const MAX_PREVIEW_PATH_LENGTH = 1_024;
+const PREVIEW_REQUEST_TIMEOUT_MS = 10_000;
 const PREVIEW_CSP = [
   'sandbox allow-scripts allow-same-origin',
   "default-src 'self'",
@@ -25,6 +27,11 @@ const PREVIEW_CSP = [
   "base-uri 'self'",
   "form-action 'none'",
 ].join('; ');
+const SERVER_PREVIEW_CSP = PREVIEW_CSP.replace(
+  "connect-src 'none'",
+  "connect-src 'self'"
+).replace("form-action 'none'", "form-action 'self'");
+const SERVER_PREVIEW_METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']);
 
 const MIME_TYPES = Object.freeze({
   '.avif': 'image/avif',
@@ -128,16 +135,81 @@ function requestRelativePath(url) {
   return segments.filter(Boolean).join('/');
 }
 
-function responseHeaders(contentType = null) {
+function responseHeaders(contentType = null, options = {}) {
   return {
     ...(contentType && { 'Content-Type': contentType }),
     'Cache-Control': 'no-store',
-    'Content-Security-Policy': PREVIEW_CSP,
+    'Content-Security-Policy': options.server === true ? SERVER_PREVIEW_CSP : PREVIEW_CSP,
     'Cross-Origin-Resource-Policy': 'same-origin',
     'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=(), usb=()',
     'Referrer-Policy': 'no-referrer',
     'X-Content-Type-Options': 'nosniff',
     'X-Frame-Options': 'DENY',
+  };
+}
+
+async function readBoundedBody(body, maximum, declaredLength = null, signal = null) {
+  if (!body) return Buffer.alloc(0);
+  if (Number.isSafeInteger(declaredLength) && declaredLength > maximum) {
+    throw new WorkspacePreviewError('WORKSPACE_PREVIEW_TOO_LARGE', 'Preview data is too large');
+  }
+  const reader = body.getReader();
+  const chunks = [];
+  let total = 0;
+  let rejectAborted;
+  const aborted = new Promise((_resolve, reject) => {
+    rejectAborted = reject;
+  });
+  const abort = () => rejectAborted(new Error('Preview request stopped'));
+  signal?.addEventListener?.('abort', abort, { once: true });
+  if (signal?.aborted) abort();
+  try {
+    while (true) {
+      const result = await Promise.race([reader.read(), aborted]);
+      if (result.done) break;
+      const chunk = Buffer.from(result.value);
+      total += chunk.byteLength;
+      if (total > maximum) {
+        await reader.cancel();
+        throw new WorkspacePreviewError('WORKSPACE_PREVIEW_TOO_LARGE', 'Preview data is too large');
+      }
+      chunks.push(chunk);
+    }
+  } finally {
+    signal?.removeEventListener?.('abort', abort);
+    if (signal?.aborted) await reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks, total);
+}
+
+function contentLength(headers) {
+  const value = headers?.get?.('content-length');
+  if (!value || !/^\d+$/.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+function forwardedRequestHeaders(request) {
+  const headers = new Headers();
+  for (const name of ['accept', 'accept-language', 'content-type']) {
+    const value = request.headers?.get?.(name);
+    if (typeof value === 'string' && value.length <= 1_024) headers.set(name, value);
+  }
+  headers.set('user-agent', 'Freedom workspace preview');
+  return headers;
+}
+
+function serverResponseHeaders(response, length) {
+  const contentType = response.headers?.get?.('content-type');
+  return {
+    ...responseHeaders(
+      typeof contentType === 'string' && contentType.length <= 256
+        ? contentType
+        : 'application/octet-stream',
+      { server: true }
+    ),
+    'Content-Length': String(length),
   };
 }
 
@@ -227,6 +299,7 @@ class WorkspacePreviewController {
     this.previews = new Map();
     this.session = null;
     this.activeRequests = 0;
+    this.fetch = options.fetch || globalThis.fetch;
   }
 
   register(targetSession) {
@@ -295,12 +368,205 @@ class WorkspacePreviewController {
     }
     this.previews.set(
       token,
-      Object.freeze({ conversationId, workspaceId: workspace.workspaceId, root, entryPath })
+      Object.freeze({
+        kind: 'static',
+        conversationId,
+        workspaceId: workspace.workspaceId,
+        root,
+        entryPath,
+      })
     );
     return Object.freeze({
       url: `${PREVIEW_SCHEME}://${token}/${encodeURIComponent(entryPath)}`,
       entryPath: relative === '.' ? entryPath : relative,
     });
+  }
+
+  createProcessPreview(conversationId, processId) {
+    if (
+      typeof this.workspaceController.inspectProcess !== 'function' ||
+      typeof this.fetch !== 'function'
+    ) {
+      throw new WorkspacePreviewError(
+        'WORKSPACE_PREVIEW_UNAVAILABLE',
+        'Managed server previews are unavailable'
+      );
+    }
+    const process = this.workspaceController.inspectProcess(conversationId, processId);
+    const workspace = process?.workspace;
+    if (
+      workspace?.state !== 'running' ||
+      workspace.processId !== processId ||
+      workspace.networkPosture !== 'full' ||
+      !Number.isSafeInteger(workspace.previewPort) ||
+      workspace.previewPort < 1_024 ||
+      workspace.previewPort > 65_535
+    ) {
+      throw new WorkspacePreviewError(
+        'WORKSPACE_PREVIEW_UNAVAILABLE',
+        'Preview requires a running managed server launched with an approved preview port and full networking'
+      );
+    }
+    for (const [token, preview] of this.previews) {
+      if (
+        preview.kind === 'server' &&
+        preview.conversationId === conversationId &&
+        preview.workspaceId === workspace.workspaceId &&
+        preview.processId === processId &&
+        preview.port === workspace.previewPort
+      ) {
+        return Object.freeze({
+          kind: 'server',
+          url: `${PREVIEW_SCHEME}://${token}/`,
+          processId,
+          port: preview.port,
+          entryPath: `server on port ${preview.port}`,
+        });
+      }
+    }
+    if (this.previews.size >= this.maxPreviews) {
+      throw new WorkspacePreviewError(
+        'WORKSPACE_PREVIEW_UNAVAILABLE',
+        'Too many previews are already open'
+      );
+    }
+    const token = this.tokenFactory();
+    if (typeof token !== 'string' || !/^[a-f0-9]{20,128}$/.test(token) || this.previews.has(token)) {
+      throw new WorkspacePreviewError(
+        'WORKSPACE_PREVIEW_UNAVAILABLE',
+        'Could not allocate a preview'
+      );
+    }
+    this.previews.set(
+      token,
+      Object.freeze({
+        kind: 'server',
+        conversationId,
+        workspaceId: workspace.workspaceId,
+        processId,
+        port: workspace.previewPort,
+      })
+    );
+    return Object.freeze({
+      kind: 'server',
+      url: `${PREVIEW_SCHEME}://${token}/`,
+      processId,
+      port: workspace.previewPort,
+      entryPath: `server on port ${workspace.previewPort}`,
+    });
+  }
+
+  async #handleServerRequest(request, url, preview) {
+    const method = request?.method || 'GET';
+    if (!SERVER_PREVIEW_METHODS.has(method)) {
+      return new Response('Method not allowed', {
+        status: 405,
+        headers: responseHeaders('text/plain; charset=utf-8', { server: true }),
+      });
+    }
+    let process;
+    try {
+      process = this.workspaceController.inspectProcess(preview.conversationId, preview.processId);
+    } catch {
+      process = null;
+    }
+    if (
+      process?.workspace?.state !== 'running' ||
+      process.workspace.workspaceId !== preview.workspaceId ||
+      process.workspace.networkPosture !== 'full' ||
+      process.workspace.previewPort !== preview.port
+    ) {
+      this.previews.delete(url.hostname);
+      return new Response('Preview server stopped', {
+        status: 410,
+        headers: responseHeaders('text/plain; charset=utf-8', { server: true }),
+      });
+    }
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    request.signal?.addEventListener?.('abort', abort, { once: true });
+    if (request.signal?.aborted) abort();
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      abort();
+    }, PREVIEW_REQUEST_TIMEOUT_MS);
+    timeout.unref?.();
+    try {
+      try {
+        const relative = requestRelativePath(url);
+        const target = new URL(`http://127.0.0.1:${preview.port}/`);
+        target.pathname = `/${relative}`;
+        target.search = url.search;
+        const requestBody = ['GET', 'HEAD'].includes(method)
+          ? null
+          : await readBoundedBody(
+              request.body,
+              MAX_PREVIEW_REQUEST_BYTES,
+              contentLength(request.headers),
+              controller.signal
+            );
+        const upstream = await this.fetch(target, {
+          method,
+          headers: forwardedRequestHeaders(request),
+          redirect: 'manual',
+          signal: controller.signal,
+          ...(requestBody?.byteLength && { body: requestBody }),
+        });
+        if (upstream.status >= 300 && upstream.status < 400) {
+          const location = upstream.headers.get('location');
+          if (!location) {
+            return new Response(null, {
+              status: upstream.status,
+              headers: responseHeaders(null, { server: true }),
+            });
+          }
+          const redirected = new URL(location, target);
+          if (
+            redirected.protocol !== 'http:' ||
+            redirected.hostname !== '127.0.0.1' ||
+            Number(redirected.port) !== preview.port
+          ) {
+            throw new WorkspacePreviewError(
+              'WORKSPACE_PREVIEW_UNSAFE',
+              'The preview server attempted an external redirect'
+            );
+          }
+          return new Response(null, {
+            status: upstream.status,
+            headers: {
+              ...responseHeaders(null, { server: true }),
+              Location: `${redirected.pathname}${redirected.search}${redirected.hash}`,
+            },
+          });
+        }
+        const body =
+          method === 'HEAD' || [204, 205, 304].includes(upstream.status)
+            ? Buffer.alloc(0)
+            : await readBoundedBody(
+                upstream.body,
+                MAX_PREVIEW_FILE_BYTES,
+                contentLength(upstream.headers),
+                controller.signal
+              );
+        return new Response(
+          method === 'HEAD' || [204, 205, 304].includes(upstream.status) ? null : body,
+          {
+            status: upstream.status,
+            headers: serverResponseHeaders(upstream, body.byteLength),
+          }
+        );
+      } catch (error) {
+        if (error instanceof WorkspacePreviewError) throw error;
+        return new Response(timedOut ? 'Preview server timed out' : 'Preview server unavailable', {
+          status: timedOut ? 504 : 502,
+          headers: responseHeaders('text/plain; charset=utf-8', { server: true }),
+        });
+      }
+    } finally {
+      clearTimeout(timeout);
+      request.signal?.removeEventListener?.('abort', abort);
+    }
   }
 
   async handleRequest(request) {
@@ -312,12 +578,6 @@ class WorkspacePreviewController {
     }
     this.activeRequests += 1;
     try {
-      if (!['GET', 'HEAD'].includes(request?.method || 'GET')) {
-        return new Response('Method not allowed', {
-          status: 405,
-          headers: responseHeaders('text/plain; charset=utf-8'),
-        });
-      }
       const url = new URL(request.url);
       const preview = this.previews.get(url.hostname);
       if (url.protocol !== `${PREVIEW_SCHEME}:` || !preview) {
@@ -331,6 +591,15 @@ class WorkspacePreviewController {
         this.previews.delete(url.hostname);
         return new Response('Preview unavailable', {
           status: 404,
+          headers: responseHeaders('text/plain; charset=utf-8'),
+        });
+      }
+      if (preview.kind === 'server') {
+        return await this.#handleServerRequest(request, url, preview);
+      }
+      if (!['GET', 'HEAD'].includes(request?.method || 'GET')) {
+        return new Response('Method not allowed', {
+          status: 405,
           headers: responseHeaders('text/plain; charset=utf-8'),
         });
       }
@@ -354,7 +623,12 @@ class WorkspacePreviewController {
         headers: { ...responseHeaders(contentType), 'Content-Length': String(data.byteLength) },
       });
     } catch (error) {
-      const status = error?.code === 'ENOENT' || error?.code === 'ENOTDIR' ? 404 : 403;
+      const status =
+        error?.code === 'ENOENT' || error?.code === 'ENOTDIR'
+          ? 404
+          : error?.code === 'WORKSPACE_PREVIEW_TOO_LARGE'
+            ? 413
+            : 403;
       return new Response(status === 404 ? 'Not found' : 'Preview blocked', {
         status,
         headers: responseHeaders('text/plain; charset=utf-8'),
@@ -407,10 +681,13 @@ class WorkspacePreviewController {
 module.exports = {
   MAX_CONCURRENT_PREVIEW_REQUESTS,
   MAX_PREVIEW_FILE_BYTES,
+  MAX_PREVIEW_REQUEST_BYTES,
   MAX_PREVIEWS,
   MIME_TYPES,
   PREVIEW_CSP,
+  PREVIEW_REQUEST_TIMEOUT_MS,
   PREVIEW_SCHEME,
+  SERVER_PREVIEW_CSP,
   WorkspacePreviewController,
   WorkspacePreviewError,
   readRegularFile,

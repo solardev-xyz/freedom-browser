@@ -287,6 +287,15 @@ describe('ManagedWorkspaceController', () => {
         backend: 'linux-bubblewrap',
       },
     });
+    expect(controller.inspectProcess('conversation_one', started.processId)).toMatchObject({
+      processId: started.processId,
+      state: 'running',
+      workspace: {
+        processId: started.processId,
+        state: 'running',
+        networkPosture: 'none',
+      },
+    });
     await controller.interactProcess('conversation_one', started.processId, {
       input: 'reload\n',
       waitMs: 0,
@@ -510,12 +519,21 @@ describe('ManagedWorkspaceController', () => {
 
     const fullNetworkReceipt = await controller.execute('conversation_one', {
       command: 'curl https://example.com',
+      previewPort: 4_173,
     });
     expect(dependencies.executor.execute).toHaveBeenLastCalledWith(
       fullNetworkAgentPolicy,
       expect.objectContaining({ command: '/bin/sh' })
     );
     expect(fullNetworkReceipt.networkPosture).toBe('full');
+    expect(fullNetworkReceipt.previewPort).toBe(4_173);
+
+    await expect(
+      controller.execute('conversation_one', {
+        command: 'curl https://example.com',
+        previewPort: 4_173,
+      })
+    ).rejects.toMatchObject({ code: 'WORKSPACE_PREVIEW_NETWORK_REQUIRED' });
 
     const offlineReceipt = await controller.execute('conversation_one', {
       command: 'curl https://example.com',

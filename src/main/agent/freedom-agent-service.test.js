@@ -526,6 +526,7 @@ describe('FreedomAgentService', () => {
     expect(dependencies.createSession.mock.calls[0][0].systemPrompt).not.toContain(
       'grant direct networking'
     );
+    expect(dependencies.createSession.mock.calls[0][0].systemPrompt).not.toContain('previewPort');
     expect(service.getState().workspace).toEqual(
       expect.objectContaining({ workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa' })
     );
@@ -609,6 +610,12 @@ describe('FreedomAgentService', () => {
     );
     expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toContain(
       'public internet, host localhost, and private/LAN addresses'
+    );
+    expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toContain(
+      'run that same command through bash with previewPort set to the TCP port'
+    );
+    expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toContain(
+      'pass that processId to workspace_preview'
     );
 
     fake.prompt.resolve();
