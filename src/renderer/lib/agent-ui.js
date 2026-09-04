@@ -2788,6 +2788,12 @@ function handleAgentEvent(event) {
     void refreshSessionHistory();
     return;
   }
+  if (event.type === 'tool_finished' && event.runId !== currentRunId) {
+    finishToolRow(event);
+    void refreshWorkspaceProjection();
+    void refreshSessionHistory();
+    return;
+  }
   if (!currentRunId) return;
   if (event.type === 'run_thinking') {
     setLiveStatus(event.runId, 'Thinking…');

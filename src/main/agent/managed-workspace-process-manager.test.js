@@ -40,6 +40,7 @@ function deferred() {
 
 describe('ManagedWorkspaceProcessManager', () => {
   test('returns ordinary commands directly when they finish before yielding', async () => {
+    const onTerminal = jest.fn();
     const manager = new ManagedWorkspaceProcessManager({
       execute: jest.fn(async (_conversationId, request) => {
         request.onOutput('stdout', Buffer.from('hello\n'));
@@ -48,7 +49,9 @@ describe('ManagedWorkspaceProcessManager', () => {
       idFactory: () => 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
     });
 
-    await expect(manager.start('conversation_one', { command: 'node hello.js' })).resolves.toEqual(
+    await expect(
+      manager.start('conversation_one', { command: 'node hello.js', onTerminal })
+    ).resolves.toEqual(
       expect.objectContaining({
         processId: 'workspace_process_aaaaaaaaaaaaaaaaaaaaaaaa',
         state: 'completed',
@@ -56,12 +59,14 @@ describe('ManagedWorkspaceProcessManager', () => {
         receipt: expect.objectContaining({ state: 'completed' }),
       })
     );
+    expect(onTerminal).not.toHaveBeenCalled();
   });
 
   test('yields a running process, streams later output, accepts input, and reports completion', async () => {
     const completion = deferred();
     let request;
     const write = jest.fn(() => true);
+    const onTerminal = jest.fn();
     const manager = new ManagedWorkspaceProcessManager({
       execute: jest.fn(async (_conversationId, value) => {
         request = value;
@@ -84,6 +89,7 @@ describe('ManagedWorkspaceProcessManager', () => {
     const started = await manager.start('conversation_one', {
       command: 'node server.js',
       yieldMs: 1,
+      onTerminal,
     });
     expect(started).toEqual(
       expect.objectContaining({
@@ -111,6 +117,13 @@ describe('ManagedWorkspaceProcessManager', () => {
     await expect(
       manager.interact('conversation_one', started.processId, { waitMs: 1_000 })
     ).resolves.toEqual(expect.objectContaining({ state: 'completed' }));
+    expect(onTerminal).toHaveBeenCalledWith(
+      expect.objectContaining({
+        processId: started.processId,
+        state: 'completed',
+        receipt: expect.objectContaining({ terminationScope: 'pid_namespace' }),
+      })
+    );
   });
 
   test('binds process access to its conversation and terminates through the retained signal', async () => {
@@ -172,6 +185,7 @@ describe('ManagedWorkspaceProcessManager', () => {
   test('expires a process that fails after its initial result was yielded', async () => {
     const completion = deferred();
     const retention = [];
+    const onTerminal = jest.fn();
     const manager = new ManagedWorkspaceProcessManager({
       execute: jest.fn(async () => completion.promise),
       idFactory: () => 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee',
@@ -185,10 +199,21 @@ describe('ManagedWorkspaceProcessManager', () => {
     const started = await manager.start('conversation_one', {
       command: 'node server.js',
       yieldMs: 250,
+      onTerminal,
     });
     completion.reject(Object.assign(new Error('launch failed'), { code: 'LAUNCH_FAILED' }));
     await new Promise((resolve) => setImmediate(resolve));
 
+    expect(onTerminal).toHaveBeenCalledWith(
+      expect.objectContaining({
+        processId: started.processId,
+        state: 'failed',
+        receipt: expect.objectContaining({
+          state: 'failed',
+          terminationScope: 'unknown',
+        }),
+      })
+    );
     expect(retention).toHaveLength(1);
     retention[0]();
     await expect(

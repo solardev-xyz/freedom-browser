@@ -1545,6 +1545,10 @@ class ManagedWorkspaceController {
       timeoutMs: Number.isFinite(request.timeoutMs)
         ? request.timeoutMs
         : DEFAULT_MANAGED_PROCESS_TIMEOUT_MS,
+      ...(typeof request.onTerminal === 'function' && {
+        onTerminal: (terminal) =>
+          request.onTerminal(this.#processResult(conversationId, terminal)),
+      }),
     });
     return this.#processResult(conversationId, process);
   }

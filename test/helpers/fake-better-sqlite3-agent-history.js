@@ -138,12 +138,42 @@ class FakeBetterSqlite3AgentHistoryDatabase {
       };
     }
 
+    if (
+      query ===
+      "UPDATE agent_turns SET activity_json = ? WHERE id = ? AND session_id = ? AND status != 'running'"
+    ) {
+      return {
+        run: (activityJson, id, sessionId) => {
+          const row = this.state.turns.find(
+            (candidate) =>
+              candidate.id === id &&
+              candidate.session_id === sessionId &&
+              candidate.status !== 'running'
+          );
+          if (!row) return { changes: 0 };
+          row.activity_json = activityJson;
+          return { changes: 1 };
+        },
+      };
+    }
+
     if (query === 'UPDATE agent_sessions SET status = ?, updated_at = ? WHERE id = ?') {
       return {
         run: (status, updatedAt, id) => {
           const row = this.state.sessions.find((candidate) => candidate.id === id);
           if (!row) return { changes: 0 };
           row.status = status;
+          row.updated_at = updatedAt;
+          return { changes: 1 };
+        },
+      };
+    }
+
+    if (query === 'UPDATE agent_sessions SET updated_at = ? WHERE id = ?') {
+      return {
+        run: (updatedAt, id) => {
+          const row = this.state.sessions.find((candidate) => candidate.id === id);
+          if (!row) return { changes: 0 };
           row.updated_at = updatedAt;
           return { changes: 1 };
         },

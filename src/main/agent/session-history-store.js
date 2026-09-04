@@ -312,6 +312,13 @@ class AgentSessionHistoryStore {
         UPDATE agent_turns SET guidance_json = ?
         WHERE id = ? AND session_id = ?
       `),
+      updateTurnActivity: db.prepare(`
+        UPDATE agent_turns SET activity_json = ?
+        WHERE id = ? AND session_id = ? AND status != 'running'
+      `),
+      touchSessionTime: db.prepare(`
+        UPDATE agent_sessions SET updated_at = ? WHERE id = ?
+      `),
       touchSession: db.prepare(`
         UPDATE agent_sessions SET status = ?, updated_at = ? WHERE id = ?
       `),
@@ -440,6 +447,21 @@ class AgentSessionHistoryStore {
     );
     if (result.changes > 0) {
       this.#getStatements().touchSession.run('running', this.now(), sessionId);
+    }
+    return result.changes > 0;
+  }
+
+  updateTurnActivity(entry) {
+    const sessionId = requiredString(entry?.conversationId, 'Agent conversation ID', 160);
+    const runId = requiredString(entry?.runId, 'Agent run ID', 160);
+    const activity = normalizeActivity(entry?.activity);
+    const result = this.#getStatements().updateTurnActivity.run(
+      JSON.stringify(activity),
+      runId,
+      sessionId
+    );
+    if (result.changes > 0) {
+      this.#getStatements().touchSessionTime.run(this.now(), sessionId);
     }
     return result.changes > 0;
   }

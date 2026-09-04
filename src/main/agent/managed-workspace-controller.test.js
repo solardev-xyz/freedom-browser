@@ -243,6 +243,7 @@ describe('ManagedWorkspaceController', () => {
   test('yields and later stops a conversation-owned sandbox process with streamed output', async () => {
     let sandboxRequest;
     const stdin = { write: jest.fn(() => true) };
+    const onTerminal = jest.fn();
     const { controller, dependencies } = createController();
     dependencies.executor.execute.mockImplementation(async (_policy, request) => {
       sandboxRequest = request;
@@ -274,6 +275,7 @@ describe('ManagedWorkspaceController', () => {
     const started = await controller.startProcess('conversation_one', {
       command: 'node server.js',
       yieldMs: 250,
+      onTerminal,
     });
     expect(started).toMatchObject({
       state: 'running',
@@ -306,6 +308,16 @@ describe('ManagedWorkspaceController', () => {
         terminationScope: 'pid_namespace',
       },
     });
+    expect(onTerminal).toHaveBeenCalledWith(
+      expect.objectContaining({
+        processId: started.processId,
+        state: 'cancelled',
+        workspace: expect.objectContaining({
+          processId: started.processId,
+          terminationScope: 'pid_namespace',
+        }),
+      })
+    );
   });
 
   test('binds one-shot executable access to one exact command and working directory', async () => {

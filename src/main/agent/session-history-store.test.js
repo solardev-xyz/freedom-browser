@@ -314,6 +314,87 @@ describe('AgentSessionHistoryStore', () => {
     expect(store.getDb().filePath).toBe(path.join(userDataDir, DB_FILE));
   });
 
+  test('updates terminal turn activity without changing its status', () => {
+    store.createSession({
+      conversationId: 'conversation_one',
+      title: 'Run server',
+      approvalMode: 'every_interaction',
+    });
+    store.startTurn({
+      conversationId: 'conversation_one',
+      runId: 'run_one',
+      userText: 'Run the server',
+      approvalMode: 'every_interaction',
+    });
+    expect(
+      store.updateTurnActivity({
+        conversationId: 'conversation_one',
+        runId: 'run_one',
+        activity: [],
+      })
+    ).toBe(false);
+    store.finishTurn({
+      conversationId: 'conversation_one',
+      runId: 'run_one',
+      assistantText: 'Server started.',
+      status: 'completed',
+      activity: [],
+    });
+    now = 2_000;
+
+    expect(
+      store.updateTurnActivity({
+        conversationId: 'conversation_one',
+        runId: 'run_one',
+        activity: [
+          {
+            toolCallId: 'call_server',
+            operation: 'bash',
+            status: 'succeeded',
+            label: 'Ran node server.js',
+            intent: 'Running node server.js',
+            effect: 'changed',
+            workspace: {
+              workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa',
+              commandId: 'workspace_cmd_bbbbbbbbbbbbbbbbbbbbbbbb',
+              processId: 'workspace_process_cccccccccccccccccccccccc',
+              kind: 'command',
+              command: 'node server.js',
+              workingDirectory: '.',
+              backend: 'linux-bubblewrap',
+              networkPosture: 'none',
+              state: 'completed',
+              terminationGuarantee: 'namespace_scoped',
+              terminationScope: 'pid_namespace',
+              sideEffects: 'unknown',
+              completeDescendantTermination: true,
+            },
+          },
+        ],
+      })
+    ).toBe(true);
+    expect(store.getSession('conversation_one')).toMatchObject({
+      status: 'ready',
+      updatedAt: 2_000,
+      transcript: [
+        {
+          status: 'completed',
+          activity: [
+            {
+              toolCallId: 'call_server',
+              status: 'succeeded',
+              workspace: {
+                processId: 'workspace_process_cccccccccccccccccccccccc',
+                state: 'completed',
+                terminationScope: 'pid_namespace',
+              },
+            },
+          ],
+        },
+      ],
+    });
+  });
+
   test('renames and permanently deletes a session with all turns', () => {
     store.createSession({
       conversationId: 'conversation_one',

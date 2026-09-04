@@ -113,15 +113,33 @@ class ManagedWorkspaceProcessManager {
     entry.revision += 1;
     this.#wake(entry);
     this.#retainTerminal(entry);
+    this.#notifyTerminal(entry);
     return receipt;
   }
 
   #failed(entry, error) {
     entry.error = error;
     entry.state = 'failed';
+    entry.receipt = Object.freeze({
+      ...(entry.workspace || {}),
+      command: entry.workspace?.command || entry.command,
+      workingDirectory: entry.workspace?.workingDirectory || entry.workingDirectory,
+      backend: entry.workspace?.backend || 'unavailable',
+      state: 'failed',
+      exitCode: null,
+      signal: null,
+      stdoutTruncated: entry.outputTruncated,
+      stderrTruncated: false,
+      terminationGuarantee: 'unknown',
+      terminationScope: 'unknown',
+      sideEffects: 'unknown',
+      survivorsPossible: true,
+      completeDescendantTermination: false,
+    });
     entry.revision += 1;
     this.#wake(entry);
     this.#retainTerminal(entry);
+    this.#notifyTerminal(entry);
     return null;
   }
 
@@ -133,6 +151,24 @@ class ManagedWorkspaceProcessManager {
       if (this.entries.get(key) === entry) this.entries.delete(key);
     }, TERMINAL_PROCESS_RETENTION_MS);
     entry.retentionTimer?.unref?.();
+  }
+
+  #notifyTerminal(entry) {
+    if (!entry.exposed || entry.terminalNotified || !entry.receipt || !entry.onTerminal) return;
+    entry.terminalNotified = true;
+    const event = Object.freeze({
+      processId: entry.processId,
+      state: entry.state,
+      command: entry.command,
+      workingDirectory: entry.workingDirectory,
+      ...(entry.workspace && { workspace: entry.workspace }),
+      receipt: entry.receipt,
+    });
+    try {
+      Promise.resolve(entry.onTerminal(event)).catch(() => {});
+    } catch {
+      // Process completion and cleanup cannot depend on a lifecycle observer.
+    }
   }
 
   #snapshot(entry) {
@@ -197,6 +233,12 @@ class ManagedWorkspaceProcessManager {
 
   async start(conversationId, request = {}) {
     const owner = validConversationId(conversationId);
+    if (request.onTerminal !== undefined && typeof request.onTerminal !== 'function') {
+      throw new ManagedWorkspaceProcessError(
+        'INVALID_WORKSPACE_PROCESS_REQUEST',
+        'Workspace process completion observer must be a function'
+      );
+    }
     if (this.#activeCount(owner) >= MAX_ACTIVE_PROCESSES_PER_CONVERSATION) {
       throw new ManagedWorkspaceProcessError(
         'WORKSPACE_PROCESS_LIMIT_REACHED',
@@ -229,16 +271,20 @@ class ManagedWorkspaceProcessManager {
       revision: 0,
       waiters: new Set(),
       retentionTimer: null,
+      exposed: false,
+      terminalNotified: false,
+      onTerminal: request.onTerminal || null,
     };
     this.entries.set(processKey(owner, id), entry);
 
     const abort = () => controller.abort();
     request.signal?.addEventListener?.('abort', abort, { once: true });
     if (request.signal?.aborted) controller.abort();
+    const { onTerminal: _onTerminal, ...executionRequest } = request;
     entry.completion = Promise.resolve()
       .then(() =>
         this.execute(owner, {
-          ...request,
+          ...executionRequest,
           signal: controller.signal,
           onOutput: (stream, chunk) => this.#append(entry, stream, chunk),
           onStdin: (control) => {
@@ -269,6 +315,7 @@ class ManagedWorkspaceProcessManager {
       throw entry.error;
     }
     const snapshot = this.#snapshot(entry);
+    if (entry.state === 'running') entry.exposed = true;
     if (entry.state !== 'running') {
       if (entry.retentionTimer) this.clearTimer(entry.retentionTimer);
       this.entries.delete(processKey(owner, id));

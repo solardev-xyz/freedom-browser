@@ -3451,6 +3451,69 @@ describe('Agent UI', () => {
     );
   });
 
+  test('reconciles a yielded workspace process after its Agent run has finished', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({
+      type: 'run_started',
+      conversationId: 'conversation_test',
+      runId: 'run_process',
+      userText: 'Start the worker',
+    });
+    ctx.emit({
+      type: 'tool_started',
+      conversationId: 'conversation_test',
+      runId: 'run_process',
+      toolCallId: 'tool_process',
+      operation: 'bash',
+      intent: 'Starting the worker',
+    });
+    ctx.emit({
+      type: 'tool_finished',
+      conversationId: 'conversation_test',
+      runId: 'run_process',
+      toolCallId: 'tool_process',
+      operation: 'bash',
+      status: 'succeeded',
+      label: 'Process still running',
+      workspace: {
+        state: 'running',
+        processId: 'workspace_process_1234567890abcdef12345678',
+        terminationScope: 'pending',
+      },
+    });
+    ctx.emit({
+      type: 'run_finished',
+      conversationId: 'conversation_test',
+      runId: 'run_process',
+      status: 'completed',
+      durationMs: 12_000,
+      actionCount: 1,
+    });
+
+    const row = ctx.elements['agent-transcript'].querySelector('.agent-tool-item');
+    expect(row.children[1].textContent).toBe('Process still running');
+    expect(ctx.elements['agent-run-status'].textContent).toBe('Complete');
+
+    ctx.emit({
+      type: 'tool_finished',
+      conversationId: 'conversation_test',
+      runId: 'run_process',
+      toolCallId: 'tool_process',
+      operation: 'bash',
+      status: 'succeeded',
+      label: 'Ran the worker',
+      workspace: {
+        state: 'completed',
+        processId: 'workspace_process_1234567890abcdef12345678',
+        terminationScope: 'pid_namespace',
+      },
+    });
+
+    expect(row.children[0].textContent).toBe('✓');
+    expect(row.children[1].textContent).toBe('Ran the worker');
+    expect(ctx.elements['agent-run-status'].textContent).toBe('Complete');
+  });
+
   test('connects a ChatGPT subscription without exposing OAuth credentials', async () => {
     let resolveLogin;
     const loginPromise = new Promise((resolve) => {

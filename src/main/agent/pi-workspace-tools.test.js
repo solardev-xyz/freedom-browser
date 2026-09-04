@@ -259,6 +259,7 @@ describe('Pi managed workspace tools', () => {
   test('yields long-running bash commands and continues them through write_stdin', async () => {
     const controller = createController();
     const onToolOutcome = jest.fn();
+    const onProcessTerminal = jest.fn();
     controller.startProcess.mockResolvedValueOnce({
       processId: 'workspace_process_cccccccccccccccccccccccc',
       state: 'running',
@@ -288,6 +289,7 @@ describe('Pi managed workspace tools', () => {
       conversationId: 'conversation_one',
       requestApproval: jest.fn(),
       onToolOutcome,
+      onProcessTerminal,
     });
 
     await expect(
@@ -307,7 +309,21 @@ describe('Pi managed workspace tools', () => {
     });
     expect(controller.startProcess).toHaveBeenCalledWith(
       'conversation_one',
-      expect.objectContaining({ command: 'node server.js', yieldMs: 250 })
+      expect.objectContaining({
+        command: 'node server.js',
+        yieldMs: 250,
+        onTerminal: expect.any(Function),
+      })
+    );
+    controller.startProcess.mock.calls[0][1].onTerminal({
+      workspace: { state: 'completed' },
+    });
+    expect(onProcessTerminal).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toolCallId: 'bash_server',
+        operation: 'bash',
+        workspace: expect.objectContaining({ state: 'completed' }),
+      })
     );
 
     const processTool = tools.find((tool) => tool.name === 'write_stdin');

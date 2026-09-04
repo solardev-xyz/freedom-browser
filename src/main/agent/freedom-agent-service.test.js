@@ -100,6 +100,7 @@ function createHistoryStore(overrides = {}) {
     createSession: jest.fn(),
     startTurn: jest.fn(),
     finishTurn: jest.fn(),
+    updateTurnActivity: jest.fn(),
     updateTurnGuidance: jest.fn(),
     listSessions: jest.fn(() => []),
     getSession: jest.fn(() => null),
@@ -504,6 +505,7 @@ describe('FreedomAgentService', () => {
       getRunSignal: expect.any(Function),
       onToolOutcome: expect.any(Function),
       onToolPhase: expect.any(Function),
+      onProcessTerminal: expect.any(Function),
     });
     expect(dependencies.createSession.mock.calls[0][0]).toMatchObject({
       customTools: [
@@ -2179,6 +2181,134 @@ describe('FreedomAgentService', () => {
       },
     });
     expect(events.at(-1)).toMatchObject({ type: 'run_finished', status: 'cancelled' });
+  });
+
+  test('reconciles a yielded process into its finished turn without another poll', async () => {
+    const fake = createFakeSession();
+    const historyStore = createHistoryStore();
+    let workspaceOptions;
+    const workspaceController = {
+      getWorkspace: jest.fn(() => ({
+        workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa',
+        enabled: true,
+        backend: 'linux-bubblewrap',
+        commands: [],
+      })),
+      disclosure: jest.fn(),
+      enable: jest.fn(),
+      execute: jest.fn(),
+      cancelConversation: jest.fn(() => 0),
+      deleteConversation: jest.fn(async () => true),
+      dispose: jest.fn(),
+    };
+    const createWorkspaceTools = jest.fn(async (options) => {
+      workspaceOptions = options;
+      return [{ name: 'bash' }];
+    });
+    const { service } = createService(fake, {
+      historyStore,
+      workspaceController,
+      createWorkspaceTools,
+    });
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+    fake.emit({
+      type: 'tool_execution_start',
+      toolCallId: 'call_workspace_server',
+      toolName: 'bash',
+      args: { command: 'node server.js' },
+    });
+    workspaceOptions.onToolOutcome({
+      toolCallId: 'call_workspace_server',
+      operation: 'bash',
+      status: 'succeeded',
+      workspace: {
+        workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa',
+        commandId: 'workspace_cmd_bbbbbbbbbbbbbbbbbbbbbbbb',
+        processId: 'workspace_process_cccccccccccccccccccccccc',
+        kind: 'command',
+        command: 'node server.js',
+        workingDirectory: '.',
+        backend: 'linux-bubblewrap',
+        networkPosture: 'none',
+        state: 'running',
+        terminationGuarantee: 'pending',
+        terminationScope: 'pending',
+        sideEffects: 'unknown',
+        survivorsPossible: false,
+        completeDescendantTermination: false,
+      },
+    });
+    fake.emit({
+      type: 'tool_execution_end',
+      toolCallId: 'call_workspace_server',
+      toolName: 'bash',
+      isError: false,
+    });
+    fake.emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop' } });
+    fake.prompt.resolve();
+    await service.waitForIdle();
+    expect(service.getState().transcript[0].activity[0].workspace.state).toBe('running');
+
+    workspaceOptions.onProcessTerminal({
+      toolCallId: 'call_workspace_server',
+      operation: 'bash',
+      workspace: {
+        workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa',
+        commandId: 'workspace_cmd_bbbbbbbbbbbbbbbbbbbbbbbb',
+        processId: 'workspace_process_cccccccccccccccccccccccc',
+        kind: 'command',
+        command: 'node server.js',
+        workingDirectory: '.',
+        backend: 'linux-bubblewrap',
+        networkPosture: 'none',
+        state: 'completed',
+        durationMs: 2_000,
+        exitCode: 0,
+        stdout: 'private-process-output',
+        stderr: 'private-process-error',
+        hostPath: '/Users/example/private-workspace',
+        terminationGuarantee: 'namespace_scoped',
+        terminationScope: 'pid_namespace',
+        sideEffects: 'unknown',
+        survivorsPossible: false,
+        completeDescendantTermination: true,
+      },
+    });
+
+    expect(historyStore.updateTurnActivity).toHaveBeenCalledWith({
+      conversationId: 'conversation_test',
+      runId: 'run_test',
+      activity: [
+        expect.objectContaining({
+          toolCallId: 'call_workspace_server',
+          status: 'succeeded',
+          label: 'Ran node server.js',
+          workspace: expect.objectContaining({
+            state: 'completed',
+            terminationScope: 'pid_namespace',
+          }),
+        }),
+      ],
+    });
+    expect(service.getState().transcript[0].activity[0]).toMatchObject({
+      status: 'succeeded',
+      label: 'Ran node server.js',
+      workspace: { state: 'completed', terminationScope: 'pid_namespace' },
+    });
+    expect(events.at(-1)).toMatchObject({
+      type: 'tool_finished',
+      runId: 'run_test',
+      toolCallId: 'call_workspace_server',
+      status: 'succeeded',
+      workspace: { state: 'completed' },
+    });
+    expect(events.at(-2)).toMatchObject({ type: 'run_finished', status: 'completed' });
+    expect(JSON.stringify(historyStore.updateTurnActivity.mock.calls.at(-1)[0])).not.toMatch(
+      /private-process|\/Users\/example/
+    );
+    expect(JSON.stringify(events.at(-1))).not.toMatch(/private-process|\/Users\/example/);
   });
 
   test('finishes Stop at its deadline when both Pi abort and execution remain wedged', async () => {

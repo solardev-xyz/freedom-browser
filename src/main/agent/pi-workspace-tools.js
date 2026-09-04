@@ -1020,6 +1020,14 @@ function bashOperations(options, captureReceipt, toolParams = {}) {
         ...(Number.isFinite(execution.timeout) && { timeoutMs: execution.timeout * 1_000 }),
         ...(Number.isFinite(toolParams.yield_time_ms) && { yieldMs: toolParams.yield_time_ms }),
         ...(options.operationPhase && { onPhase: options.operationPhase }),
+        ...(options.onProcessTerminal && {
+          onTerminal: (terminal) =>
+            notify(options.onProcessTerminal, {
+              toolCallId: options.toolCallId,
+              operation: 'bash',
+              workspace: terminal.workspace,
+            }),
+        }),
       });
       const receipt = process.workspace;
       captureReceipt(receipt);
@@ -1174,6 +1182,7 @@ function wrapWorkspaceTool(template, operation, options, createRuntimeTool) {
         notify(options.onToolPhase, { toolCallId, operation, phase });
       const executionOptions = {
         ...options,
+        toolCallId,
         operationSignal,
         operationPhase,
       };

@@ -965,6 +965,7 @@ class FreedomAgentService {
         'listSessions',
         'getSession',
         'updateApprovalMode',
+        'updateTurnActivity',
         'updateTurnGuidance',
         'renameSession',
         'deleteSession',
@@ -1500,6 +1501,8 @@ class FreedomAgentService {
                 const active = activeConversationRun();
                 if (active) this.#handleToolOutcome(active, outcome);
               },
+              onProcessTerminal: (outcome) =>
+                this.#handleWorkspaceProcessTerminal(run.conversationId, outcome),
               onToolPhase: (outcome) => {
                 const active = activeConversationRun();
                 if (active) this.#handleWorkspacePhase(active, outcome);
@@ -2092,15 +2095,24 @@ class FreedomAgentService {
         run.pendingWorkspaceOutcomes.set(normalized.toolCallId, pendingOutcome);
       }
     } else if (normalized.type === 'tool_finished') {
-      this.#applyToolFinished(run, normalized);
+      const applied = this.#applyToolFinished(run, normalized);
       if (toolOutcome) run.pendingWorkspaceOutcomes.delete(normalized.toolCallId);
+      if (!applied) return;
     }
     this.#emit(run, normalized);
   }
 
   #applyToolFinished(run, normalized) {
     const item = run.activity.find((candidate) => candidate.toolCallId === normalized.toolCallId);
-    if (!item) return;
+    if (!item) return true;
+    if (
+      normalized.workspace?.state === 'running' &&
+      normalized.workspace.processId &&
+      item.workspace?.processId === normalized.workspace.processId &&
+      item.workspace.state !== 'running'
+    ) {
+      return false;
+    }
     item.status = normalized.status;
     item.label = normalized.label;
     item.intent = normalized.intent;
@@ -2121,6 +2133,7 @@ class FreedomAgentService {
     if (normalized.attachment) item.attachment = normalized.attachment;
     if (normalized.artifacts) item.artifacts = normalized.artifacts;
     if (item.approval) normalized.approval = item.approval;
+    return true;
   }
 
   #reconcileToolOutcomes(run) {
@@ -2136,8 +2149,7 @@ class FreedomAgentService {
         { label: run.providerLabel, modelId: run.modelId }
       );
       if (normalized?.type !== 'tool_finished') continue;
-      this.#applyToolFinished(run, normalized);
-      this.#emit(run, normalized);
+      if (this.#applyToolFinished(run, normalized)) this.#emit(run, normalized);
       run.toolOutcomes.delete(toolCallId);
       run.pendingWorkspaceOutcomes.delete(toolCallId);
     }
@@ -2207,6 +2219,70 @@ class FreedomAgentService {
     });
     run.toolOutcomes.set(normalized.toolCallId, normalized);
     run.pendingWorkspaceOutcomes.get(normalized.toolCallId)?.resolve();
+  }
+
+  #handleWorkspaceProcessTerminal(conversationId, outcome) {
+    if (
+      this.disposed ||
+      !outcome ||
+      typeof outcome.toolCallId !== 'string' ||
+      !outcome.toolCallId
+    ) {
+      return;
+    }
+    const workspace = normalizeWorkspaceReceipt(outcome.workspace);
+    if (!workspace?.processId || workspace.state === 'running') return;
+    const conversation = this.conversations.get(conversationId);
+    if (!conversation) return;
+    const run = [...conversation.turns]
+      .reverse()
+      .find((candidate) =>
+        candidate.activity.some((item) => item.toolCallId === outcome.toolCallId)
+      );
+    const item = run?.activity.find((candidate) => candidate.toolCallId === outcome.toolCallId);
+    if (!run || !item || item.operation !== 'bash') return;
+    if (item.workspace?.processId && item.workspace.processId !== workspace.processId) return;
+    if (item.workspace?.commandId && item.workspace.commandId !== workspace.commandId) return;
+    if (
+      item.workspace?.processId === workspace.processId &&
+      item.workspace.state === workspace.state
+    ) {
+      return;
+    }
+    const errorCode =
+      workspace.state === 'timed_out'
+        ? 'WORKSPACE_COMMAND_TIMED_OUT'
+        : workspace.state === 'cancelled'
+          ? 'WORKSPACE_COMMAND_CANCELLED'
+          : workspace.state === 'sandbox_denied'
+            ? 'WORKSPACE_SANDBOX_DENIED'
+            : workspace.state === 'failed'
+              ? workspace.exitCode === 127
+                ? 'WORKSPACE_COMMAND_NOT_FOUND'
+                : 'WORKSPACE_COMMAND_FAILED'
+              : workspace.state === 'interrupted'
+                ? 'WORKSPACE_EXECUTION_INTERRUPTED'
+                : undefined;
+    const progress = activityProgress('bash', { workspace });
+    const normalized = {
+      type: 'tool_finished',
+      toolCallId: outcome.toolCallId,
+      operation: 'bash',
+      status: errorCode ? 'failed' : 'succeeded',
+      ...progress,
+      ...(errorCode && { errorCode }),
+      workspace,
+    };
+    if (!this.#applyToolFinished(run, normalized)) return;
+    run.outcome = buildAgentOutcome(run.activity, run.status, run.error);
+    if (run.finished) {
+      this.#persistHistory('updateTurnActivity', {
+        conversationId: run.conversationId,
+        runId: run.runId,
+        activity: run.activity,
+      });
+    }
+    this.#emit(run, normalized);
   }
 
   #handleWorkspacePhase(run, outcome) {
