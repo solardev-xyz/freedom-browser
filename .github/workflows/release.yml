@@ -407,6 +407,110 @@ jobs:
           if-no-files-found: error
           overwrite: true
 
+  # Smoke-test the Linux x64 artifacts the way a user gets them: install the
+  # .deb, run the `packaged` Playwright project against /opt/Freedom/freedom,
+  # then repeat against the binary inside the AppImage. This automates steps 1
+  # (launch), 2 (version) and 6 (persistence) of the manual checklist in
+  # docs/agent-playbooks/release-process.md §6 for this one platform; the other
+  # platforms, navigation, the bundled nodes and the headline feature are still
+  # tested by hand there.
+  smoke-linux-x64:
+    needs: [linux]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      # `--ignore-scripts` on purpose: this job only needs Playwright to drive
+      # an already-built artifact, so there is nothing to rebuild against
+      # Electron and no bundled binary to download.
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Install Playwright system dependencies
+        uses: ./.github/actions/install-playwright-deps
+
+      - name: Download the linux x64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: freedom-linux-x64
+          path: artifact
+
+      # A tag push must smoke-test the version it claims to be shipping; a
+      # dispatch run has no tag, so the working tree's version is the only
+      # truth available.
+      - name: Resolve the expected version
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = 'push' ]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="$(node -p "require('./package.json').version")"
+          fi
+          echo "Expecting the packaged app to report version $version"
+          echo "FREEDOM_E2E_EXPECTED_VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Install the .deb
+        run: |
+          shopt -s nullglob
+          debs=(artifact/*.deb)
+          if [ ${#debs[@]} -ne 1 ]; then
+            echo "Expected exactly one .deb in the artifact, found ${#debs[@]}" >&2
+            exit 1
+          fi
+          package="$(dpkg-deb -f "${debs[0]}" Package)"
+          # Through the apt wrapper for the same reason every other apt call on
+          # a Linux runner goes through it: bounded, retried, lock-aware.
+          "$GITHUB_WORKSPACE/scripts/ci/apt-hardening.sh" install "$(realpath "${debs[0]}")"
+          dpkg -s "$package" | grep -E '^(Package|Version|Architecture):'
+          test -x /opt/Freedom/freedom
+
+      - name: Smoke-test the installed .deb
+        env:
+          FREEDOM_E2E_EXECUTABLE: /opt/Freedom/freedom
+          FREEDOM_E2E_NO_SANDBOX: '1'
+        run: xvfb-run -a npm run test:e2e:packaged -- --output=test-results/deb
+
+      # No FUSE on the runner, so run the extracted tree rather than the
+      # self-mounting AppImage. `--appimage-extract-and-run` would do the same
+      # thing per launch; extracting once keeps every launch in this leg
+      # pointing at one binary.
+      - name: Extract the AppImage
+        run: |
+          shopt -s nullglob
+          images=(artifact/*.AppImage)
+          if [ ${#images[@]} -ne 1 ]; then
+            echo "Expected exactly one .AppImage in the artifact, found ${#images[@]}" >&2
+            exit 1
+          fi
+          chmod +x "${images[0]}"
+          "$(realpath "${images[0]}")" --appimage-extract >/dev/null
+          test -x squashfs-root/freedom
+
+      - name: Smoke-test the AppImage
+        env:
+          FREEDOM_E2E_EXECUTABLE: ${{ github.workspace }}/squashfs-root/freedom
+          FREEDOM_E2E_NO_SANDBOX: '1'
+        run: xvfb-run -a npm run test:e2e:packaged -- --output=test-results/appimage
+
+      # Traces and screenshots are only written for failures, so this is
+      # usually empty on a green run — hence `ignore` rather than `error`.
+      - name: Upload the smoke-test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-linux-x64-report
+          path: test-results/
+          if-no-files-found: ignore
+          overwrite: true
+
   windows-x64:
     runs-on: windows-latest
     timeout-minutes: 90
@@ -493,11 +597,12 @@ jobs:
           overwrite: true
 
   # One release for all platforms, created only after every build succeeded
-  # so the page never shows a partial set. "Re-run failed jobs" re-runs this
-  # job too and picks the successful jobs' artifacts back up from the run.
+  # and the Linux x64 artifacts passed their packaged smoke test, so the page
+  # never shows a partial or dead-on-arrival set. "Re-run failed jobs" re-runs
+  # this job too and picks the successful jobs' artifacts back up from the run.
   release:
     if: github.event_name == 'push'
-    needs: [mac-arm64, linux, windows-x64]
+    needs: [mac-arm64, linux, windows-x64, smoke-linux-x64]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
