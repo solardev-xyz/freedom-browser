@@ -2,19 +2,20 @@
 
 'use strict';
 
-// Qualification-only harness for the experimental full-network Agent permission path on Linux.
+// Qualification-only harness for the full-network Agent permission path on Linux.
 //
 // It composes the production FreedomAgentService, the production Pi workspace tools built from the
 // real Pi SDK tool factories, the production approval normalization, the production capability grant
 // store, the production ManagedWorkspaceController, and the real Bubblewrap executor. Only the Pi
 // *session* is a deterministic fake: no model provider, no credentials, no network from the harness
-// process itself. The feature gate is read exactly as src/main/index.js reads it.
+// process itself. Networking is available by default in the product but still requires an exact
+// approval. Pass --network-disabled to retain a deterministic unavailable-capability regression.
 //
 // Launch it through the checkout's Electron binary in Node mode (ELECTRON_RUN_AS_NODE=1), exactly as
 // the packaged Linux qualification is launched: the native SQLite stores are built for Electron's
 // ABI, and the unmodified production runtime detector then attests that same binary as the helper
-// runtime. Run twice: once with FREEDOM_EXPERIMENTAL_AGENT_NETWORK=1 and once without it. Each run
-// emits one JSON line per assertion and exits non-zero if any assertion fails.
+// runtime. Run once normally and once with --network-disabled. Each run emits one JSON line per
+// assertion and exits non-zero if any assertion fails.
 
 const { spawnSync } = require('child_process');
 const fs = require('fs');
@@ -38,8 +39,7 @@ const {
   createWorkspaceCapabilityRequest,
 } = require('../src/main/agent/workspace-execution/workspace-capabilities');
 
-// Mirrors src/main/index.js: the gate is the literal environment comparison, nothing else.
-const NETWORK_PERMISSIONS_ENABLED = process.env.FREEDOM_EXPERIMENTAL_AGENT_NETWORK === '1';
+const NETWORK_PERMISSIONS_ENABLED = !process.argv.includes('--network-disabled');
 const PUBLIC_HOST = process.env.FREEDOM_SANDBOX_PUBLIC_HOST || '1.1.1.1';
 const PUBLIC_PORT = process.env.FREEDOM_SANDBOX_PUBLIC_PORT || '443';
 const PUBLIC_URL = process.env.FREEDOM_SANDBOX_PUBLIC_URL || 'https://example.com/';
@@ -505,7 +505,7 @@ async function main() {
   } else {
     check(
       '1a',
-      'default-off: schema and Agent instructions do not advertise network access',
+      'capability-disabled: schema and Agent instructions do not advertise network access',
       !advertisesNetwork &&
         permissionTool.parameters.required.includes('executables') &&
         permissionTool.parameters.additionalProperties === false &&
@@ -587,7 +587,7 @@ async function main() {
     });
     check(
       '1b',
-      'default-off: a forged network permission request fails closed without any grant',
+      'capability-disabled: a forged network permission request fails closed without any grant',
       forged.error?.code === 'NETWORK_PERMISSION_UNAVAILABLE' &&
         controller.capabilityGrants.grants.size === 0,
       { error: forged.error }
@@ -611,14 +611,14 @@ async function main() {
     }
     check(
       '1b-2',
-      'default-off: a manually supplied grant object is refused',
+      'capability-disabled: a manually supplied grant object is refused',
       forgedGrant === 'INVALID_COMMAND_PERMISSION_GRANT',
       { code: forgedGrant }
     );
     const after = await callTool(run1, 'bash', { command: probeCommand });
     check(
       '1c-2',
-      'default-off: ordinary workspace commands remain offline after the forgery attempts',
+      'capability-disabled: ordinary workspace commands remain offline after the forgery attempts',
       offlineExpectation(probeResult(after)?.child) && lastExecution().network === 'none',
       { child: probeResult(after)?.child }
     );

@@ -459,7 +459,6 @@ async function bootstrap() {
         packaged: app.isPackaged === true,
         freedomVersion: app.getVersion(),
       },
-      workspaceNetworkPermissionsEnabled: process.env.FREEDOM_EXPERIMENTAL_AGENT_NETWORK === '1',
       controller: automationController,
       automationTabIdForRenderer,
       createAutomationPageForHost: createDesktopAutomationPageForHost,

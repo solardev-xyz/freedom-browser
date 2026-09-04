@@ -421,8 +421,8 @@ describe('ManagedWorkspaceController', () => {
     }
   });
 
-  test('keeps direct networking unavailable when the experimental product gate is closed', async () => {
-    const { controller, dependencies } = createController();
+  test('keeps direct networking unavailable when the capability is explicitly disabled', async () => {
+    const { controller, dependencies } = createController({ networkPermissionsEnabled: false });
     dependencies.executor.detectCapabilities.mockResolvedValue({
       available: true,
       backend: 'linux-bubblewrap',

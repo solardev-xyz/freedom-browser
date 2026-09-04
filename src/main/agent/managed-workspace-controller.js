@@ -699,7 +699,7 @@ class ManagedWorkspaceController {
         execute: (conversationId, request) => this.execute(conversationId, request),
       });
     this.capabilityGrants = options.capabilityGrants || new WorkspaceCapabilityGrantStore();
-    this.networkPermissionsEnabled = options.networkPermissionsEnabled === true;
+    this.networkPermissionsEnabled = options.networkPermissionsEnabled !== false;
     this.hostCommandEnvironment = null;
     this.hostCommandEnvironmentPromise = null;
   }
@@ -1026,7 +1026,7 @@ class ManagedWorkspaceController {
         if (!this.networkPermissionsEnabled || !capabilities.fullNetworkAvailable) {
           throw new ManagedWorkspaceError(
             'NETWORK_PERMISSION_UNAVAILABLE',
-            'Experimental direct network permissions are unavailable'
+            'Direct network permissions are unavailable on this workspace sandbox'
           );
         }
         requestedCapabilities.push(...createFullNetworkCapabilities());

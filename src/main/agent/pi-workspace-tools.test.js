@@ -651,6 +651,20 @@ describe('Pi managed workspace tools', () => {
     expect(preview.parameters.properties.processId).toBeDefined();
 
     await expect(
+      bash.execute('call_invalid_fractional_port', {
+        command: 'node server.js',
+        previewPort: 4_173.5,
+      })
+    ).rejects.toMatchObject({ code: 'INVALID_WORKSPACE_PROCESS_REQUEST' });
+    await expect(
+      bash.execute('call_invalid_string_port', {
+        command: 'node server.js',
+        previewPort: '4173',
+      })
+    ).rejects.toMatchObject({ code: 'INVALID_WORKSPACE_PROCESS_REQUEST' });
+    expect(controller.startProcess).not.toHaveBeenCalled();
+
+    await expect(
       bash.execute('call_server', {
         command: 'node server.js',
         previewPort: 4_173,

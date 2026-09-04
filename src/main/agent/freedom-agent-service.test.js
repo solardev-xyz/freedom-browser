@@ -586,7 +586,7 @@ describe('FreedomAgentService', () => {
     await service.waitForIdle();
   });
 
-  test('advertises direct networking to Pi only when the experimental gate is enabled', async () => {
+  test('advertises direct networking to Pi when the workspace capability is available', async () => {
     const fake = createFakeSession();
     const workspaceController = {
       getWorkspace: jest.fn(() => null),

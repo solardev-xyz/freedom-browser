@@ -45,6 +45,7 @@
     "build:agent-sandbox:linux:packaged": "electron-builder --linux dir deb AppImage --config config/electron-builder.agent-sandbox-linux.js --publish never",
     "test:agent-sandbox:linux:packaged": "node scripts/qualify-agent-sandbox-packaged-linux.js",
     "test:agent-sandbox:network:product": "ELECTRON_RUN_AS_NODE=1 electron scripts/qualify-agent-network-product.js",
+    "test:agent-sandbox:network:disabled": "ELECTRON_RUN_AS_NODE=1 electron scripts/qualify-agent-network-product.js --network-disabled",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",

@@ -125,7 +125,6 @@ describe('Freedom agent runtime', () => {
       nodeLifecycleControllerOptions: { verifyTimeoutMs: 250 },
       nodeDiagnosticsControllerOptions: { logBuffer: {} },
       workspaceRuntimeOptions: { packaged: true, freedomVersion: '0.8.1-dev' },
-      workspaceNetworkPermissionsEnabled: true,
     };
 
     const runtime = createFreedomAgentRuntime(options);

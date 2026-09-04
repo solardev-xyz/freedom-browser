@@ -547,6 +547,16 @@ function workspaceBashCwd(value = '.') {
   return segments.length ? path.join(VIRTUAL_AGENT_CWD, ...segments) : VIRTUAL_AGENT_CWD;
 }
 
+function workspacePreviewPort(value) {
+  if (value === undefined || value === null) return null;
+  if (!Number.isSafeInteger(value) || value < 1_024 || value > 65_535) {
+    const error = new Error('A valid managed server preview port is required');
+    error.code = 'INVALID_WORKSPACE_PROCESS_REQUEST';
+    throw error;
+  }
+  return value;
+}
+
 function failedWorkspaceReceipt(
   controller,
   conversationId,
@@ -1074,15 +1084,14 @@ function createRequestPermissionsTool(sdk, options) {
 function bashOperations(options, captureReceipt, toolParams = {}) {
   return Object.freeze({
     exec: async (command, cwd, execution = {}) => {
+      const previewPort = workspacePreviewPort(toolParams.previewPort);
       const process = await options.controller.startProcess(options.conversationId, {
         command,
         workingDirectory: virtualPathToWorkspaceRelative(cwd, { allowRoot: true }),
         signal: execution.signal,
         ...(Number.isFinite(execution.timeout) && { timeoutMs: execution.timeout * 1_000 }),
         ...(Number.isFinite(toolParams.yield_time_ms) && { yieldMs: toolParams.yield_time_ms }),
-        ...(Number.isSafeInteger(toolParams.previewPort) && {
-          previewPort: toolParams.previewPort,
-        }),
+        ...(previewPort && { previewPort }),
         ...(options.operationPhase && { onPhase: options.operationPhase }),
         ...(options.onProcessTerminal && {
           onTerminal: (terminal) =>
