@@ -174,7 +174,7 @@ These require `.env` credentials via `dotenv-cli` and are implemented in `script
 
 `.github/workflows/release-mac.yml` produces the same signed + notarized arm64 `.dmg` / `.zip` on a GitHub-hosted `macos-14` runner, so a release does not depend on one maintainer's Mac.
 
-- **Tag push (`v*`)** — signed build, verified with `codesign` / `spctl` / `stapler`, and attached to a **draft** GitHub Release for that tag together with `latest-mac.yml` and the `.blockmap`. The job fails fast if `package.json` does not match the tag (step 1) or if any signing secret is missing. Publish the draft only after the §6 smoke test passes; `freedom.baby/downloads` (§7) remains the updater channel, so still upload the artifacts there.
+- **Tag push (`v*`)** — signed build, verified with `codesign` / `spctl` / `stapler`, and attached to a GitHub Release for that tag together with `latest-mac.yml` and the `.blockmap`. A final tag (`v0.8.1`) produces a **draft**; publish it only after the §6 smoke test passes. A pre-release tag (`v0.8.1-rc.1`, anything with a hyphen) is published immediately and flagged **Pre-release** — see "Release candidates" below. The job fails fast if `package.json` does not match the tag (step 1) or if any signing secret is missing. `freedom.baby/downloads` (§7) remains the updater channel, so still upload final artifacts there.
 - **Manual run** (Actions → "Release (macOS arm64)" → Run workflow) — builds from any branch and uploads a workflow artifact only, no release. Untick `signed` for an unsigned pipeline test that needs no secrets; untick `bundle_tor` to skip the cargo build of Arti.
 
 Signed runs need these repository secrets (Settings → Secrets and variables → Actions): `CSC_LINK` (the Developer ID Application certificate exported from Keychain as a password-protected `.p12`, then base64-encoded), `CSC_KEY_PASSWORD`, and the same `APPLE_ID` / `APPLE_TEAM_ID` / `APPLE_APP_SPECIFIC_PASSWORD` as `.env.example`. `electron-builder` imports the certificate into a temporary keychain for the run.
@@ -291,6 +291,23 @@ If any platform fails:
 - Proceed to §7 only when every platform you intend to ship passes.
 
 This step is intentionally separate from §4 — §4 verifies the source tree (`npm test`, `npm start` from source); §6 verifies the **packaged artifact** that end users will install. They catch different classes of bugs.
+
+## Release candidates (optional loop between §5 and §7)
+
+When a release needs testing on machines or by people who do not build from source, cut pre-release builds from the release branch instead of sharing ad-hoc artifacts. The version string is the marker: use semver pre-release identifiers, never a separate branch or tag scheme.
+
+1. On `release/<version>`, set the version in `package.json` and `package-lock.json` (same two files as §1) to `<version>-alpha.1` for early builds or `<version>-rc.1` once you believe it is shippable.
+2. Commit (`chore(release): cut <version>-rc.1`), tag `v<version>-rc.1`, and push both. The GitHub Actions job (§5) builds, signs, and publishes it as a **Pre-release** on GitHub — visible to testers, excluded from "Latest release".
+3. Fix issues with normal PRs against the release branch (or land them on `main` and cherry-pick). When a fix set is in, bump to `rc.2` and tag again. Never move or reuse a tag; the number always goes up. The final release is the bare `<version>` with no suffix, which sorts higher than every candidate.
+4. Do **not** upload candidate artifacts or manifests to `freedom.baby/downloads`. The in-app updater auto-downloads whatever that manifest advertises, so only finals go there. A tester on `rc.N` is upgraded to the final automatically once it is published, because `<version>` is newer than `<version>-rc.N`.
+
+Testing a candidate: it shares the app id and profile directory with the installed release, so launch the binary directly (`open -a` does not forward shell environment variables) against a separate profile to keep migrations and node data from touching your real one:
+
+```
+FREEDOM_TEST_USER_DATA="$HOME/freedom-rc-test" /Applications/Freedom.app/Contents/MacOS/Freedom
+```
+
+Run the §6 checklist twice per candidate — as a fresh install and as an upgrade from the last final (copy a real profile into the test directory first). For quick private iteration between tagged candidates, trigger the workflow manually on the PR branch; the artifact needs a GitHub login to download and expires, so it is for your own testing, not for handing out.
 
 ## 7. Upload binaries and update the website
 

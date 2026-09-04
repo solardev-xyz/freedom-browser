@@ -5,9 +5,11 @@ name: Release (macOS arm64)
 # to a draft GitHub Release for the pushed tag.
 #
 # Triggers:
-#   - push of a `v*` tag: signed build, verified, attached to a draft release
-#     (a maintainer publishes the draft after the §6 smoke test in
-#     docs/agent-playbooks/release-process.md).
+#   - push of a `v*` tag: signed build, verified, attached to a GitHub
+#     Release. A pre-release tag (`v0.8.1-rc.1`, anything with a hyphen) is
+#     published immediately, flagged "Pre-release", so testers can download
+#     it. A final tag (`v0.8.1`) becomes a draft that a maintainer publishes
+#     after the §6 smoke test in docs/agent-playbooks/release-process.md.
 #   - workflow_dispatch: signed by default; set `signed: false` for an
 #     unsigned pipeline test. Dispatch runs only upload a workflow artifact,
 #     never a release.
@@ -184,19 +186,37 @@ jobs:
             dist/latest-mac.yml
           if-no-files-found: error
 
-      # Draft so a maintainer can run the release-process.md §6 smoke test
+      # Pre-release tags (semver with a hyphen: v0.8.1-alpha.1, v0.8.1-rc.2)
+      # are published at once and flagged "Pre-release" so testers can grab
+      # them; GitHub keeps them out of "Latest release". Final tags become a
+      # draft so a maintainer can run the release-process.md §6 smoke test
       # before anything becomes visible to end users. Re-runs on the same tag
       # replace the assets instead of failing.
-      - name: Attach to draft GitHub Release
+      - name: Attach to GitHub Release
         if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
-          notes="Signed and notarized macOS (Apple Silicon) build of Freedom ${TAG#v}.
+          version="${TAG#v}"
+          changelog="https://github.com/${GITHUB_REPOSITORY}/blob/${TAG}/CHANGELOG.md"
+          case "$version" in
+            *-*)
+              flag="--prerelease"
+              title="Freedom ${version} (pre-release)"
+              notes="Pre-release build of Freedom ${version} for macOS (Apple Silicon), signed and notarized. Not for general use: test it against a separate profile (FREEDOM_TEST_USER_DATA) and report problems on the release branch.
 
-          Changelog: https://github.com/${GITHUB_REPOSITORY}/blob/${TAG}/CHANGELOG.md"
+          Changelog so far: ${changelog}"
+              ;;
+            *)
+              flag="--draft"
+              title="Freedom ${version}"
+              notes="Signed and notarized macOS (Apple Silicon) build of Freedom ${version}.
+
+          Changelog: ${changelog}"
+              ;;
+          esac
           if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --draft --verify-tag --title "Freedom ${TAG#v}" --notes "$notes"
+            gh release create "$TAG" "$flag" --verify-tag --title "$title" --notes "$notes"
           fi
           gh release upload "$TAG" --clobber dist/*.dmg dist/*.zip dist/*.blockmap dist/latest-mac.yml
