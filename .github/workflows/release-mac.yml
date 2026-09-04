@@ -1,0 +1,335 @@
+name: Release (macOS arm64)
+
+# Builds the Apple Silicon distributable on a GitHub-hosted macOS runner,
+# signs + notarizes it with the Developer ID secrets, and attaches the result
+# to a draft GitHub Release for the pushed tag.
+#
+# Triggers:
+#   - push of a `v*` tag: signed build, verified, attached to a GitHub
+#     Release. A pre-release tag (`v0.8.1-rc.1`, anything with a hyphen) is
+#     published immediately, flagged "Pre-release", so testers can download
+#     it. A final tag (`v0.8.1`) becomes a draft that a maintainer publishes
+#     after the §6 smoke test in docs/agent-playbooks/release-process.md.
+#   - workflow_dispatch: signed by default; set `signed: false` for an
+#     unsigned pipeline test. Dispatch runs only upload a workflow artifact,
+#     never a release.
+#
+# Required repository secrets for a signed build (Settings → Secrets and
+# variables → Actions):
+#   CSC_LINK                    Developer ID Application cert, .p12 exported
+#                               from Keychain, base64-encoded
+#   CSC_KEY_PASSWORD            password set on that .p12 export
+#   APPLE_ID                    Apple ID used for notarytool
+#   APPLE_TEAM_ID               team id (46XPHRBLH5 for Solar Dev Ltd)
+#   APPLE_APP_SPECIFIC_PASSWORD app-specific password for that Apple ID
+#
+# electron-builder imports CSC_LINK into a temporary keychain on CI and
+# `build.mac.notarize: true` in package.json submits + staples the
+# notarization inline, exactly like the maintainer flow in
+# docs/agent-playbooks/release-process.md §5. That inline pass covers
+# `Freedom.app` only — the disk image dmg-builder wraps around it is
+# notarized and stapled by a separate step below.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      signed:
+        description: >-
+          Sign and notarize with the Developer ID secrets. Uncheck for an
+          unsigned pipeline test that needs no secrets.
+        type: boolean
+        default: true
+      bundle_tor:
+        description: >-
+          Build and bundle the Arti (Tor) client. Compiles from crates.io with
+          cargo and adds several minutes.
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-mac-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  mac-arm64:
+    runs-on: macos-14
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    env:
+      # Tag pushes are always signed and always bundle Tor; dispatch runs
+      # follow their inputs (`inputs.*` is null on push, hence the OR).
+      SIGNED: ${{ github.event_name == 'push' || inputs.signed }}
+      BUNDLE_TOR: ${{ github.event_name == 'push' || inputs.bundle_tor }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Assert Apple Silicon runner
+        run: |
+          if [ "$(uname -m)" != "arm64" ]; then
+            echo "Expected an arm64 macOS runner, got $(uname -m)" >&2
+            exit 1
+          fi
+
+      - name: Check signing secrets are configured
+        if: env.SIGNED == 'true'
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          missing=""
+          for name in CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_TEAM_ID APPLE_APP_SPECIFIC_PASSWORD; do
+            if [ -z "${!name}" ]; then missing="$missing $name"; fi
+          done
+          if [ -n "$missing" ]; then
+            echo "Signed build requested but these repository secrets are empty:$missing" >&2
+            echo "Add them under Settings → Secrets and variables → Actions, or re-run with signed=false for an unsigned pipeline test." >&2
+            exit 1
+          fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Assert package.json version matches the tag
+        if: github.event_name == 'push'
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$version" ]; then
+            echo "Tag v$tag does not match package.json version $version." >&2
+            echo "Promote the dev version on the release branch first (release-process.md §1)." >&2
+            exit 1
+          fi
+
+      # Full install (with lifecycle scripts): `electron-builder install-app-deps`
+      # rebuilds the native modules against Electron on the arm64 host.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download adblock filter lists
+        run: npm run adblock:download
+
+      - name: Download Ant binaries
+        run: npm run ant:download
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      # fetch-freedom-ipfs-native.js downloads release assets directly and
+      # makes no API calls, so it needs no token.
+      - name: Download IPFS native addon
+        run: npm run ipfs:download
+
+      - name: Download libradicle addon
+        run: npm run radicle:download -- --mac --arm64
+
+      - name: Download Myotis addon
+        run: npm run myotis:download
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          MYOTIS_DOWNLOAD_TARGET: darwin-arm64
+
+      # The runner image normally ships cargo. If it does not, install a
+      # pinned, checksummed rustup-init rather than piping sh.rustup.rs into
+      # a shell: this job later holds the signing credentials, so nothing
+      # unpinned should run on it. Same convention as the fetch-* scripts.
+      - name: Build Arti (Tor) client
+        if: env.BUNDLE_TOR == 'true'
+        env:
+          RUSTUP_VERSION: 1.28.2
+          RUSTUP_SHA256: 20ef5516c31b1ac2290084199ba77dbbcaa1406c45c1d978ca68558ef5964ef5
+        run: |
+          if ! command -v cargo >/dev/null 2>&1; then
+            (
+              cd "$RUNNER_TEMP"
+              curl --proto '=https' --tlsv1.2 -sSfo rustup-init \
+                "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/aarch64-apple-darwin/rustup-init"
+              echo "${RUSTUP_SHA256}  rustup-init" | shasum -a 256 -c -
+              chmod +x rustup-init
+              ./rustup-init -y --profile minimal --no-modify-path
+              rm rustup-init
+            )
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          npm run tor:download
+
+      - name: Build, sign and notarize
+        if: env.SIGNED == 'true'
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: npm run dist -- --mac --arm64
+
+      - name: Build unsigned (pipeline test)
+        if: env.SIGNED != 'true'
+        run: npm run dist -- --mac --arm64 --unsigned --no-notarize
+
+      # `build.mac.notarize: true` submits and staples `Freedom.app` and stops
+      # there: dmg-builder wraps that already-stapled app in a disk image but
+      # never notarizes the image itself, so the `.dmg` carries no ticket of
+      # its own — Gatekeeper has to check it online when a user opens it, and
+      # `xcrun stapler validate` on it fails outright. Notarize and staple
+      # each disk image here, the same thing `npm run dist:mac:staple-notary`
+      # does in the out-of-band flow (release-process.md §5).
+      - name: Notarize and staple the disk image
+        if: env.SIGNED == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          shopt -s nullglob
+          dmgs=(dist/*.dmg)
+          if [ ${#dmgs[@]} -eq 0 ]; then
+            echo "No .dmg in dist/ to notarize." >&2
+            exit 1
+          fi
+          for dmg in "${dmgs[@]}"; do
+            echo "Notarizing $(basename "$dmg")"
+            xcrun notarytool submit "$dmg" \
+              --apple-id "$APPLE_ID" \
+              --team-id "$APPLE_TEAM_ID" \
+              --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+              --wait --timeout 30m
+            xcrun stapler staple "$dmg"
+          done
+
+      # Stapling rewrites the disk image, so the sha512/size electron-builder
+      # recorded for it before the ticket was attached no longer describe the
+      # file that gets uploaded. electron-updater only ever reads the `.zip`
+      # entry on macOS, but latest-mac.yml is a checksum manifest: refresh the
+      # `.dmg` entry so every hash it publishes matches the bytes actually
+      # shipped. The `.dmg.blockmap` still describes the pre-staple bytes;
+      # nothing on the macOS update path reads it, and a mismatch there only
+      # costs a full download instead of a differential one.
+      - name: Refresh mac update metadata
+        if: env.SIGNED == 'true'
+        run: |
+          node - <<'NODE'
+          const crypto = require('crypto');
+          const fs = require('fs');
+          const path = require('path');
+
+          const ymlPath = path.join('dist', 'latest-mac.yml');
+          let yml = fs.readFileSync(ymlPath, 'utf8');
+
+          for (const name of fs.readdirSync('dist').filter((f) => f.endsWith('.dmg'))) {
+            const bytes = fs.readFileSync(path.join('dist', name));
+            const sha512 = crypto.createHash('sha512').update(bytes).digest('base64');
+            const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const entry = new RegExp(`(- url: ${escaped}\\n\\s+sha512: )\\S+(\\n\\s+size: )\\d+`);
+            if (!entry.test(yml)) {
+              throw new Error(`No ${name} entry in ${ymlPath} to refresh`);
+            }
+            yml = yml.replace(entry, `$1${sha512}$2${bytes.length}`);
+            console.log(`${name}: sha512 refreshed, size ${bytes.length}`);
+          }
+
+          fs.writeFileSync(ymlPath, yml);
+          NODE
+
+      - name: Verify signature, notarization and staple
+        if: env.SIGNED == 'true'
+        run: |
+          set -x
+          codesign --verify --deep --strict --verbose=2 dist/mac-arm64/Freedom.app
+          spctl --assess --type execute --verbose dist/mac-arm64/Freedom.app
+          xcrun stapler validate dist/mac-arm64/Freedom.app
+          for dmg in dist/*.dmg; do xcrun stapler validate "$dmg"; done
+
+      - name: List distributables
+        run: ls -la dist
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: freedom-mac-arm64-${{ env.SIGNED == 'true' && 'signed' || 'unsigned' }}
+          path: |
+            dist/*.dmg
+            dist/*.zip
+            dist/*.blockmap
+            dist/latest-mac.yml
+          if-no-files-found: error
+          # "Re-run failed jobs" keeps the previous attempt's artifact; without
+          # this the upload 409s and the run never reaches the release step.
+          overwrite: true
+
+      # The release is always created as a draft first and only flipped to
+      # public once every asset is uploaded, so watchers never see an empty
+      # release. Pre-release tags (semver with a hyphen: v0.8.1-alpha.1,
+      # v0.8.1-rc.2) are then published flagged "Pre-release" so testers can
+      # grab them; GitHub keeps them out of "Latest release". Final tags stay
+      # a draft so a maintainer can run the release-process.md §6 smoke test
+      # before anything becomes visible to end users. Re-running the job on a
+      # tag whose release is still a draft replaces the assets; re-running on
+      # an already published release fails instead of overwriting files users
+      # may have downloaded and checksummed. Tags are never moved, so a bad
+      # published build means a new version, not a rebuild.
+      - name: Attach to GitHub Release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="${TAG#v}"
+          changelog="https://github.com/${GITHUB_REPOSITORY}/blob/${TAG}/CHANGELOG.md"
+          case "$version" in
+            *-*)
+              prerelease=true
+              title="Freedom ${version} (pre-release)"
+              notes="Pre-release build of Freedom ${version} for macOS (Apple Silicon), signed and notarized. Not for general use: test it against a separate profile (FREEDOM_TEST_USER_DATA) and report problems on the release branch.
+
+          Changelog so far: ${changelog}"
+              ;;
+            *)
+              prerelease=false
+              title="Freedom ${version}"
+              notes="Signed and notarized macOS (Apple Silicon) build of Freedom ${version}.
+
+          Changelog: ${changelog}"
+              ;;
+          esac
+          # Look the tag up in the full release list rather than `gh release
+          # view`, whose non-zero exit cannot tell a transient API error from
+          # "no release yet" — and GitHub happily creates a second draft for
+          # the same tag. A failed list call fails the step.
+          if ! found="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+                --jq ".[] | select(.tag_name == \"${TAG}\") | if .draft then \"draft\" else \"published\" end")"; then
+            echo "Could not list releases for ${GITHUB_REPOSITORY}; not touching the release." >&2
+            exit 1
+          fi
+          if [ "$(printf '%s\n' "$found" | grep -c .)" -gt 1 ]; then
+            echo "More than one release exists for $TAG; resolve the duplicates by hand." >&2
+            exit 1
+          fi
+          state="${found:-missing}"
+          case "$state" in
+            published)
+              echo "Release $TAG is already published; refusing to overwrite its assets. Cut a new version instead." >&2
+              exit 1
+              ;;
+            missing)
+              gh release create "$TAG" --draft --verify-tag --title "$title" --notes "$notes"
+              ;;
+          esac
+          gh release upload "$TAG" --clobber dist/*.dmg dist/*.zip dist/*.blockmap dist/latest-mac.yml
+          if [ "$prerelease" = true ]; then
+            gh release edit "$TAG" --draft=false --prerelease
+          fi
