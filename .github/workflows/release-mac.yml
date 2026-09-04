@@ -306,7 +306,20 @@ jobs:
           Changelog: ${changelog}"
               ;;
           esac
-          state="$(gh release view "$TAG" --json isDraft --jq 'if .isDraft then "draft" else "published" end' 2>/dev/null || echo missing)"
+          # Look the tag up in the full release list rather than `gh release
+          # view`, whose non-zero exit cannot tell a transient API error from
+          # "no release yet" — and GitHub happily creates a second draft for
+          # the same tag. A failed list call fails the step.
+          if ! found="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+                --jq ".[] | select(.tag_name == \"${TAG}\") | if .draft then \"draft\" else \"published\" end")"; then
+            echo "Could not list releases for ${GITHUB_REPOSITORY}; not touching the release." >&2
+            exit 1
+          fi
+          if [ "$(printf '%s\n' "$found" | grep -c .)" -gt 1 ]; then
+            echo "More than one release exists for $TAG; resolve the duplicates by hand." >&2
+            exit 1
+          fi
+          state="${found:-missing}"
           case "$state" in
             published)
               echo "Release $TAG is already published; refusing to overwrite its assets. Cut a new version instead." >&2
