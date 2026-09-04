@@ -7,7 +7,7 @@ const Database = require('better-sqlite3');
 const log = require('../logger');
 
 const DB_FILE = 'agent-workspaces.sqlite';
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 const WORKSPACE_DIRECTORY = 'agent-workspaces';
 const MAX_RETAINED_COMMANDS = 1_000;
 const COMMAND_STATES = new Set([
@@ -19,6 +19,7 @@ const COMMAND_STATES = new Set([
   'sandbox_denied',
   'interrupted',
 ]);
+const NETWORK_POSTURES = new Set(['none', 'full']);
 
 function requiredString(value, label, maxLength) {
   if (typeof value !== 'string' || !value.trim()) {
@@ -35,6 +36,13 @@ function optionalString(value, maxLength) {
   if (value === undefined || value === null || value === '') return null;
   if (typeof value !== 'string') throw new TypeError('Workspace metadata must be a string');
   return value.slice(0, maxLength);
+}
+
+function requiredNetworkPosture(value) {
+  if (!NETWORK_POSTURES.has(value)) {
+    throw new TypeError('Workspace command network posture must be none or full');
+  }
+  return value;
 }
 
 function opaqueWorkspaceId() {
@@ -67,6 +75,7 @@ function rowToCommand(row) {
     workingDirectory: row.working_directory,
     state: COMMAND_STATES.has(row.state) ? row.state : 'interrupted',
     backend: row.backend || '',
+    ...(NETWORK_POSTURES.has(row.network_posture) && { networkPosture: row.network_posture }),
     startedAt: row.started_at,
     ...(Number.isFinite(row.finished_at) && { finishedAt: row.finished_at }),
     ...(Number.isFinite(row.duration_ms) && { durationMs: row.duration_ms }),
@@ -158,8 +167,11 @@ class AgentManagedWorkspaceStore {
         CREATE INDEX IF NOT EXISTS idx_agent_workspace_commands_owner
           ON agent_workspace_commands(conversation_id, started_at DESC);
       `);
-      this.db.pragma(`user_version = ${SCHEMA_VERSION}`);
     }
+    if (version < 2) {
+      this.db.exec(`ALTER TABLE agent_workspace_commands ADD COLUMN network_posture TEXT;`);
+    }
+    if (version < SCHEMA_VERSION) this.db.pragma(`user_version = ${SCHEMA_VERSION}`);
   }
 
   #getStatements() {
@@ -182,14 +194,15 @@ class AgentManagedWorkspaceStore {
       insertCommand: db.prepare(`
         INSERT INTO agent_workspace_commands (
           id, workspace_id, conversation_id, command_text, working_directory,
-          state, backend, started_at
-        ) VALUES (?, ?, ?, ?, ?, 'running', ?, ?)
+          state, backend, network_posture, started_at
+        ) VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?)
       `),
       finishCommand: db.prepare(`
         UPDATE agent_workspace_commands SET
           state = ?, finished_at = ?, duration_ms = ?, exit_code = ?, signal = ?,
           stdout = ?, stderr = ?, stdout_truncated = ?, stderr_truncated = ?,
-          termination_guarantee = ?, side_effects = ?, error_code = ?, error_message = ?
+          termination_guarantee = ?, side_effects = ?, network_posture = ?,
+          error_code = ?, error_message = ?
         WHERE id = ? AND workspace_id = ?
       `),
       listCommands: db.prepare(`
@@ -318,6 +331,7 @@ class AgentManagedWorkspaceStore {
       requiredString(entry?.command, 'Workspace command', 32_000),
       requiredString(entry?.workingDirectory, 'Workspace working directory', 1_024),
       requiredString(entry?.backend, 'Workspace backend', 80),
+      requiredNetworkPosture(entry?.networkPosture),
       startedAt
     );
     this.#getStatements().pruneCommands.run(this.maxRetainedCommands);
@@ -338,6 +352,7 @@ class AgentManagedWorkspaceStore {
       receipt?.stderrTruncated === true ? 1 : 0,
       optionalString(receipt?.terminationGuarantee, 80),
       optionalString(receipt?.sideEffects, 40) || 'unknown',
+      requiredNetworkPosture(receipt?.networkPosture),
       optionalString(receipt?.error?.code, 120),
       optionalString(receipt?.error?.message, 512),
       requiredString(commandId, 'Workspace command ID', 160),

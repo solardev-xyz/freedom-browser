@@ -76,6 +76,7 @@ describe('AgentManagedWorkspaceStore', () => {
       command: 'printf hello',
       workingDirectory: '.',
       backend: 'linux-bubblewrap',
+      networkPosture: 'full',
       startedAt: 1_200,
     });
     expect(
@@ -90,6 +91,7 @@ describe('AgentManagedWorkspaceStore', () => {
         stderrTruncated: false,
         terminationGuarantee: 'namespace_scoped',
         sideEffects: 'unknown',
+        networkPosture: 'full',
       })
     ).toBe(true);
     const interruptedCommandId = store.startCommand({
@@ -98,6 +100,7 @@ describe('AgentManagedWorkspaceStore', () => {
       command: 'sleep 100',
       workingDirectory: '.',
       backend: 'linux-bubblewrap',
+      networkPosture: 'none',
       startedAt: 1_400,
     });
     now = 1_500;
@@ -116,6 +119,7 @@ describe('AgentManagedWorkspaceStore', () => {
         durationMs: 100,
         stdout: 'x'.repeat(65_536),
         stdoutTruncated: true,
+        networkPosture: 'full',
       }),
     ]);
 

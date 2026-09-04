@@ -70,7 +70,16 @@ class FakeBetterSqlite3WorkspacesDatabase {
     }
     if (query.startsWith('INSERT INTO agent_workspace_commands')) {
       return {
-        run: (id, workspaceId, conversationId, command, workingDirectory, backend, startedAt) => {
+        run: (
+          id,
+          workspaceId,
+          conversationId,
+          command,
+          workingDirectory,
+          backend,
+          networkPosture,
+          startedAt
+        ) => {
           this.state.commands.push({
             id,
             workspace_id: workspaceId,
@@ -79,6 +88,7 @@ class FakeBetterSqlite3WorkspacesDatabase {
             working_directory: workingDirectory,
             state: 'running',
             backend,
+            network_posture: networkPosture,
             started_at: startedAt,
             finished_at: null,
             duration_ms: null,
@@ -111,6 +121,7 @@ class FakeBetterSqlite3WorkspacesDatabase {
           stderrTruncated,
           terminationGuarantee,
           sideEffects,
+          networkPosture,
           errorCode,
           errorMessage,
           id,
@@ -132,6 +143,7 @@ class FakeBetterSqlite3WorkspacesDatabase {
             stderr_truncated: stderrTruncated,
             termination_guarantee: terminationGuarantee,
             side_effects: sideEffects,
+            network_posture: networkPosture,
             error_code: errorCode,
             error_message: errorMessage,
           });

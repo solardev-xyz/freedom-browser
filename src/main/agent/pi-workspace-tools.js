@@ -398,6 +398,7 @@ function fileWorkspaceReceipt(controller, conversationId, operation, params, sta
     command: workspaceAction(operation, params),
     workingDirectory: '.',
     backend: 'freedom-workspace-files',
+    networkPosture: 'none',
     state,
     stdoutTruncated: false,
     stderrTruncated: false,
@@ -415,6 +416,53 @@ function fileWorkspaceReceipt(controller, conversationId, operation, params, sta
       ? { matchCount: result.matchCount }
       : {}),
   });
+}
+
+function workspaceBashTemplate(template) {
+  return {
+    ...template,
+    description:
+      'Execute a bash command inside the managed project workspace. Optionally select a workspace-relative working directory. Returns bounded stdout and stderr.',
+    promptGuidelines: [
+      ...(Array.isArray(template.promptGuidelines) ? template.promptGuidelines : []),
+      'Use workingDirectory when the command must run in a workspace subdirectory. It must be relative to the project workspace.',
+    ],
+    parameters: {
+      ...template.parameters,
+      properties: {
+        ...template.parameters?.properties,
+        workingDirectory: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 1_024,
+          description: 'Workspace-relative working directory (optional; defaults to .)',
+        },
+      },
+      additionalProperties: false,
+    },
+  };
+}
+
+function workspaceBashCwd(value = '.') {
+  if (
+    typeof value !== 'string' ||
+    !value ||
+    value.length > 1_024 ||
+    value.includes('\0') ||
+    value.includes('\\') ||
+    path.posix.isAbsolute(value)
+  ) {
+    const error = new Error('A safe workspace-relative working directory is required');
+    error.code = 'INVALID_WORKSPACE_REQUEST';
+    throw error;
+  }
+  const segments = value === '.' ? [] : value.split('/');
+  if (segments.some((segment) => !segment || segment === '.' || segment === '..')) {
+    const error = new Error('The working directory must remain inside the managed workspace');
+    error.code = 'INVALID_WORKSPACE_REQUEST';
+    throw error;
+  }
+  return segments.length ? path.join(VIRTUAL_AGENT_CWD, ...segments) : VIRTUAL_AGENT_CWD;
 }
 
 function failedWorkspaceReceipt(
@@ -996,9 +1044,13 @@ function wrapWorkspaceTool(template, operation, options, createRuntimeTool) {
         if (!skillRead) {
           await ensureWorkspaceEnabled(options, operation, toolCallId, operationSignal);
         }
-        const runtimeTool = createRuntimeTool((value) => {
-          receipt = value;
-        }, executionOptions);
+        const runtimeTool = createRuntimeTool(
+          (value) => {
+            receipt = value;
+          },
+          executionOptions,
+          params
+        );
         const result = await runtimeTool.execute(
           toolCallId,
           params,
@@ -1085,10 +1137,12 @@ async function createWorkspaceTools(options = {}) {
     throw new TypeError('Static previews require preview and scoped browser controllers');
   }
 
-  const bashTemplate = sdk.createBashTool(VIRTUAL_AGENT_CWD, {
-    operations: bashOperations(options, () => {}),
-    exposeSessionEnvironment: false,
-  });
+  const bashTemplate = workspaceBashTemplate(
+    sdk.createBashTool(VIRTUAL_AGENT_CWD, {
+      operations: bashOperations(options, () => {}),
+      exposeSessionEnvironment: false,
+    })
+  );
   const readTemplate = createStandardReadTool(sdk, options);
   const writeTemplate = sdk.createWriteTool(VIRTUAL_AGENT_CWD, {
     operations: writeOperations(options),
@@ -1101,8 +1155,8 @@ async function createWorkspaceTools(options = {}) {
   const lsTemplate = sdk.createLsTool(VIRTUAL_AGENT_CWD);
 
   const tools = [
-    wrapWorkspaceTool(bashTemplate, 'bash', options, (capture, executionOptions) =>
-      sdk.createBashTool(VIRTUAL_AGENT_CWD, {
+    wrapWorkspaceTool(bashTemplate, 'bash', options, (capture, executionOptions, params = {}) =>
+      sdk.createBashTool(workspaceBashCwd(params.workingDirectory), {
         operations: bashOperations(executionOptions, capture),
         exposeSessionEnvironment: false,
       })

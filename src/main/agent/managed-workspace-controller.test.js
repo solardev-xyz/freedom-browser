@@ -226,6 +226,7 @@ describe('ManagedWorkspaceController', () => {
       commandId: 'workspace_cmd_bbbbbbbbbbbbbbbbbbbbbbbb',
       command: 'printf hello',
       workingDirectory: 'site',
+      networkPosture: 'none',
       state: 'completed',
       stdout: 'hello',
       sideEffects: 'unknown',
@@ -425,17 +426,23 @@ describe('ManagedWorkspaceController', () => {
       expect.objectContaining({ command: '/bin/sh' })
     );
 
-    await controller.execute('conversation_one', { command: 'curl https://example.com' });
+    const fullNetworkReceipt = await controller.execute('conversation_one', {
+      command: 'curl https://example.com',
+    });
     expect(dependencies.executor.execute).toHaveBeenLastCalledWith(
       fullNetworkAgentPolicy,
       expect.objectContaining({ command: '/bin/sh' })
     );
+    expect(fullNetworkReceipt.networkPosture).toBe('full');
 
-    await controller.execute('conversation_one', { command: 'curl https://example.com' });
+    const offlineReceipt = await controller.execute('conversation_one', {
+      command: 'curl https://example.com',
+    });
     expect(dependencies.executor.execute).toHaveBeenLastCalledWith(
       agentPolicy,
       expect.objectContaining({ command: '/bin/sh' })
     );
+    expect(offlineReceipt.networkPosture).toBe('none');
 
     const conversationPermission = await controller.prepareCommandPermissions(
       'conversation_one',

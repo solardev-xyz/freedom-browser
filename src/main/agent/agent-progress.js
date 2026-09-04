@@ -504,6 +504,9 @@ function normalizeWorkspaceReceipt(value) {
   );
   const workingDirectory = boundedString(value.workingDirectory, 1_024);
   const backend = boundedString(value.backend, 80);
+  const networkPosture = ['none', 'full'].includes(value.networkPosture)
+    ? value.networkPosture
+    : '';
   const state = boundedString(value.state, 40);
   const kind = boundedString(value.kind, 40);
   const entryCount =
@@ -546,6 +549,7 @@ function normalizeWorkspaceReceipt(value) {
     command,
     workingDirectory,
     backend,
+    ...(networkPosture && { networkPosture }),
     state,
     ...(Number.isSafeInteger(value.durationMs) && value.durationMs >= 0
       ? { durationMs: value.durationMs }

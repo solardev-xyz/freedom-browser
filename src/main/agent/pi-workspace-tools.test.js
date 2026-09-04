@@ -18,11 +18,19 @@ function createSdk() {
     SessionManager: jest.fn(),
     SettingsManager: jest.fn(),
   };
-  base.createBashTool = jest.fn((_cwd, options) => ({
+  base.createBashTool = jest.fn((cwd, options) => ({
     name: 'bash',
+    parameters: {
+      type: 'object',
+      required: ['command'],
+      properties: {
+        command: { type: 'string' },
+        timeout: { type: 'number' },
+      },
+    },
     execute: async (_id, params, signal) => {
       const chunks = [];
-      const result = await options.operations.exec(params.command, '/freedom-agent', {
+      const result = await options.operations.exec(params.command, cwd, {
         onData: (chunk) => chunks.push(Buffer.from(chunk)),
         signal,
         timeout: params.timeout,
@@ -73,6 +81,7 @@ function createController() {
       workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa',
       enabled: true,
       backend: 'linux-bubblewrap',
+      networkPosture: 'none',
     })),
     disclosure: jest.fn(async () => ({
       available: true,
@@ -197,9 +206,51 @@ describe('Pi managed workspace tools', () => {
       'conversation_one',
       expect.objectContaining({ command: 'pwd', workingDirectory: '.' })
     );
+    expect(tools[0].parameters.properties.workingDirectory).toMatchObject({
+      type: 'string',
+      maxLength: 1_024,
+    });
     expect(onToolOutcome).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'succeeded', operation: 'bash' })
     );
+  });
+
+  test('runs bash in a requested workspace-relative working directory', async () => {
+    const controller = createController();
+    const tools = await createWorkspaceTools({
+      sdk: createSdk(),
+      controller,
+      conversationId: 'conversation_one',
+      requestApproval: jest.fn(),
+    });
+
+    await tools[0].execute('call_subdirectory', {
+      command: 'npm test',
+      workingDirectory: 'packages/site',
+    });
+
+    expect(controller.execute).toHaveBeenCalledWith(
+      'conversation_one',
+      expect.objectContaining({ command: 'npm test', workingDirectory: 'packages/site' })
+    );
+  });
+
+  test('rejects bash working directories outside the managed workspace', async () => {
+    const controller = createController();
+    const tools = await createWorkspaceTools({
+      sdk: createSdk(),
+      controller,
+      conversationId: 'conversation_one',
+      requestApproval: jest.fn(),
+    });
+
+    await expect(
+      tools[0].execute('call_outside', { command: 'pwd', workingDirectory: '../outside' })
+    ).rejects.toMatchObject({ code: 'INVALID_WORKSPACE_REQUEST' });
+    await expect(
+      tools[0].execute('call_absolute', { command: 'pwd', workingDirectory: '/freedom-agent' })
+    ).rejects.toMatchObject({ code: 'INVALID_WORKSPACE_REQUEST' });
+    expect(controller.execute).not.toHaveBeenCalled();
   });
 
   test('requests a generic executable grant and applies the user-selected scope', async () => {

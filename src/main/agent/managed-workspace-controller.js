@@ -727,6 +727,7 @@ class ManagedWorkspaceController {
               workingDirectory: command.workingDirectory,
               state: command.state,
               backend: command.backend,
+              ...(command.networkPosture && { networkPosture: command.networkPosture }),
               startedAt: command.startedAt,
               ...(Number.isFinite(command.finishedAt) && { finishedAt: command.finishedAt }),
               ...(Number.isFinite(command.durationMs) && { durationMs: command.durationMs }),
@@ -1148,9 +1149,14 @@ class ManagedWorkspaceController {
         'Freedom refused unavailable direct network authority'
       );
     }
-    if (!roots.length) return basePolicy;
+    if (!roots.length) {
+      return Object.freeze({ policy: basePolicy, networkPosture: network ? 'full' : 'none' });
+    }
     const unique = [...new Map(roots.map((root) => [root.id, root])).values()];
-    return this.restrictPolicy(basePolicy, { addRuntimeRoots: unique });
+    return Object.freeze({
+      policy: this.restrictPolicy(basePolicy, { addRuntimeRoots: unique }),
+      networkPosture: network ? 'full' : 'none',
+    });
   }
 
   async #fileOperation(conversationId, operation, relativePath, content = null, request = {}) {
@@ -1419,12 +1425,13 @@ class ManagedWorkspaceController {
       command,
       workingDirectory: workingDirectory.relative,
       backend: capabilities.backend,
+      networkPosture: agentPolicy.networkPosture,
       startedAt,
     });
     this.activeCommands.set(commandId, { conversationId, controller });
     let receipt;
     try {
-      receipt = await this.executor.execute(agentPolicy, {
+      receipt = await this.executor.execute(agentPolicy.policy, {
         command: '/bin/sh',
         args: [
           '-c',
@@ -1470,6 +1477,7 @@ class ManagedWorkspaceController {
       command: commandSummary(command),
       workingDirectory: workingDirectory.relative,
       backend: receipt.backend || capabilities.backend,
+      networkPosture: agentPolicy.networkPosture,
       state:
         timedOut && receipt.state === EXECUTION_STATES.CANCELLED
           ? EXECUTION_STATES.TIMED_OUT
