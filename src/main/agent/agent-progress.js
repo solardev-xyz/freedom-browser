@@ -514,6 +514,15 @@ function normalizeWorkspaceReceipt(value) {
   const networkPosture = ['none', 'full'].includes(value.networkPosture)
     ? value.networkPosture
     : '';
+  const terminationScope = [
+    'pid_namespace',
+    'original_process_group',
+    'not_applicable',
+    'pending',
+    'unknown',
+  ].includes(value.terminationScope)
+    ? value.terminationScope
+    : '';
   const state = boundedString(value.state, 40);
   const kind = boundedString(value.kind, 40);
   const entryCount =
@@ -569,6 +578,7 @@ function normalizeWorkspaceReceipt(value) {
     stdoutTruncated: value.stdoutTruncated === true,
     stderrTruncated: value.stderrTruncated === true,
     terminationGuarantee: boundedString(value.terminationGuarantee, 80) || 'not_applicable',
+    ...(terminationScope && { terminationScope }),
     sideEffects: value.sideEffects === 'none' ? 'none' : 'unknown',
     survivorsPossible: value.survivorsPossible === true,
     completeDescendantTermination: value.completeDescendantTermination === true,

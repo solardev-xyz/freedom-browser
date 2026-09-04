@@ -107,6 +107,7 @@ function createController() {
       stdoutTruncated: false,
       stderrTruncated: false,
       terminationGuarantee: 'namespace_scoped',
+      terminationScope: 'pid_namespace',
       sideEffects: 'unknown',
     })),
     accessFile: jest.fn(async () => {}),
@@ -187,6 +188,7 @@ function createController() {
       stdoutTruncated: false,
       stderrTruncated: false,
       terminationGuarantee: 'pending',
+      terminationScope: 'pending',
       sideEffects: 'unknown',
       survivorsPossible: true,
       completeDescendantTermination: false,
@@ -785,6 +787,7 @@ describe('Pi managed workspace tools', () => {
       stdoutTruncated: false,
       stderrTruncated: false,
       terminationGuarantee: 'namespace_scoped',
+      terminationScope: 'pid_namespace',
       sideEffects: 'unknown',
     });
 
@@ -836,6 +839,7 @@ describe('Pi managed workspace tools', () => {
       stdoutTruncated: false,
       stderrTruncated: false,
       terminationGuarantee: 'unknown',
+      terminationScope: 'unknown',
       sideEffects: 'unknown',
       survivorsPossible: true,
       completeDescendantTermination: false,

@@ -54,6 +54,7 @@ function createController(overrides = {}) {
       stdoutTruncated: false,
       stderrTruncated: false,
       terminationGuarantee: 'namespace_scoped',
+      terminationScope: 'pid_namespace',
       sideEffects: 'unknown',
       survivorsPossible: false,
       completeDescendantTermination: true,
@@ -97,6 +98,7 @@ function completedExecution(stdout) {
     stdoutTruncated: false,
     stderrTruncated: false,
     terminationGuarantee: 'namespace_scoped',
+    terminationScope: 'pid_namespace',
     sideEffects: 'none',
     survivorsPossible: false,
     completeDescendantTermination: true,
@@ -262,6 +264,7 @@ describe('ManagedWorkspaceController', () => {
         stdoutTruncated: false,
         stderrTruncated: false,
         terminationGuarantee: 'namespace_scoped',
+        terminationScope: 'pid_namespace',
         sideEffects: 'unknown',
         survivorsPossible: false,
         completeDescendantTermination: true,
@@ -300,6 +303,7 @@ describe('ManagedWorkspaceController', () => {
         state: 'cancelled',
         signal: 'SIGKILL',
         terminationGuarantee: 'namespace_scoped',
+        terminationScope: 'pid_namespace',
       },
     });
   });
@@ -836,6 +840,7 @@ describe('ManagedWorkspaceController', () => {
           stdoutTruncated: false,
           stderrTruncated: false,
           terminationGuarantee: 'namespace_scoped',
+          terminationScope: 'pid_namespace',
           sideEffects: 'unknown',
           survivorsPossible: false,
           completeDescendantTermination: true,
@@ -853,7 +858,11 @@ describe('ManagedWorkspaceController', () => {
       await new Promise((resolve) => setImmediate(resolve));
     }
     expect(controller.cancelConversation('conversation_one')).toBe(1);
-    await expect(execution).resolves.toMatchObject({ state: 'cancelled', signal: 'SIGKILL' });
+    await expect(execution).resolves.toMatchObject({
+      state: 'cancelled',
+      signal: 'SIGKILL',
+      terminationScope: 'pid_namespace',
+    });
   });
 
   test('fails closed when the platform backend is unavailable', async () => {

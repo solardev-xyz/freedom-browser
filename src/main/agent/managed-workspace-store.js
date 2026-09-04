@@ -7,7 +7,7 @@ const Database = require('better-sqlite3');
 const log = require('../logger');
 
 const DB_FILE = 'agent-workspaces.sqlite';
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 const WORKSPACE_DIRECTORY = 'agent-workspaces';
 const MAX_RETAINED_COMMANDS = 1_000;
 const COMMAND_STATES = new Set([
@@ -20,6 +20,12 @@ const COMMAND_STATES = new Set([
   'interrupted',
 ]);
 const NETWORK_POSTURES = new Set(['none', 'full']);
+const TERMINATION_SCOPES = new Set([
+  'pid_namespace',
+  'original_process_group',
+  'not_applicable',
+  'unknown',
+]);
 
 function requiredString(value, label, maxLength) {
   if (typeof value !== 'string' || !value.trim()) {
@@ -86,6 +92,9 @@ function rowToCommand(row) {
     stdoutTruncated: row.stdout_truncated === 1,
     stderrTruncated: row.stderr_truncated === 1,
     terminationGuarantee: row.termination_guarantee || 'not_applicable',
+    ...(TERMINATION_SCOPES.has(row.termination_scope) && {
+      terminationScope: row.termination_scope,
+    }),
     sideEffects: row.side_effects || 'unknown',
     ...(row.error_code && {
       error: Object.freeze({
@@ -171,6 +180,9 @@ class AgentManagedWorkspaceStore {
     if (version < 2) {
       this.db.exec(`ALTER TABLE agent_workspace_commands ADD COLUMN network_posture TEXT;`);
     }
+    if (version < 3) {
+      this.db.exec(`ALTER TABLE agent_workspace_commands ADD COLUMN termination_scope TEXT;`);
+    }
     if (version < SCHEMA_VERSION) this.db.pragma(`user_version = ${SCHEMA_VERSION}`);
   }
 
@@ -201,7 +213,7 @@ class AgentManagedWorkspaceStore {
         UPDATE agent_workspace_commands SET
           state = ?, finished_at = ?, duration_ms = ?, exit_code = ?, signal = ?,
           stdout = ?, stderr = ?, stdout_truncated = ?, stderr_truncated = ?,
-          termination_guarantee = ?, side_effects = ?, network_posture = ?,
+          termination_guarantee = ?, termination_scope = ?, side_effects = ?, network_posture = ?,
           error_code = ?, error_message = ?
         WHERE id = ? AND workspace_id = ?
       `),
@@ -213,6 +225,7 @@ class AgentManagedWorkspaceStore {
         UPDATE agent_workspace_commands SET
           state = 'interrupted', finished_at = ?, duration_ms = MAX(0, ? - started_at),
           termination_guarantee = COALESCE(termination_guarantee, 'unknown'),
+          termination_scope = COALESCE(termination_scope, 'unknown'),
           side_effects = 'unknown', error_code = 'WORKSPACE_EXECUTION_INTERRUPTED',
           error_message = 'Freedom restarted before the command receipt was recorded'
         WHERE state = 'running'
@@ -351,6 +364,7 @@ class AgentManagedWorkspaceStore {
       receipt?.stdoutTruncated === true ? 1 : 0,
       receipt?.stderrTruncated === true ? 1 : 0,
       optionalString(receipt?.terminationGuarantee, 80),
+      TERMINATION_SCOPES.has(receipt?.terminationScope) ? receipt.terminationScope : null,
       optionalString(receipt?.sideEffects, 40) || 'unknown',
       requiredNetworkPosture(receipt?.networkPosture),
       optionalString(receipt?.error?.code, 120),
@@ -389,6 +403,7 @@ module.exports = {
   DB_FILE,
   MAX_RETAINED_COMMANDS,
   SCHEMA_VERSION,
+  TERMINATION_SCOPES,
   WORKSPACE_DIRECTORY,
   opaqueCommandId,
   opaqueWorkspaceId,

@@ -29,6 +29,7 @@ describe('Agent progress projection', () => {
       stdout: 'private output from /Users/private',
       stderr: 'private diagnostics',
       terminationGuarantee: 'namespace_scoped',
+      terminationScope: 'pid_namespace',
       sideEffects: 'unknown',
       completeDescendantTermination: true,
     });
@@ -47,6 +48,7 @@ describe('Agent progress projection', () => {
       stdoutTruncated: false,
       stderrTruncated: false,
       terminationGuarantee: 'namespace_scoped',
+      terminationScope: 'pid_namespace',
       sideEffects: 'unknown',
       survivorsPossible: false,
       completeDescendantTermination: true,
@@ -111,6 +113,7 @@ describe('Agent progress projection', () => {
       state: 'cancelled',
       signal: 'SIGKILL',
       terminationGuarantee: 'namespace_scoped',
+      terminationScope: 'pid_namespace',
       sideEffects: 'unknown',
       completeDescendantTermination: true,
     });

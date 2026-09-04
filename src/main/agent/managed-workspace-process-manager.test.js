@@ -20,6 +20,7 @@ function receipt(overrides = {}) {
     stdoutTruncated: false,
     stderrTruncated: false,
     terminationGuarantee: 'namespace_scoped',
+    terminationScope: 'pid_namespace',
     sideEffects: 'unknown',
     survivorsPossible: false,
     completeDescendantTermination: true,

@@ -2115,6 +2115,7 @@ describe('FreedomAgentService', () => {
               stdoutTruncated: false,
               stderrTruncated: false,
               terminationGuarantee: 'namespace_scoped',
+              terminationScope: 'pid_namespace',
               sideEffects: 'unknown',
               survivorsPossible: false,
               completeDescendantTermination: true,
@@ -2163,6 +2164,7 @@ describe('FreedomAgentService', () => {
             networkPosture: 'full',
             signal: 'SIGKILL',
             terminationGuarantee: 'namespace_scoped',
+            terminationScope: 'pid_namespace',
           },
         },
       ],
@@ -2170,7 +2172,11 @@ describe('FreedomAgentService', () => {
     expect(events.at(-2)).toMatchObject({
       type: 'tool_finished',
       toolCallId: 'call_workspace_stop',
-      workspace: { state: 'cancelled', networkPosture: 'full' },
+      workspace: {
+        state: 'cancelled',
+        networkPosture: 'full',
+        terminationScope: 'pid_namespace',
+      },
     });
     expect(events.at(-1)).toMatchObject({ type: 'run_finished', status: 'cancelled' });
   });

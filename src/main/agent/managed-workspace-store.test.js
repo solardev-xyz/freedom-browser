@@ -7,6 +7,7 @@ const FakeDatabase = require('../../../test/helpers/fake-better-sqlite3-workspac
 const {
   AgentManagedWorkspaceStore,
   DB_FILE,
+  SCHEMA_VERSION,
   WORKSPACE_DIRECTORY,
 } = require('./managed-workspace-store');
 
@@ -59,6 +60,21 @@ describe('AgentManagedWorkspaceStore', () => {
     expect(fs.statSync(workspacePath).mode & 0o777).toBe(0o700);
     expect(fs.statSync(path.join(workspacePath, '.git')).isDirectory()).toBe(true);
     expect(store.getDb().name).toBe(path.join(userDataDir, DB_FILE));
+    expect(store.getDb().pragma('user_version', { simple: true })).toBe(SCHEMA_VERSION);
+  });
+
+  test('migrates an existing command ledger to preserve termination scope', () => {
+    const database = store.getDb();
+    database.pragma('user_version = 2');
+    store.close();
+    const exec = jest.spyOn(FakeDatabase.prototype, 'exec');
+    store = new AgentManagedWorkspaceStore({ userDataDir, Database: FakeDatabase });
+
+    expect(store.getDb().pragma('user_version', { simple: true })).toBe(SCHEMA_VERSION);
+    expect(exec.mock.calls.flat().join('\n')).toContain(
+      'ALTER TABLE agent_workspace_commands ADD COLUMN termination_scope TEXT'
+    );
+    exec.mockRestore();
   });
 
   test('persists bounded command receipts and marks abandoned work as interrupted', async () => {
@@ -90,6 +106,7 @@ describe('AgentManagedWorkspaceStore', () => {
         stdoutTruncated: true,
         stderrTruncated: false,
         terminationGuarantee: 'namespace_scoped',
+        terminationScope: 'pid_namespace',
         sideEffects: 'unknown',
         networkPosture: 'full',
       })
@@ -110,6 +127,7 @@ describe('AgentManagedWorkspaceStore', () => {
         commandId: interruptedCommandId,
         state: 'interrupted',
         durationMs: 100,
+        terminationScope: 'unknown',
         sideEffects: 'unknown',
         error: expect.objectContaining({ code: 'WORKSPACE_EXECUTION_INTERRUPTED' }),
       }),
@@ -120,6 +138,7 @@ describe('AgentManagedWorkspaceStore', () => {
         stdout: 'x'.repeat(65_536),
         stdoutTruncated: true,
         networkPosture: 'full',
+        terminationScope: 'pid_namespace',
       }),
     ]);
 
