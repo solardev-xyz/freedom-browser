@@ -609,7 +609,17 @@ jobs:
           # permissions and extended attributes the code signature is computed
           # over, so the copy is still assessable by Gatekeeper below.
           ditto "$RUNNER_TEMP/dmg/Freedom.app" "$RUNNER_TEMP/apps-dmg/Freedom.app"
-          hdiutil detach "$RUNNER_TEMP/dmg"
+          # A just-mounted volume can be transiently busy (Spotlight, quarantine
+          # scan) and make detach fail with EBUSY; retry, then force. Nothing
+          # after this needs the mount gone, so a stubborn one is only a warning.
+          for attempt in 1 2 3 4 5; do
+            if hdiutil detach "$RUNNER_TEMP/dmg"; then break; fi
+            if [ "$attempt" -eq 5 ]; then
+              hdiutil detach -force "$RUNNER_TEMP/dmg" || echo "::warning::could not detach $RUNNER_TEMP/dmg; continuing"
+            else
+              sleep 3
+            fi
+          done
           test -x "$RUNNER_TEMP/apps-dmg/Freedom.app/Contents/MacOS/Freedom"
 
       # What a user's first double-click asks Gatekeeper, on the copy rather
@@ -827,8 +837,22 @@ jobs:
           # defaults to true) — stop that instance, the suite launches its own
           # against a scratch profile.
           Start-Process -Wait -FilePath "$env:FREEDOM_INSTALLER" -ArgumentList '/S'
-          Start-Sleep -Seconds 5
-          Stop-Process -Name Freedom -Force -ErrorAction SilentlyContinue
+          # Poll for that instance instead of a fixed sleep: on a cold runner it
+          # can take more than a few seconds to appear, and a missed kill would
+          # leave it running through the test steps.
+          $deadline = (Get-Date).AddSeconds(30)
+          do {
+            $running = @(Get-Process -Name Freedom -ErrorAction SilentlyContinue)
+            if ($running.Count -gt 0) { break }
+            Start-Sleep -Seconds 1
+          } while ((Get-Date) -lt $deadline)
+          if ($running.Count -gt 0) {
+            Write-Host "Stopping the $($running.Count) Freedom process(es) started by the installer"
+            $running | Stop-Process -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 2
+          } else {
+            Write-Host "No auto-started Freedom process appeared within 30s"
+          }
           # Per-user install root, resolved from the environment rather than
           # hard-coded: the runner's account name is not ours to assume. The
           # directory under it is searched rather than named because
