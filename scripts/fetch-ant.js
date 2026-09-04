@@ -24,8 +24,7 @@ const PINNED_RELEASE_TAG = 'v0.5.44';
 // together. Verifying the sums file against a digest committed here makes
 // that tampering detectable. Update alongside PINNED_RELEASE_TAG on every
 // deliberate bump: `shasum -a 256` the freshly downloaded SHA256SUMS.
-const PINNED_SHA256SUMS_DIGEST =
-  '8b29de81c31ec267ed53cdeb4eefb11e23b819f5c1abb76837060632986427ff';
+const PINNED_SHA256SUMS_DIGEST = '8b29de81c31ec267ed53cdeb4eefb11e23b819f5c1abb76837060632986427ff';
 const ANT_RELEASE_TAG = process.env.ANT_RELEASE_TAG || PINNED_RELEASE_TAG;
 
 const API_HOST = 'api.github.com';
@@ -300,8 +299,7 @@ async function main() {
     for (const target of targets) {
       const asset = assets.find(
         (a) =>
-          a.name !== 'SHA256SUMS' &&
-          target.keywords.every((k) => a.name.toLowerCase().includes(k))
+          a.name !== 'SHA256SUMS' && target.keywords.every((k) => a.name.toLowerCase().includes(k))
       );
 
       if (!asset) {
@@ -327,22 +325,34 @@ async function main() {
       }
       const actual = sha256File(tempDest);
       if (actual !== expected) {
-        throw new Error(
-          `Checksum mismatch for ${asset.name}: expected ${expected}, got ${actual}`
-        );
+        throw new Error(`Checksum mismatch for ${asset.name}: expected ${expected}, got ${actual}`);
       }
       console.log(`Verified checksum for ${asset.name}`);
 
       // execFileSync with an args vector: the asset name is attacker-influenced
       // (the checksum above covers content, not filename) and must never reach
       // a shell.
+      //
+      // Archives are extracted with cwd = targetDir and a bare file name: on
+      // Windows the absolute path `D:\a\...` makes GNU tar (first on PATH in
+      // Git Bash) treat `D` as a remote host and fail. Windows also ships no
+      // `unzip`, so use its own bsdtar, which reads zip and tar.gz alike.
+      const isWindows = process.platform === 'win32';
+      const tarBin = isWindows
+        ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe')
+        : 'tar';
+      const extractOpts = { cwd: targetDir, stdio: 'inherit' };
       if (asset.name.endsWith('.tar.gz') || asset.name.endsWith('.tgz')) {
         console.log(`Extracting ${asset.name}...`);
-        execFileSync('tar', ['-xzf', tempDest, '-C', targetDir]);
+        execFileSync(tarBin, ['-xzf', path.basename(tempDest)], extractOpts);
         fs.unlinkSync(tempDest);
       } else if (asset.name.endsWith('.zip')) {
         console.log(`Extracting ${asset.name}...`);
-        execFileSync('unzip', ['-o', tempDest, '-d', targetDir]);
+        if (isWindows) {
+          execFileSync(tarBin, ['-xf', path.basename(tempDest)], extractOpts);
+        } else {
+          execFileSync('unzip', ['-o', path.basename(tempDest)], extractOpts);
+        }
         fs.unlinkSync(tempDest);
       } else {
         fs.renameSync(tempDest, destFile);

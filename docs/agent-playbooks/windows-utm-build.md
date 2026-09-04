@@ -7,9 +7,10 @@ Windows (see `release-process.md` §6).
 
 ## When to use this (vs. cross-building)
 
-`release-process.md` §5 cross-builds the Windows installer from the mac host
-(`npm run dist -- --win --arm64` for this playbook's target), which is the supported
-way to produce the _distributable_. `better-sqlite3` is no longer a reason that
+Release builds come from CI (`release-process.md` §5, `windows-latest` runner,
+x64 only). `release-process.md` Appendix A still documents cross-building the
+Windows installer from the mac host (`npm run dist -- --win --arm64` for this
+playbook's target) as a fallback. `better-sqlite3` is no longer a reason that
 artifact would fail to launch: it is a native module `require`d at startup
 (`src/main/payment-history.js` → `src/main/index.js`), but since v13 it ships a
 `win32-<arch>` prebuild that a `--win` build packages regardless of the build host,

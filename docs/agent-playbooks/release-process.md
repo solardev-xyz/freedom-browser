@@ -4,6 +4,15 @@ Use this playbook when cutting a new Freedom release (any `MAJOR.MINOR.PATCH` bu
 
 It complements `changelog-process.md` — that playbook covers the mechanics of writing `CHANGELOG.md`; this one covers the surrounding branch, version-bump, build, tag, and publish steps.
 
+**Builds are made by CI, not on a laptop.** Pushing a `v*` tag runs `.github/workflows/release.yml`, which builds every platform on GitHub-hosted runners, signs and notarizes macOS, and attaches the artifacts to a GitHub Release. A release therefore needs no `.env`, no Mac, no Docker and no Windows VM to _build_ — only to _test_ (§6). The version string is the marker for what a build is: `<version>-rc.N` tags become public **Pre-releases** for testing, the bare `<version>` tag becomes a **draft** that is published after the smoke test. Tags are never moved; a bad build means a new number. Building locally remains possible as a fallback (Appendix A).
+
+The flow at a glance:
+
+1. Branch `release/<version>` off `main` (§0), set the version to `<version>-rc.1` (§1), refresh dependencies (§2), draft the changelog (§3), verify (§4).
+2. Tag `v<version>-rc.1` and push (§5). CI publishes a pre-release. Smoke-test it on every platform (§6). Fix on the release branch, bump to `rc.2`, tag again — until a candidate is clean.
+3. Set the bare `<version>`, finalize the changelog, tag `v<version>` (§5). CI produces a draft release from the same tree that just passed. Re-check the draft's assets (§6, short form).
+4. Upload the draft's assets to `freedom.baby`, update the website, publish the draft (§7). Merge the branch into `main` (§8) and open the next dev cycle (§9).
+
 ## 0. Create a release branch first
 
 All release work happens on a dedicated branch off `main`, never on `main` directly.
@@ -14,38 +23,46 @@ Naming convention (matches prior releases like `release/0.6.2`):
 release/<version>
 ```
 
-For example, for 0.7.0:
+For example, for 0.8.5:
 
 ```
 git checkout main
 git pull --ff-only
-git checkout -b release/0.7.0
+git checkout -b release/0.8.5
 ```
 
 Rationale:
 
 - Keeps `main` unblocked while the release is being stabilized.
 - Gives a clear target for last-minute build/changelog fixups without polluting feature history.
-- The artifacts you build, upload, and tag all come from this branch, so a broken build can be fixed here before anything lands on `main`.
+- Every tag — candidates and the final — is created on this branch, so CI builds exactly the tree you stabilized here, and a broken build is fixed here before anything lands on `main`.
 
-## 1. Promote the dev version
+Push the branch as soon as it exists (`git push -u origin release/<version>`): the changelog link on the website (§7) points at it, and fixes during the candidate loop arrive as PRs against it.
 
-Between releases, `main` carries a `<next>-dev` version (see Step 11). On the release branch, strip that suffix so the build advertises the real release number.
+## 1. Set the version
 
-Update the version string in exactly these two files:
+Between releases, `main` carries a `<next>-dev` version (see §9). On the release branch the version goes through candidates and ends at the bare release number:
+
+- `<version>-rc.1`, `<version>-rc.2`, … for each candidate build (use `-alpha.N` for builds you do not yet believe are shippable);
+- `<version>` for the final.
+
+Each bump touches exactly two files:
 
 - `package.json` — top-level `"version"`.
 - `package-lock.json` — the two top-level `"version"` entries (root object and the `""` package entry). Ignore any `0.X.Y` strings inside transitive dependency version ranges (e.g. `iconv-lite`).
 
-No other source file hard-codes the version — the renderer, `electron-builder`, and `electron-updater` all read it from `package.json` at runtime/build time.
+`npm version <value> --no-git-tag-version` edits both; check the diff, because it also normalises unrelated escapes in `package.json` (it rewrote the `\u2013` in `description` once — revert that). No other source file hard-codes the version: the renderer, `electron-builder` and `electron-updater` all read it from `package.json` at runtime/build time, and the release workflow refuses to build a tag that does not match it.
 
-If the release version differs from the in-flight `<next>-dev` (for example, the cycle was opened as `0.7.1-dev` but is being shipped as `0.8.0`), set the new version directly here — the dev suffix exists to make local builds self-identify, not to commit you to a specific number.
+If the release version differs from the in-flight `<next>-dev` (for example, the cycle was opened as `0.8.1-dev` but is being shipped as `0.8.5`), set the new version directly — the dev suffix exists to make local builds self-identify, not to commit you to a specific number. Rename the matching GitHub milestone at the same time so its issues stay attached.
 
-Commit style (matches prior releases):
+Commit style:
 
 ```
-chore(release): bump version to <version>
+chore(release): cut <version>-rc.1
+chore(release): bump version to <version>      # the final
 ```
+
+Why semver pre-release identifiers and not a separate branch or tag scheme: they show up in every artifact name, in About, and in the update manifests; electron-updater orders them correctly (`<version>` is newer than `<version>-rc.N`, so a tester on a candidate is upgraded to the final automatically); and the release workflow keys its behaviour on them (a hyphen in the tag means "public pre-release", none means "draft").
 
 ## 2. Refresh dependencies
 
@@ -127,28 +144,173 @@ Commit style:
 docs(changelog): add user-facing <version> release notes
 ```
 
-**Review gate (when drafted by an agent).** If the changelog entries were drafted by an agent — or by anyone other than the releaser — **do not create the `docs(changelog): …` commit yet**. Leave the `CHANGELOG.md` edits unstaged (or staged, but uncommitted) on the release branch, present the diff to the releaser, and wait for explicit approval before committing. Iterating in the working tree is cheaper than amending a commit, and avoids the `git commit --amend` ambiguity for agents whose tooling discourages amending without an explicit user request. `CHANGELOG.md` is not read by §4 (verify), §5 (build distributables), or §6 (manual cross-platform smoke testing), so those steps can run in parallel with the review. §7 (upload + website) and §8 (tag) freeze the changelog state visible to end users and must wait until the commit lands.
+**Review gate (when drafted by an agent).** If the changelog entries were drafted by an agent — or by anyone other than the releaser — **do not create the `docs(changelog): …` commit yet**. Leave the `CHANGELOG.md` edits unstaged (or staged, but uncommitted) on the release branch, present the diff to the releaser, and wait for explicit approval before committing. Iterating in the working tree is cheaper than amending a commit, and avoids the `git commit --amend` ambiguity for agents whose tooling discourages amending without an explicit user request. `CHANGELOG.md` is not read by §4 (verify) or by candidate builds (§5, `rc.N` tags), so those can run in parallel with the review. The **final** tag (§5) and the website update (§7) freeze the changelog state visible to end users and must wait until the commit lands.
 
 If the changelog is already committed when a correction is requested (e.g. the releaser drafted it themselves, or this gate was missed), amend the existing `docs(changelog): …` commit rather than stacking a second changelog commit.
 
-## 4. Verify before building
+## 4. Verify before tagging
 
-On the release branch, with a clean working tree:
+CI covers what `npm test` and `npm run lint` used to cover here: every push to the release branch runs the full CI matrix, and the release workflow runs `check-binaries` itself before packaging. What remains manual:
+
+**License check.** `NOTICES`, `LICENSE_AUDIT.md`, and `licenses-audit.json` attribute the bundled Ant binary as MIT OR Apache-2.0, matching the `LICENSE-MIT` / `LICENSE-APACHE` that `https://github.com/freedom-hq/ant` now publishes. Before tagging, confirm the upstream license is unchanged and update those three files if it differs.
+
+**Source-tree spot check.** `npm ci && npm start` once on the release branch and confirm the About/version surface shows the number you just set. This catches a broken tree before you spend a 25-minute CI run on it.
+
+**CI is green** on the release branch head you are about to tag (`gh pr checks` on the branch's PR, or the Actions tab). The release workflow does not gate on CI, so a red branch produces a red release.
+
+## 5. Build with CI: candidates and the final
+
+Every build is triggered by pushing an annotated tag from the release branch. The tag must equal `v` + the `package.json` version, or the workflow fails in its first minute.
 
 ```
-npm ci
-npm run lint
-npm test
-npm run check-binaries
+git tag -a v<version>-rc.1 -m "Release candidate <version>-rc.1"
+git push origin release/<version> v<version>-rc.1
 ```
 
-**License check.** `NOTICES`, `LICENSE_AUDIT.md`, and `licenses-audit.json` attribute the bundled Ant binary as MIT OR Apache-2.0, matching the `LICENSE-MIT` / `LICENSE-APACHE` that `https://github.com/freedom-hq/ant` now publishes. Before building release artifacts, confirm the upstream license is unchanged and update those three files if it differs.
+What `.github/workflows/release.yml` then does:
 
-Spot-check the app once (`npm start`) and confirm the About/version surface reflects the new number.
+| Job           | Runner             | Output                                                                                      |
+| ------------- | ------------------ | ------------------------------------------------------------------------------------------- |
+| `mac-arm64`   | `macos-14`         | signed + notarized `.dmg` / `-mac.zip`, `latest-mac.yml`                                    |
+| `linux-x64`   | `ubuntu-latest`    | `Freedom-<v>.AppImage`, `freedom-browser_<v>_amd64.deb`, `latest-linux.yml`                 |
+| `linux-arm64` | `ubuntu-24.04-arm` | `Freedom-<v>-arm64.AppImage`, `freedom-browser_<v>_arm64.deb`, `latest-linux-arm64.yml`     |
+| `windows-x64` | `windows-latest`   | `Freedom-Setup-<v>.exe`, `Freedom-<v>-win.zip`, `latest-win-x64.yml` (unsigned)             |
+| `release`     | `ubuntu-latest`    | after **all four** succeeded: one GitHub Release with every file above and the `.blockmap`s |
 
-## 5. Build distributables
+- **Candidate tag** (`v<version>-rc.N`, anything with a hyphen): the release is created as a draft, the assets are uploaded, then it is flipped to a published **Pre-release**. Public, direct download links, excluded from "Latest release". Hand these to testers.
+- **Final tag** (`v<version>`): the release stays a **draft** until you publish it in §7. Drafts are visible and downloadable only to people with write access to the repo.
+- A failed leg means no release. Fix the cause, then "Re-run failed jobs" on that run: the successful legs' artifacts are kept and the `release` job runs again. If the fix needs a code change, it lands on the release branch as a PR and the next candidate (`rc.N+1`) picks it up; never move a tag.
+- Re-running onto a tag whose release is already published fails on purpose rather than overwriting files people may have downloaded.
+- Expect 20–30 minutes per run. macOS takes longest (two notarizations: electron-builder staples the `.app`, a dedicated step then notarizes and staples the `.dmg` and refreshes its hash in `latest-mac.yml`). Arti (Tor) is compiled from crates.io on the macOS and Linux runners.
 
-Run from the release branch. All builds read the version from `package.json`.
+Windows arm64 is intentionally not built (never shipped on `freedom.baby`, no Myotis addon). No Windows code-signing certificate exists, so the installer is unsigned and SmartScreen prompts on first run. The installer is named `Freedom-Setup-<v>.exe` (`build.nsis.artifactName`), not electron-builder's default with spaces, because GitHub rewrites spaces in release-asset names to dots, which would break the `url:` in `latest-win-x64.yml`.
+
+**The candidate loop.** Cut `rc.1` as soon as the branch is set up (§1–§4). Fix issues with PRs against `release/<version>` (or land them on `main` and cherry-pick), bump to `rc.2`, tag, push. Repeat until a candidate passes §6 with nothing left to fix. Only then set the bare version (§1), finalize the changelog commit (§3), and tag `v<version>` from that commit. The final build is then the same tree as the last candidate plus the version and changelog commits, which is the point: a final that fails §6 becomes the next patch version, not a retag.
+
+**Manual runs** (Actions → "Release" → Run workflow) build every platform from any branch and upload one workflow artifact per platform, without creating a release. Untick `signed` for a macOS pipeline test that needs no secrets; untick `bundle_tor` to skip the Arti build. Workflow artifacts are zipped, need a GitHub login, and expire — they are for your own checks, not for handing out.
+
+## 6. Manual cross-platform smoke testing
+
+CI packages every artifact but never runs one. Smoke testing each artifact on a real instance of its target OS catches packaging-class bugs that `npm test` and the on-host `npm start` spot check (§4) cannot:
+
+- Wrong native-module ABI for the target arch (e.g. `better-sqlite3.node` linked for the wrong NODE_MODULE_VERSION, or a x64 binary in an arm64 package)
+- Missing or wrong-arch bundled binary/addon in `extraResources` (`antd.exe`, freedom-ipfs, `libradicle.node`, Arti)
+- `electron-builder` configuration mistakes (asar unpack rules, `extraResources` paths, NSIS installer flags, Gatekeeper / SmartScreen interaction)
+- Platform-specific code paths (file system paths, native menus, IPC permissions, system trust store, default-browser hooks)
+
+Test the **candidate** pre-releases in full; re-check the **final** draft in short form (launch + version on each platform), since it is the same tree plus the version and changelog commits.
+
+### Getting the artifacts onto test machines
+
+Download straight from the GitHub Release page — no LAN server, no `scp`, no USB stick. Candidates are public:
+
+```
+https://github.com/solardev-xyz/freedom-browser/releases/download/v<version>-rc.N/<file>
+```
+
+The final's draft is only visible to repo collaborators; download it while logged in, or use `gh release download v<version> --pattern '<file>'`.
+
+Verify the download against the matching `latest-*.yml` in the same release (each file's `sha512:` field is base64):
+
+- Linux / macOS: `openssl dgst -sha512 -binary <file> | base64 -w0` — should print the base64 hash from the manifest verbatim
+- Windows (PowerShell): `(Get-FileHash -Algorithm SHA512 <file>).Hash` prints hex; compare it with the manifest's hash decoded once on any Unix host: `echo "<base64>" | base64 -d | xxd -p -c 256`
+
+### Use a separate profile
+
+A candidate shares the app id and profile directory with whatever Freedom is installed on the test machine. Run it against a scratch profile so migrations and node data cannot touch a real one — launch the binary directly, `open -a` does not forward environment variables:
+
+```
+# macOS
+FREEDOM_TEST_USER_DATA="$HOME/freedom-rc-test" /Applications/Freedom.app/Contents/MacOS/Freedom
+# Linux
+FREEDOM_TEST_USER_DATA="$HOME/freedom-rc-test" ./Freedom-<version>.AppImage
+# Windows (PowerShell)
+$env:FREEDOM_TEST_USER_DATA="$env:USERPROFILE\freedom-rc-test"; & "$env:LOCALAPPDATA\Programs\Freedom\Freedom.exe"
+```
+
+Run the checklist twice per candidate where it matters: as a fresh install (empty scratch profile) and as an upgrade from the last final (copy a real profile into the scratch directory first).
+
+### Test environments
+
+- **Linux**: a VM or bare-metal Linux machine matching the target arch. `Freedom-<version>.AppImage` runs without install (`chmod +x` then double-click or launch from a terminal); `freedom-browser_<version>_amd64.deb` installs via `sudo apt install ./freedom-browser_<version>_amd64.deb`. Repeat for the arm64 artifacts on an arm64 Linux instance (e.g. a Raspberry Pi or a UTM arm64 VM on Apple Silicon).
+- **Windows**: a Windows VM (UTM, Parallels, VMware Fusion) or a separate Windows host. The NSIS installer (`Freedom-Setup-<version>.exe`) runs unprivileged; the portable `Freedom-<version>-win.zip` extracts and runs without install. The installer is unsigned (no Windows certificate exists), so SmartScreen shows "Windows protected your PC" — More info → Run anyway is the expected path; outright "blocked by your administrator" is not.
+- **macOS**: any Apple Silicon Mac — install the `.dmg` and run the same checklist. The workflow already ran `spctl` / `stapler` on the runner; on the test Mac just confirm the app opens with no Gatekeeper warning.
+
+### Per-platform smoke checklist
+
+For each platform, run through:
+
+1. **Launch**: the app opens cleanly — no crash dialog, main window appears
+2. **Version**: About / `freedom://settings` shows `<version>` from `package.json`
+3. **Navigation**: type `https://example.com`, confirm a basic HTTPS page renders and the address-bar shield is in its default state
+4. **Headline feature**: spot-check whatever the release leads with. For releases that touch ENS / Swarm / IPFS / Radicle, that means opening an `ens://`, `bzz://`, `ipfs://`, or `rad://` URI and confirming the documented behaviour (e.g. for `0.7.2`: Colibri verification surfaces in the address-bar shield popover)
+5. **Bundled nodes**: confirm Ant, native IPFS, and Radicle start cleanly (Radicle ships on macOS, Linux, and Windows). The nodes manager or the relevant `freedom://` settings page surfaces this — a "node failed to start" red badge or a missing native addon/API port is the failure mode
+6. **Persistence**: change one trivial setting (e.g. theme), close the app fully, reopen, confirm the change stuck
+
+If any platform fails: fix on the release branch (PR), bump to the next `rc.N`, tag, push, and re-test that candidate. Do not proceed to §7 until every platform you intend to ship passes on the **same** candidate — one green build, not a patchwork of legs from different runs.
+
+This step is intentionally separate from §4 — §4 verifies the source tree; §6 verifies the **packaged artifact** that end users will install. They catch different classes of bugs.
+
+## 7. Publish
+
+Order matters: `freedom.baby/downloads` is what existing installs poll for updates, so it goes live together with the GitHub release, never before the smoke test and never with candidate files.
+
+1. Download the final's assets from its draft release (`gh release download v<version> --dir dist-release`). These are the bytes to publish everywhere — do **not** rebuild locally, or GitHub and `freedom.baby` would serve two different signed builds of one version with different hashes.
+2. Upload them to `https://freedom.baby/downloads`: every installer / archive / `.blockmap` plus all four manifests (`latest-mac.yml`, `latest-linux.yml`, `latest-linux-arm64.yml`, `latest-win-x64.yml`) so existing installs pick up the update via `electron-updater` (`publish.provider = generic` pointing at that URL). Never upload `rc.N` files or manifests there — the updater auto-downloads whatever the manifest advertises.
+3. Update the Freedom website:
+   - Download links and per-platform file-size metadata. The Windows installer is `Freedom-Setup-<version>.exe` (with hyphens) since releases moved to Actions.
+   - Version string in the downloads intro (e.g. `Alpha release (<version>)`).
+   - `Changelog` link — pin to the release branch so the page shows the CHANGELOG state that matches the binaries being served: `https://github.com/solardev-xyz/freedom-browser/blob/release/<version>/CHANGELOG.md`. Do not link to `main`, which will absorb future releases' in-progress notes.
+4. Publish the draft GitHub Release (`gh release edit v<version> --draft=false`, or the Publish button). Give it the release notes from the changelog section; the workflow only wrote a one-line placeholder. Confirm the page lists every artifact from the table in §5.
+
+Candidate pre-releases can stay on the Releases page; they are marked Pre-release and sort below the final. Delete them only if they are known-broken and you do not want anyone to keep installing them.
+
+## 8. Merge the release branch into `main`
+
+Optionally open a PR from `release/<version>` into `main` for review. Otherwise merge directly:
+
+```
+git checkout main
+git pull --ff-only
+git merge --no-ff release/<version>
+git push origin main
+```
+
+The `--no-ff` is deliberate — it preserves the release branch as a visible bubble in `main`'s history, which matches how earlier releases landed. The tag is already on the remote (it triggered the build), so there is nothing else to push.
+
+Housekeeping:
+
+- Keep the `release/<version>` branch around (do not delete) — it matches the historical pattern, the website's changelog link points at it, and it is the natural base for a `hotfix/<version>.<patch>` branch later if needed.
+- Any build-only fixes that landed after the version bump should have been committed on the release branch with `fix(build): ...` messages, same as the `0.6.2` cycle did.
+
+## 9. Open the next dev cycle on `main`
+
+Immediately after the merge, bump `main` to the next dev version so local/CI builds and the About dialog stop advertising the just-shipped release.
+
+Default to a patch bump — e.g. after shipping `0.7.0`, set `main` to `0.7.1-dev`. If the next cycle later turns out to be a minor or major (or you decide upfront), re-bump to `0.8.0-dev` / `1.0.0-dev`; nothing downstream depends on the suffix's exact `MINOR.PATCH`.
+
+Update the same two files as §1:
+
+- `package.json` — top-level `"version"`.
+- `package-lock.json` — both top-level `"version"` entries.
+
+Commit on `main` (not on the release branch):
+
+```
+chore(release): open <next>-dev cycle
+```
+
+Why a `-dev` suffix rather than a bare `<next>`:
+
+- The About dialog (`app.getVersion()`) and the updater User-Agent in `src/main/updater.js` are the only surfaces that show the version. With the suffix, a screenshot or bug report from a local build self-identifies as unreleased, instead of falsely claiming the previous release.
+- Per semver, `<next>-dev` sorts strictly below `<next>`, so the eventual release will always look like an upgrade to a dev install (never a downgrade).
+- Note: a `-dev` suffix does **not** rescue dev installs from missing a hotfix on the previous line. By semver, `0.8.0-dev > 0.7.1` (major/minor/patch dominate; pre-release tags only break ties within the same triple). This is acceptable here because dev builds are run by developers from source, not via `electron-updater`. If you ever hand pre-release builds to non-developer testers, revisit this.
+
+## Appendix A: building locally (fallback)
+
+Use this only when the workflow cannot be used — for instance to debug a packaging problem the runner logs do not explain, or if GitHub Actions is down. Everything here reads the version from `package.json`; run it from the release branch.
+
+If you publish a locally built artifact, **do not also publish the Actions build of the same tag**: the two are different signed builds with different hashes. Delete the workflow's draft instead, and note in the release which build shipped.
 
 ### macOS (signed + notarized, inline)
 
@@ -156,7 +318,7 @@ Run from the release branch. All builds read the version from `package.json`.
 npm run dist -- --mac
 ```
 
-`build.mac.notarize: true` in `package.json` makes `electron-builder` submit and staple the notarization in the same invocation. The command blocks until Apple finishes notarizing — expect several minutes. This is the default mac release flow.
+`build.mac.notarize: true` in `package.json` makes `electron-builder` submit and staple the notarization in the same invocation. The command blocks until Apple finishes notarizing — expect several minutes. This was the release flow before the workflow existed.
 
 That inline pass notarizes and staples **`Freedom.app` only**. `dmg-builder` then wraps the already-stapled app in a disk image but never notarizes the image itself, so the `.dmg` this command produces has no ticket of its own (`xcrun stapler validate` on it fails, and Gatekeeper has to check it online when a user opens it). If you hand out that disk image, notarize and staple it too:
 
@@ -167,7 +329,7 @@ xcrun notarytool submit dist/Freedom-<version>-arm64.dmg \
 xcrun stapler staple dist/Freedom-<version>-arm64.dmg
 ```
 
-Stapling rewrites the image, so the `.dmg` entry in `dist/latest-mac.yml` no longer matches the file you upload — refresh its `sha512`/`size` (the release workflow below does this automatically). The macOS updater only reads the `.zip` entry, so this affects the checksum manifest, not updates. The async fallback below already submits and staples the `.dmg` for you.
+Stapling rewrites the image, so the `.dmg` entry in `dist/latest-mac.yml` no longer matches the file you upload — refresh its `sha512`/`size` (the release workflow does this automatically). The macOS updater only reads the `.zip` entry, so this affects the checksum manifest, not updates. The async fallback below already submits and staples the `.dmg` for you.
 
 **Fallback — async notarization.** If notarization is slow or flaky and you need to do it out-of-band (for example to retry or to free the terminal), use the split scripts instead:
 
@@ -180,15 +342,6 @@ npm run dist:mac:staple-notary      # staple once accepted
 ```
 
 These require `.env` credentials via `dotenv-cli` and are implemented in `scripts/macos-notary.js`.
-
-### macOS (Apple Silicon) via GitHub Actions
-
-`.github/workflows/release-mac.yml` produces the same signed + notarized arm64 `.dmg` / `.zip` on a GitHub-hosted `macos-14` runner, so a release does not depend on one maintainer's Mac.
-
-- **Tag push (`v*`)** — signed build, then the `.dmg` is notarized and stapled in its own step (electron-builder's inline pass covers the `.app` only, see above) and `latest-mac.yml`'s `.dmg` entry is refreshed to the stapled bytes. The result is verified with `codesign` / `spctl` / `stapler` — the staple check now covers both `Freedom.app` and every `.dmg` — and attached to a GitHub Release for that tag together with `latest-mac.yml` and the `.blockmap`. A final tag (`v0.8.1`) produces a **draft**; publish it only after the §6 smoke test passes. A pre-release tag (`v0.8.1-rc.1`, anything with a hyphen) is published as soon as its assets are uploaded and flagged **Pre-release** — see "Release candidates" below. Re-running the job on a tag whose release is already published fails rather than overwriting the live files; tags are never moved, so a bad published build means a new version. With the Actions build, the tag is the build trigger — push it before §6 (see §8 for the reordered flow). The job fails fast if `package.json` does not match the tag (step 1) or if any signing secret is missing. `freedom.baby/downloads` (§7) remains the updater channel, so still upload final artifacts there.
-- **Manual run** (Actions → "Release (macOS arm64)" → Run workflow) — builds from any branch and uploads a workflow artifact only, no release. Untick `signed` for an unsigned pipeline test that needs no secrets; untick `bundle_tor` to skip the cargo build of Arti.
-
-Signed runs need these repository secrets (Settings → Secrets and variables → Actions): `CSC_LINK` (the Developer ID Application certificate exported from Keychain as a password-protected `.p12`, then base64-encoded), `CSC_KEY_PASSWORD`, and the same `APPLE_ID` / `APPLE_TEAM_ID` / `APPLE_APP_SPECIFIC_PASSWORD` as `.env.example`. `electron-builder` imports the certificate into a temporary keychain for the run.
 
 ### Linux
 
@@ -236,162 +389,14 @@ Both legs log that the override is active. It requires the node-gyp toolchain (P
 
 Each packaged app carries only the prebuild for its own target: the `mac`/`linux`/`win` blocks in `package.json` each exclude `**/node_modules/better-sqlite3/prebuilds/!(<platform>-${arch}).node`, which keeps ~15 MB of foreign-platform addons out of every installer. If you add a target platform or arch, add the matching exclusion, and sanity-check the packaged `app.asar.unpacked/node_modules/better-sqlite3/prebuilds/` holds exactly one `.node` file.
 
-## 6. Manual cross-platform smoke testing
+## Appendix B: the release workflow, for maintainers
 
-Cross-built artifacts have **never been run** by the time §5 finishes. The Linux container can package the AppImage and `.deb`, and the mac host can cross-build the Windows NSIS installer, but neither can execute the result on its actual target platform. Smoke testing each artifact on a real instance of its target OS catches packaging-class bugs that `npm test` and the on-host `npm start` smoke (§4) cannot:
+`.github/workflows/release.yml`. Things a releaser needs to know that are not obvious from the run page:
 
-- Wrong native-module ABI for the target arch (e.g. `better-sqlite3.node` linked for the wrong NODE_MODULE_VERSION, or a x64 binary in an arm64 package)
-- Missing or wrong-arch bundled binary/addon in `extraResources` (`antd.exe`, freedom-ipfs, `libradicle.node`)
-- `electron-builder` configuration mistakes (asar unpack rules, `extraResources` paths, NSIS installer flags, Gatekeeper / SmartScreen interaction)
-- Platform-specific code paths (file system paths, native menus, IPC permissions, system trust store, default-browser hooks)
-
-### Test environments
-
-- **Linux**: a VM or bare-metal Linux machine matching the target arch — **not the build host**. `Freedom-<version>.AppImage` runs without install (`chmod +x` then double-click or launch from a terminal); `freedom-browser_<version>_amd64.deb` installs via `sudo apt install ./freedom-browser_<version>_amd64.deb`. Repeat for the arm64 artifacts on an arm64 Linux instance (e.g. a Raspberry Pi or a UTM arm64 VM on Apple Silicon).
-- **Windows**: a Windows VM (UTM, Parallels, VMware Fusion) or a separate Windows host. The NSIS installer (`Freedom Setup <version>.exe`) runs unprivileged; the portable `Freedom-<version>-win.zip` extracts and runs without install. Confirm Windows SmartScreen prompts behave as expected for the signed installer (a "Don't run" with an unblock-on-second-prompt is normal for newly-signed builds; outright "blocked by your administrator" is not).
-- **macOS**: the dev host is fine — install the `.dmg` locally (or open the staged `.app` from `dist/mac-arm64/`) and run the same checklist. Confirm Gatekeeper accepts the artifact (`spctl --assess --type execute --verbose dist/mac-arm64/Freedom.app` should print `accepted, source=Notarized Developer ID`).
-
-### Transferring artifacts to test machines
-
-**Default step: as soon as the §5 artifacts are complete, launch Python's built-in HTTP server over `dist/` on the build host** — zero setup on the test side, no SSH server required, doesn't bounce the unreleased build off any third party. It serves an auto-generated directory index, so on each test machine you just browse to the URL and click the artifact you need:
-
-```
-python3 -m http.server 8000 --directory dist/
-```
-
-Get the build host's LAN IP with `ipconfig getifaddr en0` (macOS, primary interface) or `ip -4 addr show scope global | awk '/inet / { print $2 }'` (Linux). Then download from the test machine:
-
-| Test OS              | Command                                                          |
-| -------------------- | ---------------------------------------------------------------- |
-| Linux                | `wget http://<build-host-ip>:8000/<filename>`                    |
-| Windows (PowerShell) | `iwr http://<build-host-ip>:8000/<filename> -OutFile <filename>` |
-| Any (GUI)            | Browse to `http://<build-host-ip>:8000/` and click the file      |
-
-Filenames with spaces (e.g. `Freedom Setup <version>.exe`) need URL-encoding when used in `wget` / `iwr` (`%20` for each space). The GUI browser path handles encoding automatically.
-
-Verify the transfer matches the manifest in `dist/latest-<platform>*.yml` (each file's `sha512:` field is base64):
-
-- Linux / macOS test host: `openssl dgst -sha512 -binary <file> | base64 -w0` — should print the base64 hash from the manifest verbatim
-- Windows test host: `(Get-FileHash -Algorithm SHA512 <file>).Hash` returns hex; either compare against `shasum -a 512 <file>` run on the build host (also hex), or decode the manifest's base64 once with `echo "<base64>" | base64 -d | xxd -p -c 256` on the build host
-
-Kill the HTTP server (`Ctrl+C`, or `pkill -f "http.server"` if backgrounded) once transfers are done — it serves everything in `dist/` to anything on the LAN with no auth.
-
-Alternatives if the HTTP server doesn't fit:
-
-- **USB stick** — air-gapped, no network involved. Best when the test machine is offline or on a hostile network
-- **scp** — `scp dist/<file> user@test-host:` (needs `openssh-server` on the test host)
-- **KDE Connect / LocalSend / Snapdrop** — GUI options if both ends have the app
-- Cloud storage and the `freedom.baby/downloads` URL itself both work, but bounce the file off a third party — slower, exposes the unreleased build outside your LAN, and (for `freedom.baby`) inverts the playbook order by uploading before §6 testing has signed off
-
-### Per-platform smoke checklist
-
-For each platform, run through:
-
-1. **Launch**: the app opens cleanly — no crash dialog, main window appears
-2. **Version**: About / `freedom://settings` shows `<version>` from `package.json`
-3. **Navigation**: type `https://example.com`, confirm a basic HTTPS page renders and the address-bar shield is in its default state
-4. **Headline feature**: spot-check whatever the release leads with. For releases that touch ENS / Swarm / IPFS / Radicle, that means opening an `ens://`, `bzz://`, `ipfs://`, or `rad://` URI and confirming the documented behaviour (e.g. for `0.7.2`: Colibri verification surfaces in the address-bar shield popover)
-5. **Bundled nodes**: confirm Ant, native IPFS, and Radicle start cleanly (Radicle ships on macOS, Linux, and Windows). The nodes manager or the relevant `freedom://` settings page surfaces this — a "node failed to start" red badge or a missing native addon/API port is the failure mode
-6. **Persistence**: change one trivial setting (e.g. theme), close the app fully, reopen, confirm the change stuck
-
-If any platform fails:
-
-- Fix on the release branch. The other platforms' artifacts in `dist/` are not invalidated by a fix that only changes that platform's build.
-- Re-run only the affected `npm run dist:<platform>:...`.
-- Re-test the regenerated artifact.
-- Proceed to §7 only when every platform you intend to ship passes.
-
-This step is intentionally separate from §4 — §4 verifies the source tree (`npm test`, `npm start` from source); §6 verifies the **packaged artifact** that end users will install. They catch different classes of bugs.
-
-## Release candidates (optional loop between §5 and §7)
-
-When a release needs testing on machines or by people who do not build from source, cut pre-release builds from the release branch instead of sharing ad-hoc artifacts. The version string is the marker: use semver pre-release identifiers, never a separate branch or tag scheme.
-
-1. On `release/<version>`, set the version in `package.json` and `package-lock.json` (same two files as §1) to `<version>-alpha.1` for early builds or `<version>-rc.1` once you believe it is shippable.
-2. Commit (`chore(release): cut <version>-rc.1`), tag `v<version>-rc.1`, and push both. The GitHub Actions job (§5) builds, signs, and publishes it as a **Pre-release** on GitHub — visible to testers, excluded from "Latest release".
-3. Fix issues with normal PRs against the release branch (or land them on `main` and cherry-pick). When a fix set is in, bump to `rc.2` and tag again. Never move or reuse a tag; the number always goes up. The final release is the bare `<version>` with no suffix, which sorts higher than every candidate.
-4. Do **not** upload candidate artifacts or manifests to `freedom.baby/downloads`. The in-app updater auto-downloads whatever that manifest advertises, so only finals go there. A tester on `rc.N` is upgraded to the final automatically once it is published, because `<version>` is newer than `<version>-rc.N`.
-
-Testing a candidate: it shares the app id and profile directory with the installed release, so launch the binary directly (`open -a` does not forward shell environment variables) against a separate profile to keep migrations and node data from touching your real one:
-
-```
-FREEDOM_TEST_USER_DATA="$HOME/freedom-rc-test" /Applications/Freedom.app/Contents/MacOS/Freedom
-```
-
-Run the §6 checklist twice per candidate — as a fresh install and as an upgrade from the last final (copy a real profile into the test directory first). For quick private iteration between tagged candidates, trigger the workflow manually on the PR branch; the artifact needs a GitHub login to download and expires, so it is for your own testing, not for handing out.
-
-## 7. Upload binaries and update the website
-
-1. Push the release branch to GitHub so the pinned changelog link (step 3) resolves — the `release/<version>` blob URL 404s until the branch exists on the remote:
-
-   ```
-   git push -u origin release/<version>
-   ```
-
-   This is a plain branch push, not the `main` merge (that stays in §9). The branch is meant to live on after the release anyway (§10), so publishing it now costs nothing and unblocks the website update.
-
-2. Upload the generated artifacts from `dist/` to `https://freedom.baby/downloads`, including the `latest*.yml` manifests so existing installs pick up the update via `electron-updater` (which is configured with `publish.provider = generic` pointing at that URL).
-3. Update the Freedom website to point at the new version:
-   - Download links and per-platform file-size metadata.
-   - Version string in the downloads intro (e.g. `Alpha release (<version>)`).
-   - `Changelog` link — pin to the release branch so the page shows the CHANGELOG state that matches the binaries being served: `https://github.com/solardev-xyz/freedom-browser/blob/release/<version>/CHANGELOG.md`. Do not link to `main`, which will absorb future releases' in-progress notes.
-
-Do this **before** tagging — if an upload reveals a broken artifact, you want to be able to fix it on the release branch without already having a tag pointing at a broken commit.
-
-## 8. Tag the release
-
-On the release branch, from the commit you actually built and shipped:
-
-```
-git tag -a v<version> -m "Release <version>"
-```
-
-Tag format is `v<version>` (lowercase `v`), matching `v0.6.2`.
-
-When to push the tag depends on which build is the release build:
-
-- **GitHub Actions build (default).** The tag is the build trigger, so push it from the release branch as soon as the release commit (version bump + changelog) is final — before §6. Wait for the "Release (macOS arm64)" run, download the assets from the draft release it creates, and use _those_ files for the §6 smoke test and the §7 upload to `freedom.baby`, so GitHub and `freedom.baby` serve byte-identical binaries and a single `latest-mac.yml`. Publish the draft in §10. A tag is never moved: a final that fails §6 becomes the next patch version, not a retag — which is why a final should only be tagged after an `rc.N` from the same workflow has already passed §6 ("Release candidates" above).
-- **Local build (fallback).** If you built on your own Mac (§5, inline or async flow), keep the original order: do not push the tag until the §9 merge, so `main` and the tag move as one. The Actions run that tag triggers produces a _second_ signed build whose hashes differ from what you uploaded; delete that draft instead of publishing it, so GitHub never advertises files that do not match `freedom.baby`.
-
-## 9. Merge the release branch into main
-
-Optionally open a PR from `release/<version>` into `main` for review. Otherwise merge directly:
-
-```
-git checkout main
-git pull --ff-only
-git merge --no-ff release/<version>
-git push origin main
-git push origin v<version>   # no-op if the tag was already pushed for the Actions build (§8)
-```
-
-The `--no-ff` is deliberate — it preserves the release branch as a visible bubble in `main`'s history, which matches how earlier releases landed.
-
-## 10. Post-release housekeeping
-
-- Publish the draft GitHub Release created by the Actions build (or delete it if the release was built locally, see §8), and confirm the release page lists the correct artifacts and release notes.
-- Keep the `release/<version>` branch around (do not delete) — it matches the historical pattern and is the natural base for a `hotfix/<version>.<patch>` branch later if needed.
-- Any build-only fixes that land after the version bump should be committed on the release branch with `fix(build): ...` messages, same as the `0.6.2` cycle did.
-
-## 11. Open the next dev cycle on `main`
-
-Immediately after the merge, bump `main` to the next dev version so local/CI builds and the About dialog stop advertising the just-shipped release.
-
-Default to a patch bump — e.g. after shipping `0.7.0`, set `main` to `0.7.1-dev`. If the next cycle later turns out to be a minor or major (or you decide upfront), re-bump to `0.8.0-dev` / `1.0.0-dev`; nothing downstream depends on the suffix's exact `MINOR.PATCH`.
-
-Update the same two files as Step 1:
-
-- `package.json` — top-level `"version"`.
-- `package-lock.json` — both top-level `"version"` entries.
-
-Commit on `main` (not on the release branch):
-
-```
-chore(release): open <next>-dev cycle
-```
-
-Why a `-dev` suffix rather than a bare `<next>`:
-
-- The About dialog (`app.getVersion()`) and the updater User-Agent in `src/main/updater.js` are the only surfaces that show the version. With the suffix, a screenshot or bug report from a local build self-identifies as unreleased, instead of falsely claiming the previous release.
-- Per semver, `<next>-dev` sorts strictly below `<next>`, so the eventual release will always look like an upgrade to a dev install (never a downgrade).
-- Note: a `-dev` suffix does **not** rescue dev installs from missing a hotfix on the previous line. By semver, `0.8.0-dev > 0.7.1` (major/minor/patch dominate; pre-release tags only break ties within the same triple). This is acceptable here because dev builds are run by developers from source, not via `electron-updater`. If you ever hand pre-release builds to non-developer testers, revisit this.
+- **Secrets** (Settings → Secrets and variables → Actions): `CSC_LINK` (Developer ID Application certificate exported from Keychain Access as a password-protected `.p12`, base64-encoded), `CSC_KEY_PASSWORD`, and `APPLE_ID` / `APPLE_TEAM_ID` / `APPLE_APP_SPECIFIC_PASSWORD` (the same values as `.env.example`). Only the macOS job reads them. electron-builder imports the certificate into a temporary keychain for the run. When the certificate is renewed, re-export and replace `CSC_LINK` + `CSC_KEY_PASSWORD`; nothing else changes. A signed run with any secret missing fails in its first step with the list of missing names.
+- **Guards**: the tag must match `package.json`; a release lookup that fails for a transient API reason fails the run instead of creating a duplicate draft; more than one release on a tag aborts; re-running onto a published release aborts.
+- **Ordering inside a run**: create draft → upload every asset → (candidates only) flip to published pre-release. Watchers never see an empty release.
+- **Re-runs**: "Re-run failed jobs" keeps the successful legs' artifacts and re-runs `release`. "Re-run all jobs" rebuilds everything, including a fresh macOS signature and notarization — the bytes and hashes change, which is fine for a draft and forbidden for a published release (the guard above).
+- **Update channel**: `build.publish.channel` is pinned to `latest` in `package.json`; without it electron-builder derives the channel from the version's pre-release suffix and would name the manifest `rc-mac.yml`. `scripts/build.js` pins the Windows channel to `latest-win-x64` on the command line.
+- **Known first-run fixes** worth remembering when a leg breaks: the adblock list download uses a retrying `https` client because the EasyList server drops connections; the Ant and IPFS fetch scripts extract archives with Windows' own bsdtar and relative paths because the Windows job runs in Git Bash, where GNU tar misreads `D:\...` as a remote host.
+- **Cost**: the repo is public, so runner minutes are free. A full run is four parallel jobs of 10–25 minutes.
