@@ -229,8 +229,10 @@ FREEDOM_TEST_USER_DATA="$HOME/freedom-rc-test" /Applications/Freedom.app/Content
 # Linux
 FREEDOM_TEST_USER_DATA="$HOME/freedom-rc-test" ./Freedom-<version>.AppImage
 # Windows (PowerShell)
-$env:FREEDOM_TEST_USER_DATA="$env:USERPROFILE\freedom-rc-test"; & "$env:LOCALAPPDATA\Programs\Freedom\Freedom.exe"
+$env:FREEDOM_TEST_USER_DATA="$env:USERPROFILE\freedom-rc-test"; & "$env:LOCALAPPDATA\Programs\freedom-browser\Freedom.exe"
 ```
+
+The Windows install directory is `freedom-browser` (the package `name`), not `Freedom`: electron-builder only uses the product name for the install folder of an assisted or per-machine installer, and ours is one-click per-user. `smoke-windows-x64` finds it rather than assuming it, and prints the path it found.
 
 Run the checklist twice per candidate where it matters: as a fresh install (empty scratch profile) and as an upgrade from the last final (copy a real profile into the scratch directory first).
 
@@ -251,7 +253,7 @@ For each platform, run through:
 5. **Bundled nodes**: confirm Ant, native IPFS, and Radicle start cleanly (Radicle ships on macOS, Linux, and Windows). The nodes manager or the relevant `freedom://` settings page surfaces this — a "node failed to start" red badge or a missing native addon/API port is the failure mode
 6. **Persistence**: change one trivial setting (e.g. theme), close the app fully, reopen, confirm the change stuck
 
-**Every platform runs steps 1, 2 and 6 automatically.** The four `smoke-*` jobs in `.github/workflows/release.yml` drive the run's own artifacts with the `packaged` Playwright project (`npm run test:e2e:packaged` — launch, version, persistence), each on a runner of the target OS and arch, and each twice because every platform ships two things a user can install: macOS the app copied out of the mounted `.dmg` and the app from the `-mac.zip`; Linux (x64 and arm64) `/opt/Freedom/freedom` from the installed `.deb` and the binary inside the extracted AppImage; Windows `%LOCALAPPDATA%\Programs\Freedom\Freedom.exe` from the silently installed NSIS package and `Freedom.exe` from the portable zip. `release` depends on all four jobs, so an artifact that cannot launch, reports the wrong version, or loses a setting across a restart never reaches a release page. Each job passes the tag version as `FREEDOM_E2E_EXPECTED_VERSION`, which is exactly the step-2 check; a signed mac run additionally asserts `spctl` accepts the app copied out of the disk image. Steps 3–5 (navigation, headline feature, bundled nodes) and the upgrade-from-previous-version pass are **not** automated on any platform and are still done by hand as described above. To run the automated legs yourself against any packaged build:
+**Every platform runs steps 1, 2 and 6 automatically.** The four `smoke-*` jobs in `.github/workflows/release.yml` drive the run's own artifacts with the `packaged` Playwright project (`npm run test:e2e:packaged` — launch, version, persistence), each on a runner of the target OS and arch, and each twice because every platform ships two things a user can install: macOS the app copied out of the mounted `.dmg` and the app from the `-mac.zip`; Linux (x64 and arm64) `/opt/Freedom/freedom` from the installed `.deb` and the binary inside the extracted AppImage; Windows `%LOCALAPPDATA%\Programs\freedom-browser\Freedom.exe` from the silently installed NSIS package and `Freedom.exe` from the portable zip. `release` depends on all four jobs, so an artifact that cannot launch, reports the wrong version, or loses a setting across a restart never reaches a release page. Each job passes the tag version as `FREEDOM_E2E_EXPECTED_VERSION`, which is exactly the step-2 check; a signed mac run additionally asserts `spctl` accepts the app copied out of the disk image. Steps 3–5 (navigation, headline feature, bundled nodes) and the upgrade-from-previous-version pass are **not** automated on any platform and are still done by hand as described above. To run the automated legs yourself against any packaged build:
 
 ```bash
 FREEDOM_E2E_EXECUTABLE="$PWD/dist/linux-unpacked/freedom" \

@@ -829,12 +829,23 @@ jobs:
           Start-Process -Wait -FilePath "$env:FREEDOM_INSTALLER" -ArgumentList '/S'
           Start-Sleep -Seconds 5
           Stop-Process -Name Freedom -Force -ErrorAction SilentlyContinue
-          # Per-user install target, resolved from the environment rather than
-          # hard-coded: the runner's account name is not ours to assume.
-          $exe = Join-Path $env:LOCALAPPDATA 'Programs\Freedom\Freedom.exe'
-          if (-not (Test-Path $exe)) {
-            throw "The installer finished but $exe does not exist"
+          # Per-user install root, resolved from the environment rather than
+          # hard-coded: the runner's account name is not ours to assume. The
+          # directory under it is searched rather than named because
+          # electron-builder does not use the product name there for a
+          # one-click per-user install: app-builder-lib calls
+          # getWindowsInstallationDirName(appInfo, !oneClick || isPerMachine),
+          # which falls back to the package `name` — so the app lands in
+          # Programs\freedom-browser\Freedom.exe, not Programs\Freedom\.
+          # Searching keeps this job working if either name ever changes.
+          $root = Join-Path $env:LOCALAPPDATA 'Programs'
+          $found = @(Get-ChildItem -Path $root -Filter Freedom.exe -File -Recurse -Depth 1 -ErrorAction SilentlyContinue)
+          if ($found.Count -ne 1) {
+            Get-ChildItem -Path $root -ErrorAction SilentlyContinue | Format-Table -AutoSize
+            throw "Expected exactly one Freedom.exe under $root after the install, found $($found.Count)"
           }
+          $exe = $found[0].FullName
+          Write-Host "Installed to $exe"
           Get-Item $exe | Format-List Name, Length, VersionInfo
           "FREEDOM_INSTALLED_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
