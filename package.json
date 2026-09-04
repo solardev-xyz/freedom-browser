@@ -1,6 +1,6 @@
 {
   "name": "freedom-browser",
-  "version": "0.8.5-dev",
+  "version": "0.8.5-rc.1",
   "license": "MPL-2.0",
   "description": "Freedom \u2013 A browser for the decentralized web, with Swarm, IPFS, onchain apps, and ENS as first-class protocols.",
   "author": {
