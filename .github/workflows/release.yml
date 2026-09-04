@@ -334,7 +334,7 @@ jobs:
       # build the .deb the identical way.
       - name: Install fpm for the .deb target
         run: |
-          "$GITHUB_WORKSPACE/scripts/ci/apt-hardening.sh" install ruby ruby-dev build-essential
+          "$GITHUB_WORKSPACE/scripts/ci/apt-hardening.sh" install ruby ruby-dev build-essential xz-utils
           sudo gem install fpm --no-document
           fpm --version
 
@@ -468,6 +468,9 @@ jobs:
       # unsigned (same as every release on freedom.baby so far) and SmartScreen
       # prompts on first run. scripts/build.js pins the update channel to
       # latest-win-x64 so the manifest is named the way freedom.baby serves it.
+      # build.nsis.artifactName keeps the installer name free of spaces:
+      # GitHub rewrites spaces in release-asset names to dots, which would
+      # break the `url:` latest-win-x64.yml records for the updater.
       - name: Build NSIS installer and portable zip
         run: npm run dist -- --win --x64
 

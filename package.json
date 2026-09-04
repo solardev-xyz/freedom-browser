@@ -157,6 +157,9 @@
         }
       ]
     },
+    "nsis": {
+      "artifactName": "${productName}-Setup-${version}.${ext}"
+    },
     "win": {
       "target": [
         "nsis",
