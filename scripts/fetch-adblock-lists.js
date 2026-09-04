@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const https = require('https');
 
 // Fetches the EasyList-family filter lists the adblock service compiles at
 // runtime (src/main/adblock/service.js) and writes them, plus a manifest,
@@ -52,14 +53,60 @@ function countRules(text) {
   return count;
 }
 
-async function fetchList(category, meta) {
-  const res = await fetch(meta.sourceUrl, {
-    headers: { 'User-Agent': 'Freedom-Adblock-Fetcher' },
+// Plain https instead of global fetch: when a list server drops the TLS
+// connection mid-body, Node 24's undici can die on an internal assertion
+// (`assert(!this.paused)`) that surfaces as an uncaught exception, outside
+// any try/catch — the v0.8.5-rc.1 release run failed exactly that way. The
+// https client reports the same condition as a catchable 'error', so the
+// retry loop below actually gets a chance to run.
+function download(url, redirectsLeft = 3) {
+  return new Promise((resolve, reject) => {
+    const req = https.get(url, { headers: { 'User-Agent': 'Freedom-Adblock-Fetcher' } }, (res) => {
+      const { statusCode, headers } = res;
+      if ([301, 302, 303, 307, 308].includes(statusCode) && headers.location) {
+        res.resume();
+        if (redirectsLeft === 0) return reject(new Error(`${url}: too many redirects`));
+        return resolve(download(new URL(headers.location, url).href, redirectsLeft - 1));
+      }
+      if (statusCode !== 200) {
+        res.resume();
+        return reject(new Error(`${url} responded ${statusCode}`));
+      }
+      const chunks = [];
+      res.on('data', (chunk) => chunks.push(chunk));
+      res.on('error', reject);
+      res.on('aborted', () => reject(new Error(`${url}: connection closed mid-response`)));
+      res.on('end', () => {
+        if (!res.complete) return reject(new Error(`${url}: response truncated`));
+        resolve(Buffer.concat(chunks).toString('utf-8'));
+      });
+    });
+    req.setTimeout(60_000, () => req.destroy(new Error(`${url}: timed out`)));
+    req.on('error', reject);
   });
-  if (!res.ok) {
-    throw new Error(`${meta.sourceUrl} responded ${res.status}`);
+}
+
+async function withRetries(label, fn, maxAttempts = 4) {
+  let lastErr;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (attempt < maxAttempts) {
+        const delayMs = 2000 * attempt;
+        console.warn(
+          `\n${label} attempt ${attempt} failed (${err.message}); retrying in ${delayMs}ms...`
+        );
+        await new Promise((r) => setTimeout(r, delayMs));
+      }
+    }
   }
-  const text = await res.text();
+  throw lastErr;
+}
+
+async function fetchList(category, meta) {
+  const text = await withRetries(`${meta.title} download`, () => download(meta.sourceUrl));
   if (!text.includes('[Adblock')) {
     throw new Error(`${meta.sourceUrl} does not look like an ABP filter list`);
   }
