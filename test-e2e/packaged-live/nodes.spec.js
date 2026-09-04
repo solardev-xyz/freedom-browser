@@ -22,7 +22,40 @@
 // port the app itself published). Peer counts and content retrieval depend on
 // peer discovery, which is slow and nondeterministic on a CI runner.
 
-const { test, expect } = require('../live-fixtures');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+const { test: liveTest, expect } = require('../live-fixtures');
+
+// The embedded Radicle node binds a Unix socket at $RAD_HOME/node/control.sock,
+// and sockaddr_un caps that path at ~104 bytes on macOS. The live fixtures' own
+// temp root is already over the limit on a macOS runner
+// (/var/folders/<44 chars>/T/freedom-live-e2e-XXXXXX/userData/radicle-data/node/control.sock
+// measures 111), so hand the node a short home of its own — the same thing
+// radicle-fixtures.js does, and for the same reason. '/tmp' is short and real
+// on macOS and Linux; Windows has no sockaddr_un limit to dodge (and no /tmp),
+// so it keeps os.tmpdir().
+function makeShortRadicleHome() {
+  const prefix = process.platform === 'win32' ? path.join(os.tmpdir(), 'rad-') : '/tmp/rad-';
+  return fs.mkdtempSync(prefix);
+}
+
+// Applied to every test in the file rather than only the Radicle one: it costs
+// an empty temp directory, and it keeps the launch environment identical
+// across the four node tests.
+const test = liveTest.extend({
+  // eslint-disable-next-line no-empty-pattern
+  launchEnv: async ({}, use) => {
+    const radicleHome = makeShortRadicleHome();
+    await use({ FREEDOM_RADICLE_DATA: radicleHome });
+    try {
+      fs.rmSync(radicleHome, { recursive: true, force: true });
+    } catch {
+      // Best-effort cleanup — leftover dirs in /tmp are harmless.
+    }
+  },
+});
 
 // One budget for all three, sized from the slowest thing measured rather than
 // from a round number: antd's own startup poll gives up after 60 attempts × 1s
