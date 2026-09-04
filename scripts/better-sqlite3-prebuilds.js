@@ -20,8 +20,8 @@
  *
  * Leaving that file in place breaks two documented flows:
  *
- *   - Cross-platform builds (the mac -> Windows release build in
- *     `docs/agent-playbooks/release-process.md` §5) hard-fail with
+ *   - Cross-platform builds (the mac -> Windows fallback build in
+ *     `docs/agent-playbooks/release-process.md` Appendix A) hard-fail with
  *     "node-gyp does not support cross-compiling native modules from source".
  *   - Same-platform `electron-builder install-app-deps` (our `postinstall`)
  *     runs a node-gyp configure that compiles nothing — `binding.gyp` detects
