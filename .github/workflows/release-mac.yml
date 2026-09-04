@@ -98,6 +98,12 @@ jobs:
             exit 1
           fi
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
       - name: Assert package.json version matches the tag
         if: github.event_name == 'push'
         run: |
@@ -108,12 +114,6 @@ jobs:
             echo "Promote the dev version on the release branch first (release-process.md §1)." >&2
             exit 1
           fi
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
 
       # Full install (with lifecycle scripts): `electron-builder install-app-deps`
       # rebuilds the native modules against Electron on the arm64 host.
@@ -128,10 +128,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
+      # fetch-freedom-ipfs-native.js downloads release assets directly and
+      # makes no API calls, so it needs no token.
       - name: Download IPFS native addon
         run: npm run ipfs:download
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
 
       - name: Download libradicle addon
         run: npm run radicle:download -- --mac --arm64
@@ -142,11 +142,26 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           MYOTIS_DOWNLOAD_TARGET: darwin-arm64
 
+      # The runner image normally ships cargo. If it does not, install a
+      # pinned, checksummed rustup-init rather than piping sh.rustup.rs into
+      # a shell: this job later holds the signing credentials, so nothing
+      # unpinned should run on it. Same convention as the fetch-* scripts.
       - name: Build Arti (Tor) client
         if: env.BUNDLE_TOR == 'true'
+        env:
+          RUSTUP_VERSION: 1.28.2
+          RUSTUP_SHA256: 20ef5516c31b1ac2290084199ba77dbbcaa1406c45c1d978ca68558ef5964ef5
         run: |
           if ! command -v cargo >/dev/null 2>&1; then
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+            (
+              cd "$RUNNER_TEMP"
+              curl --proto '=https' --tlsv1.2 -sSfo rustup-init \
+                "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/aarch64-apple-darwin/rustup-init"
+              echo "${RUSTUP_SHA256}  rustup-init" | shasum -a 256 -c -
+              chmod +x rustup-init
+              ./rustup-init -y --profile minimal --no-modify-path
+              rm rustup-init
+            )
             echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
             export PATH="$HOME/.cargo/bin:$PATH"
           fi
@@ -252,13 +267,21 @@ jobs:
             dist/*.blockmap
             dist/latest-mac.yml
           if-no-files-found: error
+          # "Re-run failed jobs" keeps the previous attempt's artifact; without
+          # this the upload 409s and the run never reaches the release step.
+          overwrite: true
 
-      # Pre-release tags (semver with a hyphen: v0.8.1-alpha.1, v0.8.1-rc.2)
-      # are published at once and flagged "Pre-release" so testers can grab
-      # them; GitHub keeps them out of "Latest release". Final tags become a
-      # draft so a maintainer can run the release-process.md §6 smoke test
-      # before anything becomes visible to end users. Re-runs on the same tag
-      # replace the assets instead of failing.
+      # The release is always created as a draft first and only flipped to
+      # public once every asset is uploaded, so watchers never see an empty
+      # release. Pre-release tags (semver with a hyphen: v0.8.1-alpha.1,
+      # v0.8.1-rc.2) are then published flagged "Pre-release" so testers can
+      # grab them; GitHub keeps them out of "Latest release". Final tags stay
+      # a draft so a maintainer can run the release-process.md §6 smoke test
+      # before anything becomes visible to end users. Re-running the job on a
+      # tag whose release is still a draft replaces the assets; re-running on
+      # an already published release fails instead of overwriting files users
+      # may have downloaded and checksummed. Tags are never moved, so a bad
+      # published build means a new version, not a rebuild.
       - name: Attach to GitHub Release
         if: github.event_name == 'push'
         env:
@@ -269,21 +292,31 @@ jobs:
           changelog="https://github.com/${GITHUB_REPOSITORY}/blob/${TAG}/CHANGELOG.md"
           case "$version" in
             *-*)
-              flag="--prerelease"
+              prerelease=true
               title="Freedom ${version} (pre-release)"
               notes="Pre-release build of Freedom ${version} for macOS (Apple Silicon), signed and notarized. Not for general use: test it against a separate profile (FREEDOM_TEST_USER_DATA) and report problems on the release branch.
 
           Changelog so far: ${changelog}"
               ;;
             *)
-              flag="--draft"
+              prerelease=false
               title="Freedom ${version}"
               notes="Signed and notarized macOS (Apple Silicon) build of Freedom ${version}.
 
           Changelog: ${changelog}"
               ;;
           esac
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" "$flag" --verify-tag --title "$title" --notes "$notes"
-          fi
+          state="$(gh release view "$TAG" --json isDraft --jq 'if .isDraft then "draft" else "published" end' 2>/dev/null || echo missing)"
+          case "$state" in
+            published)
+              echo "Release $TAG is already published; refusing to overwrite its assets. Cut a new version instead." >&2
+              exit 1
+              ;;
+            missing)
+              gh release create "$TAG" --draft --verify-tag --title "$title" --notes "$notes"
+              ;;
+          esac
           gh release upload "$TAG" --clobber dist/*.dmg dist/*.zip dist/*.blockmap dist/latest-mac.yml
+          if [ "$prerelease" = true ]; then
+            gh release edit "$TAG" --draft=false --prerelease
+          fi

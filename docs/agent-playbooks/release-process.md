@@ -185,7 +185,7 @@ These require `.env` credentials via `dotenv-cli` and are implemented in `script
 
 `.github/workflows/release-mac.yml` produces the same signed + notarized arm64 `.dmg` / `.zip` on a GitHub-hosted `macos-14` runner, so a release does not depend on one maintainer's Mac.
 
-- **Tag push (`v*`)** — signed build, then the `.dmg` is notarized and stapled in its own step (electron-builder's inline pass covers the `.app` only, see above) and `latest-mac.yml`'s `.dmg` entry is refreshed to the stapled bytes. The result is verified with `codesign` / `spctl` / `stapler` — the staple check now covers both `Freedom.app` and every `.dmg` — and attached to a GitHub Release for that tag together with `latest-mac.yml` and the `.blockmap`. A final tag (`v0.8.1`) produces a **draft**; publish it only after the §6 smoke test passes. A pre-release tag (`v0.8.1-rc.1`, anything with a hyphen) is published immediately and flagged **Pre-release** — see "Release candidates" below. The job fails fast if `package.json` does not match the tag (step 1) or if any signing secret is missing. `freedom.baby/downloads` (§7) remains the updater channel, so still upload final artifacts there.
+- **Tag push (`v*`)** — signed build, then the `.dmg` is notarized and stapled in its own step (electron-builder's inline pass covers the `.app` only, see above) and `latest-mac.yml`'s `.dmg` entry is refreshed to the stapled bytes. The result is verified with `codesign` / `spctl` / `stapler` — the staple check now covers both `Freedom.app` and every `.dmg` — and attached to a GitHub Release for that tag together with `latest-mac.yml` and the `.blockmap`. A final tag (`v0.8.1`) produces a **draft**; publish it only after the §6 smoke test passes. A pre-release tag (`v0.8.1-rc.1`, anything with a hyphen) is published as soon as its assets are uploaded and flagged **Pre-release** — see "Release candidates" below. Re-running the job on a tag whose release is already published fails rather than overwriting the live files; tags are never moved, so a bad published build means a new version. With the Actions build, the tag is the build trigger — push it before §6 (see §8 for the reordered flow). The job fails fast if `package.json` does not match the tag (step 1) or if any signing secret is missing. `freedom.baby/downloads` (§7) remains the updater channel, so still upload final artifacts there.
 - **Manual run** (Actions → "Release (macOS arm64)" → Run workflow) — builds from any branch and uploads a workflow artifact only, no release. Untick `signed` for an unsigned pipeline test that needs no secrets; untick `bundle_tor` to skip the cargo build of Arti.
 
 Signed runs need these repository secrets (Settings → Secrets and variables → Actions): `CSC_LINK` (the Developer ID Application certificate exported from Keychain as a password-protected `.p12`, then base64-encoded), `CSC_KEY_PASSWORD`, and the same `APPLE_ID` / `APPLE_TEAM_ID` / `APPLE_APP_SPECIFIC_PASSWORD` as `.env.example`. `electron-builder` imports the certificate into a temporary keychain for the run.
@@ -346,7 +346,12 @@ On the release branch, from the commit you actually built and shipped:
 git tag -a v<version> -m "Release <version>"
 ```
 
-Tag format is `v<version>` (lowercase `v`), matching `v0.6.2`. Do not push the tag yet — push it together with the merge in the next step so `main` and the tag move as one.
+Tag format is `v<version>` (lowercase `v`), matching `v0.6.2`.
+
+When to push the tag depends on which build is the release build:
+
+- **GitHub Actions build (default).** The tag is the build trigger, so push it from the release branch as soon as the release commit (version bump + changelog) is final — before §6. Wait for the "Release (macOS arm64)" run, download the assets from the draft release it creates, and use _those_ files for the §6 smoke test and the §7 upload to `freedom.baby`, so GitHub and `freedom.baby` serve byte-identical binaries and a single `latest-mac.yml`. Publish the draft in §10. A tag is never moved: a final that fails §6 becomes the next patch version, not a retag — which is why a final should only be tagged after an `rc.N` from the same workflow has already passed §6 ("Release candidates" above).
+- **Local build (fallback).** If you built on your own Mac (§5, inline or async flow), keep the original order: do not push the tag until the §9 merge, so `main` and the tag move as one. The Actions run that tag triggers produces a _second_ signed build whose hashes differ from what you uploaded; delete that draft instead of publishing it, so GitHub never advertises files that do not match `freedom.baby`.
 
 ## 9. Merge the release branch into main
 
@@ -357,14 +362,14 @@ git checkout main
 git pull --ff-only
 git merge --no-ff release/<version>
 git push origin main
-git push origin v<version>
+git push origin v<version>   # no-op if the tag was already pushed for the Actions build (§8)
 ```
 
 The `--no-ff` is deliberate — it preserves the release branch as a visible bubble in `main`'s history, which matches how earlier releases landed.
 
 ## 10. Post-release housekeeping
 
-- Confirm the GitHub release page lists the correct artifacts and release notes.
+- Publish the draft GitHub Release created by the Actions build (or delete it if the release was built locally, see §8), and confirm the release page lists the correct artifacts and release notes.
 - Keep the `release/<version>` branch around (do not delete) — it matches the historical pattern and is the natural base for a `hotfix/<version>.<patch>` branch later if needed.
 - Any build-only fixes that land after the version bump should be committed on the release branch with `fix(build): ...` messages, same as the `0.6.2` cycle did.
 
