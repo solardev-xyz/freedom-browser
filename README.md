@@ -41,6 +41,37 @@ npm start
 
 Swarm and IPFS start automatically. Radicle and Myotis are opt-in under **Settings → Automatic Startup**. Run `npm run radicle:download` before enabling Radicle under **Settings → Nodes**; on macOS and Linux, run `npm run tor:download` before enabling Tor under **Settings → Experimental**. For prerequisites, platform notes, tests, debugging, and local builds, read the [development guide](docs/development.md).
 
+## Development Environment (devenv)
+
+If you have [Nix](https://nixos.org) and [devenv.sh](https://devenv.sh) installed, you can skip the manual Node.js / build-toolchain setup and drop straight into an environment that matches CI (Node 20, npm, and the system dependencies needed for native modules, binary fetches, and headless E2E):
+
+```bash
+devenv shell        # enter the dev shell
+# or, with direnv installed:
+direnv allow        # auto-activate on cd
+```
+
+First-time setup (installs npm deps and downloads the Ant / IPFS / Radicle binaries):
+
+```bash
+devenv run setup
+```
+
+Useful commands (also runnable as plain `npm run …`):
+
+| Command                     | What it does                                                  |
+| --------------------------- | ------------------------------------------------------------- |
+| `devenv run start`          | Launch Freedom (`npm start`).                                 |
+| `devenv run test`           | Jest unit tests.                                              |
+| `devenv run lint`           | ESLint.                                                       |
+| `devenv run format`         | Prettier write.                                               |
+| `devenv run e2e`            | Playwright E2E (headless via `xvfb-run` on Linux).            |
+| `devenv run fetch-binaries` | Re-download Ant, the IPFS native addon, and Radicle binaries. |
+
+The `.envrc` only activates with [direnv](https://direnv.net) installed, so contributors not using devenv are unaffected — the manual Quick Start above remains the canonical path.
+
+---
+
 ## Architecture
 
 Freedom is an Electron application. Protocol, node-lifecycle, permission, wallet, download, and persistence logic lives in the main process. The renderer is a modular UI layer that communicates with the main process through the allowlisted channels in `src/shared/ipc-channels.js`.
