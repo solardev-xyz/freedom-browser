@@ -668,44 +668,29 @@ async function main() {
         executions.slice(-2).every((entry) => entry.network === 'none'),
       { otherCommand: otherCommandChild, otherDirectory: otherDirectoryChild }
     );
-    // The bash tool cannot select a working directory itself; its cwd is the virtual root. Run the
-    // exact command in the canonical directory through the same controller API the tool uses.
-    const exact = await controller.execute(conversationA, {
+    const exact = await callTool(run1, 'bash', {
       command: probeCommand,
       workingDirectory: 'link',
     });
-    const exactChild = (() => {
-      try {
-        return JSON.parse(exact.stdout.trim()).child;
-      } catch {
-        return null;
-      }
-    })();
+    const exactResult = probeResult(exact);
+    const exactChild = exactResult?.child;
     check(
       '3b',
       'allow once: a mismatching call did not consume the grant; the exact command gets full networking once',
-      onlineExpectation(exactChild) &&
-        lastExecution().network === 'full' &&
-        exact.state === 'completed',
+      onlineExpectation(exactChild) && lastExecution().network === 'full' && !exact.error,
       { policyNetwork: lastExecution().network, child: exactChild, receipt: exact }
     );
     check(
       '5',
       'real Linux behavior from a descendant: DNS, HTTPS, host loopback, non-loopback address, abstract reachable, pathname denied',
-      onlineExpectation(exactChild) && exactChild.ppid === JSON.parse(exact.stdout.trim()).parent,
+      onlineExpectation(exactChild) && exactChild.ppid === exactResult?.parent,
       exactChild
     );
-    const again = await controller.execute(conversationA, {
+    const again = await callTool(run1, 'bash', {
       command: probeCommand,
       workingDirectory: 'sub',
     });
-    const againChild = (() => {
-      try {
-        return JSON.parse(again.stdout.trim()).child;
-      } catch {
-        return null;
-      }
-    })();
+    const againChild = probeResult(again)?.child;
     check(
       '3c',
       'allow once: a second execution of the exact command is offline again',
@@ -980,14 +965,19 @@ async function main() {
         cancelledStable,
       { heartbeatStable, cancelledStable, receiptNetwork }
     );
-    record(
+    check(
       '8-network-field',
       'command receipts carry an explicit effective network posture field',
-      Object.values(receipts).every((receipt) => receipt && 'networkPosture' in receipt)
-        ? 'passed'
-        : 'finding',
+      Object.entries(receipts).every(
+        ([key, receipt]) =>
+          receipt &&
+          ['none', 'full'].includes(receipt.networkPosture) &&
+          receipt.networkPosture === receiptNetwork[key]
+      ),
       {
-        receiptKeys: Object.keys(receipts.completed || {}),
+        receiptPostures: Object.fromEntries(
+          Object.entries(receipts).map(([key, receipt]) => [key, receipt?.networkPosture ?? null])
+        ),
         policyNetworkPerReceipt: receiptNetwork,
       }
     );
@@ -1093,6 +1083,17 @@ async function main() {
       }
     }),
   ];
+  const serializedDurable = JSON.stringify(durable);
+  check(
+    '8-network-durable',
+    'durable Agent activity preserves effective full and offline network postures',
+    serializedDurable.includes('"networkPosture":"full"') &&
+      serializedDurable.includes('"networkPosture":"none"'),
+    {
+      hasFull: serializedDurable.includes('"networkPosture":"full"'),
+      hasNone: serializedDurable.includes('"networkPosture":"none"'),
+    }
+  );
   const scans = [
     leakScan('pi_visible_tool_results', piVisible, markers),
     leakScan('durable_history_activity', durable, markers),
