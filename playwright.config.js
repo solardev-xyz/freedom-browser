@@ -26,6 +26,12 @@
 
 const { defineConfig } = require('@playwright/test');
 
+const packagedRequested =
+  Boolean(process.env.FREEDOM_E2E_EXECUTABLE) ||
+  process.argv.some(
+    (a, i, argv) => a === '--project=packaged' || (a === '--project' && argv[i + 1] === 'packaged')
+  );
+
 module.exports = defineConfig({
   testDir: './test-e2e',
   // Sequential runs only — Electron launches multiple processes per app
@@ -60,25 +66,33 @@ module.exports = defineConfig({
       timeout: 10 * 60_000,
       expect: { timeout: 30_000 },
     },
-    {
-      // Runs automatically ahead of `packaged` (and only then): a missing or
-      // unusable FREEDOM_E2E_EXECUTABLE fails here, with the fix in the
-      // message, instead of launching Electron from source and reporting a
-      // green smoke test for an artifact nothing ever opened.
-      name: 'packaged-preflight',
-      testMatch: /[\\/]packaged[\\/]preflight\.setup\.js$/,
-      timeout: 10_000,
-    },
-    {
-      name: 'packaged',
-      testMatch: /[\\/]packaged[\\/].*\.spec\.js$/,
-      dependencies: ['packaged-preflight'],
-      // `harness` plus headroom: a just-installed package launches with a
-      // cold asar and cold shared libraries, and the persistence spec pays
-      // that cost twice in a single test (launch, quit, relaunch).
-      timeout: 120_000,
-      expect: { timeout: 10_000 },
-      retries: process.env.CI ? 2 : 0,
-    },
+    // The two `packaged` projects are registered only when they are wanted:
+    // FREEDOM_E2E_EXECUTABLE set, or `--project packaged` on the command
+    // line. Otherwise a bare `npx playwright test` (no --project) would run
+    // them too and fail in the preflight instead of exercising harness+live.
+    ...(packagedRequested
+      ? [
+          {
+            // Runs automatically ahead of `packaged` (and only then): a missing or
+            // unusable FREEDOM_E2E_EXECUTABLE fails here, with the fix in the
+            // message, instead of launching Electron from source and reporting a
+            // green smoke test for an artifact nothing ever opened.
+            name: 'packaged-preflight',
+            testMatch: /[\\/]packaged[\\/]preflight\.setup\.js$/,
+            timeout: 10_000,
+          },
+          {
+            name: 'packaged',
+            testMatch: /[\\/]packaged[\\/].*\.spec\.js$/,
+            dependencies: ['packaged-preflight'],
+            // `harness` plus headroom: a just-installed package launches with a
+            // cold asar and cold shared libraries, and the persistence spec pays
+            // that cost twice in a single test (launch, quit, relaunch).
+            timeout: 120_000,
+            expect: { timeout: 10_000 },
+            retries: process.env.CI ? 2 : 0,
+          },
+        ]
+      : []),
   ],
 });

@@ -48,6 +48,8 @@ test('FREEDOM_E2E_EXECUTABLE points at an executable packaged build', () => {
     throw new Error(`${EXECUTABLE_VAR}="${executable}" is not a file.\n\n${USAGE}`);
   }
 
+  // On Windows fs.accessSync(X_OK) degrades to an existence check (no execute
+  // bit), so this guard only means something on Linux/macOS.
   try {
     fs.accessSync(executable, fs.constants.X_OK);
   } catch {

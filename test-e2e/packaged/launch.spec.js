@@ -6,6 +6,8 @@
 // cannot start at all: a missing asar entry, a native module built for the
 // wrong ABI, an extraResources path that only resolves in a source tree.
 
+const fs = require('fs');
+const path = require('path');
 const { test, expect } = require('../fixtures');
 
 test('the packaged app launches with its browser chrome', async ({ window, electronApp }) => {
@@ -43,7 +45,12 @@ test('the binary under test really is a packaged Electron build', async ({
   expect(build.electron).toMatch(/^\d+\.\d+/);
   expect(build.chrome).toMatch(/^\d+\./);
   expect(build.packaged).toBe(true);
-  expect(build.executable).toBe((process.env.FREEDOM_E2E_EXECUTABLE || '').trim());
+  // process.execPath is symlink-resolved (/proc/self/exe), so compare real
+  // paths: the .deb installs /usr/bin/freedom -> /etc/alternatives/freedom ->
+  // /opt/Freedom/freedom, and a relative dist/linux-unpacked/freedom is fine too.
+  expect(fs.realpathSync(build.executable)).toBe(
+    fs.realpathSync(path.resolve((process.env.FREEDOM_E2E_EXECUTABLE || '').trim()))
+  );
 
   // The renderer has to be running on that same Electron; anything else would
   // mean the window we are driving did not come from this package.
