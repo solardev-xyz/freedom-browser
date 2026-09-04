@@ -170,6 +170,15 @@ npm run dist:mac:staple-notary      # staple once accepted
 
 These require `.env` credentials via `dotenv-cli` and are implemented in `scripts/macos-notary.js`.
 
+### macOS (Apple Silicon) via GitHub Actions
+
+`.github/workflows/release-mac.yml` produces the same signed + notarized arm64 `.dmg` / `.zip` on a GitHub-hosted `macos-14` runner, so a release does not depend on one maintainer's Mac.
+
+- **Tag push (`v*`)** — signed build, verified with `codesign` / `spctl` / `stapler`, and attached to a **draft** GitHub Release for that tag together with `latest-mac.yml` and the `.blockmap`. The job fails fast if `package.json` does not match the tag (step 1) or if any signing secret is missing. Publish the draft only after the §6 smoke test passes; `freedom.baby/downloads` (§7) remains the updater channel, so still upload the artifacts there.
+- **Manual run** (Actions → "Release (macOS arm64)" → Run workflow) — builds from any branch and uploads a workflow artifact only, no release. Untick `signed` for an unsigned pipeline test that needs no secrets; untick `bundle_tor` to skip the cargo build of Arti.
+
+Signed runs need these repository secrets (Settings → Secrets and variables → Actions): `CSC_LINK` (the Developer ID Application certificate exported from Keychain as a password-protected `.p12`, then base64-encoded), `CSC_KEY_PASSWORD`, and the same `APPLE_ID` / `APPLE_TEAM_ID` / `APPLE_APP_SPECIFIC_PASSWORD` as `.env.example`. `electron-builder` imports the certificate into a temporary keychain for the run.
+
 ### Linux
 
 ```

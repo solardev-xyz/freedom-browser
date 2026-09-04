@@ -1,0 +1,202 @@
+name: Release (macOS arm64)
+
+# Builds the Apple Silicon distributable on a GitHub-hosted macOS runner,
+# signs + notarizes it with the Developer ID secrets, and attaches the result
+# to a draft GitHub Release for the pushed tag.
+#
+# Triggers:
+#   - push of a `v*` tag: signed build, verified, attached to a draft release
+#     (a maintainer publishes the draft after the §6 smoke test in
+#     docs/agent-playbooks/release-process.md).
+#   - workflow_dispatch: signed by default; set `signed: false` for an
+#     unsigned pipeline test. Dispatch runs only upload a workflow artifact,
+#     never a release.
+#
+# Required repository secrets for a signed build (Settings → Secrets and
+# variables → Actions):
+#   CSC_LINK                    Developer ID Application cert, .p12 exported
+#                               from Keychain, base64-encoded
+#   CSC_KEY_PASSWORD            password set on that .p12 export
+#   APPLE_ID                    Apple ID used for notarytool
+#   APPLE_TEAM_ID               team id (46XPHRBLH5 for Solar Dev Ltd)
+#   APPLE_APP_SPECIFIC_PASSWORD app-specific password for that Apple ID
+#
+# electron-builder imports CSC_LINK into a temporary keychain on CI and
+# `build.mac.notarize: true` in package.json submits + staples the
+# notarization inline, exactly like the maintainer flow in
+# docs/agent-playbooks/release-process.md §5.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      signed:
+        description: >-
+          Sign and notarize with the Developer ID secrets. Uncheck for an
+          unsigned pipeline test that needs no secrets.
+        type: boolean
+        default: true
+      bundle_tor:
+        description: >-
+          Build and bundle the Arti (Tor) client. Compiles from crates.io with
+          cargo and adds several minutes.
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-mac-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  mac-arm64:
+    runs-on: macos-14
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    env:
+      # Tag pushes are always signed and always bundle Tor; dispatch runs
+      # follow their inputs (`inputs.*` is null on push, hence the OR).
+      SIGNED: ${{ github.event_name == 'push' || inputs.signed }}
+      BUNDLE_TOR: ${{ github.event_name == 'push' || inputs.bundle_tor }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Assert Apple Silicon runner
+        run: |
+          if [ "$(uname -m)" != "arm64" ]; then
+            echo "Expected an arm64 macOS runner, got $(uname -m)" >&2
+            exit 1
+          fi
+
+      - name: Check signing secrets are configured
+        if: env.SIGNED == 'true'
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          missing=""
+          for name in CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_TEAM_ID APPLE_APP_SPECIFIC_PASSWORD; do
+            if [ -z "${!name}" ]; then missing="$missing $name"; fi
+          done
+          if [ -n "$missing" ]; then
+            echo "Signed build requested but these repository secrets are empty:$missing" >&2
+            echo "Add them under Settings → Secrets and variables → Actions, or re-run with signed=false for an unsigned pipeline test." >&2
+            exit 1
+          fi
+
+      - name: Assert package.json version matches the tag
+        if: github.event_name == 'push'
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$version" ]; then
+            echo "Tag v$tag does not match package.json version $version." >&2
+            echo "Promote the dev version on the release branch first (release-process.md §1)." >&2
+            exit 1
+          fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      # Full install (with lifecycle scripts): `electron-builder install-app-deps`
+      # rebuilds the native modules against Electron on the arm64 host.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download adblock filter lists
+        run: npm run adblock:download
+
+      - name: Download Ant binaries
+        run: npm run ant:download
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Download IPFS native addon
+        run: npm run ipfs:download
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Download libradicle addon
+        run: npm run radicle:download -- --mac --arm64
+
+      - name: Download Myotis addon
+        run: npm run myotis:download
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          MYOTIS_DOWNLOAD_TARGET: darwin-arm64
+
+      - name: Build Arti (Tor) client
+        if: env.BUNDLE_TOR == 'true'
+        run: |
+          if ! command -v cargo >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          npm run tor:download
+
+      - name: Build, sign and notarize
+        if: env.SIGNED == 'true'
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: npm run dist -- --mac --arm64
+
+      - name: Build unsigned (pipeline test)
+        if: env.SIGNED != 'true'
+        run: npm run dist -- --mac --arm64 --unsigned --no-notarize
+
+      - name: Verify signature, notarization and staple
+        if: env.SIGNED == 'true'
+        run: |
+          set -x
+          codesign --verify --deep --strict --verbose=2 dist/mac-arm64/Freedom.app
+          spctl --assess --type execute --verbose dist/mac-arm64/Freedom.app
+          for dmg in dist/*.dmg; do xcrun stapler validate "$dmg"; done
+
+      - name: List distributables
+        run: ls -la dist
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: freedom-mac-arm64-${{ env.SIGNED == 'true' && 'signed' || 'unsigned' }}
+          path: |
+            dist/*.dmg
+            dist/*.zip
+            dist/*.blockmap
+            dist/latest-mac.yml
+          if-no-files-found: error
+
+      # Draft so a maintainer can run the release-process.md §6 smoke test
+      # before anything becomes visible to end users. Re-runs on the same tag
+      # replace the assets instead of failing.
+      - name: Attach to draft GitHub Release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          notes="Signed and notarized macOS (Apple Silicon) build of Freedom ${TAG#v}.
+
+          Changelog: https://github.com/${GITHUB_REPOSITORY}/blob/${TAG}/CHANGELOG.md"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --draft --verify-tag --title "Freedom ${TAG#v}" --notes "$notes"
+          fi
+          gh release upload "$TAG" --clobber dist/*.dmg dist/*.zip dist/*.blockmap dist/latest-mac.yml
