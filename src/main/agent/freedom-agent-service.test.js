@@ -2079,6 +2079,102 @@ describe('FreedomAgentService', () => {
     expect(events.at(-1)).toMatchObject({ type: 'run_finished', status: 'cancelled' });
   });
 
+  test('persists a late workspace cancellation receipt before finishing Stop', async () => {
+    const fake = createFakeSession();
+    const historyStore = createHistoryStore();
+    let workspaceOptions;
+    const workspaceController = {
+      getWorkspace: jest.fn(() => ({
+        workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa',
+        enabled: true,
+        backend: 'linux-bubblewrap',
+        commands: [],
+      })),
+      disclosure: jest.fn(),
+      enable: jest.fn(),
+      execute: jest.fn(),
+      cancelConversation: jest.fn(() => {
+        queueMicrotask(() => {
+          workspaceOptions.onToolOutcome({
+            toolCallId: 'call_workspace_stop',
+            operation: 'bash',
+            status: 'failed',
+            errorCode: 'WORKSPACE_COMMAND_CANCELLED',
+            workspace: {
+              workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa',
+              commandId: 'workspace_cmd_bbbbbbbbbbbbbbbbbbbbbbbb',
+              kind: 'command',
+              command: 'node server.js',
+              workingDirectory: '.',
+              backend: 'linux-bubblewrap',
+              networkPosture: 'full',
+              state: 'cancelled',
+              durationMs: 20,
+              exitCode: null,
+              signal: 'SIGKILL',
+              stdoutTruncated: false,
+              stderrTruncated: false,
+              terminationGuarantee: 'namespace_scoped',
+              sideEffects: 'unknown',
+              survivorsPossible: false,
+              completeDescendantTermination: true,
+            },
+          });
+        });
+        return 1;
+      }),
+      deleteConversation: jest.fn(async () => true),
+      dispose: jest.fn(),
+    };
+    const createWorkspaceTools = jest.fn(async (options) => {
+      workspaceOptions = options;
+      return [{ name: 'bash' }];
+    });
+    const { service } = createService(fake, {
+      historyStore,
+      workspaceController,
+      createWorkspaceTools,
+    });
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+    fake.emit({
+      type: 'tool_execution_start',
+      toolCallId: 'call_workspace_stop',
+      toolName: 'bash',
+      args: { command: 'node server.js' },
+    });
+
+    await expect(service.stop('run_test')).resolves.toBe(true);
+    await service.waitForIdle();
+
+    const finished = historyStore.finishTurn.mock.calls.at(-1)[0];
+    expect(finished).toMatchObject({
+      status: 'cancelled',
+      activity: [
+        {
+          toolCallId: 'call_workspace_stop',
+          operation: 'bash',
+          status: 'failed',
+          label: 'Command stopped — node server.js',
+          errorCode: 'WORKSPACE_COMMAND_CANCELLED',
+          workspace: {
+            state: 'cancelled',
+            networkPosture: 'full',
+            signal: 'SIGKILL',
+            terminationGuarantee: 'namespace_scoped',
+          },
+        },
+      ],
+    });
+    expect(events.at(-2)).toMatchObject({
+      type: 'tool_finished',
+      toolCallId: 'call_workspace_stop',
+      workspace: { state: 'cancelled', networkPosture: 'full' },
+    });
+    expect(events.at(-1)).toMatchObject({ type: 'run_finished', status: 'cancelled' });
+  });
+
   test('finishes Stop at its deadline when both Pi abort and execution remain wedged', async () => {
     const fake = createFakeSession();
     fake.session.abort.mockImplementation(() => new Promise(() => {}));

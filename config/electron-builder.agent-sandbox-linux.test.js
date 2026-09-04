@@ -12,6 +12,12 @@ const EXPECTED_DEBIAN_RUNTIME_DEPENDENCIES = Object.freeze([
 ]);
 
 describe('Linux Debian package configuration', () => {
+  test('materializes the pinned Electron runtime during a clean project install', () => {
+    expect(packageMetadata.scripts.postinstall).toBe(
+      'install-electron && electron-builder install-app-deps'
+    );
+  });
+
   test('retains Electron Builder runtime defaults and requires Bubblewrap', () => {
     expect(packageMetadata.build.deb.depends).toEqual(EXPECTED_DEBIAN_RUNTIME_DEPENDENCIES);
     expect(new Set(packageMetadata.build.deb.depends).size).toBe(

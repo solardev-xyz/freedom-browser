@@ -1352,6 +1352,7 @@ class FreedomAgentService {
       providerFailures: [],
       providerRetryCount: 0,
       toolOutcomes: new Map(),
+      pendingWorkspaceOutcomes: new Map(),
       pendingApproval: null,
       pendingWalletRequests: new Set(),
       workspaceAbortController: new AbortController(),
@@ -1698,6 +1699,10 @@ class FreedomAgentService {
       );
     }
     if (execution) pending.push(Promise.resolve(execution).catch(() => {}));
+    const workspaceOutcomes = [...run.pendingWorkspaceOutcomes.values()].map(
+      (pendingOutcome) => pendingOutcome.promise
+    );
+    if (workspaceOutcomes.length) pending.push(Promise.allSettled(workspaceOutcomes));
     const settled = await settleWithin(
       Promise.all(pending),
       this.stopGraceMs,
@@ -1710,6 +1715,7 @@ class FreedomAgentService {
         conversationId: run.conversationId,
       });
     }
+    this.#reconcileToolOutcomes(run);
     if (!run.finished) await this.#finish(run, 'cancelled');
     if (!settled && this.conversation?.conversationId === run.conversationId) {
       this.#resetConversationProviderSession(this.conversation);
@@ -1964,6 +1970,7 @@ class FreedomAgentService {
       this.#emit(run, { type: 'run_paused' });
       return;
     }
+    if (status === 'cancelled' && run.stopRequested) return;
     await this.#finish(run, status, error);
   }
 
@@ -2079,32 +2086,61 @@ class FreedomAgentService {
           pageCount: normalized.pageCount,
         }),
       });
-    } else if (normalized.type === 'tool_finished') {
-      const item = run.activity.find((candidate) => candidate.toolCallId === normalized.toolCallId);
-      if (item) {
-        item.status = normalized.status;
-        item.label = normalized.label;
-        item.intent = normalized.intent;
-        item.effect = normalized.effect;
-        if (normalized.origin) item.origin = normalized.origin;
-        if (normalized.pageId) item.pageId = normalized.pageId;
-        if (Number.isSafeInteger(normalized.pageCount)) item.pageCount = normalized.pageCount;
-        if (normalized.errorCode) item.errorCode = normalized.errorCode;
-        if (normalized.artifact) item.artifact = normalized.artifact;
-        if (normalized.upload) item.upload = normalized.upload;
-        if (normalized.wallet) item.wallet = normalized.wallet;
-        if (normalized.nodeStatus) item.nodeStatus = normalized.nodeStatus;
-        if (normalized.nodeRequest) item.nodeRequest = normalized.nodeRequest;
-        if (normalized.nodeLifecycle) item.nodeLifecycle = normalized.nodeLifecycle;
-        if (normalized.diagnostic) item.diagnostic = normalized.diagnostic;
-        if (normalized.publication) item.publication = normalized.publication;
-        if (normalized.workspace) item.workspace = normalized.workspace;
-        if (normalized.attachment) item.attachment = normalized.attachment;
-        if (normalized.artifacts) item.artifacts = normalized.artifacts;
-        if (item.approval) normalized.approval = item.approval;
+      if (WORKSPACE_TOOL_NAME_SET.has(normalized.operation)) {
+        const pendingOutcome = createDeferred();
+        if (run.toolOutcomes.has(normalized.toolCallId)) pendingOutcome.resolve();
+        run.pendingWorkspaceOutcomes.set(normalized.toolCallId, pendingOutcome);
       }
+    } else if (normalized.type === 'tool_finished') {
+      this.#applyToolFinished(run, normalized);
+      if (toolOutcome) run.pendingWorkspaceOutcomes.delete(normalized.toolCallId);
     }
     this.#emit(run, normalized);
+  }
+
+  #applyToolFinished(run, normalized) {
+    const item = run.activity.find((candidate) => candidate.toolCallId === normalized.toolCallId);
+    if (!item) return;
+    item.status = normalized.status;
+    item.label = normalized.label;
+    item.intent = normalized.intent;
+    item.effect = normalized.effect;
+    if (normalized.origin) item.origin = normalized.origin;
+    if (normalized.pageId) item.pageId = normalized.pageId;
+    if (Number.isSafeInteger(normalized.pageCount)) item.pageCount = normalized.pageCount;
+    if (normalized.errorCode) item.errorCode = normalized.errorCode;
+    if (normalized.artifact) item.artifact = normalized.artifact;
+    if (normalized.upload) item.upload = normalized.upload;
+    if (normalized.wallet) item.wallet = normalized.wallet;
+    if (normalized.nodeStatus) item.nodeStatus = normalized.nodeStatus;
+    if (normalized.nodeRequest) item.nodeRequest = normalized.nodeRequest;
+    if (normalized.nodeLifecycle) item.nodeLifecycle = normalized.nodeLifecycle;
+    if (normalized.diagnostic) item.diagnostic = normalized.diagnostic;
+    if (normalized.publication) item.publication = normalized.publication;
+    if (normalized.workspace) item.workspace = normalized.workspace;
+    if (normalized.attachment) item.attachment = normalized.attachment;
+    if (normalized.artifacts) item.artifacts = normalized.artifacts;
+    if (item.approval) normalized.approval = item.approval;
+  }
+
+  #reconcileToolOutcomes(run) {
+    for (const [toolCallId, toolOutcome] of run.toolOutcomes) {
+      const normalized = normalizePiEvent(
+        {
+          type: 'tool_execution_end',
+          toolCallId,
+          toolName: toolOutcome.operation,
+          isError: toolOutcome.status === 'failed',
+        },
+        toolOutcome,
+        { label: run.providerLabel, modelId: run.modelId }
+      );
+      if (normalized?.type !== 'tool_finished') continue;
+      this.#applyToolFinished(run, normalized);
+      this.#emit(run, normalized);
+      run.toolOutcomes.delete(toolCallId);
+      run.pendingWorkspaceOutcomes.delete(toolCallId);
+    }
   }
 
   #handleToolOutcome(run, outcome) {
@@ -2170,6 +2206,7 @@ class FreedomAgentService {
       }),
     });
     run.toolOutcomes.set(normalized.toolCallId, normalized);
+    run.pendingWorkspaceOutcomes.get(normalized.toolCallId)?.resolve();
   }
 
   #handleWorkspacePhase(run, outcome) {
@@ -2417,6 +2454,9 @@ class FreedomAgentService {
 
   async #finish(run, status, error) {
     if (run.finished) return;
+    this.#reconcileToolOutcomes(run);
+    run.toolOutcomes.clear();
+    run.pendingWorkspaceOutcomes.clear();
     this.#resolveApproval(run, 'declined');
     if (status !== 'completed') {
       run.workspaceAbortController?.abort();

@@ -1086,9 +1086,11 @@ async function main() {
   const serializedDurable = JSON.stringify(durable);
   check(
     '8-network-durable',
-    'durable Agent activity preserves effective full and offline network postures',
-    serializedDurable.includes('"networkPosture":"full"') &&
-      serializedDurable.includes('"networkPosture":"none"'),
+    NETWORK_PERMISSIONS_ENABLED
+      ? 'durable Agent activity preserves effective full and offline network postures'
+      : 'durable Agent activity remains offline while full networking is disabled',
+    serializedDurable.includes('"networkPosture":"none"') &&
+      NETWORK_PERMISSIONS_ENABLED === serializedDurable.includes('"networkPosture":"full"'),
     {
       hasFull: serializedDurable.includes('"networkPosture":"full"'),
       hasNone: serializedDurable.includes('"networkPosture":"none"'),

@@ -90,7 +90,7 @@
     "openlv:ios-harness": "node scripts/openlv-ios-harness.js",
     "serve:updates": "node scripts/serve-updates.js",
     "start:test-updater": "ENABLE_DEV_UPDATER=true npm start",
-    "postinstall": "electron-builder install-app-deps"
+    "postinstall": "install-electron && electron-builder install-app-deps"
   },
   "build": {
     "appId": "baby.freedom.browser",
