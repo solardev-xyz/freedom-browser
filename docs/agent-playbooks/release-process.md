@@ -169,19 +169,23 @@ git push origin release/<version> v<version>-rc.1
 
 What `.github/workflows/release.yml` then does:
 
-| Job           | Runner             | Output                                                                                      |
-| ------------- | ------------------ | ------------------------------------------------------------------------------------------- |
-| `mac-arm64`   | `macos-14`         | signed + notarized `.dmg` / `-mac.zip`, `latest-mac.yml`                                    |
-| `linux-x64`   | `ubuntu-latest`    | `Freedom-<v>.AppImage`, `freedom-browser_<v>_amd64.deb`, `latest-linux.yml`                 |
-| `linux-arm64` | `ubuntu-24.04-arm` | `Freedom-<v>-arm64.AppImage`, `freedom-browser_<v>_arm64.deb`, `latest-linux-arm64.yml`     |
-| `windows-x64` | `windows-latest`   | `Freedom-Setup-<v>.exe`, `Freedom-<v>-win.zip`, `latest-win-x64.yml` (unsigned)             |
-| `release`     | `ubuntu-latest`    | after **all four** succeeded: one GitHub Release with every file above and the `.blockmap`s |
+| Job                 | Runner             | Output                                                                                                                     |
+| ------------------- | ------------------ | -------------------------------------------------------------------------------------------------------------------------- |
+| `mac-arm64`         | `macos-14`         | signed + notarized `.dmg` / `-mac.zip`, `latest-mac.yml`                                                                   |
+| `linux-x64`         | `ubuntu-latest`    | `Freedom-<v>.AppImage`, `freedom-browser_<v>_amd64.deb`, `latest-linux.yml`                                                |
+| `linux-arm64`       | `ubuntu-24.04-arm` | `Freedom-<v>-arm64.AppImage`, `freedom-browser_<v>_arm64.deb`, `latest-linux-arm64.yml`                                    |
+| `windows-x64`       | `windows-latest`   | `Freedom-Setup-<v>.exe`, `Freedom-<v>-win.zip`, `latest-win-x64.yml` (unsigned)                                            |
+| `smoke-mac-arm64`   | `macos-14`         | §6 steps 1/2/6 against the app from the `.dmg` and from the `-mac.zip`                                                     |
+| `smoke-linux-x64`   | `ubuntu-latest`    | §6 steps 1/2/6 against the installed `.deb` and the extracted AppImage                                                     |
+| `smoke-linux-arm64` | `ubuntu-24.04-arm` | the same two legs on arm64 hardware                                                                                        |
+| `smoke-windows-x64` | `windows-latest`   | §6 steps 1/2/6 against the silently installed NSIS package and the portable zip                                            |
+| `release`           | `ubuntu-latest`    | after **all four builds and all four smoke jobs** succeeded: one GitHub Release with every file above and the `.blockmap`s |
 
 - **Candidate tag** (`v<version>-rc.N`, anything with a hyphen): the release is created as a draft, the assets are uploaded, then it is flipped to a published **Pre-release**. Public, direct download links, excluded from "Latest release". Hand these to testers.
 - **Final tag** (`v<version>`): the release stays a **draft** until you publish it in §7. Drafts are visible and downloadable only to people with write access to the repo.
 - A failed leg means no release. Fix the cause, then "Re-run failed jobs" on that run: the successful legs' artifacts are kept and the `release` job runs again. If the fix needs a code change, it lands on the release branch as a PR and the next candidate (`rc.N+1`) picks it up; never move a tag.
 - Re-running onto a tag whose release is already published fails on purpose rather than overwriting files people may have downloaded.
-- Expect 20–30 minutes per run. macOS takes longest (two notarizations: electron-builder staples the `.app`, a dedicated step then notarizes and staples the `.dmg` and refreshes its hash in `latest-mac.yml`). Arti (Tor) is compiled from crates.io on the macOS and Linux runners.
+- Expect 20–30 minutes per run, plus a few minutes for the smoke job that follows each build. macOS takes longest (two notarizations: electron-builder staples the `.app`, a dedicated step then notarizes and staples the `.dmg` and refreshes its hash in `latest-mac.yml`). Arti (Tor) is compiled from crates.io on the macOS and Linux runners.
 
 Windows arm64 is intentionally not built (never shipped on `freedom.baby`, no Myotis addon). No Windows code-signing certificate exists, so the installer is unsigned and SmartScreen prompts on first run. The installer is named `Freedom-Setup-<v>.exe` (`build.nsis.artifactName`), not electron-builder's default with spaces, because GitHub rewrites spaces in release-asset names to dots, which would break the `url:` in `latest-win-x64.yml`.
 
@@ -191,7 +195,7 @@ Windows arm64 is intentionally not built (never shipped on `freedom.baby`, no My
 
 ## 6. Manual cross-platform smoke testing
 
-CI packages every artifact but never runs one. Smoke testing each artifact on a real instance of its target OS catches packaging-class bugs that `npm test` and the on-host `npm start` spot check (§4) cannot:
+CI now launches every artifact it packages (steps 1, 2 and 6 below), but only on a runner and only through those three checks. Smoke testing each artifact on a real instance of its target OS still catches packaging-class bugs that `npm test`, the on-host `npm start` spot check (§4) and the automated legs cannot:
 
 - Wrong native-module ABI for the target arch (e.g. `better-sqlite3.node` linked for the wrong NODE_MODULE_VERSION, or a x64 binary in an arm64 package)
 - Missing or wrong-arch bundled binary/addon in `extraResources` (`antd.exe`, freedom-ipfs, `libradicle.node`, Arti)
@@ -247,7 +251,7 @@ For each platform, run through:
 5. **Bundled nodes**: confirm Ant, native IPFS, and Radicle start cleanly (Radicle ships on macOS, Linux, and Windows). The nodes manager or the relevant `freedom://` settings page surfaces this — a "node failed to start" red badge or a missing native addon/API port is the failure mode
 6. **Persistence**: change one trivial setting (e.g. theme), close the app fully, reopen, confirm the change stuck
 
-**Linux x64 runs steps 1, 2 and 6 automatically.** The `smoke-linux-x64` job in `.github/workflows/release.yml` installs the run's own `.deb`, drives `/opt/Freedom/freedom` with the `packaged` Playwright project (`npm run test:e2e:packaged` — launch, version, persistence), then repeats the suite against the binary inside the AppImage. The `release` job depends on it, so a Linux x64 artifact that cannot launch, reports the wrong version, or loses a setting across a restart never reaches a release page. The job passes the tag version as `FREEDOM_E2E_EXPECTED_VERSION`, which is exactly the step-2 check. Nothing else is automated: steps 3–5 (navigation, headline feature, bundled nodes) on Linux, and the whole checklist on macOS, Windows and Linux arm64, are still done by hand as described above. To run the automated leg yourself against any packaged build:
+**Every platform runs steps 1, 2 and 6 automatically.** The four `smoke-*` jobs in `.github/workflows/release.yml` drive the run's own artifacts with the `packaged` Playwright project (`npm run test:e2e:packaged` — launch, version, persistence), each on a runner of the target OS and arch, and each twice because every platform ships two things a user can install: macOS the app copied out of the mounted `.dmg` and the app from the `-mac.zip`; Linux (x64 and arm64) `/opt/Freedom/freedom` from the installed `.deb` and the binary inside the extracted AppImage; Windows `%LOCALAPPDATA%\Programs\Freedom\Freedom.exe` from the silently installed NSIS package and `Freedom.exe` from the portable zip. `release` depends on all four jobs, so an artifact that cannot launch, reports the wrong version, or loses a setting across a restart never reaches a release page. Each job passes the tag version as `FREEDOM_E2E_EXPECTED_VERSION`, which is exactly the step-2 check; a signed mac run additionally asserts `spctl` accepts the app copied out of the disk image. Steps 3–5 (navigation, headline feature, bundled nodes) and the upgrade-from-previous-version pass are **not** automated on any platform and are still done by hand as described above. To run the automated legs yourself against any packaged build:
 
 ```bash
 FREEDOM_E2E_EXECUTABLE="$PWD/dist/linux-unpacked/freedom" \
@@ -406,5 +410,5 @@ Each packaged app carries only the prebuild for its own target: the `mac`/`linux
 - **Re-runs**: "Re-run failed jobs" keeps the successful legs' artifacts and re-runs `release`. "Re-run all jobs" rebuilds everything, including a fresh macOS signature and notarization — the bytes and hashes change, which is fine for a draft and forbidden for a published release (the guard above).
 - **Update channel**: `build.publish.channel` is pinned to `latest` in `package.json`; without it electron-builder derives the channel from the version's pre-release suffix and would name the manifest `rc-mac.yml`. `scripts/build.js` pins the Windows channel to `latest-win-x64` on the command line.
 - **Known first-run fixes** worth remembering when a leg breaks: the adblock list download uses a retrying `https` client because the EasyList server drops connections; the Ant and IPFS fetch scripts extract archives with Windows' own bsdtar and relative paths because the Windows job runs in Git Bash, where GNU tar misreads `D:\...` as a remote host.
-- **Smoke gate**: `smoke-linux-x64` runs after the `linux` matrix and before `release` (§6). It needs no secrets and rebuilds nothing — `npm ci --ignore-scripts`, then Playwright against the run's own `.deb` and AppImage. A failure there blocks the release job; its Playwright traces are uploaded as the `smoke-linux-x64-report` artifact.
-- **Cost**: the repo is public, so runner minutes are free. A full run is four parallel jobs of 10–25 minutes, plus a ~5-minute smoke job on the Linux x64 leg.
+- **Smoke gate**: `smoke-linux` (a matrix over x64/arm64), `smoke-mac-arm64` and `smoke-windows-x64` each run after their build job and before `release` (§6). They need no secrets and rebuild nothing — `npm ci --ignore-scripts`, then Playwright against the run's own artifacts. A failure in any of them blocks the release job; each uploads its Playwright traces as `smoke-<platform>-report` (deliberately not matching the `freedom-*` pattern the `release` job downloads, so traces can never become release assets). The mac job reads the signing state off the artifact name it downloaded (`freedom-mac-arm64-signed` / `-unsigned`) and only assesses Gatekeeper when there is a signature to assess, so an unsigned dispatch run still passes.
+- **Cost**: the repo is public, so runner minutes are free. A full run is four parallel build jobs of 10–25 minutes, plus a smoke job per platform of a few minutes each (also in parallel, each waiting only on its own build).

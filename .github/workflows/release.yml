@@ -407,16 +407,30 @@ jobs:
           if-no-files-found: error
           overwrite: true
 
-  # Smoke-test the Linux x64 artifacts the way a user gets them: install the
-  # .deb, run the `packaged` Playwright project against /opt/Freedom/freedom,
-  # then repeat against the binary inside the AppImage. This automates steps 1
-  # (launch), 2 (version) and 6 (persistence) of the manual checklist in
-  # docs/agent-playbooks/release-process.md §6 for this one platform; the other
-  # platforms, navigation, the bundled nodes and the headline feature are still
-  # tested by hand there.
-  smoke-linux-x64:
+  # Smoke-test the Linux artifacts the way a user gets them: install the .deb,
+  # run the `packaged` Playwright project against /opt/Freedom/freedom, then
+  # repeat against the binary inside the AppImage. One leg per architecture, on
+  # a runner of that architecture — a package whose native modules were built
+  # for the other arch is exactly the class of bug this catches, and it can
+  # only be caught by running the binary on its own hardware.
+  #
+  # This and the mac/windows jobs below automate steps 1 (launch), 2 (version)
+  # and 6 (persistence) of the manual checklist in
+  # docs/agent-playbooks/release-process.md §6 on every platform the release
+  # ships; navigation, the bundled nodes, the headline feature and
+  # upgrade-from-previous are still tested by hand there.
+  smoke-linux:
     needs: [linux]
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    name: smoke-linux-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
 
     steps:
@@ -438,10 +452,10 @@ jobs:
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
 
-      - name: Download the linux x64 artifact
+      - name: Download the linux ${{ matrix.arch }} artifact
         uses: actions/download-artifact@v4
         with:
-          name: freedom-linux-x64
+          name: freedom-linux-${{ matrix.arch }}
           path: artifact
 
       # A tag push must smoke-test the version it claims to be shipping; a
@@ -506,7 +520,153 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: smoke-linux-x64-report
+          name: smoke-linux-${{ matrix.arch }}-report
+          path: test-results/
+          if-no-files-found: ignore
+          overwrite: true
+
+  # Smoke-test the macOS artifact the way a user gets it, twice: once from the
+  # disk image (mount, copy Freedom.app out, unmount — the copy is what a user
+  # drags to /Applications) and once from the `-mac.zip` electron-updater
+  # downloads for an in-place update. Both are shipped separately, both can be
+  # broken separately, and only a copy taken out of the read-only mount proves
+  # the app still runs once it leaves it.
+  smoke-mac-arm64:
+    needs: [mac-arm64]
+    runs-on: macos-14
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      # `--ignore-scripts` on purpose: this job only needs Playwright to drive
+      # an already-built artifact, so there is nothing to rebuild against
+      # Electron and no bundled binary to download.
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      # Signed and unsigned runs upload under different names, so match both
+      # and let the step below read the signing state back off the name that
+      # actually arrived rather than re-deriving it from the inputs.
+      - name: Download the mac arm64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          pattern: freedom-mac-arm64-*
+          path: artifact
+
+      # A tag push must smoke-test the version it claims to be shipping; a
+      # dispatch run has no tag, so the working tree's version is the only
+      # truth available.
+      - name: Resolve the expected version
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = 'push' ]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="$(node -p "require('./package.json').version")"
+          fi
+          echo "Expecting the packaged app to report version $version"
+          echo "FREEDOM_E2E_EXPECTED_VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Resolve the downloaded artifact
+        run: |
+          shopt -s nullglob
+          dirs=(artifact/freedom-mac-arm64-*)
+          if [ ${#dirs[@]} -ne 1 ]; then
+            echo "Expected exactly one freedom-mac-arm64-* artifact, found ${#dirs[@]}" >&2
+            exit 1
+          fi
+          case "$(basename "${dirs[0]}")" in
+            *-unsigned) signed=false ;;
+            *-signed) signed=true ;;
+            *)
+              echo "Unexpected artifact name $(basename "${dirs[0]}")" >&2
+              exit 1
+              ;;
+          esac
+          ls -la "${dirs[0]}"
+          echo "Artifact ${dirs[0]} (signed=$signed)"
+          echo "ARTIFACT_DIR=${dirs[0]}" >> "$GITHUB_ENV"
+          echo "SIGNED=$signed" >> "$GITHUB_ENV"
+
+      - name: Mount the disk image and copy the app out of it
+        run: |
+          shopt -s nullglob
+          dmgs=("$ARTIFACT_DIR"/*.dmg)
+          if [ ${#dmgs[@]} -ne 1 ]; then
+            echo "Expected exactly one .dmg in the artifact, found ${#dmgs[@]}" >&2
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/apps-dmg"
+          hdiutil attach -nobrowse -readonly -mountpoint "$RUNNER_TEMP/dmg" "${dmgs[0]}"
+          # ditto, not cp: it is the only copy that preserves the symlinks,
+          # permissions and extended attributes the code signature is computed
+          # over, so the copy is still assessable by Gatekeeper below.
+          ditto "$RUNNER_TEMP/dmg/Freedom.app" "$RUNNER_TEMP/apps-dmg/Freedom.app"
+          hdiutil detach "$RUNNER_TEMP/dmg"
+          test -x "$RUNNER_TEMP/apps-dmg/Freedom.app/Contents/MacOS/Freedom"
+
+      # What a user's first double-click asks Gatekeeper, on the copy rather
+      # than on the build tree the mac-arm64 job assessed: an app whose ticket
+      # did not survive being wrapped in a disk image is rejected here. Skipped
+      # on unsigned dispatch runs, which have nothing to assess.
+      - name: Check Gatekeeper accepts the copied app
+        if: env.SIGNED == 'true'
+        run: |
+          if ! assessment="$(spctl --assess --type execute --verbose "$RUNNER_TEMP/apps-dmg/Freedom.app" 2>&1)"; then
+            echo "$assessment" >&2
+            echo "spctl rejected the app copied out of the disk image" >&2
+            exit 1
+          fi
+          echo "$assessment"
+          case "$assessment" in
+            *accepted*) ;;
+            *)
+              echo "spctl exited 0 but did not report the app as accepted" >&2
+              exit 1
+              ;;
+          esac
+
+      # No --no-sandbox here: macOS needs no sandbox opt-out, and passing one
+      # would smoke-test a configuration no user runs.
+      - name: Smoke-test the app from the disk image
+        env:
+          FREEDOM_E2E_EXECUTABLE: ${{ runner.temp }}/apps-dmg/Freedom.app/Contents/MacOS/Freedom
+        run: npm run test:e2e:packaged -- --output=test-results/dmg
+
+      - name: Extract the mac zip
+        run: |
+          shopt -s nullglob
+          zips=("$ARTIFACT_DIR"/*-mac.zip)
+          if [ ${#zips[@]} -ne 1 ]; then
+            echo "Expected exactly one -mac.zip in the artifact, found ${#zips[@]}" >&2
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/apps-zip"
+          # electron-builder writes this zip with ditto and electron-updater
+          # unpacks it with ditto; `unzip` would flatten the symlinks inside
+          # the bundle and break the signature.
+          ditto -x -k "${zips[0]}" "$RUNNER_TEMP/apps-zip"
+          test -x "$RUNNER_TEMP/apps-zip/Freedom.app/Contents/MacOS/Freedom"
+
+      - name: Smoke-test the app from the zip
+        env:
+          FREEDOM_E2E_EXECUTABLE: ${{ runner.temp }}/apps-zip/Freedom.app/Contents/MacOS/Freedom
+        run: npm run test:e2e:packaged -- --output=test-results/zip
+
+      # Traces and screenshots are only written for failures, so this is
+      # usually empty on a green run — hence `ignore` rather than `error`.
+      - name: Upload the smoke-test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-mac-arm64-report
           path: test-results/
           if-no-files-found: ignore
           overwrite: true
@@ -596,13 +756,137 @@ jobs:
           if-no-files-found: error
           overwrite: true
 
+  # Smoke-test the Windows artifacts the way a user gets them: run the NSIS
+  # installer silently and drive the app it installed under %LOCALAPPDATA%,
+  # then extract the portable zip and drive that. The installer leg is the one
+  # that covers the install itself — a wrong `files`/`extraResources` rule that
+  # only shows up once the tree has been unpacked by NSIS rather than by a zip
+  # reader fails there and nowhere else.
+  smoke-windows-x64:
+    needs: [windows-x64]
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      # `--ignore-scripts` on purpose: this job only needs Playwright to drive
+      # an already-built artifact, so there is nothing to rebuild against
+      # Electron and no bundled binary to download.
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Download the win x64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: freedom-win-x64
+          path: artifact
+
+      # A tag push must smoke-test the version it claims to be shipping; a
+      # dispatch run has no tag, so the working tree's version is the only
+      # truth available.
+      - name: Resolve the expected version
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = 'push' ]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="$(node -p "require('./package.json').version")"
+          fi
+          echo "Expecting the packaged app to report version $version"
+          echo "FREEDOM_E2E_EXPECTED_VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Locate the installer
+        run: |
+          shopt -s nullglob
+          exes=(artifact/*.exe)
+          if [ ${#exes[@]} -ne 1 ]; then
+            echo "Expected exactly one .exe in the artifact, found ${#exes[@]}" >&2
+            exit 1
+          fi
+          # PowerShell needs a native path, and this step runs in Git Bash
+          # where the same file is /d/a/freedom-browser/...
+          echo "FREEDOM_INSTALLER=$(cygpath -w "$(realpath "${exes[0]}")")" >> "$GITHUB_ENV"
+
+      - name: Install the NSIS package
+        shell: pwsh
+        run: |
+          # `/S` is NSIS's silent switch. Launched without -Wait the installer
+          # hands off and returns while the files are still being written, so
+          # the next step would race the install. One-click installers also
+          # start the app when they are done (`build.nsis.runAfterFinish`
+          # defaults to true) — stop that instance, the suite launches its own
+          # against a scratch profile.
+          Start-Process -Wait -FilePath "$env:FREEDOM_INSTALLER" -ArgumentList '/S'
+          Start-Sleep -Seconds 5
+          Stop-Process -Name Freedom -Force -ErrorAction SilentlyContinue
+          # Per-user install target, resolved from the environment rather than
+          # hard-coded: the runner's account name is not ours to assume.
+          $exe = Join-Path $env:LOCALAPPDATA 'Programs\Freedom\Freedom.exe'
+          if (-not (Test-Path $exe)) {
+            throw "The installer finished but $exe does not exist"
+          }
+          Get-Item $exe | Format-List Name, Length, VersionInfo
+          "FREEDOM_INSTALLED_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      # No --no-sandbox here: Windows needs no sandbox opt-out, and passing one
+      # would smoke-test a configuration no user runs.
+      - name: Smoke-test the installed package
+        env:
+          FREEDOM_E2E_EXECUTABLE: ${{ env.FREEDOM_INSTALLED_EXE }}
+        run: npm run test:e2e:packaged -- --output=test-results/installer
+
+      - name: Extract the portable zip
+        shell: pwsh
+        run: |
+          # Expand-Archive rather than `tar -xf`: the first tar on PATH in Git
+          # Bash is GNU tar, which reads the leading `D:\` of a Windows path as
+          # a remote host (the same trap scripts/fetch-ant.js works around by
+          # calling System32's bsdtar explicitly).
+          $zips = @(Get-ChildItem -Path artifact -Filter *-win.zip)
+          if ($zips.Count -ne 1) {
+            throw "Expected exactly one -win.zip in the artifact, found $($zips.Count)"
+          }
+          $dest = Join-Path $env:RUNNER_TEMP 'portable'
+          Expand-Archive -Path $zips[0].FullName -DestinationPath $dest -Force
+          $exe = Join-Path $dest 'Freedom.exe'
+          if (-not (Test-Path $exe)) {
+            throw "The portable zip has no Freedom.exe at the root of $dest"
+          }
+          "FREEDOM_PORTABLE_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Smoke-test the portable zip
+        env:
+          FREEDOM_E2E_EXECUTABLE: ${{ env.FREEDOM_PORTABLE_EXE }}
+        run: npm run test:e2e:packaged -- --output=test-results/portable
+
+      # Traces and screenshots are only written for failures, so this is
+      # usually empty on a green run — hence `ignore` rather than `error`.
+      - name: Upload the smoke-test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-windows-x64-report
+          path: test-results/
+          if-no-files-found: ignore
+          overwrite: true
+
   # One release for all platforms, created only after every build succeeded
-  # and the Linux x64 artifacts passed their packaged smoke test, so the page
-  # never shows a partial or dead-on-arrival set. "Re-run failed jobs" re-runs
-  # this job too and picks the successful jobs' artifacts back up from the run.
+  # and every artifact passed its packaged smoke test, so the page never shows
+  # a partial or dead-on-arrival set. "Re-run failed jobs" re-runs this job too
+  # and picks the successful jobs' artifacts back up from the run.
   release:
     if: github.event_name == 'push'
-    needs: [mac-arm64, linux, windows-x64, smoke-linux-x64]
+    needs: [mac-arm64, linux, windows-x64, smoke-linux, smoke-mac-arm64, smoke-windows-x64]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
