@@ -158,6 +158,17 @@ npm run dist -- --mac
 
 `build.mac.notarize: true` in `package.json` makes `electron-builder` submit and staple the notarization in the same invocation. The command blocks until Apple finishes notarizing — expect several minutes. This is the default mac release flow.
 
+That inline pass notarizes and staples **`Freedom.app` only**. `dmg-builder` then wraps the already-stapled app in a disk image but never notarizes the image itself, so the `.dmg` this command produces has no ticket of its own (`xcrun stapler validate` on it fails, and Gatekeeper has to check it online when a user opens it). If you hand out that disk image, notarize and staple it too:
+
+```
+xcrun notarytool submit dist/Freedom-<version>-arm64.dmg \
+  --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
+  --password "$APPLE_APP_SPECIFIC_PASSWORD" --wait
+xcrun stapler staple dist/Freedom-<version>-arm64.dmg
+```
+
+Stapling rewrites the image, so the `.dmg` entry in `dist/latest-mac.yml` no longer matches the file you upload — refresh its `sha512`/`size` (the release workflow below does this automatically). The macOS updater only reads the `.zip` entry, so this affects the checksum manifest, not updates. The async fallback below already submits and staples the `.dmg` for you.
+
 **Fallback — async notarization.** If notarization is slow or flaky and you need to do it out-of-band (for example to retry or to free the terminal), use the split scripts instead:
 
 ```
@@ -174,7 +185,7 @@ These require `.env` credentials via `dotenv-cli` and are implemented in `script
 
 `.github/workflows/release-mac.yml` produces the same signed + notarized arm64 `.dmg` / `.zip` on a GitHub-hosted `macos-14` runner, so a release does not depend on one maintainer's Mac.
 
-- **Tag push (`v*`)** — signed build, verified with `codesign` / `spctl` / `stapler`, and attached to a GitHub Release for that tag together with `latest-mac.yml` and the `.blockmap`. A final tag (`v0.8.1`) produces a **draft**; publish it only after the §6 smoke test passes. A pre-release tag (`v0.8.1-rc.1`, anything with a hyphen) is published immediately and flagged **Pre-release** — see "Release candidates" below. The job fails fast if `package.json` does not match the tag (step 1) or if any signing secret is missing. `freedom.baby/downloads` (§7) remains the updater channel, so still upload final artifacts there.
+- **Tag push (`v*`)** — signed build, then the `.dmg` is notarized and stapled in its own step (electron-builder's inline pass covers the `.app` only, see above) and `latest-mac.yml`'s `.dmg` entry is refreshed to the stapled bytes. The result is verified with `codesign` / `spctl` / `stapler` — the staple check now covers both `Freedom.app` and every `.dmg` — and attached to a GitHub Release for that tag together with `latest-mac.yml` and the `.blockmap`. A final tag (`v0.8.1`) produces a **draft**; publish it only after the §6 smoke test passes. A pre-release tag (`v0.8.1-rc.1`, anything with a hyphen) is published immediately and flagged **Pre-release** — see "Release candidates" below. The job fails fast if `package.json` does not match the tag (step 1) or if any signing secret is missing. `freedom.baby/downloads` (§7) remains the updater channel, so still upload final artifacts there.
 - **Manual run** (Actions → "Release (macOS arm64)" → Run workflow) — builds from any branch and uploads a workflow artifact only, no release. Untick `signed` for an unsigned pipeline test that needs no secrets; untick `bundle_tor` to skip the cargo build of Arti.
 
 Signed runs need these repository secrets (Settings → Secrets and variables → Actions): `CSC_LINK` (the Developer ID Application certificate exported from Keychain as a password-protected `.p12`, then base64-encoded), `CSC_KEY_PASSWORD`, and the same `APPLE_ID` / `APPLE_TEAM_ID` / `APPLE_APP_SPECIFIC_PASSWORD` as `.env.example`. `electron-builder` imports the certificate into a temporary keychain for the run.

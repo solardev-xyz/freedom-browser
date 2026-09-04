@@ -26,7 +26,9 @@ name: Release (macOS arm64)
 # electron-builder imports CSC_LINK into a temporary keychain on CI and
 # `build.mac.notarize: true` in package.json submits + staples the
 # notarization inline, exactly like the maintainer flow in
-# docs/agent-playbooks/release-process.md §5.
+# docs/agent-playbooks/release-process.md §5. That inline pass covers
+# `Freedom.app` only — the disk image dmg-builder wraps around it is
+# notarized and stapled by a separate step below.
 
 on:
   push:
@@ -164,12 +166,77 @@ jobs:
         if: env.SIGNED != 'true'
         run: npm run dist -- --mac --arm64 --unsigned --no-notarize
 
+      # `build.mac.notarize: true` submits and staples `Freedom.app` and stops
+      # there: dmg-builder wraps that already-stapled app in a disk image but
+      # never notarizes the image itself, so the `.dmg` carries no ticket of
+      # its own — Gatekeeper has to check it online when a user opens it, and
+      # `xcrun stapler validate` on it fails outright. Notarize and staple
+      # each disk image here, the same thing `npm run dist:mac:staple-notary`
+      # does in the out-of-band flow (release-process.md §5).
+      - name: Notarize and staple the disk image
+        if: env.SIGNED == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          shopt -s nullglob
+          dmgs=(dist/*.dmg)
+          if [ ${#dmgs[@]} -eq 0 ]; then
+            echo "No .dmg in dist/ to notarize." >&2
+            exit 1
+          fi
+          for dmg in "${dmgs[@]}"; do
+            echo "Notarizing $(basename "$dmg")"
+            xcrun notarytool submit "$dmg" \
+              --apple-id "$APPLE_ID" \
+              --team-id "$APPLE_TEAM_ID" \
+              --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+              --wait --timeout 30m
+            xcrun stapler staple "$dmg"
+          done
+
+      # Stapling rewrites the disk image, so the sha512/size electron-builder
+      # recorded for it before the ticket was attached no longer describe the
+      # file that gets uploaded. electron-updater only ever reads the `.zip`
+      # entry on macOS, but latest-mac.yml is a checksum manifest: refresh the
+      # `.dmg` entry so every hash it publishes matches the bytes actually
+      # shipped. The `.dmg.blockmap` still describes the pre-staple bytes;
+      # nothing on the macOS update path reads it, and a mismatch there only
+      # costs a full download instead of a differential one.
+      - name: Refresh mac update metadata
+        if: env.SIGNED == 'true'
+        run: |
+          node - <<'NODE'
+          const crypto = require('crypto');
+          const fs = require('fs');
+          const path = require('path');
+
+          const ymlPath = path.join('dist', 'latest-mac.yml');
+          let yml = fs.readFileSync(ymlPath, 'utf8');
+
+          for (const name of fs.readdirSync('dist').filter((f) => f.endsWith('.dmg'))) {
+            const bytes = fs.readFileSync(path.join('dist', name));
+            const sha512 = crypto.createHash('sha512').update(bytes).digest('base64');
+            const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const entry = new RegExp(`(- url: ${escaped}\\n\\s+sha512: )\\S+(\\n\\s+size: )\\d+`);
+            if (!entry.test(yml)) {
+              throw new Error(`No ${name} entry in ${ymlPath} to refresh`);
+            }
+            yml = yml.replace(entry, `$1${sha512}$2${bytes.length}`);
+            console.log(`${name}: sha512 refreshed, size ${bytes.length}`);
+          }
+
+          fs.writeFileSync(ymlPath, yml);
+          NODE
+
       - name: Verify signature, notarization and staple
         if: env.SIGNED == 'true'
         run: |
           set -x
           codesign --verify --deep --strict --verbose=2 dist/mac-arm64/Freedom.app
           spctl --assess --type execute --verbose dist/mac-arm64/Freedom.app
+          xcrun stapler validate dist/mac-arm64/Freedom.app
           for dmg in dist/*.dmg; do xcrun stapler validate "$dmg"; done
 
       - name: List distributables
