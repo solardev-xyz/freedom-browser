@@ -1084,6 +1084,11 @@ async function main() {
     }),
   ];
   const serializedDurable = JSON.stringify(durable);
+  const durableActivity = durable.flatMap((session) =>
+    Array.isArray(session.transcript)
+      ? session.transcript.flatMap((turn) => (Array.isArray(turn.activity) ? turn.activity : []))
+      : []
+  );
   check(
     '8-network-durable',
     NETWORK_PERMISSIONS_ENABLED
@@ -1096,6 +1101,22 @@ async function main() {
       hasNone: serializedDurable.includes('"networkPosture":"none"'),
     }
   );
+  if (NETWORK_PERMISSIONS_ENABLED) {
+    const cancelledActivity = durableActivity.find(
+      (item) =>
+        item.operation === 'bash' &&
+        item.status !== 'running' &&
+        item.workspace?.state === 'cancelled' &&
+        item.workspace?.networkPosture === 'full' &&
+        item.workspace?.signal === 'SIGKILL'
+    );
+    check(
+      '8-network-cancelled-durable',
+      'a stopped full-network command is durably terminal with its authoritative receipt',
+      Boolean(cancelledActivity),
+      cancelledActivity || null
+    );
+  }
   const scans = [
     leakScan('pi_visible_tool_results', piVisible, markers),
     leakScan('durable_history_activity', durable, markers),
