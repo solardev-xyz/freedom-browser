@@ -81,7 +81,8 @@
     },
     "publish": {
       "provider": "generic",
-      "url": "https://freedom.baby/downloads"
+      "url": "https://freedom.baby/downloads",
+      "channel": "latest"
     },
     "mac": {
       "target": [
