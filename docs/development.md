@@ -54,6 +54,7 @@ Protocol and privileged logic belongs in the main process. The renderer talks to
 | `npm run test:coverage`       | Run Jest with coverage                                          |
 | `npm run test:e2e`            | Run the deterministic Playwright harness suite                  |
 | `npm run test:e2e:live`       | Run live node, protocol, and naming integration tests           |
+| `npm run test:e2e:packaged`   | Smoke-test a packaged build (`FREEDOM_E2E_EXECUTABLE`)          |
 | `npm run test:e2e:tor`        | Run the live Tor `.onion` integration test                      |
 | `npm run check-binaries`      | Validate packaged native binary targets                         |
 | `npm run ant:download`        | Download the pinned Ant binary                                  |
@@ -82,14 +83,17 @@ Most source modules have a neighboring `.test.js` file. At minimum, run the corr
 
 ### End-to-end tests
 
-Playwright has two projects:
+Playwright has three projects:
 
-| Suite     | Command                 | Behavior                                                                                 |
-| --------- | ----------------------- | ---------------------------------------------------------------------------------------- |
-| `harness` | `npm run test:e2e`      | Launches Electron with deterministic Ant/IPFS/naming stubs; fast and network-independent |
-| `live`    | `npm run test:e2e:live` | Uses real nodes, protocols, and network resolution; requires downloaded binaries         |
+| Suite      | Command                     | Behavior                                                                                                       |
+| ---------- | --------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `harness`  | `npm run test:e2e`          | Launches Electron with deterministic Ant/IPFS/naming stubs; fast and network-independent                       |
+| `live`     | `npm run test:e2e:live`     | Uses real nodes, protocols, and network resolution; requires downloaded binaries                               |
+| `packaged` | `npm run test:e2e:packaged` | Runs the release smoke checks (launch, version, persistence) against a built binary instead of the source tree |
 
-Both suites use a temporary Electron `userData` directory and run sequentially. The full CI matrix covers the operating-system-specific and native-node checks that most contributors cannot reproduce locally.
+The `packaged` project needs `FREEDOM_E2E_EXECUTABLE` pointing at that binary and refuses to run without it; add `FREEDOM_E2E_NO_SANDBOX=1` on a headless machine. After `npm run build -- --linux --x64`, that is `FREEDOM_E2E_EXECUTABLE="$PWD/dist/linux-unpacked/freedom" FREEDOM_E2E_NO_SANDBOX=1 xvfb-run -a npm run test:e2e:packaged`. The release workflow runs the same suite against every artifact it just built — the macOS `.dmg` and `-mac.zip`, the Linux x64/arm64 `.deb` and AppImage, the Windows installer and portable zip (see `agent-playbooks/release-process.md` §6).
+
+All three suites use a temporary Electron `userData` directory and run sequentially. The full CI matrix covers the operating-system-specific and native-node checks that most contributors cannot reproduce locally.
 
 ## Logging and debugging
 
