@@ -28,6 +28,7 @@ const WORKSPACE_OPERATIONS = Object.freeze({
   GREP: 'grep',
   FIND: 'find',
   LS: 'ls',
+  PROCESS: 'write_stdin',
   PREVIEW: 'workspace_preview',
 });
 const WORKSPACE_OPERATION_SET = new Set(Object.values(WORKSPACE_OPERATIONS));
@@ -217,6 +218,11 @@ const OPERATION_PROGRESS = Object.freeze({
     effect: ACTIVITY_EFFECTS.OBSERVED,
     intent: 'Listing a project directory',
     completed: 'Listed a project directory',
+  },
+  [WORKSPACE_OPERATIONS.PROCESS]: {
+    effect: ACTIVITY_EFFECTS.MANAGED,
+    intent: 'Checking a workspace process',
+    completed: 'Checked a workspace process',
   },
   [WORKSPACE_OPERATIONS.PREVIEW]: {
     effect: ACTIVITY_EFFECTS.MANAGED,
@@ -497,6 +503,7 @@ function normalizeWorkspaceReceipt(value) {
   ]);
   const workspaceId = boundedString(value.workspaceId, 160);
   const commandId = boundedString(value.commandId, 160);
+  const processId = boundedString(value.processId, 160);
   const command = boundedString(
     // eslint-disable-next-line no-control-regex
     typeof value.command === 'string' ? value.command.replace(/[\u0000-\u001f\u007f]+/g, ' ') : '',
@@ -524,6 +531,7 @@ function normalizeWorkspaceReceipt(value) {
   if (
     (workspaceId && !/^workspace_[a-f0-9]{20}$/.test(workspaceId)) ||
     (commandId && !/^workspace_cmd_[a-f0-9]{24}$/.test(commandId)) ||
+    (processId && !/^workspace_process_[a-f0-9]{24}$/.test(processId)) ||
     !command ||
     !workingDirectory ||
     !backend ||
@@ -534,6 +542,7 @@ function normalizeWorkspaceReceipt(value) {
   return Object.freeze({
     ...(workspaceId && { workspaceId }),
     ...(commandId && { commandId }),
+    ...(processId && { processId }),
     kind: [
       'command',
       'file_read',
@@ -543,6 +552,7 @@ function normalizeWorkspaceReceipt(value) {
       'file_find',
       'directory_list',
       'static_preview',
+      'process',
     ].includes(kind)
       ? kind
       : 'command',
@@ -771,6 +781,9 @@ function activityProgress(operation, receipt = {}) {
       [WORKSPACE_OPERATIONS.GREP]: `Searching ${action.replace(/^Search /, '')}`,
       [WORKSPACE_OPERATIONS.FIND]: `Finding ${action.replace(/^Find /, '')}`,
       [WORKSPACE_OPERATIONS.LS]: `Listing ${action.replace(/^List /, '')}`,
+      [WORKSPACE_OPERATIONS.PROCESS]: action.startsWith('Stop ')
+        ? action
+        : `Checking ${action.replace(/^Check /, '')}`,
       [WORKSPACE_OPERATIONS.PREVIEW]: `Opening ${action.replace(/^Preview /, '')}`,
     };
     const completedLabels = {
@@ -791,18 +804,26 @@ function activityProgress(operation, receipt = {}) {
           ? `${action.replace(/^List /, 'Listed ')} — empty`
           : action.replace(/^List /, 'Listed '),
       [WORKSPACE_OPERATIONS.PREVIEW]: action.replace(/^Preview /, 'Opened preview for '),
+      [WORKSPACE_OPERATIONS.PROCESS]: `Process finished — ${action.replace(/^(?:Check|Stop) /, '')}`,
     };
     intent = activeLabels[operation];
+    const processName = action.replace(/^(?:Check|Stop) /, '');
     label =
-      workspace.state === 'completed'
-        ? completedLabels[operation]
-        : workspace.state === 'timed_out'
-          ? `Command timed out — ${action}`
-          : workspace.state === 'cancelled'
-            ? `Command stopped — ${action}`
-            : workspace.state === 'sandbox_denied'
-              ? `Workspace operation blocked — ${action}`
-              : `Workspace operation failed — ${action}`;
+      workspace.state === 'running'
+        ? `Process still running — ${processName}`
+        : workspace.state === 'completed'
+          ? completedLabels[operation]
+          : workspace.state === 'timed_out'
+            ? operation === WORKSPACE_OPERATIONS.PROCESS
+              ? `Process timed out — ${processName}`
+              : `Command timed out — ${action}`
+            : workspace.state === 'cancelled'
+              ? operation === WORKSPACE_OPERATIONS.PROCESS
+                ? `Process stopped — ${processName}`
+                : `Command stopped — ${action}`
+              : workspace.state === 'sandbox_denied'
+                ? `Workspace operation blocked — ${action}`
+                : `Workspace operation failed — ${action}`;
   } else if (origin) {
     const originCopy = {
       [OPERATIONS.CREATE_TAB]: ['Opening', 'Opened'],

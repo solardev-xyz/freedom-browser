@@ -319,12 +319,16 @@ describe('Bubblewrap backend contract', () => {
 
   test('continues draining after a visible output limit', async () => {
     const stream = new PassThrough();
-    const collection = collectStream(stream, 5);
+    const onData = jest.fn();
+    const collection = collectStream(stream, 5, onData);
     stream.write('hello');
     stream.write(' discarded');
     stream.end();
     await collection.done;
     expect(collection.result()).toEqual({ bytes: 5, text: 'hello', truncated: true });
+    expect(Buffer.concat(onData.mock.calls.map(([chunk]) => chunk)).toString('utf8')).toBe(
+      'hello discarded'
+    );
   });
 
   test('accepts only the first valid Bubblewrap child PID status', () => {

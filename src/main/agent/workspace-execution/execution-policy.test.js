@@ -718,12 +718,21 @@ describe('workspace execution policy', () => {
   });
 
   test('allows only bounded command vectors and non-sensitive environment names', () => {
-    expect(validateExecutionRequest({ command: '/bin/sh', args: ['-c', 'echo ok'] })).toMatchObject(
-      {
+    const onOutput = jest.fn();
+    const onStdin = jest.fn();
+    expect(
+      validateExecutionRequest({
         command: '/bin/sh',
         args: ['-c', 'echo ok'],
-      }
-    );
+        onOutput,
+        onStdin,
+      })
+    ).toMatchObject({
+      command: '/bin/sh',
+      args: ['-c', 'echo ok'],
+      onOutput,
+      onStdin,
+    });
     expect(() => validateExecutionRequest({ command: '/bin/sh', args: ['bad\0arg'] })).toThrow(
       ExecutionPolicyError
     );
@@ -734,6 +743,9 @@ describe('workspace execution policy', () => {
     expect(() => validateEnvironmentName('PGPASSWORD')).toThrow('not eligible');
     expect(() => validateEnvironmentName('MYSQL_PWD')).toThrow('not eligible');
     expect(() => validateEnvironmentName('NPM_CONFIG__AUTHTOKEN')).toThrow('not eligible');
+    expect(() => validateExecutionRequest({ command: '/bin/sh', onOutput: true })).toThrow(
+      'onOutput must be a function'
+    );
   });
 
   test('uses path containment without prefix confusion', () => {

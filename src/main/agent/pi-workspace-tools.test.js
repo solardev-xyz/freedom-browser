@@ -75,7 +75,7 @@ function createSdk() {
 }
 
 function createController() {
-  return {
+  const controller = {
     fullNetworkPermissionsEnabled: jest.fn(() => false),
     getWorkspace: jest.fn(() => ({
       workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa',
@@ -159,6 +159,40 @@ function createController() {
       workingDirectory: '.',
     })),
   };
+  controller.startProcess = jest.fn(async (conversationId, request) => {
+    const workspace = await controller.execute(conversationId, request);
+    return {
+      processId: 'workspace_process_cccccccccccccccccccccccc',
+      state: workspace.state,
+      output: `${workspace.stdout || ''}${workspace.stderr || ''}`,
+      outputTruncated: workspace.stdoutTruncated || workspace.stderrTruncated,
+      receipt: workspace,
+      workspace,
+    };
+  });
+  controller.interactProcess = jest.fn(async () => ({
+    processId: 'workspace_process_cccccccccccccccccccccccc',
+    state: 'running',
+    output: '',
+    outputTruncated: false,
+    workspace: {
+      workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa',
+      processId: 'workspace_process_cccccccccccccccccccccccc',
+      kind: 'process',
+      command: 'node server.js',
+      workingDirectory: '.',
+      backend: 'linux-bubblewrap',
+      networkPosture: 'none',
+      state: 'running',
+      stdoutTruncated: false,
+      stderrTruncated: false,
+      terminationGuarantee: 'pending',
+      sideEffects: 'unknown',
+      survivorsPossible: true,
+      completeDescendantTermination: false,
+    },
+  }));
+  return controller;
 }
 
 describe('Pi managed workspace tools', () => {
@@ -189,6 +223,7 @@ describe('Pi managed workspace tools', () => {
       'find',
       'ls',
       'request_permissions',
+      'write_stdin',
     ]);
     await expect(tools[0].execute('call_one', { command: 'pwd' })).resolves.toEqual({
       content: [{ type: 'text', text: '/workspace\n' }],
@@ -210,8 +245,81 @@ describe('Pi managed workspace tools', () => {
       type: 'string',
       maxLength: 1_024,
     });
+    expect(tools[0].parameters.properties.yield_time_ms).toMatchObject({
+      type: 'number',
+      maximum: 30_000,
+    });
     expect(onToolOutcome).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'succeeded', operation: 'bash' })
+    );
+  });
+
+  test('yields long-running bash commands and continues them through write_stdin', async () => {
+    const controller = createController();
+    const onToolOutcome = jest.fn();
+    controller.startProcess.mockResolvedValueOnce({
+      processId: 'workspace_process_cccccccccccccccccccccccc',
+      state: 'running',
+      output: 'server ready\n',
+      outputTruncated: false,
+      workspace: {
+        workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa',
+        commandId: 'workspace_cmd_bbbbbbbbbbbbbbbbbbbbbbbb',
+        processId: 'workspace_process_cccccccccccccccccccccccc',
+        kind: 'command',
+        command: 'node server.js',
+        workingDirectory: '.',
+        backend: 'linux-bubblewrap',
+        networkPosture: 'full',
+        state: 'running',
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        terminationGuarantee: 'pending',
+        sideEffects: 'unknown',
+        survivorsPossible: true,
+        completeDescendantTermination: false,
+      },
+    });
+    const tools = await createWorkspaceTools({
+      sdk: createSdk(),
+      controller,
+      conversationId: 'conversation_one',
+      requestApproval: jest.fn(),
+      onToolOutcome,
+    });
+
+    await expect(
+      tools[0].execute('bash_server', {
+        command: 'node server.js',
+        yield_time_ms: 250,
+      })
+    ).resolves.toEqual({
+      content: [
+        {
+          type: 'text',
+          text: expect.stringContaining(
+            'Command still running with session ID workspace_process_cccccccccccccccccccccccc'
+          ),
+        },
+      ],
+    });
+    expect(controller.startProcess).toHaveBeenCalledWith(
+      'conversation_one',
+      expect.objectContaining({ command: 'node server.js', yieldMs: 250 })
+    );
+
+    const processTool = tools.find((tool) => tool.name === 'write_stdin');
+    await processTool.execute('process_poll', {
+      session_id: 'workspace_process_cccccccccccccccccccccccc',
+      yield_time_ms: 0,
+    });
+    expect(controller.interactProcess).toHaveBeenCalledWith(
+      'conversation_one',
+      'workspace_process_cccccccccccccccccccccccc',
+      expect.objectContaining({ input: '', waitMs: 0, terminate: false })
+    );
+    expect(onToolOutcome).toHaveBeenLastCalledWith(
+      expect.objectContaining({ operation: 'write_stdin', status: 'succeeded' })
     );
   });
 

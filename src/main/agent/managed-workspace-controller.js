@@ -6,6 +6,7 @@ const {
   createWorkspaceExecutionPolicy,
   EXECUTION_STATES,
   insidePath,
+  MAX_TIMEOUT_MS,
   NETWORK_POSTURES,
   restrictWorkspaceExecutionPolicy,
 } = require('./workspace-execution/execution-policy');
@@ -16,6 +17,7 @@ const {
   resolveExecutableAccess,
 } = require('./workspace-execution/executable-access');
 const { captureHostCommandEnvironment } = require('./workspace-execution/host-command-environment');
+const { ManagedWorkspaceProcessManager } = require('./managed-workspace-process-manager');
 const {
   CAPABILITY_KINDS,
   WorkspaceCapabilityGrantStore,
@@ -34,6 +36,7 @@ const FULL_NETWORK_CAPABILITY_KINDS = new Set([
 ]);
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 5 * 60 * 1_000;
+const DEFAULT_MANAGED_PROCESS_TIMEOUT_MS = MAX_TIMEOUT_MS;
 const DEFAULT_FILE_OPERATION_TIMEOUT_MS = 10_000;
 const MAX_COMMAND_LENGTH = 32_000;
 const MAX_PERMISSION_COMMAND_LENGTH = 4_096;
@@ -675,6 +678,11 @@ class ManagedWorkspaceController {
     this.leases = new Map();
     this.leasePromises = new Map();
     this.activeCommands = new Map();
+    this.processManager =
+      options.processManager ||
+      new ManagedWorkspaceProcessManager({
+        execute: (conversationId, request) => this.execute(conversationId, request),
+      });
     this.capabilityGrants = options.capabilityGrants || new WorkspaceCapabilityGrantStore();
     this.networkPermissionsEnabled = options.networkPermissionsEnabled === true;
     this.hostCommandEnvironment = null;
@@ -851,7 +859,7 @@ class ManagedWorkspaceController {
           },
         },
         limits: {
-          timeoutMs: DEFAULT_COMMAND_TIMEOUT_MS,
+          timeoutMs: DEFAULT_MANAGED_PROCESS_TIMEOUT_MS,
           stdoutBytes: 1024 * 1024,
           stderrBytes: 1024 * 1024,
         },
@@ -1411,7 +1419,7 @@ class ManagedWorkspaceController {
     externalSignal?.addEventListener?.('abort', abort, { once: true });
     if (externalSignal?.aborted) controller.abort();
     const requestedTimeoutMs = Number.isFinite(request.timeoutMs)
-      ? Math.max(1, Math.min(DEFAULT_COMMAND_TIMEOUT_MS, Math.floor(request.timeoutMs)))
+      ? Math.max(1, Math.min(DEFAULT_MANAGED_PROCESS_TIMEOUT_MS, Math.floor(request.timeoutMs)))
       : DEFAULT_COMMAND_TIMEOUT_MS;
     let timedOut = false;
     const timeout = setTimeout(() => {
@@ -1429,6 +1437,30 @@ class ManagedWorkspaceController {
       startedAt,
     });
     this.activeCommands.set(commandId, { conversationId, controller });
+    if (typeof request.onStarted === 'function') {
+      try {
+        request.onStarted(
+          Object.freeze({
+            workspaceId: workspace.workspaceId,
+            commandId,
+            kind: 'command',
+            command: commandSummary(command),
+            workingDirectory: workingDirectory.relative,
+            backend: capabilities.backend,
+            networkPosture: agentPolicy.networkPosture,
+            state: 'running',
+            stdoutTruncated: false,
+            stderrTruncated: false,
+            terminationGuarantee: 'pending',
+            sideEffects: 'unknown',
+            survivorsPossible: capabilities.survivorsPossible === true,
+            completeDescendantTermination: false,
+          })
+        );
+      } catch {
+        // Progress observers are non-authoritative and must not affect execution.
+      }
+    }
     let receipt;
     try {
       receipt = await this.executor.execute(agentPolicy.policy, {
@@ -1441,6 +1473,8 @@ class ManagedWorkspaceController {
           command,
         ],
         signal: controller.signal,
+        ...(typeof request.onOutput === 'function' && { onOutput: request.onOutput }),
+        ...(typeof request.onStdin === 'function' && { onStdin: request.onStdin }),
       });
     } catch {
       const finishedAt = this.now();
@@ -1501,7 +1535,60 @@ class ManagedWorkspaceController {
     return result;
   }
 
+  async startProcess(conversationId, request = {}) {
+    const process = await this.processManager.start(conversationId, {
+      ...request,
+      timeoutMs: Number.isFinite(request.timeoutMs)
+        ? request.timeoutMs
+        : DEFAULT_MANAGED_PROCESS_TIMEOUT_MS,
+    });
+    return this.#processResult(conversationId, process);
+  }
+
+  async interactProcess(conversationId, processId, request = {}) {
+    return this.#processResult(
+      conversationId,
+      await this.processManager.interact(conversationId, processId, request)
+    );
+  }
+
+  #processResult(conversationId, process) {
+    if (process.receipt) {
+      return Object.freeze({
+        ...process,
+        workspace: Object.freeze({
+          ...process.receipt,
+          processId: process.processId,
+          kind: process.receipt.kind || 'command',
+        }),
+      });
+    }
+    const workspace = process.workspace || this.getWorkspace(conversationId);
+    const command = process.workspace?.command || commandSummary(process.command);
+    return Object.freeze({
+      ...process,
+      workspace: Object.freeze({
+        ...(workspace?.workspaceId && { workspaceId: workspace.workspaceId }),
+        ...(workspace?.commandId && { commandId: workspace.commandId }),
+        processId: process.processId,
+        kind: 'command',
+        command,
+        workingDirectory: workspace?.workingDirectory || process.workingDirectory || '.',
+        backend: workspace?.backend || 'pending',
+        ...(workspace?.networkPosture && { networkPosture: workspace.networkPosture }),
+        state: 'running',
+        stdoutTruncated: process.outputTruncated === true,
+        stderrTruncated: false,
+        terminationGuarantee: 'pending',
+        sideEffects: 'unknown',
+        survivorsPossible: workspace?.survivorsPossible !== false,
+        completeDescendantTermination: false,
+      }),
+    });
+  }
+
   cancelConversation(conversationId) {
+    this.processManager.cancelConversation(conversationId);
     let count = 0;
     for (const active of this.activeCommands.values()) {
       if (active.conversationId !== conversationId) continue;
@@ -1513,6 +1600,7 @@ class ManagedWorkspaceController {
 
   async deleteConversation(conversationId) {
     this.cancelConversation(conversationId);
+    this.processManager.deleteConversation(conversationId);
     const workspace = this.store.getForConversation(conversationId);
     if (!workspace) return false;
     this.leases.delete(workspace.workspaceId);
@@ -1522,6 +1610,7 @@ class ManagedWorkspaceController {
   }
 
   dispose() {
+    this.processManager.dispose();
     for (const active of this.activeCommands.values()) active.controller.abort();
     this.activeCommands.clear();
     this.leases.clear();
@@ -1532,6 +1621,7 @@ class ManagedWorkspaceController {
 
 module.exports = {
   DEFAULT_COMMAND_TIMEOUT_MS,
+  DEFAULT_MANAGED_PROCESS_TIMEOUT_MS,
   DEFAULT_FILE_OPERATION_TIMEOUT_MS,
   MAX_COMMAND_LENGTH,
   MAX_PERMISSION_COMMAND_LENGTH,

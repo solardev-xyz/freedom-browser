@@ -13,6 +13,7 @@ const {
   isValidatedWorkspaceExecutionPolicy,
   validateExecutionRequest,
 } = require('./execution-policy');
+const { createReadinessOutputForwarder, notifyOutput, notifyStdin } = require('./process-io');
 
 const DEFAULT_SEATBELT_PATH = '/usr/bin/sandbox-exec';
 const PROBE_TIMEOUT_MS = 5_000;
@@ -487,12 +488,13 @@ async function detectSeatbeltCapabilities(options = {}) {
   });
 }
 
-function collectStream(stream, limit) {
+function collectStream(stream, limit, onData) {
   const chunks = [];
   let bytes = 0;
   let truncated = false;
   stream?.on('data', (chunk) => {
     const buffer = Buffer.from(chunk);
+    onData?.(buffer);
     const available = Math.max(0, limit - bytes);
     if (available > 0) {
       const accepted = buffer.subarray(0, available);
@@ -684,7 +686,7 @@ class SeatbeltExecutor {
           cwd: hostWorkingDirectory(policy, workspace),
           detached: true,
           env: environment,
-          stdio: ['ignore', 'pipe', 'pipe'],
+          stdio: ['pipe', 'pipe', 'pipe'],
         });
       } catch {
         this.cleanupPrivateDirectory(privateDirectory).then((cleanup) => {
@@ -703,9 +705,13 @@ class SeatbeltExecutor {
 
       const stdout = collectStream(
         child.stdout,
-        policy.limits.stdoutBytes + Buffer.byteLength(markerPrefix)
+        policy.limits.stdoutBytes + Buffer.byteLength(markerPrefix),
+        createReadinessOutputForwarder(markerPrefix, request.onOutput)
       );
-      const stderr = collectStream(child.stderr, policy.limits.stderrBytes);
+      const stderr = collectStream(child.stderr, policy.limits.stderrBytes, (chunk) =>
+        notifyOutput(request.onOutput, 'stderr', chunk)
+      );
+      notifyStdin(request.onStdin, child);
       let requestedState = null;
       let spawnError = null;
       let terminationTimer = null;
@@ -794,12 +800,10 @@ class SeatbeltExecutor {
             cancellationGuarantee: 'best_effort',
             executableRootsScoped: true,
             networkPosture: policy.network,
-            publicNetworking:
-              policy.network === NETWORK_POSTURES.FULL ? 'host_network' : 'denied',
+            publicNetworking: policy.network === NETWORK_POSTURES.FULL ? 'host_network' : 'denied',
             loopbackNetworking:
               policy.network === NETWORK_POSTURES.FULL ? 'host_network' : 'denied',
-            privateNetworking:
-              policy.network === NETWORK_POSTURES.FULL ? 'host_network' : 'denied',
+            privateNetworking: policy.network === NETWORK_POSTURES.FULL ? 'host_network' : 'denied',
             hostUnixSockets: 'denied_unless_filesystem_authorized',
             platformNetworkServices:
               policy.network === NETWORK_POSTURES.FULL ? 'dns_tls_configuration' : 'denied',

@@ -21,6 +21,7 @@ const WORKSPACE_TOOL_NAMES = Object.freeze([
   'find',
   'ls',
   'request_permissions',
+  'write_stdin',
   'workspace_preview',
 ]);
 const READ_ONLY_WORKSPACE_OPERATIONS = new Set([
@@ -68,6 +69,10 @@ const WORKSPACE_ERROR_MESSAGES = Object.freeze({
   WORKSPACE_COMMAND_FAILED: 'The workspace command exited unsuccessfully',
   WORKSPACE_COMMAND_NOT_FOUND: 'A required command is not available in the workspace shell',
   WORKSPACE_COMMAND_TIMED_OUT: 'The workspace command timed out',
+  WORKSPACE_PROCESS_INPUT_UNAVAILABLE: 'The workspace process is not accepting input',
+  WORKSPACE_PROCESS_LIMIT_REACHED: 'Too many workspace commands are still running',
+  WORKSPACE_PROCESS_NOT_FOUND: 'The workspace process is no longer available',
+  INVALID_WORKSPACE_PROCESS_REQUEST: 'The workspace process request is invalid',
   WORKSPACE_EXECUTION_FAILED: 'Freedom could not start the workspace command',
   WORKSPACE_FILE_TOO_LARGE: 'The requested workspace file exceeds the supported size limit',
   WORKSPACE_FILE_UNAVAILABLE: 'The requested workspace file could not be accessed',
@@ -107,6 +112,10 @@ function safeWorkspaceError(error, options = {}) {
     'WORKSPACE_COMMAND_FAILED',
     'WORKSPACE_COMMAND_NOT_FOUND',
     'WORKSPACE_COMMAND_TIMED_OUT',
+    'WORKSPACE_PROCESS_INPUT_UNAVAILABLE',
+    'WORKSPACE_PROCESS_LIMIT_REACHED',
+    'WORKSPACE_PROCESS_NOT_FOUND',
+    'INVALID_WORKSPACE_PROCESS_REQUEST',
     'WORKSPACE_FILE_TOO_LARGE',
     'WORKSPACE_FILE_UNAVAILABLE',
     'WORKSPACE_FILE_UNSAFE',
@@ -236,6 +245,10 @@ function workspaceAction(operation, params = {}) {
     const summary = command.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim();
     return summary.length > 160 ? `${summary.slice(0, 157)}…` : summary || 'shell command';
   }
+  if (operation === 'write_stdin') {
+    const id = typeof params.session_id === 'string' ? params.session_id.slice(-8) : 'process';
+    return params.terminate === true ? `Stop process ${id}` : `Check process ${id}`;
+  }
   const target = modelPathLabel(params.path || '.');
   if (operation === 'grep') {
     const pattern = typeof params.pattern === 'string' ? params.pattern.slice(0, 120) : 'pattern';
@@ -265,6 +278,7 @@ function workspaceOperationKind(operation) {
     find: 'file_find',
     ls: 'directory_list',
     request_permissions: 'permission',
+    write_stdin: 'process',
     workspace_preview: 'static_preview',
   }[operation];
 }
@@ -436,6 +450,13 @@ function workspaceBashTemplate(template) {
           minLength: 1,
           maxLength: 1_024,
           description: 'Workspace-relative working directory (optional; defaults to .)',
+        },
+        yield_time_ms: {
+          type: 'number',
+          minimum: 250,
+          maximum: 30_000,
+          description:
+            'Wait before returning a session ID for a command that is still running (optional; defaults to 10000 ms)',
         },
       },
       additionalProperties: false,
@@ -989,19 +1010,30 @@ function createRequestPermissionsTool(sdk, options) {
   });
 }
 
-function bashOperations(options, captureReceipt) {
+function bashOperations(options, captureReceipt, toolParams = {}) {
   return Object.freeze({
     exec: async (command, cwd, execution = {}) => {
-      const receipt = await options.controller.execute(options.conversationId, {
+      const process = await options.controller.startProcess(options.conversationId, {
         command,
         workingDirectory: virtualPathToWorkspaceRelative(cwd, { allowRoot: true }),
         signal: execution.signal,
         ...(Number.isFinite(execution.timeout) && { timeoutMs: execution.timeout * 1_000 }),
+        ...(Number.isFinite(toolParams.yield_time_ms) && { yieldMs: toolParams.yield_time_ms }),
         ...(options.operationPhase && { onPhase: options.operationPhase }),
       });
+      const receipt = process.workspace;
       captureReceipt(receipt);
-      const output = boundedBashOutput(receipt);
+      const output = boundedBashOutput({ stdout: process.output || '', stderr: '' });
       if (output.byteLength) execution.onData(output);
+      if (process.state === 'running') {
+        execution.onData(
+          Buffer.from(
+            `${output.byteLength ? '\n' : ''}Command still running with session ID ${process.processId}. Use write_stdin to read more output, send input, or stop it.\n`,
+            'utf8'
+          )
+        );
+        return { exitCode: 0 };
+      }
       if (receipt.state === 'cancelled') {
         const error = new Error('The workspace command was stopped');
         error.code = 'WORKSPACE_COMMAND_CANCELLED';
@@ -1022,6 +1054,112 @@ function bashOperations(options, captureReceipt) {
       return { exitCode: receipt.exitCode };
     },
   });
+}
+
+function createWriteStdinTool(sdk, options) {
+  return trustBuiltInToolOverride(
+    sdk.defineTool({
+      name: 'write_stdin',
+      label: 'Workspace process',
+      description:
+        'Read new output from an existing workspace command session, send bounded text to its standard input, or stop it. Empty input polls without writing.',
+      parameters: {
+        type: 'object',
+        required: ['session_id'],
+        properties: {
+          session_id: {
+            type: 'string',
+            pattern: '^workspace_process_[a-f0-9]{24}$',
+            description: 'Session identifier returned by bash for a command that is still running',
+          },
+          chars: {
+            type: 'string',
+            maxLength: 16_384,
+            description:
+              'Text to write to the running process; omit or use an empty string to poll',
+          },
+          yield_time_ms: {
+            type: 'number',
+            minimum: 0,
+            maximum: 30_000,
+            description: 'Wait for new output or completion (optional)',
+          },
+          terminate: {
+            type: 'boolean',
+            description: 'Stop the sandboxed process and its descendants',
+          },
+        },
+        additionalProperties: false,
+      },
+      executionMode: 'parallel',
+      async execute(toolCallId, params = {}, signal) {
+        const operation = 'write_stdin';
+        let receipt;
+        try {
+          if (signal?.aborted) {
+            const cancelled = new Error('The workspace operation was stopped');
+            cancelled.code = 'WORKSPACE_OPERATION_CANCELLED';
+            throw cancelled;
+          }
+          const process = await options.controller.interactProcess(
+            options.conversationId,
+            params.session_id,
+            {
+              input: params.chars || '',
+              ...(Number.isFinite(params.yield_time_ms) && { waitMs: params.yield_time_ms }),
+              terminate: params.terminate === true,
+              signal,
+            }
+          );
+          if (signal?.aborted) {
+            const cancelled = new Error('The workspace operation was stopped');
+            cancelled.code = 'WORKSPACE_OPERATION_CANCELLED';
+            throw cancelled;
+          }
+          receipt = process.workspace;
+          const status =
+            process.state === 'running' ? 'still running' : `finished: ${process.state}`;
+          const output = boundedBashOutput({ stdout: process.output || '', stderr: '' }).toString(
+            'utf8'
+          );
+          notify(options.onToolOutcome, {
+            toolCallId,
+            operation,
+            status: ['failed', 'cancelled', 'timed_out', 'sandbox_denied'].includes(process.state)
+              ? 'failed'
+              : 'succeeded',
+            workspace: receipt,
+          });
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `${output}${output && !output.endsWith('\n') ? '\n' : ''}Process ${process.processId} is ${status}.`,
+              },
+            ],
+            details: {
+              sessionId: process.processId,
+              state: process.state,
+              outputTruncated: process.outputTruncated === true,
+              ...(receipt?.exitCode !== undefined && receipt?.exitCode !== null
+                ? { exitCode: receipt.exitCode }
+                : {}),
+            },
+          };
+        } catch (error) {
+          const safe = safeWorkspaceError(error, { operation, receipt });
+          notify(options.onToolOutcome, {
+            toolCallId,
+            operation,
+            status: 'failed',
+            errorCode: safe.code,
+            ...(receipt && { workspace: receipt }),
+          });
+          throw safe;
+        }
+      },
+    })
+  );
 }
 
 function wrapWorkspaceTool(template, operation, options, createRuntimeTool) {
@@ -1117,6 +1255,8 @@ async function createWorkspaceTools(options = {}) {
       'grepFiles',
       'prepareCommandPermissions',
       'grantCommandPermissions',
+      'startProcess',
+      'interactProcess',
     ].some((method) => typeof controller[method] !== 'function')
   ) {
     throw new TypeError('Workspace tools require a managed workspace controller');
@@ -1157,7 +1297,7 @@ async function createWorkspaceTools(options = {}) {
   const tools = [
     wrapWorkspaceTool(bashTemplate, 'bash', options, (capture, executionOptions, params = {}) =>
       sdk.createBashTool(workspaceBashCwd(params.workingDirectory), {
-        operations: bashOperations(executionOptions, capture),
+        operations: bashOperations(executionOptions, capture, params),
         exposeSessionEnvironment: false,
       })
     ),
@@ -1180,6 +1320,7 @@ async function createWorkspaceTools(options = {}) {
       createStandardLsTool(lsTemplate, executionOptions)
     ),
     createRequestPermissionsTool(sdk, options),
+    createWriteStdinTool(sdk, options),
   ];
   if (previewEnabled) tools.push(createWorkspacePreviewTool(sdk, options));
   return tools;
@@ -1196,6 +1337,7 @@ module.exports = {
   createStandardGrepTool,
   createStandardLsTool,
   createRequestPermissionsTool,
+  createWriteStdinTool,
   createWorkspacePreviewTool,
   createWorkspaceTools,
   decisionApproved,

@@ -238,6 +238,72 @@ describe('ManagedWorkspaceController', () => {
     );
   });
 
+  test('yields and later stops a conversation-owned sandbox process with streamed output', async () => {
+    let sandboxRequest;
+    const stdin = { write: jest.fn(() => true) };
+    const { controller, dependencies } = createController();
+    dependencies.executor.execute.mockImplementation(async (_policy, request) => {
+      sandboxRequest = request;
+      request.onStdin(stdin);
+      request.onOutput('stdout', Buffer.from('ready\n'));
+      await new Promise((resolve) =>
+        request.signal.addEventListener('abort', resolve, { once: true })
+      );
+      return {
+        backend: 'linux-bubblewrap',
+        state: 'cancelled',
+        startedAt: 1_000,
+        finishedAt: 1_010,
+        durationMs: 10,
+        exitCode: null,
+        signal: 'SIGKILL',
+        stdout: 'ready\n',
+        stderr: '',
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        terminationGuarantee: 'namespace_scoped',
+        sideEffects: 'unknown',
+        survivorsPossible: false,
+        completeDescendantTermination: true,
+      };
+    });
+
+    const started = await controller.startProcess('conversation_one', {
+      command: 'node server.js',
+      yieldMs: 250,
+    });
+    expect(started).toMatchObject({
+      state: 'running',
+      output: 'ready\n',
+      workspace: {
+        commandId: 'workspace_cmd_bbbbbbbbbbbbbbbbbbbbbbbb',
+        processId: expect.stringMatching(/^workspace_process_[a-f0-9]{24}$/),
+        state: 'running',
+        backend: 'linux-bubblewrap',
+      },
+    });
+    await controller.interactProcess('conversation_one', started.processId, {
+      input: 'reload\n',
+      waitMs: 0,
+    });
+    expect(stdin.write).toHaveBeenCalledWith(Buffer.from('reload\n'));
+
+    const stopped = await controller.interactProcess('conversation_one', started.processId, {
+      terminate: true,
+      waitMs: 1_000,
+    });
+    expect(sandboxRequest.signal.aborted).toBe(true);
+    expect(stopped).toMatchObject({
+      state: 'cancelled',
+      workspace: {
+        processId: started.processId,
+        state: 'cancelled',
+        signal: 'SIGKILL',
+        terminationGuarantee: 'namespace_scoped',
+      },
+    });
+  });
+
   test('binds one-shot executable access to one exact command and working directory', async () => {
     fs.promises.realpath.mockRestore();
     fs.promises.stat.mockRestore();

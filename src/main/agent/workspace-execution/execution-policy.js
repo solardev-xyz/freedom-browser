@@ -1108,10 +1108,18 @@ function validateExecutionRequest(request = {}) {
   if (request.signal !== undefined && typeof request.signal?.addEventListener !== 'function') {
     throw new ExecutionPolicyError('INVALID_REQUEST', 'signal must be an AbortSignal');
   }
+  if (request.onOutput !== undefined && typeof request.onOutput !== 'function') {
+    throw new ExecutionPolicyError('INVALID_REQUEST', 'onOutput must be a function');
+  }
+  if (request.onStdin !== undefined && typeof request.onStdin !== 'function') {
+    throw new ExecutionPolicyError('INVALID_REQUEST', 'onStdin must be a function');
+  }
   return Object.freeze({
     command: request.command,
     args: Object.freeze(normalizedArgs),
     signal: request.signal,
+    onOutput: request.onOutput,
+    onStdin: request.onStdin,
   });
 }
 

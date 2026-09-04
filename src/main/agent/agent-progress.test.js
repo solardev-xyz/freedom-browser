@@ -99,6 +99,29 @@ describe('Agent progress projection', () => {
     });
   });
 
+  test('presents managed process state without duplicating action verbs', () => {
+    const process = normalizeWorkspaceReceipt({
+      workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa',
+      commandId: 'workspace_cmd_bbbbbbbbbbbbbbbbbbbbbbbb',
+      processId: 'workspace_process_cccccccccccccccccccccccc',
+      kind: 'process',
+      command: 'Stop workspace_process_cccccccccccccccccccccccc',
+      workingDirectory: '.',
+      backend: 'linux-bubblewrap',
+      state: 'cancelled',
+      signal: 'SIGKILL',
+      terminationGuarantee: 'namespace_scoped',
+      sideEffects: 'unknown',
+      completeDescendantTermination: true,
+    });
+
+    expect(activityProgress(WORKSPACE_OPERATIONS.PROCESS, { workspace: process })).toMatchObject({
+      intent: 'Stop workspace_process_cccccccccccccccccccccccc',
+      label: 'Process stopped — workspace_process_cccccccccccccccccccccccc',
+      effect: 'managed',
+    });
+  });
+
   test('reports empty workspace discovery without claiming that it found results', () => {
     const find = normalizeWorkspaceReceipt({
       workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa',

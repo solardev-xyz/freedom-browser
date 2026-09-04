@@ -12,6 +12,7 @@ const {
   isValidatedWorkspaceExecutionPolicy,
   validateExecutionRequest,
 } = require('./execution-policy');
+const { createReadinessOutputForwarder, notifyOutput, notifyStdin } = require('./process-io');
 
 const DEFAULT_BUBBLEWRAP_PATH = '/usr/bin/bwrap';
 const CAPABILITY_PROBE_TIMEOUT_MS = 5_000;
@@ -97,7 +98,7 @@ async function readInteger(file) {
   return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
-function collectStream(stream, maximumBytes) {
+function collectStream(stream, maximumBytes, onData) {
   const chunks = [];
   let bytes = 0;
   let truncated = false;
@@ -110,6 +111,7 @@ function collectStream(stream, maximumBytes) {
   const done = new Promise((resolve, reject) => {
     stream.on('data', (chunk) => {
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      onData?.(buffer);
       const remaining = Math.max(0, maximumBytes - bytes);
       if (remaining > 0) {
         const retained = buffer.subarray(0, remaining);
@@ -778,7 +780,7 @@ class BubblewrapExecutor {
       try {
         child = this.spawnProcess(this.binary, launch.args, {
           env: { PATH: BUBBLEWRAP_SYSTEM_TOOLCHAIN_PATH },
-          stdio: ['ignore', 'pipe', 'pipe', 'pipe'],
+          stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
         });
       } catch {
         this.cleanupStagingDirectory(launch.stagingDirectory).then((cleanupDiagnostics) => {
@@ -796,11 +798,16 @@ class BubblewrapExecutor {
       }
 
       const markerPrefix = `${launch.readinessMarker}\n`;
+      const forwardStdout = createReadinessOutputForwarder(markerPrefix, launch.request.onOutput);
       const stdout = collectStream(
         child.stdout,
-        policy.limits.stdoutBytes + Buffer.byteLength(markerPrefix)
+        policy.limits.stdoutBytes + Buffer.byteLength(markerPrefix),
+        forwardStdout
       );
-      const stderr = collectStream(child.stderr, policy.limits.stderrBytes);
+      const stderr = collectStream(child.stderr, policy.limits.stderrBytes, (chunk) =>
+        notifyOutput(launch.request.onOutput, 'stderr', chunk)
+      );
+      notifyStdin(launch.request.onStdin, child);
       let namespaceCreated = false;
       let sandboxPid = null;
       let requestedState = null;
@@ -906,12 +913,10 @@ class BubblewrapExecutor {
             aggregateResourceLimits: false,
             cancellationGuarantee: 'namespace_scoped',
             networkPosture: policy.network,
-            publicNetworking:
-              policy.network === NETWORK_POSTURES.FULL ? 'host_network' : 'denied',
+            publicNetworking: policy.network === NETWORK_POSTURES.FULL ? 'host_network' : 'denied',
             loopbackNetworking:
               policy.network === NETWORK_POSTURES.FULL ? 'host_network' : 'private_namespace',
-            privateNetworking:
-              policy.network === NETWORK_POSTURES.FULL ? 'host_network' : 'denied',
+            privateNetworking: policy.network === NETWORK_POSTURES.FULL ? 'host_network' : 'denied',
             hostAbstractUnixSockets:
               policy.network === NETWORK_POSTURES.FULL ? 'reachable' : 'isolated',
             survivorsPossible: false,

@@ -194,6 +194,35 @@ requiredDescribe('macOS Seatbelt execution boundary', () => {
     }
   });
 
+  test('streams post-readiness output and accepts standard input', async () => {
+    const streamed = [];
+    let stdin;
+    const execution = executor.execute(await policy(), {
+      command: '/bin/sh',
+      args: [
+        '-c',
+        'printf ready; IFS= read -r line; printf "received:%s" "$line"; printf warning >&2',
+      ],
+      onOutput: (stream, chunk) => streamed.push([stream, chunk.toString('utf8')]),
+      onStdin: (control) => {
+        stdin = control;
+      },
+    });
+    while (!stdin) await delay(10);
+    expect(stdin.write(Buffer.from('hello\n'))).toBe(true);
+
+    await expect(execution).resolves.toMatchObject({
+      state: 'completed',
+      stdout: 'readyreceived:hello',
+      stderr: 'warning',
+    });
+    expect(streamed.map(([stream]) => stream)).toEqual(
+      expect.arrayContaining(['stdout', 'stderr'])
+    );
+    expect(streamed.map(([, value]) => value).join('')).not.toMatch(/freedom-seatbelt-ready/);
+    expect(streamed.map(([, value]) => value).join('')).toContain('received:hello');
+  });
+
   test('denies direct, encoded, generated-program and symlink filesystem escapes', async () => {
     const outsideCanary = path.join(fixture.outsideRoot, 'canary.txt');
     const outsideWrite = path.join(fixture.outsideRoot, 'written.txt');
