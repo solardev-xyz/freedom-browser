@@ -247,6 +247,13 @@ For each platform, run through:
 5. **Bundled nodes**: confirm Ant, native IPFS, and Radicle start cleanly (Radicle ships on macOS, Linux, and Windows). The nodes manager or the relevant `freedom://` settings page surfaces this — a "node failed to start" red badge or a missing native addon/API port is the failure mode
 6. **Persistence**: change one trivial setting (e.g. theme), close the app fully, reopen, confirm the change stuck
 
+**Linux x64 runs steps 1, 2 and 6 automatically.** The `smoke-linux-x64` job in `.github/workflows/release.yml` installs the run's own `.deb`, drives `/opt/Freedom/freedom` with the `packaged` Playwright project (`npm run test:e2e:packaged` — launch, version, persistence), then repeats the suite against the binary inside the AppImage. The `release` job depends on it, so a Linux x64 artifact that cannot launch, reports the wrong version, or loses a setting across a restart never reaches a release page. The job passes the tag version as `FREEDOM_E2E_EXPECTED_VERSION`, which is exactly the step-2 check. Nothing else is automated: steps 3–5 (navigation, headline feature, bundled nodes) on Linux, and the whole checklist on macOS, Windows and Linux arm64, are still done by hand as described above. To run the automated leg yourself against any packaged build:
+
+```bash
+FREEDOM_E2E_EXECUTABLE="$PWD/dist/linux-unpacked/freedom" \
+  FREEDOM_E2E_NO_SANDBOX=1 xvfb-run -a npm run test:e2e:packaged
+```
+
 If any platform fails: fix on the release branch (PR), bump to the next `rc.N`, tag, push, and re-test that candidate. Do not proceed to §7 until every platform you intend to ship passes on the **same** candidate — one green build, not a patchwork of legs from different runs.
 
 This step is intentionally separate from §4 — §4 verifies the source tree; §6 verifies the **packaged artifact** that end users will install. They catch different classes of bugs.
@@ -399,4 +406,5 @@ Each packaged app carries only the prebuild for its own target: the `mac`/`linux
 - **Re-runs**: "Re-run failed jobs" keeps the successful legs' artifacts and re-runs `release`. "Re-run all jobs" rebuilds everything, including a fresh macOS signature and notarization — the bytes and hashes change, which is fine for a draft and forbidden for a published release (the guard above).
 - **Update channel**: `build.publish.channel` is pinned to `latest` in `package.json`; without it electron-builder derives the channel from the version's pre-release suffix and would name the manifest `rc-mac.yml`. `scripts/build.js` pins the Windows channel to `latest-win-x64` on the command line.
 - **Known first-run fixes** worth remembering when a leg breaks: the adblock list download uses a retrying `https` client because the EasyList server drops connections; the Ant and IPFS fetch scripts extract archives with Windows' own bsdtar and relative paths because the Windows job runs in Git Bash, where GNU tar misreads `D:\...` as a remote host.
-- **Cost**: the repo is public, so runner minutes are free. A full run is four parallel jobs of 10–25 minutes.
+- **Smoke gate**: `smoke-linux-x64` runs after the `linux` matrix and before `release` (§6). It needs no secrets and rebuilds nothing — `npm ci --ignore-scripts`, then Playwright against the run's own `.deb` and AppImage. A failure there blocks the release job; its Playwright traces are uploaded as the `smoke-linux-x64-report` artifact.
+- **Cost**: the repo is public, so runner minutes are free. A full run is four parallel jobs of 10–25 minutes, plus a ~5-minute smoke job on the Linux x64 leg.
