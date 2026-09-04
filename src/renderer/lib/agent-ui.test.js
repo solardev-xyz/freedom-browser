@@ -3255,9 +3255,7 @@ describe('Agent UI', () => {
       },
     });
 
-    expect(ctx.elements['agent-approval-action'].textContent).toBe(
-      'Run “node validate.js”?'
-    );
+    expect(ctx.elements['agent-approval-action'].textContent).toBe('Run “node validate.js”?');
     expect(ctx.elements['agent-approval-origin'].textContent).toBe('');
     expect(ctx.elements['agent-workspace-permission-details'].hidden).toBe(false);
     expect(ctx.elements['agent-workspace-permission-details'].open).toBe(false);
@@ -3292,6 +3290,51 @@ describe('Agent UI', () => {
       'approval_executable',
       true,
       { workspacePermissionScope: 'conversation' }
+    );
+  });
+
+  test('renders the indivisible full-network grant behind command-specific details', async () => {
+    const ctx = await loadAgentUi();
+    ctx.emit({ type: 'run_started', runId: 'run_test' });
+    ctx.emit({
+      type: 'approval_requested',
+      runId: 'run_test',
+      approvalId: 'approval_network',
+      action: 'workspace_permission',
+      operation: 'request_permissions',
+      label: 'Download project dependencies',
+      workspacePermission: {
+        kind: 'command_access',
+        command: 'npm install',
+        workingDirectory: '.',
+        commands: [],
+        network: {
+          posture: 'full',
+          publicInternet: true,
+          hostLoopback: true,
+          privateLan: true,
+          hostAbstractUnixSockets: 'reachable',
+        },
+      },
+    });
+
+    expect(ctx.elements['agent-approval-action'].textContent).toBe('Run “npm install”?');
+    expect(ctx.elements['agent-approval-origin'].textContent).toBe('');
+    expect(ctx.elements['agent-workspace-permission-details'].open).toBe(false);
+    expect(ctx.elements['agent-workspace-permission-summary'].textContent).toContain(
+      'public internet, services on this computer’s localhost, and private/LAN addresses'
+    );
+    expect(ctx.elements['agent-workspace-permission-summary'].textContent).toContain(
+      'host abstract Unix sockets'
+    );
+    expect(ctx.elements['agent-workspace-permission-summary'].textContent).toContain(
+      'keeps the disclosed network access available'
+    );
+    expect(ctx.elements['agent-workspace-permission-summary'].textContent).not.toContain(
+      'package access'
+    );
+    expect(ctx.elements['agent-workspace-permission-summary'].textContent).toContain(
+      'Agent says: Download project dependencies'
     );
   });
 

@@ -17,12 +17,21 @@ const {
 } = require('./workspace-execution/executable-access');
 const { captureHostCommandEnvironment } = require('./workspace-execution/host-command-environment');
 const {
+  CAPABILITY_KINDS,
   WorkspaceCapabilityGrantStore,
   createExecutableRootCapability,
+  createFullNetworkCapabilities,
   createWorkspaceCapabilityRequest,
   executableRootForCapability,
+  fullNetworkPostureForCapabilities,
   isTrustedWorkspaceCapabilityRequest,
 } = require('./workspace-execution/workspace-capabilities');
+
+const FULL_NETWORK_CAPABILITY_KINDS = new Set([
+  CAPABILITY_KINDS.NETWORK_PUBLIC,
+  CAPABILITY_KINDS.NETWORK_LOOPBACK,
+  CAPABILITY_KINDS.NETWORK_PRIVATE,
+]);
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 5 * 60 * 1_000;
 const DEFAULT_FILE_OPERATION_TIMEOUT_MS = 10_000;
@@ -633,6 +642,9 @@ function publicCapabilities(capabilities) {
     available: true,
     backend: capabilities.backend,
     network: 'disabled',
+    fullNetworkAvailable: Boolean(enforcement.networkFull),
+    fullNetworkIncludesHostAbstractUnixSockets:
+      enforcement.fullNetworkIncludesHostAbstractUnixSockets === true,
     filesystem: 'managed_workspace_only',
     cancellationGuarantee: enforcement.cancellationGuarantee || 'backend_reported',
     survivorsPossible: enforcement.survivorsPossible === true,
@@ -664,8 +676,13 @@ class ManagedWorkspaceController {
     this.leasePromises = new Map();
     this.activeCommands = new Map();
     this.capabilityGrants = options.capabilityGrants || new WorkspaceCapabilityGrantStore();
+    this.networkPermissionsEnabled = options.networkPermissionsEnabled === true;
     this.hostCommandEnvironment = null;
     this.hostCommandEnvironmentPromise = null;
+  }
+
+  fullNetworkPermissionsEnabled() {
+    return this.networkPermissionsEnabled;
   }
 
   async getCapabilities(request = {}) {
@@ -816,12 +833,17 @@ class ManagedWorkspaceController {
   async #createLease(workspace) {
     const workspaceRoot = await this.store.resolvePath(workspace.workspaceId);
     const runtime = await this.#attestedRuntime();
+    const capabilities = await this.getCapabilities();
+    const network =
+      this.networkPermissionsEnabled && capabilities.fullNetworkAvailable
+        ? NETWORK_POSTURES.FULL
+        : NETWORK_POSTURES.NONE;
     let policy;
     try {
-      const helperPolicy = await this.createPolicy({
+      const basePolicy = await this.createPolicy({
         workspaceRoot,
         electronRuntime: runtime,
-        network: NETWORK_POSTURES.NONE,
+        network,
         environment: {
           set: {
             ELECTRON_RUN_AS_NODE: '1',
@@ -833,11 +855,22 @@ class ManagedWorkspaceController {
           stderrBytes: 1024 * 1024,
         },
       });
+      const helperPolicy =
+        network === NETWORK_POSTURES.FULL
+          ? this.restrictPolicy(basePolicy, { network: NETWORK_POSTURES.NONE })
+          : basePolicy;
       const agentPolicy = this.restrictPolicy(helperPolicy, {
         omitRuntimeRootIds: ['electron'],
         omitEnvironmentNames: ['ELECTRON_RUN_AS_NODE'],
       });
-      policy = { helperPolicy, agentPolicy };
+      const fullNetworkAgentPolicy =
+        network === NETWORK_POSTURES.FULL
+          ? this.restrictPolicy(basePolicy, {
+              omitRuntimeRootIds: ['electron'],
+              omitEnvironmentNames: ['ELECTRON_RUN_AS_NODE'],
+            })
+          : null;
+      policy = { helperPolicy, agentPolicy, fullNetworkAgentPolicy };
     } catch (error) {
       throw new ManagedWorkspaceError(
         typeof error?.code === 'string' ? error.code : 'WORKSPACE_POLICY_FAILED',
@@ -897,9 +930,11 @@ class ManagedWorkspaceController {
     return { workspace, lease: await this.#lease(workspace, request) };
   }
 
-  async prepareExecutableAccess(conversationId, executables, request = {}) {
+  async prepareCommandPermissions(conversationId, permissions = {}, request = {}) {
     throwIfWorkspaceAborted(request.signal);
     let prepared;
+    let publicNetwork = null;
+    let requestedCapabilities;
     try {
       const command = validatePermissionCommand(request.command);
       const capabilities = await this.getCapabilities(request);
@@ -912,50 +947,96 @@ class ManagedWorkspaceController {
         request.workingDirectory || '.',
         capabilities.backend
       );
-      let hostEnvironment = this.executableAccessOptions.hostEnvironment;
-      if (!hostEnvironment && this.resolveExecutableAccess === resolveExecutableAccess) {
-        if (!this.hostCommandEnvironment) {
-          if (!this.hostCommandEnvironmentPromise) {
-            this.hostCommandEnvironmentPromise = this.captureHostCommandEnvironment(
-              this.executableAccessOptions
-            )
-              .then((environment) => {
-                this.hostCommandEnvironment = environment;
-                return environment;
-              })
-              .finally(() => {
-                this.hostCommandEnvironmentPromise = null;
-              });
-          }
-          await this.hostCommandEnvironmentPromise;
-        }
-        hostEnvironment = this.hostCommandEnvironment;
+      const executables = permissions.executables ?? [];
+      if (!Array.isArray(executables) || executables.length > 16) {
+        throw new ManagedWorkspaceError(
+          'INVALID_CAPABILITY_REQUEST',
+          'Executable permissions must be a short array'
+        );
       }
-      const executableAccess = await this.resolveExecutableAccess(executables, {
-        ...this.executableAccessOptions,
-        ...(hostEnvironment && { hostEnvironment }),
+      const requestedNetwork = permissions.network ?? null;
+      if (![null, NETWORK_POSTURES.FULL].includes(requestedNetwork)) {
+        throw new ManagedWorkspaceError(
+          'INVALID_CAPABILITY_REQUEST',
+          'The requested network posture is unsupported'
+        );
+      }
+      if (!executables.length && !requestedNetwork) {
+        throw new ManagedWorkspaceError(
+          'INVALID_CAPABILITY_REQUEST',
+          'Request at least one executable or the full network capability'
+        );
+      }
+      let executableAccess = Object.freeze({
+        commands: Object.freeze([]),
+        runtimeRoots: Object.freeze([]),
       });
-      const capabilityRequest = executableAccess.runtimeRoots.length
+      if (executables.length) {
+        let hostEnvironment = this.executableAccessOptions.hostEnvironment;
+        if (!hostEnvironment && this.resolveExecutableAccess === resolveExecutableAccess) {
+          if (!this.hostCommandEnvironment) {
+            if (!this.hostCommandEnvironmentPromise) {
+              this.hostCommandEnvironmentPromise = this.captureHostCommandEnvironment(
+                this.executableAccessOptions
+              )
+                .then((environment) => {
+                  this.hostCommandEnvironment = environment;
+                  return environment;
+                })
+                .finally(() => {
+                  this.hostCommandEnvironmentPromise = null;
+                });
+            }
+            await this.hostCommandEnvironmentPromise;
+          }
+          hostEnvironment = this.hostCommandEnvironment;
+        }
+        executableAccess = await this.resolveExecutableAccess(executables, {
+          ...this.executableAccessOptions,
+          ...(hostEnvironment && { hostEnvironment }),
+        });
+      }
+      requestedCapabilities = executableAccess.runtimeRoots.map(createExecutableRootCapability);
+      if (requestedNetwork) {
+        if (!this.networkPermissionsEnabled || !capabilities.fullNetworkAvailable) {
+          throw new ManagedWorkspaceError(
+            'NETWORK_PERMISSION_UNAVAILABLE',
+            'Experimental direct network permissions are unavailable'
+          );
+        }
+        requestedCapabilities.push(...createFullNetworkCapabilities());
+        publicNetwork = Object.freeze({
+          posture: NETWORK_POSTURES.FULL,
+          publicInternet: true,
+          hostLoopback: true,
+          privateLan: true,
+          hostAbstractUnixSockets: capabilities.fullNetworkIncludesHostAbstractUnixSockets
+            ? 'reachable'
+            : 'denied',
+        });
+      }
+      const capabilityRequest = requestedCapabilities.length
         ? createWorkspaceCapabilityRequest({
             conversationId,
             command,
             workingDirectory: workingDirectory.relative,
-            capabilities: executableAccess.runtimeRoots.map(createExecutableRootCapability),
+            capabilities: requestedCapabilities,
           })
         : null;
       prepared = Object.freeze({
-        kind: 'freedom.command-executable-access',
+        kind: 'freedom.command-permissions',
         executableAccess,
         capabilityRequest,
         command,
         workingDirectory: workingDirectory.relative,
+        network: requestedNetwork,
       });
     } catch (error) {
       throw new ManagedWorkspaceError(
-        typeof error?.code === 'string' ? error.code : 'EXECUTABLE_RESOLUTION_FAILED',
+        typeof error?.code === 'string' ? error.code : 'COMMAND_PERMISSION_PREPARATION_FAILED',
         typeof error?.message === 'string'
           ? error.message
-          : 'Freedom could not resolve the requested executables'
+          : 'Freedom could not prepare the requested command permissions'
       );
     }
     return Object.freeze({
@@ -965,8 +1046,9 @@ class ManagedWorkspaceController {
         command: prepared.command,
         workingDirectory: prepared.workingDirectory,
         commands: prepared.executableAccess.commands,
+        ...(publicNetwork && { network: publicNetwork }),
       }),
-      approvalRequired: prepared.executableAccess.runtimeRoots.length > 0,
+      approvalRequired: requestedCapabilities.length > 0,
       unavailable: Object.freeze(
         prepared.executableAccess.commands
           .filter((command) => command.status === 'unavailable')
@@ -980,28 +1062,36 @@ class ManagedWorkspaceController {
     });
   }
 
-  grantExecutableAccess(conversationId, prepared, scope = 'once') {
+  async prepareExecutableAccess(conversationId, executables, request = {}) {
+    return this.prepareCommandPermissions(conversationId, { executables }, request);
+  }
+
+  grantCommandPermissions(conversationId, prepared, scope = 'once') {
     const workspace = this.store.getForConversation(conversationId);
+    const executableAccess = prepared?.executableAccess;
     if (
       typeof conversationId !== 'string' ||
       !conversationId ||
       !workspace?.enabled ||
-      prepared?.kind !== 'freedom.command-executable-access' ||
-      !isValidatedExecutableAccessRequest(prepared.executableAccess) ||
+      prepared?.kind !== 'freedom.command-permissions' ||
+      !executableAccess ||
+      !Array.isArray(executableAccess.commands) ||
+      (executableAccess.commands.length > 0 &&
+        !isValidatedExecutableAccessRequest(executableAccess)) ||
       !isTrustedWorkspaceCapabilityRequest(prepared.capabilityRequest) ||
       !['once', 'conversation'].includes(scope)
     ) {
       throw new ManagedWorkspaceError(
-        'INVALID_EXECUTABLE_GRANT',
-        'Freedom refused an invalid executable grant'
+        'INVALID_COMMAND_PERMISSION_GRANT',
+        'Freedom refused an invalid command permission grant'
       );
     }
     try {
       this.capabilityGrants.grant(conversationId, prepared.capabilityRequest, scope);
     } catch {
       throw new ManagedWorkspaceError(
-        'INVALID_EXECUTABLE_GRANT',
-        'Freedom refused an invalid executable grant'
+        'INVALID_COMMAND_PERMISSION_GRANT',
+        'Freedom refused an invalid command permission grant'
       );
     }
     return Object.freeze({
@@ -1013,7 +1103,12 @@ class ManagedWorkspaceController {
       ),
       command: prepared.command,
       workingDirectory: prepared.workingDirectory,
+      ...(prepared.network && { network: prepared.network }),
     });
+  }
+
+  grantExecutableAccess(conversationId, prepared, scope = 'once') {
+    return this.grantCommandPermissions(conversationId, prepared, scope);
   }
 
   clearTurnPermissions(conversationId) {
@@ -1021,23 +1116,41 @@ class ManagedWorkspaceController {
   }
 
   #agentPolicy(conversationId, lease, command, workingDirectory) {
-    const roots = this.capabilityGrants
-      .resolve(conversationId, { command, workingDirectory })
-      .map((capability) => {
-        const root = executableRootForCapability(capability);
-        if (root) return root;
+    const capabilities = this.capabilityGrants.resolve(conversationId, {
+      command,
+      workingDirectory,
+    });
+    const roots = capabilities.map(executableRootForCapability).filter(Boolean);
+    let network;
+    try {
+      network = fullNetworkPostureForCapabilities(capabilities);
+    } catch (error) {
+      throw new ManagedWorkspaceError(
+        typeof error?.code === 'string' ? error.code : 'UNSUPPORTED_WORKSPACE_CAPABILITY',
+        'Freedom refused an unsupported workspace capability combination'
+      );
+    }
+    for (const capability of capabilities) {
+      if (
+        !executableRootForCapability(capability) &&
+        !FULL_NETWORK_CAPABILITY_KINDS.has(capability.kind)
+      ) {
         throw new ManagedWorkspaceError(
           'UNSUPPORTED_WORKSPACE_CAPABILITY',
           'Freedom refused a workspace capability without a qualified enforcement adapter'
         );
-      });
-    if (!roots.length) return lease.agentPolicy;
+      }
+    }
+    const basePolicy = network ? lease.fullNetworkAgentPolicy : lease.agentPolicy;
+    if (!basePolicy) {
+      throw new ManagedWorkspaceError(
+        'UNSUPPORTED_WORKSPACE_CAPABILITY',
+        'Freedom refused unavailable direct network authority'
+      );
+    }
+    if (!roots.length) return basePolicy;
     const unique = [...new Map(roots.map((root) => [root.id, root])).values()];
-    return this.restrictPolicy(lease.helperPolicy, {
-      omitRuntimeRootIds: ['electron'],
-      omitEnvironmentNames: ['ELECTRON_RUN_AS_NODE'],
-      addRuntimeRoots: unique,
-    });
+    return this.restrictPolicy(basePolicy, { addRuntimeRoots: unique });
   }
 
   async #fileOperation(conversationId, operation, relativePath, content = null, request = {}) {

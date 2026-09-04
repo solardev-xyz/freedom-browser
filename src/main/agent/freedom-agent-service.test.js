@@ -521,6 +521,9 @@ describe('FreedomAgentService', () => {
     expect(dependencies.createSession.mock.calls[0][0].systemPrompt).not.toContain(
       'FREEDOM_JAVASCRIPT_RUNTIME'
     );
+    expect(dependencies.createSession.mock.calls[0][0].systemPrompt).not.toContain(
+      'grant direct networking'
+    );
     expect(service.getState().workspace).toEqual(
       expect.objectContaining({ workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa' })
     );
@@ -577,6 +580,36 @@ describe('FreedomAgentService', () => {
     await service.decideApproval('run_workspace_second', approval.approvalId, true);
     await expect(approvalDecision).resolves.toBe('approved');
     fake.prompts[1].resolve();
+    await service.waitForIdle();
+  });
+
+  test('advertises direct networking to Pi only when the experimental gate is enabled', async () => {
+    const fake = createFakeSession();
+    const workspaceController = {
+      getWorkspace: jest.fn(() => null),
+      fullNetworkPermissionsEnabled: jest.fn(() => true),
+      disclosure: jest.fn(),
+      enable: jest.fn(),
+      execute: jest.fn(),
+      cancelConversation: jest.fn(),
+      deleteConversation: jest.fn(async () => true),
+      dispose: jest.fn(),
+    };
+    const { service, dependencies } = createService(fake, {
+      workspaceController,
+      createWorkspaceTools: jest.fn(async () => []),
+    });
+
+    await service.start(startOptions());
+
+    expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toContain(
+      'grant direct networking to an exact workspace command'
+    );
+    expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toContain(
+      'public internet, host localhost, and private/LAN addresses'
+    );
+
+    fake.prompt.resolve();
     await service.waitForIdle();
   });
 
@@ -1447,6 +1480,61 @@ describe('FreedomAgentService', () => {
               rootPath: '/opt/homebrew/Cellar/node/24',
             },
           ],
+        },
+      })
+    ).rejects.toMatchObject({ code: AGENT_ERROR_CODES.INVALID_ARGUMENT });
+
+    await service.stop('run_test');
+    await service.waitForIdle();
+  });
+
+  test('projects the exact full-network bundle and rejects incomplete network claims', async () => {
+    const fake = createFakeSession();
+    const { service, dependencies } = createService(fake);
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    await service.start(startOptions());
+
+    const requestApproval = dependencies.createControllerScope.mock.calls[0][0].requestApproval;
+    const workspacePermission = {
+      kind: 'command_access',
+      command: 'curl https://example.com',
+      workingDirectory: '.',
+      commands: [],
+      network: {
+        posture: 'full',
+        publicInternet: true,
+        hostLoopback: true,
+        privateLan: true,
+        hostAbstractUnixSockets: 'reachable',
+      },
+    };
+    const decision = requestApproval({
+      action: 'workspace_permission',
+      operation: 'request_permissions',
+      label: 'Download project dependencies',
+      workspacePermission,
+    });
+    const approval = events.at(-1);
+
+    expect(approval).toMatchObject({
+      type: 'approval_requested',
+      workspacePermission,
+    });
+    await service.decideApproval('run_test', approval.approvalId, {
+      approved: true,
+      workspacePermissionScope: 'once',
+    });
+    await expect(decision).resolves.toEqual({ status: 'approved' });
+
+    await expect(
+      requestApproval({
+        action: 'workspace_permission',
+        operation: 'request_permissions',
+        label: 'Incomplete authority',
+        workspacePermission: {
+          ...workspacePermission,
+          network: { ...workspacePermission.network, privateLan: false },
         },
       })
     ).rejects.toMatchObject({ code: AGENT_ERROR_CODES.INVALID_ARGUMENT });

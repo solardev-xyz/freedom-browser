@@ -125,6 +125,7 @@ describe('Freedom agent runtime', () => {
       nodeLifecycleControllerOptions: { verifyTimeoutMs: 250 },
       nodeDiagnosticsControllerOptions: { logBuffer: {} },
       workspaceRuntimeOptions: { packaged: true, freedomVersion: '0.8.1-dev' },
+      workspaceNetworkPermissionsEnabled: true,
     };
 
     const runtime = createFreedomAgentRuntime(options);
@@ -163,6 +164,7 @@ describe('Freedom agent runtime', () => {
     expect(ManagedWorkspaceController).toHaveBeenCalledWith({
       store: workspaceStore,
       runtimeOptions: options.workspaceRuntimeOptions,
+      networkPermissionsEnabled: true,
     });
     expect(ManagedWorkspaceSourceReader).toHaveBeenCalledWith({ workspaceController });
     expect(WorkspacePreviewController).toHaveBeenCalledWith({ workspaceController });

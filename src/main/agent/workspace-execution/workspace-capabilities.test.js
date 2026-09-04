@@ -10,8 +10,10 @@ const {
   WorkspaceCapabilityGrantStore,
   capabilityImplementationStatus,
   createExecutableRootCapability,
+  createFullNetworkCapabilities,
   createWorkspaceCapabilityRequest,
   executableRootForCapability,
+  fullNetworkPostureForCapabilities,
   isTrustedWorkspaceCapability,
   isTrustedWorkspaceCapabilityRequest,
 } = require('./workspace-capabilities');
@@ -40,10 +42,8 @@ describe('workspace capability contract', () => {
       CAPABILITY_KINDS.NETWORK_PRIVATE,
       CAPABILITY_KINDS.HOST_IPC,
     ]);
-    expect(capabilityImplementationStatus(CAPABILITY_KINDS.EXECUTABLE_ROOT)).toBe(
-      'implemented'
-    );
-    expect(capabilityImplementationStatus(CAPABILITY_KINDS.NETWORK_PUBLIC)).toBe('unsupported');
+    expect(capabilityImplementationStatus(CAPABILITY_KINDS.EXECUTABLE_ROOT)).toBe('implemented');
+    expect(capabilityImplementationStatus(CAPABILITY_KINDS.NETWORK_PUBLIC)).toBe('implemented');
     expect(capabilityImplementationStatus('invented')).toBe('unknown');
     expect(Object.isFrozen(CAPABILITY_DEFINITIONS)).toBe(true);
   });
@@ -70,6 +70,24 @@ describe('workspace capability contract', () => {
     } finally {
       await fs.promises.rm(fixture, { recursive: true, force: true });
     }
+  });
+
+  test('issues direct networking only as one opaque complete capability bundle', () => {
+    const capabilities = createFullNetworkCapabilities();
+    expect(capabilities.map((capability) => capability.kind)).toEqual([
+      CAPABILITY_KINDS.NETWORK_PUBLIC,
+      CAPABILITY_KINDS.NETWORK_LOOPBACK,
+      CAPABILITY_KINDS.NETWORK_PRIVATE,
+    ]);
+    expect(capabilities.every(isTrustedWorkspaceCapability)).toBe(true);
+    expect(fullNetworkPostureForCapabilities(capabilities)).toBe('full');
+    expect(JSON.stringify(capabilities)).not.toContain('authority');
+    expect(() => fullNetworkPostureForCapabilities(capabilities.slice(0, 1))).toThrow(
+      expect.objectContaining({ code: 'UNSUPPORTED_CAPABILITY_COMBINATION' })
+    );
+    expect(() =>
+      fullNetworkPostureForCapabilities(capabilities.map((capability) => ({ ...capability })))
+    ).toThrow(expect.objectContaining({ code: 'UNTRUSTED_CAPABILITY_AUTHORITY' }));
   });
 
   test('consumes a one-shot permit only for its exact command and directory', async () => {

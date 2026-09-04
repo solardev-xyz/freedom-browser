@@ -68,6 +68,7 @@ function createSdk() {
 
 function createController() {
   return {
+    fullNetworkPermissionsEnabled: jest.fn(() => false),
     getWorkspace: jest.fn(() => ({
       workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa',
       enabled: true,
@@ -123,7 +124,7 @@ function createController() {
       outputTruncated: false,
       scanLimitReached: false,
     })),
-    prepareExecutableAccess: jest.fn(async () => ({
+    prepareCommandPermissions: jest.fn(async () => ({
       prepared: { kind: 'trusted-test-request' },
       publicRequest: {
         kind: 'command_access',
@@ -142,7 +143,7 @@ function createController() {
       available: ['node'],
       unavailable: [],
     })),
-    grantExecutableAccess: jest.fn(() => ({
+    grantCommandPermissions: jest.fn(() => ({
       scope: 'once',
       commands: ['node'],
       command: 'node validate.js',
@@ -242,19 +243,105 @@ describe('Pi managed workspace tools', () => {
         workingDirectory: '.',
       }),
     });
-    expect(controller.prepareExecutableAccess).toHaveBeenCalledWith(
+    expect(controller.prepareCommandPermissions).toHaveBeenCalledWith(
       'conversation_one',
-      ['node'],
+      { executables: ['node'] },
       expect.objectContaining({
         command: 'node validate.js',
         workingDirectory: '.',
         signal: undefined,
       })
     );
-    expect(controller.grantExecutableAccess).toHaveBeenCalledWith(
+    expect(controller.grantCommandPermissions).toHaveBeenCalledWith(
       'conversation_one',
       { kind: 'trusted-test-request' },
       'conversation'
+    );
+    expect(permissionTool.parameters.properties).not.toHaveProperty('network');
+  });
+
+  test('requests the gated full-network bundle without requiring an executable', async () => {
+    const controller = createController();
+    controller.fullNetworkPermissionsEnabled.mockReturnValue(true);
+    controller.prepareCommandPermissions.mockResolvedValue({
+      prepared: { kind: 'trusted-network-request' },
+      publicRequest: {
+        kind: 'command_access',
+        command: 'curl https://example.com',
+        workingDirectory: '.',
+        commands: [],
+        network: {
+          posture: 'full',
+          publicInternet: true,
+          hostLoopback: true,
+          privateLan: true,
+          hostAbstractUnixSockets: 'reachable',
+        },
+      },
+      approvalRequired: true,
+      available: [],
+      unavailable: [],
+    });
+    const requestApproval = jest.fn(async () => ({
+      status: 'approved',
+      workspacePermissionScope: 'once',
+    }));
+    const tools = await createWorkspaceTools({
+      sdk: createSdk(),
+      controller,
+      conversationId: 'conversation_one',
+      requestApproval,
+    });
+    const permissionTool = tools.find((tool) => tool.name === 'request_permissions');
+
+    expect(permissionTool.parameters).toMatchObject({
+      required: ['reason', 'command', 'workingDirectory'],
+      anyOf: [{ required: ['executables'] }, { required: ['network'] }],
+      properties: { network: { enum: ['full'] } },
+    });
+    await expect(
+      permissionTool.execute('permission_network', {
+        network: 'full',
+        reason: 'Download project dependencies',
+        command: 'curl https://example.com',
+        workingDirectory: '.',
+      })
+    ).resolves.toEqual({
+      content: [
+        {
+          type: 'text',
+          text: 'Full direct networking is available for the approved scope.',
+        },
+      ],
+      details: {
+        available: [],
+        unavailable: [],
+        scope: 'once',
+        command: 'curl https://example.com',
+        workingDirectory: '.',
+        network: 'full',
+      },
+    });
+    expect(controller.prepareCommandPermissions).toHaveBeenCalledWith(
+      'conversation_one',
+      { executables: [], network: 'full' },
+      expect.objectContaining({
+        command: 'curl https://example.com',
+        workingDirectory: '.',
+      })
+    );
+    expect(requestApproval).toHaveBeenCalledWith({
+      action: 'workspace_permission',
+      operation: 'request_permissions',
+      label: 'Download project dependencies',
+      workspacePermission: expect.objectContaining({
+        network: expect.objectContaining({ posture: 'full' }),
+      }),
+    });
+    expect(controller.grantCommandPermissions).toHaveBeenCalledWith(
+      'conversation_one',
+      { kind: 'trusted-network-request' },
+      'once'
     );
   });
 

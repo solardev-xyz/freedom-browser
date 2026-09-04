@@ -54,6 +54,7 @@ function createFreedomAgentRuntime(options = {}) {
   const workspaceController = new ManagedWorkspaceController({
     store: workspaceStore,
     runtimeOptions: options.workspaceRuntimeOptions,
+    networkPermissionsEnabled: options.workspaceNetworkPermissionsEnabled === true,
   });
   const workspaceSourceReader = new ManagedWorkspaceSourceReader({ workspaceController });
   const workspacePreviewController = new WorkspacePreviewController({ workspaceController });

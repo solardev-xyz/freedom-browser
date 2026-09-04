@@ -1942,6 +1942,48 @@ function workspaceEnablementDetails(workspace) {
   return `Freedom stores one local workspace for this conversation and removes it when the conversation is deleted. Agent may write only inside that workspace; protected .git metadata remains read-only. Workspace commands may read and execute required system tools and separately approved executable packages, but cannot write to them. This approval does not grant internet, localhost, or LAN access; those require a separate capability.\n\n${lifecycle}`;
 }
 
+function workspaceCommandPermissionDetails(permission, reason) {
+  const requestedExecutables = permission.commands
+    .filter((command) => command.status === 'requires_permission')
+    .map((command) => command.name);
+  const requestedRoots = [
+    ...new Set(
+      permission.commands
+        .filter((command) => command.status === 'requires_permission')
+        .map((command) => command.rootPath)
+    ),
+  ];
+  const paragraphs = [
+    `Working directory: ${permission.workingDirectory === '.' ? 'Project workspace' : permission.workingDirectory}`,
+  ];
+  if (requestedRoots.length) {
+    paragraphs.push(
+      `Requires read and execute access to ${requestedRoots.join(', ')}. Agent may read and execute within ${requestedExecutables.length === 1 ? 'this package' : 'these packages'}, but cannot write there.`
+    );
+  }
+  if (permission.network) {
+    const socketDisclosure =
+      permission.network.hostAbstractUnixSockets === 'reachable'
+        ? ' On Linux, this direct-network mode also reaches host abstract Unix sockets; pathname sockets outside mounted files remain inaccessible.'
+        : ' Host Unix sockets remain inaccessible.';
+    paragraphs.push(
+      `Requires full direct networking: public internet, services on this computer’s localhost, and private/LAN addresses.${socketDisclosure}`
+    );
+  } else {
+    paragraphs.push('Network access is not part of this request.');
+  }
+  const retainedAuthority = permission.network
+    ? requestedRoots.length
+      ? 'the disclosed network and package access'
+      : 'the disclosed network access'
+    : 'the disclosed package access';
+  paragraphs.push(
+    `“Allow once” applies only to this exact command and directory. “Allow for conversation” keeps ${retainedAuthority} available for later workspace commands.`
+  );
+  if (reason) paragraphs.push(`Agent says: ${reason}`);
+  return paragraphs.join('\n\n');
+}
+
 function renderApproval(request) {
   if (!request || typeof request.approvalId !== 'string') return;
   pendingApproval = request;
@@ -1975,18 +2017,6 @@ function renderApproval(request) {
     'myotis-ethereum': 'Myotis Ethereum',
     'myotis-gnosis': 'Myotis Gnosis',
   };
-  const requestedExecutables = workspacePermission?.commands
-    ?.filter((command) => command.status === 'requires_permission')
-    .map((command) => command.name);
-  const requestedExecutableRoots = workspacePermission
-    ? [
-        ...new Set(
-          workspacePermission.commands
-            .filter((command) => command.status === 'requires_permission')
-            .map((command) => command.rootPath)
-        ),
-      ]
-    : [];
   elements.approvalAction.textContent = workspacePermission
     ? `Run “${workspacePermission.command}”?`
     : workspace
@@ -2081,7 +2111,7 @@ function renderApproval(request) {
   elements.workspacePermissionDetails.hidden = !workspacePermission && !workspace;
   elements.workspacePermissionDetails.open = false;
   elements.workspacePermissionSummary.textContent = workspacePermission
-    ? `Working directory: ${workspacePermission.workingDirectory === '.' ? 'Project workspace' : workspacePermission.workingDirectory}\n\nRequires read and execute access to ${requestedExecutableRoots.join(', ')}. Agent may read and execute within ${requestedExecutables.length === 1 ? 'this package' : 'these packages'}, but cannot write there. “Allow once” applies only to this exact command and directory; conversation access keeps the disclosed package access available for later commands. Network access is not part of this request.${request.label ? `\n\nAgent says: ${request.label}` : ''}`
+    ? workspaceCommandPermissionDetails(workspacePermission, request.label)
     : workspace
       ? workspaceEnablementDetails(workspace)
       : '';

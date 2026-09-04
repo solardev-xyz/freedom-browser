@@ -36,17 +36,17 @@ const CAPABILITY_DEFINITIONS = Object.freeze({
   [CAPABILITY_KINDS.NETWORK_PUBLIC]: Object.freeze({
     resource: 'network',
     access: 'public',
-    implemented: false,
+    implemented: true,
   }),
   [CAPABILITY_KINDS.NETWORK_LOOPBACK]: Object.freeze({
     resource: 'network',
     access: 'host_loopback',
-    implemented: false,
+    implemented: true,
   }),
   [CAPABILITY_KINDS.NETWORK_PRIVATE]: Object.freeze({
     resource: 'network',
     access: 'private_lan',
-    implemented: false,
+    implemented: true,
   }),
   [CAPABILITY_KINDS.HOST_IPC]: Object.freeze({
     resource: 'host_ipc',
@@ -111,6 +111,26 @@ function createExecutableRootCapability(root) {
   return capability;
 }
 
+function createFullNetworkCapabilities() {
+  return Object.freeze(
+    [
+      CAPABILITY_KINDS.NETWORK_PUBLIC,
+      CAPABILITY_KINDS.NETWORK_LOOPBACK,
+      CAPABILITY_KINDS.NETWORK_PRIVATE,
+    ].map((kind) => {
+      const capability = Object.freeze({ kind, version: CAPABILITY_VERSION });
+      trustedCapabilities.set(
+        capability,
+        Object.freeze({
+          identity: `${kind}:full`,
+          authority: Object.freeze({ networkPosture: 'full' }),
+        })
+      );
+      return capability;
+    })
+  );
+}
+
 function isTrustedWorkspaceCapability(value) {
   return Boolean(value && typeof value === 'object' && trustedCapabilities.has(value));
 }
@@ -123,6 +143,34 @@ function executableRootForCapability(capability) {
     return null;
   }
   return trustedCapabilities.get(capability).authority;
+}
+
+function fullNetworkPostureForCapabilities(capabilities) {
+  const expected = new Set([
+    CAPABILITY_KINDS.NETWORK_PUBLIC,
+    CAPABILITY_KINDS.NETWORK_LOOPBACK,
+    CAPABILITY_KINDS.NETWORK_PRIVATE,
+  ]);
+  const networkCapabilities = capabilities.filter((capability) => expected.has(capability?.kind));
+  if (!networkCapabilities.length) return null;
+  const kinds = new Set();
+  for (const capability of networkCapabilities) {
+    const trusted = trustedCapabilities.get(capability);
+    if (!trusted || trusted.authority?.networkPosture !== 'full') {
+      throw new WorkspaceCapabilityError(
+        'UNTRUSTED_CAPABILITY_AUTHORITY',
+        'Network capability authority must come from Freedom network policy'
+      );
+    }
+    kinds.add(capability.kind);
+  }
+  if (kinds.size !== expected.size || [...expected].some((kind) => !kinds.has(kind))) {
+    throw new WorkspaceCapabilityError(
+      'UNSUPPORTED_CAPABILITY_COMBINATION',
+      'Direct network access requires the complete public, localhost, and private-network bundle'
+    );
+  }
+  return 'full';
 }
 
 function createWorkspaceCapabilityRequest(options = {}) {
@@ -283,8 +331,10 @@ module.exports = {
   WorkspaceCapabilityGrantStore,
   capabilityImplementationStatus,
   createExecutableRootCapability,
+  createFullNetworkCapabilities,
   createWorkspaceCapabilityRequest,
   executableRootForCapability,
+  fullNetworkPostureForCapabilities,
   isTrustedWorkspaceCapability,
   isTrustedWorkspaceCapabilityRequest,
 };

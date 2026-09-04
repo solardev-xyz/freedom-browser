@@ -122,6 +122,8 @@ describe('ManagedWorkspaceController', () => {
       available: true,
       backend: 'linux-bubblewrap',
       network: 'disabled',
+      fullNetworkAvailable: false,
+      fullNetworkIncludesHostAbstractUnixSockets: false,
       filesystem: 'managed_workspace_only',
       cancellationGuarantee: 'namespace_scoped',
       survivorsPossible: false,
@@ -252,7 +254,7 @@ describe('ManagedWorkspaceController', () => {
       .mockImplementation(async (value) => path.resolve(String(value)));
     jest.spyOn(fs.promises, 'stat').mockResolvedValue({ isDirectory: () => true });
     const grantedPolicy = { kind: 'test-granted-policy' };
-    const { controller, dependencies, helperPolicy } = createController({
+    const { controller, dependencies } = createController({
       resolveExecutableAccess: jest.fn(async () => prepared),
       restrictPolicy: jest
         .fn()
@@ -281,7 +283,7 @@ describe('ManagedWorkspaceController', () => {
       });
       expect(() =>
         controller.grantExecutableAccess('conversation_one', resolved.prepared, 'once')
-      ).toThrow(expect.objectContaining({ code: 'INVALID_EXECUTABLE_GRANT' }));
+      ).toThrow(expect.objectContaining({ code: 'INVALID_COMMAND_PERMISSION_GRANT' }));
 
       await controller.execute('conversation_one', { command: 'tool --help' });
       expect(dependencies.executor.execute).toHaveBeenLastCalledWith(
@@ -290,11 +292,10 @@ describe('ManagedWorkspaceController', () => {
       );
 
       await controller.execute('conversation_one', { command: 'tool --version' });
-      expect(dependencies.restrictPolicy).toHaveBeenLastCalledWith(helperPolicy, {
-        omitRuntimeRootIds: ['electron'],
-        omitEnvironmentNames: ['ELECTRON_RUN_AS_NODE'],
-        addRuntimeRoots: prepared.runtimeRoots,
-      });
+      expect(dependencies.restrictPolicy).toHaveBeenLastCalledWith(
+        { kind: 'test-agent-policy' },
+        { addRuntimeRoots: prepared.runtimeRoots }
+      );
       expect(dependencies.executor.execute).toHaveBeenCalledWith(
         grantedPolicy,
         expect.objectContaining({ command: '/bin/sh' })
@@ -328,6 +329,137 @@ describe('ManagedWorkspaceController', () => {
     }
   });
 
+  test('keeps direct networking unavailable when the experimental product gate is closed', async () => {
+    const { controller, dependencies } = createController();
+    dependencies.executor.detectCapabilities.mockResolvedValue({
+      available: true,
+      backend: 'linux-bubblewrap',
+      enforcement: {
+        networkFull: 'host_namespace',
+        fullNetworkIncludesHostAbstractUnixSockets: true,
+      },
+    });
+
+    await expect(
+      controller.prepareCommandPermissions(
+        'conversation_one',
+        { network: 'full' },
+        { command: 'curl https://example.com', workingDirectory: '.' }
+      )
+    ).rejects.toMatchObject({ code: 'NETWORK_PERMISSION_UNAVAILABLE' });
+    expect(controller.fullNetworkPermissionsEnabled()).toBe(false);
+    expect(dependencies.createPolicy).toHaveBeenCalledWith(
+      expect.objectContaining({ network: 'none' })
+    );
+  });
+
+  test('binds full networking to an exact command while helper operations remain offline', async () => {
+    const basePolicy = { kind: 'test-full-base-policy' };
+    const helperPolicy = { kind: 'test-offline-helper-policy' };
+    const agentPolicy = { kind: 'test-offline-agent-policy' };
+    const fullNetworkAgentPolicy = { kind: 'test-full-network-agent-policy' };
+    const restrictPolicy = jest.fn((policy, restrictions) => {
+      if (policy === basePolicy && restrictions.network === 'none') return helperPolicy;
+      if (policy === helperPolicy) return agentPolicy;
+      if (policy === basePolicy) return fullNetworkAgentPolicy;
+      throw new Error('Unexpected policy restriction');
+    });
+    const { controller, dependencies } = createController({
+      networkPermissionsEnabled: true,
+      createPolicy: jest.fn(async () => basePolicy),
+      restrictPolicy,
+    });
+    dependencies.executor.detectCapabilities.mockResolvedValue({
+      available: true,
+      backend: 'linux-bubblewrap',
+      enforcement: {
+        cancellationGuarantee: 'namespace_scoped',
+        survivorsPossible: false,
+        completeDescendantTermination: true,
+        networkFull: 'host_namespace',
+        fullNetworkIncludesHostAbstractUnixSockets: true,
+      },
+    });
+
+    const resolved = await controller.prepareCommandPermissions(
+      'conversation_one',
+      { network: 'full' },
+      { command: 'curl https://example.com', workingDirectory: '.' }
+    );
+
+    expect(controller.fullNetworkPermissionsEnabled()).toBe(true);
+    expect(dependencies.createPolicy).toHaveBeenCalledWith(
+      expect.objectContaining({ network: 'full' })
+    );
+    expect(resolved).toMatchObject({
+      approvalRequired: true,
+      available: [],
+      unavailable: [],
+      publicRequest: {
+        kind: 'command_access',
+        command: 'curl https://example.com',
+        workingDirectory: '.',
+        commands: [],
+        network: {
+          posture: 'full',
+          publicInternet: true,
+          hostLoopback: true,
+          privateLan: true,
+          hostAbstractUnixSockets: 'reachable',
+        },
+      },
+    });
+    expect(
+      controller.grantCommandPermissions('conversation_one', resolved.prepared, 'once')
+    ).toEqual({
+      scope: 'once',
+      commands: [],
+      command: 'curl https://example.com',
+      workingDirectory: '.',
+      network: 'full',
+    });
+
+    await controller.execute('conversation_one', { command: 'curl https://example.org' });
+    expect(dependencies.executor.execute).toHaveBeenLastCalledWith(
+      agentPolicy,
+      expect.objectContaining({ command: '/bin/sh' })
+    );
+
+    await controller.execute('conversation_one', { command: 'curl https://example.com' });
+    expect(dependencies.executor.execute).toHaveBeenLastCalledWith(
+      fullNetworkAgentPolicy,
+      expect.objectContaining({ command: '/bin/sh' })
+    );
+
+    await controller.execute('conversation_one', { command: 'curl https://example.com' });
+    expect(dependencies.executor.execute).toHaveBeenLastCalledWith(
+      agentPolicy,
+      expect.objectContaining({ command: '/bin/sh' })
+    );
+
+    const conversationPermission = await controller.prepareCommandPermissions(
+      'conversation_one',
+      { network: 'full' },
+      { command: 'npm install', workingDirectory: '.' }
+    );
+    controller.grantCommandPermissions(
+      'conversation_one',
+      conversationPermission.prepared,
+      'conversation'
+    );
+    await controller.execute('conversation_one', { command: 'git fetch' });
+    expect(dependencies.executor.execute).toHaveBeenLastCalledWith(
+      fullNetworkAgentPolicy,
+      expect.objectContaining({ command: '/bin/sh' })
+    );
+
+    await controller.readFile('conversation_one', 'README.md');
+    expect(dependencies.executor.execute).toHaveBeenLastCalledWith(
+      helperPolicy,
+      expect.objectContaining({ args: expect.arrayContaining(['read', 'README.md']) })
+    );
+  });
+
   test('captures and caches the user command PATH for the default resolver', async () => {
     fs.promises.realpath.mockRestore();
     fs.promises.stat.mockRestore();
@@ -341,9 +473,10 @@ describe('ManagedWorkspaceController', () => {
       .mockImplementation(async (value) => path.resolve(String(value)));
     jest.spyOn(fs.promises, 'stat').mockImplementation(async (value) => ({
       isDirectory: () =>
-        [path.resolve(packageRoot), path.resolve('/managed/workspace_aaaaaaaaaaaaaaaaaaaa')].includes(
-          path.resolve(String(value))
-        ),
+        [
+          path.resolve(packageRoot),
+          path.resolve('/managed/workspace_aaaaaaaaaaaaaaaaaaaa'),
+        ].includes(path.resolve(String(value))),
       isFile: () => path.resolve(String(value)) === path.resolve(path.join(bin, 'tool')),
     }));
     const capture = jest.fn(async () => ({ PATH: bin, source: 'login_shell' }));
@@ -374,6 +507,26 @@ describe('ManagedWorkspaceController', () => {
       deleteConversation: jest.fn(() => false),
       grant: jest.fn(),
       resolve: jest.fn(() => [Object.freeze({ kind: 'network_public', version: 1 })]),
+    };
+    const { controller, dependencies } = createController({ capabilityGrants });
+
+    await expect(
+      controller.execute('conversation_one', {
+        command: 'printf hello',
+        workingDirectory: '.',
+      })
+    ).rejects.toMatchObject({ code: 'UNTRUSTED_CAPABILITY_AUTHORITY' });
+    expect(dependencies.executor.execute).not.toHaveBeenCalled();
+    expect(dependencies.store.startCommand).not.toHaveBeenCalled();
+  });
+
+  test('fails closed for an unknown network-prefixed capability', async () => {
+    const capabilityGrants = {
+      clear: jest.fn(),
+      clearOnce: jest.fn(() => false),
+      deleteConversation: jest.fn(() => false),
+      grant: jest.fn(),
+      resolve: jest.fn(() => [Object.freeze({ kind: 'network_unknown', version: 1 })]),
     };
     const { controller, dependencies } = createController({ capabilityGrants });
 

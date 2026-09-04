@@ -51,8 +51,19 @@ const WORKSPACE_ERROR_MESSAGES = Object.freeze({
     'Approved executable access is unavailable on this platform',
   EXECUTABLE_RESOLUTION_FAILED: 'Freedom could not resolve the requested executables',
   EXECUTABLE_SCOPE_TOO_BROAD: 'Freedom refused an executable with an unsafe package boundary',
+  COMMAND_PERMISSION_DECLINED: 'The user did not grant the requested command permissions',
+  COMMAND_PERMISSION_PREPARATION_FAILED:
+    'Freedom could not prepare the requested command permissions',
+  INVALID_COMMAND_PERMISSION_GRANT: 'Freedom refused an invalid command permission grant',
+  INVALID_CAPABILITY_REQUEST: 'The requested command permissions are invalid',
   INVALID_EXECUTABLE_GRANT: 'Freedom refused an invalid executable grant',
   INVALID_EXECUTABLE_REQUEST: 'The executable permission request is invalid',
+  NETWORK_PERMISSION_UNAVAILABLE: 'Direct network permission is unavailable in this build',
+  UNSUPPORTED_CAPABILITY_COMBINATION:
+    'Freedom refused an unsupported combination of command permissions',
+  UNSUPPORTED_WORKSPACE_CAPABILITY:
+    'Freedom cannot enforce one of the requested workspace permissions',
+  UNTRUSTED_CAPABILITY_AUTHORITY: 'Freedom refused untrusted workspace authority',
   WORKSPACE_COMMAND_CANCELLED: 'The workspace command was stopped',
   WORKSPACE_COMMAND_FAILED: 'The workspace command exited unsuccessfully',
   WORKSPACE_COMMAND_NOT_FOUND: 'A required command is not available in the workspace shell',
@@ -80,6 +91,9 @@ function safeWorkspaceError(error, options = {}) {
     'EXECUTABLE_ACCESS_PLATFORM_UNAVAILABLE',
     'EXECUTABLE_RESOLUTION_FAILED',
     'EXECUTABLE_SCOPE_TOO_BROAD',
+    'COMMAND_PERMISSION_DECLINED',
+    'COMMAND_PERMISSION_PREPARATION_FAILED',
+    'INVALID_COMMAND_PERMISSION_GRANT',
     'INVALID_EXECUTABLE_GRANT',
     'INVALID_EXECUTABLE_REQUEST',
     'WORKSPACE_CAPABILITY_DETECTION_FAILED',
@@ -107,6 +121,11 @@ function safeWorkspaceError(error, options = {}) {
     'WORKSPACE_RUNTIME_UNAVAILABLE',
     'WORKSPACE_SANDBOX_DENIED',
     'WORKSPACE_WRITE_FAILED',
+    'INVALID_CAPABILITY_REQUEST',
+    'NETWORK_PERMISSION_UNAVAILABLE',
+    'UNSUPPORTED_CAPABILITY_COMBINATION',
+    'UNSUPPORTED_WORKSPACE_CAPABILITY',
+    'UNTRUSTED_CAPABILITY_AUTHORITY',
     'ELECTRON_RUNTIME_PLATFORM_UNAVAILABLE',
     'ELECTRON_MAIN_PROCESS_REQUIRED',
     'ELECTRON_EXECUTABLE_UNAVAILABLE',
@@ -769,31 +788,52 @@ function createStandardGrepTool(template, options) {
 }
 
 function createRequestPermissionsTool(sdk, options) {
+  const networkPermissionsEnabled = options.controller.fullNetworkPermissionsEnabled?.() === true;
+  const properties = {
+    executables: {
+      type: 'array',
+      minItems: 1,
+      maxItems: 16,
+      items: { type: 'string', minLength: 1, maxLength: 128 },
+    },
+    reason: { type: 'string', minLength: 1, maxLength: 240 },
+    command: { type: 'string', minLength: 1, maxLength: 4_096 },
+    workingDirectory: { type: 'string', minLength: 1, maxLength: 1_024 },
+    ...(networkPermissionsEnabled && {
+      network: {
+        type: 'string',
+        enum: ['full'],
+        description:
+          'Direct networking is one indivisible grant covering public internet, host localhost, and private/LAN addresses.',
+      },
+    }),
+  };
   return sdk.defineTool({
     name: 'request_permissions',
-    label: 'Request executable access',
-    description:
-      'Resolve named executables from the user’s installed command-line environment and request the exact access needed to run one intended workspace command. Use this before retrying an unavailable command, or when you know a required executable is outside the current workspace shell. Never guess host paths.',
-    promptSnippet: 'Request access to installed executables',
+    label: 'Request command access',
+    description: networkPermissionsEnabled
+      ? 'Request the exact executable and/or full direct-network access needed to run one intended workspace command. Full networking includes public internet, host localhost, and private/LAN addresses. Never guess host paths.'
+      : 'Resolve named executables from the user’s installed command-line environment and request the exact access needed to run one intended workspace command. Use this before retrying an unavailable command, or when you know a required executable is outside the current workspace shell. Never guess host paths.',
+    promptSnippet: 'Request access for an exact workspace command',
     promptGuidelines: [
-      'Request only the exact executable names needed for the task.',
+      'When requesting executable access, include only the exact executable names needed for the task.',
       'Provide the exact command and workspace-relative working directory you intend to use next. If the user allows it once, only that matching call can consume the permission.',
       'If an executable is unavailable, explain that it is not installed; do not claim permission can install it.',
+      ...(networkPermissionsEnabled
+        ? [
+            'Request network: full only when the exact command needs direct networking. It is one combined public-internet, host-localhost, and private/LAN grant.',
+          ]
+        : []),
     ],
     parameters: {
       type: 'object',
-      properties: {
-        executables: {
-          type: 'array',
-          minItems: 1,
-          maxItems: 16,
-          items: { type: 'string', minLength: 1, maxLength: 128 },
-        },
-        reason: { type: 'string', minLength: 1, maxLength: 240 },
-        command: { type: 'string', minLength: 1, maxLength: 4_096 },
-        workingDirectory: { type: 'string', minLength: 1, maxLength: 1_024 },
-      },
-      required: ['executables', 'reason', 'command', 'workingDirectory'],
+      properties,
+      required: networkPermissionsEnabled
+        ? ['reason', 'command', 'workingDirectory']
+        : ['executables', 'reason', 'command', 'workingDirectory'],
+      ...(networkPermissionsEnabled && {
+        anyOf: [{ required: ['executables'] }, { required: ['network'] }],
+      }),
       additionalProperties: false,
     },
     executionMode: 'sequential',
@@ -804,9 +844,12 @@ function createRequestPermissionsTool(sdk, options) {
       let receipt;
       try {
         await ensureWorkspaceEnabled(options, operation, toolCallId, operationSignal);
-        const resolved = await options.controller.prepareExecutableAccess(
+        const resolved = await options.controller.prepareCommandPermissions(
           options.conversationId,
-          params.executables,
+          {
+            executables: params.executables || [],
+            ...(params.network && { network: params.network }),
+          },
           {
             command: params.command,
             workingDirectory: params.workingDirectory || '.',
@@ -827,12 +870,12 @@ function createRequestPermissionsTool(sdk, options) {
             throw cancelled;
           }
           if (!decisionApproved(decision)) {
-            const declined = new Error('The user did not grant executable access');
-            declined.code = 'EXECUTABLE_ACCESS_DECLINED';
+            const declined = new Error('The user did not grant the requested command permissions');
+            declined.code = 'COMMAND_PERMISSION_DECLINED';
             throw declined;
           }
           scope = decision?.workspacePermissionScope === 'conversation' ? 'conversation' : 'once';
-          options.controller.grantExecutableAccess(
+          options.controller.grantCommandPermissions(
             options.conversationId,
             resolved.prepared,
             scope
@@ -851,20 +894,26 @@ function createRequestPermissionsTool(sdk, options) {
           status: 'succeeded',
           workspace: receipt,
         });
-        const available = resolved.available.length
+        const executableSummary = resolved.available.length
           ? `Available: ${resolved.available.join(', ')}.`
-          : 'No requested executable is available.';
+          : resolved.unavailable.length
+            ? 'No requested executable is available.'
+            : '';
         const unavailable = resolved.unavailable.length
-          ? ` Unavailable on this computer: ${resolved.unavailable.join(', ')}.`
+          ? `${executableSummary ? ' ' : ''}Unavailable on this computer: ${resolved.unavailable.join(', ')}.`
+          : '';
+        const network = resolved.publicRequest.network
+          ? `${executableSummary || unavailable ? ' ' : ''}Full direct networking is available for the approved scope.`
           : '';
         return {
-          content: [{ type: 'text', text: `${available}${unavailable}` }],
+          content: [{ type: 'text', text: `${executableSummary}${unavailable}${network}` }],
           details: {
             available: resolved.available,
             unavailable: resolved.unavailable,
             scope,
             command: resolved.publicRequest.command,
             workingDirectory: resolved.publicRequest.workingDirectory,
+            ...(resolved.publicRequest.network && { network: 'full' }),
           },
         };
       } catch (error) {
@@ -1014,8 +1063,8 @@ async function createWorkspaceTools(options = {}) {
       'listDirectory',
       'findFiles',
       'grepFiles',
-      'prepareExecutableAccess',
-      'grantExecutableAccess',
+      'prepareCommandPermissions',
+      'grantCommandPermissions',
     ].some((method) => typeof controller[method] !== 'function')
   ) {
     throw new TypeError('Workspace tools require a managed workspace controller');

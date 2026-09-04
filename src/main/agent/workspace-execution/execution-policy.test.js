@@ -14,6 +14,7 @@ const {
   DEFAULT_OUTPUT_BYTES,
   DEFAULT_TIMEOUT_MS,
   ExecutionPolicyError,
+  NETWORK_POSTURES,
   createWorkspaceExecutionPolicy,
   insidePath,
   isValidatedWorkspaceExecutionPolicy,
@@ -227,6 +228,30 @@ describe('workspace execution policy', () => {
     expect(() =>
       restrictWorkspaceExecutionPolicy({ ...helperPolicy }, { omitRuntimeRootIds: ['electron'] })
     ).toThrow('trusted Freedom workspace policy');
+  });
+
+  test('derives offline policy from full networking but refuses network expansion', async () => {
+    const fixture = await createFixture();
+    fixtureRoots.push(fixture.fixtureRoot);
+    const fullPolicy = await createWorkspaceExecutionPolicy({
+      workspaceRoot: fixture.workspaceRoot,
+      network: NETWORK_POSTURES.FULL,
+    });
+
+    const offlinePolicy = restrictWorkspaceExecutionPolicy(fullPolicy, {
+      network: NETWORK_POSTURES.NONE,
+    });
+
+    expect(isValidatedWorkspaceExecutionPolicy(offlinePolicy)).toBe(true);
+    expect(fullPolicy.network).toBe(NETWORK_POSTURES.FULL);
+    expect(offlinePolicy.network).toBe(NETWORK_POSTURES.NONE);
+    expect(offlinePolicy.filesystem.writableRoots).toBe(fullPolicy.filesystem.writableRoots);
+    expect(() =>
+      restrictWorkspaceExecutionPolicy(offlinePolicy, { network: NETWORK_POSTURES.FULL })
+    ).toThrow(expect.objectContaining({ code: 'INVALID_POLICY' }));
+    expect(() =>
+      restrictWorkspaceExecutionPolicy(fullPolicy, { network: NETWORK_POSTURES.BROKERED })
+    ).toThrow(expect.objectContaining({ code: 'INVALID_POLICY' }));
   });
 
   test('adds only Freedom-resolved executable roots to a derived agent policy', async () => {

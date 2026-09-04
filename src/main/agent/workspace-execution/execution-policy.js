@@ -996,6 +996,16 @@ function restrictWorkspaceExecutionPolicy(policy, options = {}) {
     );
   }
   const requested = requirePlainObject(options, 'restrictions');
+  const network = requested.network ?? policy.network;
+  if (
+    network !== policy.network &&
+    !(policy.network === NETWORK_POSTURES.FULL && network === NETWORK_POSTURES.NONE)
+  ) {
+    throw new ExecutionPolicyError(
+      'INVALID_POLICY',
+      'A derived execution policy may only remove direct network authority'
+    );
+  }
   const omittedRuntimeRootIds = requested.omitRuntimeRootIds ?? [];
   const addedRuntimeRoots = requested.addRuntimeRoots ?? [];
   const omittedEnvironmentNames = requested.omitEnvironmentNames ?? [];
@@ -1047,6 +1057,7 @@ function restrictWorkspaceExecutionPolicy(policy, options = {}) {
   }
   const restricted = Object.freeze({
     ...policy,
+    network,
     filesystem: Object.freeze({
       ...policy.filesystem,
       runtimeRoots: Object.freeze(combinedRuntimeRoots),
