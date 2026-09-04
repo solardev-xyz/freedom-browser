@@ -6,11 +6,22 @@
 // handlers stream through local nodes. We still pass
 // FREEDOM_TEST_USER_DATA so the test session doesn't write to the
 // user's real settings/bookmarks/history files.
+//
+// Setting FREEDOM_E2E_EXECUTABLE points this same launch at a *packaged*
+// Freedom binary — that is the `packaged-live` project
+// (test-e2e/packaged-live/), which starts the real node managers inside a
+// built artifact. Unset, everything below behaves exactly as it did before.
+// Note that the HAS_* / *_PATH exports describe the *source tree's* binary
+// layout (`npm run ant:download` and friends), so they are only meaningful
+// for the `live` project; a packaged spec has to ask the app under test
+// where its bundled binaries are (e.g. `window.tor.checkBinary()`).
 
 const { test: base, expect, _electron: electron } = require('@playwright/test');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+
+const { isPackagedRun, packagedLaunchTarget } = require('./packaged-launch');
 
 const repoRoot = path.resolve(__dirname, '..');
 
@@ -116,7 +127,8 @@ const test = base.extend({
     }
 
     const app = await electron.launch({
-      args: ['.'],
+      // Source tree or FREEDOM_E2E_EXECUTABLE — see packaged-launch.js.
+      ...packagedLaunchTarget(),
       cwd: repoRoot,
       env: {
         ...process.env,
@@ -131,7 +143,10 @@ const test = base.extend({
         ELECTRON_DISABLE_SECURITY_WARNINGS: 'true',
         LANG: 'en_US.UTF-8',
       },
-      timeout: 60_000,
+      // Same reason fixtures.js gives a packaged launch more room than a
+      // source one: a just-installed package starts from a cold asar and cold
+      // shared libraries.
+      timeout: isPackagedRun() ? 90_000 : 60_000,
     });
 
     await use(app);
