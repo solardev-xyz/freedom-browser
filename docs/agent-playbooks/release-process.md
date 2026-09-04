@@ -181,12 +181,22 @@ npm run dist:mac:staple-notary      # staple once accepted
 
 These require `.env` credentials via `dotenv-cli` and are implemented in `scripts/macos-notary.js`.
 
-### macOS (Apple Silicon) via GitHub Actions
+### All platforms via GitHub Actions
 
-`.github/workflows/release-mac.yml` produces the same signed + notarized arm64 `.dmg` / `.zip` on a GitHub-hosted `macos-14` runner, so a release does not depend on one maintainer's Mac.
+`.github/workflows/release.yml` builds every distributable on GitHub-hosted runners, so a release does not depend on one maintainer's Mac or on the Docker recipes above:
 
-- **Tag push (`v*`)** — signed build, then the `.dmg` is notarized and stapled in its own step (electron-builder's inline pass covers the `.app` only, see above) and `latest-mac.yml`'s `.dmg` entry is refreshed to the stapled bytes. The result is verified with `codesign` / `spctl` / `stapler` — the staple check now covers both `Freedom.app` and every `.dmg` — and attached to a GitHub Release for that tag together with `latest-mac.yml` and the `.blockmap`. A final tag (`v0.8.1`) produces a **draft**; publish it only after the §6 smoke test passes. A pre-release tag (`v0.8.1-rc.1`, anything with a hyphen) is published as soon as its assets are uploaded and flagged **Pre-release** — see "Release candidates" below. Re-running the job on a tag whose release is already published fails rather than overwriting the live files; tags are never moved, so a bad published build means a new version. With the Actions build, the tag is the build trigger — push it before §6 (see §8 for the reordered flow). The job fails fast if `package.json` does not match the tag (step 1) or if any signing secret is missing. `freedom.baby/downloads` (§7) remains the updater channel, so still upload final artifacts there.
-- **Manual run** (Actions → "Release (macOS arm64)" → Run workflow) — builds from any branch and uploads a workflow artifact only, no release. Untick `signed` for an unsigned pipeline test that needs no secrets; untick `bundle_tor` to skip the cargo build of Arti.
+| Job           | Runner             | Output                                                                                  |
+| ------------- | ------------------ | --------------------------------------------------------------------------------------- |
+| `mac-arm64`   | `macos-14`         | signed + notarized `.dmg` / `-mac.zip`, `latest-mac.yml`                                |
+| `linux-x64`   | `ubuntu-latest`    | `Freedom-<v>.AppImage`, `freedom-browser_<v>_amd64.deb`, `latest-linux.yml`             |
+| `linux-arm64` | `ubuntu-24.04-arm` | `Freedom-<v>-arm64.AppImage`, `freedom-browser_<v>_arm64.deb`, `latest-linux-arm64.yml` |
+| `windows-x64` | `windows-latest`   | `Freedom-Setup-<v>.exe`, `Freedom-<v>-win.zip`, `latest-win-x64.yml` (unsigned)         |
+| `release`     | `ubuntu-latest`    | tag pushes only: attaches all of the above to one GitHub Release                        |
+
+Windows arm64 is intentionally not built (it was never shipped on `freedom.baby` and Myotis publishes no addon for it). No Windows code-signing certificate exists, so the installer is unsigned and SmartScreen prompts on first run — same as every manual release so far. The installer is named `Freedom-Setup-<v>.exe` (`build.nsis.artifactName`), not the electron-builder default `Freedom Setup <v>.exe`: GitHub rewrites spaces in release-asset names to dots, which would break the `url:` in `latest-win-x64.yml`. Update the website's download link accordingly the first time a release ships from Actions. Linux jobs install `fpm` from RubyGems (`USE_SYSTEM_FPM=true`) exactly like the Docker recipes, and build Arti with the runner's cargo.
+
+- **Tag push (`v*`)** — all four build jobs run in parallel; the macOS leg is signed, then the `.dmg` is notarized and stapled in its own step (electron-builder's inline pass covers the `.app` only, see above) and `latest-mac.yml`'s `.dmg` entry is refreshed to the stapled bytes. The result is verified with `codesign` / `spctl` / `stapler` — the staple check now covers both `Freedom.app` and every `.dmg` — and, once **every** platform job has succeeded, the `release` job attaches all artifacts (installers, portable archives, `.blockmap`s and every `latest-*.yml`) to a GitHub Release for that tag. A failed leg means no release; fix and "Re-run failed jobs", which re-runs `release` too. A final tag (`v0.8.1`) produces a **draft**; publish it only after the §6 smoke test passes. A pre-release tag (`v0.8.1-rc.1`, anything with a hyphen) is published as soon as its assets are uploaded and flagged **Pre-release** — see "Release candidates" below. Re-running the job on a tag whose release is already published fails rather than overwriting the live files; tags are never moved, so a bad published build means a new version. With the Actions build, the tag is the build trigger — push it before §6 (see §8 for the reordered flow). The job fails fast if `package.json` does not match the tag (step 1) or if any signing secret is missing. `freedom.baby/downloads` (§7) remains the updater channel, so still upload final artifacts there.
+- **Manual run** (Actions → "Release" → Run workflow) — builds every platform from any branch and uploads one workflow artifact per platform, no release. Untick `signed` for an unsigned macOS pipeline test that needs no secrets; untick `bundle_tor` to skip the cargo build of Arti on macOS and Linux.
 
 Signed runs need these repository secrets (Settings → Secrets and variables → Actions): `CSC_LINK` (the Developer ID Application certificate exported from Keychain as a password-protected `.p12`, then base64-encoded), `CSC_KEY_PASSWORD`, and the same `APPLE_ID` / `APPLE_TEAM_ID` / `APPLE_APP_SPECIFIC_PASSWORD` as `.env.example`. `electron-builder` imports the certificate into a temporary keychain for the run.
 
@@ -248,7 +258,7 @@ Cross-built artifacts have **never been run** by the time §5 finishes. The Linu
 ### Test environments
 
 - **Linux**: a VM or bare-metal Linux machine matching the target arch — **not the build host**. `Freedom-<version>.AppImage` runs without install (`chmod +x` then double-click or launch from a terminal); `freedom-browser_<version>_amd64.deb` installs via `sudo apt install ./freedom-browser_<version>_amd64.deb`. Repeat for the arm64 artifacts on an arm64 Linux instance (e.g. a Raspberry Pi or a UTM arm64 VM on Apple Silicon).
-- **Windows**: a Windows VM (UTM, Parallels, VMware Fusion) or a separate Windows host. The NSIS installer (`Freedom Setup <version>.exe`) runs unprivileged; the portable `Freedom-<version>-win.zip` extracts and runs without install. Confirm Windows SmartScreen prompts behave as expected for the signed installer (a "Don't run" with an unblock-on-second-prompt is normal for newly-signed builds; outright "blocked by your administrator" is not).
+- **Windows**: a Windows VM (UTM, Parallels, VMware Fusion) or a separate Windows host. The NSIS installer (`Freedom-Setup-<version>.exe`) runs unprivileged; the portable `Freedom-<version>-win.zip` extracts and runs without install. Confirm Windows SmartScreen prompts behave as expected for the signed installer (a "Don't run" with an unblock-on-second-prompt is normal for newly-signed builds; outright "blocked by your administrator" is not).
 - **macOS**: the dev host is fine — install the `.dmg` locally (or open the staged `.app` from `dist/mac-arm64/`) and run the same checklist. Confirm Gatekeeper accepts the artifact (`spctl --assess --type execute --verbose dist/mac-arm64/Freedom.app` should print `accepted, source=Notarized Developer ID`).
 
 ### Transferring artifacts to test machines
@@ -267,7 +277,7 @@ Get the build host's LAN IP with `ipconfig getifaddr en0` (macOS, primary interf
 | Windows (PowerShell) | `iwr http://<build-host-ip>:8000/<filename> -OutFile <filename>` |
 | Any (GUI)            | Browse to `http://<build-host-ip>:8000/` and click the file      |
 
-Filenames with spaces (e.g. `Freedom Setup <version>.exe`) need URL-encoding when used in `wget` / `iwr` (`%20` for each space). The GUI browser path handles encoding automatically.
+Filenames with spaces (e.g. `Freedom-Setup-<version>.exe`) need URL-encoding when used in `wget` / `iwr` (`%20` for each space). The GUI browser path handles encoding automatically.
 
 Verify the transfer matches the manifest in `dist/latest-<platform>*.yml` (each file's `sha512:` field is base64):
 
@@ -350,7 +360,7 @@ Tag format is `v<version>` (lowercase `v`), matching `v0.6.2`.
 
 When to push the tag depends on which build is the release build:
 
-- **GitHub Actions build (default).** The tag is the build trigger, so push it from the release branch as soon as the release commit (version bump + changelog) is final — before §6. Wait for the "Release (macOS arm64)" run, download the assets from the draft release it creates, and use _those_ files for the §6 smoke test and the §7 upload to `freedom.baby`, so GitHub and `freedom.baby` serve byte-identical binaries and a single `latest-mac.yml`. Publish the draft in §10. A tag is never moved: a final that fails §6 becomes the next patch version, not a retag — which is why a final should only be tagged after an `rc.N` from the same workflow has already passed §6 ("Release candidates" above).
+- **GitHub Actions build (default).** The tag is the build trigger, so push it from the release branch as soon as the release commit (version bump + changelog) is final — before §6. Wait for the "Release" run, download the assets from the draft release it creates, and use _those_ files for the §6 smoke test and the §7 upload to `freedom.baby`, so GitHub and `freedom.baby` serve byte-identical binaries and the same `latest-mac.yml`, `latest-linux.yml`, `latest-linux-arm64.yml` and `latest-win-x64.yml`. Publish the draft in §10. A tag is never moved: a final that fails §6 becomes the next patch version, not a retag — which is why a final should only be tagged after an `rc.N` from the same workflow has already passed §6 ("Release candidates" above).
 - **Local build (fallback).** If you built on your own Mac (§5, inline or async flow), keep the original order: do not push the tag until the §9 merge, so `main` and the tag move as one. The Actions run that tag triggers produces a _second_ signed build whose hashes differ from what you uploaded; delete that draft instead of publishing it, so GitHub never advertises files that do not match `freedom.baby`.
 
 ## 9. Merge the release branch into main
