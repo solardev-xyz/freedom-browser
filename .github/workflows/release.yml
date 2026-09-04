@@ -1,21 +1,25 @@
-name: Release (macOS arm64)
+name: Release
 
-# Builds the Apple Silicon distributable on a GitHub-hosted macOS runner,
-# signs + notarizes it with the Developer ID secrets, and attaches the result
-# to a draft GitHub Release for the pushed tag.
+# Builds every distributable Freedom ships — macOS arm64 (signed + notarized),
+# Linux x64/arm64 (AppImage + deb) and Windows x64 (NSIS installer + portable
+# zip, unsigned) — on GitHub-hosted runners and attaches them all to one
+# GitHub Release for the pushed tag. Windows arm64 is deliberately not built
+# (never shipped on freedom.baby; no Myotis addon for it).
 #
 # Triggers:
-#   - push of a `v*` tag: signed build, verified, attached to a GitHub
-#     Release. A pre-release tag (`v0.8.1-rc.1`, anything with a hyphen) is
-#     published immediately, flagged "Pre-release", so testers can download
-#     it. A final tag (`v0.8.1`) becomes a draft that a maintainer publishes
-#     after the §6 smoke test in docs/agent-playbooks/release-process.md.
-#   - workflow_dispatch: signed by default; set `signed: false` for an
-#     unsigned pipeline test. Dispatch runs only upload a workflow artifact,
-#     never a release.
+#   - push of a `v*` tag: all platforms build in parallel; once every job
+#     has succeeded the `release` job attaches the artifacts to a GitHub
+#     Release. A pre-release tag (`v0.8.5-rc.1`, anything with a hyphen) is
+#     published, flagged "Pre-release", as soon as its assets are uploaded so
+#     testers can download it. A final tag (`v0.8.5`) becomes a draft that a
+#     maintainer publishes after the §6 smoke test in
+#     docs/agent-playbooks/release-process.md.
+#   - workflow_dispatch: same builds from any branch; macOS is signed by
+#     default, set `signed: false` for a pipeline test without secrets.
+#     Dispatch runs only upload workflow artifacts, never a release.
 #
-# Required repository secrets for a signed build (Settings → Secrets and
-# variables → Actions):
+# Required repository secrets for a signed macOS build (Settings → Secrets
+# and variables → Actions); Linux and Windows need none:
 #   CSC_LINK                    Developer ID Application cert, .p12 exported
 #                               from Keychain, base64-encoded
 #   CSC_KEY_PASSWORD            password set on that .p12 export
@@ -38,14 +42,14 @@ on:
     inputs:
       signed:
         description: >-
-          Sign and notarize with the Developer ID secrets. Uncheck for an
-          unsigned pipeline test that needs no secrets.
+          macOS only: sign and notarize with the Developer ID secrets.
+          Uncheck for an unsigned pipeline test that needs no secrets.
         type: boolean
         default: true
       bundle_tor:
         description: >-
-          Build and bundle the Arti (Tor) client. Compiles from crates.io with
-          cargo and adds several minutes.
+          macOS and Linux: build and bundle the Arti (Tor) client. Compiles
+          from crates.io with cargo and adds several minutes per job.
         type: boolean
         default: true
 
@@ -53,15 +57,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-mac-${{ github.ref }}
+  group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   mac-arm64:
     runs-on: macos-14
     timeout-minutes: 120
-    permissions:
-      contents: write
     env:
       # Tag pushes are always signed and always bundle Tor; dispatch runs
       # follow their inputs (`inputs.*` is null on push, hence the OR).
@@ -271,6 +273,244 @@ jobs:
           # this the upload 409s and the run never reaches the release step.
           overwrite: true
 
+  linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-latest
+            uname: x86_64
+            myotis: linux-x64
+            manifest: latest-linux.yml
+            rust_triple: x86_64-unknown-linux-gnu
+            rustup_sha256: 20a06e644b0d9bd2fbdbfd52d42540bdde820ea7df86e92e533c073da0cdd43c
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            uname: aarch64
+            myotis: linux-arm64
+            manifest: latest-linux-arm64.yml
+            rust_triple: aarch64-unknown-linux-gnu
+            rustup_sha256: e3853c5a252fca15252d07cb23a1bdd9377a8c6f3efa01531109281ae47f841c
+    name: linux-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    env:
+      BUNDLE_TOR: ${{ github.event_name == 'push' || inputs.bundle_tor }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Assert ${{ matrix.uname }} runner
+        run: |
+          if [ "$(uname -m)" != "${{ matrix.uname }}" ]; then
+            echo "Expected a ${{ matrix.uname }} runner, got $(uname -m)" >&2
+            exit 1
+          fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Assert package.json version matches the tag
+        if: github.event_name == 'push'
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$version" ]; then
+            echo "Tag v$tag does not match package.json version $version." >&2
+            exit 1
+          fi
+
+      - name: Install Linux native build dependencies
+        uses: ./.github/actions/install-linux-native-deps
+
+      # electron-builder's bundled fpm is x64-only; the arm64 Docker recipe in
+      # package.json (`dist:linux:arm64:docker`) installs fpm from RubyGems and
+      # sets USE_SYSTEM_FPM=true. Do the same on both runners so both legs
+      # build the .deb the identical way.
+      - name: Install fpm for the .deb target
+        run: |
+          "$GITHUB_WORKSPACE/scripts/ci/apt-hardening.sh" install ruby ruby-dev build-essential
+          sudo gem install fpm --no-document
+          fpm --version
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download adblock filter lists
+        run: npm run adblock:download
+
+      - name: Download Ant binaries
+        run: npm run ant:download
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Download IPFS native addon
+        run: npm run ipfs:download
+
+      - name: Download libradicle addon
+        run: npm run radicle:download -- --linux --${{ matrix.arch }}
+
+      - name: Download Myotis addon
+        run: npm run myotis:download
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          MYOTIS_DOWNLOAD_TARGET: ${{ matrix.myotis }}
+
+      - name: Build Arti (Tor) client
+        if: env.BUNDLE_TOR == 'true'
+        env:
+          RUSTUP_VERSION: 1.28.2
+          RUSTUP_SHA256: ${{ matrix.rustup_sha256 }}
+          RUST_TRIPLE: ${{ matrix.rust_triple }}
+        run: |
+          if ! command -v cargo >/dev/null 2>&1; then
+            (
+              cd "$RUNNER_TEMP"
+              curl --proto '=https' --tlsv1.2 -sSfo rustup-init \
+                "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/${RUST_TRIPLE}/rustup-init"
+              echo "${RUSTUP_SHA256}  rustup-init" | sha256sum -c -
+              chmod +x rustup-init
+              ./rustup-init -y --profile minimal --no-modify-path
+              rm rustup-init
+            )
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          npm run tor:download
+
+      - name: Build AppImage and deb
+        run: npm run dist -- --linux --${{ matrix.arch }}
+        env:
+          USE_SYSTEM_FPM: 'true'
+
+      - name: Sanity-check the distributables
+        run: |
+          ls -la dist
+          test -f "dist/${{ matrix.manifest }}" || { echo "Expected dist/${{ matrix.manifest }} (update manifest for this arch)" >&2; exit 1; }
+          for deb in dist/*.deb; do dpkg-deb -f "$deb" Package Version Architecture; done
+          ls dist/*.AppImage
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: freedom-linux-${{ matrix.arch }}
+          path: |
+            dist/*.AppImage
+            dist/*.deb
+            dist/*.blockmap
+            dist/${{ matrix.manifest }}
+          if-no-files-found: error
+          overwrite: true
+
+  windows-x64:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Assert x86_64 runner
+        run: |
+          if [ "$(uname -m)" != "x86_64" ]; then
+            echo "Expected an x86_64 Windows runner, got $(uname -m)" >&2
+            exit 1
+          fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Assert package.json version matches the tag
+        if: github.event_name == 'push'
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$version" ]; then
+            echo "Tag v$tag does not match package.json version $version." >&2
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download adblock filter lists
+        run: npm run adblock:download
+
+      - name: Download Ant binaries
+        run: npm run ant:download
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Download IPFS native addon
+        run: npm run ipfs:download
+
+      - name: Download libradicle addon
+        run: npm run radicle:download -- --win --x64
+
+      - name: Download Myotis addon
+        run: npm run myotis:download
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          MYOTIS_DOWNLOAD_TARGET: win32-x64
+
+      # No Windows code-signing certificate exists yet, so this installer is
+      # unsigned (same as every release on freedom.baby so far) and SmartScreen
+      # prompts on first run. scripts/build.js pins the update channel to
+      # latest-win-x64 so the manifest is named the way freedom.baby serves it.
+      - name: Build NSIS installer and portable zip
+        run: npm run dist -- --win --x64
+
+      - name: Sanity-check the distributables
+        run: |
+          ls -la dist
+          test -f dist/latest-win-x64.yml || { echo "Expected dist/latest-win-x64.yml" >&2; exit 1; }
+          ls dist/*.exe dist/*-win.zip
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: freedom-win-x64
+          path: |
+            dist/*.exe
+            dist/*.zip
+            dist/*.blockmap
+            dist/latest-win-x64.yml
+          if-no-files-found: error
+          overwrite: true
+
+  # One release for all platforms, created only after every build succeeded
+  # so the page never shows a partial set. "Re-run failed jobs" re-runs this
+  # job too and picks the successful jobs' artifacts back up from the run.
+  release:
+    if: github.event_name == 'push'
+    needs: [mac-arm64, linux, windows-x64]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: freedom-*
+          merge-multiple: true
+          path: release
+
+      - name: List release assets
+        run: ls -la release
+
       # The release is always created as a draft first and only flipped to
       # public once every asset is uploaded, so watchers never see an empty
       # release. Pre-release tags (semver with a hyphen: v0.8.1-alpha.1,
@@ -283,9 +523,9 @@ jobs:
       # may have downloaded and checksummed. Tags are never moved, so a bad
       # published build means a new version, not a rebuild.
       - name: Attach to GitHub Release
-        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
           version="${TAG#v}"
@@ -294,14 +534,14 @@ jobs:
             *-*)
               prerelease=true
               title="Freedom ${version} (pre-release)"
-              notes="Pre-release build of Freedom ${version} for macOS (Apple Silicon), signed and notarized. Not for general use: test it against a separate profile (FREEDOM_TEST_USER_DATA) and report problems on the release branch.
+              notes="Pre-release build of Freedom ${version}: macOS Apple Silicon (signed and notarized), Linux x64/arm64 (AppImage, deb) and Windows x64 (installer and portable zip, unsigned — expect a SmartScreen prompt). Not for general use: test it against a separate profile (FREEDOM_TEST_USER_DATA) and report problems on the release branch.
 
           Changelog so far: ${changelog}"
               ;;
             *)
               prerelease=false
               title="Freedom ${version}"
-              notes="Signed and notarized macOS (Apple Silicon) build of Freedom ${version}.
+              notes="Freedom ${version} for macOS Apple Silicon (signed and notarized), Linux x64/arm64 (AppImage, deb) and Windows x64 (installer and portable zip).
 
           Changelog: ${changelog}"
               ;;
@@ -310,9 +550,9 @@ jobs:
           # view`, whose non-zero exit cannot tell a transient API error from
           # "no release yet" — and GitHub happily creates a second draft for
           # the same tag. A failed list call fails the step.
-          if ! found="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+          if ! found="$(gh api --paginate "repos/${GH_REPO}/releases?per_page=100" \
                 --jq ".[] | select(.tag_name == \"${TAG}\") | if .draft then \"draft\" else \"published\" end")"; then
-            echo "Could not list releases for ${GITHUB_REPOSITORY}; not touching the release." >&2
+            echo "Could not list releases for ${GH_REPO}; not touching the release." >&2
             exit 1
           fi
           if [ "$(printf '%s\n' "$found" | grep -c .)" -gt 1 ]; then
@@ -329,7 +569,7 @@ jobs:
               gh release create "$TAG" --draft --verify-tag --title "$title" --notes "$notes"
               ;;
           esac
-          gh release upload "$TAG" --clobber dist/*.dmg dist/*.zip dist/*.blockmap dist/latest-mac.yml
+          gh release upload "$TAG" --clobber release/*
           if [ "$prerelease" = true ]; then
             gh release edit "$TAG" --draft=false --prerelease
           fi
