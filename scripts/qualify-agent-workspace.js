@@ -24,6 +24,7 @@
 //   previews        Managed server previews, gate enabled
 //   previews --network-disabled
 //                   Managed server previews, gate-absent regression
+//   process-controls  Trusted-chrome running-process controls (list, stop, preview)
 //   self-test-fault Controlled-failure self-test that proves cleanup runs after a scenario error
 //   all             Every group above (both network modes and both preview modes), each in its own
 //                   isolated process, with an aggregate matrix; excludes the slow expiry case and
@@ -53,6 +54,10 @@ const SCENARIOS = {
     module: './agent-qualification/scenarios/previews',
     modes: (flags) => ({ networkEnabled: !flags.networkDisabled }),
   },
+  'process-controls': {
+    module: './agent-qualification/scenarios/process-controls',
+    modes: () => ({ networkEnabled: true }),
+  },
   'self-test-fault': {
     module: './agent-qualification/scenarios/self-test-fault',
     modes: () => ({ networkEnabled: true }),
@@ -68,6 +73,7 @@ const AGGREGATE = [
   { group: 'reconciliation', flags: [] },
   { group: 'previews', flags: [] },
   { group: 'previews', flags: ['--network-disabled'] },
+  { group: 'process-controls', flags: [] },
 ];
 
 function parseFlags(argv) {
