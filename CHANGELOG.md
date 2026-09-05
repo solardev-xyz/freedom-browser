@@ -6,7 +6,7 @@ All notable changes to Freedom will be documented in this file.
 
 ### Added
 
-- Ad and tracker blocking, on by default, with cosmetic hiding of the empty gaps blocking leaves behind:
+- Ad and tracker blocking, on by default, which also hides the empty spaces blocked ads leave:
   - Settings > Ad Blocking with a per-site allowlist and live rule counts
   - Cookie-banner and annoyance filtering, off by default
   - Filter lists refresh over Swarm without an app update
@@ -19,10 +19,10 @@ All notable changes to Freedom will be documented in this file.
   - Remembered decisions per profile under Settings > Site Permissions, with per-site and remove-all revocation
   - Indicator icon in the address bar with quick revoke on sites holding granted permissions
 - Private windows (`Cmd/Ctrl+Shift+N`, File > New Private Window): ephemeral browsing on a per-window in-memory session with dark, badged chrome
-  - No history, favicon-cache, or autocomplete writes; cookies and site data evaporate on close
-  - Downloads are flagged and drop out of the list when the window closes (files stay on disk); permission decisions are session-only
+  - No history, favicon-cache or autocomplete writes; cookies and site data end on close
+  - Downloads leave the list on close and permission decisions are session-only; files stay on disk
   - Wallet and `window.ethereum` / `window.swarm` / `window.radicle` providers are unavailable; x402 payment interception is off
-  - Honest start page: what's protected (local traces) and what isn't (network observers, sites you log into, your IP)
+  - Start page listing what private windows do and do not protect
 - Find in page (`Cmd/Ctrl+F`, also under Edit in the menu): overlay bar with a live match counter, `Enter` / `Shift+Enter` to cycle matches, `Esc` to close
 - Audio indicator on tabs playing sound; click it or use "Mute Tab" in the tab context menu to mute/unmute (mute survives navigation)
 - Remappable keyboard shortcuts under Settings > Shortcuts:
@@ -33,31 +33,34 @@ All notable changes to Freedom will be documented in this file.
 - Address-bar search for typed input that isn't a URL, with DuckDuckGo, Google, Bing, Brave Search, Ecosia, Startpage or a custom engine under Settings > Search
 - Three new wallet account types, usable with the vault locked and across dApp signing, sends and x402 payments:
   - Ledger hardware accounts, confirmed on the device
-  - Phone accounts over Open Lavatory: scan a QR code, confirm on the phone, the key never leaves it
-  - Safe multi-owner accounts on Gnosis, with a signing board each owner works through at their own pace
+  - Phone accounts over Open Lavatory: scan a QR code, signing happens on the phone
+  - Safe multi-owner accounts on Gnosis, with a signing board owners sign in any order
 - Contract-hosted onchain apps on `web3://<address>[:<chainId>]/`, read straight from the chain with no gateway:
   - Address-bar shield popover reporting the chain, block, contract and content hash behind the page
-  - The wallet provider is pinned to the app's chain and a page cannot switch it away
+  - The wallet provider is pinned to the app's chain; a page cannot switch it
 - Radicle repositories are browsable and writable from the browser:
   - `rad:` as a fetchable scheme, plus a consented `window.radicle` provider for issues, comments and patches
-  - Seed-to-browse reports real per-peer clone phases with retry and cancellation instead of assuming success
-- Encrypted point-to-point and broadcast messaging for Swarm apps through `window.swarm`, behind its own consent tier
+  - Seed-to-browse reports per-peer clone phases, with retry and cancellation
+  - Repository view pinned to any commit id, with commit, branch and contributor counts
+  - Nodes menu shows the Radicle node's connected peers, seeded repositories and addon version
+- Encrypted point-to-point messaging and topic broadcast for Swarm apps through `window.swarm`, behind its own consent tier
 - Swarm apps can ship a `freedom-manifest.json` so their permissions are one decision instead of a stream of prompts
-- Tor for `.onion` addresses through a bundled Arti client, off by default under Settings > Experimental (clearnet traffic keeps connecting directly)
-  - A system Tor client found on its default port, such as Tor Browser, can be adopted instead of the bundled Arti
-- Myotis, a fully peer-to-peer Ethereum and Gnosis light client, as an experimental verified source, off by default:
-  - Draggable read and verification order per chain under Settings > Chains, alongside Colibri, RPC quorum and direct RPC
+- Tor for `.onion` addresses through a bundled [Arti](https://gitlab.torproject.org/tpo/core/arti) 1.4.4 client, off by default under Settings > Experimental (clearnet traffic keeps connecting directly)
+  - Prompt to use a system Tor client, such as Tor Browser, instead of Arti
+- [Myotis](https://github.com/biafra23/myotis) 0.1.7, a peer-to-peer Ethereum and Gnosis light client, as an experimental verified source, off by default:
+  - Draggable read and verification order per chain under Settings > Chains, alongside Colibri and RPC
 - `.tez` name resolution from the Tezos Domains contracts, for bare names and `ipfs://` / `ipns://` targets
 
 ### Changed
 
-- Radicle runs as an embedded libradicle 0.7.1 addon instead of separate daemon, HTTP and CLI processes, and takes no local port
+- Radicle runs as an embedded [libradicle](https://github.com/solardev-xyz/libradicle) 0.7.1 addon instead of separate daemon, HTTP and CLI processes, and takes no local port
+- Swarm peers count up from launch instead of sitting at 0 during startup
 - Installers are about 15 MB smaller: each build now ships only the `better-sqlite3` native addon for its own platform and architecture instead of all eight upstream prebuilds
 - The Windows installer is named `Freedom-Setup-<version>.exe`, previously `Freedom Setup <version>.exe`
 
 ### Removed
 
-- Adopting a system Radicle node found on its default port as an external node
+- Adopting a system Radicle node found on its default port as an external node — the embedded Radicle node takes no local port, so there is nothing to adopt
 
 ### Fixed
 
@@ -65,12 +68,14 @@ All notable changes to Freedom will be documented in this file.
 - A `bzz://` deep link resolves when the manifest has no root index document instead of stranding on the not-found page
 - Pages that call `preventDefault()` on a context menu no longer also get Freedom's native menu
 - Custom RPC endpoints accept `http://` for loopback addresses such as `http://localhost:8545`, and save errors appear at the field (thanks @biafra23!)
+- Uploads around 250 MiB no longer stall
+- Expired or invalid postage batches fail fast with a clear error instead of stalling uploads
 - macOS disk images pass Gatekeeper without an online check
 
 ### Security
 
 - Updated bundled nodes:
-  - [Ant](https://github.com/freedom-hq/ant) 0.5.33 to 0.5.44 (Swarm peers count up from launch, no ~250 MiB upload stall, expired postage batches fail fast)
+  - [Ant](https://github.com/freedom-hq/ant) 0.5.33 to 0.5.44
 - Updated runtime dependencies:
   - `@corpus-core/colibri-stateless` 1.1.30 to 2.0.4 (thanks @simon-jentzsch!)
   - `better-sqlite3` 12.11.1 to 13.0.3
