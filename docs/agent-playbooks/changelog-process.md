@@ -67,7 +67,8 @@ If a sub-bullet runs past 20 words, opens with the same noun phrase as a sibling
 - **No trailing periods** on bullet entries.
 - **No cross-references between sections.** Don't write "see Added" or "as in the Security entry above" — each bullet stands alone.
 - **State user impact, not implementation.** Mechanism lives in the code, not the changelog. `Tab spinner stays on through ENS link clicks` — not `Tab spinner stays on because handler now awaits the resolver promise before clearing state`.
-- **Plain register, no selling.** Describe what the thing does; do not evaluate it. `Start page listing what private windows do and do not protect` — not `Honest start page: what's protected and what isn't`. Adjectives and phrases that would fit a landing page (`honest`, `the key never leaves it`, `at their own pace`, `read straight from the chain`) are the tell. The `0.8.0` section is the register to match: `Node data and Swarm identity migrate in place on first launch`.
+- **Warm, not selling.** The register of the shipped sections is plain description with room for a short tagline on the headline entry and the occasional friendly comparison: `Native x402 payment support — pay as you browse, straight from the built-in wallet:` (`0.7.4`), `shown in the bottom-left like Chrome and Firefox` (`0.7.2`), `Node data and Swarm identity migrate in place on first launch` (`0.8.0`). What does not belong is evaluation: adjectives that would fit a landing page (`honest`, `fully`, `real`, `the key never leaves it`, `at their own pace`). Say what it does and, on the headline, what it is for.
+- **Explain the non-obvious with a `Reasoning:` sub-bullet**, as `0.7.1` (CID canonicalisation) and `0.8.0` (in-house Rust nodes) do. One line, plain-text label, for changes whose "why" a reader cannot infer from the "what". Verify the reasoning against the code or README before writing it.
 - **Removed entries say why**, in a dash clause, as `0.8.0` does: `Local Kubo API and gateway ports (5001, 8080) — the embedded IPFS node exposes no local endpoints`. A bare "X was removed" leaves the reader guessing whether they lost something.
 - **Drop internal commentary.** `(already latest)` next to a version, `(precautionary)` qualifiers, project-internal context: noise.
 - **Migration guidance points to README**, doesn't duplicate it. Use a conversational pointer like `(see README for site-author migration)` rather than inlining the migration content.
@@ -86,6 +87,7 @@ If a sub-bullet runs past 20 words, opens with the same noun phrase as a sibling
 
 ### Structure rules
 
+- **Lead `Added` with the release's defining feature.** Every shipped section opens with its headline (`0.7.0` wallet, `0.7.2` Colibri verification, `0.7.4` x402, `0.8.0` Rust nodes); readers take the first bullet as the release's identity. Protocol, wallet and node features rank above browser-chrome conveniences unless the release really is about the chrome. `package.json`'s `description` is a fair signal of what the maintainers consider headline.
 - **Multi-surface features = one parent bullet + sub-bullets**, not multiple top-level entries. The `0.7.0` `Experimental Identity & Wallet system:` block is the model.
 - **A bundled component shipping for the first time is named with its version and an upstream link** in its `Added` parent, as `0.8.0` did for `[Ant](https://github.com/freedom-hq/ant) 0.5.33` and `[freedom-ipfs](https://github.com/solardev-xyz/freedom-ipfs) 0.4.3`. Take the version from the pin in the matching `scripts/fetch-*.js` at the release head, not from memory. Later cycles then have a baseline for `name old to new`.
 - **Update lines carry no feature summaries.** `Updated bundled nodes:` / `Updated runtime dependencies:` sub-bullets are `name old to new` and nothing else (the one exception is Electron's Chromium/Node detail, below). If a node update changes something the user can see — peers counting up at launch, an upload that no longer stalls, a clearer error — that is its own `Changed` or `Fixed` entry, where `0.8.0` put `Radicle peer discovery follows the community seeds' move to radicle.network`. Packing it into a parenthetical on the version line hides it from anyone scanning for what changed for them.
@@ -111,6 +113,10 @@ Common deduplication failures:
 
 - **Added ↔ Security**: a new feature with security motivation belongs in `Added`, not in both. Don't restate the threat-model framing as a separate `Security` bullet — the `Added` entry's user-facing surface (toggle name, settings page, interstitial) already conveys the property.
 - **Added ↔ Fixed**: polish on a feature that ships in this release is part of `Added`, not a separate `Fixed` entry. "X consistently with Y" or "X tightens its CSP" on a brand-new X is how it shipped, not a regression fix.
+
+### Security is not only version bumps
+
+Every shipped `Security` section except `0.7.3` lists at least one actual hardening besides dependency updates — CSP headers (`0.6.1`), IPC input validation (`0.6.2`), permission prompts keyed on the committed page URL (`0.7.2`). Before finalising, sweep the cycle specifically for hardening a user or dApp author would notice (origin checks, consent models, isolation, validation) and add it in `0.7.2`'s subject-led form. If the sweep finds nothing, say so in the review note with the PRs checked; a `Security` section that is only bumps should be a finding, not an omission.
 
 ### Categorising dependency updates
 
