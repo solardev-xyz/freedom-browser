@@ -375,6 +375,20 @@ describe('preload', () => {
         [{ conversationId: 'conversation_123', approvalMode: 'allow_website_interactions' }],
       ],
       [exposures.electronAPI, 'claimAgentTab', [7], IPC.AGENT_TAB_CLAIM, [{ rendererTabId: 7 }]],
+      [
+        exposures.electronAPI,
+        'stopAgentProcess',
+        ['workspace_process_aaaaaaaaaaaaaaaaaaaaaaaa'],
+        IPC.AGENT_PROCESS_STOP,
+        [{ processId: 'workspace_process_aaaaaaaaaaaaaaaaaaaaaaaa' }],
+      ],
+      [
+        exposures.electronAPI,
+        'openAgentProcessPreview',
+        ['workspace_process_aaaaaaaaaaaaaaaaaaaaaaaa'],
+        IPC.AGENT_PROCESS_PREVIEW_OPEN,
+        [{ processId: 'workspace_process_aaaaaaaaaaaaaaaaaaaaaaaa' }],
+      ],
       [exposures.electronAPI, 'getAgentProviderStatus', [], IPC.AGENT_PROVIDER_GET_STATUS, []],
       [exposures.electronAPI, 'getAgentProviderCatalog', [], IPC.AGENT_PROVIDER_GET_CATALOG, []],
       [

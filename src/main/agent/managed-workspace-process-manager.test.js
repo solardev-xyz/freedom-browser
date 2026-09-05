@@ -113,6 +113,14 @@ describe('ManagedWorkspaceProcessManager', () => {
       })
     );
     expect(manager.inspect('conversation_one', started.processId)).not.toHaveProperty('output');
+    expect(manager.list('conversation_one')).toEqual([
+      expect.objectContaining({
+        processId: started.processId,
+        command: 'node server.js',
+        previewPort: 4_173,
+      }),
+    ]);
+    expect(manager.list('conversation_two')).toEqual([]);
 
     request.onOutput('stderr', Buffer.from('request\n'));
     const interaction = manager.interact('conversation_one', started.processId, {
@@ -156,9 +164,21 @@ describe('ManagedWorkspaceProcessManager', () => {
       execute: jest.fn(async (_conversationId, value) => {
         request = value;
         await new Promise((resolve) =>
-          value.signal.addEventListener('abort', resolve, { once: true })
+          value.signal.addEventListener(
+            'abort',
+            () => {
+              value.onOutput('stderr', Buffer.from('stopping\n'));
+              resolve();
+            },
+            { once: true }
+          )
         );
-        return receipt({ state: 'cancelled', exitCode: null, signal: 'SIGKILL' });
+        return receipt({
+          state: 'cancelled',
+          exitCode: null,
+          signal: 'SIGKILL',
+          stderr: 'stopping\n',
+        });
       }),
       idFactory: () => 'cccccccc-cccc-cccc-cccc-cccccccccccc',
     });
@@ -170,10 +190,7 @@ describe('ManagedWorkspaceProcessManager', () => {
     await expect(
       manager.interact('conversation_two', started.processId, { waitMs: 0 })
     ).rejects.toMatchObject({ code: 'WORKSPACE_PROCESS_NOT_FOUND' });
-    const stopped = manager.interact('conversation_one', started.processId, {
-      terminate: true,
-      waitMs: 1_000,
-    });
+    const stopped = manager.terminate('conversation_one', started.processId, { waitMs: 1_000 });
     await expect(stopped).resolves.toEqual(
       expect.objectContaining({
         state: 'cancelled',
@@ -181,6 +198,10 @@ describe('ManagedWorkspaceProcessManager', () => {
       })
     );
     expect(request.signal.aborted).toBe(true);
+    expect(manager.list('conversation_one')).toEqual([]);
+    await expect(
+      manager.interact('conversation_one', started.processId, { waitMs: 0 })
+    ).resolves.toEqual(expect.objectContaining({ state: 'cancelled', output: 'stopping\n' }));
   });
 
   test('keeps only bounded undelivered output', async () => {

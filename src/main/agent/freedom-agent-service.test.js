@@ -586,6 +586,76 @@ describe('FreedomAgentService', () => {
     await service.waitForIdle();
   });
 
+  test('stops and reopens a conversation-owned managed server from trusted chrome controls', async () => {
+    const fake = createFakeSession();
+    const processId = 'workspace_process_aaaaaaaaaaaaaaaaaaaaaaaa';
+    const workspaceController = {
+      getWorkspace: jest.fn(() => ({
+        workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa',
+        enabled: true,
+        backend: 'linux-bubblewrap',
+        processes: [],
+        commands: [],
+      })),
+      disclosure: jest.fn(),
+      enable: jest.fn(),
+      execute: jest.fn(),
+      terminateProcess: jest.fn(async () => ({ processId, state: 'cancelled' })),
+      cancelConversation: jest.fn(),
+      deleteConversation: jest.fn(async () => true),
+      dispose: jest.fn(),
+    };
+    const workspacePreviewController = {
+      createPreview: jest.fn(),
+      createProcessPreview: jest.fn(() => ({
+        kind: 'server',
+        url: 'freedom-workspace-preview://previewtoken/',
+        processId,
+        port: 4_173,
+      })),
+      revokeConversation: jest.fn(),
+    };
+    const execute = jest
+      .fn()
+      .mockResolvedValueOnce({ ok: true, result: { tabs: [] } })
+      .mockResolvedValueOnce({ ok: true, result: { tab: { tabId: 'tab_preview' } } });
+    const { service } = createService(fake, {
+      workspaceController,
+      workspacePreviewController,
+    });
+    service.conversation = {
+      conversationId: 'conversation_test',
+      scopedController: { execute },
+      turns: [],
+    };
+
+    await expect(service.stopWorkspaceProcess(processId)).resolves.toMatchObject({
+      state: 'cancelled',
+    });
+    expect(workspaceController.terminateProcess).toHaveBeenCalledWith(
+      'conversation_test',
+      processId,
+      { waitMs: 30_000 }
+    );
+
+    await expect(service.openWorkspaceProcessPreview(processId)).resolves.toEqual({
+      processId,
+      port: 4_173,
+      tabId: 'tab_preview',
+    });
+    expect(workspacePreviewController.createProcessPreview).toHaveBeenCalledWith(
+      'conversation_test',
+      processId
+    );
+    expect(execute.mock.calls.map(([operation]) => operation)).toEqual([
+      OPERATIONS.LIST_TABS,
+      OPERATIONS.CREATE_TAB,
+    ]);
+    expect(service.listAgentTabs()).toEqual([
+      expect.objectContaining({ tabId: 'tab_preview', conversationId: 'conversation_test' }),
+    ]);
+  });
+
   test('advertises direct networking to Pi when the workspace capability is available', async () => {
     const fake = createFakeSession();
     const workspaceController = {
@@ -2304,18 +2374,22 @@ describe('FreedomAgentService', () => {
       label: 'Ran node server.js',
       workspace: { state: 'completed', terminationScope: 'pid_namespace' },
     });
-    expect(events.at(-1)).toMatchObject({
+    expect(events.at(-2)).toMatchObject({
       type: 'tool_finished',
       runId: 'run_test',
       toolCallId: 'call_workspace_server',
       status: 'succeeded',
       workspace: { state: 'completed' },
     });
-    expect(events.at(-2)).toMatchObject({ type: 'run_finished', status: 'completed' });
+    expect(events.at(-1)).toMatchObject({
+      type: 'workspace_processes_changed',
+      conversationId: 'conversation_test',
+    });
+    expect(events.at(-3)).toMatchObject({ type: 'run_finished', status: 'completed' });
     expect(JSON.stringify(historyStore.updateTurnActivity.mock.calls.at(-1)[0])).not.toMatch(
       /private-process|\/Users\/example/
     );
-    expect(JSON.stringify(events.at(-1))).not.toMatch(/private-process|\/Users\/example/);
+    expect(JSON.stringify(events.slice(-2))).not.toMatch(/private-process|\/Users\/example/);
   });
 
   test('finishes Stop at its deadline when both Pi abort and execution remain wedged', async () => {

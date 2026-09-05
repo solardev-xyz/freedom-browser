@@ -1522,27 +1522,66 @@
           </div>
 
           <div id="agent-workspace-view" class="agent-view agent-workspace-view" hidden>
-            <div class="agent-workspace-scroll">
-              <div class="agent-run-header">
-                <span id="agent-run-status" class="agent-badge">Idle</span>
-                <div class="agent-lifecycle-actions">
-                  <button id="agent-new-chat" class="agent-text-button" type="button" hidden>
-                    New chat
-                  </button>
+            <div id="agent-workspace-body" class="agent-workspace-body">
+              <div class="agent-workspace-scroll">
+                <div class="agent-run-header">
+                  <span id="agent-run-status" class="agent-badge">Idle</span>
+                  <div class="agent-lifecycle-actions">
+                    <button id="agent-new-chat" class="agent-text-button" type="button" hidden>
+                      New chat
+                    </button>
+                  </div>
                 </div>
-              </div>
-              <p id="agent-run-message" class="agent-message" aria-live="polite"></p>
+                <p id="agent-run-message" class="agent-message" aria-live="polite"></p>
 
-              <div id="agent-empty-state" class="agent-empty-state">
-                <div class="agent-empty-state-icon" aria-hidden="true">✦</div>
-                <h3>What should I do?</h3>
-                <p>Ask Agent to research, fill in a form, or complete a task across the web.</p>
+                <div id="agent-empty-state" class="agent-empty-state">
+                  <div class="agent-empty-state-icon" aria-hidden="true">✦</div>
+                  <h3>What should I do?</h3>
+                  <p>Ask Agent to research, fill in a form, or complete a task across the web.</p>
+                </div>
+
+                <div id="agent-transcript" class="agent-transcript" aria-live="polite" hidden></div>
               </div>
 
-              <div id="agent-transcript" class="agent-transcript" aria-live="polite" hidden></div>
+              <aside
+                id="agent-process-panel"
+                class="agent-process-panel"
+                aria-label="Running processes"
+                hidden
+              >
+                <div class="agent-process-panel-heading">
+                  <span>Processes</span>
+                  <span id="agent-process-panel-count" class="agent-process-count"></span>
+                </div>
+                <div id="agent-process-panel-list" class="agent-process-list"></div>
+              </aside>
             </div>
 
             <div class="agent-composer-wrap">
+              <div id="agent-process-compact" class="agent-process-compact" hidden>
+                <button
+                  id="agent-process-compact-toggle"
+                  class="agent-process-compact-toggle"
+                  type="button"
+                  aria-expanded="false"
+                  aria-controls="agent-process-compact-popover"
+                >
+                  <span class="agent-process-live-dot" aria-hidden="true"></span>
+                  <span id="agent-process-compact-label">Process running</span>
+                  <span aria-hidden="true">⌃</span>
+                </button>
+                <div
+                  id="agent-process-compact-popover"
+                  class="agent-process-compact-popover"
+                  hidden
+                >
+                  <div class="agent-process-panel-heading">
+                    <span>Running processes</span>
+                    <span id="agent-process-compact-count" class="agent-process-count"></span>
+                  </div>
+                  <div id="agent-process-compact-list" class="agent-process-list"></div>
+                </div>
+              </div>
               <div
                 id="agent-attachment-menu"
                 class="agent-attachment-menu"

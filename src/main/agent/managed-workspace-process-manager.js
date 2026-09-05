@@ -400,6 +400,50 @@ class ManagedWorkspaceProcessManager {
     });
   }
 
+  list(conversationId) {
+    const owner = validConversationId(conversationId);
+    return Object.freeze(
+      [...this.entries.values()]
+        .filter(
+          (entry) =>
+            entry.conversationId === owner && entry.exposed === true && entry.state === 'running'
+        )
+        .map((entry) =>
+          Object.freeze({
+            processId: entry.processId,
+            state: entry.state,
+            command: entry.command,
+            workingDirectory: entry.workingDirectory,
+            ...(entry.previewPort && { previewPort: entry.previewPort }),
+            ...(entry.workspace && { workspace: entry.workspace }),
+          })
+        )
+    );
+  }
+
+  async terminate(conversationId, id, request = {}) {
+    const entry = this.#entry(conversationId, id);
+    if (entry.state === 'running') entry.controller.abort();
+    const waitMs = boundedInteger(request.waitMs, MAX_PROCESS_POLL_MS, 0, MAX_PROCESS_POLL_MS);
+    if (entry.state === 'running' && waitMs > 0) {
+      const deadline = timedWait(waitMs, this.setTimer, this.clearTimer);
+      let abortWake;
+      const aborted = new Promise((resolve) => {
+        abortWake = resolve;
+        request.signal?.addEventListener?.('abort', resolve, { once: true });
+        if (request.signal?.aborted) resolve();
+      });
+      try {
+        await Promise.race([entry.completion, deadline.promise, aborted]);
+      } finally {
+        deadline.cancel();
+        request.signal?.removeEventListener?.('abort', abortWake);
+      }
+    }
+    if (entry.error) throw entry.error;
+    return this.inspect(conversationId, id);
+  }
+
   cancelConversation(conversationId) {
     const owner = validConversationId(conversationId);
     let count = 0;

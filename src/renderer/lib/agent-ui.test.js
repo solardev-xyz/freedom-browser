@@ -39,6 +39,16 @@ function createAgentElements() {
     'agent-loading-view',
     'agent-setup-view',
     'agent-workspace-view',
+    'agent-workspace-body',
+    'agent-process-panel',
+    'agent-process-panel-count',
+    'agent-process-panel-list',
+    'agent-process-compact',
+    'agent-process-compact-toggle',
+    'agent-process-compact-label',
+    'agent-process-compact-popover',
+    'agent-process-compact-count',
+    'agent-process-compact-list',
     'agent-connected-providers',
     'agent-connected-provider-list',
     'agent-provider-select',
@@ -149,6 +159,10 @@ function createAgentElements() {
   elements['agent-sidebar-back'] = createElement('button');
   elements['agent-setup-view'].hidden = true;
   elements['agent-workspace-view'].hidden = true;
+  elements['agent-process-panel'].hidden = true;
+  elements['agent-process-compact'].hidden = true;
+  elements['agent-process-compact-toggle'] = createElement('button');
+  elements['agent-process-compact-popover'].hidden = true;
   elements['agent-connected-providers'].hidden = true;
   elements['agent-provider-select'] = createElement('select', { value: 'openai' });
   elements['agent-model-select'] = createElement('select');
@@ -312,6 +326,11 @@ async function loadAgentUi(options = {}) {
       approvalMode,
     })),
     claimAgentTab: jest.fn(),
+    stopAgentProcess: jest.fn().mockResolvedValue({ ok: true, state: { workspace: null } }),
+    openAgentProcessPreview: jest.fn().mockResolvedValue({
+      ok: true,
+      state: { workspace: { processes: [] } },
+    }),
     openAgentArtifact: jest.fn().mockResolvedValue({ success: true }),
     showAgentArtifactInFolder: jest.fn().mockResolvedValue({ success: true }),
     openAgentPublication: jest.fn().mockResolvedValue({ ok: true, opened: true }),
@@ -1934,6 +1953,60 @@ describe('Agent UI', () => {
     );
     expect(ctx.elements['agent-model-menu-button'].disabled).toBe(true);
     expect(ctx.elements['agent-new-chat'].hidden).toBe(false);
+  });
+
+  test('shows conversation-owned running processes and exposes preview and stop controls', async () => {
+    const process = {
+      processId: 'workspace_process_aaaaaaaaaaaaaaaaaaaaaaaa',
+      command: 'node server.js',
+      workingDirectory: '.',
+      state: 'running',
+      backend: 'macos-seatbelt',
+      networkPosture: 'full',
+      previewPort: 4_173,
+    };
+    const state = {
+      status: 'ready',
+      conversationId: 'conversation_process',
+      approvalMode: 'every_interaction',
+      transcript: [],
+      workspace: { processes: [process], commands: [] },
+    };
+    const stopAgentProcess = jest.fn().mockResolvedValue({
+      ok: true,
+      state: { ...state, workspace: { processes: [], commands: [] } },
+    });
+    const openAgentProcessPreview = jest.fn().mockResolvedValue({ ok: true, state });
+    const ctx = await loadAgentUi({
+      electronAPI: {
+        getAgentState: jest.fn().mockResolvedValue({ ok: true, state }),
+        stopAgentProcess,
+        openAgentProcessPreview,
+      },
+    });
+
+    expect(ctx.elements['agent-workspace-body'].classList.contains('has-processes')).toBe(true);
+    expect(ctx.elements['agent-process-panel'].hidden).toBe(false);
+    expect(ctx.elements['agent-process-compact'].hidden).toBe(false);
+    expect(ctx.elements['agent-process-compact-label'].textContent).toBe('node server.js');
+    expect(ctx.elements['agent-process-panel-list'].children).toHaveLength(1);
+    expect(ctx.elements['agent-process-panel-list'].children[0].children[1].textContent).toContain(
+      'Network access'
+    );
+
+    ctx.elements['agent-process-compact-toggle'].dispatch('click');
+    expect(ctx.elements['agent-process-compact-popover'].hidden).toBe(false);
+
+    const actions = ctx.elements['agent-process-panel-list'].children[0].children[2];
+    actions.children[0].dispatch('click');
+    await flush();
+    expect(openAgentProcessPreview).toHaveBeenCalledWith(process.processId);
+
+    actions.children[1].dispatch('click');
+    await flush();
+    expect(stopAgentProcess).toHaveBeenCalledWith(process.processId);
+    expect(ctx.elements['agent-process-compact'].hidden).toBe(true);
+    expect(ctx.elements['agent-workspace-body'].classList.contains('has-processes')).toBe(false);
   });
 
   test('opens a saved session and continues without silently adopting the current page', async () => {

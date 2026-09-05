@@ -1051,10 +1051,220 @@ body.agent-first-mode .agent-composer textarea {
 }
 
 .agent-workspace-view {
+  container-name: agent-workspace-view;
+  container-type: inline-size;
   display: flex;
   flex: 1;
   flex-direction: column;
   min-height: 0;
+}
+
+.agent-workspace-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.agent-workspace-body > .agent-workspace-scroll {
+  width: 100%;
+}
+
+.agent-process-panel,
+.agent-process-compact-popover {
+  color: var(--text);
+  background: color-mix(in srgb, var(--toolbar) 54%, var(--bg));
+  border: 1px solid var(--agent-divider, var(--border));
+  border-radius: 14px;
+  box-shadow: 0 14px 34px color-mix(in srgb, black 16%, transparent);
+}
+
+.agent-process-panel {
+  display: none;
+}
+
+.agent-process-panel[hidden],
+.agent-process-compact[hidden],
+.agent-process-compact-popover[hidden] {
+  display: none;
+}
+
+.agent-process-panel-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 11px 12px 8px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.agent-process-count {
+  min-width: 18px;
+  padding: 1px 5px;
+  color: var(--text);
+  text-align: center;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-radius: 999px;
+}
+
+.agent-process-list {
+  display: grid;
+  gap: 2px;
+  padding: 0 6px 7px;
+}
+
+.agent-process-item {
+  min-width: 0;
+  padding: 9px 8px;
+  border-radius: 10px;
+}
+
+.agent-process-item + .agent-process-item {
+  border-top: 1px solid color-mix(in srgb, var(--border) 52%, transparent);
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+
+.agent-process-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.agent-process-live-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  background: #63c985;
+  border-radius: 50%;
+  box-shadow: 0 0 0 3px color-mix(in srgb, #63c985 14%, transparent);
+}
+
+.agent-process-command {
+  min-width: 0;
+  overflow: hidden;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-process-meta {
+  margin: 5px 0 0 14px;
+  color: var(--muted);
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
+.agent-process-actions {
+  display: flex;
+  gap: 6px;
+  margin: 8px 0 0 14px;
+}
+
+.agent-process-actions button {
+  min-height: 25px;
+  padding: 4px 8px;
+  color: var(--text);
+  font: inherit;
+  font-size: 10px;
+  background: color-mix(in srgb, var(--toolbar) 72%, var(--bg));
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: 7px;
+}
+
+.agent-process-actions button:not(:disabled):hover,
+.agent-process-actions button:not(:disabled):focus-visible {
+  background: color-mix(in srgb, var(--toolbar) 88%, var(--text));
+}
+
+.agent-process-actions button.danger:not(:disabled) {
+  color: #ff9b9b;
+}
+
+.agent-process-actions button:disabled {
+  opacity: 0.55;
+}
+
+.agent-process-compact {
+  position: relative;
+  width: 100%;
+  max-width: 900px;
+  margin: 0 auto 8px;
+}
+
+.agent-process-compact-toggle {
+  display: flex;
+  width: 100%;
+  min-height: 34px;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 10px;
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+  background: color-mix(in srgb, var(--toolbar) 56%, var(--bg));
+  border: 1px solid var(--agent-divider, var(--border));
+  border-radius: 11px;
+}
+
+.agent-process-compact-toggle span:nth-child(2) {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-process-compact-popover {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 7px);
+  left: 0;
+  z-index: 24;
+  max-height: min(52vh, 420px);
+  overflow: auto;
+}
+
+body.agent-first-mode .agent-workspace-body > .agent-workspace-scroll {
+  width: min(100%, 820px);
+}
+
+@container agent-workspace-view (min-width: 1120px) {
+  body.agent-first-mode .agent-workspace-body.has-processes {
+    display: grid;
+    grid-template-columns: minmax(0, 820px) 260px;
+    gap: 24px;
+    justify-content: center;
+    padding: 0 24px;
+  }
+
+  body.agent-first-mode .agent-workspace-body.has-processes > .agent-workspace-scroll {
+    width: 100%;
+    padding-right: 0;
+    padding-left: 0;
+    margin: 0;
+  }
+
+  body.agent-first-mode .agent-workspace-body.has-processes > .agent-process-panel {
+    display: block;
+    align-self: start;
+    max-height: calc(100% - 56px);
+    margin-top: 28px;
+    overflow: auto;
+  }
+
+  body.agent-first-mode
+    .agent-workspace-view:has(.agent-workspace-body.has-processes)
+    .agent-process-compact {
+    display: none;
+  }
 }
 
 .agent-workspace-scroll {

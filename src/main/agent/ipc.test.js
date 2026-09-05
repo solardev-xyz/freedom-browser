@@ -47,6 +47,10 @@ function createService(options = {}) {
     clearConversation: options.clearConversation || jest.fn(async () => true),
     listConversations: options.listConversations || jest.fn(() => []),
     listAgentTabs: options.listAgentTabs || jest.fn(() => []),
+    stopWorkspaceProcess:
+      options.stopWorkspaceProcess || jest.fn(async () => ({ state: 'cancelled' })),
+    openWorkspaceProcessPreview:
+      options.openWorkspaceProcessPreview || jest.fn(async () => ({ port: 4_173 })),
     claimTab: options.claimTab || jest.fn(async () => false),
     openConversation: options.openConversation || jest.fn(async () => null),
     renameConversation: options.renameConversation || jest.fn(() => null),
@@ -991,6 +995,37 @@ describe('Freedom agent IPC', () => {
     expect(getState({ sender: ctx.sender }).state.taskTabs).toEqual([
       { rendererTabId: 7, agentActive: false },
     ]);
+  });
+
+  test('binds process stop and preview controls to the owning chrome', async () => {
+    const processId = 'workspace_process_aaaaaaaaaaaaaaaaaaaaaaaa';
+    const ctx = register();
+    await ctx.ipcMain.handlers.get(IPC.AGENT_START)(
+      { sender: ctx.sender },
+      { rendererTabId: 7, prompt: 'Task' }
+    );
+    const stop = ctx.ipcMain.handlers.get(IPC.AGENT_PROCESS_STOP);
+    const preview = ctx.ipcMain.handlers.get(IPC.AGENT_PROCESS_PREVIEW_OPEN);
+
+    await expect(stop({ sender: ctx.otherSender }, { processId })).resolves.toMatchObject({
+      ok: false,
+      error: { code: AGENT_IPC_ERROR_CODES.NOT_OWNER },
+    });
+    await expect(stop({ sender: ctx.sender }, { processId: 'bad' })).resolves.toMatchObject({
+      ok: false,
+      error: { code: AGENT_IPC_ERROR_CODES.NOT_OWNER },
+    });
+    await expect(stop({ sender: ctx.sender }, { processId })).resolves.toMatchObject({
+      ok: true,
+      result: { state: 'cancelled' },
+      state: { conversationId: 'conversation_test' },
+    });
+    await expect(preview({ sender: ctx.sender }, { processId })).resolves.toMatchObject({
+      ok: true,
+      result: { port: 4_173 },
+    });
+    expect(ctx.service.stopWorkspaceProcess).toHaveBeenCalledWith(processId);
+    expect(ctx.service.openWorkspaceProcessPreview).toHaveBeenCalledWith(processId);
   });
 
   test('configures providers only for trusted chrome and never returns a key', async () => {

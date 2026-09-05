@@ -193,6 +193,8 @@ function registerFreedomAgentIpc(options = {}) {
     typeof service.clearConversation !== 'function' ||
     typeof service.listConversations !== 'function' ||
     typeof service.listAgentTabs !== 'function' ||
+    typeof service.stopWorkspaceProcess !== 'function' ||
+    typeof service.openWorkspaceProcessPreview !== 'function' ||
     typeof service.claimTab !== 'function' ||
     typeof service.openConversation !== 'function' ||
     typeof service.renameConversation !== 'function' ||
@@ -651,6 +653,37 @@ function registerFreedomAgentIpc(options = {}) {
     };
   };
 
+  const handleProcessAction = async (event, payload, action) => {
+    if (
+      !owner ||
+      owner.sender !== event?.sender ||
+      !payload ||
+      typeof payload !== 'object' ||
+      Array.isArray(payload) ||
+      typeof payload.processId !== 'string' ||
+      !/^workspace_process_[a-f0-9]{24}$/.test(payload.processId)
+    ) {
+      return errorEnvelope(
+        AGENT_IPC_ERROR_CODES.NOT_OWNER,
+        'The sender does not own that workspace process'
+      );
+    }
+    try {
+      const result = await action(payload.processId);
+      return { ok: true, result, state: handleGetState(event).state };
+    } catch (error) {
+      return safeServiceError(error);
+    }
+  };
+
+  const handleProcessStop = (event, payload) =>
+    handleProcessAction(event, payload, (processId) => service.stopWorkspaceProcess(processId));
+
+  const handleProcessPreviewOpen = (event, payload) =>
+    handleProcessAction(event, payload, (processId) =>
+      service.openWorkspaceProcessPreview(processId)
+    );
+
   const handleClearConversation = async (event) => {
     if (!owner || owner.sender !== event?.sender) {
       return errorEnvelope(
@@ -1101,6 +1134,8 @@ function registerFreedomAgentIpc(options = {}) {
   ipcMain.handle(IPC.AGENT_ATTACHMENTS_PREVIEW, handleAttachmentPreview);
   ipcMain.handle(IPC.AGENT_APPROVAL_MODE_SET, handleSetApprovalMode);
   ipcMain.handle(IPC.AGENT_TAB_CLAIM, handleTabClaim);
+  ipcMain.handle(IPC.AGENT_PROCESS_STOP, handleProcessStop);
+  ipcMain.handle(IPC.AGENT_PROCESS_PREVIEW_OPEN, handleProcessPreviewOpen);
   ipcMain.handle(IPC.AGENT_PUBLICATION_OPEN, handleOpenPublication);
   ipcMain.handle(IPC.AGENT_PROVIDER_GET_STATUS, handleProviderStatus);
   ipcMain.handle(IPC.AGENT_PROVIDER_GET_CATALOG, handleProviderCatalog);
@@ -1133,6 +1168,8 @@ function registerFreedomAgentIpc(options = {}) {
     ipcMain.removeHandler?.(IPC.AGENT_ATTACHMENTS_PREVIEW);
     ipcMain.removeHandler?.(IPC.AGENT_APPROVAL_MODE_SET);
     ipcMain.removeHandler?.(IPC.AGENT_TAB_CLAIM);
+    ipcMain.removeHandler?.(IPC.AGENT_PROCESS_STOP);
+    ipcMain.removeHandler?.(IPC.AGENT_PROCESS_PREVIEW_OPEN);
     ipcMain.removeHandler?.(IPC.AGENT_PUBLICATION_OPEN);
     ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_GET_STATUS);
     ipcMain.removeHandler?.(IPC.AGENT_PROVIDER_GET_CATALOG);

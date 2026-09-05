@@ -196,6 +196,8 @@ module.exports = {
   AGENT_ATTACHMENTS_PREVIEW: 'agent:attachments:preview',
   AGENT_APPROVAL_MODE_SET: 'agent:approval-mode:set',
   AGENT_TAB_CLAIM: 'agent:tab:claim',
+  AGENT_PROCESS_STOP: 'agent:process:stop',
+  AGENT_PROCESS_PREVIEW_OPEN: 'agent:process:preview-open',
   AGENT_PUBLICATION_OPEN: 'agent:publication:open',
   AGENT_EVENT: 'agent:event',
   AGENT_PROVIDER_GET_STATUS: 'agent:provider:get-status',

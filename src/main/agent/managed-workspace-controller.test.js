@@ -296,14 +296,21 @@ describe('ManagedWorkspaceController', () => {
         networkPosture: 'none',
       },
     });
+    expect(controller.listProcesses('conversation_one')).toEqual([
+      expect.objectContaining({
+        processId: started.processId,
+        command: 'node server.js',
+        state: 'running',
+      }),
+    ]);
+    expect(controller.getWorkspace('conversation_one').processes).toHaveLength(1);
     await controller.interactProcess('conversation_one', started.processId, {
       input: 'reload\n',
       waitMs: 0,
     });
     expect(stdin.write).toHaveBeenCalledWith(Buffer.from('reload\n'));
 
-    const stopped = await controller.interactProcess('conversation_one', started.processId, {
-      terminate: true,
+    const stopped = await controller.terminateProcess('conversation_one', started.processId, {
       waitMs: 1_000,
     });
     expect(sandboxRequest.signal.aborted).toBe(true);

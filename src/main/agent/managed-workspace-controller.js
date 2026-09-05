@@ -742,6 +742,7 @@ class ManagedWorkspaceController {
           workspaceId: workspace.workspaceId,
           enabled: workspace.enabled,
           backend: workspace.backend,
+          processes: this.listProcesses(conversationId),
           commands: this.store.listCommands(conversationId, 50).map((command) => {
             const error = safeReceiptError(command.error);
             return {
@@ -763,6 +764,23 @@ class ManagedWorkspaceController {
           }),
         })
       : null;
+  }
+
+  listProcesses(conversationId) {
+    return Object.freeze(
+      this.processManager.list(conversationId).map((process) => {
+        const workspace = process.workspace || {};
+        return Object.freeze({
+          processId: process.processId,
+          command: commandSummary(workspace.command || process.command),
+          workingDirectory: workspace.workingDirectory || process.workingDirectory || '.',
+          state: 'running',
+          backend: workspace.backend || 'pending',
+          networkPosture: workspace.networkPosture || 'none',
+          ...(process.previewPort && { previewPort: process.previewPort }),
+        });
+      })
+    );
   }
 
   async resolveWorkspacePath(conversationId) {
@@ -1586,8 +1604,7 @@ class ManagedWorkspaceController {
         ? request.timeoutMs
         : DEFAULT_MANAGED_PROCESS_TIMEOUT_MS,
       ...(typeof request.onTerminal === 'function' && {
-        onTerminal: (terminal) =>
-          request.onTerminal(this.#processResult(conversationId, terminal)),
+        onTerminal: (terminal) => request.onTerminal(this.#processResult(conversationId, terminal)),
       }),
     });
     return this.#processResult(conversationId, process);
@@ -1604,6 +1621,13 @@ class ManagedWorkspaceController {
     return this.#processResult(
       conversationId,
       this.processManager.inspect(conversationId, processId)
+    );
+  }
+
+  async terminateProcess(conversationId, processId, request = {}) {
+    return this.#processResult(
+      conversationId,
+      await this.processManager.terminate(conversationId, processId, request)
     );
   }
 

@@ -1078,6 +1078,85 @@ class FreedomAgentService {
       .map((record) => ({ ...record }));
   }
 
+  async stopWorkspaceProcess(processId) {
+    const conversation = this.conversation;
+    if (
+      this.disposed ||
+      !conversation ||
+      typeof processId !== 'string' ||
+      !/^workspace_process_[a-f0-9]{24}$/.test(processId) ||
+      typeof this.workspaceController?.terminateProcess !== 'function'
+    ) {
+      throw new FreedomAgentError(
+        AGENT_ERROR_CODES.INVALID_ARGUMENT,
+        'The requested workspace process is unavailable'
+      );
+    }
+    try {
+      const result = await this.workspaceController.terminateProcess(
+        conversation.conversationId,
+        processId,
+        { waitMs: 30_000 }
+      );
+      if (result?.state === 'running') throw new Error('Process termination did not settle');
+      return result;
+    } catch {
+      throw new FreedomAgentError(
+        AGENT_ERROR_CODES.INVALID_ARGUMENT,
+        'The requested workspace process is unavailable'
+      );
+    }
+  }
+
+  async openWorkspaceProcessPreview(processId) {
+    const conversation = this.conversation;
+    if (
+      this.disposed ||
+      !conversation?.scopedController ||
+      typeof processId !== 'string' ||
+      !/^workspace_process_[a-f0-9]{24}$/.test(processId) ||
+      typeof this.workspacePreviewController?.createProcessPreview !== 'function'
+    ) {
+      throw new FreedomAgentError(
+        AGENT_ERROR_CODES.INVALID_ARGUMENT,
+        'The requested workspace preview is unavailable'
+      );
+    }
+    try {
+      const preview = this.workspacePreviewController.createProcessPreview(
+        conversation.conversationId,
+        processId
+      );
+      const listed = await conversation.scopedController.execute(OPERATIONS.LIST_TABS, {});
+      if (listed?.ok !== true) throw new Error('Could not list Agent tabs');
+      const existing = listed.result?.tabs?.find((tab) => tab.url === preview.url);
+      let opened;
+      if (existing?.tabId) {
+        const focused = await conversation.scopedController.execute(OPERATIONS.FOCUS_TAB, {
+          tabId: existing.tabId,
+        });
+        if (focused?.ok !== true) throw new Error('Could not focus preview');
+        opened = await conversation.scopedController.execute(OPERATIONS.NAVIGATE, {
+          tabId: existing.tabId,
+          url: preview.url,
+        });
+      } else {
+        opened = await conversation.scopedController.execute(OPERATIONS.CREATE_TAB, {
+          url: preview.url,
+        });
+      }
+      if (opened?.ok !== true) throw new Error('Could not open preview');
+      const tabId = opened.result?.tab?.tabId || opened.result?.activeTabId || existing?.tabId;
+      if (tabId) this.#registerAgentTab(tabId, conversation.conversationId);
+      return Object.freeze({ processId, port: preview.port, ...(tabId && { tabId }) });
+    } catch {
+      throw new FreedomAgentError(
+        AGENT_ERROR_CODES.INVALID_ARGUMENT,
+        'The requested workspace preview is unavailable'
+      );
+    }
+  }
+
   async openConversation(conversationId) {
     if (this.disposed || this.activeRun || !this.historyStore) return null;
     const liveConversation = this.conversations.get(conversationId);
@@ -2283,6 +2362,10 @@ class FreedomAgentService {
       });
     }
     this.#emit(run, normalized);
+    this.#broadcast({
+      type: 'workspace_processes_changed',
+      conversationId: run.conversationId,
+    });
   }
 
   #handleWorkspacePhase(run, outcome) {

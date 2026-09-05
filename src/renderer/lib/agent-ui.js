@@ -105,6 +105,7 @@ let providerAuthEventUnsubscribe = null;
 let tabPresentationUnsubscribe = null;
 let openTabs = [];
 let taskTabProjection = [];
+let workspaceProcesses = [];
 let workspaceProjectionGeneration = 0;
 let agentFirstMode = false;
 let sessionSidebarOpen = true;
@@ -537,9 +538,11 @@ function closeComposerPopovers() {
   elements.modelMenu.hidden = true;
   elements.approvalModePopover.hidden = true;
   elements.attachmentMenu.hidden = true;
+  elements.processCompactPopover.hidden = true;
   elements.modelMenuButton.setAttribute('aria-expanded', 'false');
   elements.approvalModeButton.setAttribute('aria-expanded', 'false');
   elements.attachmentButton.setAttribute('aria-expanded', 'false');
+  elements.processCompactToggle.setAttribute('aria-expanded', 'false');
 }
 
 function setApprovalMode(nextMode, options = {}) {
@@ -818,9 +821,133 @@ function applyWorkspaceProjection(state) {
       )
     : [];
   setAgentTabCustody(Array.isArray(state?.agentTabs) ? state.agentTabs : []);
+  renderWorkspaceProcesses(state?.workspace?.processes);
   renderTaskPages();
   ensureWorkspacePageVisible();
   renderPageInterlock();
+}
+
+function validWorkspaceProcess(process) {
+  return (
+    process?.state === 'running' &&
+    typeof process.processId === 'string' &&
+    /^workspace_process_[a-f0-9]{24}$/.test(process.processId) &&
+    typeof process.command === 'string' &&
+    process.command.length > 0 &&
+    process.command.length <= 500 &&
+    typeof process.workingDirectory === 'string' &&
+    process.workingDirectory.length > 0 &&
+    process.workingDirectory.length <= 1_024
+  );
+}
+
+async function stopWorkspaceProcess(processId, button) {
+  button.disabled = true;
+  button.textContent = 'Stopping…';
+  try {
+    const response = await window.electronAPI.stopAgentProcess(processId);
+    if (!response?.ok) {
+      setMessage(
+        elements.runMessage,
+        responseMessage(response, 'Could not stop the process'),
+        true
+      );
+      return;
+    }
+    applyWorkspaceProjection(response.state);
+    setMessage(elements.runMessage, 'Process stopped.');
+  } catch {
+    setMessage(elements.runMessage, 'Could not stop the process', true);
+  } finally {
+    button.disabled = false;
+    button.textContent = 'Stop';
+  }
+}
+
+async function openWorkspaceProcessPreview(processId, button) {
+  button.disabled = true;
+  try {
+    const response = await window.electronAPI.openAgentProcessPreview(processId);
+    if (!response?.ok) {
+      setMessage(
+        elements.runMessage,
+        responseMessage(response, 'Could not open the server preview'),
+        true
+      );
+      return;
+    }
+    applyWorkspaceProjection(response.state);
+    setMessage(elements.runMessage, 'Server preview opened.');
+  } catch {
+    setMessage(elements.runMessage, 'Could not open the server preview', true);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function createWorkspaceProcessItem(process) {
+  const item = document.createElement('div');
+  item.className = 'agent-process-item';
+  item.dataset.processId = process.processId;
+
+  const title = document.createElement('div');
+  title.className = 'agent-process-title';
+  const dot = document.createElement('span');
+  dot.className = 'agent-process-live-dot';
+  dot.setAttribute('aria-hidden', 'true');
+  const command = document.createElement('span');
+  command.className = 'agent-process-command';
+  command.textContent = process.command;
+  command.title = process.command;
+  title.appendChild(dot);
+  title.appendChild(command);
+
+  const meta = document.createElement('div');
+  meta.className = 'agent-process-meta';
+  const directory =
+    process.workingDirectory === '.' ? 'Project workspace' : process.workingDirectory;
+  const network = process.networkPosture === 'full' ? ' · Network access' : '';
+  meta.textContent = `Running · ${directory}${network}`;
+
+  const actions = document.createElement('div');
+  actions.className = 'agent-process-actions';
+  if (Number.isSafeInteger(process.previewPort)) {
+    const preview = document.createElement('button');
+    preview.type = 'button';
+    preview.textContent = 'Open preview';
+    preview.addEventListener('click', () =>
+      openWorkspaceProcessPreview(process.processId, preview)
+    );
+    actions.appendChild(preview);
+  }
+  const stop = document.createElement('button');
+  stop.type = 'button';
+  stop.className = 'danger';
+  stop.textContent = 'Stop';
+  stop.addEventListener('click', () => stopWorkspaceProcess(process.processId, stop));
+  actions.appendChild(stop);
+
+  item.appendChild(title);
+  item.appendChild(meta);
+  item.appendChild(actions);
+  return item;
+}
+
+function renderWorkspaceProcesses(processes) {
+  workspaceProcesses = Array.isArray(processes) ? processes.filter(validWorkspaceProcess) : [];
+  const count = workspaceProcesses.length;
+  elements.workspaceBody.classList.toggle('has-processes', count > 0);
+  elements.processPanel.hidden = count === 0;
+  elements.processCompact.hidden = count === 0;
+  elements.processPanelCount.textContent = String(count);
+  elements.processCompactCount.textContent = String(count);
+  elements.processCompactLabel.textContent =
+    count === 1 ? workspaceProcesses[0].command : `${count} processes running`;
+  elements.processPanelList.replaceChildren(...workspaceProcesses.map(createWorkspaceProcessItem));
+  elements.processCompactList.replaceChildren(
+    ...workspaceProcesses.map(createWorkspaceProcessItem)
+  );
+  if (count === 0) closeComposerPopovers();
 }
 
 async function refreshWorkspaceProjection() {
@@ -2707,6 +2834,7 @@ function applyConversationCleared() {
   setConversationTitle('New task');
   setAgentControlledTab(null);
   taskTabProjection = [];
+  renderWorkspaceProcesses([]);
   renderTaskPages();
   resetConversationUi();
   setRunState('idle', 'Idle');
@@ -2733,6 +2861,10 @@ function handleAgentEvent(event) {
     if (event.conversationId === currentConversationId) {
       setApprovalMode(event.approvalMode, { force: true });
     }
+    return;
+  }
+  if (event?.type === 'workspace_processes_changed') {
+    if (event.conversationId === currentConversationId) void refreshWorkspaceProjection();
     return;
   }
   if (!event || typeof event.runId !== 'string') return;
@@ -3323,6 +3455,16 @@ export function initAgentUi(options = {}) {
     loadingView: byId('agent-loading-view'),
     setupView: byId('agent-setup-view'),
     workspaceView: byId('agent-workspace-view'),
+    workspaceBody: byId('agent-workspace-body'),
+    processPanel: byId('agent-process-panel'),
+    processPanelCount: byId('agent-process-panel-count'),
+    processPanelList: byId('agent-process-panel-list'),
+    processCompact: byId('agent-process-compact'),
+    processCompactToggle: byId('agent-process-compact-toggle'),
+    processCompactLabel: byId('agent-process-compact-label'),
+    processCompactPopover: byId('agent-process-compact-popover'),
+    processCompactCount: byId('agent-process-compact-count'),
+    processCompactList: byId('agent-process-compact-list'),
     connectedProviders: byId('agent-connected-providers'),
     connectedProviderList: byId('agent-connected-provider-list'),
     provider: byId('agent-provider-select'),
@@ -3458,6 +3600,12 @@ export function initAgentUi(options = {}) {
   elements.loginProvider.addEventListener('click', loginSubscriptionProvider);
   elements.cancelProviderLogin.addEventListener('click', cancelProviderLogin);
   elements.run.addEventListener('click', submitComposer);
+  elements.processCompactToggle.addEventListener('click', () => {
+    const opening = elements.processCompactPopover.hidden;
+    closeComposerPopovers();
+    elements.processCompactPopover.hidden = !opening;
+    elements.processCompactToggle.setAttribute('aria-expanded', String(opening));
+  });
   elements.attachmentButton.addEventListener('click', () => {
     const opening = elements.attachmentMenu.hidden;
     closeComposerPopovers();
@@ -3554,13 +3702,21 @@ export function initAgentUi(options = {}) {
     ) {
       closeComposerPopovers();
     }
+    if (
+      !elements.processCompactPopover.hidden &&
+      !elements.processCompactPopover.contains(event.target) &&
+      !elements.processCompactToggle.contains(event.target)
+    ) {
+      closeComposerPopovers();
+    }
   });
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return;
     const popoverWasOpen =
       !elements.modelMenu.hidden ||
       !elements.approvalModePopover.hidden ||
-      !elements.attachmentMenu.hidden;
+      !elements.attachmentMenu.hidden ||
+      !elements.processCompactPopover.hidden;
     closeComposerPopovers();
     if (!elements.takeoverDialog.hidden) {
       setTakeoverDialogOpen(false);
