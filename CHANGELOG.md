@@ -33,7 +33,7 @@ All notable changes to Freedom will be documented in this file.
 - Address-bar search for typed input that isn't a URL, with DuckDuckGo, Google, Bing, Brave Search, Ecosia, Startpage or a custom engine under Settings > Search
 - Three new wallet account types, usable with the vault locked and across dApp signing and sends:
   - Ledger hardware accounts, confirmed on the device, including x402 payments
-  - Phone accounts over Open Lavatory: scan a QR code, signing happens on the phone, including x402 payments
+  - Phone accounts over Open Lavatory: QR pairing, signing on the phone, including x402 payments
   - Safe multi-owner accounts on Gnosis, with a signing board owners sign in any order
 - Contract-hosted onchain apps on `web3://<address>[:<chainId>]/`, read straight from the chain with no gateway:
   - Address-bar shield popover reporting the chain, block, contract and content hash behind the page
