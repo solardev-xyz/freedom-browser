@@ -563,6 +563,7 @@ function buildContext(composition, { root, userDataDir, networkEnabled, includeS
     endRun,
     callTool,
     bashText,
+    createFakeSession,
     lastExecution,
     executionsBefore,
     // collectors

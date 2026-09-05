@@ -160,12 +160,18 @@ cleanup still runs.
   with no host path, buffered output, capability, authority, or private data. Chrome Stop terminates
   the exact conversation-owned process with the truthful SIGKILL / namespace_scoped / pid_namespace
   receipt, drops it from the live projection while its terminal ledger evidence remains, and does not
-  consume the process's Pi `write_stdin` output cursor. A declared server reopens through the chrome
-  preview action via the isolated preview controller; another conversation, an unknown id, and a
-  malformed id are refused and cannot affect a live process; natural completion during a newer turn
-  emits the independent `workspace_processes_changed` refresh. The pure IPC gate — sender ownership
-  ("another renderer") and the processId shape check — is covered by `src/main/agent/ipc.test.js` and
-  `src/main/preload.test.js`.
+  consume the process's Pi `write_stdin` output cursor (the exact unread tail survives Stop with no
+  gap and no duplication). A declared server reopens through the chrome preview action via the
+  isolated preview controller; another conversation, an unknown id, and a malformed id are refused
+  and cannot affect a live process; natural completion during a newer turn emits the independent
+  `workspace_processes_changed` refresh. A second part (`PCI*`) registers the production
+  `registerFreedomAgentIpc` against the same real service and Bubblewrap composition, establishes a
+  chrome-owned run through the real `agent:start` handler, and drives the registered
+  `agent:process:stop` / `agent:process:preview-open` handlers directly — proving the owning sender
+  succeeds (real Bubblewrap SIGKILL), another renderer and a malformed id are rejected `AGENT_NOT_OWNER`
+  before reaching the service, and a cross-conversation id is rejected `INVALID_ARGUMENT`, each leaving
+  the live process untouched. The `preload.test.js` suite additionally covers the preload exposure
+  shape.
 
 ## Reliability
 
