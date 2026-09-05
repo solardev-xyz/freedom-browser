@@ -14,6 +14,7 @@ const {
   validateExecutionRequest,
 } = require('./execution-policy');
 const { createReadinessOutputForwarder, notifyOutput, notifyStdin } = require('./process-io');
+const { systemToolchainDirectories } = require('./executable-access');
 
 const DEFAULT_SEATBELT_PATH = '/usr/bin/sandbox-exec';
 const PROBE_TIMEOUT_MS = 5_000;
@@ -193,9 +194,7 @@ function systemReadPaths() {
 }
 
 function systemToolchainPath() {
-  return ['/Library/Developer/CommandLineTools/usr/bin', '/usr/bin', '/bin']
-    .filter((value) => fs.existsSync(value))
-    .join(':');
+  return systemToolchainDirectories('darwin').join(':');
 }
 
 function capabilityProbeProfile() {

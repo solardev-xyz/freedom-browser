@@ -159,8 +159,13 @@ process.on('unhandledRejection', (reason, _promise) => {
   log.error('Unhandled rejection:', reason);
 });
 
-const { registerShutdownSignalHandlers } = require('./shutdown-signals');
-const unregisterShutdownSignalHandlers = registerShutdownSignalHandlers({ app, logger: log });
+const { createShutdownDiagnostics, registerShutdownSignalHandlers } = require('./shutdown-signals');
+const shutdownDiagnostics = createShutdownDiagnostics({ app, logger: log });
+const unregisterShutdownSignalHandlers = registerShutdownSignalHandlers({
+  app,
+  logger: log,
+  onSignal: shutdownDiagnostics.signal,
+});
 const { BrowserWindow, ipcMain, protocol, safeStorage, session, shell } = require('electron');
 const { registerBaseIpcHandlers, broadcastProfileUpdated } = require('./ipc-handlers');
 const { watchProfileRegistry } = require('./profile-registry-watcher');
@@ -748,7 +753,9 @@ app.on('before-quit', async (event) => {
   runtimeIdleController = null;
 
   if (agentRuntime) {
+    shutdownDiagnostics.phase('agent_dispose_started');
     await agentRuntime.dispose();
+    shutdownDiagnostics.phase('agent_dispose_finished');
     agentRuntime = null;
     automationController.setPageLifecycle(null);
   }
@@ -768,6 +775,7 @@ app.on('before-quit', async (event) => {
 
   // Close all windows first, before winding down peers
   log.info('[App] Closing all windows...');
+  shutdownDiagnostics.phase('windows_close_started');
   const allWindows = BrowserWindow.getAllWindows();
   if (allWindows.length > 0) {
     await Promise.all(
@@ -784,6 +792,7 @@ app.on('before-quit', async (event) => {
     );
   }
   log.info('[App] All windows closed');
+  shutdownDiagnostics.phase('windows_close_finished');
 
   // Close history databases
   log.info('[App] Closing history databases...');
@@ -796,11 +805,13 @@ app.on('before-quit', async (event) => {
   cleanupTempDirs();
 
   log.info('[App] Waiting for Ant, IPFS, Myotis, Radicle, and Tor to stop...');
+  shutdownDiagnostics.phase('nodes_stop_started');
   myotisManager.stopAllMyotis();
   await Promise.all([stopAnt(), stopIpfs(), stopRadicle(), stopTor()]);
   log.info('[App] All processes stopped, quitting...');
-
+  shutdownDiagnostics.phase('final_quit_requested');
   app.quit();
+  shutdownDiagnostics.phase('final_quit_returned');
 });
 
 app.on('browser-window-created', () => {

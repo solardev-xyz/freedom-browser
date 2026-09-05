@@ -262,7 +262,7 @@ describeBubblewrap(bubblewrapDescription, () => {
         `approved-npm:${root.mountPath}/bin/npm`,
         `${root.mountPath}/bin/node`,
         `${root.mountPath}/bin/npm`,
-        `${root.mountPath}/bin:/usr/bin:/bin`,
+        `${root.mountPath}/bin:/usr/bin:/bin:/usr/sbin:/sbin`,
       ].join('\n')
     );
 
@@ -273,7 +273,9 @@ describeBubblewrap(bubblewrapDescription, () => {
         `test ! -e ${root.mountPath} && test ! -e /opt/freedom-toolchain && printf "%s" "$PATH"`,
       ],
     });
-    expect(baseline).toMatchObject({ state: 'completed', exitCode: 0, stdout: '/usr/bin:/bin' });
+    expect(baseline).toMatchObject({
+      state: 'completed', exitCode: 0, stdout: '/usr/bin:/bin:/usr/sbin:/sbin',
+    });
   });
 
   test('denies direct, encoded, generated-script, and symlink reads and writes outside the workspace', async () => {

@@ -68,6 +68,25 @@ describe('approved executable access', () => {
     expect(request.runtimeRoots).toEqual([]);
   });
 
+  test('finds a baseline command even when the host PATH omits system directories', async () => {
+    const request = await resolveExecutableAccess(['sh'], {
+      hostEnvironment: { PATH: '/nonexistent' },
+    });
+    expect(request.commands).toEqual([{ name: 'sh', status: 'available' }]);
+    expect(request.runtimeRoots).toEqual([]);
+  });
+
+  test('does not call an out-of-PATH alias available merely because it resolves to a system binary', async () => {
+    const fixture = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'freedom-executable-'));
+    fixtureRoots.push(fixture);
+    await fs.promises.symlink('/bin/sh', path.join(fixture, 'freedom-shell-alias'));
+    const request = await resolveExecutableAccess(['freedom-shell-alias'], {
+      hostEnvironment: { PATH: fixture },
+    });
+    expect(request.commands).toEqual([{ name: 'freedom-shell-alias', status: 'unavailable' }]);
+    expect(request.runtimeRoots).toEqual([]);
+  });
+
   test('rejects paths and unbounded executable requests', () => {
     expect(() => validateExecutableNames(['../node'])).toThrow(
       expect.objectContaining({ code: 'INVALID_EXECUTABLE_REQUEST' })

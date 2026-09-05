@@ -153,6 +153,24 @@ requiredDescribe('macOS Seatbelt execution boundary', () => {
     });
   }
 
+  test('resolves approved baseline sbin command names inside the offline sandbox', async () => {
+    const access = await resolveExecutableAccess(['ping', 'sysctl'], {
+      hostEnvironment: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin' },
+    });
+    expect(access.commands).toEqual([
+      { name: 'ping', status: 'available' },
+      { name: 'sysctl', status: 'available' },
+    ]);
+    expect(access.runtimeRoots).toEqual([]);
+    const receipt = await executor.execute(await policy({ runtimeRoots: [] }), {
+      command: '/bin/sh',
+      args: ['-c', 'command -v ping && command -v sysctl'],
+    });
+    expect(receipt).toMatchObject({
+      state: 'completed', exitCode: 0, stdout: '/sbin/ping\n/usr/sbin/sysctl\n',
+    });
+  });
+
   test('runs shell scripts, Python, Node, Git reads and nested descendants', async () => {
     const receipt = await executor.execute(await policy(), {
       command: '/bin/sh',

@@ -1603,8 +1603,16 @@ class FreedomAgentService {
         if (existingConversation?.restored) {
           systemPrompt = `${systemPrompt}\n\n${RESTORED_SESSION_PROMPT}`;
         }
+        let sessionForDiagnostics = null;
         const created = await this.createSession({
           sdk,
+          createModelDiagnostic: () => {
+            // Capture at request start so late headers cannot be attributed to a newer turn.
+            const owner = sessionForDiagnostics && this.activeRun?.session === sessionForDiagnostics
+              ? this.activeRun
+              : run;
+            return (event) => this.#diagnostic(owner, 'model_transport', event);
+          },
           model: options.model,
           modelRuntime: options.modelRuntime,
           thinkingLevel: options.thinkingLevel,
@@ -1624,6 +1632,7 @@ class FreedomAgentService {
           systemPrompt,
         });
         const session = created?.session;
+        sessionForDiagnostics = session;
         if (
           !session ||
           typeof session.subscribe !== 'function' ||
@@ -1758,6 +1767,7 @@ class FreedomAgentService {
   async stop(runId) {
     const run = this.activeRun;
     if (!run || (runId !== undefined && run.runId !== runId)) return false;
+    this.#diagnostic(run, 'stop_requested');
     run.stopRequested = true;
     run.workspaceAbortController.abort();
     this.#resolveApproval(run, 'declined');
@@ -1990,15 +2000,30 @@ class FreedomAgentService {
     );
   }
 
+  #diagnostic(run, event, details = {}) {
+    try {
+      log.info('[AgentLifecycle]', {
+        runId: run?.runId,
+        conversationId: run?.conversationId,
+        event,
+        ...details,
+      });
+    } catch {
+      // Diagnostics do not participate in Agent control flow.
+    }
+  }
+
   async #executeTurn(run, prompt) {
     let status = 'completed';
     let error;
     try {
+      this.#diagnostic(run, 'prompt_started');
       await run.session.prompt(prompt, {
         expandPromptTemplates: false,
         source: 'interactive',
         ...(run.promptImages.length && { images: run.promptImages }),
       });
+      this.#diagnostic(run, 'prompt_resolved');
       while (run.pendingWalletRequests.size) {
         await Promise.allSettled([...run.pendingWalletRequests]);
       }
@@ -2028,6 +2053,7 @@ class FreedomAgentService {
         error = terminalError(AGENT_ERROR_CODES.RUN_FAILED, 'The agent run ended unexpectedly');
       }
     } catch (caughtError) {
+      this.#diagnostic(run, 'prompt_rejected', { stopRequested: run.stopRequested === true });
       if (run.stopRequested) {
         status = 'cancelled';
       } else if (run.pauseRequested) {
@@ -2065,6 +2091,31 @@ class FreedomAgentService {
       conversation.activeRun !== run
     ) {
       return;
+    }
+    if (event?.type === 'message_start' && event.message?.role === 'assistant') {
+      run.diagnosticResponseSeen = false;
+    }
+    if (event?.type === 'message_update' && !run.diagnosticResponseSeen) {
+      run.diagnosticResponseSeen = true;
+      this.#diagnostic(run, 'first_assistant_event');
+    }
+    if (event?.type === 'message_end' && event.message?.role === 'assistant') {
+      const reason = event.message.stopReason;
+      this.#diagnostic(run, 'assistant_response_finished', {
+        stopReason: ['stop', 'length', 'toolUse', 'error', 'aborted'].includes(reason)
+          ? reason
+          : 'unknown',
+      });
+    }
+    if (
+      ['tool_execution_start', 'tool_execution_end'].includes(event?.type) &&
+      event.toolName === 'request_permissions'
+    ) {
+      this.#diagnostic(
+        run,
+        event.type === 'tool_execution_start' ? 'permission_tool_started' : 'permission_tool_returned',
+        { failed: event.isError === true }
+      );
     }
     if (event?.type === 'message_start' && event.message?.role === 'user') {
       const text = piMessageText(event.message);
@@ -2601,6 +2652,9 @@ class FreedomAgentService {
       ? run.activity.find((item) => item.toolCallId === pending.toolCallId)
       : null;
     const status = typeof decision === 'object' ? decision.status : decision;
+    this.#diagnostic(run, 'approval_resolved', {
+      decision: ['approved', 'declined', 'withdrawn'].includes(status) ? status : 'other',
+    });
     if (activityItem) activityItem.approval = status;
     pending.decision.resolve(decision);
     this.#emit(run, {
@@ -2613,6 +2667,7 @@ class FreedomAgentService {
 
   async #finish(run, status, error) {
     if (run.finished) return;
+    this.#diagnostic(run, 'run_finished', { status });
     this.#reconcileToolOutcomes(run);
     run.toolOutcomes.clear();
     run.pendingWorkspaceOutcomes.clear();

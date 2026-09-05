@@ -45,6 +45,49 @@ function createSdk() {
 }
 
 describe('isolated Pi session factory', () => {
+  test('traces each model request and headers without consuming the stream or logging content', async () => {
+    const events = [];
+    const response = { status: 200, body: 'private-response' };
+    const fetchImpl = jest.fn(async () => response);
+    const stream = { privateState: 'private-stream', [Symbol.asyncIterator]: jest.fn() };
+    let requestOptions;
+    const modelRuntime = {
+      streamSimple: jest.fn((_model, _context, options) => {
+        requestOptions = options;
+        return stream;
+      }),
+    };
+    const runtime = createDiagnosticModelRuntime(modelRuntime, () => (event) => events.push(event));
+    expect(runtime.streamSimple({ id: 'private-model' }, { text: 'private-prompt' }, {
+      fetch: fetchImpl,
+    })).toBe(stream);
+    expect(await requestOptions.fetch('https://private-host', {
+      headers: { Authorization: 'private-token' }, body: 'private-body',
+    })).toBe(response);
+    expect(events.map((event) => event.phase)).toEqual([
+      'model_request_started', 'fetch_started', 'response_headers_received',
+    ]);
+    expect(events.every((event) => event.requestSequenceId === 1)).toBe(true);
+    expect(events.at(-1).status).toBe(200);
+    expect(JSON.stringify(events)).not.toContain('private-');
+    expect(stream[Symbol.asyncIterator]).not.toHaveBeenCalled();
+    runtime.streamSimple({}, {}, { fetch: fetchImpl });
+    expect(events.at(-1).requestSequenceId).toBe(2);
+  });
+
+  test('diagnostic failures cannot prevent requests or alter their errors', async () => {
+    const failure = new Error('request failed');
+    const modelRuntime = {
+      streamSimple: (_model, _context, options) => options.fetch('https://private-host'),
+    };
+    const runtime = createDiagnosticModelRuntime(modelRuntime, () => () => {
+      throw new Error('logger failed');
+    });
+    const fetchImpl = jest.fn().mockRejectedValue(failure);
+    await expect(runtime.streamSimple({}, {}, { fetch: fetchImpl })).rejects.toBe(failure);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   test('preserves sanitized nested fetch causes before Pi flattens provider errors', async () => {
     const cause = Object.assign(
       new Error('Connect Timeout Error Authorization: Bearer private-provider-token'),

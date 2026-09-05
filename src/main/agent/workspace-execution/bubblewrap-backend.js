@@ -13,12 +13,13 @@ const {
   validateExecutionRequest,
 } = require('./execution-policy');
 const { createReadinessOutputForwarder, notifyOutput, notifyStdin } = require('./process-io');
+const { systemToolchainDirectories } = require('./executable-access');
 
 const DEFAULT_BUBBLEWRAP_PATH = '/usr/bin/bwrap';
 const CAPABILITY_PROBE_TIMEOUT_MS = 5_000;
 const PRIVATE_TEMP_SIZE_BYTES = 256 * 1024 * 1024;
 const SHARED_MEMORY_SIZE_BYTES = 64 * 1024 * 1024;
-const BUBBLEWRAP_SYSTEM_TOOLCHAIN_PATH = '/usr/bin:/bin';
+const BUBBLEWRAP_SYSTEM_TOOLCHAIN_PATH = systemToolchainDirectories('linux').join(':');
 const BUBBLEWRAP_SUPERVISOR_SHELL = '/bin/bash';
 const DESCRIPTOR_CLOSURE_PROBE_DESCRIPTORS = Object.freeze([4, 5, 10, 37]);
 const BUBBLEWRAP_SUPERVISOR_SCRIPT = Object.freeze(

@@ -9,6 +9,15 @@ const MAX_EXECUTABLE_REQUESTS = 16;
 const EXECUTABLE_NAME = /^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/;
 const validatedExecutableRoots = new WeakSet();
 const validatedExecutableRequests = new WeakSet();
+const SYSTEM_TOOLCHAIN_DIRECTORIES = Object.freeze(['/usr/bin', '/bin', '/usr/sbin', '/sbin']);
+
+function systemToolchainDirectories(platform) {
+  const directories = [...SYSTEM_TOOLCHAIN_DIRECTORIES];
+  if (platform === 'darwin' && fs.existsSync('/Library/Developer/CommandLineTools/usr/bin')) {
+    directories.unshift('/Library/Developer/CommandLineTools/usr/bin');
+  }
+  return directories;
+}
 
 class ExecutableAccessError extends Error {
   constructor(code, message) {
@@ -120,13 +129,19 @@ async function resolveExecutableAccess(executables, options = {}) {
   const rootBuilders = new Map();
   const commands = [];
   for (const name of names) {
-    const found = await findExecutable(name, pathEntries);
+    // Merely living beneath a system root does not make a name shell-resolvable.
+    // Preserve explicit host toolchain selection, with the sandbox baseline as fallback.
+    const baseline = await findExecutable(name, systemToolchainDirectories(platform));
+    const found = (await findExecutable(name, pathEntries)) || baseline;
     if (!found) {
       commands.push(Object.freeze({ name, status: 'unavailable' }));
       continue;
     }
     if (isSystemExecutable(found.executablePath, platform)) {
-      commands.push(Object.freeze({ name, status: 'available' }));
+      commands.push(Object.freeze({
+        name,
+        status: baseline?.executablePath === found.executablePath ? 'available' : 'unavailable',
+      }));
       continue;
     }
     const sourcePath = await fs.promises.realpath(packageRootForExecutable(found.executablePath));
@@ -199,11 +214,13 @@ function isValidatedExecutableAccessRequest(value) {
 }
 
 module.exports = {
+  SYSTEM_TOOLCHAIN_DIRECTORIES,
   EXECUTABLE_NAME,
   MAX_EXECUTABLE_REQUESTS,
   ExecutableAccessError,
   isValidatedExecutableAccessRequest,
   isValidatedExecutableRoot,
   resolveExecutableAccess,
+  systemToolchainDirectories,
   validateExecutableNames,
 };

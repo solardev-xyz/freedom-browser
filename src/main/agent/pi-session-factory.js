@@ -146,33 +146,66 @@ function enrichProviderFetchError(error) {
   return enriched;
 }
 
-function createProviderDiagnosticFetch(fetchImpl = globalThis.fetch) {
+function createProviderDiagnosticFetch(fetchImpl = globalThis.fetch, record = () => {}) {
   if (typeof fetchImpl !== 'function') {
     throw new TypeError('Freedom provider diagnostics require a fetch implementation');
   }
   return async (...args) => {
+    record('fetch_started');
     try {
-      return await fetchImpl(...args);
+      const response = await fetchImpl(...args);
+      record('response_headers_received', {
+        status: Number.isInteger(response?.status) ? response.status : null,
+      });
+      return response;
     } catch (error) {
+      record('fetch_failed');
       throw enrichProviderFetchError(error);
     }
   };
 }
 
-function createDiagnosticModelRuntime(modelRuntime) {
+function createDiagnosticModelRuntime(modelRuntime, createDiagnostic) {
   if (!modelRuntime || typeof modelRuntime.streamSimple !== 'function') return modelRuntime;
   const methods = new Map();
+  let requestSequence = 0;
   return new Proxy(modelRuntime, {
     get(target, property) {
       if (property === 'streamSimple') {
         if (!methods.has(property)) {
           methods.set(property, (model, context, options = {}) => {
+            const requestSequenceId = ++requestSequence;
+            const startedAt = Date.now();
+            let diagnostic;
+            try {
+              diagnostic = createDiagnostic?.();
+            } catch {
+              // Observability must never prevent a model request.
+            }
+            const record = (phase, details = {}) => {
+              try {
+                diagnostic?.({
+                  phase,
+                  requestSequenceId,
+                  elapsedMs: Date.now() - startedAt,
+                  ...details,
+                });
+              } catch {
+                // Do not change provider behavior if diagnostic logging fails.
+              }
+            };
             const fetchImpl =
               typeof options.fetch === 'function' ? options.fetch : globalThis.fetch;
-            return target.streamSimple(model, context, {
-              ...options,
-              fetch: createProviderDiagnosticFetch(fetchImpl),
-            });
+            record('model_request_started');
+            try {
+              return target.streamSimple(model, context, {
+                ...options,
+                fetch: createProviderDiagnosticFetch(fetchImpl, record),
+              });
+            } catch (error) {
+              record('model_request_threw');
+              throw error;
+            }
           });
         }
         return methods.get(property);
@@ -218,7 +251,10 @@ async function createIsolatedPiSession(options = {}) {
   });
   const sessionManager = sdk.SessionManager.inMemory(VIRTUAL_AGENT_CWD);
   hydrateVisibleTranscript(sessionManager, options.restoredTranscript, options.model);
-  const modelRuntime = createDiagnosticModelRuntime(options.modelRuntime);
+  const modelRuntime = createDiagnosticModelRuntime(
+    options.modelRuntime,
+    options.createModelDiagnostic
+  );
 
   const result = await sdk.createAgentSession({
     cwd: VIRTUAL_AGENT_CWD,

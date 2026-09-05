@@ -112,6 +112,55 @@ function createHistoryStore(overrides = {}) {
 }
 
 describe('FreedomAgentService', () => {
+  test('traces approval continuation without logging tool arguments or assistant content', async () => {
+    const log = require('../logger');
+    const logging = jest.spyOn(log, 'info').mockImplementation(() => {});
+    const fake = createFakeSession();
+    const { service, dependencies } = createService(fake);
+    const events = [];
+    service.subscribe((event) => events.push(event));
+    try {
+      await service.start(startOptions({ prompt: 'private-prompt' }));
+      fake.emit({ type: 'tool_execution_start', toolCallId: 'permission_test',
+        toolName: 'request_permissions', args: { reason: 'private-reason' } });
+      const requestApproval = dependencies.createControllerScope.mock.calls[0][0].requestApproval;
+      const decision = requestApproval({
+        action: 'browser_interaction', operation: 'browser_click', label: 'private-label',
+        origin: 'https://private-origin.test',
+      });
+      await service.decideApproval('run_test', events.at(-1).approvalId, true);
+      await decision;
+      fake.emit({ type: 'tool_execution_end', toolCallId: 'permission_test',
+        toolName: 'request_permissions', result: { content: 'private-result' }, isError: false });
+      const diagnostic = dependencies.createSession.mock.calls[0][0].createModelDiagnostic();
+      diagnostic({ phase: 'model_request_started', requestSequenceId: 1 });
+      fake.emit({ type: 'message_start', message: { role: 'assistant' } });
+      fake.emit({ type: 'message_update', assistantMessageEvent: {
+        type: 'thinking_delta', delta: 'private-reasoning',
+      } });
+      fake.emit({ type: 'message_update', assistantMessageEvent: {
+        type: 'thinking_delta', delta: 'private-reasoning-again',
+      } });
+      fake.emit({ type: 'message_end', message: {
+        role: 'assistant', content: [{ type: 'text', text: 'private-answer' }], stopReason: 'stop',
+      } });
+      fake.prompt.resolve();
+      await service.waitForIdle();
+      const records = logging.mock.calls.filter(([tag]) => tag === '[AgentLifecycle]')
+        .map(([, record]) => record);
+      expect(records.map((record) => record.event)).toEqual([
+        'prompt_started', 'permission_tool_started', 'approval_resolved',
+        'permission_tool_returned', 'model_transport', 'first_assistant_event',
+        'assistant_response_finished', 'prompt_resolved', 'run_finished',
+      ]);
+      expect(JSON.stringify(records)).not.toContain('private-');
+      expect(records.every((record) => record.runId === 'run_test')).toBe(true);
+    } finally {
+      await service.dispose();
+      logging.mockRestore();
+    }
+  });
+
   test('builds one isolated run and emits normalized lifecycle events', async () => {
     const fake = createFakeSession();
     const { service, dependencies } = createService(fake);
@@ -144,6 +193,7 @@ describe('FreedomAgentService', () => {
     });
     expect(dependencies.createSession).toHaveBeenCalledWith({
       sdk: { kind: 'sdk' },
+      createModelDiagnostic: expect.any(Function),
       model: { id: 'model_test', provider: 'test' },
       modelRuntime: { kind: 'model-runtime' },
       thinkingLevel: 'low',
