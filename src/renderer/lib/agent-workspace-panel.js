@@ -237,7 +237,7 @@ export function createWorkspaceInspector(hosts) {
       const plan = await historyRequest('prepare_restore', { versionId: version.id });
       if (!plan || ui.sequence !== viewerSequence || ui.version !== generation) return;
       ui.note.textContent =
-        'Freedom will save the current eligible files as “Before restore”, then apply these changes. Ignored, generated, secret, and oversized files are left alone. Stop running processes before restoring.';
+        'Freedom will back up the already-reviewed current versions, then apply these changes. Unreviewed changes in affected files must be reviewed first. Other project files are left alone.';
       for (const change of plan.changes)
         ui.content.appendChild(
           element(
@@ -289,10 +289,10 @@ export function createWorkspaceInspector(hosts) {
     const name = document.createElement('input');
     name.type = 'text';
     name.maxLength = 80;
-    name.placeholder = 'Name this version…';
-    name.setAttribute('aria-label', 'Version name');
+    name.placeholder = 'Name latest checkpoint…';
+    name.setAttribute('aria-label', 'Checkpoint name');
     const save = button(
-      historyBusy ? 'Saving…' : 'Save version',
+      historyBusy ? 'Saving…' : 'Name checkpoint',
       () => void saveVersion(name.value),
       'agent-text-button'
     );
@@ -308,7 +308,7 @@ export function createWorkspaceInspector(hosts) {
       element(
         'p',
         'agent-workspace-note',
-        'Local versions exclude dependencies, builds, caches, secrets and files over 64 KiB. Maximum 200 files / 512 KiB per version. Saving does not mean the project was tested.'
+        'Only agent-reviewed revisions are checkpointed. Other changes stay in your project. Naming a checkpoint adds no new files. Limits: 200 files, 64 KiB per file, 512 KiB total.'
       )
     );
     if (!history) {
@@ -316,6 +316,68 @@ export function createWorkspaceInspector(hosts) {
       return;
     }
     if (history.notice) body.appendChild(element('p', 'agent-workspace-note', history.notice));
+    const exclusionDetails = element('details', 'agent-workspace-exclusion-editor');
+    exclusionDetails.appendChild(element('summary', '', 'Exclude a file from future checkpoints'));
+    const exclusionForm = element('form', 'agent-workspace-version-save');
+    const excludedPath = document.createElement('input');
+    excludedPath.placeholder = 'Project-relative file path';
+    excludedPath.setAttribute('aria-label', 'Excluded file path');
+    excludedPath.maxLength = 1024;
+    const reason = document.createElement('input');
+    reason.placeholder = 'Reason (without private details)';
+    reason.setAttribute('aria-label', 'Exclusion reason');
+    reason.maxLength = 160;
+    const exclude = button(
+      'Exclude file',
+      async () => {
+        try {
+          await historyRequest('exclude', { path: excludedPath.value, reason: reason.value });
+          await refreshHistory();
+        } catch (cause) {
+          error = cause.message;
+          render();
+        }
+      },
+      'agent-text-button'
+    );
+    exclusionForm.addEventListener('submit', (event) => {
+      event.preventDefault();
+      exclude.click();
+    });
+    exclusionForm.appendChild(excludedPath);
+    exclusionForm.appendChild(reason);
+    exclusionForm.appendChild(exclude);
+    exclusionDetails.appendChild(exclusionForm);
+    exclusionDetails.appendChild(
+      element('p', 'agent-workspace-note', 'Exclusions do not erase copies in earlier versions.')
+    );
+    body.appendChild(exclusionDetails);
+    if (history.exclusions?.length) {
+      body.appendChild(element('p', 'agent-workspace-note', 'Additional exclusions'));
+      for (const entry of history.exclusions) {
+        const row = element('div', 'agent-workspace-version');
+        row.appendChild(element('p', 'agent-workspace-note', `${entry.path} · ${entry.reason}`));
+        row.appendChild(
+          button(
+            'Allow review',
+            async () => {
+              try {
+                await historyRequest('include', {
+                  path: entry.path,
+                  reason: 'User removed the additional exclusion in Versions',
+                });
+                await refreshHistory();
+              } catch (cause) {
+                error = cause.message;
+                render();
+              }
+            },
+            'agent-text-button'
+          )
+        );
+        body.appendChild(row);
+      }
+    }
     if (!history.versions.length)
       body.appendChild(element('p', 'agent-workspace-note', 'No versions saved yet.'));
     for (const version of history.versions) {
@@ -329,7 +391,8 @@ export function createWorkspaceInspector(hosts) {
         )
       );
       const restore = button('Restore…', () => reviewRestore(version), 'agent-text-button');
-      restore.disabled = historyBusy || history.running;
+      restore.disabled = historyBusy || history.running || version.reviewed === false;
+      if (version.reviewed === false) row.appendChild(element('p', 'agent-workspace-note', 'Older automatic snapshot — inspect and review files before restoring.'));
       row.appendChild(restore);
       body.appendChild(row);
     }

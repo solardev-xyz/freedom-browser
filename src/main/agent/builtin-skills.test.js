@@ -13,6 +13,7 @@ const {
 describe('Freedom built-in Agent skills', () => {
   test('publishes reviewed Pi skill metadata at virtual-only locations', () => {
     expect(getBuiltInSkills()).toEqual([
+      expect.objectContaining({ name: 'workspace-history', filePath: skillVirtualPath('workspace-history', 'SKILL.md'), disableModelInvocation: false }),
       expect.objectContaining({
         name: 'swarm-postage',
         filePath: skillVirtualPath('swarm-postage', 'SKILL.md'),

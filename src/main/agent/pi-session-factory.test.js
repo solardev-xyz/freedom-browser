@@ -197,6 +197,7 @@ describe('isolated Pi session factory', () => {
     expect(created.toolNames).toEqual(['node_request', 'read']);
     expect(created.resourceLoader.getSkills()).toEqual({
       skills: [
+        expect.objectContaining({ name: 'workspace-history' }),
         expect.objectContaining({ name: 'swarm-postage' }),
         expect.objectContaining({ name: 'swarm-publishing' }),
       ],
@@ -227,7 +228,7 @@ describe('isolated Pi session factory', () => {
       expect.objectContaining({ customTools: [readOverride], tools: ['read'] })
     );
     expect(sdk.createReadTool).not.toHaveBeenCalled();
-    expect(created.resourceLoader.getSkills().skills).toHaveLength(2);
+    expect(created.resourceLoader.getSkills().skills).toHaveLength(3);
   });
 
   test('rejects built-in, unnamed, and duplicate tool names', () => {
@@ -386,7 +387,7 @@ describe('isolated Pi session factory', () => {
       ],
       extensions: 0,
       sessionFile: null,
-      skills: 2,
+      skills: 3,
       contextFiles: 0,
     });
     expect(result.prompt).toContain('swarm-postage');

@@ -8,6 +8,7 @@ const MAX_BUILTIN_SKILL_BYTES = 64 * 1024;
 const BUNDLED_SKILLS_ROOT = path.join(__dirname, 'skills');
 
 const BUILTIN_SKILL_DEFINITIONS = Object.freeze([
+  Object.freeze({ name: 'workspace-history', description: 'Review project changes, exclude private or temporary files, and checkpoint selected file revisions in local workspace history.', files: Object.freeze(['SKILL.md']) }),
   Object.freeze({
     name: 'swarm-postage',
     description:

@@ -4,6 +4,7 @@ const fs = require('fs');
 const { WORKSPACE_HISTORY_HELPER } = require('./workspace-history-helper');
 const { ManagedWorkspaceHistory, WorkspaceHistoryError, fingerprint } = require('./managed-workspace-history');
 const crypto = require('crypto');
+const { historyPathReason, historyContainsSecret } = require('./workspace-history-policy');
 const { WORKSPACE_INSPECTION_HELPER } = require('./workspace-inspection-helper');
 const path = require('path');
 const {
@@ -712,6 +713,7 @@ class ManagedWorkspaceController {
     this.historyControllers = new Map();
     this.historyNotices = new Map();
     this.restorePlans = new Map();
+    this.historyReviews = new Map();
     this.processManager =
       options.processManager ||
       new ManagedWorkspaceProcessManager({
@@ -853,7 +855,6 @@ class ManagedWorkspaceController {
         'Freedom could not enable the managed workspace'
       );
     }
-    await this.prepareWorkspaceHistory(conversationId);
     reportWorkspacePhase(request, 'workspace_ready');
     return enabled;
   }
@@ -1225,6 +1226,7 @@ class ManagedWorkspaceController {
     if (this.historyLocks.has(conversationId) && ['write', 'mkdir'].includes(operation)) {
       throw new ManagedWorkspaceError('WORKSPACE_HISTORY_BUSY', 'Workspace version operation in progress');
     }
+    if (operation.startsWith('history_') && this.historyControllers.get(conversationId)?.signal.aborted) throw new WorkspaceHistoryError('Workspace history was stopped');
     const readOnlyOperations = new Set(['access', 'read', 'list', 'find', 'grep', 'workspace_inspect', 'history_snapshot', 'history_validate']);
     const rootOperations = new Set(['list', 'find', 'grep', 'workspace_inspect', 'history_snapshot', 'history_validate']);
     const relative =
@@ -1331,68 +1333,91 @@ class ManagedWorkspaceController {
     }
   }
 
-  async #historySnapshot(conversationId) {
-    const output = await this.#fileOperation(conversationId, 'history_snapshot', '.');
+  async #historySnapshot(conversationId, paths) {
+    const output = await this.#fileOperation(conversationId, 'history_snapshot', '.', paths ? Buffer.from(JSON.stringify({ paths })) : null);
     return JSON.parse(output.toString('utf8'));
   }
 
-  async #stableHistorySnapshot(conversationId) {
-    const first = await this.#historySnapshot(conversationId);
-    const second = await this.#historySnapshot(conversationId);
+  async #stableHistorySnapshot(conversationId, paths) {
+    const first = await this.#historySnapshot(conversationId, paths);
+    const second = await this.#historySnapshot(conversationId, paths);
     if (fingerprint(first) !== fingerprint(second)) throw new WorkspaceHistoryError('Workspace files changed while saving');
     return second;
   }
 
-  async #withHistory(conversationId, action) {
+  async #withHistory(conversationId, action, { signal } = {}) {
     if (this.historyLocks.has(conversationId)) throw new WorkspaceHistoryError('Workspace history is busy');
     this.historyLocks.add(conversationId);
     const cancellation = new AbortController();
     this.historyControllers.set(conversationId, cancellation);
+    const abort = () => cancellation.abort();
+    signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) abort();
     try {
       const { lease } = await this.#enabledLease(conversationId);
       return await action(new ManagedWorkspaceHistory(lease.workspaceRoot, { signal: cancellation.signal }));
-    } finally { this.historyLocks.delete(conversationId); this.historyControllers.delete(conversationId); }
+    } finally { signal?.removeEventListener('abort', abort); this.historyLocks.delete(conversationId); this.historyControllers.delete(conversationId); }
   }
 
-  async prepareWorkspaceHistory(conversationId) {
-    if (!this.store.getForConversation(conversationId)?.enabled) return;
-    try {
-      await this.#withHistory(conversationId, async (history) => {
-        const listing = await history.list();
-        await history.save(await this.#stableHistorySnapshot(conversationId), {
-          label: listing.versions.length ? 'Before agent turn' : 'Starting files',
-          kind: listing.versions.length ? 'automatic' : 'baseline', onlyIfChanged: true,
-        });
-      });
-      this.historyNotices.delete(conversationId);
-    } catch {
-      this.historyNotices.set(conversationId, 'Automatic history is unavailable or files are changing. Current files have not been rolled back.');
-    }
+  async markWorkspaceHistoryUnreviewed(conversationId) {
+    this.historyNotices.set(conversationId, 'Only explicitly reviewed file versions are checkpointed. Later edits and unselected files remain outside saved history.');
   }
 
-  async checkpointWorkspace(conversationId, status = 'completed') {
-    if (!this.store.getForConversation(conversationId)?.enabled) return;
-    try {
-      const result = await this.#withHistory(conversationId, async (history) => {
-        // Do not bless writes still being performed by a command which has not settled.
-        if ([...this.activeCommands.values()].some((command) => command.conversationId === conversationId)) throw new WorkspaceHistoryError('Workspace commands are unsettled');
-        return history.save(await this.#stableHistorySnapshot(conversationId), {
-          label: status === 'completed' ? 'After agent turn' : status === 'cancelled' ? 'After interrupted turn' : 'After failed turn',
-          kind: status === 'completed' ? 'automatic' : status === 'cancelled' ? 'interrupted' : 'failed', onlyIfChanged: true,
-        });
-      });
+  async reviewWorkspaceHistory(conversationId, request = {}, options = {}) {
+    return this.#withHistory(conversationId, async (history) => {
+      const exclusions = await history.exclusions();
+      if (request.action === 'status') {
+        return { ...(await this.inspectWorkspace(conversationId, { kind: 'changes' })), exclusions,
+          message: 'Review file contents before checkpointing. Unselected changes are never saved automatically.' };
+      }
+      if (request.action === 'exclude' || request.action === 'include') {
+        if (historyPathReason(request.path) || typeof request.reason !== 'string' || !request.reason.trim() || request.reason.length > 160 || historyContainsSecret(request.reason)) throw new WorkspaceHistoryError('Use an eligible exact file path and a short reason without private data');
+        const next = exclusions.filter((entry) => entry.path !== request.path);
+        if (request.action === 'exclude') next.push({ path: request.path, reason: request.reason });
+        await history.setExclusions(next);
+        for (const [id, review] of this.historyReviews) if (review.conversationId === conversationId && review.path === request.path) this.historyReviews.delete(id);
+        return { exclusions: next, message: 'Exclusions affect future checkpoints and restores, not copies in earlier versions. Including a path does not approve its contents.' };
+      }
+      if (request.action === 'review') {
+        if (historyPathReason(request.path) || exclusions.some((entry) => entry.path === request.path)) throw new WorkspaceHistoryError('This file is excluded from history');
+        const snapshot = await this.#stableHistorySnapshot(conversationId, [request.path]);
+        if (snapshot.excludedCount) throw new WorkspaceHistoryError('This file is excluded, unsafe, or oversized');
+        const file = snapshot.files[0] || null;
+        const head = await history.currentSnapshot();
+        if (!file && !head.files.some((entry) => entry.path === request.path)) throw new WorkspaceHistoryError('No current or previously checkpointed file at this path');
+        const reviewId = 'review_' + crypto.randomBytes(16).toString('hex');
+        for (const [id, review] of this.historyReviews) if (review.expires < Date.now()) this.historyReviews.delete(id);
+        if (this.historyReviews.size >= 400) throw new WorkspaceHistoryError('Too many pending reviews');
+        this.historyReviews.set(reviewId, { conversationId, path: request.path, file, expires: Date.now() + 600000 });
+        const bytes = file ? Buffer.from(file.content, 'base64') : null;
+        return { reviewId, path: request.path, deleted: !file, binary: bytes?.includes(0) || false,
+          text: bytes && !bytes.includes(0) ? bytes.toString('utf8') : '', bytes: bytes?.length || 0,
+          message: 'Assess this exact revision in context. Binary content requires appropriate separate inspection; a token alone does not establish suitability.' };
+      }
+      if (request.action !== 'checkpoint' || !Array.isArray(request.reviewIds) || !request.reviewIds.length || request.reviewIds.length > 200 || new Set(request.reviewIds).size !== request.reviewIds.length) throw new WorkspaceHistoryError('Select explicit file review tokens for this checkpoint');
+      const reviews = request.reviewIds.map((id) => this.historyReviews.get(id));
+      if (reviews.some((review) => !review || review.conversationId !== conversationId || review.expires < Date.now() || exclusions.some((entry) => entry.path === review.path)) || new Set(reviews.map((review) => review.path)).size !== reviews.length) throw new WorkspaceHistoryError('Review expired, excluded, or belongs to another conversation');
+      const current = await this.#stableHistorySnapshot(conversationId, reviews.map((review) => review.path));
+      if (current.excludedCount) throw new WorkspaceHistoryError('Reviewed files are now excluded or unsafe');
+      const files = new Map((await history.currentSnapshot()).files.filter((file) => !exclusions.some((entry) => entry.path === file.path)).map((file) => [file.path, file]));
+      for (const review of reviews) {
+        const now = current.files.find((file) => file.path === review.path) || null;
+        if (JSON.stringify(now) !== JSON.stringify(review.file)) throw new WorkspaceHistoryError('File changed since review; inspect its new contents');
+        if (review.file) files.set(review.path, review.file); else files.delete(review.path);
+      }
+      const snapshot = { files: [...files.values()].sort((a, b) => a.path < b.path ? -1 : 1), excluded: exclusions.map((entry) => ({ ...entry, reason: 'Agent/user exclusion: ' + entry.reason })), excludedCount: exclusions.length };
+      const result = await history.save(snapshot, { label: request.label, kind: 'reviewed', onlyIfChanged: true, reviewed: true });
+      for (const id of request.reviewIds) this.historyReviews.delete(id);
       this.historyNotices.delete(conversationId);
-      return result;
-    } catch {
-      this.historyNotices.set(conversationId, 'Checkpoint not saved: files may be changing, too large, or Git may be unavailable. Current files remain in the workspace.');
-      return { saved: false };
-    }
+      return { ...result, reviewedPaths: reviews.map((review) => review.path), message: 'Only selected revisions were updated. Other changes remain uncheckpointed. This does not certify testing.' };
+    }, options);
   }
 
   async workspaceHistory(conversationId, request = {}) {
+    if (['exclude', 'include'].includes(request.action)) return this.reviewWorkspaceHistory(conversationId, request);
     const perform = async (history) => {
       if (request.action === 'list') {
-        return { ...(await history.list()), notice: this.historyNotices.get(conversationId) || '', running: this.listProcesses(conversationId).length > 0 };
+        return { ...(await history.list()), exclusions: await history.exclusions(), notice: this.historyNotices.get(conversationId) || '', running: this.listProcesses(conversationId).length > 0 };
       }
       if (request.action === 'files') {
         const record = await history.ownedRecord(request.versionId);
@@ -1406,15 +1431,27 @@ class ManagedWorkspaceController {
         return { text: bytes.includes(0) ? '' : bytes.toString('utf8'), binary: bytes.includes(0) };
       }
       if (request.action === 'save') {
-        const result = await history.save(await this.#stableHistorySnapshot(conversationId), { label: request.label, kind: 'manual' });
+        const snapshot = await history.currentSnapshot();
+        const exclusions = await history.exclusions();
+        snapshot.files = snapshot.files.filter((file) => !exclusions.some((entry) => entry.path === file.path));
+        const currentId = await history.currentId();
+        if (!currentId || (await history.record(currentId)).reviewed !== true) throw new WorkspaceHistoryError('Ask the agent to review and create a checkpoint first');
+        const result = await history.save(snapshot, { label: request.label, kind: 'named', reviewed: true });
         this.historyNotices.delete(conversationId);
         return result;
       }
       if (!['prepare_restore', 'restore'].includes(request.action)) throw new WorkspaceHistoryError('Unknown workspace history operation');
       if (this.listProcesses(conversationId).length || [...this.activeCommands.values()].some((command) => command.conversationId === conversationId)) throw new WorkspaceHistoryError('Stop workspace processes before restoring');
       if (request.action === 'prepare_restore') {
-        const current = await this.#stableHistorySnapshot(conversationId);
+        const latest = await history.currentSnapshot();
+        if ((await history.ownedRecord(request.versionId)).reviewed !== true) throw new WorkspaceHistoryError('This older automatic version was not reviewed. Inspect its files and create a reviewed checkpoint before restoring');
         const target = await history.snapshot(request.versionId);
+        const exclusions = await history.exclusions();
+        latest.files = latest.files.filter((file) => !exclusions.some((entry) => entry.path === file.path));
+        if (target.files.some((file) => exclusions.some((entry) => entry.path === file.path))) throw new WorkspaceHistoryError('This version contains a currently excluded file; review exclusions first');
+        const paths = [...new Set([...latest.files, ...target.files].map((file) => file.path))];
+        const current = await this.#stableHistorySnapshot(conversationId, paths);
+        if (current.excludedCount || fingerprint(current) !== fingerprint(latest)) throw new WorkspaceHistoryError('Review and checkpoint current changes before restoring. Unreviewed files cannot be backed up or overwritten');
         const byPath = new Map(current.files.map((file) => [file.path, file]));
         const desired = new Map(target.files.map((file) => [file.path, file]));
         const operations = [];
@@ -1430,25 +1467,26 @@ class ManagedWorkspaceController {
         await this.#fileOperation(conversationId, 'history_validate', '.', preflight);
         for (const [id, plan] of this.restorePlans) if (plan.conversationId === conversationId || plan.expires < Date.now()) this.restorePlans.delete(id);
         const token = 'restore_' + crypto.randomBytes(16).toString('hex');
-        this.restorePlans.set(token, { conversationId, versionId: request.versionId, fingerprint: fingerprint(current), operations, target, preflight, expires: Date.now() + 60000 });
+        this.restorePlans.set(token, { conversationId, versionId: request.versionId, fingerprint: fingerprint(current), operations, target, paths, head: await history.currentId(), preflight, expires: Date.now() + 60000 });
         return { token, changes: operations.map((entry) => ({ path: entry.path, action: entry.action })), excludedCount: current.excludedCount || 0 };
       }
       const plan = this.restorePlans.get(request.token);
       this.restorePlans.delete(request.token);
       if (!plan || plan.conversationId !== conversationId || plan.expires < Date.now()) throw new WorkspaceHistoryError('Restore preview expired; review it again');
-      const current = await this.#stableHistorySnapshot(conversationId);
-      if (fingerprint(current) !== plan.fingerprint) throw new WorkspaceHistoryError('Workspace changed; review the restore again');
+      if (await history.currentId() !== plan.head || (await history.exclusions()).some((entry) => plan.paths.includes(entry.path))) throw new WorkspaceHistoryError('Workspace history changed; review the restore again');
+      const current = await this.#stableHistorySnapshot(conversationId, plan.paths);
+      if (current.excludedCount || fingerprint(current) !== plan.fingerprint) throw new WorkspaceHistoryError('Workspace changed; review the restore again');
       await this.#fileOperation(conversationId, 'history_validate', '.', plan.preflight);
-      const backup = await history.save(current, { label: 'Before restore', kind: 'backup' });
+      const backup = await history.save(current, { label: 'Before restore', kind: 'backup', reviewed: true });
       const deadline = Date.now() + 15000;
       try {
         for (const operation of plan.operations) {
           if (Date.now() > deadline || this.historyControllers.get(conversationId)?.signal.aborted) throw new WorkspaceHistoryError('Restore was stopped');
           await this.#fileOperation(conversationId, 'history_restore', operation.path, Buffer.from(JSON.stringify(operation)));
         }
-        const restored = await this.#stableHistorySnapshot(conversationId);
+        const restored = await this.#stableHistorySnapshot(conversationId, plan.paths);
         if (fingerprint(restored) !== fingerprint(plan.target)) throw new WorkspaceHistoryError('Workspace changed during restore');
-        const result = await history.save(restored, { label: 'Restored version', kind: 'restore' });
+        const result = await history.save(restored, { label: 'Restored version', kind: 'restore', reviewed: true });
         this.historyNotices.delete(conversationId);
         return { ...result, backupId: backup.id };
       } catch {
@@ -1868,6 +1906,7 @@ class ManagedWorkspaceController {
   dispose() {
     for (const controller of this.historyControllers.values()) controller.abort();
     this.restorePlans.clear();
+    this.historyReviews.clear();
     this.processManager.dispose();
     for (const active of this.activeCommands.values()) active.controller.abort();
     this.activeCommands.clear();

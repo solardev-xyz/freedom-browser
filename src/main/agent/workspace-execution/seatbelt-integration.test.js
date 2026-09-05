@@ -211,9 +211,13 @@ requiredDescribe('macOS Seatbelt execution boundary', () => {
     });
     try {
       await fs.promises.writeFile(path.join(root, 'game.js'), 'version one\n');
-      const first = await controller.workspaceHistory('conversation_one', { action: 'save', label: 'Version one' });
+      const one = await controller.reviewWorkspaceHistory('conversation_one', { action: 'review', path: 'game.js' });
+      const first = await controller.reviewWorkspaceHistory('conversation_one', { action: 'checkpoint', label: 'Version one', reviewIds: [one.reviewId] });
       await fs.promises.writeFile(path.join(root, 'game.js'), 'version two\n');
       await fs.promises.writeFile(path.join(root, '.env'), 'fixture-private-value');
+      await expect(controller.workspaceHistory('conversation_one', { action: 'prepare_restore', versionId: first.id })).rejects.toThrow('Unreviewed');
+      const two = await controller.reviewWorkspaceHistory('conversation_one', { action: 'review', path: 'game.js' });
+      await controller.reviewWorkspaceHistory('conversation_one', { action: 'checkpoint', label: 'Version two', reviewIds: [two.reviewId] });
       const plan = await controller.workspaceHistory('conversation_one', { action: 'prepare_restore', versionId: first.id });
       const restored = await controller.workspaceHistory('conversation_one', { action: 'restore', token: plan.token });
       expect(await fs.promises.readFile(path.join(root, 'game.js'), 'utf8')).toBe('version one\n');

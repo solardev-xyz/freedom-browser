@@ -10,6 +10,8 @@ const {
   historyContainsSecret,
 } = require('./workspace-history-policy');
 
+const { workspaceGitCommand } = require('./workspace-git-command');
+
 const OID = /^[a-f0-9]{40}$/;
 const MAX_RECORD_BYTES = 64 * 1024;
 
@@ -104,6 +106,10 @@ class ManagedWorkspaceHistory {
   }
 
   async validate() {
+    if (!workspaceGitCommand())
+      throw new WorkspaceHistoryError(
+        'Version history is unavailable because Git is not available in the supported system toolchain. Project editing remains available.'
+      );
     if (this.signal?.aborted) throw new WorkspaceHistoryError('Workspace history was stopped');
     await checkedDirectory(this.root);
     await checkedDirectory(this.gitDirectory);
@@ -160,8 +166,11 @@ class ManagedWorkspaceHistory {
     const remaining = this.deadline - Date.now();
     if (this.signal?.aborted) throw new WorkspaceHistoryError('Workspace history was stopped');
     if (remaining <= 0) throw new WorkspaceHistoryError('Workspace history operation timed out');
-    const clt = '/Library/Developer/CommandLineTools/usr/bin/git';
-    const executable = process.platform === 'darwin' && fs.existsSync(clt) ? clt : '/usr/bin/git';
+    const executable = workspaceGitCommand();
+    if (!executable)
+      throw new WorkspaceHistoryError(
+        'Git is unavailable for workspace history. Project editing remains available.'
+      );
     // Fixed plumbing only. Git never reads project file contents; screened bytes
     // arrive on stdin from the sandbox helper. Do not inherit host Git settings.
     return new Promise((resolve, reject) => {
@@ -252,6 +261,47 @@ class ManagedWorkspaceHistory {
     return record;
   }
 
+  async exclusions() {
+    await this.validate();
+    try {
+      const values = JSON.parse(
+        await readMetadata(path.join(this.recordsDirectory, 'exclusions.json'))
+      );
+      if (
+        !Array.isArray(values) ||
+        values.length > 200 ||
+        values.some(
+          (entry) =>
+            historyPathReason(entry.path) ||
+            typeof entry.reason !== 'string' ||
+            entry.reason.length > 160 ||
+            historyContainsSecret(entry.reason)
+        )
+      )
+        throw new Error();
+      return values;
+    } catch (error) {
+      if (error.code === 'ENOENT') return [];
+      throw new WorkspaceHistoryError('Workspace exclusions are unavailable');
+    }
+  }
+
+  async setExclusions(values) {
+    await this.validate();
+    if (values.length > 200) throw new WorkspaceHistoryError('Too many workspace exclusions');
+    await atomicMetadata(
+      path.join(this.recordsDirectory, 'exclusions.json'),
+      Buffer.from(JSON.stringify(values))
+    );
+  }
+
+  async currentSnapshot() {
+    await this.validate();
+    const id = await this.currentId();
+    return id && (await this.record(id)).reviewed === true
+      ? this.snapshot(id) : { files: [], excluded: [], excludedCount: 0 };
+  }
+
   async list() {
     await this.validate();
     const records = [];
@@ -261,6 +311,7 @@ class ManagedWorkspaceHistory {
       records.push({
         id,
         label: record.label,
+        reviewed: record.reviewed === true,
         kind: record.kind,
         createdAt: record.createdAt,
         fileCount: record.files.length,
@@ -288,7 +339,8 @@ class ManagedWorkspaceHistory {
     return validateSnapshot({ files, excluded: [], excludedCount: record.excludedCount });
   }
 
-  async save(snapshot, { label, kind = 'manual', onlyIfChanged = false } = {}) {
+  async save(snapshot, { label, kind = 'manual', onlyIfChanged = false, reviewed = false } = {}) {
+    if (reviewed !== true) throw new WorkspaceHistoryError('A checkpoint requires explicit file review');
     validateSnapshot(snapshot);
     if (
       typeof label !== 'string' ||
@@ -302,7 +354,7 @@ class ManagedWorkspaceHistory {
     const parent = await this.currentId();
     const previous = parent ? await this.record(parent) : null;
     const digest = fingerprint(snapshot);
-    if (onlyIfChanged && previous?.digest === digest)
+    if (onlyIfChanged && previous?.reviewed === true && previous.digest === digest)
       return { saved: false, id: parent, excludedCount: snapshot.excludedCount || 0 };
     const files = [];
     for (const file of snapshot.files) {
@@ -338,6 +390,7 @@ class ManagedWorkspaceHistory {
       label: label.trim(),
       kind,
       createdAt: Date.now(),
+      reviewed: true,
       files,
       excludedCount: snapshot.excludedCount || 0,
       excluded: (snapshot.excluded || []).slice(0, 20),

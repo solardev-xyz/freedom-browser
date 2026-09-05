@@ -22,6 +22,7 @@ const WORKSPACE_TOOL_NAMES = Object.freeze([
   'request_permissions',
   'write_stdin',
   'workspace_preview',
+  'workspace_history',
 ]);
 const READ_ONLY_WORKSPACE_OPERATIONS = new Set([
   'read',
@@ -310,6 +311,44 @@ function assertBrowserEnvelope(envelope) {
   const error = new Error('Freedom could not open the workspace preview tab');
   error.code = 'WORKSPACE_PREVIEW_UNAVAILABLE';
   throw error;
+}
+
+function createWorkspaceHistoryTool(sdk, options) {
+  return sdk.defineTool({
+    name: 'workspace_history', label: 'Review project history',
+    description: 'Review exact project file revisions, record contextual exclusions, and checkpoint only selected review tokens. Load the workspace-history skill first. No automatic commits or remote operations.',
+    parameters: {
+      type: 'object', additionalProperties: false,
+      properties: {
+        action: { type: 'string', enum: ['status', 'review', 'exclude', 'include', 'checkpoint'] },
+        path: { type: 'string', minLength: 1, maxLength: 1024 },
+        reason: { type: 'string', minLength: 1, maxLength: 160 },
+        label: { type: 'string', minLength: 1, maxLength: 80 },
+        reviewIds: { type: 'array', minItems: 1, maxItems: 200, items: { type: 'string', pattern: '^review_[a-f0-9]{32}$' } },
+      }, required: ['action'],
+    },
+    executionMode: 'sequential',
+    execute: async (toolCallId, params, signal) => {
+      const operation = 'workspace_history';
+      const abort = combinedAbortSignal(signal, options.getRunSignal?.());
+      let receipt;
+      try {
+        if (abort.signal?.aborted) throw new Error('Stopped');
+        await ensureWorkspaceEnabled(options, operation, toolCallId, abort.signal);
+        notify(options.onToolPhase, { toolCallId, operation, phase: 'executing_operation' });
+        const result = await options.controller.reviewWorkspaceHistory(options.conversationId, params, { signal: abort.signal });
+        if (abort.signal?.aborted) throw new Error('Stopped');
+        receipt = fileWorkspaceReceipt(options.controller, options.conversationId, operation, { path: params.path || '.' }, 'completed', { kind: 'history', command: `Project history: ${params.action}` });
+        notify(options.onToolOutcome, { toolCallId, operation, status: 'succeeded', workspace: receipt });
+        return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+      } catch (error) {
+        notify(options.onToolOutcome, { toolCallId, operation, status: 'failed', errorCode: 'WORKSPACE_HISTORY_UNAVAILABLE' });
+        const safe = new Error(error?.code === 'WORKSPACE_HISTORY_UNAVAILABLE' ? error.message : 'Project history operation unavailable or stopped. No unreviewed changes were automatically checkpointed.');
+        safe.code = 'WORKSPACE_HISTORY_UNAVAILABLE';
+        throw safe;
+      } finally { abort.dispose(); }
+    },
+  });
 }
 
 function createWorkspacePreviewTool(sdk, options) {
@@ -1412,6 +1451,7 @@ async function createWorkspaceTools(options = {}) {
     createRequestPermissionsTool(sdk, options),
     createWriteStdinTool(sdk, options),
   ];
+  if (typeof controller.reviewWorkspaceHistory === 'function') tools.push(createWorkspaceHistoryTool(sdk, options));
   if (previewEnabled) tools.push(createWorkspacePreviewTool(sdk, toolOptions));
   return tools;
 }
@@ -1429,6 +1469,7 @@ module.exports = {
   createRequestPermissionsTool,
   createWriteStdinTool,
   createWorkspacePreviewTool,
+  createWorkspaceHistoryTool,
   createWorkspaceTools,
   decisionApproved,
   isSkillReadPath,

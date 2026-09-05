@@ -213,7 +213,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   claimAgentTab: (rendererTabId) => ipcRenderer.invoke('agent:tab:claim', { rendererTabId }),
   agentWorkspaceHistory: (conversationId, action, options = {}) =>
     ipcRenderer.invoke('agent:workspace:history', { conversationId, action,
-      versionId: options.versionId, label: options.label, path: options.path, token: options.token }),
+      versionId: options.versionId, label: options.label, path: options.path, token: options.token, reason: options.reason }),
   inspectAgentWorkspace: (conversationId, kind, path = '.', showGenerated = false) =>
     ipcRenderer.invoke('agent:workspace:inspect', { conversationId, kind, path, showGenerated }),
   stopAgentProcess: (processId) => ipcRenderer.invoke('agent:process:stop', { processId }),

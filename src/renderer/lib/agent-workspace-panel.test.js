@@ -130,6 +130,26 @@ describe('workspace inspector', () => {
     });
   });
 
+  test('lets the user add and remove contextual exclusions without approving file contents', async () => {
+    let exclusions = [];
+    const historyApi = jest.fn(async (conversationId, action, options = {}) => {
+      if (action === 'exclude') exclusions = [{ path: options.path, reason: options.reason }];
+      if (action === 'include') exclusions = [];
+      return { ok: true, conversationId, result: { versions: [], exclusions } };
+    });
+    window.electronAPI.agentWorkspaceHistory = historyApi;
+    inspector.setWorkspace('conversation_one');
+    jest.advanceTimersByTime(250); await flush();
+    panel.querySelectorAll('.agent-workspace-inspector-tab')[2].dispatch('click'); await flush();
+    const form = panel.querySelector('.agent-workspace-exclusion-editor').querySelector('.agent-workspace-version-save');
+    form.children[0].value = 'customer-export.csv'; form.children[1].value = 'Private customer data';
+    form.children[2].dispatch('click'); await flush();
+    expect(historyApi).toHaveBeenCalledWith('conversation_one', 'exclude', { path: 'customer-export.csv', reason: 'Private customer data' });
+    panel.querySelector('.agent-workspace-version').children[1].dispatch('click'); await flush();
+    expect(historyApi).toHaveBeenCalledWith('conversation_one', 'include', expect.objectContaining({ path: 'customer-export.csv' }));
+    expect(historyApi.mock.calls.some((call) => ['save', 'restore', 'checkpoint'].includes(call[1]))).toBe(false);
+  });
+
   test('keeps files visible and reports unavailable change inspection', async () => {
     api.mockImplementation(async (conversationId, kind) => ({
       ok: true,

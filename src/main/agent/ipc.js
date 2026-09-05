@@ -706,17 +706,18 @@ function registerFreedomAgentIpc(options = {}) {
     if (!owner || owner.sender !== event?.sender || !payload || typeof payload !== 'object' || Array.isArray(payload) || payload.conversationId !== owner.conversationId) {
       return errorEnvelope(AGENT_IPC_ERROR_CODES.NOT_OWNER, 'The sender does not own this workspace');
     }
-    const { conversationId, action, versionId, label, path, token } = payload;
-    if (!['list', 'files', 'file', 'save', 'prepare_restore', 'restore'].includes(action) ||
+    const { conversationId, action, versionId, label, path, token, reason } = payload;
+    if (!['list', 'files', 'file', 'save', 'prepare_restore', 'restore', 'include', 'exclude'].includes(action) ||
         (['files', 'file', 'prepare_restore'].includes(action) && !/^[a-f0-9]{40}$/.test(versionId || '')) ||
-        (action === 'file' && (typeof path !== 'string' || !path || path.length > 1024)) ||
+        (['file', 'include', 'exclude'].includes(action) && (typeof path !== 'string' || !path || path.length > 1024)) ||
+        (['include', 'exclude'].includes(action) && (typeof reason !== 'string' || !reason.trim() || reason.length > 160)) ||
         (action === 'save' && (typeof label !== 'string' || !label.trim() || label.length > 80)) ||
         (action === 'restore' && !/^restore_[a-f0-9]{32}$/.test(token || ''))) {
       return errorEnvelope(AGENT_ERROR_CODES.INVALID_ARGUMENT, 'Invalid workspace version request');
     }
     const ownerAtStart = owner;
     try {
-      const result = await service.workspaceHistory(conversationId, { action, versionId, label, path, token });
+      const result = await service.workspaceHistory(conversationId, { action, versionId, label, path, token, reason });
       if (owner !== ownerAtStart || owner.conversationId !== conversationId) return errorEnvelope(AGENT_IPC_ERROR_CODES.NOT_OWNER, 'Workspace ownership changed');
       return { ok: true, conversationId, result };
     } catch (error) { return safeServiceError(error); }

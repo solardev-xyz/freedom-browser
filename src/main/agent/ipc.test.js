@@ -1006,11 +1006,14 @@ describe('Freedom agent IPC', () => {
     const input = { conversationId: 'conversation_test', action: 'list' };
     for (const [sender, payload] of [[ctx.otherSender, input], [ctx.sender, { ...input, conversationId: 'foreign' }],
       [ctx.sender, { ...input, action: 'restore', token: 'bad' }], [ctx.sender, { ...input, action: 'prepare_restore', versionId: '../other' }],
-      [ctx.sender, { ...input, action: 'save', label: 'a'.repeat(81) }]]) {
+      [ctx.sender, { ...input, action: 'save', label: 'a'.repeat(81) }],
+      [ctx.sender, { ...input, action: 'exclude', path: 'customer.csv', reason: 'x'.repeat(161) }]]) {
       await expect(call({ sender }, payload)).resolves.toMatchObject({ ok: false });
     }
     expect(ctx.service.workspaceHistory).not.toHaveBeenCalled();
     await expect(call({ sender: ctx.sender }, input)).resolves.toMatchObject({ ok: true, result: { versions: [] } });
+    await call({ sender: ctx.sender }, { ...input, action: 'exclude', path: 'customer.csv', reason: 'Private input' });
+    expect(ctx.service.workspaceHistory).toHaveBeenLastCalledWith('conversation_test', expect.objectContaining({ action: 'exclude', path: 'customer.csv', reason: 'Private input' }));
   });
 
   test('binds workspace inspection to the owning chrome and conversation with bounded input', async () => {

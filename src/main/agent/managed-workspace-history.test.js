@@ -85,120 +85,152 @@ describe('managed workspace checkpoints and restore', () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  test('creates a real baseline, checkpoints changes once, and labels interrupted turns', async () => {
-    write('game.js', 'before\n');
-    await controller.prepareWorkspaceHistory('conversation_one');
-    expect((await history({ action: 'list' })).versions[0]).toMatchObject({
-      kind: 'baseline',
-      fileCount: 1,
-    });
-    expect(git('status', '--porcelain')).toBe('');
-    expect((await controller.checkpointWorkspace('conversation_one')).saved).toBe(false);
-    write('game.js', 'after\n');
-    expect((await controller.checkpointWorkspace('conversation_one', 'cancelled')).saved).toBe(
-      true
-    );
-    const versions = (await history({ action: 'list' })).versions;
-    expect(versions).toHaveLength(2);
-    expect(versions[0]).toMatchObject({ kind: 'interrupted', label: 'After interrupted turn' });
-    expect(git('show', `${versions[1].id}:game.js`)).toBe('before\n');
-    expect(git('show', 'HEAD:game.js')).toBe('after\n');
-    await controller.prepareWorkspaceHistory('conversation_one');
-    expect((await history({ action: 'list' })).versions).toHaveLength(2);
-    write('game.js', 'edited between turns\n');
-    await controller.prepareWorkspaceHistory('conversation_one');
-    expect((await history({ action: 'list' })).versions[0]).toMatchObject({
-      kind: 'automatic', label: 'Before agent turn',
-    });
-    expect(git('show', 'HEAD:game.js')).toBe('edited between turns\n');
+  const review = (request) => controller.reviewWorkspaceHistory('conversation_one', request);
+  const checkpoint = async (paths, label) => {
+    const reviewIds = [];
+    for (const filePath of paths)
+      reviewIds.push((await review({ action: 'review', path: filePath })).reviewId);
+    return review({ action: 'checkpoint', reviewIds, label });
+  };
+
+  test('saves only reviewed revisions and retains prior versions of unselected changes', async () => {
+    write('game.js', 'one');
+    write('style.css', 'first');
+    write('customer-export.csv', 'private customer rows');
+    const first = await checkpoint(['game.js', 'style.css'], 'First game');
+    expect(first.saved).toBe(true);
+    expect(git('ls-tree', '--name-only', 'HEAD')).not.toContain('customer-export');
+    write('game.js', 'two');
+    write('style.css', 'unreviewed edit');
+    await checkpoint(['game.js'], 'New mechanics');
+    expect(git('show', 'HEAD:game.js')).toBe('two');
+    expect(git('show', 'HEAD:style.css')).toBe('first');
+    await history({ action: 'save', label: 'Named latest checkpoint' });
+    expect(git('show', 'HEAD:style.css')).toBe('first');
     expect(git('fsck', '--no-reflogs')).not.toContain('error');
   });
 
-  test('immutable exclusions and content screening cannot be bypassed with gitignore negations', async () => {
+  test('rejects changed, replayed, foreign and cancelled reviews', async () => {
+    write('game.js', 'one');
+    const token = (await review({ action: 'review', path: 'game.js' })).reviewId;
+    write('game.js', 'two');
+    await expect(
+      review({ action: 'checkpoint', reviewIds: [token], label: 'Stale' })
+    ).rejects.toThrow('changed');
+    const fresh = (await review({ action: 'review', path: 'game.js' })).reviewId;
+    controller.historyReviews.get(fresh).conversationId = 'other';
+    await expect(
+      review({ action: 'checkpoint', reviewIds: [fresh], label: 'Foreign' })
+    ).rejects.toThrow('conversation');
+    const selected = (await review({ action: 'review', path: 'game.js' })).reviewId;
+    await review({ action: 'checkpoint', reviewIds: [selected], label: 'Reviewed' });
+    await expect(
+      review({ action: 'checkpoint', reviewIds: [selected], label: 'Replay' })
+    ).rejects.toThrow('expired');
+    const abort = new AbortController();
+    abort.abort();
+    await expect(
+      controller.reviewWorkspaceHistory(
+        'conversation_one',
+        { action: 'review', path: 'game.js' },
+        { signal: abort.signal }
+      )
+    ).rejects.toThrow();
+  });
+
+  test('persists contextual exclusions and does not allow an include to approve bytes', async () => {
+    write('customer-export.csv', 'private customer rows');
+    const token = (await review({ action: 'review', path: 'customer-export.csv' })).reviewId;
+    await review({
+      action: 'exclude',
+      path: 'customer-export.csv',
+      reason: 'Private customer data',
+    });
+    await expect(review({ action: 'checkpoint', reviewIds: [token], label: 'No' })).rejects.toThrow(
+      'excluded'
+    );
+    expect((await history({ action: 'list' })).exclusions).toEqual([
+      { path: 'customer-export.csv', reason: 'Private customer data' },
+    ]);
+    await expect(review({ action: 'review', path: 'customer-export.csv' })).rejects.toThrow(
+      'excluded'
+    );
+    await history({
+      action: 'include',
+      path: 'customer-export.csv',
+      reason: 'User removed private data',
+    });
+    expect(await new ManagedWorkspaceHistory(root).currentId()).toBe(null);
+  });
+
+  test('mandatory exclusions and secret detection cannot be overridden by the agent', async () => {
     write('.gitignore', '!node_modules/\n!node_modules/**\n!.env\n');
     write('node_modules/lib.js', 'generated');
-    write('.env', 'actual-private-value');
+    write('.env', 'private');
     write('config.js', 'const apiKey = "this-is-a-real-looking-credential";');
     write('settings.yml', 'password: sensitive-value\n');
-    write('secrets/unusual-name.txt', 'private content');
-    write('image.png', Buffer.from([137, 80, 78, 71, 0, 1]));
-    write('game.js', 'const score = 1;');
     write('huge.txt', 'a'.repeat(65537));
-    const saved = await history({ action: 'save', label: 'Playable game' });
-    expect(saved.excludedCount).toBeGreaterThanOrEqual(3);
-    const names = git('ls-tree', '-r', '--name-only', 'HEAD');
-    expect(names).toContain('game.js');
-    expect(names).toContain('image.png');
-    expect(names).not.toMatch(/node_modules|\.env|config.js|huge.txt|settings.yml|secrets\//);
-    const allObjects = git('rev-list', '--objects', '--all');
-    expect(allObjects).not.toContain('config.js');
-    expect((await history({ action: 'file', versionId: saved.id, path: 'image.png' })).binary).toBe(
-      true
-    );
+    for (const name of ['node_modules/lib.js', '.env', 'config.js', 'settings.yml', 'huge.txt']) {
+      await expect(review({ action: 'review', path: name })).rejects.toThrow();
+    }
+    await expect(review({ action: 'include', path: '.env', reason: 'Bypass' })).rejects.toThrow();
+    expect(await new ManagedWorkspaceHistory(root).currentId()).toBe(null);
   });
 
-  test('restores additions, modifications and deletions only after saving a recoverable backup', async () => {
-    write('src/game.js', 'old game\n');
-    write('old.txt', 'old file\n');
-    const old = await history({ action: 'save', label: 'Working game' });
-    write('src/game.js', 'new game\n');
-    fs.unlinkSync(path.join(root, 'old.txt'));
-    write('new.txt', 'new file\n');
-    write('.env', 'untouched secret');
-    write('node_modules/library.js', 'untouched dependency');
-    const plan = await history({ action: 'prepare_restore', versionId: old.id });
-    expect(plan.changes).toEqual(
-      expect.arrayContaining([
-        { path: 'new.txt', action: 'remove' },
-        { path: 'old.txt', action: 'write' },
-      ])
-    );
-    const result = await history({ action: 'restore', token: plan.token });
-    expect(fs.readFileSync(path.join(root, 'src/game.js'), 'utf8')).toBe('old game\n');
-    expect(fs.existsSync(path.join(root, 'new.txt'))).toBe(false);
-    expect(fs.readFileSync(path.join(root, '.env'), 'utf8')).toBe('untouched secret');
-    expect(fs.readFileSync(path.join(root, 'node_modules/library.js'), 'utf8')).toBe(
-      'untouched dependency'
-    );
-    expect(git('show', `${result.backupId}:src/game.js`)).toBe('new game\n');
-    expect(git('show', `${result.backupId}:new.txt`)).toBe('new file\n');
-    expect(git('status', '--porcelain')).toBe('');
-    const restoreBackup = await history({ action: 'prepare_restore', versionId: result.backupId });
-    await history({ action: 'restore', token: restoreBackup.token });
-    expect(fs.readFileSync(path.join(root, 'new.txt'), 'utf8')).toBe('new file\n');
-  });
-
-  test('rejects stale or replayed plans and foreign conversations without changing files', async () => {
-    write('game.js', 'before');
-    const version = await history({ action: 'save', label: 'Before' });
-    write('game.js', 'after');
-    const plan = await history({ action: 'prepare_restore', versionId: version.id });
-    write('game.js', 'newer');
-    await expect(history({ action: 'restore', token: plan.token })).rejects.toThrow('changed');
-    await expect(history({ action: 'restore', token: plan.token })).rejects.toThrow('expired');
-    await expect(
-      controller.workspaceHistory('conversation_other', { action: 'list' })
-    ).rejects.toThrow();
-    expect(fs.readFileSync(path.join(root, 'game.js'), 'utf8')).toBe('newer');
-  });
-
-  test('does not overwrite excluded content and refuses restore while a process is running', async () => {
-    write('config.js', 'const visible = true;');
-    const saved = await history({ action: 'save', label: 'Before' });
-    write('config.js', 'const password = "sensitive-production-password";');
-    await expect(history({ action: 'prepare_restore', versionId: saved.id })).rejects.toThrow();
-    write('config.js', 'const visible = false;');
-    jest.spyOn(controller, 'listProcesses').mockReturnValue([{ state: 'running' }]);
-    await expect(history({ action: 'prepare_restore', versionId: saved.id })).rejects.toThrow(
-      'Stop workspace processes'
-    );
-  });
-
-  test('retains backup and reports a partially interrupted restore', async () => {
+  test('restore never saves or overwrites unreviewed changes and leaves unrelated files alone', async () => {
     write('game.js', 'one');
-    const old = await history({ action: 'save', label: 'One' });
+    const first = await checkpoint(['game.js'], 'One');
+    write('game.js', 'private notes appended');
+    write('customer-export.csv', 'private customer rows');
+    await expect(history({ action: 'prepare_restore', versionId: first.id })).rejects.toThrow(
+      'Unreviewed'
+    );
+    expect((await history({ action: 'list' })).versions).toHaveLength(1);
     write('game.js', 'two');
-    const plan = await history({ action: 'prepare_restore', versionId: old.id });
+    await checkpoint(['game.js'], 'Two');
+    const plan = await history({ action: 'prepare_restore', versionId: first.id });
+    const result = await history({ action: 'restore', token: plan.token });
+    expect(fs.readFileSync(path.join(root, 'game.js'), 'utf8')).toBe('one');
+    expect(fs.readFileSync(path.join(root, 'customer-export.csv'), 'utf8')).toBe(
+      'private customer rows'
+    );
+    expect(git('show', `${result.backupId}:game.js`)).toBe('two');
+    expect(git('rev-list', '--objects', '--all')).not.toContain('customer-export');
+    await expect(history({ action: 'restore', token: plan.token })).rejects.toThrow('expired');
+  });
+
+  test('restores reviewed additions and deletions, rejects stale plans and unreviewed collisions', async () => {
+    write('old.txt', 'old');
+    const first = await checkpoint(['old.txt'], 'Old');
+    fs.unlinkSync(path.join(root, 'old.txt'));
+    write('new.txt', 'new');
+    await checkpoint(['old.txt', 'new.txt'], 'New');
+    write('old.txt', 'private collision');
+    await expect(history({ action: 'prepare_restore', versionId: first.id })).rejects.toThrow(
+      'Unreviewed'
+    );
+    fs.unlinkSync(path.join(root, 'old.txt'));
+    const plan = await history({ action: 'prepare_restore', versionId: first.id });
+    write('new.txt', 'changed');
+    await expect(history({ action: 'restore', token: plan.token })).rejects.toThrow('changed');
+    write('new.txt', 'new');
+    const next = await history({ action: 'prepare_restore', versionId: first.id });
+    await history({ action: 'restore', token: next.token });
+    expect(fs.readFileSync(path.join(root, 'old.txt'), 'utf8')).toBe('old');
+    expect(fs.existsSync(path.join(root, 'new.txt'))).toBe(false);
+  });
+
+  test('retains a reviewed backup after partial failure and requires stopped processes', async () => {
+    write('game.js', 'one');
+    const first = await checkpoint(['game.js'], 'One');
+    write('game.js', 'two');
+    await checkpoint(['game.js'], 'Two');
+    const running = jest.spyOn(controller, 'listProcesses').mockReturnValue([{ state: 'running' }]);
+    await expect(history({ action: 'prepare_restore', versionId: first.id })).rejects.toThrow(
+      'Stop'
+    );
+    running.mockRestore();
+    const plan = await history({ action: 'prepare_restore', versionId: first.id });
     const execute = executor.execute.getMockImplementation();
     executor.execute.mockImplementation(async (policy, request) =>
       request.args[6] === 'history_restore'
@@ -213,23 +245,41 @@ describe('managed workspace checkpoints and restore', () => {
     await expect(history({ action: 'restore', token: plan.token })).rejects.toThrow(
       'Before restore'
     );
-    const listing = await history({ action: 'list' });
-    expect(listing.notice).toContain('did not finish');
-    expect(listing.versions[0].kind).toBe('backup');
     expect(git('show', 'HEAD:game.js')).toBe('two');
+    expect((await history({ action: 'list' })).versions[0].kind).toBe('backup');
   });
 
-  test('survives reopening and rejects foreign or redirected Git metadata', async () => {
-    write('game.js', 'saved');
-    const saved = await history({ action: 'save', label: 'Saved' });
-    const reopened = new ManagedWorkspaceHistory(root);
-    expect((await reopened.list()).versions[0].id).toBe(saved.id);
-    expect((await reopened.snapshot(saved.id)).files[0].content).toBe(
-      Buffer.from('saved').toString('base64')
-    );
-    fs.appendFileSync(path.join(root, '.git/config'), '\n[include]\npath=/private/config\n');
-    await expect(
-      reopened.save({ files: [], excludedCount: 0 }, { label: 'Unsafe' })
-    ).rejects.toThrow('externally configured');
+  test('missing installed Git disables history while ordinary file editing still works', async () => {
+    const access = jest.spyOn(fs, 'accessSync').mockImplementation(() => { throw new Error('Git unavailable'); });
+    try {
+      await expect(history({ action: 'list' })).rejects.toThrow('Project editing remains available');
+      await controller.writeFile('conversation_one', 'game.js', 'still editable');
+      expect(fs.readFileSync(path.join(root, 'game.js'), 'utf8')).toBe('still editable');
+    } finally { access.mockRestore(); }
+  });
+
+  test('does not silently inherit or restore unreviewed automatic snapshots from older builds', async () => {
+    write('game.js', 'game'); write('private-notes.txt', 'contextually private');
+    const older = await checkpoint(['game.js', 'private-notes.txt'], 'Old build fixture');
+    const filename = path.join(root, '.git/freedom-history', `${older.id}.json`);
+    const record = JSON.parse(fs.readFileSync(filename)); delete record.reviewed; record.kind = 'automatic';
+    fs.writeFileSync(filename, JSON.stringify(record));
+    await expect(history({ action: 'prepare_restore', versionId: older.id })).rejects.toThrow('not reviewed');
+    const reviewed = await checkpoint(['game.js'], 'Reviewed game');
+    expect(git('ls-tree', '--name-only', 'HEAD')).not.toContain('private-notes');
+    expect(fs.readFileSync(path.join(root, 'private-notes.txt'), 'utf8')).toBe('contextually private');
+    const secondFile = path.join(root, '.git/freedom-history', `${reviewed.id}.json`);
+    const second = JSON.parse(fs.readFileSync(secondFile)); delete second.reviewed;
+    fs.writeFileSync(secondFile, JSON.stringify(second));
+    await expect(history({ action: 'save', label: 'Name old automatic snapshot' })).rejects.toThrow('review');
+    expect((await checkpoint(['game.js'], 'Review unchanged legacy contents')).saved).toBe(true);
+  });
+
+  test('reopens saved versions but preserves external Git configuration', async () => {
+    write('game.js', 'one');
+    const first = await checkpoint(['game.js'], 'One');
+    expect((await new ManagedWorkspaceHistory(root).list()).versions[0].id).toBe(first.id);
+    fs.appendFileSync(path.join(root, '.git/config'), '[include]\npath=/etc/other\n');
+    await expect(history({ action: 'list' })).rejects.toThrow('externally configured');
   });
 });

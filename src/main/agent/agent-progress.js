@@ -574,6 +574,7 @@ function normalizeWorkspaceReceipt(value) {
       'directory_list',
       'static_preview',
       'server_preview',
+      'history',
       'process',
     ].includes(kind)
       ? kind

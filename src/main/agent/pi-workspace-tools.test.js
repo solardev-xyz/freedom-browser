@@ -1047,3 +1047,26 @@ describe('Pi managed workspace tools', () => {
     });
   });
 });
+
+
+describe('reviewed workspace history tool', () => {
+  test('binds history to its conversation and never exposes restore or arbitrary Git commands', async () => {
+    const controller = createController();
+    controller.getWorkspace.mockReturnValue({ enabled: true, workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa' });
+    controller.reviewWorkspaceHistory = jest.fn(async () => ({ reviewId: 'review_' + 'a'.repeat(32), text: 'reviewed source' }));
+    const outcome = jest.fn();
+    const tools = await createWorkspaceTools({ controller, conversationId: 'conversation_one', sdk: createSdk(), requestApproval: jest.fn(), onToolOutcome: outcome });
+    const tool = tools.find((entry) => entry.name === 'workspace_history');
+    expect(tool.parameters.properties.action.enum).not.toContain('restore');
+    const result = await tool.execute('call_one', { action: 'review', path: 'game.js' }, new AbortController().signal);
+    expect(controller.reviewWorkspaceHistory).toHaveBeenCalledWith('conversation_one', { action: 'review', path: 'game.js' }, expect.objectContaining({ signal: expect.anything() }));
+    expect(result.content[0].text).toContain('reviewed source');
+    expect(outcome).toHaveBeenCalledWith(expect.objectContaining({ workspace: expect.objectContaining({ kind: 'history', networkPosture: 'none' }) }));
+    controller.reviewWorkspaceHistory.mockRejectedValueOnce(new Error('/private/host/secret'));
+    await expect(tool.execute('call_two', { action: 'status' })).rejects.toThrow('unavailable or stopped');
+    const stopped = new AbortController(); stopped.abort();
+    const calls = controller.reviewWorkspaceHistory.mock.calls.length;
+    await expect(tool.execute('call_three', { action: 'checkpoint', reviewIds: [] }, stopped.signal)).rejects.toThrow('stopped');
+    expect(controller.reviewWorkspaceHistory).toHaveBeenCalledTimes(calls);
+  });
+});

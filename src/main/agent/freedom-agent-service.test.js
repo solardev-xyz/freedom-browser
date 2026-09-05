@@ -636,30 +636,21 @@ describe('FreedomAgentService', () => {
     await service.waitForIdle();
   });
 
-  test('prepares history before the model and completes the checkpoint before ending the turn', async () => {
+  test('does not checkpoint automatically at turn boundaries and routes history judgment to the skill', async () => {
     const fake = createFakeSession();
-    const order = [];
-    const checkpoint = createDeferred();
     const workspaceController = {
       getWorkspace: () => ({ enabled: true }), disclosure: jest.fn(), enable: jest.fn(), execute: jest.fn(),
       cancelConversation: jest.fn(), deleteConversation: jest.fn(), dispose: jest.fn(),
-      prepareWorkspaceHistory: jest.fn(async () => { order.push('baseline'); }),
-      checkpointWorkspace: jest.fn(async () => { order.push('checkpoint'); await checkpoint.promise; }),
-      workspaceHistory: jest.fn(),
+      prepareWorkspaceHistory: jest.fn(), checkpointWorkspace: jest.fn(), markWorkspaceHistoryUnreviewed: jest.fn(),
     };
     const { service, dependencies } = createService(fake, { workspaceController, createWorkspaceTools: jest.fn(async () => []) });
-    service.subscribe((event) => { if (event.type === 'run_finished') order.push('finished'); });
     await service.start(startOptions());
-    expect(workspaceController.prepareWorkspaceHistory).toHaveBeenCalledWith('conversation_test');
-    expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toContain('a checkpoint never proves that code works');
+    expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toContain('workspace-history skill');
     fake.prompt.resolve();
-    await new Promise(setImmediate);
-    expect(order).toEqual(['baseline', 'checkpoint']);
-    await expect(service.workspaceHistory('conversation_test', { action: 'restore', token: 'restore_' + 'a'.repeat(32) })).rejects.toMatchObject({ code: AGENT_ERROR_CODES.BUSY });
-    checkpoint.resolve();
     await service.waitForIdle();
-    expect(order).toEqual(['baseline', 'checkpoint', 'finished']);
-    expect(workspaceController.checkpointWorkspace).toHaveBeenCalledWith('conversation_test', 'completed');
+    expect(workspaceController.prepareWorkspaceHistory).not.toHaveBeenCalled();
+    expect(workspaceController.checkpointWorkspace).not.toHaveBeenCalled();
+    expect(workspaceController.markWorkspaceHistoryUnreviewed).toHaveBeenCalledWith('conversation_test');
   });
 
   test('blocks turn start and conversation switching during a version mutation and rejects foreign history', async () => {

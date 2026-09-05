@@ -1,8 +1,11 @@
 'use strict';
 
+const { workspaceGitCommand } = require('./workspace-git-command');
+
 // Appended to the existing sandboxed file helper. These operations are exposed
 // only to trusted chrome; file bodies and diffs never enter Agent state/history.
 const WORKSPACE_INSPECTION_HELPER = String.raw`
+${workspaceGitCommand.toString()}
 function inspectPath(value, allowRoot = false) {
   const safe = checkedRelative(value, allowRoot);
   if (safe.length > 1024 || safe.split('/').some((part) => part.toLowerCase() === '.git')) fail('WORKSPACE_PROTECTED_PATH');
@@ -27,10 +30,8 @@ function gitRead(args, acceptedCodes = [0]) {
     GIT_ATTR_NOSYSTEM: '1', GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0',
     GIT_LITERAL_PATHSPECS: '1', LC_ALL: 'C',
   });
-  // /usr/bin/git on macOS can dispatch into a selected Xcode installation
-  // outside the sandbox. Prefer the real Git in the existing system-toolchain boundary.
-  const commandLineGit = '/Library/Developer/CommandLineTools/usr/bin/git';
-  const executable = process.platform === 'darwin' && fs.existsSync(commandLineGit) ? commandLineGit : '/usr/bin/git';
+  const executable = workspaceGitCommand();
+  if (!executable) throw new Error('Git unavailable');
   const result = spawnSync(executable, [
     '--no-pager', '--git-dir=.git', '--work-tree=.',
     '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null',

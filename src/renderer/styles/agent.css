@@ -3335,3 +3335,12 @@ body.agent-first-mode .agent-workspace-body > .agent-workspace-scroll {
   cursor: pointer;
 }
 .agent-workspace-restore-confirm:disabled { opacity: 0.5; cursor: default; }
+
+.agent-workspace-exclusion-editor {
+  padding: 10px 12px;
+  font-size: 12px;
+}
+
+.agent-workspace-exclusion-editor summary {
+  cursor: pointer;
+}
