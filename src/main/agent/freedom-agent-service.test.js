@@ -636,6 +636,46 @@ describe('FreedomAgentService', () => {
     await service.waitForIdle();
   });
 
+  test('prepares history before the model and completes the checkpoint before ending the turn', async () => {
+    const fake = createFakeSession();
+    const order = [];
+    const checkpoint = createDeferred();
+    const workspaceController = {
+      getWorkspace: () => ({ enabled: true }), disclosure: jest.fn(), enable: jest.fn(), execute: jest.fn(),
+      cancelConversation: jest.fn(), deleteConversation: jest.fn(), dispose: jest.fn(),
+      prepareWorkspaceHistory: jest.fn(async () => { order.push('baseline'); }),
+      checkpointWorkspace: jest.fn(async () => { order.push('checkpoint'); await checkpoint.promise; }),
+      workspaceHistory: jest.fn(),
+    };
+    const { service, dependencies } = createService(fake, { workspaceController, createWorkspaceTools: jest.fn(async () => []) });
+    service.subscribe((event) => { if (event.type === 'run_finished') order.push('finished'); });
+    await service.start(startOptions());
+    expect(workspaceController.prepareWorkspaceHistory).toHaveBeenCalledWith('conversation_test');
+    expect(dependencies.createSession.mock.calls[0][0].systemPrompt).toContain('a checkpoint never proves that code works');
+    fake.prompt.resolve();
+    await new Promise(setImmediate);
+    expect(order).toEqual(['baseline', 'checkpoint']);
+    await expect(service.workspaceHistory('conversation_test', { action: 'restore', token: 'restore_' + 'a'.repeat(32) })).rejects.toMatchObject({ code: AGENT_ERROR_CODES.BUSY });
+    checkpoint.resolve();
+    await service.waitForIdle();
+    expect(order).toEqual(['baseline', 'checkpoint', 'finished']);
+    expect(workspaceController.checkpointWorkspace).toHaveBeenCalledWith('conversation_test', 'completed');
+  });
+
+  test('blocks turn start and conversation switching during a version mutation and rejects foreign history', async () => {
+    const { service } = createService(createFakeSession(), { historyStore: createHistoryStore() });
+    const pending = createDeferred();
+    service.workspaceController = { workspaceHistory: jest.fn(() => pending.promise) };
+    service.conversation = { conversationId: 'conversation_one' };
+    await expect(service.workspaceHistory('other', { action: 'list' })).rejects.toThrow();
+    const mutation = service.workspaceHistory('conversation_one', { action: 'save', label: 'Version' });
+    await expect(service.start(startOptions())).rejects.toMatchObject({ code: AGENT_ERROR_CODES.BUSY });
+    expect(await service.clearConversation()).toBe(false);
+    expect(await service.openConversation('other')).toBeNull();
+    pending.resolve({ saved: true });
+    await expect(mutation).resolves.toEqual({ saved: true });
+  });
+
   test('inspects only the selected conversation and drops results after switching conversations', async () => {
     const fake = createFakeSession();
     const { service } = createService(fake);

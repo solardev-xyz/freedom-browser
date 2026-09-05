@@ -83,6 +83,53 @@ describe('workspace inspector', () => {
     expect(document.querySelector('.agent-workspace-viewer')).toBeNull();
   });
 
+  test('requires a reviewed restore token and exposes named versions without invoking the model', async () => {
+    const version = {
+      id: 'a'.repeat(40),
+      label: 'Working game',
+      kind: 'manual',
+      fileCount: 1,
+      createdAt: 1000,
+    };
+    const historyApi = jest.fn(async (conversationId, action) => ({
+      ok: true,
+      conversationId,
+      result:
+        action === 'list'
+          ? { versions: [version] }
+          : action === 'prepare_restore'
+            ? {
+                token: 'restore_' + 'b'.repeat(32),
+                changes: [{ path: 'game.js', action: 'write' }],
+              }
+            : { saved: true },
+    }));
+    window.electronAPI.agentWorkspaceHistory = historyApi;
+    inspector.setWorkspace('conversation_one');
+    jest.advanceTimersByTime(250);
+    await flush();
+    panel.querySelectorAll('.agent-workspace-inspector-tab')[2].dispatch('click');
+    await flush();
+    const form = panel.querySelector('.agent-workspace-version-save');
+    form.children[0].value = 'Before adding enemies';
+    form.children[1].dispatch('click');
+    await flush();
+    expect(historyApi).toHaveBeenCalledWith('conversation_one', 'save', {
+      label: 'Before adding enemies',
+    });
+    panel.querySelector('.agent-workspace-version').children[2].dispatch('click');
+    await flush();
+    expect(historyApi).toHaveBeenCalledWith('conversation_one', 'prepare_restore', {
+      versionId: version.id,
+    });
+    expect(historyApi.mock.calls.some((call) => call[1] === 'restore')).toBe(false);
+    document.querySelector('.agent-workspace-restore-confirm').dispatch('click');
+    await flush();
+    expect(historyApi).toHaveBeenCalledWith('conversation_one', 'restore', {
+      token: 'restore_' + 'b'.repeat(32),
+    });
+  });
+
   test('keeps files visible and reports unavailable change inspection', async () => {
     api.mockImplementation(async (conversationId, kind) => ({
       ok: true,

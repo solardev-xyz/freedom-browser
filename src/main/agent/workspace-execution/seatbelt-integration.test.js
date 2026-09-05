@@ -10,6 +10,8 @@ const { resolveExecutableAccess } = require('./executable-access');
 const { captureHostCommandEnvironment } = require('./host-command-environment');
 const { resolveProcessRuntimeAccess } = require('./qualification-runtime-access');
 const { SeatbeltExecutor } = require('./seatbelt-backend');
+const { initializeWorkspaceGit } = require('../managed-workspace-git');
+const { ManagedWorkspaceController } = require('../managed-workspace-controller');
 const { WORKSPACE_FILE_HELPER } = require('../managed-workspace-controller');
 
 jest.setTimeout(30_000);
@@ -194,6 +196,31 @@ requiredDescribe('macOS Seatbelt execution boundary', () => {
       expect(lock.packages['node_modules/fixture-library']).toBeDefined();
     }
   );
+
+  test('checkpoints and restores screened files using the real offline sandbox', async () => {
+    const root = path.join(fixture.fixtureRoot, 'history-workspace');
+    await fs.promises.mkdir(root);
+    await fs.promises.mkdir(path.join(root, '.git'));
+    await initializeWorkspaceGit(root);
+    const workspace = { workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa', enabled: true };
+    const controller = new ManagedWorkspaceController({
+      store: { ensureForConversation: async () => workspace, getForConversation: () => workspace, resolvePath: async () => root, listCommands: () => [] },
+      executor, detectRuntime: async () => ({ available: true, sandboxExecutablePath: process.execPath }),
+      createPolicy: () => createWorkspaceExecutionPolicy({ workspaceRoot: root, runtimeRoots, limits: { timeoutMs: 10000 } }),
+      restrictPolicy: (policy) => policy,
+    });
+    try {
+      await fs.promises.writeFile(path.join(root, 'game.js'), 'version one\n');
+      const first = await controller.workspaceHistory('conversation_one', { action: 'save', label: 'Version one' });
+      await fs.promises.writeFile(path.join(root, 'game.js'), 'version two\n');
+      await fs.promises.writeFile(path.join(root, '.env'), 'fixture-private-value');
+      const plan = await controller.workspaceHistory('conversation_one', { action: 'prepare_restore', versionId: first.id });
+      const restored = await controller.workspaceHistory('conversation_one', { action: 'restore', token: plan.token });
+      expect(await fs.promises.readFile(path.join(root, 'game.js'), 'utf8')).toBe('version one\n');
+      expect(await fs.promises.readFile(path.join(root, '.env'), 'utf8')).toBe('fixture-private-value');
+      expect(await controller.workspaceHistory('conversation_one', { action: 'file', versionId: restored.backupId, path: 'game.js' })).toMatchObject({ text: 'version two\n' });
+    } finally { controller.dispose(); }
+  });
 
   test('inspects files and Git changes through the offline sandbox', async () => {
     await fs.promises.writeFile(path.join(fixture.workspaceRoot, 'source.txt'), 'updated source\n');

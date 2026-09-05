@@ -702,6 +702,26 @@ function registerFreedomAgentIpc(options = {}) {
     }
   };
 
+  const handleWorkspaceHistory = async (event, payload) => {
+    if (!owner || owner.sender !== event?.sender || !payload || typeof payload !== 'object' || Array.isArray(payload) || payload.conversationId !== owner.conversationId) {
+      return errorEnvelope(AGENT_IPC_ERROR_CODES.NOT_OWNER, 'The sender does not own this workspace');
+    }
+    const { conversationId, action, versionId, label, path, token } = payload;
+    if (!['list', 'files', 'file', 'save', 'prepare_restore', 'restore'].includes(action) ||
+        (['files', 'file', 'prepare_restore'].includes(action) && !/^[a-f0-9]{40}$/.test(versionId || '')) ||
+        (action === 'file' && (typeof path !== 'string' || !path || path.length > 1024)) ||
+        (action === 'save' && (typeof label !== 'string' || !label.trim() || label.length > 80)) ||
+        (action === 'restore' && !/^restore_[a-f0-9]{32}$/.test(token || ''))) {
+      return errorEnvelope(AGENT_ERROR_CODES.INVALID_ARGUMENT, 'Invalid workspace version request');
+    }
+    const ownerAtStart = owner;
+    try {
+      const result = await service.workspaceHistory(conversationId, { action, versionId, label, path, token });
+      if (owner !== ownerAtStart || owner.conversationId !== conversationId) return errorEnvelope(AGENT_IPC_ERROR_CODES.NOT_OWNER, 'Workspace ownership changed');
+      return { ok: true, conversationId, result };
+    } catch (error) { return safeServiceError(error); }
+  };
+
   const handleProcessStop = (event, payload) =>
     handleProcessAction(event, payload, (processId) => service.stopWorkspaceProcess(processId));
 
@@ -1160,6 +1180,7 @@ function registerFreedomAgentIpc(options = {}) {
   ipcMain.handle(IPC.AGENT_ATTACHMENTS_PREVIEW, handleAttachmentPreview);
   ipcMain.handle(IPC.AGENT_APPROVAL_MODE_SET, handleSetApprovalMode);
   ipcMain.handle(IPC.AGENT_TAB_CLAIM, handleTabClaim);
+  ipcMain.handle(IPC.AGENT_WORKSPACE_HISTORY, handleWorkspaceHistory);
   ipcMain.handle(IPC.AGENT_WORKSPACE_INSPECT, handleWorkspaceInspect);
   ipcMain.handle(IPC.AGENT_PROCESS_STOP, handleProcessStop);
   ipcMain.handle(IPC.AGENT_PROCESS_PREVIEW_OPEN, handleProcessPreviewOpen);
@@ -1195,6 +1216,7 @@ function registerFreedomAgentIpc(options = {}) {
     ipcMain.removeHandler?.(IPC.AGENT_ATTACHMENTS_PREVIEW);
     ipcMain.removeHandler?.(IPC.AGENT_APPROVAL_MODE_SET);
     ipcMain.removeHandler?.(IPC.AGENT_TAB_CLAIM);
+    ipcMain.removeHandler?.(IPC.AGENT_WORKSPACE_HISTORY);
     ipcMain.removeHandler?.(IPC.AGENT_WORKSPACE_INSPECT);
     ipcMain.removeHandler?.(IPC.AGENT_PROCESS_STOP);
     ipcMain.removeHandler?.(IPC.AGENT_PROCESS_PREVIEW_OPEN);

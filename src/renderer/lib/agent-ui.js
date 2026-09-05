@@ -2998,6 +2998,8 @@ function handleAgentEvent(event) {
     setLiveStatus(event.runId, 'Responding…');
     view.section.scrollIntoView?.({ block: 'end' });
     elements.emptyState.hidden = true;
+  } else if (event.type === 'workspace_checkpoint_started') {
+    setLiveStatus(event.runId, 'Saving workspace version…');
   } else if (event.type === 'tool_started') {
     addToolRow(event);
     const view = turnView(event.runId);

@@ -3287,3 +3287,51 @@ body.agent-first-mode .agent-workspace-body > .agent-workspace-scroll {
 .agent-diff-added { color: #63c985; }
 .agent-diff-deleted { color: #ff9b9b; }
 .agent-diff-hunk { color: #89b4fa; }
+
+.agent-workspace-version-save {
+  display: grid;
+  gap: 8px;
+  padding: 8px 12px;
+}
+
+.agent-workspace-version-save input {
+  min-width: 0;
+  width: 100%;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+}
+
+.agent-workspace-version {
+  padding: 8px 10px;
+  border-top: 1px solid var(--border);
+}
+
+.agent-workspace-version > .agent-workspace-item {
+  padding: 2px 0;
+  font-weight: 600;
+}
+
+.agent-workspace-version .agent-workspace-note { margin: 6px 0; }
+.agent-workspace-version > .agent-text-button { font-size: 11px; }
+
+.agent-workspace-version-content {
+  overflow: auto;
+  padding: 8px 16px 20px;
+}
+
+.agent-workspace-restore-confirm {
+  margin-top: 16px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--toolbar);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+.agent-workspace-restore-confirm:disabled { opacity: 0.5; cursor: default; }

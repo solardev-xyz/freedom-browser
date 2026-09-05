@@ -375,6 +375,8 @@ describe('preload', () => {
         [{ conversationId: 'conversation_123', approvalMode: 'allow_website_interactions' }],
       ],
       [exposures.electronAPI, 'claimAgentTab', [7], IPC.AGENT_TAB_CLAIM, [{ rendererTabId: 7 }]],
+      [exposures.electronAPI, 'agentWorkspaceHistory', ['conversation_one', 'save', { label: 'Working' }], IPC.AGENT_WORKSPACE_HISTORY,
+        [{ conversationId: 'conversation_one', action: 'save', label: 'Working', versionId: undefined, path: undefined, token: undefined }]],
       [exposures.electronAPI, 'inspectAgentWorkspace', ['conversation_one', 'tree'], IPC.AGENT_WORKSPACE_INSPECT,
         [{ conversationId: 'conversation_one', kind: 'tree', path: '.', showGenerated: false }]],
       [

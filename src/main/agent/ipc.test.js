@@ -47,6 +47,7 @@ function createService(options = {}) {
     clearConversation: options.clearConversation || jest.fn(async () => true),
     listConversations: options.listConversations || jest.fn(() => []),
     listAgentTabs: options.listAgentTabs || jest.fn(() => []),
+    workspaceHistory: options.workspaceHistory || jest.fn(async () => ({ versions: [] })),
     inspectWorkspace: options.inspectWorkspace || jest.fn(async () => ({ entries: [] })),
     stopWorkspaceProcess:
       options.stopWorkspaceProcess || jest.fn(async () => ({ state: 'cancelled' })),
@@ -996,6 +997,20 @@ describe('Freedom agent IPC', () => {
     expect(getState({ sender: ctx.sender }).state.taskTabs).toEqual([
       { rendererTabId: 7, agentActive: false },
     ]);
+  });
+
+  test('binds version operations to owned chrome and validates restore tokens and identifiers', async () => {
+    const ctx = register();
+    await ctx.ipcMain.handlers.get(IPC.AGENT_START)({ sender: ctx.sender }, { rendererTabId: 7, prompt: 'Task' });
+    const call = ctx.ipcMain.handlers.get(IPC.AGENT_WORKSPACE_HISTORY);
+    const input = { conversationId: 'conversation_test', action: 'list' };
+    for (const [sender, payload] of [[ctx.otherSender, input], [ctx.sender, { ...input, conversationId: 'foreign' }],
+      [ctx.sender, { ...input, action: 'restore', token: 'bad' }], [ctx.sender, { ...input, action: 'prepare_restore', versionId: '../other' }],
+      [ctx.sender, { ...input, action: 'save', label: 'a'.repeat(81) }]]) {
+      await expect(call({ sender }, payload)).resolves.toMatchObject({ ok: false });
+    }
+    expect(ctx.service.workspaceHistory).not.toHaveBeenCalled();
+    await expect(call({ sender: ctx.sender }, input)).resolves.toMatchObject({ ok: true, result: { versions: [] } });
   });
 
   test('binds workspace inspection to the owning chrome and conversation with bounded input', async () => {

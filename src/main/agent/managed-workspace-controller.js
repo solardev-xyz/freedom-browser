@@ -1,6 +1,9 @@
 'use strict';
 
 const fs = require('fs');
+const { WORKSPACE_HISTORY_HELPER } = require('./workspace-history-helper');
+const { ManagedWorkspaceHistory, WorkspaceHistoryError, fingerprint } = require('./managed-workspace-history');
+const crypto = require('crypto');
 const { WORKSPACE_INSPECTION_HELPER } = require('./workspace-inspection-helper');
 const path = require('path');
 const {
@@ -272,9 +275,16 @@ function writablePath(value) {
 }
 
 ${WORKSPACE_INSPECTION_HELPER}
+${WORKSPACE_HISTORY_HELPER}
 
 try {
-  if (operation === 'workspace_inspect') {
+  if (operation === 'history_snapshot') {
+    writeJson(historySnapshot());
+  } else if (operation === 'history_restore') {
+    historyRestoreEntry();
+  } else if (operation === 'history_validate') {
+    historyValidateRestore();
+  } else if (operation === 'workspace_inspect') {
     writeJson(inspectWorkspace(optionsPayload()));
   } else if (operation === 'access' || operation === 'read') {
     const { target } = targetPath(relative);
@@ -400,13 +410,13 @@ try {
     fail('INVALID_WORKSPACE_REQUEST');
   }
 } catch (error) {
-  const allowed = new Set(['INVALID_WORKSPACE_REQUEST', 'WORKSPACE_FILE_TOO_LARGE', 'WORKSPACE_FILE_UNSAFE', 'WORKSPACE_PATH_TYPE_MISMATCH', 'WORKSPACE_PROTECTED_PATH']);
+  const allowed = new Set(['INVALID_WORKSPACE_REQUEST', 'WORKSPACE_FILE_TOO_LARGE', 'WORKSPACE_FILE_UNSAFE', 'WORKSPACE_PATH_TYPE_MISMATCH', 'WORKSPACE_PROTECTED_PATH', 'WORKSPACE_HISTORY_CHANGED', 'WORKSPACE_HISTORY_TOO_LARGE']);
   const native = new Map([
     ['ENOENT', 'WORKSPACE_PATH_NOT_FOUND'],
     ['ENOTDIR', 'WORKSPACE_PATH_TYPE_MISMATCH'],
     ['EISDIR', 'WORKSPACE_PATH_TYPE_MISMATCH'],
   ]);
-  const readOnly = new Set(['read', 'access', 'list', 'find', 'grep', 'workspace_inspect']);
+  const readOnly = new Set(['read', 'access', 'list', 'find', 'grep', 'workspace_inspect', 'history_snapshot', 'history_validate']);
   const fallback = readOnly.has(operation) ? 'WORKSPACE_FILE_UNAVAILABLE' : 'WORKSPACE_WRITE_FAILED';
   const code = allowed.has(error && error.code) ? error.code : native.get(error && error.code) || fallback;
   process.stderr.write('FREEDOM_FILE_ERROR:' + code);
@@ -698,6 +708,10 @@ class ManagedWorkspaceController {
     this.leases = new Map();
     this.leasePromises = new Map();
     this.activeCommands = new Map();
+    this.historyLocks = new Set();
+    this.historyControllers = new Map();
+    this.historyNotices = new Map();
+    this.restorePlans = new Map();
     this.processManager =
       options.processManager ||
       new ManagedWorkspaceProcessManager({
@@ -839,6 +853,7 @@ class ManagedWorkspaceController {
         'Freedom could not enable the managed workspace'
       );
     }
+    await this.prepareWorkspaceHistory(conversationId);
     reportWorkspacePhase(request, 'workspace_ready');
     return enabled;
   }
@@ -1207,8 +1222,11 @@ class ManagedWorkspaceController {
   }
 
   async #fileOperation(conversationId, operation, relativePath, content = null, request = {}) {
-    const readOnlyOperations = new Set(['access', 'read', 'list', 'find', 'grep', 'workspace_inspect']);
-    const rootOperations = new Set(['list', 'find', 'grep', 'workspace_inspect']);
+    if (this.historyLocks.has(conversationId) && ['write', 'mkdir'].includes(operation)) {
+      throw new ManagedWorkspaceError('WORKSPACE_HISTORY_BUSY', 'Workspace version operation in progress');
+    }
+    const readOnlyOperations = new Set(['access', 'read', 'list', 'find', 'grep', 'workspace_inspect', 'history_snapshot', 'history_validate']);
+    const rootOperations = new Set(['list', 'find', 'grep', 'workspace_inspect', 'history_snapshot', 'history_validate']);
     const relative =
       operation === 'mkdir'
         ? relativePath === '.'
@@ -1274,6 +1292,8 @@ class ManagedWorkspaceController {
         'WORKSPACE_PATH_TYPE_MISMATCH',
         'WORKSPACE_PROTECTED_PATH',
         'WORKSPACE_WRITE_FAILED',
+        'WORKSPACE_HISTORY_CHANGED',
+        'WORKSPACE_HISTORY_TOO_LARGE',
       ]);
       const code = allowed.has(reported)
         ? reported
@@ -1309,6 +1329,138 @@ class ManagedWorkspaceController {
         'Freedom received an invalid workspace discovery result'
       );
     }
+  }
+
+  async #historySnapshot(conversationId) {
+    const output = await this.#fileOperation(conversationId, 'history_snapshot', '.');
+    return JSON.parse(output.toString('utf8'));
+  }
+
+  async #stableHistorySnapshot(conversationId) {
+    const first = await this.#historySnapshot(conversationId);
+    const second = await this.#historySnapshot(conversationId);
+    if (fingerprint(first) !== fingerprint(second)) throw new WorkspaceHistoryError('Workspace files changed while saving');
+    return second;
+  }
+
+  async #withHistory(conversationId, action) {
+    if (this.historyLocks.has(conversationId)) throw new WorkspaceHistoryError('Workspace history is busy');
+    this.historyLocks.add(conversationId);
+    const cancellation = new AbortController();
+    this.historyControllers.set(conversationId, cancellation);
+    try {
+      const { lease } = await this.#enabledLease(conversationId);
+      return await action(new ManagedWorkspaceHistory(lease.workspaceRoot, { signal: cancellation.signal }));
+    } finally { this.historyLocks.delete(conversationId); this.historyControllers.delete(conversationId); }
+  }
+
+  async prepareWorkspaceHistory(conversationId) {
+    if (!this.store.getForConversation(conversationId)?.enabled) return;
+    try {
+      await this.#withHistory(conversationId, async (history) => {
+        const listing = await history.list();
+        await history.save(await this.#stableHistorySnapshot(conversationId), {
+          label: listing.versions.length ? 'Before agent turn' : 'Starting files',
+          kind: listing.versions.length ? 'automatic' : 'baseline', onlyIfChanged: true,
+        });
+      });
+      this.historyNotices.delete(conversationId);
+    } catch {
+      this.historyNotices.set(conversationId, 'Automatic history is unavailable or files are changing. Current files have not been rolled back.');
+    }
+  }
+
+  async checkpointWorkspace(conversationId, status = 'completed') {
+    if (!this.store.getForConversation(conversationId)?.enabled) return;
+    try {
+      const result = await this.#withHistory(conversationId, async (history) => {
+        // Do not bless writes still being performed by a command which has not settled.
+        if ([...this.activeCommands.values()].some((command) => command.conversationId === conversationId)) throw new WorkspaceHistoryError('Workspace commands are unsettled');
+        return history.save(await this.#stableHistorySnapshot(conversationId), {
+          label: status === 'completed' ? 'After agent turn' : status === 'cancelled' ? 'After interrupted turn' : 'After failed turn',
+          kind: status === 'completed' ? 'automatic' : status === 'cancelled' ? 'interrupted' : 'failed', onlyIfChanged: true,
+        });
+      });
+      this.historyNotices.delete(conversationId);
+      return result;
+    } catch {
+      this.historyNotices.set(conversationId, 'Checkpoint not saved: files may be changing, too large, or Git may be unavailable. Current files remain in the workspace.');
+      return { saved: false };
+    }
+  }
+
+  async workspaceHistory(conversationId, request = {}) {
+    const perform = async (history) => {
+      if (request.action === 'list') {
+        return { ...(await history.list()), notice: this.historyNotices.get(conversationId) || '', running: this.listProcesses(conversationId).length > 0 };
+      }
+      if (request.action === 'files') {
+        const record = await history.ownedRecord(request.versionId);
+        return { files: record.files.map((file) => ({ path: file.path })), label: record.label, excluded: record.excluded || [] };
+      }
+      if (request.action === 'file') {
+        const snapshot = await history.snapshot(request.versionId);
+        const file = snapshot.files.find((file) => file.path === request.path);
+        if (!file) throw new WorkspaceHistoryError('Version file not found');
+        const bytes = Buffer.from(file.content, 'base64');
+        return { text: bytes.includes(0) ? '' : bytes.toString('utf8'), binary: bytes.includes(0) };
+      }
+      if (request.action === 'save') {
+        const result = await history.save(await this.#stableHistorySnapshot(conversationId), { label: request.label, kind: 'manual' });
+        this.historyNotices.delete(conversationId);
+        return result;
+      }
+      if (!['prepare_restore', 'restore'].includes(request.action)) throw new WorkspaceHistoryError('Unknown workspace history operation');
+      if (this.listProcesses(conversationId).length || [...this.activeCommands.values()].some((command) => command.conversationId === conversationId)) throw new WorkspaceHistoryError('Stop workspace processes before restoring');
+      if (request.action === 'prepare_restore') {
+        const current = await this.#stableHistorySnapshot(conversationId);
+        const target = await history.snapshot(request.versionId);
+        const byPath = new Map(current.files.map((file) => [file.path, file]));
+        const desired = new Map(target.files.map((file) => [file.path, file]));
+        const operations = [];
+        for (const filePath of new Set([...byPath.keys(), ...desired.keys()])) {
+          const before = byPath.get(filePath);
+          const after = desired.get(filePath);
+          if (before?.content === after?.content && before?.mode === after?.mode) continue;
+          const expected = before ? crypto.createHash('sha256').update(before.mode + ':' + before.content).digest('hex') : null;
+          operations.push({ path: filePath, expected, action: after ? 'write' : 'remove', ...(after && { content: after.content, mode: after.mode }) });
+        }
+        const preflight = Buffer.from(JSON.stringify(operations.map(({ path, expected }) => ({ path, expected }))));
+        if (preflight.length > 65536) throw new WorkspaceHistoryError('Restore plan is too large');
+        await this.#fileOperation(conversationId, 'history_validate', '.', preflight);
+        for (const [id, plan] of this.restorePlans) if (plan.conversationId === conversationId || plan.expires < Date.now()) this.restorePlans.delete(id);
+        const token = 'restore_' + crypto.randomBytes(16).toString('hex');
+        this.restorePlans.set(token, { conversationId, versionId: request.versionId, fingerprint: fingerprint(current), operations, target, preflight, expires: Date.now() + 60000 });
+        return { token, changes: operations.map((entry) => ({ path: entry.path, action: entry.action })), excludedCount: current.excludedCount || 0 };
+      }
+      const plan = this.restorePlans.get(request.token);
+      this.restorePlans.delete(request.token);
+      if (!plan || plan.conversationId !== conversationId || plan.expires < Date.now()) throw new WorkspaceHistoryError('Restore preview expired; review it again');
+      const current = await this.#stableHistorySnapshot(conversationId);
+      if (fingerprint(current) !== plan.fingerprint) throw new WorkspaceHistoryError('Workspace changed; review the restore again');
+      await this.#fileOperation(conversationId, 'history_validate', '.', plan.preflight);
+      const backup = await history.save(current, { label: 'Before restore', kind: 'backup' });
+      const deadline = Date.now() + 15000;
+      try {
+        for (const operation of plan.operations) {
+          if (Date.now() > deadline || this.historyControllers.get(conversationId)?.signal.aborted) throw new WorkspaceHistoryError('Restore was stopped');
+          await this.#fileOperation(conversationId, 'history_restore', operation.path, Buffer.from(JSON.stringify(operation)));
+        }
+        const restored = await this.#stableHistorySnapshot(conversationId);
+        if (fingerprint(restored) !== fingerprint(plan.target)) throw new WorkspaceHistoryError('Workspace changed during restore');
+        const result = await history.save(restored, { label: 'Restored version', kind: 'restore' });
+        this.historyNotices.delete(conversationId);
+        return { ...result, backupId: backup.id };
+      } catch {
+        this.historyNotices.set(conversationId, 'Restore did not finish. Your previous eligible files are saved in “Before restore”.');
+        throw new WorkspaceHistoryError('Restore did not finish. Use the “Before restore” version to recover.');
+      }
+    };
+    if (['list', 'files', 'file'].includes(request.action)) {
+      const { lease } = await this.#enabledLease(conversationId);
+      return perform(new ManagedWorkspaceHistory(lease.workspaceRoot));
+    }
+    return this.#withHistory(conversationId, perform);
   }
 
   async inspectWorkspace(conversationId, options = {}) {
@@ -1450,6 +1602,7 @@ class ManagedWorkspaceController {
   }
 
   async execute(conversationId, request = {}) {
+    if (this.historyLocks.has(conversationId)) throw new ManagedWorkspaceError('WORKSPACE_HISTORY_BUSY', 'Workspace version operation in progress');
     const { workspace, lease } = await this.#enabledLease(conversationId, request);
     const command = validateCommand(request.command);
     const capabilities = await this.getCapabilities(request);
@@ -1690,6 +1843,7 @@ class ManagedWorkspaceController {
   }
 
   cancelConversation(conversationId) {
+    this.historyControllers.get(conversationId)?.abort();
     this.processManager.cancelConversation(conversationId);
     let count = 0;
     for (const active of this.activeCommands.values()) {
@@ -1712,6 +1866,8 @@ class ManagedWorkspaceController {
   }
 
   dispose() {
+    for (const controller of this.historyControllers.values()) controller.abort();
+    this.restorePlans.clear();
     this.processManager.dispose();
     for (const active of this.activeCommands.values()) active.controller.abort();
     this.activeCommands.clear();

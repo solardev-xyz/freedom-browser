@@ -23,6 +23,8 @@ export function createWorkspaceInspector(hosts) {
   let directories = new Map();
   let expanded = new Set();
   let changes = null;
+  let history = null;
+  let historyBusy = false;
   let loading = false;
   let refreshQueued = false;
   let error = '';
@@ -53,7 +55,7 @@ export function createWorkspaceInspector(hosts) {
     return response.result;
   }
 
-  async function openFile(path, kind) {
+  async function openFile(path, kind, versionId = null) {
     closeViewer();
     const sequence = ++viewerSequence;
     const version = generation;
@@ -90,7 +92,9 @@ export function createWorkspaceInspector(hosts) {
     });
     close.focus();
     try {
-      const result = await inspect(kind, path);
+      const result = versionId
+        ? await historyRequest('file', { versionId, path })
+        : await inspect(kind, path);
       if (!result || sequence !== viewerSequence || version !== generation) return;
       note.textContent =
         result.message ||
@@ -99,7 +103,7 @@ export function createWorkspaceInspector(hosts) {
           : result.truncated
             ? 'Showing a limited preview (64 KiB maximum).'
             : kind === 'diff'
-              ? 'Changes compared with the latest commit. No checkpoints are saved automatically yet.'
+              ? 'Changes compared with the latest saved version.'
               : 'Read-only file preview');
       if (kind === 'diff') {
         const lines = (result.text || '').split('\n');
@@ -124,6 +128,217 @@ export function createWorkspaceInspector(hosts) {
       if (sequence === viewerSequence && version === generation)
         note.textContent = 'This workspace item could not be read. Refresh and try again.';
     }
+  }
+
+  async function historyRequest(action, options = {}) {
+    const expected = conversationId;
+    const version = generation;
+    const response = await window.electronAPI.agentWorkspaceHistory(expected, action, options);
+    if (version !== generation || expected !== conversationId) return null;
+    if (!response?.ok || response.conversationId !== expected)
+      throw new Error(response?.error?.message || 'Workspace history is unavailable.');
+    return response.result;
+  }
+
+  async function refreshHistory() {
+    const version = generation;
+    try {
+      const result = await historyRequest('list');
+      if (result) history = result;
+    } catch (error) {
+      if (version === generation) history = { versions: [], notice: error.message };
+    }
+    if (version === generation) render();
+  }
+
+  async function saveVersion(label) {
+    if (historyBusy || !label.trim()) return;
+    const version = generation;
+    historyBusy = true;
+    error = '';
+    render();
+    try {
+      await historyRequest('save', { label: label.trim() });
+      if (version === generation) await refreshHistory();
+    } catch (cause) {
+      if (version === generation) error = cause.message;
+    } finally {
+      if (version === generation) {
+        historyBusy = false;
+        render();
+      }
+    }
+  }
+
+  function historyDialog(title) {
+    closeViewer();
+    returnFocus = document.activeElement;
+    viewer = element('div', 'agent-workspace-viewer-backdrop');
+    const dialog = element('section', 'agent-workspace-viewer');
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'true');
+    dialog.setAttribute('aria-label', title);
+    const heading = element('div', 'agent-workspace-viewer-heading');
+    heading.appendChild(element('strong', '', title));
+    const close = button('Close', closeViewer, 'agent-text-button');
+    heading.appendChild(close);
+    const note = element('p', 'agent-workspace-note', 'Loading…');
+    const content = element('div', 'agent-workspace-version-content');
+    dialog.appendChild(heading);
+    dialog.appendChild(note);
+    dialog.appendChild(content);
+    viewer.appendChild(dialog);
+    document.body.appendChild(viewer);
+    viewer.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        event.stopPropagation();
+        closeViewer();
+      }
+      if (event.key === 'Tab') {
+        const targets = [...dialog.querySelectorAll('button')].filter((node) => !node.disabled);
+        event.preventDefault();
+        const index = targets.indexOf(document.activeElement);
+        targets[(index + (event.shiftKey ? -1 : 1) + targets.length) % targets.length]?.focus();
+      }
+    });
+    close.focus();
+    return { note, content, sequence: viewerSequence, version: generation };
+  }
+
+  async function viewVersion(version) {
+    const ui = historyDialog(version.label);
+    try {
+      const result = await historyRequest('files', { versionId: version.id });
+      if (!result || ui.sequence !== viewerSequence || ui.version !== generation) return;
+      ui.note.textContent = `${result.files.length} saved files. Click a file to inspect this version.`;
+      for (const file of result.files)
+        ui.content.appendChild(button(file.path, () => openFile(file.path, 'file', version.id)));
+      if (result.excluded?.length) {
+        ui.content.appendChild(
+          element(
+            'p',
+            'agent-workspace-note',
+            'Additional exclusions in this version (up to 20 shown):'
+          )
+        );
+        for (const entry of result.excluded)
+          ui.content.appendChild(
+            element('p', 'agent-workspace-note', `${entry.path} · ${entry.reason}`)
+          );
+      }
+    } catch (cause) {
+      if (ui.sequence === viewerSequence) ui.note.textContent = cause.message;
+    }
+  }
+
+  async function reviewRestore(version) {
+    const ui = historyDialog(`Restore “${version.label}”`);
+    try {
+      const plan = await historyRequest('prepare_restore', { versionId: version.id });
+      if (!plan || ui.sequence !== viewerSequence || ui.version !== generation) return;
+      ui.note.textContent =
+        'Freedom will save the current eligible files as “Before restore”, then apply these changes. Ignored, generated, secret, and oversized files are left alone. Stop running processes before restoring.';
+      for (const change of plan.changes)
+        ui.content.appendChild(
+          element(
+            'p',
+            'agent-workspace-note',
+            `${change.action === 'remove' ? 'Remove' : 'Write'} · ${change.path}`
+          )
+        );
+      if (!plan.changes.length)
+        ui.content.appendChild(
+          element('p', 'agent-workspace-note', 'The eligible files already match this version.')
+        );
+      const confirm = button(
+        'Save current work and restore',
+        async () => {
+          confirm.disabled = true;
+          historyBusy = true;
+          ui.note.textContent = 'Saving current work and restoring…';
+          try {
+            const result = await historyRequest('restore', { token: plan.token });
+            if (result && ui.version === generation) {
+              closeViewer();
+              await refreshHistory();
+              void refresh();
+            }
+          } catch (cause) {
+            if (ui.version === generation) {
+              ui.note.textContent = cause.message;
+              error = cause.message;
+            }
+          } finally {
+            if (ui.version === generation) {
+              historyBusy = false;
+              render();
+            }
+          }
+        },
+        'agent-workspace-restore-confirm'
+      );
+      confirm.disabled = !plan.changes.length;
+      ui.content.appendChild(confirm);
+    } catch (cause) {
+      if (ui.sequence === viewerSequence) ui.note.textContent = cause.message;
+    }
+  }
+
+  function renderHistory(body) {
+    const form = element('form', 'agent-workspace-version-save');
+    const name = document.createElement('input');
+    name.type = 'text';
+    name.maxLength = 80;
+    name.placeholder = 'Name this version…';
+    name.setAttribute('aria-label', 'Version name');
+    const save = button(
+      historyBusy ? 'Saving…' : 'Save version',
+      () => void saveVersion(name.value),
+      'agent-text-button'
+    );
+    save.disabled = historyBusy;
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      void saveVersion(name.value);
+    });
+    form.appendChild(name);
+    form.appendChild(save);
+    body.appendChild(form);
+    body.appendChild(
+      element(
+        'p',
+        'agent-workspace-note',
+        'Local versions exclude dependencies, builds, caches, secrets and files over 64 KiB. Maximum 200 files / 512 KiB per version. Saving does not mean the project was tested.'
+      )
+    );
+    if (!history) {
+      body.appendChild(element('p', 'agent-workspace-note', 'Loading versions…'));
+      return;
+    }
+    if (history.notice) body.appendChild(element('p', 'agent-workspace-note', history.notice));
+    if (!history.versions.length)
+      body.appendChild(element('p', 'agent-workspace-note', 'No versions saved yet.'));
+    for (const version of history.versions) {
+      const row = element('div', 'agent-workspace-version');
+      row.appendChild(button(version.label, () => viewVersion(version)));
+      row.appendChild(
+        element(
+          'p',
+          'agent-workspace-note',
+          `${version.kind} · ${new Date(version.createdAt).toLocaleString()} · ${version.fileCount} files${version.excludedCount ? ` · ${version.excludedCount} excluded` : ''}`
+        )
+      );
+      const restore = button('Restore…', () => reviewRestore(version), 'agent-text-button');
+      restore.disabled = historyBusy || history.running;
+      row.appendChild(restore);
+      body.appendChild(row);
+    }
+    if (history.running)
+      body.appendChild(
+        element('p', 'agent-workspace-note', 'Stop running processes to restore a version.')
+      );
+    if (history.limitReached)
+      body.appendChild(element('p', 'agent-workspace-note', 'Showing the latest 100 versions.'));
   }
 
   async function toggleDirectory(path) {
@@ -217,12 +432,14 @@ export function createWorkspaceInspector(hosts) {
           'changes',
           `Changes${changes?.available ? ` · ${changes.changes.length}${changes.limitReached ? '+' : ''}` : ''}`,
         ],
+        ['versions', 'Versions'],
       ]) {
         const tab = button(
           label,
           () => {
             selectedTab = id;
             render();
+            if (id === 'versions') void refreshHistory();
           },
           'agent-workspace-inspector-tab'
         );
@@ -232,7 +449,9 @@ export function createWorkspaceInspector(hosts) {
       host.appendChild(tabs);
       const body = element('div', 'agent-workspace-inspector-body');
       if (error) body.appendChild(element('p', 'agent-workspace-note', error));
-      if (selectedTab === 'files') {
+      if (selectedTab === 'versions') {
+        renderHistory(body);
+      } else if (selectedTab === 'files') {
         const label = element('label', 'agent-workspace-generated-toggle');
         const toggle = document.createElement('input');
         toggle.type = 'checkbox';
@@ -302,6 +521,7 @@ export function createWorkspaceInspector(hosts) {
       else error = 'Files could not be refreshed. Try again.';
       if (git.status === 'fulfilled' && git.value) changes = git.value;
       else changes = { available: false, message: 'Changes could not be refreshed. Try again.' };
+      if (selectedTab === 'versions') await refreshHistory();
       for (const path of expanded) {
         if (version !== generation || sequence !== refreshSequence) return;
         const listing = await inspect('tree', path).catch(() => null);
@@ -330,6 +550,8 @@ export function createWorkspaceInspector(hosts) {
         directories = new Map();
         expanded = new Set();
         changes = null;
+        history = null;
+        historyBusy = false;
         error = '';
         loading = false;
         refreshQueued = false;
