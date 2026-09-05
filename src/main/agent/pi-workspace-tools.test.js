@@ -524,68 +524,89 @@ describe('Pi managed workspace tools', () => {
     );
   });
 
-  test('opens and refreshes a static preview through the scoped tab authority', async () => {
-    const previewUrl = `freedom-preview://${'a'.repeat(40)}/index.html`;
+  test('reopens and switches static projects across turns without clearing page observation checks', async () => {
+    const { OriginScopedAutomationController } = require('../automation/origin-scoped-controller');
+    const tabs = new Map();
+    const browser = {
+      execute: jest.fn(async (operation, input) => {
+        if (operation === 'browser_create_tab') {
+          const tab = { tabId: `tab_${tabs.size + 1}`, url: input.url };
+          tabs.set(tab.tabId, tab);
+          return { ok: true, result: { tab } };
+        }
+        const tab = tabs.get(input.tabId);
+        if (!tab) return { ok: false, error: { code: 'TAB_NOT_FOUND' } };
+        if (operation === 'browser_navigate') tab.url = input.url;
+        return { ok: true, result: { tab, elements: [] } };
+      }),
+    };
+    const scope = new OriginScopedAutomationController({
+      controller: browser,
+      createWorkspacePage: async (url) => {
+        const created = await browser.execute('browser_create_tab', { url });
+        return created.result.tab.tabId;
+      },
+    });
     const previewController = {
-      createPreview: jest.fn(async () => ({ url: previewUrl, entryPath: 'index.html' })),
+      createPreview: jest.fn(async (_conversation, path) => ({
+        url: `freedom-preview://${(path === 'game-two/index.html' ? 'b' : 'a').repeat(40)}/index.html`,
+        entryPath: path,
+      })),
     };
-    const scopedController = {
-      execute: jest
-        .fn()
-        .mockResolvedValueOnce({ ok: true, result: { tabs: [], activeTabId: null } })
-        .mockResolvedValueOnce({
-          ok: true,
-          result: { activeTabId: 'tab_preview', tab: { tabId: 'tab_preview', url: previewUrl } },
-        })
-        .mockResolvedValueOnce({
-          ok: true,
-          result: { tabs: [{ tabId: 'tab_preview', url: previewUrl }] },
-        })
-        .mockResolvedValueOnce({ ok: true, result: { activeTabId: 'tab_preview' } })
-        .mockResolvedValueOnce({
-          ok: true,
-          result: { activeTabId: 'tab_preview', tab: { tabId: 'tab_preview', url: previewUrl } },
-        }),
-    };
-    const onToolOutcome = jest.fn();
     const tools = await createWorkspaceTools({
       sdk: createSdk(),
       controller: createController(),
       previewController,
-      scopedController,
+      scopedController: scope,
       conversationId: 'conversation_one',
       requestApproval: jest.fn(async () => 'approved'),
-      onToolOutcome,
     });
-    expect(tools.map((tool) => tool.name)).toContain('workspace_preview');
-    const previewTool = tools.find((tool) => tool.name === 'workspace_preview');
-
-    await expect(previewTool.execute('call_preview_one', {})).resolves.toMatchObject({
-      content: [
-        { type: 'text', text: 'Opened the static preview for index.html in an Agent tab.' },
-      ],
-      details: { entryPath: 'index.html', pageId: 'tab_preview' },
+    const preview = tools.find((tool) => tool.name === 'workspace_preview');
+    await expect(preview.execute('first', { path: 'game-one/index.html' })).resolves.toMatchObject({
+      details: { pageId: 'tab_1' },
     });
-    await previewTool.execute('call_preview_two', { path: '.' });
-
-    expect(previewController.createPreview).toHaveBeenCalledWith('conversation_one', '.');
-    expect(scopedController.execute).toHaveBeenCalledWith('browser_create_tab', {
-      url: previewUrl,
+    await scope.prepareResume();
+    await expect(preview.execute('reopen', { path: 'game-one/index.html' })).resolves.toMatchObject({
+      details: { pageId: 'tab_1' },
     });
-    expect(scopedController.execute).toHaveBeenCalledWith('browser_focus_tab', {
-      tabId: 'tab_preview',
+    expect(tabs.size).toBe(1);
+    await scope.prepareResume();
+    await expect(preview.execute('switch', { path: 'game-two/index.html' })).resolves.toMatchObject({
+      details: { pageId: 'tab_2' },
     });
-    expect(scopedController.execute).toHaveBeenCalledWith('browser_navigate', {
-      tabId: 'tab_preview',
-      url: previewUrl,
+    expect(browser.execute).toHaveBeenCalledWith('browser_create_tab', {
+      url: `freedom-preview://${'b'.repeat(40)}/index.html`,
+      openerTabId: 'tab_1',
     });
-    expect(onToolOutcome).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        operation: 'workspace_preview',
-        status: 'succeeded',
-        pageId: 'tab_preview',
-      })
-    );
+    await scope.prepareResume();
+    await expect(preview.execute('return', { path: 'game-one/index.html' })).resolves.toMatchObject({
+      details: { pageId: 'tab_1' },
+    });
+    expect(tabs.size).toBe(2);
+    for (const operation of ['browser_click', 'browser_navigate']) {
+      await expect(
+        scope.execute(operation, { tabId: 'tab_1', url: 'https://example.com', ref: 'stale' })
+      ).resolves.toMatchObject({ ok: false, error: { code: 'POLICY_DENIED' } });
+    }
+    await expect(scope.execute('browser_snapshot', { tabId: 'tab_1' })).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'POLICY_DENIED' },
+    });
+    await scope.execute('browser_get_tab', { tabId: 'tab_1' });
+    await scope.execute('browser_snapshot', { tabId: 'tab_1' });
+    await expect(
+      scope.execute('browser_navigate', { tabId: 'tab_1', url: tabs.get('tab_1').url })
+    ).resolves.toMatchObject({ ok: true });
+    for (const url of [
+      'https://example.com',
+      'file:///private/index.html',
+      'freedom-preview://bad/index.html',
+    ]) {
+      await expect(scope.openWorkspacePreview(url)).resolves.toMatchObject({
+        ok: false,
+        error: { code: 'POLICY_DENIED' },
+      });
+    }
   });
 
   test('declares and opens a gated managed server preview through one process identity', async () => {
@@ -624,10 +645,7 @@ describe('Pi managed workspace tools', () => {
       })),
     };
     const scopedController = {
-      execute: jest
-        .fn()
-        .mockResolvedValueOnce({ ok: true, result: { tabs: [], activeTabId: null } })
-        .mockResolvedValueOnce({
+      openWorkspacePreview: jest.fn().mockResolvedValueOnce({
           ok: true,
           result: { activeTabId: 'tab_server', tab: { tabId: 'tab_server', url: previewUrl } },
         }),

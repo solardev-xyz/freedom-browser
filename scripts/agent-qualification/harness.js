@@ -32,6 +32,9 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const pkg = require(path.join(REPO_ROOT, 'package.json'));
 
 const { FreedomAgentService } = require('../../src/main/agent/freedom-agent-service');
+const {
+  OriginScopedAutomationController,
+} = require('../../src/main/automation/origin-scoped-controller');
 const { ManagedWorkspaceController } = require('../../src/main/agent/managed-workspace-controller');
 const { AgentManagedWorkspaceStore } = require('../../src/main/agent/managed-workspace-store');
 const { AgentSessionHistoryStore } = require('../../src/main/agent/session-history-store');
@@ -336,45 +339,52 @@ function buildComposition({ userDataDir, networkEnabled }) {
 
   const service = new FreedomAgentService({
     controller: { execute: async () => ({ ok: false, error: { code: 'UNSUPPORTED' } }) },
-    // Minimal in-memory browser-tab scope that records navigations so preview scenarios can read
-    // the opaque origin the controller opened. Non-preview scenarios never create a tab.
-    createControllerScope: async () => ({
-      execute: async (operation, params = {}) => {
-        if (operation === OPERATIONS.LIST_TABS) {
-          return {
-            ok: true,
-            result: {
-              tabs: browserTabs.map((tab) => ({ ...tab })),
-              activeTabId: browserTabs.at(-1)?.tabId || null,
-            },
-          };
-        }
-        if (operation === OPERATIONS.CREATE_TAB) {
-          const tab = { tabId: `tab_${browserTabs.length + 1}`, url: params.url };
-          browserTabs.push(tab);
-          navigations.push({ operation, url: params.url });
-          return { ok: true, result: { activeTabId: tab.tabId, tab: { ...tab } } };
-        }
-        if (operation === OPERATIONS.FOCUS_TAB) {
-          return { ok: true, result: { activeTabId: params.tabId } };
-        }
-        if (operation === OPERATIONS.NAVIGATE) {
-          const tab = browserTabs.find((candidate) => candidate.tabId === params.tabId);
-          if (tab) tab.url = params.url;
-          navigations.push({ operation, url: params.url });
-          return { ok: true, result: { activeTabId: params.tabId, tab: tab && { ...tab } } };
-        }
-        return { ok: false, error: { code: 'UNSUPPORTED' } };
-      },
-      getWorkspaceState: () => ({
-        tabIds: browserTabs.map((tab) => tab.tabId),
-        activeTabId: browserTabs.at(-1)?.tabId || null,
-      }),
-      getActiveTabId: () => browserTabs.at(-1)?.tabId || null,
-      setApprovalMode: () => {},
-      prepareResume: async () => ({ ok: true }),
-      releaseTab: () => {},
-    }),
+    // Keep the tab surface in memory, but exercise the production scope and
+    // preview-opening path, including ownership and continued-turn observation.
+    createControllerScope: async () => {
+      const browser = {
+        execute: async (operation, params = {}) => {
+          if (operation === OPERATIONS.GET_TAB || operation === OPERATIONS.SNAPSHOT) {
+            const tab = browserTabs.find((candidate) => candidate.tabId === params.tabId);
+            return tab
+              ? { ok: true, result: { tab: { ...tab }, elements: [] } }
+              : { ok: false, error: { code: 'TAB_NOT_FOUND' } };
+          }
+          if (operation === OPERATIONS.LIST_TABS) {
+            return {
+              ok: true,
+              result: {
+                tabs: browserTabs.map((tab) => ({ ...tab })),
+                activeTabId: browserTabs.at(-1)?.tabId || null,
+              },
+            };
+          }
+          if (operation === OPERATIONS.CREATE_TAB) {
+            const tab = { tabId: `tab_${browserTabs.length + 1}`, url: params.url };
+            browserTabs.push(tab);
+            navigations.push({ operation, url: params.url });
+            return { ok: true, result: { activeTabId: tab.tabId, tab: { ...tab } } };
+          }
+          if (operation === OPERATIONS.FOCUS_TAB) {
+            return { ok: true, result: { activeTabId: params.tabId } };
+          }
+          if (operation === OPERATIONS.NAVIGATE) {
+            const tab = browserTabs.find((candidate) => candidate.tabId === params.tabId);
+            if (tab) tab.url = params.url;
+            navigations.push({ operation, url: params.url });
+            return { ok: true, result: { activeTabId: params.tabId, tab: tab && { ...tab } } };
+          }
+          return { ok: false, error: { code: 'UNSUPPORTED' } };
+        },
+      };
+      return new OriginScopedAutomationController({
+        controller: browser,
+        createWorkspacePage: async (url) => {
+          const result = await browser.execute(OPERATIONS.CREATE_TAB, { url });
+          return result.result.tab.tabId;
+        },
+      });
+    },
     createTools: async () => [],
     // The real Pi workspace tool factory, wrapped only to observe the trusted per-process terminal
     // observer and, when a scenario asks, to simulate a single observer failure.

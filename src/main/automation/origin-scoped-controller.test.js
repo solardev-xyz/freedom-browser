@@ -667,6 +667,40 @@ describe('OriginScopedAutomationController', () => {
     ).resolves.toMatchObject({ ok: true });
   });
 
+  test('preview opening preserves ownership and cannot grant a general resume bypass', async () => {
+    const controller = createController();
+    const scoped = await createOriginScopedAutomationController({
+      controller,
+      tabId: 'tab_assigned',
+    });
+    await scoped.prepareResume();
+    await expect(
+      scoped.execute(
+        OPERATIONS.NAVIGATE,
+        {
+          tabId: 'tab_assigned',
+          url: 'https://other.example',
+        },
+        { previewNavigation: true }
+      )
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: ERROR_CODES.POLICY_DENIED },
+    });
+    const url = `freedom-preview://${'a'.repeat(40)}/index.html`;
+    await expect(scoped.openWorkspacePreview(url)).resolves.toMatchObject({ ok: true });
+    expect(controller.execute).toHaveBeenCalledWith(OPERATIONS.CREATE_TAB, {
+      url,
+      openerTabId: 'tab_assigned',
+    });
+    await expect(
+      scoped.execute(OPERATIONS.FOCUS_TAB, { tabId: 'tab_not_owned' })
+    ).resolves.toMatchObject({ ok: false, error: { code: ERROR_CODES.POLICY_DENIED } });
+    await expect(
+      scoped.execute(OPERATIONS.NAVIGATE, { tabId: 'tab_created', url })
+    ).resolves.toMatchObject({ ok: false, error: { code: ERROR_CODES.POLICY_DENIED } });
+  });
+
   test('prepares resume after a cross-origin human navigation inside the workspace', async () => {
     const controller = createController();
     const scoped = await createOriginScopedAutomationController({

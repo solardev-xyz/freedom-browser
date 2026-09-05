@@ -226,6 +226,52 @@ class OriginScopedAutomationController {
   }
 
   async execute(operation, input = {}, execution = {}) {
+    return this.#execute(operation, input, execution);
+  }
+
+  // Called only by Freedom's preview controller consumers, after they resolve a
+  // conversation-owned preview. This is not a model-facing browser operation.
+  // Opening a known preview needs no old page references; preserve the resume
+  // observation barrier for subsequent page interactions instead of clearing it.
+  async openWorkspacePreview(url) {
+    if (
+      typeof url !== 'string' ||
+      !/^freedom-preview:\/\/[a-f0-9]{20,128}\/[^?#\s]*$/.test(url)
+    ) {
+      return errorEnvelope(
+        this.lastState,
+        ERROR_CODES.POLICY_DENIED,
+        'A workspace preview URL is required'
+      );
+    }
+    const listed = await this.execute(OPERATIONS.LIST_TABS, {});
+    if (!listed?.ok) return listed;
+    const existing = listed.result.tabs.find((tab) => tab.url === url);
+    const needsObservation = Boolean(this.resumeObservation);
+    let opened;
+    if (existing?.tabId) {
+      const focused = await this.#execute(OPERATIONS.FOCUS_TAB, { tabId: existing.tabId }, {}, true);
+      if (!focused?.ok) return focused;
+      opened = await this.#execute(OPERATIONS.NAVIGATE, { tabId: existing.tabId, url }, {}, true);
+    } else {
+      opened = await this.#execute(
+        OPERATIONS.CREATE_TAB,
+        {
+          url,
+          ...(listed.result.activeTabId && { tabId: listed.result.activeTabId }),
+        },
+        {},
+        true
+      );
+    }
+    if (needsObservation) this.resumeObservation = 'get_tab';
+    if (opened?.ok) {
+      opened.result = { ...opened.result, activeTabId: this.activeTabId };
+    }
+    return opened;
+  }
+
+  async #execute(operation, input = {}, execution = {}, previewNavigation = false) {
     await this.#awaitExternalApprovalBarrier();
     if (!ORIGIN_SCOPED_OPERATIONS.has(operation)) {
       return errorEnvelope(
@@ -291,7 +337,7 @@ class OriginScopedAutomationController {
       });
     }
     if (operation === OPERATIONS.CREATE_TAB) {
-      if (this.resumeObservation && this.resumeObservation !== 'create_tab') {
+      if (!previewNavigation && this.resumeObservation && this.resumeObservation !== 'create_tab') {
         return errorEnvelope(
           this.lastState,
           ERROR_CODES.POLICY_DENIED,
@@ -347,7 +393,7 @@ class OriginScopedAutomationController {
     }
     if (!this.#acceptCurrentOrigin(state)) return this.#originDenied(state);
 
-    if (this.resumeObservation) {
+    if (this.resumeObservation && !previewNavigation) {
       if (operation !== OPERATIONS.SNAPSHOT || this.resumeObservation !== 'snapshot') {
         return errorEnvelope(
           state,

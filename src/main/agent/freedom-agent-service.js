@@ -1127,26 +1127,9 @@ class FreedomAgentService {
         conversation.conversationId,
         processId
       );
-      const listed = await conversation.scopedController.execute(OPERATIONS.LIST_TABS, {});
-      if (listed?.ok !== true) throw new Error('Could not list Agent tabs');
-      const existing = listed.result?.tabs?.find((tab) => tab.url === preview.url);
-      let opened;
-      if (existing?.tabId) {
-        const focused = await conversation.scopedController.execute(OPERATIONS.FOCUS_TAB, {
-          tabId: existing.tabId,
-        });
-        if (focused?.ok !== true) throw new Error('Could not focus preview');
-        opened = await conversation.scopedController.execute(OPERATIONS.NAVIGATE, {
-          tabId: existing.tabId,
-          url: preview.url,
-        });
-      } else {
-        opened = await conversation.scopedController.execute(OPERATIONS.CREATE_TAB, {
-          url: preview.url,
-        });
-      }
+      const opened = await conversation.scopedController.openWorkspacePreview(preview.url);
       if (opened?.ok !== true) throw new Error('Could not open preview');
-      const tabId = opened.result?.tab?.tabId || opened.result?.activeTabId || existing?.tabId;
+      const tabId = opened.result?.tab?.tabId || opened.result?.activeTabId;
       if (tabId) this.#registerAgentTab(tabId, conversation.conversationId);
       return Object.freeze({ processId, port: preview.port, ...(tabId && { tabId }) });
     } catch {

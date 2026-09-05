@@ -659,23 +659,23 @@ describe('FreedomAgentService', () => {
       createPreview: jest.fn(),
       createProcessPreview: jest.fn(() => ({
         kind: 'server',
-        url: 'freedom-workspace-preview://previewtoken/',
+        url: 'freedom-preview://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/',
         processId,
         port: 4_173,
       })),
       revokeConversation: jest.fn(),
     };
-    const execute = jest
-      .fn()
-      .mockResolvedValueOnce({ ok: true, result: { tabs: [] } })
-      .mockResolvedValueOnce({ ok: true, result: { tab: { tabId: 'tab_preview' } } });
+    const openWorkspacePreview = jest.fn(async () => ({
+      ok: true,
+      result: { tab: { tabId: 'tab_preview' } },
+    }));
     const { service } = createService(fake, {
       workspaceController,
       workspacePreviewController,
     });
     service.conversation = {
       conversationId: 'conversation_test',
-      scopedController: { execute },
+      scopedController: { openWorkspacePreview },
       turns: [],
     };
 
@@ -697,10 +697,9 @@ describe('FreedomAgentService', () => {
       'conversation_test',
       processId
     );
-    expect(execute.mock.calls.map(([operation]) => operation)).toEqual([
-      OPERATIONS.LIST_TABS,
-      OPERATIONS.CREATE_TAB,
-    ]);
+    expect(openWorkspacePreview).toHaveBeenCalledWith(
+      'freedom-preview://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/'
+    );
     expect(service.listAgentTabs()).toEqual([
       expect.objectContaining({ tabId: 'tab_preview', conversationId: 'conversation_test' }),
     ]);

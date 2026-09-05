@@ -1,7 +1,6 @@
 'use strict';
 
 const path = require('path');
-const { OPERATIONS } = require('../automation/contract/operations');
 const { getBuiltInSkillResource, isBuiltInSkillResourcePath } = require('./builtin-skills');
 const {
   MAX_WORKSPACE_DIRECTORY_ENTRIES,
@@ -364,29 +363,10 @@ function createWorkspacePreviewTool(sdk, options) {
           cancelled.code = 'WORKSPACE_OPERATION_CANCELLED';
           throw cancelled;
         }
-        const listed = assertBrowserEnvelope(
-          await options.scopedController.execute(OPERATIONS.LIST_TABS, {})
+        const opened = assertBrowserEnvelope(
+          await options.scopedController.openWorkspacePreview(preview.url)
         );
-        const existing = listed.result?.tabs?.find((tab) => tab.url === preview.url);
-        let opened;
-        if (existing?.tabId) {
-          assertBrowserEnvelope(
-            await options.scopedController.execute(OPERATIONS.FOCUS_TAB, {
-              tabId: existing.tabId,
-            })
-          );
-          opened = assertBrowserEnvelope(
-            await options.scopedController.execute(OPERATIONS.NAVIGATE, {
-              tabId: existing.tabId,
-              url: preview.url,
-            })
-          );
-        } else {
-          opened = assertBrowserEnvelope(
-            await options.scopedController.execute(OPERATIONS.CREATE_TAB, { url: preview.url })
-          );
-        }
-        const pageId = opened.result?.tab?.tabId || opened.result?.activeTabId || existing?.tabId;
+        const pageId = opened.result?.tab?.tabId || opened.result?.activeTabId;
         receipt = fileWorkspaceReceipt(
           options.controller,
           options.conversationId,
@@ -1356,7 +1336,7 @@ async function createWorkspaceTools(options = {}) {
   if (
     previewEnabled &&
     (typeof options.previewController?.createPreview !== 'function' ||
-      typeof options.scopedController?.execute !== 'function')
+      typeof options.scopedController?.openWorkspacePreview !== 'function')
   ) {
     throw new TypeError('Static previews require preview and scoped browser controllers');
   }
