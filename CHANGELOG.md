@@ -6,53 +6,82 @@ All notable changes to Freedom will be documented in this file.
 
 ### Added
 
-- Remappable keyboard shortcuts under Settings > Shortcuts:
-  - Searchable list grouped by category; click a binding and press the new combination
-  - Conflict warning with a one-click swap when a combination is already taken
-  - Per-shortcut reset and a Restore defaults button; changes apply without a restart
-- Private windows (`Cmd+Shift+N` / `Ctrl+Shift+N`, File > New Private Window): ephemeral browsing on a per-window in-memory session with dark, badged chrome
-  - No history, favicon-cache, or autocomplete writes; cookies and site data evaporate on close
-  - Downloads are allowed but flagged and drop out of the downloads list when the window closes (files stay on disk); permission prompts work but decisions are session-only
-  - Wallet and `window.ethereum` / `window.swarm` / `window.radicle` providers are unavailable in private windows (EIP-6963 silent); x402 payment interception is off
-  - Honest private start page: what's protected (local traces) and what isn't (network observers, sites you log into, your IP)
-- Find in page (`Cmd+F` / `Ctrl+F`, also under Edit in the menu): overlay bar over the page with a live match counter, `Enter` / `Shift+Enter` to cycle matches, `Esc` to close
+- Contract-hosted onchain apps on `web3://<address>[:<chainId>]/` — the app itself lives in the contract, not on a web server:
+  - Address-bar shield popover reporting the chain, block, contract and content hash behind the page
+  - The wallet provider is pinned to the app's chain; a page cannot switch it
+  - Reasoning: the page is a contract read, not a hosted file; the shield reports whether that read was verified
+- Three new wallet account types, usable with the vault locked and across dApp signing and sends:
+  - Ledger hardware accounts, confirmed on the device, including x402 payments
+  - Phone accounts over Open Lavatory: QR pairing, signing on the phone, including x402 payments
+  - Safe multi-owner accounts on Gnosis, with a signing board owners sign in any order
+- Radicle repositories are browsable and writable from the browser — open a `rad:` URL the way you would a web page:
+  - `rad:` as a fetchable scheme, plus a consented `window.radicle` provider for issues, comments and patches
+  - Seed-to-browse reports per-peer clone phases, with retry and cancellation
+  - Repository view pinned to any commit id, with commit, branch and contributor counts
+  - Nodes menu shows the Radicle node's connected peers, seeded repositories and addon version
+- Tor for `.onion` addresses through a bundled [Arti](https://gitlab.torproject.org/tpo/core/arti) 1.4.4 client, off by default under Settings > Experimental (clearnet traffic keeps connecting directly)
+  - Prompt to use a system Tor client, such as Tor Browser, instead of Arti
+- [Myotis](https://github.com/biafra23/myotis) 0.1.7, a peer-to-peer Ethereum and Gnosis light client, as an experimental verified source, off by default:
+  - Draggable read and verification order per chain under Settings > Chains, alongside Colibri and RPC
+  - Reasoning: reads are proven against a chain head Myotis syncs from peers itself, rather than trusted from an endpoint
+- `.tez` name resolution from the Tezos Domains contracts, for bare names and `ipfs://` / `ipns://` targets
+- Encrypted point-to-point messaging and topic broadcast for Swarm apps through `window.swarm`, behind its own consent tier
+- Swarm apps can ship a `freedom-manifest.json` so their permissions are one decision instead of a stream of prompts
+- Ad and tracker blocking, on by default, which also hides the empty spaces blocked ads leave:
+  - Settings > Ad Blocking with a per-site allowlist and live rule counts
+  - Cookie-banner and annoyance filtering, off by default
+  - Filter lists refresh over Swarm without an app update
 - Download manager covering every download source, including `bzz://` and `ipfs://` content:
   - Shelf card with live progress and cancel; Open / Show in Folder on completion
-  - `freedom://downloads` page (Cmd/Ctrl+Shift+J) with search, pause/resume, and Clear All
+  - `freedom://downloads` page (`Cmd/Ctrl+Shift+J`) with search, pause/resume, and Clear All
   - "Ask where to save each file" toggle under Settings > Downloads
 - Per-site permission prompts for camera, microphone, notifications, clipboard reading, location, and MIDI, replacing the previous silent denial:
   - Prompt under the address bar with Allow / Block and "Remember for this site"
   - Remembered decisions per profile under Settings > Site Permissions, with per-site and remove-all revocation
   - Indicator icon in the address bar with quick revoke on sites holding granted permissions
-  - Location prompts note that positioning may be unreliable
-- Download manager covering every download source, including `bzz://` and `ipfs://` content:
-  - Shelf card with live progress and cancel; Open / Show in Folder on completion
-  - `freedom://downloads` page (Cmd/Ctrl+Shift+J) with search, pause/resume, and Clear All
-  - "Ask where to save each file" toggle under Settings > Downloads
-- Find in page (`Cmd+F` / `Ctrl+F`, also under Edit in the menu): overlay bar over the page with a live match counter, `Enter` / `Shift+Enter` to cycle matches, `Esc` to close
+- Private windows (`Cmd/Ctrl+Shift+N`, File > New Private Window): ephemeral browsing on a per-window in-memory session with dark, badged chrome
+  - No history, favicon-cache or autocomplete writes; cookies and site data end on close
+  - Downloads leave the list on close and permission decisions are session-only; files stay on disk
+  - Wallet and `window.ethereum` / `window.swarm` / `window.radicle` providers are unavailable; x402 payment interception is off
+  - Start page listing what private windows do and do not protect
+- Find in page (`Cmd/Ctrl+F`, also under Edit in the menu): overlay bar with a live match counter, `Enter` / `Shift+Enter` to cycle matches, `Esc` to close
 - Audio indicator on tabs playing sound; click it or use "Mute Tab" in the tab context menu to mute/unmute (mute survives navigation)
+- Remappable keyboard shortcuts under Settings > Shortcuts:
+  - Searchable list grouped by category; click a binding and press the new combination
+  - Conflict warning with a one-click swap when a combination is already taken
+  - Per-shortcut reset and a Restore defaults button; changes apply without a restart
+- Page zoom on `Cmd/Ctrl` with `=`, `-` and `0`, remappable like every other binding (thanks @alexwbend!)
+- Address-bar search for typed input that isn't a URL, with DuckDuckGo, Google, Bing, Brave Search, Ecosia, Startpage or a custom engine under Settings > Search
 
 ### Changed
 
-- Updated bundled [Ant](https://github.com/freedom-hq/ant) 0.5.33 to 0.5.44:
-  - Fixes the ~250 MiB upload stall
-  - Upload-side Reed-Solomon encoding, end-to-end Swarm content encryption, local pinning, and ACT access control
-  - Fewer intermittent upload failures under feed workloads, faster feed resolution
-  - Expired or invalid postage batches fail fast with a clear error instead of stalling uploads
-  - Freshly bought batches rejected by peers during propagation now recover on their own
-  - Encrypted point-to-point and broadcast messaging on the light node
-- The Swarm node's API now comes up instantly on start, so the node menu shows peers counting up live instead of sitting at 0 during startup
-- Radicle now runs as an embedded libradicle 0.7.1 addon instead of separate daemon, HTTP, and CLI processes:
-  - Native browsing, seeding, synchronization, unseeding, GitHub imports, and provider writes
-  - Live peer-level clone phases with cancellation, retry, and timeout handling
-  - Concurrent cold-start discovery across a device-ranked 14-node seed book
-  - Historical commit browsing with repository remotes, branches, commits, and contributor stats
-  - Profile-scoped identity, peer and repository counts, and addon version in the Nodes menu
+- Radicle runs as an embedded [libradicle](https://github.com/solardev-xyz/libradicle) 0.7.1 addon instead of separate daemon, HTTP and CLI processes, and takes no local port
+- Swarm peers count up from launch instead of sitting at 0 during startup
 - Installers are about 15 MB smaller: each build now ships only the `better-sqlite3` native addon for its own platform and architecture instead of all eight upstream prebuilds
+- The Windows installer is named `Freedom-Setup-<version>.exe`, previously `Freedom Setup <version>.exe`
+
+### Removed
+
+- Adopting a system Radicle node found on its default port as an external node — the embedded Radicle node takes no local port, so there is nothing to adopt
+
+### Fixed
+
+- Save image as and Copy image work on images loaded from `bzz://`, `ipfs://` and `ipns://` pages
+- A `bzz://` deep link resolves when the manifest has no root index document instead of stranding on the not-found page
+- Pages that call `preventDefault()` on a context menu no longer also get Freedom's native menu
+- Custom RPC endpoints accept `http://` for loopback addresses such as `http://localhost:8545`, and save errors appear at the field (thanks @biafra23!)
+- Uploads around 250 MiB no longer stall
+- Expired or invalid postage batches fail fast with a clear error instead of stalling uploads
+- macOS disk images pass Gatekeeper without an online check
 
 ### Security
 
+- Escape repository-supplied names and identifiers in the Radicle repository viewer's HTML attributes, blocking script execution from a crafted file name
+- `window.ethereum` responses reach only the document that made the request, so a reply arriving after a navigation cannot land in the next page
+- Updated bundled nodes:
+  - [Ant](https://github.com/freedom-hq/ant) 0.5.33 to 0.5.44
 - Updated runtime dependencies:
+  - `@corpus-core/colibri-stateless` 1.1.30 to 2.0.4 (thanks @simon-jentzsch!)
   - `better-sqlite3` 12.11.1 to 13.0.3
   - `micro-key-producer` 0.9.0 to 0.10.2
 
