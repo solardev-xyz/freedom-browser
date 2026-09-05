@@ -2053,7 +2053,9 @@ function renderApproval(request) {
                               : interactionCopy[request.operation] ||
                                 `Let Agent interact with “${label}”?`;
   elements.approvalOrigin.textContent = workspacePermission
-    ? ''
+    ? workspacePermission.network
+      ? 'With access to the internet, localhost, and LAN.'
+      : ''
     : workspace
       ? 'Agent can create, edit, and delete files inside a Freedom-managed project workspace.'
       : publication

@@ -3293,7 +3293,7 @@ describe('Agent UI', () => {
     );
   });
 
-  test('renders the indivisible full-network grant behind command-specific details', async () => {
+  test('shows the network qualifier above collapsed command-specific details', async () => {
     const ctx = await loadAgentUi();
     ctx.emit({ type: 'run_started', runId: 'run_test' });
     ctx.emit({
@@ -3319,7 +3319,9 @@ describe('Agent UI', () => {
     });
 
     expect(ctx.elements['agent-approval-action'].textContent).toBe('Run “npm install”?');
-    expect(ctx.elements['agent-approval-origin'].textContent).toBe('');
+    expect(ctx.elements['agent-approval-origin'].textContent).toBe(
+      'With access to the internet, localhost, and LAN.'
+    );
     expect(ctx.elements['agent-workspace-permission-details'].open).toBe(false);
     expect(ctx.elements['agent-workspace-permission-summary'].textContent).toContain(
       'public internet, services on this computer’s localhost, and private/LAN addresses'
