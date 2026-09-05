@@ -6,6 +6,27 @@ All notable changes to Freedom will be documented in this file.
 
 ### Added
 
+- Contract-hosted onchain apps on `web3://<address>[:<chainId>]/` — the app itself lives in the contract, not on a web server:
+  - Address-bar shield popover reporting the chain, block, contract and content hash behind the page
+  - The wallet provider is pinned to the app's chain; a page cannot switch it
+  - Reasoning: the page is a contract read, not a hosted file; the shield reports whether that read was verified
+- Three new wallet account types, usable with the vault locked and across dApp signing and sends:
+  - Ledger hardware accounts, confirmed on the device, including x402 payments
+  - Phone accounts over Open Lavatory: QR pairing, signing on the phone, including x402 payments
+  - Safe multi-owner accounts on Gnosis, with a signing board owners sign in any order
+- Radicle repositories are browsable and writable from the browser — open a `rad:` URL the way you would a web page:
+  - `rad:` as a fetchable scheme, plus a consented `window.radicle` provider for issues, comments and patches
+  - Seed-to-browse reports per-peer clone phases, with retry and cancellation
+  - Repository view pinned to any commit id, with commit, branch and contributor counts
+  - Nodes menu shows the Radicle node's connected peers, seeded repositories and addon version
+- Tor for `.onion` addresses through a bundled [Arti](https://gitlab.torproject.org/tpo/core/arti) 1.4.4 client, off by default under Settings > Experimental (clearnet traffic keeps connecting directly)
+  - Prompt to use a system Tor client, such as Tor Browser, instead of Arti
+- [Myotis](https://github.com/biafra23/myotis) 0.1.7, a peer-to-peer Ethereum and Gnosis light client, as an experimental verified source, off by default:
+  - Draggable read and verification order per chain under Settings > Chains, alongside Colibri and RPC
+  - Reasoning: reads are proven against a chain head Myotis syncs from peers itself, rather than trusted from an endpoint
+- `.tez` name resolution from the Tezos Domains contracts, for bare names and `ipfs://` / `ipns://` targets
+- Encrypted point-to-point messaging and topic broadcast for Swarm apps through `window.swarm`, behind its own consent tier
+- Swarm apps can ship a `freedom-manifest.json` so their permissions are one decision instead of a stream of prompts
 - Ad and tracker blocking, on by default, which also hides the empty spaces blocked ads leave:
   - Settings > Ad Blocking with a per-site allowlist and live rule counts
   - Cookie-banner and annoyance filtering, off by default
@@ -31,25 +52,6 @@ All notable changes to Freedom will be documented in this file.
   - Per-shortcut reset and a Restore defaults button; changes apply without a restart
 - Page zoom on `Cmd/Ctrl` with `=`, `-` and `0`, remappable like every other binding (thanks @alexwbend!)
 - Address-bar search for typed input that isn't a URL, with DuckDuckGo, Google, Bing, Brave Search, Ecosia, Startpage or a custom engine under Settings > Search
-- Three new wallet account types, usable with the vault locked and across dApp signing and sends:
-  - Ledger hardware accounts, confirmed on the device, including x402 payments
-  - Phone accounts over Open Lavatory: QR pairing, signing on the phone, including x402 payments
-  - Safe multi-owner accounts on Gnosis, with a signing board owners sign in any order
-- Contract-hosted onchain apps on `web3://<address>[:<chainId>]/`, read straight from the chain with no gateway:
-  - Address-bar shield popover reporting the chain, block, contract and content hash behind the page
-  - The wallet provider is pinned to the app's chain; a page cannot switch it
-- Radicle repositories are browsable and writable from the browser:
-  - `rad:` as a fetchable scheme, plus a consented `window.radicle` provider for issues, comments and patches
-  - Seed-to-browse reports per-peer clone phases, with retry and cancellation
-  - Repository view pinned to any commit id, with commit, branch and contributor counts
-  - Nodes menu shows the Radicle node's connected peers, seeded repositories and addon version
-- Encrypted point-to-point messaging and topic broadcast for Swarm apps through `window.swarm`, behind its own consent tier
-- Swarm apps can ship a `freedom-manifest.json` so their permissions are one decision instead of a stream of prompts
-- Tor for `.onion` addresses through a bundled [Arti](https://gitlab.torproject.org/tpo/core/arti) 1.4.4 client, off by default under Settings > Experimental (clearnet traffic keeps connecting directly)
-  - Prompt to use a system Tor client, such as Tor Browser, instead of Arti
-- [Myotis](https://github.com/biafra23/myotis) 0.1.7, a peer-to-peer Ethereum and Gnosis light client, as an experimental verified source, off by default:
-  - Draggable read and verification order per chain under Settings > Chains, alongside Colibri and RPC
-- `.tez` name resolution from the Tezos Domains contracts, for bare names and `ipfs://` / `ipns://` targets
 
 ### Changed
 
@@ -74,6 +76,8 @@ All notable changes to Freedom will be documented in this file.
 
 ### Security
 
+- Escape repository-supplied names and identifiers in the Radicle repository viewer's HTML attributes, blocking script execution from a crafted file name
+- `window.ethereum` responses reach only the document that made the request, so a reply arriving after a navigation cannot land in the next page
 - Updated bundled nodes:
   - [Ant](https://github.com/freedom-hq/ant) 0.5.33 to 0.5.44
 - Updated runtime dependencies:
