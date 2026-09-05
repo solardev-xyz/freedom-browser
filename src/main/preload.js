@@ -211,6 +211,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setAgentApprovalMode: (conversationId, approvalMode) =>
     ipcRenderer.invoke('agent:approval-mode:set', { conversationId, approvalMode }),
   claimAgentTab: (rendererTabId) => ipcRenderer.invoke('agent:tab:claim', { rendererTabId }),
+  inspectAgentWorkspace: (conversationId, kind, path = '.', showGenerated = false) =>
+    ipcRenderer.invoke('agent:workspace:inspect', { conversationId, kind, path, showGenerated }),
   stopAgentProcess: (processId) => ipcRenderer.invoke('agent:process:stop', { processId }),
   openAgentProcessPreview: (processId) =>
     ipcRenderer.invoke('agent:process:preview-open', { processId }),

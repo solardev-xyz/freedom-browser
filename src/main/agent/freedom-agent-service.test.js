@@ -636,6 +636,23 @@ describe('FreedomAgentService', () => {
     await service.waitForIdle();
   });
 
+  test('inspects only the selected conversation and drops results after switching conversations', async () => {
+    const fake = createFakeSession();
+    const { service } = createService(fake);
+    const inspectWorkspace = jest.fn(async () => ({ text: 'workspace source' }));
+    service.workspaceController = { inspectWorkspace };
+    service.conversation = { conversationId: 'conversation_one' };
+    await expect(service.inspectWorkspace('conversation_other', { kind: 'file', path: 'source.js' })).rejects.toMatchObject({ code: AGENT_ERROR_CODES.INVALID_ARGUMENT });
+    expect(inspectWorkspace).not.toHaveBeenCalled();
+    await expect(service.inspectWorkspace('conversation_one', { kind: 'file', path: 'source.js' })).resolves.toEqual({ text: 'workspace source' });
+    let resolve;
+    inspectWorkspace.mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
+    const pending = service.inspectWorkspace('conversation_one', { kind: 'file', path: 'source.js' });
+    service.conversation = { conversationId: 'conversation_two' };
+    resolve({ text: 'old source' });
+    await expect(pending).rejects.toMatchObject({ code: AGENT_ERROR_CODES.INVALID_ARGUMENT });
+  });
+
   test('stops and reopens a conversation-owned managed server from trusted chrome controls', async () => {
     const fake = createFakeSession();
     const processId = 'workspace_process_aaaaaaaaaaaaaaaaaaaaaaaa';

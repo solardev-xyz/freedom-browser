@@ -1,3 +1,4 @@
+import { createWorkspaceInspector } from './agent-workspace-panel.js';
 import { isPrivateWindow } from './private-mode.js';
 import { homeUrl } from './page-urls.js';
 import { close as closeWalletSidebar, isVisible as isWalletSidebarVisible } from './sidebar.js';
@@ -107,6 +108,8 @@ let openTabs = [];
 let taskTabProjection = [];
 let workspaceProcesses = [];
 let workspaceProjectionGeneration = 0;
+let workspaceInspector = null;
+let workspaceInspectionConversationId = null;
 let agentFirstMode = false;
 let sessionSidebarOpen = true;
 let workspaceSidebarOpen = true;
@@ -821,6 +824,8 @@ function applyWorkspaceProjection(state) {
       )
     : [];
   setAgentTabCustody(Array.isArray(state?.agentTabs) ? state.agentTabs : []);
+  workspaceInspectionConversationId = state?.workspace?.enabled ? state.conversationId : null;
+  workspaceInspector?.setWorkspace(workspaceInspectionConversationId);
   renderWorkspaceProcesses(state?.workspace?.processes);
   renderTaskPages();
   ensureWorkspacePageVisible();
@@ -936,18 +941,30 @@ function createWorkspaceProcessItem(process) {
 function renderWorkspaceProcesses(processes) {
   workspaceProcesses = Array.isArray(processes) ? processes.filter(validWorkspaceProcess) : [];
   const count = workspaceProcesses.length;
+  const hasWorkspacePanel = count > 0 || Boolean(workspaceInspectionConversationId);
   elements.workspaceBody.classList.toggle('has-processes', count > 0);
-  elements.processPanel.hidden = count === 0;
-  elements.processCompact.hidden = count === 0;
+  elements.workspaceBody.classList.toggle('has-workspace-panel', hasWorkspacePanel);
+  elements.processPanel.hidden = !hasWorkspacePanel;
+  elements.processCompact.hidden = !hasWorkspacePanel;
   elements.processPanelCount.textContent = String(count);
   elements.processCompactCount.textContent = String(count);
   elements.processCompactLabel.textContent =
-    count === 1 ? workspaceProcesses[0].command : `${count} processes running`;
+    workspaceInspectionConversationId ? `Workspace${count ? ` · ${count} running` : ''}` :
+      count === 1 ? workspaceProcesses[0].command : `${count} processes running`;
+  elements.processCompact.classList.toggle('has-running-processes', count > 0);
   elements.processPanelList.replaceChildren(...workspaceProcesses.map(createWorkspaceProcessItem));
   elements.processCompactList.replaceChildren(
     ...workspaceProcesses.map(createWorkspaceProcessItem)
   );
-  if (count === 0) closeComposerPopovers();
+  if (count === 0 && hasWorkspacePanel) {
+    for (const list of [elements.processPanelList, elements.processCompactList]) {
+      const empty = document.createElement('p');
+      empty.className = 'agent-workspace-note';
+      empty.textContent = 'No running processes';
+      list.appendChild(empty);
+    }
+  }
+  if (!hasWorkspacePanel) closeComposerPopovers();
 }
 
 async function refreshWorkspaceProjection() {
@@ -2830,6 +2847,8 @@ async function deleteSavedSession(session) {
 function applyConversationCleared() {
   workspaceProjectionGeneration += 1;
   currentConversationId = null;
+  workspaceInspectionConversationId = null;
+  workspaceInspector?.setWorkspace(null);
   conversationRendererTabId = null;
   dismissedPageContextTabId = null;
   pendingPromptText = '';
@@ -3462,6 +3481,8 @@ export function initAgentUi(options = {}) {
     setupView: byId('agent-setup-view'),
     workspaceView: byId('agent-workspace-view'),
     workspaceBody: byId('agent-workspace-body'),
+    workspaceInspectorPanel: byId('agent-workspace-inspector-panel'),
+    workspaceInspectorCompact: byId('agent-workspace-inspector-compact'),
     processPanel: byId('agent-process-panel'),
     processPanelCount: byId('agent-process-panel-count'),
     processPanelList: byId('agent-process-panel-list'),
@@ -3574,6 +3595,7 @@ export function initAgentUi(options = {}) {
     return;
   }
 
+  workspaceInspector = createWorkspaceInspector([elements.workspaceInspectorPanel, elements.workspaceInspectorCompact]);
   setAgentTabClaimHandler(claimAgentOwnedTab);
 
   elements.toggle.addEventListener('click', togglePanel);

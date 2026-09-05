@@ -40,6 +40,8 @@ function createAgentElements() {
     'agent-setup-view',
     'agent-workspace-view',
     'agent-workspace-body',
+    'agent-workspace-inspector-panel',
+    'agent-workspace-inspector-compact',
     'agent-process-panel',
     'agent-process-panel-count',
     'agent-process-panel-list',

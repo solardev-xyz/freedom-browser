@@ -1,6 +1,7 @@
 'use strict';
 
 const fs = require('fs');
+const { WORKSPACE_INSPECTION_HELPER } = require('./workspace-inspection-helper');
 const path = require('path');
 const {
   createWorkspaceExecutionPolicy,
@@ -270,8 +271,12 @@ function writablePath(value) {
   return safe;
 }
 
+${WORKSPACE_INSPECTION_HELPER}
+
 try {
-  if (operation === 'access' || operation === 'read') {
+  if (operation === 'workspace_inspect') {
+    writeJson(inspectWorkspace(optionsPayload()));
+  } else if (operation === 'access' || operation === 'read') {
     const { target } = targetPath(relative);
     const stats = regularFile(target);
     if (stats.size > READ_LIMIT) fail('WORKSPACE_FILE_TOO_LARGE');
@@ -401,7 +406,7 @@ try {
     ['ENOTDIR', 'WORKSPACE_PATH_TYPE_MISMATCH'],
     ['EISDIR', 'WORKSPACE_PATH_TYPE_MISMATCH'],
   ]);
-  const readOnly = new Set(['read', 'access', 'list', 'find', 'grep']);
+  const readOnly = new Set(['read', 'access', 'list', 'find', 'grep', 'workspace_inspect']);
   const fallback = readOnly.has(operation) ? 'WORKSPACE_FILE_UNAVAILABLE' : 'WORKSPACE_WRITE_FAILED';
   const code = allowed.has(error && error.code) ? error.code : native.get(error && error.code) || fallback;
   process.stderr.write('FREEDOM_FILE_ERROR:' + code);
@@ -1202,8 +1207,8 @@ class ManagedWorkspaceController {
   }
 
   async #fileOperation(conversationId, operation, relativePath, content = null, request = {}) {
-    const readOnlyOperations = new Set(['access', 'read', 'list', 'find', 'grep']);
-    const rootOperations = new Set(['list', 'find', 'grep']);
+    const readOnlyOperations = new Set(['access', 'read', 'list', 'find', 'grep', 'workspace_inspect']);
+    const rootOperations = new Set(['list', 'find', 'grep', 'workspace_inspect']);
     const relative =
       operation === 'mkdir'
         ? relativePath === '.'
@@ -1304,6 +1309,22 @@ class ManagedWorkspaceController {
         'Freedom received an invalid workspace discovery result'
       );
     }
+  }
+
+  async inspectWorkspace(conversationId, options = {}) {
+    if (!['tree', 'changes', 'file', 'diff'].includes(options.kind)) {
+      throw new ManagedWorkspaceError('INVALID_WORKSPACE_REQUEST', 'Unknown workspace inspection');
+    }
+    const relativePath = validateWorkspacePath(options.path ?? '.', {
+      allowRoot: ['tree', 'changes'].includes(options.kind),
+    });
+    if (relativePath.split('/').some((part) => part.toLowerCase() === '.git')) {
+      throw new ManagedWorkspaceError('WORKSPACE_PROTECTED_PATH', 'Git metadata is private');
+    }
+    return this.#structuredFileOperation(conversationId, 'workspace_inspect', relativePath, {
+      kind: options.kind,
+      showGenerated: options.showGenerated === true,
+    });
   }
 
   async accessFile(conversationId, relativePath, request = {}) {

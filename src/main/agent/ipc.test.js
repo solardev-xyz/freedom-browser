@@ -47,6 +47,7 @@ function createService(options = {}) {
     clearConversation: options.clearConversation || jest.fn(async () => true),
     listConversations: options.listConversations || jest.fn(() => []),
     listAgentTabs: options.listAgentTabs || jest.fn(() => []),
+    inspectWorkspace: options.inspectWorkspace || jest.fn(async () => ({ entries: [] })),
     stopWorkspaceProcess:
       options.stopWorkspaceProcess || jest.fn(async () => ({ state: 'cancelled' })),
     openWorkspaceProcessPreview:
@@ -995,6 +996,20 @@ describe('Freedom agent IPC', () => {
     expect(getState({ sender: ctx.sender }).state.taskTabs).toEqual([
       { rendererTabId: 7, agentActive: false },
     ]);
+  });
+
+  test('binds workspace inspection to the owning chrome and conversation with bounded input', async () => {
+    const ctx = register();
+    await ctx.ipcMain.handlers.get(IPC.AGENT_START)({ sender: ctx.sender }, { rendererTabId: 7, prompt: 'Task' });
+    const inspect = ctx.ipcMain.handlers.get(IPC.AGENT_WORKSPACE_INSPECT);
+    const input = { conversationId: 'conversation_test', kind: 'tree', path: '.' };
+    await expect(inspect({ sender: ctx.otherSender }, input)).resolves.toMatchObject({ ok: false, error: { code: AGENT_IPC_ERROR_CODES.NOT_OWNER } });
+    await expect(inspect({ sender: ctx.sender }, { ...input, conversationId: 'other' })).resolves.toMatchObject({ ok: false });
+    await expect(inspect({ sender: ctx.sender }, { ...input, path: 'x'.repeat(1025) })).resolves.toMatchObject({ ok: false });
+    await expect(inspect({ sender: ctx.sender }, { ...input, kind: 'write' })).resolves.toMatchObject({ ok: false });
+    expect(ctx.service.inspectWorkspace).not.toHaveBeenCalled();
+    await expect(inspect({ sender: ctx.sender }, input)).resolves.toMatchObject({ ok: true, conversationId: 'conversation_test', result: { entries: [] } });
+    expect(ctx.service.inspectWorkspace).toHaveBeenCalledWith('conversation_test', { kind: 'tree', path: '.', showGenerated: false });
   });
 
   test('binds process stop and preview controls to the owning chrome', async () => {

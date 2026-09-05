@@ -2,6 +2,7 @@
 
 const crypto = require('crypto');
 const fs = require('fs');
+const { initializeWorkspaceGit } = require('./managed-workspace-git');
 const path = require('path');
 const Database = require('better-sqlite3');
 const log = require('../logger');
@@ -118,6 +119,7 @@ class AgentManagedWorkspaceStore {
     this.workspaceParent = path.join(this.userDataDir, WORKSPACE_DIRECTORY);
     this.db = null;
     this.statements = null;
+    this.gitInitializations = new Map();
   }
 
   getDb() {
@@ -286,6 +288,7 @@ class AgentManagedWorkspaceStore {
       }
       try {
         await fs.promises.mkdir(path.join(workspacePath, '.git'), { mode: 0o700 });
+        await initializeWorkspaceGit(workspacePath);
         const createdAt = this.now();
         this.#getStatements().insertWorkspace.run(workspaceId, ownerId, createdAt, createdAt);
         return this.get(workspaceId);
@@ -319,7 +322,14 @@ class AgentManagedWorkspaceStore {
   }
 
   async resolvePath(workspaceId) {
-    return this.#validateWorkspaceDirectory(workspaceId);
+    const workspaceRoot = await this.#validateWorkspaceDirectory(workspaceId);
+    let pending = this.gitInitializations.get(workspaceId);
+    if (!pending) {
+      pending = initializeWorkspaceGit(workspaceRoot).finally(() => this.gitInitializations.delete(workspaceId));
+      this.gitInitializations.set(workspaceId, pending);
+    }
+    await pending;
+    return workspaceRoot;
   }
 
   enable(workspaceId, conversationId, backend) {

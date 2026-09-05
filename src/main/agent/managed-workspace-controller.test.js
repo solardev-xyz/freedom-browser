@@ -765,6 +765,19 @@ describe('ManagedWorkspaceController', () => {
     );
   });
 
+  test('routes chrome inspection through the offline helper and rejects metadata before execution', async () => {
+    const { controller, dependencies, helperPolicy } = createController();
+    dependencies.executor.execute.mockResolvedValueOnce({ state: 'completed', exitCode: 0, stdout: '{"entries":[]}' });
+    await expect(controller.inspectWorkspace('conversation_one', { kind: 'tree', path: '.' })).resolves.toEqual({ entries: [] });
+    expect(dependencies.executor.execute).toHaveBeenCalledWith(helperPolicy, expect.objectContaining({ command: '/bin/sh' }));
+    dependencies.executor.execute.mockClear();
+    for (const path of ['../escape', '.git/config', 'nested/.git/config']) {
+      await expect(controller.inspectWorkspace('conversation_one', { kind: 'file', path })).rejects.toThrow();
+    }
+    await expect(controller.inspectWorkspace('conversation_one', { kind: 'write', path: 'file' })).rejects.toThrow();
+    expect(dependencies.executor.execute).not.toHaveBeenCalled();
+  });
+
   test('the sandbox file helper rejects symlink and hardlink escapes', () => {
     const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'freedom-workspace-helper-'));
     const workspace = path.join(fixture, 'workspace');

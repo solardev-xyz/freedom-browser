@@ -932,6 +932,7 @@ class FreedomAgentService {
     }
     this.walletController = options.walletController || null;
     this.workspaceController = options.workspaceController || null;
+    this.workspaceInspectionCount = 0;
     this.workspacePreviewController = options.workspacePreviewController || null;
     if (
       this.workspaceController &&
@@ -1076,6 +1077,29 @@ class FreedomAgentService {
     return [...this.agentTabs.values()]
       .filter((record) => record.custody === 'agent')
       .map((record) => ({ ...record }));
+  }
+
+  async inspectWorkspace(conversationId, options) {
+    const conversation = this.conversation;
+    if (this.disposed || !conversation || conversation.conversationId !== conversationId ||
+        typeof this.workspaceController?.inspectWorkspace !== 'function') {
+      throw new FreedomAgentError(AGENT_ERROR_CODES.INVALID_ARGUMENT, 'This workspace is unavailable');
+    }
+    if (this.workspaceInspectionCount >= 4) {
+      throw new FreedomAgentError(AGENT_ERROR_CODES.BUSY, 'Workspace inspection is busy; try again shortly');
+    }
+    this.workspaceInspectionCount += 1;
+    try {
+      const result = await this.workspaceController.inspectWorkspace(conversationId, options);
+      if (this.disposed || this.conversation !== conversation) {
+        throw new Error('Conversation changed during inspection');
+      }
+      return result;
+    } catch {
+      throw new FreedomAgentError(AGENT_ERROR_CODES.INVALID_ARGUMENT, 'This workspace item could not be read');
+    } finally {
+      this.workspaceInspectionCount -= 1;
+    }
   }
 
   async stopWorkspaceProcess(processId) {

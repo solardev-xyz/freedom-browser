@@ -10,6 +10,7 @@ const { resolveExecutableAccess } = require('./executable-access');
 const { captureHostCommandEnvironment } = require('./host-command-environment');
 const { resolveProcessRuntimeAccess } = require('./qualification-runtime-access');
 const { SeatbeltExecutor } = require('./seatbelt-backend');
+const { WORKSPACE_FILE_HELPER } = require('../managed-workspace-controller');
 
 jest.setTimeout(30_000);
 
@@ -193,6 +194,23 @@ requiredDescribe('macOS Seatbelt execution boundary', () => {
       expect(lock.packages['node_modules/fixture-library']).toBeDefined();
     }
   );
+
+  test('inspects files and Git changes through the offline sandbox', async () => {
+    await fs.promises.writeFile(path.join(fixture.workspaceRoot, 'source.txt'), 'updated source\n');
+    for (const [kind, relative] of [['tree', '.'], ['changes', '.'], ['diff', 'source.txt'], ['file', 'source.txt']]) {
+      const receipt = await executor.execute(await policy(), {
+        command: '/bin/sh',
+        args: ['-c', 'exec node -e "$1" workspace_inspect "$2" "$3"', 'workspace-inspection',
+          WORKSPACE_FILE_HELPER, relative, Buffer.from(JSON.stringify({ kind })).toString('base64')],
+      });
+      expect(receipt).toMatchObject({ state: 'completed', exitCode: 0, stdoutTruncated: false });
+      const result = JSON.parse(receipt.stdout);
+      if (kind === 'changes') expect(result).toMatchObject({ available: true, changes: [{ path: 'source.txt', status: 'modified' }] });
+      if (kind === 'diff') expect(result.text).toContain('+updated source');
+      if (kind === 'file') expect(result.text).toBe('updated source\n');
+      if (kind === 'tree') expect(result.entries).toContainEqual({ name: 'source.txt', type: 'file' });
+    }
+  });
 
   test('runs shell scripts, Python, Node, Git reads and nested descendants', async () => {
     const receipt = await executor.execute(await policy(), {

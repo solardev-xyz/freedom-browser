@@ -676,6 +676,32 @@ function registerFreedomAgentIpc(options = {}) {
     }
   };
 
+  const handleWorkspaceInspect = async (event, payload) => {
+    if (!owner || owner.sender !== event?.sender) {
+      return errorEnvelope(AGENT_IPC_ERROR_CODES.NOT_OWNER, 'The sender does not own this workspace');
+    }
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload) ||
+        typeof payload.conversationId !== 'string' || payload.conversationId.length > 160 ||
+        !['tree', 'changes', 'file', 'diff'].includes(payload.kind) ||
+        typeof payload.path !== 'string' || payload.path.length > 1024 ||
+        (payload.showGenerated !== undefined && typeof payload.showGenerated !== 'boolean')) {
+      return errorEnvelope(AGENT_ERROR_CODES.INVALID_ARGUMENT, 'Invalid workspace inspection');
+    }
+    if (payload.conversationId !== owner.conversationId) {
+      return errorEnvelope(AGENT_IPC_ERROR_CODES.NOT_OWNER, 'The sender does not own this workspace');
+    }
+    try {
+      const ownerAtStart = owner;
+      const result = await service.inspectWorkspace(payload.conversationId, {
+        kind: payload.kind, path: payload.path, showGenerated: payload.showGenerated === true,
+      });
+      if (owner !== ownerAtStart || owner.conversationId !== payload.conversationId) return errorEnvelope(AGENT_IPC_ERROR_CODES.NOT_OWNER, 'Workspace ownership changed');
+      return { ok: true, conversationId: payload.conversationId, result };
+    } catch (error) {
+      return safeServiceError(error);
+    }
+  };
+
   const handleProcessStop = (event, payload) =>
     handleProcessAction(event, payload, (processId) => service.stopWorkspaceProcess(processId));
 
@@ -1134,6 +1160,7 @@ function registerFreedomAgentIpc(options = {}) {
   ipcMain.handle(IPC.AGENT_ATTACHMENTS_PREVIEW, handleAttachmentPreview);
   ipcMain.handle(IPC.AGENT_APPROVAL_MODE_SET, handleSetApprovalMode);
   ipcMain.handle(IPC.AGENT_TAB_CLAIM, handleTabClaim);
+  ipcMain.handle(IPC.AGENT_WORKSPACE_INSPECT, handleWorkspaceInspect);
   ipcMain.handle(IPC.AGENT_PROCESS_STOP, handleProcessStop);
   ipcMain.handle(IPC.AGENT_PROCESS_PREVIEW_OPEN, handleProcessPreviewOpen);
   ipcMain.handle(IPC.AGENT_PUBLICATION_OPEN, handleOpenPublication);
@@ -1168,6 +1195,7 @@ function registerFreedomAgentIpc(options = {}) {
     ipcMain.removeHandler?.(IPC.AGENT_ATTACHMENTS_PREVIEW);
     ipcMain.removeHandler?.(IPC.AGENT_APPROVAL_MODE_SET);
     ipcMain.removeHandler?.(IPC.AGENT_TAB_CLAIM);
+    ipcMain.removeHandler?.(IPC.AGENT_WORKSPACE_INSPECT);
     ipcMain.removeHandler?.(IPC.AGENT_PROCESS_STOP);
     ipcMain.removeHandler?.(IPC.AGENT_PROCESS_PREVIEW_OPEN);
     ipcMain.removeHandler?.(IPC.AGENT_PUBLICATION_OPEN);
