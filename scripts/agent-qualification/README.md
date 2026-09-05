@@ -62,8 +62,8 @@ store, policy, or capability object:
 
 ## Commands
 
-Aggregate (both network modes, both preview modes, plus processes and reconciliation, each in its own
-isolated process, with a summary matrix):
+Aggregate (both network modes, both preview modes, plus processes, reconciliation, and the
+trusted-chrome process controls, each in its own isolated process, with a summary matrix):
 
 ```
 npm run test:agent-sandbox:workspace
@@ -80,6 +80,7 @@ npm run test:agent-sandbox:workspace:processes:slow       # also the 5-minute te
 npm run test:agent-sandbox:workspace:reconciliation       # automatic terminal reconciliation
 npm run test:agent-sandbox:workspace:previews             # managed server previews, gate enabled
 npm run test:agent-sandbox:workspace:previews:disabled    # managed server previews, gate-absent regression
+npm run test:agent-sandbox:workspace:process-controls     # trusted-chrome running-process controls (list, stop, preview)
 npm run test:agent-sandbox:workspace:self-test-fault      # controlled-failure cleanup self-test (exits non-zero by design)
 ```
 
@@ -148,6 +149,29 @@ cleanup still runs.
   output; and route revocation on explicit termination, conversation Stop, deletion (with storage
   clearing), and controller disposal. The gate-absent mode proves the parameters are not advertised,
   forged parameters fail closed, and only the offline static preview remains.
+- **process-controls** — the user-visible trusted-chrome controls through the real service path that
+  backs the `agent:process:stop` / `agent:process:preview-open` IPC handlers
+  (`FreedomAgentService.stopWorkspaceProcess` / `openWorkspaceProcessPreview` →
+  `ManagedWorkspaceController.terminateProcess` / `listProcesses` →
+  `ManagedWorkspaceProcessManager.terminate` / `list` → Bubblewrap). Reads the renderer-facing
+  `service.getState().workspace.processes` projection: only yielded, still-running commands appear;
+  short commands never do; the projection is bounded to opaque id, command summary,
+  workspace-relative directory, state, backend, network posture, and optional declared preview port,
+  with no host path, buffered output, capability, authority, or private data. Chrome Stop terminates
+  the exact conversation-owned process with the truthful SIGKILL / namespace_scoped / pid_namespace
+  receipt, drops it from the live projection while its terminal ledger evidence remains, and does not
+  consume the process's Pi `write_stdin` output cursor (the exact unread tail survives Stop with no
+  gap and no duplication). A declared server reopens through the chrome preview action via the
+  isolated preview controller; another conversation, an unknown id, and a malformed id are refused
+  and cannot affect a live process; natural completion during a newer turn emits the independent
+  `workspace_processes_changed` refresh. A second part (`PCI*`) registers the production
+  `registerFreedomAgentIpc` against the same real service and Bubblewrap composition, establishes a
+  chrome-owned run through the real `agent:start` handler, and drives the registered
+  `agent:process:stop` / `agent:process:preview-open` handlers directly — proving the owning sender
+  succeeds (real Bubblewrap SIGKILL), another renderer and a malformed id are rejected `AGENT_NOT_OWNER`
+  before reaching the service, and a cross-conversation id is rejected `INVALID_ARGUMENT`, each leaving
+  the live process untouched. The `preload.test.js` suite additionally covers the preload exposure
+  shape.
 
 ## Reliability
 

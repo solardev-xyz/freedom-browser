@@ -53,6 +53,7 @@
     "test:agent-sandbox:workspace:reconciliation": "ELECTRON_RUN_AS_NODE=1 electron scripts/qualify-agent-workspace.js reconciliation",
     "test:agent-sandbox:workspace:previews": "ELECTRON_RUN_AS_NODE=1 electron scripts/qualify-agent-workspace.js previews",
     "test:agent-sandbox:workspace:previews:disabled": "ELECTRON_RUN_AS_NODE=1 electron scripts/qualify-agent-workspace.js previews --network-disabled",
+    "test:agent-sandbox:workspace:process-controls": "ELECTRON_RUN_AS_NODE=1 electron scripts/qualify-agent-workspace.js process-controls",
     "test:agent-sandbox:workspace:self-test-fault": "ELECTRON_RUN_AS_NODE=1 electron scripts/qualify-agent-workspace.js self-test-fault",
     "lint": "eslint .",
     "format": "prettier --write .",
