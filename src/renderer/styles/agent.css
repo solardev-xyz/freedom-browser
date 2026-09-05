@@ -1234,6 +1234,8 @@ body.agent-first-mode .agent-composer textarea {
 
 body.agent-first-mode .agent-workspace-body > .agent-workspace-scroll {
   width: min(100%, 820px);
+  min-width: 0;
+  max-width: 820px;
 }
 
 @container agent-workspace-view (min-width: 1120px) {
