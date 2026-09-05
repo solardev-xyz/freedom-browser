@@ -172,10 +172,11 @@ requiredDescribe('macOS Seatbelt execution boundary', () => {
     });
   });
 
-  test.each([['npm', 'node'], ['node', 'npm']])(
-    'runs symlinked npm with %s approved before %s and installs a local dependency offline',
-    async (first, second) => {
-      const access = await resolveProcessRuntimeAccess({ commands: [first, second] });
+  test.each([['npm', 'node'], ['node', 'npm'], ['npm']].map((commands) => ({ commands })))(
+    'runs symlinked npm requested as $commands and installs a local dependency offline',
+    async ({ commands }) => {
+      const access = await resolveProcessRuntimeAccess({ commands });
+      expect(access.commands.map((entry) => entry.name)).toEqual(expect.arrayContaining(['npm', 'node']));
       await fs.promises.mkdir(path.join(fixture.workspaceRoot, 'local-package'));
       await fs.promises.writeFile(path.join(fixture.workspaceRoot, 'local-package', 'package.json'),
         JSON.stringify({ name: 'fixture-library', version: '1.0.0' }));

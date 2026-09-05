@@ -100,6 +100,8 @@ function safeWorkspaceError(error, options = {}) {
     'EXECUTABLE_ACCESS_DECLINED',
     'EXECUTABLE_ACCESS_PLATFORM_UNAVAILABLE',
     'EXECUTABLE_RESOLUTION_FAILED',
+    'EXECUTABLE_INTERPRETER_UNAVAILABLE',
+    'EXECUTABLE_INTERPRETER_UNSUPPORTED',
     'EXECUTABLE_SCOPE_TOO_BROAD',
     'COMMAND_PERMISSION_DECLINED',
     'COMMAND_PERMISSION_PREPARATION_FAILED',
@@ -949,6 +951,7 @@ function createRequestPermissionsTool(sdk, options) {
     promptSnippet: 'Request access for an exact workspace command',
     promptGuidelines: [
       'When requesting executable access, include only the exact executable names needed for the task.',
+      'Freedom inspects supported script launcher lines and includes required interpreters in the same permission request. Missing interpreters are reported before execution; permission does not install them.',
       'Provide the exact command and workspace-relative working directory you intend to use next. If the user allows it once, only that matching call can consume the permission.',
       'If an executable is unavailable, explain that it is not installed; do not claim permission can install it.',
       ...(networkPermissionsEnabled

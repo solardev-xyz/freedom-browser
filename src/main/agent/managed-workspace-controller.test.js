@@ -336,7 +336,7 @@ describe('ManagedWorkspaceController', () => {
     );
   });
 
-  test('binds one-shot executable access to one exact command and working directory', async () => {
+  test.each([false, true])('binds one-shot executable access and discovered interpreters (%s) to one exact command', async (script) => {
     fs.promises.realpath.mockRestore();
     fs.promises.stat.mockRestore();
     const fixture = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'freedom-controller-tool-'));
@@ -344,6 +344,10 @@ describe('ManagedWorkspaceController', () => {
     const bin = path.join(packageRoot, 'bin');
     await fs.promises.mkdir(bin, { recursive: true });
     await fs.promises.writeFile(path.join(bin, 'tool'), '#!/bin/sh\n', { mode: 0o700 });
+    if (script) {
+      await fs.promises.writeFile(path.join(bin, 'tool'), '#!/usr/bin/env runtime\n', { mode: 0o700 });
+      await fs.promises.writeFile(path.join(bin, 'runtime'), '#!/bin/sh\n', { mode: 0o700 });
+    }
     const prepared = await resolveExecutableAccess(['tool'], {
       platform: 'darwin',
       hostEnvironment: { PATH: bin },
@@ -370,13 +374,15 @@ describe('ManagedWorkspaceController', () => {
         kind: 'command_access',
         command: 'tool --version',
         workingDirectory: '.',
-        commands: [expect.objectContaining({ name: 'tool', status: 'requires_permission' })],
+        commands: (script ? ['tool', 'runtime'] : ['tool']).map((name) =>
+          expect.objectContaining({ name, status: 'requires_permission' })
+        ),
       });
       expect(
         controller.grantExecutableAccess('conversation_one', resolved.prepared, 'once')
       ).toEqual({
         scope: 'once',
-        commands: ['tool'],
+        commands: script ? ['tool', 'runtime'] : ['tool'],
         command: 'tool --version',
         workingDirectory: '.',
       });
@@ -585,14 +591,12 @@ describe('ManagedWorkspaceController', () => {
     jest
       .spyOn(fs.promises, 'realpath')
       .mockImplementation(async (value) => path.resolve(String(value)));
-    jest.spyOn(fs.promises, 'stat').mockImplementation(async (value) => ({
-      isDirectory: () =>
-        [
-          path.resolve(packageRoot),
-          path.resolve('/managed/workspace_aaaaaaaaaaaaaaaaaaaa'),
-        ].includes(path.resolve(String(value))),
-      isFile: () => path.resolve(String(value)) === path.resolve(path.join(bin, 'tool')),
-    }));
+    const actualStat = fs.promises.stat;
+    jest.spyOn(fs.promises, 'stat').mockImplementation(async (value) =>
+      String(value).startsWith('/managed/')
+        ? { isDirectory: () => true, isFile: () => false }
+        : actualStat(value)
+    );
     const capture = jest.fn(async () => ({ PATH: bin, source: 'login_shell' }));
     const { controller } = createController({
       resolveExecutableAccess,

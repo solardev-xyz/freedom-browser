@@ -3495,14 +3495,19 @@ describe('Agent UI', () => {
     expect(ctx.setAgentControlledTab).toHaveBeenLastCalledWith(null);
   });
 
-  test('renders workspace failures as workspace errors rather than browser failures', async () => {
+  test.each([
+    ['bash', 'WORKSPACE_COMMAND_NOT_FOUND', 'A required command is not available in the workspace shell'],
+    ['request_permissions', 'WORKSPACE_OPERATION_CANCELLED', 'Project operation was stopped'],
+    ['request_permissions', 'UNKNOWN_PERMISSION_ERROR', 'Workspace operation failed'],
+    ['write_stdin', 'UNKNOWN_PROCESS_ERROR', 'Workspace operation failed'],
+  ])('renders %s failures as workspace errors (%s)', async (operation, errorCode, message) => {
     const ctx = await loadAgentUi();
     ctx.emit({ type: 'run_started', runId: 'run_test' });
     ctx.emit({
       type: 'tool_started',
       runId: 'run_test',
       toolCallId: 'bash_missing',
-      operation: 'bash',
+      operation,
       intent: 'Running missing-tool',
       label: 'Ran missing-tool',
     });
@@ -3510,20 +3515,16 @@ describe('Agent UI', () => {
       type: 'tool_finished',
       runId: 'run_test',
       toolCallId: 'bash_missing',
-      operation: 'bash',
+      operation,
       status: 'failed',
-      errorCode: 'WORKSPACE_COMMAND_NOT_FOUND',
+      errorCode,
       label: 'Workspace operation failed — missing-tool',
     });
 
     const row = ctx.elements['agent-transcript'].querySelector('.agent-tool-list').children[0];
-    expect(row.children[1].textContent).toContain(
-      'A required command is not available in the workspace shell'
-    );
+    expect(row.children[1].textContent).toContain(message);
     expect(row.children[1].textContent).not.toContain('Browser action failed');
-    expect(ctx.elements['agent-run-message'].textContent).toContain(
-      'A required command is not available in the workspace shell'
-    );
+    expect(ctx.elements['agent-run-message'].textContent).toContain(message);
   });
 
   test('reconciles a yielded workspace process after its Agent run has finished', async () => {

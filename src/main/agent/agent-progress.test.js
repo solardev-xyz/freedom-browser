@@ -43,6 +43,9 @@ describe('Agent progress projection', () => {
       status: 'running', effect: 'changed', pageId: 'tab_1' }], status);
     expect(mixed.detail).toContain('interrupted browser action');
     expect(mixed.detail).toContain('project operations');
+    const noWrites = buildAgentOutcome(items.slice(1), status);
+    expect(noWrites.detail).not.toContain('Completed project changes');
+    expect(noWrites.detail).toContain('Shell-command side effects inside the workspace remain unknown');
   });
 
   test('a permission check alone does not imply a shell command ran', () => {

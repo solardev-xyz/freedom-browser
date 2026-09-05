@@ -2387,6 +2387,11 @@ function formatToolError(code, operation) {
     INTERNAL_ERROR: 'Browser action failed unexpectedly',
     INVALID_WORKSPACE_REQUEST: 'Workspace request is invalid',
     WORKSPACE_COMMAND_CANCELLED: 'Workspace command was stopped',
+    WORKSPACE_OPERATION_CANCELLED: 'Project operation was stopped',
+    COMMAND_PERMISSION_DECLINED: 'Project permission was declined',
+    EXECUTABLE_ACCESS_DECLINED: 'Executable access was declined',
+    EXECUTABLE_INTERPRETER_UNAVAILABLE: 'A required script interpreter is unavailable',
+    EXECUTABLE_INTERPRETER_UNSUPPORTED: 'The script launcher could not be resolved safely',
     WORKSPACE_COMMAND_FAILED: 'Workspace command exited unsuccessfully',
     WORKSPACE_COMMAND_NOT_FOUND: 'A required command is not available in the workspace shell',
     WORKSPACE_COMMAND_TIMED_OUT: 'Workspace command timed out',
@@ -2406,7 +2411,8 @@ function formatToolError(code, operation) {
   if (operation === 'attachment_list') return 'Attached sources could not be listed';
   if (operation === 'attachment_read') return 'Attached source could not be read';
   if (
-    ['bash', 'read', 'write', 'edit', 'grep', 'find', 'ls', 'workspace_preview'].includes(operation)
+    ['bash', 'read', 'write', 'edit', 'grep', 'find', 'ls', 'workspace_preview',
+      'write_stdin', 'request_permissions'].includes(operation)
   ) {
     return labels[code] || 'Workspace operation failed';
   }

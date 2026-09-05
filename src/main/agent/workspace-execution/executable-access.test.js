@@ -15,6 +15,77 @@ const {
 describe('approved executable access', () => {
   const fixtureRoots = [];
 
+  async function scriptFixture(files) {
+    const fixture = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'freedom-interpreters-'));
+    fixtureRoots.push(fixture);
+    const bin = path.join(fixture, 'bin');
+    await fs.promises.mkdir(bin);
+    for (const [name, content] of Object.entries(files)) {
+      await fs.promises.writeFile(path.join(bin, name), content, { mode: 0o700 });
+    }
+    return { bin, options: { hostEnvironment: { PATH: bin } } };
+  }
+
+  test.each(['#!/usr/bin/env runtime\n', '#!/usr/bin/env -S runtime --no-warnings\n'])(
+    'includes the interpreter from %s in the same trusted request', async (header) => {
+      const { bin, options } = await scriptFixture({ tool: header, runtime: '#!/bin/sh\n' });
+      const access = await resolveExecutableAccess(['tool'], options);
+      expect(access.commands.map(({ name }) => name)).toEqual(['tool', 'runtime']);
+      expect(access.runtimeRoots).toHaveLength(1);
+      expect(executableCommandEntries(access.runtimeRoots, 'darwin')).toContainEqual({
+        name: 'runtime', executablePath: await fs.promises.realpath(path.join(bin, 'runtime')),
+      });
+      expect(isValidatedExecutableAccessRequest(access)).toBe(true);
+      const explicit = await resolveExecutableAccess(['tool', 'runtime'], options);
+      expect(explicit.commands.map(({ name }) => name)).toEqual(['tool', 'runtime']);
+    }
+  );
+
+  test('reports a missing interpreter before issuing any executable authority', async () => {
+    const { options } = await scriptFixture({ tool: '#!/usr/bin/env freedom-missing-runtime\n' });
+    await expect(resolveExecutableAccess(['tool'], options)).rejects.toMatchObject({
+      code: 'EXECUTABLE_INTERPRETER_UNAVAILABLE',
+      message: expect.stringContaining('freedom-missing-runtime required by tool'),
+    });
+  });
+
+  test.each([
+    '#!/usr/bin/env PATH=/tmp runtime\n',
+    '#!/usr/bin/env -S\n',
+    '#!/usr/bin/env -S runtime "quoted argument"\n',
+    '#!/usr/bin/env runtime --flag\n',
+    '#!/usr/bin/env -S runtime $(payload)\n',
+    '#!' + 'x'.repeat(4_096),
+  ])('refuses unsupported launcher syntax without executing it', async (header) => {
+    const { options } = await scriptFixture({ tool: header });
+    await expect(resolveExecutableAccess(['tool'], options)).rejects.toMatchObject({
+      code: 'EXECUTABLE_INTERPRETER_UNSUPPORTED',
+    });
+  });
+
+  test('rejects interpreter cycles and excessive depth', async () => {
+    const { options } = await scriptFixture({
+      a: '#!/usr/bin/env b\n', b: '#!/usr/bin/env a\n',
+      c: '#!/usr/bin/env d\n', d: '#!/usr/bin/env e\n',
+      e: '#!/usr/bin/env f\n', f: '#!/usr/bin/env g\n', g: '#!/bin/sh\n',
+    });
+    for (const name of ['a', 'c']) {
+      await expect(resolveExecutableAccess([name], options)).rejects.toMatchObject({
+        code: 'EXECUTABLE_INTERPRETER_UNSUPPORTED',
+      });
+    }
+  });
+
+  test('includes an exact external interpreter on macOS and refuses its unmapped absolute path on Linux', async () => {
+    const { bin, options } = await scriptFixture({ runtime: '#!/bin/sh\n' });
+    await fs.promises.writeFile(path.join(bin, 'tool'), `#!${bin}/runtime\n`, { mode: 0o700 });
+    const request = await resolveExecutableAccess(['tool'], { ...options, platform: 'darwin' });
+    expect(request.commands.map(({ name }) => name)).toEqual(['tool', 'runtime']);
+    await expect(resolveExecutableAccess(['tool'], { ...options, platform: 'linux' })).rejects.toMatchObject({
+      code: 'EXECUTABLE_INTERPRETER_UNSUPPORTED',
+    });
+  });
+
   afterEach(async () => {
     await Promise.all(
       fixtureRoots.splice(0).map((root) => fs.promises.rm(root, { recursive: true, force: true }))

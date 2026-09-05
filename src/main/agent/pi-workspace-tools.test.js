@@ -914,6 +914,13 @@ describe('Pi managed workspace tools', () => {
     ).toBe(
       '[WORKSPACE_POLICY_FAILED] Freedom could not complete the operation inside the managed workspace'
     );
+    expect(safeWorkspaceError({
+      code: 'EXECUTABLE_INTERPRETER_UNAVAILABLE',
+      message: 'The interpreter node required by npm is unavailable in the installed command environment',
+    }).message).toContain('node required by npm');
+    expect(safeWorkspaceError({
+      code: 'EXECUTABLE_INTERPRETER_UNSUPPORTED', message: 'Cannot read /private/launcher',
+    }).message).not.toContain('/private');
   });
 
   test('returns bounded failed-command diagnostics to Pi without persisting output in activity', async () => {

@@ -116,6 +116,95 @@ function publicPath(value) {
   return value.length <= 1_024 ? value : `${value.slice(0, 1_021)}…`;
 }
 
+function unsupportedInterpreter(name) {
+  return new ExecutableAccessError(
+    'EXECUTABLE_INTERPRETER_UNSUPPORTED',
+    `Freedom cannot safely resolve the script interpreter required by ${name}`
+  );
+}
+
+async function scriptInterpreter(executablePath, name) {
+  // Inspect a bounded header without executing the program or following a changed symlink.
+  const file = await fs.promises.open(
+    executablePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK
+  );
+  try {
+    if (!(await file.stat()).isFile()) throw unsupportedInterpreter(name);
+    const header = Buffer.alloc(4_096);
+    const { bytesRead } = await file.read(header, 0, header.length, 0);
+    if (header[0] !== 35 || header[1] !== 33) return null;
+    const text = header.subarray(0, bytesRead).toString('utf8');
+    if (!text.includes('\n') && bytesRead === header.length) throw unsupportedInterpreter(name);
+    const line = text.split('\n', 1)[0];
+    // eslint-disable-next-line no-control-regex
+    if (/[\u0000-\u0008\u000b-\u001f\u007f]/.test(line)) throw unsupportedInterpreter(name);
+    const match = /^#![ \t]*(\/[^ \t]+)(?:[ \t]+(.*))?$/.exec(line);
+    if (!match) throw unsupportedInterpreter(name);
+    const interpreterPath = match[1];
+    if (interpreterPath === '/usr/bin/env' || interpreterPath === '/bin/env') {
+      if (!(await findExecutable('env', [path.dirname(interpreterPath)]))) {
+        throw unsupportedInterpreter(name);
+      }
+      const args = (match[2] || '').trim().split(/[ \t]+/);
+      const split = args[0] === '-S';
+      if (split) args.shift();
+      if (
+        typeof args[0] !== 'string' || !EXECUTABLE_NAME.test(args[0]) ||
+        (!split && args.length !== 1) ||
+        args.slice(1).some((arg) => !/^--?[A-Za-z0-9][A-Za-z0-9._=+-]*$/.test(arg))
+      ) {
+        throw unsupportedInterpreter(name);
+      }
+      return { name: args[0], exactPath: null };
+    }
+    const interpreterName = path.basename(interpreterPath);
+    if (!EXECUTABLE_NAME.test(interpreterName)) throw unsupportedInterpreter(name);
+    return { name: interpreterName, exactPath: interpreterPath };
+  } finally {
+    await file.close();
+  }
+}
+
+async function resolveCommandInterpreters(names, pathEntries, platform) {
+  const resolved = new Map();
+  const visited = new Set();
+  async function visit(name, parent = null, exactPath = null, ancestors = []) {
+    const baseline = await findExecutable(name, systemToolchainDirectories(platform));
+    const found = exactPath
+      ? await findExecutable(name, [path.dirname(exactPath)])
+      : (await findExecutable(name, pathEntries)) || baseline;
+    if (parent && (!found || (!exactPath && isSystemExecutable(found.executablePath, platform) &&
+        baseline?.executablePath !== found.executablePath))) {
+      throw new ExecutableAccessError(
+        'EXECUTABLE_INTERPRETER_UNAVAILABLE',
+        `The interpreter ${name} required by ${parent} is unavailable in the installed command environment`
+      );
+    }
+    const previous = resolved.get(name);
+    if (previous?.found?.executablePath && previous.found.executablePath !== found?.executablePath) {
+      throw unsupportedInterpreter(parent || name);
+    }
+    if (found && (ancestors.includes(found.executablePath) || ancestors.length >= 4)) {
+      throw unsupportedInterpreter(parent || name);
+    }
+    // Linux remaps external package roots: an absolute external shebang would still
+    // address the host layout. Refuse it rather than silently broadening mount authority.
+    if (exactPath && platform === 'linux' && !isSystemExecutable(found.executablePath, platform)) {
+      throw unsupportedInterpreter(parent || name);
+    }
+    resolved.set(name, { found, baseline });
+    if (resolved.size > MAX_EXECUTABLE_REQUESTS) throw unsupportedInterpreter(parent || name);
+    if (!found || visited.has(found.executablePath)) return;
+    const interpreter = await scriptInterpreter(found.executablePath, name);
+    if (interpreter) {
+      await visit(interpreter.name, name, interpreter.exactPath, [...ancestors, found.executablePath]);
+    }
+    visited.add(found.executablePath);
+  }
+  for (const name of names) await visit(name);
+  return resolved;
+}
+
 async function resolveExecutableAccess(executables, options = {}) {
   const names = validateExecutableNames(executables);
   const platform = options.platform || process.platform;
@@ -126,18 +215,18 @@ async function resolveExecutableAccess(executables, options = {}) {
     );
   }
   const pathEntries = hostPathEntries(options.hostEnvironment || process.env);
+  const resolved = await resolveCommandInterpreters(names, pathEntries, platform);
   const rootBuilders = new Map();
   const commands = [];
-  for (const name of names) {
+  for (const [name, { found, baseline }] of resolved) {
     // Merely living beneath a system root does not make a name shell-resolvable.
     // Preserve explicit host toolchain selection, with the sandbox baseline as fallback.
-    const baseline = await findExecutable(name, systemToolchainDirectories(platform));
-    const found = (await findExecutable(name, pathEntries)) || baseline;
     if (!found) {
       commands.push(Object.freeze({ name, status: 'unavailable' }));
       continue;
     }
     if (isSystemExecutable(found.executablePath, platform)) {
+      if (!names.includes(name)) continue; // Already present in the sandbox's system toolchain.
       commands.push(Object.freeze({
         name,
         status: baseline?.executablePath === found.executablePath ? 'available' : 'unavailable',

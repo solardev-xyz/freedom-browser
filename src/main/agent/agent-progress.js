@@ -1471,7 +1471,10 @@ function buildAgentOutcome(activity, status, error) {
   }
   if (workspaceCommands.length) {
     const hasBrowserActivity = items.some((item) => !nonBrowserObservations.has(item?.operation));
-    const projectState = `${workspaceCommands.length} project ${workspaceCommands.length === 1 ? 'operation was' : 'operations were'} recorded. Completed project changes were not rolled back.${workspaceShellCommands.some((receipt) => receipt.sideEffects === 'unknown') ? ' Shell-command side effects inside the workspace remain unknown.' : ''}`;
+    const completedFileChanges = workspaceCommands.some((receipt) =>
+      ['file_write', 'file_edit'].includes(receipt.kind) && receipt.state === 'completed'
+    );
+    const projectState = `${workspaceCommands.length} project ${workspaceCommands.length === 1 ? 'operation was' : 'operations were'} recorded.${completedFileChanges ? ' Completed project changes were not rolled back.' : ''}${workspaceShellCommands.some((receipt) => receipt.sideEffects === 'unknown') ? ' Shell-command side effects inside the workspace remain unknown.' : ''}`;
     browserState = `${hasBrowserActivity ? `${browserState} ` : ''}${projectState}`;
   }
   const retryNeedsReview = counts.changed > 0 || uncertainChanges.length > 0;
