@@ -14,6 +14,47 @@ const {
 } = require('./agent-progress');
 
 describe('Agent progress projection', () => {
+  test.each(['cancelled', 'interrupted'])('describes a %s dependency setup as project work', (status) => {
+    const workspace = {
+      workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa', kind: 'command',
+      command: 'npm install', workingDirectory: '.', backend: 'macos-seatbelt',
+      state: 'failed', exitCode: 1, sideEffects: 'unknown',
+      terminationGuarantee: 'best_effort',
+    };
+    const permission = { ...workspace, command: 'Use corepack, node', state: 'cancelled',
+      exitCode: null, sideEffects: 'none' };
+    const items = [
+      { operation: 'write', status: 'succeeded', effect: 'changed',
+        workspace: { ...workspace, kind: 'file_write', command: 'Write package.json', state: 'completed' } },
+      { operation: 'bash', status: 'failed', effect: 'changed', workspace,
+        errorCode: 'WORKSPACE_COMMAND_FAILED' },
+      { operation: 'request_permissions', status: 'failed', approval: 'declined',
+        workspace: permission, errorCode: 'WORKSPACE_OPERATION_CANCELLED' },
+    ];
+    const outcome = buildAgentOutcome(items, status);
+    expect(outcome.detail).toContain('3 project operations were recorded');
+    expect(outcome.detail).toContain('not rolled back');
+    expect(outcome.detail).toContain('Shell-command side effects inside the workspace remain unknown');
+    expect(outcome.detail).not.toContain('browser');
+    expect(activityProgress('request_permissions', { workspace: permission })).toMatchObject({
+      label: 'Project permission request stopped', intent: 'Requesting project permissions', effect: 'managed',
+    });
+    const mixed = buildAgentOutcome([...items, { operation: OPERATIONS.CLICK,
+      status: 'running', effect: 'changed', pageId: 'tab_1' }], status);
+    expect(mixed.detail).toContain('interrupted browser action');
+    expect(mixed.detail).toContain('project operations');
+  });
+
+  test('a permission check alone does not imply a shell command ran', () => {
+    const workspace = { kind: 'command', command: 'Use npm', workingDirectory: '.',
+      backend: 'freedom-workspace-files', state: 'completed', sideEffects: 'none',
+      terminationGuarantee: 'not_applicable' };
+    expect(activityProgress('request_permissions', { workspace }).label).toBe('Checked project permissions');
+    expect(activityProgress('request_permissions', { workspace: { ...workspace, state: 'running' } }).label).not.toContain('failed');
+    const outcome = buildAgentOutcome([{ operation: 'request_permissions', status: 'succeeded', workspace }], 'completed');
+    expect(outcome.detail).not.toContain('Shell-command side effects');
+  });
+
   test('projects bounded workspace activity without command output or host paths', () => {
     const workspace = normalizeWorkspaceReceipt({
       workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa',

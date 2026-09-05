@@ -166,7 +166,8 @@ describe('Bubblewrap backend contract', () => {
     const packageRoot = path.join(fixture.fixtureRoot, 'toolchain');
     const bin = path.join(packageRoot, 'bin');
     await fs.promises.mkdir(bin, { recursive: true });
-    await fs.promises.writeFile(path.join(bin, 'tool'), '#!/bin/sh\n', { mode: 0o700 });
+    await fs.promises.writeFile(path.join(bin, 'actual-tool'), '#!/bin/sh\n', { mode: 0o700 });
+    await fs.promises.symlink('actual-tool', path.join(bin, 'tool'));
     const access = await resolveExecutableAccess(['tool'], {
       platform: 'linux',
       hostEnvironment: { PATH: bin },
@@ -183,7 +184,12 @@ describe('Bubblewrap backend contract', () => {
     const pathIndex = launch.args.findIndex(
       (value, index) => value === '--setenv' && launch.args[index + 1] === 'PATH'
     );
-    expect(launch.args[pathIndex + 2].split(':')[0]).toBe(`${root.mountPath}/bin`);
+    expect(launch.args[pathIndex + 2].split(':').slice(0, 2)).toEqual([
+      '/opt/freedom-toolchain/commands', `${root.mountPath}/bin`,
+    ]);
+    expectArgumentSequence(launch.args, [
+      '--symlink', `${root.mountPath}/bin/actual-tool`, '/opt/freedom-toolchain/commands/tool',
+    ]);
     expect(launch.args.join('\n')).not.toContain(`${root.sourcePath}\n${root.sourcePath}`);
   });
 

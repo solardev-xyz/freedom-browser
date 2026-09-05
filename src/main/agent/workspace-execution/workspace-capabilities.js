@@ -1,6 +1,6 @@
 'use strict';
 
-const { isValidatedExecutableRoot } = require('./executable-access');
+const { isValidatedExecutableRoot, mergeExecutableRoots } = require('./executable-access');
 
 const CAPABILITY_VERSION = 1;
 const MAX_CAPABILITIES_PER_REQUEST = 32;
@@ -231,9 +231,16 @@ function uniqueCapabilities(capabilities) {
   for (const capability of capabilities) {
     const trusted = trustedCapabilities.get(capability);
     if (!trusted) continue;
-    unique.set(trusted.identity, capability);
+    unique.set(trusted.identity, mergeCapability(unique.get(trusted.identity), capability));
   }
   return Object.freeze([...unique.values()]);
+}
+
+function mergeCapability(previous, next) {
+  if (!previous || next.kind !== CAPABILITY_KINDS.EXECUTABLE_ROOT) return next;
+  return createExecutableRootCapability(
+    mergeExecutableRoots(executableRootForCapability(previous), executableRootForCapability(next))
+  );
 }
 
 class WorkspaceCapabilityGrantStore {
@@ -265,7 +272,9 @@ class WorkspaceCapabilityGrantStore {
     if (scope === CAPABILITY_SCOPES.CONVERSATION) {
       for (const capability of request.capabilities) {
         const identity = trustedCapabilities.get(capability).identity;
-        grants.conversation.set(identity, capability);
+        grants.conversation.set(
+          identity, mergeCapability(grants.conversation.get(identity), capability)
+        );
       }
     } else {
       grants.once.push(request);

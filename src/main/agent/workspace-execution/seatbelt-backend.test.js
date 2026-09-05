@@ -112,6 +112,7 @@ describe('macOS Seatbelt backend contract', () => {
     expect(profile).toContain(`(allow file-read* (subpath "${root.sourcePath}"))`);
     expect(profile).toContain(`(allow process-exec (subpath "${root.sourcePath}"))`);
     expect(profile).not.toContain(`(allow file-write* (subpath "${root.sourcePath}"))`);
+    expect(profile).toContain(`(deny file-write* (subpath "${privateDirectory}/commands"))`);
   });
 
   test('adds full IP networking without granting general Unix-socket authority', async () => {

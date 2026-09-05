@@ -8,6 +8,7 @@ const path = require('path');
 const { createWorkspaceExecutionPolicy } = require('./execution-policy');
 const { resolveExecutableAccess } = require('./executable-access');
 const { captureHostCommandEnvironment } = require('./host-command-environment');
+const { resolveProcessRuntimeAccess } = require('./qualification-runtime-access');
 const { SeatbeltExecutor } = require('./seatbelt-backend');
 
 jest.setTimeout(30_000);
@@ -170,6 +171,27 @@ requiredDescribe('macOS Seatbelt execution boundary', () => {
       state: 'completed', exitCode: 0, stdout: '/sbin/ping\n/usr/sbin/sysctl\n',
     });
   });
+
+  test.each([['npm', 'node'], ['node', 'npm']])(
+    'runs symlinked npm with %s approved before %s and installs a local dependency offline',
+    async (first, second) => {
+      const access = await resolveProcessRuntimeAccess({ commands: [first, second] });
+      await fs.promises.mkdir(path.join(fixture.workspaceRoot, 'local-package'));
+      await fs.promises.writeFile(path.join(fixture.workspaceRoot, 'local-package', 'package.json'),
+        JSON.stringify({ name: 'fixture-library', version: '1.0.0' }));
+      await fs.promises.writeFile(path.join(fixture.workspaceRoot, 'package.json'),
+        JSON.stringify({ name: 'fixture-app', version: '1.0.0', private: true,
+          dependencies: { 'fixture-library': 'file:./local-package' } }));
+      const receipt = await executor.execute(await policy({ runtimeRoots: access.runtimeRoots }), {
+        command: '/bin/sh', args: ['-c',
+          'npm --version && node --version && npm install --offline --ignore-scripts --no-audit --no-fund'],
+      });
+      expect(receipt).toMatchObject({ state: 'completed', exitCode: 0 });
+      expect(receipt.stderr).not.toContain('npm-prefix.js');
+      const lock = JSON.parse(await fs.promises.readFile(path.join(fixture.workspaceRoot, 'package-lock.json'), 'utf8'));
+      expect(lock.packages['node_modules/fixture-library']).toBeDefined();
+    }
+  );
 
   test('runs shell scripts, Python, Node, Git reads and nested descendants', async () => {
     const receipt = await executor.execute(await policy(), {

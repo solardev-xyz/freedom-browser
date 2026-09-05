@@ -916,6 +916,39 @@ describe('Pi managed workspace tools', () => {
     );
   });
 
+  test('returns bounded failed-command diagnostics to Pi without persisting output in activity', async () => {
+    const controller = createController();
+    const onToolOutcome = jest.fn();
+    controller.startProcess.mockResolvedValueOnce({
+      state: 'failed', output: 'install starting\nCannot find module npm-prefix.js\n',
+      workspace: {
+        workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa',
+        kind: 'command', command: 'npm install', workingDirectory: '.',
+        state: 'failed', exitCode: 1, backend: 'macos-seatbelt', sideEffects: 'unknown',
+      },
+    });
+    const tools = await createWorkspaceTools({
+      sdk: createSdk(), controller, conversationId: 'conversation_one',
+      requestApproval: jest.fn(), onToolOutcome,
+    });
+    await expect(tools[0].execute('install_failed', { command: 'npm install' })).rejects.toMatchObject({
+      code: 'WORKSPACE_COMMAND_FAILED',
+      message: expect.stringContaining('install starting\nCannot find module npm-prefix.js'),
+    });
+    expect(JSON.stringify(onToolOutcome.mock.calls)).not.toContain('Cannot find module');
+    const safe = safeWorkspaceError(new Error('private infrastructure error'), {
+      operation: 'bash', receipt: { state: 'failed', exitCode: 1 },
+      commandOutput: 'discarded-prefix' + 'x'.repeat(MAX_MODEL_BASH_OUTPUT_BYTES) + 'diagnostic-tail',
+    });
+    expect(safe.message).toContain('diagnostic-tail');
+    expect(safe.message).not.toMatch(/discarded-prefix|private infrastructure error/);
+    expect(safe.message.length).toBeLessThan(MAX_MODEL_BASH_OUTPUT_BYTES + 512);
+    expect(safeWorkspaceError(new Error('/private/launch'), {
+      operation: 'bash', receipt: { state: 'failed', error: { code: 'WORKSPACE_EXECUTION_FAILED' } },
+      commandOutput: '/private/launch details',
+    }).message).not.toContain('/private');
+  });
+
   test('distinguishes command-not-found and missing files from sandbox denial', async () => {
     const controller = createController();
     const onToolOutcome = jest.fn();

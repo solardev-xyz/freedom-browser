@@ -4,6 +4,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const {
+  executableCommandEntries,
+  mergeExecutableRoots,
   isValidatedExecutableAccessRequest,
   isValidatedExecutableRoot,
   resolveExecutableAccess,
@@ -66,6 +68,56 @@ describe('approved executable access', () => {
 
     expect(request.commands).toEqual([{ name: 'definitely-not-installed', status: 'unavailable' }]);
     expect(request.runtimeRoots).toEqual([]);
+  });
+
+  test.each([['tool', 'runtime'], ['runtime', 'tool']])(
+    'preserves symlinked command targets with %s requested before %s',
+    async (first, second) => {
+      const fixture = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'freedom-executable-'));
+      fixtureRoots.push(fixture);
+      const bin = path.join(fixture, 'runtime', 'bin');
+      const packageBin = path.join(fixture, 'runtime', 'lib', 'package', 'bin');
+      await fs.promises.mkdir(bin, { recursive: true });
+      await fs.promises.mkdir(packageBin, { recursive: true });
+      await fs.promises.writeFile(path.join(bin, 'runtime'), '#!/bin/sh\n', { mode: 0o700 });
+      await fs.promises.writeFile(path.join(packageBin, 'cli.js'), '#!/bin/sh\nprintf correct', { mode: 0o700 });
+      await fs.promises.writeFile(path.join(packageBin, 'tool'), '#!/bin/sh\nprintf wrong', { mode: 0o700 });
+      await fs.promises.symlink('../lib/package/bin/cli.js', path.join(bin, 'tool'));
+      const request = await resolveExecutableAccess([first, second], { hostEnvironment: { PATH: bin } });
+      const target = await fs.promises.realpath(path.join(packageBin, 'cli.js'));
+      const entries = executableCommandEntries(request.runtimeRoots, 'darwin');
+      expect(entries.find((entry) => entry.name === 'tool').executablePath).toBe(target);
+      const root = request.runtimeRoots.find((entry) => entry.commands.includes('tool'));
+      expect(executableCommandEntries(request.runtimeRoots, 'linux')).toContainEqual({
+        name: 'tool', executablePath: `${root.mountPath}/bin/cli.js`,
+      });
+      expect(Object.isFrozen(root.commandEntries)).toBe(true);
+      expect(Object.isFrozen(root.commandEntries[0])).toBe(true);
+      // A serialized descriptor cannot create a command mapping.
+      expect(executableCommandEntries(JSON.parse(JSON.stringify(request.runtimeRoots)), 'darwin')).toEqual([]);
+    }
+  );
+
+  test('rejects conflicting command targets and untrusted root merges', async () => {
+    const fixture = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'freedom-executable-'));
+    fixtureRoots.push(fixture);
+    const roots = [];
+    for (const name of ['first', 'second']) {
+      const bin = path.join(fixture, name, 'bin');
+      await fs.promises.mkdir(bin, { recursive: true });
+      await fs.promises.writeFile(path.join(bin, 'tool'), '#!/bin/sh\n', { mode: 0o700 });
+      const access = await resolveExecutableAccess(['tool'], { hostEnvironment: { PATH: bin } });
+      roots.push(access.runtimeRoots[0]);
+    }
+    expect(() => executableCommandEntries(roots, 'linux')).toThrow(
+      expect.objectContaining({ code: 'AMBIGUOUS_EXECUTABLE_COMMAND' })
+    );
+    expect(() => mergeExecutableRoots(roots[0], roots[1])).toThrow(
+      expect.objectContaining({ code: 'INVALID_EXECUTABLE_ROOT' })
+    );
+    expect(() => mergeExecutableRoots(roots[0], { ...roots[0] })).toThrow(
+      expect.objectContaining({ code: 'INVALID_EXECUTABLE_ROOT' })
+    );
   });
 
   test('finds a baseline command even when the host PATH omits system directories', async () => {

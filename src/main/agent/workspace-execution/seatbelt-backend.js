@@ -14,7 +14,7 @@ const {
   validateExecutionRequest,
 } = require('./execution-policy');
 const { createReadinessOutputForwarder, notifyOutput, notifyStdin } = require('./process-io');
-const { systemToolchainDirectories } = require('./executable-access');
+const { executableCommandEntries, systemToolchainDirectories } = require('./executable-access');
 
 const DEFAULT_SEATBELT_PATH = '/usr/bin/sandbox-exec';
 const PROBE_TIMEOUT_MS = 5_000;
@@ -350,6 +350,7 @@ function buildSeatbeltProfile(policy, privateDirectory) {
   lines.push(pathRule('allow', 'file-read*', 'subpath', privateDirectory));
   lines.push(pathRule('allow', 'file-write*', 'subpath', privateDirectory));
   lines.push(pathRule('allow', 'process-exec', 'subpath', privateDirectory));
+  lines.push(pathRule('deny', 'file-write*', 'subpath', path.join(privateDirectory, 'commands')));
   for (const protectedPath of policy.filesystem.protectedPaths) {
     lines.push(
       pathRule('deny', 'file-write*', protectedPathFilter(protectedPath), protectedPath.sourcePath)
@@ -602,9 +603,18 @@ class SeatbeltExecutor {
     }
     let privateDirectory;
     let profile;
+    let commandDirectory;
     const readinessMarker = `freedom-seatbelt-ready-${crypto.randomUUID()}`;
     try {
       privateDirectory = await createPrivateDirectory();
+      const entries = executableCommandEntries(policy.filesystem.runtimeRoots, 'darwin');
+      if (entries.length) {
+        commandDirectory = path.join(privateDirectory, 'commands');
+        await fs.promises.mkdir(commandDirectory, { mode: 0o700 });
+        for (const { name, executablePath } of entries) {
+          await fs.promises.symlink(executablePath, path.join(commandDirectory, name));
+        }
+      }
       profile = buildSeatbeltProfile(policy, privateDirectory);
       await fs.promises.writeFile(path.join(privateDirectory, 'profile.sb'), profile, {
         mode: 0o600,
@@ -655,7 +665,11 @@ class SeatbeltExecutor {
       GIT_OPTIONAL_LOCKS: '0',
       HOME: path.join(privateDirectory, 'home'),
       LOGNAME: 'sandbox',
-      PATH: [...runtimePath, systemToolchainPath()].join(':'),
+      PATH: [
+        ...(commandDirectory ? [commandDirectory] : []),
+        ...runtimePath,
+        systemToolchainPath(),
+      ].join(':'),
       SHELL: '/bin/sh',
       TMP: path.join(privateDirectory, 'tmp'),
       TMPDIR: path.join(privateDirectory, 'tmp'),

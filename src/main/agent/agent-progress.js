@@ -30,6 +30,7 @@ const WORKSPACE_OPERATIONS = Object.freeze({
   LS: 'ls',
   PROCESS: 'write_stdin',
   PREVIEW: 'workspace_preview',
+  PERMISSIONS: 'request_permissions',
 });
 const WORKSPACE_OPERATION_SET = new Set(Object.values(WORKSPACE_OPERATIONS));
 
@@ -223,6 +224,11 @@ const OPERATION_PROGRESS = Object.freeze({
     effect: ACTIVITY_EFFECTS.MANAGED,
     intent: 'Checking a workspace process',
     completed: 'Checked a workspace process',
+  },
+  [WORKSPACE_OPERATIONS.PERMISSIONS]: {
+    effect: ACTIVITY_EFFECTS.MANAGED,
+    intent: 'Requesting project permissions',
+    completed: 'Checked project permissions',
   },
   [WORKSPACE_OPERATIONS.PREVIEW]: {
     effect: ACTIVITY_EFFECTS.MANAGED,
@@ -789,6 +795,14 @@ function activityProgress(operation, receipt = {}) {
         : '';
     intent = `Looking at ${source}${page}`;
     label = `Looked at ${source}${page}`;
+  } else if (operation === WORKSPACE_OPERATIONS.PERMISSIONS) {
+    intent = 'Requesting project permissions';
+    label =
+      workspace?.state === 'cancelled'
+        ? 'Project permission request stopped'
+        : receipt.status === 'failed' || ['failed', 'sandbox_denied', 'timed_out'].includes(workspace?.state)
+          ? 'Project permission request failed'
+          : 'Checked project permissions';
   } else if (WORKSPACE_OPERATION_SET.has(operation) && workspace) {
     const action = workspace.command;
     const activeLabels = {
@@ -1026,6 +1040,12 @@ function buildAgentOutcome(activity, status, error) {
     .filter(Boolean);
   const workspaceCommands = items
     .filter((item) => WORKSPACE_OPERATION_SET.has(item?.operation))
+    .map((item) => normalizeWorkspaceReceipt(item?.workspace))
+    .filter(Boolean);
+  const workspaceShellCommands = items
+    .filter((item) =>
+      [WORKSPACE_OPERATIONS.BASH, WORKSPACE_OPERATIONS.PROCESS].includes(item?.operation)
+    )
     .map((item) => normalizeWorkspaceReceipt(item?.workspace))
     .filter(Boolean);
   const nonBrowserObservations = new Set([
@@ -1353,7 +1373,7 @@ function buildAgentOutcome(activity, status, error) {
       const changedFiles = workspaceCommands.filter(
         (item) => ['file_write', 'file_edit'].includes(item.kind) && item.state === 'completed'
       );
-      const shellCommands = workspaceCommands.filter((item) => item.kind === 'command');
+      const shellCommands = workspaceShellCommands;
       const lastOperation = workspaceCommands.at(-1);
       const previewOpened =
         ['static_preview', 'server_preview'].includes(lastOperation.kind) &&
@@ -1438,10 +1458,21 @@ function buildAgentOutcome(activity, status, error) {
   }
 
   let browserState = 'Freedom did not verify any browser changes.';
-  if (uncertainChanges.length) {
+  const uncertainBrowserChanges = uncertainChanges.filter(
+    (item) => !nonBrowserObservations.has(item?.operation)
+  );
+  const changedBrowserCount = browserSucceeded.filter(
+    (item) => normalizedEffect(item) === ACTIVITY_EFFECTS.CHANGED
+  ).length;
+  if (uncertainBrowserChanges.length) {
     browserState = 'Freedom cannot confirm whether the interrupted browser action was applied.';
-  } else if (counts.changed) {
-    browserState = `${counts.changed} earlier browser ${counts.changed === 1 ? 'change remains' : 'changes remain'} in place.`;
+  } else if (changedBrowserCount) {
+    browserState = `${changedBrowserCount} earlier browser ${changedBrowserCount === 1 ? 'change remains' : 'changes remain'} in place.`;
+  }
+  if (workspaceCommands.length) {
+    const hasBrowserActivity = items.some((item) => !nonBrowserObservations.has(item?.operation));
+    const projectState = `${workspaceCommands.length} project ${workspaceCommands.length === 1 ? 'operation was' : 'operations were'} recorded. Completed project changes were not rolled back.${workspaceShellCommands.some((receipt) => receipt.sideEffects === 'unknown') ? ' Shell-command side effects inside the workspace remain unknown.' : ''}`;
+    browserState = `${hasBrowserActivity ? `${browserState} ` : ''}${projectState}`;
   }
   const retryNeedsReview = counts.changed > 0 || uncertainChanges.length > 0;
   if (status === 'cancelled') {
@@ -1466,7 +1497,9 @@ function buildAgentOutcome(activity, status, error) {
       headline: 'Previous run was interrupted',
       detail: interruptionDetail,
       destinations,
-      nextStep: 'Review the Agent tabs, then ask Agent to continue.',
+      nextStep: workspaceCommands.length
+        ? 'Review the recorded project operations, then ask Agent to continue.'
+        : 'Review the Agent tabs, then ask Agent to continue.',
       retrySafety: retryNeedsReview ? 'review' : 'safe',
       counts,
     });

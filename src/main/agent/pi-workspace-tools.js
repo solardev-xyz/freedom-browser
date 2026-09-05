@@ -167,7 +167,19 @@ function safeWorkspaceError(error, options = {}) {
     !error.message.includes('\\')
       ? error.message.slice(0, 512)
       : 'Freedom could not complete the operation inside the managed workspace');
-  const safe = new Error(`[${code}] ${message}`);
+  // Only captured command output may accompany an execution failure. Infrastructure
+  // exceptions still use the fixed safe message; never forward their raw messages.
+  const output =
+    options.operation === 'bash' &&
+    [
+      'WORKSPACE_COMMAND_FAILED',
+      'WORKSPACE_COMMAND_NOT_FOUND',
+      'WORKSPACE_COMMAND_TIMED_OUT',
+      'WORKSPACE_COMMAND_CANCELLED',
+    ].includes(code)
+      ? boundedBashOutput({ stdout: options.commandOutput || '' }).toString('utf8')
+      : '';
+  const safe = new Error(`[${code}] ${message}${output ? `\n\n${output}` : ''}`);
   safe.code = code;
   return safe;
 }
@@ -1083,8 +1095,8 @@ function bashOperations(options, captureReceipt, toolParams = {}) {
         }),
       });
       const receipt = process.workspace;
-      captureReceipt(receipt);
       const output = boundedBashOutput({ stdout: process.output || '', stderr: '' });
+      captureReceipt(receipt, output.toString('utf8'));
       if (output.byteLength) execution.onData(output);
       if (process.state === 'running') {
         execution.onData(
@@ -1240,13 +1252,15 @@ function wrapWorkspaceTool(template, operation, options, createRuntimeTool) {
         operationPhase,
       };
       let receipt = null;
+      let commandOutput = '';
       try {
         if (!skillRead) {
           await ensureWorkspaceEnabled(options, operation, toolCallId, operationSignal);
         }
         const runtimeTool = createRuntimeTool(
-          (value) => {
+          (value, output) => {
             receipt = value;
+            commandOutput = output || '';
           },
           executionOptions,
           params
@@ -1277,7 +1291,7 @@ function wrapWorkspaceTool(template, operation, options, createRuntimeTool) {
         return result;
       } catch (error) {
         if (skillRead) throw error;
-        const safe = safeWorkspaceError(error, { operation, receipt });
+        const safe = safeWorkspaceError(error, { operation, receipt, commandOutput });
         receipt = failedWorkspaceReceipt(
           options.controller,
           options.conversationId,

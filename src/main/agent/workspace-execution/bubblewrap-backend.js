@@ -13,7 +13,7 @@ const {
   validateExecutionRequest,
 } = require('./execution-policy');
 const { createReadinessOutputForwarder, notifyOutput, notifyStdin } = require('./process-io');
-const { systemToolchainDirectories } = require('./executable-access');
+const { executableCommandEntries, systemToolchainDirectories } = require('./executable-access');
 
 const DEFAULT_BUBBLEWRAP_PATH = '/usr/bin/bwrap';
 const CAPABILITY_PROBE_TIMEOUT_MS = 5_000;
@@ -500,6 +500,15 @@ async function buildBubblewrapArguments(policy, request) {
       '--clearenv',
     ];
     const pathEntries = [];
+    const commandEntries = executableCommandEntries(policy.filesystem.runtimeRoots, 'linux');
+    if (commandEntries.length) {
+      const commandDirectory = '/opt/freedom-toolchain/commands';
+      args.push('--dir', commandDirectory);
+      for (const { name, executablePath } of commandEntries) {
+        args.push('--symlink', executablePath, `${commandDirectory}/${name}`);
+      }
+      pathEntries.push(commandDirectory);
+    }
     for (const runtimeRoot of policy.filesystem.runtimeRoots) {
       args.push('--dir', path.posix.dirname(runtimeRoot.mountPath));
       addReadOnlyMount(args, runtimeRoot.sourcePath, runtimeRoot.mountPath);

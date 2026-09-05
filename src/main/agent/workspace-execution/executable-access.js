@@ -167,12 +167,14 @@ async function resolveExecutableAccess(executables, options = {}) {
         pathEntries: new Set(),
         executablePaths: new Set(),
         commands: new Set(),
+        commandEntries: [],
       };
       rootBuilders.set(sourcePath, builder);
     }
     builder.pathEntries.add(pathEntryRelative);
     builder.executablePaths.add(found.executablePath);
     builder.commands.add(name);
+    builder.commandEntries.push(Object.freeze({ name, executablePath: found.executablePath }));
     commands.push(
       Object.freeze({
         name,
@@ -192,6 +194,7 @@ async function resolveExecutableAccess(executables, options = {}) {
       pathEntries: Object.freeze([...builder.pathEntries].sort()),
       executablePaths: Object.freeze([...builder.executablePaths].sort()),
       commands: Object.freeze([...builder.commands].sort()),
+      commandEntries: Object.freeze(builder.commandEntries),
     });
     validatedExecutableRoots.add(root);
     return root;
@@ -209,6 +212,71 @@ function isValidatedExecutableRoot(value) {
   return Boolean(value && typeof value === 'object' && validatedExecutableRoots.has(value));
 }
 
+function mergeExecutableRoots(previous, next) {
+  if (
+    !isValidatedExecutableRoot(previous) || !isValidatedExecutableRoot(next) ||
+    previous.id !== next.id || previous.sourcePath !== next.sourcePath ||
+    previous.mountPath !== next.mountPath
+  ) {
+    throw new ExecutableAccessError(
+      'INVALID_EXECUTABLE_ROOT', 'Only identical approved package roots can be combined'
+    );
+  }
+  const commands = new Map(previous.commandEntries.map((entry) => [entry.name, entry]));
+  for (const entry of next.commandEntries) {
+    const existing = commands.get(entry.name);
+    if (existing && existing.executablePath !== entry.executablePath) {
+      throw new ExecutableAccessError(
+        'AMBIGUOUS_EXECUTABLE_COMMAND', 'An approved command entry point changed'
+      );
+    }
+    commands.set(entry.name, entry);
+  }
+  if (commands.size > 256) {
+    throw new ExecutableAccessError(
+      'INVALID_EXECUTABLE_ROOT', 'An approved package has too many command entries'
+    );
+  }
+  const root = Object.freeze({
+    ...next,
+    pathEntries: Object.freeze([...new Set([...previous.pathEntries, ...next.pathEntries])].sort()),
+    executablePaths: Object.freeze(
+      [...new Set([...previous.executablePaths, ...next.executablePaths])].sort()
+    ),
+    commands: Object.freeze([...commands.keys()].sort()),
+    commandEntries: Object.freeze([...commands.values()]),
+  });
+  validatedExecutableRoots.add(root);
+  return root;
+}
+
+// Preserve command names independently of the basename of a symlink's target. Adding
+// that target directory to PATH alone can select a different, same-named launcher.
+function executableCommandEntries(runtimeRoots, platform) {
+  const entries = new Map();
+  for (const root of runtimeRoots) {
+    if (!isValidatedExecutableRoot(root)) continue; // Electron runtime has its own attestation.
+    for (const entry of root.commandEntries) {
+      const executablePath =
+        platform === 'linux'
+          ? path.posix.join(
+              root.mountPath,
+              ...path.relative(root.sourcePath, entry.executablePath).split(path.sep)
+            )
+          : entry.executablePath;
+      const previous = entries.get(entry.name);
+      if (previous && previous !== executablePath) {
+        throw new ExecutableAccessError(
+          'AMBIGUOUS_EXECUTABLE_COMMAND',
+          'Approved executable roots disagree on a command entry point'
+        );
+      }
+      entries.set(entry.name, executablePath);
+    }
+  }
+  return [...entries].map(([name, executablePath]) => ({ name, executablePath }));
+}
+
 function isValidatedExecutableAccessRequest(value) {
   return Boolean(value && typeof value === 'object' && validatedExecutableRequests.has(value));
 }
@@ -218,6 +286,8 @@ module.exports = {
   EXECUTABLE_NAME,
   MAX_EXECUTABLE_REQUESTS,
   ExecutableAccessError,
+  executableCommandEntries,
+  mergeExecutableRoots,
   isValidatedExecutableAccessRequest,
   isValidatedExecutableRoot,
   resolveExecutableAccess,

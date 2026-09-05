@@ -3,7 +3,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { resolveExecutableAccess } = require('./executable-access');
+const { executableCommandEntries, resolveExecutableAccess } = require('./executable-access');
 const {
   CAPABILITY_DEFINITIONS,
   CAPABILITY_KINDS,
@@ -32,6 +32,34 @@ async function resolvedExecutableFixture() {
 }
 
 describe('workspace capability contract', () => {
+  test.each(['once', 'conversation'])('preserves command mappings across a later %s grant for the same root', async (scope) => {
+    const { fixture, root } = await resolvedExecutableFixture();
+    try {
+      const bin = path.join(root.sourcePath, 'bin');
+      await fs.promises.symlink('tool', path.join(bin, 'another-tool'));
+      const next = await resolveExecutableAccess(['another-tool'], { hostEnvironment: { PATH: bin } });
+      const grants = new WorkspaceCapabilityGrantStore();
+      const request = (runtimeRoot, command) => createWorkspaceCapabilityRequest({
+        conversationId: 'conversation_one', command, workingDirectory: '.',
+        capabilities: [createExecutableRootCapability(runtimeRoot)],
+      });
+      grants.grant('conversation_one', request(root, 'tool'), 'conversation');
+      grants.grant('conversation_one', request(next.runtimeRoots[0], 'another-tool'), scope);
+      const names = (capabilities) => executableCommandEntries(
+        capabilities.map(executableRootForCapability), 'darwin'
+      ).map((entry) => entry.name).sort();
+      const operation = { command: 'another-tool', workingDirectory: '.' };
+      expect(names(grants.inspect('conversation_one', operation))).toEqual(['another-tool', 'tool']);
+      expect(names(grants.resolve('conversation_one', operation))).toEqual(['another-tool', 'tool']);
+      expect(names(grants.resolve('conversation_one', operation))).toEqual(
+        scope === 'once' ? ['tool'] : ['another-tool', 'tool']
+      );
+      expect(grants.inspect('conversation_two', operation)).toEqual([]);
+    } finally {
+      await fs.promises.rm(fixture, { recursive: true, force: true });
+    }
+  });
+
   test('defines distinct authority kinds and fails closed for unimplemented vocabulary', () => {
     expect(Object.keys(CAPABILITY_DEFINITIONS)).toEqual([
       CAPABILITY_KINDS.EXECUTABLE_ROOT,
