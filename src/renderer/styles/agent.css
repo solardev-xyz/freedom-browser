@@ -1239,17 +1239,16 @@ body.agent-first-mode .agent-workspace-body > .agent-workspace-scroll {
 @container agent-workspace-view (min-width: 1120px) {
   body.agent-first-mode .agent-workspace-body.has-processes {
     display: grid;
-    grid-template-columns: minmax(0, 820px) 260px;
+    grid-template-columns: minmax(0, 1fr) 260px;
     gap: 24px;
-    justify-content: center;
     padding: 0 24px;
   }
 
   body.agent-first-mode .agent-workspace-body.has-processes > .agent-workspace-scroll {
-    width: 100%;
+    width: min(100%, 820px);
     padding-right: 0;
     padding-left: 0;
-    margin: 0;
+    margin: 0 auto;
   }
 
   body.agent-first-mode .agent-workspace-body.has-processes > .agent-process-panel {
