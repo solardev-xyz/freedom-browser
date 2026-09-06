@@ -55,7 +55,7 @@ The generated profile is deny-by-default and allows:
 
 Profile generation filters both required and optional system-path candidates through the live filesystem before calling `stat`. Every required path that exists on macOS retains its previous read permission; absent macOS paths are simply omitted so platform-neutral profile-construction tests can run on Linux. Runtime capability detection still rejects every non-Darwin platform before launch.
 
-Electron qualification adds no standalone-Node runtime root. Its child `PATH` is exactly `/usr/bin:/bin`; `/usr/local` receives an explicit read denial unless it is itself an authorized runtime root. `process-exec` is scoped to the exposed system toolchain, attested runtime, workspace and private execution directory rather than being granted globally. This preserves workspace-built programs while denying absolute NVM/Homebrew or other host executables outside those roots. Capability and receipt metadata report `executableRootsScoped: true` only for that profile. The packaged corpus also attempts the canonical host Homebrew Node directly and confirms that it cannot start under the profile.
+Electron qualification adds no standalone-Node runtime root. Its child `PATH` is the canonical declared macOS system toolchain (`/Library/Developer/CommandLineTools/usr/bin` when present, then `/usr/bin:/bin:/usr/sbin:/sbin`); `/usr/local` receives an explicit read denial unless it is itself an authorized runtime root. `process-exec` is scoped to the exposed system toolchain, attested runtime, workspace and private execution directory rather than being granted globally. This preserves workspace-built programs while denying absolute NVM/Homebrew or other host executables outside those roots. Capability and receipt metadata report `executableRootsScoped: true` only for that profile. The packaged corpus also attempts the canonical host Homebrew Node directly and confirms that it cannot start under the profile.
 
 `.git`, configured protected paths and authorized external Git metadata receive explicit deny-write rules that take precedence over the writable workspace. `.git` is an immutable baseline protection, so an empty caller list cannot disable it. Electron execution additionally requires the frozen runtime descriptor attested by the active Electron main process; serialized path-bearing lookalikes are rejected before profile construction. The launcher fixes `GIT_OPTIONAL_LOCKS=0` and does not let the caller override it.
 
@@ -179,7 +179,7 @@ The Electron harness discovers and probes the active application executable, the
 - `/Users/flobot/Git/freedom-dev/freedom-browser/node_modules/electron/dist/Electron.app` — read-only, required for the active Electron executable, frameworks and resources.
 - `/Users/flobot/Git/freedom-dev/freedom-browser/out/agent-sandbox-packaged/mac-arm64/Freedom.app` — read-only, required for the packaged executable, frameworks, resources and `app.asar`.
 
-The policy explicitly disables standalone-Node inference. It adds neither Homebrew nor a host Node root, uses only `/usr/bin:/bin` in `PATH`, explicitly denies `/usr/local`, and invokes the exact active Electron executable by canonical path. The packaged corpus directly attempts the launcher's `/opt/homebrew/Cellar/node@22/22.22.0/bin/node`; Seatbelt terminates it with `SIGABRT` rather than allowing a host-runtime fallback. The exact packaged app happens to live below the user's home on this throwaway checkout and is deliberately exposed read-only; no other home subtree is granted.
+The policy explicitly disables standalone-Node inference. It adds neither Homebrew nor a host Node root, uses only the declared system-toolchain directories in `PATH`, explicitly denies `/usr/local`, and invokes the exact active Electron executable by canonical path. The packaged corpus directly attempts the launcher's `/opt/homebrew/Cellar/node@22/22.22.0/bin/node`; Seatbelt terminates it with `SIGABRT` rather than allowing a host-runtime fallback. The exact packaged app happens to live below the user's home on this throwaway checkout and is deliberately exposed read-only; no other home subtree is granted.
 
 The shared runtime contract now records the canonical runtime root, canonical host executable, relative executable path, and backend sandbox executable path separately. On macOS those host and execution identities remain the same canonical path under the validated `.app`; Seatbelt permissions and fail-closed bundle validation are unchanged. The distinction exists so mount-based backends can derive a neutral execution path without asking product or model-facing code to guess one.
 
@@ -219,7 +219,7 @@ Ordinary qualification additionally verifies:
 - final same-group cleanup after normal root exit; and
 - bounded `SIGTERM` to `SIGKILL` escalation when the root and child ignore `SIGTERM`.
 
-Packaged qualification additionally asserts `app.isPackaged`, `app.asar` entry loading, exact `Freedom.app` runtime selection, exact packaged-executable helper use, the single Electron runtime root, `/usr/bin:/bin` child `PATH`, forbidden host-Node denial and packaged user-data cleanup.
+Packaged qualification additionally asserts `app.isPackaged`, `app.asar` entry loading, exact `Freedom.app` runtime selection, exact packaged-executable helper use, the single Electron runtime root, the canonical declared child `PATH`, forbidden host-Node denial and packaged user-data cleanup.
 
 The separate Electron destructive command remains doubly gated. It records a token-bearing `setsid()` PID, demonstrates that the child survives group cancellation while file/network restrictions persist, and performs bounded token-checked cleanup in `finally`. The focused destructive Jest corpus also creates a separate process group using `/bin/sh` job control (`set -m`), proves its token-bearing child survives cancellation and continues its heartbeat, and always cleans the recorded PID with the same bounded ownership check. Freedom crash or quit cannot currently guarantee teardown of either kind of escaped descendant; this isolated backend intentionally adds no product-level quit manager.
 
@@ -292,7 +292,7 @@ Audit-hardening evidence on the ordinary case-insensitive APFS workspace volume:
 | Seatbelt profile application readiness | yes | Representative launch probe plus per-launch marker; application failure is sandbox-denied. |
 | Electron main-process invocation | yes | Freedom 0.8.1-dev under Electron 43.0.0 development and packaged bundles. |
 | Electron JavaScript helper | yes, constrained | Active canonical executable in `ELECTRON_RUN_AS_NODE` mode; exact `.app` bundle read-only. |
-| Arbitrary host JavaScript runtime fallback | denied | No standalone-Node root, `/usr/bin:/bin` only, `/usr/local` denied; canonical Homebrew Node launch rejected. |
+| Arbitrary host JavaScript runtime fallback | denied | No standalone-Node root, declared system toolchain only, `/usr/local` denied; canonical Homebrew Node launch rejected. |
 | Unsigned unpacked packaged Freedom | yes | `app.isPackaged`, `app.asar`, packaged executable and fresh user data qualified; `RunAsNode` enabled. |
 | Signed/notarized Freedom | **not yet** | Would add release-integrity, Gatekeeper, hardened-runtime and entitlement evidence, not stronger child Seatbelt or process-tree semantics. |
 | Exact workspace read/write | yes | Canonical host path; no neutral mount path on macOS. |
@@ -341,8 +341,87 @@ The concepts adapted are deny-default Seatbelt confinement, same-sandbox process
 10. `sandbox-exec` and SBPL are deprecated/private interfaces and can change between macOS releases.
 11. This is not protection against a Seatbelt or kernel escape.
 
-## Recommendation
+## Earlier backend-level recommendation
 
 **Proceed with constraints.** The filesystem/network boundary, packaged Electron runtime path and explicit best-effort lifecycle model are sufficiently qualified to begin narrow managed-workspace product integration behind an experimental gate. Keep command authority in trusted main-process code and retain opaque managed workspace identities.
 
 Before wider or release-facing exposure, rerun a smoke/corpus from the real signed/notarized artifact to cover its code-signing, Gatekeeper, hardened-runtime and entitlement behavior. That run would add distribution-integrity evidence but would not provide a stronger filesystem/network boundary or complete descendant teardown. Product/security decisions must still cover aggregate resource containment, detached-process policy, supported macOS/runtime layouts and same-UID workspace lifecycle races. Do not represent process-group cleanup as a security boundary.
+
+The broader product-path gate below supersedes this narrower backend-level recommendation.
+
+## Disposable-Mac product-path qualification — 2026-09-06
+
+Candidate base `fe5861fc9f9648fa30490ea7011c51b9ffaf1b3a` was checked out exactly on a
+physical Mac mini `Mac16,10` (Apple M4, arm64, 16 GB), macOS 15.6 build 24G84, as uid 501.
+The reusable service harness previously skipped Darwin with exit 0 and zero assertions. It now uses
+a small platform adapter while retaining Linux's `namespace_scoped` contract and runs the real
+Freedom service, stores, workspace controller/process manager, Pi tool factories, registered
+process-control IPC handlers, preview controller, runtime detector and Seatbelt executor.
+
+The first full-network product run found one real policy defect: broad
+`(allow network-outbound)` let a command connect to a pathname Unix socket outside the workspace.
+The execution profile now grants outbound remote IP, inbound/bind local IP, and only the exact
+`/private/var/run/mDNSResponder` and `/var/run/mDNSResponder` resolver sockets. The broad Unix-socket
+rule is absent. A sequence of reruns demonstrated the narrow composition: public TCP, HTTPS, DNS,
+owned loopback and owned LAN endpoints work under the exact full-network grant, while the owned
+outside pathname socket returns `EPERM`; ordinary commands and fixed helpers remain offline.
+
+New product-path evidence includes:
+
+- development aggregate: nine groups, 160 assertions passed, zero failed;
+- unsigned packaged `app.asar` aggregate: nine groups, 149 assertions passed, zero failed, with an
+  additional exact-runtime assertion in every group;
+- macOS adversarial boundary: 11/11, including direct/interpreter/symlink/hard-link/recursive-delete
+  outside canaries, protected Git hard links, ordinary workspace hard links, `.GIT`/`.GiT`, a
+  symlinked Git parent, scrubbed environment/private storage, host sentinel process visibility,
+  public/durable leak scans and receipt semantics;
+- reviewed checkpoint/restore: 11/11 through the real `workspace_history` tool and production
+  restore controller, covering no automatic snapshot at normal turn completion, contextual and
+  mandatory exclusions, selected revisions, changed/expired/replayed tokens, restore backup,
+  unrelated/excluded file preservation and restore-token replay denial;
+- product-path detached descendant: 6/6 including cleanup checks. A token-bearing `setsid()` child
+  survived original-group cancellation as expected, remained unable to read the outside canary or
+  reach owned loopback, internet or DNS, and was explicitly killed only after PID ownership was
+  revalidated. Its heartbeat stopped and no survivor remained;
+- five-minute terminal retention: 27/27 at 304,996 ms, with terminal expiry, stable disposal
+  heartbeat and an empty survivor scan;
+- controlled failure: intentional exit 1, with all four scenario/cleanup assertions passing,
+  fixture removal and no survivor;
+- real Electron idle application exit: exit code 0, Agent disposal start/finish and process-exit
+  diagnostics observed, four helpers present before quit and no direct child after exit, fresh
+  profile removed. The human-readable signal-handler log was not emitted to captured stdout/stderr;
+  the process exit and disposal phases are the authoritative evidence.
+
+The packaged build is unsigned/ad-hoc, directory-only, and unnotarized. It runs Freedom 0.8.1-dev,
+Electron 43.0.0, Node 24.17.0 and Chromium 150.0.7871.46 from
+`out/agent-sandbox-packaged/mac-arm64/Freedom.app`. Fuse v1 inspection reports `RunAsNode` enabled.
+The product aggregate loads its runner from `Contents/Resources/app.asar`, reattests the exact
+`Contents/MacOS/Freedom` executable in every group, and reports no host-Node fallback. A separately
+doubly gated packaged detached qualification also passed and token-cleaned its survivor.
+
+First-run qualification failures were retained as evidence and corrected narrowly:
+
+1. platform-specific Linux receipt/listener/runtime assumptions in the reusable harness;
+2. the genuine broad Unix-socket authority described above;
+3. an exact `/usr/bin:/bin` Electron qualification assertion that disagreed with the production
+   policy's declared Command Line Tools-first PATH on this host; and
+4. a focused integration setup that asked the login PATH to resolve `/usr/bin/python3` even though
+   the actual sandbox PATH intentionally selects the existing Command Line Tools Python first.
+
+The independent affected-boundary matrix passed 20 suites and 382 tests; one suite and 20 tests
+were platform-skipped. Focused Seatbelt passed 2 suites/31 tests, the standalone Seatbelt
+qualification passed its four workloads, the existing detached/job-control Jest suite passed 2/2,
+and development and packaged Electron detached qualifications passed. A new direct platform-adapter
+regression suite passed 3/3 and preserves Linux's `namespace_scoped`/`pid_namespace`/`SIGKILL`
+expectations. Lint passed. Full Jest passed 232 suites and 4,037 tests, with nine suites and 61 tests
+normally skipped. An initial full-suite run inside the outer Codex sandbox failed 16 tests across
+five suites solely because that outer layer denied their owned TCP and Unix-socket listeners; the
+same immutable working tree passed when run with the required host qualification permissions.
+
+This expanded gate is **not closed yet**. The scripted Pi sessions do not substitute for the required
+live already-approved model/provider fixture, and no approved provider configuration was available
+for this run. Real application exit was observed only while idle; running and detached managed-workspace
+application-exit modes remain uncovered even though controller disposal and detached confinement were
+qualified independently. Aggregate CPU, memory, PID and disk containment remains unsupported by
+contract. These gaps must remain explicit rather than being inferred from the green deterministic,
+Electron or packaged corpora.

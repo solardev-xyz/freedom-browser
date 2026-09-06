@@ -9,6 +9,7 @@ const path = require('path');
 const { app } = require('electron');
 const { version: freedomVersion } = require('../../../../package.json');
 const { BUBBLEWRAP_SYSTEM_TOOLCHAIN_PATH } = require('./bubblewrap-backend');
+const { systemToolchainDirectories } = require('./executable-access');
 const { detectElectronJavaScriptRuntime } = require('./electron-runtime');
 const { createWorkspaceExecutionPolicy, insidePath } = require('./execution-policy');
 const { configurePackagedQualificationUserData } = require('./qualification-user-data');
@@ -506,7 +507,9 @@ async function qualifyBoundary(executor, policy, runtime, fixture) {
   }
   assertCondition(
     result.path ===
-      (process.platform === 'linux' ? BUBBLEWRAP_SYSTEM_TOOLCHAIN_PATH : '/usr/bin:/bin'),
+      (process.platform === 'linux'
+        ? BUBBLEWRAP_SYSTEM_TOOLCHAIN_PATH
+        : systemToolchainDirectories('darwin').join(':')),
     `Electron qualification received an unexpected toolchain PATH: ${result.path}`
   );
   assertCondition(

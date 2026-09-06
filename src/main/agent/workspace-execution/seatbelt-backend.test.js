@@ -127,11 +127,15 @@ describe('macOS Seatbelt backend contract', () => {
 
     const profile = buildSeatbeltProfile(policy, privateDirectory);
 
-    expect(profile).toContain('(allow network-outbound)');
-    expect(profile).toContain('(allow network-inbound)');
+    expect(profile).toContain('(allow network-outbound (remote ip))');
+    expect(profile).toContain('(allow network-inbound (local ip))');
+    expect(profile).toContain('(allow network-bind (local ip))');
+    expect(profile).toContain(
+      '(allow network-outbound (remote unix-socket (literal "/private/var/run/mDNSResponder")))'
+    );
+    expect(profile).not.toContain('(allow network-outbound)');
+    expect(profile).not.toContain('(allow network-inbound)');
     expect(profile).not.toContain('(deny network*)');
-    expect(profile).not.toContain('remote unix-socket');
-    expect(profile).not.toContain('local unix-socket');
     expect(profile).toContain('(sysctl-name-regex #"^net\\.routetable")');
     for (const service of SEATBELT_NETWORK_MACH_SERVICES) {
       expect(profile).toContain(`(global-name "${service}")`);

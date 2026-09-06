@@ -8,7 +8,7 @@
 // real SQLite AgentManagedWorkspaceStore and AgentSessionHistoryStore, the production
 // ManagedWorkspaceController and its ManagedWorkspaceProcessManager, the real Pi workspace tool
 // factory (createWorkspaceTools), the production WorkspacePreviewController and its preview request
-// handler, and the real Bubblewrap executor. Only observability wrappers are added around the
+// handler, and the real platform executor. Only observability wrappers are added around the
 // executor and the tool factory, and three deterministic seams remain:
 //   * the Pi *session* is a scripted fake (no model provider, no credentials, no harness network),
 //   * the browser tab surface is a minimal in-memory stub that records navigations, and
@@ -18,9 +18,8 @@
 //
 // Launch through the checkout's Electron binary in Node mode (ELECTRON_RUN_AS_NODE=1 electron
 // <script>): the native SQLite stores are built for Electron's ABI and the production runtime
-// detector attests that same binary as the helper runtime. The runner is Linux-only; on other
-// platforms it prints an explicit skip and exits 0. Missing Bubblewrap on Linux, or running as
-// root, fails the qualification rather than skipping it.
+// detector attests that same binary as the helper runtime. The runner supports Linux/Bubblewrap
+// and macOS/Seatbelt; a missing platform primitive or root execution fails rather than skipping.
 
 const { spawnSync } = require('child_process');
 const fs = require('fs');
@@ -60,6 +59,7 @@ const {
 const {
   createWorkspaceTools: realCreateWorkspaceTools,
 } = require('../../src/main/agent/pi-workspace-tools');
+const { createPlatformAdapter, commonHostBaseline } = require('./platform-adapter');
 
 function emit(type, value = {}) {
   process.stdout.write(`${JSON.stringify({ type, ...value })}\n`);
@@ -103,12 +103,10 @@ function closeServer(server) {
 }
 
 // A read-only survivor scan for the sandbox primitives. It never kills anything: cleanup happens
-// through namespace teardown in controller.dispose(). Scenario-specific process markers can be
-// appended; the harness always checks the Bubblewrap and supervisor primitives.
-function survivorScan(extraPattern) {
-  const pattern = extraPattern
-    ? `[b]wrap|freedom-sandbox-supervisor|${extraPattern}`
-    : '[b]wrap|freedom-sandbox-supervisor';
+// through controller disposal. Scenario-specific process markers can be appended; the harness
+// always checks the active sandbox launcher and supervisor primitives.
+function survivorScan(adapter, extraPattern) {
+  const pattern = adapter.survivorPattern(extraPattern);
   const found = spawnSync('pgrep', ['-af', pattern], { encoding: 'utf8' });
   return (found.stdout || '')
     .split('\n')
@@ -157,14 +155,14 @@ async function selectLanAddress(overrideAddress) {
 }
 
 // The kernel listener for a loopback port, as owned by the sandboxed process tree.
-function ssListener(port) {
-  return spawnSync('ss', ['-H', '-ltnp', `sport = :${port}`], { encoding: 'utf8' }).stdout.trim();
+function socketListener(adapter, port) {
+  return adapter.listener(port);
 }
 
-async function pickFreePort() {
+async function pickFreePort(adapter) {
   for (let attempt = 0; attempt < 20; attempt += 1) {
     const candidate = 40_000 + Math.floor(Math.random() * 20_000);
-    if (ssListener(candidate)) continue;
+    if (socketListener(adapter, candidate)) continue;
     const free = await new Promise((resolve) => {
       const server = net.createServer();
       server.once('error', () => resolve(false));
@@ -205,38 +203,8 @@ function createFakeSession() {
 }
 
 function hostBaseline(networkEnabled) {
-  const read = (file) => {
-    try {
-      return fs.readFileSync(file, 'utf8').trim();
-    } catch {
-      return null;
-    }
-  };
-  const sysctl = (name) => read(`/proc/sys/${name.replace(/\./g, '/')}`);
-  const bwrap = spawnSync('bwrap', ['--version'], { encoding: 'utf8' });
-  const apparmor = spawnSync('dpkg-query', ['-W', '-f=${Version}', 'apparmor'], {
-    encoding: 'utf8',
-  });
-  return {
-    uid: process.getuid?.(),
-    gid: process.getgid?.(),
-    user: os.userInfo().username,
-    kernel: `${os.type()} ${os.release()} ${os.arch()}`,
-    distribution: read('/etc/os-release')
-      ?.split('\n')
-      .find((line) => line.startsWith('PRETTY_NAME='))
-      ?.slice('PRETTY_NAME='.length)
-      .replace(/"/g, ''),
-    bubblewrap: bwrap.status === 0 ? bwrap.stdout.trim() : null,
-    apparmor: apparmor.status === 0 ? apparmor.stdout.trim() : null,
-    apparmorLabel: read('/proc/self/attr/current'),
-    apparmorRestrictUnprivilegedUserns: sysctl('kernel.apparmor_restrict_unprivileged_userns'),
-    unprivilegedUsernsClone: sysctl('kernel.unprivileged_userns_clone'),
-    maxUserNamespaces: sysctl('user.max_user_namespaces'),
-    node: process.version,
-    electron: process.versions.electron || null,
-    networkPermissionsEnabled: networkEnabled,
-  };
+  const adapter = createPlatformAdapter();
+  return adapter ? commonHostBaseline(adapter, networkEnabled) : null;
 }
 
 // Build the full production composition plus the disclosed deterministic seams, and return a
@@ -270,6 +238,7 @@ function buildComposition({ userDataDir, networkEnabled }) {
         const receipt = await realExecutor.execute(policy, request);
         entry.state = receipt.state;
         entry.receipt = {
+          backend: receipt.backend,
           state: receipt.state,
           exitCode: receipt.exitCode,
           signal: receipt.signal,
@@ -297,7 +266,10 @@ function buildComposition({ userDataDir, networkEnabled }) {
       policyCreations += 1;
       return createWorkspaceExecutionPolicy(options);
     },
-    runtimeOptions: { packaged: false, freedomVersion: pkg.version },
+    runtimeOptions: {
+      packaged: process.env.FREEDOM_AGENT_WORKSPACE_PACKAGED === '1',
+      freedomVersion: pkg.version,
+    },
     networkPermissionsEnabled: networkEnabled,
   });
   const workspaceStore = controller.store;
@@ -457,7 +429,7 @@ function buildComposition({ userDataDir, networkEnabled }) {
 // Assemble the context handed to a scenario's run(ctx). It carries the composition, the run
 // helpers (startRun/endRun/callTool), report helpers (check/record/emit), generic utilities, and a
 // finally-based cleanup registry.
-function buildContext(composition, { root, userDataDir, networkEnabled, includeSlow }) {
+function buildContext(composition, { root, userDataDir, networkEnabled, includeSlow, platform }) {
   const results = [];
   const cleanups = [];
   let callCounter = 0;
@@ -552,6 +524,7 @@ function buildContext(composition, { root, userDataDir, networkEnabled, includeS
     userDataDir,
     networkEnabled,
     includeSlow,
+    platform,
     // composition
     ...composition,
     // report + utilities
@@ -563,9 +536,9 @@ function buildContext(composition, { root, userDataDir, networkEnabled, includeS
     listen,
     closeServer,
     selectLanAddress,
-    ssListener,
-    pickFreePort,
-    survivorScan,
+    ssListener: (port) => socketListener(platform, port),
+    pickFreePort: () => pickFreePort(platform),
+    survivorScan: (extraPattern) => survivorScan(platform, extraPattern),
     leakScan,
     onCleanup,
     // run helpers and derived accessors
@@ -596,7 +569,7 @@ async function teardown(context) {
       errors.push({ label, message: error.message, code: error.code });
     }
   };
-  // Terminate any yielded process still held by the conversation and tear down live namespaces.
+  // Terminate any yielded process still held by the conversation and tear down live sandboxes.
   await step('service.dispose', () => service.dispose());
   await step('previewController.dispose', () => workspacePreviewController.dispose());
   await step('controller.dispose', () => controller.dispose());
@@ -619,6 +592,7 @@ async function teardown(context) {
 // summary and never throws: a scenario error is captured, cleanup still runs, and the exit code
 // reflects both assertion failures and cleanup failures.
 async function runScenario(scenario, { networkEnabled = true, includeSlow = false } = {}) {
+  const platform = createPlatformAdapter();
   const baseline = hostBaseline(networkEnabled);
   emit('host', baseline);
   emit('scenario', {
@@ -628,9 +602,17 @@ async function runScenario(scenario, { networkEnabled = true, includeSlow = fals
     includeSlow,
   });
 
-  if (process.platform !== 'linux') {
+  if (!platform) {
     emit('skip', {
-      reason: 'This qualification requires Linux; the Bubblewrap sandbox is not available here.',
+      reason: 'This qualification supports only Linux Bubblewrap and macOS Seatbelt.',
+      platform: process.platform,
+    });
+    emit('summary', { scenario: scenario.id, passed: 0, failed: 0, skipped: true });
+    return { skipped: true, failed: 0 };
+  }
+  if (Array.isArray(scenario.platforms) && !scenario.platforms.includes(process.platform)) {
+    emit('skip', {
+      reason: `Scenario ${scenario.id} does not apply to ${process.platform}.`,
       platform: process.platform,
     });
     emit('summary', { scenario: scenario.id, passed: 0, failed: 0, skipped: true });
@@ -644,9 +626,7 @@ async function runScenario(scenario, { networkEnabled = true, includeSlow = fals
   if (baseline.uid === 0) {
     throw new Error('Refusing to qualify the sandbox as root');
   }
-  if (!baseline.bubblewrap) {
-    throw new Error('Bubblewrap is required on Linux but `bwrap --version` did not succeed');
-  }
+  platform.assertAvailable(baseline);
 
   const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'freedom-agent-qual-'));
   await fs.promises.chmod(root, 0o700);
@@ -654,11 +634,38 @@ async function runScenario(scenario, { networkEnabled = true, includeSlow = fals
   await fs.promises.mkdir(userDataDir, { mode: 0o700 });
 
   const composition = buildComposition({ userDataDir, networkEnabled });
-  const context = buildContext(composition, { root, userDataDir, networkEnabled, includeSlow });
+  const context = buildContext(composition, {
+    root,
+    userDataDir,
+    networkEnabled,
+    includeSlow,
+    platform,
+  });
 
   let scenarioError = null;
   try {
     await scenario.run(context);
+    if (process.env.FREEDOM_AGENT_WORKSPACE_PACKAGED === '1') {
+      const runtime = composition.controller.runtime;
+      const entryPath = fs.realpathSync(__filename);
+      context.check(
+        'packaged-runtime',
+        'the product composition uses the exact packaged application runtime from app.asar',
+        runtime?.packaged === true &&
+          runtime.executablePath === fs.realpathSync(process.execPath) &&
+          runtime.applicationBundleRoot?.endsWith('.app') &&
+          entryPath.includes(`${path.sep}app.asar${path.sep}`),
+        {
+          packaged: runtime?.packaged,
+          exactProcessExecutable: runtime?.executablePath === fs.realpathSync(process.execPath),
+          applicationBundle: runtime?.applicationBundleRoot
+            ? path.basename(runtime.applicationBundleRoot)
+            : null,
+          entryFromAsar: entryPath.includes(`${path.sep}app.asar${path.sep}`),
+          hostNodeFallback: false,
+        }
+      );
+    }
   } catch (error) {
     scenarioError = error;
     emit('scenario_error', {
@@ -692,7 +699,7 @@ async function runScenario(scenario, { networkEnabled = true, includeSlow = fals
   }
 
   const rootRemoved = !fs.existsSync(root);
-  const survivors = survivorScan(scenario.survivorPattern);
+  const survivors = survivorScan(platform, scenario.survivorPattern);
   emit('cleanup', {
     scenario: scenario.id,
     rootRemoved,
@@ -708,7 +715,7 @@ async function runScenario(scenario, { networkEnabled = true, includeSlow = fals
   );
   context.check(
     'cleanup-survivors',
-    'no Bubblewrap or sandbox supervisor process survived the qualification',
+    `no ${platform.sandboxName} launcher or sandbox supervisor process survived the qualification`,
     survivors === '',
     { survivors }
   );

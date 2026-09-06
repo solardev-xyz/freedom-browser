@@ -160,8 +160,11 @@ function sysctlReadRule() {
 
 function fullNetworkRules() {
   return [
-    '(allow network-outbound)',
-    '(allow network-inbound)',
+    '(allow network-outbound (remote ip))',
+    '(allow network-inbound (local ip))',
+    '(allow network-bind (local ip))',
+    '(allow network-outbound (remote unix-socket (literal "/private/var/run/mDNSResponder")))',
+    '(allow network-outbound (remote unix-socket (literal "/var/run/mDNSResponder")))',
     [
       '(allow system-socket',
       '  (require-all',

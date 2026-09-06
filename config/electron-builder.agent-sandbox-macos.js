@@ -6,6 +6,11 @@ const releaseBuild = packageMetadata.build;
 
 module.exports = {
   ...releaseBuild,
+  files: [
+    ...releaseBuild.files,
+    'scripts/qualify-agent-workspace.js',
+    'scripts/agent-qualification/**/*',
+  ],
   directories: {
     ...releaseBuild.directories,
     output: 'out/agent-sandbox-packaged',

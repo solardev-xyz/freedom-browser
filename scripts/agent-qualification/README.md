@@ -1,6 +1,6 @@
 # Agent workspace qualification harness
 
-A tracked, reusable harness that qualifies the four Freedom managed Agent workspace capabilities
+A tracked, reusable harness that qualifies Freedom's managed Agent workspace capabilities
 against the real product objects:
 
 1. **Network permissions** — available by default in the product build, offline until an exact,
@@ -16,7 +16,8 @@ Each scenario runs against the **production** `FreedomAgentService`, the real SQ
 `AgentManagedWorkspaceStore` and `AgentSessionHistoryStore`, the production
 `ManagedWorkspaceController` and its `ManagedWorkspaceProcessManager`, the real Pi workspace tool
 factory (`createWorkspaceTools`), the production `WorkspacePreviewController` and its preview request
-handler, and the **real Bubblewrap executor**. Server-preview requests are proxied through the
+handler, and the **real platform executor** (Bubblewrap on Linux, Seatbelt on macOS).
+Server-preview requests are proxied through the
 production preview handler against a real sandboxed HTTP server.
 
 ## Layout
@@ -31,7 +32,12 @@ scripts/agent-qualification/
     processes.js                          # managed-process scenario
     reconciliation.js                     # automatic terminal reconciliation scenario
     previews.js                           # managed server-preview scenario (enabled + disabled modes)
+    process-controls.js                   # trusted-chrome service and registered IPC controls
+    macos-boundary.js                     # macOS filesystem/process-visibility attacks
+    history.js                            # reviewed checkpoint and restore behavior
+    macos-destructive.js                  # doubly gated macOS detached descendant
     self-test-fault.js                    # controlled-failure self-test for the cleanup path
+  platform-adapter.js                     # exact Linux and macOS qualification contracts
 ```
 
 ## Deterministic seams (disclosed)
@@ -49,11 +55,8 @@ store, policy, or capability object:
 
 ## Prerequisites
 
-- **Linux** with an unprivileged-user-namespace-capable kernel. On any other platform every group
-  prints an explicit `skip` and exits 0. (macOS Seatbelt sandboxing is qualified separately by the
-  `test:agent-sandbox:macos*` scripts.)
-- **Bubblewrap** (`bwrap`) on `PATH`. Missing `bwrap` on Linux **fails** qualification rather than
-  skipping it.
+- **Linux** with Bubblewrap and unprivileged user namespaces, or **macOS** with
+  `/usr/bin/sandbox-exec`. A missing required primitive fails rather than skipping.
 - An **ordinary non-root user**. Running as root is refused.
 - `npm ci` completed, so `node_modules/electron` and the native SQLite modules are materialized for
   Electron's ABI.
@@ -62,8 +65,9 @@ store, policy, or capability object:
 
 ## Commands
 
-Aggregate (both network modes, both preview modes, plus processes, reconciliation, and the
-trusted-chrome process controls, each in its own isolated process, with a summary matrix):
+Aggregate (both network modes, both preview modes, processes, reconciliation, and trusted-chrome
+process controls, plus macOS boundary and history scenarios on Darwin; each in its own isolated
+process, with a summary matrix):
 
 ```
 npm run test:agent-sandbox:workspace
@@ -81,6 +85,10 @@ npm run test:agent-sandbox:workspace:reconciliation       # automatic terminal r
 npm run test:agent-sandbox:workspace:previews             # managed server previews, gate enabled
 npm run test:agent-sandbox:workspace:previews:disabled    # managed server previews, gate-absent regression
 npm run test:agent-sandbox:workspace:process-controls     # trusted-chrome running-process controls (list, stop, preview)
+npm run test:agent-sandbox:workspace:macos:destructive    # doubly gated product-path setsid survivor
+npm run test:agent-sandbox:workspace:macos:app-exit       # real idle Electron app exit
+npm run test:agent-sandbox:workspace:packaged:macos       # aggregate from unsigned app.asar
+npm run test:agent-sandbox:macos:packaged:destructive     # doubly gated packaged setsid survivor
 npm run test:agent-sandbox:workspace:self-test-fault      # controlled-failure cleanup self-test (exits non-zero by design)
 ```
 
@@ -88,7 +96,8 @@ Directly (any group; flags are `--network-disabled` and `--include-slow`):
 
 ```
 ELECTRON_RUN_AS_NODE=1 electron scripts/qualify-agent-workspace.js <group> [flags]
-# groups: network | processes | reconciliation | previews | self-test-fault | all
+# groups: network | processes | reconciliation | previews | process-controls |
+#         macos-boundary | history | macos-destructive | self-test-fault | all
 ```
 
 ### Slow cases
@@ -99,11 +108,9 @@ default `processes` group and from the aggregate. Run it with
 
 ### Destructive / adversarial cases
 
-This harness contains no deliberately destructive cases and is safe to run repeatedly. The hostile
-filesystem / descendant / resource corpus remains in the separately gated jest suites
-(`test:agent-sandbox:destructive`, gated by `FREEDOM_SANDBOX_DESTRUCTIVE=1`, and the macOS
-`*:destructive` scripts gated by `FREEDOM_SANDBOX_VM_ONLY=1`). Those are never part of ordinary
-`npm test`, and this harness does not change that.
+The ordinary aggregate contains only bounded disposable fixtures. Detached descendants remain in
+the separately doubly gated `macos-destructive` scenario and existing destructive Jest/Electron
+suites. They are never part of ordinary `npm test` or the aggregate.
 
 ## Expected output
 
@@ -153,22 +160,22 @@ cleanup still runs.
   backs the `agent:process:stop` / `agent:process:preview-open` IPC handlers
   (`FreedomAgentService.stopWorkspaceProcess` / `openWorkspaceProcessPreview` →
   `ManagedWorkspaceController.terminateProcess` / `listProcesses` →
-  `ManagedWorkspaceProcessManager.terminate` / `list` → Bubblewrap). Reads the renderer-facing
+  `ManagedWorkspaceProcessManager.terminate` / `list` → the platform backend). Reads the renderer-facing
   `service.getState().workspace.processes` projection: only yielded, still-running commands appear;
   short commands never do; the projection is bounded to opaque id, command summary,
   workspace-relative directory, state, backend, network posture, and optional declared preview port,
   with no host path, buffered output, capability, authority, or private data. Chrome Stop terminates
-  the exact conversation-owned process with the truthful SIGKILL / namespace_scoped / pid_namespace
-  receipt, drops it from the live projection while its terminal ledger evidence remains, and does not
+  the exact conversation-owned process with the platform's truthful lifecycle receipt, drops it from
+  the live projection while its terminal ledger evidence remains, and does not
   consume the process's Pi `write_stdin` output cursor (the exact unread tail survives Stop with no
   gap and no duplication). A declared server reopens through the chrome preview action via the
   isolated preview controller; another conversation, an unknown id, and a malformed id are refused
   and cannot affect a live process; natural completion during a newer turn emits the independent
   `workspace_processes_changed` refresh. A second part (`PCI*`) registers the production
-  `registerFreedomAgentIpc` against the same real service and Bubblewrap composition, establishes a
+  `registerFreedomAgentIpc` against the same real service and platform composition, establishes a
   chrome-owned run through the real `agent:start` handler, and drives the registered
   `agent:process:stop` / `agent:process:preview-open` handlers directly — proving the owning sender
-  succeeds (real Bubblewrap SIGKILL), another renderer and a malformed id are rejected `AGENT_NOT_OWNER`
+  succeeds (real platform cancellation), another renderer and a malformed id are rejected `AGENT_NOT_OWNER`
   before reaching the service, and a cross-conversation id is rejected `INVALID_ARGUMENT`, each leaving
   the live process untouched. The `preload.test.js` suite additionally covers the preload exposure
   shape.
@@ -177,11 +184,11 @@ cleanup still runs.
 
 - Every run creates a uniquely owned temporary fixture directory (`freedom-agent-qual-<random>`), and
   a `finally`-based teardown disposes the service, preview controller, and controller (terminating
-  live namespaces), drains in-flight terminal writes, closes the stores, runs scenario cleanups, and
+  live managed processes), drains in-flight terminal writes, closes the stores, runs scenario cleanups, and
   removes the fixture directory. Cleanup validates its own success (`cleanup-root`,
   `cleanup-survivors`, `cleanup-errors`) and never removes leftovers from previous runs.
-- Survivor scans are **read-only** (`pgrep`, never a kill) and matched narrowly; cleanup happens
-  through namespace teardown, not process-name kills.
+- Survivor scans are **read-only** and matched narrowly. The gated macOS detached case records one
+  PID and revalidates its synthetic token before bounded explicit cleanup; no process-name kill is used.
 - Unexpected scenario errors and cleanup failures produce a non-zero exit with bounded diagnostics.
 - Run `test:agent-sandbox:workspace:self-test-fault` to confirm the cleanup path on a controlled
   failure: it launches a live process, throws, and the `cleanup` diagnostic must still show
@@ -189,8 +196,7 @@ cleanup still runs.
 
 ## Troubleshooting
 
-- **Every group skips.** You are not on Linux, or `process.platform !== 'linux'`. The harness is
-  Linux-only by design.
+- **Every group skips.** The current platform is neither supported Linux nor macOS.
 - **`Bubblewrap is required on Linux …`.** Install `bwrap` (`apt-get install bubblewrap`) and ensure
   unprivileged user namespaces are permitted (`kernel.apparmor_restrict_unprivileged_userns`,
   `kernel.unprivileged_userns_clone`, `user.max_user_namespaces`). The `host` line reports these.
@@ -199,7 +205,7 @@ cleanup still runs.
   `ELECTRON_RUN_AS_NODE=1 electron scripts/qualify-agent-workspace.js <group>`. Plain `node` cannot
   load the Electron-ABI native SQLite modules.
 - **A `previews` port assertion fails.** `pickFreePort` avoids in-use loopback ports, but a busy host
-  can still race; re-run. The scenario reads `ss`/`/proc` for listener ownership, so those must be
-  available.
+  can still race; re-run. The scenario reads `ss`/`/proc` on Linux or `lsof`/`ps` on macOS for
+  listener ownership, so the corresponding host tools must be available.
 - **Cleanup reports `ENOTEMPTY` / survivors.** A genuine teardown regression. The `cleanup` line and
   the `cleanupErrors` array carry bounded diagnostics.

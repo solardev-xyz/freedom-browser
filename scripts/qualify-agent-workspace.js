@@ -5,7 +5,7 @@
 // Unified runner for the Freedom managed Agent workspace qualification. It composes the production
 // FreedomAgentService, the real SQLite stores, the ManagedWorkspaceController and its process
 // manager, the real Pi tool factories, the production WorkspacePreviewController, and the real
-// Bubblewrap executor once (see ./agent-qualification/harness.js), then drives one reusable
+// platform executor once (see ./agent-qualification/harness.js), then drives one reusable
 // scenario group against that composition and guarantees finally-based cleanup.
 //
 // Launch through the checkout's Electron binary in Node mode so the native SQLite stores load and
@@ -25,13 +25,16 @@
 //   previews --network-disabled
 //                   Managed server previews, gate-absent regression
 //   process-controls  Trusted-chrome running-process controls (list, stop, preview)
+//   macos-boundary  macOS product-path filesystem and process-visibility attacks
+//   history         Reviewed checkpoint selection and production restore behavior
+//   macos-destructive  doubly gated detached-descendant product-path qualification
 //   self-test-fault Controlled-failure self-test that proves cleanup runs after a scenario error
 //   all             Every group above (both network modes and both preview modes), each in its own
 //                   isolated process, with an aggregate matrix; excludes the slow expiry case and
 //                   the self-test-fault group
 //
 // Each run emits one JSON line per assertion and exits non-zero if any assertion, the scenario, or
-// cleanup failed. On non-Linux platforms every group prints an explicit skip and exits 0.
+// cleanup failed. Unsupported platforms print an explicit skip and exit 0.
 
 const { spawn } = require('child_process');
 
@@ -58,6 +61,18 @@ const SCENARIOS = {
     module: './agent-qualification/scenarios/process-controls',
     modes: () => ({ networkEnabled: true }),
   },
+  'macos-boundary': {
+    module: './agent-qualification/scenarios/macos-boundary',
+    modes: () => ({ networkEnabled: true }),
+  },
+  history: {
+    module: './agent-qualification/scenarios/history',
+    modes: () => ({ networkEnabled: true }),
+  },
+  'macos-destructive': {
+    module: './agent-qualification/scenarios/macos-destructive',
+    modes: () => ({ networkEnabled: true }),
+  },
   'self-test-fault': {
     module: './agent-qualification/scenarios/self-test-fault',
     modes: () => ({ networkEnabled: true }),
@@ -74,6 +89,12 @@ const AGGREGATE = [
   { group: 'previews', flags: [] },
   { group: 'previews', flags: ['--network-disabled'] },
   { group: 'process-controls', flags: [] },
+  ...(process.platform === 'darwin'
+    ? [
+        { group: 'macos-boundary', flags: [] },
+        { group: 'history', flags: [] },
+      ]
+    : []),
 ];
 
 function parseFlags(argv) {

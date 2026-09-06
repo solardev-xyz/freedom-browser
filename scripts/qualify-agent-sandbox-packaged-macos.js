@@ -22,9 +22,9 @@ function defaultApplicationPath() {
   );
 }
 
-function run(executablePath, environment) {
+function run(executablePath, args, environment) {
   return new Promise((resolve, reject) => {
-    const child = spawn(executablePath, [], {
+    const child = spawn(executablePath, args, {
       env: environment,
       stdio: 'inherit',
     });
@@ -38,7 +38,7 @@ async function main() {
     throw new Error('Packaged workspace-sandbox qualification requires macOS');
   }
   const applicationPath = await fs.promises.realpath(
-    path.resolve(process.argv[2] || defaultApplicationPath())
+    path.resolve(process.argv.find((argument) => argument.endsWith('.app')) || defaultApplicationPath())
   );
   if (path.extname(applicationPath) !== '.app') {
     throw new Error('Packaged qualification target must be a macOS application bundle');
@@ -59,17 +59,48 @@ async function main() {
   delete environment.ELECTRON_RUN_AS_NODE;
   delete environment.FREEDOM_SANDBOX_DESTRUCTIVE;
 
+  const workspaceProduct = process.argv.includes('--workspace-product');
+  const destructive = process.argv.includes('--destructive');
+  if (workspaceProduct && destructive) {
+    throw new Error('Choose either the workspace product corpus or the detached corpus');
+  }
+  if (
+    destructive &&
+    (process.env.FREEDOM_SANDBOX_DESTRUCTIVE !== '1' ||
+      process.env.FREEDOM_SANDBOX_VM_ONLY !== '1')
+  ) {
+    throw new Error('Packaged destructive qualification requires both disposable-host gates');
+  }
+  const args = [];
+  if (workspaceProduct) {
+    const entryPath = path.join(
+      applicationPath,
+      'Contents',
+      'Resources',
+      'app.asar',
+      'scripts',
+      'qualify-agent-workspace.js'
+    );
+    args.push(entryPath, 'all');
+    environment.ELECTRON_RUN_AS_NODE = '1';
+    environment.FREEDOM_AGENT_WORKSPACE_PACKAGED = '1';
+  } else if (destructive) {
+    environment.FREEDOM_SANDBOX_DESTRUCTIVE = '1';
+    environment.FREEDOM_SANDBOX_VM_ONLY = '1';
+  }
+
   process.stdout.write(
     `${JSON.stringify({
       type: 'packaged-qualification-launch',
       applicationPath,
       executablePath,
       userDataRoot,
+      mode: workspaceProduct ? 'workspace-product' : destructive ? 'destructive' : 'ordinary',
     })}\n`
   );
   let result;
   try {
-    result = await run(executablePath, environment);
+    result = await run(executablePath, args, environment);
   } finally {
     validateQualificationUserData(userDataRoot);
     await fs.promises.rm(userDataRoot, { recursive: true, force: true });

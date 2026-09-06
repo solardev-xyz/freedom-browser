@@ -46,7 +46,7 @@ def probe(args):
     result['loopback'] = connect(socket.AF_INET, ('127.0.0.1', int(loop_port)))
     result['lan'] = connect(socket.AF_INET, (lan_host, int(lan_port)))
     result['public'] = connect(socket.AF_INET, (public_host, int(public_port)))
-    result['abstract'] = connect(socket.AF_UNIX, '\0' + abstract)
+    result['abstract'] = connect(socket.AF_UNIX, '\0' + abstract) if abstract != '-' else 'not_applicable'
     result['pathname'] = connect(socket.AF_UNIX, sock_path)
     try:
         socket.getaddrinfo('example.com', 443)
@@ -113,6 +113,7 @@ module.exports = {
       userDataDir,
       networkEnabled,
       policyCreations,
+      platform,
     } = ctx;
     const NETWORK_PERMISSIONS_ENABLED = networkEnabled;
 
@@ -124,14 +125,20 @@ module.exports = {
     });
     await listen(tcpServer, { host: '0.0.0.0', port: 0 });
     const tcpPort = tcpServer.address().port;
-    const abstractName = `freedom-product-network-${process.pid}-${Date.now()}`;
-    const abstractServer = net.createServer((socket) => {
-      socket.on('error', () => {});
-      socket.end('host-abstract');
-    });
-    await listen(abstractServer, `\0${abstractName}`);
-    // A host pathname socket outside every mounted root; the sandbox's /tmp is a private tmpfs.
-    const socketPath = path.join(os.tmpdir(), `freedom-product-network-${process.pid}.sock`);
+    const abstractName =
+      platform.platform === 'linux'
+        ? `freedom-product-network-${process.pid}-${Date.now()}`
+        : '-';
+    const abstractServer = abstractName !== '-'
+      ? net.createServer((socket) => {
+          socket.on('error', () => {});
+          socket.end('host-abstract');
+        })
+      : null;
+    if (abstractServer) await listen(abstractServer, `\0${abstractName}`);
+    // An owned host pathname socket outside the managed workspace and its private runtime storage.
+    const socketPath = path.join(root, 'outside-network.sock');
+    const socketProbePath = 'host-socket-link';
     const unixServer = net.createServer((socket) => {
       socket.on('error', () => {});
       socket.end('host-unix');
@@ -140,7 +147,7 @@ module.exports = {
     onCleanup(async () => {
       await Promise.all([
         closeServer(tcpServer),
-        closeServer(abstractServer),
+        ...(abstractServer ? [closeServer(abstractServer)] : []),
         closeServer(unixServer),
       ]);
       await fs.promises.rm(socketPath, { force: true });
@@ -151,8 +158,8 @@ module.exports = {
       publicTcp: `${PUBLIC_HOST}:${PUBLIC_PORT}`,
       publicUrl: PUBLIC_URL,
       dnsName: DNS_NAME,
-      abstractSocket: 'named',
-      pathnameSocket: 'host temporary directory, outside every sandbox mount',
+      abstractSocket: abstractName !== '-' ? 'named' : 'not_applicable',
+      pathnameSocket: 'owned fixture path outside the managed workspace and private storage',
     });
 
     const probeResult = (entry) => {
@@ -170,7 +177,7 @@ module.exports = {
       PUBLIC_HOST,
       PUBLIC_PORT,
       abstractName,
-      socketPath,
+      socketProbePath,
       PUBLIC_URL,
     ].join(' ');
     const probeCommand = `python3 probe.py ${probeArguments}`;
@@ -189,7 +196,9 @@ module.exports = {
       child.loopback === 'connected' &&
       child.lan === 'connected' &&
       child.public === 'connected' &&
-      child.abstract === 'connected' &&
+      (platform.fullNetworkIncludesHostAbstractUnixSockets
+        ? child.abstract === 'connected'
+        : child.abstract === 'not_applicable') &&
       child.pathname !== 'connected' &&
       String(child.https).startsWith('status:');
 
@@ -250,6 +259,10 @@ module.exports = {
     const conversationA = run1.conversationId;
     const workspaceA = controller.getWorkspace(conversationA);
     const leaseA = controller.leases.get(workspaceA.workspaceId);
+    await Promise.all([
+      fs.promises.symlink(socketPath, path.join(leaseA.workspaceRoot, socketProbePath)),
+      fs.promises.symlink(socketPath, path.join(leaseA.workspaceRoot, 'sub', socketProbePath)),
+    ]);
     check(
       NETWORK_PERMISSIONS_ENABLED ? '6a' : '1c',
       'lease policies: helper and Agent policies are offline; full-network Agent policy exists only when gated on',
@@ -366,7 +379,8 @@ module.exports = {
           projected.network.publicInternet === true &&
           projected.network.hostLoopback === true &&
           projected.network.privateLan === true &&
-          projected.network.hostAbstractUnixSockets === 'reachable' &&
+          projected.network.hostAbstractUnixSockets ===
+            (platform.fullNetworkIncludesHostAbstractUnixSockets ? 'reachable' : 'denied') &&
           request.result?.details?.network === 'full' &&
           request.result.details.workingDirectory === 'sub',
         { projected, details: request.result?.details }
@@ -399,7 +413,7 @@ module.exports = {
       );
       check(
         '5',
-        'real Linux behavior from a descendant: DNS, HTTPS, host loopback, non-loopback address, abstract reachable, pathname denied',
+        `real ${platform.sandboxName} behavior from a descendant: DNS, HTTPS, host loopback, non-loopback address, and the platform Unix-socket boundary`,
         onlineExpectation(exactChild) && exactChild.ppid === exactResult?.parent,
         exactChild
       );
@@ -539,8 +553,8 @@ module.exports = {
         'executable + full network in one permission: exact command gets both; runtime root is read/execute only; mismatch gets neither',
         nodeCommand?.status === 'requires_permission' &&
           composedProjection?.network?.posture === 'full' &&
-          composedResult?.execPath?.startsWith('/opt/freedom-toolchain/approved/') &&
-          composedResult.rootWrite === 'EROFS' &&
+          platform.approvedRuntimeMatches(composedResult?.execPath) &&
+          platform.runtimeWriteDenied(composedResult.rootWrite) &&
           composedResult.loopback === 'connected' &&
           composedResult.dns === 'resolved' &&
           composedExecution.network === 'full' &&
@@ -664,9 +678,7 @@ module.exports = {
       const honest = (receipt, state) =>
         receipt &&
         receipt.state === state &&
-        receipt.backend === 'linux-bubblewrap' &&
-        receipt.terminationGuarantee === 'namespace_scoped' &&
-        receipt.sideEffects === 'unknown';
+        platform.receiptMatches(receipt, state);
       check(
         '8',
         'successful, failed, timed-out, and cancelled receipts stay honest and no descendant survives',
@@ -675,9 +687,9 @@ module.exports = {
           honest(receipts.failed, 'failed') &&
           receipts.failed.exitCode === 7 &&
           honest(receipts.timedOut, 'timed_out') &&
-          receipts.timedOut.signal === 'SIGKILL' &&
+          platform.signalMatches(receipts.timedOut.signal) &&
           honest(receipts.cancelled, 'cancelled') &&
-          receipts.cancelled.signal === 'SIGKILL' &&
+          platform.signalMatches(receipts.cancelled.signal) &&
           heartbeatStable &&
           cancelledStable,
         { heartbeatStable, cancelledStable, receiptNetwork }
@@ -828,7 +840,7 @@ module.exports = {
           item.status !== 'running' &&
           item.workspace?.state === 'cancelled' &&
           item.workspace?.networkPosture === 'full' &&
-          item.workspace?.signal === 'SIGKILL'
+          platform.signalMatches(item.workspace?.signal)
       );
       check(
         '8-network-cancelled-durable',
