@@ -39,13 +39,33 @@ const DARK_ONLY = new Set(['private.html']);
 
 const pageFiles = [...Object.values(INTERNAL_PAGES.routable), ...INTERNAL_PAGES.other].sort();
 
-/** The CSS a page ships: its inline `<style>` blocks plus its own stylesheets. */
+/**
+ * The CSS a page ships: its inline `<style>` blocks, *every* stylesheet it
+ * links — not just the ones under `styles/`, or `rad-browser.html`'s
+ * `../vendor/hljs-github-dark.css` would never be swept — and the sheets the
+ * page's own scripts swap in at runtime (`scripts/rad-browser.js` flips that
+ * same `<link>` between the dark and light highlight.js themes, so the light
+ * one is only ever reachable through the script).
+ */
 function cssFor(file) {
   const html = fs.readFileSync(path.join(PAGES_DIR, file), 'utf8');
   const parts = [...html.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/g)].map(([, body]) => body);
-  for (const [, href] of html.matchAll(/<link\b[^>]*href="(styles\/[^"]+\.css)"/g)) {
-    parts.push(fs.readFileSync(path.join(PAGES_DIR, href), 'utf8'));
+  const sheets = [];
+  for (const [, href] of html.matchAll(/<link\b[^>]*href="([^"]+\.css)"/g)) {
+    // A linked sheet that does not resolve is a broken page, so read it
+    // unguarded; a remote one has nothing on disk to sweep.
+    if (!/^(?:[a-z][a-z\d+.-]*:)?\/\//i.test(href)) sheets.push(path.resolve(PAGES_DIR, href));
   }
+  for (const [, src] of html.matchAll(/<script\b[^>]*src="(scripts\/[^"]+\.js)"/g)) {
+    const js = fs.readFileSync(path.join(PAGES_DIR, src), 'utf8');
+    // Heuristic — a `.css` literal in the page's own script — so only take the
+    // ones that name a real file.
+    for (const [, href] of js.matchAll(/['"]([^'"\s]+\.css)['"]/g)) {
+      const resolved = path.resolve(PAGES_DIR, href);
+      if (fs.existsSync(resolved)) sheets.push(resolved);
+    }
+  }
+  for (const sheet of [...new Set(sheets)]) parts.push(fs.readFileSync(sheet, 'utf8'));
   return parts.join('\n');
 }
 
@@ -57,7 +77,7 @@ const stripComments = (css) => css.replace(/\/\*[\s\S]*?\*\//g, (c) => ' '.repea
  * depth. `body` is only the rule's own declarations; nested rules are returned
  * as their own entries, so the light wrapper's children are visible here.
  */
-function rules(css, prefix = '') {
+function rules(css, prefixes = ['']) {
   const found = [];
   let i = 0;
   let prelude = '';
@@ -71,13 +91,23 @@ function rules(css, prefix = '') {
         else if (css[end] === '}') depth -= 1;
       }
       const inner = css.slice(i + 1, end - 1);
-      const selector = prelude.trim();
+      // An enclosing scope applies to *every* member of a grouped prelude, so
+      // the prefix is distributed over the group rather than glued onto its
+      // first member — otherwise `:where(html[data-theme='light']) { .a, .b }`
+      // flattens to `… .a, .b` and `.b` reads as an unscoped selector.
+      const expanded = prefixes.flatMap((p) => selectorsOf(prelude).map((s) => `${p}${s}`));
       // Own declarations only: everything outside a nested block.
       found.push({
-        selector: `${prefix}${selector}`,
+        selector: expanded.join(', '),
         body: inner.replace(/[^{}]*\{[^{}]*\}/g, ''),
       });
-      if (/\{/.test(inner)) found.push(...rules(inner, `${prefix}${selector} `));
+      if (/\{/.test(inner))
+        found.push(
+          ...rules(
+            inner,
+            expanded.map((s) => `${s} `)
+          )
+        );
       prelude = '';
       i = end;
       continue;
@@ -105,15 +135,32 @@ const selectorsOf = (selector) =>
     .map((s) => s.replace(/\s+/g, ' ').trim())
     .filter(Boolean);
 
-/** The rules a page paints in *both* themes, and the ones only the light theme sees. */
+/**
+ * The rules a page paints in *both* themes, and the ones only the light theme
+ * sees, keyed by the element they target rather than by the scope they carry.
+ * A grouped prelude is classified member by member, so a page written flat —
+ * `html[data-theme='light'] .a, html[data-theme='light'] .b { … }` — lands the
+ * same way as one written as a nested `:where()` block.
+ */
 function split(css) {
-  const all = rules(stripComments(css));
-  return {
-    base: all.filter((r) => !LIGHT_SCOPE.test(r.selector)),
-    light: all
-      .filter((r) => LIGHT_SCOPE.test(r.selector) && !/^[^ ]*$/.test(r.selector))
-      .map((r) => ({ ...r, selector: r.selector.replace(/^.*?\]\)?\s+/, '') })),
-  };
+  const base = [];
+  const light = [];
+  for (const rule of rules(stripComments(css))) {
+    const unscoped = [];
+    const plain = [];
+    for (const selector of selectorsOf(rule.selector)) {
+      if (!LIGHT_SCOPE.test(selector)) {
+        plain.push(selector);
+        continue;
+      }
+      const target = selector.replace(/^\S*html\[data-theme=['"]light['"]\]\S*\s+/, '');
+      // The scope on its own is the palette wrapper: it paints no element.
+      if (!LIGHT_SCOPE.test(target)) unscoped.push(target);
+    }
+    if (plain.length) base.push({ ...rule, selector: plain.join(', ') });
+    if (unscoped.length) light.push({ ...rule, selector: unscoped.join(', ') });
+  }
+  return { base, light };
 }
 
 /** Selector -> the last light-theme `background`/`background-color` it sets. */
@@ -136,6 +183,18 @@ describe('internal page theming', () => {
     for (const file of pageFiles) expect(fs.existsSync(path.join(PAGES_DIR, file))).toBe(true);
     expect(pageFiles).toContain('publish.html');
     expect(pageFiles).toContain('payments.html');
+  });
+
+  test('the sweep reads every stylesheet a page ships, wherever it lives', () => {
+    // `rad-browser.html` is the one page that links outside `styles/`: it
+    // points a `<link>` at the highlight.js vendor theme and its own script
+    // swaps that href for the light twin on `data-theme` changes. Both sheets
+    // have to be in the sweep, or a vendor bump that adds a
+    // `prefers-color-scheme` block (or a dark-only palette) sails past.
+    const css = cssFor('rad-browser.html');
+    expect(css).toContain('Theme: GitHub Dark');
+    expect(css).toContain('Theme: GitHub\n');
+    expect(css).toContain('/* Radicle Browser Styles */'); // …and still its own sheet
   });
 
   test('no page tracks the OS colour scheme (#233, #245)', () => {
@@ -241,6 +300,27 @@ describe('internal page theming', () => {
     expect(declarationOf(flat[2].body, 'color')).toBe('red');
     // …and `background-color` must not answer a query for `background`.
     expect(declarationOf('background-color: #fff;', 'background')).toBeNull();
+  });
+
+  test('a flat light scope is read the same as a nested one', () => {
+    // Every page today writes its light block as a nested `:where()` wrapper,
+    // so the two sweeps below would silently stop covering a page written
+    // flat — with the scope repeated on each member of a group — unless the
+    // scope is stripped per selector rather than once per rule.
+    const flat = `.a { background: #21262d ${CHEVRON} no-repeat } .b { background: #21262d }
+      .b:hover { background: #30363d }
+      html[data-theme='light'] .a, html[data-theme='light'] .b { background: #ffffff }`;
+    const { base, light } = split(flat);
+    expect(base.map((r) => r.selector)).toEqual(['.a', '.b', '.b:hover']);
+    expect(light.map((r) => r.selector)).toEqual(['.a, .b']);
+    // Both members are keyed by the element they paint, so both are sweepable.
+    expect([...lightBackgrounds(light).keys()]).toEqual(['.a', '.b']);
+    // Nested and flat spellings of the same override read identically.
+    const nested = split(
+      `${flat.slice(0, flat.indexOf("html[data-theme='light']"))}
+       :where(html[data-theme='light']) { .a, .b { background: #ffffff } }`
+    );
+    expect([...lightBackgrounds(nested.light).keys()]).toEqual(['.a', '.b']);
   });
 
   test('the chevron sweep flags the shorthand payments used, and only that', () => {
