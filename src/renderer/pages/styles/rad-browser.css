@@ -1,4 +1,14 @@
 /* Radicle Browser Styles */
+  /* Internal pages follow Settings > Appearance, not the OS colour scheme: the
+     webview preload resolves the setting and stamps `data-theme` on <html>
+     before first paint (#233). Declaring `color-scheme` from the same
+     attribute keeps scrollbars and form controls in step. */
+  html {
+    color-scheme: dark;
+  }
+  html[data-theme='light'] {
+    color-scheme: light;
+  }
   * {
     box-sizing: border-box;
   }
@@ -736,8 +746,10 @@
 
   /* =============================================
      LIGHT THEME
+     `:where()` holds the wrapper at zero specificity, so every rule below
+     weighs exactly what it did as a media query.
      ============================================= */
-  @media (prefers-color-scheme: light) {
+  :where(html[data-theme='light']) {
     body {
       background: #ffffff;
       color: #202124;

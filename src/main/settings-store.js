@@ -378,6 +378,21 @@ function registerSettingsIpc() {
   ipcMain.handle(IPC.SETTINGS_SAVE, (_event, newSettings) => {
     return saveSettings(newSettings);
   });
+
+  // Sync read for the sandboxed webview preload: internal pages need the
+  // Appearance theme at document-start, before their first paint, and cannot
+  // await the async SETTINGS_GET handler that early. Returns the raw setting
+  // ('system' | 'light' | 'dark'); the preload resolves 'system' against
+  // prefers-color-scheme, exactly as the page CSS used to.
+  ipcMain.on(IPC.GET_THEME, (event) => {
+    let theme = DEFAULT_SETTINGS.theme;
+    try {
+      theme = loadSettings().theme || DEFAULT_SETTINGS.theme;
+    } catch (err) {
+      log.error('Failed to read theme for internal page:', err.message);
+    }
+    event.returnValue = theme;
+  });
 }
 
 module.exports = {
