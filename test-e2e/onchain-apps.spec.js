@@ -348,3 +348,99 @@ test('offers no continue action when RPC servers disagreed about an app', async 
     )
     .toEqual({ continueBtn: false, dissented: 'rpc-b.example, rpc-c.example' });
 });
+
+// The trust gate is only worth anything if web content cannot reach it.
+// Chromium sends no `Origin` header to a custom-scheme handler and enforces
+// no CORS on its response, so before the `onchain-app-guard` onBeforeRequest
+// handler a plain `fetch('web3://…')` from any page read the whole 451 gate
+// response — including the single-use approval token — replayed it with the
+// approval header, and pre-approved unverified app code for the session
+// without the user ever seeing this interstitial.
+test('blocks a page from reaching the onchain trust gate as a subresource', async ({
+  window,
+  harness,
+}) => {
+  const app = { address: ethers.getAddress(ADDRESS), chainId: 1 };
+  const interstitialUrl = buildOnchainInterstitialUrl({
+    app,
+    provenance: {
+      version: 1,
+      chainId: 1,
+      network: 'Ethereum',
+      contract: app.address,
+      htmlHash: HTML_HASH,
+      trust: {
+        level: 'unverified',
+        method: 'direct',
+        agreed: ['rpc.example'],
+        dissented: [],
+        queried: ['rpc.example'],
+      },
+    },
+    requestUrl: APP_URL,
+    token: 'a'.repeat(43),
+  });
+  await harness.setContentFixture(APP_URL, {
+    status: 451,
+    body: 'This response must never become executable app content.',
+    headers: {
+      [GATE_HEADER]: Buffer.from(interstitialUrl, 'utf8').toString('base64url'),
+    },
+  });
+
+  await expect
+    .poll(() =>
+      window.evaluate(() => document.querySelector('webview:not(.hidden)')?.getURL() || '')
+    )
+    .toContain('/pages/home.html');
+
+  const input = window.locator('[data-test="address-input"]');
+  await input.fill('https://hostile.example/');
+  await input.press('Enter');
+  await expect
+    .poll(() =>
+      window.evaluate(() => document.querySelector('webview:not(.hidden)')?.getURL() || '')
+    )
+    .toContain('hostile.example');
+
+  // Both shapes matter: a plain fetch reads the token outright, and an opaque
+  // `no-cors` fetch still runs the handler (staging or consuming a token)
+  // even though the page cannot read the response.
+  const probe = await window.evaluate(
+    ({ appUrl, gateHeader }) => {
+      const webview = document.querySelector('webview:not(.hidden)');
+      return webview.executeJavaScript(`(async () => {
+        const attempt = async (init) => {
+          try {
+            const response = await fetch(${JSON.stringify(appUrl)}, init);
+            return {
+              status: response.status,
+              type: response.type,
+              gate: response.headers.get(${JSON.stringify(gateHeader)})
+            };
+          } catch (error) {
+            return { error: String((error && error.message) || error) };
+          }
+        };
+        return { cors: await attempt(undefined), noCors: await attempt({ mode: 'no-cors' }) };
+      })()`);
+    },
+    { appUrl: APP_URL, gateHeader: GATE_HEADER }
+  );
+
+  expect(probe.cors.gate).toBeUndefined();
+  expect(probe.cors.status).toBeUndefined();
+  expect(probe.cors.error).toBeTruthy();
+  expect(probe.noCors.status).toBeUndefined();
+  expect(probe.noCors.error).toBeTruthy();
+
+  // Acceptance side: the same app in the same tab still gates a real
+  // top-level navigation, so the guard blocks the attack, not the feature.
+  await input.fill(`web3://${ADDRESS}`);
+  await input.press('Enter');
+  await expect
+    .poll(() =>
+      window.evaluate(() => document.querySelector('webview:not(.hidden)')?.getURL() || '')
+    )
+    .toContain('/pages/onchain-unverified.html');
+});

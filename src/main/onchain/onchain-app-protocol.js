@@ -472,8 +472,33 @@ function documentUrl(value) {
   }
 }
 
+// Strip the gate header from a response that is not going to a top-level
+// navigation. Returns the remaining headers, or null when there was nothing
+// to strip (so the dispatcher chain is left untouched).
+function withoutGateHeader(responseHeaders) {
+  const wanted = GATE_HEADER.toLowerCase();
+  let stripped = false;
+  const remaining = {};
+  for (const [key, value] of Object.entries(responseHeaders || {})) {
+    if (key.toLowerCase() === wanted) {
+      stripped = true;
+      continue;
+    }
+    remaining[key] = value;
+  }
+  return stripped ? remaining : null;
+}
+
 function captureOnchainProvenance(details) {
-  if (details?.resourceType !== 'mainFrame') return null;
+  if (details?.resourceType !== 'mainFrame') {
+    // Defence in depth behind guardOnchainAppRequest: the gate header carries
+    // the single-use approval token, and Chromium enforces no CORS on a
+    // custom-scheme response — so it must never reach a reader that is not
+    // Freedom's own top-level navigation, whatever future path served it.
+    if (!documentUrl(details?.url).startsWith('web3://')) return null;
+    const responseHeaders = withoutGateHeader(details?.responseHeaders);
+    return responseHeaders ? { responseHeaders } : null;
+  }
   if (!documentUrl(details.url).startsWith('web3://')) return null;
   const gateUrl = decodeGateUrl(responseHeader(details.responseHeaders, GATE_HEADER), details.url);
   if (gateUrl && details.statusCode === 451) {
@@ -515,7 +540,36 @@ function captureOnchainProvenance(details) {
   return null;
 }
 
+/**
+ * onBeforeRequest guard: drop every `web3:` request that is not a top-level
+ * navigation.
+ *
+ * An onchain app is only ever a top-level document — `frame-ancestors 'none'`
+ * plus `X-Frame-Options: DENY` say so, and its own CSP denies it any
+ * subresource fetch — so nothing legitimate loads this scheme as a
+ * subresource. Web content could, though: nothing in a custom-scheme request
+ * reaching `protocol.handle` is trustworthy (Chromium sends no `Origin`
+ * header for one and does not enforce CORS on the response either), so a
+ * plain `fetch('web3://<app>.eip155-1/')` from a hostile page used to read
+ * the 451 gate response in full — including the single-use approval token —
+ * replay it with the approval header, and silently pre-approve unverified
+ * app code for the whole session before the user ever saw the interstitial.
+ * The same reachability let any page grind the staged-document FIFO and evict
+ * a real user's pending token.
+ *
+ * The initiating request's resource type, taken from the network layer before
+ * the handler runs, is the only value the main process can trust here. Fails
+ * closed: a request Chromium cannot attribute to a main frame is cancelled.
+ */
+function guardOnchainAppRequest(details) {
+  if (!/^web3:/i.test(details?.url || '')) return null;
+  if (details.resourceType === 'mainFrame') return null;
+  log.warn('[onchain-app] Blocked a web3: request that is not a top-level navigation');
+  return { cancel: true };
+}
+
 function installOnchainProvenanceCapture() {
+  registerWebRequestHandler('onBeforeRequest', 'onchain-app-guard', guardOnchainAppRequest);
   registerWebRequestHandler(
     'onHeadersReceived',
     'onchain-provenance',
@@ -572,6 +626,7 @@ module.exports = {
   decodeOnchainProvenance,
   decodeHtmlResult,
   encodeOnchainProvenance,
+  guardOnchainAppRequest,
   handleOnchainAppRequest,
   installOnchainProvenanceCapture,
   parseOnchainAppUrl,

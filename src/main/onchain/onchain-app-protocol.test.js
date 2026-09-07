@@ -25,6 +25,7 @@ const {
   decodeOnchainProvenance,
   createOnchainAppTrustState,
   captureOnchainProvenance,
+  guardOnchainAppRequest,
   handleOnchainAppRequest,
   parseOnchainAppUrl,
   registerOnchainAppProtocol,
@@ -418,6 +419,77 @@ describe('captureOnchainProvenance trust gate', () => {
     });
 
     expect(contents.loadURL).not.toHaveBeenCalled();
+  });
+
+  test('strips the approval token from a response that is not a navigation', async () => {
+    const blocked = await handleOnchainAppRequest(request(appUrl()), {
+      chainRequest: jest.fn(async () => ({
+        result: encodedHtml('<h1>unverified app</h1>'),
+        trust: { level: 'unverified', method: 'direct', agreed: ['rpc.example'] },
+      })),
+      trustState: createOnchainAppTrustState({ createToken: () => 'a'.repeat(43) }),
+    });
+    const contents = { loadURL: jest.fn() };
+
+    const result = captureOnchainProvenance({
+      resourceType: 'xhr',
+      statusCode: blocked.status,
+      url: appUrl(),
+      responseHeaders: {
+        'Cache-Control': ['no-store'],
+        [GATE_HEADER]: [blocked.headers.get(GATE_HEADER)],
+      },
+      webContents: contents,
+    });
+
+    expect(result).toEqual({ responseHeaders: { 'Cache-Control': ['no-store'] } });
+    expect(JSON.stringify(result)).not.toContain('a'.repeat(43));
+    expect(contents.loadURL).not.toHaveBeenCalled();
+  });
+
+  test('leaves unrelated subresource responses untouched', () => {
+    expect(
+      captureOnchainProvenance({
+        resourceType: 'image',
+        statusCode: 200,
+        url: 'https://example.com/logo.png',
+        responseHeaders: { 'Content-Type': ['image/png'] },
+      })
+    ).toBeNull();
+  });
+});
+
+describe('guardOnchainAppRequest', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  test('allows a top-level navigation to an onchain app', () => {
+    expect(
+      guardOnchainAppRequest({ url: appUrl(), resourceType: 'mainFrame' })
+    ).toBeNull();
+    expect(log.warn).not.toHaveBeenCalled();
+  });
+
+  // The gate is only meaningful if web content cannot reach it: a page that
+  // can fetch the 451 response reads the single-use approval token out of it
+  // (no CORS is enforced on custom-scheme responses), replays it, and
+  // pre-approves unverified app code for the session with no interstitial.
+  test.each(['subFrame', 'xhr', 'image', 'script', 'other', undefined])(
+    'cancels a %s request for an onchain app',
+    (resourceType) => {
+      expect(guardOnchainAppRequest({ url: appUrl(), resourceType })).toEqual({ cancel: true });
+    }
+  );
+
+  test('cancels a mixed-case web3 URL that is not a navigation', () => {
+    expect(
+      guardOnchainAppRequest({ url: `WEB3://${ADDRESS}.eip155-1/`, resourceType: 'xhr' })
+    ).toEqual({ cancel: true });
+  });
+
+  test('ignores requests for every other scheme', () => {
+    expect(guardOnchainAppRequest({ url: 'https://example.com/', resourceType: 'xhr' })).toBeNull();
+    expect(guardOnchainAppRequest({ url: 'ipfs://cid/x', resourceType: 'subFrame' })).toBeNull();
+    expect(guardOnchainAppRequest({})).toBeNull();
   });
 });
 
