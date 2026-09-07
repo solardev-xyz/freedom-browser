@@ -36,11 +36,6 @@
   font-size: 13px;
 }
 
-.find-bar-input:focus {
-  outline: none;
-  border-color: var(--accent);
-}
-
 [data-theme='light'] .find-bar-input {
   background: #f1f3f4;
 }

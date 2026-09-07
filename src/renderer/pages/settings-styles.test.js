@@ -454,6 +454,33 @@ describe('settings.html inline stylesheet', () => {
     expect(missingLightOverrides(sheet)).toEqual([]);
   });
 
+  test('anchors in settings copy are styled, in both shapes (#234)', () => {
+    // Settings copy carries links two ways: inside a help paragraph
+    // (`<p class="row-help">… <a href="#chains">Chains settings</a></p>`) and
+    // as the paragraph itself (`<a class="row-help" href=…>Configure →</a>`).
+    // Neither may fall through to the UA's default blue, which is barely
+    // readable on the dark palette. One rule has to cover both.
+    const styled = new Set(
+      topLevel
+        .filter((node) => !isAtRule(node) && declaration(node, 'color').includes('var(--accent)'))
+        .flatMap(selectorsOf)
+    );
+    expect(styled).toContain('.row-help a');
+    expect(styled).toContain('a.row-help');
+
+    // And every anchor the page actually ships is one of those two shapes.
+    const anchors = [...SOURCE.matchAll(/<a\s+([^>]*)>/g)].map(([, attrs]) => attrs);
+    expect(anchors.length).toBeGreaterThan(0);
+    const unstyled = anchors.filter((attrs) => !/class="[^"]*\brow-help\b/.test(attrs));
+    for (const attrs of unstyled) {
+      // A bare <a> is fine as long as it sits inside a `.row-help` paragraph;
+      // the ones that do are all written inline in such a paragraph.
+      const at = SOURCE.indexOf(`<a ${attrs}>`);
+      const paragraph = SOURCE.lastIndexOf('<p', at);
+      expect(SOURCE.slice(paragraph, at)).toMatch(/class="[^"]*\brow-help\b/);
+    }
+  });
+
   // --- self-tests: the guards above only guard while they can still see -----
 
   const parse = (text) => parseStylesheet(maskOpaqueSpans(text));

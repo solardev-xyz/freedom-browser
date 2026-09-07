@@ -1,0 +1,52 @@
+/* ============================================
+   Chrome text fields — one shared focus ring
+   ============================================
+
+   Every text field in the browser chrome gets the same focus indicator
+   (#237). Before this file there were five treatments living side by side:
+
+     - the address bar had none of its own, so it fell through to the
+       platform's default ring (white on dark, amber on Linux GTK) — and
+       the light theme went further and explicitly removed even that;
+     - the find bar, bookmark/profile modals, onboarding and most sidebar
+       fields swapped their 1px border to `--accent`;
+     - `.send-input` did that *and* lightened its background;
+     - the x402 cap fields hard-coded `#2775ca`;
+     - the publisher-identity search hard-coded `#f59e0b`.
+
+   This sheet is imported after every component sheet (see styles.css), so
+   it is the last word on focus for these elements. Components keep owning
+   their resting border, radius and background — including the background
+   shifts that some of them apply on focus.
+
+   Why an `outline` rather than another border swap: the address bar and the
+   find bar rest on a *transparent* border, and on the light palette
+   `--border` is the same colour as `--bg`, so a border-only ring is close to
+   invisible for the keyboard user this indicator exists for. `outline-offset:
+   -1px` draws the ring just inside the border box, so it can never be clipped
+   by the tight toolbar/find-bar rows or by an overflow-hidden panel, and
+   Chromium follows the element's own border-radius. `--accent` is redefined
+   by both the light theme and `body.private-window`, so the ring tracks all
+   three palettes without a per-theme override.
+
+   Why `:focus-visible` rather than `:focus`: Chromium always matches
+   `:focus-visible` on a text-entry field however it was focused, so mouse
+   users keep the indicator, while a `<select>` or a future control matched
+   here does not light up on a plain mouse click.
+
+   `select` is included because the x402 rules this replaces styled a cap
+   input and its unit `<select>` through one selector — leaving the select on
+   its hard-coded blue would have put two focus colours inside one row. */
+
+input[type='text']:focus-visible,
+input[type='search']:focus-visible,
+input[type='password']:focus-visible,
+input[type='number']:focus-visible,
+input[type='url']:focus-visible,
+input[type='email']:focus-visible,
+input:not([type]):focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
