@@ -69,12 +69,26 @@
         margin-bottom: 24px;
       }
 
+      /* Shared internal-page header (#256): a 28 px accent title laid out as a
+         flex row with an inline icon, over a one-line count subtitle — the
+         same pattern history, downloads, links and payments use. The accent
+         comes from the token, so it is #58a6ff dark / #0969da light like the
+         siblings' literals. */
       .page-title {
-        margin: 0;
-        font-size: 22px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin: 0 0 8px 0;
+        font-size: 28px;
         font-weight: 600;
-        letter-spacing: -0.01em;
-        color: var(--text);
+        letter-spacing: -0.5px;
+        color: var(--accent);
+      }
+
+      .subtitle {
+        margin: 0;
+        font-size: 14px;
+        color: var(--text-muted);
       }
 
       .btn {
@@ -561,7 +575,23 @@
   <body>
     <main class="page">
       <div class="page-head">
-        <h1 class="page-title">Profiles</h1>
+        <h1 class="page-title">
+          <svg
+            width="28"
+            height="28"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M20 21a8 8 0 0 0-16 0" />
+            <circle cx="12" cy="7" r="4" />
+          </svg>
+          Profiles
+        </h1>
+        <p class="subtitle" id="stats">Loading…</p>
       </div>
 
       <div class="profile-grid" id="profile-manager-list">
@@ -613,8 +643,15 @@
     <script src="scripts/hover-tooltip.js"></script>
     <script>
       const managerList = document.getElementById('profile-manager-list');
+      const statsEl = document.getElementById('stats');
       const deleteModal = document.getElementById('delete-modal');
       const profileToast = document.getElementById('profile-toast');
+
+      // Header count line, like history's "N entries" and downloads'
+      // "N downloads" (#256). Counts the cards actually on screen.
+      const setStats = (text) => {
+        if (statsEl) statsEl.textContent = text;
+      };
 
       const esc = (s) =>
         String(s == null ? '' : s).replace(
@@ -678,18 +715,21 @@
           </button>`;
 
         if (!profiles?.length) {
+          setStats('0 profiles');
           managerList.innerHTML =
             '<div class="profile-manager-empty">No profiles found</div>' + createTile;
           return;
         }
 
-        const cards = profiles
-          // Hide any profile whose optimistic delete is still in flight: an
-          // unrelated onProfileUpdated refresh can fire before the deletion
-          // lands in the registry, and we don't want it to briefly re-render
-          // the card the user just removed. The delete path clears the id on
-          // completion (or failure, followed by a refresh that restores it).
-          .filter((profile) => !pendingDeleteIds.has(profile.id))
+        // Hide any profile whose optimistic delete is still in flight: an
+        // unrelated onProfileUpdated refresh can fire before the deletion
+        // lands in the registry, and we don't want it to briefly re-render
+        // the card the user just removed. The delete path clears the id on
+        // completion (or failure, followed by a refresh that restores it).
+        const shown = profiles.filter((profile) => !pendingDeleteIds.has(profile.id));
+        setStats(`${shown.length} profile${shown.length === 1 ? '' : 's'}`);
+
+        const cards = shown
           .map((profile) => {
             const isUnregistered = profile.isUnregistered === true;
             const isActive = profile.isActive === true;
@@ -763,6 +803,7 @@
           }
           renderProfiles(result.profiles || []);
         } catch (err) {
+          setStats('Profile list unavailable');
           managerList.innerHTML =
             '<div class="profile-manager-empty">Profile list unavailable</div>';
           logError('Failed to load profiles', err);

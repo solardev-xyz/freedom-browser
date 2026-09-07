@@ -703,3 +703,60 @@ describe('settings.html inline stylesheet', () => {
     expect(darkBackgroundValue(rule('rgb(22 27 34 / 8%)'))).toBeNull();
   });
 });
+
+/**
+ * Heading hierarchy (#255).
+ *
+ * `docs/agent-playbooks/ui-consistency.md`: `h2.section-title` for the section,
+ * `h3.row-label` (or the 12 px uppercase category style) for sub-headings,
+ * never a second large heading. The chain-detail route used to emit up to five
+ * `h2.section-title`s — the page title and four sub-sections — so a nested
+ * group was indistinguishable from the page it lived in.
+ *
+ * Each `view.innerHTML = ` template in the file is one rendered route, so
+ * counting the headings per template is what "one per route" means here.
+ */
+describe('settings.html heading hierarchy (#255)', () => {
+  const routeTemplates = [...SOURCE.matchAll(/view\.innerHTML = `([\s\S]*?)`;/g)].map((m) => m[1]);
+
+  test('the sub-heading style exists and is the small uppercase one', () => {
+    const node = topLevel.find((rule) => rule.prelude === '.subsection-title');
+    expect(node).toBeDefined();
+    expect(declaration(node, 'font-size')).toEqual(['12px']);
+    expect(declaration(node, 'text-transform')).toEqual(['uppercase']);
+    // Same treatment as the Shortcuts categories it is shared with — the two
+    // rules are separate only because the #223 guard above pins that one by
+    // prelude.
+    const shortcut = topLevel.find((rule) => rule.prelude === '.shortcut-category');
+    expect(declaration(node, 'font-size')).toEqual(declaration(shortcut, 'font-size'));
+    expect(declaration(node, 'text-transform')).toEqual(declaration(shortcut, 'text-transform'));
+    expect(declaration(node, 'color')).toEqual(declaration(shortcut, 'color'));
+  });
+
+  test('no rendered route carries a second large heading', () => {
+    // The dynamic views (chains list, chain detail, add-chain, RPC providers)
+    // are the ones that grew extra titles; the static sections are one
+    // `<section>` each, with their `<h2>` in the page markup. A view rendered
+    // *under* such a section carries none of its own, which is why the bar is
+    // "never more than one" rather than "exactly one".
+    expect(routeTemplates.length).toBeGreaterThanOrEqual(4);
+    const offenders = routeTemplates
+      .map((template) => (template.match(/class="section-title"/g) || []).length)
+      .filter((count) => count > 1);
+    expect(offenders).toEqual([]);
+
+    // The chain detail — the route this guards (#255) — has exactly its own.
+    const detail = routeTemplates.find((template) => template.includes('Transaction broadcast'));
+    expect((detail.match(/class="section-title"/g) || []).length).toBe(1);
+  });
+
+  test('the chain-detail sub-sections use the sub-heading style', () => {
+    const detail = routeTemplates.find((template) => template.includes('Transaction broadcast'));
+    expect(detail).toBeDefined();
+    for (const title of ['Read and verification order', 'Transaction broadcast']) {
+      expect(detail).toContain(`<h3 class="subsection-title">${title}</h3>`);
+    }
+    // …including the four RPC groups the `section()` helper emits.
+    expect(SOURCE).toContain('<h3 class="subsection-title">${title}</h3>');
+  });
+});

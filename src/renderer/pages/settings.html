@@ -148,6 +148,22 @@
         color: var(--text);
       }
 
+      /* Sub-heading inside a section (#255). A route carries exactly one
+         `.section-title`; anything nested under it uses this 12 px uppercase
+         category style or `h3.row-label`, never a second large heading
+         (docs/agent-playbooks/ui-consistency.md). Deliberately identical to
+         `.shortcut-category` below, which is the same heading for the
+         Shortcuts list; that rule stays on its own selector because
+         `settings-styles.test.js` pins it by prelude (#223). */
+      .subsection-title {
+        margin: 20px 0 8px 0;
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.4px;
+        text-transform: uppercase;
+        color: var(--text-muted);
+      }
+
       .card {
         background: var(--bg-card);
         border: 1px solid var(--border);
@@ -717,6 +733,7 @@
         font-family: inherit;
       }
 
+      /* Same type styles as `.subsection-title` above (see the note there). */
       .shortcut-category {
         margin: 20px 0 8px 0;
         font-size: 12px;
@@ -3332,7 +3349,7 @@
             : '';
 
           const section = (title, help, list, emptyHint) => `
-            <h2 class="section-title" style="margin-top: 20px">${title}</h2>
+            <h3 class="subsection-title">${title}</h3>
             <p class="row-help" style="margin-bottom: 12px">${help}</p>
             <div class="card">${
               list.length
@@ -3351,12 +3368,12 @@
               to the next source.
             </p>
 
-            <h2 class="section-title" style="margin-top: 20px">Read and verification order</h2>
+            <h3 class="subsection-title">Read and verification order</h3>
             <p class="row-help" style="margin-bottom: 12px">Drag sources into priority order.</p>
             <div class="card">${accessRows(cid, 'read', readOrder)}</div>
             ${proverConfig}
 
-            <h2 class="section-title" style="margin-top: 20px">Transaction broadcast</h2>
+            <h3 class="subsection-title">Transaction broadcast</h3>
             <p class="row-help" style="margin-bottom: 12px">Signed transactions use P2P first, with RPC as the compatibility fallback.</p>
             <div class="card">${accessRows(cid, 'broadcast', broadcastOrder)}</div>
 

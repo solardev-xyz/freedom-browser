@@ -35,10 +35,12 @@
         box-sizing: border-box;
         min-height: 100vh;
       }
+      /* Same header accent as every other internal page (#256): #58a6ff dark,
+         #0969da light — matching history, downloads and links. */
       h1 {
         font-size: 28px;
         margin-bottom: 8px;
-        color: #2775ca;
+        color: #58a6ff;
         font-weight: 600;
         letter-spacing: -0.5px;
         display: flex;
@@ -72,7 +74,7 @@
         transition: border-color 0.15s;
       }
       .search-input:focus {
-        border-color: #2775ca;
+        border-color: #58a6ff;
       }
       .search-input::placeholder {
         color: #6e7681;
@@ -94,7 +96,7 @@
         transition: border-color 0.15s;
       }
       .filter-select:focus {
-        border-color: #2775ca;
+        border-color: #58a6ff;
       }
       .filter-select:hover {
         background-color: #30363d;
@@ -164,7 +166,7 @@
         border-bottom: none;
       }
       tbody tr:hover {
-        background: rgba(39, 117, 202, 0.04);
+        background: rgba(88, 166, 255, 0.04);
       }
       .when {
         color: #8b949e;
@@ -198,7 +200,7 @@
       .tx-link {
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
         font-size: 12px;
-        color: #2775ca;
+        color: #58a6ff;
         text-decoration: none;
       }
       .tx-link:hover {
@@ -320,13 +322,15 @@
           background: linear-gradient(135deg, #ffffff 0%, #f6f8fa 50%, #f0f2f5 100%);
           color: #1a1a1a;
         }
-        h1 { color: #2775ca; }
+        h1 { color: #0969da; }
+        .tx-link { color: #0969da; }
         .subtitle, .when, .addr, .amount-asset { color: #6e7681; }
         .search-input, .filter-select, .btn {
           background: #ffffff;
           border-color: #d0d7de;
           color: #1a1a1a;
         }
+        .search-input:focus, .filter-select:focus { border-color: #0969da; }
         .search-input::placeholder { color: #8b949e; }
         .table-wrap, .loading, .empty-state {
           background: #ffffff;
@@ -335,7 +339,7 @@
         thead { background: #f6f8fa; }
         th { color: #57606a; border-bottom-color: #d0d7de; }
         td { border-bottom-color: #eaeef2; }
-        tbody tr:hover { background: rgba(39, 117, 202, 0.05); }
+        tbody tr:hover { background: rgba(9, 105, 218, 0.05); }
         .site { color: #1a1a1a; }
         .chain-badge { background: rgba(0, 0, 0, 0.06); color: #1a1a1a; }
         .kind-x402 { background: rgba(39, 117, 202, 0.12); color: #1f5fa8; }
