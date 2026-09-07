@@ -13,7 +13,12 @@
       href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjOGI5NDllIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+PGNpcmNsZSBjeD0iMTIiIGN5PSIxMiIgcj0iMyIvPjxwYXRoIGQ9Ik0xOS40IDE1YTEuNjUgMS42NSAwIDAgMCAuMzMgMS44MmwuMDYuMDZhMiAyIDAgMSAxLTIuODMgMi44M2wtLjA2LS4wNmExLjY1IDEuNjUgMCAwIDAtMS44Mi0uMzMgMS42NSAxLjY1IDAgMCAwLTEgMS41MVYyMWEyIDIgMCAwIDEtNCAwdi0uMDlBMS42NSAxLjY1IDAgMCAwIDkgMTkuNGExLjY1IDEuNjUgMCAwIDAtMS44Mi4zM2wtLjA2LjA2YTIgMiAwIDEgMS0yLjgzLTIuODNsLjA2LS4wNmExLjY1IDEuNjUgMCAwIDAgLjMzLTEuODIgMS42NSAxLjY1IDAgMCAwLTEuNTEtMUgzYTIgMiAwIDAgMSAwLTRoLjA5QTEuNjUgMS42NSAwIDAgMCA0LjYgOWExLjY1IDEuNjUgMCAwIDAtLjMzLTEuODJsLS4wNi0uMDZhMiAyIDAgMSAxIDIuODMtMi44M2wuMDYuMDZhMS42NSAxLjY1IDAgMCAwIDEuODIuMzNIOWExLjY1IDEuNjUgMCAwIDAgMS0xLjUxVjNhMiAyIDAgMCAxIDQgMHYuMDlhMS42NSAxLjY1IDAgMCAwIDEgMS41MSAxLjY1IDEuNjUgMCAwIDAgMS44Mi0uMzNsLjA2LS4wNmEyIDIgMCAxIDEgMi44MyAyLjgzbC0uMDYuMDZhMS42NSAxLjY1IDAgMCAwLS4zMyAxLjgyVjlhMS42NSAxLjY1IDAgMCAwIDEuNTEgMUgyMWEyIDIgMCAwIDEgMCA0aC0uMDlhMS42NSAxLjY1IDAgMCAwLTEuNTEgMXoiLz48L3N2Zz4="
     />
     <style>
+      /* Internal pages follow Settings > Appearance, not the OS colour scheme:
+         the webview preload resolves the setting and stamps `data-theme` on
+         <html> before first paint (#233). Declaring `color-scheme` from the
+         same attribute keeps scrollbars and form controls in step. */
       :root {
+        color-scheme: dark;
         --bg: #0d1117;
         --bg-elev: #161b22;
         --bg-card: #21262d;
@@ -790,24 +795,28 @@
         gap: 8px;
       }
 
-      /* Light theme */
-      @media (prefers-color-scheme: light) {
-        :root {
-          --bg: #ffffff;
-          --bg-elev: #ffffff;
-          --bg-card: #ffffff;
-          --border: #d0d7de;
-          --border-strong: #8c959f;
-          --text: #24292f;
-          --text-muted: #57606a;
-          --text-subtle: #8c959f;
-          --accent: #0969da;
-          --accent-muted: rgba(9, 105, 218, 0.1);
-          --danger: #cf222e;
-          --success: #1a7f37;
-          --warn: #9a6700;
-        }
+      /* Light theme. The palette rule is written as `html[data-theme='light']`
+         so it outweighs the `:root` defaults above; everything else sits under
+         a `:where()` wrapper, which holds the scope at zero specificity so each
+         rule weighs exactly what it did as a media query. */
+      html[data-theme='light'] {
+        color-scheme: light;
+        --bg: #ffffff;
+        --bg-elev: #ffffff;
+        --bg-card: #ffffff;
+        --border: #d0d7de;
+        --border-strong: #8c959f;
+        --text: #24292f;
+        --text-muted: #57606a;
+        --text-subtle: #8c959f;
+        --accent: #0969da;
+        --accent-muted: rgba(9, 105, 218, 0.1);
+        --danger: #cf222e;
+        --success: #1a7f37;
+        --warn: #9a6700;
+      }
 
+      :where(html[data-theme='light']) {
         body {
           background: linear-gradient(135deg, #ffffff 0%, #f6f8fa 50%, #f0f2f5 100%);
         }

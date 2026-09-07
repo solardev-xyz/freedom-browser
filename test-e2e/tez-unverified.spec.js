@@ -37,6 +37,25 @@ test('the unverified interstitial "Continue once" loads the .tez content', async
   // Single-provider agreement → soft block on the interstitial.
   await expect.poll(webviewUrl, { timeout: 10_000 }).toMatch(/pages\/ens-unverified\.html/);
 
+  // The interstitial is chrome, not content (#235): the address bar keeps the
+  // name the user typed and must never expose the interstitial's own
+  // `file:///…/pages/ens-unverified.html` path. Polled on the interstitial's
+  // rendered name so the assertion runs after the navigation has committed
+  // (dom-ready follows did-navigate, which is what repaints the address bar),
+  // then read once — a retrying matcher could otherwise go green on the
+  // pre-navigation value before the file:// path replaced it.
+  await expect
+    .poll(
+      () =>
+        window.evaluate(() => {
+          const wv = document.querySelector('webview.active, webview:not(.hidden)');
+          return wv?.executeJavaScript?.('document.getElementById("name-el")?.textContent || ""');
+        }),
+      { timeout: 10_000 }
+    )
+    .toBe('retry.tez');
+  expect(await input.inputValue()).toBe('retry.tez');
+
   // Click the interstitial's own button inside the webview so the real
   // sendToHost → `ens:continue-unverified` ipc-message path runs.
   await window.evaluate(() => {

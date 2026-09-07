@@ -1,4 +1,8 @@
 :root {
+  /* This page ships a dark palette only, so it pins `color-scheme` instead of
+     following `data-theme`; without it Chromium paints a light scrollbar on
+     the dark page (#233). */
+  color-scheme: dark;
   --bg: #1e1e1e;
   --surface: #2a2a2a;
   --border: #3a3a3a;

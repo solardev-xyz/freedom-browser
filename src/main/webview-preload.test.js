@@ -6,6 +6,7 @@ const {
 
 const originalWindow = global.window;
 const originalDocument = global.document;
+const originalMutationObserver = global.MutationObserver;
 const originalNavigator = global.navigator;
 const originalLocation = global.location;
 
@@ -38,6 +39,8 @@ function loadWebviewPreloadModule(options = {}) {
       [IPC.GET_INTERNAL_PAGES]: internalPages,
       [IPC.GET_ETHEREUM_INJECT_SOURCE]: '/* ethereum inject source stub */',
       [IPC.PRIVATE_IS_PRIVATE]: options.isPrivateWindow === true,
+      [IPC.GET_THEME]: options.theme ?? 'system',
+      ...(options.syncResponses || {}),
     },
     invokeResponses: {
       [IPC.HISTORY_GET]: [{ url: 'https://example.com' }],
@@ -52,9 +55,27 @@ function loadWebviewPreloadModule(options = {}) {
   const documentHandlers = {};
   const documentCaptureHandlers = {};
   const body = { tagName: 'BODY' };
+  // <html>. `options.documentElement === null` models document-start, where
+  // the preload runs before the element exists.
+  const attributes = {};
+  const documentElement =
+    options.documentElement === null
+      ? null
+      : {
+          tagName: 'HTML',
+          attributes,
+          setAttribute: jest.fn((name, value) => {
+            attributes[name] = value;
+          }),
+          getAttribute: jest.fn((name) => (name in attributes ? attributes[name] : null)),
+          removeAttribute: jest.fn((name) => {
+            delete attributes[name];
+          }),
+        };
   const document = {
     title: options.title || 'Internal Page',
     body,
+    documentElement,
     addEventListener: jest.fn((event, handler, useCapture) => {
       documentHandlers[event] = handler;
       if (useCapture === true) {
@@ -80,6 +101,14 @@ function loadWebviewPreloadModule(options = {}) {
   global.document = document;
   const windowFetch = options.fetch || jest.fn();
   const windowCaptureHandlers = {};
+  // Only `(prefers-color-scheme: dark)` is queried, by the internal-page theme
+  // bootstrap. The list is a single live object, so a spec can flip `matches`
+  // and fire `mediaChangeHandlers` to model the desktop switching scheme.
+  const mediaChangeHandlers = [];
+  const prefersDarkQuery = {
+    matches: options.prefersDark === true,
+    addEventListener: jest.fn((_event, handler) => mediaChangeHandlers.push(handler)),
+  };
   global.window = {
     location,
     getSelection: jest.fn(() => selection),
@@ -88,11 +117,29 @@ function loadWebviewPreloadModule(options = {}) {
         windowCaptureHandlers[event] = handler;
       }
     }),
+    matchMedia: jest.fn(() => prefersDarkQuery),
     fetch: windowFetch,
   };
   global.location = location;
   global.navigator = {
     clipboard,
+  };
+  // The theme bootstrap falls back to observing `document` when <html> does
+  // not exist yet at document-start.
+  const mutationObservers = [];
+  global.MutationObserver = class {
+    constructor(callback) {
+      this.callback = callback;
+      this.disconnected = false;
+      mutationObservers.push(this);
+    }
+    observe(target, init) {
+      this.target = target;
+      this.init = init;
+    }
+    disconnect() {
+      this.disconnected = true;
+    }
   };
 
   jest.doMock('electron', () => ({
@@ -106,6 +153,10 @@ function loadWebviewPreloadModule(options = {}) {
     clipboard,
     contextBridge,
     document,
+    documentElement,
+    mediaChangeHandlers,
+    prefersDarkQuery,
+    mutationObservers,
     documentHandlers,
     documentCaptureHandlers,
     windowCaptureHandlers,
@@ -133,6 +184,7 @@ describe('webview-preload', () => {
     global.document = originalDocument;
     global.navigator = originalNavigator;
     global.location = originalLocation;
+    global.MutationObserver = originalMutationObserver;
     jest.restoreAllMocks();
   });
 
@@ -885,6 +937,7 @@ describe('webview-preload private windows', () => {
     global.document = originalDocument;
     global.navigator = originalNavigator;
     global.location = originalLocation;
+    global.MutationObserver = originalMutationObserver;
     jest.restoreAllMocks();
   });
 
@@ -992,5 +1045,144 @@ describe('webview-preload private windows', () => {
     expect(scripts[0].textContent).toBe('/* ethereum inject source stub */');
     expect(head.insertBefore).toHaveBeenNthCalledWith(1, scripts[0], null);
     expect(scripts[0].remove).toHaveBeenCalled();
+  });
+});
+
+// #233: internal pages used to follow the OS colour scheme only, so a dark app
+// on a light desktop rendered a dark toolbar over white pages. The preload now
+// resolves Settings > Appearance at document-start and stamps the answer on
+// <html>; the page stylesheets key their light palette (and `color-scheme`)
+// off that attribute.
+describe('webview-preload internal-page theme', () => {
+  beforeEach(() => {
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    global.window = originalWindow;
+    global.document = originalDocument;
+    global.navigator = originalNavigator;
+    global.location = originalLocation;
+    global.MutationObserver = originalMutationObserver;
+    jest.restoreAllMocks();
+  });
+
+  const internalLocation = {
+    href: 'file:///app/pages/history.html',
+    protocol: 'file:',
+    pathname: '/app/pages/history.html',
+  };
+
+  test.each([
+    ['dark', 'dark'],
+    ['light', 'light'],
+  ])('an explicit theme of %s wins over the OS scheme', (theme, expected) => {
+    // prefersDark is the *opposite* of the setting in both rows: the whole
+    // point of #233 is that the setting, not the desktop, decides.
+    const { documentElement, ipcRenderer } = loadWebviewPreloadModule({
+      location: internalLocation,
+      theme,
+      prefersDark: theme === 'light',
+    });
+
+    expect(ipcRenderer.sendSync).toHaveBeenCalledWith(IPC.GET_THEME);
+    expect(documentElement.setAttribute).toHaveBeenCalledWith('data-theme', expected);
+  });
+
+  test.each([
+    [true, 'dark'],
+    [false, 'light'],
+  ])('"system" still resolves through prefers-color-scheme (dark=%s)', (prefersDark, expected) => {
+    const { documentElement } = loadWebviewPreloadModule({
+      location: internalLocation,
+      theme: 'system',
+      prefersDark,
+    });
+
+    expect(documentElement.setAttribute).toHaveBeenCalledWith('data-theme', expected);
+  });
+
+  test('"system" repaints when the OS scheme changes, an explicit theme does not', () => {
+    const system = loadWebviewPreloadModule({
+      location: internalLocation,
+      theme: 'system',
+      prefersDark: false,
+    });
+    expect(system.documentElement.getAttribute('data-theme')).toBe('light');
+    expect(system.mediaChangeHandlers).toHaveLength(1);
+    // The desktop switches to dark: the live query flips, then notifies.
+    system.prefersDarkQuery.matches = true;
+    system.mediaChangeHandlers[0]();
+    expect(system.documentElement.getAttribute('data-theme')).toBe('dark');
+
+    // An explicit setting ignores the OS entirely.
+    const explicit = loadWebviewPreloadModule({
+      location: internalLocation,
+      theme: 'light',
+      prefersDark: false,
+    });
+    explicit.prefersDarkQuery.matches = true;
+    explicit.mediaChangeHandlers[0]();
+    expect(explicit.documentElement.getAttribute('data-theme')).toBe('light');
+  });
+
+  test('a settings:updated broadcast repaints an already-loaded page', () => {
+    // OS is dark here, so the "system" leg below is not satisfied by the
+    // starting value.
+    const { documentElement, ipcRenderer } = loadWebviewPreloadModule({
+      location: internalLocation,
+      theme: 'light',
+      prefersDark: true,
+    });
+    expect(documentElement.getAttribute('data-theme')).toBe('light');
+
+    const handlers = ipcRenderer.listeners.get(IPC.SETTINGS_UPDATED) || [];
+    expect(handlers).toHaveLength(1);
+    handlers[0]({}, { theme: 'dark' });
+    expect(documentElement.getAttribute('data-theme')).toBe('dark');
+
+    handlers[0]({}, { theme: 'light' });
+    expect(documentElement.getAttribute('data-theme')).toBe('light');
+
+    // Falling back to "system" re-reads the OS scheme, which is dark here.
+    handlers[0]({}, { theme: 'system' });
+    expect(documentElement.getAttribute('data-theme')).toBe('dark');
+  });
+
+  test('stamps <html> as soon as it is parsed when it does not exist yet', () => {
+    // Preloads run at document-start, before the parser has created <html>.
+    // Waiting for DOMContentLoaded instead would flash the wrong theme.
+    const { document, mutationObservers } = loadWebviewPreloadModule({
+      location: internalLocation,
+      theme: 'light',
+      documentElement: null,
+    });
+
+    expect(mutationObservers).toHaveLength(1);
+    expect(mutationObservers[0].target).toBe(document);
+    expect(mutationObservers[0].init).toEqual({ childList: true });
+
+    const attributes = {};
+    document.documentElement = {
+      setAttribute: (name, value) => {
+        attributes[name] = value;
+      },
+    };
+    mutationObservers[0].callback();
+    expect(attributes['data-theme']).toBe('light');
+    expect(mutationObservers[0].disconnected).toBe(true);
+  });
+
+  test('leaves non-internal pages alone', () => {
+    const { documentElement, ipcRenderer } = loadWebviewPreloadModule({
+      location: { href: 'https://dapp.example/', protocol: 'https:', pathname: '/' },
+      theme: 'dark',
+    });
+
+    expect(ipcRenderer.sendSync).not.toHaveBeenCalledWith(IPC.GET_THEME);
+    expect(documentElement.setAttribute).not.toHaveBeenCalled();
+    expect(ipcRenderer.listeners.get(IPC.SETTINGS_UPDATED)).toBeUndefined();
   });
 });
