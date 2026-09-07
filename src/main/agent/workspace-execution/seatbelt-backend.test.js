@@ -4,6 +4,7 @@ const { spawnSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { EventEmitter } = require('events');
 const { PassThrough } = require('stream');
 const { createWorkspaceExecutionPolicy } = require('./execution-policy');
 const { resolveExecutableAccess } = require('./executable-access');
@@ -14,12 +15,10 @@ const {
   SeatbeltExecutor,
   buildSeatbeltProfile,
   capabilityProbeProfile,
-  collectStream,
   createPrivateDirectory,
   detectSeatbeltCapabilities,
   hostWorkingDirectory,
   seatbeltString,
-  signalProcessGroup,
 } = require('./seatbelt-backend');
 
 async function createFixture() {
@@ -190,6 +189,74 @@ describe('macOS Seatbelt backend contract', () => {
     }
   });
 
+  test('adds only the exact protected native gate path to the profile', async () => {
+    const fixture = await createFixture();
+    fixtureRoots.push(fixture.fixtureRoot);
+    const policy = await createWorkspaceExecutionPolicy({ workspaceRoot: fixture.workspaceRoot });
+    const directory = await createPrivateDirectory();
+    fixtureRoots.push(directory);
+    const profile = buildSeatbeltProfile(policy, directory, { executablePath: '/trusted/helper' });
+    expect(profile).toContain('(allow process-exec (literal "/trusted/helper"))');
+    expect(profile).toContain('(allow file-read* (literal "/trusted/helper"))');
+    expect(profile).not.toContain('(subpath "/trusted")');
+    expect(profile).toContain('(allow signal (target same-sandbox))');
+    expect(() => buildSeatbeltProfile(policy, directory, { executablePath: `${directory}/helper` })).toThrow();
+  });
+
+  test.each([
+    { name: 'completed with uncertain cleanup', reason: 'completed', expected: 'completed' },
+    { name: 'missing FINAL', missing: true, expected: 'failed' },
+    { name: 'broken control channel', controlError: true, reason: 'cancelled', expected: 'failed' },
+    { name: 'unrequested cancellation', reason: 'cancelled', expected: 'failed' },
+    { name: 'native deadline', reason: 'timed_out', expected: 'timed_out' },
+    { name: 'user cancellation racing native deadline', abort: true, reason: 'timed_out', expected: 'cancelled' },
+    { name: 'valid FINAL before delayed exit callback', delayedExit: true, reason: 'completed', expected: 'completed' },
+    { name: 'native supervisor failure', reason: 'supervisor_failed', expected: 'failed' },
+  ])('maps native outcome truthfully: $name', async ({ missing, controlError, reason, expected, abort, delayedExit }) => {
+    const fixture = await createFixture();
+    fixtureRoots.push(fixture.fixtureRoot);
+    const policy = await createWorkspaceExecutionPolicy({ workspaceRoot: fixture.workspaceRoot });
+    const child = new EventEmitter();
+    child.pid = 12345;
+    child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough();
+    child.stdio = [child.stdin, child.stdout, child.stderr, new PassThrough(), new PassThrough()];
+    child.kill = jest.fn();
+    child.unref = jest.fn();
+    const cancellation = new AbortController();
+    const executor = new SeatbeltExecutor({
+      resolveSupervisor: async () => ({ executablePath: '/trusted/helper' }),
+      spawnProcess: () => {
+        queueMicrotask(() => {
+          child.stdio[4].write(`${JSON.stringify({ v: 1, type: 'ready' })}\n`);
+          if (controlError) child.stdio[3].emit('error', new Error('broken control'));
+          if (abort) cancellation.abort();
+          child.stdout.end('finished'); child.stderr.end();
+          child.stdio[4].end(missing ? '' : `${JSON.stringify({
+            v: 1, type: 'final', reason, spawned: true, releaseIssued: true,
+            rootExitObserved: true, rootReaped: true, groupVerified: true, cleanupUncertain: true,
+            exitCode: 0, signal: null, finalKillAttempted: true,
+            signalErrors: [{ phase: 'kill', errno: 1 }], setupError: null,
+          })}\n`);
+          if (!delayedExit) child.emit('exit', 0, null);
+        });
+        return child;
+      },
+    });
+    executor.capabilities = { available: true };
+    const receipt = await executor.execute(policy, { command: '/usr/bin/true', signal: cancellation.signal });
+    expect(receipt).toMatchObject({ state: expected, stdout: 'finished',
+      terminationGuarantee: 'best_effort', survivorsPossible: true, completeDescendantTermination: false,
+      terminationScope: 'original_process_group', diagnostics: { nativeSupervisor: true } });
+    if (expected === 'failed') expect(receipt.error).toEqual({
+      code: 'WORKSPACE_SUPERVISOR_FAILED', message: 'The native workspace supervisor failed',
+    });
+    if (delayedExit) expect(receipt.diagnostics.supervisorExitUnconfirmed).toBe(true);
+    if (!missing) expect(receipt.diagnostics.processGroupSignalErrors).toEqual([
+      { phase: 'finalization', signal: 'SIGKILL', code: 'EPERM', errno: 1 },
+    ]);
+    expect(child.kill).not.toHaveBeenCalled();
+  });
+
   test('rejects forged policy objects and unvalidated private paths', async () => {
     expect(() => buildSeatbeltProfile({}, '/tmp/freedom-seatbelt-forged')).toThrow(
       expect.objectContaining({ code: 'INVALID_POLICY' })
@@ -212,6 +279,7 @@ describe('macOS Seatbelt backend contract', () => {
     await expect(
       detectSeatbeltCapabilities({
         platform: 'darwin',
+        resolveSupervisor: async () => ({ executablePath: '/trusted/supervisor' }),
         architecture: 'future-arch',
         release: 'future-release',
         binary: '/usr/bin/true',
@@ -236,6 +304,7 @@ describe('macOS Seatbelt backend contract', () => {
     await expect(
       detectSeatbeltCapabilities({
         platform: 'darwin',
+        resolveSupervisor: async () => ({ executablePath: '/trusted/supervisor' }),
         binary: '/usr/bin/true',
         run: async () => ({ exitCode: 1, signal: null, stdout: '', stderr: 'denied' }),
       })
@@ -261,38 +330,4 @@ describe('macOS Seatbelt backend contract', () => {
     });
   });
 
-  test('records process-group signal failures other than an exited group', () => {
-    const success = jest.fn();
-    expect(signalProcessGroup(123, 'SIGKILL', success)).toBeNull();
-    expect(success).toHaveBeenCalledWith(-123, 'SIGKILL');
-
-    expect(
-      signalProcessGroup(123, 'SIGKILL', () => {
-        const error = new Error('gone');
-        error.code = 'ESRCH';
-        throw error;
-      })
-    ).toBeNull();
-
-    expect(
-      signalProcessGroup(123, 'SIGKILL', () => {
-        const error = new Error('not permitted');
-        error.code = 'EPERM';
-        throw error;
-      })
-    ).toEqual({ signal: 'SIGKILL', code: 'EPERM' });
-  });
-
-  test('continues draining output after the visible limit', () => {
-    const stream = new PassThrough();
-    const onData = jest.fn();
-    const collection = collectStream(stream, 5, onData);
-    stream.write('hello');
-    stream.write(' discarded');
-    stream.end();
-    expect(collection.result()).toEqual({ text: 'hello', truncated: true });
-    expect(Buffer.concat(onData.mock.calls.map(([chunk]) => chunk)).toString('utf8')).toBe(
-      'hello discarded'
-    );
-  });
 });

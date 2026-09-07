@@ -525,6 +525,7 @@ function workspaceBashTemplate(template, options = {}) {
     promptGuidelines: [
       ...(Array.isArray(template.promptGuidelines) ? template.promptGuidelines : []),
       'Use workingDirectory when the command must run in a workspace subdirectory. It must be relative to the project workspace.',
+      'Run development servers in the foreground and continue the returned session with write_stdin. Command completion triggers process cleanup.',
     ],
     parameters: {
       ...template.parameters,
@@ -1201,7 +1202,7 @@ function createWriteStdinTool(sdk, options) {
           },
           terminate: {
             type: 'boolean',
-            description: 'Stop the sandboxed process and its descendants',
+            description: 'Request process termination; the receipt reports the platform’s cleanup limits',
           },
         },
         additionalProperties: false,

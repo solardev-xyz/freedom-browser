@@ -26,6 +26,6 @@ module.exports = {
     target: ['dir'],
     identity: null,
     notarize: false,
-    extraResources: [],
+    extraResources: releaseBuild.mac.extraResources.filter((resource) => resource.to === 'workspace-supervisor'),
   },
 };

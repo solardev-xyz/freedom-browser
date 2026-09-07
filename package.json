@@ -104,7 +104,9 @@
     "openlv:ios-harness": "node scripts/openlv-ios-harness.js",
     "serve:updates": "node scripts/serve-updates.js",
     "start:test-updater": "ENABLE_DEV_UPDATER=true npm start",
-    "postinstall": "install-electron && electron-builder install-app-deps"
+    "postinstall": "install-electron && electron-builder install-app-deps",
+    "prestart": "node scripts/build-macos-workspace-supervisor.js",
+    "build:workspace-supervisor": "node scripts/build-macos-workspace-supervisor.js"
   },
   "build": {
     "appId": "baby.freedom.browser",
@@ -146,8 +148,17 @@
           "filter": [
             "**/*"
           ]
+        },
+        {
+          "from": "out/macos-supervisor/${arch}/",
+          "to": "workspace-supervisor",
+          "filter": [
+            "freedom-workspace-supervisor",
+            "manifest.json"
+          ]
         }
-      ]
+      ],
+      "sign": "./scripts/sign-macos-workspace-supervisor.js"
     },
     "linux": {
       "target": [
@@ -209,7 +220,8 @@
       "src/**/*",
       "package.json",
       "!**/*.test.js",
-      "!**/coverage/**"
+      "!**/coverage/**",
+      "!**/*.test.c"
     ],
     "asarUnpack": [
       "**/node_modules/better-sqlite3/**",
@@ -252,7 +264,8 @@
         "from": "config/default-bookmarks.json",
         "to": "default-bookmarks.json"
       }
-    ]
+    ],
+    "beforePack": "./scripts/build-macos-workspace-supervisor.js"
   },
   "engines": {
     "node": ">=18"

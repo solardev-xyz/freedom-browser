@@ -144,7 +144,7 @@ Main-agent source review identified two items that must not be copied into produ
 
 [The independent Claude review and main-agent disposition](evidence/macos-retained-root-claude-review-2026-09-07.md) support continued native integration design while requiring real exec-chain descriptor checks, kernel verification of group/session leadership, bounded output draining, default signal state and structural prevention of post-reap signaling. The main agent refined recommendations that assumed the old shell launcher or gave unverified errno interpretations. Raw `EPERM` remains a failed signal attempt with context, not proof of emptiness; a successful command receipt currently stays successful despite that diagnostic. The review supplied no new run evidence. Its suggested repeated fixture loop is not authorized under the completed probe's birth budget.
 
-### Concrete integration contract — reviewed, not implemented
+### Concrete integration contract — reviewed before implementation
 
 [The completed production-protocol review](evidence/macos-supervisor-production-protocol-2026-09-07.md), request `macmini/req-cadd244e5185ef32f4670e0bcc92271c`, recommends direct command stdin/stdout/stderr between Browser and worker. The supervisor owns separate control/status streams and never forwards command output. Node's inherited streams may use socketpairs; the protocol must handle byte framing and directional EOF without assuming anonymous-pipe boundaries.
 
@@ -155,7 +155,17 @@ Main-agent source review identified two items that must not be copied into produ
 - Preserve only worker descriptors 0/1/2/5/6 through `sandbox-exec` into the trusted gate; close the gate descriptors before successful payload exec. Keep the helper and its replacement-controlling ancestors outside writable roots. Add exact helper read/exec permission, preserve same-sandbox signal restrictions, and retain pre-launch environment filtering. Real exec-chain and composed-Seatbelt checks remain required.
 - Build repository-owned native source with installed tooling and explicit target architecture/minOS; align the candidate with inspected Electron 43's macOS 12 minimum. A fixed private resolver must fail closed on missing/skewed artifacts. Include both normal and qualification packages. Installed electron-builder supports a custom signing hook wrapping per-file options; an explicit empty helper entitlement plist avoids inheriting the browser's JIT and disabled-library-validation privileges while preserving other components' signing behavior. No signing or build ran during this review.
 
-This specifies the next implementation candidate; no native helper has been integrated and no additional qualification is claimed. The detailed review lists the required transport, exec, failure, architecture and packaging checks. Detached descendants and supervisor failure remain unresolved.
+At this review checkpoint no native helper had been integrated. The detailed review lists the required transport, exec, failure, architecture and packaging checks. The implementation checkpoint below supersedes that status without changing the prototype's evidence or unresolved guarantees.
+
+### Native integration candidate — implemented, product qualification incomplete
+
+The Seatbelt executor now launches the repository-owned helper through `macos-supervisor-process.js`. Native code owns the execution root, verifies its session/group before releasing a trusted post-Seatbelt gate, watches browser control EOF and a continuous-clock deadline, signals before relinquishing wait ownership, and reports bounded private lifecycle records. Command output cannot spoof readiness or completion. JavaScript cancellation closes the control channel; there is no JavaScript numeric-signal fallback. Startup/control failures remain failures rather than appearing as user cancellation. Root outcome, supervisor-exit uncertainty and output truncation remain distinct evidence.
+
+`macos-supervisor-runtime.js` resolves a fixed architecture-specific development or packaged artifact, checks executable/source/manifest consistency and rejects workspace-writable placement. These hashes detect skew; the manifest is not an independent integrity trust root. The production app seal remains the packaging integrity boundary. Installed Apple tooling builds the helper without downloads. Both package configurations include it; the signing hook gives the leaf empty entitlements, verifies runtime/identity properties and updates its hash before sealing the containing app. Developer-ID signing/notarization is not yet qualified.
+
+[The implementation evidence](evidence/macos-native-supervisor-implementation-2026-09-07.md) retains the exact native source/build identities, explicit disposable-Mac report, native fixtures and receipts, and primary-Mac benign checks. Four native exec/control cases passed once each, with registered exact-instance exit evidence and no observed owned survivors. These used a synthetic Electron-as-Node driver and the older checkout's policy builder plus literal helper rules; they do not qualify the primary's full JS/product integration. The optimized local helper separately passed fixed commands through Node, Electron and the unsigned packaged asar backend. No native Quit, browser-crash or detached fixture ran on the primary Mac.
+
+The candidate improves who owns original-group cleanup. It does not discover or terminate every escaped descendant, survive failure of its own supervisor, reclaim stale processes at startup, or enforce aggregate resource limits. Keep `best_effort / original_process_group / survivorsPossible=true / completeDescendantTermination=false`. Current-product Stop/timeout/preview/conversation teardown, native Quit, browser crash and supervisor-failure cases still require bounded disposable-Mac qualification before calling this milestone complete.
 
 ## Existing qualification evidence recovered by inventory
 
@@ -177,7 +187,7 @@ No immutable run-to-source-to-artifact manifest was found. Forty-character IDs i
 
 ## Investigation and qualification boundaries
 
-The primary development Mac is restricted to source/documentation review and ordinary benign checks. Potentially harmful, detached-process and application-exit experiments belong on the designated disposable Mac. No downloaded software, OS changes, entitlements, service installation, or broader release is authorized by this investigation.
+The primary development Mac is restricted to source/documentation review and ordinary benign checks. Potentially harmful, detached-process and application-exit experiments belong on the designated disposable Mac. No downloaded software, OS privilege changes, service installation, or broader release is authorized by this investigation. The native helper's empty signing entitlements grant no additional privileges.
 
 Before adopting an implementation, record the achievable contract and independently observe survivors before fixture cleanup. Use bounded fixtures, explicit ownership established before launch, finite spawn counts, deadlines, an independent watchdog and unrelated-process canaries. A deliberately demonstrated survivor is a limitation result, not a complete-cleanup pass. Never signal by process name, workspace-path resemblance, or an unvalidated stale PID.
 

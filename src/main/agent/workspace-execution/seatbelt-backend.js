@@ -1,7 +1,6 @@
 'use strict';
 
 const { execFile, execFileSync, spawn } = require('child_process');
-const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -13,13 +12,13 @@ const {
   isValidatedWorkspaceExecutionPolicy,
   validateExecutionRequest,
 } = require('./execution-policy');
-const { createReadinessOutputForwarder, notifyOutput, notifyStdin } = require('./process-io');
+const { getSystemErrorName } = require('util');
+const { runMacosSupervisor } = require('./macos-supervisor-process');
+const { resolveMacosSupervisor, assertSupervisorOutsideWritableRoots } = require('./macos-supervisor-runtime');
 const { executableCommandEntries, systemToolchainDirectories } = require('./executable-access');
 
 const DEFAULT_SEATBELT_PATH = '/usr/bin/sandbox-exec';
 const PROBE_TIMEOUT_MS = 5_000;
-const TERMINATION_GRACE_MS = 1_000;
-const FORCED_RECEIPT_DELAY_MS = 250;
 const PRIVATE_DIRECTORY_PREFIX = 'freedom-seatbelt-';
 const SYSTEM_READ_PATHS = Object.freeze(['/System', '/usr', '/bin', '/sbin']);
 const OPTIONAL_SYSTEM_READ_PATHS = Object.freeze([
@@ -113,19 +112,6 @@ const SEATBELT_NETWORK_MACH_SERVICES = Object.freeze([
 
 function boundedText(value, maximum = 512) {
   return String(value || '').slice(0, maximum);
-}
-
-function signalProcessGroup(processGroupId, signal, killProcess = process.kill) {
-  try {
-    killProcess(-processGroupId, signal);
-    return null;
-  } catch (error) {
-    if (error?.code === 'ESRCH') return null;
-    return Object.freeze({
-      signal,
-      code: boundedText(error?.code || 'UNKNOWN', 64),
-    });
-  }
 }
 
 function execFileResult(binary, args, options = {}) {
@@ -262,7 +248,7 @@ function discoverRuntimeReadPaths(runtimeRoots) {
   return [...paths];
 }
 
-function buildSeatbeltProfile(policy, privateDirectory) {
+function buildSeatbeltProfile(policy, privateDirectory, supervisor = null) {
   if (!isValidatedWorkspaceExecutionPolicy(policy)) {
     throw new ExecutionPolicyError(
       'INVALID_POLICY',
@@ -325,6 +311,11 @@ function buildSeatbeltProfile(policy, privateDirectory) {
     pathRule('allow', 'file-read*', 'literal', '/dev/urandom'),
     pathRule('allow', 'file-read*', 'literal', '/dev/random'),
   ];
+  if (supervisor) {
+    assertSupervisorOutsideWritableRoots(supervisor, policy, privateDirectory);
+    lines.push(pathRule('allow', 'file-read*', 'literal', supervisor.executablePath));
+    lines.push(pathRule('allow', 'process-exec', 'literal', supervisor.executablePath));
+  }
   if (policy.filesystem.exposeSystemToolchain) {
     for (const systemPath of systemReadPaths()) {
       const directory = fs.statSync(systemPath).isDirectory();
@@ -422,6 +413,14 @@ async function detectSeatbeltCapabilities(options = {}) {
       { platform, architecture, release }
     );
   }
+  try {
+    await (options.resolveSupervisor || resolveMacosSupervisor)({ platform, architecture, release });
+  } catch {
+    return unavailableCapabilities(
+      { code: 'WORKSPACE_SUPERVISOR_UNAVAILABLE', message: 'The native workspace supervisor is unavailable; rebuild Freedom’s macOS helper' },
+      { platform, architecture, release }
+    );
+  }
   let stats;
   try {
     stats = await fs.promises.stat(binary);
@@ -491,31 +490,6 @@ async function detectSeatbeltCapabilities(options = {}) {
   });
 }
 
-function collectStream(stream, limit, onData) {
-  const chunks = [];
-  let bytes = 0;
-  let truncated = false;
-  stream?.on('data', (chunk) => {
-    const buffer = Buffer.from(chunk);
-    onData?.(buffer);
-    const available = Math.max(0, limit - bytes);
-    if (available > 0) {
-      const accepted = buffer.subarray(0, available);
-      chunks.push(accepted);
-      bytes += accepted.length;
-    }
-    if (buffer.length > available) truncated = true;
-  });
-  return Object.freeze({
-    result() {
-      return Object.freeze({ text: Buffer.concat(chunks).toString('utf8'), truncated });
-    },
-    stop() {
-      stream?.destroy();
-    },
-  });
-}
-
 function deniedReceipt(startedAt, finishedAt, code, message, diagnostics = {}) {
   return Object.freeze({
     backend: 'macos-seatbelt',
@@ -545,7 +519,7 @@ class SeatbeltExecutor {
   constructor(options = {}) {
     this.binary = options.binary || DEFAULT_SEATBELT_PATH;
     this.spawnProcess = options.spawnProcess || spawn;
-    this.killProcess = options.killProcess || process.kill;
+    this.resolveSupervisor = options.resolveSupervisor || resolveMacosSupervisor;
     this.now = options.now || Date.now;
     this.setTimeout = options.setTimeout || setTimeout;
     this.clearTimeout = options.clearTimeout || clearTimeout;
@@ -560,6 +534,7 @@ class SeatbeltExecutor {
     if (this.capabilities && !options.force) return this.capabilities;
     this.capabilities = await detectSeatbeltCapabilities({
       binary: this.binary,
+      resolveSupervisor: this.resolveSupervisor,
       ...this.capabilityOptions,
       ...options,
     });
@@ -607,7 +582,13 @@ class SeatbeltExecutor {
     let privateDirectory;
     let profile;
     let commandDirectory;
-    const readinessMarker = `freedom-seatbelt-ready-${crypto.randomUUID()}`;
+    let supervisor;
+    try {
+      supervisor = await this.resolveSupervisor();
+    } catch {
+      return deniedReceipt(startedAt, this.now(), 'WORKSPACE_SUPERVISOR_UNAVAILABLE',
+        'The native workspace supervisor is unavailable; rebuild Freedom’s macOS helper');
+    }
     try {
       privateDirectory = await createPrivateDirectory();
       const entries = executableCommandEntries(policy.filesystem.runtimeRoots, 'darwin');
@@ -618,7 +599,7 @@ class SeatbeltExecutor {
           await fs.promises.symlink(executablePath, path.join(commandDirectory, name));
         }
       }
-      profile = buildSeatbeltProfile(policy, privateDirectory);
+      profile = buildSeatbeltProfile(policy, privateDirectory, supervisor);
       await fs.promises.writeFile(path.join(privateDirectory, 'profile.sb'), profile, {
         mode: 0o600,
       });
@@ -682,198 +663,96 @@ class SeatbeltExecutor {
       XDG_CONFIG_HOME: path.join(privateDirectory, 'config'),
       XDG_DATA_HOME: path.join(privateDirectory, 'data'),
     };
-    const markerPrefix = `${readinessMarker}\n`;
-    const args = [
-      '-f',
-      path.join(privateDirectory, 'profile.sb'),
-      '/bin/sh',
-      '-c',
-      'printf "%s\\n" "$1"; shift; exec "$@"',
-      'freedom-seatbelt-supervisor',
-      readinessMarker,
-      request.command,
-      ...request.args,
-    ];
-
-    return new Promise((resolve) => {
-      let child;
-      try {
-        child = this.spawnProcess(this.binary, args, {
-          cwd: hostWorkingDirectory(policy, workspace),
-          detached: true,
-          env: environment,
-          stdio: ['pipe', 'pipe', 'pipe'],
-        });
-      } catch {
-        this.cleanupPrivateDirectory(privateDirectory).then((cleanup) => {
-          resolve(
-            deniedReceipt(
-              startedAt,
-              this.now(),
-              'SEATBELT_LAUNCH_FAILED',
-              'Freedom could not launch the macOS sandbox',
-              cleanup || {}
-            )
-          );
-        });
-        return;
-      }
-
-      const stdout = collectStream(
-        child.stdout,
-        policy.limits.stdoutBytes + Buffer.byteLength(markerPrefix),
-        createReadinessOutputForwarder(markerPrefix, request.onOutput)
-      );
-      const stderr = collectStream(child.stderr, policy.limits.stderrBytes, (chunk) =>
-        notifyOutput(request.onOutput, 'stderr', chunk)
-      );
-      notifyStdin(request.onStdin, child);
-      let requestedState = null;
-      let spawnError = null;
-      let terminationTimer = null;
-      let forcedReceiptTimer = null;
-      let wallTimer = null;
-      let abortListener = null;
-      let settled = false;
-      const processGroupSignalErrors = [];
-
-      const signalGroup = (signal, phase) => {
-        const error = signalProcessGroup(child.pid, signal, this.killProcess);
-        if (error) {
-          processGroupSignalErrors.push(
-            Object.freeze({
-              phase,
-              ...error,
-            })
-          );
-        }
-      };
-      const finalize = async (exitCode, signal, forced = false) => {
-        if (settled) return;
-        settled = true;
-        // Direct-child close does not imply that every member of its process group exited.
-        // Make cleanup an invariant of every spawned receipt before clearing escalation timers.
-        signalGroup('SIGKILL', 'finalization');
-        if (wallTimer) this.clearTimeout(wallTimer);
-        if (terminationTimer) this.clearTimeout(terminationTimer);
-        if (forcedReceiptTimer) this.clearTimeout(forcedReceiptTimer);
-        request.signal?.removeEventListener('abort', abortListener);
-        if (forced) {
-          stdout.stop();
-          stderr.stop();
-          child.unref?.();
-        }
-        const rawOutput = stdout.result();
-        const errorOutput = stderr.result();
-        const sandboxStarted = rawOutput.text.startsWith(markerPrefix);
-        const cleanup = await this.cleanupPrivateDirectory(privateDirectory);
-        const finishedAt = this.now();
-        if (!sandboxStarted && !requestedState) {
-          resolve(
-            deniedReceipt(
-              startedAt,
-              finishedAt,
-              spawnError ? 'SEATBELT_LAUNCH_FAILED' : 'SEATBELT_INITIALIZATION_FAILED',
-              'Freedom refused to run the command because Seatbelt initialization failed',
-              {
-                cause: spawnError?.code || null,
-                signal,
-                processGroupFinalKillAttempted: true,
-                ...(processGroupSignalErrors.length > 0
-                  ? { processGroupSignalErrors: Object.freeze([...processGroupSignalErrors]) }
-                  : {}),
-                ...(cleanup || {}),
-              }
-            )
-          );
-          return;
-        }
-        const state =
-          requestedState || (exitCode === 0 ? EXECUTION_STATES.COMPLETED : EXECUTION_STATES.FAILED);
-        const receipt = {
-          backend: 'macos-seatbelt',
-          state,
-          startedAt,
-          finishedAt,
-          durationMs: Math.max(0, finishedAt - startedAt),
-          exitCode:
-            state === EXECUTION_STATES.COMPLETED || state === EXECUTION_STATES.FAILED
-              ? exitCode
-              : null,
-          signal: signal || (requestedState ? 'SIGTERM' : null),
-          stdout: sandboxStarted ? rawOutput.text.slice(markerPrefix.length) : '',
-          stderr: errorOutput.text,
-          stdoutTruncated: rawOutput.truncated,
-          stderrTruncated: errorOutput.truncated,
-          terminationGuarantee: 'best_effort',
-          sideEffects: 'unknown',
-          survivorsPossible: true,
-          completeDescendantTermination: false,
-          terminationScope: 'original_process_group',
-          capabilities: Object.freeze({
-            backend: 'macos-seatbelt',
-            aggregateResourceLimits: false,
-            cancellationGuarantee: 'best_effort',
-            executableRootsScoped: true,
-            networkPosture: policy.network,
-            publicNetworking: policy.network === NETWORK_POSTURES.FULL ? 'host_network' : 'denied',
-            loopbackNetworking:
-              policy.network === NETWORK_POSTURES.FULL ? 'host_network' : 'denied',
-            privateNetworking: policy.network === NETWORK_POSTURES.FULL ? 'host_network' : 'denied',
-            hostUnixSockets: 'denied_unless_filesystem_authorized',
-            platformNetworkServices:
-              policy.network === NETWORK_POSTURES.FULL ? 'dns_tls_configuration' : 'denied',
-            survivorsPossible: true,
-            completeDescendantTermination: false,
-          }),
-        };
-        if (state === EXECUTION_STATES.FAILED) {
-          receipt.error = Object.freeze({
-            code: 'COMMAND_FAILED',
-            message: 'The sandboxed command exited unsuccessfully',
-          });
-        }
-        receipt.diagnostics = Object.freeze({
-          processGroupFinalKillAttempted: true,
-          ...(processGroupSignalErrors.length > 0
-            ? { processGroupSignalErrors: Object.freeze([...processGroupSignalErrors]) }
-            : {}),
-          ...(forced ? { processGroupCleanupBoundExpired: true } : {}),
-          ...(cleanup || {}),
-        });
-        resolve(Object.freeze(receipt));
-      };
-      const terminate = (state) => {
-        if (requestedState) return;
-        requestedState = state;
-        signalGroup('SIGTERM', 'termination_requested');
-        terminationTimer = this.setTimeout(() => {
-          signalGroup('SIGKILL', 'termination_grace_expired');
-          forcedReceiptTimer = this.setTimeout(
-            () => finalize(null, 'SIGKILL', true),
-            FORCED_RECEIPT_DELAY_MS
-          );
-        }, TERMINATION_GRACE_MS);
-      };
-
-      wallTimer = this.setTimeout(
-        () => terminate(EXECUTION_STATES.TIMED_OUT),
-        policy.limits.timeoutMs
-      );
-      abortListener = () => terminate(EXECUTION_STATES.CANCELLED);
-      request.signal?.addEventListener('abort', abortListener, { once: true });
-      if (request.signal?.aborted) terminate(EXECUTION_STATES.CANCELLED);
-      child.once('error', (error) => {
-        spawnError = error;
-      });
-      child.once('close', (exitCode, signal) => finalize(exitCode, signal));
+    const outcome = await runMacosSupervisor({
+      executablePath: supervisor.executablePath,
+      profilePath: path.join(privateDirectory, 'profile.sb'),
+      cwd: hostWorkingDirectory(policy, workspace),
+      env: environment,
+      timeoutMs: policy.limits.timeoutMs,
+      stdoutBytes: policy.limits.stdoutBytes,
+      stderrBytes: policy.limits.stderrBytes,
+      request,
+      spawnProcess: this.spawnProcess,
+      setTimeout: this.setTimeout,
+      clearTimeout: this.clearTimeout,
+    });
+    const native = outcome.final;
+    const cleanup = await this.cleanupPrivateDirectory(privateDirectory);
+    const finishedAt = this.now();
+    const signalName = (number) => number === null || number === undefined ? null :
+      Object.entries(os.constants.signals).find(([, value]) => value === number)?.[0] || null;
+    const signalErrors = (native?.signalErrors || []).map(({ phase, errno }) => {
+      let code;
+      try { code = getSystemErrorName(-errno); } catch { code = 'UNKNOWN'; }
+      return Object.freeze({ phase: phase === 'term' ? 'termination_requested' : 'finalization',
+        signal: phase === 'term' ? 'SIGTERM' : 'SIGKILL', code, errno });
+    });
+    const diagnostics = Object.freeze({
+      nativeSupervisor: true,
+      processGroupFinalKillAttempted: native?.groupVerified === true && native.finalKillAttempted,
+      nativeRootExitObserved: native?.rootExitObserved === true,
+      nativeRootReaped: native?.rootReaped === true,
+      nativeCleanupUncertain: !native || native.cleanupUncertain,
+      ...(native?.rootExitObserved ? { nativeRootExitCode: native.exitCode, nativeRootSignal: signalName(native.signal) } : {}),
+      ...(native?.setupError ? { nativeSetupError: native.setupError } : {}),
+      ...(signalErrors.length ? { processGroupSignalErrors: Object.freeze(signalErrors) } : {}),
+      ...outcome.diagnostics,
+      ...(cleanup || {}),
+    });
+    if (!outcome.spawned || (native && !native.releaseIssued && native.reason === 'setup_failed')) {
+      return deniedReceipt(startedAt, finishedAt,
+        outcome.spawned ? 'SEATBELT_INITIALIZATION_FAILED' : 'SEATBELT_LAUNCH_FAILED',
+        'Freedom could not initialize the native macOS workspace sandbox', diagnostics);
+    }
+    // A valid FINAL plus status EOF confirms the root's outcome independently
+    // of when Electron processes the supervisor's exit callback.
+    const transportFailed = !native ||
+      outcome.diagnostics.supervisorExitedAbnormally || outcome.diagnostics.supervisorProtocolFailed;
+    const requested = outcome.requestedState;
+    const supervisorFailed = transportFailed || requested === 'failed' ||
+      native?.reason === 'supervisor_failed' || (native?.reason === 'cancelled' && !requested);
+    const state = requested === 'timed_out' || (!requested && native?.reason === 'timed_out')
+      ? EXECUTION_STATES.TIMED_OUT
+      : requested === 'cancelled'
+        ? EXECUTION_STATES.CANCELLED
+        : !supervisorFailed && native.reason === 'completed' && native.exitCode === 0
+          ? EXECUTION_STATES.COMPLETED : EXECUTION_STATES.FAILED;
+    const noPayload = native && !native.releaseIssued;
+    return Object.freeze({
+      backend: 'macos-seatbelt', state, startedAt, finishedAt,
+      durationMs: Math.max(0, finishedAt - startedAt),
+      exitCode: [EXECUTION_STATES.COMPLETED, EXECUTION_STATES.FAILED].includes(state)
+        ? native?.exitCode ?? null : null,
+      signal: signalName(native?.signal),
+      stdout: outcome.stdout, stderr: outcome.stderr,
+      stdoutTruncated: outcome.stdoutTruncated, stderrTruncated: outcome.stderrTruncated,
+      terminationGuarantee: noPayload && !native.spawned ? 'not_applicable' : 'best_effort',
+      sideEffects: noPayload ? 'none' : 'unknown',
+      survivorsPossible: native?.spawned === false ? false : true,
+      completeDescendantTermination: native?.spawned === false,
+      terminationScope: 'original_process_group',
+      capabilities: Object.freeze({
+        backend: 'macos-seatbelt', aggregateResourceLimits: false,
+        cancellationGuarantee: 'best_effort', executableRootsScoped: true,
+        networkPosture: policy.network,
+        publicNetworking: policy.network === NETWORK_POSTURES.FULL ? 'host_network' : 'denied',
+        loopbackNetworking: policy.network === NETWORK_POSTURES.FULL ? 'host_network' : 'denied',
+        privateNetworking: policy.network === NETWORK_POSTURES.FULL ? 'host_network' : 'denied',
+        hostUnixSockets: 'denied_unless_filesystem_authorized',
+        platformNetworkServices: policy.network === NETWORK_POSTURES.FULL ? 'dns_tls_configuration' : 'denied',
+        survivorsPossible: true, completeDescendantTermination: false,
+      }),
+      ...(state === EXECUTION_STATES.FAILED ? { error: Object.freeze({
+        code: supervisorFailed ? 'WORKSPACE_SUPERVISOR_FAILED' : 'COMMAND_FAILED',
+        message: supervisorFailed ? 'The native workspace supervisor failed' : 'The sandboxed command exited unsuccessfully',
+      }) } : {}),
+      diagnostics,
     });
   }
 }
 
 module.exports = {
   DEFAULT_SEATBELT_PATH,
-  FORCED_RECEIPT_DELAY_MS,
   OPTIONAL_SYSTEM_READ_PATHS,
   PRIVATE_DIRECTORY_PREFIX,
   PROBE_TIMEOUT_MS,
@@ -881,15 +760,12 @@ module.exports = {
   SEATBELT_NETWORK_MACH_SERVICES,
   SYSTEM_READ_PATHS,
   SeatbeltExecutor,
-  TERMINATION_GRACE_MS,
   buildSeatbeltProfile,
   capabilityProbeProfile,
-  collectStream,
   createPrivateDirectory,
   detectSeatbeltCapabilities,
   discoverRuntimeReadPaths,
   hostWorkingDirectory,
   seatbeltString,
-  signalProcessGroup,
   sysctlReadRule,
 };

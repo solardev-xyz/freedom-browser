@@ -476,11 +476,11 @@ requiredDescribe('macOS Seatbelt execution boundary', () => {
         command: '/bin/ps',
         args: ['-p', String(sentinel.pid), '-o', 'pid=,command='],
       });
-      expect(receipt).toMatchObject({ state: 'failed', exitCode: 1, stdout: '' });
-      expect(receipt.stderr).toBe(
-        'freedom-seatbelt-supervisor: /bin/ps: Operation not permitted\n' +
-          'freedom-seatbelt-supervisor: /bin/ps: Undefined error: 0\n'
-      );
+      // The native gate reports the failed exec through its private status
+      // channel, preserving errno rather than relying on shell diagnostics.
+      expect(receipt).toMatchObject({ state: 'failed', exitCode: 127, stdout: '',
+        diagnostics: { nativeSetupError: os.constants.errno.EPERM, nativeRootReaped: true } });
+      expect(receipt.stderr).toBe('');
       expect(receipt.stderr).not.toContain(token);
     } finally {
       await cleanupSentinel(sentinel, token);
