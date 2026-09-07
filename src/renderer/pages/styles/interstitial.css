@@ -1,4 +1,16 @@
-/* Shared base styles for name-resolution and onchain-app interstitial pages. */
+/* Shared base styles for the name interstitial pages (conflict, unverified),
+   used by the ENS, Tezos Domains and onchain-app name flows. */
+
+/* Internal pages follow Settings > Appearance, not the OS colour scheme: the
+   webview preload resolves the setting and stamps `data-theme` on <html>
+   before first paint (#233). Declaring `color-scheme` from the same attribute
+   keeps scrollbars and form controls in step. */
+html {
+  color-scheme: dark;
+}
+html[data-theme='light'] {
+  color-scheme: light;
+}
 html,
 body {
   height: 100%;
@@ -33,8 +45,12 @@ h1 {
   align-items: center;
   gap: 12px;
 }
-body.conflict h1 { color: #ff5e5e; }
-body.unverified h1 { color: #d7a77c; }
+body.conflict h1 {
+  color: #ff5e5e;
+}
+body.unverified h1 {
+  color: #d7a77c;
+}
 .groups {
   display: flex;
   flex-direction: column;
@@ -165,14 +181,19 @@ button[disabled] {
   color: #8fbcff;
 }
 
-/* Light theme */
-@media (prefers-color-scheme: light) {
+/* Light theme. `:where()` holds the wrapper at zero specificity, so every
+   rule below weighs exactly what it did as a media query. */
+:where(html[data-theme='light']) {
   body {
     background: radial-gradient(ellipse at top left, #f6f8fa 0%, #ffffff 60%);
     color: #24292f;
   }
-  body.conflict h1 { color: #cf222e; }
-  body.unverified h1 { color: #9a6700; }
+  body.conflict h1 {
+    color: #cf222e;
+  }
+  body.unverified h1 {
+    color: #9a6700;
+  }
   p {
     color: #57606a;
   }

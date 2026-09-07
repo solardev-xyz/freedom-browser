@@ -50,12 +50,14 @@ import {
 import {
   homeUrl,
   homeUrlNormalized,
-  errorUrlBase,
   internalPages,
   detectProtocol,
   isHistoryRecordable,
   getInternalPageName,
   getOnchainInterstitialTarget,
+  getInterstitialDisplayName,
+  isErrorPageUrl,
+  isInterstitialPageUrl,
   parseEnsInput,
   buildInternalPageUrl,
 } from './page-urls.js';
@@ -66,7 +68,13 @@ import {
   shouldLearnAutocomplete,
 } from './private-mode.js';
 import { parseEthereumUri } from './ethereum-uri.js';
-import { openSendFlow } from './wallet-ui.js';
+import {
+  openSendFlow,
+  SEND_FLOW_OK,
+  SEND_FLOW_DISABLED,
+  SEND_FLOW_PRIVATE,
+  SEND_FLOW_SETUP,
+} from './wallet-ui.js';
 import { walletState } from './wallet/wallet-state.js';
 import { formatWeiToDecimal } from './wallet/send.js';
 import { startIpfsProgressStatus, stopIpfsProgressStatus } from './ipfs-progress-status.js';
@@ -277,8 +285,6 @@ let bookmarkBarOverride = false;
 // Track previous active tab ID to save address bar state when switching
 let previousActiveTabId = null;
 
-
-
 // Last recorded URL to avoid duplicates in quick succession
 let lastRecordedUrl = null;
 
@@ -344,11 +350,7 @@ const setLoading = (isLoading, tabId = null) => {
 // no-op calls (every dispatch + every did-navigate on the hot path) don't
 // re-run `updateProtocolIcon`, which walks `state.ensTrustByName` and
 // invokes the trust-badge resolver on every call.
-const setAddressDisplayForTab = (
-  displayValue,
-  tabId,
-  { isViewingSourceForTab = false } = {}
-) => {
+const setAddressDisplayForTab = (displayValue, tabId, { isViewingSourceForTab = false } = {}) => {
   if (isActiveTab(tabId) || tabId === null) {
     if (addressInput.value !== displayValue) {
       addressInput.value = displayValue;
@@ -356,8 +358,7 @@ const setAddressDisplayForTab = (
     }
     return;
   }
-  const targetTab =
-    tabId !== null && tabId !== undefined ? getTabById(tabId) : null;
+  const targetTab = tabId !== null && tabId !== undefined ? getTabById(tabId) : null;
   if (!targetTab) return;
   if (targetTab.navigationState) {
     targetTab.navigationState.addressBarSnapshot = displayValue;
@@ -803,6 +804,16 @@ const syncBzzBase = (nextBase) => {
     });
 };
 
+// One message per openSendFlow refusal reason: the way out differs for each,
+// and telling a private-window user with a fully set-up wallet to flip a
+// Settings toggle that is already on leaves them nowhere to go (#240).
+const SEND_FLOW_REFUSAL_MESSAGES = {
+  [SEND_FLOW_DISABLED]: 'Enable Identity & Wallet (Settings → Experimental) to accept tips.',
+  [SEND_FLOW_PRIVATE]:
+    'Wallet is unavailable in private windows. Open a normal window to accept tips.',
+  [SEND_FLOW_SETUP]: 'Finish setting up Identity & Wallet to accept tips.',
+};
+
 // EIP-681 carries value in the chain's base unit (wei for ETH et al.); we
 // assume 18 decimals for the native token, correct for every chain freedom
 // currently ships with.
@@ -828,13 +839,13 @@ const handleEthereumUri = (value) => {
   }
 
   const amount = parsed.value ? formatWeiToDecimal(BigInt(parsed.value)) : undefined;
-  const opened = openSendFlow({
+  const result = openSendFlow({
     recipient: parsed.target,
     chainId: parsed.chainId,
     amount,
   });
-  if (!opened) {
-    alert('Enable Identity & Wallet (Settings → Experimental) to accept tips.');
+  if (result !== SEND_FLOW_OK) {
+    alert(SEND_FLOW_REFUSAL_MESSAGES[result] || SEND_FLOW_REFUSAL_MESSAGES[SEND_FLOW_DISABLED]);
   }
 };
 
@@ -945,9 +956,7 @@ const startBzzNavigationWithProbe = (webview, target, navState, displayUrl) => {
       // `aborted` aren't content failures — leave the cache alone.
       const ensNameForInvalidation = (() => {
         const match = (target.bzzLoadUrl || '').match(/^bzz:\/\/([^/?#]+)/i);
-        return match && parseEnsInput(`bzz://${match[1]}`)
-          ? match[1].toLowerCase()
-          : null;
+        return match && parseEnsInput(`bzz://${match[1]}`) ? match[1].toLowerCase() : null;
       })();
       const invalidateOnContentFailure = () => {
         if (!ensNameForInvalidation || !electronAPI?.invalidateEnsContent) return;
@@ -960,9 +969,7 @@ const startBzzNavigationWithProbe = (webview, target, navState, displayUrl) => {
         const message = awaitResult?.error?.message || 'failed to await probe';
         pushDebug(`[Swarm] Probe await failed: ${message}`);
         invalidateOnContentFailure();
-        webview.loadURL(
-          buildErrorPageUrl('swarm_content_not_found', errorDisplayUrl, errorExtras)
-        );
+        webview.loadURL(buildErrorPageUrl('swarm_content_not_found', errorDisplayUrl, errorExtras));
         return;
       }
 
@@ -989,17 +996,13 @@ const startBzzNavigationWithProbe = (webview, target, navState, displayUrl) => {
 
       if (outcome.reason === 'bee_unreachable') {
         pushDebug('[Swarm] Probe: Bee unreachable');
-        webview.loadURL(
-          buildErrorPageUrl('ERR_CONNECTION_REFUSED', errorDisplayUrl, errorExtras)
-        );
+        webview.loadURL(buildErrorPageUrl('ERR_CONNECTION_REFUSED', errorDisplayUrl, errorExtras));
         return;
       }
 
       pushDebug(`[Swarm] Probe failed (${outcome.reason}) — showing error page`);
       invalidateOnContentFailure();
-      webview.loadURL(
-        buildErrorPageUrl('swarm_content_not_found', errorDisplayUrl, errorExtras)
-      );
+      webview.loadURL(buildErrorPageUrl('swarm_content_not_found', errorDisplayUrl, errorExtras));
     })
     .catch((err) => {
       pushDebug(`[Swarm] Probe error: ${err?.message || err}`);
@@ -1040,8 +1043,7 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
   // that settles after a tab switch would clobber the foreground tab's
   // address bar with the resolved URL of a backgrounded tab.
   const targetTabId = getTabIdForWebview(webview);
-  const navState =
-    getTabById(targetTabId)?.navigationState || getNavState();
+  const navState = getTabById(targetTabId)?.navigationState || getNavState();
   if (!webview) {
     pushDebug('No active webview to load target');
     return;
@@ -1086,7 +1088,9 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
           setLoading(false, capturedTabId);
           if (!result || result.type !== 'ok') {
             if (isActiveTab(capturedTabId)) {
-              alert(`${systemLabel} resolution failed for ${ens.name}: ${result?.reason || 'no response'}`);
+              alert(
+                `${systemLabel} resolution failed for ${ens.name}: ${result?.reason || 'no response'}`
+              );
             }
             return;
           }
@@ -1181,8 +1185,7 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
   // chain-data router. No gateway URL or page-owned RPC endpoint is involved.
   const onchainAppUrl = formatOnchainAppUrl(value);
   if (onchainAppUrl) {
-    const displayValue =
-      displayOverride || formatOnchainAppDisplayUrl(value) || onchainAppUrl;
+    const displayValue = displayOverride || formatOnchainAppDisplayUrl(value) || onchainAppUrl;
     setAddressDisplayForTab(displayValue, targetTabId);
     navState.pendingTitleForUrl = onchainAppUrl;
     navState.pendingNavigationUrl = onchainAppUrl;
@@ -1315,9 +1318,9 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
             ? result.uri
             : appendPublishedWebsiteSuffix(result.uri, ens.suffix);
           if (
-            result.trust?.level === 'unverified'
-            && state.blockUnverifiedEns
-            && !options.allowUnverifiedOnce
+            result.trust?.level === 'unverified' &&
+            state.blockUnverifiedEns &&
+            !options.allowUnverifiedOnce
           ) {
             capturedWebview.loadURL(
               buildInternalPageUrl('ens-unverified.html', { name: ens.name, uri: targetUri })
@@ -1359,9 +1362,9 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
         // Unverified = soft block. Interstitial lets the user continue once,
         // bypassing this check for the follow-up load.
         if (
-          result.trust?.level === 'unverified'
-          && state.blockUnverifiedEns
-          && !options.allowUnverifiedOnce
+          result.trust?.level === 'unverified' &&
+          state.blockUnverifiedEns &&
+          !options.allowUnverifiedOnce
         ) {
           pushDebug(`${systemLabel} unverified for ${ens.name} → interstitial`);
           capturedWebview.loadURL(
@@ -1380,8 +1383,8 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
         // unsupported protocols, but the `result.protocol` guard above
         // already rejects anything but bzz/ipfs/ipns.
         const transportDisplay =
-          buildEnsDisplayUri(result.protocol, ens.name, ens.suffix)
-          || `ens://${ens.name}${ens.suffix || ''}`;
+          buildEnsDisplayUri(result.protocol, ens.name, ens.suffix) ||
+          `ens://${ens.name}${ens.suffix || ''}`;
 
         // For ENS-backed dweb sites we want Chromium to load
         // `<scheme>://<name>/...` directly: the protocol handler resolves
@@ -1418,7 +1421,10 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
   }
 
   // Try Radicle (rad:RID or rad://RID)
-  if (value.trim().toLowerCase().startsWith('rad:') || value.trim().toLowerCase().startsWith('rad://')) {
+  if (
+    value.trim().toLowerCase().startsWith('rad:') ||
+    value.trim().toLowerCase().startsWith('rad://')
+  ) {
     if (isRadicleDisabledForProfile()) {
       // Radicle is off for this profile: the node can never start, so the
       // generic connection-error panel ("enable Radicle in the Nodes menu")
@@ -1455,7 +1461,10 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
       return;
     }
     // Invalid Radicle ID — show error page
-    const withoutScheme = value.trim().replace(/^rad:\/\//i, '').replace(/^rad:/i, '');
+    const withoutScheme = value
+      .trim()
+      .replace(/^rad:\/\//i, '')
+      .replace(/^rad:/i, '');
     pushDebug(`Invalid Radicle ID: ${withoutScheme}`);
     const errorUrl = new URL('pages/rad-browser.html', window.location.href);
     errorUrl.searchParams.set('error', 'invalid-rid');
@@ -1597,9 +1606,10 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
     // Augment with optional ENS-transport overrides. `swarmHash` lets the
     // probe target the resolved Swarm reference; `bzzLoadUrl` is what
     // Chromium actually loads, so the page's URL/origin stays ENS-named.
-    const augmented = options.bzzLoadUrl || options.swarmHash
-      ? { ...target, bzzLoadUrl: options.bzzLoadUrl, swarmHash: options.swarmHash }
-      : target;
+    const augmented =
+      options.bzzLoadUrl || options.swarmHash
+        ? { ...target, bzzLoadUrl: options.bzzLoadUrl, swarmHash: options.swarmHash }
+        : target;
 
     // Probe the Bee gateway first so the tab spinner stays active while the
     // node's peer set warms up; only load the webview once the content is
@@ -1698,7 +1708,7 @@ export const loadHomePage = () => {
 // Shared error-page retry logic used by both reload variants and the reload button
 const retryErrorPageOrReload = (webview, hard) => {
   const current = webview.getURL();
-  const originalUrl = getOriginalUrlFromErrorPage(current, errorUrlBase);
+  const originalUrl = getOriginalUrlFromErrorPage(current);
   if (originalUrl) {
     // Hard reload of an ENS error page also bypasses `ensResultCache` so the
     // recovery resolution actually re-runs under today's verification method
@@ -1711,7 +1721,7 @@ const retryErrorPageOrReload = (webview, hard) => {
     loadTarget(originalUrl);
     return;
   }
-  if (current.startsWith(errorUrlBase) || current.includes('/error.html?')) {
+  if (isErrorPageUrl(current)) {
     try {
       new URL(current);
     } catch (err) {
@@ -1740,7 +1750,9 @@ const retryErrorPageOrReload = (webview, hard) => {
   const ensInput = committedDisplay ? parseEnsInput(committedDisplay) : null;
   if (ensInput) {
     if (hard) invalidateContentName(ensInput);
-    pushDebug(`${hard ? 'Hard reload' : 'Reload'} re-resolving ${nameSystemLabelForName(ensInput.name)}: ${committedDisplay}`);
+    pushDebug(
+      `${hard ? 'Hard reload' : 'Reload'} re-resolving ${nameSystemLabelForName(ensInput.name)}: ${committedDisplay}`
+    );
     loadTarget(committedDisplay);
     return;
   }
@@ -1753,8 +1765,7 @@ const retryErrorPageOrReload = (webview, hard) => {
   // the plain reload — no re-probe, preserving the happy-path behaviour.
   const dwebScheme = committedDisplay.match(/^(ipfs|ipns|bzz):\/\//i)?.[1]?.toLowerCase();
   if (dwebScheme) {
-    const nodeUnavailable =
-      dwebScheme === 'bzz' ? !state.bzzRoutePrefix : isIpfsNodeUnavailable();
+    const nodeUnavailable = dwebScheme === 'bzz' ? !state.bzzRoutePrefix : isIpfsNodeUnavailable();
     if (nodeUnavailable) {
       pushDebug(
         `${hard ? 'Hard reload' : 'Reload'} dweb node unavailable — routing ${committedDisplay} to error page`
@@ -1896,7 +1907,17 @@ const handleNavigationEvent = (event) => {
       return;
     }
 
-    if (event.url.startsWith(errorUrlBase)) {
+    // Name-resolution interstitials (unverified soft block, head/contenthash
+    // conflict hard block) get the same treatment as the error page: the
+    // address bar keeps the name the user asked for, never the interstitial's
+    // own `file:///…/pages/ens-*.html` path (#235). The name is empty only if
+    // the page was opened without its `name` param — an empty address bar is
+    // the fail-safe there, since the on-disk path must not be shown either.
+    if (isInterstitialPageUrl(event.url)) {
+      const blockedName = getInterstitialDisplayName(event.url) || '';
+      addressInput.value = blockedName;
+      pushDebug(`[AddressBar] Interstitial -> Blocked name: ${blockedName || '(none)'}`);
+    } else if (isErrorPageUrl(event.url)) {
       try {
         const parsed = new URL(event.url);
         const originalUrl = parsed.searchParams.get('url');

@@ -7,6 +7,16 @@
       content="default-src 'none'; style-src 'unsafe-inline'; img-src 'self';"
     />
     <style>
+      /* Internal pages follow Settings > Appearance, not the OS colour scheme:
+         the webview preload resolves the setting and stamps `data-theme` on
+         <html> before first paint (#233). Declaring `color-scheme` from the
+         same attribute keeps scrollbars and form controls in step. */
+      html {
+        color-scheme: dark;
+      }
+      html[data-theme='light'] {
+        color-scheme: light;
+      }
       html,
       body {
         height: 100%;
@@ -90,8 +100,9 @@
         display: none;
       }
 
-      /* Light theme */
-      @media (prefers-color-scheme: light) {
+      /* Light theme. `:where()` holds the wrapper at zero specificity, so
+         every rule below weighs exactly what it did as a media query. */
+      :where(html[data-theme='light']) {
         body {
           background: #ffffff;
           color: #202124;

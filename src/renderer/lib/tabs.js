@@ -571,6 +571,7 @@ const createWebview = (tabId, initialUrl) => {
         // Use webview.getURL() for full URL (includes view-source: prefix)
         // event.url doesn't include the view-source: prefix
         const webviewUrl = webview.getURL();
+        const previousUrl = tab.url;
         tab.url = webviewUrl;
         tab.hasCertError = false; // Reset cert error on new navigation
         // Track view-source state directly on tab for reliable detection in page-title-updated
@@ -589,6 +590,31 @@ const createWebview = (tabId, initialUrl) => {
           tab.navigationState.committedDisplayUrl =
             formatOnchainAppDisplayUrl(interstitialTarget || webviewUrl) || webviewUrl;
           tab.navigationState.committedNavigationSequence += 1;
+        }
+        // A committed main-frame navigation replaces the document, so the
+        // previous page's title must not survive it. Chromium fires
+        // `page-title-updated` only when the new document actually declares a
+        // title, so without this reset a titleless page — or one whose
+        // <title> arrives late — keeps showing the previous page's title, and
+        // the history entry written at did-stop-loading records it too. That
+        // is issue #236: the Swarm error page inherited "RPC servers
+        // disagreed" from the page visited before it. Clearing to the empty
+        // title renders as "New Tab", which is already what a titleless page
+        // loaded into a fresh tab shows. Same-URL commits (reload) keep their
+        // title so a reload doesn't flicker; view-source titles are owned by
+        // navigation.js and set right after this handler forwards the event.
+        if (
+          event.url &&
+          event.url !== 'about:blank' &&
+          webviewUrl !== previousUrl &&
+          !tab.isViewingSource &&
+          tab.title
+        ) {
+          tab.title = '';
+          renderTabs();
+          if (tabId === tabState.activeTabId) {
+            electronAPI?.setWindowTitle?.('');
+          }
         }
         void refreshOnchainProvenance(tab, webviewUrl);
         // Clear any stale favicon from the previous page when navigating to

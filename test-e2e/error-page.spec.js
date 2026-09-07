@@ -4,7 +4,14 @@
 // the webview's URL (the error page itself is loaded from the host
 // pages/ directory so it's accessible to Playwright as a frame).
 
-const { test, expect, SAMPLE_BZZ_HASH } = require('./fixtures');
+const { test, expect, SAMPLE_BZZ_HASH, SAMPLE_IPFS_CID } = require('./fixtures');
+
+// A second opaque CIDv1 for the titleless fixture. All-lowercase on purpose:
+// Chromium lowercases the host of a committed `ipfs://` URL, so a fixture key
+// carrying uppercase never matches the request the harness sees and the test
+// would silently assert against the harness's 404 fallback instead of its own
+// document.
+const NO_TITLE_IPFS_CID = 'bafybeic' + 'b'.repeat(51);
 
 test('a probe-not-found bzz:// navigation lands on the error page', async ({
   window,
@@ -37,4 +44,105 @@ test('a probe-not-found bzz:// navigation lands on the error page', async ({
       { timeout: 10_000, intervals: [200, 500, 1000] }
     )
     .toMatch(/pages\/error\.html\?error=swarm_content_not_found/);
+});
+
+// #236: the error page used to declare no <title>, so Chromium never fired
+// `page-title-updated` for it and the tab kept the previous page's title
+// ("RPC servers disagreed" in the reported screenshot). Reproduced exactly as
+// the issue describes: visit a titled fixture page, then a not-found hash.
+test('the swarm error page does not inherit the previous page title', async ({
+  window,
+  harness,
+}) => {
+  await harness.setContentFixture(`ipfs://${SAMPLE_IPFS_CID}`, {
+    body: '<html><head><title>Alpha fixture page</title></head><body>alpha</body></html>',
+  });
+  await harness.setProbeFixture(SAMPLE_BZZ_HASH, { ok: false, reason: 'not_found' });
+
+  const input = window.locator('[data-test="address-input"]');
+  const tabTitle = window.locator('[data-test="tab"] .tab-title').first();
+
+  await input.click();
+  await input.fill(`ipfs://${SAMPLE_IPFS_CID}`);
+  await input.press('Enter');
+  await expect(tabTitle).toHaveText('Alpha fixture page', { timeout: 10_000 });
+
+  await input.click();
+  await input.fill(`bzz://${SAMPLE_BZZ_HASH}`);
+  await input.press('Enter');
+
+  await expect
+    .poll(
+      async () =>
+        window.evaluate(() => {
+          const wv = document.querySelector('webview.active, webview:not(.hidden)');
+          return wv?.getURL?.() || '';
+        }),
+      { timeout: 10_000, intervals: [200, 500, 1000] }
+    )
+    .toMatch(/pages\/error\.html\?error=swarm_content_not_found/);
+
+  // The error page names itself. `swarm_content_not_found` renders the
+  // "Content not ready yet" headline and sets the document title to match.
+  await expect(tabTitle).toHaveText('Content not ready yet', { timeout: 10_000 });
+});
+
+// The other half of #236: the tab title is what the history entry records at
+// did-stop-loading. A page that declares no <title> of its own must not have
+// the previous page's title written against its URL — that is what put the
+// wrong title next to the URL in the autocomplete dropdown.
+test('a page without a title does not record the previous page title in history', async ({
+  window,
+  harness,
+}) => {
+  await harness.setContentFixture(`ipfs://${SAMPLE_IPFS_CID}`, {
+    body: '<html><head><title>Alpha fixture page</title></head><body>alpha</body></html>',
+  });
+  await harness.setContentFixture(`ipfs://${NO_TITLE_IPFS_CID}`, {
+    body: '<html><body data-test="no-title-fixture">no title of its own</body></html>',
+  });
+
+  const input = window.locator('[data-test="address-input"]');
+  const tabTitle = window.locator('[data-test="tab"] .tab-title').first();
+
+  await input.click();
+  await input.fill(`ipfs://${SAMPLE_IPFS_CID}`);
+  await input.press('Enter');
+  await expect(tabTitle).toHaveText('Alpha fixture page', { timeout: 10_000 });
+
+  await input.click();
+  await input.fill(`ipfs://${NO_TITLE_IPFS_CID}`);
+  await input.press('Enter');
+
+  // The titleless document under test has to be *ours*, not the harness's
+  // 404 body: that fallback is only coincidentally titleless, so asserting
+  // against it would stop covering this scenario the moment it grows a
+  // <title>, without failing.
+  await expect
+    .poll(
+      () =>
+        window.evaluate(async () => {
+          const wv = document.querySelector('webview.active, webview:not(.hidden)');
+          if (!wv || typeof wv.executeJavaScript !== 'function') return null;
+          try {
+            return await wv.executeJavaScript(
+              'document.querySelector("[data-test=\\"no-title-fixture\\"]")?.textContent || ""'
+            );
+          } catch {
+            return null;
+          }
+        }),
+      { timeout: 10_000, intervals: [200, 500, 1000] }
+    )
+    .toBe('no title of its own');
+
+  const historyFor = async (urlPart) =>
+    window.evaluate(async (part) => {
+      const entries = await window.electronAPI.getHistory({ limit: 50 });
+      return entries.find((entry) => entry.url.toLowerCase().includes(part)) || null;
+    }, urlPart);
+
+  await expect.poll(() => historyFor(NO_TITLE_IPFS_CID), { timeout: 10_000 }).not.toBeNull();
+  const entry = await historyFor(NO_TITLE_IPFS_CID);
+  expect(entry.title).not.toBe('Alpha fixture page');
 });

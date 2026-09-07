@@ -3,7 +3,13 @@ import {
   deriveDisplayValue,
   parseOnchainAppUrl,
 } from './url-utils.js';
-import { getInternalPageName, parseEnsInput } from './page-urls.js';
+import {
+  getInternalPageName,
+  getInterstitialDisplayName,
+  isErrorPageUrl,
+  isInterstitialPageUrl,
+  parseEnsInput,
+} from './page-urls.js';
 import { isDwebNameHost } from './origin-utils.js';
 
 // Extract the Ethereum name from an address bar value, or null if the value isn't
@@ -542,6 +548,18 @@ export const deriveSwitchedTabDisplay = ({
   }
 
   const strippedUrl = url.startsWith('view-source:') ? url.slice(12) : url;
+  // A tab parked on a name-resolution interstitial restores the blocked name
+  // (`lagged.tez`), never the interstitial's `file://` path — same rule the
+  // active-tab did-navigate handler applies, and on the same input: the test
+  // is against the committed URL itself, not the `view-source:` inner URL, so
+  // both surfaces agree on what counts as an interstitial. The name is empty
+  // only when the page was opened without its `name` param; an empty address
+  // bar is the fail-safe there, since the on-disk path must not be shown
+  // either. See #235.
+  if (isInterstitialPageUrl(url)) {
+    return getInterstitialDisplayName(url) || '';
+  }
+
   // A tab parked on `pages/error.html?...&url=<original>` should restore the
   // friendly original target (e.g. `ipfs://vitalik.eth`), not the raw
   // `file://.../error.html?...` URL Chromium actually committed. Mirrors the
@@ -588,14 +606,14 @@ export const getBookmarkBarState = ({
   };
 };
 
-export const getOriginalUrlFromErrorPage = (url, errorUrlBase = '') => {
-  if (!url) {
-    return null;
-  }
-
-  const isErrorPage =
-    (errorUrlBase && url.startsWith(errorUrlBase)) || url.includes('/error.html?');
-  if (!isErrorPage) {
+// The friendly target an error page is standing in for, or null when `url`
+// isn't *our* error page. The chrome test is `isErrorPageUrl` (exact match on
+// the shell's own `pages/error.html`) rather than a `/error.html?` substring:
+// the `url` param is echoed straight into the address bar and the protocol
+// icon, so a remote `https://evil.test/error.html?url=bzz://vitalik.eth` would
+// otherwise get to pick both while rendering attacker HTML. See #235.
+export const getOriginalUrlFromErrorPage = (url) => {
+  if (!isErrorPageUrl(url)) {
     return null;
   }
 

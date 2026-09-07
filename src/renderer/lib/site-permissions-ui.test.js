@@ -15,6 +15,7 @@ import {
   initSitePermissionsUi,
   _resetForTests,
 } from './site-permissions-ui.js';
+import { getDisplayUrlForWebview } from './tabs.js';
 
 const { createDocument, createElement } = require('../../../test/helpers/fake-dom.js');
 
@@ -254,5 +255,83 @@ describe('site-permissions-ui prompt tab-scoping', () => {
     switchTab(2);
     expect(promptVisible()).toBe(false);
     expect(api.respondToPrompt).not.toHaveBeenCalled();
+  });
+});
+
+describe('site-permissions-ui popover revoke label', () => {
+  const originalDocument = global.document;
+  const originalWindow = global.window;
+
+  let els;
+  let doc;
+  let api;
+
+  beforeEach(() => {
+    _resetForTests();
+    els = {
+      'permission-prompt': createElement('div'),
+      'permission-prompt-origin': createElement('span'),
+      'permission-prompt-action': createElement('span'),
+      'permission-prompt-note': createElement('div'),
+      'permission-prompt-remember-label': createElement('label'),
+      'permission-prompt-remember': createElement('input'),
+      'permission-prompt-allow': createElement('button'),
+      'permission-prompt-block': createElement('button'),
+      'permission-indicator': createElement('button'),
+      'permission-popover': createElement('div'),
+      'permission-popover-title': createElement('div'),
+      'permission-popover-list': createElement('div'),
+    };
+    els['permission-prompt'].hidden = true;
+    els['permission-popover'].hidden = true;
+    doc = createDocument({ elementsById: els });
+    global.document = doc;
+
+    api = {
+      onPromptRequest: jest.fn(),
+      onPromptCancel: jest.fn(),
+      onOsDenied: jest.fn(),
+      onChanged: jest.fn(),
+      respondToPrompt: jest.fn(() => Promise.resolve(true)),
+      getForOrigin: jest.fn(() =>
+        Promise.resolve({
+          camera: { decision: 'allow', remembered: true },
+          geolocation: { decision: 'deny', remembered: true },
+        })
+      ),
+      revoke: jest.fn(() => Promise.resolve(true)),
+    };
+    global.window = { sitePermissions: api, addEventListener: jest.fn() };
+    mockActiveWebview = { getWebContentsId: () => 1 };
+    getDisplayUrlForWebview.mockReturnValue('https://a.example/page');
+    initSitePermissionsUi();
+  });
+
+  afterEach(() => {
+    global.document = originalDocument;
+    global.window = originalWindow;
+    mockActiveWebview = null;
+    getDisplayUrlForWebview.mockReturnValue('');
+  });
+
+  // #226: the popover said 'Reset' while Settings > Site Permissions says
+  // 'Remove' / 'Remove site' / 'Remove all' for the same action.
+  test("each row's revoke button says Remove, matching Settings", async () => {
+    // Let the indicator refresh kicked off by init resolve.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    els['permission-indicator'].dispatch('click');
+
+    const buttons = els['permission-popover-list'].querySelectorAll('.permission-popover-revoke');
+    expect(buttons).toHaveLength(2);
+    expect(buttons.map((b) => b.textContent)).toEqual(['Remove', 'Remove']);
+    expect(buttons.map((b) => b.getAttribute('aria-label'))).toEqual([
+      'Remove Camera permission',
+      'Remove Location permission',
+    ]);
+
+    buttons[0].dispatch('click');
+    expect(api.revoke).toHaveBeenCalledWith('https://a.example', 'camera');
   });
 });

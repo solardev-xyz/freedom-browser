@@ -17,6 +17,9 @@
 @import './styles/permissions.css';
 @import './styles/find-bar.css';
 @import './styles/onboarding.css';
+/* After every component sheet: the shared chrome-input focus ring is the
+   last word on focus for text fields (see styles/inputs.css). */
+@import './styles/inputs.css';
 @import './styles/light-theme.css';
 /* Last: private-window tokens must out-cascade the theme files. */
 @import './styles/private.css';
