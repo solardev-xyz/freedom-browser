@@ -4519,7 +4519,10 @@
     opacity 0.15s ease;
 }
 
-.wallet-settings-delete-btn:hover {
+/* `:not(:disabled)` like every other hover in this sheet: the main wallet
+   cannot be deleted (wallet-settings.js), and an inverted fill would read as
+   an enabled primary action through the disabled state's 0.5 opacity. */
+.wallet-settings-delete-btn:hover:not(:disabled) {
   background: var(--danger);
   color: #fff;
 }

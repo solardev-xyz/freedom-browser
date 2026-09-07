@@ -707,11 +707,12 @@ describe('settings.html inline stylesheet', () => {
 /**
  * Heading hierarchy (#255).
  *
- * `docs/agent-playbooks/ui-consistency.md`: `h2.section-title` for the section,
- * `h3.row-label` (or the 12 px uppercase category style) for sub-headings,
- * never a second large heading. The chain-detail route used to emit up to five
- * `h2.section-title`s — the page title and four sub-sections — so a nested
- * group was indistinguishable from the page it lived in.
+ * `docs/agent-playbooks/ui-consistency.md` (lands with #247):
+ * `h2.section-title` for the section, `h3.row-label` (or the 12 px uppercase
+ * category style) for sub-headings, never a second large heading. The
+ * chain-detail route used to emit up to five `h2.section-title`s — the page
+ * title and four sub-sections — so a nested group was indistinguishable from
+ * the page it lived in.
  *
  * Each `view.innerHTML = ` template in the file is one rendered route, so
  * counting the headings per template is what "one per route" means here.

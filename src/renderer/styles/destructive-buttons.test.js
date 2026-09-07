@@ -1,12 +1,13 @@
 /**
  * Destructive buttons are outlined, never filled (#259).
  *
- * `docs/agent-playbooks/ui-consistency.md`: "Primary action filled `--accent`,
- * secondary outlined, destructive outlined `--danger`". Every destructive
- * control followed that — "Revoke auto-pay", "Clear All", "Restore defaults",
- * "Remove all" — except `.wallet-settings-delete-btn`, which shipped a solid
- * `--danger` fill. So the most destructive action in the app (deleting a
- * wallet) was the one styled as the screen's primary call to action.
+ * `docs/agent-playbooks/ui-consistency.md` (lands with #247): "Primary action
+ * filled `--accent`, secondary outlined, destructive outlined `--danger`".
+ * Every destructive control followed that — "Revoke auto-pay", "Clear All",
+ * "Restore defaults", "Remove all" — except `.wallet-settings-delete-btn`,
+ * which shipped a solid `--danger` fill. So the most destructive action in the
+ * app (deleting a wallet) was the one styled as the screen's primary call to
+ * action.
  *
  * The regression this guards is a *new* sibling arriving with a fill, not just
  * that one button: it sweeps every chrome stylesheet for a button whose
@@ -80,13 +81,22 @@ describe('destructive controls', () => {
     expect(background(revoke.body)).toBe('transparent');
     expect(declaration(revoke.body, 'border')).toMatch(/1px solid var\(--danger/);
 
-    // Both invert on hover rather than dimming a fill.
-    for (const selector of ['.wallet-settings-delete-btn:hover', '.perms-disconnect-btn:hover']) {
+    // Both invert on hover rather than dimming a fill. Delete Wallet carries
+    // the sheet's `:not(:disabled)` guard because it is disabled for the main
+    // wallet; `.perms-disconnect-btn` is never disabled and has no `:disabled`
+    // rule, so it keeps the bare `:hover`.
+    for (const selector of [
+      '.wallet-settings-delete-btn:hover:not(:disabled)',
+      '.perms-disconnect-btn:hover',
+    ]) {
       const hover = ruleFor(selector);
       expect(hover).toBeDefined();
       expect(background(hover.body)).toMatch(DANGER);
       expect(declaration(hover.body, 'color')).toBe('#fff');
     }
+
+    // The disabled main-wallet button must not pick up the inverted fill.
+    expect(ruleFor('.wallet-settings-delete-btn:hover')).toBeUndefined();
   });
 
   test('the sweep can tell a filled button from an outlined one', () => {
