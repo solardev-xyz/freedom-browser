@@ -76,6 +76,26 @@ export const getInternalPageName = (url) => {
   return null;
 };
 
+// Trust interstitials are deliberately not routable freedom:// pages, but the
+// browser chrome must keep showing the app the user asked for while one is
+// visible. Return only the bounded web3: target carried by our bundled page.
+export const getOnchainInterstitialTarget = (url) => {
+  if (typeof url !== 'string' || !url || url.length > 8192) return null;
+  try {
+    const parsed = new URL(url);
+    if (
+      parsed.protocol !== 'file:' ||
+      !parsed.pathname.endsWith('/pages/onchain-unverified.html')
+    ) {
+      return null;
+    }
+    const target = parsed.searchParams.get('target');
+    return target && target.length <= 2048 && /^web3:\/\//i.test(target) ? target : null;
+  } catch {
+    return null;
+  }
+};
+
 // Parse Ethereum name input. Accepts:
 //   - bare names (vitalik.eth, name.box, name.wei, name.gwei, with optional path/query/fragment)
 //   - legacy ens:// URLs (kept for bookmark + history compatibility)

@@ -4,7 +4,12 @@ import { closeMenus } from './menus.js';
 import { hideBookmarkContextMenu } from './bookmarks-ui.js';
 import { showMenuBackdrop, hideMenuBackdrop } from './menu-backdrop.js';
 import { setupWebviewContextMenu } from './page-context-menu.js';
-import { homeUrl, getInternalPageName, internalPages } from './page-urls.js';
+import {
+  homeUrl,
+  getInternalPageName,
+  getOnchainInterstitialTarget,
+  internalPages,
+} from './page-urls.js';
 import { getPrivatePartition, isPrivateWindow } from './private-mode.js';
 import { setupWebviewProvider, setActiveWebview } from './dapp-provider.js';
 import { setupSwarmProvider } from './swarm-provider.js';
@@ -580,8 +585,9 @@ const createWebview = (tabId, initialUrl) => {
         // loadURL runs; clobbering the previous commit there would lose
         // the actual page identity.
         if (tab.navigationState && event.url && event.url !== 'about:blank') {
+          const interstitialTarget = getOnchainInterstitialTarget(webviewUrl);
           tab.navigationState.committedDisplayUrl =
-            formatOnchainAppDisplayUrl(webviewUrl) || webviewUrl;
+            formatOnchainAppDisplayUrl(interstitialTarget || webviewUrl) || webviewUrl;
           tab.navigationState.committedNavigationSequence += 1;
         }
         void refreshOnchainProvenance(tab, webviewUrl);

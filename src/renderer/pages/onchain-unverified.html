@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src data:;"
+    />
+    <title>Onchain app not independently verified</title>
+    <link rel="stylesheet" href="styles/interstitial.css" />
+  </head>
+  <body class="unverified">
+    <div class="container">
+      <h1>
+        <svg class="shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 2 L4 6 L4 12 C4 17 7.5 21 12 22 C16.5 21 20 17 20 12 L20 6 Z" />
+          <line x1="12" y1="8" x2="12" y2="13" />
+          <circle cx="12" cy="17" r="0.5" fill="currentColor" />
+        </svg>
+        <span id="heading-el">Onchain app not independently verified</span>
+      </h1>
+      <p id="summary-el">
+        Freedom fetched this app's code through one public RPC endpoint, but could not verify the
+        answer against chain consensus or matching independent sources. The app has not run yet.
+      </p>
+
+      <div class="details" aria-label="Onchain app details">
+        <div class="detail-row">
+          <span class="detail-label">Network</span>
+          <span class="detail-value" id="network-el"></span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">Contract</span>
+          <span class="detail-value" id="contract-el"></span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">Fetched from</span>
+          <span class="detail-value" id="source-el"></span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">HTML hash</span>
+          <span class="detail-value" id="hash-el"></span>
+        </div>
+        <div class="detail-row conflict-only" hidden>
+          <span class="detail-label">Disagreed</span>
+          <span class="detail-value" id="dissented-el"></span>
+        </div>
+      </div>
+
+      <div class="buttons">
+        <button id="continue-btn" class="button-primary">Continue once</button>
+        <button id="retry-btn" class="button-primary conflict-only" hidden>Try again</button>
+        <button id="back-btn">← Go back</button>
+        <button id="settings-btn">Open RPC settings</button>
+      </div>
+
+      <p class="learn-more" id="learn-more-el">
+        Continue once authorizes only these exact app bytes for this browser session. If the
+        contract returns different HTML later, Freedom will warn you again. A user-configured RPC is
+        treated as a source you explicitly trust.
+      </p>
+    </div>
+    <script src="scripts/onchain-unverified.js"></script>
+  </body>
+</html>
