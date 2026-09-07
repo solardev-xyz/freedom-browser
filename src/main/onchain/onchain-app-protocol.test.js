@@ -99,7 +99,10 @@ describe('handleOnchainAppRequest', () => {
       1,
       'eth_call',
       [{ to: CANONICAL_ADDRESS, data: HTML_SELECTOR }, 'latest'],
-      { includeTrust: true }
+      {
+        includeTrust: true,
+        routingContext: { origin: `web3://${ADDRESS.toLowerCase()}` },
+      }
     );
     expect(response.status).toBe(200);
     await expect(response.text()).resolves.toBe(html);
@@ -145,7 +148,10 @@ describe('handleOnchainAppRequest', () => {
       100,
       'eth_call',
       expect.any(Array),
-      { includeTrust: true }
+      {
+        includeTrust: true,
+        routingContext: { origin: `web3://${ADDRESS.toLowerCase()}:100` },
+      }
     );
   });
 

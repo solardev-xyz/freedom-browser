@@ -15,6 +15,7 @@ const { ethers } = require('ethers');
 const log = require('../logger');
 const chainData = require('../networks/chain-data-router');
 const networkRegistry = require('../networks/network-registry');
+const { getPermissionKey } = require('../../shared/origin-utils');
 const { registerWebRequestHandler } = require('../webrequest-dispatcher');
 const {
   runWithPrivateLogContext,
@@ -402,7 +403,13 @@ async function handleOnchainAppRequest(
           app.chainId,
           'eth_call',
           [{ to: app.address, data: HTML_SELECTOR }, 'latest'],
-          { includeTrust: true }
+          {
+            includeTrust: true,
+            // The document fetch is the first app-driven read. Give it the
+            // same per-origin latency budget and adaptive fall-through as the
+            // EIP-1193 calls the loaded document will make afterwards.
+            routingContext: { origin: getPermissionKey(request.url) },
+          }
         )
       ),
       timeoutMs,
