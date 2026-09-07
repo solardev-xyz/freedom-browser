@@ -237,6 +237,34 @@ test('private window: badge, isolated partition, private start page, no wallet p
   await closePrivateWindows(electronApp);
 });
 
+test('private window: the wallet panel says it is unavailable instead of offering setup', async ({
+  window,
+  electronApp,
+}) => {
+  const priv = await openPrivateWindow(electronApp);
+
+  // The toggle still opens the panel — it just has nothing to offer here.
+  await priv.locator('#wallet-toggle-btn').click();
+  const notice = priv.locator('[data-test="sidebar-private-notice"]');
+  await expect(notice).toBeVisible();
+  await expect(notice).toContainText('Wallet is unavailable in private windows');
+
+  // No identity setup, no wallet, no tab bar in a private window.
+  await expect(priv.locator('#sidebar-setup-cta')).toBeHidden();
+  await expect(priv.locator('#sidebar-setup-btn')).toBeHidden();
+  await expect(priv.locator('#sidebar-identity')).toBeHidden();
+  await expect(priv.locator('.sidebar-tabs')).toBeHidden();
+
+  // The same toggle in a normal window still offers setup (so the
+  // assertions above are about private mode, not about a dead panel).
+  await window.locator('#wallet-toggle-btn').click();
+  await expect(window.locator('#sidebar-setup-cta')).toBeVisible();
+  await expect(window.locator('#sidebar-setup-btn')).toBeVisible();
+  await expect(window.locator('[data-test="sidebar-private-notice"]')).toBeHidden();
+
+  await closePrivateWindows(electronApp);
+});
+
 test('private browsing leaves no history, no downloads history, and no cookies behind', async ({
   window,
   electronApp,

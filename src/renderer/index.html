@@ -1081,6 +1081,27 @@
             </button>
           </div>
           <div class="sidebar-content">
+            <!-- Private windows: the identity & wallet are deliberately out of
+                 reach here (no providers injected, nothing persisted), so the
+                 panel says so instead of offering identity setup. -->
+            <div
+              id="sidebar-private-notice"
+              class="sidebar-private-notice hidden"
+              data-test="sidebar-private-notice"
+            >
+              <div class="setup-cta-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                  <rect x="3" y="11" width="18" height="10" rx="2" />
+                  <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                </svg>
+              </div>
+              <h3 class="setup-cta-title">Wallet is unavailable in private windows</h3>
+              <p class="setup-cta-text">
+                Your identity and wallet are persistent by design. Open a normal window
+                to use them.
+              </p>
+            </div>
+
             <!-- Setup CTA (shown if no vault) -->
             <div id="sidebar-setup-cta" class="sidebar-setup-cta hidden">
               <div class="setup-cta-icon">
@@ -1877,7 +1898,7 @@
                   and open the <strong>Ethereum</strong> app.
                 </p>
                 <div id="connect-ledger-status" class="connect-ledger-status">
-                  <span class="connect-ledger-status-spinner"></span>
+                  <span class="connect-ledger-status-spinner" id="connect-ledger-status-spinner"></span>
                   <span id="connect-ledger-status-text">Looking for your Ledger…</span>
                 </div>
               </div>
