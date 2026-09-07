@@ -33,7 +33,7 @@ Use this playbook when asked to update `CHANGELOG.md` for a new version.
 6. Merge related commits into a single user-facing entry.
 7. Inspect PR merge commits by reviewing underlying commits.
 8. Re-run the git log before editing to catch late commits.
-9. Prepend the new version section above the previous one. If a `## [Unreleased]` heading is present, replace it with `## [<version>] - <YYYY-MM-DD>`. If it is absent (rare, since the dev cycle on `main` accumulates entries under `[Unreleased]`), add the new version heading directly. When writing the first user-facing change in the next dev cycle, re-introduce a `## [Unreleased]` heading above the latest released version.
+9. Prepend the new version section above the previous one. While the release is still in candidates (`rc.N` tags), keep the heading as `## [Unreleased]` and only replace it with `## [<version>] - <YYYY-MM-DD>` when the bare version is cut (see `release-process.md` §1/§3). If the heading is absent (rare, since the dev cycle on `main` accumulates entries under `[Unreleased]`), add the version heading directly. When writing the first user-facing change in the next dev cycle, re-introduce a `## [Unreleased]` heading above the latest released version.
 
 ## Output Style
 
@@ -47,13 +47,13 @@ Mechanical sanity checks:
 
 - Top-level bullets: aim ≤ 25 words.
 - Sub-bullets: aim ≤ 15 words.
-- Sub-bullets across the whole release: aim ≤ 10 total, excluding the per-package dependency sub-bullets (see Structure rules). If you're over, fold related surfaces into the parent or drop them.
+- Sub-bullets across the whole release: aim ≤ 10 total for a two-to-three-week release, excluding the per-package dependency sub-bullets (see Structure rules). A longer cycle scales roughly with its length (`0.8.0`, two months, shipped 25; `0.8.5` about 30), but no single parent should carry more than 4 and no sub-bullet should restate its parent. If you're over, fold related surfaces into the parent or drop them.
 
 Drift patterns to cut on sight (every one of these has shipped into a draft and had to be trimmed later):
 
 - **Mechanism in user-facing copy.** RPC method names (`eth_call`), protocol terms ("Universal Resolver", "sync committee"), helper-function names — the reader doesn't need the protocol step. Leave it in the commit message and PR description.
 - **"so X" tails justifying the change.** `Forward and reverse lookups are both verified, so the wallet's recipient-name display carries the same guarantee` — the parent bullet already conveys it; drop the tail.
-- **Em-dash explanations expanding into mechanism.** `X keeps working — the prover does Y, ethers does Z, the final callback is independently proven`. The `X keeps working` half is the entry; drop the expansion.
+- **Em-dash explanations expanding into mechanism.** `X keeps working — the prover does Y, ethers does Z, the final callback is independently proven`. The `X keeps working` half is the entry; drop the expansion. This is different from the short dash-tagline on a headline entry that says what the thing is _for_ (`— pay as you browse, straight from the built-in wallet`), which the voice rules allow.
 - **Consecutive sub-bullets repeating their subject.** Two bullets both opening with `Wallet send review screen shows…` — open each with the distinct surface (`Green ✓ next to a verified name`, `Amber ⚠ next to a spoofed name`) and let the parent carry the shared context.
 - **Defensive parentheticals.** `(zk-proven sync bootstrap by default)`, `(stale record or spoofing attempt)` — drop unless the reader genuinely can't infer the case.
 - **Thin sub-bullet groups.** If a parent has only 1–2 sub-bullets and they add no surface variety, fold them into the parent.
@@ -136,6 +136,13 @@ The vague historical phrasing (`Chromium and Node patches`, used in `0.7.1`'s `E
 ### Review gate
 
 An agent draft is a starting point, not a final. After drafting, diff the new section against the previous shipped release and trim/restructure until per-entry density matches. Compare more than word counts: lead patterns per section, whether first-shipped components carry version and link, whether update lines stay bare, and register (a `0.8.5` draft matched `0.8.0`'s headings and bullet counts while drifting on all four).
+
+**Verify claims, not prose.** Before presenting, check every factual claim against the tree at the release head, and say in the review note what each entry was verified against:
+
+- Version pairs from both ends of the range (`git show v<prev>:scripts/fetch-*.js`, lockfile at both refs), never from a PR description.
+- A trailing clause shared by several sibling items (`…, usable across dApp signing, sends and x402 payments` over Ledger / phone / Safe) must hold for **every** sibling; check each in code. The 0.8.5 draft claimed x402 for Safe accounts, which cannot sign x402 authorizations.
+- An entry about a shared list or config (external-node candidates, chain catalogue, shortcut map, search providers) is checked against the **whole list at head**, not just the PR that motivated the entry: in 0.8.5 one PR removed the Radicle candidate (documented) while another PR in the same window had added a Tor candidate to the same array (missed).
+- Credits via `gh pr view <n> --json author`; links with a real request returning 200; feature reachability in `src/` (a route or IPC channel that nothing in the renderer calls is not a feature).
 
 **Nothing disappears silently.** When a draft trims or replaces entries that were already in `[Unreleased]` (or in an earlier agent draft), the PR or review note lists what was dropped and why — "Ant internals with no Freedom UI surface", "duplicate of the Added parent" — so the releaser decides, not the compressor. Restoring a dropped capability requires checking in `src/` that a user can actually reach it in this build; the old text is not evidence.
 

@@ -134,9 +134,10 @@ Per `changelog-process.md` § Categorising dependency updates, dependency update
 
 Follow `changelog-process.md` in full. Key points for release branches:
 
-- The baseline for `git log` is the last `package.json` version bump commit.
-- Replace the `## [Unreleased]` heading with `## [<version>] - <YYYY-MM-DD>` using the date from `git show -s --format="%ad" --date=short HEAD`.
+- **Baseline is the previous release's tag** (`git rev-list -n 1 v<prev>`), not "the last version bump commit" — on a release branch the last bump is the `cut <version>-rc.N` commit and would yield an empty range. Sweep merged PRs in that window as well as commits; read PR descriptions, not titles.
+- **Two phases.** During the candidate loop the section stays under `## [Unreleased]`: write and review it early (ideally before `rc.1`, at the latest while `rc.1` is being tested) so testers read the same notes the release will ship. When the bare version is cut, replace the heading with `## [<version>] - <YYYY-MM-DD>` (date from `git show -s --format="%ad" --date=short HEAD`) in the same commit as the version bump or right after it.
 - Do **not** leave an empty `## [Unreleased]` section behind. The first user-facing change after the release re-introduces the heading above the latest version.
+- `CHANGELOG.md` is not read by §4 (verify) or by candidate builds (§5, `rc.N` tags), so those run in parallel with the review. The **final** tag (§5) and the website update (§7) freeze the changelog state visible to end users and must wait until the reviewed text is on the release branch.
 
 Commit style:
 
@@ -144,9 +145,12 @@ Commit style:
 docs(changelog): add user-facing <version> release notes
 ```
 
-**Review gate (when drafted by an agent).** If the changelog entries were drafted by an agent — or by anyone other than the releaser — **do not create the `docs(changelog): …` commit yet**. Leave the `CHANGELOG.md` edits unstaged (or staged, but uncommitted) on the release branch, present the diff to the releaser, and wait for explicit approval before committing. Iterating in the working tree is cheaper than amending a commit, and avoids the `git commit --amend` ambiguity for agents whose tooling discourages amending without an explicit user request. `CHANGELOG.md` is not read by §4 (verify) or by candidate builds (§5, `rc.N` tags), so those can run in parallel with the review. The **final** tag (§5) and the website update (§7) freeze the changelog state visible to end users and must wait until the commit lands.
+**Review gate (when drafted by an agent).** Agent-drafted changelog text is not committed to the release branch until the releaser has approved it. Two ways to hold that, pick by who is drafting:
 
-If the changelog is already committed when a correction is requested (e.g. the releaser drafted it themselves, or this gate was missed), amend the existing `docs(changelog): …` commit rather than stacking a second changelog commit.
+- _Releaser working in their own checkout with an agent:_ leave the `CHANGELOG.md` edits unstaged, present the diff, create the `docs(changelog): …` commit only after explicit approval. Corrections before approval are edits in the working tree, not amends.
+- _Agent working on its own branch (the alan flow used for 0.8.5):_ the agent opens a PR **against `release/<version>`** (explicit `--base`; the default is `main`) touching only `CHANGELOG.md`, with a per-entry "verified against" list in the description. The PR is the presentation; the releaser's merge is the approval. Corrections land as further commits on the PR branch — do not amend — and the PR description must state which entries changed and any judgement calls left for the releaser (category placement, whether to announce a feature whose PR is still open, link targets). Expect more than one round: the 0.8.5 changelog took an alan review plus two maintainer-directed fix rounds before merge. `alan fix <repo> <pr> "<numbered instructions>"` is the tool for those rounds.
+
+Either way, run the side-by-side comparison in `changelog-process.md` § Review gate against the previous shipped section before presenting, and again after each fix round; the rules there were written from what the 0.8.5 draft got wrong.
 
 ## 4. Verify before tagging
 
