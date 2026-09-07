@@ -108,6 +108,42 @@ An existing clean checkout at `/Users/florian/Git/freedom-dev/codex` was inspect
 - Follow-up review found that a command still preparing could outlive the drain deadline and later yield a live handle after its ownership records were cleared. The manager now rejects that late result; an end-to-end controller regression also checks that it cannot reread a closed store or launch the payload. Follow-up validation: lint and full Jest passed, 234 suites / 4,052 tests with 7 suites / 54 tests skipped.
 - These are ordinary unit/integration checks on the primary Mac. No detached, destructive or native app-exit qualification was run there; native supervisor/crash behavior remains subsequent work.
 
+### Selected next native slice — retain the execution root until final signaling
+
+[The completed disposable-Mac design review](evidence/macos-native-supervisor-review-2026-09-07.md) recommends one trusted native supervisor per execution, outside the worker's Seatbelt profile. It directly owns the initial `sandbox-exec` root, which retains today's separate session/group layout and execs forward into the command. The supervisor observes root exit without immediately reaping it, performs its final original-group cleanup, disables further signaling, and only then reaps. This avoids adding a separate permanent group anchor to the first implementation.
+
+The matching XNU allocator checks the process hash (including running and zombie entries), process groups and sessions before assigning a PID. Retaining the direct root with initial PGID equal to its PID therefore provides a source-supported reservation invariant while the supervisor remains its parent and has not reaped it. This is an inference from the [matching allocator](https://github.com/apple-oss-distributions/xnu/blob/43a90889846e00bfb5cf1d255cdc0a701a1e05a4/bsd/kern/kern_fork.c#L924), independently inspected by the main agent, not a PID-reuse stress result. Every signal timer must be disabled before reap. A missing group or a lost direct-child relationship never permits targeting another PID/group.
+
+The bounded prototype request `macmini/req-6d2d121862ee7ddaf4d1260e2107c88e` covers a synthetic browser parent and self-expiring fixture commands, without product integration. Its required controls are:
+
+- Browser-only liveness writer, supervisor-only reader; no inherited worker writer that could hide browser death.
+- A trusted pre-execution gate, explicit per-role descriptor closure, independent readiness/control records, and terminal abort/EOF behavior. Untrusted stdout cannot authorize release or spoof lifecycle evidence.
+- Root-exit observation independent of output EOF, with bounded forwarding/backpressure and TERM/KILL timing. A descendant retaining stdout must not indefinitely postpone cleanup.
+- Cleanup ownership recorded before partial-setup failure, an unrelated owned sentinel, independent deadlines, finite births and verified cleanup on the disposable Mac.
+
+This prototype is not product qualification. Integration still needs reviewed native source and protocol handling, a validated bundled executable path, architecture-specific compilation using installed tooling, nested signing without browser-level entitlements, and inclusion in both normal and qualification packages. Existing qualification packaging clears `extraResources`; adding a helper to only the normal package would leave a misleading coverage gap. Execution authority remains in main's existing backend; no renderer-facing PID/signal API or new top-level module responsibility is proposed. No third-party dependency, privileged service, private libproc API, extra anchor or VM is needed for this first slice.
+
+A live supervisor can improve ordinary group cleanup after browser failure. Supervisor failure, a stalled supervisor, escaped groups/sessions and safe startup reclamation remain unresolved; no stale-PGID recovery is allowed. Neither this design nor a successful synthetic probe changes `best_effort` / `original_process_group` / `survivorsPossible: true` / `completeDescendantTermination: false`.
+
+### Retained-root prototype — completed 2026-09-07
+
+[The explicit disposable-Mac report](evidence/macos-retained-root-probe-2026-09-07.md) retains the prototype source, driver, per-case results and artifact inventory. The main agent checked the returned source byte counts and SHA-256 hashes without compiling or executing either file locally. One warning-free compile with installed clang and four successful cases produced 46 native assertions and 60 driver checks. There were 17 fixture births, at most five live native roles plus the Python driver, and a reported 0.593-second execution window. Independent seven-second fixture expiry and driver deadlines were present but were not exercised by the successful runs.
+
+| Case | Observed result |
+| --- | --- |
+| Normal root exit with a same-group output holder | Root exit became observable through `waitid(...WNOWAIT)` while stdout remained open. Final group KILL preceded root reap; a pre-registered descendant `NOTE_EXIT` confirmed that known instance exited. Bounded forwarding tolerated a non-draining output consumer. |
+| Control EOF before release | The trusted gate saw EOF and no payload began. The root was observed and reaped after the final signal attempt. |
+| Control EOF during execution | The supervisor sent TERM without browser-side cleanup, observed the root's signal exit, and completed final signaling before reap. Closed output produced handled `EPIPE`. |
+| Failure after root creation, before readiness | Ownership already existed; cleanup targeted only the unreaped direct child before group verification. No payload began. |
+
+Sixteen owned direct instances have actual wait/reap receipts. The normal case's one orphaned descendant has a registered exit event, not a direct reap receipt or an observed OS reap timestamp. An unrelated owned sentinel responded after supervisor cleanup in every case and was then separately reaped. Final group KILL returned `EPERM` in the before-release and running-EOF cases after the root was already waitable; the evidence preserves those errors and does not reinterpret them as successful signals or justify a per-member PID fallback.
+
+The synthetic browser stayed alive as an observation harness while closing its control pipe. These are EOF-path checks, not actual browser-crash or native-Quit tests. The prototype performs no exec or `sandbox-exec`, so it does not establish production descriptor isolation, gate protection after Seatbelt application, signing or packaging compatibility. The PID-reservation claim remains a source inference; no PID-recycling stress was performed. Successful runs also do not qualify the driver's unexercised exception/timeout cleanup paths.
+
+Main-agent source review identified two items that must not be copied into production: the prototype records some setup failures as assertions without making them terminal before release, and the driver writes its post-spawn ownership artifact outside a guaranteed exception-cleanup scope. Independent fixture expiry limits the latter experiment, but it is not a substitute for cleanup verification on failure. Production setup needs explicit fail-closed transitions, and any expanded harness needs exception-safe ownership immediately after launch.
+
+[The independent Claude review and main-agent disposition](evidence/macos-retained-root-claude-review-2026-09-07.md) support continued native integration design while requiring real exec-chain descriptor checks, kernel verification of group/session leadership, bounded output draining, default signal state and structural prevention of post-reap signaling. The main agent refined recommendations that assumed the old shell launcher or gave unverified errno interpretations. Raw `EPERM` remains a failed signal attempt with context, not proof of emptiness; a successful command receipt currently stays successful despite that diagnostic. The review supplied no new run evidence. Its suggested repeated fixture loop is not authorized under the completed probe's birth budget. The follow-on read-only protocol review is `macmini/req-cadd244e5185ef32f4670e0bcc92271c`; product integration remains pending.
+
 ## Existing qualification evidence recovered by inventory
 
 The remote assessment located 53 existing `/private/tmp/freedom-*.log` files and the unsigned packaged app; it did not rerun them. Selected evidence locations on **macmini**, not the primary Mac:
