@@ -31,8 +31,13 @@
 
    Why `:focus-visible` rather than `:focus`: Chromium always matches
    `:focus-visible` on a text-entry field however it was focused, so mouse
-   users keep the indicator, while a `<select>` or a future control matched
-   here does not light up on a plain mouse click.
+   users keep the indicator. The same holds for the `<select>` below —
+   clicking it with the mouse does match `:focus-visible` and does paint this
+   ring (verified in-app 2026-09-07; see test-e2e/chrome-input-focus.spec.js).
+   So for everything matched today, `:focus-visible` behaves like `:focus`.
+   It is still the right selector: a non-text control added here later (a
+   button, a `[tabindex]` wrapper) would light up only for the keyboard user
+   this indicator exists for, rather than on every click.
 
    `select` is included because the x402 rules this replaces styled a cap
    input and its unit `<select>` through one selector — leaving the select on

@@ -138,3 +138,45 @@ test('an unfocused field paints no ring, so the indicator means something', asyn
   });
   expect(idle.outlineStyle === 'none' || idle.outlineWidth === '0px').toBe(true);
 });
+
+// inputs.css includes `select` in the shared rule and its header comment says a
+// mouse-clicked select matches :focus-visible and paints the ring. That claim is
+// about Chromium's own heuristic, not about our CSS, so assert it with a real
+// mouse click rather than trusting the comment.
+test('a mouse-clicked select gets the same ring as a text field', async ({ window }) => {
+  await window.evaluate(() => {
+    document.getElementById('sidebar')?.classList.remove('collapsed');
+    for (const id of ['sidebar-connect-ledger', 'connect-ledger-accounts-step']) {
+      document.getElementById(id)?.classList.remove('hidden');
+    }
+    // The sidebar is wider than the harness window, so this select sits partly
+    // off-screen and a click would miss it. Only its position is moved; nothing
+    // that decides the focus ring is touched.
+    const el = document.getElementById('connect-ledger-scheme');
+    Object.assign(el.style, { position: 'fixed', left: '400px', top: '300px', zIndex: '99999' });
+  });
+
+  const select = window.locator('#connect-ledger-scheme');
+  await expect(select).toBeVisible();
+  const box = await select.boundingBox();
+  await window.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+
+  const ring = await window.evaluate(() => {
+    const el = document.getElementById('connect-ledger-scheme');
+    const style = getComputedStyle(el);
+    return {
+      focused: document.activeElement === el,
+      focusVisible: el.matches(':focus-visible'),
+      outlineStyle: style.outlineStyle,
+      outlineWidth: style.outlineWidth,
+      outlineOffset: style.outlineOffset,
+    };
+  });
+  expect(ring).toMatchObject({
+    focused: true,
+    focusVisible: true,
+    outlineStyle: 'solid',
+    outlineWidth: '2px',
+    outlineOffset: '-1px',
+  });
+});

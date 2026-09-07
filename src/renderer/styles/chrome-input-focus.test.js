@@ -42,8 +42,12 @@ const focusSelectors = (css) => focusRules(css).map((rule) => rule.selector);
 
 // The properties that *draw* the focus indicator. A component may still lift
 // its own fill on focus (`.send-input` does); what it may not do is decide
-// what the ring looks like.
-const INDICATOR = /(^|[;\s])(outline|border|border-color|box-shadow)\s*:/;
+// what the ring looks like. The side longhands are in because an underline
+// treatment (`border-bottom: 2px solid …` on :focus) is a focus indicator just
+// as much as a full border swap is. `border-radius` and `outline-offset` are
+// deliberately out: neither draws anything on its own.
+const INDICATOR =
+  /(^|[;\s])(box-shadow|outline(-(color|width|style))?|border(-(top|right|bottom|left))?(-(color|width|style))?)\s*:/;
 
 /**
  * Does `selector` style the focused element *itself* as a form field?
@@ -102,12 +106,22 @@ describe('chrome text-field focus', () => {
       'outline: none; border-color: #2775ca;',
       'background-color: #ffffff; border-color: transparent; box-shadow: none;',
       'box-shadow: 0 0 0 2px var(--accent);',
+      // …plus the shapes a component sheet could reintroduce one in next: an
+      // underline swap, which draws a ring just as visibly as a full border.
+      'border-bottom: 2px solid var(--accent);',
+      'border-bottom-color: #f59e0b;',
+      'border-left: 2px solid var(--accent);',
+      'border-top-width: 2px;',
+      'outline-color: #2775ca;',
     ]) {
       expect(INDICATOR.test(body)).toBe(true);
     }
-    // …and the fill lift a component is still allowed to keep.
+    // …and the fill lift a component is still allowed to keep, plus the
+    // properties that shape a ring without drawing one.
     expect(INDICATOR.test('background: rgba(255, 255, 255, 0.08);')).toBe(false);
     expect(INDICATOR.test('background-color: #ffffff;')).toBe(false);
+    expect(INDICATOR.test('border-radius: 6px;')).toBe(false);
+    expect(INDICATOR.test('outline-offset: -1px;')).toBe(false);
   });
 
   test('the shared rule is a visible, palette-driven ring on every text field', () => {
