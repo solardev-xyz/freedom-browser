@@ -50,11 +50,13 @@ import {
 import {
   homeUrl,
   homeUrlNormalized,
-  errorUrlBase,
   internalPages,
   detectProtocol,
   isHistoryRecordable,
   getInternalPageName,
+  getInterstitialDisplayName,
+  isErrorPageUrl,
+  isInterstitialPageUrl,
   parseEnsInput,
   buildInternalPageUrl,
 } from './page-urls.js';
@@ -1697,7 +1699,7 @@ export const loadHomePage = () => {
 // Shared error-page retry logic used by both reload variants and the reload button
 const retryErrorPageOrReload = (webview, hard) => {
   const current = webview.getURL();
-  const originalUrl = getOriginalUrlFromErrorPage(current, errorUrlBase);
+  const originalUrl = getOriginalUrlFromErrorPage(current);
   if (originalUrl) {
     // Hard reload of an ENS error page also bypasses `ensResultCache` so the
     // recovery resolution actually re-runs under today's verification method
@@ -1710,7 +1712,7 @@ const retryErrorPageOrReload = (webview, hard) => {
     loadTarget(originalUrl);
     return;
   }
-  if (current.startsWith(errorUrlBase) || current.includes('/error.html?')) {
+  if (isErrorPageUrl(current)) {
     try {
       new URL(current);
     } catch (err) {
@@ -1876,7 +1878,17 @@ const handleNavigationEvent = (event) => {
       return;
     }
 
-    if (event.url.startsWith(errorUrlBase)) {
+    // Name-resolution interstitials (unverified soft block, head/contenthash
+    // conflict hard block) get the same treatment as the error page: the
+    // address bar keeps the name the user asked for, never the interstitial's
+    // own `file:///…/pages/ens-*.html` path (#235). The name is empty only if
+    // the page was opened without its `name` param — an empty address bar is
+    // the fail-safe there, since the on-disk path must not be shown either.
+    if (isInterstitialPageUrl(event.url)) {
+      const blockedName = getInterstitialDisplayName(event.url) || '';
+      addressInput.value = blockedName;
+      pushDebug(`[AddressBar] Interstitial -> Blocked name: ${blockedName || '(none)'}`);
+    } else if (isErrorPageUrl(event.url)) {
       try {
         const parsed = new URL(event.url);
         const originalUrl = parsed.searchParams.get('url');
