@@ -7,6 +7,7 @@ import {
   getInternalPageName,
   getInterstitialDisplayName,
   isErrorPageUrl,
+  isInterstitialPageUrl,
   parseEnsInput,
 } from './page-urls.js';
 import { isDwebNameHost } from './origin-utils.js';
@@ -549,10 +550,14 @@ export const deriveSwitchedTabDisplay = ({
   const strippedUrl = url.startsWith('view-source:') ? url.slice(12) : url;
   // A tab parked on a name-resolution interstitial restores the blocked name
   // (`lagged.tez`), never the interstitial's `file://` path — same rule the
-  // active-tab did-navigate handler applies. See #235.
-  const blockedName = getInterstitialDisplayName(strippedUrl);
-  if (blockedName) {
-    return blockedName;
+  // active-tab did-navigate handler applies, and on the same input: the test
+  // is against the committed URL itself, not the `view-source:` inner URL, so
+  // both surfaces agree on what counts as an interstitial. The name is empty
+  // only when the page was opened without its `name` param; an empty address
+  // bar is the fail-safe there, since the on-disk path must not be shown
+  // either. See #235.
+  if (isInterstitialPageUrl(url)) {
+    return getInterstitialDisplayName(url) || '';
   }
 
   // A tab parked on `pages/error.html?...&url=<original>` should restore the

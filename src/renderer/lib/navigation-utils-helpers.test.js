@@ -221,6 +221,39 @@ describe('navigation-utils extracted helpers', () => {
       })
     ).toBe('lagged.tez');
 
+    // Fail-safe: an interstitial with no `name` param clears the address bar
+    // rather than falling through to its on-disk path — the same fallback the
+    // active-tab did-navigate handler applies.
+    expect(
+      mod.deriveSwitchedTabDisplay({
+        url: 'file:///app/pages/ens-conflict.html',
+        bzzRoutePrefix: 'http://127.0.0.1:1633/bzz/',
+        homeUrlNormalized: 'file:///app/pages/home.html',
+      })
+    ).toBe('');
+
+    expect(
+      mod.deriveSwitchedTabDisplay({
+        url: 'file:///app/pages/ens-unverified.html?uri=ipfs%3A%2F%2FQmRetryTez',
+        bzzRoutePrefix: 'http://127.0.0.1:1633/bzz/',
+        homeUrlNormalized: 'file:///app/pages/home.html',
+      })
+    ).toBe('');
+
+    // The interstitial test runs on the committed URL as-is, never on the
+    // `view-source:` inner URL: viewing an interstitial's source is source
+    // text, not the block itself, and the active-tab handler's view-source
+    // branch (which runs ahead of its interstitial branch) shows
+    // `view-source:<inner display>`. Both surfaces have to agree.
+    expect(
+      mod.deriveSwitchedTabDisplay({
+        url: 'view-source:file:///app/pages/ens-conflict.html?name=lagged.tez&block=%7B%7D',
+        isViewingSource: true,
+        bzzRoutePrefix: 'http://127.0.0.1:1633/bzz/',
+        homeUrlNormalized: 'file:///app/pages/home.html',
+      })
+    ).toBe('view-source:file:///app/pages/ens-conflict.html?name=lagged.tez&block=%7B%7D');
+
     // #235 regression: a remote page served at a chrome-look-alike path must
     // never dictate the switched-tab address bar. `deriveSwitchedTabDisplay`
     // used to run both the interstitial and the error-page recovery on a bare
