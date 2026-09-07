@@ -6,6 +6,10 @@
 // heading case. They exist because every one of these drifted silently across
 // sibling surfaces (#252, #253, #257, #258, #260) and only a side-by-side
 // screenshot ever caught it.
+//
+// Scope: src/renderer only. The native application menu labels the same
+// actions from src/main and drifts as a pair with the hamburger flyout — that
+// half is guarded by src/main/main-copy.test.js.
 
 const fs = require('node:fs');
 const path = require('node:path');
