@@ -276,6 +276,19 @@ describe('navigation-utils extracted helpers', () => {
       ).toBe('');
     }
 
+    // `view-source:` of the gate is refused at dispatch, but a tab that
+    // already holds one (session restore, a pre-fix history entry) must not
+    // repaint the approval token into the address bar on switchback either:
+    // the gate test also runs on the stripped URL, and fails safe to blank.
+    expect(
+      mod.deriveSwitchedTabDisplay({
+        url: 'view-source:file:///app/pages/onchain-unverified.html?target=web3%3A%2F%2F0x00000095643cffa7d9fae407a84dfcb6406456c6.eip155-1%2F&token=aaaabbbbcccc',
+        isViewingSource: true,
+        bzzRoutePrefix: 'http://127.0.0.1:1633/bzz/',
+        homeUrlNormalized: 'file:///app/pages/home.html',
+      })
+    ).toBe('');
+
     // …but a remote look-alike path is real content and keeps its own URL.
     expect(
       mod.deriveSwitchedTabDisplay({

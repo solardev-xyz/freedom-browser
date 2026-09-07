@@ -45,6 +45,18 @@ function readVisibleInterstitial(window) {
   });
 }
 
+// Right-click inside the guest page. The webview preload intercepts
+// `contextmenu` in the capture phase and forwards the context to the shell,
+// which is what renders `#page-context-menu`.
+function openWebviewContextMenu(window) {
+  return window.evaluate(async () => {
+    const webview = document.querySelector('webview:not(.hidden)');
+    await webview.executeJavaScript(`document.body.dispatchEvent(
+      new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 40, clientY: 40 })
+    )`);
+  });
+}
+
 test('loads a contract-hosted app under its web3 contract-and-chain origin', async ({
   window,
   harness,
@@ -265,6 +277,31 @@ test('shows the browser-owned gate before unverified onchain app code can run', 
     })
   ).toEqual([]);
 
+  // The page context menu is the third chrome surface that can publish the
+  // gate's own URL: "View Page Source" opened a new tab committed on
+  // `view-source:file:///…/pages/onchain-unverified.html?…&token=…`, putting
+  // the live approval token and the on-disk implementation path into a
+  // copyable address bar and the window title. A browser-owned interstitial
+  // has no source worth showing, so the item is withheld here (#235).
+  await openWebviewContextMenu(window);
+  const pageMenu = window.locator('#page-context-menu');
+  const viewSourceItem = window.locator('#page-context-menu [data-action="view-source"]');
+  await expect(pageMenu).toBeVisible();
+  await expect(window.locator('#page-context-menu [data-action="reload"]')).toBeVisible();
+  await expect(viewSourceItem).toBeHidden();
+  await window.screenshot({ path: '/tmp/onchain-gate-context-menu.png' });
+
+  // …and the action itself refuses, so a scripted or stale click can't
+  // smuggle the token-bearing URL into a new tab either.
+  await window.evaluate(() =>
+    document.querySelector('#page-context-menu [data-action="view-source"]')?.click()
+  );
+  await expect(pageMenu).toBeHidden();
+  expect(await window.evaluate(() => document.querySelectorAll('[data-test="tab"]').length)).toBe(
+    2
+  );
+  await expect(input).toHaveValue(DISPLAY_URL);
+
   // Swap the harness response before clicking so this leg proves the
   // internal-page → preload → shell → web3 navigation bridge. Main-process
   // unit tests separately prove the real handler accepts only the bound token
@@ -307,6 +344,15 @@ test('shows the browser-owned gate before unverified onchain app code can run', 
       { timeout: 10_000, message: 'waiting for the approved app in history' }
     )
     .toEqual(['Approved onchain app']);
+
+  // The item is withheld on the interstitial, not removed from the browser:
+  // the same tab, now on real app content, offers View Page Source again.
+  await openWebviewContextMenu(window);
+  await expect(pageMenu).toBeVisible();
+  await expect(viewSourceItem).toBeVisible();
+  await window.screenshot({ path: '/tmp/onchain-app-context-menu.png' });
+  await window.keyboard.press('Escape');
+  await expect(pageMenu).toBeHidden();
 });
 
 test('offers no continue action when RPC servers disagreed about an app', async ({

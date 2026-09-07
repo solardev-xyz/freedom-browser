@@ -569,7 +569,15 @@ export const deriveSwitchedTabDisplay = ({
   // URL — which additionally carries the single-use approval token. An
   // unparseable/absent target falls back to an empty address bar rather than
   // the on-disk path, same fail-safe as the name interstitials. See #235.
-  if (isOnchainInterstitialPageUrl(url)) {
+  //
+  // Unlike the name interstitials above, the test runs on the *stripped* URL
+  // as well: `view-source:` of the gate is refused at dispatch, but if such a
+  // tab exists anyway (session restore, a pre-fix history entry) a switch
+  // back to it must not repaint the token into the address bar either — so
+  // that case fails safe to a blank address bar rather than
+  // `view-source:<gate URL>`.
+  if (isOnchainInterstitialPageUrl(strippedUrl)) {
+    if (strippedUrl !== url) return '';
     const target = getOnchainInterstitialTarget(url);
     return (target && formatOnchainAppDisplayUrl(target)) || '';
   }

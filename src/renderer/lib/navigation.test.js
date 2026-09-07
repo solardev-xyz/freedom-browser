@@ -77,6 +77,8 @@ const loadNavigationModule = async (options = {}) => {
     ['file:///app/pages/ens-unverified.html', 'file:///app/pages/ens-conflict.html'].some((base) =>
       matchesInternalPage(url, base)
     );
+  const isOnchainInterstitialPageUrlMock = (url) =>
+    matchesInternalPage(url, 'file:///app/pages/onchain-unverified.html');
   const state = {
     bzzRoutePrefix: 'https://gateway.example/bzz/',
     ipfsRoutePrefix: 'https://gateway.example/ipfs/',
@@ -326,6 +328,10 @@ const loadNavigationModule = async (options = {}) => {
     getOnchainInterstitialTarget: jest.fn(() => null),
     isErrorPageUrl: jest.fn((url) => matchesInternalPage(url, errorUrlBase)),
     isInterstitialPageUrl: jest.fn((url) => isInterstitialPageUrlMock(url)),
+    isOnchainInterstitialPageUrl: jest.fn((url) => isOnchainInterstitialPageUrlMock(url)),
+    isTrustInterstitialPageUrl: jest.fn(
+      (url) => isInterstitialPageUrlMock(url) || isOnchainInterstitialPageUrlMock(url)
+    ),
     getInterstitialDisplayName: jest.fn((url) => {
       if (!isInterstitialPageUrlMock(url)) {
         return null;
@@ -832,6 +838,48 @@ describe('navigation', () => {
       expect(ctx.elements.addressInput.value).toBe(
         `web3://${ADDRESS.toLowerCase()}:100/swap?token=eth#route`
       );
+    });
+
+    test('refuses to view the source of the trust gate, on dispatch and on commit', async () => {
+      // #235: the gate's own `file:///…/pages/onchain-unverified.html?…` URL
+      // carries the single-use approval token. `view-source:` of it commits
+      // that URL, so every chrome surface that repaints from the committed
+      // URL — address bar, tab title, window title — would publish the token
+      // and the on-disk implementation path. The context menu hides the item;
+      // the dispatch refuses the navigation outright.
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      const gateUrl = `file:///app/pages/onchain-unverified.html?target=${encodeURIComponent(
+        CANONICAL
+      )}&token=aaaabbbbccccddddeeeeffff`;
+
+      ctx.activeRef.tab.webview.loadURL.mockClear();
+      ctx.elements.addressInput.value = '';
+      ctx.mod.loadTarget(`view-source:${gateUrl}`);
+
+      expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
+      expect(ctx.elements.addressInput.value).toBe('');
+
+      // Same for the name-resolution interstitials — same class of page.
+      ctx.mod.loadTarget('view-source:file:///app/pages/ens-conflict.html?name=lagged.tez');
+      expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
+
+      // Ordinary content still views its source.
+      ctx.mod.loadTarget('view-source:https://example.com/page');
+      // (`buildViewSourceNavigation` is mocked with a `load:` prefix here.)
+      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(
+        'load:view-source:https://example.com/page'
+      );
+
+      // Fail-safe on commit: if such a tab exists anyway (session restore, a
+      // back/forward entry predating the refusal above), the address bar and
+      // title stay blank rather than showing the token.
+      ctx.activeRef.tab.webview.getURL.mockReturnValue(`view-source:${gateUrl}`);
+      ctx.tabsMocks.webviewEventHandler('did-navigate', { event: { url: gateUrl } });
+
+      expect(ctx.elements.addressInput.value).toBe('');
+      expect(ctx.tabsMocks.updateActiveTabTitle).toHaveBeenCalledWith('');
+      expect(ctx.electronAPI.setWindowTitle).toHaveBeenCalledWith('');
     });
 
     test('surfaces malformed web3 intent instead of searching for it', async () => {

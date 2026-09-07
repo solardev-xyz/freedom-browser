@@ -146,6 +146,15 @@ export const isOnchainInterstitialPageUrl = (url) => {
   }
 };
 
+// Either family of browser-owned trust interstitial: the name-resolution
+// pages above and the onchain gate. These are the shell's own documents, not
+// content the user navigated to, so chrome must never publish their
+// `file:///…/pages/*.html` URL — and `view-source:` of one is refused
+// outright rather than rendered, since the gate's URL carries the single-use
+// approval token. See issue #235.
+export const isTrustInterstitialPageUrl = (url) =>
+  isInterstitialPageUrl(url) || isOnchainInterstitialPageUrl(url);
+
 // Return only the bounded web3: target carried by our bundled gate page.
 export const getOnchainInterstitialTarget = (url) => {
   if (!isOnchainInterstitialPageUrl(url)) return null;

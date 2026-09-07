@@ -198,6 +198,23 @@ describe('page-urls', () => {
     ).toBe(false);
     expect(mod.isOnchainInterstitialPageUrl('file:///app/pages/error.html')).toBe(false);
     expect(mod.isOnchainInterstitialPageUrl(undefined)).toBe(false);
+
+    // Both interstitial families answer to one predicate, so surfaces that
+    // must refuse the shell's own page URL outright (the context menu's View
+    // Page Source item, the `view-source:` navigation dispatch) can't cover
+    // one family and miss the other.
+    expect(mod.isTrustInterstitialPageUrl(internal)).toBe(true);
+    expect(mod.isTrustInterstitialPageUrl('file:///app/pages/ens-unverified.html?name=a.eth')).toBe(
+      true
+    );
+    expect(mod.isTrustInterstitialPageUrl('file:///app/pages/ens-conflict.html?name=a.tez')).toBe(
+      true
+    );
+    expect(mod.isTrustInterstitialPageUrl('file:///app/pages/error.html?url=https://a.test')).toBe(
+      false
+    );
+    expect(mod.isTrustInterstitialPageUrl('https://evil.test/pages/ens-conflict.html')).toBe(false);
+    expect(mod.isTrustInterstitialPageUrl('https://example.com/')).toBe(false);
   });
 
   test('parses ens inputs with prefixes, paths, and invalid names', async () => {

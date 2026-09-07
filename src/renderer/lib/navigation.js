@@ -58,6 +58,8 @@ import {
   getInterstitialDisplayName,
   isErrorPageUrl,
   isInterstitialPageUrl,
+  isOnchainInterstitialPageUrl,
+  isTrustInterstitialPageUrl,
   parseEnsInput,
   buildInternalPageUrl,
 } from './page-urls.js';
@@ -1057,6 +1059,18 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
 
   // Handle view-source: URLs - need to resolve dweb URLs before loading
   if (value.startsWith('view-source:')) {
+    // …but never for one of our own trust interstitials. Those pages are
+    // chrome, not content: their source is the shell's own bundled HTML, and
+    // committing `view-source:file:///…/pages/onchain-unverified.html?…`
+    // publishes the gate's single-use approval token (and the on-disk
+    // implementation path) into the address bar, the tab title and the
+    // window title — the leak #235 exists to prevent, on every surface that
+    // repaints from the committed URL. The context menu hides the item; this
+    // also covers a typed or restored URL. See issue #235.
+    if (isTrustInterstitialPageUrl(value.slice(12))) {
+      pushDebug('[ViewSource] Refused: browser-owned trust interstitial');
+      return;
+    }
     isViewingSource = true; // Track that this tab is viewing source
     const innerUrl = value.slice(12); // 'view-source:'.length === 12
 
@@ -1833,9 +1847,16 @@ const handleNavigationEvent = (event) => {
         radicleApiPrefix: state.radicleApiPrefix,
         knownEnsNames: state.knownEnsNames,
       });
-      const displayUrl = `view-source:${displayInner || event.url}`;
+      // Fail safe if a view-source commit on the onchain trust gate lands
+      // anyway (session restore, a back/forward entry predating the refusal
+      // in `loadTarget`): a blank address bar and title, never the gate's own
+      // file:// URL with its single-use approval token. Same fail-safe the
+      // tab-switch surface applies. See issue #235.
+      const displayUrl = isOnchainInterstitialPageUrl(event.url)
+        ? ''
+        : `view-source:${displayInner || event.url}`;
       addressInput.value = displayUrl;
-      pushDebug(`[AddressBar] View source: ${displayUrl}`);
+      pushDebug(`[AddressBar] View source: ${displayUrl || '(withheld)'}`);
       navState.currentPageUrl = webviewUrl;
       // Update tab title to "view-source:<address>"
       updateActiveTabTitle(displayUrl);
