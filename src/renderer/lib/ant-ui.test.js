@@ -197,7 +197,9 @@ describe('bee-ui', () => {
     ctx.mod.resetAntVersion();
     expect(ctx.state.antVersionFetched).toBe(false);
     expect(ctx.state.antVersionValue).toBe('');
-    expect(ctx.elements.beeVersionText.textContent).toBe('');
+    // #253: a blank Version row read as a rendering failure next to four
+    // populated siblings; every node's unknown version now reads 'Unknown'.
+    expect(ctx.elements.beeVersionText.textContent).toBe('Unknown');
   });
 
   test('updates Bee status lines, toggle state, and running transitions', async () => {

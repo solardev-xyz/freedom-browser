@@ -394,7 +394,7 @@
             <polyline points="3 6 5 6 21 6"></polyline>
             <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
           </svg>
-          Clear all
+          Clear All
         </button>
       </div>
     </div>
@@ -545,13 +545,21 @@
         });
       }
 
+      // Subtitle counter, shared by the sibling list pages (history, downloads,
+      // payments): pluralise the noun, and name how much of the whole list is
+      // showing while a filter is active (#254). Duplicated per page because
+      // these pages' CSP allows inline script only; the copies are held
+      // identical to src/renderer/lib/ui-format.js by
+      // src/renderer/pages/list-page-counters.test.js.
+      function formatCount(shown, total, singular, plural = `${singular}s`) {
+        const noun = total === 1 ? singular : plural;
+        return shown === total ? `${total} ${noun}` : `${shown} of ${total} ${noun}`;
+      }
+
       function render() {
         const filtered = applyClientFilters(payments);
 
-        statsEl.textContent =
-          filtered.length === payments.length
-            ? `${payments.length} payment${payments.length === 1 ? '' : 's'}`
-            : `${filtered.length} of ${payments.length} payment${payments.length === 1 ? '' : 's'}`;
+        statsEl.textContent = formatCount(filtered.length, payments.length, 'payment');
 
         if (filtered.length === 0) {
           resultsEl.innerHTML = `
@@ -560,7 +568,7 @@
                 <rect x="2" y="6" width="20" height="12" rx="2"></rect>
                 <circle cx="12" cy="12" r="2"></circle>
               </svg>
-              <p>${payments.length === 0 ? 'No payments yet.' : 'No payments match your filters.'}</p>
+              <p>${payments.length === 0 ? 'No payments yet' : 'No payments match your filters'}</p>
             </div>
           `;
           return;
