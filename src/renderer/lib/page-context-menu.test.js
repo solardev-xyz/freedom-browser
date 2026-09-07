@@ -91,6 +91,7 @@ const loadPageContextMenuModule = async (options = {}) => {
   const imageGroup = createElement();
   const backBtn = createElement();
   const forwardBtn = createElement();
+  const viewSourceBtn = createElement();
   const pageContextMenu = createElement(['hidden']);
   const webviewContainer = {
     querySelector: jest.fn(() => activeWebview),
@@ -110,6 +111,7 @@ const loadPageContextMenuModule = async (options = {}) => {
     '[data-group="image"]': imageGroup,
     '[data-action="back"]': backBtn,
     '[data-action="forward"]': forwardBtn,
+    '[data-action="view-source"]': viewSourceBtn,
   };
   const pushDebug = jest.fn();
   const backdrop = {
@@ -134,6 +136,11 @@ const loadPageContextMenuModule = async (options = {}) => {
   global.window = {
     electronAPI,
     nodeConfig: {},
+    // page-urls.js resolves the shell's own `pages/*.html` URLs from these at
+    // import time; the trust-interstitial test the view-source item is gated
+    // on compares against the resolved base.
+    location: { href: 'file:///app/index.html' },
+    internalPages: { routable: { settings: 'settings.html' } },
     innerWidth: 800,
     innerHeight: 600,
     addEventListener: jest.fn((event, handler) => {
@@ -188,6 +195,7 @@ const loadPageContextMenuModule = async (options = {}) => {
     imageGroup,
     backBtn,
     forwardBtn,
+    viewSourceBtn,
     activeWebview,
     webviewContainer,
     documentHandlers,
@@ -231,6 +239,8 @@ describe('page-context-menu', () => {
     global.window = {
       electronAPI: {},
       nodeConfig: {},
+      location: { href: 'file:///app/index.html' },
+      internalPages: { routable: {} },
       innerWidth: 800,
       innerHeight: 600,
       addEventListener: jest.fn(),
@@ -346,6 +356,58 @@ describe('page-context-menu', () => {
 
     expect(backBtn.disabled).toBe(true);
     expect(forwardBtn.disabled).toBe(true);
+  });
+
+  test('withholds view source on browser-owned trust interstitials', async () => {
+    const { mod, pageContextMenu, viewSourceBtn, pushDebug } = await loadPageContextMenuModule();
+
+    await mod.initPageContextMenu();
+
+    // Real content: the item is offered and dispatches as before.
+    mod.showPageContextMenu(10, 10, { pageUrl: 'https://example.com/page' });
+    expect(viewSourceBtn.classList.contains('hidden')).toBe(false);
+
+    // The onchain trust gate. Its URL carries the single-use approval token,
+    // so `view-source:` of it would publish the token and the on-disk path
+    // into the new tab's address bar, tab title and window title (#235).
+    const gateUrl =
+      'file:///app/pages/onchain-unverified.html?target=web3%3A%2F%2F0x00000095643cffa7d9fae407a84dfcb6406456c6.eip155-1%2F&token=aaaabbbbccccddddeeeeffff';
+    mod.showPageContextMenu(10, 10, { pageUrl: gateUrl });
+    expect(viewSourceBtn.classList.contains('hidden')).toBe(true);
+
+    global.document.dispatchEvent.mockClear();
+    await triggerMenuAction(pageContextMenu, 'view-source');
+    expect(global.document.dispatchEvent).not.toHaveBeenCalled();
+    expect(pushDebug).toHaveBeenCalledWith(
+      'Refusing view source for a browser-owned trust interstitial'
+    );
+
+    // Same for the name-resolution interstitials — same class of page, same
+    // rule about the shell's own file:// URL reaching chrome.
+    for (const url of [
+      'file:///app/pages/ens-unverified.html?name=retry.tez',
+      'file:///app/pages/ens-conflict.html?name=lagged.tez&block=%7B%7D',
+    ]) {
+      mod.showPageContextMenu(10, 10, { pageUrl: url });
+      expect(viewSourceBtn.classList.contains('hidden')).toBe(true);
+      global.document.dispatchEvent.mockClear();
+      await triggerMenuAction(pageContextMenu, 'view-source');
+      expect(global.document.dispatchEvent).not.toHaveBeenCalled();
+    }
+
+    // A remote look-alike path is ordinary content: still viewable.
+    mod.showPageContextMenu(10, 10, {
+      pageUrl: 'https://evil.test/pages/onchain-unverified.html?token=aaaa',
+    });
+    expect(viewSourceBtn.classList.contains('hidden')).toBe(false);
+    global.document.dispatchEvent.mockClear();
+    await triggerMenuAction(pageContextMenu, 'view-source');
+    expect(global.document.dispatchEvent).toHaveBeenCalledWith({
+      type: 'open-url-new-tab',
+      detail: {
+        url: 'view-source:https://evil.test/pages/onchain-unverified.html?token=aaaa',
+      },
+    });
   });
 
   test('dispatches page and link actions through menu clicks', async () => {

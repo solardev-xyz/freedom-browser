@@ -388,6 +388,10 @@ async function bootstrap() {
   // After the rewriter (which owns scheme/gateway rewriting) and before
   // x402, so blocked requests never reach the payment flow.
   installAdblockInterception();
+  // Also installs the `onchain-app-guard` onBeforeRequest handler, which keeps
+  // web content out of the `web3:` trust gate. Runs unconditionally — the test
+  // harness owns the `web3:` bytes in test mode, but the guard is browser
+  // policy either way.
   installOnchainProvenanceCapture();
   installX402Interception();
   attachWebRequestDispatcher(defaultSession);

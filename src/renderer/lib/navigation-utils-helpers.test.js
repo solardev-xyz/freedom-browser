@@ -240,6 +240,66 @@ describe('navigation-utils extracted helpers', () => {
       })
     ).toBe('');
 
+    // The onchain trust gate follows the same rule with its own param: a tab
+    // parked on it restores the `web3://` app identity, never the gate's
+    // file:// path — which carries the single-use approval token.
+    expect(
+      mod.deriveSwitchedTabDisplay({
+        url: 'file:///app/pages/onchain-unverified.html?target=web3%3A%2F%2F0x00000095643cffa7d9fae407a84dfcb6406456c6.eip155-1%2F&token=abc123&conflict=1',
+        bzzRoutePrefix: 'http://127.0.0.1:1633/bzz/',
+        homeUrlNormalized: 'file:///app/pages/home.html',
+      })
+    ).toBe('web3://0x00000095643cffa7d9fae407a84dfcb6406456c6/');
+
+    // A non-default chain keeps its `:<chainId>` suffix, same as the active
+    // tab's address bar.
+    expect(
+      mod.deriveSwitchedTabDisplay({
+        url: 'file:///app/pages/onchain-unverified.html?target=web3%3A%2F%2F0x00000095643cffa7d9fae407a84dfcb6406456c6.eip155-100%2Fswap&token=abc123',
+        bzzRoutePrefix: 'http://127.0.0.1:1633/bzz/',
+        homeUrlNormalized: 'file:///app/pages/home.html',
+      })
+    ).toBe('web3://0x00000095643cffa7d9fae407a84dfcb6406456c6:100/swap');
+
+    // Fail-safe: a gate URL with a missing/non-web3 target clears the address
+    // bar rather than falling through to its on-disk path.
+    for (const url of [
+      'file:///app/pages/onchain-unverified.html',
+      'file:///app/pages/onchain-unverified.html?target=https%3A%2F%2Fevil.example&token=abc123',
+    ]) {
+      expect(
+        mod.deriveSwitchedTabDisplay({
+          url,
+          bzzRoutePrefix: 'http://127.0.0.1:1633/bzz/',
+          homeUrlNormalized: 'file:///app/pages/home.html',
+        })
+      ).toBe('');
+    }
+
+    // `view-source:` of the gate is refused at dispatch, but a tab that
+    // already holds one (session restore, a pre-fix history entry) must not
+    // repaint the approval token into the address bar on switchback either:
+    // the gate test also runs on the stripped URL, and fails safe to blank.
+    expect(
+      mod.deriveSwitchedTabDisplay({
+        url: 'view-source:file:///app/pages/onchain-unverified.html?target=web3%3A%2F%2F0x00000095643cffa7d9fae407a84dfcb6406456c6.eip155-1%2F&token=aaaabbbbcccc',
+        isViewingSource: true,
+        bzzRoutePrefix: 'http://127.0.0.1:1633/bzz/',
+        homeUrlNormalized: 'file:///app/pages/home.html',
+      })
+    ).toBe('');
+
+    // …but a remote look-alike path is real content and keeps its own URL.
+    expect(
+      mod.deriveSwitchedTabDisplay({
+        url: 'https://evil.test/pages/onchain-unverified.html?target=web3%3A%2F%2F0x00000095643cffa7d9fae407a84dfcb6406456c6.eip155-1%2F',
+        bzzRoutePrefix: 'http://127.0.0.1:1633/bzz/',
+        homeUrlNormalized: 'file:///app/pages/home.html',
+      })
+    ).toBe(
+      'https://evil.test/pages/onchain-unverified.html?target=web3%3A%2F%2F0x00000095643cffa7d9fae407a84dfcb6406456c6.eip155-1%2F'
+    );
+
     // The interstitial test runs on the committed URL as-is, never on the
     // `view-source:` inner URL: viewing an interstitial's source is source
     // text, not the block itself, and the active-tab handler's view-source

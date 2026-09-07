@@ -77,6 +77,8 @@ const loadNavigationModule = async (options = {}) => {
     ['file:///app/pages/ens-unverified.html', 'file:///app/pages/ens-conflict.html'].some((base) =>
       matchesInternalPage(url, base)
     );
+  const isOnchainInterstitialPageUrlMock = (url) =>
+    matchesInternalPage(url, 'file:///app/pages/onchain-unverified.html');
   const state = {
     bzzRoutePrefix: 'https://gateway.example/bzz/',
     ipfsRoutePrefix: 'https://gateway.example/ipfs/',
@@ -245,9 +247,7 @@ const loadNavigationModule = async (options = {}) => {
     }),
     formatOnchainAppUrl: jest.fn((input) => {
       const raw = (input || '').trim();
-      const canonical = raw.match(
-        /^web3:\/\/(0x[0-9a-f]{40})\.eip155-([0-9]+)([/?#].*)?$/i
-      );
+      const canonical = raw.match(/^web3:\/\/(0x[0-9a-f]{40})\.eip155-([0-9]+)([/?#].*)?$/i);
       const friendly = raw.match(
         /^web3:\/\/(0x[0-9a-f]{40})(?::([1-9][0-9]*))?(\/[^?#]*)?(\?[^#]*)?(#.*)?$/i
       );
@@ -262,9 +262,7 @@ const loadNavigationModule = async (options = {}) => {
     }),
     formatOnchainAppDisplayUrl: jest.fn((input) => {
       const raw = (input || '').trim();
-      const canonical = raw.match(
-        /^web3:\/\/(0x[0-9a-f]{40})\.eip155-([0-9]+)([/?#].*)?$/i
-      );
+      const canonical = raw.match(/^web3:\/\/(0x[0-9a-f]{40})\.eip155-([0-9]+)([/?#].*)?$/i);
       const friendly = raw.match(
         /^web3:\/\/(0x[0-9a-f]{40})(?::([1-9][0-9]*))?(\/[^?#]*)?(\?[^#]*)?(#.*)?$/i
       );
@@ -279,7 +277,9 @@ const loadNavigationModule = async (options = {}) => {
     }),
     looksLikeOnchainAppInput: jest.fn((input) => /^web3:/i.test((input || '').trim())),
     deriveDisplayValue: jest.fn((url) => `display:${url}`),
-    deriveBzzBaseFromUrl: jest.fn((url) => (url.includes('/bzz/') ? 'https://gateway.example/bzz/hash/' : null)),
+    deriveBzzBaseFromUrl: jest.fn((url) =>
+      url.includes('/bzz/') ? 'https://gateway.example/bzz/hash/' : null
+    ),
     deriveIpfsBaseFromUrl: jest.fn(() => null),
     applyEnsNamePreservation: jest.fn((url) => url),
     buildEnsDisplayUri: jest.fn((protocol, name, suffix = '') => {
@@ -325,8 +325,13 @@ const loadNavigationModule = async (options = {}) => {
       );
     }),
     getInternalPageName: jest.fn((url) => (url === historyUrl ? 'history' : null)),
+    getOnchainInterstitialTarget: jest.fn(() => null),
     isErrorPageUrl: jest.fn((url) => matchesInternalPage(url, errorUrlBase)),
     isInterstitialPageUrl: jest.fn((url) => isInterstitialPageUrlMock(url)),
+    isOnchainInterstitialPageUrl: jest.fn((url) => isOnchainInterstitialPageUrlMock(url)),
+    isTrustInterstitialPageUrl: jest.fn(
+      (url) => isInterstitialPageUrlMock(url) || isOnchainInterstitialPageUrlMock(url)
+    ),
     getInterstitialDisplayName: jest.fn((url) => {
       if (!isInterstitialPageUrlMock(url)) {
         return null;
@@ -791,9 +796,7 @@ describe('navigation', () => {
       ctx.mod.loadTarget('   ');
 
       expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
-      expect(ctx.debugMocks.pushDebug).toHaveBeenCalledWith(
-        'Ignoring empty input or invalid URL.'
-      );
+      expect(ctx.debugMocks.pushDebug).toHaveBeenCalledWith('Ignoring empty input or invalid URL.');
     });
 
     test('does not turn protocol input into a search', async () => {
@@ -837,13 +840,57 @@ describe('navigation', () => {
       );
     });
 
+    test('refuses to view the source of the trust gate, on dispatch and on commit', async () => {
+      // #235: the gate's own `file:///…/pages/onchain-unverified.html?…` URL
+      // carries the single-use approval token. `view-source:` of it commits
+      // that URL, so every chrome surface that repaints from the committed
+      // URL — address bar, tab title, window title — would publish the token
+      // and the on-disk implementation path. The context menu hides the item;
+      // the dispatch refuses the navigation outright.
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      const gateUrl = `file:///app/pages/onchain-unverified.html?target=${encodeURIComponent(
+        CANONICAL
+      )}&token=aaaabbbbccccddddeeeeffff`;
+
+      ctx.activeRef.tab.webview.loadURL.mockClear();
+      ctx.elements.addressInput.value = '';
+      ctx.mod.loadTarget(`view-source:${gateUrl}`);
+
+      expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
+      expect(ctx.elements.addressInput.value).toBe('');
+
+      // Same for the name-resolution interstitials — same class of page.
+      ctx.mod.loadTarget('view-source:file:///app/pages/ens-conflict.html?name=lagged.tez');
+      expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
+
+      // Ordinary content still views its source.
+      ctx.mod.loadTarget('view-source:https://example.com/page');
+      // (`buildViewSourceNavigation` is mocked with a `load:` prefix here.)
+      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(
+        'load:view-source:https://example.com/page'
+      );
+
+      // Fail-safe on commit: if such a tab exists anyway (session restore, a
+      // back/forward entry predating the refusal above), the address bar and
+      // title stay blank rather than showing the token.
+      ctx.activeRef.tab.webview.getURL.mockReturnValue(`view-source:${gateUrl}`);
+      ctx.tabsMocks.webviewEventHandler('did-navigate', { event: { url: gateUrl } });
+
+      expect(ctx.elements.addressInput.value).toBe('');
+      expect(ctx.tabsMocks.updateActiveTabTitle).toHaveBeenCalledWith('');
+      expect(ctx.electronAPI.setWindowTitle).toHaveBeenCalledWith('');
+    });
+
     test('surfaces malformed web3 intent instead of searching for it', async () => {
       const ctx = await loadNavigationModule();
       await ctx.mod.initNavigation();
 
       ctx.mod.loadTarget('web3://not-a-contract:1/');
 
-      expect(global.alert).toHaveBeenCalledWith(expect.stringContaining('Invalid onchain application URL'));
+      expect(global.alert).toHaveBeenCalledWith(
+        expect.stringContaining('Invalid onchain application URL')
+      );
       expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
     });
   });
@@ -881,9 +928,7 @@ describe('navigation', () => {
 
       // After a successful probe we hand off to the `bzz:` protocol handler
       // rather than the raw gateway URL — see README "Swarm Content Retrieval".
-      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(
-        `bzz://${VALID_HASH}/`
-      );
+      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(`bzz://${VALID_HASH}/`);
       expect(ctx.activeRef.tab.navigationState.pendingSwarmProbeId).toBeNull();
     });
 
@@ -1014,9 +1059,7 @@ describe('navigation', () => {
       // already been cleared, so the webview stays on its original URL.
       settleAwait(ctx, 'probe-1', { ok: true });
       await flushMicrotasks();
-      expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalledWith(
-        `bzz://${VALID_HASH}/`
-      );
+      expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalledWith(`bzz://${VALID_HASH}/`);
     });
 
     test('a second navigation cancels the first probe', async () => {
@@ -1038,16 +1081,12 @@ describe('navigation', () => {
       // Settle the superseded first probe — result must be ignored.
       settleAwait(ctx, 'probe-1', { ok: true });
       await flushMicrotasks();
-      expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalledWith(
-        `bzz://${VALID_HASH}/`
-      );
+      expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalledWith(`bzz://${VALID_HASH}/`);
 
       // Settle the second probe with success — it should load the bzz:// URL.
       settleAwait(ctx, 'probe-2', { ok: true });
       await flushMicrotasks();
-      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(
-        `bzz://${secondHash}/`
-      );
+      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(`bzz://${secondHash}/`);
     });
 
     test('aborted outcome leaves the webview alone', async () => {
@@ -1726,9 +1765,7 @@ describe('navigation', () => {
       ctx.mod.loadTarget('docs.example.tez/ignored');
       await flushMicrotasks();
 
-      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(
-        'https://example.com/landing'
-      );
+      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith('https://example.com/landing');
     });
 
     test('Tezos HTTP content appends the requested path to its published base path', async () => {
@@ -2045,9 +2082,7 @@ describe('navigation', () => {
       ctx.mod.loadTarget('bzz://vitalik.eth');
       await flushMicrotasks();
 
-      expect(global.alert).toHaveBeenCalledWith(
-        expect.stringMatching(/resolves to ipfs, not bzz/)
-      );
+      expect(global.alert).toHaveBeenCalledWith(expect.stringMatching(/resolves to ipfs, not bzz/));
       expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
       expect(ctx.electronAPI.startSwarmProbe).not.toHaveBeenCalled();
     });
@@ -2070,9 +2105,7 @@ describe('navigation', () => {
       ctx.mod.loadTarget('vitalik.eth');
       await flushMicrotasks();
 
-      expect(global.alert).not.toHaveBeenCalledWith(
-        expect.stringMatching(/resolves to ipfs, not/)
-      );
+      expect(global.alert).not.toHaveBeenCalledWith(expect.stringMatching(/resolves to ipfs, not/));
     });
 
     test('ipc-message ens:continue-unverified re-dispatches with allow flag', async () => {
@@ -2090,7 +2123,9 @@ describe('navigation', () => {
       ctx.mod.loadTarget('ens://retry.eth');
       await flushMicrotasks();
       expect(
-        ctx.activeRef.tab.webview.loadURL.mock.calls.find(([u]) => u.includes('ens-unverified.html'))
+        ctx.activeRef.tab.webview.loadURL.mock.calls.find(([u]) =>
+          u.includes('ens-unverified.html')
+        )
       ).toBeDefined();
 
       // Simulate interstitial "Continue once" sendToHost → tabs routes to
@@ -2124,7 +2159,9 @@ describe('navigation', () => {
       ctx.mod.loadTarget('retry.tez');
       await flushMicrotasks();
       expect(
-        ctx.activeRef.tab.webview.loadURL.mock.calls.find(([u]) => u.includes('ens-unverified.html'))
+        ctx.activeRef.tab.webview.loadURL.mock.calls.find(([u]) =>
+          u.includes('ens-unverified.html')
+        )
       ).toBeDefined();
 
       ctx.electronAPI.resolveTezosDomain.mockClear();
@@ -2153,6 +2190,66 @@ describe('navigation', () => {
 
       expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(
         'file:///app/pages/settings.html'
+      );
+    });
+
+    test('ipc-message onchain continue returns the approval token as a navigation header', async () => {
+      const ctx = await setupEnsDispatch();
+      const target = 'web3://0x00000095643cffA7d9FAe407A84DfCB6406456C6.eip155-1/';
+      const token = 'a'.repeat(43);
+
+      ctx.tabsMocks.webviewEventHandler('ipc-message', {
+        tabId: ctx.activeRef.tab.id,
+        channel: 'onchain:continue-unverified',
+        args: [{ target, token }],
+      });
+
+      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(target.toLowerCase(), {
+        extraHeaders: `X-Freedom-Onchain-App-Approval: ${token}`,
+      });
+    });
+
+    test('ipc-message onchain continue rejects malformed tokens', async () => {
+      const ctx = await setupEnsDispatch();
+
+      ctx.tabsMocks.webviewEventHandler('ipc-message', {
+        tabId: ctx.activeRef.tab.id,
+        channel: 'onchain:continue-unverified',
+        args: [
+          {
+            target: 'web3://0x00000095643cffA7d9FAe407A84DfCB6406456C6.eip155-1/',
+            token: 'bad\r\nX-Injected: yes',
+          },
+        ],
+      });
+
+      expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
+    });
+
+    test('ipc-message onchain conflict retry re-enters normal web3 navigation', async () => {
+      const ctx = await setupEnsDispatch();
+      const target = 'web3://0x00000095643cffA7d9FAe407A84DfCB6406456C6.eip155-1/';
+
+      ctx.tabsMocks.webviewEventHandler('ipc-message', {
+        tabId: ctx.activeRef.tab.id,
+        channel: 'onchain:retry',
+        args: [{ target }],
+      });
+
+      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(target.toLowerCase());
+    });
+
+    test('ipc-message onchain settings opens the RPC section', async () => {
+      const ctx = await setupEnsDispatch();
+
+      ctx.tabsMocks.webviewEventHandler('ipc-message', {
+        tabId: ctx.activeRef.tab.id,
+        channel: 'onchain:open-rpc-settings',
+        args: [],
+      });
+
+      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(
+        'file:///app/pages/settings.html#rpc'
       );
     });
 
@@ -2241,12 +2338,10 @@ describe('navigation', () => {
         const m = value.match(/^(?:(?:ens|bzz|ipfs|ipns):\/\/)?([^?/]+)(.*)?$/i);
         if (!m) return null;
         const name = m[1].toLowerCase();
-        return (
-          name.endsWith('.eth') ||
+        return name.endsWith('.eth') ||
           name.endsWith('.box') ||
           name.endsWith('.wei') ||
           name.endsWith('.gwei')
-        )
           ? { name, suffix: m[2] || '', assertedTransport }
           : null;
       });
@@ -2493,12 +2588,10 @@ describe('navigation', () => {
         const m = value.match(/^(?:(?:ens|bzz|ipfs|ipns):\/\/)?([^?/]+)(.*)?$/i);
         if (!m) return null;
         const name = m[1].toLowerCase();
-        return (
-          name.endsWith('.eth') ||
+        return name.endsWith('.eth') ||
           name.endsWith('.box') ||
           name.endsWith('.wei') ||
           name.endsWith('.gwei')
-        )
           ? { name, suffix: m[2] || '', assertedTransport }
           : null;
       });
@@ -2541,9 +2634,7 @@ describe('navigation', () => {
       };
       ctx.state.ensTrustByName.set('vitalik.eth', oldTrust);
       commitDisplay(ctx, 'bzz://vitalik.eth/');
-      ctx.activeRef.tab.webview.getURL.mockReturnValue(
-        `bzz://${'a'.repeat(64)}/`
-      );
+      ctx.activeRef.tab.webview.getURL.mockReturnValue(`bzz://${'a'.repeat(64)}/`);
       ctx.electronAPI.resolveEns.mockResolvedValue({
         type: 'ok',
         name: 'vitalik.eth',
@@ -2865,9 +2956,7 @@ describe('navigation', () => {
 
       // Step 5: switch back to Tab A. The tab-switched handler restores
       // addressInput.value from the snapshot.
-      ctx.navigationUtilsMocks.deriveSwitchedTabDisplay.mockReturnValueOnce(
-        'ipfs://vitalik.eth'
-      );
+      ctx.navigationUtilsMocks.deriveSwitchedTabDisplay.mockReturnValueOnce('ipfs://vitalik.eth');
       ctx.activeRef.tab = tabA;
       ctx.tabsMocks.webviewEventHandler('tab-switched', {
         tabId: tabA.id,

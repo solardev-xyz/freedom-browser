@@ -587,6 +587,19 @@ contextBridge.exposeInMainWorld('freedomAPI', {
     ipcRenderer.sendToHost('ens:open-settings');
   }),
 
+  // Signals from the onchain-app trust interstitial. The opaque approval
+  // token is minted and consumed by the web3: protocol handler; the shell
+  // only carries it back on the next top-level navigation.
+  onchainContinueUnverified: guardInternal('onchainContinueUnverified', (payload) => {
+    ipcRenderer.sendToHost('onchain:continue-unverified', payload);
+  }),
+  onchainRetry: guardInternal('onchainRetry', (target) => {
+    ipcRenderer.sendToHost('onchain:retry', { target });
+  }),
+  onchainOpenRpcSettings: guardInternal('onchainOpenRpcSettings', () => {
+    ipcRenderer.sendToHost('onchain:open-rpc-settings');
+  }),
+
   // Favicons
   getCachedFavicon: guardInternal('getCachedFavicon', (url) =>
     ipcRenderer.invoke('favicon:get-cached', url)
