@@ -200,6 +200,12 @@ describe('bee-ui', () => {
     // #253: a blank Version row read as a rendering failure next to four
     // populated siblings; every node's unknown version now reads 'Unknown'.
     expect(ctx.elements.beeVersionText.textContent).toBe('Unknown');
+
+    // Stopping again with nothing fetched keeps 'Unknown' rather than blanking
+    // the row — the state the menu is in while /health is still in flight.
+    ctx.elements.beeVersionText.textContent = 'Ant v0.5.8';
+    ctx.mod.stopAntInfoPolling();
+    expect(ctx.elements.beeVersionText.textContent).toBe('Unknown');
   });
 
   test('updates Bee status lines, toggle state, and running transitions', async () => {

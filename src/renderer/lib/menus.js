@@ -47,10 +47,6 @@ export const setOnMenuOpening = (callback) => {
 let beeMenuButton = null;
 let beeMenuDropdown = null;
 let webviewElement = null;
-let beePeersCount = null;
-let beeNetworkPeers = null;
-let beeVersionText = null;
-let beeInfoPanel = null;
 
 export const setMenuOpen = (open) => {
   state.menuOpen = open;
@@ -98,15 +94,14 @@ export const setAntMenuOpen = (open) => {
     if (!state.menuOpen) {
       hideMenuBackdrop();
     }
+    // Each node's stop* owns resetting that node's readouts (peer counts,
+    // Version row, info panel). Menus used to reset Ant's here as well, with
+    // its own copy of the empty-state rules — the copy drifted and re-blanked
+    // the Version row #253 had just moved to 'Unknown'.
     stopAntInfoPolling();
     stopIpfsInfoPolling();
     stopMyotisInfoPolling();
     stopRadicleInfoUpdates();
-    if (beePeersCount) beePeersCount.textContent = '0';
-    if (beeNetworkPeers) beeNetworkPeers.textContent = '0';
-    if (beeVersionText)
-      beeVersionText.textContent = state.antVersionFetched ? state.antVersionValue : '';
-    if (beeInfoPanel) beeInfoPanel.classList.remove('visible');
   }
 };
 
@@ -202,10 +197,6 @@ export const initMenus = () => {
   beeMenuButton = document.getElementById('bee-menu-button');
   beeMenuDropdown = document.getElementById('bee-menu-dropdown');
   webviewElement = document.getElementById('bzz-webview');
-  beePeersCount = document.getElementById('bee-peers-count');
-  beeNetworkPeers = document.getElementById('bee-network-peers');
-  beeVersionText = document.getElementById('bee-version-text');
-  beeInfoPanel = document.querySelector('.bee-info');
 
   menuButton?.addEventListener('click', () => {
     setMenuOpen(!state.menuOpen);

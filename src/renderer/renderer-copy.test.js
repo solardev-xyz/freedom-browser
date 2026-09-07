@@ -135,6 +135,42 @@ describe('Nodes menu placeholders (#252, #253)', () => {
     expect(new Set(COUNTERS.map(spanDefault)).size).toBe(1);
     expect(new Set(VERSIONS.map(spanDefault)).size).toBe(1);
   });
+
+  // The markup default only covers the first paint. A second module holding
+  // its own copy of the empty-state rules is how the runtime side drifts:
+  // menus.js used to re-blank #bee-version-text when the Nodes menu closed,
+  // undoing the 'Unknown' ant-ui.js had just written. Each readout gets
+  // exactly one owning module.
+  test('each Nodes menu readout has exactly one owner in the renderer', () => {
+    const modules = fs
+      .readdirSync(path.join(RENDERER, 'lib'))
+      .filter((name) => name.endsWith('.js') && !name.endsWith('.test.js'));
+
+    const owners = Object.fromEntries(
+      [...COUNTERS, ...VERSIONS].map((id) => [
+        id,
+        modules.filter((name) => read(path.join(RENDERER, 'lib', name)).includes(id)),
+      ])
+    );
+
+    expect(owners).toEqual({
+      'bee-peers-count': ['ant-ui.js'],
+      'bee-network-peers': ['ant-ui.js'],
+      'bee-version-text': ['ant-ui.js'],
+      'ipfs-active-requests-count': ['ipfs-ui.js'],
+      'ipfs-version-text': ['ipfs-ui.js'],
+      'myotis-peers-count': ['myotis-ui.js'],
+      'myotis-finalized-block': ['myotis-ui.js'],
+      'myotis-version-text': ['myotis-ui.js'],
+      'myotis-gnosis-peers-count': ['myotis-ui.js'],
+      'myotis-gnosis-finalized-block': ['myotis-ui.js'],
+      'myotis-gnosis-version-text': ['myotis-ui.js'],
+      'radicle-peers-count': ['radicle-ui.js'],
+      'radicle-repos-count': ['radicle-ui.js'],
+      'radicle-version-text': ['radicle-ui.js'],
+      'tor-version-text': ['tor-ui.js'],
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
