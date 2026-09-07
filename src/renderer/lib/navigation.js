@@ -50,11 +50,13 @@ import {
 import {
   homeUrl,
   homeUrlNormalized,
-  errorUrlBase,
   internalPages,
   detectProtocol,
   isHistoryRecordable,
   getInternalPageName,
+  getInterstitialDisplayName,
+  isErrorPageUrl,
+  isInterstitialPageUrl,
   parseEnsInput,
   buildInternalPageUrl,
 } from './page-urls.js';
@@ -65,7 +67,13 @@ import {
   shouldLearnAutocomplete,
 } from './private-mode.js';
 import { parseEthereumUri } from './ethereum-uri.js';
-import { openSendFlow } from './wallet-ui.js';
+import {
+  openSendFlow,
+  SEND_FLOW_OK,
+  SEND_FLOW_DISABLED,
+  SEND_FLOW_PRIVATE,
+  SEND_FLOW_SETUP,
+} from './wallet-ui.js';
 import { walletState } from './wallet/wallet-state.js';
 import { formatWeiToDecimal } from './wallet/send.js';
 import { startIpfsProgressStatus, stopIpfsProgressStatus } from './ipfs-progress-status.js';
@@ -802,6 +810,16 @@ const syncBzzBase = (nextBase) => {
     });
 };
 
+// One message per openSendFlow refusal reason: the way out differs for each,
+// and telling a private-window user with a fully set-up wallet to flip a
+// Settings toggle that is already on leaves them nowhere to go (#240).
+const SEND_FLOW_REFUSAL_MESSAGES = {
+  [SEND_FLOW_DISABLED]: 'Enable Identity & Wallet (Settings → Experimental) to accept tips.',
+  [SEND_FLOW_PRIVATE]:
+    'Wallet is unavailable in private windows. Open a normal window to accept tips.',
+  [SEND_FLOW_SETUP]: 'Finish setting up Identity & Wallet to accept tips.',
+};
+
 // EIP-681 carries value in the chain's base unit (wei for ETH et al.); we
 // assume 18 decimals for the native token, correct for every chain freedom
 // currently ships with.
@@ -827,13 +845,13 @@ const handleEthereumUri = (value) => {
   }
 
   const amount = parsed.value ? formatWeiToDecimal(BigInt(parsed.value)) : undefined;
-  const opened = openSendFlow({
+  const result = openSendFlow({
     recipient: parsed.target,
     chainId: parsed.chainId,
     amount,
   });
-  if (!opened) {
-    alert('Enable Identity & Wallet (Settings → Experimental) to accept tips.');
+  if (result !== SEND_FLOW_OK) {
+    alert(SEND_FLOW_REFUSAL_MESSAGES[result] || SEND_FLOW_REFUSAL_MESSAGES[SEND_FLOW_DISABLED]);
   }
 };
 
@@ -1697,7 +1715,7 @@ export const loadHomePage = () => {
 // Shared error-page retry logic used by both reload variants and the reload button
 const retryErrorPageOrReload = (webview, hard) => {
   const current = webview.getURL();
-  const originalUrl = getOriginalUrlFromErrorPage(current, errorUrlBase);
+  const originalUrl = getOriginalUrlFromErrorPage(current);
   if (originalUrl) {
     // Hard reload of an ENS error page also bypasses `ensResultCache` so the
     // recovery resolution actually re-runs under today's verification method
@@ -1710,7 +1728,7 @@ const retryErrorPageOrReload = (webview, hard) => {
     loadTarget(originalUrl);
     return;
   }
-  if (current.startsWith(errorUrlBase) || current.includes('/error.html?')) {
+  if (isErrorPageUrl(current)) {
     try {
       new URL(current);
     } catch (err) {
@@ -1876,7 +1894,17 @@ const handleNavigationEvent = (event) => {
       return;
     }
 
-    if (event.url.startsWith(errorUrlBase)) {
+    // Name-resolution interstitials (unverified soft block, head/contenthash
+    // conflict hard block) get the same treatment as the error page: the
+    // address bar keeps the name the user asked for, never the interstitial's
+    // own `file:///…/pages/ens-*.html` path (#235). The name is empty only if
+    // the page was opened without its `name` param — an empty address bar is
+    // the fail-safe there, since the on-disk path must not be shown either.
+    if (isInterstitialPageUrl(event.url)) {
+      const blockedName = getInterstitialDisplayName(event.url) || '';
+      addressInput.value = blockedName;
+      pushDebug(`[AddressBar] Interstitial -> Blocked name: ${blockedName || '(none)'}`);
+    } else if (isErrorPageUrl(event.url)) {
       try {
         const parsed = new URL(event.url);
         const originalUrl = parsed.searchParams.get('url');

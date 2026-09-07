@@ -312,6 +312,9 @@
    Setup CTA (No vault state)
    ============================================ */
 
+/* Private-window state: same layout as the setup CTA, minus the call to
+   action — there is nothing to set up from a private window. */
+.sidebar-private-notice,
 .sidebar-setup-cta {
   display: flex;
   flex-direction: column;
@@ -4010,6 +4013,11 @@
   border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 0.9s linear infinite;
+}
+
+/* Detection failed: the spinner is hidden from JS, so the line is text only. */
+.connect-ledger-status-failed {
+  color: var(--danger);
 }
 
 .connect-ledger-scheme-row {
