@@ -16,11 +16,14 @@ import { renderDeviceAccountList, existingWalletAddresses } from './device-accou
 
 const ACCOUNTS_PER_PAGE = 5;
 const DETECT_POLL_MS = 1500;
+const DETECT_STATUS = 'Looking for your Ledger…';
 
 // DOM references
 let screen;
 let backBtn;
 let detectView;
+let statusEl;
+let statusSpinner;
 let statusText;
 let accountsView;
 let schemeSelect;
@@ -44,6 +47,8 @@ export function initConnectLedger() {
   screen = document.getElementById('sidebar-connect-ledger');
   backBtn = document.getElementById('connect-ledger-back');
   detectView = document.getElementById('connect-ledger-detect');
+  statusEl = document.getElementById('connect-ledger-status');
+  statusSpinner = document.getElementById('connect-ledger-status-spinner');
   statusText = document.getElementById('connect-ledger-status-text');
   accountsView = document.getElementById('connect-ledger-accounts-step');
   schemeSelect = document.getElementById('connect-ledger-scheme');
@@ -106,7 +111,7 @@ function resetFlowState() {
     submitBtn.textContent = 'Add Account';
   }
   hideError();
-  setStatus('Looking for your Ledger…');
+  setStatus(DETECT_STATUS);
 }
 
 function showStep(step) {
@@ -128,7 +133,7 @@ async function detectTick() {
   // The screen may have been closed while an IPC call was in flight.
   if (!screen || screen.classList.contains('hidden')) return;
 
-  const loaded = await loadAccountsPage(true, setStatus);
+  const loaded = await loadAccountsPage(true, setStatusError);
   if (loaded) {
     showStep('accounts');
   } else {
@@ -136,9 +141,26 @@ async function detectTick() {
   }
 }
 
-function setStatus(message) {
+/**
+ * Render the detect-step status line.
+ *
+ * The spinner is this screen's only claim that detection is still under way,
+ * so an error status has to take it down: "Ledger error. Reconnect the device
+ * and try again." next to a live spinner reads as failed and still working at
+ * the same time (#241). Same treatment connect-phone's failDiscovery() gives
+ * its (shared-class) spinner.
+ *
+ * The poll loop keeps running underneath, so the retry affordance is the
+ * screen itself: the next tick that finds the device moves on to the account
+ * list without the user touching anything.
+ */
+function setStatus(message, { error = false } = {}) {
   if (statusText) statusText.textContent = message;
+  statusSpinner?.classList.toggle('hidden', error);
+  statusEl?.classList.toggle('connect-ledger-status-failed', error);
 }
+
+const setStatusError = (message) => setStatus(message, { error: true });
 
 // --- Step 2: account selection ----------------------------------------
 
@@ -152,6 +174,9 @@ async function reloadAccounts() {
   const loaded = await loadAccountsPage(true, showError);
   if (!loaded) {
     // The device may have been unplugged mid-flow — fall back to detection.
+    // Re-arm the waiting status so the step does not reopen on a stale error
+    // line (and with its spinner still hidden) from an earlier attempt.
+    setStatus(DETECT_STATUS);
     showStep('detect');
     detectTick();
   }
