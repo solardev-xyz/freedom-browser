@@ -254,8 +254,10 @@ const renderPopover = () => {
     const revoke = document.createElement('button');
     revoke.type = 'button';
     revoke.className = 'permission-popover-revoke';
-    revoke.textContent = 'Reset';
-    revoke.setAttribute('aria-label', `Reset ${permissionLabel(key)} permission`);
+    // 'Remove' — the same verb Settings > Site Permissions uses for the
+    // same action ('Remove' / 'Remove site' / 'Remove all'); see #226.
+    revoke.textContent = 'Remove';
+    revoke.setAttribute('aria-label', `Remove ${permissionLabel(key)} permission`);
     revoke.addEventListener('click', () => {
       const origin = indicatorOrigin;
       sitePermissions()
