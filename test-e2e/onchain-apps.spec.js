@@ -245,6 +245,26 @@ test('shows the browser-owned gate before unverified onchain app code can run', 
     rows: ['Network', 'Contract', 'Fetched from', 'HTML hash'],
   });
 
+  // The switched-tab path derives its own address-bar value, so it needs the
+  // same check as the active-tab did-navigate handler: open a second tab,
+  // come back, and confirm the repaint kept the app identity instead of
+  // painting the gate's own `file://` URL — which carries the single-use
+  // approval token — into copyable chrome.
+  await window.locator('[data-test="new-tab-btn"]').click();
+  await expect(window.locator('[data-test="tab"][data-tab-id="2"]')).toHaveClass(/active/);
+  await window.locator('[data-test="tab"][data-tab-id="1"]').click();
+  await expect(window.locator('[data-test="tab"][data-tab-id="1"]')).toHaveClass(/active/);
+  await expect(input).toHaveValue(DISPLAY_URL);
+
+  // A gated app never ran, so it is not a visit: nothing may reach history or
+  // the autocomplete dropdown while the gate is up.
+  expect(
+    await window.evaluate(async () => {
+      const rows = await window.electronAPI.getHistory();
+      return rows.filter((row) => row.url?.startsWith('web3://') || row.url?.includes('.html'));
+    })
+  ).toEqual([]);
+
   // Swap the harness response before clicking so this leg proves the
   // internal-page → preload → shell → web3 navigation bridge. Main-process
   // unit tests separately prove the real handler accepts only the bound token
@@ -272,6 +292,21 @@ test('shows the browser-owned gate before unverified onchain app code can run', 
     )
     .toBe('Approved bytes');
   await expect(input).toHaveValue(DISPLAY_URL);
+
+  // Only now is there a visit — and it carries the loaded app's own title.
+  // Recording the gate first would have burned the once-per-URL dedup on an
+  // entry titled "Onchain app not independently verified" that no later load
+  // could replace.
+  await expect
+    .poll(
+      () =>
+        window.evaluate(async (displayUrl) => {
+          const rows = await window.electronAPI.getHistory();
+          return rows.filter((row) => row.url === displayUrl).map((row) => row.title);
+        }, DISPLAY_URL),
+      { timeout: 10_000, message: 'waiting for the approved app in history' }
+    )
+    .toEqual(['Approved onchain app']);
 });
 
 test('offers no continue action when RPC servers disagreed about an app', async ({
@@ -347,6 +382,26 @@ test('offers no continue action when RPC servers disagreed about an app', async 
       })
     )
     .toEqual({ continueBtn: false, dissented: 'rpc-b.example, rpc-c.example' });
+
+  // A hard block is even less of a visit than the soft gate: nothing loaded,
+  // so history must stay empty rather than record the app under the gate's
+  // "RPC servers disagreed about this app" title.
+  expect(
+    await window.evaluate(async () => {
+      const rows = await window.electronAPI.getHistory();
+      return rows.filter((row) => row.url?.startsWith('web3://') || row.url?.includes('.html'));
+    })
+  ).toEqual([]);
+
+  // Switching away and back keeps the app identity in chrome, never the
+  // gate's own file:// URL.
+  const gateInput = window.locator('[data-test="address-input"]');
+  await expect(gateInput).toHaveValue(DISPLAY_URL);
+  await window.locator('[data-test="new-tab-btn"]').click();
+  await expect(window.locator('[data-test="tab"][data-tab-id="2"]')).toHaveClass(/active/);
+  await window.locator('[data-test="tab"][data-tab-id="1"]').click();
+  await expect(window.locator('[data-test="tab"][data-tab-id="1"]')).toHaveClass(/active/);
+  await expect(gateInput).toHaveValue(DISPLAY_URL);
 });
 
 // The trust gate is only worth anything if web content cannot reach it.

@@ -1,13 +1,16 @@
 import {
   applyEnsNamePreservation,
   deriveDisplayValue,
+  formatOnchainAppDisplayUrl,
   parseOnchainAppUrl,
 } from './url-utils.js';
 import {
   getInternalPageName,
   getInterstitialDisplayName,
+  getOnchainInterstitialTarget,
   isErrorPageUrl,
   isInterstitialPageUrl,
+  isOnchainInterstitialPageUrl,
   parseEnsInput,
 } from './page-urls.js';
 import { isDwebNameHost } from './origin-utils.js';
@@ -558,6 +561,17 @@ export const deriveSwitchedTabDisplay = ({
   // either. See #235.
   if (isInterstitialPageUrl(url)) {
     return getInterstitialDisplayName(url) || '';
+  }
+
+  // The onchain trust gate is the same kind of page, but carries the blocked
+  // app in `target=` instead of `name=`: restore the `web3://` app identity
+  // the active-tab did-navigate handler shows, never the gate's own `file://`
+  // URL — which additionally carries the single-use approval token. An
+  // unparseable/absent target falls back to an empty address bar rather than
+  // the on-disk path, same fail-safe as the name interstitials. See #235.
+  if (isOnchainInterstitialPageUrl(url)) {
+    const target = getOnchainInterstitialTarget(url);
+    return (target && formatOnchainAppDisplayUrl(target)) || '';
   }
 
   // A tab parked on `pages/error.html?...&url=<original>` should restore the

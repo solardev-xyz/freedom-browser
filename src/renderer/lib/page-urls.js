@@ -99,6 +99,13 @@ export const isHistoryRecordable = (displayUrl, internalUrl) => {
   // interstitial's `file://` path (and its "RPC servers disagreed" title)
   // into the history list and the autocomplete dropdown.
   if (isInterstitialPageUrl(internalUrl)) return false;
+  // Same for the onchain trust gate: the app's code has not run (soft block)
+  // or was refused outright (conflict hard block), so the `web3://` display
+  // URL never became a visit. Recording it would file the gate's warning
+  // title ("RPC servers disagreed about this app") against the app itself in
+  // history and autocomplete — and the once-per-URL dedup would then keep a
+  // later, actually-loaded visit from replacing it.
+  if (isOnchainInterstitialPageUrl(internalUrl)) return false;
   if (internalUrl === homeUrl || internalUrl === homeUrlNormalized) return false;
   return true;
 };
@@ -122,18 +129,28 @@ export const getInternalPageName = (url) => {
 
 // Trust interstitials are deliberately not routable freedom:// pages, but the
 // browser chrome must keep showing the app the user asked for while one is
-// visible. Return only the bounded web3: target carried by our bundled page.
-export const getOnchainInterstitialTarget = (url) => {
-  if (typeof url !== 'string' || !url || url.length > 8192) return null;
+// visible. Like the ENS interstitials above, the onchain gate's own
+// `file:///…/pages/onchain-unverified.html?…` URL must never reach the
+// address bar, history, or any other chrome surface — it carries the
+// single-use approval token in a query param. Only `file:` URLs count, so a
+// remote look-alike path can never impersonate the gate. See issue #235.
+export const isOnchainInterstitialPageUrl = (url) => {
+  if (typeof url !== 'string' || !url || url.length > 8192) return false;
   try {
     const parsed = new URL(url);
-    if (
-      parsed.protocol !== 'file:' ||
-      !parsed.pathname.endsWith('/pages/onchain-unverified.html')
-    ) {
-      return null;
-    }
-    const target = parsed.searchParams.get('target');
+    return (
+      parsed.protocol === 'file:' && parsed.pathname.endsWith('/pages/onchain-unverified.html')
+    );
+  } catch {
+    return false;
+  }
+};
+
+// Return only the bounded web3: target carried by our bundled gate page.
+export const getOnchainInterstitialTarget = (url) => {
+  if (!isOnchainInterstitialPageUrl(url)) return null;
+  try {
+    const target = new URL(url).searchParams.get('target');
     return target && target.length <= 2048 && /^web3:\/\//i.test(target) ? target : null;
   } catch {
     return null;

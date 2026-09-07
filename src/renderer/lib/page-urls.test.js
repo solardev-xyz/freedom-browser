@@ -63,6 +63,28 @@ describe('page-urls', () => {
     expect(
       mod.isHistoryRecordable('retry.tez', 'file:///app/pages/ens-unverified.html?name=retry.tez')
     ).toBe(false);
+    // The onchain trust gate is the same: the app's code never ran, so the
+    // `web3://` display URL is not a visit. Recording it would file the
+    // gate's warning title against the app, and the caller's once-per-URL
+    // dedup would keep a later real load from replacing it.
+    const gatedApp = 'web3://0x00000095643cffa7d9fae407a84dfcb6406456c6/';
+    for (const gateUrl of [
+      `file:///app/pages/onchain-unverified.html?target=${encodeURIComponent(gatedApp)}&token=t`,
+      'file:///app/pages/onchain-unverified.html?conflict=1',
+    ]) {
+      expect(mod.isHistoryRecordable(gatedApp, gateUrl)).toBe(false);
+    }
+    // A remote look-alike path is real content and stays recordable.
+    expect(
+      mod.isHistoryRecordable(
+        'https://evil.test/pages/onchain-unverified.html',
+        'https://evil.test/pages/onchain-unverified.html'
+      )
+    ).toBe(true);
+    // The app itself, once it actually loads, is still recorded.
+    expect(mod.isHistoryRecordable(gatedApp, 'web3://0x00000095643cffa7d9fae407a84dfcb6406456c6.eip155-1/')).toBe(
+      true
+    );
   });
 
   test('reads the blocked name from interstitial page urls', async () => {
@@ -163,6 +185,19 @@ describe('page-urls', () => {
         'file:///app/pages/onchain-unverified.html?target=https%3A%2F%2Fevil.example'
       )
     ).toBeNull();
+
+    // The page test itself is separate from the target extraction, so chrome
+    // surfaces can fail safe (blank address bar, no history entry) on a gate
+    // URL whose target is missing or not a web3: URL.
+    expect(mod.isOnchainInterstitialPageUrl(internal)).toBe(true);
+    expect(mod.isOnchainInterstitialPageUrl('file:///app/pages/onchain-unverified.html')).toBe(true);
+    expect(
+      mod.isOnchainInterstitialPageUrl(
+        'https://evil.test/pages/onchain-unverified.html?target=web3%3A%2F%2F0x1'
+      )
+    ).toBe(false);
+    expect(mod.isOnchainInterstitialPageUrl('file:///app/pages/error.html')).toBe(false);
+    expect(mod.isOnchainInterstitialPageUrl(undefined)).toBe(false);
   });
 
   test('parses ens inputs with prefixes, paths, and invalid names', async () => {
