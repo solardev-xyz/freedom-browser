@@ -1,4 +1,4 @@
-/* Shared base styles for name-resolution and onchain-app interstitial pages. */
+/* Shared base styles for ENS interstitial pages (conflict, unverified). */
 html,
 body {
   height: 100%;
@@ -74,32 +74,6 @@ p {
   font-size: 14px;
   word-break: break-all;
 }
-.details {
-  background: #1a1a1a;
-  border: 1px solid #2c2c2c;
-  border-radius: 8px;
-  margin-bottom: 20px;
-  overflow: hidden;
-}
-.detail-row {
-  display: grid;
-  grid-template-columns: 112px minmax(0, 1fr);
-  gap: 12px;
-  padding: 10px 14px;
-}
-.detail-row + .detail-row {
-  border-top: 1px solid #2c2c2c;
-}
-.detail-label {
-  color: #888;
-  font-size: 13px;
-}
-.detail-value {
-  color: #ccc;
-  font-family: monospace;
-  font-size: 12px;
-  overflow-wrap: anywhere;
-}
 .name-block .name {
   color: #f5f5f5;
   font-size: 16px;
@@ -172,19 +146,6 @@ button[disabled] {
   .name-block {
     background: #f6f8fa;
     border: 1px solid #d0d7de;
-  }
-  .details {
-    background: #f6f8fa;
-    border-color: #d0d7de;
-  }
-  .detail-row + .detail-row {
-    border-color: #d0d7de;
-  }
-  .detail-label {
-    color: #57606a;
-  }
-  .detail-value {
-    color: #24292f;
   }
   .name-block .name {
     color: #24292f;

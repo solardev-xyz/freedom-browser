@@ -158,7 +158,6 @@ const loadTabsModule = async (options = {}) => {
     homeUrl: options.homeUrl || HOME_URL,
     getInternalPageName: (url) =>
       typeof url === 'string' && url.includes('/pages/history.html') ? 'history' : null,
-    getOnchainInterstitialTarget: () => null,
     internalPages: {},
   }));
 

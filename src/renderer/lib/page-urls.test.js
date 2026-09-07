@@ -80,24 +80,6 @@ describe('page-urls', () => {
     expect(mod.getInternalPageName('')).toBeNull();
   });
 
-  test('extracts the web3 target only from the bundled onchain interstitial', async () => {
-    const mod = await loadModule();
-    const target = 'web3://0x00000095643cffa7d9fae407a84dfcb6406456c6.eip155-1/swap';
-    const internal = `file:///app/pages/onchain-unverified.html?target=${encodeURIComponent(target)}`;
-
-    expect(mod.getOnchainInterstitialTarget(internal)).toBe(target);
-    expect(
-      mod.getOnchainInterstitialTarget(
-        `https://example.com/pages/onchain-unverified.html?target=${encodeURIComponent(target)}`
-      )
-    ).toBeNull();
-    expect(
-      mod.getOnchainInterstitialTarget(
-        'file:///app/pages/onchain-unverified.html?target=https%3A%2F%2Fevil.example'
-      )
-    ).toBeNull();
-  });
-
   test('parses ens inputs with prefixes, paths, and invalid names', async () => {
     const mod = await loadModule();
 
