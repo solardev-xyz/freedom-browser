@@ -537,8 +537,11 @@ async function requestViaMyotis(
     }
   }
 
-  const beforeStatus = includeTrust ? myotis.getStatus?.(chainId) || {} : null;
   const requestPromise = Promise.resolve().then(async () => {
+    // Sample the head inside the tracked promise: a native binding that throws
+    // synchronously must reject this request (which releases the slot below)
+    // rather than escape before the release handler is attached.
+    const beforeStatus = includeTrust ? myotis.getStatus?.(chainId) || {} : null;
     const result = await requestMyotis(chainId, method, params);
     if (!includeTrust) return result;
     const afterStatus = myotis.getStatus?.(chainId) || {};

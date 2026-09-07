@@ -575,9 +575,11 @@ describe('chain-data-router', () => {
       }, 'latest'], options));
 
     await jest.advanceTimersByTimeAsync(2000);
-    await expect(Promise.all(requests)).resolves.toEqual(
-      expect.arrayContaining(Array(6).fill(expect.objectContaining({ source: 'direct' })))
-    );
+    // Compare the whole source list, not `arrayContaining`: identical matchers
+    // there are satisfied by a single match, so 5-of-6 falling elsewhere would
+    // still pass.
+    const settled = await Promise.all(requests);
+    expect(settled.map((entry) => entry.source)).toEqual(Array(6).fill('direct'));
     expect(mockMyotis.ethCall).toHaveBeenCalledTimes(1);
   });
 
@@ -659,10 +661,35 @@ describe('chain-data-router', () => {
     expect(mockMyotis.ethCall).toHaveBeenCalledTimes(1);
 
     await jest.advanceTimersByTimeAsync(5000);
-    await expect(Promise.all(requests)).resolves.toEqual(
-      expect.arrayContaining(Array(18).fill(expect.objectContaining({ source: 'direct' })))
-    );
+    const settled = await Promise.all(requests);
+    expect(settled.map((entry) => entry.source)).toEqual(Array(18).fill('direct'));
     expect(mockMyotis.ethCall).toHaveBeenCalledTimes(1);
+  });
+
+  test('releases the Myotis slot when the trust status binding throws synchronously', async () => {
+    mockRegistry.getNetwork.mockReturnValue({
+      access: { readOrder: ['myotis', 'direct'] },
+      quorum: { timeoutMs: 500 },
+    });
+    mockMyotis.getStatus.mockImplementationOnce(() => {
+      throw new Error('native getStatus binding failed');
+    });
+    mockMyotis.ethCall.mockResolvedValue({ resultHex: '0x2a' });
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ result: '0xrpc' }),
+    });
+    const params = [{
+      to: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      data: '0x1234',
+    }, 'latest'];
+
+    await expect(request(1, 'eth_call', params, { includeTrust: true }))
+      .resolves.toMatchObject({ source: 'direct' });
+    // A single synchronous throw must not strand the one Myotis slot: the next
+    // read still reaches Myotis instead of queueing behind a leaked count.
+    await expect(request(1, 'eth_call', params, { includeTrust: true }))
+      .resolves.toMatchObject({ source: 'myotis', verified: true });
   });
 
   test('escalates Colibri timeout cooldowns from 15 to 30 to 60 seconds and resets on success', async () => {
