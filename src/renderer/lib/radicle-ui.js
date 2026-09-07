@@ -19,7 +19,7 @@ let radicleBinaryAvailable = true;
 export const stopRadicleInfoUpdates = () => {
   radicleInfoPanel?.classList.remove('visible');
   if (radiclePeersCount) radiclePeersCount.textContent = '0';
-  if (radicleReposCount) radicleReposCount.textContent = '--';
+  if (radicleReposCount) radicleReposCount.textContent = '0';
   if (radicleVersionText) radicleVersionText.textContent = state.radicleVersionFetched ? state.radicleVersionValue : '';
 };
 
@@ -32,10 +32,12 @@ const applyRadicleInfo = (info) => {
   } else if (radiclePeersCount) {
     radiclePeersCount.textContent = '0';
   }
+  // Counters in this menu share one empty state: '0', not '--' (#227).
+  // '--' stays reserved for the non-numeric Version row.
   if (radicleReposCount) {
     radicleReposCount.textContent = Number.isInteger(info.reposCount)
       ? String(info.reposCount)
-      : '--';
+      : '0';
   }
   if (typeof info.version === 'string' && info.version) {
     state.radicleVersionValue = `libradicle v${info.version}`;
@@ -62,7 +64,7 @@ const refreshRadicleInfo = async () => {
       applyRadicleInfo(info);
     } catch {
       if (radiclePeersCount) radiclePeersCount.textContent = '0';
-      if (radicleReposCount) radicleReposCount.textContent = '--';
+      if (radicleReposCount) radicleReposCount.textContent = '0';
       if (radicleVersionText) {
         radicleVersionText.textContent = state.radicleVersionValue || '--';
       }

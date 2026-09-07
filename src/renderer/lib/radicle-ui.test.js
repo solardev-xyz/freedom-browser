@@ -180,8 +180,34 @@ describe('radicle-ui', () => {
     expect(ctx.clearIntervalMock).not.toHaveBeenCalled();
     expect(ctx.elements.radicleInfoPanel.classList.contains('visible')).toBe(false);
     expect(ctx.elements.radiclePeersCount.textContent).toBe('0');
-    expect(ctx.elements.radicleReposCount.textContent).toBe('--');
+    // Counters share one empty state with the rest of the Nodes menu (#227).
+    expect(ctx.elements.radicleReposCount.textContent).toBe('0');
     expect(ctx.elements.radicleVersionText.textContent).toBe('libradicle v0.6.1');
+  });
+
+  test('an unknown seeded-repository count renders 0, like the other counters', async () => {
+    const ctx = await loadRadicleModule({
+      antMenuOpen: true,
+      currentRadicleStatus: 'running',
+      windowRadicle: true,
+      statusResult: { status: 'running', error: null },
+    });
+
+    ctx.mod.initRadicleUi();
+    ctx.mod.startRadicleInfoUpdates();
+    await flushMicrotasks();
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    // reposCount absent (older/partial payload) — must not fall back to '--'
+    // while the sibling peers row shows a number.
+    ctx.getStatusHandler()({
+      status: 'running',
+      error: null,
+      info: { success: true, count: 3, version: '0.6.1' },
+    });
+    expect(ctx.elements.radiclePeersCount.textContent).toBe('3');
+    expect(ctx.elements.radicleReposCount.textContent).toBe('0');
   });
 
   test('updates Radicle status lines, toggle state, and running transitions', async () => {
