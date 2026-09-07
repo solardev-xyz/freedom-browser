@@ -841,10 +841,6 @@
   transition: border-color 0.15s ease;
 }
 
-.password-input:focus {
-  border-color: var(--accent);
-}
-
 .password-input::placeholder {
   color: var(--muted);
 }
@@ -2792,12 +2788,6 @@
   pointer-events: none;
 }
 
-.x402-perm-input:focus,
-.x402-perm-select:focus {
-  outline: none;
-  border-color: #2775ca;
-}
-
 /* --- x402 grant editor on the approval card ----------------------- */
 /* Checkbox + inline editors for cap amount + reset window. Shares
    visual language with the perm-manage subscreen so users see the
@@ -2896,12 +2886,6 @@
   font-weight: 500;
   color: var(--foreground-muted);
   pointer-events: none;
-}
-
-.x402-grant input[type="number"]:focus,
-.x402-grant-select:focus {
-  outline: none;
-  border-color: #2775ca;
 }
 
 /* Visual hint that the inputs are inert when the toggle is off —
@@ -3410,11 +3394,6 @@
   font-size: 13px;
 }
 
-.publisher-identity-search input:focus {
-  outline: none;
-  border-color: #f59e0b;
-}
-
 .publisher-identity-search input::placeholder {
   color: var(--muted);
 }
@@ -3858,10 +3837,6 @@
   outline: none;
   transition: border-color 0.15s ease;
   box-sizing: border-box;
-}
-
-.create-wallet-input:focus {
-  border-color: var(--accent);
 }
 
 .create-wallet-input::placeholder {
@@ -4764,7 +4739,6 @@
 }
 
 .send-input:focus {
-  border-color: var(--accent);
   background: rgba(255, 255, 255, 0.08);
 }
 
@@ -5233,10 +5207,6 @@
   border: 1px solid var(--border);
   border-radius: 8px;
   outline: none;
-}
-
-.send-password-row .password-input:focus {
-  border-color: var(--accent);
 }
 
 .send-password-submit {

@@ -41,8 +41,6 @@
 
 [data-theme='light'] .address-input:focus {
   background-color: #ffffff;
-  border-color: transparent;
-  box-shadow: none;
 }
 
 [data-theme='light'] .autocomplete-dropdown {
@@ -154,7 +152,6 @@
 
 [data-theme='light'] .form-input:focus {
   background: #ffffff;
-  border-color: var(--accent);
 }
 
 [data-theme='light'] .input-action-btn:hover {

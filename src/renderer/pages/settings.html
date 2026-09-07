@@ -185,6 +185,18 @@
         margin: 4px 0 0 0;
       }
 
+      /* Anchors inside settings copy (#234). A bare <a> in a help paragraph
+         used to fall through to the UA's default blue — barely readable on
+         the dark palette — while the resolver-row links carry `.row-help`
+         themselves and rendered muted. One rule covers both shapes: a link
+         inside a help paragraph, and a link that *is* one. */
+      .row-help a,
+      a.row-help {
+        color: var(--accent);
+        text-decoration: underline;
+        text-underline-offset: 2px;
+      }
+
       .row-control {
         flex-shrink: 0;
       }
@@ -3068,8 +3080,10 @@
         const searchHtml = () => `
           <div class="card">
             <div class="rpc-block" style="border-top: none">
-              <input type="text" class="rpc-input" id="chain-search-input"
-                placeholder="Search chains by name or ID…" spellcheck="false" />
+              <div class="rpc-row">
+                <input type="text" class="rpc-input" id="chain-search-input"
+                  placeholder="Search chains by name or ID…" spellcheck="false" />
+              </div>
             </div>
           </div>
           <div class="card" id="chain-search-results" style="margin-top: 12px">${searchResultsHtml()}</div>
@@ -3307,10 +3321,12 @@
             ? `<div class="card" style="margin-top: 12px">
                 <div class="rpc-block" style="border-top: none">
                   <p class="row-label" style="margin-bottom: 8px">Colibri prover endpoint</p>
-                  <input class="rpc-input" data-chain-prover="${esc(cid)}"
-                    data-source-id="${esc(proverSource?.id || 'colibri-corpus')}"
-                    value="${esc(proverSource?.coverage?.[cid] || '')}"
-                    placeholder="https://…" spellcheck="false" />
+                  <div class="rpc-row">
+                    <input class="rpc-input" data-chain-prover="${esc(cid)}"
+                      data-source-id="${esc(proverSource?.id || 'colibri-corpus')}"
+                      value="${esc(proverSource?.coverage?.[cid] || '')}"
+                      placeholder="https://…" spellcheck="false" />
+                  </div>
                 </div>
               </div>`
             : '';
