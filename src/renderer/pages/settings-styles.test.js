@@ -29,7 +29,9 @@ const SOURCE = fs.readFileSync(path.join(__dirname, 'settings.html'), 'utf8');
 // declarations for a hand-written stylesheet with no strings containing braces.
 
 function extractStyle(html) {
-  const matches = [...html.matchAll(/<style>([\s\S]*?)<\/style>/g)];
+  // Attribute-tolerant on purpose: a CSP change that adds `<style nonce=…>`
+  // must not make the block invisible to this sweep.
+  const matches = [...html.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/g)];
   if (matches.length !== 1) {
     throw new Error(`expected exactly one inline <style> block, found ${matches.length}`);
   }
@@ -98,16 +100,42 @@ const declaration = (node, property) =>
 
 // --- colour helpers (for the hard-coded-dark-background sweep) -------------
 
+// `rgb()`/`rgba()` in both the legacy comma form and the modern
+// space-separated form, with a `,`- or `/`-introduced alpha that may be a
+// number or a percentage: rgb(22, 27, 34), rgba(22, 27, 34, .6),
+// rgb(22 27 34), rgb(22 27 34 / 60%).
+const CHANNEL = String.raw`[\d.]+%?`;
+const RGB_FUNCTION = new RegExp(
+  String.raw`rgba?\(\s*(${CHANNEL})\s*(?:,\s*|\s+)(${CHANNEL})\s*(?:,\s*|\s+)(${CHANNEL})\s*(?:[,/]\s*(${CHANNEL})\s*)?\)`,
+  'g'
+);
+// #rgb, #rgba, #rrggbb, #rrggbbaa.
+const HEX_LENGTHS = new Set([3, 4, 6, 8]);
+// Colour syntaxes this reader does *not* model. A background written in one of
+// them would parse to zero colours and be waved through the dark sweep, so the
+// stylesheet is guarded against them instead (see the test below).
+const UNMODELLED_COLOR = /\b(?:hsla?|hwb|lab|lch|oklab|oklch|color|color-mix|light-dark)\(/;
+
+const channelValue = (raw) => (raw.endsWith('%') ? (parseFloat(raw) * 255) / 100 : parseFloat(raw));
+const alphaValue = (raw) => {
+  if (raw === undefined) return 1;
+  return raw.endsWith('%') ? parseFloat(raw) / 100 : parseFloat(raw);
+};
+
 function parseColors(value) {
   const colors = [];
-  for (const [, r, g, b, a] of value.matchAll(
-    /rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+)\s*)?\)/g
-  )) {
-    colors.push({ r: +r, g: +g, b: +b, a: a === undefined ? 1 : +a });
+  for (const [, r, g, b, a] of value.matchAll(RGB_FUNCTION)) {
+    colors.push({
+      r: channelValue(r),
+      g: channelValue(g),
+      b: channelValue(b),
+      a: alphaValue(a),
+    });
   }
-  for (const [, hex] of value.matchAll(/#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})\b/g)) {
+  for (const [, hex] of value.matchAll(/#([0-9a-fA-F]+)\b/g)) {
+    if (!HEX_LENGTHS.has(hex.length)) continue;
     const full =
-      hex.length === 3
+      hex.length <= 4
         ? hex
             .split('')
             .map((c) => c + c)
@@ -117,7 +145,7 @@ function parseColors(value) {
       r: parseInt(full.slice(0, 2), 16),
       g: parseInt(full.slice(2, 4), 16),
       b: parseInt(full.slice(4, 6), 16),
-      a: 1,
+      a: full.length === 8 ? parseInt(full.slice(6, 8), 16) / 255 : 1,
     });
   }
   return colors;
@@ -143,18 +171,30 @@ function darkBackgroundValue(node) {
 
 // --- fixtures -------------------------------------------------------------
 
-const css = stripComments(extractStyle(SOURCE));
-
-// An unbalanced stylesheet must fail the brace test with a useful message
-// rather than blowing up at module load and reporting "0 tests".
+// An unreadable stylesheet — unbalanced braces, or a `<style>` block this
+// reader cannot find — must fail the brace test with a useful message rather
+// than blowing up at module load and reporting "0 tests", so extraction lives
+// inside the same catch as parsing.
 let parseError = null;
+let css = '';
 let sheet = { prelude: '', declarations: [], children: [] };
 try {
+  css = stripComments(extractStyle(SOURCE));
   sheet = parseStylesheet(css);
 } catch (err) {
   parseError = err;
 }
 const topLevel = sheet.children;
+
+/** Every style rule in the sheet, at any depth. */
+const allRules = (function collect(node) {
+  return node.children.flatMap((child) => [child, ...collect(child)]);
+})(sheet);
+
+const backgroundValues = (node) => [
+  ...declaration(node, 'background'),
+  ...declaration(node, 'background-color'),
+];
 
 const LIGHT_MEDIA = /^@media\s*\(\s*prefers-color-scheme:\s*light\s*\)$/;
 const lightBlock = topLevel.find((node) => LIGHT_MEDIA.test(node.prelude));
@@ -213,11 +253,18 @@ describe('settings.html inline stylesheet', () => {
     ]);
   });
 
-  test('every hard-coded dark background has a light-theme override', () => {
+  test('every hard-coded dark background has a *light* light-theme override', () => {
     expect(lightBlock).toBeDefined();
-    const overridden = new Set(
-      lightBlock.children.filter((node) => !isAtRule(node)).flatMap(selectorsOf)
-    );
+    // Selector -> the light-block rules that repaint its background, in source
+    // order; the last one wins, exactly as the cascade sees it.
+    const overrides = new Map();
+    for (const node of lightBlock.children) {
+      if (isAtRule(node) || !backgroundValues(node).length) continue;
+      for (const selector of selectorsOf(node)) {
+        if (!overrides.has(selector)) overrides.set(selector, []);
+        overrides.get(selector).push(node);
+      }
+    }
 
     const missing = [];
     for (const node of topLevel) {
@@ -225,9 +272,61 @@ describe('settings.html inline stylesheet', () => {
       const value = darkBackgroundValue(node);
       if (!value) continue;
       for (const selector of selectorsOf(node)) {
-        if (!overridden.has(selector)) missing.push(`${selector} { background: ${value} }`);
+        const rules = overrides.get(selector);
+        if (!rules) {
+          missing.push(`${selector} { background: ${value} } — no light-theme background`);
+          continue;
+        }
+        // Membership is not enough: an override that cargo-cults the dark value
+        // still renders dark on the light theme (#224).
+        const winner = rules[rules.length - 1];
+        const stillDark = darkBackgroundValue(winner);
+        if (stillDark) {
+          missing.push(`${selector} { background: ${stillDark} } — light override is still dark`);
+        }
       }
     }
     expect(missing).toEqual([]);
+  });
+
+  test('no background uses a colour syntax the dark sweep cannot read', () => {
+    // parseColors models rgb()/rgba() and 3/4/6/8-digit hex. Anything else
+    // parses to zero colours, which the sweep above reads as "not dark" — so a
+    // dark hsl()/oklch() background would slip through silently. Fail loudly
+    // and extend parseColors instead.
+    const unreadable = [];
+    for (const node of allRules) {
+      for (const value of backgroundValues(node)) {
+        if (UNMODELLED_COLOR.test(value)) {
+          unreadable.push(`${node.prelude} { background: ${value} }`);
+          continue;
+        }
+        for (const [token, hex] of value.matchAll(/#([0-9a-fA-F]+)\b/g)) {
+          if (!HEX_LENGTHS.has(hex.length)) unreadable.push(`${node.prelude} { ${token} }`);
+        }
+      }
+    }
+    expect(unreadable).toEqual([]);
+  });
+
+  test('parseColors reads the colour syntaxes the sweep depends on', () => {
+    expect(parseColors('#161b22')).toEqual([{ r: 22, g: 27, b: 34, a: 1 }]);
+    expect(parseColors('#161b22cc')).toEqual([{ r: 22, g: 27, b: 34, a: 204 / 255 }]);
+    expect(parseColors('#1a2b')).toEqual([{ r: 17, g: 170, b: 34, a: 187 / 255 }]);
+    expect(parseColors('rgba(22, 27, 34, 0.6)')).toEqual([{ r: 22, g: 27, b: 34, a: 0.6 }]);
+    expect(parseColors('rgb(22 27 34 / 60%)')).toEqual([{ r: 22, g: 27, b: 34, a: 0.6 }]);
+    expect(parseColors('rgb(22 27 34)')).toEqual([{ r: 22, g: 27, b: 34, a: 1 }]);
+
+    // …and that the sweep actually flags backgrounds written in those forms.
+    const rule = (value) => ({
+      prelude: '.probe',
+      declarations: [{ property: 'background', value }],
+      children: [],
+    });
+    expect(darkBackgroundValue(rule('#161b22cc'))).toBe('#161b22cc');
+    expect(darkBackgroundValue(rule('rgb(22 27 34 / 60%)'))).toBe('rgb(22 27 34 / 60%)');
+    expect(darkBackgroundValue(rule('#ffffffcc'))).toBeNull();
+    // Near-transparent tints stay exempt, in either notation.
+    expect(darkBackgroundValue(rule('rgb(22 27 34 / 8%)'))).toBeNull();
   });
 });
