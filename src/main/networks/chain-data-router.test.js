@@ -26,6 +26,11 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
+// Let every queued continuation run without advancing any timer.
+function flushMicrotasks() {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
 jest.mock('./network-registry', () => mockRegistry);
 jest.mock('../myotis/myotis-manager', () => mockMyotis);
 jest.mock('../ens/colibri-resolver', () => ({
@@ -572,6 +577,90 @@ describe('chain-data-router', () => {
     await jest.advanceTimersByTimeAsync(2000);
     await expect(Promise.all(requests)).resolves.toEqual(
       expect.arrayContaining(Array(6).fill(expect.objectContaining({ source: 'direct' })))
+    );
+    expect(mockMyotis.ethCall).toHaveBeenCalledTimes(1);
+  });
+
+  test('serializes concurrent Myotis reads instead of downgrading the second one', async () => {
+    mockRegistry.getNetwork.mockReturnValue({
+      access: { readOrder: ['myotis', 'direct'] },
+      quorum: { timeoutMs: 5000 },
+    });
+    const balanceRead = deferred();
+    const decimalsRead = deferred();
+    mockMyotis.ethCall
+      .mockReturnValueOnce(balanceRead.promise)
+      .mockReturnValueOnce(decimalsRead.promise);
+    global.fetch = jest.fn();
+    const token = '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+
+    // The shape wallet reads actually use: balanceOf + decimals in one
+    // Promise.all. Neither may silently lose verification for being second.
+    const balance = request(1, 'eth_call', [{ to: token, data: '0x70a08231' }, 'latest']);
+    const decimals = request(1, 'eth_call', [{ to: token, data: '0x313ce567' }, 'latest']);
+
+    await flushMicrotasks();
+    expect(mockMyotis.ethCall).toHaveBeenCalledTimes(1);
+    balanceRead.resolve({ resultHex: '0x2a' });
+    await expect(balance).resolves.toEqual({
+      result: '0x2a',
+      source: 'myotis',
+      verified: true,
+    });
+
+    await flushMicrotasks();
+    decimalsRead.resolve({ resultHex: '0x12' });
+    await expect(decimals).resolves.toEqual({
+      result: '0x12',
+      source: 'myotis',
+      verified: true,
+    });
+    expect(mockMyotis.ethCall).toHaveBeenCalledTimes(2);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  test('keeps a Myotis-terminal read order working under concurrency', async () => {
+    mockRegistry.getNetwork.mockReturnValue({
+      access: { readOrder: ['myotis'] },
+      quorum: { timeoutMs: 5000 },
+    });
+    mockMyotis.getAccount.mockResolvedValue({ status: 'ok', balanceWei: '42', nonce: 3 });
+
+    await expect(Promise.all([
+      request(1, 'eth_getBalance', ['0xabc', 'latest']),
+      request(1, 'eth_getTransactionCount', ['0xabc', 'latest']),
+    ])).resolves.toEqual([
+      { result: '0x2a', source: 'myotis', verified: true },
+      { result: '0x3', source: 'myotis', verified: true },
+    ]);
+    expect(mockMyotis.getAccount).toHaveBeenCalledTimes(2);
+  });
+
+  test('refuses Myotis once its wait queue is full instead of parking unbounded work', async () => {
+    jest.useFakeTimers({ now: 1_000_000 });
+    mockRegistry.getNetwork.mockReturnValue({
+      access: { readOrder: ['myotis', 'direct'] },
+      quorum: { timeoutMs: 5000 },
+    });
+    mockMyotis.ethCall.mockReturnValue(new Promise(() => {}));
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ result: '0xrpc' }),
+    });
+    // One read holds the slot, sixteen queue behind it, the eighteenth is
+    // refused outright rather than waiting on a slot that is not turning over.
+    const requests = Array.from({ length: 18 }, (_value, index) =>
+      request(1, 'eth_call', [{
+        to: `0x${String(index + 1).padStart(40, '0')}`,
+        data: '0x1234',
+      }, 'latest']));
+
+    await expect(requests[17]).resolves.toMatchObject({ source: 'direct' });
+    expect(mockMyotis.ethCall).toHaveBeenCalledTimes(1);
+
+    await jest.advanceTimersByTimeAsync(5000);
+    await expect(Promise.all(requests)).resolves.toEqual(
+      expect.arrayContaining(Array(18).fill(expect.objectContaining({ source: 'direct' })))
     );
     expect(mockMyotis.ethCall).toHaveBeenCalledTimes(1);
   });

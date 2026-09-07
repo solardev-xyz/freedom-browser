@@ -45,7 +45,18 @@ const SOURCE_TIMEOUT_COOLDOWNS_MS = [15_000, 30_000, 60_000];
 // cancelled after an interactive deadline. Keep only one outstanding read so
 // a stalled execution peer cannot occupy every worker and starve the DNS/file
 // work needed by Colibri and RPC fallbacks.
+//
+// Contended readers *queue* for that slot inside their own source deadline
+// rather than failing fast. Failing fast would make the second of any two
+// concurrent reads skip Myotis deterministically — silently downgrading a
+// verified wallet read (getTokenBalance issues balanceOf + decimals in a
+// Promise.all) and failing a Myotis-terminal readOrder outright — even
+// against a perfectly healthy peer.
 const MAX_MYOTIS_IN_FLIGHT = 1;
+// The queue is still bounded: past this depth the slot is demonstrably not
+// turning over inside anyone's deadline, so refuse rather than park unbounded
+// work behind a stalled native read.
+const MAX_MYOTIS_QUEUED = 16;
 const MAX_COLIBRI_IN_FLIGHT = 8;
 const MAX_COLIBRI_IN_FLIGHT_PER_ROUTE = 2;
 const MAX_ADAPTIVE_SOURCE_ROUTES = 1024;
@@ -54,7 +65,8 @@ const MAX_ADAPTIVE_SOURCE_ROUTES = 1024;
 // app's call shape should not reorder the user's chain policy, affect another
 // app, or stay demoted after Freedom restarts.
 const adaptiveSourceState = new Map();
-const myotisInFlight = new Set();
+let myotisInFlight = 0;
+const myotisSlotWaiters = [];
 const colibriInFlight = new Set();
 const colibriInFlightByRoute = new Map();
 
@@ -220,7 +232,8 @@ function withSourceDeadline(promise, source, timeoutMs = INTERACTIVE_SOURCE_DEAD
 
 function clearAdaptiveRoutingForTest() {
   adaptiveSourceState.clear();
-  myotisInFlight.clear();
+  myotisInFlight = 0;
+  myotisSlotWaiters.length = 0;
   colibriInFlight.clear();
   colibriInFlightByRoute.clear();
 }
@@ -469,14 +482,59 @@ async function requestMyotis(chainId, method, params) {
   throw new SourceUnavailableError(`Myotis does not support ${method}`);
 }
 
+function releaseMyotisSlot() {
+  const next = myotisSlotWaiters.shift();
+  // Hand the slot straight over rather than counting it down and back up.
+  if (next) next();
+  else myotisInFlight = Math.max(0, myotisInFlight - 1);
+}
+
+// Returns null when the queue is full. `granted` is null when the slot was
+// free, so an uncontended read never pays for a timer it cannot need.
+function acquireMyotisSlot() {
+  if (myotisInFlight < MAX_MYOTIS_IN_FLIGHT) {
+    myotisInFlight += 1;
+    return { granted: null, abandon: () => {} };
+  }
+  if (myotisSlotWaiters.length >= MAX_MYOTIS_QUEUED) return null;
+  let grant;
+  const granted = new Promise((resolve) => {
+    grant = resolve;
+  });
+  myotisSlotWaiters.push(grant);
+  return {
+    granted,
+    abandon: () => {
+      const index = myotisSlotWaiters.indexOf(grant);
+      if (index >= 0) myotisSlotWaiters.splice(index, 1);
+      // The slot was handed over as the deadline fired: pass it along rather
+      // than leaking it to a caller that has already fallen through.
+      else granted.then(releaseMyotisSlot);
+    },
+  };
+}
+
 async function requestViaMyotis(
   chainId,
   method,
   params,
   { includeTrust = false, deadlineMs = null } = {}
 ) {
-  if (myotisInFlight.size >= MAX_MYOTIS_IN_FLIGHT) {
-    throw new SourceUnavailableError('Myotis is already processing this workload');
+  const budgetMs = deadlineMs || configuredSourceTimeoutMs(chainId);
+  const slot = acquireMyotisSlot();
+  if (!slot) {
+    throw new SourceUnavailableError('Myotis has too many reads queued for this workload');
+  }
+  const startedAt = Date.now();
+  if (slot.granted) {
+    // One budget covers the queue wait *and* the read, so serializing never
+    // costs a caller more than a solo read against the same source would.
+    try {
+      await withSourceDeadline(slot.granted, 'Myotis', budgetMs);
+    } catch (err) {
+      slot.abandon();
+      throw err;
+    }
   }
 
   const beforeStatus = includeTrust ? myotis.getStatus?.(chainId) || {} : null;
@@ -486,18 +544,14 @@ async function requestViaMyotis(
     const afterStatus = myotis.getStatus?.(chainId) || {};
     return { result, trust: myotisTrust(beforeStatus, afterStatus) };
   });
-  myotisInFlight.add(requestPromise);
-  const release = () => {
-    myotisInFlight.delete(requestPromise);
-  };
   // Native reads run on libuv workers and cannot currently be cancelled.
   // Keep timed-out work accounted for until it really settles so a busy page
   // cannot exhaust the worker pool while later sources answer its requests.
-  requestPromise.then(release, release);
+  requestPromise.then(releaseMyotisSlot, releaseMyotisSlot);
   return withSourceDeadline(
     requestPromise,
     'Myotis',
-    deadlineMs || configuredSourceTimeoutMs(chainId)
+    Math.max(1, budgetMs - (Date.now() - startedAt))
   );
 }
 

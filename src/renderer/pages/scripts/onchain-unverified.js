@@ -30,20 +30,21 @@ if (isConflict) {
   document.querySelectorAll('.conflict-only').forEach((element) => {
     element.hidden = false;
   });
-  continueBtn.hidden = true;
+  // A conflict is a hard block: there is no "continue once" for it. Take the
+  // control out of the document rather than hiding it, so no stylesheet or
+  // injected click can present a dead security action as an available one.
+  continueBtn.remove();
+  retryBtn.onclick = () => {
+    retryBtn.disabled = true;
+    window.freedomAPI?.onchainRetry?.(target);
+  };
 } else {
-  retryBtn.hidden = true;
+  retryBtn.remove();
+  continueBtn.onclick = () => {
+    continueBtn.disabled = true;
+    window.freedomAPI?.onchainContinueUnverified?.({ target, token });
+  };
 }
-
-continueBtn.onclick = () => {
-  continueBtn.disabled = true;
-  window.freedomAPI?.onchainContinueUnverified?.({ target, token });
-};
-
-retryBtn.onclick = () => {
-  retryBtn.disabled = true;
-  window.freedomAPI?.onchainRetry?.(target);
-};
 
 document.getElementById('back-btn').onclick = () => {
   if (window.history.length > 1) {

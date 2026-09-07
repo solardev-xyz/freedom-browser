@@ -18,6 +18,33 @@ const APP_URL = `web3://${ADDRESS}.eip155-1/`;
 const DISPLAY_URL = `web3://${ADDRESS}/`;
 const HTML_HASH = `0x${'ab'.repeat(32)}`;
 
+// The interstitial's mode-specific controls are switched with `hidden`. Assert
+// what the user can actually see and click, not just what the markup contains:
+// an author `display` rule outranking the UA `[hidden]` rule once rendered the
+// conflict page's non-existent "Continue once" action as a live button.
+function readVisibleInterstitial(window) {
+  return window.evaluate(async () => {
+    const webview = document.querySelector('webview:not(.hidden)');
+    if (!webview?.executeJavaScript) return null;
+    try {
+      return await webview.executeJavaScript(`(() => {
+        const shown = (element) => Boolean(element && element.offsetParent !== null);
+        return {
+          title: document.title,
+          buttons: [...document.querySelectorAll('.buttons button')]
+            .filter(shown)
+            .map((button) => button.textContent.trim()),
+          rows: [...document.querySelectorAll('.detail-row')]
+            .filter(shown)
+            .map((row) => row.querySelector('.detail-label')?.textContent),
+        };
+      })()`);
+    } catch {
+      return null;
+    }
+  });
+}
+
 test('loads a contract-hosted app under its web3 contract-and-chain origin', async ({
   window,
   harness,
@@ -211,6 +238,12 @@ test('shows the browser-owned gate before unverified onchain app code can run', 
       source: 'rpc.example',
       hash: HTML_HASH,
     });
+  // The conflict-only controls belong to the other mode and must not render.
+  await expect.poll(() => readVisibleInterstitial(window), { timeout: 10_000 }).toEqual({
+    title: 'Onchain app not independently verified',
+    buttons: ['Continue once', '← Go back', 'Open RPC settings'],
+    rows: ['Network', 'Contract', 'Fetched from', 'HTML hash'],
+  });
 
   // Swap the harness response before clicking so this leg proves the
   // internal-page → preload → shell → web3 navigation bridge. Main-process
@@ -239,4 +272,79 @@ test('shows the browser-owned gate before unverified onchain app code can run', 
     )
     .toBe('Approved bytes');
   await expect(input).toHaveValue(DISPLAY_URL);
+});
+
+test('offers no continue action when RPC servers disagreed about an app', async ({
+  window,
+  harness,
+}) => {
+  const app = { address: ethers.getAddress(ADDRESS), chainId: 1 };
+  const interstitialUrl = buildOnchainInterstitialUrl({
+    app,
+    provenance: {
+      version: 1,
+      chainId: 1,
+      network: 'Ethereum',
+      contract: app.address,
+      htmlHash: HTML_HASH,
+      trust: {
+        level: 'unverified',
+        method: 'quorum',
+        agreed: ['rpc-a.example'],
+        dissented: ['rpc-b.example', 'rpc-c.example'],
+        queried: ['rpc-a.example', 'rpc-b.example', 'rpc-c.example'],
+      },
+    },
+    requestUrl: APP_URL,
+    // Deliberately no token: the main process never mints one for a conflict,
+    // which is exactly why a rendered "Continue once" button could only no-op.
+  });
+
+  await harness.setContentFixture(APP_URL, {
+    status: 451,
+    body: 'This response must never become executable app content.',
+    headers: {
+      [GATE_HEADER]: Buffer.from(interstitialUrl, 'utf8').toString('base64url'),
+    },
+  });
+
+  await expect
+    .poll(() =>
+      window.evaluate(() => document.querySelector('webview:not(.hidden)')?.getURL() || '')
+    )
+    .toContain('/pages/home.html');
+
+  const input = window.locator('[data-test="address-input"]');
+  await input.fill(`web3://${ADDRESS}`);
+  await input.press('Enter');
+
+  await expect
+    .poll(() =>
+      window.evaluate(() => document.querySelector('webview:not(.hidden)')?.getURL() || '')
+    )
+    .toContain('/pages/onchain-unverified.html');
+
+  // A conflict is a hard block: "Continue once" is not part of this page's
+  // contract, so it must be neither visible nor present in the document.
+  await expect.poll(() => readVisibleInterstitial(window), { timeout: 10_000 }).toEqual({
+    title: 'RPC servers disagreed about this app',
+    buttons: ['Try again', '← Go back', 'Open RPC settings'],
+    rows: ['Network', 'Contract', 'Fetched from', 'HTML hash', 'Disagreed'],
+  });
+  await expect
+    .poll(() =>
+      window.evaluate(async () => {
+        const webview = document.querySelector('webview:not(.hidden)');
+        if (!webview?.executeJavaScript) return null;
+        try {
+          return await webview.executeJavaScript(`({
+            continueBtn: Boolean(document.getElementById('continue-btn')),
+            dissented: document.getElementById('dissented-el')?.textContent
+          })`);
+        } catch {
+          return null;
+        }
+      })
+    )
+    .toEqual({ continueBtn: false, dissented: 'rpc-b.example, rpc-c.example' });
 });
