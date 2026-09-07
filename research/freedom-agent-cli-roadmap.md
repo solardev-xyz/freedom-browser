@@ -1890,6 +1890,12 @@ The numbered inventory below records completed foundations and remaining capabil
 - Promote stable consequential mechanisms into deterministic runtime-owned boundaries when Freedom can observe them exactly; the generic intended-consequence classifier remains a conservative interruption layer rather than a substitute for those boundaries.
 - Add identity use, payments beyond the explicit wallet transaction primitive, and decentralized publication as separate explicit capability and approval packages. Website approval settings must never grant them implicitly.
 
+#### TODO — Agent-created home/start-page widgets
+
+- Make the Freedom home/start page a widget surface. Users can describe a specific widget to Agent, preview the generated result, and add it to their start page.
+- Support persistent widget placement and configuration, further edits through conversation, and enable/disable, removal, versioning, and rollback. Reuse the existing project/build/preview foundation with a separately defined widget installation boundary.
+- Define an isolated widget runtime and explicit data/network capabilities before implementation. Generated widgets must not inherit the internal start page's trusted privileges or the creating Agent session's authority. See the creation direction below for the shared lifecycle.
+
 #### TODO — WebMCP page-tool support
 
 - Track and qualify the emerging [WebMCP](https://webmachinelearning.github.io/webmcp/) browser API, which lets a loaded web application expose structured JavaScript tools to a browser-provided Agent. This is distinct from Freedom's deferred external MCP server: WebMCP is a page capability available inside an ordinary browsing context, and the current Community Group report does not require the browser to expose those tools to its Agent through the Model Context Protocol.
@@ -1930,6 +1936,7 @@ The long-term Workspace item model is broader than browsing:
 
 - **Page** — a task-owned live Freedom webview.
 - **File or artifact** — a generated or downloaded result backed by scoped file authority and a receipt.
+- **Start-page widget** — an Agent-created component with an isolated preview, declared capabilities, and install/configuration/version controls for the home/start page.
 - **Page customization** — an inspectable user script or style with explicit site scope, preview state, and install/rollback controls.
 - **Extension project** — source, manifest, permission diff, isolated test state, and a separately approved installable package.
 - **Browser customization** — a versioned change built against stable Freedom customization APIs, with preview, compatibility status, and rollback.
@@ -1937,28 +1944,33 @@ The long-term Workspace item model is broader than browsing:
 - **Build or process** — bounded execution state with inspectable logs and cancellation.
 - **Publication/deployment receipt** — verified output from publishing source through Radicle, assets through Swarm/IPFS, or later executing a separately reviewed wallet transaction.
 
-These are product slots, not implied authority. DApp, customization, and extension creation require a task-scoped project filesystem, controlled build runtime, preview lifecycle, explicit permission and install boundaries, rollback, network-specific publication adapters where relevant, and verifiable receipts before the corresponding Workspace items become interactive product claims.
+These are product slots, not implied authority. DApp, widget, customization, and extension creation require a task-scoped project filesystem, controlled build runtime, preview lifecycle, explicit permission and install boundaries, rollback, network-specific publication adapters where relevant, and verifiable receipts before the corresponding Workspace items become interactive product claims.
 
 ### Long-term creation and malleability direction
 
-Freedom Agent should eventually be able to create the user's browsing environment as well as operate it. This is a strategic direction with three progressively stronger layers:
+Freedom Agent should eventually be able to create the user's browsing environment as well as operate it. This is a strategic direction with four creation capabilities; their order does not prescribe implementation priority:
 
-1. **Greasemonkey-style page customization**
+1. **Agent-created home/start-page widgets**
+   - A user can ask Agent to create a specific widget, inspect its preview, and install it on the Freedom home/start page. Users can arrange and configure their widgets and ask Agent to revise them across turns.
+   - Freedom owns widget placement, persistent configuration, isolated execution, declared data/network access, and lifecycle controls. Installation and permission expansion require explicit approval; generated widget code cannot access trusted start-page internals or inherit Agent authority.
+   - Widget updates are versioned and reversible, with enable/disable, removal, and rollback controls. The widget API and runtime remain to be designed.
+
+2. **Greasemonkey-style page customization**
    - A user can describe how a site should look or behave: hide unwanted elements, restyle a page, rearrange controls, add shortcuts, extract or combine information, or automate a repeated site-specific interaction.
    - Agent drafts an inspectable script/style plus explicit URL or origin matching rules. The customization can be previewed temporarily on the live page before the user installs it persistently.
    - Freedom owns execution isolation, site scope, permissions, enable/disable state, version history, conflict handling, and one-click rollback. Generated code cannot silently broaden its match rules, cross origins, access trusted browser chrome, or acquire wallet, node, identity, file, or network privileges.
 
-2. **Agent-built browser extensions**
+3. **Agent-built browser extensions**
    - A user can ask Agent to build a reusable extension ranging from a small content enhancement to a multi-page browser tool.
    - The Workspace presents source, manifest, requested permissions, build/test results, and an isolated preview. Installation and every later permission expansion require a trusted Freedom decision; updates remain versioned and reversible.
    - The eventual extension target should use a documented Freedom/WebExtensions-compatible surface rather than depending on private implementation details. Generated extensions receive only declared capabilities and never inherit the Agent session's browser authority.
 
-3. **A malleable Freedom Browser**
+4. **A malleable Freedom Browser**
    - A user can ask Agent to change Freedom itself: compose new browser workflows, rearrange supported chrome, add commands or panels, connect browser and decentralized-network capabilities, and create durable personal tools.
    - The first safe form should be a stable customization/component API with bounded slots and capabilities. Arbitrary generated patches to the running main process, preload boundary, credential store, policy controller, wallet, updater, or security-critical chrome are not an acceptable customization mechanism.
    - Deeper source-level modification may later be possible through an explicit local-fork workflow with source review, isolated builds, compatibility tests, signed release separation, and a dependable route back to the official build. It must never masquerade as an ordinary low-risk preference change.
 
-All three layers should share one creation pipeline: scoped project storage, generated-source inspection, deterministic lint/build/test steps, live preview where possible, a permission and effect diff, explicit install/apply approval, durable versioning, disable/uninstall, and rollback. Agent-first Workspace is the natural place to show the project, preview, build process, permission request, and resulting installed artifact without implying that generation alone grants execution authority.
+All four capabilities should share one creation pipeline: scoped project storage, generated-source inspection, deterministic lint/build/test steps, live preview where possible, a permission and effect diff, explicit install/apply approval, durable versioning, disable/uninstall, and rollback. Agent-first Workspace is the natural place to show the project, preview, build process, permission request, and resulting installed artifact without implying that generation alone grants execution authority.
 
 The underlying authority model separates **tab custody**, **session attachment**, and the **active run lease** rather than treating them all as “task ownership”:
 
