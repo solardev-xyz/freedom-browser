@@ -9,7 +9,7 @@ stubs Ant/IPFS/Radicle/Myotis and the network, so every surface can be reached
 in seconds with no live services. Everything here lives in this directory:
 
 - `lib.js` — launch, screenshot, navigate, find a guest page, close menus,
-  harness fixtures, application-menu clicks.
+  close the sidebar, harness fixtures, application-menu clicks.
 - `recipes.js` — functions that put the app into a state (find bar, permission
   prompt, download shelf, muted tab, private window, settings sections,
   shortcut conflict, wallet Send/dApp/Swarm screens, onchain app + trust
@@ -34,7 +34,10 @@ NODE_PATH=$PWD/node_modules xvfb-run -a -s "-screen 0 1440x900x24" \
 
 Screenshots land in `/tmp/freedom-shots/` (override with `SHOTS_DIR`), named
 `<d|l>-<nn>-<surface>.png`. The tour never stops on a failed step; it prints
-`STEP FAIL <theme> <step> <reason>` and continues.
+`STEP FAIL <theme> <step> <reason>` and continues, then repeats the list in a
+final `N STEP FAIL: ...` line and exits non-zero. Treat any failure as
+invalidating the shots after it too — a step that leaves a prompt, menu or
+shelf on screen contaminates every later surface.
 
 One state, ad hoc:
 
@@ -66,6 +69,12 @@ with `FB_ROOT=/tmp/fb-base`. Remove the worktree afterwards.
   not close them. Use `closeMenus(win)`.
 - Clicking the sidebar's "Get Started" opens the onboarding modal, which then
   blocks every sidebar click. `dismissOnboarding(win)` clicks "Skip for now".
+- dApp/Swarm approval prompts are `.sidebar-modal` subscreens covering the
+  whole sidebar, `#sidebar-close` included, so the sidebar cannot be closed
+  while one is pending. Use `closeSidebar(win)`: it clicks each prompt's Back
+  button (which rejects the request) and throws if the sidebar is still open,
+  rather than leaving a prompt in every later screenshot. Prompts ignore
+  clicks for 500 ms after appearing (input protection), so dismissals retry.
 - Keyboard shortcuts only work after clicking the address bar first; native
   menu accelerators never fire from synthetic keys. Use `menuItem(app, id)`
   (`zoom-in`, `zoom-reset`, `new-private-window`).

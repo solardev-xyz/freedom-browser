@@ -92,6 +92,37 @@ async function closeMenus(win) {
   await win.keyboard.press('Escape');
 }
 
+// Close the sidebar, dismissing whatever it is showing first.
+//
+// Approval prompts (dApp/Swarm/Radicle) render as `.sidebar-modal` subscreens
+// pinned to `inset: 0` of the sidebar, so they cover #sidebar-close and the
+// close click is intercepted while one is open. A prompt left open then bleeds
+// into every later screenshot, so this throws rather than leaving it up: each
+// prompt's Back button rejects its pending request and closes the screen.
+async function closeSidebar(win) {
+  for (let i = 0; i < 8; i++) {
+    const modal = await win.$('.sidebar-subscreen.sidebar-modal:visible');
+    if (!modal) break;
+    const id = await modal.getAttribute('id');
+    const dismiss =
+      (await modal.$('.subscreen-back-btn:visible')) ||
+      (await modal.$('[id$="-reject"]:visible, [id$="-cancel"]:visible'));
+    if (!dismiss) throw new Error(`sidebar prompt ${id} has no back/reject control`);
+    // The prompt queue ignores clicks inside a freshly presented prompt's
+    // 500 ms input-protection window, so a dismiss can need a second try.
+    await dismiss.click({ timeout: 4_000 });
+    await win.waitForTimeout(400);
+  }
+  const stuck = await win.$('.sidebar-subscreen.sidebar-modal:visible');
+  if (stuck) throw new Error(`sidebar prompt ${await stuck.getAttribute('id')} would not close`);
+  await win.click('#sidebar-close');
+  await win.waitForTimeout(400);
+  const open = await win.evaluate(
+    () => !document.getElementById('sidebar')?.classList.contains('collapsed')
+  );
+  if (open) throw new Error('sidebar did not close');
+}
+
 // Dismiss the "Welcome to Freedom" onboarding modal that opens when the
 // sidebar's Get Started is clicked (it blocks clicks on the sidebar).
 async function dismissOnboarding(win) {
@@ -142,6 +173,7 @@ module.exports = {
   pageFor,
   evalInWebview,
   closeMenus,
+  closeSidebar,
   dismissOnboarding,
   harness,
   menuItem,

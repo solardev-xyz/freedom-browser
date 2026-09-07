@@ -5,9 +5,12 @@
 //     node .claude/skills/run-freedom/tour.js [dark|light|both]
 //
 // Each step is isolated: a failing step is logged as "STEP FAIL" and the
-// tour continues, so one broken surface does not hide the rest.
+// tour continues, so one broken surface does not hide the rest. Failed steps
+// are counted, summarised at the end and exit the process non-zero — a step
+// that leaves a prompt or menu on screen contaminates every later shot, so a
+// silent failure is worse than no shot at all.
 
-const { launch, shot, go, closeMenus, dismissOnboarding, SHOTS } = require('./lib');
+const { launch, shot, go, closeMenus, closeSidebar, dismissOnboarding, SHOTS } = require('./lib');
 const r = require('./recipes');
 
 const SECTIONS = [
@@ -28,7 +31,7 @@ const SECTIONS = [
 ];
 const PAGES = ['downloads', 'history', 'profiles', 'payments'];
 
-async function tour(theme) {
+async function tour(theme, failures) {
   const t = theme[0];
   const ctx = await launch({ theme, showBookmarkBar: true });
   const { app, win } = ctx;
@@ -36,6 +39,7 @@ async function tour(theme) {
     try {
       await fn();
     } catch (e) {
+      failures.push(`${theme}/${name}`);
       console.log('STEP FAIL', theme, name, e.message.split('\n')[0]);
     }
   };
@@ -73,8 +77,9 @@ async function tour(theme) {
   await step('download', async () => {
     await r.downloadShelf(ctx);
     await snap(8, 'download-shelf');
-    const close = await win.$('[data-test="download-close"]');
-    if (close) await close.click().catch(() => {});
+    // Left open, the shelf sits at the bottom of every later shot.
+    await win.click('[data-test="download-close"]');
+    await win.waitForSelector('#download-shelf .download-card', { state: 'hidden' });
   });
   await step('tabs', async () => {
     await r.tabContextMenu(ctx);
@@ -116,7 +121,9 @@ async function tour(theme) {
       await snap(19 + i, `swarm-${kind}`);
     }
   });
-  await win.click('#sidebar-close').catch(() => {});
+  // The last Swarm prompt still owns the sidebar; dismissing it is what makes
+  // #sidebar-close reachable again (and keeps it out of every later shot).
+  await step('close-sidebar', () => closeSidebar(win));
   await step('onchain', async () => {
     await r.onchainApp(ctx);
     await snap(23, 'onchain-app');
@@ -149,7 +156,8 @@ async function tour(theme) {
   await step('private', async () => {
     const pw = await r.privateWindow(ctx);
     await shot(pw, `${t}-60-private-window`);
-    await pw.click('#wallet-toggle-btn').catch(() => {});
+    await pw.click('#wallet-toggle-btn');
+    await pw.waitForSelector('#sidebar:not(.collapsed)');
     await pw.waitForTimeout(500);
     await shot(pw, `${t}-61-private-sidebar`);
   });
@@ -159,8 +167,13 @@ async function tour(theme) {
 (async () => {
   const which = process.argv[2] || 'both';
   const themes = which === 'both' ? ['dark', 'light'] : [which];
-  for (const theme of themes) await tour(theme);
+  const failures = [];
+  for (const theme of themes) await tour(theme, failures);
   console.log('done; screenshots in', SHOTS);
+  if (failures.length) {
+    console.log(`${failures.length} STEP FAIL: ${failures.join(', ')}`);
+    process.exitCode = 1;
+  }
 })().catch((e) => {
   console.error(e);
   process.exit(1);
