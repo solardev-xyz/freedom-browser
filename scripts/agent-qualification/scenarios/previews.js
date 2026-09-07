@@ -47,6 +47,8 @@ module.exports = {
       networkEnabled,
       PREVIEW_CSP,
       SERVER_PREVIEW_CSP,
+      platform,
+      survivorScan,
     } = ctx;
     const NETWORK_PERMISSIONS_ENABLED = networkEnabled;
 
@@ -58,16 +60,7 @@ module.exports = {
       events.find((event) => event.type === 'tool_finished' && event.toolCallId === toolCallId);
     const runFinishedEvent = (runId) =>
       events.find((event) => event.type === 'run_finished' && event.runId === runId);
-    const survivorProcesses = () =>
-      spawnSync('pgrep', ['-af', '[b]wrap|freedom-sandbox-supervisor|node server\\.js'], {
-        encoding: 'utf8',
-      })
-        .stdout.split('\n')
-        .filter(
-          (line) =>
-            line && !/shell-snapshots|pgrep|claude|qualify-agent|agent-qualification/.test(line)
-        )
-        .join('\n');
+    const survivorProcesses = () => survivorScan('node server\\.js');
     const safeJson = (text) => {
       try {
         return JSON.parse(text);
@@ -417,18 +410,33 @@ module.exports = {
     // ---- S5 kernel listener ownership versus declared association
     await waitFor(() => Boolean(listener(port1)), 5_000);
     const listenerLine = listener(port1);
-    const listenerPid = Number(/pid=(\d+)/.exec(listenerLine)?.[1] || 0);
+    const listenerPid =
+      platform.platform === 'linux'
+        ? Number(/pid=(\d+)/.exec(listenerLine)?.[1] || 0)
+        : Number(listenerLine.split('\n').at(-1)?.trim().split(/\s+/)[1] || 0);
     const ancestry = [];
     let cursor = listenerPid;
     while (cursor > 1 && ancestry.length < 12) {
-      let status;
-      try {
-        status = fs.readFileSync(`/proc/${cursor}/status`, 'utf8');
-      } catch {
-        break;
+      let name;
+      let ppid;
+      if (platform.platform === 'linux') {
+        let status;
+        try {
+          status = fs.readFileSync(`/proc/${cursor}/status`, 'utf8');
+        } catch {
+          break;
+        }
+        name = /^Name:\s+(.+)$/m.exec(status)?.[1];
+        ppid = Number(/^PPid:\s+(\d+)$/m.exec(status)?.[1] || 0);
+      } else {
+        const processRow = spawnSync('/bin/ps', ['-o', 'ppid=,comm=', '-p', String(cursor)], {
+          encoding: 'utf8',
+        }).stdout.trim();
+        const match = /^(\d+)\s+(.+)$/.exec(processRow);
+        if (!match) break;
+        ppid = Number(match[1]);
+        name = match[2];
       }
-      const name = /^Name:\s+(.+)$/m.exec(status)?.[1];
-      const ppid = Number(/^PPid:\s+(\d+)$/m.exec(status)?.[1] || 0);
       ancestry.push({ pid: cursor, name });
       cursor = ppid;
     }
@@ -441,12 +449,16 @@ module.exports = {
     };
     check(
       'S5',
-      'the listener on 127.0.0.1:<port> is kernel-owned by the sandboxed process tree (bwrap ancestor, foreign pid namespace, shared network namespace); the product itself only records the declared process/port association',
+      `the listener on 127.0.0.1:<port> is kernel-owned by the sandboxed process tree under ${platform.sandboxName}; the product itself only records the declared process/port association`,
       listenerLine.includes(`127.0.0.1:${port1}`) &&
         listenerPid > 0 &&
-        ancestry.some((entry) => entry.name === 'bwrap') &&
-        readNs(listenerPid, 'pid') !== readNs(process.pid, 'pid') &&
-        readNs(listenerPid, 'net') === readNs(process.pid, 'net'),
+        (platform.platform === 'linux'
+          ? ancestry.some((entry) => entry.name === 'bwrap') &&
+            readNs(listenerPid, 'pid') !== readNs(process.pid, 'pid') &&
+            readNs(listenerPid, 'net') === readNs(process.pid, 'net')
+          : listenerPid !== process.pid &&
+            ancestry.some((entry) => entry.pid === process.pid) &&
+            launchReceipt?.backend === platform.backend),
       {
         listener: listenerLine.replace(/fd=\d+/g, 'fd=…'),
         ancestry,
@@ -751,21 +763,21 @@ module.exports = {
     const stoppedExecutor = executorFor(serverCommand)?.receipt;
     check(
       'S9',
-      'explicit termination stops the server through namespace teardown, keeps a truthful receipt with the declared port, and the first preview request returns terminal behavior before the route disappears',
+      'explicit termination stops the server through platform teardown, keeps a truthful receipt with the declared port, and the first preview request returns terminal behavior before the route disappears',
       stopped.result?.details?.state === 'cancelled' &&
         stoppedReceipt?.state === 'cancelled' &&
-        stoppedReceipt.signal === 'SIGKILL' &&
+        platform.signalMatches(stoppedReceipt.signal) &&
         stoppedReceipt.networkPosture === 'full' &&
         stoppedReceipt.previewPort === port1 &&
-        stoppedReceipt.terminationGuarantee === 'namespace_scoped' &&
-        stoppedReceipt.terminationScope === 'pid_namespace' &&
-        stoppedReceipt.survivorsPossible === false &&
-        stoppedReceipt.completeDescendantTermination === true &&
+        stoppedReceipt.terminationGuarantee === platform.terminationGuarantee &&
+        stoppedReceipt.terminationScope === platform.terminationScope &&
+        stoppedReceipt.survivorsPossible === platform.survivorsPossible &&
+        stoppedReceipt.completeDescendantTermination === platform.completeDescendantTermination &&
         stoppedLedger?.state === 'cancelled' &&
-        stoppedLedger.terminationScope === 'pid_namespace' &&
+        stoppedLedger.terminationScope === platform.terminationScope &&
         stoppedLedger.networkPosture === 'full' &&
         stoppedExecutor?.state === 'cancelled' &&
-        stoppedExecutor.terminationScope === 'pid_namespace' &&
+        stoppedExecutor.terminationScope === platform.terminationScope &&
         afterStopFirst.status === 410 &&
         afterStopFirst.text === 'Preview server stopped' &&
         afterStopSecond.status === 404 &&
@@ -817,8 +829,8 @@ module.exports = {
       !opened2.error &&
         live2.status === 200 &&
         ledgerFor(serverCommand2)?.state === 'cancelled' &&
-        ledgerFor(serverCommand2).signal === 'SIGKILL' &&
-        executorFor(serverCommand2)?.receipt?.terminationScope === 'pid_namespace' &&
+        platform.signalMatches(ledgerFor(serverCommand2).signal) &&
+        executorFor(serverCommand2)?.receipt?.terminationScope === platform.terminationScope &&
         afterStop2.status === 410 &&
         afterStop2Again.status === 404 &&
         listener(port2) === '' &&
@@ -876,7 +888,7 @@ module.exports = {
         run2Outcome.verification === 'workspace_preview_opened' &&
         deleted === true &&
         executor3Before?.receipt?.state === 'cancelled' &&
-        executor3Before.receipt.terminationScope === 'pid_namespace' &&
+        executor3Before.receipt.terminationScope === platform.terminationScope &&
         afterDelete.status === 404 &&
         storageClears.some(
           (entry) =>
@@ -961,12 +973,12 @@ module.exports = {
     const afterDispose = await probe(base4);
     check(
       'S12-dispose',
-      'controller disposal stops the retained server through namespace teardown and the preview route reports terminal then unavailable',
+      'controller disposal stops the retained server through platform teardown and the preview route reports terminal then unavailable',
       !opened4.error &&
         live4.status === 200 &&
         executor4?.receipt?.state === 'cancelled' &&
-        executor4.receipt.terminationScope === 'pid_namespace' &&
-        executor4.receipt.signal === 'SIGKILL' &&
+        executor4.receipt.terminationScope === platform.terminationScope &&
+        platform.signalMatches(executor4.receipt.signal) &&
         [410, 404].includes(afterDispose.status) &&
         listener(port4) === '' &&
         survivorProcesses() === '',
@@ -1006,11 +1018,11 @@ module.exports = {
         helperLaunches.every((entry) => entry.network === 'none') &&
         durableServerPreview?.workspace?.networkPosture === 'full' &&
         durableServerPreview.workspace.backend === 'freedom-workspace-server-preview' &&
-        durableStopItem?.workspace?.terminationGuarantee === 'namespace_scoped' &&
-        durableStopItem.workspace.terminationScope === 'pid_namespace' &&
-        durableStopItem.workspace.signal === 'SIGKILL' &&
-        ledgerA?.terminationScope === 'pid_namespace' &&
-        ledgerA.terminationGuarantee === 'namespace_scoped',
+        durableStopItem?.workspace?.terminationGuarantee === platform.terminationGuarantee &&
+        durableStopItem.workspace.terminationScope === platform.terminationScope &&
+        platform.signalMatches(durableStopItem.workspace.signal) &&
+        ledgerA?.terminationScope === platform.terminationScope &&
+        ledgerA.terminationGuarantee === platform.terminationGuarantee,
       {
         helperPostures: [...new Set(helperLaunches.map((entry) => entry.network))],
         durableServerPreview: durableServerPreview?.workspace,

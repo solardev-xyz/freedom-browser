@@ -2,7 +2,7 @@
 
 // Controlled-failure self-test. This scenario deliberately throws after enabling a workspace and
 // launching one live managed process, so the runner's finally-based teardown can be validated on
-// the failure path: the harness must terminate the live namespace process and remove the uniquely
+// the failure path: the harness must terminate the live managed process and remove the uniquely
 // owned temporary fixture directory even though the scenario itself errored. It always exits
 // non-zero (the injected failure), and the runner's cleanup diagnostic plus the cleanup-root,
 // cleanup-survivors, and cleanup-errors assertions show whether teardown succeeded regardless.
@@ -21,7 +21,7 @@ module.exports = {
     const enable = await callTool(run1, 'bash', { command: 'printf enabled' });
     if (!bashText(enable).includes('enabled')) throw new Error('workspace enable failed');
 
-    // Launch a long-lived yielded process so teardown must terminate a live sandbox namespace.
+    // Launch a long-lived yielded process so teardown must terminate a live sandbox process.
     const proc = await callTool(run1, 'bash', {
       command: 'printf ready; while :; do printf y >> hb-fault; sleep 0.2; done',
       yield_time_ms: 400,

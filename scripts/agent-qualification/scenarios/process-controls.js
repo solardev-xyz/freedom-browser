@@ -4,13 +4,13 @@
 // controls end to end through the real production path that backs the trusted IPC handlers
 // (agent:process:stop and agent:process:preview-open): FreedomAgentService.stopWorkspaceProcess /
 // openWorkspaceProcessPreview → ManagedWorkspaceController.terminateProcess / listProcesses →
-// ManagedWorkspaceProcessManager.terminate / list → real Bubblewrap execution and the production
+// ManagedWorkspaceProcessManager.terminate / list → real platform execution and the production
 // preview controller. It reads the renderer-facing projection from service.getState().workspace
 // .processes exactly as the chrome renders it.
 //
 // The scenario runs in two parts. Part one (PC*) drives the service methods directly against the
 // real composition. Part two (PCI*) registers the production Freedom agent IPC (registerFreedomAgentIpc)
-// against the same real service and Bubblewrap composition, establishes a chrome-owned run through the
+// against the same real service and platform composition, establishes a chrome-owned run through the
 // real agent:start handler, and invokes the registered agent:process:stop / agent:process:preview-open
 // handlers with the owning sender, another renderer, a malformed id, and a cross-conversation id —
 // proving the full trusted IPC path including the sender-ownership and shape gate, and that a rejected
@@ -54,8 +54,9 @@ module.exports = {
       createFakeSession,
       sessions,
       onCleanup,
-      spawnSync,
       root,
+      platform,
+      survivorScan,
     } = ctx;
 
     const SESSION_ID = /workspace_process_[a-f0-9]{24}/g;
@@ -67,16 +68,7 @@ module.exports = {
       executions
         .filter((entry) => entry.command === commandText)
         .sort((a, b) => b.index - a.index)[0]?.receipt;
-    const survivorProcesses = () =>
-      spawnSync('pgrep', ['-af', '[b]wrap|freedom-sandbox-supervisor|hb-pc-|node server\\.js'], {
-        encoding: 'utf8',
-      })
-        .stdout.split('\n')
-        .filter(
-          (line) =>
-            line && !/shell-snapshots|pgrep|claude|qualify-agent|agent-qualification/.test(line)
-        )
-        .join('\n');
+    const survivorProcesses = () => survivorScan('hb-pc-|node server\\.js');
     const ALLOWED_KEYS = [
       'processId',
       'command',
@@ -90,13 +82,8 @@ module.exports = {
     const projection = () => service.getState()?.workspace?.processes || [];
     const projectionFor = (id) => projection().find((entry) => entry.processId === id);
     const executorTruthful = (receipt, posture) =>
-      receipt &&
-      receipt.state === 'cancelled' &&
-      receipt.signal === 'SIGKILL' &&
-      receipt.terminationGuarantee === 'namespace_scoped' &&
-      receipt.terminationScope === 'pid_namespace' &&
-      receipt.survivorsPossible === false &&
-      receipt.completeDescendantTermination === true &&
+      platform.receiptMatches(receipt, 'cancelled') &&
+      platform.signalMatches(receipt.signal) &&
       receipt.networkPosture === posture;
     const probe = async (url) => {
       const response = await previewHandler(new Request(url));
@@ -145,7 +132,7 @@ module.exports = {
         entry &&
         entry.processId === procId &&
         entry.state === 'running' &&
-        entry.backend === 'linux-bubblewrap' &&
+        entry.backend === platform.backend &&
         entry.networkPosture === 'none' &&
         typeof entry.command === 'string' &&
         entry.command.length > 0 &&
@@ -219,7 +206,7 @@ module.exports = {
       }
     );
 
-    // ---- PC3: chrome Stop reaches real Bubblewrap SIGKILL; the process disappears; ledger terminal.
+    // ---- PC3: chrome Stop reaches the real backend; the process disappears; ledger is terminal.
     const hbBefore = fileSize('hb-pc-1');
     await delay(300);
     const hbGrowing = fileSize('hb-pc-1') > hbBefore;
@@ -233,23 +220,19 @@ module.exports = {
     emit('stop_result', { stopResult, projectionAfter: projection() });
     check(
       'PC3',
-      'chrome Stop terminates the exact process through real Bubblewrap namespace teardown with a truthful SIGKILL receipt; it disappears from the live projection while its terminal ledger evidence remains',
+      `chrome Stop terminates the original process group through real ${platform.sandboxName} cleanup with a truthful ${platform.terminationGuarantee} receipt; it disappears from the live projection while its terminal ledger evidence remains`,
       hbGrowing &&
         stopResult?.state === 'cancelled' &&
         stopReceipt?.state === 'cancelled' &&
-        stopReceipt.signal === 'SIGKILL' &&
-        stopReceipt.terminationGuarantee === 'namespace_scoped' &&
-        stopReceipt.terminationScope === 'pid_namespace' &&
-        stopReceipt.backend === 'linux-bubblewrap' &&
-        stopReceipt.survivorsPossible === false &&
-        stopReceipt.completeDescendantTermination === true &&
+        platform.receiptMatches(stopReceipt, 'cancelled') &&
+        platform.signalMatches(stopReceipt.signal) &&
         stopReceipt.networkPosture === 'none' &&
         executorTruthful(stopExecutor, 'none') &&
         projectionFor(procId) === undefined &&
         projection().length === 0 &&
         ledgerA?.state === 'cancelled' &&
-        ledgerA.signal === 'SIGKILL' &&
-        ledgerA.terminationScope === 'pid_namespace' &&
+        platform.signalMatches(ledgerA.signal) &&
+        ledgerA.terminationScope === platform.terminationScope &&
         hbStable &&
         survivorProcesses() === '',
       {
@@ -393,7 +376,7 @@ module.exports = {
       'PC6-revoke',
       'chrome Stop terminates the server and revokes its preview route',
       serverStop?.state === 'cancelled' &&
-        serverStop.workspace?.signal === 'SIGKILL' &&
+        platform.signalMatches(serverStop.workspace?.signal) &&
         serverStop.workspace.previewPort === port &&
         projectionFor(serverId) === undefined &&
         [410, 404].includes(afterStop.status) &&
@@ -634,7 +617,7 @@ module.exports = {
     const ipcStopReceipt = stopOwner?.result?.workspace;
     check(
       'PCI-stop',
-      'the registered agent:process:stop handler rejects another renderer (NOT_OWNER), a malformed id (NOT_OWNER), and a cross-conversation id (INVALID_ARGUMENT) without affecting the live process, then stops the owned process through real Bubblewrap for the owning sender',
+      'the registered agent:process:stop handler rejects another renderer (NOT_OWNER), a malformed id (NOT_OWNER), and a cross-conversation id (INVALID_ARGUMENT) without affecting the live process, then stops the owned process through the real platform backend for the owning sender',
       stopOther?.ok === false &&
         stopOther.error?.code === AGENT_IPC_ERROR_CODES.NOT_OWNER &&
         stopMalformed?.ok === false &&
@@ -644,10 +627,10 @@ module.exports = {
         liveAfterRejections === true &&
         stopOwner?.ok === true &&
         stopOwner.result?.state === 'cancelled' &&
-        ipcStopReceipt?.signal === 'SIGKILL' &&
-        ipcStopReceipt.terminationScope === 'pid_namespace' &&
-        ipcStopReceipt.terminationGuarantee === 'namespace_scoped' &&
-        ipcStopReceipt.backend === 'linux-bubblewrap' &&
+        platform.signalMatches(ipcStopReceipt?.signal) &&
+        ipcStopReceipt.terminationScope === platform.terminationScope &&
+        ipcStopReceipt.terminationGuarantee === platform.terminationGuarantee &&
+        ipcStopReceipt.backend === platform.backend &&
         !(stopOwner.state?.workspace?.processes || []).some(
           (entry) => entry.processId === ipcProcId
         ) &&
@@ -719,7 +702,7 @@ module.exports = {
       'stopping the IPC-owned server through the registered handler terminates it and revokes its preview route',
       ipcServerStop?.ok === true &&
         ipcServerStop.result?.state === 'cancelled' &&
-        ipcServerStop.result.workspace?.signal === 'SIGKILL' &&
+        platform.signalMatches(ipcServerStop.result.workspace?.signal) &&
         ipcServerLive() === false &&
         [410, 404].includes((await probe(ipcPreviewUrl)).status) &&
         listener(ipcPort) === '',
@@ -730,7 +713,7 @@ module.exports = {
     // ---- PC9: nothing survives (also enforced by the harness cleanup assertions).
     check(
       'PC9',
-      'no heartbeat writer, server, Bubblewrap process, or preview listener survives the controlled processes',
+      `no heartbeat writer, server, ${platform.sandboxName} launcher, or preview listener survives the controlled processes`,
       survivorProcesses() === '' && listener(port) === '' && listener(ipcPort) === '',
       { survivors: survivorProcesses(), listener: listener(port), ipcListener: listener(ipcPort) }
     );

@@ -31,12 +31,17 @@
 
 'use strict';
 
+const crypto = require('crypto');
+const fs = require('fs');
+const net = require('net');
+const os = require('os');
+const path = require('path');
 const log = require('./logger');
 const {
   runWithPrivateLogContext,
   redactUrlForLog,
 } = require('./private/private-log-context');
-const { BrowserWindow, ipcMain, webContents } = require('electron');
+const { app, BrowserWindow, ipcMain, webContents } = require('electron');
 const IPC = require('../shared/ipc-channels');
 const { success, failure } = require('./ipc-contract');
 const { updateService, MODE, setStatusMessage } = require('./service-registry');
@@ -47,9 +52,218 @@ const {
 } = require('./automation/runtime');
 
 const TEST_MODE_ENABLED = process.env.FREEDOM_TEST_MODE === '1';
+const APP_EXIT_FIXTURE_PREFIX = 'freedom-agent-app-exit-';
+const APP_EXIT_MODES = new Set(['idle', 'running', 'detached']);
+const APP_EXIT_TOKEN_PATTERN = /^freedom-agent-app-exit-[a-f0-9]{24}$/;
+const APP_EXIT_FAILURE_INJECTIONS = new Set([null, 'after_detached_process_created']);
 
 function isTestMode() {
   return TEST_MODE_ENABLED;
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForPath(candidate, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (fs.existsSync(candidate)) return;
+    await delay(25);
+  }
+  throw new Error(`Timed out waiting for Agent exit fixture ${path.basename(candidate)}`);
+}
+
+async function pickAgentExitPort() {
+  const server = net.createServer();
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen({ host: '127.0.0.1', port: 0 }, resolve);
+  });
+  const port = server.address().port;
+  await new Promise((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
+  return port;
+}
+
+function validatedAgentExitRoot() {
+  const root = fs.realpathSync(app.getPath('userData'));
+  const temporaryRoot = fs.realpathSync(os.tmpdir());
+  if (
+    path.dirname(root) !== temporaryRoot ||
+    !path.basename(root).startsWith(APP_EXIT_FIXTURE_PREFIX)
+  ) {
+    throw new Error('Agent application-exit fixture requires an owned temporary user-data root');
+  }
+  return root;
+}
+
+async function prepareAgentExitScenario(agentRuntime, request) {
+  const mode = request?.mode;
+  const token = request?.token;
+  const failureInjection = request?.failureInjection ?? null;
+  if (!APP_EXIT_MODES.has(mode)) throw new Error('Unknown Agent application-exit mode');
+  if (!APP_EXIT_TOKEN_PATTERN.test(token || '')) {
+    throw new Error('Agent application-exit fixture requires a valid cleanup token');
+  }
+  if (!APP_EXIT_FAILURE_INJECTIONS.has(failureInjection)) {
+    throw new Error('Unknown Agent application-exit failure injection');
+  }
+  if (failureInjection && mode !== 'detached') {
+    throw new Error('Agent application-exit failure injection requires detached mode');
+  }
+  if (
+    !agentRuntime?.service ||
+    !agentRuntime?.workspaceController ||
+    !agentRuntime?.workspacePreviewController
+  ) {
+    throw new Error('Agent application-exit fixture requires the app-owned Agent runtime');
+  }
+  const root = validatedAgentExitRoot();
+  const base = {
+    mode,
+    token,
+    appOwnedService: true,
+    appOwnedWorkspaceController: true,
+    appOwnedProcessManager: true,
+  };
+  if (mode === 'idle') return base;
+
+  const conversationId = `app_exit_${crypto.randomBytes(10).toString('hex')}`;
+  const controller = agentRuntime.workspaceController;
+  await controller.enable(conversationId);
+  const workspace = controller.getWorkspace(conversationId);
+  const workspaceRoot = controller.leases.get(workspace.workspaceId).workspaceRoot;
+
+  if (mode === 'running') {
+    const port = await pickAgentExitPort();
+    const scriptName = 'app-exit-running.py';
+    const pidPath = path.join(workspaceRoot, 'running.pid');
+    const readyPath = path.join(workspaceRoot, 'running.ready');
+    const heartbeatPath = path.join(workspaceRoot, 'running-heartbeat');
+    const source = [
+      'import http.server, pathlib, sys, threading, time',
+      'port = int(sys.argv[1])',
+      "pathlib.Path('running.pid').write_text(str(__import__('os').getpid()))",
+      "heartbeat = pathlib.Path('running-heartbeat')",
+      'def beat():',
+      '    while True:',
+      "        with heartbeat.open('a') as stream: stream.write('x')",
+      '        time.sleep(0.03)',
+      'class Handler(http.server.BaseHTTPRequestHandler):',
+      '    def do_GET(self):',
+      "        body = b'agent-exit-preview'",
+      '        self.send_response(200)',
+      "        self.send_header('Content-Type', 'text/plain')",
+      "        self.send_header('Content-Length', str(len(body)))",
+      '        self.end_headers()',
+      '        self.wfile.write(body)',
+      '    def log_message(self, *_args): pass',
+      'threading.Thread(target=beat, daemon=True).start()',
+      "server = http.server.ThreadingHTTPServer(('127.0.0.1', port), Handler)",
+      "pathlib.Path('running.ready').write_text('ready')",
+      'server.serve_forever()',
+    ].join('\n');
+    await fs.promises.writeFile(path.join(workspaceRoot, scriptName), source);
+    const command = `python3 ${scriptName} ${port} ${token}`;
+    const permission = await controller.prepareCommandPermissions(
+      conversationId,
+      { network: 'full' },
+      { command, workingDirectory: '.' }
+    );
+    controller.grantCommandPermissions(conversationId, permission.prepared, 'once');
+    const started = await controller.startProcess(conversationId, {
+      command,
+      previewPort: port,
+      yieldMs: 500,
+    });
+    await waitForPath(readyPath);
+    const preview = agentRuntime.workspacePreviewController.createProcessPreview(
+      conversationId,
+      started.processId
+    );
+    const response = await agentRuntime.workspacePreviewController.handleRequest(
+      new Request(preview.url)
+    );
+    return {
+      ...base,
+      conversationId,
+      workspaceRoot,
+      processId: started.processId,
+      runningProjection: started.workspace,
+      ownedProcesses: [{ role: 'managed-server', pid: Number(fs.readFileSync(pidPath, 'utf8')) }],
+      heartbeatPath,
+      preview: {
+        port,
+        url: preview.url,
+        statusBeforeQuit: response.status,
+        bodyBeforeQuit: await response.text(),
+      },
+    };
+  }
+
+  const outsideCanary = path.join(root, 'detached-outside-canary');
+  await fs.promises.writeFile(outsideCanary, 'outside-canary');
+  const scriptName = 'app-exit-detached.py';
+  const managedPidPath = path.join(workspaceRoot, 'managed.pid');
+  const detachedPidPath = path.join(workspaceRoot, 'detached.pid');
+  const resultPath = path.join(workspaceRoot, 'detached-result.json');
+  const managedHeartbeatPath = path.join(workspaceRoot, 'managed-heartbeat');
+  const detachedHeartbeatPath = path.join(workspaceRoot, 'detached-heartbeat');
+  const source = [
+    'import json, os, pathlib, socket, sys, time',
+    'token, outside = sys.argv[1:3]',
+    "pathlib.Path('managed.pid').write_text(str(os.getpid()))",
+    'if os.fork() == 0:',
+    '    os.setsid()',
+    "    pathlib.Path('detached.pid').write_text(str(os.getpid()))",
+    '    result = {}',
+    '    try:',
+    '        pathlib.Path(outside).read_text()',
+    "        result['outsideRead'] = 'unexpected'",
+    "    except OSError as error: result['outsideRead'] = error.errno",
+    '    sock = socket.socket()',
+    '    try:',
+    "        result['loopback'] = sock.connect_ex(('127.0.0.1', 9))",
+    '    finally: sock.close()',
+    '    try:',
+    "        socket.getaddrinfo('example.com', 443)",
+    "        result['dns'] = 'unexpected'",
+    "    except OSError as error: result['dns'] = getattr(error, 'errno', None) or type(error).__name__",
+    "    pathlib.Path('detached-result.json').write_text(json.dumps(result))",
+    "    heartbeat = pathlib.Path('detached-heartbeat')",
+    '    while True:',
+    "        with heartbeat.open('a') as stream: stream.write('x')",
+    '        time.sleep(0.03)',
+    "heartbeat = pathlib.Path('managed-heartbeat')",
+    'while True:',
+    "    with heartbeat.open('a') as stream: stream.write('x')",
+    '    time.sleep(0.03)',
+  ].join('\n');
+  await fs.promises.writeFile(path.join(workspaceRoot, scriptName), source);
+  const command = `python3 ${scriptName} ${token} ${outsideCanary}`;
+  const started = await controller.startProcess(conversationId, { command, yieldMs: 500 });
+  await Promise.all([waitForPath(managedPidPath), waitForPath(detachedPidPath)]);
+  if (failureInjection === 'after_detached_process_created') {
+    throw new Error('Injected Agent exit failure after detached process creation');
+  }
+  await waitForPath(resultPath);
+  return {
+    ...base,
+    conversationId,
+    workspaceRoot,
+    processId: started.processId,
+    runningProjection: started.workspace,
+    ownedProcesses: [
+      { role: 'managed-parent', pid: Number(fs.readFileSync(managedPidPath, 'utf8')) },
+      { role: 'detached-descendant', pid: Number(fs.readFileSync(detachedPidPath, 'utf8')) },
+    ],
+    heartbeatPath: managedHeartbeatPath,
+    detachedHeartbeatPath,
+    outsideCanary,
+    confinement: JSON.parse(fs.readFileSync(resultPath, 'utf8')),
+  };
 }
 
 // In-memory fixtures. Maps are keyed lower-case for ENS / hashes; content
@@ -618,7 +832,7 @@ function installProfileDeleteSimulator() {
 // runner can drive fixtures via `electronApp.evaluate(() => globalThis
 // .__FREEDOM_TEST_HARNESS__.setContentFixture(...))` without an IPC
 // round-trip.
-function exposeGlobalShim() {
+function exposeGlobalShim(agentRuntime) {
   globalThis.__FREEDOM_TEST_HARNESS__ = {
     setContentFixture: (url, fixture) => {
       contentFixtures.set(url, fixture || {});
@@ -688,6 +902,7 @@ function exposeGlobalShim() {
       window.close();
       return true;
     },
+    prepareAgentExitScenario: (request) => prepareAgentExitScenario(agentRuntime, request),
     state: () => ({
       content: [...contentFixtures.keys()],
       contentActivity: Object.fromEntries(contentFixtureActivity),
@@ -699,7 +914,7 @@ function exposeGlobalShim() {
   };
 }
 
-function installTestHarness({ defaultSession }) {
+function installTestHarness({ defaultSession, agentRuntime }) {
   if (!TEST_MODE_ENABLED) return false;
   log.info('[test-harness] FREEDOM_TEST_MODE=1 — installing harness');
   resetFixtures();
@@ -715,7 +930,7 @@ function installTestHarness({ defaultSession }) {
   installProfileLaunchRecorder();
   installProfileFocusSimulator();
   installProfileDeleteSimulator();
-  exposeGlobalShim();
+  exposeGlobalShim(agentRuntime);
   return true;
 }
 

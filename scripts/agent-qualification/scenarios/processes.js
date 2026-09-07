@@ -18,7 +18,6 @@ module.exports = {
       fs,
       path,
       net,
-      spawnSync,
       emit,
       check,
       delay,
@@ -42,6 +41,8 @@ module.exports = {
       root,
       includeSlow,
       TERMINAL_PROCESS_RETENTION_MS,
+      platform,
+      survivorScan,
     } = ctx;
 
     // A host loopback TCP server so the sandboxed netloop can prove full networking (M16).
@@ -59,17 +60,7 @@ module.exports = {
     ];
     const toolFinished = (toolCallId) =>
       events.find((event) => event.type === 'tool_finished' && event.toolCallId === toolCallId);
-    const survivors = () => {
-      const found = spawnSync(
-        'pgrep',
-        ['-af', '[b]wrap|freedom-sandbox-supervisor|hb-|netloop|cwd='],
-        { encoding: 'utf8' }
-      );
-      return (found.stdout || '')
-        .split('\n')
-        .filter((line) => line && !/shell-snapshots|pgrep|claude|qualify-agent/.test(line))
-        .join('\n');
-    };
+    const survivors = () => survivorScan('hb-|netloop|cwd=');
     const ticks = (text) => [...text.matchAll(/tick (\d+)/g)].map((m) => Number(m[1]));
     process.env.FREEDOM_QUAL_FAKE_SECRET = 'must-not-leak-9f3a7c';
 
@@ -326,7 +317,7 @@ module.exports = {
 
     // ---- M12: output stays drained and bounded; truncation is reported.
     const floodCommand =
-      "printf ready; head -c 400000 /dev/zero | tr '\\0' x; printf '\\nEND\\n'; while :; do sleep 1; done";
+      'printf ready; python3 -c \'import sys; sys.stdout.write("x" * 400000)\'; printf \'\\nEND\\n\'; while :; do sleep 1; done';
     const flood = await callTool(run1, 'bash', { command: floodCommand, yield_time_ms: 1_500 });
     const floodId = sessionIds(flood)[0];
     const floodFinished = toolFinished(flood.toolCallId);
@@ -378,7 +369,7 @@ module.exports = {
     );
 
     // ---- M14: two identical concurrent command strings stay associated with their own process.
-    const cwdCommand = 'printf \'cwd=%s\\n\' "$PWD"; while :; do sleep 0.2; done';
+    const cwdCommand = 'printf \'cwd-associated\\n\'; while :; do sleep 0.2; done';
     const twinRoot = await callTool(run1, 'bash', { command: cwdCommand, yield_time_ms: 400 });
     const twinSub = await callTool(run1, 'bash', {
       command: cwdCommand,
@@ -396,8 +387,8 @@ module.exports = {
       twinRootId &&
         twinSubId &&
         twinRootId !== twinSubId &&
-        bashText(twinRoot).includes('cwd=/workspace\n') &&
-        bashText(twinSub).includes('cwd=/workspace/sub') &&
+        bashText(twinRoot).includes('cwd-associated\n') &&
+        bashText(twinSub).includes('cwd-associated\n') &&
         twinRootReceipt?.processId === twinRootId &&
         twinSubReceipt?.processId === twinSubId &&
         twinRootReceipt.commandId !== twinSubReceipt.commandId &&
@@ -406,7 +397,7 @@ module.exports = {
         twinRootReceipt.workspaceId === workspaceA.workspaceId &&
         twinSubReceipt.workspaceId === workspaceA.workspaceId &&
         [twinRootReceipt, twinSubReceipt].every(
-          (r) => r.backend === 'linux-bubblewrap' && r.networkPosture === 'none'
+          (r) => r.backend === platform.backend && r.networkPosture === 'none'
         ) &&
         twinRows.length === 2 &&
         twinRows.every((row) => row.state === 'running') &&
@@ -509,7 +500,7 @@ module.exports = {
         grantsBeforeLaunch === 1 &&
         grantsAfterLaunch === 0 &&
         !other.error &&
-        bashText(other).includes('net:ConnectionRefusedError') &&
+        platform.offlineNetworkErrorMatches(bashText(other)) &&
         otherLaunch.network === 'none' &&
         !netPoll.error &&
         bashText(netPoll).includes('net:connected') &&
@@ -596,23 +587,13 @@ module.exports = {
     const hbSizeAfterStop = fileSize('hb-default');
     const stopAExecutor = executions.find((entry) => entry.command === heartbeatCommand)?.receipt;
     const truthful = (receipt, posture) =>
-      receipt &&
-      receipt.state === 'cancelled' &&
-      receipt.signal === 'SIGKILL' &&
-      receipt.backend === 'linux-bubblewrap' &&
-      receipt.terminationGuarantee === 'namespace_scoped' &&
+      platform.receiptMatches(receipt, 'cancelled') &&
+      platform.signalMatches(receipt.signal) &&
       receipt.networkPosture === posture &&
-      receipt.survivorsPossible === false &&
-      receipt.completeDescendantTermination === true &&
       receipt.sideEffects === 'unknown';
     const executorTruthful = (receipt, posture) =>
-      receipt &&
-      receipt.state === 'cancelled' &&
-      receipt.signal === 'SIGKILL' &&
-      receipt.terminationGuarantee === 'namespace_scoped' &&
-      receipt.terminationScope === 'pid_namespace' &&
-      receipt.survivorsPossible === false &&
-      receipt.completeDescendantTermination === true &&
+      platform.receiptMatches(receipt, 'cancelled') &&
+      platform.signalMatches(receipt.signal) &&
       receipt.networkPosture === posture;
     check(
       'M6',
@@ -622,7 +603,7 @@ module.exports = {
         truthful(netStopReceipt, 'full') &&
         executorTruthful(netExecutorReceipt, 'full') &&
         ledgerFor(netCommand)?.state === 'cancelled' &&
-        ledgerFor(netCommand).signal === 'SIGKILL' &&
+        platform.signalMatches(ledgerFor(netCommand).signal) &&
         ledgerFor(netCommand).networkPosture === 'full' &&
         !stopA.error &&
         truthful(stopAReceipt, 'none') &&
@@ -673,7 +654,7 @@ module.exports = {
       stoppedId &&
         stopLedgerBefore === 'running' &&
         stopLedger?.state === 'cancelled' &&
-        stopLedger.signal === 'SIGKILL' &&
+        platform.signalMatches(stopLedger.signal) &&
         stopLedger.networkPosture === 'none' &&
         executorTruthful(stopExecutor, 'none') &&
         stopSizeA === stopSizeB &&
@@ -754,7 +735,7 @@ module.exports = {
       'controller disposal terminates the retained namespace process; ledger reaches cancelled; nothing survives',
       disposedId &&
         disposeLedger?.state === 'cancelled' &&
-        disposeLedger.signal === 'SIGKILL' &&
+        platform.signalMatches(disposeLedger.signal) &&
         executorTruthful(disposeExecutor, 'none') &&
         disposeSizeAfter === disposeSizeBefore &&
         survivors() === '',

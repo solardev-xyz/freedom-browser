@@ -586,7 +586,7 @@ async function bootstrap() {
   // the channels it needs to stub — ENS resolution, the bzz: probe,
   // and bee/ipfs/radicle start/stop. No-op when FREEDOM_TEST_MODE is
   // unset, so the production path is unaffected.
-  installTestHarness({ defaultSession });
+  installTestHarness({ defaultSession, agentRuntime });
 
   // If a vault exists, flag the node managers so bee/ipfs/radicle start with
   // the user's derived keys. Without a vault, nodes start with their own

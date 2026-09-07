@@ -22,7 +22,6 @@ module.exports = {
       fs,
       os,
       path,
-      spawnSync,
       check,
       delay,
       waitFor,
@@ -45,6 +44,8 @@ module.exports = {
       bashText,
       root,
       userDataDir,
+      platform,
+      survivorScan,
     } = ctx;
 
     const SESSION_ID = /workspace_process_[a-f0-9]{24}/g;
@@ -57,20 +58,10 @@ module.exports = {
       events.find((event) => event.type === 'run_finished' && event.runId === runId);
     const executorFor = (commandText) =>
       executions.find((entry) => entry.command === commandText)?.receipt;
-    const survivorProcesses = () =>
-      spawnSync('pgrep', ['-af', '[b]wrap|freedom-sandbox-supervisor|hb-rc-'], { encoding: 'utf8' })
-        .stdout.split('\n')
-        .filter((line) => line && !/shell-snapshots|pgrep|claude|qualify-agent/.test(line))
-        .join('\n');
+    const survivorProcesses = () => survivorScan('hb-rc-');
     const fullReceipt = (receipt, state) =>
-      receipt &&
-      receipt.state === state &&
-      receipt.backend === 'linux-bubblewrap' &&
+      platform.receiptMatches(receipt, state) &&
       ['none', 'full'].includes(receipt.networkPosture) &&
-      receipt.terminationGuarantee === 'namespace_scoped' &&
-      receipt.terminationScope === 'pid_namespace' &&
-      receipt.survivorsPossible === false &&
-      receipt.completeDescendantTermination === true &&
       receipt.sideEffects === 'unknown' &&
       (Number.isInteger(receipt.exitCode) || typeof receipt.signal === 'string');
     process.env.FREEDOM_QUAL_FAKE_SECRET = 'must-not-leak-9f3a7c';
@@ -303,7 +294,7 @@ module.exports = {
         state: 'timed_out',
         status: 'failed',
         exitCode: undefined,
-        signal: 'SIGKILL',
+        signal: 'termination',
         errorCode: 'WORKSPACE_COMMAND_TIMED_OUT',
       },
     ];
@@ -322,7 +313,8 @@ module.exports = {
       const matches = (receipt) =>
         fullReceipt(receipt, scenario.state) &&
         (scenario.exitCode === undefined || receipt.exitCode === scenario.exitCode) &&
-        (scenario.signal === undefined || receipt.signal === scenario.signal) &&
+        (scenario.signal === undefined ||
+          (scenario.signal === 'termination' && platform.signalMatches(receipt.signal))) &&
         receipt.processId === sessionIds(scenario.entry)[0];
       check(
         scenario.id,
@@ -340,12 +332,13 @@ module.exports = {
           matches(terminalEvent.workspace) &&
           terminalEvent.sequence > run1Finished.sequence &&
           ledger?.state === scenario.state &&
-          ledger.terminationScope === 'pid_namespace' &&
+          ledger.terminationScope === platform.terminationScope &&
           (scenario.exitCode === undefined || ledger.exitCode === scenario.exitCode) &&
-          (scenario.signal === undefined || ledger.signal === scenario.signal) &&
+          (scenario.signal === undefined ||
+            (scenario.signal === 'termination' && platform.signalMatches(ledger.signal))) &&
           projection?.state === scenario.state &&
-          projection.terminationScope === 'pid_namespace' &&
-          executor?.terminationScope === 'pid_namespace',
+          projection.terminationScope === platform.terminationScope &&
+          executor?.terminationScope === platform.terminationScope,
         {
           memory: memory && {
             status: memory.status,
@@ -427,9 +420,9 @@ module.exports = {
       observerFailures.thrown === 1 &&
         isolatedLedger?.state === 'completed' &&
         isolatedLedger.exitCode === 0 &&
-        isolatedLedger.terminationScope === 'pid_namespace' &&
+        isolatedLedger.terminationScope === platform.terminationScope &&
         isolatedExecutor?.state === 'completed' &&
-        isolatedExecutor.terminationScope === 'pid_namespace' &&
+        isolatedExecutor.terminationScope === platform.terminationScope &&
         survivorProcesses() === '',
       {
         thrown: observerFailures.thrown,

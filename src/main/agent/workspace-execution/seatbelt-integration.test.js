@@ -128,7 +128,11 @@ requiredDescribe('macOS Seatbelt execution boundary', () => {
       },
     });
     const hostEnvironment = await captureHostCommandEnvironment();
-    const executableAccess = await resolveExecutableAccess(['node', 'python3'], {
+    // Python is already part of the declared macOS system toolchain. Asking the host login PATH to
+    // resolve it can select /usr/bin/python3 while the sandbox's canonical PATH intentionally
+    // selects CommandLineTools first, making the qualification compare two different launchers.
+    // The positive Python workload below exercises the actual sandbox launcher directly.
+    const executableAccess = await resolveExecutableAccess(['node'], {
       hostEnvironment,
     });
     expect(executableAccess.commands).not.toContainEqual(
