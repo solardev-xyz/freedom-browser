@@ -12,7 +12,7 @@ export function initRpcSettings() {
   if (!container) return;
 
   container.innerHTML = `
-    <p style="font-size: 12px; color: var(--text-secondary, #888); margin: 0 0 8px">
+    <p style="font-size: 12px; color: var(--muted); margin: 0 0 8px">
       RPC provider API keys are managed on the RPC Providers settings page.
     </p>
     <button type="button" id="rpc-open-providers" class="rpc-provider-btn" style="width: 100%">
