@@ -27,13 +27,14 @@ const isDisabledForProfile = () => state.registry.radicle?.mode === 'disabled';
 
 const applyRadicleInfo = (info) => {
   if (!radicleInfoPanel?.classList.contains('visible')) return;
-  if (info.success && radiclePeersCount) {
-    radiclePeersCount.textContent = String(info.count);
-  } else if (radiclePeersCount) {
-    radiclePeersCount.textContent = '0';
-  }
   // Counters in this menu share one empty state: '0', not '--' (#227).
-  // '--' stays reserved for the non-numeric Version row.
+  // '--' stays reserved for the non-numeric Version row. Both rows guard on
+  // Number.isInteger so a partial payload renders the empty state rather than
+  // the literal 'undefined'/'null'.
+  if (radiclePeersCount) {
+    radiclePeersCount.textContent =
+      info.success && Number.isInteger(info.count) ? String(info.count) : '0';
+  }
   if (radicleReposCount) {
     radicleReposCount.textContent = Number.isInteger(info.reposCount)
       ? String(info.reposCount)

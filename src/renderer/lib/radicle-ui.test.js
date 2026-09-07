@@ -210,6 +210,41 @@ describe('radicle-ui', () => {
     expect(ctx.elements.radicleReposCount.textContent).toBe('0');
   });
 
+  test('an unknown connected-peer count renders 0, like the other counters', async () => {
+    const ctx = await loadRadicleModule({
+      antMenuOpen: true,
+      currentRadicleStatus: 'running',
+      windowRadicle: true,
+      statusResult: { status: 'running', error: null },
+    });
+
+    ctx.mod.initRadicleUi();
+    ctx.mod.startRadicleInfoUpdates();
+    await flushMicrotasks();
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    // The mirror of the case above: count absent from a successful payload
+    // must not render the literal 'undefined' while the sibling repos row
+    // shows a number.
+    ctx.getStatusHandler()({
+      status: 'running',
+      error: null,
+      info: { success: true, reposCount: 2, version: '0.6.1' },
+    });
+    expect(ctx.elements.radiclePeersCount.textContent).toBe('0');
+    expect(ctx.elements.radicleReposCount.textContent).toBe('2');
+
+    // A non-integer count (a string from an older/looser payload) is empty
+    // state too, not a coerced number.
+    ctx.getStatusHandler()({
+      status: 'running',
+      error: null,
+      info: { success: true, count: null, reposCount: 2, version: '0.6.1' },
+    });
+    expect(ctx.elements.radiclePeersCount.textContent).toBe('0');
+  });
+
   test('updates Radicle status lines, toggle state, and running transitions', async () => {
     const ctx = await loadRadicleModule({
       antMenuOpen: true,
