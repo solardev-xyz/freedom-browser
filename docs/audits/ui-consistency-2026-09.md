@@ -9,6 +9,11 @@ Method, tooling and conventions:
 - Driver: `.claude/skills/run-freedom/` (`tour.js both`, `recipes.js`, plus ad-hoc
   scripts for the surfaces the tour does not reach).
 - Conventions checked against `docs/agent-playbooks/ui-consistency.md`.
+- **Both of those paths ship in [#247](https://github.com/solardev-xyz/freedom-browser/pull/247), which was still open when this
+  report merged** — neither exists on `main` yet, and this report does not depend
+  on either landing. If you are reading this and the paths do not resolve, #247
+  has not merged; the findings below were all re-verified by hand against the
+  commits named in each one, so nothing here needs the driver to be checked.
 - Base commit: `18a7e39b` (`main`). App run headless under
   `xvfb-run -a -s "-screen 0 1440x900x24"` with `FREEDOM_TEST_MODE=1`.
 - `main` moved while this report was in review: #243, #244, #245 and #246 landed
@@ -120,12 +125,14 @@ pass and changed how every internal page reads the theme.
 of any kind. Every other routable internal page has one — since #245 that means a
 `:where(html[data-theme='light'])` block plus an
 `html[data-theme='light'] { color-scheme: light }` rule, stamped from the
-Appearance setting by `webview-preload.js` (`home.html`, `error.html`,
-`history.html`, `links.html`, `downloads.html`, `payments.html`, `profiles.html`,
-`settings.html`, `protocol-test.html`), as do the sibling page stylesheets
-`pages/styles/interstitial.css` and `pages/styles/rad-browser.css`. No
-`src/renderer/pages/**` stylesheet uses `@media (prefers-color-scheme: …)` any
-more.
+Appearance setting by `webview-preload.js` (`home.html`, `history.html`,
+`links.html`, `downloads.html`, `payments.html`, `profiles.html`,
+`settings.html`, `protocol-test.html` — i.e. every entry in
+`internal-pages.json`'s `routable` map except `publish` itself and `private`).
+The non-routable pages in the same directory carry it too: `error.html`, and the
+sibling page stylesheets `pages/styles/interstitial.css` and
+`pages/styles/rad-browser.css`. No `src/renderer/pages/**` stylesheet uses
+`@media (prefers-color-scheme: …)` any more.
 
 #245 left `publish.css` (and `pages/private.html`) dark-only and pinned
 `color-scheme: dark` on both so their scrollbars match, with a comment on each.
@@ -171,7 +178,7 @@ Three separate misses in the same light block:
   with no arrow while History's "Most Recent" keeps its own.
 - `src/renderer/pages/payments.html:89-92` — `.filter-select:hover { background-color:
 #30363d; }` has no light counterpart, so hovering a filter fills it
-  `rgb(48,54,58)` under `#1a1a1a` text (measured).
+  `rgb(48,54,61)` under `#1a1a1a` text (measured).
 - `src/renderer/pages/payments.html:113-116` — `.btn:hover` likewise; `history.html:378`
   does override its `.btn:hover`.
 
@@ -343,13 +350,27 @@ a session sees two heading conventions on the same page. The sibling
 interstitials are sentence case throughout (`ens-unverified.html:20`
 `Resolution not cross-checked`, `ens-conflict.html` `RPC servers disagreed`).
 
+The `<h1>` is not the only Title Case default on this page. #243 landed after the
+base commit and gave `error.html` a static `<title>Content Unavailable</title>`
+(`2582f165:14`) so a failed navigation stops showing the previous page's title in
+the tab strip (#236), plus a `setErrorTitle()` helper (`:210`) that writes
+`titleEl.textContent` and `document.title` together. So the two runtime states are
+already consistent across heading and tab, and it is exactly the two *static*
+defaults — `<title>` at `:14` and `<h1>` at `:116` on `2582f165` — that are Title
+Case. Sentence-casing only the `<h1>` would leave the tab strip Title Case and
+make the page inconsistent with itself in a second way.
+
 ![error page titles](images/09-error-page-title-case.png)
 
 Repro: navigate to a `bzz://` hash with no content (Title Case) and to a hash the
 node cannot find in time (sentence case).
 
-Suggested fix: make `error.html:99` sentence case (`Content unavailable`) to
-match the two runtime titles and the interstitials.
+Suggested fix: sentence-case **both** static defaults — the `<h1>`
+(`18a7e39b:99`, `2582f165:116`) and the `<title>` #243 added (`2582f165:14`) — to
+`Content unavailable`, so the heading, the tab strip, the two runtime titles and
+the interstitials all share one casing. `setErrorTitle()` already keeps heading
+and `document.title` in step for the runtime states, so no script change is
+needed.
 
 ## Checked and clean
 
