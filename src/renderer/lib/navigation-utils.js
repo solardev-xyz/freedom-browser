@@ -3,7 +3,7 @@ import {
   deriveDisplayValue,
   parseOnchainAppUrl,
 } from './url-utils.js';
-import { getInternalPageName, parseEnsInput } from './page-urls.js';
+import { getInternalPageName, getInterstitialDisplayName, parseEnsInput } from './page-urls.js';
 import { isDwebNameHost } from './origin-utils.js';
 
 // Extract the Ethereum name from an address bar value, or null if the value isn't
@@ -542,6 +542,14 @@ export const deriveSwitchedTabDisplay = ({
   }
 
   const strippedUrl = url.startsWith('view-source:') ? url.slice(12) : url;
+  // A tab parked on a name-resolution interstitial restores the blocked name
+  // (`lagged.tez`), never the interstitial's `file://` path — same rule the
+  // active-tab did-navigate handler applies. See #235.
+  const blockedName = getInterstitialDisplayName(strippedUrl);
+  if (blockedName) {
+    return blockedName;
+  }
+
   // A tab parked on `pages/error.html?...&url=<original>` should restore the
   // friendly original target (e.g. `ipfs://vitalik.eth`), not the raw
   // `file://.../error.html?...` URL Chromium actually committed. Mirrors the

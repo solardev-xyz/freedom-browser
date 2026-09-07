@@ -35,6 +35,29 @@ export const buildInternalPageUrl = (pageFile, params = null) => {
   return url.toString();
 };
 
+// Name-resolution interstitials. These are chrome, not content: the shell
+// loads them into the webview when an ENS/Tezos name is blocked (unverified
+// soft block, head/contenthash conflict hard block). Like `error.html` they
+// carry the user-facing target in a query param, and — also like the error
+// page — their own `file:///…/pages/*.html` URL must never reach the address
+// bar, history, or any other chrome surface. See issue #235.
+const INTERSTITIAL_PAGE_FILES = ['ens-unverified.html', 'ens-conflict.html'];
+
+export const isInterstitialPageUrl = (url) =>
+  typeof url === 'string' && INTERSTITIAL_PAGE_FILES.some((file) => url.includes(`/${file}`));
+
+// The user-facing name an interstitial is blocking (`lagged.tez`), or null
+// when `url` isn't an interstitial / carries no name. Mirrors
+// `getOriginalUrlFromErrorPage` for the error page.
+export const getInterstitialDisplayName = (url) => {
+  if (!isInterstitialPageUrl(url)) return null;
+  try {
+    return new URL(url).searchParams.get('name') || null;
+  } catch {
+    return null;
+  }
+};
+
 // Detect protocol from display URL for history recording
 export const detectProtocol = (url) => {
   if (!url) return 'unknown';
@@ -55,6 +78,11 @@ export const isHistoryRecordable = (displayUrl, internalUrl) => {
   if (displayUrl.startsWith('freedom://')) return false;
   if (displayUrl.startsWith('view-source:')) return false;
   if (internalUrl?.includes('/error.html')) return false;
+  // A blocked name never lands on real content, so the interstitial is no
+  // more history-worthy than the error page — and recording it would put the
+  // interstitial's `file://` path (and its "RPC servers disagreed" title)
+  // into the history list and the autocomplete dropdown.
+  if (isInterstitialPageUrl(internalUrl)) return false;
   if (internalUrl === homeUrl || internalUrl === homeUrlNormalized) return false;
   return true;
 };

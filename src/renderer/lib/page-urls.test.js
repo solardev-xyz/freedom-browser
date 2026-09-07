@@ -55,6 +55,37 @@ describe('page-urls', () => {
     expect(mod.isHistoryRecordable('https://example.com', 'file:///app/pages/error.html')).toBe(false);
     expect(mod.isHistoryRecordable('https://example.com', mod.homeUrl)).toBe(false);
     expect(mod.isHistoryRecordable('https://example.com', 'https://example.com')).toBe(true);
+    // Interstitials (#235): recording them would put the interstitial's own
+    // file:// path and title into history and the autocomplete dropdown.
+    expect(
+      mod.isHistoryRecordable('lagged.tez', 'file:///app/pages/ens-conflict.html?name=lagged.tez')
+    ).toBe(false);
+    expect(
+      mod.isHistoryRecordable('retry.tez', 'file:///app/pages/ens-unverified.html?name=retry.tez')
+    ).toBe(false);
+  });
+
+  test('reads the blocked name from interstitial page urls', async () => {
+    const mod = await loadModule();
+
+    expect(
+      mod.getInterstitialDisplayName(
+        'file:///app/pages/ens-unverified.html?name=retry.tez&uri=ipfs%3A%2F%2FQmRetryTez'
+      )
+    ).toBe('retry.tez');
+    expect(
+      mod.getInterstitialDisplayName('file:///app/pages/ens-conflict.html?name=lagged.tez&block=%7B%7D')
+    ).toBe('lagged.tez');
+    // No name param, not an interstitial, or unparseable — never a file:// path.
+    expect(mod.getInterstitialDisplayName('file:///app/pages/ens-conflict.html')).toBeNull();
+    expect(mod.getInterstitialDisplayName('file:///app/pages/error.html?url=bzz%3A%2F%2Fabc')).toBeNull();
+    expect(mod.getInterstitialDisplayName('https://example.com')).toBeNull();
+    expect(mod.getInterstitialDisplayName(null)).toBeNull();
+
+    expect(mod.isInterstitialPageUrl('file:///app/pages/ens-unverified.html?name=a.eth')).toBe(true);
+    expect(mod.isInterstitialPageUrl('file:///app/pages/ens-conflict.html?name=a.eth')).toBe(true);
+    expect(mod.isInterstitialPageUrl('file:///app/pages/error.html')).toBe(false);
+    expect(mod.isInterstitialPageUrl(undefined)).toBe(false);
   });
 
   test('maps internal page urls back to freedom:// names', async () => {

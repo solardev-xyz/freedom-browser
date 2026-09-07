@@ -202,6 +202,24 @@ describe('navigation-utils extracted helpers', () => {
         ipnsRoutePrefix: 'http://127.0.0.1:8080/ipns/',
       })
     ).toBe('ipfs://vitalik.eth');
+
+    // Same rule for the name-resolution interstitials (#235): a tab parked
+    // on one restores the blocked name, never the interstitial's file:// path.
+    expect(
+      mod.deriveSwitchedTabDisplay({
+        url: 'file:///app/pages/ens-unverified.html?name=retry.tez&uri=ipfs%3A%2F%2FQmRetryTez',
+        bzzRoutePrefix: 'http://127.0.0.1:1633/bzz/',
+        homeUrlNormalized: 'file:///app/pages/home.html',
+      })
+    ).toBe('retry.tez');
+
+    expect(
+      mod.deriveSwitchedTabDisplay({
+        url: 'file:///app/pages/ens-conflict.html?name=lagged.tez&block=%7B%7D&groups=%5B%5D',
+        bzzRoutePrefix: 'http://127.0.0.1:1633/bzz/',
+        homeUrlNormalized: 'file:///app/pages/home.html',
+      })
+    ).toBe('lagged.tez');
   });
 
   test('computes bookmark bar state and extracts original urls from error pages', async () => {

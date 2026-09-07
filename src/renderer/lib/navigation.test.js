@@ -305,6 +305,24 @@ const loadNavigationModule = async (options = {}) => {
       );
     }),
     getInternalPageName: jest.fn((url) => (url === historyUrl ? 'history' : null)),
+    isInterstitialPageUrl: jest.fn(
+      (url) =>
+        typeof url === 'string' &&
+        (url.includes('/ens-unverified.html') || url.includes('/ens-conflict.html'))
+    ),
+    getInterstitialDisplayName: jest.fn((url) => {
+      if (
+        typeof url !== 'string' ||
+        !(url.includes('/ens-unverified.html') || url.includes('/ens-conflict.html'))
+      ) {
+        return null;
+      }
+      try {
+        return new URL(url).searchParams.get('name') || null;
+      } catch {
+        return null;
+      }
+    }),
     parseEnsInput: jest.fn(() => null),
     buildInternalPageUrl: jest.fn((file, params = null) => {
       const base = `file:///app/pages/${file}`;
@@ -1466,6 +1484,35 @@ describe('navigation', () => {
       const url = new URL(interstitialCall[0]);
       expect(url.searchParams.get('name')).toBe('lonely.eth');
       expect(url.searchParams.get('uri')).toContain('ipfs://QmFake');
+    });
+
+    test('committing an interstitial keeps the blocked name in the address bar', async () => {
+      // #235: the interstitials are chrome, not content. Their own
+      // `file:///…/pages/ens-*.html` URL must never reach the address bar —
+      // the user keeps seeing the name they asked for, exactly like the
+      // Swarm error page keeps `bzz://<hash>/`.
+      const ctx = await setupEnsDispatch({ blockUnverifiedEns: true });
+
+      ctx.tabsMocks.webviewEventHandler('did-navigate', {
+        event: {
+          url: 'file:///app/pages/ens-unverified.html?name=retry.tez&uri=ipfs%3A%2F%2FQmRetryTez',
+        },
+      });
+      expect(ctx.elements.addressInput.value).toBe('retry.tez');
+
+      ctx.tabsMocks.webviewEventHandler('did-navigate', {
+        event: {
+          url: 'file:///app/pages/ens-conflict.html?name=lagged.tez&block=%7B%7D&groups=%5B%5D',
+        },
+      });
+      expect(ctx.elements.addressInput.value).toBe('lagged.tez');
+
+      // Fail-safe: an interstitial without its `name` param still must not
+      // fall through to the raw file:// path.
+      ctx.tabsMocks.webviewEventHandler('did-navigate', {
+        event: { url: 'file:///app/pages/ens-conflict.html' },
+      });
+      expect(ctx.elements.addressInput.value).toBe('');
     });
 
     test('unverified proceeds normally when blockUnverifiedEns is off', async () => {
