@@ -519,6 +519,63 @@ describe('chain-data-router', () => {
     expect(mockRequestViaColibri).toHaveBeenCalledTimes(1);
   });
 
+  test('falls through after two seconds and temporarily bypasses a timed-out Myotis route', async () => {
+    jest.useFakeTimers({ now: 1_000_000 });
+    mockRegistry.getNetwork.mockReturnValue({
+      access: { readOrder: ['myotis', 'direct'] },
+      quorum: { timeoutMs: 5000 },
+    });
+    const hangingRead = deferred();
+    mockMyotis.ethCall.mockReturnValue(hangingRead.promise);
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ result: '0xrpc' }),
+    });
+    const params = [{
+      to: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      data: '0x1234',
+    }, 'latest'];
+    const options = { routingContext: { origin: 'https://swap.example' } };
+
+    const first = request(1, 'eth_call', params, options);
+    await jest.advanceTimersByTimeAsync(2000);
+    await expect(first).resolves.toMatchObject({ result: '0xrpc', source: 'direct' });
+
+    await expect(request(1, 'eth_call', params, options)).resolves.toMatchObject({
+      result: '0xrpc',
+      source: 'direct',
+    });
+    expect(mockMyotis.ethCall).toHaveBeenCalledTimes(1);
+
+    hangingRead.resolve({ resultHex: '0xlate' });
+    await Promise.resolve();
+  });
+
+  test('keeps non-cancellable Myotis work from starving interactive fallbacks', async () => {
+    jest.useFakeTimers({ now: 1_000_000 });
+    mockRegistry.getNetwork.mockReturnValue({
+      access: { readOrder: ['myotis', 'direct'] },
+      quorum: { timeoutMs: 5000 },
+    });
+    mockMyotis.ethCall.mockReturnValue(new Promise(() => {}));
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ result: '0xrpc' }),
+    });
+    const options = { routingContext: { origin: 'https://swap.example' } };
+    const requests = Array.from({ length: 6 }, (_value, index) =>
+      request(1, 'eth_call', [{
+        to: `0x${String(index + 1).padStart(40, '0')}`,
+        data: '0x1234',
+      }, 'latest'], options));
+
+    await jest.advanceTimersByTimeAsync(2000);
+    await expect(Promise.all(requests)).resolves.toEqual(
+      expect.arrayContaining(Array(6).fill(expect.objectContaining({ source: 'direct' })))
+    );
+    expect(mockMyotis.ethCall).toHaveBeenCalledTimes(1);
+  });
+
   test('escalates Colibri timeout cooldowns from 15 to 30 to 60 seconds and resets on success', async () => {
     jest.useFakeTimers({ now: 1_000_000 });
     mockRegistry.getNetwork.mockReturnValue({
@@ -833,6 +890,28 @@ describe('chain-data-router', () => {
     await expect(response).resolves.toEqual({
       result: '0xverified',
       source: 'colibri',
+      verified: true,
+    });
+  });
+
+  test('gives Myotis the configured timeout when it is the last configured source', async () => {
+    jest.useFakeTimers({ now: 1_000_000 });
+    mockRegistry.getNetwork.mockReturnValue({
+      access: { readOrder: ['myotis'] },
+      quorum: { timeoutMs: 5000 },
+    });
+    const slowRead = deferred();
+    mockMyotis.ethCall.mockReturnValue(slowRead.promise);
+
+    const response = request(1, 'eth_call', [{ to: '0xabc' }, 'latest'], {
+      routingContext: { origin: 'https://swap.example' },
+    });
+    await jest.advanceTimersByTimeAsync(3000);
+    slowRead.resolve({ resultHex: '0xverified' });
+
+    await expect(response).resolves.toEqual({
+      result: '0xverified',
+      source: 'myotis',
       verified: true,
     });
   });

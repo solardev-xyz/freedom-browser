@@ -41,6 +41,11 @@ const DEFAULT_NON_MYOTIS_READ_ORDER = ['colibri', 'quorum', 'direct'];
 const DEFAULT_BROADCAST_ORDER = ['myotis', 'direct'];
 const INTERACTIVE_SOURCE_DEADLINE_MS = 2000;
 const SOURCE_TIMEOUT_COOLDOWNS_MS = [15_000, 30_000, 60_000];
+// Myotis' blocking N-API reads use libuv's shared worker pool and cannot be
+// cancelled after an interactive deadline. Keep only one outstanding read so
+// a stalled execution peer cannot occupy every worker and starve the DNS/file
+// work needed by Colibri and RPC fallbacks.
+const MAX_MYOTIS_IN_FLIGHT = 1;
 const MAX_COLIBRI_IN_FLIGHT = 8;
 const MAX_COLIBRI_IN_FLIGHT_PER_ROUTE = 2;
 const MAX_ADAPTIVE_SOURCE_ROUTES = 1024;
@@ -49,6 +54,7 @@ const MAX_ADAPTIVE_SOURCE_ROUTES = 1024;
 // app's call shape should not reorder the user's chain policy, affect another
 // app, or stay demoted after Freedom restarts.
 const adaptiveSourceState = new Map();
+const myotisInFlight = new Set();
 const colibriInFlight = new Set();
 const colibriInFlightByRoute = new Map();
 
@@ -214,6 +220,7 @@ function withSourceDeadline(promise, source, timeoutMs = INTERACTIVE_SOURCE_DEAD
 
 function clearAdaptiveRoutingForTest() {
   adaptiveSourceState.clear();
+  myotisInFlight.clear();
   colibriInFlight.clear();
   colibriInFlightByRoute.clear();
 }
@@ -460,6 +467,38 @@ async function requestMyotis(chainId, method, params) {
   }
 
   throw new SourceUnavailableError(`Myotis does not support ${method}`);
+}
+
+async function requestViaMyotis(
+  chainId,
+  method,
+  params,
+  { includeTrust = false, deadlineMs = null } = {}
+) {
+  if (myotisInFlight.size >= MAX_MYOTIS_IN_FLIGHT) {
+    throw new SourceUnavailableError('Myotis is already processing this workload');
+  }
+
+  const beforeStatus = includeTrust ? myotis.getStatus?.(chainId) || {} : null;
+  const requestPromise = Promise.resolve().then(async () => {
+    const result = await requestMyotis(chainId, method, params);
+    if (!includeTrust) return result;
+    const afterStatus = myotis.getStatus?.(chainId) || {};
+    return { result, trust: myotisTrust(beforeStatus, afterStatus) };
+  });
+  myotisInFlight.add(requestPromise);
+  const release = () => {
+    myotisInFlight.delete(requestPromise);
+  };
+  // Native reads run on libuv workers and cannot currently be cancelled.
+  // Keep timed-out work accounted for until it really settles so a busy page
+  // cannot exhaust the worker pool while later sources answer its requests.
+  requestPromise.then(release, release);
+  return withSourceDeadline(
+    requestPromise,
+    'Myotis',
+    deadlineMs || configuredSourceTimeoutMs(chainId)
+  );
 }
 
 async function requestColibri(chainId, method, params, routeKey = null, deadlineMs = null) {
@@ -827,11 +866,10 @@ async function requestSource(
   } = {}
 ) {
   if (source === 'myotis') {
-    const beforeStatus = includeTrust ? myotis.getStatus?.(chainId) || {} : null;
-    const result = await requestMyotis(chainId, method, params);
-    if (!includeTrust) return result;
-    const afterStatus = myotis.getStatus?.(chainId) || {};
-    return { result, trust: myotisTrust(beforeStatus, afterStatus) };
+    return requestViaMyotis(chainId, method, params, {
+      includeTrust,
+      deadlineMs,
+    });
   }
   if (source === 'colibri') {
     const result = await requestColibri(chainId, method, params, routeKey, deadlineMs);
@@ -878,7 +916,7 @@ async function request(
   for (let sourceIndex = 0; sourceIndex < order.length; sourceIndex += 1) {
     const source = order[sourceIndex];
     if (DIRECT_ONLY_METHODS.has(method) && source !== 'direct') continue;
-    const routeKey = source === 'colibri' || source === 'quorum'
+    const routeKey = source === 'myotis' || source === 'colibri' || source === 'quorum'
       ? adaptiveRouteKey(source, chainId, method, params, routingContext)
       : null;
     if (adaptiveSourceUnavailable(routeKey)) {
