@@ -50,12 +50,12 @@ import {
 import {
   homeUrl,
   homeUrlNormalized,
-  errorUrlBase,
   internalPages,
   detectProtocol,
   isHistoryRecordable,
   getInternalPageName,
   getInterstitialDisplayName,
+  isErrorPageUrl,
   isInterstitialPageUrl,
   parseEnsInput,
   buildInternalPageUrl,
@@ -1699,7 +1699,7 @@ export const loadHomePage = () => {
 // Shared error-page retry logic used by both reload variants and the reload button
 const retryErrorPageOrReload = (webview, hard) => {
   const current = webview.getURL();
-  const originalUrl = getOriginalUrlFromErrorPage(current, errorUrlBase);
+  const originalUrl = getOriginalUrlFromErrorPage(current);
   if (originalUrl) {
     // Hard reload of an ENS error page also bypasses `ensResultCache` so the
     // recovery resolution actually re-runs under today's verification method
@@ -1712,7 +1712,7 @@ const retryErrorPageOrReload = (webview, hard) => {
     loadTarget(originalUrl);
     return;
   }
-  if (current.startsWith(errorUrlBase) || current.includes('/error.html?')) {
+  if (isErrorPageUrl(current)) {
     try {
       new URL(current);
     } catch (err) {
@@ -1888,7 +1888,7 @@ const handleNavigationEvent = (event) => {
       const blockedName = getInterstitialDisplayName(event.url) || '';
       addressInput.value = blockedName;
       pushDebug(`[AddressBar] Interstitial -> Blocked name: ${blockedName || '(none)'}`);
-    } else if (event.url.startsWith(errorUrlBase)) {
+    } else if (isErrorPageUrl(event.url)) {
       try {
         const parsed = new URL(event.url);
         const originalUrl = parsed.searchParams.get('url');

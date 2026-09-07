@@ -220,6 +220,28 @@ describe('navigation-utils extracted helpers', () => {
         homeUrlNormalized: 'file:///app/pages/home.html',
       })
     ).toBe('lagged.tez');
+
+    // #235 regression: a remote page served at a chrome-look-alike path must
+    // never dictate the switched-tab address bar. `deriveSwitchedTabDisplay`
+    // used to run both the interstitial and the error-page recovery on a bare
+    // `/<file>.html` substring test, so `https://evil.test/error.html?url=…`
+    // repainted the address bar (protocol icon included) with the attacker's
+    // chosen value while the webview rendered the attacker's page.
+    expect(
+      mod.deriveSwitchedTabDisplay({
+        url: 'https://evil.test/error.html?error=offline&url=bzz%3A%2F%2Fvitalik.eth&protocol=swarm',
+        bzzRoutePrefix: 'http://127.0.0.1:1633/bzz/',
+        homeUrlNormalized: 'file:///app/pages/home.html',
+      })
+    ).toBe('https://evil.test/error.html?error=offline&url=bzz%3A%2F%2Fvitalik.eth&protocol=swarm');
+
+    expect(
+      mod.deriveSwitchedTabDisplay({
+        url: 'https://evil.test/ens-conflict.html?name=bank.eth',
+        bzzRoutePrefix: 'http://127.0.0.1:1633/bzz/',
+        homeUrlNormalized: 'file:///app/pages/home.html',
+      })
+    ).toBe('https://evil.test/ens-conflict.html?name=bank.eth');
   });
 
   test('computes bookmark bar state and extracts original urls from error pages', async () => {
@@ -255,7 +277,14 @@ describe('navigation-utils extracted helpers', () => {
         'file:///app/pages/error.html'
       )
     ).toBe('https://example.com');
-    expect(mod.getOriginalUrlFromErrorPage('https://example.com', 'file:///app/pages/error.html')).toBeNull();
-    expect(mod.getOriginalUrlFromErrorPage('not-a-url/error.html?', 'file:///app/pages/error.html')).toBeNull();
+    expect(mod.getOriginalUrlFromErrorPage('https://example.com')).toBeNull();
+    expect(mod.getOriginalUrlFromErrorPage('not-a-url/error.html?')).toBeNull();
+    // Only the shell's own error page counts (#235).
+    expect(
+      mod.getOriginalUrlFromErrorPage('https://evil.test/error.html?url=bzz%3A%2F%2Fvitalik.eth')
+    ).toBeNull();
+    expect(
+      mod.getOriginalUrlFromErrorPage('file:///app/pages/error.html.evil?url=https%3A%2F%2Fa.test')
+    ).toBeNull();
   });
 });

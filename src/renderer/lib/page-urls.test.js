@@ -88,6 +88,42 @@ describe('page-urls', () => {
     expect(mod.isInterstitialPageUrl(undefined)).toBe(false);
   });
 
+  test('remote look-alike paths are never mistaken for chrome pages', async () => {
+    const mod = await loadModule();
+
+    // #235 regression: the interstitial/error-page tests used to match on a
+    // `/<file>.html` substring, so any remote page could serve that path and
+    // take over the address bar with its own `?name=` / `?url=` value while
+    // rendering attacker HTML.
+    for (const hostile of [
+      'https://evil.test/ens-conflict.html?name=bank.eth',
+      'https://evil.test/ens-unverified.html?name=bank.eth',
+      'https://evil.test/pages/ens-conflict.html?name=bank.eth',
+      'http://127.0.0.1:8080/ipfs/Qm123/ens-conflict.html?name=bank.eth',
+      // Same base with extra path/host characters glued on is not our page.
+      'file:///app/pages/ens-conflict.html.evil?name=bank.eth',
+      'file:///app/pages/ens-conflict.htmlx?name=bank.eth',
+    ]) {
+      expect(mod.isInterstitialPageUrl(hostile)).toBe(false);
+      expect(mod.getInterstitialDisplayName(hostile)).toBeNull();
+    }
+
+    for (const hostile of [
+      'https://evil.test/error.html?url=bzz%3A%2F%2Fvitalik.eth',
+      'https://evil.test/pages/error.html?url=bzz%3A%2F%2Fvitalik.eth',
+      'file:///app/pages/error.html.evil?url=bzz%3A%2F%2Fvitalik.eth',
+    ]) {
+      expect(mod.isErrorPageUrl(hostile)).toBe(false);
+      // A remote look-alike is real content, so it stays history-recordable.
+      expect(mod.isHistoryRecordable(hostile, hostile)).toBe(true);
+    }
+
+    expect(mod.isErrorPageUrl('file:///app/pages/error.html')).toBe(true);
+    expect(mod.isErrorPageUrl('file:///app/pages/error.html?url=https%3A%2F%2Fa.test')).toBe(true);
+    expect(mod.isErrorPageUrl('file:///app/pages/error.html#frag')).toBe(true);
+    expect(mod.isErrorPageUrl(undefined)).toBe(false);
+  });
+
   test('maps internal page urls back to freedom:// names', async () => {
     const mod = await loadModule({
       history: 'history.html',

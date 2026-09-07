@@ -3,7 +3,12 @@ import {
   deriveDisplayValue,
   parseOnchainAppUrl,
 } from './url-utils.js';
-import { getInternalPageName, getInterstitialDisplayName, parseEnsInput } from './page-urls.js';
+import {
+  getInternalPageName,
+  getInterstitialDisplayName,
+  isErrorPageUrl,
+  parseEnsInput,
+} from './page-urls.js';
 import { isDwebNameHost } from './origin-utils.js';
 
 // Extract the Ethereum name from an address bar value, or null if the value isn't
@@ -596,14 +601,14 @@ export const getBookmarkBarState = ({
   };
 };
 
-export const getOriginalUrlFromErrorPage = (url, errorUrlBase = '') => {
-  if (!url) {
-    return null;
-  }
-
-  const isErrorPage =
-    (errorUrlBase && url.startsWith(errorUrlBase)) || url.includes('/error.html?');
-  if (!isErrorPage) {
+// The friendly target an error page is standing in for, or null when `url`
+// isn't *our* error page. The chrome test is `isErrorPageUrl` (exact match on
+// the shell's own `pages/error.html`) rather than a `/error.html?` substring:
+// the `url` param is echoed straight into the address bar and the protocol
+// icon, so a remote `https://evil.test/error.html?url=bzz://vitalik.eth` would
+// otherwise get to pick both while rendering attacker HTML. See #235.
+export const getOriginalUrlFromErrorPage = (url) => {
+  if (!isErrorPageUrl(url)) {
     return null;
   }
 

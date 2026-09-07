@@ -7,10 +7,26 @@ import { isEnsHost, isTezosDomainHost } from './origin-utils.js';
 
 const ROUTABLE_PAGES = window.internalPages?.routable || {};
 
+// Resolve an internal page file to the shell's own `pages/<file>` URL.
+const internalPageUrl = (pageFile) => new URL(`pages/${pageFile}`, window.location.href).toString();
+
+// "Is this committed URL one of our own chrome pages?" Every such test must
+// compare against the *resolved* base URL above, never a `/<file>.html`
+// substring: a remote page is free to serve `https://evil.test/error.html` or
+// `https://evil.test/ens-conflict.html`, and a substring test would let it
+// impersonate chrome — taking over the address bar with its own `?url=` /
+// `?name=` value while the webview renders attacker HTML. Only the exact base
+// (optionally with a query string or fragment) counts. See issue #235.
+const matchesInternalPage = (url, base) =>
+  typeof url === 'string' &&
+  (url === base || url.startsWith(`${base}?`) || url.startsWith(`${base}#`));
+
 // URLs for pages
-export const homeUrl = new URL('pages/home.html', window.location.href).toString();
+export const homeUrl = internalPageUrl('home.html');
 export const homeUrlNormalized = homeUrl;
-export const errorUrlBase = new URL('pages/error.html', window.location.href).toString();
+export const errorUrlBase = internalPageUrl('error.html');
+
+export const isErrorPageUrl = (url) => matchesInternalPage(url, errorUrlBase);
 
 // Internal pages map for freedom:// protocol
 export const internalPages = Object.fromEntries(
@@ -41,10 +57,10 @@ export const buildInternalPageUrl = (pageFile, params = null) => {
 // carry the user-facing target in a query param, and — also like the error
 // page — their own `file:///…/pages/*.html` URL must never reach the address
 // bar, history, or any other chrome surface. See issue #235.
-const INTERSTITIAL_PAGE_FILES = ['ens-unverified.html', 'ens-conflict.html'];
+const INTERSTITIAL_PAGE_URLS = ['ens-unverified.html', 'ens-conflict.html'].map(internalPageUrl);
 
 export const isInterstitialPageUrl = (url) =>
-  typeof url === 'string' && INTERSTITIAL_PAGE_FILES.some((file) => url.includes(`/${file}`));
+  INTERSTITIAL_PAGE_URLS.some((base) => matchesInternalPage(url, base));
 
 // The user-facing name an interstitial is blocking (`lagged.tez`), or null
 // when `url` isn't an interstitial / carries no name. Mirrors
@@ -77,7 +93,7 @@ export const isHistoryRecordable = (displayUrl, internalUrl) => {
   if (!displayUrl || displayUrl === '') return false;
   if (displayUrl.startsWith('freedom://')) return false;
   if (displayUrl.startsWith('view-source:')) return false;
-  if (internalUrl?.includes('/error.html')) return false;
+  if (isErrorPageUrl(internalUrl)) return false;
   // A blocked name never lands on real content, so the interstitial is no
   // more history-worthy than the error page — and recording it would put the
   // interstitial's `file://` path (and its "RPC servers disagreed" title)
