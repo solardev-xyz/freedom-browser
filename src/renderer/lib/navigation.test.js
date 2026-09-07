@@ -98,6 +98,16 @@ const loadNavigationModule = async (options = {}) => {
     startIpfsProgressStatus: jest.fn(),
     stopIpfsProgressStatus: jest.fn(),
   };
+  // navigation.js only reaches into wallet-ui.js for the ethereum: tip-link
+  // send flow; the reason constants mirror the real module so the refusal
+  // messages are asserted against the same strings production compares.
+  const walletUiMocks = {
+    openSendFlow: jest.fn(() => 'ok'),
+    SEND_FLOW_OK: 'ok',
+    SEND_FLOW_DISABLED: 'disabled',
+    SEND_FLOW_PRIVATE: 'private',
+    SEND_FLOW_SETUP: 'setup',
+  };
   const activeRef = {};
   const tabsRef = { list: [] };
   const tabsMocks = {
@@ -451,6 +461,7 @@ const loadNavigationModule = async (options = {}) => {
   jest.doMock('./url-utils.js', () => urlUtilsMocks);
   jest.doMock('./page-urls.js', () => pageUrlsMocks);
   jest.doMock('./ipfs-progress-status.js', () => ipfsProgressMocks);
+  jest.doMock('./wallet-ui.js', () => walletUiMocks);
 
   // Pin the shortcut matcher to Linux semantics (Ctrl-based combos) so the
   // keyboard-shortcut assertions below don't depend on the host platform.
@@ -466,6 +477,7 @@ const loadNavigationModule = async (options = {}) => {
     bookmarksUiMocks,
     githubBridgeUiMocks,
     ipfsProgressMocks,
+    walletUiMocks,
     tabsMocks,
     navigationUtilsMocks,
     urlUtilsMocks,
@@ -1259,6 +1271,73 @@ describe('navigation', () => {
       const loadedUrl = ctx.activeRef.tab.webview.loadURL.mock.calls.at(-1)[0];
       expect(loadedUrl).toBe('ipfs://QmTest');
       expect(loadedUrl).not.toContain('error.html');
+    });
+  });
+
+  describe('ethereum: tip links', () => {
+    // The chain registry has to be populated or handleEthereumUri bails before
+    // it ever reaches openSendFlow.
+    const loadWithChains = async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      const { walletState } = await import('./wallet/wallet-state.js');
+      walletState.registeredChains = { 100: { name: 'Gnosis' } };
+      return ctx;
+    };
+
+    test('opens the send flow with the parsed recipient, chain and amount', async () => {
+      const ctx = await loadWithChains();
+
+      ctx.mod.loadTarget('ethereum:0x1111111111111111111111111111111111111111@100?value=1e18');
+      await flushMicrotasks();
+
+      expect(ctx.walletUiMocks.openSendFlow).toHaveBeenCalledWith({
+        recipient: '0x1111111111111111111111111111111111111111',
+        chainId: 100,
+        amount: '1',
+      });
+      expect(global.alert).not.toHaveBeenCalled();
+      // Routing to the sidebar means no page load.
+      expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
+    });
+
+    // Each refusal has a different way out; the alert has to name the right
+    // one. Telling a private-window user to flip a Settings toggle that is
+    // already on leaves them with no path forward (#240).
+    test('explains a private window instead of pointing at the feature toggle', async () => {
+      const ctx = await loadWithChains();
+      ctx.walletUiMocks.openSendFlow.mockReturnValue('private');
+
+      ctx.mod.loadTarget('ethereum:0x1111111111111111111111111111111111111111@100');
+      await flushMicrotasks();
+
+      expect(global.alert).toHaveBeenCalledWith(
+        'Wallet is unavailable in private windows. Open a normal window to accept tips.'
+      );
+    });
+
+    test('points at the feature toggle only when the feature is off', async () => {
+      const ctx = await loadWithChains();
+      ctx.walletUiMocks.openSendFlow.mockReturnValue('disabled');
+
+      ctx.mod.loadTarget('ethereum:0x1111111111111111111111111111111111111111@100');
+      await flushMicrotasks();
+
+      expect(global.alert).toHaveBeenCalledWith(
+        'Enable Identity & Wallet (Settings → Experimental) to accept tips.'
+      );
+    });
+
+    test('points at onboarding when the wallet is enabled but not set up', async () => {
+      const ctx = await loadWithChains();
+      ctx.walletUiMocks.openSendFlow.mockReturnValue('setup');
+
+      ctx.mod.loadTarget('ethereum:0x1111111111111111111111111111111111111111@100');
+      await flushMicrotasks();
+
+      expect(global.alert).toHaveBeenCalledWith(
+        'Finish setting up Identity & Wallet to accept tips.'
+      );
     });
   });
 

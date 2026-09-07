@@ -391,14 +391,25 @@ export function openPublishSetupFlow() {
 // amount. Used by the ethereum: URI scheme handler (EIP-681) so static web
 // pages can offer "Tip" links that route straight into the send flow.
 //
-// Same bail conditions as openPublishSetupFlow.
+// Same bail conditions as openPublishSetupFlow, but reported back to the
+// caller: each refusal has a different way out for the user (turn the feature
+// on, open a normal window, finish identity setup), so a single boolean would
+// force the caller to guess — and guessing "enable the feature" at a user
+// whose wallet is already enabled leaves them no path forward (#240).
+// Returns 'ok' when the send screen opened, otherwise one of the reasons.
+export const SEND_FLOW_OK = 'ok';
+export const SEND_FLOW_DISABLED = 'disabled';
+export const SEND_FLOW_PRIVATE = 'private';
+export const SEND_FLOW_SETUP = 'setup';
+
 export function openSendFlow({ recipient, chainId, amount } = {}) {
-  if (!isSidebarFeatureEnabled()) return false;
-  if (walletState.viewMode !== 'identity') return false;
+  if (!isSidebarFeatureEnabled()) return SEND_FLOW_DISABLED;
+  if (walletState.viewMode === 'private') return SEND_FLOW_PRIVATE;
+  if (walletState.viewMode !== 'identity') return SEND_FLOW_SETUP;
   openSidebarPanel();
   switchTab('wallet');
   openSend({ recipient, chainId, amount });
-  return true;
+  return SEND_FLOW_OK;
 }
 
 /**

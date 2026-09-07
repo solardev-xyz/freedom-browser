@@ -265,6 +265,46 @@ test('private window: the wallet panel says it is unavailable instead of offerin
   await closePrivateWindows(electronApp);
 });
 
+// An `ethereum:` tip link routes into the wallet sidebar's Send screen, which
+// a private window refuses. The refusal has to name the way out that actually
+// exists here — a normal window — not the Settings toggle that is already on
+// for a user whose wallet is fully set up.
+test('private window: an ethereum: tip link points at a normal window, not the feature toggle', async ({
+  window,
+  electronApp,
+}) => {
+  const TIP_URI = 'ethereum:0x1111111111111111111111111111111111111111@100?value=1e18';
+
+  const captureTipAlert = async (page) => {
+    let message = null;
+    page.on('dialog', async (dialog) => {
+      message = dialog.message();
+      await dialog.dismiss();
+    });
+    await navigateTo(page, TIP_URI);
+    await expect
+      .poll(() => message, {
+        message: 'Waiting for the tip-link alert',
+        timeout: 15_000,
+      })
+      .not.toBeNull();
+    return message;
+  };
+
+  const priv = await openPrivateWindow(electronApp);
+  const privateMessage = await captureTipAlert(priv);
+  expect(privateMessage).toContain('Open a normal window');
+  expect(privateMessage).not.toContain('Settings');
+
+  // A normal window without a vault gets the setup message instead, so the
+  // assertion above is about private mode rather than about one blanket
+  // refusal string.
+  const normalMessage = await captureTipAlert(window);
+  expect(normalMessage).toContain('Finish setting up Identity & Wallet');
+
+  await closePrivateWindows(electronApp);
+});
+
 test('private browsing leaves no history, no downloads history, and no cookies behind', async ({
   window,
   electronApp,

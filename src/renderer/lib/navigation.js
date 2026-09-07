@@ -65,7 +65,13 @@ import {
   shouldLearnAutocomplete,
 } from './private-mode.js';
 import { parseEthereumUri } from './ethereum-uri.js';
-import { openSendFlow } from './wallet-ui.js';
+import {
+  openSendFlow,
+  SEND_FLOW_OK,
+  SEND_FLOW_DISABLED,
+  SEND_FLOW_PRIVATE,
+  SEND_FLOW_SETUP,
+} from './wallet-ui.js';
 import { walletState } from './wallet/wallet-state.js';
 import { formatWeiToDecimal } from './wallet/send.js';
 import { startIpfsProgressStatus, stopIpfsProgressStatus } from './ipfs-progress-status.js';
@@ -802,6 +808,16 @@ const syncBzzBase = (nextBase) => {
     });
 };
 
+// One message per openSendFlow refusal reason: the way out differs for each,
+// and telling a private-window user with a fully set-up wallet to flip a
+// Settings toggle that is already on leaves them nowhere to go (#240).
+const SEND_FLOW_REFUSAL_MESSAGES = {
+  [SEND_FLOW_DISABLED]: 'Enable Identity & Wallet (Settings → Experimental) to accept tips.',
+  [SEND_FLOW_PRIVATE]:
+    'Wallet is unavailable in private windows. Open a normal window to accept tips.',
+  [SEND_FLOW_SETUP]: 'Finish setting up Identity & Wallet to accept tips.',
+};
+
 // EIP-681 carries value in the chain's base unit (wei for ETH et al.); we
 // assume 18 decimals for the native token, correct for every chain freedom
 // currently ships with.
@@ -827,13 +843,13 @@ const handleEthereumUri = (value) => {
   }
 
   const amount = parsed.value ? formatWeiToDecimal(BigInt(parsed.value)) : undefined;
-  const opened = openSendFlow({
+  const result = openSendFlow({
     recipient: parsed.target,
     chainId: parsed.chainId,
     amount,
   });
-  if (!opened) {
-    alert('Enable Identity & Wallet (Settings → Experimental) to accept tips.');
+  if (result !== SEND_FLOW_OK) {
+    alert(SEND_FLOW_REFUSAL_MESSAGES[result] || SEND_FLOW_REFUSAL_MESSAGES[SEND_FLOW_DISABLED]);
   }
 };
 
