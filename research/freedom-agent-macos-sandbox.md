@@ -387,16 +387,20 @@ New product-path evidence includes:
   heartbeat and an empty survivor scan;
 - controlled failure: intentional exit 1, with all four scenario/cleanup assertions passing,
   fixture removal and no survivor;
-- real Electron application Quit in idle, running-preview and detached states: 14/14 assertions
-  passed. Each case invoked the native `Menu.sendActionToFirstResponder("terminate:")` action used
+- real Electron application Quit and partial-setup cleanup: 17/17 assertions passed. The idle,
+  running-preview and detached cases invoked the native
+  `Menu.sendActionToFirstResponder("terminate:")` action used
   by application Quit/Cmd+Q, reached Agent disposal start/finish, and produced an observed zero-code,
-  no-signal OS exit in 143-171 ms. Process identities were recorded by PID, start time and command
+  no-signal OS exit in 137-174 ms. Process identities were recorded by PID, start time and command
   before Quit and checked after exit independently of parentage. Idle left no survivor. Running Quit
   stopped the managed server, stabilized its heartbeat, removed its listener and made its preview
   route unavailable with the application. Detached Quit stopped the original managed process but
   left the token-bearing `setsid()` descendant alive and writing, exactly as `best_effort` predicts;
   it remained denied outside-file, loopback and DNS access, was reported before cleanup, then was
-  token-validated, terminated and removed with the fresh fixture.
+  token-validated, terminated and removed with the fresh fixture. A deterministic partial-setup
+  failure injected immediately after detached-process creation separately proves that ownership is
+  registered before preparation: cleanup rediscovers the token-bearing process without a returned
+  fixture, validates and terminates it, confirms its absence, and only then removes the directory.
 
 The follow-up receipt review also removed a permissive qualification shortcut. Complete executor
 receipts must now explicitly carry the platform survivor fields: macOS requires

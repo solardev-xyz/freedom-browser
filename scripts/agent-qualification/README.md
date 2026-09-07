@@ -117,7 +117,10 @@ existing test-mode composition and invokes the native `terminate:` menu action u
 Quit/Cmd+Q. It independently snapshots main, helper, managed-server, and detached process identities
 before Quit, then checks the same PID, start time, and command after exit rather than relying on
 parentage. The detached fixture is uniquely tokenized and is explicitly cleaned only after the
-qualification reports it as a pre-cleanup survivor.
+qualification reports it as a pre-cleanup survivor. A fourth deterministic check registers its
+cleanup token and owned temporary root before preparation, injects a failure immediately after a
+detached process is created, rediscovers that process by token and exact identity, terminates it,
+confirms its absence, and only then removes the fixture.
 
 ## Expected output
 

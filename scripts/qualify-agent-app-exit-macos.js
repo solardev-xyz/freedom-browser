@@ -11,6 +11,8 @@ const { _electron: electron } = require('@playwright/test');
 
 const PREFIX = 'freedom-agent-app-exit-';
 const MODES = ['idle', 'running', 'detached'];
+const DETACHED_FAILURE_INJECTION = 'after_detached_process_created';
+const DETACHED_FAILURE_MESSAGE = 'Injected Agent exit failure after detached process creation';
 const MAX_OUTPUT_BYTES = 256 * 1024;
 
 function emit(type, value = {}) {
@@ -127,17 +129,22 @@ async function stopExactProcess(identity, token, signal) {
 
 async function cleanupTokenProcesses(token, identities) {
   const cleaned = [];
+  const errors = [];
   for (const identity of identities) {
-    if (!identityMatches(identity, token)) continue;
-    if (!(await stopExactProcess(identity, token, 'SIGTERM'))) {
+    try {
       if (!identityMatches(identity, token)) continue;
-      if (!(await stopExactProcess(identity, token, 'SIGKILL'))) {
-        throw new Error(`Token-owned process ${identity.pid} survived bounded cleanup`);
+      if (!(await stopExactProcess(identity, token, 'SIGTERM'))) {
+        if (!identityMatches(identity, token)) continue;
+        if (!(await stopExactProcess(identity, token, 'SIGKILL'))) {
+          throw new Error(`Token-owned process ${identity.pid} survived bounded cleanup`);
+        }
       }
+      cleaned.push(identity.pid);
+    } catch (error) {
+      errors.push(`${identity.pid}:${error.message}`);
     }
-    cleaned.push(identity.pid);
   }
-  return cleaned;
+  return { cleaned, errors };
 }
 
 async function settleWithin(promise, timeoutMs) {
@@ -179,10 +186,17 @@ function publicIdentities(identities) {
   }));
 }
 
-async function runMode(mode, results) {
+async function runMode(mode, results, options = {}) {
+  const scenario = options.scenario || mode;
+  const failureInjection = options.failureInjection || null;
+  const expectsPreparationFailure = failureInjection !== null;
   const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), PREFIX));
   await fs.promises.chmod(root, 0o700);
   const launchToken = `freedom-agent-exit-launch-${crypto.randomBytes(12).toString('hex')}`;
+  const ownership = Object.freeze({
+    token: `freedom-agent-app-exit-${crypto.randomBytes(12).toString('hex')}`,
+    userDataRoot: root,
+  });
   let stdout = '';
   let stderr = '';
   let electronApp = null;
@@ -193,11 +207,17 @@ async function runMode(mode, results) {
   let cleanupPids = [];
   const check = (id, name, condition, evidence = {}) => {
     const status = condition ? 'passed' : 'failed';
-    results.push({ id: `${mode}:${id}`, status });
-    emit('assertion', { mode, id, name, status, evidence });
+    results.push({ id: `${scenario}:${id}`, status });
+    emit('assertion', { scenario, mode, id, name, status, evidence });
   };
 
-  emit('app-exit-scenario', { mode, userDataRoot: path.basename(root) });
+  emit('app-exit-scenario', { scenario, mode, userDataRoot: path.basename(root) });
+  emit('app-exit-ownership', {
+    scenario,
+    mode,
+    cleanupTokenRegisteredBeforePreparation: true,
+    userDataRootRegisteredBeforePreparation: true,
+  });
   try {
     electronApp = await electron.launch({
       args: ['.', `--freedom-agent-exit-token=${launchToken}`],
@@ -220,10 +240,13 @@ async function runMode(mode, results) {
     });
     await electronApp.firstWindow();
     fixture = await electronApp.evaluate(
-      async (_electron, requestedMode) =>
-        globalThis.__FREEDOM_TEST_HARNESS__.prepareAgentExitScenario(requestedMode),
-      mode
+      async (_electron, request) =>
+        globalThis.__FREEDOM_TEST_HARNESS__.prepareAgentExitScenario(request),
+      { mode, token: ownership.token, failureInjection }
     );
+    if (expectsPreparationFailure) {
+      throw new Error('Expected Agent exit preparation failure was not injected');
+    }
 
     const explicitRoles = new Map(
       (fixture.ownedProcesses || []).map((entry) => [entry.pid, entry.role])
@@ -424,8 +447,17 @@ async function runMode(mode, results) {
       );
     }
   } catch (error) {
-    results.push({ id: `${mode}:scenario`, status: 'failed' });
-    emit('app-exit-error', { mode, message: error.message });
+    if (expectsPreparationFailure && error.message.includes(DETACHED_FAILURE_MESSAGE)) {
+      check(
+        'injected-preparation-failure',
+        'the deterministic failure occurs only after the detached process was created',
+        true,
+        { failureInjection, message: DETACHED_FAILURE_MESSAGE }
+      );
+    } else {
+      results.push({ id: `${scenario}:scenario`, status: 'failed' });
+      emit('app-exit-error', { scenario, mode, message: error.message });
+    }
   } finally {
     const cleanupErrors = [];
     if (electronApp && child) {
@@ -435,18 +467,36 @@ async function runMode(mode, results) {
         cleanupErrors.push(`application:${error.message}`);
       }
     }
-    const token = fixture?.token;
-    if (token) {
-      const tokenIdentities = tokenProcesses(token)
-        .map((row) => processIdentity(row.pid))
-        .filter(Boolean);
-      try {
-        cleanupPids = await cleanupTokenProcesses(token, tokenIdentities);
-      } catch (error) {
-        cleanupErrors.push(`fixture-process:${error.message}`);
-      }
+    const tokenIdentities = tokenProcesses(ownership.token)
+      .map((row) => {
+        const identity = processIdentity(row.pid);
+        return identity
+          ? {
+              ...identity,
+              role: 'token-owned-cleanup',
+              ownershipToken: ownership.token,
+              ownershipBasis: 'fixture_token',
+              tokenVerified: identity.command.includes(ownership.token),
+            }
+          : null;
+      })
+      .filter(Boolean);
+    if (expectsPreparationFailure) {
+      survivorsBeforeCleanup = tokenIdentities;
+      check(
+        'partial-setup-process-discovery',
+        'cleanup rediscovers token-owned processes after preparation failed and the app stopped',
+        tokenIdentities.length > 0 &&
+          tokenIdentities.every((identity) => identity.tokenVerified === true),
+        { ownedProcesses: publicIdentities(tokenIdentities) }
+      );
     }
-    const finalTokenSurvivors = token ? tokenProcesses(token) : [];
+    if (tokenIdentities.length > 0) {
+      const cleanup = await cleanupTokenProcesses(ownership.token, tokenIdentities);
+      cleanupPids = cleanup.cleaned;
+      cleanupErrors.push(...cleanup.errors.map((error) => `fixture-process:${error}`));
+    }
+    const finalTokenSurvivors = tokenProcesses(ownership.token);
     const applicationStopped = !child || child.exitCode !== null || child.signalCode !== null;
     if (applicationStopped && finalTokenSurvivors.length === 0) {
       try {
@@ -460,8 +510,9 @@ async function runMode(mode, results) {
       finalTokenSurvivors.length === 0 &&
       !fs.existsSync(root) &&
       cleanupErrors.length === 0;
-    results.push({ id: `${mode}:cleanup`, status: cleanupPassed ? 'passed' : 'failed' });
+    results.push({ id: `${scenario}:cleanup`, status: cleanupPassed ? 'passed' : 'failed' });
     emit('app-exit-cleanup', {
+      scenario,
       mode,
       survivorsBeforeCleanup: publicIdentities(survivorsBeforeCleanup),
       tokenValidatedCleanupPids: cleanupPids,
@@ -478,9 +529,18 @@ async function main() {
   if (process.platform !== 'darwin') throw new Error('Application-exit qualification requires macOS');
   const results = [];
   for (const mode of MODES) await runMode(mode, results);
+  await runMode('detached', results, {
+    scenario: 'detached-setup-failure',
+    failureInjection: DETACHED_FAILURE_INJECTION,
+  });
   const passed = results.filter((entry) => entry.status === 'passed').length;
   const failed = results.filter((entry) => entry.status === 'failed').length;
-  emit('app-exit-summary', { passed, failed, modes: MODES });
+  emit('app-exit-summary', {
+    passed,
+    failed,
+    modes: MODES,
+    failureInjections: [DETACHED_FAILURE_INJECTION],
+  });
   if (failed > 0) process.exitCode = 1;
 }
 

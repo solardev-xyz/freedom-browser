@@ -54,6 +54,8 @@ const {
 const TEST_MODE_ENABLED = process.env.FREEDOM_TEST_MODE === '1';
 const APP_EXIT_FIXTURE_PREFIX = 'freedom-agent-app-exit-';
 const APP_EXIT_MODES = new Set(['idle', 'running', 'detached']);
+const APP_EXIT_TOKEN_PATTERN = /^freedom-agent-app-exit-[a-f0-9]{24}$/;
+const APP_EXIT_FAILURE_INJECTIONS = new Set([null, 'after_detached_process_created']);
 
 function isTestMode() {
   return TEST_MODE_ENABLED;
@@ -97,8 +99,20 @@ function validatedAgentExitRoot() {
   return root;
 }
 
-async function prepareAgentExitScenario(agentRuntime, mode) {
+async function prepareAgentExitScenario(agentRuntime, request) {
+  const mode = request?.mode;
+  const token = request?.token;
+  const failureInjection = request?.failureInjection ?? null;
   if (!APP_EXIT_MODES.has(mode)) throw new Error('Unknown Agent application-exit mode');
+  if (!APP_EXIT_TOKEN_PATTERN.test(token || '')) {
+    throw new Error('Agent application-exit fixture requires a valid cleanup token');
+  }
+  if (!APP_EXIT_FAILURE_INJECTIONS.has(failureInjection)) {
+    throw new Error('Unknown Agent application-exit failure injection');
+  }
+  if (failureInjection && mode !== 'detached') {
+    throw new Error('Agent application-exit failure injection requires detached mode');
+  }
   if (
     !agentRuntime?.service ||
     !agentRuntime?.workspaceController ||
@@ -107,7 +121,6 @@ async function prepareAgentExitScenario(agentRuntime, mode) {
     throw new Error('Agent application-exit fixture requires the app-owned Agent runtime');
   }
   const root = validatedAgentExitRoot();
-  const token = `freedom-agent-app-exit-${crypto.randomBytes(12).toString('hex')}`;
   const base = {
     mode,
     token,
@@ -231,7 +244,11 @@ async function prepareAgentExitScenario(agentRuntime, mode) {
   await fs.promises.writeFile(path.join(workspaceRoot, scriptName), source);
   const command = `python3 ${scriptName} ${token} ${outsideCanary}`;
   const started = await controller.startProcess(conversationId, { command, yieldMs: 500 });
-  await Promise.all([waitForPath(detachedPidPath), waitForPath(resultPath)]);
+  await Promise.all([waitForPath(managedPidPath), waitForPath(detachedPidPath)]);
+  if (failureInjection === 'after_detached_process_created') {
+    throw new Error('Injected Agent exit failure after detached process creation');
+  }
+  await waitForPath(resultPath);
   return {
     ...base,
     conversationId,
@@ -885,7 +902,7 @@ function exposeGlobalShim(agentRuntime) {
       window.close();
       return true;
     },
-    prepareAgentExitScenario: (mode) => prepareAgentExitScenario(agentRuntime, mode),
+    prepareAgentExitScenario: (request) => prepareAgentExitScenario(agentRuntime, request),
     state: () => ({
       content: [...contentFixtures.keys()],
       contentActivity: Object.fromEntries(contentFixtureActivity),
