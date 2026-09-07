@@ -272,6 +272,66 @@ describe('Tab Navigation State Isolation', () => {
     });
   });
 
+  describe('did-navigate clears the previous document title (#236)', () => {
+    // Chromium fires `page-title-updated` only when the new document
+    // actually declares a title, so a page without a <title> — the Swarm
+    // error page being the reported case — otherwise keeps showing, and
+    // recording in history, the title of the page visited before it.
+    test('clears the carried-over title when a different URL commits', async () => {
+      const { createTab, switchTab } = await import('./tabs.js');
+
+      const tab = createTab('https://example.com/');
+      switchTab(tab.id);
+      tab.title = 'RPC servers disagreed';
+      mockElectronAPI.setWindowTitle.mockClear();
+
+      tab.webview.getURL.mockReturnValue('file:///app/pages/error.html?error=x');
+      tab.webview._eventHandlers['did-navigate']({
+        url: 'file:///app/pages/error.html?error=x',
+      });
+
+      expect(tab.title).toBe('');
+      expect(mockElectronAPI.setWindowTitle).toHaveBeenCalledWith('');
+    });
+
+    test('keeps the title when the same URL re-commits (reload)', async () => {
+      const { createTab } = await import('./tabs.js');
+
+      const tab = createTab('https://example.com/');
+      tab.webview.getURL.mockReturnValue('https://example.com/page');
+      tab.webview._eventHandlers['did-navigate']({ url: 'https://example.com/page' });
+      tab.title = 'Example Page';
+
+      tab.webview._eventHandlers['did-navigate']({ url: 'https://example.com/page' });
+
+      expect(tab.title).toBe('Example Page');
+    });
+
+    test('keeps the title through an about:blank commit', async () => {
+      // Same reasoning as committedDisplayUrl: "open in new window" passes
+      // through about:blank before the real navigation commits.
+      const { createTab } = await import('./tabs.js');
+
+      const tab = createTab('https://example.com/');
+      tab.title = 'Example Page';
+      tab.webview.getURL.mockReturnValue('about:blank');
+      tab.webview._eventHandlers['did-navigate']({ url: 'about:blank' });
+
+      expect(tab.title).toBe('Example Page');
+    });
+
+    test('leaves a view-source title alone (navigation.js owns it)', async () => {
+      const { createTab } = await import('./tabs.js');
+
+      const tab = createTab('https://example.com/');
+      tab.title = 'view-source:https://example.com/';
+      tab.webview.getURL.mockReturnValue('view-source:https://example.com/other');
+      tab.webview._eventHandlers['did-navigate']({ url: 'https://example.com/other' });
+
+      expect(tab.title).toBe('view-source:https://example.com/');
+    });
+  });
+
   describe('getActiveTabState helper', () => {
     test('should return navigation state of active tab', async () => {
       const { createTab, switchTab, getActiveTabState } = await import('./tabs.js');

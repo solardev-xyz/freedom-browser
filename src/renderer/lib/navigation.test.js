@@ -67,6 +67,16 @@ const loadNavigationModule = async (options = {}) => {
   const homeUrl = 'file:///app/pages/home.html';
   const historyUrl = 'file:///app/pages/history.html';
   const errorUrlBase = 'file:///app/pages/error.html';
+  // Mirrors `page-urls.js`: chrome pages are matched on the shell's own
+  // resolved `pages/<file>` base, never a `/<file>.html` substring, so a
+  // remote look-alike path can't impersonate an internal page (#235).
+  const matchesInternalPage = (url, base) =>
+    typeof url === 'string' &&
+    (url === base || url.startsWith(`${base}?`) || url.startsWith(`${base}#`));
+  const isInterstitialPageUrlMock = (url) =>
+    ['file:///app/pages/ens-unverified.html', 'file:///app/pages/ens-conflict.html'].some((base) =>
+      matchesInternalPage(url, base)
+    );
   const state = {
     bzzRoutePrefix: 'https://gateway.example/bzz/',
     ipfsRoutePrefix: 'https://gateway.example/ipfs/',
@@ -171,7 +181,7 @@ const loadNavigationModule = async (options = {}) => {
       };
     }),
     getOriginalUrlFromErrorPage: jest.fn((url) => {
-      if (!url.includes('error.html')) return null;
+      if (!matchesInternalPage(url, errorUrlBase)) return null;
       try {
         return new URL(url).searchParams.get('url');
       } catch {
@@ -311,10 +321,22 @@ const loadNavigationModule = async (options = {}) => {
         Boolean(displayUrl) &&
         !displayUrl.startsWith('freedom://') &&
         !displayUrl.startsWith('view-source:') &&
-        !internalUrl.includes('/error.html')
+        !matchesInternalPage(internalUrl, errorUrlBase)
       );
     }),
     getInternalPageName: jest.fn((url) => (url === historyUrl ? 'history' : null)),
+    isErrorPageUrl: jest.fn((url) => matchesInternalPage(url, errorUrlBase)),
+    isInterstitialPageUrl: jest.fn((url) => isInterstitialPageUrlMock(url)),
+    getInterstitialDisplayName: jest.fn((url) => {
+      if (!isInterstitialPageUrlMock(url)) {
+        return null;
+      }
+      try {
+        return new URL(url).searchParams.get('name') || null;
+      } catch {
+        return null;
+      }
+    }),
     parseEnsInput: jest.fn(() => null),
     buildInternalPageUrl: jest.fn((file, params = null) => {
       const base = `file:///app/pages/${file}`;
@@ -1545,6 +1567,57 @@ describe('navigation', () => {
       const url = new URL(interstitialCall[0]);
       expect(url.searchParams.get('name')).toBe('lonely.eth');
       expect(url.searchParams.get('uri')).toContain('ipfs://QmFake');
+    });
+
+    test('committing an interstitial keeps the blocked name in the address bar', async () => {
+      // #235: the interstitials are chrome, not content. Their own
+      // `file:///…/pages/ens-*.html` URL must never reach the address bar —
+      // the user keeps seeing the name they asked for, exactly like the
+      // Swarm error page keeps `bzz://<hash>/`.
+      const ctx = await setupEnsDispatch({ blockUnverifiedEns: true });
+
+      ctx.tabsMocks.webviewEventHandler('did-navigate', {
+        event: {
+          url: 'file:///app/pages/ens-unverified.html?name=retry.tez&uri=ipfs%3A%2F%2FQmRetryTez',
+        },
+      });
+      expect(ctx.elements.addressInput.value).toBe('retry.tez');
+
+      ctx.tabsMocks.webviewEventHandler('did-navigate', {
+        event: {
+          url: 'file:///app/pages/ens-conflict.html?name=lagged.tez&block=%7B%7D&groups=%5B%5D',
+        },
+      });
+      expect(ctx.elements.addressInput.value).toBe('lagged.tez');
+
+      // Fail-safe: an interstitial without its `name` param still must not
+      // fall through to the raw file:// path.
+      ctx.tabsMocks.webviewEventHandler('did-navigate', {
+        event: { url: 'file:///app/pages/ens-conflict.html' },
+      });
+      expect(ctx.elements.addressInput.value).toBe('');
+    });
+
+    test('a remote page at an interstitial-look-alike path cannot spoof the address bar', async () => {
+      // #235 regression: `isInterstitialPageUrl` matched a `/ens-*.html`
+      // substring, so any remote page served at that path was treated as
+      // chrome — the address bar showed the attacker's `?name=` value (and
+      // the trust shield could badge it) while the webview rendered the
+      // attacker's HTML. Only the shell's own `pages/ens-*.html` is chrome.
+      const ctx = await setupEnsDispatch({ blockUnverifiedEns: true });
+
+      for (const hostile of [
+        'https://evil.test/ens-conflict.html?name=bank.eth',
+        'https://evil.test/pages/ens-unverified.html?name=bank.eth',
+        'https://evil.test/error.html?url=bzz%3A%2F%2Fvitalik.eth',
+      ]) {
+        ctx.tabsMocks.webviewEventHandler('did-navigate', { event: { url: hostile } });
+        expect(ctx.elements.addressInput.value).not.toBe('bank.eth');
+        expect(ctx.elements.addressInput.value).not.toBe('bzz://vitalik.eth');
+        // Falls through to the ordinary content path — `deriveDisplayValue`
+        // (mocked here as a `display:` prefix) renders the real URL.
+        expect(ctx.elements.addressInput.value).toBe(`display:${hostile}`);
+      }
     });
 
     test('unverified proceeds normally when blockUnverifiedEns is off', async () => {
