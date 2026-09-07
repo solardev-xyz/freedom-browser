@@ -50,24 +50,24 @@ Ranked by user impact. All are pre-existing on `main` at `18a7e39b`; none is a
 regression introduced by a specific recent PR unless stated. Issues #223–#242
 (the 0.8.5 audit) were excluded from this pass.
 
-| #   | Issue      | Surface                                  | Impact                                                                          |
-| --- | ---------- | ---------------------------------------- | ------------------------------------------------------------------------------- |
-| 1   | [#ISSUE1]  | Sidebar → manage permissions             | Site origin renders white-on-white in light theme                               |
-| 2   | [#ISSUE2]  | `freedom://publish`                      | Only routable internal page with no light theme                                 |
-| 3   | [#ISSUE3]  | `freedom://payments`                     | Filter dropdowns lose their chevron and go dark-on-dark on hover in light theme |
-| 4   | [#ISSUE4]  | Nodes menu                               | `Finalized Block: --` where every sibling counter shows `0`                     |
-| 5   | [#ISSUE5]  | Nodes menu                               | Four different `Version:` placeholder conventions in one menu                   |
-| 6   | [#ISSUE6]  | Downloads / History / Payments           | Three counter conventions; `1 downloads` and `1 entries` never pluralise        |
-| 7   | [#ISSUE7]  | `freedom://settings/chains/<id>`         | Page title and its sub-sections share `h2.section-title`                        |
-| 8   | [#ISSUE8]  | Internal page headers                    | `profiles` and `payments` break the shared page-header pattern                  |
-| 9   | [#ISSUE9]  | Hamburger menu + search placeholders     | `...` and `…` mixed in the same menu                                            |
-| 10  | [#ISSUE10] | Downloads / History / Payments / Publish | Empty-state punctuation and `Clear All` vs `Clear all`                          |
-| 11  | [#ISSUE11] | Sidebar Wallet Settings                  | `Delete Wallet` is a filled destructive button; every sibling is outlined       |
-| 12  | [#ISSUE12] | `pages/error.html`                       | Same `<h1>` is Title Case in one state and sentence case in two others          |
+| #   | Issue                                                              | Surface                                  | Impact                                                                          |
+| --- | ------------------------------------------------------------------ | ---------------------------------------- | ------------------------------------------------------------------------------- |
+| 1   | [#249](https://github.com/solardev-xyz/freedom-browser/issues/249) | Sidebar → manage permissions             | Site origin renders white-on-white in light theme                               |
+| 2   | [#250](https://github.com/solardev-xyz/freedom-browser/issues/250) | `freedom://publish`                      | Only routable internal page with no light theme                                 |
+| 3   | [#251](https://github.com/solardev-xyz/freedom-browser/issues/251) | `freedom://payments`                     | Filter dropdowns lose their chevron and go dark-on-dark on hover in light theme |
+| 4   | [#252](https://github.com/solardev-xyz/freedom-browser/issues/252) | Nodes menu                               | `Finalized Block: --` where every sibling counter shows `0`                     |
+| 5   | [#253](https://github.com/solardev-xyz/freedom-browser/issues/253) | Nodes menu                               | Four different `Version:` placeholder conventions in one menu                   |
+| 6   | [#254](https://github.com/solardev-xyz/freedom-browser/issues/254) | Downloads / History / Payments           | Three counter conventions; `1 downloads` and `1 entries` never pluralise        |
+| 7   | [#255](https://github.com/solardev-xyz/freedom-browser/issues/255) | `freedom://settings/chains/<id>`         | Page title and its sub-sections share `h2.section-title`                        |
+| 8   | [#256](https://github.com/solardev-xyz/freedom-browser/issues/256) | Internal page headers                    | `profiles` and `payments` break the shared page-header pattern                  |
+| 9   | [#257](https://github.com/solardev-xyz/freedom-browser/issues/257) | Hamburger menu + search placeholders     | `...` and `…` mixed in the same menu                                            |
+| 10  | [#258](https://github.com/solardev-xyz/freedom-browser/issues/258) | Downloads / History / Payments / Publish | Empty-state punctuation and `Clear All` vs `Clear all`                          |
+| 11  | [#259](https://github.com/solardev-xyz/freedom-browser/issues/259) | Sidebar Wallet Settings                  | `Delete Wallet` is a filled destructive button; every sibling is outlined       |
+| 12  | [#260](https://github.com/solardev-xyz/freedom-browser/issues/260) | `pages/error.html`                       | Same `<h1>` is Title Case in one state and sentence case in two others          |
 
 ---
 
-### 1. Sidebar "manage permissions" screens are unreadable in light theme — [#ISSUE1]
+### 1. Sidebar "manage permissions" screens are unreadable in light theme — [#249](https://github.com/solardev-xyz/freedom-browser/issues/249)
 
 `src/renderer/styles/sidebar.css:3050` — `.perms-site { color: var(--text-primary, #fff); }`
 
@@ -103,7 +103,7 @@ Suggested fix: replace the undefined tokens with the real ones
 (`--text`/`--muted`) or define them in `variables.css` with a
 `[data-theme='light']` block.
 
-### 2. `freedom://publish` has no light theme at all — [#ISSUE2]
+### 2. `freedom://publish` has no light theme at all — [#250](https://github.com/solardev-xyz/freedom-browser/issues/250)
 
 `src/renderer/pages/styles/publish.css:1-11` hard-codes a dark palette
 (`--bg: #1e1e1e; --surface: #2a2a2a; --text: #e0e0e0`) and the file contains no
@@ -123,7 +123,7 @@ Sampled pixels, same window, same run, light theme: `freedom://publish` body is
 Suggested fix: add a `@media (prefers-color-scheme: light)` block to
 `publish.css` overriding the five `:root` values, matching `downloads.html`.
 
-### 3. Payments filter dropdowns lose their chevron and invert on hover in light theme — [#ISSUE3]
+### 3. Payments filter dropdowns lose their chevron and invert on hover in light theme — [#251](https://github.com/solardev-xyz/freedom-browser/issues/251)
 
 Three separate misses in the same light block:
 
@@ -144,7 +144,7 @@ Three separate misses in the same light block:
 Suggested fix: repeat the chevron `url()` in the light `.filter-select` rule and
 add light `.filter-select:hover` / `.btn:hover` overrides, copying `history.html`.
 
-### 4. Nodes menu still shows `--` for two counters — [#ISSUE4]
+### 4. Nodes menu still shows `--` for two counters — [#252](https://github.com/solardev-xyz/freedom-browser/issues/252)
 
 `src/renderer/index.html:713` (`myotis-finalized-block`) and `:742`
 (`myotis-gnosis-finalized-block`) default to `--`, and Gnosis keeps `--` for as
@@ -166,7 +166,7 @@ _Seeded Repositories_ two rows below reads `0`.
 Suggested fix: default both `myotis-finalized-block` and
 `myotis-gnosis-finalized-block` to `0`, as #227 did for `radicle-repos-count`.
 
-### 5. Four different `Version:` placeholders in one menu — [#ISSUE5]
+### 5. Four different `Version:` placeholders in one menu — [#253](https://github.com/solardev-xyz/freedom-browser/issues/253)
 
 The same `Version:` row in the Nodes menu has four conventions:
 
@@ -186,7 +186,7 @@ _Version:_ is blank while Ethereum reads `Myotis v0.1.7` and Radicle
 Suggested fix: pick one placeholder (the playbook's `0`-not-`--` rule implies a
 neutral literal, e.g. `Unknown`) and use it for all four rows.
 
-### 6. Three counter conventions across the three list pages — [#ISSUE6]
+### 6. Three counter conventions across the three list pages — [#254](https://github.com/solardev-xyz/freedom-browser/issues/254)
 
 The `#stats` subtitle on the three sibling list pages:
 
@@ -202,7 +202,7 @@ The `#stats` subtitle on the three sibling list pages:
 Suggested fix: adopt the payments form (pluralise, and show `N of M` while
 filtered) on history and downloads.
 
-### 7. Chain-detail settings route stacks equal-weight headings — [#ISSUE7]
+### 7. Chain-detail settings route stacks equal-weight headings — [#255](https://github.com/solardev-xyz/freedom-browser/issues/255)
 
 `src/renderer/pages/settings.html:3320` renders the page title as
 `<h2 class="section-title">` — and so do its own sub-sections at `:3329`
@@ -225,7 +225,7 @@ Repro: `freedom://settings/chains/1`.
 Suggested fix: demote the three sub-headings to the 12 px uppercase category
 style already used elsewhere in settings, keeping one `.section-title` per route.
 
-### 8. Two internal pages break the shared page-header pattern — [#ISSUE8]
+### 8. Two internal pages break the shared page-header pattern — [#256](https://github.com/solardev-xyz/freedom-browser/issues/256)
 
 `history`, `downloads`, `links` all use the same header: `h1 { font-size: 28px;
 color: #58a6ff; display: flex; gap: 12px }` with an inline SVG icon and a
@@ -244,7 +244,7 @@ var(--text) }` (`profiles.html:555`) — six pixels smaller, body-grey instead o
 Suggested fix: give `profiles.html` the shared 28 px accent `h1` + icon +
 subtitle, and move payments onto the same accent as its siblings.
 
-### 9. `...` and `…` mixed in the same menu — [#ISSUE9]
+### 9. `...` and `…` mixed in the same menu — [#257](https://github.com/solardev-xyz/freedom-browser/issues/257)
 
 Inside the hamburger menu: `src/renderer/index.html:980` `Print...`,
 `:893` `Create Profile...`, `:896` `Manage Profiles...` — but `:1005`
@@ -263,7 +263,7 @@ and `settings.html:3063` `Search chains by name or ID…`; `history.html:507`
 Suggested fix: standardise on U+2026 (`…`) and add a lint rule or test for
 `\.\.\.` in user-facing renderer strings.
 
-### 10. Empty-state punctuation and bulk-clear label drift — [#ISSUE10]
+### 10. Empty-state punctuation and bulk-clear label drift — [#258](https://github.com/solardev-xyz/freedom-browser/issues/258)
 
 Empty states, same page family, same `.empty-state` component:
 
@@ -283,7 +283,7 @@ Bulk-clear button, same action, three pages: `history.html:501` `Clear All`,
 
 Suggested fix: drop the trailing periods and use `Clear All` everywhere.
 
-### 11. `Delete Wallet` is the only filled destructive button — [#ISSUE11]
+### 11. `Delete Wallet` is the only filled destructive button — [#259](https://github.com/solardev-xyz/freedom-browser/issues/259)
 
 `src/renderer/styles/sidebar.css:4520-4531` gives `.wallet-settings-delete-btn` a
 solid `background: var(--danger)` with `color: #fff`. Every other destructive
@@ -297,7 +297,7 @@ control follows the playbook's outlined-`--danger` rule: `Clear All`
 Suggested fix: restyle `.wallet-settings-delete-btn` as an outlined `--danger`
 button like `.perms-disconnect-btn`.
 
-### 12. `error.html` mixes Title Case and sentence case in the same `<h1>` — [#ISSUE12]
+### 12. `error.html` mixes Title Case and sentence case in the same `<h1>` — [#260](https://github.com/solardev-xyz/freedom-browser/issues/260)
 
 `src/renderer/pages/error.html:99` ships `Content Unavailable` (Title Case) as the
 default title; the script then replaces it with `Couldn't load this page`
