@@ -226,6 +226,21 @@ const readIndexHintDatasets = () => {
   });
 };
 
+// #227: every numeric counter row in the Nodes menu shares one empty-state
+// representation ('0'); '--' stays reserved for the non-numeric rows
+// (Version, Finalized Block). Read the real dropdown markup so a counter
+// can't drift back to '--' — including one added later.
+const readNodesMenuCounterDefaults = () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
+  const dropdown = html.slice(
+    html.indexOf('id="bee-menu-dropdown"'),
+    html.indexOf('id="wallet-toggle-btn"')
+  );
+  return [...dropdown.matchAll(/<span id="([\w-]+(?:-count|-peers))">([^<]*)<\/span>/g)].map(
+    ([, id, text]) => [id, text]
+  );
+};
+
 describe('menus', () => {
   afterEach(() => {
     global.window = originalWindow;
@@ -253,6 +268,23 @@ describe('menus', () => {
         'Ctrl+Alt+I',
       ]);
     });
+  });
+
+  // #227: the Radicle row used to be the odd one out at '--'; the Swarm and
+  // IPFS rows were the odd ones out the other way once it moved to '0'.
+  test('every Nodes menu counter starts at 0, not --', () => {
+    const counters = readNodesMenuCounterDefaults();
+
+    expect(counters.map(([id]) => id)).toEqual([
+      'bee-peers-count',
+      'bee-network-peers',
+      'ipfs-active-requests-count',
+      'myotis-peers-count',
+      'myotis-gnosis-peers-count',
+      'radicle-peers-count',
+      'radicle-repos-count',
+    ]);
+    expect(counters.filter(([, text]) => text !== '0')).toEqual([]);
   });
 
   test('hamburger shortcut hints render as mac glyph runs on darwin', async () => {
