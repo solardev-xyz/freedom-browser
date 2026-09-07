@@ -11,6 +11,13 @@ Method, tooling and conventions:
 - Conventions checked against `docs/agent-playbooks/ui-consistency.md`.
 - Base commit: `18a7e39b` (`main`). App run headless under
   `xvfb-run -a -s "-screen 0 1440x900x24"` with `FREEDOM_TEST_MODE=1`.
+- `main` moved while this report was in review: #243, #244, #245 and #246 landed
+  and closed #233, #234, #235, #236, #237, #238, #240, #241 and #242. Every
+  finding below was re-checked against `main` at `2582f165` and still
+  reproduces; the `file:line` references are to the base commit and have drifted
+  by a few lines in the files those PRs touched. Finding 2 and
+  "Deliberately not re-reported" are written against `2582f165`, because #245
+  changed the mechanism they describe.
 
 ## What was exercised
 
@@ -53,7 +60,7 @@ regression introduced by a specific recent PR unless stated. Issues #223–#242
 | #   | Issue                                                              | Surface                                  | Impact                                                                          |
 | --- | ------------------------------------------------------------------ | ---------------------------------------- | ------------------------------------------------------------------------------- |
 | 1   | [#249](https://github.com/solardev-xyz/freedom-browser/issues/249) | Sidebar → manage permissions             | Site origin renders white-on-white in light theme                               |
-| 2   | [#250](https://github.com/solardev-xyz/freedom-browser/issues/250) | `freedom://publish`                      | Only routable internal page with no light theme                                 |
+| 2   | [#250](https://github.com/solardev-xyz/freedom-browser/issues/250) | `freedom://publish`                      | No light palette; ignores an explicit Light Appearance setting                  |
 | 3   | [#251](https://github.com/solardev-xyz/freedom-browser/issues/251) | `freedom://payments`                     | Filter dropdowns lose their chevron and go dark-on-dark on hover in light theme |
 | 4   | [#252](https://github.com/solardev-xyz/freedom-browser/issues/252) | Nodes menu                               | `Finalized Block: --` where every sibling counter shows `0`                     |
 | 5   | [#253](https://github.com/solardev-xyz/freedom-browser/issues/253) | Nodes menu                               | Four different `Version:` placeholder conventions in one menu                   |
@@ -103,25 +110,54 @@ Suggested fix: replace the undefined tokens with the real ones
 (`--text`/`--muted`) or define them in `variables.css` with a
 `[data-theme='light']` block.
 
-### 2. `freedom://publish` has no light theme at all — [#250](https://github.com/solardev-xyz/freedom-browser/issues/250)
+### 2. `freedom://publish` ignores an explicit Light setting — [#250](https://github.com/solardev-xyz/freedom-browser/issues/250)
 
-`src/renderer/pages/styles/publish.css:1-11` hard-codes a dark palette
-(`--bg: #1e1e1e; --surface: #2a2a2a; --text: #e0e0e0`) and the file contains no
-`@media (prefers-color-scheme: light)` and no `[data-theme='light']` block. Every
-other routable internal page has one (`home.html:94`, `error.html:71`,
-`history.html:351`, `links.html:163`, `downloads.html:264`, `payments.html:307`,
-`profiles.html:516`, `settings.html:782`), as do the sibling page stylesheets
-`pages/styles/interstitial.css:136` and `pages/styles/rad-browser.css:740`.
-`pages/private.html` is dark-only on purpose and says so in a comment; publish
-has no such note.
+Written against `main` at `2582f165`, not the base commit: #245 landed after this
+pass and changed how every internal page reads the theme.
 
-Sampled pixels, same window, same run, light theme: `freedom://publish` body is
-`rgb(30,30,30)`, `freedom://downloads` body is `rgb(245,247,249)`.
+`src/renderer/pages/styles/publish.css:1-15` hard-codes a dark palette
+(`--bg: #1e1e1e; --surface: #2a2a2a; --text: #e0e0e0`) and has no light override
+of any kind. Every other routable internal page has one — since #245 that means a
+`:where(html[data-theme='light'])` block plus an
+`html[data-theme='light'] { color-scheme: light }` rule, stamped from the
+Appearance setting by `webview-preload.js` (`home.html`, `error.html`,
+`history.html`, `links.html`, `downloads.html`, `payments.html`, `profiles.html`,
+`settings.html`, `protocol-test.html`), as do the sibling page stylesheets
+`pages/styles/interstitial.css` and `pages/styles/rad-browser.css`. No
+`src/renderer/pages/**` stylesheet uses `@media (prefers-color-scheme: …)` any
+more.
+
+#245 left `publish.css` (and `pages/private.html`) dark-only and pinned
+`color-scheme: dark` on both so their scrollbars match, with a comment on each.
+So publish does now carry a dark-by-design note — what it does not carry is a
+reason. `private.html:11-13` gives one ("Private windows keep dark styling in
+both themes"): it is the start page a private window opens on
+(`lib/tabs.js:377`), and that window's whole chrome is deliberately plum-on-dark,
+so the page matching it is the consistent choice. `publish.css:2-4` only restates
+that the page is dark. `freedom://publish` is an ordinary page in an ordinary
+window, sitting in the same `routable` map as `downloads`, `history` and
+`payments` (`src/shared/internal-pages.json`), and it and `private` are the only
+two entries in that map that ignore an explicit Light setting — with nothing
+about publish's window to justify it.
+
+Re-measured on `2582f165` with Appearance set to **Light**, same window, same
+run: `<html>` on `freedom://publish` is stamped `data-theme="light"` and its
+computed background is still `rgb(30,30,30)` with `color-scheme: dark`, while
+`freedom://downloads` renders `rgb(245,247,249)` with `color-scheme: light`. The
+preload already delivers the setting to this page — only the stylesheet is
+missing.
 
 ![publish vs downloads in light theme](images/02-publish-no-light-theme.png)
 
-Suggested fix: add a `@media (prefers-color-scheme: light)` block to
-`publish.css` overriding the five `:root` values, matching `downloads.html`.
+Suggested fix: give `publish.css` the light palette the way #245 wrote every
+other page — a `:where(html[data-theme='light'])` block overriding the `:root`
+values plus `html[data-theme='light'] { color-scheme: light }`, replacing the
+pinned `color-scheme: dark` and its comment. Do **not** add
+`@media (prefers-color-scheme: light)`: that is the mechanism #245 removed
+repo-wide, and it would make publish the only internal page tracking the OS
+scheme instead of the Appearance setting, reintroducing #233 on this one page. If
+dark-only is a deliberate product decision after all, close #250 as such and give
+the comment an actual reason.
 
 ### 3. Payments filter dropdowns lose their chevron and invert on hover in light theme — [#251](https://github.com/solardev-xyz/freedom-browser/issues/251)
 
@@ -338,8 +374,20 @@ Recorded so the next audit does not re-walk them:
 
 ## Deliberately not re-reported
 
-Issues #223–#242. In particular #233 (internal pages follow the OS colour scheme
-rather than the Appearance setting) is why every internal page in the screenshots
-above renders light under `xvfb` regardless of the theme seed; #234 (prover
-endpoint input width), #237 (focus rings), #238 (sidebar headers), #239 (Swarm
-approval buttons), #242 (home artwork) were all re-observed and are unchanged.
+Issues #223–#242, the 0.8.5 audit's own findings.
+
+At the base commit (`18a7e39b`) #233 — internal pages follow the OS colour scheme
+rather than the Appearance setting — was still open, which is why every internal
+page in the screenshots above renders light under `xvfb` regardless of the theme
+seed. #234 (prover endpoint input width), #237 (focus rings), #238 (sidebar
+headers), #239 (Swarm approval buttons) and #242 (home artwork) were re-observed
+at that commit and were unchanged there.
+
+Since then, and before this report merged, #243–#246 landed on `main` and closed
+every one of those but #239: #233 by #245, #234/#237/#238 by #246, #242 by #244.
+**Only #239 is still open.** So the screenshots above are historic on that point —
+re-running the driver on `2582f165` gives internal pages that follow the
+Appearance setting, dark and light (`freedom://downloads` renders `rgb(23,28,35)`
+with the setting on Dark and `rgb(245,247,249)` on Light, on the same OS scheme).
+Anything above that depends on the old behaviour should be re-shot, not re-read,
+before it is acted on.
