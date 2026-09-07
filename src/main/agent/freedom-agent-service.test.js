@@ -2357,7 +2357,7 @@ describe('FreedomAgentService', () => {
     expect(events.at(-1)).toMatchObject({ type: 'run_finished', status: 'cancelled' });
   });
 
-  test('reconciles a yielded process into its finished turn without another poll', async () => {
+  test.each([false, true])('reconciles a yielded process into its finished turn during shutdown=%s', async (duringShutdown) => {
     const fake = createFakeSession();
     const historyStore = createHistoryStore();
     let workspaceOptions;
@@ -2425,6 +2425,15 @@ describe('FreedomAgentService', () => {
     await service.waitForIdle();
     expect(service.getState().transcript[0].activity[0].workspace.state).toBe('running');
 
+    const drained = createDeferred();
+    let shutdown;
+    if (duringShutdown) {
+      workspaceController.dispose.mockReturnValue(drained.promise);
+      shutdown = service.dispose();
+      expect(service.dispose()).toBe(shutdown);
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(workspaceController.dispose).toHaveBeenCalledTimes(1);
+    }
     workspaceOptions.onProcessTerminal({
       toolCallId: 'call_workspace_server',
       operation: 'bash',
@@ -2466,7 +2475,7 @@ describe('FreedomAgentService', () => {
         }),
       ],
     });
-    expect(service.getState().transcript[0].activity[0]).toMatchObject({
+    if (!duringShutdown) expect(service.getState().transcript[0].activity[0]).toMatchObject({
       status: 'succeeded',
       label: 'Ran node server.js',
       workspace: { state: 'completed', terminationScope: 'pid_namespace' },
@@ -2487,6 +2496,11 @@ describe('FreedomAgentService', () => {
       /private-process|\/Users\/example/
     );
     expect(JSON.stringify(events.slice(-2))).not.toMatch(/private-process|\/Users\/example/);
+    if (duringShutdown) {
+      drained.resolve({ drained: true });
+      await shutdown;
+      expect(service.getState()).toEqual({ status: 'disposed' });
+    }
   });
 
   test('finishes Stop at its deadline when both Pi abort and execution remain wedged', async () => {

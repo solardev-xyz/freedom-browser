@@ -2,7 +2,7 @@
 
 Date: 2026-09-07
 
-Status: source/architecture assessment and two bounded disposable-host API probes complete. Implementation contract awaits user selection. No product cleanup guarantee has changed.
+Status: native macOS implementation selected; VMs explicitly ruled out by the user. Source/architecture assessment and two bounded disposable-host API probes are complete. The first implementation adds bounded awaited shutdown and receipt persistence; the backend descendant-termination guarantee has not changed.
 
 ## Objective and current boundary
 
@@ -17,7 +17,7 @@ Current macOS receipts remain `best_effort` / `original_process_group`, with `su
 - `workspace-execution/seatbelt-backend.js` launches `sandbox-exec` with `detached: true`. The readiness wrapper replaces itself with the requested command; `freedom-seatbelt-supervisor` is an argument label, not an independent supervisor.
 - Cancellation and timeout signal the original negative PGID with TERM, escalate after one second, and force receipt finalization after a further 250 ms. Finalization also attempts group KILL after ordinary direct-child close. There is no retained kernel process identity behind the numeric PGID.
 - `managed-workspace-process-manager.js` tracks application session IDs and promises, not arbitrary native descendants. Its trusted `terminate()` path does not consume the model's output cursor. This behavior must survive a cleanup change.
-- Manager/controller disposal requests cancellation and clears in-memory registries synchronously. `FreedomAgentService.dispose()` and `runtime.js` do not await controller-level completion of backend cleanup. This is an integration concern to test, not a claim that the earlier successful native-Quit fixtures failed.
+- The initial assessment found synchronous manager/controller disposal without awaiting backend cleanup in the service/runtime. The shutdown-draining correction below addresses this ordering gap; it does not invalidate the earlier successful native-Quit observations.
 - Startup's interrupted-command bookkeeping is not proof that native survivors were discovered or terminated. A future ownership journal must remain separate from renderer-facing session state and must never authorize signaling from stale PIDs alone.
 
 ## Mechanisms under assessment
@@ -32,7 +32,7 @@ Current macOS receipts remain `best_effort` / `original_process_group`, with `su
 | launchd / XPC | Supervise a service independently of the application | Documented launchd cleanup is scoped to the job's process group. Service supervision must not be described as whole-tree termination without stronger evidence. |
 | Kernel coalitions | Kernel accounting and grouping exist | The inspected creation/management syscall checks privileged-coalition membership. Its terminate operation requests eventual empty-coalition termination, rather than killing every existing member. Not an established unprivileged replacement for a PID namespace. |
 | Endpoint Security | OS event monitoring and authorization facilities | Requires an Apple-granted entitlement. A newer descendant-scoped client is a separate platform-dependent candidate; no whole-tree lifetime guarantee has been established here. |
-| Stronger isolated execution environment | Potentially provide an independently owned lifetime boundary | A separate architecture, compatibility, packaging, and acquisition decision; no VM or external runtime has been selected or approved. |
+| VM-backed execution | Excluded from this implementation | The user explicitly rejected VMs as excessive for this product. Continue with native macOS improvements without treating that decision as acceptance of surviving descendants. |
 
 ## Primary source observations
 
@@ -90,12 +90,22 @@ Exact remote evidence directory: `/private/tmp/freedom-native-discriminants-r88p
 
 ## Implementation decision
 
-The required implementation outcome remains to be selected:
+The user selected native macOS process ownership and cleanup, and explicitly ruled out VMs. Continue with bounded asynchronous teardown, then evaluate trusted native supervision and root/group lifetime anchoring. Safe signaling of proven owned instances remains conditional on demonstrated host support. Missed descendants, supervisor failure and ambiguous recovery must remain explicit limitations. A scanner alone must not become signaling authority. Any helper's packaging, signing, private APIs, IPC authentication and startup behavior must be specified before adoption.
 
-1. **Improve native best-effort cleanup.** Candidate work is bounded asynchronous teardown before stores close, independent trusted supervision and root/group lifetime anchoring, followed by safe signaling of proven owned instances where host support is established. Missed descendants, supervisor failure and ambiguous recovery remain explicit limitations. A scanner alone must not become signaling authority. Any helper's packaging, signing, private APIs, IPC authentication and startup behavior must be specified before adoption.
-2. **Require whole-tree termination.** The inspected native baseline has not met this requirement. Evaluate a separately owned isolation boundary, including guest execution as a candidate, before choosing implementation. This includes filesystem/network mediation, host/supervisor failure, compatibility with developer tools, resource use, signing and acquisition. Stopping a guest is not automatically proof of correct cleanup when the host controller itself fails. No guest image, VM implementation or new runtime acquisition is authorized by this document.
+This direction preserves the existing main/renderer boundary, bounded public state, Linux guarantees, preview isolation and reviewed history. It does not waive broader-release policy or relabel existing macOS receipts as complete descendant teardown.
 
-Both routes preserve the existing main/renderer boundary, bounded public state, Linux guarantees, preview isolation and reviewed history. Neither should silently relabel existing macOS terminal receipts as complete descendant teardown.
+### Codex implementation reference
+
+An existing clean checkout at `/Users/florian/Git/freedom-dev/codex` was inspected at `c9fecd3fa06af28011166207c596ad547e37abab` (2026-09-03). No clone, build, install or execution was needed. Its [process-group helpers](https://github.com/openai/codex/blob/c9fecd3fa06af28011166207c596ad547e37abab/codex-rs/utils/pty/src/process_group.rs) use group signaling and, on macOS permission denial, enumerate that group's members, recheck current group membership and signal individual numeric PIDs. This supplies a concrete same-group compatibility pattern; it does not discover session/group escapees or eliminate the separate membership-check/signal race. Parent-death signaling in that helper is Linux-only. Its [process lifecycle](https://github.com/openai/codex/blob/c9fecd3fa06af28011166207c596ad547e37abab/codex-rs/utils/pty/src/process.rs) also distinguishes termination requests from shutting down output readers, a useful separation for receipt draining. No Codex source was copied into the product in this correction.
+
+### First correction — await workspace shutdown
+
+- Controller disposal now prevents new command/file-helper execution, cancels pending preparation and active executions, and awaits their settlement before clearing grants and leases. The tracked command promise includes the durable ledger write.
+- Process-manager disposal retains cleanup promises even after a record is consumed or removed from its conversation. It waits for backend receipts and terminal observers; trusted Stop still leaves the model's output cursor untouched.
+- Service disposal keeps finished-turn terminal reconciliation available during draining, then disables callbacks and releases conversations. Service and controller disposal calls share their in-progress promise. Runtime awaits the controller before closing stores.
+- A five-second workspace drain deadline prevents a wedged backend/observer from indefinitely blocking this phase. Timeout reports `drained: false` and logs a bounded uncertainty message. Late backend results cannot write to the closed command store or initiate new terminal callbacks. An unfinished ledger row is left for existing startup interruption reconciliation; the timeout does not fabricate an exit receipt or prove process death. This deadline is for workspace draining, not a bound on every other application shutdown subsystem.
+- Local validation: four focused suites / 100 tests passed, followed by full `npm test` with ordinary fixture socket permissions: 234 suites / 4,051 tests passed, 7 suites / 54 tests skipped; exit 0. Lint and whitespace checks passed. Existing OpenLV/websocket-mqtt late-log diagnostics remained non-fatal. Regression tests cover delayed receipts, file helpers, cancellation during preparation, bounded shutdown, late writes/callback suppression, consumed-record observers, retained conversation history and store-close ordering.
+- These are ordinary unit/integration checks on the primary Mac. No detached, destructive or native app-exit qualification was run there; native supervisor/crash behavior remains subsequent work.
 
 ## Existing qualification evidence recovered by inventory
 

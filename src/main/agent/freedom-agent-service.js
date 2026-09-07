@@ -1997,9 +1997,15 @@ class FreedomAgentService {
     return true;
   }
 
-  async dispose() {
-    if (this.disposed) return;
+  dispose() {
+    if (this.disposePromise) return this.disposePromise;
     this.disposed = true;
+    this.drainingWorkspaceProcesses = true;
+    this.disposePromise = Promise.resolve().then(() => this.#dispose());
+    return this.disposePromise;
+  }
+
+  async #dispose() {
     if (this.unsubscribeTabLifecycle) {
       try {
         this.unsubscribeTabLifecycle();
@@ -2021,7 +2027,14 @@ class FreedomAgentService {
     for (const conversation of this.conversations.values()) {
       this.#disposeConversation(conversation);
     }
-    this.workspaceController?.dispose();
+    try {
+      const result = await this.workspaceController?.dispose();
+      if (result?.drained === false) {
+        log.warn('[AgentWorkspace] Shutdown deadline reached; workspace cleanup remains uncertain');
+      }
+    } finally {
+      this.drainingWorkspaceProcesses = false;
+    }
     this.conversations.clear();
     this.agentTabs.clear();
     this.listeners.clear();
@@ -2393,7 +2406,7 @@ class FreedomAgentService {
 
   #handleWorkspaceProcessTerminal(conversationId, outcome) {
     if (
-      this.disposed ||
+      (this.disposed && !this.drainingWorkspaceProcesses) ||
       !outcome ||
       typeof outcome.toolCallId !== 'string' ||
       !outcome.toolCallId

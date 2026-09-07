@@ -10,6 +10,7 @@ const MAX_PROCESS_LOG_BYTES = 256 * 1024;
 const MAX_PROCESS_INPUT_BYTES = 16 * 1024;
 const MAX_ACTIVE_PROCESSES_PER_CONVERSATION = 4;
 const TERMINAL_PROCESS_RETENTION_MS = 5 * 60 * 1_000;
+const WORKSPACE_SHUTDOWN_TIMEOUT_MS = 5_000;
 const MIN_PREVIEW_PORT = 1_024;
 const MAX_PREVIEW_PORT = 65_535;
 
@@ -71,11 +72,11 @@ function validPreviewPort(value) {
   return value;
 }
 
-function timedWait(ms, setTimer, clearTimer) {
+function timedWait(ms, setTimer, clearTimer, unref = true) {
   let timer;
   const promise = new Promise((resolve) => {
     timer = setTimer(resolve, ms);
-    timer?.unref?.();
+    if (unref) timer?.unref?.();
   });
   return Object.freeze({
     promise,
@@ -84,6 +85,19 @@ function timedWait(ms, setTimer, clearTimer) {
       timer = null;
     },
   });
+}
+
+// This bounds application shutdown, not the backend's descendant-termination guarantee.
+async function waitForWorkspaceShutdown(promises, setTimer = setTimeout, clearTimer = clearTimeout) {
+  const deadline = timedWait(WORKSPACE_SHUTDOWN_TIMEOUT_MS, setTimer, clearTimer, false);
+  try {
+    return await Promise.race([
+      Promise.allSettled(promises).then(() => true),
+      deadline.promise.then(() => false),
+    ]);
+  } finally {
+    deadline.cancel();
+  }
 }
 
 class ManagedWorkspaceProcessManager {
@@ -96,9 +110,14 @@ class ManagedWorkspaceProcessManager {
     this.setTimer = options.setTimer || setTimeout;
     this.clearTimer = options.clearTimer || clearTimeout;
     this.entries = new Map();
+    this.pendingCompletions = new Set();
+    this.disposePromise = null;
+    this.disposed = false;
+    this.shutdownFinished = false;
   }
 
   #append(entry, stream, value) {
+    if (this.shutdownFinished) return;
     const buffer = Buffer.isBuffer(value) ? value : Buffer.from(value || '');
     if (!buffer.length) return;
     entry.streamed[stream] = true;
@@ -168,7 +187,7 @@ class ManagedWorkspaceProcessManager {
   }
 
   #notifyTerminal(entry) {
-    if (!entry.exposed || entry.terminalNotified || !entry.receipt || !entry.onTerminal) return;
+    if (this.shutdownFinished || !entry.exposed || entry.terminalNotified || !entry.receipt || !entry.onTerminal) return;
     entry.terminalNotified = true;
     const event = Object.freeze({
       processId: entry.processId,
@@ -180,7 +199,7 @@ class ManagedWorkspaceProcessManager {
       receipt: entry.receipt,
     });
     try {
-      Promise.resolve(entry.onTerminal(event)).catch(() => {});
+      entry.notification = Promise.resolve(entry.onTerminal(event)).catch(() => {});
     } catch {
       // Process completion and cleanup cannot depend on a lifecycle observer.
     }
@@ -248,6 +267,12 @@ class ManagedWorkspaceProcessManager {
   }
 
   async start(conversationId, request = {}) {
+    if (this.disposed) {
+      throw new ManagedWorkspaceProcessError(
+        'WORKSPACE_PROCESS_MANAGER_DISPOSED',
+        'Workspace processes are shutting down'
+      );
+    }
     const owner = validConversationId(conversationId);
     const requestedPreviewPort = validPreviewPort(request.previewPort);
     if (request.onTerminal !== undefined && typeof request.onTerminal !== 'function') {
@@ -319,6 +344,11 @@ class ManagedWorkspaceProcessManager {
         (receipt) => this.#terminal(entry, receipt),
         (error) => this.#failed(entry, error)
       );
+
+    // Keep cleanup ownership even when a terminal record is consumed or its conversation deleted.
+    const settled = entry.completion.then(() => entry.notification).catch(() => {});
+    this.pendingCompletions.add(settled);
+    void settled.then(() => this.pendingCompletions.delete(settled));
 
     const deadline = timedWait(yieldMs, this.setTimer, this.clearTimer);
     try {
@@ -466,12 +496,26 @@ class ManagedWorkspaceProcessManager {
   }
 
   dispose() {
+    if (this.disposePromise) return this.disposePromise;
+    this.disposed = true;
+    this.disposePromise = Promise.resolve().then(() => this.#dispose());
     for (const entry of this.entries.values()) {
       if (entry.state === 'running') entry.controller.abort();
-      if (entry.retentionTimer) this.clearTimer(entry.retentionTimer);
       this.#wake(entry);
     }
+    return this.disposePromise;
+  }
+
+  async #dispose() {
+    const drained = await waitForWorkspaceShutdown(
+      [...this.pendingCompletions], this.setTimer, this.clearTimer
+    );
+    this.shutdownFinished = true;
+    for (const entry of this.entries.values()) {
+      if (entry.retentionTimer) this.clearTimer(entry.retentionTimer);
+    }
     this.entries.clear();
+    return Object.freeze({ drained });
   }
 }
 
@@ -488,4 +532,6 @@ module.exports = {
   ManagedWorkspaceProcessError,
   ManagedWorkspaceProcessManager,
   TERMINAL_PROCESS_RETENTION_MS,
+  WORKSPACE_SHUTDOWN_TIMEOUT_MS,
+  waitForWorkspaceShutdown,
 };

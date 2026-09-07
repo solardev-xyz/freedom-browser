@@ -131,7 +131,7 @@ function createFreedomAgentRuntime(options = {}) {
       await nodeRequestController.dispose();
       publicationController.dispose();
       await workspacePreviewController.dispose();
-      workspaceController.dispose();
+      await workspaceController.dispose();
       attachmentStore.dispose();
       pdfProcessor.dispose();
       historyStore.close();

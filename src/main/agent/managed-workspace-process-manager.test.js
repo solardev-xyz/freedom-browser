@@ -2,6 +2,7 @@
 
 const {
   MAX_PROCESS_LOG_BYTES,
+  WORKSPACE_SHUTDOWN_TIMEOUT_MS,
   ManagedWorkspaceProcessManager,
 } = require('./managed-workspace-process-manager');
 
@@ -225,6 +226,56 @@ describe('ManagedWorkspaceProcessManager', () => {
     expect(polled.outputTruncated).toBe(true);
     manager.dispose();
     completion.resolve(receipt({ state: 'cancelled' }));
+  });
+
+  test('drains consumed terminal observers and shares disposal without accepting new work', async () => {
+    const completion = deferred();
+    const observed = deferred();
+    const onTerminal = jest.fn(() => observed.promise);
+    const manager = new ManagedWorkspaceProcessManager({ execute: () => completion.promise });
+    const started = await manager.start('conversation_one', {
+      command: 'node server.js', yieldMs: 250, onTerminal,
+    });
+    completion.resolve(receipt());
+    await manager.interact('conversation_one', started.processId, { waitMs: 1_000 });
+    expect(manager.entries.size).toBe(0);
+    let finished = false;
+    const shutdown = manager.dispose();
+    void shutdown.then(() => { finished = true; });
+    expect(manager.dispose()).toBe(shutdown);
+    await expect(manager.start('conversation_one', { command: 'node server.js' }))
+      .rejects.toMatchObject({ code: 'WORKSPACE_PROCESS_MANAGER_DISPOSED' });
+    expect(finished).toBe(false);
+    observed.resolve();
+    await expect(shutdown).resolves.toEqual({ drained: true });
+    expect(onTerminal).toHaveBeenCalledTimes(1);
+  });
+
+  test('bounds shutdown and suppresses callbacks from a backend that settles after the deadline', async () => {
+    jest.useFakeTimers();
+    try {
+      const completion = deferred();
+      const onTerminal = jest.fn();
+      let request;
+      const manager = new ManagedWorkspaceProcessManager({ execute: (_owner, value) => {
+        request = value;
+        return completion.promise;
+      } });
+      const start = manager.start('conversation_one', { command: 'node server.js', yieldMs: 250, onTerminal });
+      await jest.advanceTimersByTimeAsync(250);
+      await start;
+      const shutdown = manager.dispose();
+      expect(request.signal.aborted).toBe(true);
+      await jest.advanceTimersByTimeAsync(WORKSPACE_SHUTDOWN_TIMEOUT_MS);
+      await expect(shutdown).resolves.toEqual({ drained: false });
+      completion.resolve(receipt({ state: 'cancelled' }));
+      await jest.advanceTimersByTimeAsync(0);
+      expect(onTerminal).not.toHaveBeenCalled();
+      expect(manager.entries.size).toBe(0);
+      expect(jest.getTimerCount()).toBe(0);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   test('expires a process that fails after its initial result was yielded', async () => {

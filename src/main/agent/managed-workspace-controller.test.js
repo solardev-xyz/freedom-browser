@@ -919,6 +919,80 @@ describe('ManagedWorkspaceController', () => {
     });
   });
 
+  test.each(['command', 'file'])('awaits cancelled %s cleanup before completing disposal', async (kind) => {
+    const { controller, dependencies } = createController();
+    let finish;
+    let request;
+    dependencies.executor.execute.mockImplementation((_policy, value) => {
+      request = value;
+      return new Promise((resolve) => { finish = resolve; });
+    });
+    const execution = kind === 'command'
+      ? controller.execute('conversation_one', { command: 'node server.js' })
+      : controller.readFile('conversation_one', 'index.html');
+    const outcome = execution.catch((error) => error);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(request).toBeDefined();
+    const shutdown = controller.dispose();
+    expect(controller.dispose()).toBe(shutdown);
+    expect(request.signal.aborted).toBe(true);
+    let finished = false;
+    void shutdown.then(() => { finished = true; });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(finished).toBe(false);
+    expect(dependencies.store.finishCommand).not.toHaveBeenCalled();
+    const receipt = { ...completedExecution(''), state: 'cancelled', signal: 'SIGKILL', exitCode: null };
+    finish(receipt);
+    await outcome;
+    await expect(shutdown).resolves.toEqual({ drained: true });
+    if (kind === 'command') {
+      expect(dependencies.store.finishCommand).toHaveBeenCalledWith(
+        expect.any(String), expect.any(String), expect.objectContaining({ state: 'cancelled', signal: 'SIGKILL' })
+      );
+    }
+    await expect(controller.execute('conversation_one', { command: 'node late.js' }))
+      .rejects.toMatchObject({ code: 'WORKSPACE_OPERATION_CANCELLED' });
+    await expect(controller.readFile('conversation_one', 'index.html'))
+      .rejects.toMatchObject({ code: 'WORKSPACE_OPERATION_CANCELLED' });
+    expect(dependencies.executor.execute).toHaveBeenCalledTimes(1);
+  });
+
+  test('cancels a command still preparing its working directory before it can launch', async () => {
+    const { controller, dependencies } = createController();
+    let release;
+    fs.promises.realpath.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
+    const execution = controller.execute('conversation_one', { command: 'node server.js' });
+    const outcome = expect(execution).rejects.toMatchObject({ code: 'WORKSPACE_OPERATION_CANCELLED' });
+    await new Promise((resolve) => setImmediate(resolve));
+    const shutdown = controller.dispose();
+    release('/managed/workspace_aaaaaaaaaaaaaaaaaaaa');
+    await outcome;
+    await expect(shutdown).resolves.toEqual({ drained: true });
+    expect(dependencies.executor.execute).not.toHaveBeenCalled();
+    expect(dependencies.store.startCommand).not.toHaveBeenCalled();
+  });
+
+  test('leaves a late backend receipt out of the closed store after the shutdown deadline', async () => {
+    jest.useFakeTimers();
+    try {
+      const { controller, dependencies } = createController();
+      let finish;
+      dependencies.executor.execute.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+      const execution = controller.execute('conversation_one', { command: 'node server.js' });
+      await jest.advanceTimersByTimeAsync(0);
+      expect(finish).toBeDefined();
+      const shutdown = controller.dispose();
+      await jest.advanceTimersByTimeAsync(5_000);
+      await expect(shutdown).resolves.toEqual({ drained: false });
+      expect(dependencies.store.finishCommand).not.toHaveBeenCalled();
+      finish({ ...completedExecution(''), state: 'cancelled' });
+      await execution;
+      expect(dependencies.store.finishCommand).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   test('fails closed when the platform backend is unavailable', async () => {
     const { controller, dependencies } = createController();
     dependencies.executor.detectCapabilities.mockResolvedValue({

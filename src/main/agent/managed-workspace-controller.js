@@ -26,6 +26,7 @@ const {
   MAX_PREVIEW_PORT,
   MIN_PREVIEW_PORT,
   ManagedWorkspaceProcessManager,
+  waitForWorkspaceShutdown,
 } = require('./managed-workspace-process-manager');
 const {
   CAPABILITY_KINDS,
@@ -709,6 +710,10 @@ class ManagedWorkspaceController {
     this.leases = new Map();
     this.leasePromises = new Map();
     this.activeCommands = new Map();
+    this.pendingOperations = new Set();
+    this.shutdownController = new AbortController();
+    this.disposePromise = null;
+    this.shutdownFinished = false;
     this.historyLocks = new Set();
     this.historyControllers = new Map();
     this.historyNotices = new Map();
@@ -1222,7 +1227,27 @@ class ManagedWorkspaceController {
     });
   }
 
-  async #fileOperation(conversationId, operation, relativePath, content = null, request = {}) {
+  async #runOperation(request, operation) {
+    throwIfWorkspaceAborted(this.shutdownController.signal);
+    const signal = request.signal
+      ? AbortSignal.any([request.signal, this.shutdownController.signal])
+      : this.shutdownController.signal;
+    const pending = operation({ ...request, signal });
+    this.pendingOperations.add(pending);
+    try {
+      return await pending;
+    } finally {
+      this.pendingOperations.delete(pending);
+    }
+  }
+
+  #fileOperation(conversationId, operation, relativePath, content = null, request = {}) {
+    return this.#runOperation(request, (executionRequest) =>
+      this.#executeFileOperation(conversationId, operation, relativePath, content, executionRequest)
+    );
+  }
+
+  async #executeFileOperation(conversationId, operation, relativePath, content, request) {
     if (this.historyLocks.has(conversationId) && ['write', 'mkdir'].includes(operation)) {
       throw new ManagedWorkspaceError('WORKSPACE_HISTORY_BUSY', 'Workspace version operation in progress');
     }
@@ -1242,6 +1267,7 @@ class ManagedWorkspaceController {
       throw new ManagedWorkspaceError(capabilities.denial.code, capabilities.denial.message);
     }
     const { lease } = await this.#enabledLease(conversationId, request);
+    throwIfWorkspaceAborted(request.signal);
     reportWorkspacePhase(request, 'executing_operation');
     const executionRoot =
       capabilities.backend === 'linux-bubblewrap' ? '/workspace' : lease.workspaceRoot;
@@ -1639,7 +1665,13 @@ class ManagedWorkspaceController {
     });
   }
 
-  async execute(conversationId, request = {}) {
+  execute(conversationId, request = {}) {
+    return this.#runOperation(request, (executionRequest) =>
+      this.#executeCommand(conversationId, executionRequest)
+    );
+  }
+
+  async #executeCommand(conversationId, request) {
     if (this.historyLocks.has(conversationId)) throw new ManagedWorkspaceError('WORKSPACE_HISTORY_BUSY', 'Workspace version operation in progress');
     const { workspace, lease } = await this.#enabledLease(conversationId, request);
     const command = validateCommand(request.command);
@@ -1805,7 +1837,9 @@ class ManagedWorkspaceController {
       completeDescendantTermination: receipt.completeDescendantTermination === true,
       ...(error && { error }),
     });
-    this.store.finishCommand(commandId, workspace.workspaceId, result);
+    // A backend that misses the shutdown deadline must not write to a closed store.
+    // Its unfinished ledger row remains uncertain and is reconciled on next startup.
+    if (!this.shutdownFinished) this.store.finishCommand(commandId, workspace.workspaceId, result);
     return result;
   }
 
@@ -1816,7 +1850,11 @@ class ManagedWorkspaceController {
         ? request.timeoutMs
         : DEFAULT_MANAGED_PROCESS_TIMEOUT_MS,
       ...(typeof request.onTerminal === 'function' && {
-        onTerminal: (terminal) => request.onTerminal(this.#processResult(conversationId, terminal)),
+        onTerminal: (terminal) => {
+          if (!this.shutdownFinished) {
+            return request.onTerminal(this.#processResult(conversationId, terminal));
+          }
+        },
       }),
     });
     return this.#processResult(conversationId, process);
@@ -1904,15 +1942,32 @@ class ManagedWorkspaceController {
   }
 
   dispose() {
+    if (this.disposePromise) return this.disposePromise;
+    this.disposePromise = Promise.resolve().then(() => this.#dispose());
+    this.shutdownController.abort();
+    return this.disposePromise;
+  }
+
+  async #dispose() {
     for (const controller of this.historyControllers.values()) controller.abort();
     this.restorePlans.clear();
     this.historyReviews.clear();
-    this.processManager.dispose();
+    let processResult;
+    const processes = Promise.resolve(this.processManager.dispose()).then(
+      (result) => { processResult = result; },
+      () => { processResult = { drained: false }; }
+    );
     for (const active of this.activeCommands.values()) active.controller.abort();
+    const drained = await waitForWorkspaceShutdown([
+      ...this.pendingOperations,
+      processes,
+    ]);
+    this.shutdownFinished = true;
     this.activeCommands.clear();
     this.leases.clear();
     this.leasePromises.clear();
     this.capabilityGrants.clear();
+    return Object.freeze({ drained: drained && processResult?.drained !== false });
   }
 }
 

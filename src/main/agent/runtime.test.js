@@ -72,7 +72,12 @@ describe('Freedom agent runtime', () => {
       markStaleRunningAsInterrupted: jest.fn(),
       close: jest.fn(() => calls.push('workspaces')),
     };
-    const workspaceController = { dispose: jest.fn(() => calls.push('workspace-controller')) };
+    let finishWorkspaceShutdown;
+    const workspaceShutdown = new Promise((resolve) => { finishWorkspaceShutdown = resolve; });
+    const workspaceController = { dispose: jest.fn(async () => {
+      calls.push('workspace-controller');
+      await workspaceShutdown;
+    }) };
     const workspaceSourceReader = {};
     const workspacePreviewController = {
       dispose: jest.fn(() => calls.push('workspace-preview-controller')),
@@ -219,7 +224,13 @@ describe('Freedom agent runtime', () => {
 
     const resolveModel = registerFreedomAgentIpc.mock.calls[0][0].resolveModel;
     await expect(resolveModel()).resolves.toEqual({ model: {} });
-    await runtime.dispose();
+    const shutdown = runtime.dispose();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(workspaceController.dispose).toHaveBeenCalledTimes(1);
+    expect(historyStore.close).not.toHaveBeenCalled();
+    expect(workspaceStore.close).not.toHaveBeenCalled();
+    finishWorkspaceShutdown();
+    await shutdown;
 
     expect(options.controller.setWalletController).not.toHaveBeenCalled();
 
