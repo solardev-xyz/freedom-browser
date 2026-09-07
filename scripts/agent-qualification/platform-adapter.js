@@ -67,11 +67,21 @@ function linuxAdapter() {
           receipt.backend === this.backend &&
           receipt.terminationGuarantee === this.terminationGuarantee &&
           receipt.terminationScope === this.terminationScope &&
-          (receipt.survivorsPossible === undefined ||
-            receipt.survivorsPossible === this.survivorsPossible) &&
-          (receipt.completeDescendantTermination === undefined ||
-            receipt.completeDescendantTermination === this.completeDescendantTermination) &&
+          receipt.survivorsPossible === this.survivorsPossible &&
+          receipt.completeDescendantTermination === this.completeDescendantTermination &&
           receipt.sideEffects === 'unknown'
+      );
+    },
+    ledgerReceiptMatches(receipt, state) {
+      return Boolean(
+        receipt &&
+          receipt.state === state &&
+          receipt.backend === this.backend &&
+          receipt.terminationGuarantee === this.terminationGuarantee &&
+          receipt.terminationScope === this.terminationScope &&
+          receipt.sideEffects === 'unknown' &&
+          receipt.survivorsPossible === undefined &&
+          receipt.completeDescendantTermination === undefined
       );
     },
     signalMatches(signal) {
@@ -132,11 +142,21 @@ function macosAdapter() {
           receipt.backend === this.backend &&
           receipt.terminationGuarantee === this.terminationGuarantee &&
           receipt.terminationScope === this.terminationScope &&
-          (receipt.survivorsPossible === undefined ||
-            receipt.survivorsPossible === this.survivorsPossible) &&
-          (receipt.completeDescendantTermination === undefined ||
-            receipt.completeDescendantTermination === this.completeDescendantTermination) &&
+          receipt.survivorsPossible === this.survivorsPossible &&
+          receipt.completeDescendantTermination === this.completeDescendantTermination &&
           receipt.sideEffects === 'unknown'
+      );
+    },
+    ledgerReceiptMatches(receipt, state) {
+      return Boolean(
+        receipt &&
+          receipt.state === state &&
+          receipt.backend === this.backend &&
+          receipt.terminationGuarantee === this.terminationGuarantee &&
+          receipt.terminationScope === this.terminationScope &&
+          receipt.sideEffects === 'unknown' &&
+          receipt.survivorsPossible === undefined &&
+          receipt.completeDescendantTermination === undefined
       );
     },
     signalMatches(signal) {

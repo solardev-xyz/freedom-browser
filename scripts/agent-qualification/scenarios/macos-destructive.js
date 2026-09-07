@@ -38,6 +38,7 @@ module.exports = {
       root,
       onCleanup,
       platform,
+      executions,
     } = ctx;
 
     const server = net.createServer((socket) => socket.end('owned-host-listener'));
@@ -126,6 +127,7 @@ module.exports = {
     const receipt = workspaceStore
       .listCommands(run.conversationId, 100)
       .find((entry) => entry.command === command);
+    const executionReceipt = executions.find((entry) => entry.command === command)?.receipt;
     const commandAfterStop = processCommand(spawnSync, detachedPid);
     const heartbeat = path.join(workspaceRoot, 'detached-heartbeat');
     const heartbeatBefore = fs.statSync(heartbeat).size;
@@ -136,12 +138,14 @@ module.exports = {
       'a setsid descendant may survive original-group cancellation and the receipt says so honestly',
       sessionId &&
         stopped.result?.details?.state === 'cancelled' &&
-        platform.receiptMatches(receipt, 'cancelled') &&
+        platform.ledgerReceiptMatches(receipt, 'cancelled') &&
+        platform.receiptMatches(executionReceipt, 'cancelled') &&
         commandAfterStop.includes(token) &&
         heartbeatAfter > heartbeatBefore,
       {
         sessionId,
-        receipt,
+        ledgerReceipt: receipt,
+        executionReceipt,
         survivorObservedBeforeCleanup: commandAfterStop.includes(token),
         heartbeatAdvanced: heartbeatAfter > heartbeatBefore,
       }

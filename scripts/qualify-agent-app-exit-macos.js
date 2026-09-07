@@ -2,109 +2,486 @@
 
 'use strict';
 
-const { spawn, spawnSync } = require('child_process');
+const { spawnSync } = require('child_process');
+const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { _electron: electron } = require('@playwright/test');
 
 const PREFIX = 'freedom-agent-app-exit-';
+const MODES = ['idle', 'running', 'detached'];
 const MAX_OUTPUT_BYTES = 256 * 1024;
+
+function emit(type, value = {}) {
+  process.stdout.write(`${JSON.stringify({ type, ...value })}\n`);
+}
 
 function boundedAppend(current, chunk) {
   return `${current}${chunk}`.slice(-MAX_OUTPUT_BYTES);
 }
 
-function childProcesses(pid) {
-  const result = spawnSync('/usr/bin/pgrep', ['-P', String(pid)], { encoding: 'utf8' });
-  return result.status === 0 ? result.stdout.trim().split('\n').filter(Boolean) : [];
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function main() {
-  if (process.platform !== 'darwin') throw new Error('Application-exit qualification requires macOS');
+function fileSize(candidate) {
+  try {
+    return fs.statSync(candidate).size;
+  } catch {
+    return -1;
+  }
+}
+
+function processRows() {
+  const result = spawnSync('/bin/ps', ['-axo', 'pid=,ppid=,command='], { encoding: 'utf8' });
+  if (result.status !== 0) return [];
+  return result.stdout
+    .split('\n')
+    .map((line) => /^\s*(\d+)\s+(\d+)\s+(.+)$/.exec(line))
+    .filter(Boolean)
+    .map((match) => ({ pid: Number(match[1]), ppid: Number(match[2]), command: match[3] }));
+}
+
+function processIdentity(pid) {
+  const command = spawnSync('/bin/ps', ['-p', String(pid), '-o', 'command='], {
+    encoding: 'utf8',
+  });
+  const started = spawnSync('/bin/ps', ['-p', String(pid), '-o', 'lstart='], {
+    encoding: 'utf8',
+  });
+  if (command.status !== 0 || started.status !== 0) return null;
+  return { pid, command: command.stdout.trim(), started: started.stdout.trim() };
+}
+
+function identityMatches(identity, token = null) {
+  const current = processIdentity(identity.pid);
+  return Boolean(
+    current &&
+      current.command === identity.command &&
+      current.started === identity.started &&
+      (!token || current.command.includes(token))
+  );
+}
+
+function descendantPids(rootPid, rows = processRows()) {
+  const found = new Set([rootPid]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const row of rows) {
+      if (found.has(row.ppid) && !found.has(row.pid)) {
+        found.add(row.pid);
+        changed = true;
+      }
+    }
+  }
+  return [...found];
+}
+
+function tokenProcesses(token) {
+  return processRows().filter((row) => row.command.includes(token));
+}
+
+function listener(port) {
+  if (!port) return '';
+  const result = spawnSync('/usr/sbin/lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN'], {
+    encoding: 'utf8',
+  });
+  return result.status === 0 ? result.stdout.trim() : '';
+}
+
+function waitForExit(child, timeoutMs) {
+  if (child.exitCode !== null || child.signalCode) {
+    return Promise.resolve({ exitCode: child.exitCode, signal: child.signalCode });
+  }
+  return new Promise((resolve, reject) => {
+    let timer = null;
+    const cleanup = () => {
+      if (timer !== null) clearTimeout(timer);
+      timer = null;
+      child.removeListener('exit', onExit);
+    };
+    const onExit = (exitCode, signal) => {
+      cleanup();
+      resolve({ exitCode, signal });
+    };
+    child.once('exit', onExit);
+    timer = setTimeout(() => {
+      cleanup();
+      reject(new Error(`Freedom did not exit within ${timeoutMs} ms`));
+    }, timeoutMs);
+    timer.unref?.();
+  });
+}
+
+async function stopExactProcess(identity, token, signal) {
+  if (!identityMatches(identity, token)) return true;
+  process.kill(identity.pid, signal);
+  for (let index = 0; index < 80; index += 1) {
+    if (!identityMatches(identity, token)) return true;
+    await delay(25);
+  }
+  return false;
+}
+
+async function cleanupTokenProcesses(token, identities) {
+  const cleaned = [];
+  for (const identity of identities) {
+    if (!identityMatches(identity, token)) continue;
+    if (!(await stopExactProcess(identity, token, 'SIGTERM'))) {
+      if (!identityMatches(identity, token)) continue;
+      if (!(await stopExactProcess(identity, token, 'SIGKILL'))) {
+        throw new Error(`Token-owned process ${identity.pid} survived bounded cleanup`);
+      }
+    }
+    cleaned.push(identity.pid);
+  }
+  return cleaned;
+}
+
+async function settleWithin(promise, timeoutMs) {
+  let timer = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve(null), timeoutMs);
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer !== null) clearTimeout(timer);
+  }
+}
+
+async function ensureApplicationStopped(electronApp, child) {
+  if (child.exitCode !== null || child.signalCode) return;
+  await settleWithin(electronApp.close().catch(() => {}), 5_000);
+  if (child.exitCode !== null || child.signalCode) return;
+  child.kill('SIGTERM');
+  try {
+    await waitForExit(child, 5_000);
+    return;
+  } catch {
+    child.kill('SIGKILL');
+    await waitForExit(child, 5_000);
+  }
+}
+
+function publicIdentities(identities) {
+  return identities.map(({ role, pid, started, ownershipBasis, tokenVerified }) => ({
+    role,
+    pid,
+    started,
+    ownershipBasis,
+    ...(tokenVerified !== undefined && { tokenVerified }),
+  }));
+}
+
+async function runMode(mode, results) {
   const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), PREFIX));
   await fs.promises.chmod(root, 0o700);
-  const executable = await fs.promises.realpath(
-    path.join(
-      __dirname,
-      '..',
-      'node_modules',
-      'electron',
-      'dist',
-      'Electron.app',
-      'Contents',
-      'MacOS',
-      'Electron'
-    )
-  );
+  const launchToken = `freedom-agent-exit-launch-${crypto.randomBytes(12).toString('hex')}`;
   let stdout = '';
   let stderr = '';
-  let child;
+  let electronApp = null;
+  let child = null;
+  let fixture = null;
+  let identities = [];
+  let survivorsBeforeCleanup = [];
+  let cleanupPids = [];
+  const check = (id, name, condition, evidence = {}) => {
+    const status = condition ? 'passed' : 'failed';
+    results.push({ id: `${mode}:${id}`, status });
+    emit('assertion', { mode, id, name, status, evidence });
+  };
+
+  emit('app-exit-scenario', { mode, userDataRoot: path.basename(root) });
   try {
-    child = spawn(executable, ['.'], {
+    electronApp = await electron.launch({
+      args: ['.', `--freedom-agent-exit-token=${launchToken}`],
       cwd: path.join(__dirname, '..'),
       env: {
         ...process.env,
         FREEDOM_TEST_MODE: '1',
         FREEDOM_TEST_USER_DATA: root,
+        ELECTRON_DISABLE_SECURITY_WARNINGS: 'true',
+        LANG: 'en_US.UTF-8',
       },
-      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 20_000,
     });
-    child.stdout.on('data', (chunk) => {
+    child = electronApp.process();
+    child.stdout?.on('data', (chunk) => {
       stdout = boundedAppend(stdout, chunk);
     });
-    child.stderr.on('data', (chunk) => {
+    child.stderr?.on('data', (chunk) => {
       stderr = boundedAppend(stderr, chunk);
     });
-    const readyDeadline = Date.now() + 20_000;
-    while (!stdout.includes('Setting window title') && Date.now() < readyDeadline) {
-      if (child.exitCode !== null || child.signalCode) break;
-      await new Promise((resolve) => setTimeout(resolve, 50));
+    await electronApp.firstWindow();
+    fixture = await electronApp.evaluate(
+      async (_electron, requestedMode) =>
+        globalThis.__FREEDOM_TEST_HARNESS__.prepareAgentExitScenario(requestedMode),
+      mode
+    );
+
+    const explicitRoles = new Map(
+      (fixture.ownedProcesses || []).map((entry) => [entry.pid, entry.role])
+    );
+    identities = descendantPids(child.pid)
+      .map((pid) => {
+        const identity = processIdentity(pid);
+        if (!identity) return null;
+        const fixtureToken = explicitRoles.has(pid) ? fixture.token : null;
+        return {
+          ...identity,
+          role: pid === child.pid ? 'electron-main' : explicitRoles.get(pid) || 'electron-helper',
+          ownershipToken: fixtureToken,
+          ownershipBasis: fixtureToken
+            ? 'fixture_token'
+            : pid === child.pid
+              ? 'launch_token'
+              : 'pre_quit_descendant_identity',
+          ...(fixtureToken && { tokenVerified: identity.command.includes(fixtureToken) }),
+          ...(pid === child.pid && { tokenVerified: identity.command.includes(launchToken) }),
+        };
+      })
+      .filter(Boolean);
+    for (const entry of fixture.ownedProcesses || []) {
+      if (identities.some((identity) => identity.pid === entry.pid)) continue;
+      const identity = processIdentity(entry.pid);
+      if (!identity) continue;
+      identities.push({
+        ...identity,
+        role: entry.role,
+        ownershipToken: fixture.token,
+        ownershipBasis: 'fixture_token',
+        tokenVerified: identity.command.includes(fixture.token),
+      });
     }
-    if (!stdout.includes('Setting window title')) {
-      throw new Error(`Freedom did not become ready: ${stderr.slice(-512)}`);
+
+    const heartbeatBefore = fileSize(fixture.heartbeatPath);
+    const detachedHeartbeatBefore = fileSize(fixture.detachedHeartbeatPath);
+    const listenerBefore = listener(fixture.preview?.port);
+    check(
+      'prepared',
+      'the app-owned Agent service, controller, and process manager prepared the requested state',
+      fixture.appOwnedService === true &&
+        fixture.appOwnedWorkspaceController === true &&
+        fixture.appOwnedProcessManager === true &&
+        identities.some((identity) => identity.role === 'electron-main' && identity.tokenVerified) &&
+        (fixture.ownedProcesses || []).every((entry) =>
+          identities.some((identity) => identity.pid === entry.pid && identity.tokenVerified)
+        ),
+      {
+        composition: {
+          service: fixture.appOwnedService,
+          controller: fixture.appOwnedWorkspaceController,
+          processManager: fixture.appOwnedProcessManager,
+        },
+        ownedBeforeQuit: publicIdentities(identities),
+      }
+    );
+    if (mode === 'running') {
+      check(
+        'preview-before-quit',
+        'the declared preview route and its owned listener are live before application Quit',
+        fixture.preview?.statusBeforeQuit === 200 &&
+          fixture.preview.bodyBeforeQuit === 'agent-exit-preview' &&
+          listenerBefore.includes(`127.0.0.1:${fixture.preview.port}`) &&
+          heartbeatBefore >= 0,
+        {
+          routeStatus: fixture.preview?.statusBeforeQuit,
+          listenerPresent: Boolean(listenerBefore),
+          heartbeatBytes: heartbeatBefore,
+        }
+      );
     }
-    const pid = child.pid;
-    const helpersBefore = childProcesses(pid);
-    child.kill('SIGTERM');
-    const outcome = await Promise.race([
-      new Promise((resolve) =>
-        child.once('exit', (exitCode, signal) => resolve({ exitCode, signal }))
-      ),
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('Freedom did not exit within 20 seconds')), 20_000)
-      ),
-    ]);
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    if (mode === 'detached') {
+      check(
+        'detached-confined',
+        'the deliberately detached descendant is live and Seatbelt-confined before Quit',
+        fixture.confinement?.outsideRead === 1 &&
+          fixture.confinement.loopback === 1 &&
+          fixture.confinement.dns !== 'unexpected' &&
+          detachedHeartbeatBefore >= 0,
+        {
+          confinement: fixture.confinement,
+          detachedHeartbeatBytes: detachedHeartbeatBefore,
+        }
+      );
+    }
+
+    const quitStartedAt = Date.now();
+    await electronApp.evaluate(({ Menu }) => {
+      Menu.sendActionToFirstResponder('terminate:');
+    });
+    const outcome = await waitForExit(child, 20_000);
+    const quitDurationMs = Date.now() - quitStartedAt;
+    await delay(250);
+
+    survivorsBeforeCleanup = identities.filter((identity) =>
+      identityMatches(identity, identity.ownershipToken)
+    );
+    const untrackedTokenSurvivors = tokenProcesses(fixture.token).filter(
+      (entry) => !survivorsBeforeCleanup.some((identity) => identity.pid === entry.pid)
+    );
+    for (const row of untrackedTokenSurvivors) {
+      const identity = processIdentity(row.pid);
+      if (identity) {
+        survivorsBeforeCleanup.push({
+          ...identity,
+          role: 'token-owned-untracked',
+          ownershipToken: fixture.token,
+          ownershipBasis: 'fixture_token',
+          tokenVerified: true,
+        });
+      }
+    }
+
+    const heartbeatAfterA = fileSize(fixture.heartbeatPath);
+    const detachedHeartbeatAfterA = fileSize(fixture.detachedHeartbeatPath);
+    const listenerAfterA = listener(fixture.preview?.port);
+    await delay(250);
+    const heartbeatAfterB = fileSize(fixture.heartbeatPath);
+    const detachedHeartbeatAfterB = fileSize(fixture.detachedHeartbeatPath);
+    const listenerAfterB = listener(fixture.preview?.port);
     const combinedOutput = `${stdout}\n${stderr}`;
-    const evidence = {
-      mode: 'idle',
-      pid,
-      helpersObservedBeforeQuit: helpersBefore.length,
-      exitCode: outcome.exitCode,
-      signal: outcome.signal,
-      gracefulSignalLogObserved: combinedOutput.includes(
-        'Received SIGTERM; starting graceful shutdown'
-      ),
-      agentDisposeStarted: combinedOutput.includes('agent_dispose_started'),
-      agentDisposeFinished: combinedOutput.includes('agent_dispose_finished'),
-      processExitObserved: combinedOutput.includes('process_exit'),
-      directChildrenAfterExit: childProcesses(pid),
-    };
-    process.stdout.write(`${JSON.stringify({ type: 'app-exit', ...evidence })}\n`);
-    if (
-      outcome.exitCode !== 0 ||
-      outcome.signal !== null ||
-      !evidence.agentDisposeStarted ||
-      !evidence.agentDisposeFinished ||
-      evidence.directChildrenAfterExit.length !== 0
-    ) {
-      throw new Error(`Idle application exit evidence was incomplete: ${JSON.stringify(evidence)}`);
+    check(
+      'native-quit',
+      'the native macOS application Quit action reaches orderly Agent disposal and an actual zero-code OS exit',
+      outcome.exitCode === 0 &&
+        outcome.signal === null &&
+        combinedOutput.includes('agent_dispose_started') &&
+        combinedOutput.includes('agent_dispose_finished') &&
+        combinedOutput.includes('process_exit'),
+      {
+        invokedBy: 'Menu.sendActionToFirstResponder("terminate:")',
+        exitCode: outcome.exitCode,
+        signal: outcome.signal,
+        durationMs: quitDurationMs,
+        agentDisposeStarted: combinedOutput.includes('agent_dispose_started'),
+        agentDisposeFinished: combinedOutput.includes('agent_dispose_finished'),
+        processExitObserved: combinedOutput.includes('process_exit'),
+      }
+    );
+
+    if (mode === 'idle') {
+      check(
+        'idle-processes',
+        'the idle app and all independently tracked helper identities are gone after Quit',
+        survivorsBeforeCleanup.length === 0,
+        { survivorsBeforeCleanup: publicIdentities(survivorsBeforeCleanup) }
+      );
+    } else if (mode === 'running') {
+      check(
+        'running-processes',
+        'application Quit stops the running managed process, heartbeat, preview listener, and route owner',
+        survivorsBeforeCleanup.length === 0 &&
+          heartbeatAfterA === heartbeatAfterB &&
+          listenerAfterA === '' &&
+          listenerAfterB === '',
+        {
+          survivorsBeforeCleanup: publicIdentities(survivorsBeforeCleanup),
+          heartbeat: { before: heartbeatBefore, afterA: heartbeatAfterA, afterB: heartbeatAfterB },
+          preview: {
+            listenerBefore: Boolean(listenerBefore),
+            listenerAfterA: Boolean(listenerAfterA),
+            listenerAfterB: Boolean(listenerAfterB),
+            routeAfterQuit: 'application_exited',
+          },
+        }
+      );
+    } else {
+      const detached = survivorsBeforeCleanup.find(
+        (identity) => identity.role === 'detached-descendant'
+      );
+      const managed = survivorsBeforeCleanup.find((identity) => identity.role === 'managed-parent');
+      check(
+        'detached-processes',
+        'Quit stops the original managed process but truthfully leaves the detached descendant alive',
+        !managed &&
+          Boolean(detached) &&
+          detached?.tokenVerified === true &&
+          heartbeatAfterA === heartbeatAfterB &&
+          detachedHeartbeatAfterB > detachedHeartbeatAfterA,
+        {
+          survivorsBeforeCleanup: publicIdentities(survivorsBeforeCleanup),
+          managedHeartbeat: {
+            before: heartbeatBefore,
+            afterA: heartbeatAfterA,
+            afterB: heartbeatAfterB,
+          },
+          detachedHeartbeat: {
+            before: detachedHeartbeatBefore,
+            afterA: detachedHeartbeatAfterA,
+            afterB: detachedHeartbeatAfterB,
+          },
+          terminationGuarantee: 'best_effort',
+          survivorsPossible: true,
+          completeDescendantTermination: false,
+        }
+      );
     }
+  } catch (error) {
+    results.push({ id: `${mode}:scenario`, status: 'failed' });
+    emit('app-exit-error', { mode, message: error.message });
   } finally {
-    if (child && child.exitCode === null && !child.signalCode) child.kill('SIGKILL');
-    await fs.promises.rm(root, { recursive: true, force: true });
-    process.stdout.write(`${JSON.stringify({ type: 'app-exit-cleanup', removed: !fs.existsSync(root) })}\n`);
+    const cleanupErrors = [];
+    if (electronApp && child) {
+      try {
+        await ensureApplicationStopped(electronApp, child);
+      } catch (error) {
+        cleanupErrors.push(`application:${error.message}`);
+      }
+    }
+    const token = fixture?.token;
+    if (token) {
+      const tokenIdentities = tokenProcesses(token)
+        .map((row) => processIdentity(row.pid))
+        .filter(Boolean);
+      try {
+        cleanupPids = await cleanupTokenProcesses(token, tokenIdentities);
+      } catch (error) {
+        cleanupErrors.push(`fixture-process:${error.message}`);
+      }
+    }
+    const finalTokenSurvivors = token ? tokenProcesses(token) : [];
+    const applicationStopped = !child || child.exitCode !== null || child.signalCode !== null;
+    if (applicationStopped && finalTokenSurvivors.length === 0) {
+      try {
+        await fs.promises.rm(root, { recursive: true, force: true });
+      } catch (error) {
+        cleanupErrors.push(`fixture-directory:${error.message}`);
+      }
+    }
+    const cleanupPassed =
+      applicationStopped &&
+      finalTokenSurvivors.length === 0 &&
+      !fs.existsSync(root) &&
+      cleanupErrors.length === 0;
+    results.push({ id: `${mode}:cleanup`, status: cleanupPassed ? 'passed' : 'failed' });
+    emit('app-exit-cleanup', {
+      mode,
+      survivorsBeforeCleanup: publicIdentities(survivorsBeforeCleanup),
+      tokenValidatedCleanupPids: cleanupPids,
+      survivorsAfterCleanup: finalTokenSurvivors.map(({ pid }) => pid),
+      applicationStopped,
+      fixtureRemoved: !fs.existsSync(root),
+      cleanupErrors,
+      status: cleanupPassed ? 'passed' : 'failed',
+    });
   }
+}
+
+async function main() {
+  if (process.platform !== 'darwin') throw new Error('Application-exit qualification requires macOS');
+  const results = [];
+  for (const mode of MODES) await runMode(mode, results);
+  const passed = results.filter((entry) => entry.status === 'passed').length;
+  const failed = results.filter((entry) => entry.status === 'failed').length;
+  emit('app-exit-summary', { passed, failed, modes: MODES });
+  if (failed > 0) process.exitCode = 1;
 }
 
 main().catch((error) => {

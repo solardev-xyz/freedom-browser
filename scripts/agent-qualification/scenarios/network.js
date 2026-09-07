@@ -660,6 +660,12 @@ module.exports = {
         timedOut: byCommand('while true; do printf x >> heartbeat; sleep 0.03; done'),
         cancelled: byCommand('while true; do printf y >> cancelled-heartbeat; sleep 0.03; done'),
       };
+      const executionReceipts = Object.fromEntries(
+        Object.entries(receipts).map(([key, receipt]) => [
+          key,
+          executions.find((entry) => entry.command === receipt?.command)?.receipt ?? null,
+        ])
+      );
       const receiptNetwork = Object.fromEntries(
         Object.entries(receipts).map(([key, receipt]) => [
           key,
@@ -667,7 +673,8 @@ module.exports = {
         ])
       );
       emit('receipts', {
-        receipts,
+        ledgerReceipts: receipts,
+        executionReceipts,
         policyNetworkPerReceipt: receiptNetwork,
         toolErrors: {
           failed: failed.error?.message?.slice(0, 120),
@@ -675,20 +682,26 @@ module.exports = {
           cancelled: cancelled.error?.message?.slice(0, 120),
         },
       });
-      const honest = (receipt, state) =>
-        receipt &&
-        receipt.state === state &&
-        platform.receiptMatches(receipt, state);
+      const honest = (key, state, executionState = state) => {
+        const ledgerReceipt = receipts[key];
+        const executionReceipt = executionReceipts[key];
+        return (
+          ledgerReceipt?.state === state &&
+          platform.ledgerReceiptMatches(ledgerReceipt, state) &&
+          executionReceipt?.state === executionState &&
+          platform.receiptMatches(executionReceipt, executionState)
+        );
+      };
       check(
         '8',
         'successful, failed, timed-out, and cancelled receipts stay honest and no descendant survives',
-        honest(receipts.completed, 'completed') &&
+        honest('completed', 'completed') &&
           receipts.completed.exitCode === 0 &&
-          honest(receipts.failed, 'failed') &&
+          honest('failed', 'failed') &&
           receipts.failed.exitCode === 7 &&
-          honest(receipts.timedOut, 'timed_out') &&
+          honest('timedOut', 'timed_out', 'cancelled') &&
           platform.signalMatches(receipts.timedOut.signal) &&
-          honest(receipts.cancelled, 'cancelled') &&
+          honest('cancelled', 'cancelled') &&
           platform.signalMatches(receipts.cancelled.signal) &&
           heartbeatStable &&
           cancelledStable,

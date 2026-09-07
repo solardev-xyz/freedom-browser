@@ -86,7 +86,7 @@ npm run test:agent-sandbox:workspace:previews             # managed server previ
 npm run test:agent-sandbox:workspace:previews:disabled    # managed server previews, gate-absent regression
 npm run test:agent-sandbox:workspace:process-controls     # trusted-chrome running-process controls (list, stop, preview)
 npm run test:agent-sandbox:workspace:macos:destructive    # doubly gated product-path setsid survivor
-npm run test:agent-sandbox:workspace:macos:app-exit       # real idle Electron app exit
+npm run test:agent-sandbox:workspace:macos:app-exit       # native Quit: idle, running preview, detached
 npm run test:agent-sandbox:workspace:packaged:macos       # aggregate from unsigned app.asar
 npm run test:agent-sandbox:macos:packaged:destructive     # doubly gated packaged setsid survivor
 npm run test:agent-sandbox:workspace:self-test-fault      # controlled-failure cleanup self-test (exits non-zero by design)
@@ -111,6 +111,13 @@ default `processes` group and from the aggregate. Run it with
 The ordinary aggregate contains only bounded disposable fixtures. Detached descendants remain in
 the separately doubly gated `macos-destructive` scenario and existing destructive Jest/Electron
 suites. They are never part of ordinary `npm test` or the aggregate.
+
+The macOS application-exit command launches three fresh real Electron applications through the
+existing test-mode composition and invokes the native `terminate:` menu action used by application
+Quit/Cmd+Q. It independently snapshots main, helper, managed-server, and detached process identities
+before Quit, then checks the same PID, start time, and command after exit rather than relying on
+parentage. The detached fixture is uniquely tokenized and is explicitly cleaned only after the
+qualification reports it as a pre-cleanup survivor.
 
 ## Expected output
 

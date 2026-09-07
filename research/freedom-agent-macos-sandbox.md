@@ -369,7 +369,7 @@ outside pathname socket returns `EPERM`; ordinary commands and fixed helpers rem
 New product-path evidence includes:
 
 - development aggregate: nine groups, 160 assertions passed, zero failed;
-- unsigned packaged `app.asar` aggregate: nine groups, 149 assertions passed, zero failed, with an
+- unsigned packaged `app.asar` aggregate: nine groups, 169 assertions passed, zero failed, with an
   additional exact-runtime assertion in every group;
 - macOS adversarial boundary: 11/11, including direct/interpreter/symlink/hard-link/recursive-delete
   outside canaries, protected Git hard links, ordinary workspace hard links, `.GIT`/`.GiT`, a
@@ -387,10 +387,24 @@ New product-path evidence includes:
   heartbeat and an empty survivor scan;
 - controlled failure: intentional exit 1, with all four scenario/cleanup assertions passing,
   fixture removal and no survivor;
-- real Electron idle application exit: exit code 0, Agent disposal start/finish and process-exit
-  diagnostics observed, four helpers present before quit and no direct child after exit, fresh
-  profile removed. The human-readable signal-handler log was not emitted to captured stdout/stderr;
-  the process exit and disposal phases are the authoritative evidence.
+- real Electron application Quit in idle, running-preview and detached states: 14/14 assertions
+  passed. Each case invoked the native `Menu.sendActionToFirstResponder("terminate:")` action used
+  by application Quit/Cmd+Q, reached Agent disposal start/finish, and produced an observed zero-code,
+  no-signal OS exit in 143-171 ms. Process identities were recorded by PID, start time and command
+  before Quit and checked after exit independently of parentage. Idle left no survivor. Running Quit
+  stopped the managed server, stabilized its heartbeat, removed its listener and made its preview
+  route unavailable with the application. Detached Quit stopped the original managed process but
+  left the token-bearing `setsid()` descendant alive and writing, exactly as `best_effort` predicts;
+  it remained denied outside-file, loopback and DNS access, was reported before cleanup, then was
+  token-validated, terminated and removed with the fresh fixture.
+
+The follow-up receipt review also removed a permissive qualification shortcut. Complete executor
+receipts must now explicitly carry the platform survivor fields: macOS requires
+`survivorsPossible: true` and `completeDescendantTermination: false`, while Linux requires the
+opposite values. Missing or incorrect fields fail focused negative tests. The durable SQLite command
+ledger is checked through a separate projection matcher that requires those two fields to be absent;
+the same scenario independently checks its corresponding complete executor receipt, so the narrower
+projection cannot weaken the full receipt contract.
 
 The packaged build is unsigned/ad-hoc, directory-only, and unnotarized. It runs Freedom 0.8.1-dev,
 Electron 43.0.0, Node 24.17.0 and Chromium 150.0.7871.46 from
@@ -412,16 +426,18 @@ The independent affected-boundary matrix passed 20 suites and 382 tests; one sui
 were platform-skipped. Focused Seatbelt passed 2 suites/31 tests, the standalone Seatbelt
 qualification passed its four workloads, the existing detached/job-control Jest suite passed 2/2,
 and development and packaged Electron detached qualifications passed. A new direct platform-adapter
-regression suite passed 3/3 and preserves Linux's `namespace_scoped`/`pid_namespace`/`SIGKILL`
-expectations. Lint passed. Full Jest passed 232 suites and 4,037 tests, with nine suites and 61 tests
-normally skipped. An initial full-suite run inside the outer Codex sandbox failed 16 tests across
-five suites solely because that outer layer denied their owned TCP and Unix-socket listeners; the
-same immutable working tree passed when run with the required host qualification permissions.
+regression suite passed 3/3, including negative field assertions, and preserves Linux's
+`namespace_scoped`/`pid_namespace`/`SIGKILL` expectations. The follow-up affected unit selection
+passed 7 suites and 111 tests. Lint passed. Full Jest passed 232 suites and 4,037 tests, with nine
+suites and 61 tests normally skipped. An initial full-suite run inside the outer Codex sandbox
+failed 16 tests across five suites solely because that outer layer denied their owned TCP and
+Unix-socket listeners; the same immutable working tree passed when run with the required host
+qualification permissions.
 
 This expanded gate is **not closed yet**. The scripted Pi sessions do not substitute for the required
 live already-approved model/provider fixture, and no approved provider configuration was available
-for this run. Real application exit was observed only while idle; running and detached managed-workspace
-application-exit modes remain uncovered even though controller disposal and detached confinement were
-qualified independently. Aggregate CPU, memory, PID and disk containment remains unsupported by
-contract. These gaps must remain explicit rather than being inferred from the green deterministic,
-Electron or packaged corpora.
+for this run. The deterministic application-exit gap is now covered in all three required states.
+Aggregate CPU, memory, PID and disk containment remains unsupported by contract, and a signed/notarized
+artifact remains a later release gate rather than additional Seatbelt authority evidence. These
+remaining gaps must stay explicit rather than being inferred from the green deterministic, Electron
+or packaged corpora.

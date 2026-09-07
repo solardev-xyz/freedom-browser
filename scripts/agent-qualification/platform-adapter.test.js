@@ -30,6 +30,24 @@ describe('workspace qualification platform adapters', () => {
     expect(adapter.receiptMatches({ ...receipt, backend: 'macos-seatbelt' }, 'cancelled')).toBe(
       false
     );
+    expect(adapter.receiptMatches({ ...receipt, survivorsPossible: undefined }, 'cancelled')).toBe(
+      false
+    );
+    expect(
+      adapter.receiptMatches({ ...receipt, completeDescendantTermination: undefined }, 'cancelled')
+    ).toBe(false);
+    expect(adapter.receiptMatches({ ...receipt, survivorsPossible: true }, 'cancelled')).toBe(
+      false
+    );
+    expect(
+      adapter.receiptMatches({ ...receipt, completeDescendantTermination: false }, 'cancelled')
+    ).toBe(false);
+    expect(
+      adapter.ledgerReceiptMatches(
+        { ...receipt, survivorsPossible: undefined, completeDescendantTermination: undefined },
+        'cancelled'
+      )
+    ).toBe(true);
     expect(adapter.signalMatches('SIGKILL')).toBe(true);
     expect(adapter.signalMatches('SIGTERM')).toBe(false);
     expect(adapter.approvedRuntimeMatches('/opt/freedom-toolchain/approved/node/bin/node')).toBe(
@@ -65,9 +83,24 @@ describe('workspace qualification platform adapters', () => {
       fullNetworkIncludesHostAbstractUnixSockets: false,
     });
     expect(adapter.receiptMatches(receipt, 'timed_out')).toBe(true);
+    expect(adapter.receiptMatches({ ...receipt, survivorsPossible: undefined }, 'timed_out')).toBe(
+      false
+    );
+    expect(
+      adapter.receiptMatches({ ...receipt, completeDescendantTermination: undefined }, 'timed_out')
+    ).toBe(false);
+    expect(adapter.receiptMatches({ ...receipt, survivorsPossible: false }, 'timed_out')).toBe(
+      false
+    );
     expect(
       adapter.receiptMatches({ ...receipt, completeDescendantTermination: true }, 'timed_out')
     ).toBe(false);
+    expect(
+      adapter.ledgerReceiptMatches(
+        { ...receipt, survivorsPossible: undefined, completeDescendantTermination: undefined },
+        'timed_out'
+      )
+    ).toBe(true);
     expect(adapter.signalMatches('SIGTERM')).toBe(true);
     expect(adapter.signalMatches('SIGKILL')).toBe(true);
     expect(adapter.offlineNetworkErrorMatches('net:PermissionError')).toBe(true);
