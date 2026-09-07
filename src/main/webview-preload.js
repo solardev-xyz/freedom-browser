@@ -111,6 +111,85 @@ if (typeof window !== 'undefined') {
   });
 }
 
+// APPEARANCE THEME (internal pages only)
+//
+// Settings > Appearance promises to apply to "both the browser chrome and
+// internal pages", but the chrome is the only renderer that reads the
+// setting: every internal page used to style itself from
+// `@media (prefers-color-scheme: …)` alone. `nativeTheme.themeSource` does
+// not reach `prefers-color-scheme` in the renderer on every platform (Linux
+// in particular — see #233), so on a system whose scheme differs from the
+// app setting the result was a dark toolbar over white pages.
+//
+// The preload runs at document-start, before any page script or first paint,
+// so it resolves the setting here and stamps the answer on <html> as
+// `data-theme="dark" | "light"`. Pages carry their light palette under
+// `:where(html[data-theme='light'])` and declare `color-scheme` from the same
+// attribute, so scrollbars and form controls follow too.
+//
+// 'system' keeps behaving exactly as it does today: it resolves through
+// `prefers-color-scheme` and tracks OS changes live.
+const THEME_ATTRIBUTE = 'data-theme';
+const prefersDarkQuery =
+  typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+    ? window.matchMedia('(prefers-color-scheme: dark)')
+    : null;
+
+// Dark is every internal page's default palette, so an unreadable/unknown
+// setting and a missing matchMedia both fall back to it.
+const resolveTheme = (theme) => {
+  if (theme === 'light' || theme === 'dark') return theme;
+  return prefersDarkQuery && !prefersDarkQuery.matches ? 'light' : 'dark';
+};
+
+function installInternalPageTheme() {
+  let configuredTheme = 'system';
+  try {
+    configuredTheme = ipcRenderer.sendSync('internal:get-theme') || 'system';
+  } catch {
+    // Main process unavailable (teardown): fall through to 'system'.
+  }
+
+  const applyTheme = () => {
+    const root = document.documentElement;
+    if (!root) return false;
+    root.setAttribute(THEME_ATTRIBUTE, resolveTheme(configuredTheme));
+    return true;
+  };
+
+  // At document-start <html> may not exist yet. Observing `document` lets us
+  // stamp the attribute the instant the element is parsed, still before the
+  // stylesheet paints, instead of waiting for DOMContentLoaded (which would
+  // flash the wrong theme).
+  if (!applyTheme() && typeof MutationObserver === 'function') {
+    const observer = new MutationObserver(() => {
+      if (applyTheme()) observer.disconnect();
+    });
+    observer.observe(document, { childList: true });
+  }
+
+  // Live updates: the Appearance dropdown saves through the settings store,
+  // which broadcasts to every webContents including these webviews.
+  const onSettingsUpdated = (_event, settings) => {
+    configuredTheme = settings?.theme || 'system';
+    applyTheme();
+  };
+  ipcRenderer.on('settings:updated', onSettingsUpdated);
+  const unsubscribe = () => {
+    ipcRenderer.removeListener('settings:updated', onSettingsUpdated);
+    activeSubscriptions.delete(unsubscribe);
+  };
+  activeSubscriptions.add(unsubscribe);
+
+  prefersDarkQuery?.addEventListener('change', () => {
+    if (configuredTheme !== 'light' && configuredTheme !== 'dark') applyTheme();
+  });
+}
+
+if (isInternalPage()) {
+  installInternalPageTheme();
+}
+
 const guardInternalSubscription = (name, channel) => (callback) => {
   if (!isInternalPage()) {
     console.warn(`[freedomAPI] blocked subscription "${name}" on non-internal page`);

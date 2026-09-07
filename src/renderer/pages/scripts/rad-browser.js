@@ -43,17 +43,24 @@ const fileTreeEl = document.getElementById('file-tree-container');
 const fileViewerEl = document.getElementById('file-viewer-container');
 const readmeEl = document.getElementById('readme-container');
 
-// Set up highlight.js theme based on color scheme
+// Set up highlight.js theme from the resolved Appearance theme. The webview
+// preload stamps `data-theme` on <html> before this script runs and rewrites
+// it whenever the setting (or, under "system", the OS scheme) changes, so the
+// syntax theme follows the same source of truth as the stylesheet instead of
+// reading prefers-color-scheme directly (#233).
 function updateHljsTheme() {
   const link = document.getElementById('hljs-theme');
-  if (window.matchMedia('(prefers-color-scheme: light)').matches) {
+  if (document.documentElement.getAttribute('data-theme') === 'light') {
     link.href = '../vendor/hljs-github-light.css';
   } else {
     link.href = '../vendor/hljs-github-dark.css';
   }
 }
 updateHljsTheme();
-window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', updateHljsTheme);
+new MutationObserver(updateHljsTheme).observe(document.documentElement, {
+  attributes: true,
+  attributeFilter: ['data-theme'],
+});
 
 // Show RID in header
 displayRid.textContent = rid ? `rad://${rid}` : 'rad://...';
