@@ -15,8 +15,10 @@
  *   - braces balance, and no top-level style rule has nested children;
  *   - the light-theme media query is a *top-level* rule, as are the sections
  *     that were swallowed;
- *   - every hard-coded dark background outside the light block has a light
- *     override (#224 — `.resolver-config` did not).
+ *   - every hard-coded dark background that paints the light theme — at any
+ *     nesting depth, in any at-rule that is not a dark-scheme query — has a
+ *     light-theme override that is itself light (#224 — `.resolver-config` had
+ *     none).
  */
 
 const fs = require('fs');
@@ -26,7 +28,9 @@ const SOURCE = fs.readFileSync(path.join(__dirname, 'settings.html'), 'utf8');
 
 // --- tiny CSS reader ------------------------------------------------------
 // Deliberately not a full CSS parser: enough to model blocks, preludes and
-// declarations for a hand-written stylesheet with no strings containing braces.
+// declarations for a hand-written stylesheet. Strings and `url(…)` tokens are
+// blanked first (see `maskOpaqueSpans`) so a `;`, `{` or `}` inside a value
+// cannot fracture the block structure.
 
 function extractStyle(html) {
   // Attribute-tolerant on purpose: a CSP change that adds `<style nonce=…>`
@@ -40,6 +44,56 @@ function extractStyle(html) {
 
 function stripComments(css) {
   return css.replace(/\/\*[\s\S]*?\*\//g, '');
+}
+
+/**
+ * Blank the *contents* of quoted strings and unquoted `url(…)` tokens, keeping
+ * their delimiters (and their length, so offsets in error messages still line
+ * up).
+ *
+ * The block reader below is not a tokenizer: it treats every `;`, `{` and `}`
+ * as structural. CSS lets all three appear inside a string or a URL — the
+ * likeliest one here is a `data:image/svg+xml;base64,…` background, whose `;`
+ * would split the declaration mid-value and hide whatever colour follows it
+ * from the dark sweep, while a `content: '{'` would unbalance the brace count
+ * on a perfectly correct stylesheet. Hiding those spans first makes both
+ * cases inert without pretending to parse the value.
+ */
+function maskOpaqueSpans(css) {
+  const blank = (text) => ' '.repeat(text.length);
+  let out = '';
+  let i = 0;
+  while (i < css.length) {
+    const ch = css[i];
+    if (ch === '"' || ch === "'") {
+      let end = i + 1;
+      while (end < css.length && css[end] !== ch) end += css[end] === '\\' ? 2 : 1;
+      if (end >= css.length) throw new Error(`unterminated ${ch} string at offset ${i}`);
+      out += ch + blank(css.slice(i + 1, end)) + ch;
+      i = end + 1;
+      continue;
+    }
+    const isUrlToken =
+      css.slice(i, i + 4).toLowerCase() === 'url(' && !/[\w-]/.test(css[i - 1] || '');
+    if (isUrlToken) {
+      let start = i + 4;
+      while (start < css.length && /\s/.test(css[start])) start += 1;
+      // A quoted URL is left to the string branch on the next iteration.
+      if (css[start] === '"' || css[start] === "'") {
+        out += css.slice(i, start);
+        i = start;
+        continue;
+      }
+      const close = css.indexOf(')', start);
+      if (close === -1) throw new Error(`unclosed url( at offset ${i}`);
+      out += css.slice(i, start) + blank(css.slice(start, close)) + ')';
+      i = close + 1;
+      continue;
+    }
+    out += ch;
+    i += 1;
+  }
+  return out;
 }
 
 function flushDeclaration(node, buffer) {
@@ -179,7 +233,7 @@ let parseError = null;
 let css = '';
 let sheet = { prelude: '', declarations: [], children: [] };
 try {
-  css = stripComments(extractStyle(SOURCE));
+  css = maskOpaqueSpans(stripComments(extractStyle(SOURCE)));
   sheet = parseStylesheet(css);
 } catch (err) {
   parseError = err;
@@ -199,6 +253,79 @@ const backgroundValues = (node) => [
 const LIGHT_MEDIA = /^@media\s*\(\s*prefers-color-scheme:\s*light\s*\)$/;
 const lightBlock = topLevel.find((node) => LIGHT_MEDIA.test(node.prelude));
 
+// Which colour scheme an at-rule scopes its contents to. Rules under a `light`
+// query are the overrides; rules under a `dark` one never paint the light
+// theme. Everything else — top level, `@media (max-width: …)`, `@supports`,
+// `@container` — does, so it is swept.
+const schemeOf = (prelude, inherited) => {
+  if (/prefers-color-scheme:\s*light/.test(prelude)) return 'light';
+  if (/prefers-color-scheme:\s*dark/.test(prelude)) return 'dark';
+  return inherited;
+};
+
+/**
+ * Every style rule under `root` at any depth, tagged with the colour scheme its
+ * enclosing at-rules scope it to and the at-rule preludes it sits under. The
+ * sweep walks this rather than `topLevel`, so a dark background added inside a
+ * future `@media (max-width: 600px)` block cannot slip past it.
+ */
+function scopedRules(root, scheme = 'any', context = []) {
+  return root.children.flatMap((child) => {
+    const nextContext = [...context, child.prelude];
+    if (isAtRule(child)) {
+      return scopedRules(child, schemeOf(child.prelude, scheme), nextContext);
+    }
+    return [{ rule: child, scheme, context }, ...scopedRules(child, scheme, nextContext)];
+  });
+}
+
+const describeRule = (entry, selector) =>
+  entry.context.length ? `${entry.context.join(' > ')} > ${selector}` : selector;
+
+/**
+ * Selectors that paint a hard-coded dark background under the light theme:
+ * either with no light-theme background at all, or with one that is itself
+ * dark. Returns one message per offending selector; `[]` means the sheet is
+ * clean.
+ */
+function missingLightOverrides(root) {
+  const all = scopedRules(root);
+  // Selector -> the light-scoped rules that repaint its background, in source
+  // order; the last one wins, exactly as the cascade sees it.
+  const overrides = new Map();
+  for (const { rule, scheme } of all) {
+    if (scheme !== 'light' || !backgroundValues(rule).length) continue;
+    for (const selector of selectorsOf(rule)) {
+      if (!overrides.has(selector)) overrides.set(selector, []);
+      overrides.get(selector).push(rule);
+    }
+  }
+
+  const missing = [];
+  for (const entry of all) {
+    // 'light' rules are the overrides themselves; 'dark' ones never paint the
+    // light theme. Everything else needs an override, at any nesting depth.
+    if (entry.scheme !== 'any') continue;
+    const value = darkBackgroundValue(entry.rule);
+    if (!value) continue;
+    for (const selector of selectorsOf(entry.rule)) {
+      const where = describeRule(entry, selector);
+      const repaints = overrides.get(selector);
+      if (!repaints) {
+        missing.push(`${where} { background: ${value} } — no light-theme background`);
+        continue;
+      }
+      // Membership is not enough: an override that cargo-cults the dark value
+      // still renders dark on the light theme (#224).
+      const stillDark = darkBackgroundValue(repaints[repaints.length - 1]);
+      if (stillDark) {
+        missing.push(`${where} { background: ${stillDark} } — light override is still dark`);
+      }
+    }
+  }
+  return missing;
+}
+
 describe('settings.html inline stylesheet', () => {
   test('braces balance', () => {
     expect(parseError && parseError.message).toBeNull();
@@ -216,7 +343,10 @@ describe('settings.html inline stylesheet', () => {
   });
 
   test('the light-theme media query is a top-level rule', () => {
-    expect(topLevel.map((node) => node.prelude)).toContain('@media (prefers-color-scheme: light)');
+    // Matched with the same whitespace-tolerant regex the `lightBlock` lookup
+    // uses: a cosmetic reformat (`prefers-color-scheme:light`) must not fail a
+    // stylesheet that still works.
+    expect(topLevel.map((node) => node.prelude).filter((p) => LIGHT_MEDIA.test(p))).toHaveLength(1);
     // …and it still carries the palette it exists for.
     const root = lightBlock.children.find((node) => node.prelude === ':root');
     expect(root).toBeDefined();
@@ -255,38 +385,75 @@ describe('settings.html inline stylesheet', () => {
 
   test('every hard-coded dark background has a *light* light-theme override', () => {
     expect(lightBlock).toBeDefined();
-    // Selector -> the light-block rules that repaint its background, in source
-    // order; the last one wins, exactly as the cascade sees it.
-    const overrides = new Map();
-    for (const node of lightBlock.children) {
-      if (isAtRule(node) || !backgroundValues(node).length) continue;
-      for (const selector of selectorsOf(node)) {
-        if (!overrides.has(selector)) overrides.set(selector, []);
-        overrides.get(selector).push(node);
-      }
-    }
+    expect(missingLightOverrides(sheet)).toEqual([]);
+  });
 
-    const missing = [];
-    for (const node of topLevel) {
-      if (isAtRule(node)) continue;
-      const value = darkBackgroundValue(node);
-      if (!value) continue;
-      for (const selector of selectorsOf(node)) {
-        const rules = overrides.get(selector);
-        if (!rules) {
-          missing.push(`${selector} { background: ${value} } — no light-theme background`);
-          continue;
-        }
-        // Membership is not enough: an override that cargo-cults the dark value
-        // still renders dark on the light theme (#224).
-        const winner = rules[rules.length - 1];
-        const stillDark = darkBackgroundValue(winner);
-        if (stillDark) {
-          missing.push(`${selector} { background: ${stillDark} } — light override is still dark`);
-        }
-      }
+  // --- self-tests: the guards above only guard while they can still see -----
+
+  const parse = (text) => parseStylesheet(maskOpaqueSpans(stripComments(text)));
+  const LIGHT_PANEL = '@media (prefers-color-scheme: light) { .panel { background: #ffffff } }';
+
+  test('the dark-background sweep reaches inside at-rules, not just the top level', () => {
+    expect(missingLightOverrides(parse('.panel { background: #0d1117 }'))).toEqual([
+      '.panel { background: #0d1117 } — no light-theme background',
+    ]);
+    // The blind spot: a dark background nested in a non-light at-rule.
+    const narrow = '@media (max-width: 600px) { .panel { background: rgba(13, 17, 23, 0.9) } }';
+    expect(missingLightOverrides(parse(narrow))).toEqual([
+      '@media (max-width: 600px) > .panel { background: rgba(13, 17, 23, 0.9) } — no light-theme background',
+    ]);
+    // …and its light override still counts, wherever the two are declared.
+    expect(missingLightOverrides(parse(`${narrow} ${LIGHT_PANEL}`))).toEqual([]);
+    // A rule scoped to the dark scheme never paints the light theme.
+    expect(
+      missingLightOverrides(
+        parse('@media (prefers-color-scheme: dark) { .panel { background: #0d1117 } }')
+      )
+    ).toEqual([]);
+    // An override that cargo-cults the dark value is not an override (#224).
+    const cargoCult =
+      '.panel { background: #0d1117 } @media (prefers-color-scheme: light) { .panel { background: rgba(22, 27, 34, 0.6) } }';
+    expect(missingLightOverrides(parse(cargoCult))).toEqual([
+      '.panel { background: rgba(22, 27, 34, 0.6) } — light override is still dark',
+    ]);
+  });
+
+  test('a `;`, `{` or `}` inside url()/strings does not fracture the reader', () => {
+    // The `;base64,` form of the `select` arrow is the likeliest future edit:
+    // unmasked it splits the declaration at the `;`, hiding the colour that
+    // follows from the sweep entirely.
+    const tricky = parse(
+      `.a { background: url(data:image/svg+xml;base64,PHN2ZyB7fS8+) , rgba(13, 17, 23, 0.9); color: red }
+       .b::after { content: '} .c { background: #0d1117'; background: #ffffff }`
+    );
+    expect(tricky.children.map((node) => node.prelude)).toEqual(['.a', '.b::after']);
+    expect(tricky.children.every((node) => node.children.length === 0)).toBe(true);
+
+    const [a, b] = tricky.children;
+    // The declaration survived the `;` inside the URL, so the dark colour after
+    // it is still visible to the sweep.
+    expect(declaration(a, 'color')).toEqual(['red']);
+    expect(parseColors(declaration(a, 'background')[0])).toContainEqual({
+      r: 13,
+      g: 17,
+      b: 23,
+      a: 0.9,
+    });
+    expect(darkBackgroundValue(a)).toContain('rgba(13, 17, 23, 0.9)');
+    // The braces and the `#0d1117` inside the string are inert: no phantom
+    // rule, no unbalanced count, and `.b::after` reads as light.
+    expect(darkBackgroundValue(b)).toBeNull();
+  });
+
+  test('the light-media matcher tolerates cosmetic reformatting', () => {
+    for (const prelude of [
+      '@media (prefers-color-scheme: light)',
+      '@media (prefers-color-scheme:light)',
+      '@media(prefers-color-scheme: light )',
+    ]) {
+      expect(LIGHT_MEDIA.test(prelude)).toBe(true);
     }
-    expect(missing).toEqual([]);
+    expect(LIGHT_MEDIA.test('@media (prefers-color-scheme: dark)')).toBe(false);
   });
 
   test('no background uses a colour syntax the dark sweep cannot read', () => {
