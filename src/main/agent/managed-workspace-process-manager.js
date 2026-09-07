@@ -357,6 +357,12 @@ class ManagedWorkspaceProcessManager {
       deadline.cancel();
     }
     request.signal?.removeEventListener?.('abort', abort);
+    if (this.shutdownFinished) {
+      throw new ManagedWorkspaceProcessError(
+        'WORKSPACE_PROCESS_MANAGER_DISPOSED',
+        'Workspace processes have shut down'
+      );
+    }
     if (entry.error) {
       if (entry.retentionTimer) this.clearTimer(entry.retentionTimer);
       this.entries.delete(processKey(owner, id));

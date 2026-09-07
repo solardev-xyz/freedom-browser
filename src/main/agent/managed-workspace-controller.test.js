@@ -972,6 +972,32 @@ describe('ManagedWorkspaceController', () => {
     expect(dependencies.store.startCommand).not.toHaveBeenCalled();
   });
 
+  test('never publishes a late live handle or rereads a closed store when preparation outlives shutdown', async () => {
+    jest.useFakeTimers();
+    try {
+      const { controller, dependencies } = createController();
+      let release;
+      fs.promises.realpath.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
+      const starting = controller.startProcess('conversation_one', { command: 'node server.js' });
+      const outcome = expect(starting).rejects.toMatchObject({ code: 'WORKSPACE_PROCESS_MANAGER_DISPOSED' });
+      await jest.advanceTimersByTimeAsync(0);
+      expect(release).toBeDefined();
+      const shutdown = controller.dispose();
+      await jest.advanceTimersByTimeAsync(5_000);
+      await expect(shutdown).resolves.toEqual({ drained: false });
+      const readsBeforeClose = dependencies.store.getForConversation.mock.calls.length;
+      await jest.advanceTimersByTimeAsync(5_000);
+      await outcome;
+      expect(dependencies.store.getForConversation).toHaveBeenCalledTimes(readsBeforeClose);
+      expect(controller.processManager.entries.size).toBe(0);
+      release('/managed/workspace_aaaaaaaaaaaaaaaaaaaa');
+      await jest.advanceTimersByTimeAsync(0);
+      expect(dependencies.executor.execute).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   test('leaves a late backend receipt out of the closed store after the shutdown deadline', async () => {
     jest.useFakeTimers();
     try {
