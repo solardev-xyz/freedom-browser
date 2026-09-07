@@ -311,17 +311,37 @@ async function swarmApproval({ win }, kind = 'connect') {
     const origin = 'bzz://myapp.eth';
     const show = {
       connect: (res, rej) => sc.showSwarmConnect('myapp.eth', origin, res, rej, null),
+      // Data mode reads params.contentType / params.data / params.name
+      // (see presentSwarmPublishApproval); anything else renders as
+      // "Type: unknown" with no name row.
       publish: (res, rej) =>
         sc.showSwarmPublishApproval(
           origin,
-          { size: 1234, filename: 'index.html' },
+          {
+            data: `<!doctype html><title>My app</title>${'<p>Hello Swarm.</p>'.repeat(64)}`,
+            contentType: 'text/html',
+            name: 'index.html',
+          },
           res,
           rej,
-          'swarm_upload'
+          'swarm_publishData'
         ),
+      // Siblings of the publish prompt: both read `options.method` (and
+      // grantMode/autoApproveType) for their copy, so an empty options object
+      // renders the wrong title/label pair the product never shows.
       messaging: (res, rej) =>
-        sc.showSwarmMessagingApproval(origin, { topic: 'chat' }, res, rej, {}),
-      feed: (res, rej) => sc.showSwarmFeedApproval(origin, { topic: 'feed' }, res, rej, {}),
+        sc.showSwarmMessagingApproval(
+          origin,
+          { topic: 'chat', data: 'Hello from myapp.eth' },
+          res,
+          rej,
+          { method: 'swarm_sendPss', grantMode: false }
+        ),
+      feed: (res, rej) =>
+        sc.showSwarmFeedApproval(origin, { name: 'blog-updates' }, res, rej, {
+          method: 'swarm_createFeed',
+          autoApproveType: 'feeds',
+        }),
     }[k];
     new Promise(show);
   }, kind);

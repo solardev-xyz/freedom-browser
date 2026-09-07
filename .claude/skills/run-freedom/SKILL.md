@@ -75,6 +75,8 @@ with `FB_ROOT=/tmp/fb-base`. Remove the worktree afterwards.
   button (which rejects the request) and throws if the sidebar is still open,
   rather than leaving a prompt in every later screenshot. Prompts ignore
   clicks for 500 ms after appearing (input protection), so dismissals retry.
+  It returns immediately when the sidebar is already collapsed, so an earlier
+  failed step cannot cascade into a timeout on the hidden `#sidebar-close`.
 - Keyboard shortcuts only work after clicking the address bar first; native
   menu accelerators never fire from synthetic keys. Use `menuItem(app, id)`
   (`zoom-in`, `zoom-reset`, `new-private-window`).

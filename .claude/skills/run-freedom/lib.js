@@ -92,7 +92,9 @@ async function closeMenus(win) {
   await win.keyboard.press('Escape');
 }
 
-// Close the sidebar, dismissing whatever it is showing first.
+// Close the sidebar, dismissing whatever it is showing first. A no-op when the
+// sidebar is already collapsed (or absent), so a failed earlier step does not
+// cascade into an 8 s timeout on a hidden #sidebar-close.
 //
 // Approval prompts (dApp/Swarm/Radicle) render as `.sidebar-modal` subscreens
 // pinned to `inset: 0` of the sidebar, so they cover #sidebar-close and the
@@ -100,6 +102,10 @@ async function closeMenus(win) {
 // into every later screenshot, so this throws rather than leaving it up: each
 // prompt's Back button rejects its pending request and closes the screen.
 async function closeSidebar(win) {
+  const alreadyClosed = await win.evaluate(
+    () => document.getElementById('sidebar')?.classList.contains('collapsed') ?? true
+  );
+  if (alreadyClosed) return;
   for (let i = 0; i < 8; i++) {
     const modal = await win.$('.sidebar-subscreen.sidebar-modal:visible');
     if (!modal) break;
