@@ -5,8 +5,11 @@
 // Chromium-safe contract-and-chain origin in the guest webview.
 
 const { test, expect } = require('./fixtures');
+const { ethers } = require('ethers');
 const {
+  GATE_HEADER,
   PROVENANCE_HEADER,
+  buildOnchainInterstitialUrl,
   encodeOnchainProvenance,
 } = require('../src/main/onchain/onchain-app-protocol');
 
@@ -129,4 +132,111 @@ test('loads a contract-hosted app under its web3 contract-and-chain origin', asy
       },
       chainAtParse: '0x1',
     });
+});
+
+test('shows the browser-owned gate before unverified onchain app code can run', async ({
+  window,
+  harness,
+}) => {
+  const app = { address: ethers.getAddress(ADDRESS), chainId: 1 };
+  const provenance = {
+    version: 1,
+    chainId: 1,
+    network: 'Ethereum',
+    contract: app.address,
+    htmlHash: HTML_HASH,
+    trust: {
+      level: 'unverified',
+      method: 'direct',
+      agreed: ['rpc.example'],
+      dissented: [],
+      queried: ['rpc.example'],
+    },
+  };
+  const interstitialUrl = buildOnchainInterstitialUrl({
+    app,
+    provenance,
+    requestUrl: APP_URL,
+    token: 'a'.repeat(43),
+  });
+
+  await harness.setContentFixture(APP_URL, {
+    status: 451,
+    body: 'This response must never become executable app content.',
+    headers: {
+      [GATE_HEADER]: Buffer.from(interstitialUrl, 'utf8').toString('base64url'),
+    },
+  });
+
+  await expect
+    .poll(() =>
+      window.evaluate(() => document.querySelector('webview:not(.hidden)')?.getURL() || '')
+    )
+    .toContain('/pages/home.html');
+
+  const input = window.locator('[data-test="address-input"]');
+  await input.fill(`web3://${ADDRESS}`);
+  await input.press('Enter');
+
+  await expect(input).toHaveValue(DISPLAY_URL);
+  await expect
+    .poll(() =>
+      window.evaluate(() => document.querySelector('webview:not(.hidden)')?.getURL() || '')
+    )
+    .toContain('/pages/onchain-unverified.html');
+  await expect
+    .poll(
+      () =>
+        window.evaluate(async () => {
+          const webview = document.querySelector('webview:not(.hidden)');
+          if (!webview?.executeJavaScript) return null;
+          try {
+            return await webview.executeJavaScript(`({
+            title: document.title,
+            summary: document.getElementById('summary-el')?.textContent.trim(),
+            contract: document.getElementById('contract-el')?.textContent,
+            source: document.getElementById('source-el')?.textContent,
+            hash: document.getElementById('hash-el')?.textContent
+          })`);
+          } catch {
+            return null;
+          }
+        }),
+      { timeout: 10_000 }
+    )
+    .toEqual({
+      title: 'Onchain app not independently verified',
+      summary: expect.stringContaining('The app has not run yet.'),
+      contract: app.address,
+      source: 'rpc.example',
+      hash: HTML_HASH,
+    });
+
+  // Swap the harness response before clicking so this leg proves the
+  // internal-page → preload → shell → web3 navigation bridge. Main-process
+  // unit tests separately prove the real handler accepts only the bound token
+  // and returns its already-fetched bytes without a second chain read.
+  await harness.setContentFixture(APP_URL, {
+    body: '<title>Approved onchain app</title><h1 id="approved">Approved bytes</h1>',
+  });
+  await window.evaluate(async () => {
+    const webview = document.querySelector('webview:not(.hidden)');
+    await webview.executeJavaScript("document.getElementById('continue-btn').click()");
+  });
+  await expect
+    .poll(() =>
+      window.evaluate(async () => {
+        const webview = document.querySelector('webview:not(.hidden)');
+        if (!webview?.executeJavaScript) return null;
+        try {
+          return await webview.executeJavaScript(
+            "document.getElementById('approved')?.textContent || null"
+          );
+        } catch {
+          return null;
+        }
+      })
+    )
+    .toBe('Approved bytes');
+  await expect(input).toHaveValue(DISPLAY_URL);
 });

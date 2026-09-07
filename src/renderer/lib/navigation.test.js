@@ -305,6 +305,7 @@ const loadNavigationModule = async (options = {}) => {
       );
     }),
     getInternalPageName: jest.fn((url) => (url === historyUrl ? 'history' : null)),
+    getOnchainInterstitialTarget: jest.fn(() => null),
     parseEnsInput: jest.fn(() => null),
     buildInternalPageUrl: jest.fn((file, params = null) => {
       const base = `file:///app/pages/${file}`;
@@ -2001,6 +2002,66 @@ describe('navigation', () => {
 
       expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(
         'file:///app/pages/settings.html'
+      );
+    });
+
+    test('ipc-message onchain continue returns the approval token as a navigation header', async () => {
+      const ctx = await setupEnsDispatch();
+      const target = 'web3://0x00000095643cffA7d9FAe407A84DfCB6406456C6.eip155-1/';
+      const token = 'a'.repeat(43);
+
+      ctx.tabsMocks.webviewEventHandler('ipc-message', {
+        tabId: ctx.activeRef.tab.id,
+        channel: 'onchain:continue-unverified',
+        args: [{ target, token }],
+      });
+
+      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(target.toLowerCase(), {
+        extraHeaders: `X-Freedom-Onchain-App-Approval: ${token}`,
+      });
+    });
+
+    test('ipc-message onchain continue rejects malformed tokens', async () => {
+      const ctx = await setupEnsDispatch();
+
+      ctx.tabsMocks.webviewEventHandler('ipc-message', {
+        tabId: ctx.activeRef.tab.id,
+        channel: 'onchain:continue-unverified',
+        args: [
+          {
+            target: 'web3://0x00000095643cffA7d9FAe407A84DfCB6406456C6.eip155-1/',
+            token: 'bad\r\nX-Injected: yes',
+          },
+        ],
+      });
+
+      expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
+    });
+
+    test('ipc-message onchain conflict retry re-enters normal web3 navigation', async () => {
+      const ctx = await setupEnsDispatch();
+      const target = 'web3://0x00000095643cffA7d9FAe407A84DfCB6406456C6.eip155-1/';
+
+      ctx.tabsMocks.webviewEventHandler('ipc-message', {
+        tabId: ctx.activeRef.tab.id,
+        channel: 'onchain:retry',
+        args: [{ target }],
+      });
+
+      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(target.toLowerCase());
+    });
+
+    test('ipc-message onchain settings opens the RPC section', async () => {
+      const ctx = await setupEnsDispatch();
+
+      ctx.tabsMocks.webviewEventHandler('ipc-message', {
+        tabId: ctx.activeRef.tab.id,
+        channel: 'onchain:open-rpc-settings',
+        args: [],
+      });
+
+      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(
+        'file:///app/pages/settings.html#rpc'
       );
     });
 

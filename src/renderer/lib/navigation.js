@@ -55,6 +55,7 @@ import {
   detectProtocol,
   isHistoryRecordable,
   getInternalPageName,
+  getOnchainInterstitialTarget,
   parseEnsInput,
   buildInternalPageUrl,
 } from './page-urls.js';
@@ -1836,6 +1837,25 @@ const handleNavigationEvent = (event) => {
       return;
     }
 
+    // A web3: protocol response can redirect to Freedom's browser-owned
+    // trust interstitial. Keep the requested app identity in chrome instead
+    // of exposing the implementation's file:// URL.
+    const onchainInterstitialTarget = getOnchainInterstitialTarget(event.url);
+    if (onchainInterstitialTarget) {
+      const displayUrl = formatOnchainAppDisplayUrl(onchainInterstitialTarget);
+      if (displayUrl) addressInput.value = displayUrl;
+      navState.pendingTitleForUrl = event.url;
+      navState.pendingNavigationUrl = event.url;
+      navState.currentPageUrl = event.url;
+      navState.hasNavigatedDuringCurrentLoad = true;
+      updateNavigationState();
+      updateBookmarkButtonVisibility();
+      updateGithubBridgeIcon();
+      updateProtocolIcon();
+      navState.addressBarSnapshot = addressInput.value;
+      return;
+    }
+
     // Check for internal pages first
     const internalPageName = getInternalPageName(event.url);
     if (internalPageName && internalPageName !== 'home') {
@@ -2337,6 +2357,22 @@ export const initNavigation = () => {
           }
         } else if (data.channel === 'ens:open-settings') {
           loadTarget('freedom://settings', null, webview);
+        } else if (data.channel === 'onchain:continue-unverified') {
+          const payload = data.args?.[0] || {};
+          const target = formatOnchainAppUrl(payload.target);
+          const token = typeof payload.token === 'string' ? payload.token : '';
+          if (target && /^[A-Za-z0-9_-]{43}$/.test(token)) {
+            const displayUrl = formatOnchainAppDisplayUrl(target);
+            if (displayUrl) setAddressDisplayForTab(displayUrl, data.tabId);
+            webview.loadURL(target, {
+              extraHeaders: `X-Freedom-Onchain-App-Approval: ${token}`,
+            });
+          }
+        } else if (data.channel === 'onchain:retry') {
+          const target = formatOnchainAppUrl(data.args?.[0]?.target);
+          if (target) loadTarget(target, null, webview);
+        } else if (data.channel === 'onchain:open-rpc-settings') {
+          loadTarget('freedom://settings/rpc', null, webview);
         } else if (data.channel === 'link:navigate') {
           const payload = data.args?.[0] || {};
           const url = payload.url;
