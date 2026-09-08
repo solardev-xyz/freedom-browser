@@ -171,20 +171,29 @@ carries that claim.)
 
 ### Coverage gap
 
-All load testing above is **linux-x64 only**, on one host. macOS arm64/x64 and
-Windows x64 artifacts were not exercised; they come from the same napi-rs /
-node-addon-api builds, so the same conclusion is _expected_ to hold, but it is
-unverified here. CI's `freedom-ipfs-native-addon`, `radicle-addon-load` and
-`myotis-addon-load` matrices cover those targets — and, per §2, those are
-exactly the jobs that should stay green on this branch, so this PR's own CI run
-is the cross-platform evidence this audit cannot produce locally.
+All addon load testing above is **linux-x64 only, on one host, under Electron
+44**. macOS arm64/x64 and Windows x64 artifacts were not exercised under
+Electron anywhere. They come from the same napi-rs / node-addon-api builds, so
+the same conclusion is _expected_ to hold — but it is **unverified**, and it is
+worth being precise about why CI does not close this gap:
 
-Separately, those three matrices all load the addon under **plain Node 24**,
-never under Electron. That is adequate for Node-API addons (the point of N-API
-is that the two are equivalent) but it does mean CI has no direct
-Electron-ABI assertion for any addon; nothing in the repo asserts a Node ABI
-anywhere (`grep -rn "NODE_MODULE_VERSION\|process.versions.modules\|node-abi"
-src/ scripts/ .github/` → zero hits).
+CI's `freedom-ipfs-native-addon` (4 targets), `radicle-addon-load` (5) and
+`myotis-addon-load` (5) matrices do cover every shipped platform/arch, and all
+14 legs pass on this branch. **That is not Electron 44 evidence.** All three
+jobs install with `npm ci --ignore-scripts`, which never downloads Electron at
+all, and then `require()` the addon under **plain Node 24**. They therefore
+produce byte-identical results on this branch and on `main`; their green status
+says the addons still load under Node 24, not that they load under ABI 149.
+
+For Node-API addons that is a defensible design — the whole point of N-API is
+that Node and Electron are equivalent hosts — and the linux-x64 result above
+does demonstrate the equivalence directly (the same binaries loading under ABI
+127 and ABI 149). But it does mean **nothing in CI asserts an Electron ABI for
+any addon on any platform**, and nothing in the repo asserts a Node ABI either
+(`grep -rn "NODE_MODULE_VERSION\|process.versions.modules\|node-abi"
+src/ scripts/ .github/` → zero hits). The macOS and Windows Electron-44 load
+path is genuinely untested and has to be covered by the manual smoke pass, or
+by adding an Electron-hosted load check to those matrices.
 
 ---
 
@@ -451,18 +460,29 @@ No other failure occurred, so there is nothing else to classify as addon-ABI,
 Chromium-behaviour or flake. Notably **zero** failures were addon-ABI related,
 consistent with §1.
 
-### What this branch's CI will and won't show
+### What this branch's CI showed
 
-The jobs split cleanly on whether they install with scripts:
+Observed on run `34225923826`, and the split is exactly along whether a job
+installs with scripts — **18 pass, 16 fail**:
 
-- **`npm ci --ignore-scripts` → expected GREEN** (they never reach the
-  `node-abi` blocker): `test`, `migration-cross-platform`,
-  `freedom-ipfs-native-addon` (4 targets), `radicle-addon-load` (5 targets),
-  `myotis-addon-load` (5 targets). These are the cross-platform addon-load
-  evidence §1 could not produce locally.
-- **plain `npm ci` → expected RED at the install step, before any test runs**:
-  `e2e-settings`, `e2e-shortcuts-zoom`, `e2e-address-bar-clipboard`,
-  `e2e-profiles`, `e2e-onboarding-identity`, `e2e-ant`, `myotis-native-e2e`.
+- **`npm ci --ignore-scripts` → all GREEN** (they never reach the `node-abi`
+  blocker, and never download Electron): `test`, `migration-cross-platform`
+  (3 OSes), `freedom-ipfs-native-addon` (4 targets), `radicle-addon-load`
+  (5 targets), `myotis-addon-load` (5 targets). Per the coverage note in §1,
+  these are green on `main` too and carry no Electron-44 signal.
+- **plain `npm ci` → all RED at the "Install dependencies" step, before any
+  test ran**: `e2e-settings`, `e2e-shortcuts-zoom`, `e2e-address-bar-clipboard`
+  (3 OSes), `e2e-profiles` (3 OSes), `e2e-onboarding-identity` (3 OSes),
+  `e2e-ant`, `myotis-native-e2e` (3 targets). Identical error on ubuntu, macOS
+  and Windows, confirming Blocker 1 is not host-specific:
+
+  ```
+  e2e-address-bar-clipboard (ubuntu-latest)  Install dependencies
+    > freedom-browser@0.8.5-dev postinstall
+    ⨯ Could not detect abi for version 44.2.0 and runtime electron. ... failedTask=installAppDeps
+    npm error command sh -c node scripts/better-sqlite3-prebuilds.js && electron-builder install-app-deps
+    ##[error]Process completed with exit code 1.
+  ```
 
 Consequence worth stating plainly: **CI cannot currently observe the clipboard
 regression at all**, because `e2e-address-bar-clipboard` — the one job that
