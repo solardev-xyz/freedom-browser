@@ -6,19 +6,49 @@
 
 const { test, expect, HAS_ARTI_BINARY, ARTI_BINARY_PATH } = require('../live-fixtures');
 
+// Default target. The previous default (The Guardian's onion) stopped
+// publishing a descriptor — "Onion Service not found" on every attempt as of
+// 2026-09-08 — so it was swapped for one that answers. Override both variables
+// together to point at something else.
 const DEFAULT_ONION_URL =
-  'https://www.guardian2zotagl6tmjucg3lrhxdk4dw3lhbqnkvvkywawy3oqfoprid.onion/';
+  'https://duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion/';
+// A word from the rendered page that does not also appear in the onion address
+// — see the sniffer below for why that matters.
+const DEFAULT_ONION_CONTENT = 'privacy';
 const ONION_URL = process.env.FREEDOM_TOR_E2E_ONION_URL || DEFAULT_ONION_URL;
+// Only meaningful together with the URL: overriding the URL alone falls back to
+// "the page rendered any body text", which the origin/error-page guards in the
+// sniffer below still keep as a real assertion.
+const ONION_CONTENT =
+  process.env.FREEDOM_TOR_E2E_ONION_CONTENT
+  || (ONION_URL === DEFAULT_ONION_URL ? DEFAULT_ONION_CONTENT : '');
 
 const TOR_START_TIMEOUT_MS = 180_000;
 const ONION_NAVIGATION_TIMEOUT_MS = 180_000;
 const PAGE_RENDER_TIMEOUT_MS = 120_000;
 const SETTINGS_TIMEOUT_MS = 30_000;
 
+// Assert on a rendered onion page, not on an error surface that quotes the
+// address it failed to reach. A failed `.onion` load lands the webview on
+// Freedom's own interstitial (`src/renderer/pages/error.html?error=…&url=…`,
+// title "Couldn't load this page"), whose body text repeats the onion
+// hostname — so a marker that is a substring of that hostname matches there
+// too. The old default did exactly that (`/guardian/i` against
+// `guardian2zot….onion`) and so reported a pass while the service was down.
+//
+// The origin check is what catches that: Freedom's interstitial is a `file://`
+// page, so a failed load can never satisfy it. The `#main-frame-error` check is
+// a second, defensive guard for a navigation that ends on Chromium's own
+// network-error page instead — which was not observed here, since Freedom's
+// error handler took every failure, but which does keep the requested URL as
+// its location and so would pass the origin check.
 const ONION_RENDER_SNIFFER = `
   (() => {
+    if (location.origin !== ${JSON.stringify(new URL(ONION_URL).origin)}) return false;
+    if (document.querySelector('#main-frame-error')) return false;
     const text = [document.title, document.body?.innerText || ''].join('\\n');
-    return /guardian/i.test(text);
+    const marker = ${JSON.stringify(ONION_CONTENT)};
+    return marker ? new RegExp(marker, 'i').test(text) : text.trim().length > 0;
   })()
 `;
 
