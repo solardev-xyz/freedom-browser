@@ -58,6 +58,7 @@ import {
   getInterstitialDisplayName,
   isErrorPageUrl,
   isInterstitialPageUrl,
+  isNewTabPageUrl,
   isOnchainInterstitialPageUrl,
   isTrustInterstitialPageUrl,
   parseEnsInput,
@@ -1888,9 +1889,12 @@ const handleNavigationEvent = (event) => {
       return;
     }
 
-    // Check for internal pages first
+    // Check for internal pages first. New-tab pages (`home`, and the private
+    // window's start page) are excluded: they fall through to the generic
+    // derivation below, which resolves them to an empty address bar — Chrome
+    // shows an empty omnibox on both its NTP and its Incognito NTP. See #312.
     const internalPageName = getInternalPageName(event.url);
-    if (internalPageName && internalPageName !== 'home') {
+    if (internalPageName && !isNewTabPageUrl(event.url)) {
       addressInput.value = `freedom://${internalPageName}`;
       pushDebug(`[AddressBar] Internal page: freedom://${internalPageName}`);
       electronAPI?.setWindowTitle?.(
@@ -2419,7 +2423,17 @@ export const initNavigation = () => {
           const payload = data.args?.[0] || {};
           const url = payload.url;
           if (url) {
-            const disposition = payload.disposition === 'newTab' ? 'newTab' : 'currentTab';
+            // Dispositions mirror Chrome's link heuristic, resolved in
+            // webview-preload from the activation's modifiers: `newTab`
+            // (foreground — plain `target="_blank"`, Ctrl+Shift+click,
+            // Shift+middle-click), `newBackgroundTab` (Ctrl/Cmd+click,
+            // middle-click), `newWindow` (Shift+click). Anything else is a
+            // same-tab navigation. See #303.
+            const disposition = ['newTab', 'newBackgroundTab', 'newWindow'].includes(
+              payload.disposition
+            )
+              ? payload.disposition
+              : 'currentTab';
             const rawTarget = typeof payload.target === 'string' ? payload.target : '';
             // Mirrors webcontents-setup.js: only names without a
             // leading underscore are tracked as named targets. `_blank`,
@@ -2431,7 +2445,12 @@ export const initNavigation = () => {
                 (namedTarget ? `, target=${namedTarget}` : '') +
                 ')'
             );
-            if (disposition === 'newTab') {
+            if (disposition === 'newWindow') {
+              // Shift+click. Same main-process route (and same private-window
+              // guard on the sender) the page context menu's "Open Link in
+              // New Window" already uses.
+              electronAPI?.openUrlInNewWindow?.(url);
+            } else if (disposition === 'newTab' || disposition === 'newBackgroundTab') {
               // Mirrors the Chromium → setWindowOpenHandler →
               // tab:new-with-url path, but with the raw mixed-case href
               // intact. openInNewTabWithTarget routes through createTab
@@ -2440,7 +2459,9 @@ export const initNavigation = () => {
               // same way as a same-tab navigation, AND named targets
               // reuse their existing tab instead of always opening a
               // new one.
-              openInNewTabWithTarget(url, namedTarget);
+              openInNewTabWithTarget(url, namedTarget, {
+                background: disposition === 'newBackgroundTab',
+              });
             } else {
               loadTarget(url, null, webview);
             }
@@ -2517,14 +2538,31 @@ export const initNavigation = () => {
           }
           tabNavState.isWebviewLoading = isLoading;
           reloadBtn.dataset.state = isLoading ? 'stop' : 'reload';
-          // Focus address bar only for new empty tabs (home page)
-          // Don't focus for: view-source, links opened in new tab/window, etc.
+          // Where focus lands on a NEW tab. tabs.js focuses the page itself for
+          // every other kind of activation (#304) but defers this case here,
+          // because only the address-bar derivation knows whether the tab
+          // landed on this window's new-tab page.
+          //
+          // - New-tab page (the home page in a normal window, the private start
+          //   page in a private window — `isNewTabPageUrl`; before #312 the
+          //   private form failed this test, so a private new tab left focus on
+          //   <body> with nowhere to type): focus the address bar, as Chrome
+          //   does on both its NTP and its Incognito NTP.
+          // - Anything else (a link opened in a new foreground tab,
+          //   view-source, …): focus the page, so focus is never stranded on
+          //   the outgoing tab's now-hidden webview.
           const isEmptyNewTab =
-            !isViewingSource &&
-            !addressInput.value &&
-            (url === homeUrl || url === homeUrlNormalized || !url);
-          if (data.isNewTab && isEmptyNewTab) {
-            addressInput.focus();
+            !isViewingSource && !addressInput.value && (isNewTabPageUrl(url) || !url);
+          if (data.isNewTab) {
+            if (isEmptyNewTab) {
+              addressInput.focus();
+              // Match the explicit focus-address-bar shortcut (tabs.js), which
+              // focuses *and* selects; a no-op while the value is empty, but
+              // the two paths should not differ.
+              addressInput.select();
+            } else {
+              data.tab.webview?.focus?.();
+            }
           }
           // Update favicon for the switched-to tab (in case it wasn't set)
           if (!data.tab.favicon && display && !display.startsWith('freedom://')) {

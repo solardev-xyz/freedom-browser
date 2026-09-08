@@ -236,7 +236,22 @@ describe('preload', () => {
     const listenerCases = [
       [exposures.electronAPI, 'onNewTab', 'tab:new', [], []],
       [exposures.electronAPI, 'onCloseTab', 'tab:close', [], []],
-      [exposures.electronAPI, 'onNewTabWithUrl', 'tab:new-with-url', ['https://example.com', 'named-target'], ['https://example.com', 'named-target']],
+      // The 4th IPC arg is the link disposition (#303); a sender that omits it
+      // reaches the callback as an empty object, i.e. a foreground tab.
+      [
+        exposures.electronAPI,
+        'onNewTabWithUrl',
+        'tab:new-with-url',
+        ['https://example.com', 'named-target'],
+        ['https://example.com', 'named-target', {}],
+      ],
+      [
+        exposures.electronAPI,
+        'onNewTabWithUrl',
+        'tab:new-with-url',
+        ['https://example.com', null, { background: true, newWindow: false }],
+        ['https://example.com', null, { background: true, newWindow: false }],
+      ],
       [exposures.electronAPI, 'onProfileUpdated', IPC.PROFILE_UPDATED, [{ id: 'work', displayName: 'Work' }], [{ id: 'work', displayName: 'Work' }]],
       [exposures.electronAPI, 'onExternalNodeCandidates', IPC.PROFILE_EXTERNAL_CANDIDATES, [{ requestId: 'req-1' }], [{ requestId: 'req-1' }]],
       [exposures.electronAPI, 'onNavigateToUrl', 'navigate-to-url', ['bzz://hash'], ['bzz://hash']],

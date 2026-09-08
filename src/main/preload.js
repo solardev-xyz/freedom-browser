@@ -183,7 +183,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('tab:close', handler);
   },
   onNewTabWithUrl: (callback) => {
-    const handler = (_event, url, targetName) => callback(url, targetName);
+    // `options` carries the link disposition Chromium reported
+    // (`{ background, newWindow }`); senders that don't set one send nothing
+    // and get the default foreground tab. See #303.
+    const handler = (_event, url, targetName, options) => callback(url, targetName, options || {});
     ipcRenderer.on('tab:new-with-url', handler);
     return () => ipcRenderer.removeListener('tab:new-with-url', handler);
   },

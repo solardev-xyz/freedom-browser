@@ -66,6 +66,7 @@ const loadNavigationModule = async (options = {}) => {
 
   const homeUrl = 'file:///app/pages/home.html';
   const historyUrl = 'file:///app/pages/history.html';
+  const privateUrl = 'file:///app/pages/private.html';
   const errorUrlBase = 'file:///app/pages/error.html';
   // Mirrors `page-urls.js`: chrome pages are matched on the shell's own
   // resolved `pages/<file>` base, never a `/<file>.html` substring, so a
@@ -169,7 +170,11 @@ const loadNavigationModule = async (options = {}) => {
     deriveDisplayAddress: jest.fn(({ url }) => `display:${url}`),
     deriveSwitchedTabDisplay: jest.fn(
       ({ url, isLoading, addressBarSnapshot }) =>
-        (isLoading && addressBarSnapshot) || (url ? `switched:${url}` : '')
+        (isLoading && addressBarSnapshot) ||
+        // Mirrors the real helper on the one branch the focus rule depends on:
+        // a new-tab page (home, or a private window's start page) derives to an
+        // EMPTY address bar, not to its `freedom://<page>` name (#312).
+        (url && !pageUrlsMocks.isNewTabPageUrl(url) ? `switched:${url}` : '')
     ),
     extractEnsResolutionMetadata: jest.fn(() => ({
       knownEnsPairs: [],
@@ -314,6 +319,7 @@ const loadNavigationModule = async (options = {}) => {
     internalPages: {
       history: historyUrl,
       settings: 'file:///app/pages/settings.html',
+      private: privateUrl,
     },
     detectProtocol: jest.fn(() => 'https'),
     isHistoryRecordable: jest.fn((displayUrl, internalUrl) => {
@@ -324,7 +330,22 @@ const loadNavigationModule = async (options = {}) => {
         !matchesInternalPage(internalUrl, errorUrlBase)
       );
     }),
-    getInternalPageName: jest.fn((url) => (url === historyUrl ? 'history' : null)),
+    getInternalPageName: jest.fn((url) => {
+      if (url === historyUrl) return 'history';
+      if (url === privateUrl) return 'private';
+      if (url === homeUrl) return 'home';
+      return null;
+    }),
+    // Mirrors `page-urls.js#isNewTabPageUrl`: the home page and the private
+    // window's start page, in both the friendly `freedom://` form and the
+    // resolved `file://` one (#312).
+    isNewTabPageUrl: jest.fn(
+      (url) =>
+        url === homeUrl ||
+        url === privateUrl ||
+        url === 'freedom://home' ||
+        url === 'freedom://private'
+    ),
     getOnchainInterstitialTarget: jest.fn(() => null),
     isErrorPageUrl: jest.fn((url) => matchesInternalPage(url, errorUrlBase)),
     isInterstitialPageUrl: jest.fn((url) => isInterstitialPageUrlMock(url)),
@@ -365,6 +386,9 @@ const loadNavigationModule = async (options = {}) => {
     setBookmarkBarChecked: jest.fn(),
     setBookmarkBarToggleEnabled: jest.fn(),
     setWindowTitle: jest.fn(),
+    // Shift+click on a link routes here (#303) — same request the page context
+    // menu's "Open Link in New Window" uses.
+    openUrlInNewWindow: jest.fn(),
     fetchFaviconWithKey: jest.fn().mockResolvedValue('data:image/png;base64,favicon'),
     addHistory: jest.fn().mockResolvedValue(undefined),
     setBzzBase: jest.fn(),
@@ -2282,7 +2306,9 @@ describe('navigation', () => {
       });
       await flushMicrotasks();
 
-      expect(ctx.tabsMocks.openInNewTabWithTarget).toHaveBeenCalledWith(rawHref, null);
+      expect(ctx.tabsMocks.openInNewTabWithTarget).toHaveBeenCalledWith(rawHref, null, {
+        background: false,
+      });
       expect(ctx.tabsMocks.createTab).not.toHaveBeenCalled();
       expect(ctx.urlUtilsMocks.formatIpfsUrl).not.toHaveBeenCalled();
     });
@@ -2304,7 +2330,9 @@ describe('navigation', () => {
       });
       await flushMicrotasks();
 
-      expect(ctx.tabsMocks.openInNewTabWithTarget).toHaveBeenCalledWith(rawHref, 'docs');
+      expect(ctx.tabsMocks.openInNewTabWithTarget).toHaveBeenCalledWith(rawHref, 'docs', {
+        background: false,
+      });
     });
 
     test('ipc-message link:navigate with target=_blank does not register as a named tab', async () => {
@@ -2322,7 +2350,123 @@ describe('navigation', () => {
       });
       await flushMicrotasks();
 
-      expect(ctx.tabsMocks.openInNewTabWithTarget).toHaveBeenCalledWith(rawHref, null);
+      expect(ctx.tabsMocks.openInNewTabWithTarget).toHaveBeenCalledWith(rawHref, null, {
+        background: false,
+      });
+    });
+
+    // #303: Ctrl/Cmd+click and middle-click open a BACKGROUND tab in Chrome —
+    // the current page stays active and keeps keyboard focus. The preload
+    // resolves the modifiers into the disposition; this is the renderer half.
+    test('ipc-message link:navigate with disposition newBackgroundTab opens without switching', async () => {
+      const ctx = await setupEnsDispatch();
+      const rawHref = 'ipfs://QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG';
+
+      ctx.tabsMocks.webviewEventHandler('ipc-message', {
+        tabId: ctx.activeRef.tab.id,
+        channel: 'link:navigate',
+        args: [{ url: rawHref, disposition: 'newBackgroundTab', target: null }],
+      });
+      await flushMicrotasks();
+
+      expect(ctx.tabsMocks.openInNewTabWithTarget).toHaveBeenCalledWith(rawHref, null, {
+        background: true,
+      });
+      expect(ctx.electronAPI.openUrlInNewWindow).not.toHaveBeenCalled();
+    });
+
+    // #303: Shift+click opens a new window, through the same
+    // `window:new-with-url` request (and private-window guard) the page
+    // context menu's "Open Link in New Window" already uses.
+    test('ipc-message link:navigate with disposition newWindow opens a window, not a tab', async () => {
+      const ctx = await setupEnsDispatch();
+      const rawHref = 'ipfs://QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG';
+
+      ctx.tabsMocks.webviewEventHandler('ipc-message', {
+        tabId: ctx.activeRef.tab.id,
+        channel: 'link:navigate',
+        args: [{ url: rawHref, disposition: 'newWindow', target: null }],
+      });
+      await flushMicrotasks();
+
+      expect(ctx.electronAPI.openUrlInNewWindow).toHaveBeenCalledWith(rawHref);
+      expect(ctx.tabsMocks.openInNewTabWithTarget).not.toHaveBeenCalled();
+      expect(ctx.tabsMocks.createTab).not.toHaveBeenCalled();
+    });
+
+    // An unknown/absent disposition still means "this tab" — the fallback has
+    // to stay closed rather than defaulting into any of the new branches.
+    test('ipc-message link:navigate with an unknown disposition navigates the current tab', async () => {
+      const ctx = await setupEnsDispatch();
+      const rawHref = 'ipfs://QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG';
+
+      ctx.tabsMocks.webviewEventHandler('ipc-message', {
+        tabId: ctx.activeRef.tab.id,
+        channel: 'link:navigate',
+        args: [{ url: rawHref, disposition: 'newSomething', target: null }],
+      });
+      await flushMicrotasks();
+
+      expect(ctx.tabsMocks.openInNewTabWithTarget).not.toHaveBeenCalled();
+      expect(ctx.electronAPI.openUrlInNewWindow).not.toHaveBeenCalled();
+      expect(ctx.urlUtilsMocks.formatIpfsUrl).toHaveBeenCalledWith(
+        rawHref,
+        ctx.state.ipfsRoutePrefix
+      );
+    });
+  });
+
+  // #312: a private window's new tab has to focus an EMPTY address bar, the
+  // same as a normal window's. Before the fix the private start page derived
+  // to `freedom://private`, so the "empty new tab" test never fired and focus
+  // was left on <body>.
+  describe('new tab focus', () => {
+    const switchToNewTab = (ctx, url) => {
+      const tab = createTab(42, url);
+      ctx.tabsRef.list = [tab];
+      ctx.activeRef.tab = tab;
+      ctx.tabsMocks.webviewEventHandler('tab-switched', { tabId: tab.id, tab, isNewTab: true });
+    };
+
+    test('a new tab on the private start page focuses and selects an empty address bar', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      ctx.elements.addressInput.focus.mockClear();
+
+      switchToNewTab(ctx, 'freedom://private');
+
+      expect(ctx.elements.addressInput.value).toBe('');
+      expect(ctx.elements.addressInput.focus).toHaveBeenCalled();
+      expect(ctx.elements.addressInput.select).toHaveBeenCalled();
+    });
+
+    test('a new tab on the home page still focuses the address bar', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      ctx.elements.addressInput.focus.mockClear();
+
+      switchToNewTab(ctx, 'file:///app/pages/home.html');
+
+      expect(ctx.elements.addressInput.value).toBe('');
+      expect(ctx.elements.addressInput.focus).toHaveBeenCalled();
+    });
+
+    test('a tab opened on a real page focuses the page, not the address bar', async () => {
+      // A link opened in a new foreground tab: the address bar must not steal
+      // focus, and focus must not stay stranded on the outgoing tab's
+      // now-hidden webview either (#303/#304).
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      ctx.elements.addressInput.focus.mockClear();
+
+      const tab = createTab(43, 'https://example.com/');
+      const webviewFocus = jest.spyOn(tab.webview, 'focus');
+      ctx.tabsRef.list = [tab];
+      ctx.activeRef.tab = tab;
+      ctx.tabsMocks.webviewEventHandler('tab-switched', { tabId: tab.id, tab, isNewTab: true });
+
+      expect(ctx.elements.addressInput.focus).not.toHaveBeenCalled();
+      expect(webviewFocus).toHaveBeenCalled();
     });
   });
 

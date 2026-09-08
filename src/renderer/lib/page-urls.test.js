@@ -169,6 +169,31 @@ describe('page-urls', () => {
     expect(mod.getInternalPageName('')).toBeNull();
   });
 
+  // #312: the private window's start page is a new-tab page like the home
+  // page, in both the friendly and the resolved form. Everything else — other
+  // internal pages, ordinary web pages — is not.
+  test('recognises the home and private start pages as new-tab pages', async () => {
+    const mod = await loadModule({
+      home: 'home.html',
+      private: 'private.html',
+      settings: 'settings.html',
+    });
+
+    expect(mod.isNewTabPageUrl('file:///app/pages/home.html')).toBe(true);
+    expect(mod.isNewTabPageUrl('freedom://home')).toBe(true);
+    expect(mod.isNewTabPageUrl('file:///app/pages/private.html')).toBe(true);
+    expect(mod.isNewTabPageUrl('freedom://private')).toBe(true);
+    expect(mod.isNewTabPageUrl('freedom://private/')).toBe(true);
+
+    expect(mod.isNewTabPageUrl('file:///app/pages/settings.html')).toBe(false);
+    expect(mod.isNewTabPageUrl('freedom://settings')).toBe(false);
+    expect(mod.isNewTabPageUrl('about:blank')).toBe(false);
+    expect(mod.isNewTabPageUrl('')).toBe(false);
+    expect(mod.isNewTabPageUrl(null)).toBe(false);
+    // A remote look-alike path must not pass as chrome's own page (#235).
+    expect(mod.isNewTabPageUrl('https://evil.test/pages/private.html')).toBe(false);
+  });
+
   test('extracts the web3 target only from the bundled onchain interstitial', async () => {
     const mod = await loadModule();
     const target = 'web3://0x00000095643cffa7d9fae407a84dfcb6406456c6.eip155-1/swap';

@@ -24,6 +24,9 @@ const createElectronApi = () => {
       updateTabMenuState: jest.fn(),
       closeWindow: jest.fn(),
       getWebviewPreloadPath: jest.fn().mockResolvedValue('/tmp/webview-preload.js'),
+      // Shift+click / `new-window` disposition routes back out through the
+      // existing "Open Link in New Window" request (#303).
+      openUrlInNewWindow: jest.fn(),
       getCachedFavicon: jest.fn().mockResolvedValue('data:image/png;base64,favicon'),
       onNewTab: register('newTab'),
       onCloseTab: register('closeTab'),
@@ -937,8 +940,12 @@ describe('tabs ui behavior', () => {
       clientY: 30,
     });
     windowHandlers.blur();
-    elements.bzzWebview.dispatch('focus');
-    elements.bzzWebview.dispatch('mousedown');
+    // The `#bzz-webview` focus/mousedown dismissal that used to live in
+    // initTabs was dead code — webviews are created id-less, so the lookup was
+    // always null (#315, #306). The fake DOM *does* resolve that id, so this
+    // asserts the listeners are really gone rather than merely never firing.
+    expect(elements.bzzWebview.handlers.focus).toBeUndefined();
+    expect(elements.bzzWebview.handlers.mousedown).toBeUndefined();
 
     elements.newTabBtn.dispatch('click');
     expect(mod.getTabs()).toHaveLength(3);
@@ -958,12 +965,22 @@ describe('tabs ui behavior', () => {
     jest.runOnlyPendingTimers();
     await flushMicrotasks();
     expect(mod.getTabs()).toHaveLength(beforeReuseCount);
-    expect(onLoadTarget).toHaveBeenCalledWith('https://reuse-target.example');
+    // The reused tab's own webview is named explicitly so a background
+    // re-navigation can't land in whatever tab happens to be active (#303).
+    expect(onLoadTarget).toHaveBeenCalledWith(
+      'https://reuse-target.example',
+      null,
+      expect.objectContaining({ tagName: 'WEBVIEW' })
+    );
 
     electronHandlers.newTabWithUrl('ipfs://cid', 'ipfs-target');
     jest.runOnlyPendingTimers();
     await flushMicrotasks();
-    expect(onLoadTarget).toHaveBeenCalledWith('ipfs://cid');
+    expect(onLoadTarget).toHaveBeenCalledWith(
+      'ipfs://cid',
+      null,
+      expect.objectContaining({ tagName: 'WEBVIEW' })
+    );
 
     electronHandlers.navigateToUrl('https://navigate.example');
     electronHandlers.loadUrl('https://load.example');
@@ -1142,5 +1159,212 @@ describe('tabs ui behavior', () => {
     mod.switchTab(firstTab.id);
     expect(linkStatusMocks.clearLinkStatus).toHaveBeenCalledWith({ immediate: true });
     expect(linkStatusMocks.setLinkStatusSide).toHaveBeenLastCalledWith('right');
+  });
+  // #304: activating a tab hands keyboard focus to that tab's page, the way
+  // Chrome does — otherwise focus is left on the tab button (mouse switch) or
+  // stranded on the now-hidden outgoing webview (keyboard switch), and
+  // scrolling/typing does nothing until the user clicks into the page.
+  test('switchTab focuses the incoming page and never the hidden outgoing one', async () => {
+    const { mod } = await loadTabsModule();
+    await mod.initTabs();
+
+    const firstTab = mod.getActiveTab();
+    const secondTab = mod.createTab('https://second.example');
+    const firstFocus = jest.spyOn(firstTab.webview, 'focus');
+    const secondFocus = jest.spyOn(secondTab.webview, 'focus');
+
+    mod.switchTab(firstTab.id);
+    expect(firstFocus).toHaveBeenCalledTimes(1);
+    expect(secondFocus).not.toHaveBeenCalled();
+
+    // Keyboard switch (Ctrl+Tab) goes through the same path.
+    mod.switchToNextTab();
+    expect(mod.getActiveTab().id).toBe(secondTab.id);
+    expect(secondFocus).toHaveBeenCalledTimes(1);
+    expect(firstFocus).toHaveBeenCalledTimes(1);
+  });
+
+  // #304: the tab promoted when the active tab closes is focused too.
+  test('closing the active tab focuses the tab promoted in its place', async () => {
+    const { mod } = await loadTabsModule();
+    await mod.initTabs();
+
+    const firstTab = mod.getActiveTab();
+    const secondTab = mod.createTab('https://second.example');
+    const firstFocus = jest.spyOn(firstTab.webview, 'focus');
+
+    expect(mod.getActiveTab().id).toBe(secondTab.id);
+    mod.closeTab(secondTab.id);
+
+    expect(mod.getActiveTab().id).toBe(firstTab.id);
+    expect(firstFocus).toHaveBeenCalled();
+  });
+
+  // #311: below the tabs' minimum width the strip scrolls instead of clipping,
+  // so the newly activated tab has to be scrolled back into view — a tab you
+  // cannot see or click is the bug this fixes.
+  test('switchTab scrolls the activated tab into view', async () => {
+    const { mod, elements } = await loadTabsModule();
+    await mod.initTabs();
+
+    const firstTab = mod.getActiveTab();
+    const secondTab = mod.createTab('https://second.example');
+    const firstTabEl = findTabElement(elements.tabBar, firstTab.id);
+    firstTabEl.scrollIntoView = jest.fn();
+
+    mod.switchTab(firstTab.id);
+
+    expect(firstTabEl.scrollIntoView).toHaveBeenCalledWith({
+      block: 'nearest',
+      inline: 'nearest',
+    });
+    void secondTab;
+  });
+
+  // #311: the edge fades are the only cue that more tabs exist in a direction,
+  // since the strip's scrollbar is hidden.
+  test('the tab strip marks which edge has more tabs behind it', async () => {
+    const { mod, elements } = await loadTabsModule();
+    await mod.initTabs();
+
+    // Not overflowing: neither fade.
+    elements.tabBar.scrollWidth = 400;
+    elements.tabBar.clientWidth = 400;
+    elements.tabBar.scrollLeft = 0;
+    mod.createTab('https://second.example');
+    expect(elements.tabBar.classList.contains('overflow-start')).toBe(false);
+    expect(elements.tabBar.classList.contains('overflow-end')).toBe(false);
+
+    // Overflowing, scrolled to the left end: more tabs to the right only.
+    elements.tabBar.scrollWidth = 1200;
+    elements.tabBar.clientWidth = 400;
+    elements.tabBar.scrollLeft = 0;
+    elements.tabBar.dispatch('scroll');
+    expect(elements.tabBar.classList.contains('overflow-start')).toBe(false);
+    expect(elements.tabBar.classList.contains('overflow-end')).toBe(true);
+
+    // Scrolled into the middle: tabs hidden on both sides.
+    elements.tabBar.scrollLeft = 300;
+    elements.tabBar.dispatch('scroll');
+    expect(elements.tabBar.classList.contains('overflow-start')).toBe(true);
+    expect(elements.tabBar.classList.contains('overflow-end')).toBe(true);
+
+    // Scrolled to the right end: more tabs to the left only.
+    elements.tabBar.scrollLeft = 800;
+    elements.tabBar.dispatch('scroll');
+    expect(elements.tabBar.classList.contains('overflow-start')).toBe(true);
+    expect(elements.tabBar.classList.contains('overflow-end')).toBe(false);
+  });
+
+  // #303: Ctrl/Cmd+click and middle-click open a background tab — the tab is
+  // created and navigated, but the user stays on the page they were reading
+  // and it keeps keyboard focus.
+  test('a background tab is created without switching away from the current one', async () => {
+    jest.useFakeTimers();
+    const { mod } = await loadTabsModule();
+    const onLoadTarget = jest.fn();
+    mod.setLoadTargetHandler(onLoadTarget);
+    await mod.initTabs();
+
+    const activeTab = mod.getActiveTab();
+    const activeFocus = jest.spyOn(activeTab.webview, 'focus');
+
+    const backgroundTab = mod.openInNewTabWithTarget('ipfs://cid', null, { background: true });
+    jest.runOnlyPendingTimers();
+
+    expect(mod.getTabs()).toHaveLength(2);
+    expect(mod.getActiveTab().id).toBe(activeTab.id);
+    expect(activeFocus).not.toHaveBeenCalled();
+    expect(backgroundTab.webview.classList.contains('hidden')).toBe(true);
+    // The dweb URL still resolves — into the BACKGROUND tab's webview, not
+    // into whatever tab is active.
+    expect(onLoadTarget).toHaveBeenCalledWith('ipfs://cid', null, backgroundTab.webview);
+
+    // Without the flag the same call still opens in the foreground.
+    const foregroundTab = mod.openInNewTabWithTarget('https://fg.example', null);
+    expect(mod.getActiveTab().id).toBe(foregroundTab.id);
+  });
+
+  // #303: the main process forwards the disposition Chromium derived from the
+  // click's modifiers over `tab:new-with-url`.
+  test('tab:new-with-url honours the background and new-window dispositions', async () => {
+    const { mod, electronAPI, electronHandlers } = await loadTabsModule();
+    await mod.initTabs();
+
+    const activeTab = mod.getActiveTab();
+    electronHandlers.newTabWithUrl('https://bg.example', null, { background: true });
+    expect(mod.getTabs()).toHaveLength(2);
+    expect(mod.getActiveTab().id).toBe(activeTab.id);
+
+    electronHandlers.newTabWithUrl('https://win.example', null, { newWindow: true });
+    expect(electronAPI.openUrlInNewWindow).toHaveBeenCalledWith('https://win.example');
+    expect(mod.getTabs()).toHaveLength(2);
+
+    // No options → the previous foreground-tab behaviour.
+    electronHandlers.newTabWithUrl('https://fg.example', null);
+    expect(mod.getTabs()).toHaveLength(3);
+    expect(mod.getActiveTab().url).toBe('https://fg.example');
+  });
+
+  // #315: the menu was dismissed by a mouse tab switch (the strip click
+  // reaches the document listener) but not by a keyboard one, leaving every
+  // destructive item bound to the tab the user had just left.
+  test('a tab context menu is dismissed by any tab activation and by a close', async () => {
+    const { mod, elements } = await loadTabsModule();
+    await mod.initTabs();
+
+    const firstTab = mod.getActiveTab();
+    const secondTab = mod.createTab('https://second.example');
+    mod.switchTab(firstTab.id);
+    const firstTabEl = findTabElement(elements.tabBar, firstTab.id);
+
+    const openMenu = () =>
+      firstTabEl.dispatch('contextmenu', {
+        preventDefault: jest.fn(),
+        stopPropagation: jest.fn(),
+        clientX: 20,
+        clientY: 30,
+      });
+
+    openMenu();
+    expect(elements.tabContextMenu.classList.contains('hidden')).toBe(false);
+
+    // Keyboard switch (Ctrl+Tab / Ctrl+PageDown / Ctrl+1..8).
+    mod.switchToNextTab();
+    expect(mod.getActiveTab().id).toBe(secondTab.id);
+    expect(elements.tabContextMenu.classList.contains('hidden')).toBe(true);
+
+    // A tab closing invalidates the menu's anchor and its target too.
+    mod.switchTab(firstTab.id);
+    openMenu();
+    expect(elements.tabContextMenu.classList.contains('hidden')).toBe(false);
+    mod.closeTab(secondTab.id);
+    expect(elements.tabContextMenu.classList.contains('hidden')).toBe(true);
+  });
+
+  // #315: belt and braces — if some future path leaves a menu up over a tab
+  // that no longer exists, its destructive items refuse rather than resolving
+  // to whichever tab took that id's place.
+  test('a tab context menu item refuses to act on a tab that is gone', async () => {
+    const { mod, elements } = await loadTabsModule();
+    await mod.initTabs();
+
+    const firstTab = mod.getActiveTab();
+    const secondTab = mod.createTab('https://second.example');
+    const secondTabEl = findTabElement(elements.tabBar, secondTab.id);
+
+    secondTabEl.dispatch('contextmenu', {
+      preventDefault: jest.fn(),
+      stopPropagation: jest.fn(),
+      clientX: 20,
+      clientY: 30,
+    });
+    // Drop the tab out from under the menu without going through closeTab's
+    // dismissal, then click "Close Tab".
+    mod.getTabs().splice(1, 1);
+    elements.tabContextMenu.dispatch('click', { target: elements.closeBtn });
+
+    expect(mod.getTabs().map((tab) => tab.id)).toEqual([firstTab.id]);
+    expect(elements.tabContextMenu.classList.contains('hidden')).toBe(true);
   });
 });

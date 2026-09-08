@@ -1082,6 +1082,45 @@ const updateTabElement = (tabEl, tab, isActive, isBeforeActive) => {
   separator.style.display = !isActive && !isBeforeActive ? '' : 'none';
 };
 
+// Tab-strip overflow (#311).
+//
+// Tabs shrink to the `min-width` floor in tabs.css first; past that the strip
+// scrolls horizontally instead of clipping, which is what Chrome does. Two
+// things have to follow from that: the edges need a fade so it is visible that
+// more tabs exist in that direction, and the *active* tab must always be
+// scrolled into view — a tab you cannot see or click is the actual bug.
+
+// Toggle the edge-fade classes from the current scroll offsets. Cheap enough
+// to run on every scroll event; reads only layout properties the browser has
+// already computed for the scroll.
+const updateTabStripOverflow = () => {
+  if (!tabBar?.classList) return;
+  const scrollLeft = tabBar.scrollLeft || 0;
+  const scrollWidth = tabBar.scrollWidth || 0;
+  const clientWidth = tabBar.clientWidth || 0;
+  // 1px slack absorbs sub-pixel layout rounding, which would otherwise leave
+  // a permanent fade on a strip that is not actually overflowing.
+  const overflowing = scrollWidth - clientWidth > 1;
+  tabBar.classList.toggle('overflow-start', overflowing && scrollLeft > 1);
+  tabBar.classList.toggle(
+    'overflow-end',
+    overflowing && scrollLeft + clientWidth < scrollWidth - 1
+  );
+};
+
+// Keep the active tab reachable. Called from `switchTab` (and after a close
+// promotes another tab) rather than from `renderTabs`, which also runs on
+// title/loading churn — scrolling the strip back on every spinner tick would
+// fight a user who scrolled it themselves.
+const scrollActiveTabIntoView = () => {
+  const tabEl = tabElements.get(tabState.activeTabId);
+  // `scrollIntoView` is a real-DOM API; the unit tests' fake DOM omits it.
+  if (typeof tabEl?.scrollIntoView === 'function') {
+    tabEl.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }
+  updateTabStripOverflow();
+};
+
 // Render the tab bar incrementally
 const renderTabs = () => {
   if (!tabBar) return;
@@ -1126,6 +1165,9 @@ const renderTabs = () => {
 
     previousSibling = tabEl;
   });
+
+  // Adding or removing a tab changes whether the strip overflows.
+  updateTabStripOverflow();
 };
 
 // URLs `createTab` is allowed to load directly as the initial webview
@@ -1160,8 +1202,13 @@ const resolveInternalPageUrl = (url) => {
   return target.subPath ? `${pageUrl}#${target.subPath}` : pageUrl;
 };
 
-// Create a new tab
-export const createTab = (url = null) => {
+// Create a new tab.
+//
+// `options.background` leaves the current tab active and keeps its keyboard
+// focus — Chrome's disposition for Ctrl/Cmd+click and middle-click on a link
+// (#303). The tab is still created, appended and navigated; only the switch is
+// skipped. Everything else opens in the foreground, as before.
+export const createTab = (url = null, options = {}) => {
   const tabId = tabState.nextTabId++;
   // Direct loads: empty/null (use homeUrl), http(s), about:blank, and
   // the app's own `homeUrl` (production: file:///…/pages/home.html).
@@ -1182,6 +1229,12 @@ export const createTab = (url = null) => {
   const isDirect = resolvedInternalUrl != null || isDirectLoadUrl(url);
   const webviewUrl = resolvedInternalUrl || (isDirect ? url || fallbackUrl : 'about:blank');
   const webview = createWebview(tabId, webviewUrl);
+  // Webviews are created visible and `switchTab` hides every other one. A
+  // background tab never switches, so it has to start hidden or it would
+  // render on top of the page the user is still reading (#303).
+  if (options.background) {
+    webview.classList.add('hidden');
+  }
 
   const tab = {
     id: tabId,
@@ -1198,8 +1251,14 @@ export const createTab = (url = null) => {
   tabState.tabs.push(tab);
   webviewContainer?.appendChild(webview);
 
-  // Switch to the new tab
-  switchTab(tabId, { isNewTab: true });
+  // Switch to the new tab — unless it was asked for in the background, in
+  // which case the strip still has to pick up the new tab element.
+  if (options.background) {
+    renderTabs();
+    pushTabMenuState();
+  } else {
+    switchTab(tabId, { isNewTab: true });
+  }
 
   // Anything that isn't a direct-load URL flows through the resolution
   // pipeline. For routed schemes (bzz://, ipfs://, ens://, rad:,
@@ -1208,9 +1267,13 @@ export const createTab = (url = null) => {
   // navigation; for unrecognised inputs (file://, data:, javascript:,
   // etc.) it falls through to a debug-log no-op, leaving the tab on
   // about:blank. Recognised freedom:// pages took the direct path above.
+  //
+  // The new tab's own webview is passed explicitly: `loadTarget` otherwise
+  // falls back to the *active* webview, which for a background tab is the tab
+  // the user is still looking at (#303).
   if (!isDirect) {
     setTimeout(() => {
-      if (onLoadTarget) onLoadTarget(url);
+      if (onLoadTarget) onLoadTarget(url, null, webview);
     }, 50);
   }
 
@@ -1235,6 +1298,13 @@ const cleanupWebview = (webview) => {
 export const closeTab = (tabId) => {
   const tabIndex = tabState.tabs.findIndex((t) => t.id === tabId);
   if (tabIndex === -1) return;
+
+  // A tab context menu open over the strip is anchored to a layout — and to a
+  // `contextMenuTabId` — that closing a tab invalidates. Chrome dismisses it;
+  // leaving it up pointed every destructive item at whatever tab now sits
+  // under it. Harmless when the close *came from* the menu (the item handler
+  // hides it first). See #315.
+  hideTabContextMenu();
 
   const tab = tabState.tabs[tabIndex];
 
@@ -1479,6 +1549,13 @@ export const switchTab = (tabId, options = {}) => {
   // real side effects (closing an open find bar, re-hiding webviews).
   if (tabState.activeTabId === tabId) return;
 
+  // Any tab activation dismisses the tab context menu, whatever caused it.
+  // A strip *click* already reached the document-click listener; a keyboard
+  // switch (Ctrl+Tab, Ctrl+PageDown, Ctrl+1..8) did not, leaving the menu open
+  // over the tab you just left with Close Tab / Close Others / Close to the
+  // Right / Pin / Mute all still bound to it. See #315.
+  hideTabContextMenu();
+
   // Reset the link-hover preview before swapping active tabs:
   // - immediate clear so the previous tab's URL never trails into the new tab
   // - restore side from the incoming tab's last-known cursor-zone state
@@ -1511,6 +1588,23 @@ export const switchTab = (tabId, options = {}) => {
     setActiveWebview(tab.webview);
   }
 
+  // Give the page keyboard focus, the way Chrome does on every tab
+  // activation (click, Ctrl+Tab, Ctrl+1..8, the tab promoted when another
+  // closes): scrolling and typing work immediately, focus is never left on
+  // the tab button, and it is never stranded on the now-hidden outgoing
+  // webview (#304).
+  //
+  // A brand-new tab is deliberately excluded and handed to the navigation
+  // module's `tab-switched` case instead, which knows whether the tab landed
+  // on this window's new-tab page (focus the address bar — #312) or on a real
+  // page opened from a link (focus the page). Focusing here as well is not
+  // harmless: `<webview>.focus()` hands focus to the guest asynchronously, so
+  // it lands *after* a synchronous `addressInput.focus()` and takes the
+  // address bar's focus away again.
+  if (!options.isNewTab) {
+    tab.webview?.focus?.();
+  }
+
   // Update window title
   if (tab.title) {
     electronAPI?.setWindowTitle?.(tab.title);
@@ -1522,6 +1616,9 @@ export const switchTab = (tabId, options = {}) => {
   }
 
   renderTabs();
+  // The strip scrolls once tabs hit their minimum width, so the tab we just
+  // activated can be sitting past its edge (#311).
+  scrollActiveTabIntoView();
   pushTabMenuState();
 
   pushDebug(`Switched to tab ${tabId}`);
@@ -1546,8 +1643,14 @@ export const switchTab = (tabId, options = {}) => {
  * because dweb clicks bypass `setWindowOpenHandler` (so the click can
  * be intercepted before Chromium lowercases the host).
  *
+ * `options.background` opens the tab without leaving the current one — the
+ * Ctrl/Cmd+click and middle-click disposition (#303). A *reused* named target
+ * is still navigated in place but likewise not switched to, so the modifier
+ * means the same thing whether or not the name already had a tab.
+ *
  * @param {string} url - target URL
  * @param {string|null} targetName - HTML `target` attribute, if any
+ * @param {{ background?: boolean }} [options] - opening disposition
  * @returns {object|null} the (possibly new) tab, or null on noop
  */
 // Parse a `freedom://<page>[/<sub>]` URL into `{ pageName, subPath }` when
@@ -1563,8 +1666,9 @@ const freedomInternalPageTarget = (url) => {
   return { pageName, subPath: match[2] ? match[2].toLowerCase() : null };
 };
 
-export const openInNewTabWithTarget = (url, targetName) => {
+export const openInNewTabWithTarget = (url, targetName, options = {}) => {
   if (!url) return null;
+  const background = !!options.background;
 
   // EVERY freedom:// internal page (profiles, history, settings, …) is treated
   // as a singleton: an untargeted open focuses the existing tab instead of
@@ -1583,10 +1687,12 @@ export const openInNewTabWithTarget = (url, targetName) => {
     const existingTab = tabState.tabs.find((t) => t.id === existingTabId);
     if (existingTab) {
       pushDebug(`Reusing tab ${existingTabId} for target "${targetName}": ${url}`);
-      switchTab(existingTabId);
+      if (!background) switchTab(existingTabId);
       setTimeout(() => {
         if (onLoadTarget) {
-          onLoadTarget(url);
+          // Same reason as `createTab`: name the webview so a background
+          // re-navigation cannot land in whatever tab happens to be active.
+          onLoadTarget(url, null, existingTab.webview);
         }
       }, 50);
       return existingTab;
@@ -1604,7 +1710,7 @@ export const openInNewTabWithTarget = (url, targetName) => {
   // Critically, this also makes `tab.url` reflect the actual target,
   // so the `tab-switched` handler can derive a meaningful address bar
   // value immediately instead of leaving it empty until ENS resolves.
-  const newTab = createTab(url);
+  const newTab = createTab(url, { background });
 
   if (targetName && newTab) {
     namedTargets.set(targetName, newTab.id);
@@ -1674,23 +1780,33 @@ export const initTabs = async () => {
   if (tabContextMenu) {
     tabContextMenu.addEventListener('click', (e) => {
       const action = e.target.dataset?.action;
-      if (!action || !contextMenuTabId) return;
+      const targetTabId = contextMenuTabId;
+      if (!action || !targetTabId) return;
+      // Fail safe on a stale target. Every activation and every close now
+      // dismisses the menu (#315), so a menu that is still up always points at
+      // a live tab — but each item here is destructive, so a target that has
+      // gone away is refused rather than resolved to whatever tab took its
+      // place.
+      if (!tabState.tabs.some((t) => t.id === targetTabId)) {
+        hideTabContextMenu();
+        return;
+      }
 
       switch (action) {
         case 'close':
-          closeTab(contextMenuTabId);
+          closeTab(targetTabId);
           break;
         case 'close-others':
-          closeOtherTabs(contextMenuTabId);
+          closeOtherTabs(targetTabId);
           break;
         case 'close-right':
-          closeTabsToRight(contextMenuTabId);
+          closeTabsToRight(targetTabId);
           break;
         case 'pin':
-          togglePinTab(contextMenuTabId);
+          togglePinTab(targetTabId);
           break;
         case 'mute':
-          toggleMuteTab(contextMenuTabId);
+          toggleMuteTab(targetTabId);
           break;
       }
       hideTabContextMenu();
@@ -1711,11 +1827,18 @@ export const initTabs = async () => {
     }
   });
   window.addEventListener('blur', hideTabContextMenu);
+  // (The `focus`/`mousedown` dismissal that used to hang off
+  // `document.getElementById('bzz-webview')` is gone: webviews are created
+  // id-less, so that lookup was always null and the listeners never existed.
+  // `#menu-backdrop` covers the window while the menu is open, so a click into
+  // the page dismisses it through the document-click listener above. See #315,
+  // #306.)
 
-  // Hide context menu when webview gets focus
-  const webviewElement = document.getElementById('bzz-webview');
-  webviewElement?.addEventListener('focus', hideTabContextMenu);
-  webviewElement?.addEventListener('mousedown', hideTabContextMenu);
+  // Keep the tab strip's edge fades in sync with a scroll the user drove
+  // themselves (trackpad/shift-wheel), not just with the programmatic
+  // `scrollActiveTabIntoView` ones (#311).
+  tabBar?.addEventListener('scroll', updateTabStripOverflow, { passive: true });
+  window.addEventListener('resize', updateTabStripOverflow);
 
   // Fetch webview preload path for internal pages
   try {
@@ -1743,10 +1866,19 @@ export const initTabs = async () => {
     }
   });
 
-  electronAPI?.onNewTabWithUrl?.((url, targetName) => {
-    if (url) {
-      openInNewTabWithTarget(url, targetName || null);
+  electronAPI?.onNewTabWithUrl?.((url, targetName, options = {}) => {
+    if (!url) return;
+    // The main process forwards the disposition Chromium derived from the
+    // activation's modifiers (`setWindowOpenHandler`), so a Ctrl/Cmd+click or
+    // middle-click on an http(s) link opens in the background and a
+    // Shift+click opens a window — see #303. Callers that don't send options
+    // (the app menu's "Open Downloads/History/Profiles", the webview
+    // context menu) keep the plain foreground-tab behaviour.
+    if (options?.newWindow) {
+      electronAPI?.openUrlInNewWindow?.(url);
+      return;
     }
+    openInNewTabWithTarget(url, targetName || null, { background: !!options?.background });
   });
 
   electronAPI?.onNavigateToUrl?.((url) => {
