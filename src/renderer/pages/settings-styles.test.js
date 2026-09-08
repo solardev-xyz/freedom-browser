@@ -12,19 +12,24 @@
  *
  * These tests parse the shipped stylesheet and assert the structure it is
  * supposed to have:
- *   - braces balance, and no top-level style rule has nested children;
- *   - the light-theme media query is a *top-level* rule, as are the sections
- *     that were swallowed;
- *   - every hard-coded dark background that paints the light theme — at any
- *     nesting depth, in any at-rule that is not a dark-scheme query — has a
- *     light-theme override that is itself light (#224 — `.resolver-config` had
- *     none).
+ *   - braces balance, and no style rule has nested children;
+ *   - the sections #223 swallowed are top-level rules and still have bodies;
+ *   - the page links the shared palette (`styles/theme.css`, #261) and keeps no
+ *     theme scope of its own;
+ *   - no rule paints a hard-coded dark background — at any nesting depth, in
+ *     any at-rule that is not a dark-scheme query. Before #261 such a literal
+ *     was allowed with a matching light override (#224 — `.resolver-config` had
+ *     none); now there is no light block to write one in, so the token is the
+ *     only way to paint one.
  */
 
 const fs = require('fs');
 const path = require('path');
 
 const SOURCE = fs.readFileSync(path.join(__dirname, 'settings.html'), 'utf8');
+// The palette both themes are declared in since #261, linked by every internal
+// page. Settings' own sheet is asserted against it below.
+const THEME_SOURCE = fs.readFileSync(path.join(__dirname, 'styles', 'theme.css'), 'utf8');
 
 // --- tiny CSS reader ------------------------------------------------------
 // Deliberately not a full CSS parser: enough to model blocks, preludes and
@@ -331,8 +336,6 @@ const LIGHT_WRAPPER = /^:where\(\s*html\[data-theme=(['"])\s*\1\]\s*\)$/;
 const LIGHT_PALETTE = /^html\[data-theme=(['"])\s*\1\]$/;
 const isLightScope = (prelude) =>
   LIGHT_MEDIA.test(prelude) || LIGHT_WRAPPER.test(prelude) || LIGHT_PALETTE.test(prelude);
-const lightBlock = topLevel.find((node) => LIGHT_WRAPPER.test(node.prelude));
-const lightPalette = topLevel.find((node) => LIGHT_PALETTE.test(node.prelude));
 
 // Which colour scheme a rule scopes its contents to. Rules under a `light`
 // query — or under the `data-theme='light'` wrapper — are the overrides; rules
@@ -418,14 +421,13 @@ describe('settings.html inline stylesheet', () => {
     expect((css.match(/\{/g) || []).length).toBe((css.match(/\}/g) || []).length);
   });
 
-  test('only the light-theme wrapper contains nested rules', () => {
-    // The stylesheet is flat apart from the one deliberate grouping style rule
-    // — the `:where(html[data-theme='light'])` wrapper (#233) — plus at-rules.
-    // Any *other* style rule that has grown children means an earlier rule lost
-    // its closing brace and swallowed everything after it.
+  test('no style rule contains nested rules', () => {
+    // The stylesheet is flat: since #261 moved the palette out, the one
+    // deliberate grouping rule — the `:where(html[data-theme='light'])` wrapper
+    // (#233) — is gone with it. A style rule that has grown children means an
+    // earlier rule lost its closing brace and swallowed everything after it.
     const nested = topLevel
       .filter((node) => !isAtRule(node) && node.children.length > 0)
-      .filter((node) => !LIGHT_WRAPPER.test(node.prelude))
       .map((node) => `${node.prelude} (swallowed ${node.children.length} rules)`);
     expect(nested).toEqual([]);
   });
@@ -436,27 +438,29 @@ describe('settings.html inline stylesheet', () => {
     // dark-themed app on a light desktop paints this page light again.
     expect(css).not.toMatch(/prefers-color-scheme/);
 
-    // Exactly one wrapper, at the top level, matched with a whitespace-tolerant
-    // regex: a cosmetic reformat must not fail a sheet that still works.
-    expect(topLevel.map((node) => node.prelude).filter((p) => LIGHT_WRAPPER.test(p))).toHaveLength(
-      1
-    );
-    // The mask hides the attribute *value* from the tree, so pin both scopes
-    // against the raw source — `[data-theme='dark']` has the same masked shape.
-    expect(SOURCE).toContain(":where(html[data-theme='light'])");
-    expect(SOURCE).toContain("html[data-theme='light'] {");
+    // #261: both palettes live in `styles/theme.css`, which this page links —
+    // and can only fetch because `style-src` allows `'self'`.
+    expect(SOURCE).toContain('<link rel="stylesheet" href="styles/theme.css" />');
+    expect(SOURCE).toMatch(/style-src [^;"]*'self'/);
+    // …so the page itself carries no theme scope and no palette of its own; a
+    // page-local override is exactly the per-page drift #261 removed.
+    expect(css).not.toMatch(/data-theme/);
+    expect(topLevel.filter((node) => node.prelude === ':root')).toEqual([]);
 
-    // …and the palette it exists for is declared on a *specificity-carrying*
-    // selector, because it has to outweigh the `:root` defaults above it.
-    // Written inside the zero-specificity `:where()` wrapper it would lose.
-    expect(lightPalette).toBeDefined();
-    expect(declaration(lightPalette, '--bg')).toEqual(['#ffffff']);
+    // The palette it paints from, asserted against that one file: written
+    // inside the zero-specificity `:where()` wrapper the light block would lose
+    // to the `html` defaults above it, so it carries specificity on purpose.
+    const theme = parseStylesheet(maskOpaqueSpans(THEME_SOURCE)).children;
+    const dark = theme.find((node) => node.prelude === 'html');
+    const light = theme.find((node) => LIGHT_PALETTE.test(node.prelude));
+    expect(THEME_SOURCE).toContain("html[data-theme='light'] {");
+    expect(declaration(dark, '--bg')).toEqual(['#0d1117']);
+    expect(declaration(light, '--bg')).toEqual(['#ffffff']);
 
     // Scrollbars and form controls follow the same attribute (the second half
     // of #233 — the Shortcuts/Name Resolution sections scroll).
-    const root = topLevel.find((node) => node.prelude === ':root');
-    expect(declaration(root, 'color-scheme')).toEqual(['dark']);
-    expect(declaration(lightPalette, 'color-scheme')).toEqual(['light']);
+    expect(declaration(dark, 'color-scheme')).toEqual(['dark']);
+    expect(declaration(light, 'color-scheme')).toEqual(['light']);
   });
 
   test('the rules dropped by #223 are top-level and non-empty', () => {
@@ -489,8 +493,11 @@ describe('settings.html inline stylesheet', () => {
     ]);
   });
 
-  test('every hard-coded dark background has a *light* light-theme override', () => {
-    expect(lightBlock).toBeDefined();
+  test('no rule paints a hard-coded dark background (#224)', () => {
+    // The sweep used to accept a dark literal that had a light-theme override.
+    // Since #261 this page has no light block to write one in, so the only way
+    // to paint a dark background is a token from `styles/theme.css` — which
+    // carries its own light value. Every remaining literal fails here.
     expect(missingLightOverrides(sheet)).toEqual([]);
   });
 

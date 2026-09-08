@@ -36,8 +36,12 @@ Renaming anything below breaks protocol or identity compatibility — leave it.
   `/chainstate`, `/wallet`, `/chequebook/*`, `/health`. Default API port `1633`;
   `GET /health` must return `200` + JSON. If a node already answers `/health` on
   `1633`, Freedom reuses it instead of spawning its own.
-- The `@ethersphere/bee-js@^12` dependency (the client library Ant answers).
-  Internal wrappers (e.g. `fetchAntJson`) are renamed; the package is not.
+- The `@ethersphere/bee-js@^13` dependency (the client library Ant answers).
+  Internal wrappers (e.g. `fetchAntJson`) are renamed; the package is not. The
+  major shown here tracks `package.json` (guarded by
+  `architecture-boundaries.test.js`) — it records which client major currently
+  speaks the contract, not a pin: bumping bee-js is allowed, swapping the
+  package out is not.
 - Bee **YAML config keys**: `api-addr`, `cors-allowed-origins`,
   `blockchain-rpc-endpoint`, `swap-enable`, `mainnet`, `full-node`, `data-dir`,
   `password`, … Ant's parser expects these. The config *file name* changed

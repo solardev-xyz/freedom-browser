@@ -39,7 +39,7 @@ const MESSAGE = 'freedom openlv ios harness';
 function buildHostPage(signalingUrl) {
   return `<!doctype html>
 <html><body><script type="module">
-import { createSession, encodeConnectionURL, mqtt, webrtc } from '/openlv.esm.js';
+import { createSession, encodeConnectionURL, webrtc } from '/openlv.esm.js';
 
 const report = (update) => window.__report(JSON.stringify(update));
 const toHex = (text) =>
@@ -52,18 +52,22 @@ try {
 
   const session = await createSession(
     { p: 'mqtt', s: ${JSON.stringify(signalingUrl)} },
-    mqtt,
     [webrtc()],
     onIncoming,
   );
   report({ phase: 'qr', uri: encodeConnectionURL(session.getHandshakeParameters()) });
 
-  session.emitter.on('state_change', (state) => {
-    if (state?.status) report({ phase: state.status });
-  });
+  session.status.subscribe((status) => report({ phase: status }));
 
   await session.connect();
-  await session.waitForLink();
+  // No waitForLink() since openlv 0.2.0: 'disconnected' is the terminal
+  // failure state, and until() never rejects on its own.
+  const linked = await session.status.until(
+    (status) => status === 'connected' || status === 'disconnected',
+  );
+  if (linked !== 'connected') {
+    throw new Error(session.error.get() || 'Session failed to connect');
+  }
   report({ phase: 'linked' });
 
   const exchange = async (method, params) => {

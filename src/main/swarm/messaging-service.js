@@ -98,7 +98,7 @@ function deriveGsoc(topic) {
   const bee = getBee();
   const identifier = new Identifier(keccakOfUtf8(topic));
   const targetOverlay = keccakOfUtf8(GSOC_TARGET_CONTEXT + topic);
-  const signer = bee.gsocMine(targetOverlay, identifier, GSOC_PROXIMITY);
+  const signer = bee.messaging.gsocMine(targetOverlay, identifier, GSOC_PROXIMITY);
   const address = toHex(
     bee.calculateSingleOwnerChunkAddress(identifier, signer.publicKey().address())
   );
@@ -129,7 +129,7 @@ function resolvePssTopicHex(topic) {
  */
 async function getMessagingIdentity() {
   const bee = getBee();
-  const addresses = await bee.getNodeAddresses();
+  const addresses = await bee.connectivity.getNodeAddresses();
   return {
     pssPublicKey: addresses.pssPublicKey.toCompressedHex().replace(/^0x/, ''),
     overlay: toHex(addresses.overlay),
@@ -153,7 +153,7 @@ async function selectMessageBatch() {
 async function sendPss({ topic, targets, recipient, data }) {
   const bee = getBee();
   const batchId = await selectMessageBatch();
-  await bee.pssSend(batchId, Topic.fromString(topic), targets, data, recipient);
+  await bee.messaging.pssSend(batchId, Topic.fromString(topic), targets, data, recipient);
   log.info(`[MessagingService] PSS message sent: topic=${topic}, target=${targets}`);
 }
 
@@ -166,7 +166,7 @@ async function sendGsoc({ topic, data }) {
   const bee = getBee();
   const { identifier, signer, address } = deriveGsoc(topic);
   const batchId = await selectMessageBatch();
-  await bee.gsocSend(batchId, signer, identifier, data);
+  await bee.messaging.gsocSend(batchId, signer, identifier, data);
   log.info(`[MessagingService] GSOC message sent: topic=${topic}, address=${address}`);
   return { address };
 }

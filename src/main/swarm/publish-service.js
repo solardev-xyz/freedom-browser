@@ -72,8 +72,8 @@ async function publishData(data, options = {}) {
     throw new Error('No usable postage batch available. Purchase stamps first.');
   }
 
-  // Use uploadFile so the content gets a manifest and is browsable via bzz://
-  const result = await bee.uploadFile(batchId, data, options.name || 'data', {
+  // Use file.upload so the content gets a manifest and is browsable via bzz://
+  const result = await bee.file.upload(batchId, data, options.name || 'data', {
     pin: true,
     deferred: false,
     contentType: options.contentType || 'text/plain',
@@ -99,7 +99,7 @@ async function publishFile(filePath, options = {}) {
   const name = path.basename(filePath);
   const contentType = options.contentType || undefined;
 
-  const result = await bee.uploadFile(batchId, stream, name, {
+  const result = await bee.file.upload(batchId, stream, name, {
     pin: true,
     deferred: true,
     contentType,
@@ -130,7 +130,7 @@ async function publishDirectory(dirPath, options = {}) {
   const indexDocument = options.indexDocument ||
     (fs.existsSync(path.join(dirPath, 'index.html')) ? 'index.html' : undefined);
 
-  const result = await bee.uploadFilesFromDirectory(batchId, dirPath, {
+  const result = await bee.collection.uploadFromDirectory(batchId, dirPath, {
     pin: true,
     deferred: true,
     indexDocument,
@@ -145,7 +145,8 @@ async function publishDirectory(dirPath, options = {}) {
  * Writes files to a temp directory, delegates to publishDirectory, cleans up.
  *
  * Note: per-file contentType is accepted in the file objects but not currently
- * applied — bee-js uploadFilesFromDirectory infers MIME types from extensions.
+ * applied — bee-js collection.uploadFromDirectory infers MIME types from
+ * extensions.
  * Files with non-standard names should use appropriate extensions.
  *
  * @param {Array<{path: string, bytes: Buffer, contentType?: string}>} files
@@ -196,7 +197,7 @@ async function estimateDirSize(dirPath) {
  */
 async function getUploadStatus(tagUid) {
   const bee = getBee();
-  const tag = await bee.retrieveTag(tagUid);
+  const tag = await bee.tag.get(tagUid);
   return normalizeTag(tag);
 }
 

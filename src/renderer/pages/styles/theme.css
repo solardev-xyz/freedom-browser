@@ -1,0 +1,330 @@
+/* The palette every internal page paints from.
+ *
+ * Internal pages follow Settings > Appearance, not the OS colour scheme:
+ * the webview preload resolves the setting and stamps `data-theme` on
+ * <html> before first paint (#233). Both palettes live here, keyed on that
+ * attribute, and `color-scheme` is derived from it so scrollbars and form
+ * controls stay in step (#250).
+ *
+ * Every page under `pages/` links this file and paints from these tokens;
+ * no page carries a palette of its own any more (#261 item 2). The values
+ * are the ones each page shipped before the extraction — several roles
+ * therefore have more than one token (three greys for a muted label, two
+ * inks for body copy). Unifying them is a visible change and belongs to
+ * the shared-component work (#261 item 3), not here.
+ *
+ * The light block carries specificity on purpose (`html[data-theme='light']`
+ * beats `html`), so it must not be wrapped in `:where()`.
+ */
+
+html {
+  color-scheme: dark;
+
+  /* Surfaces and ink — history, downloads, payments, links, profiles, settings. */
+  --bg: #0d1117;
+  --bg-elev: #161b22;
+  --bg-card: #21262d;
+  --bg-card-hover: #21262d;
+  --bg-raised: #30363d;
+  --page-gradient: linear-gradient(135deg, #0d1117 0%, #161b22 50%, #21262d 100%);
+  --page-gradient-profiles: linear-gradient(135deg, #0d1117 0%, #161b22 50%, #21262d 100%) fixed;
+  --surface-translucent: rgba(22, 27, 34, 0.6);
+  --panel-translucent: rgba(22, 27, 34, 0.8);
+  --sidebar-translucent: rgba(13, 17, 23, 0.6);
+  --row-sub-bg: rgba(22, 27, 34, 0.6);
+  --rpc-block-bg: rgba(22, 27, 34, 0.5);
+  --border: #30363d;
+  --border-strong: #484f58;
+  --text: #c9d1d9;
+  --text-strong: #f0f6fc;
+  --text-muted: #8b949e;
+  --text-meta: #6e7681;
+  --text-subtle: #6e7681;
+  --accent: #58a6ff;
+  --accent-muted: rgba(88, 166, 255, 0.12);
+  --danger: #f85149;
+  --danger-bg: #f8514915;
+  --success: #3fb950;
+  --warn: #d29922;
+  --select-chevron: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="%236e7681" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>');
+  --toggle-knob-on: #ffffff;
+
+  /* Link-test page badges and callouts (freedom://links). */
+  --badge-info-bg: #388bfd33;
+  --badge-info-border: #388bfd33;
+  --info-bg: #388bfd15;
+  --badge-warn-bg: #f0883e33;
+  --warn-accent: #f0883e;
+  --code-accent: #79c0ff;
+
+  /* Payments table (freedom://payments).
+     Its light ink is a shade darker than the other list pages and its muted
+     greys differ; kept verbatim rather than unified, so the extraction
+     repaints nothing (#261 item 3 is where they converge). */
+  --pay-text: #c9d1d9;
+  --pay-muted: #8b949e;
+  --pay-placeholder: #6e7681;
+  --pay-thead-bg: #1c2128;
+  --pay-row-hover: rgba(88, 166, 255, 0.04);
+  --pay-cell-border: #21262d;
+  --pay-chip-bg: rgba(110, 118, 129, 0.2);
+  --pay-x402-bg: rgba(39, 117, 202, 0.18);
+  --pay-x402-fg: #5a9eee;
+  --pay-wallet-bg: rgba(187, 137, 250, 0.18);
+  --pay-wallet-fg: #d2a8ff;
+  --pay-dapp-bg: rgba(245, 158, 11, 0.18);
+  --pay-dapp-fg: #f0b65d;
+  --pay-safe-bg: rgba(46, 187, 137, 0.18);
+  --pay-safe-fg: #5ad2a8;
+  --pay-status-ok: #9ad9b3;
+  --pay-status-pending: #f1d68b;
+  --pay-status-failed: #ffb3b3;
+  --pay-status-none: #b3bac1;
+
+  /* Graphite pages — home, error, name interstitials, protocol test, Radicle browser.
+     These grew from the window chrome's greys rather than the GitHub palette
+     above, so they carry their own ramp. */
+  --shell-bg: #1f2020;
+  --shell-bg-deep: #141414;
+  --shell-gradient: radial-gradient(ellipse at top left, #1f1f1f 0%, #141414 60%);
+  --shell-surface: #1a1a1a;
+  --shell-surface-plain: #1a1a1a;
+  --shell-panel: #161b22;
+  --shell-panel-alt: #161b22;
+  --shell-inset: #252525;
+  --shell-inset-chip: #252525;
+  --shell-code: #2a2a2a;
+  --shell-code-alt: #2a2a2a;
+  --shell-chip: #2a2a2a;
+  --shell-chip-surface: #2a2a2a;
+  --shell-button: #2c2c2c;
+  --shell-button-hover: #3a3a3a;
+  --shell-disabled: #333;
+  --shell-border: #444;
+  --shell-border-soft: #2c2c2c;
+  --shell-border-chip: #2a2a2a;
+  --shell-border-muted: #333;
+  --shell-border-strong: #555;
+  --shell-border-rule: #2a2a2a;
+  --shell-border-frame: #4a4a4a;
+  --shell-spinner-track: #333;
+  --shell-text: #c7c7c7;
+  --shell-text-ink: #c7c7c7;
+  --shell-heading: #f5f5f5;
+  --shell-heading-ink: #f5f5f5;
+  --shell-heading-md: #f5f5f5;
+  --shell-strong: #e0e0e0;
+  --shell-value: #bbb;
+  --shell-body: #ccc;
+  --shell-body-ink: #ccc;
+  --shell-muted: #888;
+  --shell-muted-alt: #888;
+  --shell-dim: #aaa;
+  --shell-faint: #666;
+  --shell-faint-ink: #666;
+  --shell-faint-alt: #666;
+  --shell-subtle: #999;
+  --shell-on-button: white;
+  --shell-on-primary: #ffffff;
+  --shell-link: #8fbcff;
+  --shell-link-alt: #7cacf8;
+  --shell-link-chip: #6eb5ff;
+  --shell-link-home: #6eb5ff;
+  --shell-link-home-hover: #8ecfff;
+  --shell-link-home-bg-hover: #3a3a4a;
+  --shell-folder: #7cacf8;
+  --shell-primary: #3a6fff;
+  --shell-primary-hover: #558bff;
+  --shell-danger: #ff5e5e;
+  --shell-danger-bg: rgba(255, 94, 94, 0.08);
+  --shell-danger-bg-strong: rgba(255, 94, 94, 0.2);
+  --shell-danger-border: rgba(255, 94, 94, 0.3);
+  --shell-danger-border-strong: rgba(255, 94, 94, 0.4);
+  --shell-warn: #d7a77c;
+  --shell-success: #4caf50;
+  --shell-success-bg: rgba(76, 175, 80, 0.2);
+  --shell-success-border: rgba(76, 175, 80, 0.4);
+  --shell-neutral-bg: rgba(136, 136, 136, 0.2);
+  --shell-neutral-border: rgba(136, 136, 136, 0.4);
+  --shell-info-bg: rgba(124, 172, 248, 0.1);
+  --shell-info-border: rgba(124, 172, 248, 0.3);
+  --shell-name-border: none;
+
+  /* Profiles' modal overlay.
+     The modal follows the window chrome rather than the page it sits on. */
+  --m-bg: #1a1a1a;
+  --m-border: #4a4a4a;
+  --m-text: #c7c7c7;
+  --m-muted: #c7c7c7;
+  --m-accent: #8ab4f8;
+  --m-danger: #f28b82;
+
+  /* Publish (freedom://publish).
+     Its own greys again; prefixed so `--bg` and friends keep meaning the
+     GitHub palette everywhere else. */
+  --pub-bg: #1e1e1e;
+  --pub-surface: #2a2a2a;
+  --pub-border: #3a3a3a;
+  --pub-text: #e0e0e0;
+  --pub-muted: #888;
+  --pub-accent: #1a73e8;
+  --pub-danger: #f44336;
+  --pub-warn: #ff9800;
+  --pub-success: #4caf50;
+  --pub-card-hover: #333;
+
+  /* Theme-conditional asset swaps.
+     `freedom://home` ships a white and a black wordmark and shows one. */
+  --dark-only-display: block;
+  --light-only-display: none;
+}
+
+html[data-theme='light'] {
+  color-scheme: light;
+
+  /* Surfaces and ink — history, downloads, payments, links, profiles, settings. */
+  --bg: #ffffff;
+  --bg-elev: #ffffff;
+  --bg-card: #ffffff;
+  --bg-card-hover: #f6f8fa;
+  --bg-raised: #f6f8fa;
+  --page-gradient: linear-gradient(135deg, #ffffff 0%, #f6f8fa 50%, #f0f2f5 100%);
+  --page-gradient-profiles: linear-gradient(135deg, #ffffff 0%, #f6f8fa 50%, #f0f2f5 100%);
+  --surface-translucent: rgba(255, 255, 255, 0.8);
+  --panel-translucent: rgba(255, 255, 255, 0.9);
+  --sidebar-translucent: rgba(255, 255, 255, 0.6);
+  --row-sub-bg: #f6f8fa;
+  --rpc-block-bg: #f6f8fa;
+  --border: #d0d7de;
+  --border-strong: #8c959f;
+  --text: #24292f;
+  --text-strong: #24292f;
+  --text-muted: #57606a;
+  --text-meta: #57606a;
+  --text-subtle: #8c959f;
+  --accent: #0969da;
+  --accent-muted: rgba(9, 105, 218, 0.1);
+  --danger: #cf222e;
+  --danger-bg: #ffebe9;
+  --success: #1a7f37;
+  --warn: #9a6700;
+  --select-chevron: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="%2357606a" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>');
+
+  /* Link-test page badges and callouts (freedom://links). */
+  --badge-info-bg: #ddf4ff;
+  --badge-info-border: #54aeff66;
+  --info-bg: #ddf4ff;
+  --badge-warn-bg: #fff8c5;
+  --warn-accent: #9a6700;
+  --code-accent: #0969da;
+
+  /* Payments table (freedom://payments). */
+  --pay-text: #1a1a1a;
+  --pay-muted: #6e7681;
+  --pay-placeholder: #8b949e;
+  --pay-thead-bg: #f6f8fa;
+  --pay-row-hover: rgba(9, 105, 218, 0.05);
+  --pay-cell-border: #eaeef2;
+  --pay-chip-bg: rgba(0, 0, 0, 0.06);
+  --pay-x402-bg: rgba(39, 117, 202, 0.12);
+  --pay-x402-fg: #1f5fa8;
+  --pay-wallet-bg: rgba(140, 90, 220, 0.12);
+  --pay-wallet-fg: #6e3ba8;
+  --pay-dapp-bg: rgba(217, 119, 6, 0.12);
+  --pay-dapp-fg: #9a5a04;
+  --pay-safe-bg: rgba(16, 150, 100, 0.12);
+  --pay-safe-fg: #0d7a52;
+  --pay-status-ok: #1f7a34;
+  --pay-status-pending: #8a5a07;
+  --pay-status-failed: #b3261e;
+  --pay-status-none: #57606a;
+
+  /* Graphite pages — home, error, name interstitials, protocol test, Radicle browser. */
+  --shell-bg: #ffffff;
+  --shell-bg-deep: #ffffff;
+  --shell-gradient: radial-gradient(ellipse at top left, #f6f8fa 0%, #ffffff 60%);
+  --shell-surface: #f6f8fa;
+  --shell-surface-plain: #ffffff;
+  --shell-panel: #ffffff;
+  --shell-panel-alt: #f6f8fa;
+  --shell-inset: #f6f8fa;
+  --shell-inset-chip: #e8eaed;
+  --shell-code: #f1f3f4;
+  --shell-code-alt: #eff1f3;
+  --shell-chip: #e8eaed;
+  --shell-chip-surface: #f6f8fa;
+  --shell-button: #f6f8fa;
+  --shell-button-hover: #e8eaed;
+  --shell-disabled: #f6f8fa;
+  --shell-border: #d0d7de;
+  --shell-border-soft: #d0d7de;
+  --shell-border-chip: #d0d7de;
+  --shell-border-muted: #d0d7de;
+  --shell-border-strong: #8c959f;
+  --shell-border-rule: #eaeef2;
+  --shell-border-frame: #dfe1e5;
+  --shell-spinner-track: #dfe1e5;
+  --shell-text: #202124;
+  --shell-text-ink: #24292f;
+  --shell-heading: #202124;
+  --shell-heading-ink: #24292f;
+  --shell-heading-md: #1f2328;
+  --shell-strong: #24292f;
+  --shell-value: #24292f;
+  --shell-body: #57606a;
+  --shell-body-ink: #24292f;
+  --shell-muted: #57606a;
+  --shell-muted-alt: #5f6368;
+  --shell-dim: #57606a;
+  --shell-faint: #8c959f;
+  --shell-faint-ink: #57606a;
+  --shell-faint-alt: #5f6368;
+  --shell-subtle: #5f6368;
+  --shell-on-button: #24292f;
+  --shell-link: #0969da;
+  --shell-link-alt: #0969da;
+  --shell-link-chip: #0969da;
+  --shell-link-home: #1a73e8;
+  --shell-link-home-hover: #1558b0;
+  --shell-link-home-bg-hover: #e8eaed;
+  --shell-folder: #54aeff;
+  --shell-primary: #0969da;
+  --shell-primary-hover: #0860c7;
+  --shell-danger: #cf222e;
+  --shell-danger-bg: rgba(207, 34, 46, 0.05);
+  --shell-danger-bg-strong: rgba(207, 34, 46, 0.1);
+  --shell-danger-border: rgba(207, 34, 46, 0.3);
+  --shell-danger-border-strong: rgba(207, 34, 46, 0.3);
+  --shell-warn: #9a6700;
+  --shell-success: #1a7f37;
+  --shell-success-bg: rgba(26, 127, 55, 0.1);
+  --shell-success-border: rgba(26, 127, 55, 0.3);
+  --shell-neutral-bg: rgba(99, 99, 99, 0.1);
+  --shell-neutral-border: rgba(99, 99, 99, 0.3);
+  --shell-info-bg: rgba(9, 105, 218, 0.1);
+  --shell-info-border: rgba(9, 105, 218, 0.3);
+  --shell-name-border: 1px solid #d0d7de;
+
+  /* Profiles' modal overlay. */
+  --m-bg: #ffffff;
+  --m-border: #dfe1e5;
+  --m-text: #202124;
+  --m-muted: #5f6368;
+  --m-accent: #1a73e8;
+  --m-danger: #d93025;
+
+  /* Publish (freedom://publish). */
+  --pub-bg: #ffffff;
+  --pub-surface: #f6f8fa;
+  --pub-border: #d0d7de;
+  --pub-text: #24292f;
+  --pub-muted: #57606a;
+  --pub-danger: #b3261e;
+  --pub-warn: #8a5a07;
+  --pub-success: #1f7a34;
+  --pub-card-hover: #eaeef2;
+
+  /* Theme-conditional asset swaps. */
+  --dark-only-display: none;
+  --light-only-display: block;
+}
