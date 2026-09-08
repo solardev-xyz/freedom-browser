@@ -37,7 +37,15 @@ module.exports = {
   transform: {
     '^.+\\.js$': 'babel-jest',
   },
+  // ESM-only dependencies jest has to transpile before it can require
+  // them (`aedes` went ESM-only in 1.x). Node's own unflagged require(esm)
+  // (v20.19/v22.12+) does not help here: jest's module registry intercepts
+  // require(), and its native require(esm) path is gated on
+  // `vm.SourceTextModule.prototype.hasAsyncGraph` — which needs *both*
+  // node >= v24.9 and `--experimental-vm-modules`. The `jest` scripts in
+  // package.json pass neither, so this transform is load-bearing on every
+  // toolchain we run, CI's node 24 included.
   transformIgnorePatterns: [
-    '/node_modules/(?!(@scure|@noble|micro-key-producer|micro-packed|@openlv|websocket-mqtt|ts-pattern)/)',
+    '/node_modules/(?!(@scure|@noble|micro-key-producer|micro-packed|@openlv|websocket-mqtt|ts-pattern|aedes)/)',
   ],
 };
