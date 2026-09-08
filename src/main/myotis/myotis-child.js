@@ -34,15 +34,21 @@ function runChild(host = process, loadAddon = require) {
     if (!message || stopping) return;
     if (message.type === 'start' && !generation) {
       generation = message.generation;
+      let failure = 'configuration';
       try {
         if (!['mainnet', 'gnosis'].includes(message.network)) throw new Error('network');
+        failure = 'load';
         addon = loadAddon(message.addonPath);
+        failure = 'abi';
         if (addon.init() !== EXPECTED_ABI) throw new Error('ABI');
+        failure = 'create';
         handle = addon.create(message.network, message.dataDir);
-        if (handle < 1 || !addon.start(handle)) throw new Error('start');
+        if (handle < 1) throw new Error('create');
+        failure = 'start';
+        if (!addon.start(handle)) throw new Error('start');
         send({ type: 'started', ok: true });
       } catch {
-        send({ type: 'started', ok: false });
+        send({ type: 'started', ok: false, failure });
         stop();
       }
       return;

@@ -38,6 +38,9 @@ function statusSnapshot(status) {
     if (typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value)) ||
       (typeof value === 'string' && value.length <= 64)) snapshot[key] = value;
   }
+  if (typeof status?.optimisticBlockNumber === 'number' && Number.isFinite(status.optimisticBlockNumber)) {
+    snapshot.optimisticBlockNumber = status.optimisticBlockNumber;
+  }
   return snapshot;
 }
 
@@ -50,8 +53,11 @@ function unavailable(message, uncertain = false) {
 }
 
 class MyotisProcess {
-  constructor({ addonPath, network, dataDir, onStatus, onUnavailable, onExit }) {
+  constructor({ addonPath, network, dataDir, onStatus, onUnavailable, onExit, onLifecycle = () => {} }) {
     this.generation = randomUUID();
+    this.onLifecycle = onLifecycle;
+    this.lifecycleEvents = new Set();
+    this.report('start-attempt');
     this.nextId = 0;
     this.active = new Map();
     this.queue = [];
@@ -113,6 +119,14 @@ class MyotisProcess {
 
   }
 
+  // At most one of each fixed lifecycle event per generation. Never pass raw
+  // addon exceptions, paths, request arguments or engine diagnostics here.
+  report(event, fields = {}) {
+    if (this.lifecycleEvents.has(event)) return;
+    this.lifecycleEvents.add(event);
+    this.onLifecycle({ generation: this.generation, event, ...fields });
+  }
+
   invalidReceipt() {
     this.receiptInvalid = true;
     this.receiptBuffer = '';
@@ -135,9 +149,13 @@ class MyotisProcess {
     if (message.type === 'started' && !this.stopping) {
       clearTimeout(this.startTimer);
       if (!message.ok) {
+        const failure = ['configuration', 'load', 'abi', 'create', 'start'].includes(message.failure)
+          ? message.failure : 'unknown';
+        this.report('startup-failed', { failure });
         this.fail('Myotis native startup failed (check addon ABI and installation)');
         return;
       }
+      this.report('started');
       this.accepting = true;
       this.resolveStart(true);
       return;
@@ -208,6 +226,7 @@ class MyotisProcess {
 
   fail(message) {
     if (this.exited || this.stopping) return;
+    this.report('unavailable', { reason: message });
     this.onUnavailable(message);
     this.stop();
   }
@@ -215,6 +234,7 @@ class MyotisProcess {
   stop() {
     if (this.stopPromise) return this.stopPromise;
     if (this.exited) return Promise.resolve(true);
+    this.report('stop-requested');
     this.stopping = true;
     this.accepting = false;
     clearTimeout(this.startTimer);
@@ -243,7 +263,18 @@ class MyotisProcess {
 
   finishExit() {
     if (!this.supervisorExit || !this.receiptsEnded) return;
-    if (!this.receiptInvalid && this.terminalReceipt && this.supervisorExit.code === 0 && !this.supervisorExit.signal) {
+    const verified = !this.receiptInvalid && this.terminalReceipt &&
+      this.supervisorExit.code === 0 && !this.supervisorExit.signal;
+    this.report('supervisor-exit', {
+      classification: verified ? 'verified' : 'unconfirmed',
+      code: Number.isInteger(this.supervisorExit.code) ? this.supervisorExit.code : null,
+      signal: /^SIG[A-Z0-9]{1,12}$/.test(this.supervisorExit.signal) ? this.supervisorExit.signal : null,
+      receipt: this.receiptInvalid ? 'invalid' : this.terminalReceipt ? 'reaped' : 'missing',
+      childExitCode: this.terminalReceipt?.exitCode ?? null,
+      childSignal: this.terminalReceipt?.signal ?? null,
+      forced: this.terminalReceipt?.forced ?? null,
+    });
+    if (verified) {
       this.didExit();
     } else {
       this.fail('Myotis supervisor exit unconfirmed; data directory quarantined');

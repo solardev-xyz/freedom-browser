@@ -284,9 +284,17 @@ export async function loadCachedBalances() {
     if (swarmResult?.success && swarmResult.balances) {
       displaySwarmBalances(swarmResult.balances);
     }
+    const cacheMiss = (userAddress && !(userResult?.success && userResult.balances)) ||
+      (swarmAddress && !(swarmResult?.success && swarmResult.balances));
+    if (cacheMiss && walletIsVisible()) await refreshBalances();
   } catch (err) {
     console.error('[WalletUI] Failed to load cached balances:', err);
   }
+}
+
+function walletIsVisible() {
+  const walletTab = document.getElementById('tab-wallet');
+  return walletTab && !document.hidden && walletTab.checkVisibility();
 }
 
 /**
@@ -296,8 +304,7 @@ export function startBalanceRefresh() {
   stopBalanceRefresh();
   walletState.balanceRefreshInterval = setInterval(() => {
     // Only refresh if wallet tab is visible
-    const walletTab = document.getElementById('tab-wallet');
-    if (walletTab && !document.hidden && walletTab.checkVisibility() && walletState.fullAddresses.wallet) {
+    if (walletIsVisible() && walletState.fullAddresses.wallet) {
       refreshBalances();
     }
   }, walletState.BALANCE_REFRESH_MS);

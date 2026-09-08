@@ -45,8 +45,15 @@ sandbox** or an aggregate CPU/memory limit.
   this error is not permission to create a replacement or retry a payment.
 - Automatic wallet polling checks actual element visibility (including hidden
   ancestors) and document visibility. Startup cache IPC does not initiate fresh
-  reads. Overlapping balance refreshes share work per address, including forced
+  reads. A visible wallet with a startup cache miss refreshes immediately;
+  cached startup data and hidden wallets do not trigger that refresh.
+  Overlapping balance refreshes share work per address, including forced
   refresh and background refresh.
+
+Main records bounded lifecycle facts once per event per generation: startup
+attempt/result (configuration, load, ABI, create or start failure), unavailability,
+stop request and supervisor exit classification/code/signal/receipt/forced status.
+Raw addon logs, exception text, request arguments and profile paths are excluded.
 
 ## Native ownership and durable recovery
 

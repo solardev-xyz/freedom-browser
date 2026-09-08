@@ -233,6 +233,7 @@ function startMyotis({ dataDir, chainId = 1 } = {}) {
       addonPath: addonFile,
       network: instance.name,
       dataDir: dataDir || getMyotisDataDir(instance.name),
+      onLifecycle: (event) => log.info(`[myotis] ${instance.name} lifecycle ${JSON.stringify(event)}`),
       onStatus: (status) => {
         if (instance.client !== client || instance.stopping) return;
         instance.lastStatus = status;
@@ -271,6 +272,7 @@ function startMyotis({ dataDir, chainId = 1 } = {}) {
     }).finally(() => { instance.startPromise = null; });
     return instance.startPromise;
   } catch {
+    log.warn(`[myotis] ${instance.name} supervisor launch unavailable`);
     instance.lastError = 'Myotis process supervisor unavailable';
     instance.retryAfter = Date.now() + RECOVERY_COOLDOWN_MS;
     publishStatus(publicStatus(chainId));

@@ -19,7 +19,7 @@ describe('MyotisProcess', () => {
     jest.doMock('child_process', () => ({ fork }));
     jest.doMock('fs', () => ({ existsSync: () => true, accessSync: jest.fn(), mkdirSync: jest.fn(), constants: { X_OK: 1 } }));
     const { MyotisProcess } = require('./myotis-process');
-    callbacks = { onStatus: jest.fn(), onUnavailable: jest.fn(), onExit: jest.fn() };
+    callbacks = { onStatus: jest.fn(), onUnavailable: jest.fn(), onExit: jest.fn(), onLifecycle: jest.fn() };
     processClient = new MyotisProcess({ addonPath: '/addon.node', network: 'mainnet', dataDir: '/data', ...callbacks });
   });
   afterEach(() => { jest.clearAllTimers(); jest.useRealTimers(); });
@@ -70,6 +70,25 @@ describe('MyotisProcess', () => {
     verifiedExit();
     await stopping;
     await Promise.all(requests);
+  });
+
+  test('preserves the verified head through the real bounded status snapshot', async () => {
+    ready();
+    const expected = {
+      beaconState: 'SYNCED', currentPeriod: 1400, targetPeriod: 1400,
+      peerCount: 12, snapPeers: 3, finalizedBlockNumber: 25684100,
+      optimisticBlockNumber: 25684159, elReaderAvailable: true, elHunting: false,
+    };
+    const status = processClient.request('status');
+    reply(child.send.mock.calls.at(-1)[0], { ...expected, engineLogs: 'private payload' });
+    await status;
+    expect(callbacks.onStatus).toHaveBeenLastCalledWith(expected);
+    for (const value of ['25684159', Infinity, NaN]) {
+      const next = processClient.request('status');
+      reply(child.send.mock.calls.at(-1)[0], { optimisticBlockNumber: value });
+      await next;
+      expect(callbacks.onStatus).toHaveBeenLastCalledWith({});
+    }
   });
 
   test('timed-out native requests retain permits, reject queue and cannot refill', async () => {
@@ -125,6 +144,31 @@ describe('MyotisProcess', () => {
     await expect(processClient.stop()).resolves.toBe(false);
     expect(processClient.exited).toBe(false);
     expect(callbacks.onExit).not.toHaveBeenCalled();
+  });
+
+  test('logs bounded startup and unknown-exit facts without addon payloads', async () => {
+    receipt('owned');
+    child.emit('message', {
+      type: 'started', generation: processClient.generation, ok: false,
+      failure: 'secret addon exception with request payload',
+    });
+    child.emit('exit', 67, null);
+    child.stdout.emit('end');
+    processClient.finishExit();
+    expect(callbacks.onLifecycle).toHaveBeenCalledWith({
+      generation: processClient.generation, event: 'startup-failed', failure: 'unknown',
+    });
+    const events = callbacks.onLifecycle.mock.calls.map(([event]) => event);
+    expect(events.filter((event) => event.event === 'supervisor-exit')).toEqual([{
+      generation: processClient.generation, event: 'supervisor-exit',
+      classification: 'unconfirmed', code: 67, signal: null, receipt: 'missing',
+      childExitCode: null, childSignal: null, forced: null,
+    }]);
+    expect(events.length).toBeLessThanOrEqual(6);
+    expect(JSON.stringify(events)).not.toMatch(/secret|payload|addon\.node|\/data/);
+    expect(processClient.exited).toBe(false);
+    jest.advanceTimersByTime(5000);
+    await expect(processClient.stop()).resolves.toBe(false);
   });
 
   test('ignores stale generation and duplicate reply identities', async () => {

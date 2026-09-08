@@ -52,3 +52,13 @@ test('rejects stale generations and stops admission before synchronous native st
   expect(ctx.addon.stop).toHaveBeenCalledWith(7);
   expect(ctx.host.exit).toHaveBeenCalledWith(0);
 });
+
+
+test.each(['load', 'abi', 'create', 'start'])('reports only the bounded %s startup failure class', (failure) => {
+  const ctx = setup();
+  const operation = { load: ctx.load, abi: ctx.addon.init, create: ctx.addon.create, start: ctx.addon.start }[failure];
+  operation.mockImplementation(() => { throw new Error('secret request payload'); });
+  ctx.start();
+  expect(ctx.host.send).toHaveBeenCalledWith({ generation: 'current', type: 'started', ok: false, failure });
+  expect(JSON.stringify(ctx.host.send.mock.calls)).not.toContain('secret');
+});

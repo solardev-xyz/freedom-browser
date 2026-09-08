@@ -1,4 +1,4 @@
-import { startBalanceRefresh } from './balance-display.js';
+import { startBalanceRefresh, loadCachedBalances } from './balance-display.js';
 import { walletState } from './wallet-state.js';
 
 beforeEach(() => jest.useFakeTimers());
@@ -20,4 +20,21 @@ test('hidden ancestors and hidden documents suppress automatic balance IPC', asy
   jest.advanceTimersByTime(walletState.BALANCE_REFRESH_MS);
   await Promise.resolve();
   expect(window.wallet.getBalances).toHaveBeenCalledWith('0xabc');
+});
+
+
+test.each([
+  [true, false, null, 1],
+  [true, false, {}, 0],
+  [false, false, null, 0],
+  [true, true, null, 0],
+])('startup visibility=%s hidden=%s cached=%s refreshes only a visible miss', async (visible, hidden, balances, calls) => {
+  global.document = { hidden, getElementById: () => ({ checkVisibility: () => visible }) };
+  global.window = { wallet: {
+    getBalancesCached: jest.fn(async () => ({ success: true, balances })),
+    getBalances: jest.fn(async () => null),
+  } };
+  walletState.fullAddresses = { wallet: '0xabc', swarm: null };
+  await loadCachedBalances();
+  expect(window.wallet.getBalances).toHaveBeenCalledTimes(calls);
 });
