@@ -4,19 +4,10 @@
     <meta charset="UTF-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; style-src 'unsafe-inline'; img-src 'self';"
+      content="default-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self';"
     />
+    <link rel="stylesheet" href="styles/theme.css" />
     <style>
-      /* Internal pages follow Settings > Appearance, not the OS colour scheme:
-         the webview preload resolves the setting and stamps `data-theme` on
-         <html> before first paint (#233). Declaring `color-scheme` from the
-         same attribute keeps scrollbars and form controls in step. */
-      html {
-        color-scheme: dark;
-      }
-      html[data-theme='light'] {
-        color-scheme: light;
-      }
       html,
       body {
         height: 100%;
@@ -29,10 +20,9 @@
         position: relative;
       }
 
-      /* Dark theme (default) */
       body {
-        background: #1f2020;
-        color: #c7c7c7;
+        background: var(--shell-bg);
+        color: var(--shell-text);
       }
       body::before {
         content: '';
@@ -59,10 +49,10 @@
         font-size: 18px;
         margin-top: 32px;
         margin-bottom: 12px;
-        color: #999;
+        color: var(--shell-subtle);
       }
       code {
-        background: #2a2a2a;
+        background: var(--shell-code);
         padding: 2px 6px;
         border-radius: 4px;
         font-family: 'SF Mono', Menlo, monospace;
@@ -77,9 +67,9 @@
         margin-bottom: 4px;
       }
       a.protocol-link {
-        color: #6eb5ff;
+        color: var(--shell-link-home);
         text-decoration: none;
-        background: #2a2a2a;
+        background: var(--shell-code);
         padding: 2px 6px;
         border-radius: 4px;
         font-family: 'SF Mono', Menlo, monospace;
@@ -90,43 +80,14 @@
           color 0.15s ease;
       }
       a.protocol-link:hover {
-        background: #3a3a4a;
-        color: #8ecfff;
+        background: var(--shell-link-home-bg-hover);
+        color: var(--shell-link-home-hover);
       }
       .logo-dark {
-        display: block;
+        display: var(--dark-only-display);
       }
       .logo-light {
-        display: none;
-      }
-
-      /* Light theme. `:where()` holds the wrapper at zero specificity, so
-         every rule below weighs exactly what it did as a media query. */
-      :where(html[data-theme='light']) {
-        body {
-          background: #ffffff;
-          color: #202124;
-        }
-        h2 {
-          color: #5f6368;
-        }
-        code {
-          background: #f1f3f4;
-        }
-        a.protocol-link {
-          color: #1a73e8;
-          background: #f1f3f4;
-        }
-        a.protocol-link:hover {
-          background: #e8eaed;
-          color: #1558b0;
-        }
-        .logo-dark {
-          display: none;
-        }
-        .logo-light {
-          display: block;
-        }
+        display: var(--light-only-display);
       }
     </style>
   </head>
