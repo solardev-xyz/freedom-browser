@@ -1,6 +1,6 @@
 # Native macOS cleanup: current-product qualification, 2026-09-08
 
-Status: incomplete. The first bounded product group stopped on an independent monitor registration failure; it is not a passing qualification. The production implementation remains committed as `d9f13f14fd64f7be00b7ae157b793846850802e7`.
+Status: the corrected four-group product campaign passed 89 assertions; actual native Quit/browser-loss/supervisor-loss qualification remains incomplete. The first aborted attempt is retained below and is not counted as a pass. The production implementation remains committed as `d9f13f14fd64f7be00b7ae157b793846850802e7`.
 
 ## Authorization and source identity
 
@@ -578,3 +578,1995 @@ The suggested two-phase registration correction is confined to the qualification
 One corrected four-group attempt is authorized, with a revised cumulative campaign ceiling of 1,000 conservatively reserved process roles including the first attempt's 29, at most 24 live roles, and at most 600 seconds of fixture execution across attempts. The earlier 800 ceiling is not silently reset: the new four-group reservation is 793, bringing the combined upper bound to 822. The earlier attempt and cleanup evidence must remain intact. Stop on the first new failure; no automatic third attempt. Results remain pending at this entry.
 
 No evidence changes `best_effort / original_process_group / survivorsPossible=true / completeDescendantTermination=false`. Native Quit, actual browser loss, deliberate supervisor loss, detached descendants, aggregate limits and signed release qualification are not established by this partial product run.
+
+## Explicit corrected product-campaign report
+
+The following explicit reply is from request `macmini/req-89d63be9a6bc319f9b14eed3e8ecea3b`. It supersedes the pending retry status above without erasing the failed attempt.
+
+PASS for the one authorized corrected phase-2 retry campaign on the disposable Mac: processes-fast, reconciliation, previews, process-controls all exited 0; 89 assertions passed, 0 failed, no scenarioError, cleanup error, monitor error, independent expiry cancellation, or watchdog signal. This is d9f13f14 production source-subtree evidence, not dd96ec87, GUI/Quit/crash, signed packaging, or complete descendant qualification. Phase 3 remains pending. No third attempt was run.
+
+Evidence root: /private/tmp/freedom-phase2-retry-mz7bbbuk
+Prior immutable attempt: /private/tmp/freedom-bounded-phase2-4o1zph2v; original archive SHA256 80fb1d20ddfb6e416ec3918a80f505dbcc84f4e938f82675b8b6f6475fca9eed. Prior accounting stays 29 conservative roles, peak 8, 15.643214834 seconds; 7 S / 6 C registered, last unregistered C reaped by native supervisor. It remains a failed registration attempt, not a pass.
+
+The corrected harness replaces the exposed ChildProcess stdio[4] stream before product listener attachment. A bounded forwarding barrier exclusively consumes original FD4. S registration completes before the spawn wrapper returns. Exact native READY initiates C registration at the blocked gate, with all READY bytes and following data withheld until the watchdog ACK validates phase/id/S and rootRegistered. Failed ACK, timeout, oversized input, or source error closes owned control and prevents product READY/G. No native records are fabricated; exact bytes/order and EOF/error semantics are preserved, with chunk boundaries allowed to change. Pre-ready FINAL does not wait for a C that never became ready. `native_status` journal entries observe the original transport, so a raw READY log precedes `root_registration_acked_before_product_ready`; the latter precedes forwarding to production. All 53 chains have that ACK event.
+
+The watchdog saves known S PID/parent/start identity before later argv/audit reads, registers NOTE_EXIT, obtains genuine current S audit identity only in memory, rechecks identity and ACKs S alone. At C registration it validates proc_listchildpids count/buffer (exactly one PID in four slots), stores known C, registers NOTE_EXIT, validates exact canonical helper --gate -- and root PGID, rechecks identity, then ACKs. C is observation-only, never numeric signal authority. Failed read evidence includes syscall/rc/errno/phase/PID and known S/C identity. Wait timeout now retains bounded observation/reap attempts after irrevocably retiring all numeric B signaling. No emergency path executed in this retry. Audit API use belongs only to the disposable watchdog, not shipping production guarantees.
+
+Apple's host-family immutable wrapper source confirms proc_listchildpids returns a PID count, not a byte count: https://raw.githubusercontent.com/apple-oss-distributions/xnu/43a90889846e00bfb5cf1d255cdc0a701a1e05a4/libsyscall/wrappers/libproc/libproc.c (function lines 80–89). Local declaration: /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/libproc.h:95. The read-only man3 lookup had no local entry (exit 1); no external software was obtained.
+
+Prelaunch evidence is SAFETY-PLAN.md, prior-attempt.json, setup-attempt-01.json and setup-attempt-02.json. The plan's leading retry addendum supersedes its explicitly retained historical 800-role table: W1 + 4×198 = 793 retry maximum; prior29 gives822 planned maximum <=1000. Per-group operational175 including B, cleanup reserve23, <=24 live including W/B and chain allowances; scenario95 seconds, independent fixture expiry by absolute group-start+100 seconds, TERM102 / emergency110 / observation119 / final bound119.4. Actual runs finished long before expiry. The old 800 table is historical text, not a reset of cumulative accounting.
+
+Inherited prior harness-only adaptations remain: check() throws on first failed assertion within finally cleanup; repeating shell/external-sleep payloads replaced by exec no-fork finite Python/Node; loopback servers bind127.0.0.1; real installed runtime resolver receives explicit hostEnvironment PATH instead of invoking personal login setup; raw real executor receipts retained before mapped diagnostics stripping. Product service/controller/Pi/executor remain the original candidate. Long fixtures arm <=100-second independent expiry, finite output/iterations; original finite400000-byte truncation control and finite17MiB HTTP response bound control retained. No weakened product assertion. Existing wording mentioning namespace/SIGKILL is inherited scenario text; actual macOS receipts below govern the original-group/TERM behavior. The only correction for this retry was registration/barrier/watchdog source, with final native code and binary unchanged.
+
+Both prelaunch lint commands exited 0; Python AST checks exited 0; 8 pure stream/barrier mocks passed on each of two prelaunch runs (16 executions, same8 cases). Tests cover split READY, coalesced records, two listeners/no G after failed ACK, rejected ACK/timeout, pre-ready FINAL, source error during ACK, partial EOF, and2048-byte bound. These tests do not spawn or signal fixture processes. Four Electron-as-Node setup launches (two lint, two mock) are separately inventoried and excluded from fixture campaign roles; read-only filesystem/source/SDK queries and report-generation Python processes are likewise setup/analysis work, not fixture roles. No compilation or helper rebuild in this request. Electron printed its existing `task_name_for_pid: (os/kern) failure (5)` startup diagnostic during setup; all actual watchdog identity acquisitions/ACKs succeeded. Exact commands/stdout/stderr are in both setup-attempt JSON files. Post-run one ad hoc read-only summarizer failed with KeyError('items') because the executions record uses another list key; corrected analysis only, no fixture rerun or evidence alteration.
+
+Actual campaign launch (one invocation, exit0):
+python3 /private/tmp/freedom-phase2-retry-mz7bbbuk/watchdog.py
+Each child command, run once from the qualification directory with ELECTRON_RUN_AS_NODE=1:
+/Users/flobot/Git/freedom-dev/freedom-browser/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron /private/tmp/freedom-phase2-retry-mz7bbbuk/qualification/scripts/qualify-agent-workspace.js GROUP
+GROUP order: processes, reconciliation, previews, process-controls. No --include-slow. Exact finite environment is in watchdog.py run_group, and per-group intent/expiry/owned runner identity is retained before composition. Command-attempts.json records launch intents and all settlements (some child argv are bounded by journal design); full fixture arguments/source and environment are reconstructible from included harness/fixtures and raw execution journals.
+
+| Group | Assertions | Exit | Seconds | Conservative roles incl B | Peak incl W/B | Direct launch intents | S / C registered / native reaped | Accounted roles incl B |
+|---|---:|---:|---:|---:|---:|---:|---|---:|
+| processes | 26 | 0 | 26.640216 | 67 | 14 | 30 | 18 / 18 / 18 | 50 |
+| reconciliation | 19 | 0 | 12.199283 | 31 | 11 | 16 | 7 / 7 / 7 | 24 |
+| previews | 26 | 0 | 25.230806 | 84 | 8 | 53 | 15 / 15 / 15 | 69 |
+| process-controls | 18 | 0 | 32.731081 | 63 | 8 | 36 | 13 / 13 / 13 | 51 |
+
+Retry246 conservative roles including shared W1; cumulative275 with prior29 <=1000. Auditable accounted births195 retry:135 direct launch intents +53 C +4 runners +1 W +2 ordinary mkdir children inferred from completed fixed shell commands. mkdir children are not separately kernel-observed; the conservative chain allowance already covers them. Exec through sandbox-exec/gate/shell/payload is one C birth. No fixture Git descendants occurred in selected execution lists. These are not presented as complete adversarial descendant enumeration. Peak conservative live14 <=24. Retry elapsed96.806355916 seconds, cumulative112.449570792 <=600. Per-group retained output/evidence bytes579006 /76961 /133341 /123006, each <2MiB. No further fixtures or optional Seatbelt full suites were run.
+
+All 53 S and53 C instances have NOTE_EXIT observations, plus4 B exits. Every B was reaped after permanently retiring numeric signal authority. All53 native FINAL receipts report spawned/releaseIssued/rootExitObserved/rootReaped/groupVerified/finalKillAttempted true; 35 completed,18 cancelled. All53 preserve final KILL errno1 (EPERM) and cleanupUncertain=true. This is a truthful limitation, not proof that the group was empty. No fake successful teardown or completeDescendantTermination change. Native raw root statuses remain actual, including ordinary nonzero exit tests. The raw executor receipts preserve nativeCleanupUncertain and mapped processGroupSignalErrors. No monitor error, unconfirmed identity, expiry marker/exit124, or watchdog intervention occurred.
+
+Each group passed its3 guaranteed cleanup checks (owned workspace removal, survivor observation, no cleanup errors). Owned loopback listener/heartbeat assertions passed in scenarios. Independent post-run /bin/ps -axo pid=,ppid=,lstart=,command= exited0 and found no commands matching the unique retry root or the4 expiry tokens. It was read-only corroboration, never signal authority or complete descendant proof. No old evidence or user fixture was removed. Empty outer fixtures/group containers and all code/logs/ACKs remain. Process snapshot details: post-cleanup-process-snapshot.json; exact PID/start identities and NOTE_EXIT indices: results.json and logs/GROUP/known-*.json, registered-*.json, runner-owned.json. Audit tokens were never serialized.
+
+Actual assertions and skips (all listed IDs passed; detailed names/evidence in assertions.json and raw stdout.jsonl):
+processes: M0, M1, M2, M3, M4, M5, M5-completed, M10-consumed, M11-retained, M12, M13, M14, M15, M16, M17, M9, M6, M6-scope-field, M7-stop, M8-dispose, M19, M18, M18-durable, cleanup-root, cleanup-survivors, cleanup-errors. Skips: [{"type": "skip", "id": "M11-expired", "reason": "terminal-handle expiry waits the five-minute retention window; pass --include-slow"}]
+reconciliation: R0, R4, R-yield, R-turn, R8, R1, R2, R3, R3-teardown, R5, R6, R7, R9, R11, R12, 2d, cleanup-root, cleanup-survivors, cleanup-errors. Skips: []
+previews: S1, S2, S3a, S3, S4, S5, S6-mint, S6-idempotent, S6-identity, S7-content, S7-req-headers, S7-resp-headers, S7-redirects, S7-bounds, S7-safety, S8, S9, S10, S11, S12-static, S12-dispose, S13, S14, cleanup-root, cleanup-survivors, cleanup-errors. Skips: []
+process-controls: PC0, PC1, PC2, PC5-iso, PC3, PC4, PC6-preview, PC6-revoke, PC7, PC8, PCI0, PCI-stop, PCI-preview, PCI-revoke, PC9, cleanup-root, cleanup-survivors, cleanup-errors. Skips: []
+
+Five-minute handle expiry M11-expired is the sole scenario skip. Optional standalone Seatbelt integration, GUI/native Quit, browser-main loss, supervisor-loss, detached/session escape, packaging and full aggregate remain intentionally unrun. This completes only the authorized phase-2 retry. Contract remains best_effort / original_process_group / survivorsPossible=true / completeDescendantTermination=false; Stop is not permission revocation.
+
+Host/runtime: Mac.fritz.box, macOS15.6 (24G84), Darwin arm64/XNU11417.140.69, uid501. Installed Apple clang17 (clang-1700.0.13.5), SDK15.5; no compile this turn. Electron43.0.0 / Node24.17.0 / uv1.52.1 via old checkout's read-only node_modules; preview runtime installed /opt/homebrew/Cellar/node@22/22.22.0/bin/node; Python existing CLT3.9. Source proof rechecked after all fixtures:
+
+```json
+{
+  "candidate": "/private/tmp/freedom-final-candidate-he26qp5x/candidate",
+  "checks": [
+    {
+      "repository": "/Users/flobot/Git/freedom-dev/freedom-browser",
+      "command": [
+        "git",
+        "rev-parse",
+        "HEAD"
+      ],
+      "exit": 0,
+      "stdout": "11a863ecad4c02ed139040243d0ed657b7a1443b\n",
+      "stderr": ""
+    },
+    {
+      "repository": "/Users/flobot/Git/freedom-dev/freedom-browser",
+      "command": [
+        "git",
+        "branch",
+        "--show-current"
+      ],
+      "exit": 0,
+      "stdout": "codex/agent-workspace-macos-qualification\n",
+      "stderr": ""
+    },
+    {
+      "repository": "/Users/flobot/Git/freedom-dev/freedom-browser",
+      "command": [
+        "git",
+        "status",
+        "--short"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "repository": "/Users/flobot/Git/freedom-browser",
+      "command": [
+        "git",
+        "rev-parse",
+        "HEAD"
+      ],
+      "exit": 0,
+      "stdout": "38b07f33bae548f167114ea615770e4871525ea4\n",
+      "stderr": ""
+    },
+    {
+      "repository": "/Users/flobot/Git/freedom-browser",
+      "command": [
+        "git",
+        "branch",
+        "--show-current"
+      ],
+      "exit": 0,
+      "stdout": "feature/swarm-publishing-updated\n",
+      "stderr": ""
+    },
+    {
+      "repository": "/Users/flobot/Git/freedom-browser",
+      "command": [
+        "git",
+        "status",
+        "--short"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "git",
+        "write-tree"
+      ],
+      "exit": 0,
+      "stdout": "1210f3b898edf855959b48a00b9e5779b34a8645\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "git",
+        "ls-tree",
+        "1210f3b898edf855959b48a00b9e5779b34a8645",
+        "src",
+        "scripts",
+        "config",
+        "package.json"
+      ],
+      "exit": 0,
+      "stdout": "040000 tree 4b92ebead9cd66346da12a06f1aab8d63b6ec16b\tconfig\n100644 blob 7ad2dce912ea545551c9343b26884da175800e0f\tpackage.json\n040000 tree 18743216110ed329e19dac8994ad6d75f08a3194\tscripts\n040000 tree a4fb6ff3d63374f983fc7ba9d191d511d87feeeb\tsrc\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--exit-code",
+        "--",
+        "src",
+        "scripts",
+        "config",
+        "package.json"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  ],
+  "hashes": [
+    {
+      "path": "/private/tmp/freedom-final-candidate-he26qp5x/candidate/src/main/agent/workspace-execution/native/macos-supervisor.c",
+      "bytes": 29432,
+      "sha256": "01d67c27e99220ebb37e3d1e07e962703ceab10b832cadd053abc7fd0b458cce"
+    },
+    {
+      "path": "/private/tmp/freedom-final-candidate-he26qp5x/candidate/out/macos-supervisor/arm64/freedom-workspace-supervisor",
+      "bytes": 36680,
+      "sha256": "f7cb7da6b40562def145bee3576567403225fb99ae8d56a488d2ecf22b176671"
+    }
+  ]
+}
+```
+
+Both original checkouts remain clean at their listed branches/HEADs. Candidate index tree1210f3b898edf855959b48a00b9e5779b34a8645 and src/config/scripts/package identities equal the supplied d9f13f14 source subtrees; not a full commit/history identity claim. Native C01d67... (29432 bytes) and existing arm64 binaryf7cb7... (36680 bytes) unchanged. No src/main/test-harness.js edit, dependency write, install, OS change, commit or push.
+
+Relevant raw native and executor receipts (all53 native FINAL records, two unmodified representative executor receipts per group):
+
+```json
+[
+  {
+    "group": "processes",
+    "nativeFinals": [
+      {
+        "launch": 6,
+        "v": 1,
+        "type": "final",
+        "reason": "completed",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": 0,
+        "signal": null,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      },
+      {
+        "launch": 7,
+        "v": 1,
+        "type": "final",
+        "reason": "completed",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": 0,
+        "signal": null,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      },
+      {
+        "launch": 9,
+        "v": 1,
+        "type": "final",
+        "reason": "completed",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": 3,
+        "signal": null,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      },
+      {
+        "launch": 10,
+        "v": 1,
+        "type": "final",
+        "reason": "completed",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": 0,
+        "signal": null,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      },
+      {
+        "launch": 11,
+        "v": 1,
+        "type": "final",
+        "reason": "completed",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": 0,
+        "signal": null,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      },
+      {
+        "launch": 12,
+        "v": 1,
+        "type": "final",
+        "reason": "cancelled",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": null,
+        "signal": 15,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      },
+      {
+        "launch": 13,
+        "v": 1,
+        "type": "final",
+        "reason": "cancelled",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": null,
+        "signal": 15,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      },
+      {
+        "launch": 14,
+        "v": 1,
+        "type": "final",
+        "reason": "cancelled",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": null,
+        "signal": 15,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      },
+      {
+        "launch": 15,
+        "v": 1,
+        "type": "final",
+        "reason": "completed",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": 0,
+        "signal": null,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      },
+      {
+        "launch": 16,
+        "v": 1,
+        "type": "final",
+        "reason": "completed",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": 0,
+        "signal": null,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      },
+      {
+        "launch": 18,
+        "v": 1,
+        "type": "final",
+        "reason": "completed",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": 0,
+        "signal": null,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      },
+      {
+        "launch": 19,
+        "v": 1,
+        "type": "final",
+        "reason": "completed",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": 0,
+        "signal": null,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      },
+      {
+        "launch": 20,
+        "v": 1,
+        "type": "final",
+        "reason": "completed",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": 0,
+        "signal": null,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      },
+      {
+        "launch": 21,
+        "v": 1,
+        "type": "final",
+        "reason": "completed",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": 0,
+        "signal": null,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      },
+      {
+        "launch": 17,
+        "v": 1,
+        "type": "final",
+        "reason": "cancelled",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": null,
+        "signal": 15,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      },
+      {
+        "launch": 8,
+        "v": 1,
+        "type": "final",
+        "reason": "cancelled",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": null,
+        "signal": 15,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      },
+      {
+        "launch": 24,
+        "v": 1,
+        "type": "final",
+        "reason": "cancelled",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": null,
+        "signal": 15,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      },
+      {
+        "launch": 27,
+        "v": 1,
+        "type": "final",
+        "reason": "cancelled",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": null,
+        "signal": 15,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      }
+    ],
+    "representativeRawExecutorReceipts": [
+      {
+        "at": 1788849461565,
+        "type": "raw_executor_receipt",
+        "index": 0,
+        "receipt": {
+          "backend": "macos-seatbelt",
+          "state": "completed",
+          "startedAt": 1788849461495,
+          "finishedAt": 1788849461565,
+          "durationMs": 70,
+          "exitCode": 0,
+          "signal": null,
+          "stdout": "enabled",
+          "stderr": "",
+          "stdoutTruncated": false,
+          "stderrTruncated": false,
+          "terminationGuarantee": "best_effort",
+          "sideEffects": "unknown",
+          "survivorsPossible": true,
+          "completeDescendantTermination": false,
+          "terminationScope": "original_process_group",
+          "capabilities": {
+            "backend": "macos-seatbelt",
+            "aggregateResourceLimits": false,
+            "cancellationGuarantee": "best_effort",
+            "executableRootsScoped": true,
+            "networkPosture": "none",
+            "publicNetworking": "denied",
+            "loopbackNetworking": "denied",
+            "privateNetworking": "denied",
+            "hostUnixSockets": "denied_unless_filesystem_authorized",
+            "platformNetworkServices": "denied",
+            "survivorsPossible": true,
+            "completeDescendantTermination": false
+          },
+          "diagnostics": {
+            "nativeSupervisor": true,
+            "processGroupFinalKillAttempted": true,
+            "nativeRootExitObserved": true,
+            "nativeRootReaped": true,
+            "nativeCleanupUncertain": true,
+            "nativeRootExitCode": 0,
+            "nativeRootSignal": null,
+            "processGroupSignalErrors": [
+              {
+                "phase": "finalization",
+                "signal": "SIGKILL",
+                "code": "EPERM",
+                "errno": 1
+              }
+            ]
+          }
+        }
+      },
+      {
+        "at": 1788849478745,
+        "type": "raw_executor_receipt",
+        "index": 7,
+        "receipt": {
+          "backend": "macos-seatbelt",
+          "state": "cancelled",
+          "startedAt": 1788849477860,
+          "finishedAt": 1788849478745,
+          "durationMs": 885,
+          "exitCode": null,
+          "signal": "SIGTERM",
+          "stdout": "cwd-associated\n",
+          "stderr": "",
+          "stdoutTruncated": false,
+          "stderrTruncated": false,
+          "terminationGuarantee": "best_effort",
+          "sideEffects": "unknown",
+          "survivorsPossible": true,
+          "completeDescendantTermination": false,
+          "terminationScope": "original_process_group",
+          "capabilities": {
+            "backend": "macos-seatbelt",
+            "aggregateResourceLimits": false,
+            "cancellationGuarantee": "best_effort",
+            "executableRootsScoped": true,
+            "networkPosture": "none",
+            "publicNetworking": "denied",
+            "loopbackNetworking": "denied",
+            "privateNetworking": "denied",
+            "hostUnixSockets": "denied_unless_filesystem_authorized",
+            "platformNetworkServices": "denied",
+            "survivorsPossible": true,
+            "completeDescendantTermination": false
+          },
+          "diagnostics": {
+            "nativeSupervisor": true,
+            "processGroupFinalKillAttempted": true,
+            "nativeRootExitObserved": true,
+            "nativeRootReaped": true,
+            "nativeCleanupUncertain": true,
+            "nativeRootExitCode": null,
+            "nativeRootSignal": "SIGTERM",
+            "processGroupSignalErrors": [
+              {
+                "phase": "finalization",
+                "signal": "SIGKILL",
+                "code": "EPERM",
+                "errno": 1
+              }
+            ]
+          }
+        }
+      }
+    ]
+  },
+  {
+    "group": "reconciliation",
+    "nativeFinals": [
+      {
+        "launch": 6,
+        "v": 1,
+        "type": "final",
+        "reason": "completed",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": 0,
+        "signal": null,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      },
+      {
+        "launch": 7,
+        "v": 1,
+        "type": "final",
+        "reason": "completed",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": 0,
+        "signal": null,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      },
+      {
+        "launch": 8,
+        "v": 1,
+        "type": "final",
+        "reason": "completed",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": 0,
+        "signal": null,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      },
+      {
+        "launch": 9,
+        "v": 1,
+        "type": "final",
+        "reason": "completed",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": 0,
+        "signal": null,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      },
+      {
+        "launch": 10,
+        "v": 1,
+        "type": "final",
+        "reason": "completed",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": 0,
+        "signal": null,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      },
+      {
+        "launch": 11,
+        "v": 1,
+        "type": "final",
+        "reason": "completed",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": 7,
+        "signal": null,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      },
+      {
+        "launch": 12,
+        "v": 1,
+        "type": "final",
+        "reason": "cancelled",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": null,
+        "signal": 15,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      }
+    ],
+    "representativeRawExecutorReceipts": [
+      {
+        "at": 1788849488215,
+        "type": "raw_executor_receipt",
+        "index": 0,
+        "receipt": {
+          "backend": "macos-seatbelt",
+          "state": "completed",
+          "startedAt": 1788849488145,
+          "finishedAt": 1788849488215,
+          "durationMs": 70,
+          "exitCode": 0,
+          "signal": null,
+          "stdout": "enabled",
+          "stderr": "",
+          "stdoutTruncated": false,
+          "stderrTruncated": false,
+          "terminationGuarantee": "best_effort",
+          "sideEffects": "unknown",
+          "survivorsPossible": true,
+          "completeDescendantTermination": false,
+          "terminationScope": "original_process_group",
+          "capabilities": {
+            "backend": "macos-seatbelt",
+            "aggregateResourceLimits": false,
+            "cancellationGuarantee": "best_effort",
+            "executableRootsScoped": true,
+            "networkPosture": "none",
+            "publicNetworking": "denied",
+            "loopbackNetworking": "denied",
+            "privateNetworking": "denied",
+            "hostUnixSockets": "denied_unless_filesystem_authorized",
+            "platformNetworkServices": "denied",
+            "survivorsPossible": true,
+            "completeDescendantTermination": false
+          },
+          "diagnostics": {
+            "nativeSupervisor": true,
+            "processGroupFinalKillAttempted": true,
+            "nativeRootExitObserved": true,
+            "nativeRootReaped": true,
+            "nativeCleanupUncertain": true,
+            "nativeRootExitCode": 0,
+            "nativeRootSignal": null,
+            "processGroupSignalErrors": [
+              {
+                "phase": "finalization",
+                "signal": "SIGKILL",
+                "code": "EPERM",
+                "errno": 1
+              }
+            ]
+          }
+        }
+      },
+      {
+        "at": 1788849498757,
+        "type": "raw_executor_receipt",
+        "index": 6,
+        "receipt": {
+          "backend": "macos-seatbelt",
+          "state": "cancelled",
+          "startedAt": 1788849492715,
+          "finishedAt": 1788849498757,
+          "durationMs": 6042,
+          "exitCode": null,
+          "signal": "SIGTERM",
+          "stdout": "ready",
+          "stderr": "",
+          "stdoutTruncated": false,
+          "stderrTruncated": false,
+          "terminationGuarantee": "best_effort",
+          "sideEffects": "unknown",
+          "survivorsPossible": true,
+          "completeDescendantTermination": false,
+          "terminationScope": "original_process_group",
+          "capabilities": {
+            "backend": "macos-seatbelt",
+            "aggregateResourceLimits": false,
+            "cancellationGuarantee": "best_effort",
+            "executableRootsScoped": true,
+            "networkPosture": "none",
+            "publicNetworking": "denied",
+            "loopbackNetworking": "denied",
+            "privateNetworking": "denied",
+            "hostUnixSockets": "denied_unless_filesystem_authorized",
+            "platformNetworkServices": "denied",
+            "survivorsPossible": true,
+            "completeDescendantTermination": false
+          },
+          "diagnostics": {
+            "nativeSupervisor": true,
+            "processGroupFinalKillAttempted": true,
+            "nativeRootExitObserved": true,
+            "nativeRootReaped": true,
+            "nativeCleanupUncertain": true,
+            "nativeRootExitCode": null,
+            "nativeRootSignal": "SIGTERM",
+            "processGroupSignalErrors": [
+              {
+                "phase": "finalization",
+                "signal": "SIGKILL",
+                "code": "EPERM",
+                "errno": 1
+              }
+            ]
+          }
+        }
+      }
+    ]
+  },
+  {
+    "group": "previews",
+    "nativeFinals": [
+      {
+        "launch": 6,
+        "v": 1,
+        "type": "final",
+        "reason": "completed",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": 0,
+        "signal": null,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      },
+      {
+        "launch": 7,
+        "v": 1,
+        "type": "final",
+        "reason": "completed",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": 0,
+        "signal": null,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      },
+      {
+        "launch": 8,
+        "v": 1,
+        "type": "final",
+        "reason": "completed",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": 0,
+        "signal": null,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      },
+      {
+        "launch": 9,
+        "v": 1,
+        "type": "final",
+        "reason": "completed",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": 0,
+        "signal": null,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      },
+      {
+        "launch": 10,
+        "v": 1,
+        "type": "final",
+        "reason": "completed",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": 0,
+        "signal": null,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      },
+      {
+        "launch": 24,
+        "v": 1,
+        "type": "final",
+        "reason": "cancelled",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": null,
+        "signal": 15,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      },
+      {
+        "launch": 13,
+        "v": 1,
+        "type": "final",
+        "reason": "cancelled",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": null,
+        "signal": 15,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      },
+      {
+        "launch": 31,
+        "v": 1,
+        "type": "final",
+        "reason": "cancelled",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": null,
+        "signal": 15,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      },
+      {
+        "launch": 37,
+        "v": 1,
+        "type": "final",
+        "reason": "cancelled",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": null,
+        "signal": 15,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      },
+      {
+        "launch": 41,
+        "v": 1,
+        "type": "final",
+        "reason": "completed",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": 0,
+        "signal": null,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      },
+      {
+        "launch": 42,
+        "v": 1,
+        "type": "final",
+        "reason": "completed",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": 0,
+        "signal": null,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      },
+      {
+        "launch": 43,
+        "v": 1,
+        "type": "final",
+        "reason": "completed",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": 0,
+        "signal": null,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      },
+      {
+        "launch": 44,
+        "v": 1,
+        "type": "final",
+        "reason": "completed",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": 0,
+        "signal": null,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      },
+      {
+        "launch": 45,
+        "v": 1,
+        "type": "final",
+        "reason": "completed",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": 0,
+        "signal": null,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      },
+      {
+        "launch": 48,
+        "v": 1,
+        "type": "final",
+        "reason": "cancelled",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": null,
+        "signal": 15,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      }
+    ],
+    "representativeRawExecutorReceipts": [
+      {
+        "at": 1788849500396,
+        "type": "raw_executor_receipt",
+        "index": 0,
+        "receipt": {
+          "backend": "macos-seatbelt",
+          "state": "completed",
+          "startedAt": 1788849500349,
+          "finishedAt": 1788849500396,
+          "durationMs": 47,
+          "exitCode": 0,
+          "signal": null,
+          "stdout": "enabled",
+          "stderr": "",
+          "stdoutTruncated": false,
+          "stderrTruncated": false,
+          "terminationGuarantee": "best_effort",
+          "sideEffects": "unknown",
+          "survivorsPossible": true,
+          "completeDescendantTermination": false,
+          "terminationScope": "original_process_group",
+          "capabilities": {
+            "backend": "macos-seatbelt",
+            "aggregateResourceLimits": false,
+            "cancellationGuarantee": "best_effort",
+            "executableRootsScoped": true,
+            "networkPosture": "none",
+            "publicNetworking": "denied",
+            "loopbackNetworking": "denied",
+            "privateNetworking": "denied",
+            "hostUnixSockets": "denied_unless_filesystem_authorized",
+            "platformNetworkServices": "denied",
+            "survivorsPossible": true,
+            "completeDescendantTermination": false
+          },
+          "diagnostics": {
+            "nativeSupervisor": true,
+            "processGroupFinalKillAttempted": true,
+            "nativeRootExitObserved": true,
+            "nativeRootReaped": true,
+            "nativeCleanupUncertain": true,
+            "nativeRootExitCode": 0,
+            "nativeRootSignal": null,
+            "processGroupSignalErrors": [
+              {
+                "phase": "finalization",
+                "signal": "SIGKILL",
+                "code": "EPERM",
+                "errno": 1
+              }
+            ]
+          }
+        }
+      },
+      {
+        "at": 1788849503791,
+        "type": "raw_executor_receipt",
+        "index": 6,
+        "receipt": {
+          "backend": "macos-seatbelt",
+          "state": "cancelled",
+          "startedAt": 1788849503450,
+          "finishedAt": 1788849503790,
+          "durationMs": 340,
+          "exitCode": null,
+          "signal": "SIGTERM",
+          "stdout": "plain",
+          "stderr": "",
+          "stdoutTruncated": false,
+          "stderrTruncated": false,
+          "terminationGuarantee": "best_effort",
+          "sideEffects": "unknown",
+          "survivorsPossible": true,
+          "completeDescendantTermination": false,
+          "terminationScope": "original_process_group",
+          "capabilities": {
+            "backend": "macos-seatbelt",
+            "aggregateResourceLimits": false,
+            "cancellationGuarantee": "best_effort",
+            "executableRootsScoped": true,
+            "networkPosture": "none",
+            "publicNetworking": "denied",
+            "loopbackNetworking": "denied",
+            "privateNetworking": "denied",
+            "hostUnixSockets": "denied_unless_filesystem_authorized",
+            "platformNetworkServices": "denied",
+            "survivorsPossible": true,
+            "completeDescendantTermination": false
+          },
+          "diagnostics": {
+            "nativeSupervisor": true,
+            "processGroupFinalKillAttempted": true,
+            "nativeRootExitObserved": true,
+            "nativeRootReaped": true,
+            "nativeCleanupUncertain": true,
+            "nativeRootExitCode": null,
+            "nativeRootSignal": "SIGTERM",
+            "processGroupSignalErrors": [
+              {
+                "phase": "finalization",
+                "signal": "SIGKILL",
+                "code": "EPERM",
+                "errno": 1
+              }
+            ]
+          }
+        }
+      }
+    ]
+  },
+  {
+    "group": "process-controls",
+    "nativeFinals": [
+      {
+        "launch": 6,
+        "v": 1,
+        "type": "final",
+        "reason": "completed",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": 0,
+        "signal": null,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      },
+      {
+        "launch": 7,
+        "v": 1,
+        "type": "final",
+        "reason": "completed",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": 0,
+        "signal": null,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      },
+      {
+        "launch": 8,
+        "v": 1,
+        "type": "final",
+        "reason": "cancelled",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": null,
+        "signal": 15,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      },
+      {
+        "launch": 11,
+        "v": 1,
+        "type": "final",
+        "reason": "cancelled",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": null,
+        "signal": 15,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      },
+      {
+        "launch": 12,
+        "v": 1,
+        "type": "final",
+        "reason": "completed",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": 0,
+        "signal": null,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      },
+      {
+        "launch": 13,
+        "v": 1,
+        "type": "final",
+        "reason": "completed",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": 0,
+        "signal": null,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      },
+      {
+        "launch": 16,
+        "v": 1,
+        "type": "final",
+        "reason": "cancelled",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": null,
+        "signal": 15,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      },
+      {
+        "launch": 20,
+        "v": 1,
+        "type": "final",
+        "reason": "completed",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": 0,
+        "signal": null,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      },
+      {
+        "launch": 21,
+        "v": 1,
+        "type": "final",
+        "reason": "completed",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": 0,
+        "signal": null,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      },
+      {
+        "launch": 23,
+        "v": 1,
+        "type": "final",
+        "reason": "completed",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": 0,
+        "signal": null,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      },
+      {
+        "launch": 24,
+        "v": 1,
+        "type": "final",
+        "reason": "completed",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": 0,
+        "signal": null,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      },
+      {
+        "launch": 22,
+        "v": 1,
+        "type": "final",
+        "reason": "cancelled",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": null,
+        "signal": 15,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      },
+      {
+        "launch": 27,
+        "v": 1,
+        "type": "final",
+        "reason": "cancelled",
+        "spawned": true,
+        "releaseIssued": true,
+        "rootExitObserved": true,
+        "rootReaped": true,
+        "groupVerified": true,
+        "cleanupUncertain": true,
+        "exitCode": null,
+        "signal": 15,
+        "finalKillAttempted": true,
+        "signalErrors": [
+          {
+            "phase": "kill",
+            "errno": 1
+          }
+        ],
+        "setupError": null
+      }
+    ],
+    "representativeRawExecutorReceipts": [
+      {
+        "at": 1788849525634,
+        "type": "raw_executor_receipt",
+        "index": 0,
+        "receipt": {
+          "backend": "macos-seatbelt",
+          "state": "completed",
+          "startedAt": 1788849525575,
+          "finishedAt": 1788849525634,
+          "durationMs": 59,
+          "exitCode": 0,
+          "signal": null,
+          "stdout": "enabled",
+          "stderr": "",
+          "stdoutTruncated": false,
+          "stderrTruncated": false,
+          "terminationGuarantee": "best_effort",
+          "sideEffects": "unknown",
+          "survivorsPossible": true,
+          "completeDescendantTermination": false,
+          "terminationScope": "original_process_group",
+          "capabilities": {
+            "backend": "macos-seatbelt",
+            "aggregateResourceLimits": false,
+            "cancellationGuarantee": "best_effort",
+            "executableRootsScoped": true,
+            "networkPosture": "none",
+            "publicNetworking": "denied",
+            "loopbackNetworking": "denied",
+            "privateNetworking": "denied",
+            "hostUnixSockets": "denied_unless_filesystem_authorized",
+            "platformNetworkServices": "denied",
+            "survivorsPossible": true,
+            "completeDescendantTermination": false
+          },
+          "diagnostics": {
+            "nativeSupervisor": true,
+            "processGroupFinalKillAttempted": true,
+            "nativeRootExitObserved": true,
+            "nativeRootReaped": true,
+            "nativeCleanupUncertain": true,
+            "nativeRootExitCode": 0,
+            "nativeRootSignal": null,
+            "processGroupSignalErrors": [
+              {
+                "phase": "finalization",
+                "signal": "SIGKILL",
+                "code": "EPERM",
+                "errno": 1
+              }
+            ]
+          }
+        }
+      },
+      {
+        "at": 1788849536057,
+        "type": "raw_executor_receipt",
+        "index": 2,
+        "receipt": {
+          "backend": "macos-seatbelt",
+          "state": "cancelled",
+          "startedAt": 1788849525706,
+          "finishedAt": 1788849536057,
+          "durationMs": 10351,
+          "exitCode": null,
+          "signal": "SIGTERM",
+          "stdout": "readypc-out-1\npc-out-2\npc-out-3\npc-out-4\npc-out-5\npc-out-6\npc-out-7\npc-out-8\npc-out-9\npc-out-10\npc-out-11\npc-out-12\npc-out-13\npc-out-14\npc-out-15\npc-out-16\npc-out-17\npc-out-18\npc-out-19\npc-out-20\npc-out-21\npc-out-22\npc-out-23\npc-out-24\npc-out-25\npc-out-26\npc-out-27\npc-out-28\npc-out-29\npc-out-30\npc-out-31\npc-out-32\npc-out-33\npc-out-34\npc-out-35\npc-out-36\npc-out-37\npc-out-38\npc-out-39\npc-out-40\npc-out-41\npc-out-42\npc-out-43\npc-out-44\npc-out-45\npc-out-46\npc-out-47\npc-out-48\npc-out-49\npc-out-50\npc-out-51\n",
+          "stderr": "",
+          "stdoutTruncated": false,
+          "stderrTruncated": false,
+          "terminationGuarantee": "best_effort",
+          "sideEffects": "unknown",
+          "survivorsPossible": true,
+          "completeDescendantTermination": false,
+          "terminationScope": "original_process_group",
+          "capabilities": {
+            "backend": "macos-seatbelt",
+            "aggregateResourceLimits": false,
+            "cancellationGuarantee": "best_effort",
+            "executableRootsScoped": true,
+            "networkPosture": "none",
+            "publicNetworking": "denied",
+            "loopbackNetworking": "denied",
+            "privateNetworking": "denied",
+            "hostUnixSockets": "denied_unless_filesystem_authorized",
+            "platformNetworkServices": "denied",
+            "survivorsPossible": true,
+            "completeDescendantTermination": false
+          },
+          "diagnostics": {
+            "nativeSupervisor": true,
+            "processGroupFinalKillAttempted": true,
+            "nativeRootExitObserved": true,
+            "nativeRootReaped": true,
+            "nativeCleanupUncertain": true,
+            "nativeRootExitCode": null,
+            "nativeRootSignal": "SIGTERM",
+            "processGroupSignalErrors": [
+              {
+                "phase": "finalization",
+                "signal": "SIGKILL",
+                "code": "EPERM",
+                "errno": 1
+              }
+            ]
+          }
+        }
+      }
+    ]
+  }
+]
+```
+
+Artifact inventory: artifact-inventory.json contains every retained file path, byte count, SHA256 and symlink target as of report preparation. Major files: SAFETY-PLAN.md; prior-attempt.json; execution-budget.json; watchdog.py; qualification/scripts/agent-qualification/{harness,finite-fixtures,launch-guard,status-barrier,status-barrier.test}.js and selected scenarios; both setup-attempt JSONs; results.json; campaign-summary.json; assertions.json; native-receipts.json; command-attempts.json; source-proof.json; post-cleanup-process-snapshot.json; sources.json/.gz/.gz.b64 and source-archive-manifest.json. Per group logs retain intent.json, runner-owned.json, all phase register/known/ACK JSONs, launches.jsonl, stdout.jsonl and watchdog-result.json. Prior attempt untouched. Report-generation scripts also retained.
+
+The source archive retained remotely is gzip/base64 of UTF8 JSON records with path, utf8 source, bytecount and SHA256; its manifest follows. It includes unchanged copied supporting/scenario files for review; their inclusion is not an assertion they were executed. Per-file original candidate and prior-attempt hashes distinguish adaptations. No executable bytes, credentials, genuine audit contents or Herdr reply tokens included. Runtime paths are fixed local evidence paths; importing reusable corrections requires deliberately adapting those paths, not executing this watchdog on the main Mac.
+
+```json
+{
+  "decodedBytes": 328112,
+  "decodedSha256": "0b8188ad57277e61281085aade72d6b305fb72b34bb4c0a7fea4023e5f49372b",
+  "gzipBytes": 80102,
+  "gzipSha256": "925b4e56d2016ee53d8340d7cd42b322616be04c4fc973237d453c1ed02c6286",
+  "files": [
+    {
+      "path": "qualification/eslint.config.js",
+      "bytes": 1655,
+      "sha256": "236f4dd3e674e7772f9dacae7fe90bc99a1549f5ef006735c0f8d96120c9e7fd",
+      "priorSha256": "236f4dd3e674e7772f9dacae7fe90bc99a1549f5ef006735c0f8d96120c9e7fd",
+      "originalCandidateSha256": "236f4dd3e674e7772f9dacae7fe90bc99a1549f5ef006735c0f8d96120c9e7fd"
+    },
+    {
+      "path": "qualification/scripts/agent-qualification/README.md",
+      "bytes": 14907,
+      "sha256": "a664bc8bad4a420e0a334600cd9f648b096a3552d5e5c3f9194f58bc51160279",
+      "priorSha256": "a664bc8bad4a420e0a334600cd9f648b096a3552d5e5c3f9194f58bc51160279",
+      "originalCandidateSha256": "a664bc8bad4a420e0a334600cd9f648b096a3552d5e5c3f9194f58bc51160279"
+    },
+    {
+      "path": "qualification/scripts/agent-qualification/finite-fixtures.js",
+      "bytes": 3361,
+      "sha256": "c39acaad5ff7cf0c445fbff58a4cacb743d641fab9cf3ff7d40fcd07da6a3d5c",
+      "priorSha256": "c39acaad5ff7cf0c445fbff58a4cacb743d641fab9cf3ff7d40fcd07da6a3d5c",
+      "originalCandidateSha256": null
+    },
+    {
+      "path": "qualification/scripts/agent-qualification/harness.js",
+      "bytes": 27738,
+      "sha256": "eb3ef98023787edc8035dd9258fc1f1f3f03628ee4bf50002636190fa4c73f26",
+      "priorSha256": "eb3ef98023787edc8035dd9258fc1f1f3f03628ee4bf50002636190fa4c73f26",
+      "originalCandidateSha256": "9af12fff257314d82f9a241612a9f2dc60828ca78703a31378a6fd1feeb1a33c"
+    },
+    {
+      "path": "qualification/scripts/agent-qualification/launch-guard.js",
+      "bytes": 6709,
+      "sha256": "41745da3669bda9d5d045400d1c670dddebeb0313604e44f302aef9ef1b371fc",
+      "priorSha256": "2b296116b918a358a039fa72fc38266cdaf9b102b582581382790c347aa57d09",
+      "originalCandidateSha256": null
+    },
+    {
+      "path": "qualification/scripts/agent-qualification/platform-adapter.js",
+      "bytes": 7197,
+      "sha256": "b05141080646e312db15fcceaf51fe1368db65318bc87fe1511b85a515493198",
+      "priorSha256": "b05141080646e312db15fcceaf51fe1368db65318bc87fe1511b85a515493198",
+      "originalCandidateSha256": "b05141080646e312db15fcceaf51fe1368db65318bc87fe1511b85a515493198"
+    },
+    {
+      "path": "qualification/scripts/agent-qualification/platform-adapter.test.js",
+      "bytes": 4239,
+      "sha256": "6117d88bf2c505efa14b7163c6196cca64c5ec6a1bda05867299331fea2655bf",
+      "priorSha256": "6117d88bf2c505efa14b7163c6196cca64c5ec6a1bda05867299331fea2655bf",
+      "originalCandidateSha256": "6117d88bf2c505efa14b7163c6196cca64c5ec6a1bda05867299331fea2655bf"
+    },
+    {
+      "path": "qualification/scripts/agent-qualification/scenarios/history.js",
+      "bytes": 7371,
+      "sha256": "bca879ef20fee9d2e410e3bb663439525ad020a7870ebb711da10f340204059d",
+      "priorSha256": "bca879ef20fee9d2e410e3bb663439525ad020a7870ebb711da10f340204059d",
+      "originalCandidateSha256": "bca879ef20fee9d2e410e3bb663439525ad020a7870ebb711da10f340204059d"
+    },
+    {
+      "path": "qualification/scripts/agent-qualification/scenarios/macos-boundary.js",
+      "bytes": 9421,
+      "sha256": "02c73ba9301c261d36f8a28e73f69421a672e8a2a4550331d027c8ed678d24e7",
+      "priorSha256": "02c73ba9301c261d36f8a28e73f69421a672e8a2a4550331d027c8ed678d24e7",
+      "originalCandidateSha256": "02c73ba9301c261d36f8a28e73f69421a672e8a2a4550331d027c8ed678d24e7"
+    },
+    {
+      "path": "qualification/scripts/agent-qualification/scenarios/macos-destructive.js",
+      "bytes": 6971,
+      "sha256": "ee909fb4aac7dad5383ab74b140bfbf31f950d2c9f1b8267bbcdcbaba0e03182",
+      "priorSha256": "ee909fb4aac7dad5383ab74b140bfbf31f950d2c9f1b8267bbcdcbaba0e03182",
+      "originalCandidateSha256": "ee909fb4aac7dad5383ab74b140bfbf31f950d2c9f1b8267bbcdcbaba0e03182"
+    },
+    {
+      "path": "qualification/scripts/agent-qualification/scenarios/network.js",
+      "bytes": 37543,
+      "sha256": "d222bf8a73750116f1086ddcdbdf041e4a49772b381f4bc8b7a9893fd448637e",
+      "priorSha256": "d222bf8a73750116f1086ddcdbdf041e4a49772b381f4bc8b7a9893fd448637e",
+      "originalCandidateSha256": "d222bf8a73750116f1086ddcdbdf041e4a49772b381f4bc8b7a9893fd448637e"
+    },
+    {
+      "path": "qualification/scripts/agent-qualification/scenarios/previews.js",
+      "bytes": 46790,
+      "sha256": "68a626e1861b21d1e729b7fc9a2af667b4a21b765536d705a5829f14bbdb9ace",
+      "priorSha256": "68a626e1861b21d1e729b7fc9a2af667b4a21b765536d705a5829f14bbdb9ace",
+      "originalCandidateSha256": "6ea03a68a14de68feb00f90f62f6694cbe38297466b3fe9bcd9c76b1007e0883"
+    },
+    {
+      "path": "qualification/scripts/agent-qualification/scenarios/process-controls.js",
+      "bytes": 30931,
+      "sha256": "e285b53a8b1ada043b47c583e5bed2bfd5d7e18416d04d02068ce7aa8edeed4e",
+      "priorSha256": "e285b53a8b1ada043b47c583e5bed2bfd5d7e18416d04d02068ce7aa8edeed4e",
+      "originalCandidateSha256": "f4a55b71d2227a6ec17362d731a6ddcb4164a02052d27d10d06c1eb69b1686ce"
+    },
+    {
+      "path": "qualification/scripts/agent-qualification/scenarios/processes.js",
+      "bytes": 34206,
+      "sha256": "5f77c365d6f23a05a1087906971f2ef1fc28ff7cadc9e58c7e479f15a24685e3",
+      "priorSha256": "5f77c365d6f23a05a1087906971f2ef1fc28ff7cadc9e58c7e479f15a24685e3",
+      "originalCandidateSha256": "fa4a4fecc21fd64e9346227ffedaa54555feba4e5d8b2780ad02afb60072de8d"
+    },
+    {
+      "path": "qualification/scripts/agent-qualification/scenarios/reconciliation.js",
+      "bytes": 22242,
+      "sha256": "0aa0fa39a6b34846eb9f96e638621c72cc530f097652f8d239a07c014ea3db49",
+      "priorSha256": "0aa0fa39a6b34846eb9f96e638621c72cc530f097652f8d239a07c014ea3db49",
+      "originalCandidateSha256": "9ee4b255e4de09a8eec2d80f2ce0331790af65c6f5a5dae8f86bb61447f33203"
+    },
+    {
+      "path": "qualification/scripts/agent-qualification/scenarios/self-test-fault.js",
+      "bytes": 1927,
+      "sha256": "b76bd74d7b0183e26c309653c023e288afd998f94cd3392ed95d93f8f155958f",
+      "priorSha256": "b76bd74d7b0183e26c309653c023e288afd998f94cd3392ed95d93f8f155958f",
+      "originalCandidateSha256": "b76bd74d7b0183e26c309653c023e288afd998f94cd3392ed95d93f8f155958f"
+    },
+    {
+      "path": "qualification/scripts/agent-qualification/status-barrier.js",
+      "bytes": 2457,
+      "sha256": "d9da4d9d988e4c255a7615d2a1f1fb9d4ad4879b1dabf8c4a8611c5f0ba32f2a",
+      "priorSha256": null,
+      "originalCandidateSha256": null
+    },
+    {
+      "path": "qualification/scripts/agent-qualification/status-barrier.test.js",
+      "bytes": 4140,
+      "sha256": "1ed7aa3353a45e6bcfad9c15d910003efa7a5dec78381183dbffccaf856084de",
+      "priorSha256": null,
+      "originalCandidateSha256": null
+    },
+    {
+      "path": "qualification/scripts/qualify-agent-workspace.js",
+      "bytes": 8192,
+      "sha256": "7e1d879e1cef48d4d62ba7666df293fee29fc10f0152868467a77dbf41f395fd",
+      "priorSha256": "7e1d879e1cef48d4d62ba7666df293fee29fc10f0152868467a77dbf41f395fd",
+      "originalCandidateSha256": "7e1d879e1cef48d4d62ba7666df293fee29fc10f0152868467a77dbf41f395fd"
+    },
+    {
+      "path": "watchdog.py",
+      "bytes": 15020,
+      "sha256": "375dd6b30eac9e945c5804f03d4b2547a6da74c5d92e51aa209e7865828aec59",
+      "priorSha256": "b26d12bfcd11a33271fb5190da4b2ab787d5510113bc94551ec9b00da02e4ea6"
+    },
+    {
+      "path": "correct.py",
+      "bytes": 2666,
+      "sha256": "ee3566a90e163d1a4d218bbaa29230a53e4cb1c722a6818ff497b73330db3416",
+      "priorSha256": null
+    },
+    {
+      "path": "correct_watchdog.py",
+      "bytes": 8894,
+      "sha256": "0d4cad330444283701d882ec7e9938a0aeeafcdd4613ffb2d1d3ef2ed42dc533",
+      "priorSha256": null
+    },
+    {
+      "path": "SAFETY-PLAN.md",
+      "bytes": 8211,
+      "sha256": "ea277aa07924cd9e1560f17c1e2562fc99a2341c8e5082a0a942478bcaa82e71",
+      "priorSha256": "7d2b28b9be47d9009288f0355e3035f956b124764d5b4ad74034eebe107e8847"
+    },
+    {
+      "path": "prior-attempt.json",
+      "bytes": 296,
+      "sha256": "30b830a397af43a0ddd81213d706bd4542b1b253557a10aed7729114169aab8e",
+      "priorSha256": null
+    }
+  ]
+}
+```
+
+
+### Main-agent review of the corrected observer
+
+The returned source JSON is 328,112 bytes, SHA-256 `0b8188ad57277e61281085aade72d6b305fb72b34bb4c0a7fea4023e5f49372b`. The main agent verified this digest and all 24 contained file records, then reviewed the forwarding barrier, spawn wrapper and watchdog. The barrier replaces the product-facing status stream before listeners attach and waits for gate registration before forwarding actual readiness bytes. The watchdog observes the known root at this stable gate, retains known identities before later probes, and never signals the root by numeric PID. On the passing run, all 53 chains have a registration acknowledgment before product readiness and independent exit observations. Emergency watchdog paths were not exercised; successful product cleanup is not their qualification. These test-only observers are outside the shipping backend and do not strengthen its public guarantee.
