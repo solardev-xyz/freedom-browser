@@ -18,11 +18,12 @@ This file defines mandatory constraints for automated agents and contributors. I
 
 Before executing task-specific work, read the corresponding playbook:
 
-- Architecture-sensitive changes *(adding files to `src/main/` or `src/renderer/`, creating new IPC channels, moving logic between processes)*: `docs/agent-playbooks/architecture-boundaries.md`
-- Commit message conventions *(any git commit)*: `docs/agent-playbooks/commit-messages.md`
-- Changelog updates *(version bumps, release prep)*: `docs/agent-playbooks/changelog-process.md`
-- Cutting a release *(release branch, version bump, tag, build, publish)*: `docs/agent-playbooks/release-process.md`
-- Security checklist *(before commit or PR)*: `docs/agent-playbooks/security-checklist.md`
-- Windows build in a UTM VM *(building/running a native Windows build on macOS for testing)*: `docs/agent-playbooks/windows-utm-build.md`
+- Architecture-sensitive changes _(adding files to `src/main/` or `src/renderer/`, creating new IPC channels, moving logic between processes)_: `docs/agent-playbooks/architecture-boundaries.md`
+- Renderer/UI changes _(anything under `src/renderer/`: chrome, sidebar, settings, internal pages; and reviewing such changes)_: `docs/agent-playbooks/ui-consistency.md`
+- Commit message conventions _(any git commit)_: `docs/agent-playbooks/commit-messages.md`
+- Changelog updates _(version bumps, release prep)_: `docs/agent-playbooks/changelog-process.md`
+- Cutting a release _(release branch, version bump, tag, build, publish)_: `docs/agent-playbooks/release-process.md`
+- Security checklist _(before commit or PR)_: `docs/agent-playbooks/security-checklist.md`
+- Windows build in a UTM VM _(building/running a native Windows build on macOS for testing)_: `docs/agent-playbooks/windows-utm-build.md`
 
 If multiple categories apply, read all relevant playbooks.
