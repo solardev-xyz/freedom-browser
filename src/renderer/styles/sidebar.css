@@ -2990,7 +2990,13 @@
   font-weight: 700;
 }
 
-.swarm-connect-warning {
+/* Callouts on the Swarm/Radicle approval screens. Two kinds, the same pair the
+   dApp screens already use (#239): amber + triangle glyph warns about the
+   consequence of the action being confirmed (`.dapp-tx-warning`), blue + "i"
+   glyph explains what the access being granted means (`.dapp-sign-warning`).
+   The icon lives in the markup, so a callout that changes kind changes both. */
+.swarm-connect-warning,
+.swarm-connect-note {
   display: flex;
   align-items: flex-start;
   gap: 10px;
@@ -3004,12 +3010,22 @@
   line-height: 1.4;
 }
 
-.swarm-connect-warning svg {
+.swarm-connect-warning svg,
+.swarm-connect-note svg {
   width: 18px;
   height: 18px;
   flex-shrink: 0;
   color: #f59e0b;
   margin-top: 1px;
+}
+
+.swarm-connect-note {
+  background: rgba(59, 130, 246, 0.1);
+  border-color: rgba(59, 130, 246, 0.3);
+}
+
+.swarm-connect-note svg {
+  color: rgb(59, 130, 246);
 }
 
 .auto-approve-badge {
@@ -3213,7 +3229,7 @@
   font-weight: 600;
   cursor: pointer;
   border: 1px solid transparent;
-  transition: background 0.15s, border-color 0.15s;
+  transition: background 0.15s, border-color 0.15s, opacity 0.15s;
 }
 
 .swarm-connect-reject-btn {
@@ -3226,13 +3242,18 @@
   background: var(--hover);
 }
 
+/* The one approval primary: filled `--accent`, like `.dapp-tx-approve-btn`,
+   `.dapp-connect-approve-btn` and the wallet's own Confirm. These screens used
+   to fill themselves `#f59e0b` (orange), which read as a different, more
+   alarming class of action than the blue Confirm/Sign/Connect sitting next to
+   them in the same sidebar (#239). */
 .swarm-connect-approve-btn {
-  background: #f59e0b;
+  background: var(--accent);
   color: #fff;
 }
 
 .swarm-connect-approve-btn:hover:not(:disabled) {
-  background: #d97706;
+  opacity: 0.9;
 }
 
 .swarm-connect-approve-btn:disabled {

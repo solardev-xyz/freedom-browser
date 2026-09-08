@@ -28,8 +28,18 @@ hashes and keys; search boxes and names use the sans font.
 **Buttons.** Primary action filled `--accent`, secondary outlined, destructive
 outlined `--danger` ("Clear All", "Remove all", "Restore defaults"). The same
 action uses the same verb everywhere (a remembered permission is _removed_
-in every surface; a dApp request is _rejected_). Swarm approval screens use
-the orange primary deliberately; do not spread it to non-Swarm screens.
+in every surface; a request from a site is _rejected_). Every approval screen
+in the sidebar — wallet, dApp and Swarm — pairs one filled `--accent` primary
+with an outlined secondary; the Swarm screens' orange primary and "Cancel"
+secondary were the one exception until #239. "Cancel" stays where there is no
+request to reject: dismissing a form, an unlock prompt.
+
+**Approval callouts.** Two kinds, both in `styles/sidebar.css`: amber with the
+warning triangle (`.dapp-tx-warning`, `.swarm-connect-warning`) for the
+consequence of the action being confirmed, blue with the "i" glyph
+(`.dapp-sign-warning`, `.swarm-connect-note`) for what the access being
+granted means. The icon lives in the markup, so changing the kind means
+changing both the class and the glyph.
 
 **Sidebar sub-screens.** One header component: chevron, "Back", title, and
 the same close control on every screen (Send, Confirm Transaction, Sign
