@@ -463,7 +463,7 @@ consistent with §1.
 ### What this branch's CI showed
 
 Observed on run `34225923826`, and the split is exactly along whether a job
-installs with scripts — **18 pass, 16 fail**:
+installs with scripts — 33 jobs, **18 pass, 15 fail**:
 
 - **`npm ci --ignore-scripts` → all GREEN** (they never reach the `node-abi`
   blocker, and never download Electron): `test`, `migration-cross-platform`
