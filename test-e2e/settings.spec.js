@@ -152,6 +152,107 @@ test('Nodes keeps its startup toggles across a re-render', async ({ window }) =>
   await expect.poll(persistedIpfsStartup).toBe(true);
 });
 
+// Whatever is left in the Startup card is what its heading labels, so the
+// heading names the rows rather than whichever node happens to keep one.
+test('the Startup card is labelled by what it still holds', async ({ window }) => {
+  await window.evaluate(() => document.getElementById('settings-btn')?.click());
+  await settingsEval(window, `location.hash = 'nodes'`);
+
+  await expect
+    .poll(() =>
+      settingsEval(
+        window,
+        `({
+          heading: document.querySelector('#startup .subsection-title').textContent.trim(),
+          left: [...document.querySelectorAll('#startup-card .row')].map((row) => row.id),
+          torSlotEmpty: [...document.querySelectorAll('[data-startup-slot]')]
+            .some((slot) => slot.children.length === 0)
+        })`
+      )
+    )
+    // Tor's node row only renders with the integration enabled, so with it
+    // off the Tor startup row is the one the card keeps — and no rendered
+    // slot is left standing empty.
+    .toEqual({ heading: 'Startup', left: ['start-tor-row'], torSlotEmpty: false });
+
+  // With the integration on, Tor gets its node row, that row's slot takes
+  // the last startup row, and the emptied card goes with its heading.
+  const setTor = (value) =>
+    settingsEval(window, `window.freedomAPI.saveSettings({ enableTorIntegration: ${value} })`);
+  await setTor(true);
+  await expect
+    .poll(() =>
+      settingsEval(
+        window,
+        `({
+          torSlot: [...document.querySelectorAll('[data-startup-slot="tor"] .row')]
+            .map((row) => row.id),
+          left: [...document.querySelectorAll('#startup-card .row')].map((row) => row.id),
+          startupHidden: document.getElementById('startup').hidden
+        })`
+      )
+    )
+    .toEqual({ torSlot: ['start-tor-row'], left: [], startupHidden: true });
+
+  // Leave the shared fixture in its default state for later specs.
+  await setTor(false);
+  await expect
+    .poll(() => settingsEval(window, `document.getElementById('startup').hidden`))
+    .toBe(false);
+});
+
+// A row whose action takes no argument passes no `attr`, an unknown
+// sub-route belongs to no section, and a rule separates nothing once search
+// has emptied one of its two sides.
+test('nav rows, sub-routes and the group rule carry nothing spurious', async ({ window }) => {
+  await window.evaluate(() => document.getElementById('settings-btn')?.click());
+  await settingsEval(window, `location.hash = 'networks'`);
+  await expect
+    .poll(() =>
+      settingsEval(window, `document.querySelectorAll('#chains [data-action]').length > 0`)
+    )
+    .toBe(true);
+  expect(await settingsEval(window, `document.querySelectorAll('[undefined]').length`)).toBe(0);
+
+  // A tail no section owns is dropped; Networks' own three are kept.
+  for (const [hash, canonical] of [
+    ['networks/bogus', '#networks'],
+    ['privacy/xyz', '#privacy'],
+    ['shortcuts/1', '#shortcuts'],
+    ['networks/names', '#networks/names'],
+    ['networks/keys', '#networks/keys'],
+    ['chains/1', '#networks/1'],
+  ]) {
+    await settingsEval(window, `location.hash = '${hash}'`);
+    await expect.poll(() => settingsEval(window, `location.hash`)).toBe(canonical);
+  }
+
+  const navState = `({
+    items: [...document.querySelectorAll('.nav-item')].filter((i) => !i.hidden).length,
+    rules: [...document.querySelectorAll('.nav-rule')].filter((r) => !r.hidden).length
+  })`;
+  const search = (value) =>
+    settingsEval(
+      window,
+      `(() => {
+        const field = document.getElementById('settings-search');
+        field.value = ${JSON.stringify(value)};
+        field.dispatchEvent(new Event('input', { bubbles: true }));
+      })()`
+    );
+
+  const all = await settingsEval(window, navState);
+  expect(all).toEqual({ items: 10, rules: 1 });
+  await search('networks');
+  expect(await settingsEval(window, navState)).toEqual({ items: 1, rules: 0 });
+  // Both sides matching keeps it.
+  await search('a');
+  expect((await settingsEval(window, navState)).rules).toBe(1);
+  // Leave the shared fixture in its default state for later specs.
+  await search('');
+  expect(await settingsEval(window, navState)).toEqual(all);
+});
+
 // Networks' other two panels render as their own sections, so the chain list
 // is the only place that can reach them.
 test('Networks links to Name Resolution and API keys', async ({ window }) => {

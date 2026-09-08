@@ -92,7 +92,8 @@
         background: var(--border);
       }
 
-      .nav-item[hidden] {
+      .nav-item[hidden],
+      .nav-rule[hidden] {
         display: none;
       }
 
@@ -166,7 +167,10 @@
         margin: 0 0 16px 0;
       }
 
-      .section-header .section-title {
+      /* The heading in that header is the sub-panel style (Site permissions
+         is one of Privacy's two panels), whose own vertical margins would
+         offset it against the button the flex row centres it with. */
+      .section-header .subsection-title {
         margin: 0;
       }
 
@@ -1243,9 +1247,13 @@
         </section>
 
         <!-- Startup -->
+        <!-- The rows' home until renderProfileNodes re-parents each one into
+             the node it belongs to. It is what the user sees before the
+             first render and if the profile fetch fails, so the heading has
+             to name all of them, not whichever one is left over. -->
         <section class="section" id="startup">
-          <h3 class="subsection-title">Tor</h3>
-          <div class="card">
+          <h3 class="subsection-title">Startup</h3>
+          <div class="card" id="startup-card">
             <div class="row" id="ant-launch-row">
               <div class="row-body">
                 <p class="row-label">Start Swarm node</p>
@@ -1726,12 +1734,16 @@
         status: $('search-provider-status'),
       };
 
-      // Which startup rows belong to which node row (#268).
+      // Which startup rows belong to which node row (#268). Tor is here
+      // too: its node row already renders the slot, and without this entry
+      // the slot stays empty while the row it is for sits in the Startup
+      // card behind it.
       const STARTUP_ROWS = {
         bee: ['ant-launch-row'],
         ipfs: ['ipfs-launch-row'],
         myotis: ['myotis-launch-row', 'myotis-gnosis-launch-row'],
         radicle: ['radicle-launch-row'],
+        tor: ['start-tor-row'],
       };
       // Resolved once, up front. renderProfileNodes re-parents these rows
       // into the node card it rebuilds from innerHTML, so from the second
@@ -1744,6 +1756,36 @@
           rowIds.map((rowId) => $(rowId)).filter(Boolean),
         ])
       );
+      // Once every row has moved into the node it belongs to, the Startup
+      // card has nothing left for its heading to label, so the section goes
+      // with them. A row whose node is not on the list (Tor with the
+      // integration off) keeps it — and its heading honest.
+      const startupSection = $('startup');
+      const startupCard = $('startup-card');
+      const syncStartupSection = () => {
+        if (!startupSection || !startupCard) return;
+        // A row the platform sweep hid (`[data-tor]` on Windows) does not
+        // count — an empty card under a heading is what this avoids.
+        startupSection.hidden = ![...startupCard.querySelectorAll('.row')].some(
+          (row) => row.style.display !== 'none'
+        );
+      };
+      // The failure path wipes the node card, which is where the rows live
+      // by then: bring the ones it took back home so the toggles stay
+      // reachable (and labelled) until a later refresh succeeds. Rows still
+      // in the card are left where they are, so nothing is reordered.
+      const homeStartupRows = () => {
+        if (!startupCard) return;
+        const rows = [...startupRows.values()].flat();
+        // Nothing to bring back: leave the card alone, so a refresh that
+        // keeps failing does not re-parent (and blur) a row every 5s.
+        if (rows.some((row) => row.parentElement !== startupCard)) {
+          // Re-appended in node order, so the rows that come back do not
+          // land behind whichever one never left.
+          for (const row of rows) startupCard.appendChild(row);
+        }
+        syncStartupSection();
+      };
       // About Freedom's version line. The app stamps its version into the
       // user agent, so this needs no new IPC; a manual "Check for updates"
       // button does, and is not mocked here.
@@ -2057,17 +2099,27 @@
         updates: 'about',
       };
 
+      // The only real sub-routes: Networks' two sibling panels and a chain
+      // detail (`networks/<chainId>`). No other section has one, so any
+      // other tail is junk and resolves to the section root — the chain id
+      // is checked for shape here and for existence by the chains
+      // controller, which drops one it cannot show (#280).
+      const isSubRoute = (section, sub) =>
+        section === 'networks' &&
+        (sub === 'keys' || sub === 'names' || /^\d+$/.test(sub || ''));
+
       // The canonical route for a hash: `<section>` or `<section>/<sub>`.
       const resolveRoute = (hash) => {
         const raw = (hash || '').replace(/^#/, '').toLowerCase();
         const [head, ...rest] = raw.split('/');
         if (LEGACY_ROUTES[head]) {
           // Only the chain detail carries a sub-route worth keeping.
-          return head === 'chains' && rest[0]
-            ? `${LEGACY_ROUTES[head]}/${rest.join('/')}`
+          return head === 'chains' && isSubRoute('networks', rest[0])
+            ? `networks/${rest[0]}`
             : LEGACY_ROUTES[head];
         }
-        return SECTIONS.includes(head) ? raw : DEFAULT_SECTION;
+        if (!SECTIONS.includes(head)) return DEFAULT_SECTION;
+        return isSubRoute(head, rest[0]) ? `${head}/${rest[0]}` : head;
       };
 
       const resolveSection = (hash) => resolveRoute(hash).split('/')[0];
@@ -2103,12 +2155,31 @@
       // A flat result list indexing every row label and helper is the fuller
       // version the issue describes.
       const settingsSearch = $('settings-search');
+      const navRules = [...document.querySelectorAll('.nav-rule')];
+      // A rule only separates two groups while both still have a visible
+      // entry; filtering that empties one side would leave it dangling
+      // under (or over) the single item that matched.
+      const syncNavRules = () => {
+        const visibleItem = (rule, step) => {
+          for (let el = rule[step]; el; el = el[step]) {
+            if (el.classList.contains('nav-item') && !el.hidden) return true;
+          }
+          return false;
+        };
+        for (const rule of navRules) {
+          rule.hidden = !(
+            visibleItem(rule, 'previousElementSibling') &&
+            visibleItem(rule, 'nextElementSibling')
+          );
+        }
+      };
       settingsSearch?.addEventListener('input', () => {
         const query = settingsSearch.value.trim().toLowerCase();
         for (const item of navItems) {
           const label = (item.textContent || '').trim().toLowerCase();
           item.hidden = query !== '' && !label.includes(query);
         }
+        syncNavRules();
       });
 
       navItems.forEach((item) => {
@@ -2337,12 +2408,19 @@
         // Same for the "Start … when Freedom opens" rows, which used to be
         // their own nav item (#268). Myotis owns two — Ethereum and Gnosis.
         for (const [protocol, rows] of startupRows) {
-          const slot = profileFields.nodesCard.querySelector(
-            `[data-startup-slot="${protocol}"]`
-          );
-          if (!slot) continue;
-          for (const row of rows) slot.appendChild(row);
+          // No node row for this protocol on this render — Tor with the
+          // integration off, or any node on a platform that hides it. Its
+          // rows go home to the Startup card instead of staying in the card
+          // this render just wiped, where they would be detached and gone.
+          const home =
+            profileFields.nodesCard.querySelector(`[data-startup-slot="${protocol}"]`) ||
+            startupCard;
+          if (!home) continue;
+          for (const row of rows) {
+            if (row.parentElement !== home) home.appendChild(row);
+          }
         }
+        syncStartupSection();
       };
 
       const refreshProfileSection = async (force = false) => {
@@ -2372,6 +2450,7 @@
         } catch {
           profileFields.nodesCard.innerHTML =
             '<div class="profile-node-empty">Profile data unavailable</div>';
+          homeStartupRows();
         }
       };
 
@@ -3170,9 +3249,11 @@
         };
 
         // A master-list button row: name + sub-line, trailing chevron.
-        // `name`/`sub` must already be escaped; `attr` is a data-attribute
-        // string the click handler reads.
-        const navRow = ({ name, sub, action, attr, disabled }) => `
+        // `name`/`sub` must already be escaped; `attr` is an optional
+        // data-attribute string the click handler reads — a row whose action
+        // needs no argument omits it, so it defaults to empty rather than
+        // interpolating `undefined` into the tag.
+        const navRow = ({ name, sub, action, attr = '', disabled }) => `
           <button type="button" class="net-row" data-action="${action}" ${attr}${disabled ? ' disabled' : ''}>
             <span class="net-row-text">
               <span class="net-row-name">${name}</span>
