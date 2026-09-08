@@ -6,7 +6,7 @@ All notable changes to Freedom will be documented in this file.
 
 ### Added
 
-- Ad and tracker blocking, on by default — the first of the everyday-browsing basics this release is built around:
+- Ad and tracker blocking, on by default, which also hides the empty spaces blocked ads leave:
   - Settings > Ad Blocking with a per-site allowlist and live rule counts
   - Blocked ads leave no empty gaps in the page
   - Cookie-banner and annoyance filtering, off by default
