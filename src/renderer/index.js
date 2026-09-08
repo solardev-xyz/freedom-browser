@@ -44,11 +44,13 @@ import {
   hardReloadPage,
   onSettingsChanged,
   setOnHistoryRecorded,
+  setSuggestionPreviewProbe,
   closeTrustPopover,
 } from './lib/navigation.js';
 import {
   initAutocomplete,
   setOnNavigate,
+  isSuggestionPreviewActive,
   refreshCache as refreshAutocompleteCache,
   hide as hideAutocomplete,
 } from './lib/autocomplete.js';
@@ -128,6 +130,9 @@ setLoadTargetHandler(loadTarget);
 setReloadHandler(reloadPage);
 setHardReloadHandler(hardReloadPage);
 setOnNavigate(loadTarget);
+// Escape ownership between the two handlers bound to the address input:
+// while a suggestion is previewed, autocomplete.js takes the press. #310.
+setSuggestionPreviewProbe(isSuggestionPreviewActive);
 setOnHistoryRecorded(refreshAutocompleteCache);
 setOnOpenHistory(() => loadTarget('freedom://history'));
 setOnNewTab(() => createTab());

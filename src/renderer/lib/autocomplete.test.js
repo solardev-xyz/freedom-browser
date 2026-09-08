@@ -112,10 +112,14 @@ const loadAutocompleteModule = async (options = {}) => {
     getBookmarks: jest.fn().mockResolvedValue(bookmarks),
     getCachedFavicon: jest.fn((url) => faviconBehavior(url)),
   };
+  // Per-tab navigation state the address-bar edit tracker writes through
+  // (`address-bar-edit.js` reads it via `getActiveTabState`).
+  const navState = { addressBarPendingInput: null, addressBarPendingSelection: null };
   const tabsMocks = {
     getOpenTabs: jest.fn(() => openTabs),
     switchTab: jest.fn(),
     hideTabContextMenu: jest.fn(),
+    getActiveTabState: jest.fn(() => navState),
   };
   const menusMocks = {
     closeMenus: jest.fn(),
@@ -252,6 +256,7 @@ const loadAutocompleteModule = async (options = {}) => {
 
   return {
     mod,
+    navState,
     dropdown,
     addressInput,
     webviewElement,
@@ -364,7 +369,7 @@ describe('autocomplete', () => {
   test('supports keyboard navigation for switching tabs, navigating, tab completion, and escape', async () => {
     jest.useFakeTimers();
 
-    const { mod, dropdown, addressInput, tabsMocks, backdropMocks } =
+    const { mod, navState, dropdown, addressInput, tabsMocks, backdropMocks } =
       await loadAutocompleteModule({
         suggestionResolver: () => [
           {
@@ -409,6 +414,10 @@ describe('autocomplete', () => {
       block: 'nearest',
     });
 
+    // Previewing a row is an uncommitted edit of this tab's address bar, so
+    // it is tracked as one (page commits must not clobber it — #305).
+    expect(navState.addressBarPendingInput).toBe('https://tab.example');
+
     addressInput.handlers.keydown({
       key: 'Enter',
       preventDefault: jest.fn(),
@@ -417,16 +426,21 @@ describe('autocomplete', () => {
     expect(tabsMocks.switchTab).toHaveBeenCalledWith(11);
     expect(addressInput.blur).toHaveBeenCalled();
     expect(backdropMocks.hideMenuBackdrop).toHaveBeenCalled();
+    // Committing a suggestion ends the edit for the tab being left.
+    expect(navState.addressBarPendingInput).toBeNull();
 
     addressInput.value = 'nav';
     addressInput.handlers.input();
     jest.runAllTimers();
     await flushMicrotasks();
 
-    addressInput.handlers.keydown({
-      key: 'ArrowUp',
-      preventDefault: jest.fn(),
-    });
+    // ArrowDown stops on the last row instead of wrapping to the first (#313).
+    addressInput.handlers.keydown({ key: 'ArrowDown', preventDefault: jest.fn() });
+    addressInput.handlers.keydown({ key: 'ArrowDown', preventDefault: jest.fn() });
+    expect(addressInput.value).toBe('https://navigate.example');
+    addressInput.handlers.keydown({ key: 'ArrowDown', preventDefault: jest.fn() });
+    expect(addressInput.value).toBe('https://navigate.example');
+
     addressInput.handlers.keydown({
       key: 'Tab',
       preventDefault: jest.fn(),
@@ -439,10 +453,8 @@ describe('autocomplete', () => {
     jest.runAllTimers();
     await flushMicrotasks();
 
-    addressInput.handlers.keydown({
-      key: 'ArrowUp',
-      preventDefault: jest.fn(),
-    });
+    addressInput.handlers.keydown({ key: 'ArrowDown', preventDefault: jest.fn() });
+    addressInput.handlers.keydown({ key: 'ArrowDown', preventDefault: jest.fn() });
     addressInput.handlers.keydown({
       key: 'Enter',
       preventDefault: jest.fn(),
@@ -459,9 +471,99 @@ describe('autocomplete', () => {
     addressInput.handlers.keydown({
       key: 'Escape',
       preventDefault: jest.fn(),
+      stopPropagation: jest.fn(),
     });
 
     expect(dropdown.classList.add).toHaveBeenCalledWith('hidden');
+  });
+
+  test('arrow keys stop at both ends of the list and return to the typed text', async () => {
+    jest.useFakeTimers();
+
+    const { mod, navState, dropdown, addressInput } = await loadAutocompleteModule({
+      suggestionResolver: () => [
+        { title: 'First', url: 'https://first.example', protocol: 'https', type: 'history' },
+        { title: 'Second', url: 'https://second.example', protocol: 'https', type: 'history' },
+      ],
+    });
+
+    mod.initAutocomplete();
+    await flushMicrotasks();
+
+    addressInput.value = 'bzz';
+    addressInput.handlers.input();
+    jest.runAllTimers();
+    await flushMicrotasks();
+
+    // ArrowUp with nothing highlighted stays on the typed text — it must not
+    // teleport to the bottom of the list (#313).
+    addressInput.handlers.keydown({ key: 'ArrowUp', preventDefault: jest.fn() });
+    expect(addressInput.value).toBe('bzz');
+    expect(mod.isSuggestionPreviewActive()).toBe(false);
+
+    addressInput.handlers.keydown({ key: 'ArrowDown', preventDefault: jest.fn() });
+    expect(addressInput.value).toBe('https://first.example');
+    expect(mod.isSuggestionPreviewActive()).toBe(true);
+
+    // ArrowUp off the first suggestion goes back to what the user typed,
+    // with nothing highlighted, and stays there.
+    addressInput.handlers.keydown({ key: 'ArrowUp', preventDefault: jest.fn() });
+    expect(addressInput.value).toBe('bzz');
+    expect(navState.addressBarPendingInput).toBe('bzz');
+    expect(mod.isSuggestionPreviewActive()).toBe(false);
+    expect(dropdown.querySelectorAll('.autocomplete-item')[0].classList.toggle).toHaveBeenCalledWith(
+      'selected',
+      false
+    );
+
+    addressInput.handlers.keydown({ key: 'ArrowUp', preventDefault: jest.fn() });
+    expect(addressInput.value).toBe('bzz');
+
+    // Hovering a row moves the highlight, so Enter commits the row under the
+    // cursor rather than the typed text (#313).
+    dropdown.handlers.mousemove({
+      target: { closest: () => ({ dataset: { index: '1' } }) },
+    });
+    expect(mod.isSuggestionPreviewActive()).toBe(true);
+    const onNavigate = jest.fn();
+    mod.setOnNavigate(onNavigate);
+    addressInput.handlers.keydown({ key: 'Enter', preventDefault: jest.fn() });
+    expect(onNavigate).toHaveBeenCalledWith('https://second.example');
+  });
+
+  test('escape with a previewed suggestion restores the typed text and keeps focus', async () => {
+    jest.useFakeTimers();
+
+    const { mod, dropdown, addressInput } = await loadAutocompleteModule({
+      suggestionResolver: () => [
+        { title: 'First', url: 'https://first.example', protocol: 'https', type: 'history' },
+      ],
+    });
+
+    mod.initAutocomplete();
+    await flushMicrotasks();
+
+    addressInput.value = 'bzz';
+    addressInput.handlers.input();
+    jest.runAllTimers();
+    await flushMicrotasks();
+    addressInput.handlers.keydown({ key: 'ArrowDown', preventDefault: jest.fn() });
+    expect(addressInput.value).toBe('https://first.example');
+
+    const escape = {
+      key: 'Escape',
+      preventDefault: jest.fn(),
+      stopPropagation: jest.fn(),
+    };
+    addressInput.handlers.keydown(escape);
+
+    // The typed text comes back, the list closes, focus stays in the bar and
+    // navigation.js' handler is left out of this press (#310).
+    expect(addressInput.value).toBe('bzz');
+    expect(dropdown.classList.add).toHaveBeenCalledWith('hidden');
+    expect(escape.stopPropagation).toHaveBeenCalled();
+    expect(addressInput.blur).not.toHaveBeenCalled();
+    expect(mod.isSuggestionPreviewActive()).toBe(false);
   });
 
   test('handles click selection, empty queries, blur interactions, and refresh errors', async () => {
