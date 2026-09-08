@@ -270,3 +270,144 @@ describe('error page heading case (#260)', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// #239 — approval screens: one secondary verb, one callout glyph per kind
+// ---------------------------------------------------------------------------
+
+// The four Swarm approvals and their dApp siblings answer the same question —
+// does this site get to do the thing it asked for? — so they answer it with
+// the same word. "Cancel" belongs to a form or an unlock prompt, where there
+// is no request to reject.
+describe('approval screens (#239)', () => {
+  const index = read(path.join(RENDERER, 'index.html'));
+
+  // Sidebar sub-screens are laid out one after another, so a screen runs from
+  // its own `id="sidebar-…"` to the next one.
+  const screen = (id) => {
+    const start = index.indexOf(`id="${id}"`);
+    if (start < 0) throw new Error(`no ${id} in index.html`);
+    const next = index.indexOf('id="sidebar-', start + 1);
+    return index.slice(start, next < 0 ? index.length : next);
+  };
+
+  const SWARM_SCREENS = [
+    ['sidebar-swarm-connect', 'swarm-connect-reject'],
+    ['sidebar-swarm-publish-approve', 'swarm-publish-reject'],
+    ['sidebar-swarm-messaging-approve', 'swarm-messaging-reject'],
+    ['sidebar-swarm-feed-approve', 'swarm-feed-reject'],
+  ];
+
+  const label = (html, id) => {
+    const match = html.match(new RegExp(`id="${id}"[^>]*>\\s*([^<]*?)\\s*<`));
+    if (!match) throw new Error(`no button #${id}`);
+    return match[1];
+  };
+
+  test.each(SWARM_SCREENS)('%s rejects, it does not cancel', (id, rejectId) => {
+    expect(label(screen(id), rejectId)).toBe('Reject');
+  });
+
+  test('the dApp siblings the verb comes from still say it', () => {
+    expect(label(screen('sidebar-dapp-tx'), 'dapp-tx-reject')).toBe('Reject');
+    expect(label(screen('sidebar-dapp-sign'), 'dapp-sign-reject')).toBe('Reject');
+    expect(label(screen('sidebar-dapp-connect'), 'dapp-connect-reject')).toBe('Reject');
+  });
+
+  // Callout kind and glyph are set in two places — the class in the markup,
+  // the `<path>`/`<circle>` inside it — so they drift as a pair. Amber
+  // (`.swarm-connect-warning`, `.dapp-tx-warning`) carries the warning
+  // triangle; blue (`.swarm-connect-note`, `.dapp-sign-warning`) carries "i".
+  const TRIANGLE = /M10\.29 3\.86L1\.82 18/;
+  const INFO_CIRCLE = /<circle cx="12" cy="12" r="10"/;
+
+  const callouts = (html) => [
+    ...html.matchAll(
+      /<div class="(swarm-connect-warning|swarm-connect-note)"[^>]*>([\s\S]*?)<\/svg>/g
+    ),
+  ];
+
+  test.each(SWARM_SCREENS)('%s pairs its callout class with the matching glyph', (id) => {
+    const found = callouts(screen(id));
+    expect(found).toHaveLength(1);
+    const [, kind, body] = found[0];
+    if (kind === 'swarm-connect-warning') {
+      expect(body).toMatch(TRIANGLE);
+      expect(body).not.toMatch(INFO_CIRCLE);
+    } else {
+      expect(body).toMatch(INFO_CIRCLE);
+      expect(body).not.toMatch(TRIANGLE);
+    }
+  });
+
+  test('the confirm-an-action screens warn and the grant-access screens inform', () => {
+    const kindOf = (id) => callouts(screen(id))[0][1];
+    expect(kindOf('sidebar-swarm-publish-approve')).toBe('swarm-connect-warning');
+    expect(kindOf('sidebar-swarm-messaging-approve')).toBe('swarm-connect-warning');
+    expect(kindOf('sidebar-swarm-connect')).toBe('swarm-connect-note');
+    expect(kindOf('sidebar-swarm-feed-approve')).toBe('swarm-connect-note');
+  });
+
+  test('the dApp screens the two kinds are copied from keep their glyphs', () => {
+    const tx = screen('sidebar-dapp-tx');
+    expect(tx.match(/class="dapp-tx-warning hidden"[\s\S]*?<\/svg>/)[0]).toMatch(TRIANGLE);
+    const sign = screen('sidebar-dapp-sign');
+    expect(sign.match(/class="dapp-sign-warning"[\s\S]*?<\/svg>/)[0]).toMatch(INFO_CIRCLE);
+  });
+
+  // The playbook used to state the "Reject" verb as a settled rule with the
+  // Swarm screens as its one exception, which was never true: three approval
+  // surfaces word the same decision differently. Rather than restate a rule the
+  // markup does not follow, the playbook now names those three, and this pins
+  // the naming in both directions so neither side can drift alone.
+  describe('ui-consistency.md on the reject verb', () => {
+    const playbook = fs
+      .readFileSync(path.join(__dirname, '../../docs/agent-playbooks/ui-consistency.md'), 'utf8')
+      .replace(/\s+/g, ' ');
+
+    // Straight vs. typographic apostrophes differ between prose and markup.
+    const norm = (text) => text.replace(/[’‘]/g, "'").trim();
+
+    // Every `… says "Verb" (`#id`)` the playbook lists as unpinned drift.
+    const documented = [...playbook.matchAll(/"([^"]+)" \(`#([a-z0-9-]+)`\)/g)].map((match) => [
+      match[2],
+      norm(match[1]),
+    ]);
+
+    // A secondary that is legitimately "Cancel"/not a reject at all: a form, an
+    // unlock prompt, the middle "ask each time" choice.
+    const NOT_A_REJECT = new Set([
+      'vault-unlock-cancel',
+      'publisher-identity-create-cancel',
+      'swarm-manifest-individual',
+    ]);
+
+    test('the playbook names exactly the three it says it does', () => {
+      expect(documented.map(([id]) => id).sort()).toEqual([
+        'permission-prompt-block',
+        'radicle-consent-reject',
+        'swarm-manifest-reject',
+      ]);
+    });
+
+    // doc -> markup: each documented verb is the one actually rendered.
+    test.each(documented)('#%s still reads "%s"', (id, verb) => {
+      expect(norm(label(index, id))).toBe(verb);
+    });
+
+    // markup -> doc: any other approval secondary that stops saying "Reject" is
+    // new drift, and has to be documented (or fixed) rather than land silently.
+    test('no undocumented approval secondary has drifted off "Reject"', () => {
+      const drifted = [];
+      for (const match of index.matchAll(
+        /class="(?:swarm-connect|dapp-tx|dapp-sign|dapp-connect)-reject-btn"\s+id="([a-z0-9-]+)"[^>]*>\s*([^<]*?)\s*</g
+      )) {
+        const [, id, text] = match;
+        if (NOT_A_REJECT.has(id) || norm(text) === 'Reject') continue;
+        if (documented.some(([documentedId]) => documentedId === id)) continue;
+        drifted.push(`#${id} says "${norm(text)}"`);
+      }
+      expect(drifted).toEqual([]);
+    });
+  });
+});
