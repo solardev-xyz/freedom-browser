@@ -69,10 +69,23 @@
         gap: 10px;
       }
 
+      /* Page-level search, above the nav — Chrome's placement (#281). The
+         field is a normal `.rpc-input` in an `.rpc-row`, so it is sized the
+         same way every other text field on the page is. */
+      .settings-search {
+        margin: 0 0 12px 0;
+      }
+
       .nav {
         display: flex;
         flex-direction: column;
         gap: 2px;
+      }
+
+      /* `display: flex` below outranks the UA's `[hidden] { display: none }`,
+         so search filtering has to hide the item explicitly. */
+      .nav-item[hidden] {
+        display: none;
       }
 
       .nav-item {
@@ -840,6 +853,16 @@
           </svg>
           Settings
         </h2>
+        <div class="rpc-row settings-search">
+          <input
+            type="search"
+            id="settings-search"
+            class="rpc-input"
+            placeholder="Search settings…"
+            spellcheck="false"
+            aria-label="Search settings"
+          />
+        </div>
         <nav class="nav" id="nav">
           <button type="button" class="nav-item" data-target="appearance">
             <svg
@@ -2013,6 +2036,18 @@
         // stale scroll offset from a taller prior section.
         window.scrollTo({ top: 0 });
       };
+
+      // Smallest useful version of page search: filter the nav by label.
+      // A flat result list indexing every row label and helper is the fuller
+      // version the issue describes.
+      const settingsSearch = $('settings-search');
+      settingsSearch?.addEventListener('input', () => {
+        const query = settingsSearch.value.trim().toLowerCase();
+        for (const item of navItems) {
+          const label = (item.textContent || '').trim().toLowerCase();
+          item.hidden = query !== '' && !label.includes(query);
+        }
+      });
 
       navItems.forEach((item) => {
         item.addEventListener('click', () => {
