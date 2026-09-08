@@ -177,6 +177,12 @@ benign-fixture supervisor cases once. See the [exact runtime, artifact hashes
 and evidence limits](myotis-supervisor-qualification.md#disposable-mac-checkpoint--2026-09-08).
 It is not a real-addon, Windows, signing, app-Quit or full `e662127c` runtime pass.
 
+The later [disposable Mac checkpoint at `c915e138`](myotis-supervisor-qualification.md#disposable-mac-checkpoint--c915e138-2026-09-08)
+passed nine cases once, including isolated controller-group SIGTERM, with old
+retired-record snapshots retained before both controller-loss reuses. Old
+supervisor OS exits remain unobserved; this is not real-addon, actual Quit,
+Windows, signing/packaging or aggregate resource-containment qualification.
+
 ### CI checkpoint — 2026-09-08
 
 For PR #295 at commit `09989259ea693023c452da8f266a4b66c719cb20`,

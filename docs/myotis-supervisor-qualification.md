@@ -37,6 +37,40 @@ Native helper, process, child and harness sources are byte-identical between
 campaign does not qualify the real addon, Windows, signing/packaging, app Quit,
 supervisor loss or the broader matrix below. No rerun was made for this update.
 
+## Disposable Mac checkpoint — c915e138, 2026-09-08
+
+Commit `c915e1384e6f3f3390458d3a168cf2c89b9fd486` passed all nine cases in
+one authorized campaign (build exit 0, runner exit 0; no rerun). All 715 tracked
+file hashes remained unchanged. Runtime: Electron 43.0.0, Node 24.17.0,
+libuv 1.52.1, macOS 15.6 arm64; Apple clang 17 with installed SDK 15.5.
+This is the real process wrapper/native supervisor with the benign JS fixture.
+
+Both controller-loss cases retained `old-retired-record.json` before guarded
+successor reuse. The isolated group controller's actual OS exit was SIGTERM
+with a null exit code. Evidence for each old generation remains **controller
+OS exit + generation-matched durable retirement snapshot + guarded reuse/lock
+release**; the old supervisor OS exit was unobserved. A retired record does not
+establish the old child's exit signal or graceful completion. Successors have
+their own native terminal receipts and observed supervisor OS exits.
+
+Retained remote root: `/private/tmp/freedom-myotis-c915-8o0ywmft`. Local report:
+`/tmp/freedom-mac-c915e138-reply.md`; decoded export:
+`/tmp/freedom-mac-c915e138-evidence.json` (`files[].text`). The coordinator
+independently verified all 98 exported member hashes.
+
+| Artifact | SHA-256 |
+| --- | --- |
+| Native C source | `a56be756bc14a7049f679ead1c0f272d2054ab83be5df91b3e5ec8a83a6a0516` |
+| Compiled helper | `027c518fb4fa1c7a65b35cfa88e196ea8c1cfaf89f89f17e5461673f9a5c7f61` |
+| Gzip export | `666916084d836bf19006c3a52d6279876f466faa384e0ee4ddee231bcc684bb2` |
+| Decoded JSON export | `037f4ca252f55bd614562762204c94ff957a576618e971d5fe6f991c8251c905` |
+
+No primary-Mac runtime test, real addon, actual application Quit, Windows,
+signing/packaging or supervisor-loss qualification is claimed. Manager
+freshness, UI and routing behavior are outside this narrow runtime campaign.
+It does not establish a measured process peak or aggregate resource containment.
+The earlier `098149e7` checkpoint remains a separate historical campaign.
+
 ## Running on an authorized disposable host
 
 Build the target supervisor from the candidate source using existing tools:
@@ -65,9 +99,9 @@ host is disposable; the coordinator supplies that authority.
 
 ## Cases and evidence
 
-Nine sequential cases stop at the first failure. Case 9 and the old-record
-snapshot added after the `098149e7` campaign are source/pure-unit checked only;
-they require manual review before coordinator-authorized remote execution:
+Nine sequential cases stop at the first failure. The `c915e138` checkpoint
+above covers all nine on disposable macOS; the earlier `098149e7` campaign
+covered cases 1–8 without the separate old-record snapshots:
 
 1. Actual fd3 startup/read/status using `MyotisProcess`, the native helper and
    the benign JS addon; graceful exit; a new generation reuses a retired record.
@@ -87,8 +121,10 @@ they require manual review before coordinator-authorized remote execution:
    persists `old-retired-record.json` before any successor overwrites the native
    record; the historical `098149e7` campaign did not retain that snapshot.
 9. A fresh task-owned controller is launched with POSIX `detached: true`, retaining
-   IPC and OS-exit observation (no `unref`). libuv creates its own session or fails
-   spawn. Only after generation-bound confirmation from this launcher does the
+   IPC and OS-exit observation (no `unref`). libuv requests a new session; its
+   macOS spawn path is covered by this campaign. The Linux fork fallback does
+   not check the `setsid()` return value and remains separately unqualified.
+   Only after generation-bound confirmation from this launcher does the
    controller call `process.kill(0, 'SIGTERM')` on its own current group. Missing
    confirmation expires without signaling; no stored PID/PGID or host-session
    fallback is used. The assertions are **controller OS exit + old generation's
