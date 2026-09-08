@@ -17,5 +17,24 @@
     "request": "local/req-311dedc371e75d64d8a5e7d0693c5add",
     "review": "# Post-Quit observation admission (`linux_driver.py` 55cbf63e\u2026)\n\n**Verdict: no concrete obstacle. The unconditional refusal at `:784\u2013785` is an admission rule stronger than the proof requires.**\n\nWhy the correction fits the existing machinery:\n\n- `state.expected` is a mutable set; `observe_exit` (`:193`) only needs the role present and phase `ACTION`, and `prove` (`:202`) needs `exits == expected`. Adding `\"P:\"+key` for a late registration preserves both, exactly as `:793` does at action time.\n- `account_observations` (`:558\u2013570`) credits any retained readable pidfd when `requested` is true, so a late key is credited by the same loop with no new code path or signal authority.\n- Bounds are untouched: `registry.observe` thresholds, output cap and 30 s watchdog still apply; `prove` cannot succeed until every admitted identity has exited, so a post-Quit helper that outlives B fails the case rather than being excused.\n\nTwo details to handle in the same edit:\n\n1. `:775\u2013778` refuses when the fresh pidfd is already readable at registration. A short-lived post-Quit helper may be exited by first observation; after same-instance revalidation (`start`, namespace equal) admit it as observed-and-exited and let `account_observations` credit it in the same iteration instead of raising.\n2. To distinguish first observation after action from birth after action, record `time.clock_gettime(CLOCK_BOOTTIME) * os.sysconf('SC_CLK_TCK')` at the action (nothing records this today) and label each admission `born_after_action = int(start) > action_ticks`. Both classes must still exit before proof.\n\nUnchanged limits: a never-registered zombie or vanished identity remains a diagnostic refusal, observation is incomplete birth discovery, and earlier failed runs stay failed.\n"
   },
-  "lateObservationDisposition": "Accept enrollment of a newly observed, identity-checked retained pidfd after action in the same required-exit set. First observation does not establish birth timing. Preserve already-readable registration and unknown/stat/identity refusals; decline additional registration relaxation and CLOCK_BOOTTIME birth classification. OriginalBzero and every registered exit still required. One finite idle attempt68583f946496b90252ebe70a1759b38c pending."
+  "lateObservationDisposition": "Accept enrollment of a newly observed, identity-checked retained pidfd after action in the same required-exit set. First observation does not establish birth timing. Preserve already-readable registration and unknown/stat/identity refusals; decline additional registration relaxation and CLOCK_BOOTTIME birth classification. OriginalBzero and every registered exit still required. One finite idle attempt68583f946496b90252ebe70a1759b38c pending.",
+  "finalIdleResult": {
+    "request": "hetzner1/req-ed60b2ee55c84e12d892d249ec82975c",
+    "outcome": "Scoped idle app.quit pass; no running/crash/general discovery/provider/release claim",
+    "mainAudit": {
+      "scope": "fixed Linux idle app.quit; all seven registered observation handles only",
+      "archiveMembersVerified": 46,
+      "rawExitChecksPassed": true,
+      "registeredHelpers": 7,
+      "browserOriginalExit": 0,
+      "browserSoleReap": 0,
+      "namespaceOriginalExit": 0,
+      "rootWrapperOriginalExit": 0,
+      "rootIntervention": false,
+      "proofMonotonic": 11129284.691190545,
+      "wrapperProductPassLiteral": false,
+      "disposalEvidence": "D/X markers are untimestamped; after_product_proof flags, original stream ordering and later timestamped terminal/reap records verified. No invented disposal timestamp.",
+      "localAuditCorrection": "First read-only audit incorrectly assumed disposal marker timestamps. Corrected to original stream ordering and flags; no raw record or workload changed."
+    }
+  }
 }
