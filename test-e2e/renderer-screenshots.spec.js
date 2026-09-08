@@ -36,8 +36,11 @@
 // Chromium flips a surface between subpixel and greyscale text antialiasing as
 // composited layers come and go, repainting every glyph with different colour
 // fringes — ~1% of the frame on a page nothing changed on, bistable rather than
-// random, so no amount of waiting settles it. Run the spec by its npm script,
-// not by a bare `playwright test`, or the baselines will not match.
+// random, so no amount of waiting settles it. The spec therefore skips itself
+// unless that variable is set: this file sits in `test-e2e/`, so the `harness`
+// project picks it up, and a plain `npm run test:e2e` would otherwise spend
+// ~8 minutes failing most of these tests on glyph fringes alone. Run it by its
+// npm script.
 //
 // ## Why the masks
 //
@@ -59,10 +62,11 @@ const recipes = require(
 const { pageFor, closeMenus, closeSidebar, dismissOnboarding, go } = require(
   path.join(__dirname, '..', '.claude', 'skills', 'run-freedom', 'lib.js')
 );
+const { screenshotGate } = require('./screenshot-gate');
 
-// Linux-only by default: see the header. `FREEDOM_SCREENSHOTS=1` opts a
-// non-Linux machine in, knowing it will rewrite the baselines.
-const ENABLED = process.platform === 'linux' || process.env.FREEDOM_SCREENSHOTS === '1';
+// Linux, and LCD text off. See `screenshot-gate.js` for both conditions and
+// why a run that meets neither has nothing to say.
+const { enabled: ENABLED, reason: SKIP_REASON } = screenshotGate();
 
 // Small enough that a one-pixel shift fails, loose enough that antialiasing on
 // a differently-loaded runner does not. `threshold` is per-pixel colour
@@ -103,7 +107,7 @@ async function snap(page, name, { mask = [], extra = [] } = {}) {
 }
 
 test.describe('renderer screenshots', () => {
-  test.skip(!ENABLED, 'baselines are rendered on Linux; set FREEDOM_SCREENSHOTS=1 to override');
+  test.skip(!ENABLED, SKIP_REASON);
 
   for (const theme of ['dark', 'light']) {
     test.describe(`theme: ${theme}`, () => {

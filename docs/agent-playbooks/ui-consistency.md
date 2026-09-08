@@ -118,7 +118,9 @@ Baselines are rendered on Linux and compared on Linux only, and both screenshot
 scripts set `FREEDOM_E2E_STABLE_TEXT=1` (Chromium's LCD text antialiasing flips
 between subpixel and greyscale as composited layers come and go, which repaints
 every glyph). Always run them through the npm script, never a bare
-`playwright test`.
+`playwright test`: without that variable the spec skips itself with the script
+name as the reason, which is also what keeps the screenshot walk out of a plain
+`npm run test:e2e`.
 
 To adopt a change you meant to make: `xvfb-run -a npm run test:e2e:screenshots:update`, then read
 `git diff --stat test-e2e/__screenshots__/` before committing. When a CI run
