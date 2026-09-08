@@ -232,8 +232,10 @@ describe('empty states and bulk-clear labels (#258)', () => {
   );
 
   test('publish labels its bulk clear "Clear All" too', () => {
+    // Whitespace-tolerant like the sibling assertion above: Prettier wraps the
+    // label onto its own line once the button's attributes get long enough.
     expect(read(path.join(RENDERER, 'pages/publish.html'))).toMatch(
-      /id="publish-history-clear">Clear All</
+      /id="publish-history-clear"[\s\S]*?Clear All\s*<\/button>/
     );
   });
 });

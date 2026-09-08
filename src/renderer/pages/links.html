@@ -4,20 +4,11 @@
     <meta charset="UTF-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline';"
+      content="default-src 'none'; script-src 'unsafe-inline'; style-src 'self' 'unsafe-inline';"
     />
     <title>Link Test Page</title>
+    <link rel="stylesheet" href="styles/theme.css" />
     <style>
-      /* Internal pages follow Settings > Appearance, not the OS colour scheme:
-         the webview preload resolves the setting and stamps `data-theme` on
-         <html> before first paint (#233). Declaring `color-scheme` from the
-         same attribute keeps scrollbars and form controls in step. */
-      html {
-        color-scheme: dark;
-      }
-      html[data-theme='light'] {
-        color-scheme: light;
-      }
       html,
       body {
         height: 100%;
@@ -29,8 +20,8 @@
           -apple-system,
           BlinkMacSystemFont,
           sans-serif;
-        background: linear-gradient(135deg, #0d1117 0%, #161b22 50%, #21262d 100%);
-        color: #c9d1d9;
+        background: var(--page-gradient);
+        color: var(--text);
         padding: 48px;
         box-sizing: border-box;
         min-height: 100vh;
@@ -38,18 +29,18 @@
       h1 {
         font-size: 28px;
         margin-bottom: 8px;
-        color: #58a6ff;
+        color: var(--accent);
         font-weight: 600;
         letter-spacing: -0.5px;
       }
       .subtitle {
-        color: #8b949e;
+        color: var(--text-muted);
         margin-bottom: 32px;
         font-size: 14px;
       }
       .test-section {
-        background: rgba(22, 27, 34, 0.8);
-        border: 1px solid #30363d;
+        background: var(--panel-translucent);
+        border: 1px solid var(--border);
         border-radius: 12px;
         padding: 24px;
         margin-bottom: 24px;
@@ -58,7 +49,7 @@
       h2 {
         font-size: 16px;
         margin: 0 0 16px 0;
-        color: #f0f6fc;
+        color: var(--text-strong);
         font-weight: 500;
         display: flex;
         align-items: center;
@@ -69,7 +60,7 @@
         display: inline-block;
         width: 4px;
         height: 16px;
-        background: #58a6ff;
+        background: var(--accent);
         border-radius: 2px;
       }
       .link-grid {
@@ -82,17 +73,17 @@
         align-items: center;
         gap: 10px;
         padding: 12px 16px;
-        background: #21262d;
-        border: 1px solid #30363d;
+        background: var(--bg-card);
+        border: 1px solid var(--border);
         border-radius: 8px;
-        color: #58a6ff;
+        color: var(--accent);
         text-decoration: none;
         font-size: 13px;
         transition: all 0.15s ease;
       }
       a:hover {
-        background: #30363d;
-        border-color: #58a6ff;
+        background: var(--bg-raised);
+        border-color: var(--accent);
         transform: translateY(-1px);
       }
       a:active {
@@ -113,8 +104,8 @@
         font-size: 10px;
         padding: 2px 6px;
         border-radius: 4px;
-        background: #388bfd33;
-        color: #58a6ff;
+        background: var(--badge-info-bg);
+        color: var(--accent);
         font-weight: 500;
         text-transform: uppercase;
         letter-spacing: 0.5px;
@@ -122,114 +113,51 @@
         flex-shrink: 0;
       }
       .badge.js {
-        background: #f0883e33;
-        color: #f0883e;
+        background: var(--badge-warn-bg);
+        color: var(--warn-accent);
       }
       button {
         display: flex;
         align-items: center;
         gap: 10px;
         padding: 12px 16px;
-        background: #21262d;
-        border: 1px solid #30363d;
+        background: var(--bg-card);
+        border: 1px solid var(--border);
         border-radius: 8px;
-        color: #f0883e;
+        color: var(--warn-accent);
         font-size: 13px;
         cursor: pointer;
         transition: all 0.15s ease;
         font-family: inherit;
       }
       button:hover {
-        background: #30363d;
-        border-color: #f0883e;
+        background: var(--bg-raised);
+        border-color: var(--warn-accent);
         transform: translateY(-1px);
       }
       button:active {
         transform: translateY(0);
       }
       .info {
-        background: #388bfd15;
-        border: 1px solid #388bfd33;
+        background: var(--info-bg);
+        border: 1px solid var(--badge-info-border);
         border-radius: 8px;
         padding: 16px;
         margin-bottom: 24px;
         font-size: 13px;
         line-height: 1.6;
-        color: #8b949e;
+        color: var(--text-muted);
       }
       .info strong {
-        color: #c9d1d9;
+        color: var(--text);
       }
       code {
-        background: #30363d;
+        background: var(--bg-raised);
         padding: 2px 6px;
         border-radius: 4px;
         font-family: 'SF Mono', Monaco, monospace;
         font-size: 12px;
-        color: #79c0ff;
-      }
-
-      /* Light theme. `:where()` holds the wrapper at zero specificity, so
-         every rule below weighs exactly what it did as a media query. */
-      :where(html[data-theme='light']) {
-        body {
-          background: linear-gradient(135deg, #ffffff 0%, #f6f8fa 50%, #f0f2f5 100%);
-          color: #24292f;
-        }
-        h1 {
-          color: #0969da;
-        }
-        .subtitle {
-          color: #57606a;
-        }
-        .test-section {
-          background: rgba(255, 255, 255, 0.9);
-          border-color: #d0d7de;
-        }
-        h2 {
-          color: #24292f;
-        }
-        h2::before {
-          background: #0969da;
-        }
-        a {
-          background: #ffffff;
-          border-color: #d0d7de;
-          color: #0969da;
-        }
-        a:hover {
-          background: #f6f8fa;
-          border-color: #0969da;
-        }
-        .badge {
-          background: #ddf4ff;
-          color: #0969da;
-        }
-        .badge.js {
-          background: #fff8c5;
-          color: #9a6700;
-        }
-        button {
-          background: #ffffff;
-          border-color: #d0d7de;
-          color: #9a6700;
-        }
-        button:hover {
-          background: #f6f8fa;
-          border-color: #9a6700;
-        }
-        .info {
-          background: #ddf4ff;
-          border-color: #54aeff66;
-          color: #57606a;
-        }
-        .info strong {
-          color: #24292f;
-        }
-        code {
-          background: #f6f8fa;
-          color: #0969da;
-        }
+        color: var(--code-accent);
       }
     </style>
   </head>
@@ -517,7 +445,9 @@
           >
             <circle cx="12" cy="12" r="10"></circle>
             <path d="M2 12h20"></path>
-            <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
+            <path
+              d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"
+            ></path>
           </svg>
           <span class="link-text">ens://vitalik.eth (legacy)</span>
           <span class="badge">ens</span>

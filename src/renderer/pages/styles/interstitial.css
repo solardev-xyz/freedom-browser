@@ -1,16 +1,5 @@
 /* Shared base styles for the name interstitial pages (conflict, unverified),
    used by the ENS, Tezos Domains and onchain-app name flows. */
-
-/* Internal pages follow Settings > Appearance, not the OS colour scheme: the
-   webview preload resolves the setting and stamps `data-theme` on <html>
-   before first paint (#233). Declaring `color-scheme` from the same attribute
-   keeps scrollbars and form controls in step. */
-html {
-  color-scheme: dark;
-}
-html[data-theme='light'] {
-  color-scheme: light;
-}
 html,
 body {
   height: 100%;
@@ -25,8 +14,8 @@ body {
 }
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  background: radial-gradient(ellipse at top left, #1f1f1f 0%, #141414 60%);
-  color: #f5f5f5;
+  background: var(--shell-gradient);
+  color: var(--shell-heading-ink);
   padding: 48px 24px;
   display: flex;
   flex-direction: column;
@@ -46,10 +35,10 @@ h1 {
   gap: 12px;
 }
 body.conflict h1 {
-  color: #ff5e5e;
+  color: var(--shell-danger);
 }
 body.unverified h1 {
-  color: #d7a77c;
+  color: var(--shell-warn);
 }
 .groups {
   display: flex;
@@ -58,21 +47,21 @@ body.unverified h1 {
   margin-bottom: 24px;
 }
 .group {
-  background: #1a1a1a;
-  border: 1px solid #2c2c2c;
+  background: var(--shell-surface);
+  border: 1px solid var(--shell-border-soft);
   border-radius: 8px;
   padding: 12px 16px;
 }
 .group-hosts {
   font-family: monospace;
   font-size: 12px;
-  color: #8fbcff;
+  color: var(--shell-link);
   margin-bottom: 4px;
 }
 .group-value {
   font-family: monospace;
   font-size: 13px;
-  color: #ccc;
+  color: var(--shell-body);
   word-break: break-all;
 }
 .group-reason {
@@ -86,20 +75,22 @@ body.unverified h1 {
 p {
   line-height: 1.6;
   margin: 0 0 16px;
-  color: #ccc;
+  color: var(--shell-body);
 }
 .name-block {
-  background: #1a1a1a;
+  background: var(--shell-surface);
   padding: 12px 16px;
   border-radius: 8px;
   margin-bottom: 20px;
   font-family: monospace;
   font-size: 14px;
   word-break: break-all;
+
+  border: var(--shell-name-border);
 }
 .details {
-  background: #1a1a1a;
-  border: 1px solid #2c2c2c;
+  background: var(--shell-surface);
+  border: 1px solid var(--shell-border-soft);
   border-radius: 8px;
   margin-bottom: 20px;
   overflow: hidden;
@@ -111,20 +102,20 @@ p {
   padding: 10px 14px;
 }
 .detail-row + .detail-row {
-  border-top: 1px solid #2c2c2c;
+  border-top: 1px solid var(--shell-border-soft);
 }
 .detail-label {
-  color: #888;
+  color: var(--shell-muted);
   font-size: 13px;
 }
 .detail-value {
-  color: #ccc;
+  color: var(--shell-body-ink);
   font-family: monospace;
   font-size: 12px;
   overflow-wrap: anywhere;
 }
 .name-block .name {
-  color: #f5f5f5;
+  color: var(--shell-heading-ink);
   font-size: 16px;
 }
 .name-block .block,
@@ -133,10 +124,10 @@ p {
   margin-top: 4px;
 }
 .name-block .block {
-  color: #888;
+  color: var(--shell-muted);
 }
 .name-block .uri {
-  color: #8fbcff;
+  color: var(--shell-link);
 }
 .buttons {
   display: flex;
@@ -147,9 +138,9 @@ p {
 button,
 .button-link {
   padding: 10px 20px;
-  background: #2c2c2c;
-  color: white;
-  border: 1px solid #444;
+  background: var(--shell-button);
+  color: var(--shell-on-button);
+  border: 1px solid var(--shell-border);
   border-radius: 6px;
   cursor: pointer;
   font-size: 14px;
@@ -159,18 +150,20 @@ button,
 }
 button:hover,
 .button-link:hover {
-  background: #3a3a3a;
+  background: var(--shell-button-hover);
 }
 button[disabled] {
   opacity: 0.5;
   cursor: not-allowed;
 }
 .button-primary {
-  background: #3a6fff;
-  border-color: #3a6fff;
+  background: var(--shell-primary);
+  border-color: var(--shell-primary);
+
+  color: var(--shell-on-primary);
 }
 .button-primary:hover {
-  background: #558bff;
+  background: var(--shell-primary-hover);
 }
 .learn-more {
   margin-top: 24px;
@@ -178,78 +171,5 @@ button[disabled] {
   color: #666;
 }
 .learn-more a {
-  color: #8fbcff;
-}
-
-/* Light theme. `:where()` holds the wrapper at zero specificity, so every
-   rule below weighs exactly what it did as a media query. */
-:where(html[data-theme='light']) {
-  body {
-    background: radial-gradient(ellipse at top left, #f6f8fa 0%, #ffffff 60%);
-    color: #24292f;
-  }
-  body.conflict h1 {
-    color: #cf222e;
-  }
-  body.unverified h1 {
-    color: #9a6700;
-  }
-  p {
-    color: #57606a;
-  }
-  .name-block {
-    background: #f6f8fa;
-    border: 1px solid #d0d7de;
-  }
-  .details {
-    background: #f6f8fa;
-    border-color: #d0d7de;
-  }
-  .detail-row + .detail-row {
-    border-color: #d0d7de;
-  }
-  .detail-label {
-    color: #57606a;
-  }
-  .detail-value {
-    color: #24292f;
-  }
-  .name-block .name {
-    color: #24292f;
-  }
-  .name-block .block {
-    color: #57606a;
-  }
-  .name-block .uri,
-  .learn-more a {
-    color: #0969da;
-  }
-  .group {
-    background: #f6f8fa;
-    border-color: #d0d7de;
-  }
-  .group-value {
-    color: #57606a;
-  }
-  .group-hosts {
-    color: #0969da;
-  }
-  button,
-  .button-link {
-    background: #f6f8fa;
-    border-color: #d0d7de;
-    color: #24292f;
-  }
-  button:hover,
-  .button-link:hover {
-    background: #e8eaed;
-  }
-  .button-primary {
-    background: #0969da;
-    color: white;
-    border-color: #0969da;
-  }
-  .button-primary:hover {
-    background: #0860c7;
-  }
+  color: var(--shell-link);
 }

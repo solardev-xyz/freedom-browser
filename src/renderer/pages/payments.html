@@ -4,20 +4,11 @@
     <meta charset="UTF-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:;"
+      content="default-src 'none'; script-src 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src data:;"
     />
     <title>Payments</title>
+    <link rel="stylesheet" href="styles/theme.css" />
     <style>
-      /* Internal pages follow Settings > Appearance, not the OS colour scheme:
-         the webview preload resolves the setting and stamps `data-theme` on
-         <html> before first paint (#233). Declaring `color-scheme` from the
-         same attribute keeps scrollbars and form controls in step. */
-      html {
-        color-scheme: dark;
-      }
-      html[data-theme='light'] {
-        color-scheme: light;
-      }
       html,
       body {
         height: 100%;
@@ -29,8 +20,8 @@
           -apple-system,
           BlinkMacSystemFont,
           sans-serif;
-        background: linear-gradient(135deg, #0d1117 0%, #161b22 50%, #21262d 100%);
-        color: #c9d1d9;
+        background: var(--page-gradient);
+        color: var(--pay-text);
         padding: 48px;
         box-sizing: border-box;
         min-height: 100vh;
@@ -40,7 +31,7 @@
       h1 {
         font-size: 28px;
         margin-bottom: 8px;
-        color: #58a6ff;
+        color: var(--accent);
         font-weight: 600;
         letter-spacing: -0.5px;
         display: flex;
@@ -48,7 +39,7 @@
         gap: 12px;
       }
       .subtitle {
-        color: #8b949e;
+        color: var(--pay-muted);
         margin-bottom: 24px;
         font-size: 14px;
       }
@@ -64,29 +55,27 @@
         min-width: 220px;
         max-width: 400px;
         padding: 10px 16px;
-        background: #21262d;
-        border: 1px solid #30363d;
+        background: var(--bg-card);
+        border: 1px solid var(--border);
         border-radius: 8px;
-        color: #c9d1d9;
+        color: var(--pay-text);
         font-size: 14px;
         font-family: inherit;
         outline: none;
         transition: border-color 0.15s;
       }
       .search-input:focus {
-        border-color: #58a6ff;
+        border-color: var(--accent);
       }
       .search-input::placeholder {
-        color: #6e7681;
+        color: var(--pay-placeholder);
       }
       .filter-select {
         padding: 10px 32px 10px 16px;
-        background: #21262d
-          url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="%236e7681" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>')
-          no-repeat right 12px center;
-        border: 1px solid #30363d;
+        background: var(--bg-card) var(--select-chevron) no-repeat right 12px center;
+        border: 1px solid var(--border);
         border-radius: 8px;
-        color: #c9d1d9;
+        color: var(--pay-text);
         font-size: 14px;
         font-family: inherit;
         cursor: pointer;
@@ -96,11 +85,11 @@
         transition: border-color 0.15s;
       }
       .filter-select:focus {
-        border-color: #58a6ff;
+        border-color: var(--accent);
       }
       .filter-select:hover {
-        background-color: #30363d;
-        border-color: #484f58;
+        background-color: var(--bg-raised);
+        border-color: var(--border-strong);
       }
       .toolbar-right {
         display: flex;
@@ -110,10 +99,10 @@
       }
       .btn {
         padding: 10px 16px;
-        background: #21262d;
-        border: 1px solid #30363d;
+        background: var(--bg-card);
+        border: 1px solid var(--border);
         border-radius: 8px;
-        color: #c9d1d9;
+        color: var(--pay-text);
         font-size: 14px;
         font-family: inherit;
         cursor: pointer;
@@ -123,8 +112,8 @@
         gap: 8px;
       }
       .btn:hover {
-        background: #30363d;
-        border-color: #484f58;
+        background: var(--bg-raised);
+        border-color: var(--border-strong);
       }
       .btn.danger:hover {
         background: #f8514915;
@@ -134,8 +123,8 @@
 
       /* Table */
       .table-wrap {
-        background: #161b22;
-        border: 1px solid #30363d;
+        background: var(--bg-elev);
+        border: 1px solid var(--border);
         border-radius: 10px;
         overflow: hidden;
       }
@@ -145,7 +134,7 @@
         font-size: 13px;
       }
       thead {
-        background: #1c2128;
+        background: var(--pay-thead-bg);
       }
       th {
         text-align: left;
@@ -154,27 +143,27 @@
         font-size: 11px;
         text-transform: uppercase;
         letter-spacing: 0.05em;
-        color: #8b949e;
-        border-bottom: 1px solid #30363d;
+        color: var(--text-muted);
+        border-bottom: 1px solid var(--border);
       }
       td {
         padding: 14px 16px;
-        border-bottom: 1px solid #21262d;
+        border-bottom: 1px solid var(--pay-cell-border);
         vertical-align: middle;
       }
       tbody tr:last-child td {
         border-bottom: none;
       }
       tbody tr:hover {
-        background: rgba(88, 166, 255, 0.04);
+        background: var(--pay-row-hover);
       }
       .when {
-        color: #8b949e;
+        color: var(--pay-muted);
         white-space: nowrap;
       }
       .site {
         font-weight: 500;
-        color: #c9d1d9;
+        color: var(--pay-text);
         max-width: 260px;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -189,18 +178,18 @@
         white-space: nowrap;
       }
       .amount-asset {
-        color: #8b949e;
+        color: var(--pay-muted);
         margin-left: 4px;
       }
       .addr {
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
         font-size: 12px;
-        color: #8b949e;
+        color: var(--pay-muted);
       }
       .tx-link {
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
         font-size: 12px;
-        color: #58a6ff;
+        color: var(--accent);
         text-decoration: none;
       }
       .tx-link:hover {
@@ -223,24 +212,24 @@
         text-transform: uppercase;
       }
       .chain-badge {
-        background: rgba(110, 118, 129, 0.2);
-        color: #c9d1d9;
+        background: var(--pay-chip-bg);
+        color: var(--pay-text);
       }
       .kind-x402 {
-        background: rgba(39, 117, 202, 0.18);
-        color: #5a9eee;
+        background: var(--pay-x402-bg);
+        color: var(--pay-x402-fg);
       }
       .kind-wallet-send {
-        background: rgba(187, 137, 250, 0.18);
-        color: #d2a8ff;
+        background: var(--pay-wallet-bg);
+        color: var(--pay-wallet-fg);
       }
       .kind-dapp-send {
-        background: rgba(245, 158, 11, 0.18);
-        color: #f0b65d;
+        background: var(--pay-dapp-bg);
+        color: var(--pay-dapp-fg);
       }
       .kind-safe {
-        background: rgba(46, 187, 137, 0.18);
-        color: #5ad2a8;
+        background: var(--pay-safe-bg);
+        color: var(--pay-safe-fg);
       }
       .status-pill {
         display: inline-flex;
@@ -261,7 +250,7 @@
       .status-confirmed,
       .status-settled {
         background: rgba(76, 175, 80, 0.12);
-        color: #9ad9b3;
+        color: var(--pay-status-ok);
       }
       .status-confirmed::before,
       .status-settled::before {
@@ -269,7 +258,7 @@
       }
       .status-pending {
         background: rgba(245, 158, 11, 0.12);
-        color: #f1d68b;
+        color: var(--pay-status-pending);
       }
       .status-pending::before {
         background: #d29922;
@@ -277,21 +266,26 @@
       }
       .status-failed {
         background: rgba(248, 81, 73, 0.12);
-        color: #ffb3b3;
+        color: var(--pay-status-failed);
       }
       .status-failed::before {
         background: #f85149;
       }
       .status-no-receipt {
         background: rgba(110, 118, 129, 0.18);
-        color: #b3bac1;
+        color: var(--pay-status-none);
       }
       .status-no-receipt::before {
         background: #8b949e;
       }
       @keyframes pulse {
-        0%, 100% { opacity: 1; }
-        50% { opacity: 0.4; }
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.4;
+        }
       }
 
       /* States */
@@ -300,8 +294,8 @@
         text-align: center;
         padding: 64px 16px;
         color: #6e7681;
-        background: #161b22;
-        border: 1px solid #30363d;
+        background: var(--bg-elev);
+        border: 1px solid var(--border);
         border-radius: 10px;
       }
       .empty-state svg {
@@ -313,60 +307,6 @@
       .empty-state p {
         margin: 0;
         font-size: 14px;
-      }
-
-      /* Light theme. `:where()` holds the wrapper at zero specificity, so
-         every rule below weighs exactly what it did as a media query. */
-      :where(html[data-theme='light']) {
-        body {
-          background: linear-gradient(135deg, #ffffff 0%, #f6f8fa 50%, #f0f2f5 100%);
-          color: #1a1a1a;
-        }
-        h1 { color: #0969da; }
-        .tx-link { color: #0969da; }
-        .subtitle, .when, .addr, .amount-asset { color: #6e7681; }
-        .search-input, .btn {
-          background: #ffffff;
-          border-color: #d0d7de;
-          color: #1a1a1a;
-        }
-        .search-input:focus, .filter-select:focus { border-color: #0969da; }
-        .btn:hover {
-          background: #f6f8fa;
-          border-color: #8c959f;
-        }
-        /* Not folded into the rule above: the `background` shorthand would drop
-           the chevron the dark rule paints with `url()` (#251). */
-        .filter-select {
-          background: #ffffff
-            url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="%2357606a" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>')
-            no-repeat right 12px center;
-          border-color: #d0d7de;
-          color: #1a1a1a;
-        }
-        .filter-select:hover {
-          background-color: #f6f8fa;
-          border-color: #8c959f;
-        }
-        .search-input::placeholder { color: #8b949e; }
-        .table-wrap, .loading, .empty-state {
-          background: #ffffff;
-          border-color: #d0d7de;
-        }
-        thead { background: #f6f8fa; }
-        th { color: #57606a; border-bottom-color: #d0d7de; }
-        td { border-bottom-color: #eaeef2; }
-        tbody tr:hover { background: rgba(9, 105, 218, 0.05); }
-        .site { color: #1a1a1a; }
-        .chain-badge { background: rgba(0, 0, 0, 0.06); color: #1a1a1a; }
-        .kind-x402 { background: rgba(39, 117, 202, 0.12); color: #1f5fa8; }
-        .kind-wallet-send { background: rgba(140, 90, 220, 0.12); color: #6e3ba8; }
-        .kind-dapp-send { background: rgba(217, 119, 6, 0.12); color: #9a5a04; }
-        .kind-safe { background: rgba(16, 150, 100, 0.12); color: #0d7a52; }
-        .status-confirmed, .status-settled { color: #1f7a34; }
-        .status-pending { color: #8a5a07; }
-        .status-failed { color: #b3261e; }
-        .status-no-receipt { color: #57606a; }
       }
     </style>
   </head>
@@ -411,9 +351,18 @@
       </select>
       <div class="toolbar-right">
         <button class="btn danger" id="clear-btn">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
             <polyline points="3 6 5 6 21 6"></polyline>
-            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+            <path
+              d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"
+            ></path>
           </svg>
           Clear All
         </button>
@@ -440,19 +389,19 @@
       // 500 payments we'll wire a "Load more" pager onto the bottom.
       const PAGE_LIMIT = 500;
 
-      let payments = [];          // current server-filtered page
+      let payments = []; // current server-filtered page
       let chainsById = new Map(); // chainId → { name, shortName, blockExplorer }
-      let tokensByKey = new Map();// `chainId:address` → { symbol, decimals }
+      let tokensByKey = new Map(); // `chainId:address` → { symbol, decimals }
 
       // Single source of truth for the three kind values: the renderer label,
       // the CSS class, and the "this row didn't carry an origin" fallback.
       // Unknown kinds fall back to a neutral pill with the raw value.
       const KIND_META = {
-        'x402':        { label: 'x402', cls: 'kind-x402',        anonLabel: '—' },
+        x402: { label: 'x402', cls: 'kind-x402', anonLabel: '—' },
         'wallet-send': { label: 'send', cls: 'kind-wallet-send', anonLabel: 'wallet send' },
-        'dapp-send':   { label: 'dapp', cls: 'kind-dapp-send',   anonLabel: 'dapp send' },
-        'safe-send':   { label: 'safe', cls: 'kind-safe',        anonLabel: 'safe send' },
-        'safe-deploy': { label: 'safe setup', cls: 'kind-safe',  anonLabel: 'safe activation' },
+        'dapp-send': { label: 'dapp', cls: 'kind-dapp-send', anonLabel: 'dapp send' },
+        'safe-send': { label: 'safe', cls: 'kind-safe', anonLabel: 'safe send' },
+        'safe-deploy': { label: 'safe setup', cls: 'kind-safe', anonLabel: 'safe activation' },
       };
       const KIND_FALLBACK = { label: '', cls: '', anonLabel: '—' };
 
@@ -561,7 +510,8 @@
         const q = searchInput.value.trim().toLowerCase();
         if (!q) return rows;
         return rows.filter((p) => {
-          const hay = `${p.origin || ''} ${p.toAddress || ''} ${p.fromAddress || ''} ${p.txHash || ''} ${p.url || ''}`.toLowerCase();
+          const hay =
+            `${p.origin || ''} ${p.toAddress || ''} ${p.fromAddress || ''} ${p.txHash || ''} ${p.url || ''}`.toLowerCase();
           return hay.includes(q);
         });
       }
@@ -626,7 +576,10 @@
             chainsById.set(Number(id), chain);
           }
           const opts = Array.from(chainsById.entries())
-            .map(([id, chain]) => `<option value="${id}">${escapeHtml(chain.name || `chain ${id}`)}</option>`)
+            .map(
+              ([id, chain]) =>
+                `<option value="${id}">${escapeHtml(chain.name || `chain ${id}`)}</option>`
+            )
             .join('');
           chainSelect.insertAdjacentHTML('beforeend', opts);
         }
@@ -679,7 +632,9 @@
       // shows the table immediately (with raw chain ids / unknown asset
       // symbols), upgraded in place when chain + token lookups resolve.
       Promise.all([
-        loadMetadata().then(render).catch((err) => console.error('[payments] metadata failed:', err)),
+        loadMetadata()
+          .then(render)
+          .catch((err) => console.error('[payments] metadata failed:', err)),
         loadPayments().catch((err) => {
           console.error('[payments] load failed:', err);
           resultsEl.innerHTML = `<div class="empty-state"><p>Failed to load: ${escapeHtml(err.message)}</p></div>`;
