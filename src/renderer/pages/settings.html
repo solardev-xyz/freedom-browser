@@ -2025,22 +2025,27 @@
         });
       });
 
+      // Normalize the URL to the section actually shown, so
+      // freedom://settings becomes freedom://settings/appearance and a hash
+      // naming no section does not stay in the address bar. Runs on first
+      // load *and* on every hashchange — a stale bookmark opened in an
+      // existing Settings tab, or a typo, is the same case as a bad first
+      // load. history.replaceState keeps it out of the back/forward stack.
+      const canonicalizeHash = () => {
+        const section = resolveSection(location.hash);
+        const raw = location.hash.replace(/^#/, '').toLowerCase();
+        // A bare section or one of its sub-routes (e.g. chains/1) is canonical.
+        if (raw !== section && !raw.startsWith(section + '/')) {
+          history.replaceState(null, '', `#${section}`);
+        }
+        return section;
+      };
+
       window.addEventListener('hashchange', () => {
-        showSection(resolveSection(location.hash));
+        showSection(canonicalizeHash());
       });
 
-      // On first load, normalize the URL so freedom://settings becomes
-      // freedom://settings/appearance in the address bar. history.replaceState
-      // keeps this out of the back/forward stack.
-      const initialSection = resolveSection(location.hash);
-      const initialRawHash = location.hash.replace(/^#/, '').toLowerCase();
-      // A bare section or one of its sub-routes (e.g. chains/1) is canonical.
-      const initialHashIsCanonical =
-        initialRawHash === initialSection || initialRawHash.startsWith(initialSection + '/');
-      if (!initialHashIsCanonical) {
-        history.replaceState(null, '', `#${initialSection}`);
-      }
-      showSection(initialSection);
+      showSection(canonicalizeHash());
 
       const setFieldEnabled = (checkbox, container, ...inputs) => {
         const enabled = checkbox?.checked === true;
@@ -3414,14 +3419,31 @@
             ${isCustom ? cardButton('Remove this chain', 'remove-chain', 'danger') : ''}`;
         };
 
-        const render = () => {
+        // `authoritative` marks the render that follows a completed
+        // config fetch. Only that one may declare a chain id unknown: the
+        // instant list<->detail swap on hashchange runs against the cached
+        // config, which legitimately does not know about a chain added
+        // elsewhere a moment ago.
+        const render = (authoritative = false) => {
           if (addState) {
             renderAdd();
             return;
           }
           const cid = openChainId();
-          if (cid && config.networks[cid]) renderDetail(cid);
-          else renderList();
+          if (cid && config.networks[cid]) {
+            renderDetail(cid);
+            return;
+          }
+          // A chain id that is not configured (a bookmarked detail for a
+          // chain since removed) must not leave the chain sub-route in the
+          // address bar over a list, and must say why.
+          if (cid && authoritative) {
+            history.replaceState(null, '', '#chains');
+            renderList();
+            setStatus('That chain is no longer configured.', 'error');
+            return;
+          }
+          renderList();
         };
 
         const reload = async () => {
@@ -3437,7 +3459,7 @@
             }
             config = { networks: res.networks || {}, sources: res.sources || [] };
             myotisStatuses = { 1: ethereumMyotis, 100: gnosisMyotis };
-            render();
+            render(true);
           } catch {
             setStatus('Failed to load network configuration', 'error');
           }
