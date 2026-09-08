@@ -65,8 +65,9 @@ fallback to unassigned execution exists. Termination uses the retained process
 HANDLE, followed by `WaitForSingleObject` and `GetExitCodeProcess`. A job close
 requests cleanup; the receipt proves only the trusted direct child's exit,
 not completion of hypothetical descendants. The bounded receipt also records
-`forced` separately from the child exit code. Windows source is currently
-uncompiled and unqualified.
+`forced` separately from the child exit code. The Windows x64 helper compiled
+successfully in CI at `09989259`; runtime behavior remains unqualified (see
+the CI checkpoint below).
 
 The addon child receives only null stdio and its Node IPC endpoint. It does not
 inherit the native receipt writer, control endpoint, ownership lock or Windows
@@ -162,12 +163,34 @@ benign-fixture supervisor cases once. See the [exact runtime, artifact hashes
 and evidence limits](myotis-supervisor-qualification.md#disposable-mac-checkpoint--2026-09-08).
 It is not a real-addon, Windows, signing, app-Quit or full `e662127c` runtime pass.
 
+### CI checkpoint — 2026-09-08
+
+For PR #295 at commit `09989259ea693023c452da8f266a4b66c719cb20`,
+[CI run 34271769830](https://github.com/solardev-xyz/freedom-browser/actions/runs/34271769830)
+passed lint and the full test job: 208 suites / 3,845 tests passed, with
+5 suites / 18 tests skipped. These are CI results, separate from the provisional
+primary-Mac dependency reuse described above.
+
+The [Windows Myotis job](https://github.com/solardev-xyz/freedom-browser/actions/runs/34271769830/job/102214820294)
+activated the installed MSVC developer shell and successfully ran
+`npm run myotis:build-supervisor -- x64`, producing
+`myotis-bin/win-x64/myotis-supervisor.exe`. This is **build-only Windows evidence**:
+the single live resolver test was skipped. It establishes no runtime pass for
+retained HANDLE ownership, CRT fd3 transport, job assignment/cleanup or durable
+retirement. Signing/notarization, ASAR loading, RunAsNode fuse compatibility,
+real-addon behavior and actual application Quit remain separate gates.
+
+Reviewed logs: `/tmp/freedom-pr295-windows-myotis-job.log`, lines 491–510
+(build) and 572–576 (skip); `/tmp/freedom-pr295-tests.log`, lines 3750–3751
+(test totals). No local execution or new tests were performed for this
+documentation checkpoint.
+
 Required disposable-host matrix before promoting the PR out of draft:
 
 | Area | Required evidence |
 | --- | --- |
 | POSIX helper | Linux/macOS compile; real fd3 transport; natural exit; blocked read/start/status/stop; parent-control loss at startup stages; unknown supervisor loss; verified terminal and durable quarantine/recovery |
-| Windows helper | MSVC compile; CRT fd3 mapping; explicit inheritance; suspended launch/job failure paths; retained-HANDLE termination; control loss; durable records; unsigned and signed package behavior |
+| Windows helper | x64 MSVC compile passed at `09989259`; still required: CRT fd3 mapping; explicit inheritance; suspended launch/job failure paths; retained-HANDLE termination; control loss; durable records; unsigned and signed package behavior |
 | Concurrency | Queue/caller timeouts never refill native admission; stale generation/reply rejection; independent chains and bounded polling; main DNS/file liveness |
 | App lifecycle | Actual Quit reaches OS exit; chain stop/restart cannot reuse a live directory; profile stale-lock recovery cannot bypass quarantine |
 | Packaging | Exact candidate/dependencies, helper inclusion/signatures, RunAsNode fuse, ASAR/native loading, all supported release targets |
