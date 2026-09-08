@@ -16,8 +16,16 @@
 // host allocator; the identical JS is clean on stock Node, so it is specific
 // to the Electron binary rather than to our usage. `C4_DISABLE_NATIVE` is
 // upstream's own opt-out: it makes `runtime_node.js` skip `dlopen` entirely
-// and return the same WASM runtime 2.0.4 used, so the verifier we ship is
-// unchanged from the last known-good version.
+// and return the WASM runtime — the same *implementation* 2.0.4 shipped
+// exclusively, but not the same *build*: `c4w.wasm` changed across the bump
+// (2.0.4 sha256 `32eb265c…`, 1118419 bytes; 2.0.6 `7bd999c2…`, 1130756 bytes;
+// `strings` shows consensus types such as `GloasLightClientUpdate` only in the
+// 2.0.6 build, so upstream code changed in there). So this restores the
+// pre-2.0.5 runtime *choice*, not the last known-good verifier bytes — a
+// verification discrepancy after a bump still has to be re-validated against
+// the WASM path (`ENS_COLIBRI_E2E=1 npx jest
+// src/main/__tests__/integration/colibri-e2e.test.js`) rather than assumed
+// unchanged.
 //
 // Set unconditionally (an inherited `C4_DISABLE_NATIVE=0` must not re-arm the
 // crash) and before the package is required, because upstream reads it when
