@@ -6,7 +6,23 @@
       http-equiv="Content-Security-Policy"
       content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src http://127.0.0.1:*;"
     />
+    <!-- The error page must own its title. Without one, Chromium never fires
+         `page-title-updated`, so the tab (and the window title) keep showing
+         the title of whatever page the user was on before the failed
+         navigation. See issue #236. `displayError()` keeps this in sync with
+         the headline it picks for the specific failure. -->
+    <title>Content Unavailable</title>
     <style>
+      /* Internal pages follow Settings > Appearance, not the OS colour scheme:
+         the webview preload resolves the setting and stamps `data-theme` on
+         <html> before first paint (#233). Declaring `color-scheme` from the
+         same attribute keeps scrollbars and form controls in step. */
+      html {
+        color-scheme: dark;
+      }
+      html[data-theme='light'] {
+        color-scheme: light;
+      }
       html,
       body {
         height: 100%;
@@ -67,8 +83,9 @@
         margin: 0 2px;
       }
 
-      /* Light theme */
-      @media (prefers-color-scheme: light) {
+      /* Light theme. `:where()` holds the wrapper at zero specificity, so
+         every rule below weighs exactly what it did as a media query. */
+      :where(html[data-theme='light']) {
         body {
           background: radial-gradient(ellipse at top left, #f6f8fa 0%, #ffffff 60%);
           color: #24292f;
@@ -186,6 +203,15 @@
       const descriptionEl = document.getElementById('description');
       const titleEl = document.getElementById('title');
 
+      // Headline and document title move together: the tab, the window title
+      // and the history entry all read `document.title`, and a stale one is
+      // exactly the bug in #236. The static <title> above covers the case
+      // where this script never runs (CSP failure, parse error).
+      function setErrorTitle(text) {
+        titleEl.textContent = text;
+        document.title = text;
+      }
+
       async function getRegistry() {
         try {
           return await window.serviceRegistry?.getRegistry?.();
@@ -234,7 +260,7 @@
         // peer-to-peer page when they aren't.
         if (!protocol) {
           const host = hostFor(url);
-          titleEl.textContent = "Couldn't load this page";
+          setErrorTitle("Couldn't load this page");
           descriptionEl.textContent = host
             ? `${host} didn't respond, or the response was blocked. Check the URL and try again.`
             : "The server didn't respond, or the response was blocked. Check the URL and try again.";
@@ -244,7 +270,7 @@
           // The Bee HTTP API is reachable, but the requested content didn't
           // resolve within the probe timeout. Typically means the node is
           // still connecting to enough peers to locate the manifest.
-          titleEl.textContent = "Content not ready yet";
+          setErrorTitle('Content not ready yet');
           descriptionEl.innerHTML =
             "Couldn't find this content on the Swarm network yet. The node is " +
             "still connecting to peers &mdash; try again in a moment.";

@@ -202,6 +202,139 @@ describe('navigation-utils extracted helpers', () => {
         ipnsRoutePrefix: 'http://127.0.0.1:8080/ipns/',
       })
     ).toBe('ipfs://vitalik.eth');
+
+    // Same rule for the name-resolution interstitials (#235): a tab parked
+    // on one restores the blocked name, never the interstitial's file:// path.
+    expect(
+      mod.deriveSwitchedTabDisplay({
+        url: 'file:///app/pages/ens-unverified.html?name=retry.tez&uri=ipfs%3A%2F%2FQmRetryTez',
+        bzzRoutePrefix: 'http://127.0.0.1:1633/bzz/',
+        homeUrlNormalized: 'file:///app/pages/home.html',
+      })
+    ).toBe('retry.tez');
+
+    expect(
+      mod.deriveSwitchedTabDisplay({
+        url: 'file:///app/pages/ens-conflict.html?name=lagged.tez&block=%7B%7D&groups=%5B%5D',
+        bzzRoutePrefix: 'http://127.0.0.1:1633/bzz/',
+        homeUrlNormalized: 'file:///app/pages/home.html',
+      })
+    ).toBe('lagged.tez');
+
+    // Fail-safe: an interstitial with no `name` param clears the address bar
+    // rather than falling through to its on-disk path — the same fallback the
+    // active-tab did-navigate handler applies.
+    expect(
+      mod.deriveSwitchedTabDisplay({
+        url: 'file:///app/pages/ens-conflict.html',
+        bzzRoutePrefix: 'http://127.0.0.1:1633/bzz/',
+        homeUrlNormalized: 'file:///app/pages/home.html',
+      })
+    ).toBe('');
+
+    expect(
+      mod.deriveSwitchedTabDisplay({
+        url: 'file:///app/pages/ens-unverified.html?uri=ipfs%3A%2F%2FQmRetryTez',
+        bzzRoutePrefix: 'http://127.0.0.1:1633/bzz/',
+        homeUrlNormalized: 'file:///app/pages/home.html',
+      })
+    ).toBe('');
+
+    // The onchain trust gate follows the same rule with its own param: a tab
+    // parked on it restores the `web3://` app identity, never the gate's
+    // file:// path — which carries the single-use approval token.
+    expect(
+      mod.deriveSwitchedTabDisplay({
+        url: 'file:///app/pages/onchain-unverified.html?target=web3%3A%2F%2F0x00000095643cffa7d9fae407a84dfcb6406456c6.eip155-1%2F&token=abc123&conflict=1',
+        bzzRoutePrefix: 'http://127.0.0.1:1633/bzz/',
+        homeUrlNormalized: 'file:///app/pages/home.html',
+      })
+    ).toBe('web3://0x00000095643cffa7d9fae407a84dfcb6406456c6/');
+
+    // A non-default chain keeps its `:<chainId>` suffix, same as the active
+    // tab's address bar.
+    expect(
+      mod.deriveSwitchedTabDisplay({
+        url: 'file:///app/pages/onchain-unverified.html?target=web3%3A%2F%2F0x00000095643cffa7d9fae407a84dfcb6406456c6.eip155-100%2Fswap&token=abc123',
+        bzzRoutePrefix: 'http://127.0.0.1:1633/bzz/',
+        homeUrlNormalized: 'file:///app/pages/home.html',
+      })
+    ).toBe('web3://0x00000095643cffa7d9fae407a84dfcb6406456c6:100/swap');
+
+    // Fail-safe: a gate URL with a missing/non-web3 target clears the address
+    // bar rather than falling through to its on-disk path.
+    for (const url of [
+      'file:///app/pages/onchain-unverified.html',
+      'file:///app/pages/onchain-unverified.html?target=https%3A%2F%2Fevil.example&token=abc123',
+    ]) {
+      expect(
+        mod.deriveSwitchedTabDisplay({
+          url,
+          bzzRoutePrefix: 'http://127.0.0.1:1633/bzz/',
+          homeUrlNormalized: 'file:///app/pages/home.html',
+        })
+      ).toBe('');
+    }
+
+    // `view-source:` of the gate is refused at dispatch, but a tab that
+    // already holds one (session restore, a pre-fix history entry) must not
+    // repaint the approval token into the address bar on switchback either:
+    // the gate test also runs on the stripped URL, and fails safe to blank.
+    expect(
+      mod.deriveSwitchedTabDisplay({
+        url: 'view-source:file:///app/pages/onchain-unverified.html?target=web3%3A%2F%2F0x00000095643cffa7d9fae407a84dfcb6406456c6.eip155-1%2F&token=aaaabbbbcccc',
+        isViewingSource: true,
+        bzzRoutePrefix: 'http://127.0.0.1:1633/bzz/',
+        homeUrlNormalized: 'file:///app/pages/home.html',
+      })
+    ).toBe('');
+
+    // …but a remote look-alike path is real content and keeps its own URL.
+    expect(
+      mod.deriveSwitchedTabDisplay({
+        url: 'https://evil.test/pages/onchain-unverified.html?target=web3%3A%2F%2F0x00000095643cffa7d9fae407a84dfcb6406456c6.eip155-1%2F',
+        bzzRoutePrefix: 'http://127.0.0.1:1633/bzz/',
+        homeUrlNormalized: 'file:///app/pages/home.html',
+      })
+    ).toBe(
+      'https://evil.test/pages/onchain-unverified.html?target=web3%3A%2F%2F0x00000095643cffa7d9fae407a84dfcb6406456c6.eip155-1%2F'
+    );
+
+    // The interstitial test runs on the committed URL as-is, never on the
+    // `view-source:` inner URL: viewing an interstitial's source is source
+    // text, not the block itself, and the active-tab handler's view-source
+    // branch (which runs ahead of its interstitial branch) shows
+    // `view-source:<inner display>`. Both surfaces have to agree.
+    expect(
+      mod.deriveSwitchedTabDisplay({
+        url: 'view-source:file:///app/pages/ens-conflict.html?name=lagged.tez&block=%7B%7D',
+        isViewingSource: true,
+        bzzRoutePrefix: 'http://127.0.0.1:1633/bzz/',
+        homeUrlNormalized: 'file:///app/pages/home.html',
+      })
+    ).toBe('view-source:file:///app/pages/ens-conflict.html?name=lagged.tez&block=%7B%7D');
+
+    // #235 regression: a remote page served at a chrome-look-alike path must
+    // never dictate the switched-tab address bar. `deriveSwitchedTabDisplay`
+    // used to run both the interstitial and the error-page recovery on a bare
+    // `/<file>.html` substring test, so `https://evil.test/error.html?url=…`
+    // repainted the address bar (protocol icon included) with the attacker's
+    // chosen value while the webview rendered the attacker's page.
+    expect(
+      mod.deriveSwitchedTabDisplay({
+        url: 'https://evil.test/error.html?error=offline&url=bzz%3A%2F%2Fvitalik.eth&protocol=swarm',
+        bzzRoutePrefix: 'http://127.0.0.1:1633/bzz/',
+        homeUrlNormalized: 'file:///app/pages/home.html',
+      })
+    ).toBe('https://evil.test/error.html?error=offline&url=bzz%3A%2F%2Fvitalik.eth&protocol=swarm');
+
+    expect(
+      mod.deriveSwitchedTabDisplay({
+        url: 'https://evil.test/ens-conflict.html?name=bank.eth',
+        bzzRoutePrefix: 'http://127.0.0.1:1633/bzz/',
+        homeUrlNormalized: 'file:///app/pages/home.html',
+      })
+    ).toBe('https://evil.test/ens-conflict.html?name=bank.eth');
   });
 
   test('computes bookmark bar state and extracts original urls from error pages', async () => {
@@ -237,7 +370,14 @@ describe('navigation-utils extracted helpers', () => {
         'file:///app/pages/error.html'
       )
     ).toBe('https://example.com');
-    expect(mod.getOriginalUrlFromErrorPage('https://example.com', 'file:///app/pages/error.html')).toBeNull();
-    expect(mod.getOriginalUrlFromErrorPage('not-a-url/error.html?', 'file:///app/pages/error.html')).toBeNull();
+    expect(mod.getOriginalUrlFromErrorPage('https://example.com')).toBeNull();
+    expect(mod.getOriginalUrlFromErrorPage('not-a-url/error.html?')).toBeNull();
+    // Only the shell's own error page counts (#235).
+    expect(
+      mod.getOriginalUrlFromErrorPage('https://evil.test/error.html?url=bzz%3A%2F%2Fvitalik.eth')
+    ).toBeNull();
+    expect(
+      mod.getOriginalUrlFromErrorPage('file:///app/pages/error.html.evil?url=https%3A%2F%2Fa.test')
+    ).toBeNull();
   });
 });

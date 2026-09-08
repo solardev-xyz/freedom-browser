@@ -1,8 +1,27 @@
-/* Shared base styles for ENS interstitial pages (conflict, unverified). */
+/* Shared base styles for the name interstitial pages (conflict, unverified),
+   used by the ENS, Tezos Domains and onchain-app name flows. */
+
+/* Internal pages follow Settings > Appearance, not the OS colour scheme: the
+   webview preload resolves the setting and stamps `data-theme` on <html>
+   before first paint (#233). Declaring `color-scheme` from the same attribute
+   keeps scrollbars and form controls in step. */
+html {
+  color-scheme: dark;
+}
+html[data-theme='light'] {
+  color-scheme: light;
+}
 html,
 body {
   height: 100%;
   margin: 0;
+}
+/* Author `display` rules below (buttons, detail rows) outrank the user-agent
+   `[hidden] { display: none }`, which would leave mode-specific controls —
+   including the conflict page's non-existent "Continue once" action —
+   clickable on a security interstitial. Keep `hidden` authoritative. */
+[hidden] {
+  display: none !important;
 }
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -26,8 +45,12 @@ h1 {
   align-items: center;
   gap: 12px;
 }
-body.conflict h1 { color: #ff5e5e; }
-body.unverified h1 { color: #d7a77c; }
+body.conflict h1 {
+  color: #ff5e5e;
+}
+body.unverified h1 {
+  color: #d7a77c;
+}
 .groups {
   display: flex;
   flex-direction: column;
@@ -73,6 +96,32 @@ p {
   font-family: monospace;
   font-size: 14px;
   word-break: break-all;
+}
+.details {
+  background: #1a1a1a;
+  border: 1px solid #2c2c2c;
+  border-radius: 8px;
+  margin-bottom: 20px;
+  overflow: hidden;
+}
+.detail-row {
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr);
+  gap: 12px;
+  padding: 10px 14px;
+}
+.detail-row + .detail-row {
+  border-top: 1px solid #2c2c2c;
+}
+.detail-label {
+  color: #888;
+  font-size: 13px;
+}
+.detail-value {
+  color: #ccc;
+  font-family: monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 .name-block .name {
   color: #f5f5f5;
@@ -132,20 +181,38 @@ button[disabled] {
   color: #8fbcff;
 }
 
-/* Light theme */
-@media (prefers-color-scheme: light) {
+/* Light theme. `:where()` holds the wrapper at zero specificity, so every
+   rule below weighs exactly what it did as a media query. */
+:where(html[data-theme='light']) {
   body {
     background: radial-gradient(ellipse at top left, #f6f8fa 0%, #ffffff 60%);
     color: #24292f;
   }
-  body.conflict h1 { color: #cf222e; }
-  body.unverified h1 { color: #9a6700; }
+  body.conflict h1 {
+    color: #cf222e;
+  }
+  body.unverified h1 {
+    color: #9a6700;
+  }
   p {
     color: #57606a;
   }
   .name-block {
     background: #f6f8fa;
     border: 1px solid #d0d7de;
+  }
+  .details {
+    background: #f6f8fa;
+    border-color: #d0d7de;
+  }
+  .detail-row + .detail-row {
+    border-color: #d0d7de;
+  }
+  .detail-label {
+    color: #57606a;
+  }
+  .detail-value {
+    color: #24292f;
   }
   .name-block .name {
     color: #24292f;

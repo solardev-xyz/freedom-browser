@@ -460,6 +460,59 @@ export function getAliasAccelerators(entryOrId, platform) {
     .map((alias) => alias.accelerator);
 }
 
+// ── Display formatting (mirror of src/shared/shortcuts.js) ──────────────
+
+const MAC_MODIFIER_GLYPHS = { ctrl: '⌃', alt: '⌥', shift: '⇧', meta: '⌘' };
+const MAC_KEY_GLYPHS = {
+  Left: '←',
+  Right: '→',
+  Up: '↑',
+  Down: '↓',
+  Enter: '↩',
+  Backspace: '⌫',
+  Delete: '⌦',
+  Escape: '⎋',
+  Tab: '⇥',
+  Plus: '+',
+};
+
+// Electron's `num*` key codes read like internals in Settings > Shortcuts,
+// so show them the way keyboards label them: 'Num +', 'Num 0', …
+const NUMPAD_SYMBOLS = { add: '+', sub: '-', mult: '*', div: '/', dec: '.' };
+function numpadKeyLabel(key) {
+  const match = /^num(\d|add|sub|mult|div|dec)$/.exec(key);
+  if (!match) return null;
+  return `Num ${NUMPAD_SYMBOLS[match[1]] || match[1]}`;
+}
+
+/**
+ * Human-readable binding: mac-style glyph run ('⌘⇧K') on darwin,
+ * 'Ctrl+Shift+K' elsewhere. Returns '' for unparsable input.
+ */
+export function formatAccelerator(accelerator, platform) {
+  const parsed = parseAccelerator(accelerator, platform);
+  if (!parsed) return '';
+  const key =
+    numpadKeyLabel(parsed.key) || (parsed.key.length === 1 ? parsed.key.toUpperCase() : parsed.key);
+
+  if (platform === 'darwin') {
+    let out = '';
+    if (parsed.ctrl) out += MAC_MODIFIER_GLYPHS.ctrl;
+    if (parsed.alt) out += MAC_MODIFIER_GLYPHS.alt;
+    if (parsed.shift) out += MAC_MODIFIER_GLYPHS.shift;
+    if (parsed.meta) out += MAC_MODIFIER_GLYPHS.meta;
+    return out + (MAC_KEY_GLYPHS[key] || key);
+  }
+
+  const parts = [];
+  if (parsed.ctrl) parts.push('Ctrl');
+  if (parsed.alt) parts.push('Alt');
+  if (parsed.shift) parts.push('Shift');
+  if (parsed.meta) parts.push('Super');
+  parts.push(key === 'Plus' ? '+' : key);
+  return parts.join('+');
+}
+
 // ── Renderer-side state ─────────────────────────────────────────────────
 
 const detectPlatform = () => {

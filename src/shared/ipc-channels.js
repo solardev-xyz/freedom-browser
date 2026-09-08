@@ -153,6 +153,10 @@ module.exports = {
   // Internal
   GET_WEBVIEW_PRELOAD_PATH: 'internal:get-webview-preload-path',
   GET_INTERNAL_PAGES: 'internal:get-pages',
+  // Sync read of the Appearance theme ('system' | 'light' | 'dark') by the
+  // webview preload, so internal pages can stamp the resolved scheme on
+  // <html> before their first paint (see src/main/webview-preload.js).
+  GET_THEME: 'internal:get-theme',
   GET_ETHEREUM_INJECT_SOURCE: 'internal:get-ethereum-inject-source',
   OPEN_URL_IN_NEW_TAB: 'internal:open-url-in-new-tab',
   SIDEBAR_OPEN_PUBLISH_SETUP: 'sidebar:open-publish-setup',

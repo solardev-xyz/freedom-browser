@@ -3,6 +3,7 @@ import { state } from './state.js';
 import { pushDebug } from './debug.js';
 import { showMenuBackdrop, hideMenuBackdrop } from './menu-backdrop.js';
 import { deriveDisplayValue, applyEnsNamePreservation } from './url-utils.js';
+import { isTrustInterstitialPageUrl } from './page-urls.js';
 
 const electronAPI = window.electronAPI;
 
@@ -60,6 +61,18 @@ export const showPageContextMenu = (x, y, context) => {
     // Page context - show page menu
     const pageGroup = pageContextMenu.querySelector('[data-group="page"]');
     if (pageGroup) pageGroup.classList.add('visible');
+  }
+
+  // A browser-owned trust interstitial has no source worth showing: the
+  // bytes are the shell's own bundled page, and its `file://` URL is the one
+  // thing chrome must never publish — the onchain gate carries the
+  // single-use approval token in a query param, and `view-source:<that URL>`
+  // would land verbatim in the new tab's address bar, tab title and window
+  // title. Drop the item rather than offering an action we then refuse.
+  // See issue #235.
+  const viewSourceBtn = pageContextMenu.querySelector('[data-action="view-source"]');
+  if (viewSourceBtn) {
+    viewSourceBtn.classList.toggle('hidden', isTrustInterstitialPageUrl(context.pageUrl));
   }
 
   // Update navigation button states
@@ -151,6 +164,13 @@ const handleAction = async (action) => {
 
     case 'view-source':
       if (currentContext.pageUrl) {
+        // The item is hidden on trust interstitials (see showPageContextMenu);
+        // refuse here too so a stale context can't smuggle the gate's
+        // token-bearing file:// URL into a new tab's chrome. See issue #235.
+        if (isTrustInterstitialPageUrl(currentContext.pageUrl)) {
+          pushDebug('Refusing view source for a browser-owned trust interstitial');
+          break;
+        }
         // Pass the raw gateway URL - the address bar will derive the display value
         const viewSourceUrl = `view-source:${currentContext.pageUrl}`;
         pushDebug(`Opening view source: ${viewSourceUrl}`);

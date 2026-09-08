@@ -1,3 +1,6 @@
+const fs = require('fs');
+const path = require('path');
+
 const originalWindow = global.window;
 const originalDocument = global.document;
 
@@ -23,7 +26,18 @@ const createElement = () => {
   };
 };
 
-const loadMenusModule = async ({ platform = 'darwin', webview } = {}) => {
+const DEFAULT_SHORTCUT_HINTS = [
+  { shortcut: 'CmdOrCtrl+Shift+T' },
+  { shortcut: 'Alt+CmdOrCtrl+I' },
+  // History differs per platform (Cmd+Y on macOS, Ctrl+H elsewhere).
+  { shortcut: 'Cmd+Y', shortcutOther: 'Ctrl+H' },
+];
+
+const loadMenusModule = async ({
+  platform = 'darwin',
+  webview,
+  shortcutHints = DEFAULT_SHORTCUT_HINTS,
+} = {}) => {
   jest.resetModules();
 
   const menuButton = createElement();
@@ -47,12 +61,7 @@ const loadMenusModule = async ({ platform = 'darwin', webview } = {}) => {
   const beeVersionText = createElement();
   const beeInfoPanel = createElement();
 
-  const shortcutEls = [
-    { dataset: { shortcut: 'CmdOrCtrl+Shift+T' }, textContent: '' },
-    { dataset: { shortcut: 'Alt+CmdOrCtrl+I' }, textContent: '' },
-    // History differs per platform (Cmd+Y on macOS, Ctrl+H elsewhere).
-    { dataset: { shortcut: 'Cmd+Y', shortcutOther: 'Ctrl+H' }, textContent: '' },
-  ];
+  const shortcutEls = shortcutHints.map((dataset) => ({ dataset: { ...dataset }, textContent: '' }));
 
   const documentHandlers = {};
   const windowHandlers = {};
@@ -205,10 +214,95 @@ const loadMenusModule = async ({ platform = 'darwin', webview } = {}) => {
   };
 };
 
+// The hamburger hints markup is the source of truth for what the menu
+// offers; pull the real values so this test can't drift from index.html.
+const readIndexHintDatasets = () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
+  return [...html.matchAll(/<span[^>]*class="menu-item-shortcut"[^>]*>/gs)].map((match) => {
+    const tag = match[0];
+    const shortcut = /data-shortcut="([^"]+)"/.exec(tag)?.[1];
+    const shortcutOther = /data-shortcut-other="([^"]+)"/.exec(tag)?.[1];
+    return shortcutOther ? { shortcut, shortcutOther } : { shortcut };
+  });
+};
+
+// #227: every numeric counter row in the Nodes menu shares one empty-state
+// representation ('0'); '--' stays reserved for the non-numeric rows
+// (Version, Finalized Block). Read the real dropdown markup so a counter
+// can't drift back to '--' — including one added later.
+const readNodesMenuCounterDefaults = () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
+  const dropdown = html.slice(
+    html.indexOf('id="bee-menu-dropdown"'),
+    html.indexOf('id="wallet-toggle-btn"')
+  );
+  return [...dropdown.matchAll(/<span id="([\w-]+(?:-count|-peers))">([^<]*)<\/span>/g)].map(
+    ([, id, text]) => [id, text]
+  );
+};
+
 describe('menus', () => {
   afterEach(() => {
     global.window = originalWindow;
     global.document = originalDocument;
+  });
+
+  // #225: formatShortcut used to strip every '+' on every platform, so the
+  // hamburger read 'CtrlT'/'CtrlShiftN' on Linux/Windows while Settings >
+  // Shortcuts read 'Ctrl+T'/'Ctrl+Shift+N' for the same binding.
+  describe.each(['linux', 'win32'])('hamburger shortcut hints on %s', (platform) => {
+    test('keep the + separator, matching Settings > Shortcuts', async () => {
+      const { menus, elements } = await loadMenusModule({
+        platform,
+        shortcutHints: readIndexHintDatasets(),
+      });
+
+      menus.initMenus();
+      await Promise.resolve();
+
+      expect(elements.shortcutEls.map((el) => el.textContent)).toEqual([
+        'Ctrl+T',
+        'Ctrl+N',
+        'Ctrl+Shift+N',
+        'Ctrl+H',
+        'Ctrl+Alt+I',
+      ]);
+    });
+  });
+
+  // #227: the Radicle row used to be the odd one out at '--'; the Swarm and
+  // IPFS rows were the odd ones out the other way once it moved to '0'.
+  test('every Nodes menu counter starts at 0, not --', () => {
+    const counters = readNodesMenuCounterDefaults();
+
+    expect(counters.map(([id]) => id)).toEqual([
+      'bee-peers-count',
+      'bee-network-peers',
+      'ipfs-active-requests-count',
+      'myotis-peers-count',
+      'myotis-gnosis-peers-count',
+      'radicle-peers-count',
+      'radicle-repos-count',
+    ]);
+    expect(counters.filter(([, text]) => text !== '0')).toEqual([]);
+  });
+
+  test('hamburger shortcut hints render as mac glyph runs on darwin', async () => {
+    const { menus, elements } = await loadMenusModule({
+      platform: 'darwin',
+      shortcutHints: readIndexHintDatasets(),
+    });
+
+    menus.initMenus();
+    await Promise.resolve();
+
+    expect(elements.shortcutEls.map((el) => el.textContent)).toEqual([
+      '⌘T',
+      '⌘N',
+      '⇧⌘N',
+      '⌘Y',
+      '⌥⌘I',
+    ]);
   });
 
   test('formats shortcuts and toggles the main menu state', async () => {
@@ -222,7 +316,9 @@ describe('menus', () => {
     menus.initMenus();
     await Promise.resolve();
 
-    expect(elements.shortcutEls[0].textContent).toBe('⌘⇧T');
+    // Same glyph run Settings > Shortcuts renders (⌃⌥⇧⌘ order, per Apple's
+    // menu convention) — both surfaces share formatAccelerator now (#225).
+    expect(elements.shortcutEls[0].textContent).toBe('⇧⌘T');
     expect(elements.shortcutEls[1].textContent).toBe('⌥⌘I');
     expect(elements.shortcutEls[2].textContent).toBe('⌘Y');
 
@@ -269,9 +365,10 @@ describe('menus', () => {
     await Promise.resolve();
 
     // Off macOS the hint must show the binding this platform actually has
-    // (Ctrl+H), not the mac-only Cmd+Y.
-    expect(elements.shortcutEls[0].textContent).toBe('CtrlShiftT');
-    expect(elements.shortcutEls[2].textContent).toBe('CtrlH');
+    // (Ctrl+H), not the mac-only Cmd+Y — spelled with the '+' separator
+    // Settings > Shortcuts uses (#225), not the old 'CtrlShiftT'.
+    expect(elements.shortcutEls[0].textContent).toBe('Ctrl+Shift+T');
+    expect(elements.shortcutEls[2].textContent).toBe('Ctrl+H');
 
     elements.newTabMenuBtn.handlers.click();
     elements.newWindowMenuBtn.handlers.click();

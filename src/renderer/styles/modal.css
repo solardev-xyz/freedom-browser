@@ -70,11 +70,6 @@
   font-size: 14px;
 }
 
-.form-input:focus {
-  outline: none;
-  border-color: var(--accent);
-}
-
 .help-text {
   margin: 6px 0 0;
   font-size: 12px;
