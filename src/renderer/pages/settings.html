@@ -1186,7 +1186,6 @@
             <div class="row">
               <div class="row-body">
                 <p class="row-label">Name</p>
-                <p class="row-help">The display name for the current profile.</p>
               </div>
               <div class="row-control profile-name-control">
                 <input
@@ -1225,6 +1224,7 @@
             <div class="row">
               <div class="row-body">
                 <p class="row-label">Start Swarm node</p>
+                <p class="row-help">Restart to apply.</p>
               </div>
               <div class="row-control">
                 <label class="toggle">
@@ -1236,6 +1236,7 @@
             <div class="row">
               <div class="row-body">
                 <p class="row-label">Start IPFS node</p>
+                <p class="row-help">Restart to apply.</p>
               </div>
               <div class="row-control">
                 <label class="toggle">
@@ -1247,9 +1248,7 @@
             <div class="row" id="radicle-launch-row">
               <div class="row-body">
                 <p class="row-label">Start Radicle node</p>
-                <p class="row-help" id="radicle-launch-help">
-                  Starts this profile's embedded Radicle node when Freedom opens.
-                </p>
+                <p class="row-help" id="radicle-launch-help">Restart to apply.</p>
               </div>
               <div class="row-control">
                 <label class="toggle">
@@ -1260,11 +1259,11 @@
             </div>
             <div class="row" id="myotis-launch-row">
               <div class="row-body">
-                <p class="row-label">Start Ethereum light client (Myotis)</p>
-                <p class="row-help" id="myotis-launch-help">
-                  Experimental: a fully peer-to-peer Ethereum node — name resolution verified
-                  against the chain itself, no RPC provider involved. Takes effect on next launch.
+                <p class="row-label">
+                  Start Ethereum node
+                  <span class="resolver-badge">Beta</span>
                 </p>
+                <p class="row-help" id="myotis-launch-help">Restart to apply.</p>
               </div>
               <div class="row-control">
                 <label class="toggle">
@@ -1275,11 +1274,11 @@
             </div>
             <div class="row" id="myotis-gnosis-launch-row">
               <div class="row-body">
-                <p class="row-label">Start Gnosis light client (Myotis)</p>
-                <p class="row-help" id="myotis-gnosis-launch-help">
-                  Starts the independent Gnosis P2P client for verified wallet, transaction, and
-                  dapp reads. Takes effect on next launch.
+                <p class="row-label">
+                  Start Gnosis node
+                  <span class="resolver-badge">Beta</span>
                 </p>
+                <p class="row-help" id="myotis-gnosis-launch-help">Restart to apply.</p>
               </div>
               <div class="row-control">
                 <label class="toggle">
@@ -1298,9 +1297,7 @@
             <div class="row">
               <div class="row-body">
                 <p class="row-label">Ask where to save each file</p>
-                <p class="row-help">
-                  When off, files are saved to your Downloads folder automatically.
-                </p>
+                <p class="row-help">Otherwise: ~/Downloads</p>
               </div>
               <div class="row-control">
                 <label class="toggle">
@@ -1490,10 +1487,7 @@
             <div class="row">
               <div class="row-body">
                 <p class="row-label">Allowlisted sites</p>
-                <p class="row-help">
-                  Ad blocking is turned off on these sites, including their subdomains. Changes
-                  apply to pages loaded afterwards — reload open tabs.
-                </p>
+                <p class="row-help">Ad blocking is off on these sites and their subdomains.</p>
               </div>
               <div class="row-control">
                 <input
