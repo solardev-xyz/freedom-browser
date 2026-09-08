@@ -110,6 +110,95 @@ test('Radicle is first-class, profile-visible, and opt-in at startup', async ({
     .toBe(false);
 });
 
+// The startup rows are re-parented into the node card, which
+// renderProfileNodes rebuilds from innerHTML on every refresh (the 5s
+// interval, a profile update, a node-config commit). Re-entering the section
+// forces exactly that second render.
+test('Nodes keeps its startup toggles across a re-render', async ({ window }) => {
+  const startupRows = `[...document.querySelectorAll('#profile-nodes-card [data-startup-slot] .row')]
+    .map((row) => row.id)`;
+  const expected = [
+    'ant-launch-row',
+    'ipfs-launch-row',
+    'myotis-launch-row',
+    'myotis-gnosis-launch-row',
+    'radicle-launch-row',
+  ];
+
+  await window.evaluate(() => document.getElementById('settings-btn')?.click());
+  await settingsEval(window, `location.hash = 'nodes'`);
+  await expect.poll(() => settingsEval(window, startupRows)).toEqual(expected);
+
+  await settingsEval(window, `location.hash = 'appearance'`);
+  await settingsEval(window, `location.hash = 'nodes'`);
+  await expect.poll(() => settingsEval(window, startupRows)).toEqual(expected);
+  // The toggles are the same live elements, so their handlers still work.
+  const setIpfsStartup = (value) =>
+    settingsEval(
+      window,
+      `(() => {
+        const toggle = document.getElementById('start-ipfs-at-launch');
+        toggle.checked = ${value};
+        toggle.dispatchEvent(new Event('change', { bubbles: true }));
+      })()`
+    );
+  const persistedIpfsStartup = () =>
+    settingsEval(window, `window.freedomAPI.getSettings().then((s) => s.startIpfsAtLaunch)`);
+
+  await setIpfsStartup(false);
+  await expect.poll(persistedIpfsStartup).toBe(false);
+  // Leave the shared fixture in its default state for later specs.
+  await setIpfsStartup(true);
+  await expect.poll(persistedIpfsStartup).toBe(true);
+});
+
+// Networks' other two panels render as their own sections, so the chain list
+// is the only place that can reach them.
+test('Networks links to Name Resolution and API keys', async ({ window }) => {
+  await window.evaluate(() => document.getElementById('settings-btn')?.click());
+  await settingsEval(window, `location.hash = 'networks'`);
+  await expect
+    .poll(() =>
+      settingsEval(
+        window,
+        `[...document.querySelectorAll('#chains [data-action^="open-"]:not([data-chain])')]
+          .map((row) => row.dataset.action)`
+      )
+    )
+    .toEqual(['open-names', 'open-rpc-page']);
+
+  await settingsEval(window, `document.querySelector('[data-action="open-names"]').click()`);
+  await expect
+    .poll(() =>
+      settingsEval(
+        window,
+        `({
+          hash: location.hash,
+          resolution: !document.getElementById('ens').classList.contains('hidden'),
+          methods: document.querySelectorAll('#ens [data-method]').length
+        })`
+      )
+    )
+    .toEqual({ hash: '#networks/names', resolution: true, methods: 4 });
+
+  // …and back, the way the chain detail and API keys pages already go back.
+  await settingsEval(window, `document.querySelector('#ens .back-link').click()`);
+  await expect.poll(() => settingsEval(window, `location.hash`)).toBe('#networks');
+
+  await settingsEval(window, `document.querySelector('[data-action="open-rpc-page"]').click()`);
+  await expect
+    .poll(() =>
+      settingsEval(
+        window,
+        `({
+          hash: location.hash,
+          keys: !document.getElementById('rpc').classList.contains('hidden')
+        })`
+      )
+    )
+    .toEqual({ hash: '#networks/keys', keys: true });
+});
+
 test('name resolution methods can be reordered, enabled, and persisted as one policy', async ({
   window,
 }) => {

@@ -1383,6 +1383,7 @@
 
         <!-- Ethereum Name Resolution — a focused lens on the Ethereum network -->
         <section class="section" id="ens">
+          <button type="button" class="back-link" id="ens-back">‹ Networks</button>
           <h2 class="section-title">Name Resolution</h2>
           <p class="row-help" style="margin-bottom: 16px">
             How Freedom resolves <code>.eth</code>, <code>.box</code>, <code>.wei</code>, and
@@ -1732,6 +1733,17 @@
         myotis: ['myotis-launch-row', 'myotis-gnosis-launch-row'],
         radicle: ['radicle-launch-row'],
       };
+      // Resolved once, up front. renderProfileNodes re-parents these rows
+      // into the node card it rebuilds from innerHTML, so from the second
+      // render on they are no longer in the document and a fresh
+      // getElementById would return null — holding the elements keeps them
+      // (and their handlers) alive across every re-render.
+      const startupRows = new Map(
+        Object.entries(STARTUP_ROWS).map(([protocol, rowIds]) => [
+          protocol,
+          rowIds.map((rowId) => $(rowId)).filter(Boolean),
+        ])
+      );
       // About Freedom's version line. The app stamps its version into the
       // user agent, so this needs no new IPC; a manual "Check for updates"
       // button does, and is not mocked here.
@@ -2324,15 +2336,12 @@
         }
         // Same for the "Start … when Freedom opens" rows, which used to be
         // their own nav item (#268). Myotis owns two — Ethereum and Gnosis.
-        for (const [protocol, rowIds] of Object.entries(STARTUP_ROWS)) {
+        for (const [protocol, rows] of startupRows) {
           const slot = profileFields.nodesCard.querySelector(
             `[data-startup-slot="${protocol}"]`
           );
           if (!slot) continue;
-          for (const rowId of rowIds) {
-            const row = document.getElementById(rowId);
-            if (row) slot.appendChild(row);
-          }
+          for (const row of rows) slot.appendChild(row);
         }
       };
 
@@ -3118,13 +3127,13 @@
         load();
       })();
 
-      // ── Chains settings page ────────────────────────────────────────
+      // ── Networks settings page ──────────────────────────────────────
       // Master-detail controller for the #chains section: a list of
       // chains, each drilling into a per-chain detail view of that chain's
-      // endpoint sources. Hash-routed — #chains is the list,
-      // #chains/<chainId> a detail. Talks to the registry via
-      // freedomAPI's networks:* bridge; every mutation re-fetches and
-      // re-renders so the view mirrors the registry.
+      // endpoint sources, plus the way into Networks' other two panels.
+      // Hash-routed — #networks is the list, #networks/<chainId> a detail.
+      // Talks to the registry via freedomAPI's networks:* bridge; every
+      // mutation re-fetches and re-renders so the view mirrors the registry.
       (() => {
         const section = $('chains');
         const view = $('chains-view');
@@ -3192,14 +3201,32 @@
               })
             )
             .join('');
+          // Networks' other two panels — `networks/names` (Name Resolution)
+          // and `networks/keys` (API keys) — render as their own sections,
+          // so this list is the only place that can reach them. Without
+          // these rows both are hash-only.
+          const subPages =
+            navRow({
+              name: 'Name Resolution',
+              sub: 'How .eth, .box, .wei and .gwei names resolve',
+              action: 'open-names',
+            }) +
+            navRow({
+              name: 'API keys',
+              sub: 'Keys for commercial RPC providers',
+              action: 'open-rpc-page',
+            });
           view.innerHTML = `
-            <h2 class="section-title">Chains</h2>
+            <h2 class="section-title">Networks</h2>
             <p class="row-help" style="margin-bottom: 16px">
               The chains Freedom resolves names and balances on. Select a
               chain to manage its RPC and prover endpoints.
             </p>
+            <h3 class="subsection-title">Chains</h3>
             <div class="card">${rows}</div>
-            ${cardButton('Add chain', 'add-chain')}`;
+            ${cardButton('Add chain', 'add-chain')}
+            <h3 class="subsection-title">Names and keys</h3>
+            <div class="card">${subPages}</div>`;
         };
 
         // --- add-chain flow ------------------------------------------
@@ -3307,7 +3334,7 @@
             return;
           }
           view.innerHTML = `
-            <button type="button" class="back-link" data-action="cancel-add">‹ Chains</button>
+            <button type="button" class="back-link" data-action="cancel-add">‹ Networks</button>
             <h2 class="section-title">Add a chain</h2>
             <p class="row-help" style="margin-bottom: 16px">
               Search the public chain catalogue, or enter a chain manually.
@@ -3821,6 +3848,8 @@
             await mutate(() => freedomAPI.removeEndpointSource(id));
           } else if (action === 'open-rpc-page') {
             location.hash = 'networks/keys';
+          } else if (action === 'open-names') {
+            location.hash = 'networks/names';
           } else if (action === 'remove-chain') {
             const cid = openChainId();
             if (!cid) return;
@@ -3985,6 +4014,12 @@
         const preferVerified = $('ens-prefer-verified');
         const policyStatus = $('ens-policy-status');
         if (!list || !preferVerified) return;
+
+        // Back to the Networks list this page is reached from, the same way
+        // the chain detail and the API keys page go back.
+        $('ens-back')?.addEventListener('click', () => {
+          location.hash = 'networks';
+        });
 
         const METHODS = [
           {
