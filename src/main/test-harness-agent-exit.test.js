@@ -94,6 +94,11 @@ describe('bounded app-exit fixture evidence without native execution', () => {
     expect(source).toContain('alarmArmedAfterMonotonicNs');
     expect(source).toContain('alarmArmedBeforeWallNs');
     expect(source).toContain('alarmArmedAfterWallNs');
+    expect(source).toContain("'clockDomain': 'clock_gettime:CLOCK_MONOTONIC'");
+    expect(source.indexOf('alarm_before = time.clock_gettime_ns(time.CLOCK_MONOTONIC)'))
+      .toBeLessThan(source.indexOf('signal.alarm(12)'));
+    expect(source.indexOf('alarm_after = time.clock_gettime_ns(time.CLOCK_MONOTONIC)'))
+      .toBeGreaterThan(source.indexOf('signal.alarm(12)'));
     expect(fs.statSync(fixture.receiptPath).mode & 0o777).toBe(0o600);
   });
 
