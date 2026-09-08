@@ -354,4 +354,60 @@ describe('approval screens (#239)', () => {
     const sign = screen('sidebar-dapp-sign');
     expect(sign.match(/class="dapp-sign-warning"[\s\S]*?<\/svg>/)[0]).toMatch(INFO_CIRCLE);
   });
+
+  // The playbook used to state the "Reject" verb as a settled rule with the
+  // Swarm screens as its one exception, which was never true: three approval
+  // surfaces word the same decision differently. Rather than restate a rule the
+  // markup does not follow, the playbook now names those three, and this pins
+  // the naming in both directions so neither side can drift alone.
+  describe('ui-consistency.md on the reject verb', () => {
+    const playbook = fs
+      .readFileSync(path.join(__dirname, '../../docs/agent-playbooks/ui-consistency.md'), 'utf8')
+      .replace(/\s+/g, ' ');
+
+    // Straight vs. typographic apostrophes differ between prose and markup.
+    const norm = (text) => text.replace(/[’‘]/g, "'").trim();
+
+    // Every `… says "Verb" (`#id`)` the playbook lists as unpinned drift.
+    const documented = [...playbook.matchAll(/"([^"]+)" \(`#([a-z0-9-]+)`\)/g)].map((match) => [
+      match[2],
+      norm(match[1]),
+    ]);
+
+    // A secondary that is legitimately "Cancel"/not a reject at all: a form, an
+    // unlock prompt, the middle "ask each time" choice.
+    const NOT_A_REJECT = new Set([
+      'vault-unlock-cancel',
+      'publisher-identity-create-cancel',
+      'swarm-manifest-individual',
+    ]);
+
+    test('the playbook names exactly the three it says it does', () => {
+      expect(documented.map(([id]) => id).sort()).toEqual([
+        'permission-prompt-block',
+        'radicle-consent-reject',
+        'swarm-manifest-reject',
+      ]);
+    });
+
+    // doc -> markup: each documented verb is the one actually rendered.
+    test.each(documented)('#%s still reads "%s"', (id, verb) => {
+      expect(norm(label(index, id))).toBe(verb);
+    });
+
+    // markup -> doc: any other approval secondary that stops saying "Reject" is
+    // new drift, and has to be documented (or fixed) rather than land silently.
+    test('no undocumented approval secondary has drifted off "Reject"', () => {
+      const drifted = [];
+      for (const match of index.matchAll(
+        /class="(?:swarm-connect|dapp-tx|dapp-sign|dapp-connect)-reject-btn"\s+id="([a-z0-9-]+)"[^>]*>\s*([^<]*?)\s*</g
+      )) {
+        const [, id, text] = match;
+        if (NOT_A_REJECT.has(id) || norm(text) === 'Reject') continue;
+        if (documented.some(([documentedId]) => documentedId === id)) continue;
+        drifted.push(`#${id} says "${norm(text)}"`);
+      }
+      expect(drifted).toEqual([]);
+    });
+  });
 });

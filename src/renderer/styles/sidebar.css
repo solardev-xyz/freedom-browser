@@ -3311,97 +3311,14 @@
   margin-bottom: 10px;
 }
 
-.swarm-feed-identity-help {
-  margin: 8px 0 0;
-  font-size: 12px;
-  color: var(--muted);
-  line-height: 1.4;
-}
-
-.swarm-feed-identity-option {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  padding: 10px 12px;
-  margin-bottom: 6px;
-  background: var(--toolbar);
-  border-radius: 8px;
-  cursor: pointer;
-  border: 1px solid var(--border);
-  transition: border-color 0.15s;
-}
-
-.swarm-feed-identity-option:has(input:checked) {
-  border-color: #f59e0b;
-}
-
-.swarm-feed-identity-option input[type="radio"] {
-  margin-top: 2px;
-  accent-color: #f59e0b;
-}
-
-.swarm-feed-identity-label {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.swarm-feed-identity-name {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--foreground);
-}
-
-.swarm-feed-identity-desc {
-  font-size: 12px;
-  color: var(--muted);
-  line-height: 1.3;
-}
-
-.swarm-feed-current-identity {
-  margin-bottom: 16px;
-  padding: 12px;
-  background: var(--toolbar);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-}
-
-.swarm-feed-current-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 8px;
-}
-
-.swarm-feed-current-label {
-  font-size: 12px;
-  color: var(--muted);
-}
-
-.swarm-feed-current-name {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--foreground);
-  text-align: right;
-}
-
-.swarm-feed-current-desc {
-  margin: 0 0 10px;
-  font-size: 12px;
-  color: var(--muted);
-  line-height: 1.4;
-}
-
-.swarm-feed-manage-btn {
-  padding: 0;
-  background: transparent;
-  border: 0;
-  color: #f59e0b;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-}
+/* Feed Access renders its picker into `#swarm-feed-identity-selector` through
+   `publisher-identity-selector.js`, which brings its own `.wallet-selector-*`
+   classes. The hand-rolled radio list and "current identity" card this section
+   used to style are gone from the markup; their rules were removed with #239's
+   amber sweep, since two of them (the radio `accent-color` / checked border and
+   the manage button's text colour) were the last `#f59e0b` left on this screen
+   and would have put orange back next to the blue primary if the markup ever
+   came back. The two rules above are the section's only live ones. */
 
 /* ============================================
    Publisher Identities List

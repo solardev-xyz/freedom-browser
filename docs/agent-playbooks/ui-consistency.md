@@ -27,19 +27,35 @@ hashes and keys; search boxes and names use the sans font.
 
 **Buttons.** Primary action filled `--accent`, secondary outlined, destructive
 outlined `--danger` ("Clear All", "Remove all", "Restore defaults"). The same
-action uses the same verb everywhere (a remembered permission is _removed_
-in every surface; a request from a site is _rejected_). Every approval screen
-in the sidebar — wallet, dApp and Swarm — pairs one filled `--accent` primary
-with an outlined secondary; the Swarm screens' orange primary and "Cancel"
-secondary were the one exception until #239. "Cancel" stays where there is no
-request to reject: dismissing a form, an unlock prompt.
+action uses the same verb everywhere (a remembered permission is _removed_ in
+every surface). Every approval screen in the sidebar — wallet, dApp and Swarm —
+pairs one filled `--accent` primary with an outlined secondary; the Swarm
+screens' orange primary was the one exception until #239.
+
+The _reject_ verb has not converged. The four dApp approvals and the four Swarm
+approvals say "Reject", and `renderer-copy.test.js` pins that on those eight
+screens only. Elsewhere the same decision is still worded per screen: Radicle
+Access says "Cancel" (`#radicle-consent-reject`), App permissions says "Don't
+allow" (`#swarm-manifest-reject`), the toolbar permission prompt says "Block"
+(`#permission-prompt-block`). Treat those as unpinned drift, not as a rule
+being broken — check the verb against the screen you are touching, and settle a
+screen's wording on its issue before changing it. "Cancel" is correct where
+there is no request to reject: dismissing a form, an unlock prompt.
 
 **Approval callouts.** Two kinds, both in `styles/sidebar.css`: amber with the
 warning triangle (`.dapp-tx-warning`, `.swarm-connect-warning`) for the
 consequence of the action being confirmed, blue with the "i" glyph
 (`.dapp-sign-warning`, `.swarm-connect-note`) for what the access being
-granted means. The icon lives in the markup, so changing the kind means
-changing both the class and the glyph.
+granted means. The icon lives in the markup, not in the class, so changing the
+kind means changing both.
+
+`renderer-copy.test.js` pins that pairing on the four Swarm approvals only, and
+two amber callouts outside that sweep do not follow it: the Radicle Access
+callout uses `.swarm-connect-warning` with the "i" glyph, and App permissions'
+`#swarm-manifest-identity-note` is a `.swarm-connect-warning` with no glyph at
+all. Both are known drift waiting on a per-screen kind decision (#239); do not
+repaint them to the pairing without one, and do not read them as evidence the
+pairing above is wrong.
 
 **Sidebar sub-screens.** One header component: chevron, "Back", title, and
 the same close control on every screen (Send, Confirm Transaction, Sign

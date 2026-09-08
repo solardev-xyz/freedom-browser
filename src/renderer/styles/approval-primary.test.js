@@ -74,6 +74,61 @@ describe('approval primaries (#239)', () => {
     expect(AMBER.test(background(rule.body))).toBe(true);
   });
 
+  // A fill is not the only way back to orange. The dead Feed Access rules #239
+  // deleted tinted a radio (`accent-color`), a checked border and a link-style
+  // button's text — none of which the fill sweep above would have seen. These
+  // are the remaining amber-carrying properties on an interactive control.
+  const TINTS = ['accent-color', 'color', 'border-color', 'border', 'outline-color'];
+
+  test('no control tints itself amber at rest either', () => {
+    const offenders = [];
+    for (const sheet of sheets) {
+      for (const rule of rulesOf(read(sheet))) {
+        for (const property of TINTS) {
+          const value = declaration(rule.body, property);
+          if (!value || !AMBER.test(value)) continue;
+          for (const selector of rule.selector.split(',').map((part) => part.trim())) {
+            if (STATEFUL.test(selector)) continue;
+            // `accent-color` only ever paints a form control, so it needs no
+            // button check; the rest are amber on plain text or a callout glyph
+            // unless they land on a button.
+            if (property !== 'accent-color' && !isButton(selector)) continue;
+            offenders.push(`${sheet}: ${selector} { ${property}: ${value} }`);
+          }
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  test('the tint detector fires on the Feed Access rules #239 deleted', () => {
+    // Mutation check: these two are verbatim the dead rules, and both trip.
+    const cases = [
+      [
+        '.swarm-feed-identity-option input[type="radio"] { accent-color: #f59e0b; }',
+        'accent-color',
+      ],
+      ['.swarm-feed-manage-btn { color: #f59e0b; }', 'color'],
+    ];
+    for (const [css, property] of cases) {
+      const rule = rulesOf(css)[0];
+      expect(AMBER.test(declaration(rule.body, property))).toBe(true);
+      expect(property === 'accent-color' || isButton(rule.selector)).toBe(true);
+      expect(STATEFUL.test(rule.selector)).toBe(false);
+    }
+
+    // The third deleted rule, `.swarm-feed-identity-option:has(input:checked) {
+    // border-color: #f59e0b }`, is deliberately *not* covered: it is a state
+    // selector on a non-button, and flagging every amber `border-color` in that
+    // shape would sweep up legitimate callout borders. It cannot arrive alone —
+    // it styles the same radio list as the `accent-color` rule above, which does
+    // trip — so the pair is caught through its sibling.
+    const checked = rulesOf(
+      '.swarm-feed-identity-option:has(input:checked) { border-color: #f59e0b; }'
+    )[0];
+    expect(STATEFUL.test(checked.selector)).toBe(true);
+  });
+
   test('the Swarm primary fills --accent, like the dApp primaries it sits next to', () => {
     const sidebar = rulesOf(read('sidebar.css'));
     const fillOf = (selector) => {
