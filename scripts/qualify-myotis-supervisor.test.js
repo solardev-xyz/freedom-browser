@@ -1,5 +1,5 @@
 // Pure validation tests only. No fixture, Electron or supervisor is launched.
-const { parseArguments, validateTerminal, requireRuntime } = require('./qualify-myotis-supervisor');
+const { parseArguments, validateTerminal, requireRuntime, controllerOptions } = require('./qualify-myotis-supervisor');
 
 function terminal() {
   return { exited: true, generation: 'current', supervisorExit: { code: 0, signal: null },
@@ -43,4 +43,15 @@ test('forced termination needs its own evidence and actual signal outcome', () =
   expect(() => validateTerminal(value, true)).not.toThrow();
   value.terminalReceipt.signal = 0;
   expect(() => validateTerminal(value, true)).toThrow();
+});
+
+
+test('group-signal controller requires a new POSIX session while retaining IPC observation', () => {
+  const options = controllerOptions(true);
+  expect(options.detached).toBe(true);
+  expect(options.stdio).toEqual(['ignore', 'ignore', 'ignore', 'ipc']);
+  expect(options.execPath).toBe(process.execPath);
+  expect(options.execArgv).toEqual([]);
+  expect(options.env).not.toHaveProperty('NODE_OPTIONS');
+  expect(controllerOptions(false).detached).toBe(false);
 });

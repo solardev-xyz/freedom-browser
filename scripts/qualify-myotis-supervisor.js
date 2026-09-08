@@ -88,47 +88,74 @@ async function finish(client, forced) {
 async function waitForRecord(dataDir, expected) {
   const until = Date.now() + 8000;
   while (Date.now() < until) {
-    if (readRecord(dataDir) === expected) return;
+    if (readRecord(dataDir) === expected) return expected;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   throw new Error('Native durable retirement not observed');
 }
-async function runParentController(dir) {
+function controllerOptions(groupSignal) {
+  return {
+    execPath: process.execPath, execArgv: [],
+    env: { ...childEnvironment(), FREEDOM_MYOTIS_DISPOSABLE: '1' },
+    stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+    detached: groupSignal, // libuv must create a new POSIX session or fail spawn.
+  };
+}
+async function runParentController(dir, groupSignal = false) {
   requireRuntime();
   const root = path.dirname(dir);
   const marker = JSON.parse(fs.readFileSync(path.join(root, ROOT_MARKER), 'utf8'));
   assert.equal(marker.identity, IDENTITY);
   assert.equal(hash(path.join(dir, 'addon.js')), hash(FIXTURE));
   assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'fixture.json'))).mode, 'blocked-stop');
-  // This controller contains no blocking work: only its separate fixture child
-  // blocks. The controller exits itself; the outer harness never signals it.
+  assert(process.connected && process.send, 'Task-owned controller IPC required');
+  // No blocking work here. The group case waits for the outer launcher to
+  // confirm its successful detached spawn, bound to this generation. Direct
+  // invocation or missing confirmation expires without sending any signal.
   const emergency = setTimeout(() => process.exit(79), 18000);
   const { client } = attachClient(dir, 'lost-controller');
   await ready(client);
   writeJson(path.join(dir, 'controller-ready.json'), { identity: IDENTITY, generation: client.generation, pid: process.pid });
+  if (groupSignal) {
+    process.once('message', (message) => {
+      assert.equal(message.type, 'isolated-group-confirmed');
+      assert.equal(message.generation, client.generation);
+      // The freshly detached controller targets only its own current group.
+      // No stored PID/PGID, host-session fallback, or external signal authority.
+      process.kill(0, 'SIGTERM');
+      // Keep the 18s self-expiry armed if the expected signal exit fails.
+    });
+  }
   process.send({ type: 'ready', generation: client.generation }, () => {
-    clearTimeout(emergency);
-    process.exit(0); // Actual parent loss; deliberately bypass MyotisProcess.stop.
+    if (!groupSignal) {
+      clearTimeout(emergency);
+      process.exit(0); // Parent loss deliberately bypasses MyotisProcess.stop.
+    }
   });
 }
-async function parentLoss(dir) {
-  const controller = fork(__filename, ['--parent-controller', dir], {
-    execPath: process.execPath, execArgv: [],
-    env: { ...childEnvironment(), FREEDOM_MYOTIS_DISPOSABLE: '1' },
-    stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
-  });
+async function parentLoss(dir, groupSignal = false) {
+  const controller = fork(__filename, [groupSignal ? '--group-controller' : '--parent-controller', dir],
+    controllerOptions(groupSignal));
   let generation;
-  controller.on('message', (message) => { if (message.type === 'ready') generation = message.generation; });
+  controller.once('message', (message) => {
+    assert.equal(message.type, 'ready');
+    generation = message.generation;
+    if (groupSignal) controller.send({ type: 'isolated-group-confirmed', generation });
+  });
   const exit = await deadline(new Promise((resolve, reject) => {
     controller.once('exit', (code, signal) => resolve({ code, signal }));
     controller.once('error', reject);
   }), 20000, 'parent controller exit');
-  assert.equal(exit.code, 0); assert.equal(exit.signal, null); assert(generation);
-  await waitForRecord(path.join(dir, 'data'), `v1 retired ${generation}\n`);
+  assert.equal(exit.code, groupSignal ? null : 0);
+  assert.equal(exit.signal, groupSignal ? 'SIGTERM' : null);
+  assert(generation);
+  const retiredRecord = await waitForRecord(path.join(dir, 'data'), `v1 retired ${generation}\n`);
+  // Persist before a successor can overwrite the stable native owner record.
+  writeJson(path.join(dir, 'old-retired-record.json'), { generation, record: retiredRecord });
   return {
     controllerExit: exit, generation, nativeDurableRetirement: true,
     oldSupervisorOsExitDirectlyObserved: false,
-    scope: 'Parent controller loss; native record only for old child. Not supervisor-loss qualification.',
+    scope: `${groupSignal ? 'Controller group SIGTERM' : 'Parent controller loss'}; native record only for old child. Not supervisor-loss qualification.`,
   };
 }
 async function runHarness(root) {
@@ -226,19 +253,21 @@ async function runHarness(root) {
       assert.equal(fs.existsSync(path.join(dir, 'fixture-events.jsonl')), false);
       assert.equal(readRecord(path.join(dir, 'data')), `v1 active ${activeGeneration}\n`);
     });
-    await runCase('parent-controller-loss', 'blocked-stop', async (dir) => {
-      const evidence = await parentLoss(dir);
-      const next = acquire(dir, 'after-parent-loss'); await ready(next);
-      // This new generation has full receipt+OS-exit proof. The lost observer's
-      // old generation has durable retirement proof only, explicitly recorded.
-      assert.equal(await next.stop(), true); validateTerminal(next, true);
-      return evidence;
-    });
+    for (const [name, groupSignal] of [['parent-controller-loss', false], ['controller-group-sigterm', true]]) {
+      await runCase(name, 'blocked-stop', async (dir) => {
+        const evidence = await parentLoss(dir, groupSignal);
+        const next = acquire(dir, 'after-parent-loss'); await ready(next);
+        // Only the successor has full receipt+OS-exit proof. The old generation
+        // has durable retirement proof, now snapshotted before guarded reuse.
+        assert.equal(await next.stop(), true); validateTerminal(next, true);
+        return evidence;
+      });
+    }
   } finally {
     clearTimeout(emergency);
     const inputsUnchanged = manifest.inputs.every(({ file, sha256 }) => hash(file) === sha256);
     writeJson(path.join(root, 'summary.json'), { results,
-      passed: inputsUnchanged && results.length === 8 && results.every((result) => result.passed),
+      passed: inputsUnchanged && results.length === 9 && results.every((result) => result.passed),
       inputsUnchanged,
       supervisorLossQualified: false, realAddonQualified: false,
     });
@@ -246,9 +275,10 @@ async function runHarness(root) {
 }
 
 if (require.main === module) {
-  const task = process.argv[2] === '--parent-controller'
-    ? runParentController(path.resolve(process.argv[3]))
+  const controllerMode = ['--parent-controller', '--group-controller'].includes(process.argv[2]);
+  const task = controllerMode
+    ? runParentController(path.resolve(process.argv[3]), process.argv[2] === '--group-controller')
     : runHarness(parseArguments(process.argv.slice(2)));
   task.catch((error) => { console.error(error.message); process.exitCode = 1; });
 }
-module.exports = { parseArguments, validateTerminal, requireRuntime };
+module.exports = { parseArguments, validateTerminal, requireRuntime, controllerOptions };
