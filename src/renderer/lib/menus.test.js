@@ -654,6 +654,23 @@ describe('menus', () => {
       expect(elements.profileMenuWrap.classList.remove).toHaveBeenCalledWith('flyout-open');
     });
 
+    // Empty menu chrome counts as "another part of the menu", not as still
+    // being on the flyout: a divider or the dropdown's own padding is outside
+    // #profile-menu-wrap, so it dismisses the flyout like any row would. Pinned
+    // because the index.js/menus.js comments document exactly this, and a
+    // future reader could otherwise mistake it for a bug and "fix" it.
+    test('hovering empty menu chrome (divider, dropdown padding) closes it', async () => {
+      for (const chrome of ['divider', 'padding']) {
+        const { elements } = await openFlyout();
+        const target = chrome === 'divider' ? createElement() : elements.menuDropdown;
+
+        elements.menuDropdown.handlers.mouseover({ target });
+        jest.advanceTimersByTime(SUBMENU_CLOSE_DELAY_MS);
+
+        expect(elements.profileFlyout.hidden).toBe(true);
+      }
+    });
+
     test('a diagonal move into the flyout during the delay keeps it open', async () => {
       const { elements } = await openFlyout();
 

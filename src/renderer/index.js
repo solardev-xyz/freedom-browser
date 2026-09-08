@@ -523,13 +523,15 @@ async function initProfileIndicator() {
     }
   };
 
-  // macOS/Chrome-style submenu: open after a short hover delay. Leaving the
-  // wrapper for empty menu chrome does NOT close it — it stays until something
-  // dismisses it: a hover/focus on another hamburger row (menus.js, #301), a
-  // click outside (handled below), or the hamburger closing. The flyout is a
-  // child of #menu-dropdown, so the hamburger's outside-click handler treats
-  // flyout clicks as inside — the hamburger stays open with it. Timing lives in
-  // the shared attachSubmenuHover helper.
+  // macOS/Chrome-style submenu: open after a short hover delay. It does NOT
+  // close on plain mouse-out; it stays until something dismisses it: a pointer
+  // or focus landing anywhere in the hamburger outside this wrapper — a sibling
+  // row, a divider, or the dropdown's own padding (menus.js, #301; the pointer
+  // path waits out SUBMENU_CLOSE_DELAY_MS, focus closes at once) — a click
+  // outside (handled below), or the hamburger closing. The flyout is a child of
+  // #menu-dropdown, so the hamburger's outside-click handler treats flyout
+  // clicks as inside — the hamburger stays open with it. Timing lives in the
+  // shared attachSubmenuHover helper.
   const openFlyout = () => {
     // Don't open while the hamburger itself is closed (the dropdown — and thus
     // this wrapper — isn't rendered), e.g. if a hover open-timer fires just
@@ -556,11 +558,11 @@ async function initProfileIndicator() {
   indicator.addEventListener('click', flyoutHover.openNow);
 
   // The flyout no longer closes on mouse-out, so dismiss it on click-out: a
-  // click inside the wrapper (trigger or flyout) keeps it open; a click on any
-  // other hamburger row collapses just the flyout. Clicks fully outside the
-  // hamburger are handled in menus.js, which hides the flyout when the dropdown
-  // closes. Pointerdown (not click) so the dismissal isn't pre-empted by a row
-  // that closes the whole menu on click.
+  // click inside the wrapper (trigger or flyout) keeps it open; a click
+  // anywhere else in the hamburger collapses just the flyout. Clicks fully
+  // outside the hamburger are handled in menus.js, which hides the flyout when
+  // the dropdown closes. Pointerdown (not click) so the dismissal isn't
+  // pre-empted by a row that closes the whole menu on click.
   document.addEventListener('pointerdown', (event) => {
     if (menu?.hidden !== false) return;
     if (menuWrap?.contains(event.target)) return;
