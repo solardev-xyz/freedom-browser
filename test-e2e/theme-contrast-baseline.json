@@ -1,21 +1,13 @@
 {
   "issue": "https://github.com/solardev-xyz/freedom-browser/issues/261",
-  "total": 62,
+  "total": 58,
   "gaps": [
     {
       "surface": "Swarm connect approval",
       "theme": "dark",
       "el": "button#swarm-connect-approve.swarm-connect-approve-btn",
       "text": "Allow",
-      "ratio": 2.15,
-      "bar": 4.5
-    },
-    {
-      "surface": "Swarm connect approval",
-      "theme": "light",
-      "el": "button#swarm-connect-approve.swarm-connect-approve-btn",
-      "text": "Allow",
-      "ratio": 2.15,
+      "ratio": 2.11,
       "bar": 4.5
     },
     {
@@ -23,15 +15,7 @@
       "theme": "dark",
       "el": "button#swarm-feed-approve.swarm-connect-approve-btn",
       "text": "Allow",
-      "ratio": 2.15,
-      "bar": 4.5
-    },
-    {
-      "surface": "Swarm feed approval",
-      "theme": "light",
-      "el": "button#swarm-feed-approve.swarm-connect-approve-btn",
-      "text": "Allow",
-      "ratio": 2.15,
+      "ratio": 2.11,
       "bar": 4.5
     },
     {
@@ -39,15 +23,7 @@
       "theme": "dark",
       "el": "button#swarm-messaging-confirm.swarm-connect-approve-btn",
       "text": "Allow",
-      "ratio": 2.15,
-      "bar": 4.5
-    },
-    {
-      "surface": "Swarm messaging approval",
-      "theme": "light",
-      "el": "button#swarm-messaging-confirm.swarm-connect-approve-btn",
-      "text": "Allow",
-      "ratio": 2.15,
+      "ratio": 2.11,
       "bar": 4.5
     },
     {
@@ -55,15 +31,7 @@
       "theme": "dark",
       "el": "button#swarm-publish-confirm.swarm-connect-approve-btn",
       "text": "Publish",
-      "ratio": 2.15,
-      "bar": 4.5
-    },
-    {
-      "surface": "Swarm publish approval",
-      "theme": "light",
-      "el": "button#swarm-publish-confirm.swarm-connect-approve-btn",
-      "text": "Publish",
-      "ratio": 2.15,
+      "ratio": 2.11,
       "bar": 4.5
     },
     {
