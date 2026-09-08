@@ -167,6 +167,10 @@ The Seatbelt executor now launches the repository-owned helper through `macos-su
 
 The candidate improves who owns original-group cleanup. It does not discover or terminate every escaped descendant, survive failure of its own supervisor, reclaim stale processes at startup, or enforce aggregate resource limits. Keep `best_effort / original_process_group / survivorsPossible=true / completeDescendantTermination=false`. Current-product Stop/timeout/preview/conversation teardown, native Quit, browser crash and supervisor-failure cases still require bounded disposable-Mac qualification before calling this milestone complete.
 
+### Current-product qualification follow-up — 2026-09-08
+
+User-approved source transfer is complete. [The current-product evidence](evidence/macos-native-product-qualification-2026-09-08.md) retains source/artifact identities, the first aborted bounded group, and raw native receipts. Nine product assertions and three cleanup assertions passed before a test-monitor registration failure; no command was released after that failure, and all seven roots reported reaped. The observer correction is being tested separately from the unchanged production implementation. Test-only finite app-exit support is committed as `dd96ec87`, with ordinary Jest/lint passing. Actual native Quit, browser-loss and supervisor-loss cases remain pending; this follow-up does not close the milestone.
+
 ## Existing qualification evidence recovered by inventory
 
 The remote assessment located 53 existing `/private/tmp/freedom-*.log` files and the unsigned packaged app; it did not rerun them. Selected evidence locations on **macmini**, not the primary Mac:
