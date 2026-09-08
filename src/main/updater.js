@@ -76,7 +76,7 @@ function getInstallRelaunchMode(profile = getActiveProfile()) {
     return {
       autoRunAfterInstall: true,
       actionLabel: 'Install now',
-      menuLabel: 'Install Update and Restart...',
+      menuLabel: 'Install Update and Restart…',
       readyMessage: null,
     };
   }
@@ -84,7 +84,7 @@ function getInstallRelaunchMode(profile = getActiveProfile()) {
   return {
     autoRunAfterInstall: false,
     actionLabel: 'Install and close',
-    menuLabel: 'Install Update and Close...',
+    menuLabel: 'Install Update and Close…',
     readyMessage:
       'Freedom will close after installing. Reopen this profile from the profile manager when the update finishes.',
   };

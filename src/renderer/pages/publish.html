@@ -7,6 +7,7 @@
       content="default-src 'none'; script-src 'self'; style-src 'self';"
     />
     <title>Publish on Swarm</title>
+    <link rel="stylesheet" href="styles/theme.css" />
     <link rel="stylesheet" href="styles/publish.css" />
   </head>
   <body>
@@ -25,8 +26,8 @@
           <button type="button" class="publish-action-card" id="publish-file-btn">
             <div class="publish-action-icon">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                <polyline points="14 2 14 8 20 8"/>
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                <polyline points="14 2 14 8 20 8" />
               </svg>
             </div>
             <div class="publish-action-label">Publish File</div>
@@ -36,7 +37,9 @@
           <button type="button" class="publish-action-card" id="publish-folder-btn">
             <div class="publish-action-icon">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+                <path
+                  d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"
+                />
               </svg>
             </div>
             <div class="publish-action-label">Publish Folder</div>
@@ -46,8 +49,8 @@
           <button type="button" class="publish-action-card" id="publish-text-btn">
             <div class="publish-action-icon">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
-                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
               </svg>
             </div>
             <div class="publish-action-label">Publish Text</div>
@@ -57,14 +60,19 @@
 
         <!-- Text input (shown when Publish Text is selected) -->
         <div id="publish-text-input" class="publish-text-section hidden">
-          <textarea id="publish-text-area" class="publish-textarea" placeholder="Enter text or paste data to publish..." rows="8"></textarea>
+          <textarea
+            id="publish-text-area"
+            class="publish-textarea"
+            placeholder="Enter text or paste data to publish…"
+            rows="8"
+          ></textarea>
           <button type="button" class="publish-submit-btn" id="publish-text-submit">Publish</button>
           <button type="button" class="publish-cancel-btn" id="publish-text-cancel">Cancel</button>
         </div>
 
         <!-- Progress -->
         <div id="publish-progress" class="publish-progress hidden">
-          <div class="publish-progress-text" id="publish-progress-text">Uploading...</div>
+          <div class="publish-progress-text" id="publish-progress-text">Uploading…</div>
           <div class="publish-progress-bar">
             <div class="publish-progress-fill" id="publish-progress-fill"></div>
           </div>
@@ -83,26 +91,36 @@
           </div>
           <div class="publish-result-actions">
             <button type="button" class="publish-copy-btn" id="publish-copy-url">Copy URL</button>
-            <button type="button" class="publish-copy-btn" id="publish-copy-ref">Copy Reference</button>
-            <button type="button" class="publish-open-btn" id="publish-open-url">Open in New Tab</button>
+            <button type="button" class="publish-copy-btn" id="publish-copy-ref">
+              Copy Reference
+            </button>
+            <button type="button" class="publish-open-btn" id="publish-open-url">
+              Open in New Tab
+            </button>
           </div>
-          <button type="button" class="publish-another-btn" id="publish-another">Publish Another</button>
+          <button type="button" class="publish-another-btn" id="publish-another">
+            Publish Another
+          </button>
         </div>
 
         <!-- Error -->
         <div id="publish-error" class="publish-error hidden">
           <div class="publish-error-text" id="publish-error-text"></div>
-          <button type="button" class="publish-another-btn" id="publish-error-retry">Try Again</button>
+          <button type="button" class="publish-another-btn" id="publish-error-retry">
+            Try Again
+          </button>
         </div>
 
         <!-- Recent publishes -->
         <div id="publish-history" class="publish-history">
           <div class="publish-history-header">
             <h2 class="publish-history-title">Recent Publishes</h2>
-            <button type="button" class="publish-history-clear hidden" id="publish-history-clear">Clear</button>
+            <button type="button" class="publish-history-clear hidden" id="publish-history-clear">
+              Clear All
+            </button>
           </div>
           <div class="publish-history-list" id="publish-history-list">
-            <div class="publish-history-empty">No publishes yet.</div>
+            <div class="publish-history-empty">No publishes yet</div>
           </div>
         </div>
       </main>

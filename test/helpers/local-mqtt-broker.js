@@ -8,7 +8,11 @@
 const http = require('http');
 
 async function startLocalMqttBroker() {
-  const aedes = require('aedes')();
+  // aedes 1.x removed the callable default export and made startup async
+  // (its persistence interface is promise-based now), so the broker has
+  // to be awaited before the first connection is handed to it.
+  const { Aedes } = require('aedes');
+  const aedes = await Aedes.createBroker();
   const { WebSocketServer, createWebSocketStream } = require('ws');
 
   const server = http.createServer();

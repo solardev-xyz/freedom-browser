@@ -147,7 +147,7 @@ function buildProfilesSubmenu() {
 
   submenu.push(
     {
-      label: 'Create Profile...',
+      label: 'Create Profile…',
       click: () => {
         // Open the shared chrome create-modal in the focused window.
         const win = getTargetWindow();
@@ -157,7 +157,7 @@ function buildProfilesSubmenu() {
       },
     },
     {
-      label: 'Manage Profiles...',
+      label: 'Manage Profiles…',
       click: () => {
         log.info('[menu] Manage Profiles clicked');
         openProfilesManager();
@@ -497,7 +497,7 @@ function buildHistorySubmenu() {
 function buildFindMenuItem() {
   return {
     id: 'find-in-page',
-    label: 'Find in Page...',
+    label: 'Find in Page…',
     accelerator: acc('page.findInPage'),
     click: () => {
       const win = getTargetWindow();
@@ -614,13 +614,13 @@ function setupApplicationMenu() {
           },
         },
         {
-          label: 'Check for Updates...',
+          label: 'Check for Updates…',
           enabled: false,
         },
       ]
     : [
         {
-          label: 'Check for Updates...',
+          label: 'Check for Updates…',
           click: () => {
             checkForUpdates();
           },

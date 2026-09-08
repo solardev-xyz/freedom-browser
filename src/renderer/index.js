@@ -66,6 +66,7 @@ import {
 import { pushDebug } from './lib/debug.js';
 import { initOnboarding } from './lib/onboarding.js';
 import { initSidebar } from './lib/sidebar.js';
+import { renderSubscreenHeaders } from './lib/subscreen-header.js';
 import { initRadicleConsent } from './lib/radicle-consent.js';
 import { initRadicleAlias } from './lib/radicle-alias.js';
 import { initWalletUi, openPublishSetupFlow } from './lib/wallet-ui.js';
@@ -585,7 +586,7 @@ async function initProfileIndicator() {
     }
 
     setCreateBusy(true);
-    setCreateStatus('Creating profile...', 'success');
+    setCreateStatus('Creating profile…', 'success');
     try {
       const createResult = await electronAPI.createProfile?.({ displayName });
       if (!createResult?.success) {
@@ -598,7 +599,7 @@ async function initProfileIndicator() {
         throw new Error('Profile was created but no profile id was returned');
       }
 
-      setCreateStatus(`Opening ${profile.displayName || displayName}...`, 'success');
+      setCreateStatus(`Opening ${profile.displayName || displayName}…`, 'success');
       const openResult = await electronAPI.openProfile?.(profileId);
       if (!openResult?.success) {
         throw new Error(
@@ -723,6 +724,11 @@ document.addEventListener('open-url-new-tab', (e) => {
 
 // Initialize all modules
 window.addEventListener('DOMContentLoaded', async () => {
+  // First, and synchronously: every sidebar sub-screen's Back button and
+  // title only exist once this has run, and the init*() calls below cache
+  // them by id.
+  renderSubscreenHeaders();
+
   try {
     applySettingsToState(await electronAPI.getSettings());
   } catch {

@@ -7,7 +7,7 @@ import { startRadicleInfoUpdates, stopRadicleInfoUpdates } from './radicle-ui.js
 import { hideTabContextMenu, getActiveWebview } from './tabs.js';
 import { hideBookmarkContextMenu, hideOverflowMenu } from './bookmarks-ui.js';
 import { showMenuBackdrop, hideMenuBackdrop } from './menu-backdrop.js';
-import { matchesShortcut } from './shortcuts.js';
+import { formatAccelerator, matchesShortcut } from './shortcuts.js';
 
 const electronAPI = window.electronAPI;
 
@@ -47,10 +47,6 @@ export const setOnMenuOpening = (callback) => {
 let beeMenuButton = null;
 let beeMenuDropdown = null;
 let webviewElement = null;
-let beePeersCount = null;
-let beeNetworkPeers = null;
-let beeVersionText = null;
-let beeInfoPanel = null;
 
 export const setMenuOpen = (open) => {
   state.menuOpen = open;
@@ -98,15 +94,14 @@ export const setAntMenuOpen = (open) => {
     if (!state.menuOpen) {
       hideMenuBackdrop();
     }
+    // Each node's stop* owns resetting that node's readouts (peer counts,
+    // Version row, info panel). Menus used to reset Ant's here as well, with
+    // its own copy of the empty-state rules — the copy drifted and re-blanked
+    // the Version row #253 had just moved to 'Unknown'.
     stopAntInfoPolling();
     stopIpfsInfoPolling();
     stopMyotisInfoPolling();
     stopRadicleInfoUpdates();
-    if (beePeersCount) beePeersCount.textContent = '0';
-    if (beeNetworkPeers) beeNetworkPeers.textContent = '0';
-    if (beeVersionText)
-      beeVersionText.textContent = state.antVersionFetched ? state.antVersionValue : '';
-    if (beeInfoPanel) beeInfoPanel.classList.remove('visible');
   }
 };
 
@@ -154,18 +149,6 @@ export const zoomIn = () => applyZoomFactor((current) => Math.min(ZOOM_MAX, curr
 export const zoomOut = () => applyZoomFactor((current) => Math.max(ZOOM_MIN, current - ZOOM_STEP));
 export const zoomReset = () => applyZoomFactor(() => 1);
 
-// Format keyboard shortcuts for the current platform
-const formatShortcut = (shortcut, isMac) => {
-  if (!shortcut) return '';
-
-  return shortcut
-    .replace('CmdOrCtrl', isMac ? '⌘' : 'Ctrl')
-    .replace('Cmd', isMac ? '⌘' : 'Ctrl')
-    .replace('Alt', isMac ? '⌥' : 'Alt')
-    .replace('Shift', isMac ? '⇧' : 'Shift')
-    .replace(/\+/g, '');
-};
-
 // Initialize keyboard shortcuts based on platform.
 //
 // A hint here must name a binding the app actually implements — an item
@@ -178,13 +161,17 @@ const formatShortcut = (shortcut, isMac) => {
 // `.menu-item-shortcut` slot to fill and three bindings to name rather than
 // one. Its accelerators are surfaced in the View menu and remain remappable
 // under Settings > Shortcuts.
+//
+// The hints render through `formatAccelerator` — the same formatter
+// Settings > Shortcuts uses — so one binding never reads two ways:
+// 'Ctrl+Shift+N' on Linux/Windows, '⇧⌘N' on macOS, in both surfaces.
 const initKeyboardShortcuts = async () => {
   const platform = await electronAPI?.getPlatform?.();
   const isMac = platform === 'darwin';
 
   document.querySelectorAll('.menu-item-shortcut[data-shortcut]').forEach((el) => {
     const shortcut = (!isMac && el.dataset.shortcutOther) || el.dataset.shortcut;
-    el.textContent = formatShortcut(shortcut, isMac);
+    el.textContent = formatAccelerator(shortcut, platform);
   });
 };
 
@@ -210,10 +197,6 @@ export const initMenus = () => {
   beeMenuButton = document.getElementById('bee-menu-button');
   beeMenuDropdown = document.getElementById('bee-menu-dropdown');
   webviewElement = document.getElementById('bzz-webview');
-  beePeersCount = document.getElementById('bee-peers-count');
-  beeNetworkPeers = document.getElementById('bee-network-peers');
-  beeVersionText = document.getElementById('bee-version-text');
-  beeInfoPanel = document.querySelector('.bee-info');
 
   menuButton?.addEventListener('click', () => {
     setMenuOpen(!state.menuOpen);

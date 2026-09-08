@@ -4,9 +4,10 @@
     <meta charset="UTF-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:;"
+      content="default-src 'none'; script-src 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src data:;"
     />
     <title>Downloads</title>
+    <link rel="stylesheet" href="styles/theme.css" />
     <style>
       html,
       body {
@@ -19,8 +20,8 @@
           -apple-system,
           BlinkMacSystemFont,
           sans-serif;
-        background: linear-gradient(135deg, #0d1117 0%, #161b22 50%, #21262d 100%);
-        color: #c9d1d9;
+        background: var(--page-gradient);
+        color: var(--text);
         padding: 48px;
         box-sizing: border-box;
         min-height: 100vh;
@@ -28,7 +29,7 @@
       h1 {
         font-size: 28px;
         margin-bottom: 8px;
-        color: #58a6ff;
+        color: var(--accent);
         font-weight: 600;
         letter-spacing: -0.5px;
         display: flex;
@@ -36,7 +37,7 @@
         gap: 12px;
       }
       .subtitle {
-        color: #8b949e;
+        color: var(--text-muted);
         margin-bottom: 24px;
         font-size: 14px;
       }
@@ -50,20 +51,20 @@
         flex: 1;
         max-width: 400px;
         padding: 10px 16px;
-        background: #21262d;
-        border: 1px solid #30363d;
+        background: var(--bg-card);
+        border: 1px solid var(--border);
         border-radius: 8px;
-        color: #c9d1d9;
+        color: var(--text);
         font-size: 14px;
         font-family: inherit;
         outline: none;
         transition: border-color 0.15s;
       }
       .search-input:focus {
-        border-color: #58a6ff;
+        border-color: var(--accent);
       }
       .search-input::placeholder {
-        color: #6e7681;
+        color: var(--text-subtle);
       }
       .toolbar-right {
         display: flex;
@@ -73,10 +74,10 @@
       }
       .btn {
         padding: 10px 16px;
-        background: #21262d;
-        border: 1px solid #30363d;
+        background: var(--bg-card);
+        border: 1px solid var(--border);
         border-radius: 8px;
-        color: #c9d1d9;
+        color: var(--text);
         font-size: 14px;
         font-family: inherit;
         cursor: pointer;
@@ -86,15 +87,15 @@
         gap: 8px;
       }
       .btn:hover {
-        background: #30363d;
-        border-color: #484f58;
+        background: var(--bg-raised);
+        border-color: var(--border-strong);
       }
       .btn.danger {
-        color: #f85149;
+        color: var(--danger);
       }
       .btn.danger:hover {
-        border-color: #f85149;
-        background: #f8514915;
+        border-color: var(--danger);
+        background: var(--danger-bg);
       }
       .download-list {
         display: flex;
@@ -106,14 +107,14 @@
         align-items: center;
         gap: 16px;
         padding: 14px 16px;
-        background: rgba(22, 27, 34, 0.6);
+        background: var(--surface-translucent);
         border: 1px solid transparent;
         border-radius: 8px;
         transition: all 0.15s ease;
       }
       .download-item:hover {
-        background: #21262d;
-        border-color: #30363d;
+        background: var(--bg-card);
+        border-color: var(--border);
       }
       .file-icon {
         width: 32px;
@@ -137,7 +138,7 @@
       }
       .download-name {
         font-size: 14px;
-        color: #f0f6fc;
+        color: var(--text-strong);
         margin-bottom: 4px;
         white-space: nowrap;
         overflow: hidden;
@@ -160,35 +161,35 @@
       }
       .download-url {
         font-size: 12px;
-        color: #58a6ff;
+        color: var(--accent);
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
       }
       .download-status {
         font-size: 12px;
-        color: #8b949e;
+        color: var(--text-muted);
         margin-top: 4px;
       }
       .download-status.error {
-        color: #f85149;
+        color: var(--danger);
       }
       .progress-bar {
         height: 4px;
         margin-top: 8px;
         border-radius: 2px;
-        background: #30363d;
+        background: var(--border);
         overflow: hidden;
       }
       .progress-fill {
         height: 100%;
         border-radius: 2px;
-        background: #58a6ff;
+        background: var(--accent);
         transition: width 0.2s ease;
       }
       .download-meta {
         flex-shrink: 0;
-        color: #6e7681;
+        color: var(--text-meta);
         font-size: 12px;
         min-width: 100px;
         text-align: right;
@@ -201,9 +202,9 @@
       .action-btn {
         padding: 6px 10px;
         background: transparent;
-        border: 1px solid #30363d;
+        border: 1px solid var(--border);
         border-radius: 6px;
-        color: #58a6ff;
+        color: var(--accent);
         font-size: 12px;
         font-weight: 600;
         font-family: inherit;
@@ -212,15 +213,15 @@
         transition: all 0.15s;
       }
       .action-btn:hover {
-        background: #21262d;
-        border-color: #484f58;
+        background: var(--bg-card-hover);
+        border-color: var(--border-strong);
       }
       .action-btn.danger {
-        color: #f85149;
+        color: var(--danger);
       }
       .action-btn.danger:hover {
-        border-color: #f85149;
-        background: #f8514915;
+        border-color: var(--danger);
+        background: var(--danger-bg);
       }
       .remove-btn {
         opacity: 0;
@@ -228,7 +229,7 @@
         background: transparent;
         border: none;
         border-radius: 4px;
-        color: #6e7681;
+        color: var(--text-meta);
         cursor: pointer;
         transition: all 0.15s;
       }
@@ -236,13 +237,13 @@
         opacity: 1;
       }
       .remove-btn:hover {
-        color: #f85149;
-        background: #f8514915;
+        color: var(--danger);
+        background: var(--danger-bg);
       }
       .empty-state {
         text-align: center;
         padding: 64px;
-        color: #6e7681;
+        color: var(--text-meta);
       }
       .empty-state svg {
         width: 64px;
@@ -257,104 +258,7 @@
       .loading {
         text-align: center;
         padding: 64px;
-        color: #6e7681;
-      }
-
-      /* Light theme */
-      @media (prefers-color-scheme: light) {
-        body {
-          background: linear-gradient(135deg, #ffffff 0%, #f6f8fa 50%, #f0f2f5 100%);
-          color: #24292f;
-        }
-        h1 {
-          color: #0969da;
-        }
-        .subtitle {
-          color: #57606a;
-        }
-        .search-input {
-          background: #ffffff;
-          border-color: #d0d7de;
-          color: #24292f;
-        }
-        .search-input:focus {
-          border-color: #0969da;
-        }
-        .search-input::placeholder {
-          color: #8c959f;
-        }
-        .btn {
-          background: #ffffff;
-          border-color: #d0d7de;
-          color: #24292f;
-        }
-        .btn:hover {
-          background: #f6f8fa;
-          border-color: #8c959f;
-        }
-        .btn.danger {
-          color: #cf222e;
-        }
-        .btn.danger:hover {
-          border-color: #cf222e;
-          background: #ffebe9;
-        }
-        .download-item {
-          background: rgba(255, 255, 255, 0.8);
-        }
-        .download-item:hover {
-          background: #ffffff;
-          border-color: #d0d7de;
-        }
-        .download-name {
-          color: #24292f;
-        }
-        .download-url {
-          color: #0969da;
-        }
-        .download-status {
-          color: #57606a;
-        }
-        .download-status.error {
-          color: #cf222e;
-        }
-        .progress-bar {
-          background: #d0d7de;
-        }
-        .progress-fill {
-          background: #0969da;
-        }
-        .download-meta {
-          color: #57606a;
-        }
-        .action-btn {
-          border-color: #d0d7de;
-          color: #0969da;
-        }
-        .action-btn:hover {
-          background: #f6f8fa;
-          border-color: #8c959f;
-        }
-        .action-btn.danger {
-          color: #cf222e;
-        }
-        .action-btn.danger:hover {
-          border-color: #cf222e;
-          background: #ffebe9;
-        }
-        .remove-btn {
-          color: #57606a;
-        }
-        .remove-btn:hover {
-          color: #cf222e;
-          background: #ffebe9;
-        }
-        .empty-state {
-          color: #57606a;
-        }
-        .loading {
-          color: #57606a;
-        }
+        color: var(--text-meta);
       }
     </style>
   </head>
@@ -376,14 +280,14 @@
       </svg>
       Downloads
     </h1>
-    <p class="subtitle" id="stats">Loading...</p>
+    <p class="subtitle" id="stats">Loading…</p>
 
     <div class="toolbar">
       <input
         type="text"
         class="search-input"
         id="search-input"
-        placeholder="Search downloads..."
+        placeholder="Search downloads…"
         autofocus
       />
       <div class="toolbar-right">
@@ -407,7 +311,7 @@
     </div>
 
     <div id="downloads-container">
-      <div class="loading">Loading downloads...</div>
+      <div class="loading">Loading downloads…</div>
     </div>
 
     <script>
@@ -553,7 +457,9 @@
             </div>
             <div class="download-content">
               <div class="download-name">${escapeHtml(entry.filename)}${
-                entry.is_private ? '<span class="private-badge" data-test="download-private-badge">Private</span>' : ''
+                entry.is_private
+                  ? '<span class="private-badge" data-test="download-private-badge">Private</span>'
+                  : ''
               }</div>
               <div class="download-url">${escapeHtml(entry.url)}</div>
               <div class="download-status${failed ? ' error' : ''}">${escapeHtml(actionError || statusText(entry))}</div>
@@ -570,7 +476,25 @@
         `;
       }
 
+      // Subtitle counter, shared by the sibling list pages (history, downloads,
+      // payments): pluralise the noun, and name how much of the whole list is
+      // showing while a filter is active (#254). Duplicated per page because
+      // these pages' CSP allows inline script only; the copies are held
+      // identical to src/renderer/lib/ui-format.js by
+      // src/renderer/pages/list-page-counters.test.js.
+      function formatCount(shown, total, singular, plural = `${singular}s`) {
+        const noun = total === 1 ? singular : plural;
+        return shown === total ? `${total} ${noun}` : `${shown} of ${total} ${noun}`;
+      }
+
+      function updateStats(shown) {
+        const active = allDownloads.filter((entry) => entry.state === 'in_progress').length;
+        const label = formatCount(shown, allDownloads.length, 'download');
+        statsEl.textContent = active ? `${label} — ${active} in progress` : label;
+      }
+
       function renderDownloads(entries) {
+        updateStats(entries?.length || 0);
         if (!entries || entries.length === 0) {
           container.innerHTML = `
             <div class="empty-state">
@@ -656,10 +580,6 @@
           }
 
           allDownloads = await freedomAPI.getDownloads();
-          const active = allDownloads.filter((entry) => entry.state === 'in_progress').length;
-          statsEl.textContent = active
-            ? `${allDownloads.length} downloads — ${active} in progress`
-            : `${allDownloads.length} downloads`;
           applyFilter();
         } catch (err) {
           console.error('Failed to load downloads:', err);

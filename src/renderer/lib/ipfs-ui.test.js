@@ -441,7 +441,7 @@ describe('ipfs-ui', () => {
     expect(ctx.elements.ipfsDataRead.textContent).toBe('2.0 KB');
   });
 
-  test('falls back to a bare product label when version diagnostics are missing', async () => {
+  test('falls back to the menu-wide Unknown placeholder when diagnostics are missing', async () => {
     const ctx = await loadIpfsModule({
       antMenuOpen: true,
       currentIpfsStatus: 'running',
@@ -457,8 +457,10 @@ describe('ipfs-ui', () => {
     await flushMicrotasks();
     await flushMicrotasks();
 
-    expect(ctx.elements.ipfsVersionText.textContent).toBe('Freedom IPFS');
-    expect(ctx.state.ipfsVersionValue).toBe('Freedom IPFS');
+    // #253: one placeholder for every Nodes-menu Version row, not a bare
+    // product name with no version after it.
+    expect(ctx.elements.ipfsVersionText.textContent).toBe('Unknown');
+    expect(ctx.state.ipfsVersionValue).toBe('');
   });
 
   test('upgrades the version label once IPFS reports a real version after starting', async () => {
@@ -479,9 +481,9 @@ describe('ipfs-ui', () => {
     await flushMicrotasks();
     await flushMicrotasks();
 
-    // First poll ran before a version was available: show the fallback but do
-    // NOT cache it, so later polls can still upgrade.
-    expect(ctx.elements.ipfsVersionText.textContent).toBe('Freedom IPFS');
+    // First poll ran before a version was available: show the placeholder but
+    // do NOT cache it, so later polls can still upgrade.
+    expect(ctx.elements.ipfsVersionText.textContent).toBe('Unknown');
     expect(ctx.state.ipfsVersionFetched).toBe(false);
 
     // The node finishes starting and now reports a version; the next poll tick

@@ -17,30 +17,16 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
+const { isPackagedRun, packagedLaunchTarget } = require('./packaged-launch');
+
 const repoRoot = path.resolve(__dirname, '..');
 
-// Trimmed, because shells (and YAML `env:` blocks) capture stray whitespace
-// into a value and `executablePath: '/opt/Freedom/freedom '` would fail with
-// a confusing ENOENT.
-const packagedExecutable = (process.env.FREEDOM_E2E_EXECUTABLE || '').trim();
-
-// Launch options for one app instance against `userDataDir`. Source runs pass
-// `.` so Electron loads the repo as its app directory; a packaged binary
-// already embeds its app, so it gets no positional argument at all.
+// Launch options for one app instance against `userDataDir`. Which binary is
+// launched (source tree vs FREEDOM_E2E_EXECUTABLE) and whether the sandbox is
+// opted out of is decided in packaged-launch.js, shared with live-fixtures.js.
 function launchOptions(userDataDir) {
-  const args = [];
-  if (!packagedExecutable) {
-    args.push('.');
-  } else if ((process.env.FREEDOM_E2E_NO_SANDBOX || '').trim() === '1') {
-    // Headless CI runners generally cannot use Chromium's setuid/namespace
-    // sandbox. Only ever passed in packaged mode — a source run under
-    // `npm run test:e2e` keeps the sandbox on.
-    args.push('--no-sandbox');
-  }
-
   return {
-    ...(packagedExecutable ? { executablePath: packagedExecutable } : {}),
-    args,
+    ...packagedLaunchTarget(),
     cwd: repoRoot,
     env: {
       ...process.env,
@@ -53,7 +39,7 @@ function launchOptions(userDataDir) {
     },
     // A freshly installed package has a cold asar and cold shared libraries;
     // give its first launch more room than a warm source run needs.
-    timeout: packagedExecutable ? 45_000 : 20_000,
+    timeout: isPackagedRun() ? 45_000 : 20_000,
   };
 }
 

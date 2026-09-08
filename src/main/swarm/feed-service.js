@@ -111,12 +111,12 @@ async function downloadExactFeedPayload(bee, owner, topic, index) {
   const feedIndex = normalizeFeedIndex(index);
   const identifier = makeFeedIdentifier(topic, feedIndex);
   const reference = bee.calculateSingleOwnerChunkAddress(identifier, owner);
-  const raw = await bee.downloadChunk(reference);
+  const raw = await bee.chunk.download(reference);
   const soc = bee.unmarshalSingleOwnerChunk(raw, reference);
   const cac = bee.makeContentAddressedChunk(soc.payload, soc.span);
   const payload = cac.span.toBigInt() <= 4096n
     ? cac.payload
-    : await bee.downloadData(cac.address);
+    : await bee.data.download(cac.address);
 
   return {
     payload,
@@ -175,7 +175,7 @@ async function createFeed(signerPrivateKey, topicString, batchId) {
     throw new Error('No usable postage batch available. Purchase stamps first.');
   }
 
-  const manifest = await bee.createFeedManifest(resolvedBatchId, topic, owner);
+  const manifest = await bee.feed.createManifest(resolvedBatchId, topic, owner);
   const manifestReference = toHex(manifest);
 
   log.info(`[FeedService] Feed created: topic=${topicString}, owner=${owner.toHex()}`);
@@ -211,7 +211,7 @@ async function updateFeed(signerPrivateKey, topicString, contentReference, batch
   const topicHex = topic.toHex();
 
   const result = await withWriteLock(topicHex, async () => {
-    const writer = bee.makeFeedWriter(topic, privateKey);
+    const writer = bee.feed.makeWriter(topic, privateKey);
     const nextIndex = await resolveNextIndex(writer);
     await writer.uploadReference(resolvedBatchId, contentReference, { index: nextIndex });
     return { index: nextIndex };
@@ -254,7 +254,7 @@ async function writeFeedPayload(signerPrivateKey, topicString, data, options = {
   const topicHex = topic.toHex();
 
   const result = await withWriteLock(topicHex, async () => {
-    const writer = bee.makeFeedWriter(topic, privateKey);
+    const writer = bee.feed.makeWriter(topic, privateKey);
 
     let writeIndex;
     if (index !== undefined && index !== null) {
@@ -295,7 +295,7 @@ async function writeFeedPayload(signerPrivateKey, topicString, data, options = {
 async function readFeedPayload(ownerAddress, topic, index) {
   const bee = getBee();
   const owner = new EthAddress(ownerAddress);
-  const reader = bee.makeFeedReader(topic, owner);
+  const reader = bee.feed.makeReader(topic, owner);
 
   try {
     const result = index !== undefined && index !== null

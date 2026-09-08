@@ -126,6 +126,28 @@ describe('shared ↔ renderer mirror equivalence', () => {
     }
   });
 
+  // The renderer chrome (hamburger hints, #225) formats through the mirror
+  // while Settings > Shortcuts formats through the shared module — a drift
+  // here would put the same binding on screen two different ways again.
+  test('formatAccelerator agrees across registry defaults, aliases, and edge cases', async () => {
+    const mirror = await loadMirror();
+    const extras = ['CmdOrCtrl+Plus', 'CmdOrCtrl+numadd', 'Cmd+Y', 'Ctrl+H', 'F11', '', 'Ctrl+'];
+    for (const platform of PLATFORMS) {
+      const accelerators = [
+        ...shared.SHORTCUTS.flatMap((entry) => [
+          shared.getDefaultAccelerator(entry, platform),
+          ...shared.getAliasAccelerators(entry, platform),
+        ]),
+        ...extras,
+      ];
+      for (const accelerator of accelerators) {
+        expect(mirror.formatAccelerator(accelerator, platform)).toBe(
+          shared.formatAccelerator(accelerator, platform)
+        );
+      }
+    }
+  });
+
   test('default and alias lookups agree', async () => {
     const mirror = await loadMirror();
     for (const entry of shared.SHORTCUTS) {

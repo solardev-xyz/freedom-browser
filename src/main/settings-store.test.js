@@ -488,6 +488,44 @@ describe('settings-store', () => {
 
     expect(nativeTheme.themeSource).toBe('dark');
   });
+
+  // #233: the sandboxed webview preload reads the Appearance theme
+  // synchronously at document-start so internal pages can paint the right
+  // scheme before their first frame.
+  test('serves the Appearance theme to internal pages over a sync channel', () => {
+    const ipcMain = createIpcMainMock();
+    const { mod } = loadSettingsStore({ userDataDir, ipcMain });
+    mod.registerSettingsIpc();
+
+    const read = () => {
+      const event = {};
+      ipcMain.emit(IPC.GET_THEME, event);
+      return event.returnValue;
+    };
+
+    expect(read()).toBe('system');
+    expect(mod.saveSettings({ theme: 'dark' })).toBe(true);
+    expect(read()).toBe('dark');
+    expect(mod.saveSettings({ theme: 'light' })).toBe(true);
+    expect(read()).toBe('light');
+  });
+
+  test('always answers with a theme, even when settings cannot be read', () => {
+    const ipcMain = createIpcMainMock();
+    const { mod, logger } = loadSettingsStore({ userDataDir, ipcMain });
+    mod.registerSettingsIpc();
+
+    // The internal page blocks on this sendSync, so an unanswered (throwing)
+    // handler would hang its renderer before first paint.
+    jest.spyOn(fs, 'existsSync').mockImplementation(() => {
+      throw new Error('disk gone');
+    });
+    const event = {};
+    expect(() => ipcMain.emit(IPC.GET_THEME, event)).not.toThrow();
+
+    expect(event.returnValue).toBe('system');
+    expect(logger.error).toHaveBeenCalled();
+  });
 });
 
 // The search-template validator exists in three copies: here (main), the

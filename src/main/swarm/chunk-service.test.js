@@ -65,8 +65,10 @@ class MockEthAddress {
 var mockBee = {
   url: 'http://127.0.0.1:1633',
   makeContentAddressedChunk: mockMakeContentAddressedChunk,
-  uploadChunk: mockUploadChunk,
-  downloadChunk: mockDownloadChunk,
+  chunk: {
+    upload: mockUploadChunk,
+    download: mockDownloadChunk,
+  },
   unmarshalContentAddressedChunk: mockUnmarshalContentAddressedChunk,
   unmarshalSingleOwnerChunk: mockUnmarshalSingleOwnerChunk,
   calculateSingleOwnerChunkAddress: mockCalculateSingleOwnerChunkAddress,

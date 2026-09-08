@@ -8,6 +8,7 @@ This guide covers local setup, the repository layout, tests, debugging, and deve
 - npm, included with Node.js.
 - Git.
 - Platform build tools required by Electron native modules.
+- Optional, for the bundled Tor client only (`npm run tor:download`): a Rust toolchain at or above the pinned Arti release's MSRV (`MIN_RUST_VERSION` in [`scripts/fetch-arti.js`](../scripts/fetch-arti.js); the script checks before building). Arti is compiled from crates.io rather than downloaded. On Linux that build also needs OpenSSL development headers, and `libsqlite3-dev` when `pkg-config` is installed.
 
 With `nvm` installed, select the repository version with:
 
@@ -83,17 +84,18 @@ Most source modules have a neighboring `.test.js` file. At minimum, run the corr
 
 ### End-to-end tests
 
-Playwright has three projects:
+Playwright has four projects:
 
-| Suite      | Command                     | Behavior                                                                                                       |
-| ---------- | --------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `harness`  | `npm run test:e2e`          | Launches Electron with deterministic Ant/IPFS/naming stubs; fast and network-independent                       |
-| `live`     | `npm run test:e2e:live`     | Uses real nodes, protocols, and network resolution; requires downloaded binaries                               |
-| `packaged` | `npm run test:e2e:packaged` | Runs the release smoke checks (launch, version, persistence) against a built binary instead of the source tree |
+| Suite           | Command                     | Behavior                                                                                                       |
+| --------------- | --------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `harness`       | `npm run test:e2e`          | Launches Electron with deterministic Ant/IPFS/naming stubs; fast and network-independent                       |
+| `live`          | `npm run test:e2e:live`     | Uses real nodes, protocols, and network resolution; requires downloaded binaries                               |
+| `packaged`      | `npm run test:e2e:packaged` | Runs the release smoke checks (launch, version, persistence) against a built binary instead of the source tree |
+| `packaged-live` | `npm run test:e2e:packaged` | Same built binary without the harness stubs: its bundled nodes really start and navigation really goes out     |
 
-The `packaged` project needs `FREEDOM_E2E_EXECUTABLE` pointing at that binary and refuses to run without it; add `FREEDOM_E2E_NO_SANDBOX=1` on a headless machine. After `npm run build -- --linux --x64`, that is `FREEDOM_E2E_EXECUTABLE="$PWD/dist/linux-unpacked/freedom" FREEDOM_E2E_NO_SANDBOX=1 xvfb-run -a npm run test:e2e:packaged`. The release workflow runs the same suite against every artifact it just built — the macOS `.dmg` and `-mac.zip`, the Linux x64/arm64 `.deb` and AppImage, the Windows installer and portable zip (see `agent-playbooks/release-process.md` §6).
+`npm run test:e2e:packaged` runs both packaged projects. They need `FREEDOM_E2E_EXECUTABLE` pointing at that binary and refuse to run without it; add `FREEDOM_E2E_NO_SANDBOX=1` on a headless machine. After `npm run build -- --linux --x64`, that is `FREEDOM_E2E_EXECUTABLE="$PWD/dist/linux-unpacked/freedom" FREEDOM_E2E_NO_SANDBOX=1 xvfb-run -a npm run test:e2e:packaged`; to run only the slow half, call Playwright directly with `npx playwright test --project packaged-live` (adding `--project` to the npm script would union with the two projects it already names). `packaged-live` uses the same per-test scratch data directories as `live`, and skips its Tor check (with the reason) on builds that bundle no Arti binary. The release workflow runs both suites against every artifact it just built — the macOS `.dmg` and `-mac.zip`, the Linux x64/arm64 `.deb` and AppImage, the Windows installer and portable zip (see `agent-playbooks/release-process.md` §6).
 
-All three suites use a temporary Electron `userData` directory and run sequentially. The full CI matrix covers the operating-system-specific and native-node checks that most contributors cannot reproduce locally.
+All four suites use a temporary Electron `userData` directory and run sequentially. The full CI matrix covers the operating-system-specific and native-node checks that most contributors cannot reproduce locally.
 
 ## Logging and debugging
 

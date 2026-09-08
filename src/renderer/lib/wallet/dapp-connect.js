@@ -166,7 +166,7 @@ function renderDappConnectWalletList() {
     }
 
     const truncatedAddress = wallet.address
-      ? `${wallet.address.slice(0, 6)}...${wallet.address.slice(-4)}`
+      ? `${wallet.address.slice(0, 6)}…${wallet.address.slice(-4)}`
       : '--';
 
     item.innerHTML = `
@@ -201,7 +201,7 @@ function selectDappConnectWallet(index) {
     }
     if (dappConnectWalletAddress) {
       const truncated = wallet.address
-        ? `${wallet.address.slice(0, 6)}...${wallet.address.slice(-4)}`
+        ? `${wallet.address.slice(0, 6)}…${wallet.address.slice(-4)}`
         : '--';
       dappConnectWalletAddress.textContent = truncated;
     }

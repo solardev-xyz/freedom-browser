@@ -26,6 +26,11 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
+// Let every queued continuation run without advancing any timer.
+function flushMicrotasks() {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
 jest.mock('./network-registry', () => mockRegistry);
 jest.mock('../myotis/myotis-manager', () => mockMyotis);
 jest.mock('../ens/colibri-resolver', () => ({
@@ -519,6 +524,174 @@ describe('chain-data-router', () => {
     expect(mockRequestViaColibri).toHaveBeenCalledTimes(1);
   });
 
+  test('falls through after two seconds and temporarily bypasses a timed-out Myotis route', async () => {
+    jest.useFakeTimers({ now: 1_000_000 });
+    mockRegistry.getNetwork.mockReturnValue({
+      access: { readOrder: ['myotis', 'direct'] },
+      quorum: { timeoutMs: 5000 },
+    });
+    const hangingRead = deferred();
+    mockMyotis.ethCall.mockReturnValue(hangingRead.promise);
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ result: '0xrpc' }),
+    });
+    const params = [{
+      to: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      data: '0x1234',
+    }, 'latest'];
+    const options = { routingContext: { origin: 'https://swap.example' } };
+
+    const first = request(1, 'eth_call', params, options);
+    await jest.advanceTimersByTimeAsync(2000);
+    await expect(first).resolves.toMatchObject({ result: '0xrpc', source: 'direct' });
+
+    await expect(request(1, 'eth_call', params, options)).resolves.toMatchObject({
+      result: '0xrpc',
+      source: 'direct',
+    });
+    expect(mockMyotis.ethCall).toHaveBeenCalledTimes(1);
+
+    hangingRead.resolve({ resultHex: '0xlate' });
+    await Promise.resolve();
+  });
+
+  test('keeps non-cancellable Myotis work from starving interactive fallbacks', async () => {
+    jest.useFakeTimers({ now: 1_000_000 });
+    mockRegistry.getNetwork.mockReturnValue({
+      access: { readOrder: ['myotis', 'direct'] },
+      quorum: { timeoutMs: 5000 },
+    });
+    mockMyotis.ethCall.mockReturnValue(new Promise(() => {}));
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ result: '0xrpc' }),
+    });
+    const options = { routingContext: { origin: 'https://swap.example' } };
+    const requests = Array.from({ length: 6 }, (_value, index) =>
+      request(1, 'eth_call', [{
+        to: `0x${String(index + 1).padStart(40, '0')}`,
+        data: '0x1234',
+      }, 'latest'], options));
+
+    await jest.advanceTimersByTimeAsync(2000);
+    // Compare the whole source list, not `arrayContaining`: identical matchers
+    // there are satisfied by a single match, so 5-of-6 falling elsewhere would
+    // still pass.
+    const settled = await Promise.all(requests);
+    expect(settled.map((entry) => entry.source)).toEqual(Array(6).fill('direct'));
+    expect(mockMyotis.ethCall).toHaveBeenCalledTimes(1);
+  });
+
+  test('serializes concurrent Myotis reads instead of downgrading the second one', async () => {
+    mockRegistry.getNetwork.mockReturnValue({
+      access: { readOrder: ['myotis', 'direct'] },
+      quorum: { timeoutMs: 5000 },
+    });
+    const balanceRead = deferred();
+    const decimalsRead = deferred();
+    mockMyotis.ethCall
+      .mockReturnValueOnce(balanceRead.promise)
+      .mockReturnValueOnce(decimalsRead.promise);
+    global.fetch = jest.fn();
+    const token = '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+
+    // The shape wallet reads actually use: balanceOf + decimals in one
+    // Promise.all. Neither may silently lose verification for being second.
+    const balance = request(1, 'eth_call', [{ to: token, data: '0x70a08231' }, 'latest']);
+    const decimals = request(1, 'eth_call', [{ to: token, data: '0x313ce567' }, 'latest']);
+
+    await flushMicrotasks();
+    expect(mockMyotis.ethCall).toHaveBeenCalledTimes(1);
+    balanceRead.resolve({ resultHex: '0x2a' });
+    await expect(balance).resolves.toEqual({
+      result: '0x2a',
+      source: 'myotis',
+      verified: true,
+    });
+
+    await flushMicrotasks();
+    decimalsRead.resolve({ resultHex: '0x12' });
+    await expect(decimals).resolves.toEqual({
+      result: '0x12',
+      source: 'myotis',
+      verified: true,
+    });
+    expect(mockMyotis.ethCall).toHaveBeenCalledTimes(2);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  test('keeps a Myotis-terminal read order working under concurrency', async () => {
+    mockRegistry.getNetwork.mockReturnValue({
+      access: { readOrder: ['myotis'] },
+      quorum: { timeoutMs: 5000 },
+    });
+    mockMyotis.getAccount.mockResolvedValue({ status: 'ok', balanceWei: '42', nonce: 3 });
+
+    await expect(Promise.all([
+      request(1, 'eth_getBalance', ['0xabc', 'latest']),
+      request(1, 'eth_getTransactionCount', ['0xabc', 'latest']),
+    ])).resolves.toEqual([
+      { result: '0x2a', source: 'myotis', verified: true },
+      { result: '0x3', source: 'myotis', verified: true },
+    ]);
+    expect(mockMyotis.getAccount).toHaveBeenCalledTimes(2);
+  });
+
+  test('refuses Myotis once its wait queue is full instead of parking unbounded work', async () => {
+    jest.useFakeTimers({ now: 1_000_000 });
+    mockRegistry.getNetwork.mockReturnValue({
+      access: { readOrder: ['myotis', 'direct'] },
+      quorum: { timeoutMs: 5000 },
+    });
+    mockMyotis.ethCall.mockReturnValue(new Promise(() => {}));
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ result: '0xrpc' }),
+    });
+    // One read holds the slot, sixteen queue behind it, the eighteenth is
+    // refused outright rather than waiting on a slot that is not turning over.
+    const requests = Array.from({ length: 18 }, (_value, index) =>
+      request(1, 'eth_call', [{
+        to: `0x${String(index + 1).padStart(40, '0')}`,
+        data: '0x1234',
+      }, 'latest']));
+
+    await expect(requests[17]).resolves.toMatchObject({ source: 'direct' });
+    expect(mockMyotis.ethCall).toHaveBeenCalledTimes(1);
+
+    await jest.advanceTimersByTimeAsync(5000);
+    const settled = await Promise.all(requests);
+    expect(settled.map((entry) => entry.source)).toEqual(Array(18).fill('direct'));
+    expect(mockMyotis.ethCall).toHaveBeenCalledTimes(1);
+  });
+
+  test('releases the Myotis slot when the trust status binding throws synchronously', async () => {
+    mockRegistry.getNetwork.mockReturnValue({
+      access: { readOrder: ['myotis', 'direct'] },
+      quorum: { timeoutMs: 500 },
+    });
+    mockMyotis.getStatus.mockImplementationOnce(() => {
+      throw new Error('native getStatus binding failed');
+    });
+    mockMyotis.ethCall.mockResolvedValue({ resultHex: '0x2a' });
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ result: '0xrpc' }),
+    });
+    const params = [{
+      to: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      data: '0x1234',
+    }, 'latest'];
+
+    await expect(request(1, 'eth_call', params, { includeTrust: true }))
+      .resolves.toMatchObject({ source: 'direct' });
+    // A single synchronous throw must not strand the one Myotis slot: the next
+    // read still reaches Myotis instead of queueing behind a leaked count.
+    await expect(request(1, 'eth_call', params, { includeTrust: true }))
+      .resolves.toMatchObject({ source: 'myotis', verified: true });
+  });
+
   test('escalates Colibri timeout cooldowns from 15 to 30 to 60 seconds and resets on success', async () => {
     jest.useFakeTimers({ now: 1_000_000 });
     mockRegistry.getNetwork.mockReturnValue({
@@ -833,6 +1006,28 @@ describe('chain-data-router', () => {
     await expect(response).resolves.toEqual({
       result: '0xverified',
       source: 'colibri',
+      verified: true,
+    });
+  });
+
+  test('gives Myotis the configured timeout when it is the last configured source', async () => {
+    jest.useFakeTimers({ now: 1_000_000 });
+    mockRegistry.getNetwork.mockReturnValue({
+      access: { readOrder: ['myotis'] },
+      quorum: { timeoutMs: 5000 },
+    });
+    const slowRead = deferred();
+    mockMyotis.ethCall.mockReturnValue(slowRead.promise);
+
+    const response = request(1, 'eth_call', [{ to: '0xabc' }, 'latest'], {
+      routingContext: { origin: 'https://swap.example' },
+    });
+    await jest.advanceTimersByTimeAsync(3000);
+    slowRead.resolve({ resultHex: '0xverified' });
+
+    await expect(response).resolves.toEqual({
+      result: '0xverified',
+      source: 'myotis',
       verified: true,
     });
   });

@@ -9,6 +9,7 @@ Use these files on demand:
 - `commit-messages.md`: commit title/body conventions.
 - `changelog-process.md`: release changelog procedure.
 - `release-process.md`: release branch, version bump, tag, build, and publish steps.
+- `ui-consistency.md`: conventions and checks for renderer/UI changes; pairs with the `run-freedom` skill in `.claude/skills/`.
 - `security-checklist.md`: pre-commit and pre-PR security checks.
 - `windows-utm-build.md`: build and run a native Windows build in a UTM VM on macOS.
 

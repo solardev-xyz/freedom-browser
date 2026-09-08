@@ -1,9 +1,18 @@
 import {
   applyEnsNamePreservation,
   deriveDisplayValue,
+  formatOnchainAppDisplayUrl,
   parseOnchainAppUrl,
 } from './url-utils.js';
-import { getInternalPageName, parseEnsInput } from './page-urls.js';
+import {
+  getInternalPageName,
+  getInterstitialDisplayName,
+  getOnchainInterstitialTarget,
+  isErrorPageUrl,
+  isInterstitialPageUrl,
+  isOnchainInterstitialPageUrl,
+  parseEnsInput,
+} from './page-urls.js';
 import { isDwebNameHost } from './origin-utils.js';
 
 // Extract the Ethereum name from an address bar value, or null if the value isn't
@@ -542,6 +551,37 @@ export const deriveSwitchedTabDisplay = ({
   }
 
   const strippedUrl = url.startsWith('view-source:') ? url.slice(12) : url;
+  // A tab parked on a name-resolution interstitial restores the blocked name
+  // (`lagged.tez`), never the interstitial's `file://` path — same rule the
+  // active-tab did-navigate handler applies, and on the same input: the test
+  // is against the committed URL itself, not the `view-source:` inner URL, so
+  // both surfaces agree on what counts as an interstitial. The name is empty
+  // only when the page was opened without its `name` param; an empty address
+  // bar is the fail-safe there, since the on-disk path must not be shown
+  // either. See #235.
+  if (isInterstitialPageUrl(url)) {
+    return getInterstitialDisplayName(url) || '';
+  }
+
+  // The onchain trust gate is the same kind of page, but carries the blocked
+  // app in `target=` instead of `name=`: restore the `web3://` app identity
+  // the active-tab did-navigate handler shows, never the gate's own `file://`
+  // URL — which additionally carries the single-use approval token. An
+  // unparseable/absent target falls back to an empty address bar rather than
+  // the on-disk path, same fail-safe as the name interstitials. See #235.
+  //
+  // Unlike the name interstitials above, the test runs on the *stripped* URL
+  // as well: `view-source:` of the gate is refused at dispatch, but if such a
+  // tab exists anyway (session restore, a pre-fix history entry) a switch
+  // back to it must not repaint the token into the address bar either — so
+  // that case fails safe to a blank address bar rather than
+  // `view-source:<gate URL>`.
+  if (isOnchainInterstitialPageUrl(strippedUrl)) {
+    if (strippedUrl !== url) return '';
+    const target = getOnchainInterstitialTarget(url);
+    return (target && formatOnchainAppDisplayUrl(target)) || '';
+  }
+
   // A tab parked on `pages/error.html?...&url=<original>` should restore the
   // friendly original target (e.g. `ipfs://vitalik.eth`), not the raw
   // `file://.../error.html?...` URL Chromium actually committed. Mirrors the
@@ -588,14 +628,14 @@ export const getBookmarkBarState = ({
   };
 };
 
-export const getOriginalUrlFromErrorPage = (url, errorUrlBase = '') => {
-  if (!url) {
-    return null;
-  }
-
-  const isErrorPage =
-    (errorUrlBase && url.startsWith(errorUrlBase)) || url.includes('/error.html?');
-  if (!isErrorPage) {
+// The friendly target an error page is standing in for, or null when `url`
+// isn't *our* error page. The chrome test is `isErrorPageUrl` (exact match on
+// the shell's own `pages/error.html`) rather than a `/error.html?` substring:
+// the `url` param is echoed straight into the address bar and the protocol
+// icon, so a remote `https://evil.test/error.html?url=bzz://vitalik.eth` would
+// otherwise get to pick both while rendering attacker HTML. See #235.
+export const getOriginalUrlFromErrorPage = (url) => {
+  if (!isErrorPageUrl(url)) {
     return null;
   }
 

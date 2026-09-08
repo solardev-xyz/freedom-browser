@@ -235,7 +235,7 @@ function formatTypedDataForDisplay(typedData) {
     if (typedData.domain.version) lines.push(`  Version: ${typedData.domain.version}`);
     if (typedData.domain.chainId) lines.push(`  Chain ID: ${typedData.domain.chainId}`);
     if (typedData.domain.verifyingContract) {
-      lines.push(`  Contract: ${typedData.domain.verifyingContract.slice(0, 10)}...`);
+      lines.push(`  Contract: ${typedData.domain.verifyingContract.slice(0, 10)}…`);
     }
     lines.push('');
   }
@@ -244,7 +244,7 @@ function formatTypedDataForDisplay(typedData) {
     lines.push('Message:');
     for (const [key, value] of Object.entries(typedData.message)) {
       const displayValue = typeof value === 'object' ? JSON.stringify(value) : String(value);
-      const truncated = displayValue.length > 50 ? displayValue.slice(0, 50) + '...' : displayValue;
+      const truncated = displayValue.length > 50 ? displayValue.slice(0, 50) + '…' : displayValue;
       lines.push(`  ${key}: ${truncated}`);
     }
   }
