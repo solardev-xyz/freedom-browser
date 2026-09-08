@@ -507,15 +507,16 @@ describe('find-bar', () => {
     emitFoundInPage(ctx, { activeMatchOrdinal: 2, matches: 5, finalUpdate: true });
     expect(ctx.count.textContent).toBe('2/5');
 
-    // The outgoing document's highlights are cleared before it commits (and
-    // before it can reach the back/forward cache still painted, #300).
+    // The start only records the bar's visibility — the session keeps
+    // running, because this navigation may still be one that never commits.
     ctx.mod.notifyFindBarNavigationStarted(ctx.webview);
-    expect(ctx.webview.stopFindInPage).toHaveBeenCalledWith('clearSelection');
-    expect(ctx.count.textContent).toBe('');
+    expect(ctx.webview.stopFindInPage).not.toHaveBeenCalled();
+    expect(ctx.count.textContent).toBe('2/5');
 
-    // Chrome hides the bar at commit when it was visible when the
-    // navigation started.
+    // Chrome ends the session and hides the bar at commit, when it was
+    // visible when the navigation started.
     ctx.mod.notifyFindBarNavigated(ctx.webview);
+    expect(ctx.webview.stopFindInPage).toHaveBeenCalledWith('clearSelection');
     expect(ctx.mod.isFindBarOpen()).toBe(false);
     expect(ctx.count.textContent).toBe('');
 
@@ -592,7 +593,7 @@ describe('find-bar', () => {
     expect(ctx.mod.isFindBarOpen()).toBe(false);
   });
 
-  test('the navigation hooks are no-ops for a tab that never opened the bar', async () => {
+  test('the navigation hooks paint nothing for a tab that never opened the bar', async () => {
     const ctx = await loadFindBarModule();
 
     expect(() => {
@@ -601,7 +602,84 @@ describe('find-bar', () => {
       ctx.mod.notifyFindBarTabClosed(ctx.webview);
     }).not.toThrow();
     expect(ctx.count.textContent).toBe('');
+    expect(ctx.mod.isFindBarOpen()).toBe(false);
+  });
+
+  // A main-frame navigation that never commits — a link served as a
+  // download, Stop, window.stop(), a link handed to an external protocol
+  // handler — leaves the user on the same page. Chrome acts only at commit,
+  // so its session, highlights and count survive; ours must too.
+  test('a navigation that starts but never commits leaves the live session alone', async () => {
+    const ctx = await loadFindBarModule();
+    ctx.mod.openFindBar();
+    await flushMicrotasks();
+    await typeQuery(ctx, 'needle');
+    emitFoundInPage(ctx, { activeMatchOrdinal: 1, matches: 2, finalUpdate: true });
+    expect(ctx.count.textContent).toBe('1/2');
+
+    // The download click: did-start-navigation fires (Chromium emits it
+    // before it knows the response is an attachment), no did-navigate ever
+    // follows.
+    ctx.mod.notifyFindBarNavigationStarted(ctx.webview);
+
     expect(ctx.webview.stopFindInPage).not.toHaveBeenCalled();
+    expect(ctx.mod.isFindBarOpen()).toBe(true);
+    expect(ctx.count.textContent).toBe('1/2');
+    expect(ctx.prevBtn.disabled).toBe(false);
+    expect(ctx.nextBtn.disabled).toBe(false);
+
+    // The session is still live: Enter advances the existing search instead
+    // of restarting it.
+    ctx.webview.findInPage.mockClear();
+    ctx.input.dispatch('keydown', { key: 'Enter', preventDefault: () => {} });
+    expect(ctx.webview.findInPage).toHaveBeenCalledWith('needle', {
+      forward: true,
+      findNext: true,
+    });
+  });
+
+  // The flag Chrome records at DidStartNavigation is rewritten on every
+  // start. Recording it only when unset let an uncommitted navigation wedge
+  // it, so the next real navigation kept the bar open with the previous
+  // page's query — the #299 behaviour this module removes.
+  test('an uncommitted navigation does not wedge the bar open across the next one', async () => {
+    const ctx = await loadFindBarModule();
+
+    // Bar closed: a download link is clicked, so the recorded answer is
+    // "was not visible" — and no commit ever consumes it.
+    ctx.mod.notifyFindBarNavigationStarted(ctx.webview);
+
+    // The user now searches this (unchanged) page and navigates for real.
+    ctx.mod.openFindBar();
+    await flushMicrotasks();
+    await typeQuery(ctx, 'needle');
+    ctx.mod.notifyFindBarNavigationStarted(ctx.webview);
+    ctx.mod.notifyFindBarNavigated(ctx.webview);
+
+    expect(ctx.mod.isFindBarOpen()).toBe(false);
+    expect(ctx.count.textContent).toBe('');
+  });
+
+  // #300: a document that went into the back/forward cache mid-search comes
+  // back painted. The session let go of the webview at the outgoing commit,
+  // so the restoring commit has to reach the guest anyway — Chrome's
+  // EndFindSession runs StopFinding on every cross-document commit.
+  test('a commit with no live session still tells the guest to stop finding', async () => {
+    const ctx = await loadFindBarModule();
+    ctx.mod.openFindBar();
+    await flushMicrotasks();
+    await typeQuery(ctx, 'needle');
+
+    // Navigating away ends the session (the cached document keeps its
+    // highlights, which this stop cannot reach — it is no longer current).
+    ctx.mod.notifyFindBarNavigationStarted(ctx.webview);
+    ctx.mod.notifyFindBarNavigated(ctx.webview);
+    ctx.webview.stopFindInPage.mockClear();
+
+    // Back: the cached document commits again, painted, with no session.
+    ctx.mod.notifyFindBarNavigated(ctx.webview);
+
+    expect(ctx.webview.stopFindInPage).toHaveBeenCalledWith('clearSelection');
   });
 
   test('clearing the query ends the session and blanks the counter', async () => {

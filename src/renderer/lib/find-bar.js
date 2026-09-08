@@ -14,17 +14,29 @@
 // with the highlights still painted.
 //
 // Chrome's navigation rule (chrome/browser/ui/find_bar/
-// find_bar_controller.cc, NavigationEntryCommitted) is: on a main-frame
-// navigation to a different document, if the bar was visible when the
-// navigation *started* the find session ends and the bar hides; if the
-// user opened the bar after the navigation started the bar stays open but
-// the search is stopped, so the previous origin's query is never re-run
-// automatically. Same-document navigations leave everything alone. We
-// mirror that here, with one implementation detail Chrome does not need:
-// the outgoing document's highlights are cleared at did-start-navigation
-// rather than at commit, because a document that reaches the back/forward
-// cache with a live find session comes back — on Back — still painted
-// (issue #300).
+// find_bar_controller.cc) is: on a main-frame navigation to a different
+// document, if the bar was visible when the navigation *started* the find
+// session ends and the bar hides; if the user opened the bar after the
+// navigation started the bar stays open but the search is stopped, so the
+// previous origin's query is never re-run automatically. Same-document
+// navigations leave everything alone.
+//
+// Which half runs where matters. Chrome's DidStartNavigation only *records*
+// whether the bar was visible (close_find_bar_on_navigation_commit_) — every
+// visible effect happens at commit, so a main-frame navigation that never
+// commits (a download link, Stop, window.stop(), a link handled by an
+// external protocol) leaves the live session, its highlights and its count
+// completely alone. We mirror that split exactly: the start hook writes one
+// flag and nothing else, and it rewrites it on every start so a navigation
+// that never commits can't wedge the flag for the next one.
+//
+// The commit hook also stops finding on the webview unconditionally, not
+// only when this side still holds a live session — that is what un-paints a
+// document restored from the back/forward cache with the find highlights it
+// was cached with (issue #300), since by then the session has long let go of
+// the webview. Chrome gets the same effect for free: EndFindSession →
+// FindTabHelper::StopFinding → WebContents::StopFinding runs on every
+// cross-document commit, the restoring back-navigation included.
 //
 // tabs.js drives the four hooks below (tab switch, navigation start,
 // navigation commit, tab close); sessions are keyed by the tab's webview
@@ -81,8 +93,8 @@ const createSession = () => ({
   // Last result rendered for this tab: { active, matches } or null.
   result: null,
   // Chrome's close_find_bar_on_navigation_commit_: whether the bar was
-  // visible when the pending navigation started. null = no navigation
-  // pending.
+  // visible when the most recent navigation started. null = no navigation
+  // has started since the last commit.
   closeOnCommit: null,
 });
 
@@ -181,13 +193,27 @@ const cancelPendingPrefill = () => {
   prefillGeneration++;
 };
 
-// End a tab's find session: detach the result listener and tell Chromium to
-// stop finding. `clearHighlights` is only skipped for a webview that is
-// already gone (tab closed), where the call would throw anyway.
+// Tell Chromium to stop finding in whatever document the webview is showing
+// and drop its match highlights. Separate from stopSession because a
+// document can carry highlights this side no longer tracks: one that went
+// into the back/forward cache mid-search comes back painted long after its
+// session let go of the webview (issue #300).
 //
 // Chrome ends a session with SelectionAction::kKeep (the active match stays
 // selected as ordinary text); we use 'clearSelection' so closing leaves no
 // visible residue at all, which is what issue #300 asks for.
+const clearFindHighlights = (webview) => {
+  if (!webview) return;
+  try {
+    webview.stopFindInPage('clearSelection');
+  } catch (err) {
+    pushDebug(`[FindBar] stopFindInPage failed: ${err.message}`);
+  }
+};
+
+// End a tab's find session: detach the result listener and tell Chromium to
+// stop finding. `clearHighlights` is only skipped for a webview that is
+// already gone (tab closed), where the call would throw anyway.
 const stopSession = (session, { clearHighlights = true } = {}) => {
   if (!session) return;
   session.submitted = '';
@@ -199,18 +225,12 @@ const stopSession = (session, { clearHighlights = true } = {}) => {
     webview.removeEventListener('found-in-page', session.listener);
     session.listener = null;
   }
-  if (!clearHighlights) return;
-  try {
-    webview.stopFindInPage('clearSelection');
-  } catch (err) {
-    pushDebug(`[FindBar] stopFindInPage failed: ${err.message}`);
-  }
+  if (clearHighlights) clearFindHighlights(webview);
 };
 
-// Stop a tab's live search because its page is going away, keeping the bar
-// and its query as they are — whether the bar closes is decided at commit.
-// Shared by the navigation-start and navigation-commit hooks so a
-// navigation that never reports a start still ends the session exactly once.
+// Stop a tab's live search because its page has been replaced, keeping the
+// bar and its query as they are — whether the bar closes is decided by the
+// caller, from the flag recorded when the navigation started.
 const endSessionForNavigation = (session) => {
   // The debounce and prefill timers are window-global because only the
   // foreground tab can own them — a background tab's navigation must leave
@@ -370,23 +390,26 @@ export const notifyFindBarTabSwitched = () => {
 // Called by tabs.js on `did-start-navigation` for a main-frame,
 // cross-document navigation, before the new document commits.
 //
-// Two things happen here. First, Chrome's race rule: it records whether the
-// find bar was visible when the navigation started, and only closes the bar
-// at commit if it was (a bar opened *during* the load is the user asking to
-// search the incoming page). Second, the live search is stopped while the
-// outgoing document is still the current one — Chromium keeps a
-// back/forward-cached document's find highlights painted, so a session that
-// is merely abandoned comes back on Back with stale highlights and no bar
-// (issue #300).
+// Records Chrome's race rule and nothing else: whether the find bar was
+// visible when the navigation started, so the commit hook only closes the
+// bar if it was (a bar opened *during* the load is the user asking to search
+// the incoming page). Deliberately free of visible effects, because plenty
+// of main-frame navigations start and never commit — a link served as a
+// download, Stop, window.stop(), a link handed to an external protocol
+// handler. The user is still on the same page afterwards, so the live
+// session, its highlights and its count must survive untouched, exactly as
+// they do in Chrome (which acts only at NavigationEntryCommitted).
 export const notifyFindBarNavigationStarted = (webview) => {
   // Created even for a tab that has never opened the bar: the recorded
   // "was it visible when this navigation started?" answer is what lets a
   // bar opened mid-load survive the commit.
   const session = getSession(webview, { create: true });
-  if (session.closeOnCommit === null) {
-    session.closeOnCommit = session.open;
-  }
-  endSessionForNavigation(session);
+  // Re-recorded on every start, like Chrome's DidStartNavigation. Writing it
+  // only when unset would let a navigation that never commits wedge the flag
+  // — a download click with the bar closed would leave `false` behind, and
+  // the next real navigation would then keep the bar open with the previous
+  // page's query, the #299 behaviour this module exists to remove.
+  session.closeOnCommit = session.open;
 };
 
 // Called by tabs.js when a tab commits a main-frame navigation (its
@@ -401,9 +424,17 @@ export const notifyFindBarNavigated = (webview) => {
   // start (or one that started before the bar existed) closes the bar.
   const closeBar = session.closeOnCommit !== false;
   session.closeOnCommit = null;
-  // No-op when did-start-navigation already ended the session; covers the
-  // navigations that never report a start.
+  const hadLiveSession = !!session.webview;
   endSessionForNavigation(session);
+  // A commit with no live session still has to reach the guest: this is the
+  // path a Back to a back/forward-cached document takes, and that document
+  // comes back painted with the highlights it was cached mid-search with
+  // (issue #300). Chrome's EndFindSession likewise runs StopFinding on every
+  // cross-document commit rather than only on the ones it tracks a session
+  // for. Skipped when the session was live because stopSession just did it.
+  if (!hadLiveSession) {
+    clearFindHighlights(webview);
+  }
   if (closeBar) {
     session.open = false;
   }

@@ -465,11 +465,12 @@ const createWebview = (tabId, initialUrl) => {
 
   // Create named event handlers so they can be removed later
   const handlers = {
-    // Main-frame, cross-document navigation is about to leave this page:
-    // end its find session before the outgoing document commits (and
-    // possibly enters the back/forward cache still painted with find
-    // highlights). Whether the bar itself closes is decided at commit,
-    // from the open/closed state recorded here — Chrome's rule.
+    // A main-frame, cross-document navigation started: record whether the
+    // find bar was open for this tab, which is what decides at commit
+    // whether the bar closes — Chrome's rule. Nothing visible happens here,
+    // because this navigation may never commit (a download link, Stop, an
+    // external protocol handler), and the user is then still on this page
+    // with a live search that must survive.
     'did-start-navigation': (event) => {
       if (event.isMainFrame === false || event.isInPlace) return;
       notifyFindBarNavigationStarted(webview);

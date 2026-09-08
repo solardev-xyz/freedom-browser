@@ -19,13 +19,45 @@ const FIXTURE_BODY =
 const OTHER_HASH = 'b'.repeat(64);
 const OTHER_BODY = '<!doctype html><title>other fixture</title><p>banana one</p><p>banana two</p>';
 
+// A link the browser downloads instead of navigating to (the fixture is
+// served as an attachment). Clicking it emits a main-frame
+// `did-start-navigation` that never commits — the user stays on the page.
+const DOWNLOAD_HASH = 'c'.repeat(64);
+// The link's colour and outline are pinned so :visited and :focus can't move
+// a pixel after it is clicked — the specs below compare guest screenshots
+// taken either side of that click to assert on find highlights.
+const DOWNLOAD_LINK_BODY =
+  FIXTURE_BODY +
+  `<p><a id="dl" style="color:#06c;outline:none" href="bzz://${DOWNLOAD_HASH}/file.bin">get file</a></p>`;
+
+// Serve DOWNLOAD_HASH as an attachment and load the page that links to it.
+async function loadPageWithDownloadLink(window, harness) {
+  await harness.setContentFixture(`bzz://${DOWNLOAD_HASH}/file.bin`, {
+    body: 'find-in-page-download-e2e',
+    contentType: 'application/octet-stream',
+    headers: { 'Content-Disposition': 'attachment; filename="file.bin"' },
+  });
+  await loadFixturePage(window, harness, { body: DOWNLOAD_LINK_BODY });
+}
+
+// Click the download link inside the guest and wait until the download has
+// actually been accepted (a shelf card in the chrome) — proof the navigation
+// really started, so the assertions after it are not vacuous.
+async function clickDownloadLink(window, electronApp) {
+  const guest = await guestPage(electronApp, SAMPLE_BZZ_HASH);
+  await guest.click('#dl');
+  await expect(window.locator('#download-shelf .download-card')).toHaveCount(1, {
+    timeout: 10_000,
+  });
+}
+
 // Find highlights are painted by Chromium's compositor, not written into the
 // guest's DOM, so the only way to assert on them is pixels. A guest webview
 // surfaces as its own Playwright page: screenshotting *that* captures the
 // page exactly as the user sees it, with no browser chrome (and therefore no
 // find bar) in the frame, so a byte-identical shot means "this page carries
 // no find highlights".
-async function guestShot(electronApp, urlPart) {
+async function guestPage(electronApp, urlPart) {
   let guest = null;
   await expect
     .poll(
@@ -36,6 +68,11 @@ async function guestShot(electronApp, urlPart) {
       { message: `Waiting for the guest page for ${urlPart}`, timeout: 10_000 }
     )
     .toBe(true);
+  return guest;
+}
+
+async function guestShot(electronApp, urlPart) {
+  const guest = await guestPage(electronApp, urlPart);
   return guest.screenshot();
 }
 
@@ -344,4 +381,79 @@ test('two tabs keep their own query, count and highlights', async ({
   await expect(bar).toBeVisible();
   await expect(input).toHaveValue('banana');
   await expect(counter).toHaveText('1/2');
+});
+
+// A main-frame navigation that starts and never commits (here: a link served
+// as an attachment, so it downloads) leaves the user on the same page.
+// Chrome ends find sessions at commit, so nothing about the live session
+// changes — bar, count and highlights all stay.
+test('a download link mid-search leaves the session, count and highlights alone', async ({
+  window,
+  electronApp,
+  harness,
+}) => {
+  await loadPageWithDownloadLink(window, harness);
+  const clean = await guestShot(electronApp, SAMPLE_BZZ_HASH);
+
+  await openFindBar(window);
+  const counter = window.locator('[data-test="find-bar-count"]');
+  await window.locator('[data-test="find-bar-input"]').fill('needle');
+  await expect(counter).toHaveText('1/3');
+
+  // Acceptance evidence for the "still highlighted" assertion below: the
+  // searched page really is painted differently from its clean state.
+  await expect
+    .poll(async () => Buffer.compare(await guestShot(electronApp, SAMPLE_BZZ_HASH), clean), {
+      message: 'Waiting for the match highlights to be painted',
+    })
+    .not.toBe(0);
+  const searched = await guestShot(electronApp, SAMPLE_BZZ_HASH);
+
+  await clickDownloadLink(window, electronApp);
+
+  // Same page, same session: the bar is still open on the same count.
+  await expect(window.locator('[data-test="find-bar"]')).toBeVisible();
+  await expect(counter).toHaveText('1/3');
+
+  // ...and the page is still painted with its matches. The shelf card the
+  // download popped is dismissed first, so the guest is laid out exactly as
+  // it was when `searched` was captured and the comparison is about
+  // highlights rather than about the shelf's height.
+  await window.locator('[data-test="download-close"]').click();
+  await expect(window.locator('#download-shelf .download-card')).toHaveCount(0);
+  await expect
+    .poll(async () => Buffer.compare(await guestShot(electronApp, SAMPLE_BZZ_HASH), searched), {
+      message: 'Waiting for the guest to be laid out without the download shelf',
+    })
+    .toBe(0);
+
+  // The session is still live, not just visually intact: Enter advances it.
+  await window.locator('[data-test="find-bar-input"]').press('Enter');
+  await expect(counter).toHaveText('2/3');
+});
+
+// The flag Chrome records at DidStartNavigation must be rewritten on every
+// start: an uncommitted navigation that leaves it stuck at "the bar was
+// closed" made the *next*, real navigation keep the bar open with the old
+// page's query — the #299 behaviour this PR removes.
+test('a download link with the bar closed does not keep the bar open across the next navigation', async ({
+  window,
+  electronApp,
+  harness,
+}) => {
+  await loadPageWithDownloadLink(window, harness);
+
+  // Bar closed while a navigation starts and never commits.
+  await expect(window.locator('[data-test="find-bar"]')).toBeHidden();
+  await clickDownloadLink(window, electronApp);
+
+  // Now search this (unchanged) page and navigate away for real.
+  await openFindBar(window);
+  await window.locator('[data-test="find-bar-input"]').fill('needle');
+  await expect(window.locator('[data-test="find-bar-count"]')).toHaveText('1/3');
+
+  await loadOtherPage(window, harness);
+
+  await expect(window.locator('[data-test="find-bar"]')).toBeHidden();
+  await expect(window.locator('[data-test="find-bar-count"]')).toHaveText('');
 });
