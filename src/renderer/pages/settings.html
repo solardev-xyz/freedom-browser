@@ -307,6 +307,24 @@
         gap: 8px;
       }
 
+      /* Per-row progressive disclosure (#270): the technical name and the
+         mechanism live here, collapsed, so the visible layer carries no
+         term a user would have to look up. */
+      .row-advanced {
+        margin-top: 6px;
+      }
+
+      .row-advanced > summary {
+        cursor: pointer;
+        color: var(--text-muted);
+        font-size: 12px;
+        width: fit-content;
+      }
+
+      .row-advanced > .row-help {
+        margin-top: 6px;
+      }
+
       .resolver-badge {
         display: inline-flex;
         align-items: center;
@@ -1601,15 +1619,29 @@
       // kept only where the row's badge does not already carry the fact:
       // `Ready`/`Syncing`/`Off` for the local node, `2 of 3` for quorum.
       const NETWORK_SOURCE_COPY = {
-        myotis: { label: 'Local node', help: '' },
+        myotis: {
+          label: 'Local node',
+          help: '',
+          advanced:
+            'Myotis — a peer-to-peer Ethereum light client running inside Freedom. ENS lookups use finalized state; newer record types use a verified optimistic beacon head.',
+        },
         colibri: {
           label: 'Proof check',
           help: 'A server answers; Freedom checks the proof itself.',
+          advanced:
+            'Colibri — a remote prover produces the witness and Freedom verifies the cryptographic proof locally, against chain consensus.',
         },
-        quorum: { label: 'Several servers must agree', help: '' },
+        quorum: {
+          label: 'Several servers must agree',
+          help: '',
+          advanced:
+            'RPC quorum — several independently configured endpoints are asked at one anchored block, and the answer counts only if they return byte-identical results.',
+        },
         direct: {
           label: 'One server, unchecked',
           help: 'Fastest, and the only option with nothing verifying the answer.',
+          advanced:
+            'Direct RPC — one configured endpoint answers and nothing verifies the response. Disabled by default.',
         },
       };
 
@@ -3313,7 +3345,7 @@
           const proverConfig = supportsVerifiedSources
             ? `<div class="card" style="margin-top: 12px">
                 <div class="rpc-block" style="border-top: none">
-                  <p class="row-label" style="margin-bottom: 8px">Colibri prover endpoint</p>
+                  <p class="row-label" style="margin-bottom: 8px">Proof server</p>
                   <div class="rpc-row">
                     <input class="rpc-input" data-chain-prover="${esc(cid)}"
                       data-source-id="${esc(proverSource?.id || 'colibri-corpus')}"
@@ -3350,7 +3382,7 @@
             ${proverConfig}
 
             <h3 class="subsection-title">Transaction broadcast</h3>
-            <p class="row-help" style="margin-bottom: 12px">Signed transactions use P2P first, with RPC as the compatibility fallback.</p>
+            <p class="row-help" style="margin-bottom: 12px">Signed transactions use the local node first, with a server as the fallback.</p>
             <div class="card">${accessRows(cid, 'broadcast', broadcastOrder)}</div>
 
             ${section('Your RPCs', 'Endpoints you added — tried first.', mine, 'No custom RPCs yet')}
@@ -3958,8 +3990,8 @@
                 configRow = `<div class="resolver-config" data-method-config="colibri">
                       <div class="resolver-config-line">
                         <div class="row-body">
-                          <p class="row-label">Prover endpoint</p>
-                          <p class="row-help">Leave empty to use the corpus.core default.</p>
+                          <p class="row-label">Proof server</p>
+                          <p class="row-help">Leave empty to use the default.</p>
                         </div>
                         <input type="text" id="ens-prover-url" class="rpc-input"
                           placeholder="https://mainnet1.colibri-proof.tech" spellcheck="false" />
@@ -3970,7 +4002,7 @@
                       <div class="resolver-config-line">
                         <div class="row-body">
                           <p class="row-label">Agreement threshold</p>
-                          <p class="row-help">Require matching responses from independently configured RPC providers. ${activeSources('rpc').length} currently available.</p>
+                          <p class="row-help">How many servers must agree. ${activeSources('rpc').length} currently available.</p>
                         </div>
                         <div class="resolver-quorum-fields">
                           Require
@@ -4000,6 +4032,14 @@
                       <span class="resolver-badge" data-method-status="${id}">Loading…</span>
                     </div>
                     ${method.help ? `<p class="row-help">${method.help}</p>` : ''}
+                    ${
+                      method.advanced
+                        ? `<details class="row-advanced">
+                             <summary>Advanced</summary>
+                             <p class="row-help">${method.advanced}</p>
+                           </details>`
+                        : ''
+                    }
                     ${link}
                   </div>
                   <div class="resolver-controls">
