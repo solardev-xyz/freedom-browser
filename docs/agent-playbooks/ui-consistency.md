@@ -8,14 +8,20 @@ of the 0.8.5 cycle (issues #223–#242).
 
 ## Conventions
 
-**Tokens, not literals.** Colours come from `src/renderer/styles/variables.css`
-(`--bg`, `--toolbar`, `--border`, `--text`, `--muted`, `--accent`, `--danger`,
-`--secure-fg`, `--warning-fg`, `--menu-bg`, `--modal-bg`). A hard-coded colour
-needs a matching `[data-theme='light']` override in `light-theme.css` (chrome)
-or in the page's own light block (internal pages). Every new rule in
-`settings.html` that sets a dark background must appear in the
-`@media (prefers-color-scheme: light)` block too; `settings-styles.test.js`
-enforces this.
+**Tokens, not literals.** The chrome's colours come from
+`src/renderer/styles/variables.css` (`--bg`, `--toolbar`, `--border`, `--text`,
+`--muted`, `--accent`, `--danger`, `--secure-fg`, `--warning-fg`, `--menu-bg`,
+`--modal-bg`); a hard-coded colour there needs a matching `[data-theme='light']`
+override in `light-theme.css`. Internal pages (`src/renderer/pages/`) have one
+palette between them, `pages/styles/theme.css`: both themes are declared there,
+keyed on `html[data-theme]`, and every page links it and paints from
+`var(--token)`. A page has no light block of its own to override a literal in,
+so a new colour is a new token in that file — with both values — not a literal
+in the page. `pages/styles/theme.test.js` holds the single-source rule (every
+page links the sheet and its CSP can load it, no page re-declares a palette, no
+page paints from an undefined token, no token goes unused) and
+`settings-styles.test.js` fails any hard-coded dark background left in
+`settings.html`.
 
 Since #261, `src/renderer/renderer-styles.test.js` enforces the rule
 mechanically over _every_ stylesheet, inline `<style>` block and `style=""`
