@@ -460,7 +460,7 @@ function setupSwarmPublishScreen() {
 
 /**
  * Show the per-publish approval prompt (queued behind any prompt already on
- * screen). Resolves on "Publish", rejects (code 4001) on "Cancel".
+ * screen). Resolves on "Publish", rejects (code 4001) on "Reject".
  */
 export function showSwarmPublishApproval(permissionKey, params, resolve, reject, method) {
   // A live device confirmation owns the sidebar (see signature-flight.js).
