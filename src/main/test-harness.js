@@ -197,14 +197,12 @@ async function prepareAgentExitScenario(agentRuntime, request) {
   const terminalPath = path.join(root, `${token}-terminal.json`);
   const supervisorPath = path.join(root, `${token}-supervisor.json`);
   const intentPath = path.join(root, `${token}-intent.json`);
-  if (mode === 'running') {
-    if ([intentPath, receiptPath, terminalPath, supervisorPath].some((file) => fs.existsSync(file))) {
-      throw new Error('Agent exit fixture token has already been used');
-    }
-    // Reserve the token before workspace preparation or any command launch.
-    fs.writeFileSync(intentPath, JSON.stringify({ mode, token, expirySeconds, recordedAt: Date.now() }),
-      { mode: 0o600, flag: 'wx' });
+  if ([intentPath, receiptPath, terminalPath, supervisorPath].some((file) => fs.existsSync(file))) {
+    throw new Error('Agent exit fixture token has already been used');
   }
+  // Reserve the token before workspace preparation or any command launch.
+  fs.writeFileSync(intentPath, JSON.stringify({ mode, token, expirySeconds, recordedAt: Date.now() }),
+    { mode: 0o600, flag: 'wx' });
   const conversationId = `app_exit_${crypto.randomBytes(10).toString('hex')}`;
   await controller.enable(conversationId);
   const workspace = controller.getWorkspace(conversationId);
@@ -312,12 +310,31 @@ async function prepareAgentExitScenario(agentRuntime, request) {
   const resultPath = path.join(workspaceRoot, 'detached-result.json');
   const managedHeartbeatPath = path.join(workspaceRoot, 'managed-heartbeat');
   const detachedHeartbeatPath = path.join(workspaceRoot, 'detached-heartbeat');
+  const managedExpiryPath = path.join(workspaceRoot, 'managed-expiry.json');
+  const detachedExpiryPath = path.join(workspaceRoot, 'detached-expiry.json');
   const source = [
+    'import signal, time',
+    'signal.signal(signal.SIGALRM, signal.SIG_DFL)',
+    'alarm_before = time.clock_gettime_ns(time.CLOCK_MONOTONIC)',
+    'wall_before = time.time_ns()',
+    `signal.alarm(${expirySeconds})`,
+    'wall_after = time.time_ns()',
+    'alarm_after = time.clock_gettime_ns(time.CLOCK_MONOTONIC)',
     'import json, os, pathlib, socket, sys, time',
+    'def record_expiry(name):',
+    `    pathlib.Path(name).write_text(json.dumps({'pid': os.getpid(), 'parentPid': os.getppid(), 'sessionId': os.getsid(0), 'processGroupId': os.getpgrp(), 'clockDomain': 'clock_gettime:CLOCK_MONOTONIC', 'alarmArmedBeforeMonotonicNs': alarm_before, 'alarmArmedAfterMonotonicNs': alarm_after, 'alarmArmedBeforeWallNs': wall_before, 'alarmArmedAfterWallNs': wall_after, 'expirySeconds': ${expirySeconds}}))`,
     'token, outside = sys.argv[1:3]',
+    "record_expiry('managed-expiry.json')",
     "pathlib.Path('managed.pid').write_text(str(os.getpid()))",
     'if os.fork() == 0:',
+    // A forked child needs its own alarm; do this before any child setup or I/O.
+    '    alarm_before = time.clock_gettime_ns(time.CLOCK_MONOTONIC)',
+    '    wall_before = time.time_ns()',
+    `    signal.alarm(${expirySeconds})`,
+    '    wall_after = time.time_ns()',
+    '    alarm_after = time.clock_gettime_ns(time.CLOCK_MONOTONIC)',
     '    os.setsid()',
+    "    record_expiry('detached-expiry.json')",
     "    pathlib.Path('detached.pid').write_text(str(os.getpid()))",
     '    result = {}',
     '    try:',
@@ -343,8 +360,19 @@ async function prepareAgentExitScenario(agentRuntime, request) {
     '    time.sleep(0.03)',
   ].join('\n');
   await fs.promises.writeFile(path.join(workspaceRoot, scriptName), source);
-  const command = `python3 ${scriptName} ${token} ${outsideCanary}`;
-  const started = await controller.startProcess(conversationId, { command, yieldMs: 500 });
+  const command = `exec python3 ${scriptName} ${token} ${outsideCanary}`;
+  const restoreObserver = observeAgentExitExecution(controller.executor, command, receiptPath, supervisorPath);
+  let started;
+  try {
+    started = await controller.startProcess(conversationId, {
+      command,
+      yieldMs: 500,
+      onTerminal: (terminal) => writeAgentExitEvidence(terminalPath, { terminal }),
+    });
+  } catch (error) {
+    restoreObserver();
+    throw error;
+  }
   await Promise.all([waitForPath(managedPidPath), waitForPath(detachedPidPath)]);
   if (failureInjection === 'after_detached_process_created') {
     throw new Error('Injected Agent exit failure after detached process creation');
@@ -362,6 +390,13 @@ async function prepareAgentExitScenario(agentRuntime, request) {
     ],
     heartbeatPath: managedHeartbeatPath,
     detachedHeartbeatPath,
+    expirySeconds,
+    managedExpiryPath,
+    detachedExpiryPath,
+    receiptPath,
+    terminalPath,
+    supervisorPath,
+    intentPath,
     outsideCanary,
     confinement: JSON.parse(fs.readFileSync(resultPath, 'utf8')),
   };

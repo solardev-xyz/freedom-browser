@@ -56,8 +56,14 @@ describe('bounded app-exit fixture evidence without native execution', () => {
         expect(await executor.execute(policy, execution)).toBe(receipt);
         expect(delegated).toEqual({ policy, request: execution });
         request.onTerminal({ receipt: { backend: receipt.backend, state: receipt.state } });
-        fs.writeFileSync(path.join(workspaceRoot, 'running.pid'), '456');
-        fs.writeFileSync(path.join(workspaceRoot, 'running.ready'), 'ready');
+        if (request.command.includes('app-exit-detached.py')) {
+          fs.writeFileSync(path.join(workspaceRoot, 'managed.pid'), '456');
+          fs.writeFileSync(path.join(workspaceRoot, 'detached.pid'), '457');
+          fs.writeFileSync(path.join(workspaceRoot, 'detached-result.json'), '{"outsideRead":13}');
+        } else {
+          fs.writeFileSync(path.join(workspaceRoot, 'running.pid'), '456');
+          fs.writeFileSync(path.join(workspaceRoot, 'running.ready'), 'ready');
+        }
         return { processId: 'managed', workspace: {} };
       }),
     };
@@ -107,6 +113,53 @@ describe('bounded app-exit fixture evidence without native execution', () => {
     expect(controller.enable).not.toHaveBeenCalled();
   });
 
+  test('bounds both detached-fixture roles before setup and retains separate cleanup evidence', async () => {
+    const fixture = await prepareAgentExitScenario(runtime, { mode: 'detached', token, expirySeconds: 12 });
+    const source = fs.readFileSync(path.join(workspaceRoot, 'app-exit-detached.py'), 'utf8');
+    const fork = source.indexOf('if os.fork() == 0:');
+    expect(source.indexOf('signal.alarm(12)')).toBeLessThan(source.indexOf('import json'));
+    const childAlarm = source.indexOf('signal.alarm(12)', fork);
+    expect(childAlarm).toBeGreaterThan(fork);
+    expect(childAlarm).toBeLessThan(source.indexOf('os.setsid()'));
+    expect(childAlarm).toBeLessThan(source.indexOf("record_expiry('detached-expiry.json')"));
+    expect(source.match(/os\.fork\(\)/g)).toHaveLength(1);
+    expect(source).toContain("'clockDomain': 'clock_gettime:CLOCK_MONOTONIC'");
+    expect(source).toContain('alarmArmedBeforeMonotonicNs');
+    expect(source).toContain('alarmArmedAfterWallNs');
+    expect(controller.startProcess.mock.calls[0][1].command).toMatch(/^exec python3 app-exit-detached\.py /);
+    expect(fixture.ownedProcesses).toEqual([
+      { role: 'managed-parent', pid: 456 }, { role: 'detached-descendant', pid: 457 },
+    ]);
+    expect(fixture.managedExpiryPath).toBe(path.join(workspaceRoot, 'managed-expiry.json'));
+    expect(fixture.detachedExpiryPath).toBe(path.join(workspaceRoot, 'detached-expiry.json'));
+    expect(JSON.parse(fs.readFileSync(fixture.receiptPath, 'utf8')).receipt).toEqual(receipt);
+    expect(JSON.parse(fs.readFileSync(fixture.supervisorPath, 'utf8'))).toMatchObject({ pid: 123 });
+    expect(JSON.parse(fs.readFileSync(fixture.intentPath, 'utf8'))).toMatchObject({ mode: 'detached', token, expirySeconds: 12 });
+  });
+
+  test('keeps detached execution observation when preparation throws after the child was created', async () => {
+    let finish;
+    let completion;
+    const execute = controller.executor.execute;
+    execute.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    controller.startProcess.mockImplementation(async (_conversation, request) => {
+      completion = controller.executor.execute({}, { command: '/bin/sh',
+        args: ['-c', 'wrapper', 'freedom-workspace', workspaceRoot, request.command] });
+      fs.writeFileSync(path.join(workspaceRoot, 'managed.pid'), '456');
+      fs.writeFileSync(path.join(workspaceRoot, 'detached.pid'), '457');
+      return { processId: 'managed', workspace: {} };
+    });
+    await expect(prepareAgentExitScenario(runtime, {
+      mode: 'detached', token, failureInjection: 'after_detached_process_created',
+    })).rejects.toThrow('after detached process creation');
+    expect(controller.executor.execute).not.toBe(execute);
+    expect(JSON.parse(fs.readFileSync(path.join(root, `${token}-intent.json`), 'utf8')).mode).toBe('detached');
+    finish(receipt);
+    expect(await completion).toBe(receipt);
+    expect(controller.executor.execute).toBe(execute);
+    expect(JSON.parse(fs.readFileSync(path.join(root, `${token}-executor.json`), 'utf8')).receipt).toEqual(receipt);
+  });
+
   test('restores executor observation on preparation failure without replacing the error', async () => {
     const execute = controller.executor.execute;
     const spawn = controller.executor.spawnProcess;
@@ -146,9 +199,9 @@ describe('bounded app-exit fixture evidence without native execution', () => {
     expect(fixture.appOwnedProcessManager).toBe(false);
   });
 
-  test('reserves a fixture token before workspace preparation and rejects reuse', async () => {
+  test.each(['running', 'detached'])('reserves a %s fixture token before workspace preparation and rejects reuse', async (mode) => {
     fs.writeFileSync(path.join(root, `${token}-intent.json`), '{}');
-    await expect(prepareAgentExitScenario(runtime, { mode: 'running', token })).rejects.toThrow('already been used');
+    await expect(prepareAgentExitScenario(runtime, { mode, token })).rejects.toThrow('already been used');
     expect(controller.enable).not.toHaveBeenCalled();
   });
 
