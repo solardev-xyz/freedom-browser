@@ -147,7 +147,7 @@ describe('publish-service', () => {
       jest.clearAllMocks();
     });
 
-    test('swarm:publish-data uploads via uploadFile and returns normalized result', async () => {
+    test('swarm:publish-data uploads via file.upload and returns normalized result', async () => {
       mockGetPostageBatches.mockResolvedValue([
         makeBatch('batch1', 1000000000, 86400),
       ]);

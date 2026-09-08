@@ -72,7 +72,7 @@ async function publishData(data, options = {}) {
     throw new Error('No usable postage batch available. Purchase stamps first.');
   }
 
-  // Use uploadFile so the content gets a manifest and is browsable via bzz://
+  // Use file.upload so the content gets a manifest and is browsable via bzz://
   const result = await bee.file.upload(batchId, data, options.name || 'data', {
     pin: true,
     deferred: false,
@@ -145,7 +145,8 @@ async function publishDirectory(dirPath, options = {}) {
  * Writes files to a temp directory, delegates to publishDirectory, cleans up.
  *
  * Note: per-file contentType is accepted in the file objects but not currently
- * applied — bee-js uploadFilesFromDirectory infers MIME types from extensions.
+ * applied — bee-js collection.uploadFromDirectory infers MIME types from
+ * extensions.
  * Files with non-standard names should use appropriate extensions.
  *
  * @param {Array<{path: string, bytes: Buffer, contentType?: string}>} files

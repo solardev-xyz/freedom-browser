@@ -241,7 +241,7 @@ describe('feed-service', () => {
   });
 
   describe('createFeed', () => {
-    test('calls createFeedManifest with correct args', async () => {
+    test('calls feed.createManifest with correct args', async () => {
       mockCreateFeedManifest.mockResolvedValue(new MockReference(MOCK_MANIFEST_REF));
       mockBatchForAutoSelect();
 
@@ -643,7 +643,7 @@ describe('feed-service', () => {
       expect(result.payload.toString('utf8')).toBe('HELLO-WORLD');
     });
 
-    test('passes Topic object directly to makeFeedReader', async () => {
+    test('passes Topic object directly to feed.makeReader', async () => {
       const topic = new MockTopic('cd'.repeat(32));
       const reader = createMockReader({
         downloadPayloadResult: {

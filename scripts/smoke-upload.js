@@ -8,11 +8,11 @@
  *
  * Flow (mirrors stamp-service.js + publish-service.js):
  *   1. GET /node            — assert the node reports a publish-capable mode
- *   2. getStorageCost       — price a small batch
- *   3. buyStorage           — purchase a postage batch (waitForUsable: false)
- *   4. getPostageBatches    — poll until the new batch is usable
- *   5. uploadFile           — upload content stamped with that batch
- *   6. downloadFile         — read it back and assert the bytes match
+ *   2. storage.getCost      — price a small batch
+ *   3. storage.buy          — purchase a postage batch (waitForUsable: false)
+ *   4. stamp.getAll         — poll until the new batch is usable
+ *   5. file.upload          — upload content stamped with that batch
+ *   6. file.download        — read it back and assert the bytes match
  *
  * Usage:
  *   ANT_API=http://127.0.0.1:1633 node scripts/smoke-upload.js
