@@ -4506,21 +4506,31 @@
   margin: 0 0 16px 0;
 }
 
+/* Destructive actions are outlined `--danger`, never filled (#259) — the same
+   treatment as `.perms-disconnect-btn` above and `.btn.danger` on the internal
+   pages, so deleting a wallet does not read as the screen's primary action. */
 .wallet-settings-delete-btn {
   width: 100%;
   padding: 10px 16px;
   font-size: 13px;
   font-weight: 500;
-  color: #fff;
-  background: var(--danger);
-  border: none;
+  color: var(--danger);
+  background: transparent;
+  border: 1px solid var(--danger);
   border-radius: 6px;
   cursor: pointer;
-  transition: opacity 0.15s ease;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease,
+    opacity 0.15s ease;
 }
 
-.wallet-settings-delete-btn:hover {
-  opacity: 0.9;
+/* `:not(:disabled)` like every other hover in this sheet: the main wallet
+   cannot be deleted (wallet-settings.js), and an inverted fill would read as
+   an enabled primary action through the disabled state's 0.5 opacity. */
+.wallet-settings-delete-btn:hover:not(:disabled) {
+  background: var(--danger);
+  color: #fff;
 }
 
 .wallet-settings-delete-btn:disabled {
