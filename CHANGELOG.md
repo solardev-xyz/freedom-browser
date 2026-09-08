@@ -76,7 +76,7 @@ All notable changes to Freedom will be documented in this file.
 - Expired or invalid postage batches fail fast with a clear error instead of stalling uploads
 - macOS disk images pass Gatekeeper without an online check
 - Internal pages follow the theme picked under Settings > Appearance instead of the operating system's
-- Name-resolution warning pages show the typed name in the address bar and history instead of an on-disk file path
+- Name-resolution warning pages show the typed name in the address bar instead of an on-disk file path, and stay out of history
 - A failed page load titles itself instead of leaving the previous page's title on the tab and in history
 - The Publish and Payments pages and the sidebar's permission screens are readable on the light theme
 
