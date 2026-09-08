@@ -91,7 +91,7 @@ regression introduced by a specific recent PR.** Issues #223–#242, #249–#260
 | 5   | [#307](https://github.com/solardev-xyz/freedom-browser/issues/307) | Bookmarks bar          | Ctrl+click replaces the current page, middle-click does nothing, no drag reorder   |
 | 6   | [#308](https://github.com/solardev-xyz/freedom-browser/issues/308) | Page context menu      | Survives a navigation and then acts on the previous page's link                    |
 | 7   | [#309](https://github.com/solardev-xyz/freedom-browser/issues/309) | Download shelf         | Dismissing an in-progress card brings it back on the next 250 ms progress tick     |
-| 8   | [#310](https://github.com/solardev-xyz/freedom-browser/issues/310) | Address bar            | Esc with autocomplete open leaves the typed fragment in the bar, blurred           |
+| 8   | [#310](https://github.com/solardev-xyz/freedom-browser/issues/310) | Address bar            | Esc after arrow-keying into autocomplete leaves the typed fragment in the bar      |
 | 9   | [#311](https://github.com/solardev-xyz/freedom-browser/issues/311) | Tab strip              | Tabs past the strip width are clipped and unclickable — including the active one   |
 | 10  | [#312](https://github.com/solardev-xyz/freedom-browser/issues/312) | Private window         | New Tab leaves focus nowhere and shows `freedom://private` in the bar              |
 | 11  | [#313](https://github.com/solardev-xyz/freedom-browser/issues/313) | Autocomplete           | Arrow keys wrap around instead of returning to the typed text                      |
@@ -180,13 +180,16 @@ after the redirect : {"v":"bzz://bbbb…bbbb/","f":"address-input"}
 
 ### 4. Esc does not close the hamburger or Nodes menu — [#306](https://github.com/solardev-xyz/freedom-browser/issues/306)
 
-`src/renderer/lib/menus.js` registers no `keydown` listener at all; dismissal is
-a `document` click listener (`:327-339`), the backdrop's `mousedown`
-(`src/renderer/lib/menu-backdrop.js:9-13`) and `window` blur (`:345`). Every
-sibling surface does handle Escape — tab context menu `tabs.js:1708-1712`, page
-context menu `page-context-menu.js:304-308`, bookmark context menu
-`bookmarks-ui.js:399`, trust popover `navigation.js:2102-2105`, permission prompt
-`site-permissions-ui.js:389-393`, find bar `find-bar.js:289-294`.
+`src/renderer/lib/menus.js` has one `window` `keydown` listener (`:269-281`), but
+it only handles the zoom accelerators — nothing in the module handles Escape.
+The fix belongs in that existing chain rather than in a second listener.
+Dismissal today is a `document` click listener (`:327-339`), the backdrop's
+`mousedown` (`src/renderer/lib/menu-backdrop.js:9-13`) and `window` blur
+(`:345`). Every sibling surface does handle Escape — tab context menu
+`tabs.js:1708-1712`, page context menu `page-context-menu.js:304-308`, bookmark
+context menu `bookmarks-ui.js:399`, trust popover `navigation.js:2102-2105`,
+permission prompt `site-permissions-ui.js:389-393`, find bar
+`find-bar.js:289-294`.
 
 ```
 hamburger open         : {"menu":true,"backdrop":true}
@@ -248,17 +251,31 @@ after next progress tick : ["big.iso 2.0 KB of 97.7 KB Cancel ×"]
 
 ![the dismissed card is back](images/ui-interaction-2026-09/07-download-card-resurrected.png)
 
-### 8. Esc in the address bar with autocomplete open — [#310](https://github.com/solardev-xyz/freedom-browser/issues/310)
+### 8. Esc after arrow-keying into autocomplete — [#310](https://github.com/solardev-xyz/freedom-browser/issues/310)
 
 Two Escape handlers are bound to `#address-input` and neither stops propagation.
 `navigation.js:2148-2167` restores the page URL and blurs; `autocomplete.js:303-310`
 runs afterwards (registration order: `index.js:755` then `:760`) and writes the
 typed query back. The bar comes to rest showing a fragment that is neither the
-page URL nor an active edit:
+page URL nor an active edit.
+
+The trigger is narrower than "autocomplete is open": `autocomplete.js` only sets
+`originalQuery` on the _first_ `ArrowDown`/`ArrowUp` into the dropdown
+(`:264-266`, `:274-276`), so its Escape branch is a no-op until the user has
+arrow-keyed at least once. Type-then-Esc with the dropdown open behaves
+correctly — measured on the harness against a page at
+`https://example.org/alpha`:
 
 ```
-{"v":"bzz","focused":""}      // page on screen: bzz://aaaa…aaaa/
+typed, dropdown open           : {"v":"exa","focused":"address-input"}
+Esc (no arrow keys)            : {"v":"https://example.org/alpha","focused":""}   // correct
+
+typed, then ArrowDown          : {"v":"https://example.org/alpha","focused":"address-input"}
+Esc (after ArrowDown)          : {"v":"exa","focused":""}                          // the bug
 ```
+
+The screenshot below is the same arrow-key path against the original `bzz` repro
+— page on screen `bzz://aaaa…aaaa/`, bar left holding `bzz`:
 
 ![address bar showing "bzz", blurred](images/ui-interaction-2026-09/08-addressbar-escape-autocomplete.png)
 
@@ -337,7 +354,8 @@ Checked, and either correct or a documented simplification rather than a bug:
   interaction bug and both are better raised as a zoom feature issue than as a
   Chrome-mismatch.
 - **Scroll restoration across a tab switch** — preserved, see finding 2.
-- **Close the last tab** — closes the window (`tabs.js:1299-1303`), like Chrome.
+- **Close the last tab** — closes the window (`tabs.js:1304-1307`, the `else`
+  branch of the active-tab check at `:1299`), like Chrome.
 - **Reopen closed tab** — LIFO stack up to 20 (`tabs.js:84-85`, `:1245`,
   `:1338-1346`); it restores the URL only, not history/scroll/strip position.
   That is an explicit simplification with a reasoned comment (including the
