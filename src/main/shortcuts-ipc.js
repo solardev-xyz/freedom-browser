@@ -42,6 +42,7 @@ function getShortcutState(platform = process.platform) {
     return {
       id: entry.id,
       description: entry.description,
+      settingsLabel: entry.settingsLabel || entry.description,
       category: entry.category,
       context: entry.context,
       editable: entry.editable !== false,

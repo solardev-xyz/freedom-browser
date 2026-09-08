@@ -2681,7 +2681,12 @@
         const matchesQuery = (entry) => {
           const q = query.trim().toLowerCase();
           if (!q) return true;
-          return [entry.description, entry.category, entry.formatted, entry.accelerator]
+          return [
+            entry.settingsLabel || entry.description,
+            entry.category,
+            entry.formatted,
+            entry.accelerator,
+          ]
             .concat(entry.aliases)
             .join(' ')
             .toLowerCase()
@@ -2736,7 +2741,7 @@
           return `
             <div class="row" data-shortcut-id="${esc(entry.id)}">
               <div class="row-body">
-                <p class="row-label">${esc(entry.description)}</p>
+                <p class="row-label">${esc(entry.settingsLabel || entry.description)}</p>
                 ${aliasLine}
                 ${revertedLine}
                 ${warnLine}
