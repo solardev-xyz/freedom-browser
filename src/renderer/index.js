@@ -586,7 +586,7 @@ async function initProfileIndicator() {
     }
 
     setCreateBusy(true);
-    setCreateStatus('Creating profile...', 'success');
+    setCreateStatus('Creating profile…', 'success');
     try {
       const createResult = await electronAPI.createProfile?.({ displayName });
       if (!createResult?.success) {
@@ -599,7 +599,7 @@ async function initProfileIndicator() {
         throw new Error('Profile was created but no profile id was returned');
       }
 
-      setCreateStatus(`Opening ${profile.displayName || displayName}...`, 'success');
+      setCreateStatus(`Opening ${profile.displayName || displayName}…`, 'success');
       const openResult = await electronAPI.openProfile?.(profileId);
       if (!openResult?.success) {
         throw new Error(

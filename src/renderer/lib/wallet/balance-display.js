@@ -192,7 +192,7 @@ export function renderAssetList() {
 
     if (Object.keys(walletState.currentBalances).length === 0) {
       // Balances not loaded yet
-      emptyEl.textContent = 'Loading balances...';
+      emptyEl.textContent = 'Loading balances…';
     } else {
       // Balances loaded but all are zero
       emptyEl.textContent = 'No assets with balance';

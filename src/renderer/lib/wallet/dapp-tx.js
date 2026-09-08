@@ -226,7 +226,7 @@ async function populateDappTxDetails(txParams, chainId) {
 
   if (dappTxTo) {
     const to = txParams.to || '';
-    dappTxTo.textContent = to ? `${to.slice(0, 10)}...${to.slice(-8)}` : 'Contract Creation';
+    dappTxTo.textContent = to ? `${to.slice(0, 10)}…${to.slice(-8)}` : 'Contract Creation';
     dappTxTo.title = to;
   }
 
@@ -240,7 +240,7 @@ async function populateDappTxDetails(txParams, chainId) {
   if (dappTxData) {
     const data = txParams.data || '';
     if (data && data !== '0x') {
-      dappTxData.textContent = `${data.slice(0, 20)}...`;
+      dappTxData.textContent = `${data.slice(0, 20)}…`;
       dappTxData.title = data;
       dappTxDataRow?.classList.remove('hidden');
       dappTxWarning?.classList.remove('hidden');

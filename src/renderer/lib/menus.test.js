@@ -37,6 +37,9 @@ const loadMenusModule = async ({
   platform = 'darwin',
   webview,
   shortcutHints = DEFAULT_SHORTCUT_HINTS,
+  // Load the real ant-ui.js instead of the stub, so a test can check what the
+  // Nodes menu's Ant readouts actually say after menus.js closes the dropdown.
+  realAntUi = false,
 } = {}) => {
   jest.resetModules();
 
@@ -157,12 +160,16 @@ const loadMenusModule = async ({
   jest.doMock('./tabs.js', () => tabsMocks);
   jest.doMock('./bookmarks-ui.js', () => bookmarkMocks);
   jest.doMock('./menu-backdrop.js', () => backdropMocks);
-  jest.doMock('./ant-ui.js', () => beeUiMocks);
+  // doMock survives resetModules, so the real-module case has to opt back out
+  // explicitly rather than just skipping the doMock call.
+  if (realAntUi) jest.dontMock('./ant-ui.js');
+  else jest.doMock('./ant-ui.js', () => beeUiMocks);
   jest.doMock('./ipfs-ui.js', () => ipfsUiMocks);
   jest.doMock('./myotis-ui.js', () => myotisUiMocks);
   jest.doMock('./radicle-ui.js', () => radicleUiMocks);
 
   const menus = await import('./menus.js');
+  const antUi = realAntUi ? await import('./ant-ui.js') : null;
   const stateModule = await import('./state.js');
   // Same module instance menus.js resolves matchesShortcut through, so the
   // platform can be pinned instead of sniffed from a jsdom-less navigator.
@@ -171,6 +178,7 @@ const loadMenusModule = async ({
 
   return {
     menus,
+    antUi,
     shortcuts,
     state: stateModule.state,
     elements: {
@@ -546,10 +554,9 @@ describe('menus', () => {
     const { menus, state, elements, mocks } = await loadMenusModule();
 
     menus.initMenus();
-    state.antVersionFetched = true;
-    state.antVersionValue = '1.2.3';
     elements.beePeersCount.textContent = '5';
     elements.beeNetworkPeers.textContent = '8';
+    elements.beeVersionText.textContent = 'Ant v0.5.8';
 
     menus.setAntMenuOpen(true);
 
@@ -568,11 +575,31 @@ describe('menus', () => {
     expect(mocks.ipfsUiMocks.stopIpfsInfoPolling).toHaveBeenCalled();
     expect(mocks.myotisUiMocks.stopMyotisInfoPolling).toHaveBeenCalled();
     expect(mocks.radicleUiMocks.stopRadicleInfoUpdates).toHaveBeenCalled();
-    expect(elements.beePeersCount.textContent).toBe('0');
-    expect(elements.beeNetworkPeers.textContent).toBe('0');
-    expect(elements.beeVersionText.textContent).toBe('1.2.3');
-    expect(elements.beeInfoPanel.classList.remove).toHaveBeenCalledWith('visible');
+    // Resetting the Ant readouts is stopAntInfoPolling's job (stubbed here);
+    // menus.js keeps no second copy of those empty-state rules.
+    expect(elements.beePeersCount.textContent).toBe('5');
+    expect(elements.beeNetworkPeers.textContent).toBe('8');
+    expect(elements.beeVersionText.textContent).toBe('Ant v0.5.8');
+    expect(elements.beeInfoPanel.classList.remove).not.toHaveBeenCalled();
     expect(mocks.backdropMocks.hideMenuBackdrop).toHaveBeenCalled();
+  });
+
+  // #253: closing the Nodes menu used to re-blank the Version row whenever the
+  // one-shot /health fetch had not settled yet, undoing the 'Unknown' that
+  // ant-ui.js had just written. The readouts belong to ant-ui.js alone now, so
+  // this runs the real module rather than the stub.
+  test('closing the Nodes menu leaves an unfetched Version row reading Unknown', async () => {
+    const { menus, antUi, state, elements } = await loadMenusModule({ realAntUi: true });
+
+    menus.initMenus();
+    antUi.initAntUi();
+    state.antVersionFetched = false;
+    state.antVersionValue = '';
+    elements.beeVersionText.textContent = 'Ant v0.5.8';
+
+    menus.setAntMenuOpen(false);
+
+    expect(elements.beeVersionText.textContent).toBe('Unknown');
   });
 
   test('closes menus on outside clicks, webview interaction, and window blur', async () => {

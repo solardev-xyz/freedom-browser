@@ -186,7 +186,7 @@ function renderTxRules(rules) {
 
     const addr = document.createElement('code');
     addr.className = 'perms-tx-addr';
-    addr.textContent = `${rule.to.slice(0, 10)}...${rule.to.slice(-6)}`;
+    addr.textContent = `${rule.to.slice(0, 10)}…${rule.to.slice(-6)}`;
     addr.title = rule.to;
 
     const sel = document.createElement('code');
@@ -446,7 +446,7 @@ async function renderX402Permissions() {
   const perms = (result?.permissions || []).filter((p) => p.origin === x402PermsKey);
 
   if (perms.length === 0) {
-    x402PermsList.innerHTML = '<div class="perms-empty">No active auto-pay caps for this site.</div>';
+    x402PermsList.innerHTML = '<div class="perms-empty">No active auto-pay caps for this site</div>';
     return;
   }
 

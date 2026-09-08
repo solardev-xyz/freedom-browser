@@ -1,6 +1,7 @@
 // IPFS node UI controls
 import { state, getDisplayMessage } from './state.js';
 import { pushDebug } from './debug.js';
+import { versionText } from './ui-format.js';
 
 // DOM elements (initialized in initIpfsUi)
 let ipfsToggleBtn = null;
@@ -29,7 +30,9 @@ export const stopIpfsInfoPolling = () => {
   if (ipfsActiveRequestsCount) ipfsActiveRequestsCount.textContent = '0';
   if (ipfsDataRead) ipfsDataRead.textContent = '';
   if (ipfsVersionText)
-    ipfsVersionText.textContent = state.ipfsVersionFetched ? state.ipfsVersionValue : '';
+    ipfsVersionText.textContent = versionText(
+      state.ipfsVersionFetched ? state.ipfsVersionValue : ''
+    );
 };
 
 const formatBytes = (bytes) => {
@@ -61,19 +64,17 @@ const readNativeVersion = (diagnostics = {}) => {
 // The native node only reports its version once it's actually running. Read it
 // off each stats poll and cache it the first time a real version appears — and
 // only then. A poll taken while the node is still spinning up (stopped status /
-// no diagnostics) shows the bare 'Freedom IPFS' fallback but does NOT mark the
-// version fetched, so later polls keep upgrading it instead of locking in the
-// fallback forever.
+// no diagnostics) shows the menu's shared 'Unknown' placeholder (#253) but does
+// NOT mark the version fetched, so later polls keep upgrading it instead of
+// locking in the placeholder forever.
 const updateVersionFromDiagnostics = (diagnostics) => {
   if (state.ipfsVersionFetched) return;
   const version = readNativeVersion(diagnostics);
   if (version) {
     state.ipfsVersionValue = `Freedom IPFS v${version}`;
     state.ipfsVersionFetched = true;
-  } else if (!state.ipfsVersionValue) {
-    state.ipfsVersionValue = 'Freedom IPFS';
   }
-  if (ipfsVersionText) ipfsVersionText.textContent = state.ipfsVersionValue;
+  if (ipfsVersionText) ipfsVersionText.textContent = versionText(state.ipfsVersionValue);
 };
 
 // The real backend state, ignoring any pending user intent.

@@ -423,7 +423,7 @@ function showSendPendingView() {
     },
   }[accountType(walletState.activeWalletIndex)] || {
     title: 'Sending Transaction',
-    text: 'Please wait while your transaction is being processed...',
+    text: 'Please wait while your transaction is being processed…',
   };
   const title = sendPendingView?.querySelector('.send-pending-title');
   const text = sendPendingView?.querySelector('.send-pending-text');
@@ -769,7 +769,7 @@ async function handleSendMax() {
 
     try {
       if (sendMaxBtn) {
-        sendMaxBtn.textContent = '...';
+        sendMaxBtn.textContent = '…';
         sendMaxBtn.disabled = true;
       }
 
@@ -930,13 +930,13 @@ async function handleSendContinue() {
 
   if (sendContinueBtn) {
     sendContinueBtn.disabled = true;
-    sendContinueBtn.textContent = 'Loading...';
+    sendContinueBtn.textContent = 'Loading…';
   }
 
   try {
     let reverseLookup = Promise.resolve(null);
     if (recipientClass.type === 'ens') {
-      if (sendContinueBtn) sendContinueBtn.textContent = 'Resolving name...';
+      if (sendContinueBtn) sendContinueBtn.textContent = 'Resolving name…';
       const resolved = await resolveRecipientEns(recipientClass.value);
       if (!resolved) return; // error already surfaced on the recipient field
       sendTxState.recipient = resolved.address;
@@ -951,7 +951,7 @@ async function handleSendContinue() {
       reverseLookup = lookupPrimaryNameForAddress(recipientClass.value);
     }
 
-    if (sendContinueBtn) sendContinueBtn.textContent = 'Loading...';
+    if (sendContinueBtn) sendContinueBtn.textContent = 'Loading…';
     // Safe sends: the executor pays the (execTransaction) fee, quoted
     // after signatures exist — there is no meaningful estimate here.
     const gasEstimate = activeSafeWallet() ? Promise.resolve() : estimateTransactionGas();
