@@ -69,3 +69,83 @@ The declared disposable-Mac Python is 3.9.6. Upstream [CPython 3.9.6 `pytime.c`,
 ## Review precision corrections
 
 The controller's terminal result includes both top-level process state and the mapped `receipt`, plus a `workspace` projection; the initial correction task's suggestion that `terminal.receipt` is categorically absent was too strong. Assertions must follow `managed-workspace-controller.js:#processResult` and the actual raw error's `error.code`. Likewise a case-duration limit below the full payload-alarm interval can be a conservative pre-expiry bound when case start precedes alarm installation. The first harness's decisive problems were missing fault/status/registration requirements and failure to prove actual alarm termination, not simply use of a conservative case-duration bound. The replacement must retain the explicit per-payload timing evidence for precise attribution.
+
+
+## Direct-owner replacement and independent review
+
+The disposable-Mac Codex replacement directly owns the actual Electron main (B) and a separate fixed inspector controller (D) from a Python watchdog (W). Strong direct-child references remain unreaped while numeric signal authority exists; all such authority retires before the sole wait. The controller neither launches nor signals B. Supervisor and framework-helper fault/emergency authority requires a previously acquired genuine audit identity; the payload is observed, never signaled through a rediscovered PID. This is test infrastructure, not a change to the product's cleanup guarantee.
+
+The main agent verified and read the source archive retained at `/private/tmp/freedom-direct-main-owner-y7hv5vm9` on macmini: 75,782 decoded bytes, SHA-256 `9ab8a73d6c79a7d89eabadce8719f199dfe62713e4591d84391d2c8d24575344`. The source-only explicit report records 32 pure Python tests and 12 inspector protocol assertions. Independent Claude review supports the direct-owner invariant but identifies a potential false failure: immediate emergency cleanup of framework helpers can precede their normal exit. The accepted correction is a bounded natural-exit grace within the existing deadline; emergency cleanup or unconfirmed owned helpers still prevents a pass. The review's suggestion that every helper-bearing run necessarily fails is not established by runtime evidence. Its 29-test count refers to an earlier source snapshot; the final author report records 32.
+
+Test support commit `2ea1250a` uses explicit `clock_gettime(CLOCK_MONOTONIC)` anchors around payload alarm installation, with a declared clock domain and retained wall-clock anchors. This avoids assuming CPython 3.9.6 process-local monotonic origins are shared. Ordinary primary-Mac validation passed 4,116 tests across 238 suites; 54 tests in seven suites were skipped, and lint passed. No primary-Mac app-exit or fault fixture ran.
+
+## First actual direct-owner idle attempt — aborted before Quit
+
+The explicit disposable-Mac report for `macmini/req-a89ad5d6413d0f924c947053b126fcc8` records one attempt, retained under `/private/tmp/freedom-quit-idle-once-pq6ahf2e`. Product source subtree `ac592c69a340d9eb477111d33a9d099bf2a553f1` matches the current test-support candidate; the native helper remains SHA-256 `f7cb7da6b40562def145bee3576567403225fb99ae8d56a488d2ecf22b176671`. This establishes source-subtree equivalence, not the remote checkout's full commit identity. Both original remote checkouts remained clean and unchanged. Prelaunch checks passed 39 Python tests, 12 controller assertions, 13 product test-support tests, syntax and lint.
+
+The attempt failed in inspector identity evaluation with `ReferenceError: require is not defined`, before preparation, native Quit, or any managed command. The watchdog recorded B and D's kernel SIGKILL exits, retired both numeric authorities, and reaped both with return code -9. No supervisor, payload or framework helper was registered. The attempt lasted 0.104170 seconds, with three observed instances including W. These sampled counts are not aggregate containment or a proof of every historical Chromium birth. This is neither a Quit pass nor a product browser-loss qualification.
+
+The installed Playwright Electron adapter supplies a concrete compatibility correction: select the default Node execution context and pass `contextId` plus `includeCommandLineAPI: true` to `Runtime.evaluate`. Its source explicitly associates the option with access to `require` after Electron 28. The replacement controller omitted those options. The next disposable-Mac request authorizes this focused correction, pure mock coverage, bounded helper-exit grace, and one ordered four-case campaign stopping at its first unexpected failure. No result from that campaign is claimed here.
+
+Selected raw first-attempt outcome follows; the full structured inspector exception and all streams remain in the remote `result.json`, `trace.json`, and `D-stdout.log` under `execution-zu1pr9hp/quit-idle-f9goa85x`.
+
+```json
+{
+  "case": "quit-idle",
+  "emergency": [
+    {
+      "role": "B",
+      "signal": 9
+    }
+  ],
+  "unconfirmed": [],
+  "exits": {
+    "D": {
+      "monoNs": 136195758196000,
+      "wallNs": 1788853517338737000,
+      "statusKnown": true,
+      "rawStatus": 9
+    },
+    "B": {
+      "monoNs": 136195758205000,
+      "wallNs": 1788853517338745000,
+      "statusKnown": true,
+      "rawStatus": 9
+    }
+  },
+  "observedBirths": 3,
+  "observedPeak": 3,
+  "reaped": {
+    "B": true,
+    "D": true
+  },
+  "directOwnerOutcomes": {
+    "B": {
+      "signals": [
+        {
+          "signal": 9,
+          "purpose": "finally-cleanup",
+          "success": true
+        }
+      ],
+      "authority": false,
+      "reaped": true,
+      "returncode": -9
+    },
+    "D": {
+      "signals": [
+        {
+          "signal": 9,
+          "purpose": "finally-cleanup",
+          "success": true
+        }
+      ],
+      "authority": false,
+      "reaped": true,
+      "returncode": -9
+    }
+  },
+  "passed": false,
+  "durationNs": 104170000
+}
+```
