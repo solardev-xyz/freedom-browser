@@ -247,6 +247,32 @@ describe('chrome-input-context-menu', () => {
     expect(input.value).toBe('hello pastedworld');
   });
 
+  // The other half of the main-process handlers' `{ success, error }` contract:
+  // a clipboard failure has to come back as a resolved falsy `success` so this
+  // fallback runs. If the handler let the rejection escape as an
+  // `ipcRenderer.invoke` rejection instead, `readClipboard` would throw out of
+  // the `void runEditAction(...)` call and Paste would silently do nothing.
+  test('falls back to navigator clipboard read when the electron read reports failure', async () => {
+    const input = createInput('hello world');
+    input.setSelectionRange(6, 6);
+    const { menu } = await loadModule({
+      input,
+      electronAPI: {
+        copyText: jest.fn().mockResolvedValue({ success: true }),
+        readClipboardText: jest
+          .fn()
+          .mockResolvedValue({ success: false, error: 'clipboard unavailable' }),
+      },
+    });
+
+    openContextMenu(input);
+    await clickMenu(menu, 'paste');
+
+    expect(window.electronAPI.readClipboardText).toHaveBeenCalled();
+    expect(navigator.clipboard.readText).toHaveBeenCalled();
+    expect(input.value).toBe('hello pastedworld');
+  });
+
   test('paste uses live caret when right-click did not capture a range', async () => {
     const input = createInput('abcdef');
     // User clicks at caret position 3 with no selection; the right-click

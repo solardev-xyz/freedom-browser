@@ -990,13 +990,23 @@ function registerBaseIpcHandlers(callbacks = {}) {
   });
 
   // Copy text to clipboard. `writeText` returns a promise on Electron >= 44,
-  // so it has to be awaited before we can claim the write landed.
+  // so it has to be awaited before we can claim the write landed - and an
+  // awaited promise can reject, so it needs the same catch `clipboard:copy-image`
+  // already has. Without it a rejection escapes the `{ success, error }` reply
+  // contract as an `ipcRenderer.invoke` rejection and the renderer's
+  // navigator.clipboard fallback never runs.
   ipcMain.handle('clipboard:copy-text', async (_event, text) => {
-    if (text) {
+    if (!text) {
+      return { success: false, error: 'No text provided' };
+    }
+
+    try {
       await clipboard.writeText(text);
       return { success: true };
+    } catch (error) {
+      log.error('[clipboard] Failed to copy text:', error);
+      return { success: false, error: error.message };
     }
-    return { success: false, error: 'No text provided' };
   });
 
   // Address-bar chrome context menu Paste fallback. Restricted to the
@@ -1007,12 +1017,21 @@ function registerBaseIpcHandlers(callbacks = {}) {
   //
   // `readText` returns a promise on Electron >= 44; returning it unawaited
   // puts a Promise in the reply payload, which the IPC serializer cannot
-  // structured-clone, so `ipcRenderer.invoke` never settles at all.
+  // structured-clone, so `ipcRenderer.invoke` never settles at all. That
+  // promise can also reject, so the read is wrapped the same way the write is
+  // - the sender check stays outside the try, it is a trust gate and not
+  // something a clipboard failure may be allowed to reword.
   ipcMain.handle('clipboard:read-text', async (event) => {
     if (event?.sender?.hostWebContents) {
       return { success: false, error: 'Untrusted sender' };
     }
-    return { success: true, text: await clipboard.readText() };
+
+    try {
+      return { success: true, text: await clipboard.readText() };
+    } catch (error) {
+      log.error('[clipboard] Failed to read text:', error);
+      return { success: false, error: error.message };
+    }
   });
 
   // Copy image to clipboard

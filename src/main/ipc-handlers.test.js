@@ -1509,6 +1509,68 @@ describe('ipc-handlers', () => {
         expect.any(Error)
       );
     });
+
+    // The text handlers await promises on 44, so they can reject where the
+    // synchronous 43 calls could not. A rejection that escapes the handler
+    // leaves `ipcRenderer.invoke` rejecting instead of replying
+    // `{ success: false, error }`, and the renderer's `navigator.clipboard`
+    // fallback only runs on a falsy `success` — an invoke rejection skips it.
+    test('clipboard:copy-text surfaces a writeText rejection as a failed result', async () => {
+      const ctx = loadElectron44ClipboardModule({
+        clipboard: createElectron44ClipboardMock({
+          writeText: jest.fn(async () => {
+            throw new Error('clipboard unavailable');
+          }),
+        }),
+      });
+      ctx.mod.registerBaseIpcHandlers();
+
+      await expect(ctx.ipcMain.invoke('clipboard:copy-text', 'hello')).resolves.toEqual({
+        success: false,
+        error: 'clipboard unavailable',
+      });
+      expect(ctx.log.error).toHaveBeenCalledWith(
+        '[clipboard] Failed to copy text:',
+        expect.any(Error)
+      );
+    });
+
+    test('clipboard:read-text surfaces a readText rejection as a failed result', async () => {
+      const ctx = loadElectron44ClipboardModule({
+        clipboard: createElectron44ClipboardMock({
+          readText: jest.fn(async () => {
+            throw new Error('clipboard unavailable');
+          }),
+        }),
+      });
+      ctx.mod.registerBaseIpcHandlers();
+
+      await expect(ctx.ipcMain.invoke('clipboard:read-text')).resolves.toEqual({
+        success: false,
+        error: 'clipboard unavailable',
+      });
+      expect(ctx.log.error).toHaveBeenCalledWith(
+        '[clipboard] Failed to read text:',
+        expect.any(Error)
+      );
+    });
+
+    test('clipboard:read-text still rejects a webview sender before touching the clipboard', async () => {
+      const clipboard = createElectron44ClipboardMock({
+        readText: jest.fn(async () => 'secret'),
+      });
+      const ctx = loadElectron44ClipboardModule({ clipboard });
+      ctx.mod.registerBaseIpcHandlers();
+
+      // The trust gate lives outside the new try/catch: a webview sender must
+      // still get the `Untrusted sender` error, not a clipboard read.
+      const webviewEvent = { sender: { hostWebContents: {} } };
+      await expect(ctx.ipcMain.handlers.get('clipboard:read-text')(webviewEvent)).resolves.toEqual({
+        success: false,
+        error: 'Untrusted sender',
+      });
+      expect(clipboard.readText).not.toHaveBeenCalled();
+    });
   });
 
   test('wires bzz content probe handlers through start/await/cancel', async () => {
