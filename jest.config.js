@@ -37,7 +37,11 @@ module.exports = {
   transform: {
     '^.+\\.js$': 'babel-jest',
   },
+  // ESM-only dependencies jest has to transpile before it can require
+  // them (`aedes` went ESM-only in 1.x; node 24.9+ could require() it
+  // natively, but the transform keeps the suite runnable on older
+  // local toolchains too).
   transformIgnorePatterns: [
-    '/node_modules/(?!(@scure|@noble|micro-key-producer|micro-packed|@openlv|websocket-mqtt|ts-pattern)/)',
+    '/node_modules/(?!(@scure|@noble|micro-key-producer|micro-packed|@openlv|websocket-mqtt|ts-pattern|aedes)/)',
   ],
 };
