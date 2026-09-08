@@ -325,12 +325,29 @@
         h1 { color: #0969da; }
         .tx-link { color: #0969da; }
         .subtitle, .when, .addr, .amount-asset { color: #6e7681; }
-        .search-input, .filter-select, .btn {
+        .search-input, .btn {
           background: #ffffff;
           border-color: #d0d7de;
           color: #1a1a1a;
         }
         .search-input:focus, .filter-select:focus { border-color: #0969da; }
+        .btn:hover {
+          background: #f6f8fa;
+          border-color: #8c959f;
+        }
+        /* Not folded into the rule above: the `background` shorthand would drop
+           the chevron the dark rule paints with `url()` (#251). */
+        .filter-select {
+          background: #ffffff
+            url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="%2357606a" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>')
+            no-repeat right 12px center;
+          border-color: #d0d7de;
+          color: #1a1a1a;
+        }
+        .filter-select:hover {
+          background-color: #f6f8fa;
+          border-color: #8c959f;
+        }
         .search-input::placeholder { color: #8b949e; }
         .table-wrap, .loading, .empty-state {
           background: #ffffff;

@@ -2753,7 +2753,7 @@
 
 .x402-perm-input,
 .x402-perm-select {
-  background: var(--input-background, rgba(255, 255, 255, 0.04));
+  background: rgba(127, 127, 127, 0.08);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 7px 9px;
@@ -2854,7 +2854,7 @@
 
 .x402-grant input[type="number"],
 .x402-grant-select {
-  background: var(--input-background, rgba(255, 255, 255, 0.04));
+  background: rgba(127, 127, 127, 0.08);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 7px 9px;
@@ -3020,7 +3020,7 @@
   text-transform: uppercase;
   letter-spacing: 0.5px;
   border-radius: 4px;
-  background: var(--accent-muted, rgba(99, 102, 241, 0.15));
+  background: rgba(99, 102, 241, 0.15);
   color: var(--accent, #6366f1);
   margin-left: 6px;
   flex-shrink: 0;
@@ -3031,10 +3031,16 @@
   cursor: pointer;
 }
 
+/* Manage-permissions screens (Wallet / Auto-pay / Swarm). These paint from the
+   palette in styles/variables.css — `--text`, `--muted`, `--border` — like the
+   rest of the sidebar. They used to quote `--text-primary`/`--text-secondary`/
+   `--text-tertiary`/`--bg-elevated`, which are defined nowhere, so the dark
+   literal fallback won in both themes and the site origin rendered white on
+   the light theme's white sidebar (#249). See styles/theme-tokens.test.js. */
 .perms-site {
   font-size: 14px;
   font-weight: 600;
-  color: var(--text-primary, #fff);
+  color: var(--text);
   padding: 8px 0 16px;
   word-break: break-all;
 }
@@ -3046,7 +3052,7 @@
 .perms-section-header {
   font-size: 12px;
   font-weight: 600;
-  color: var(--text-secondary, #888);
+  color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
   margin-bottom: 8px;
@@ -3062,7 +3068,7 @@
 
 .perms-label {
   font-size: 13px;
-  color: var(--text-primary, #ccc);
+  color: var(--text);
 }
 
 .perms-tx-list {
@@ -3073,7 +3079,7 @@
 
 .perms-empty {
   font-size: 12px;
-  color: var(--text-tertiary, #666);
+  color: var(--muted);
   padding: 8px 0;
 }
 
@@ -3084,7 +3090,7 @@
   gap: 8px;
   padding: 8px;
   border-radius: 6px;
-  background: var(--bg-elevated, rgba(255,255,255,0.03));
+  background: rgba(127, 127, 127, 0.12);
 }
 
 .perms-tx-info {
@@ -3098,13 +3104,13 @@
 .perms-tx-addr,
 .perms-tx-selector {
   font-size: 11px;
-  font-family: var(--mono, monospace);
-  color: var(--text-secondary, #aaa);
+  font-family: var(--font-mono, monospace);
+  color: var(--muted);
 }
 
 .perms-tx-chain {
   font-size: 10px;
-  color: var(--text-tertiary, #666);
+  color: var(--muted);
 }
 
 .perms-tx-remove {
@@ -3114,7 +3120,7 @@
   border: 1px solid var(--border, rgba(255,255,255,0.1));
   border-radius: 4px;
   background: transparent;
-  color: var(--text-secondary, #aaa);
+  color: var(--muted);
   cursor: pointer;
 }
 
@@ -3151,7 +3157,7 @@
   margin-top: 16px;
   cursor: pointer;
   font-size: 12px;
-  color: var(--text-secondary, #888);
+  color: var(--muted);
   line-height: 1.4;
 }
 
@@ -3175,7 +3181,7 @@
 
 .swarm-manifest-row {
   padding: 12px;
-  border: 1px solid var(--sidebar-border, rgba(127, 127, 127, 0.25));
+  border: 1px solid var(--border);
   border-radius: 8px;
 }
 
@@ -3187,7 +3193,7 @@
 .swarm-manifest-description,
 .swarm-manifest-choice-note {
   margin-top: 4px;
-  color: var(--sidebar-text-secondary, #8b8b8b);
+  color: var(--muted);
   font-size: 12px;
   line-height: 1.4;
 }
@@ -3946,7 +3952,7 @@
   letter-spacing: 0.5px;
   text-transform: uppercase;
   color: var(--accent, #6366f1);
-  background: var(--accent-muted, rgba(99, 102, 241, 0.15));
+  background: rgba(99, 102, 241, 0.15);
   border-radius: 4px;
   vertical-align: 1px;
 }
