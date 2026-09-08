@@ -31,6 +31,72 @@ function createIpcEvent(url = SETTINGS_PAGE_URL) {
   };
 }
 
+const PNG_BYTES = Buffer.from('png-bytes');
+
+function createNativeImageMock(overrides = {}) {
+  return {
+    isEmpty: () => false,
+    toPNG: jest.fn(() => PNG_BYTES),
+    ...overrides,
+  };
+}
+
+// The main-process `clipboard` module has two incompatible shapes across the
+// Electron majors this code has to run on, and the difference is invisible to
+// a mock that only models one of them. Electron <= 43 is synchronous, with
+// `writeImage`/`readImage`; Electron >= 44 rearchitected the module around the
+// W3C Clipboard API — `writeText`/`readText` return promises,
+// `writeImage`/`readImage` are gone, and images go through
+// `clipboard.write([new ClipboardItem({ '<mime>': <Blob> })])`.
+//
+// Both factories are used deliberately: the 43 shape guards back-compat on the
+// Electron we ship today, the 44 shape guards the three regressions
+// docs/audits/electron-44-compatibility-2026-09.md found (B2) — which the old
+// synchronous-only mock passed straight through while the real app was broken.
+function createElectron43ClipboardMock(overrides = {}) {
+  return {
+    writeText: jest.fn(),
+    readText: jest.fn(() => ''),
+    writeImage: jest.fn(),
+    readImage: jest.fn(),
+    write: jest.fn(),
+    clear: jest.fn(),
+    ...overrides,
+  };
+}
+
+class ClipboardItemMock {
+  constructor(payload) {
+    this.payload = payload;
+    this.types = Object.keys(payload);
+  }
+}
+
+function createElectron44ClipboardMock(overrides = {}) {
+  const mock = {
+    writeText: jest.fn(async () => undefined),
+    readText: jest.fn(async () => ''),
+    write: jest.fn(async () => undefined),
+    read: jest.fn(async () => []),
+    clear: jest.fn(async () => undefined),
+    has: jest.fn(() => false),
+    ...overrides,
+  };
+  // Electron 44 removed these outright — a mock that still carries them would
+  // let the legacy branch keep winning and the regression tests pass vacuously.
+  delete mock.writeImage;
+  delete mock.readImage;
+  return mock;
+}
+
+function loadElectron44ClipboardModule(options = {}) {
+  return loadIpcHandlersModule({
+    ...options,
+    clipboard: options.clipboard || createElectron44ClipboardMock(),
+    electronOverrides: { ClipboardItem: ClipboardItemMock },
+  });
+}
+
 function loadIpcHandlersModule(options = {}) {
   const ipcMain = options.ipcMain || createIpcMainMock();
   const log = {
@@ -45,14 +111,9 @@ function loadIpcHandlersModule(options = {}) {
   const dialog = options.dialog || {
     showSaveDialog: jest.fn(),
   };
-  const clipboard = options.clipboard || {
-    writeText: jest.fn(),
-    writeImage: jest.fn(),
-  };
+  const clipboard = options.clipboard || createElectron43ClipboardMock();
   const nativeImage = options.nativeImage || {
-    createFromBuffer: jest.fn(() => ({
-      isEmpty: () => false,
-    })),
+    createFromBuffer: jest.fn(() => createNativeImageMock()),
   };
   const activeProfile = Object.prototype.hasOwnProperty.call(options, 'activeProfile')
     ? options.activeProfile
@@ -171,6 +232,7 @@ function loadIpcHandlersModule(options = {}) {
     nativeImage,
     webContents: options.webContents,
     webContentsList: options.webContentsList,
+    electronOverrides: options.electronOverrides,
     extraMocks: {
       [require.resolve('./logger')]: () => log,
       [require.resolve('./settings-store')]: () => ({ loadSettings }),
@@ -296,7 +358,6 @@ describe('ipc-handlers', () => {
       })
     ).resolves.toEqual(success());
     expect(ctx.state.activeBzzBases.has(5)).toBe(false);
-
   });
 
   test('registers window, app, and internal routing handlers', async () => {
@@ -717,9 +778,7 @@ describe('ipc-handlers', () => {
       HOST_RENDERER_URL
     );
 
-    expect(result).toEqual(
-      failure('PROFILE_FOCUS_FAILED', 'The running profile did not respond')
-    );
+    expect(result).toEqual(failure('PROFILE_FOCUS_FAILED', 'The running profile did not respond'));
   });
 
   test('forwards openSettings (edit button) to openOrFocusProfile', async () => {
@@ -964,10 +1023,9 @@ describe('ipc-handlers', () => {
     // The no-ack fallback must probe the lock with an effectively-infinite
     // stale window, so a still-held lock can't read as released merely because
     // its heartbeat lapsed (dev profiles have a 5s stale < the delete wait).
-    expect(ctx.isProfileLocked).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 'work' }),
-      { staleMs: Number.MAX_SAFE_INTEGER }
-    );
+    expect(ctx.isProfileLocked).toHaveBeenCalledWith(expect.objectContaining({ id: 'work' }), {
+      staleMs: Number.MAX_SAFE_INTEGER,
+    });
   });
 
   test('updates active profile node config through validated IPC', async () => {
@@ -1267,16 +1325,12 @@ describe('ipc-handlers', () => {
   });
 
   test('copies text and images to the clipboard with error handling', async () => {
-    const emptyImage = {
-      isEmpty: () => true,
-    };
+    const emptyImage = createNativeImageMock({ isEmpty: () => true });
     const ctx = loadIpcHandlersModule({
       nativeImage: {
         createFromBuffer: jest
           .fn()
-          .mockReturnValueOnce({
-            isEmpty: () => false,
-          })
+          .mockReturnValueOnce(createNativeImageMock())
           .mockReturnValueOnce(emptyImage),
       },
     });
@@ -1303,7 +1357,7 @@ describe('ipc-handlers', () => {
     // Webview senders (hostWebContents !== null) must not be able to
     // siphon the user's clipboard without a paste gesture.
     const webviewEvent = { sender: { hostWebContents: { id: 99 } } };
-    expect(ctx.ipcMain.handlers.get('clipboard:read-text')(webviewEvent)).toEqual({
+    await expect(ctx.ipcMain.handlers.get('clipboard:read-text')(webviewEvent)).resolves.toEqual({
       success: false,
       error: 'Untrusted sender',
     });
@@ -1319,7 +1373,11 @@ describe('ipc-handlers', () => {
       success: true,
     });
     expect(ctx.fetchBuffer).toHaveBeenCalledWith('https://example.com/image.png');
+    // Electron 43 still gets `writeImage`, on purpose: its `clipboard.write`
+    // takes a `{ image }` object and silently ignores an array, so routing the
+    // array form here would drop the image with no error at all.
     expect(ctx.clipboard.writeImage).toHaveBeenCalled();
+    expect(ctx.clipboard.write).not.toHaveBeenCalled();
 
     await expect(
       ctx.ipcMain.handlers.get('clipboard:copy-image')({}, 'https://example.com/empty.png')
@@ -1343,6 +1401,114 @@ describe('ipc-handlers', () => {
       '[clipboard] Failed to copy image:',
       expect.any(Error)
     );
+  });
+
+  // Regression coverage for the three clipboard breakages that
+  // docs/audits/electron-44-compatibility-2026-09.md (B2) found on Electron
+  // 44.2.0. They are exercised against a mock of 44's clipboard surface so
+  // they fail here, on the Electron 43 we ship today, rather than only in the
+  // one e2e job that a `npm ci` failure was hiding.
+  describe('clipboard handlers on the Electron 44 clipboard surface', () => {
+    test('clipboard:read-text resolves a structured-cloneable string, never a promise', async () => {
+      const ctx = loadElectron44ClipboardModule({
+        clipboard: createElectron44ClipboardMock({
+          readText: jest.fn(async () => 'from-main-async'),
+        }),
+      });
+      ctx.mod.registerBaseIpcHandlers();
+
+      const result = await ctx.ipcMain.invoke('clipboard:read-text');
+      expect(result).toEqual({ success: true, text: 'from-main-async' });
+      expect(typeof result.text).toBe('string');
+
+      // The real failure mode: an unawaited `readText()` puts a Promise in the
+      // reply, Electron's IPC serializer cannot structured-clone it, and
+      // `ipcRenderer.invoke` never settles — it does not even reject.
+      expect(() => structuredClone(result)).not.toThrow();
+      expect(ctx.clipboard.readText).toHaveBeenCalled();
+    });
+
+    test('clipboard:copy-image writes an image/png ClipboardItem through clipboard.write', async () => {
+      const image = createNativeImageMock();
+      const ctx = loadElectron44ClipboardModule({
+        nativeImage: { createFromBuffer: jest.fn(() => image) },
+      });
+      ctx.mod.registerBaseIpcHandlers();
+
+      // `writeImage` is gone on 44, so calling it throws a TypeError that the
+      // handler's own catch turns into a silent "Copy image" failure.
+      expect(ctx.clipboard.writeImage).toBeUndefined();
+
+      await expect(
+        ctx.ipcMain.invoke('clipboard:copy-image', 'https://example.com/image.png')
+      ).resolves.toEqual({ success: true });
+      expect(ctx.log.error).not.toHaveBeenCalled();
+
+      expect(ctx.clipboard.write).toHaveBeenCalledTimes(1);
+      const [items] = ctx.clipboard.write.mock.calls[0];
+      expect(Array.isArray(items)).toBe(true);
+      expect(items).toHaveLength(1);
+      expect(items[0]).toBeInstanceOf(ClipboardItemMock);
+      expect(items[0].types).toEqual(['image/png']);
+      // `ClipboardItem` payloads must be a string or a Blob — a nativeImage is
+      // rejected outright — so the handler has to encode the image first.
+      expect(image.toPNG).toHaveBeenCalled();
+      const blob = items[0].payload['image/png'];
+      expect(blob).toBeInstanceOf(Blob);
+      expect(blob.type).toBe('image/png');
+      await expect(blob.arrayBuffer().then((b) => Buffer.from(b))).resolves.toEqual(PNG_BYTES);
+    });
+
+    test('clipboard:copy-text only reports success once the write has landed', async () => {
+      let settleWrite;
+      const writeText = jest.fn(
+        () =>
+          new Promise((resolve) => {
+            settleWrite = resolve;
+          })
+      );
+      const ctx = loadElectron44ClipboardModule({
+        clipboard: createElectron44ClipboardMock({ writeText }),
+      });
+      ctx.mod.registerBaseIpcHandlers();
+
+      const pending = ctx.ipcMain.invoke('clipboard:copy-text', 'hello');
+      let settled = false;
+      pending.then(() => {
+        settled = true;
+      });
+
+      // Drain the microtask queue: an unawaited `writeText` would have let the
+      // handler return `{ success: true }` by now, before the write landed.
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(writeText).toHaveBeenCalledWith('hello');
+      expect(settled).toBe(false);
+
+      settleWrite();
+      await expect(pending).resolves.toEqual({ success: true });
+    });
+
+    test('clipboard:copy-image surfaces a clipboard.write rejection as a failed result', async () => {
+      const ctx = loadElectron44ClipboardModule({
+        clipboard: createElectron44ClipboardMock({
+          write: jest.fn(async () => {
+            throw new Error('clipboard.write expects an array of ClipboardItem');
+          }),
+        }),
+      });
+      ctx.mod.registerBaseIpcHandlers();
+
+      await expect(
+        ctx.ipcMain.invoke('clipboard:copy-image', 'https://example.com/image.png')
+      ).resolves.toEqual({
+        success: false,
+        error: 'clipboard.write expects an array of ClipboardItem',
+      });
+      expect(ctx.log.error).toHaveBeenCalledWith(
+        '[clipboard] Failed to copy image:',
+        expect.any(Error)
+      );
+    });
   });
 
   test('wires bzz content probe handlers through start/await/cancel', async () => {
