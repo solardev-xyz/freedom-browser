@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:;"
+      content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src data:;"
     />
     <title>Profiles</title>
     <link
@@ -12,23 +12,8 @@
       type="image/svg+xml"
       href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjOGI5NDllIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+PHBhdGggZD0iTTIwIDIxYTggOCAwIDAgMC0xNiAwIi8+PGNpcmNsZSBjeD0iMTIiIGN5PSI3IiByPSI0Ii8+PC9zdmc+"
     />
+    <link rel="stylesheet" href="styles/theme.css" />
     <style>
-      :root {
-        --bg: #0d1117;
-        --bg-elev: #161b22;
-        --bg-card: #21262d;
-        --border: #30363d;
-        --border-strong: #484f58;
-        --text: #c9d1d9;
-        --text-muted: #8b949e;
-        --text-subtle: #6e7681;
-        --accent: #58a6ff;
-        --accent-muted: rgba(88, 166, 255, 0.12);
-        --danger: #f85149;
-        --success: #3fb950;
-        --warn: #d29922;
-      }
-
       *,
       *::before,
       *::after {
@@ -49,7 +34,7 @@
           sans-serif;
         /* Fixed attachment keeps the gradient covering the full viewport even
            when the page scrolls, so it never truncates at the bottom. */
-        background: linear-gradient(135deg, #0d1117 0%, #161b22 50%, #21262d 100%) fixed;
+        background: var(--page-gradient-profiles);
         color: var(--text);
         min-height: 100vh;
       }
@@ -64,12 +49,26 @@
         margin-bottom: 24px;
       }
 
+      /* Shared internal-page header (#256): a 28 px accent title laid out as a
+         flex row with an inline icon, over a one-line count subtitle — the
+         same pattern history, downloads, links and payments use. The accent
+         comes from the token, so it is #58a6ff dark / #0969da light like the
+         siblings' literals. */
       .page-title {
-        margin: 0;
-        font-size: 22px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin: 0 0 8px 0;
+        font-size: 28px;
         font-weight: 600;
-        letter-spacing: -0.01em;
-        color: var(--text);
+        letter-spacing: -0.5px;
+        color: var(--accent);
+      }
+
+      .subtitle {
+        margin: 0;
+        font-size: 14px;
+        color: var(--text-muted);
       }
 
       .btn {
@@ -99,7 +98,7 @@
       .btn.primary {
         background: var(--accent);
         border-color: var(--accent);
-        color: #0d1117;
+        color: var(--bg);
         font-weight: 600;
       }
 
@@ -364,15 +363,10 @@
       }
 
       /* Delete confirmation modal — mirrors the app chrome's Create Profile
-         modal (src/renderer/styles/modal.css) so the two look identical. The
-         chrome palette is scoped here via --m-* tokens. */
+         modal (src/renderer/styles/modal.css) so the two look identical. It
+         paints from the chrome-flavoured --m-* tokens in styles/theme.css
+         rather than this page's own palette. */
       .modal-overlay {
-        --m-bg: #1a1a1a;
-        --m-border: #4a4a4a;
-        --m-text: #c7c7c7;
-        --m-muted: #c7c7c7;
-        --m-accent: #8ab4f8;
-        --m-danger: #f28b82;
         position: fixed;
         inset: 0;
         display: flex;
@@ -511,48 +505,28 @@
         opacity: 0.55;
         cursor: default;
       }
-
-      /* Light theme */
-      @media (prefers-color-scheme: light) {
-        :root {
-          --bg: #ffffff;
-          --bg-elev: #ffffff;
-          --bg-card: #ffffff;
-          --border: #d0d7de;
-          --border-strong: #8c959f;
-          --text: #24292f;
-          --text-muted: #57606a;
-          --text-subtle: #8c959f;
-          --accent: #0969da;
-          --accent-muted: rgba(9, 105, 218, 0.1);
-          --danger: #cf222e;
-          --success: #1a7f37;
-          --warn: #9a6700;
-        }
-
-        body {
-          background: linear-gradient(135deg, #ffffff 0%, #f6f8fa 50%, #f0f2f5 100%);
-        }
-
-        .btn.primary {
-          color: #ffffff;
-        }
-
-        .modal-overlay {
-          --m-bg: #ffffff;
-          --m-border: #dfe1e5;
-          --m-text: #202124;
-          --m-muted: #5f6368;
-          --m-accent: #1a73e8;
-          --m-danger: #d93025;
-        }
-      }
     </style>
   </head>
   <body>
     <main class="page">
       <div class="page-head">
-        <h1 class="page-title">Profiles</h1>
+        <h1 class="page-title">
+          <svg
+            width="28"
+            height="28"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M20 21a8 8 0 0 0-16 0" />
+            <circle cx="12" cy="7" r="4" />
+          </svg>
+          Profiles
+        </h1>
+        <p class="subtitle" id="stats">Loading…</p>
       </div>
 
       <div class="profile-grid" id="profile-manager-list">
@@ -586,12 +560,14 @@
           <span class="modal-profile-name" data-delete-name></span>
         </div>
         <p class="modal-copy">
-          This permanently deletes this profile and its browsing data, vault, node
-          data, and keys. This cannot be undone.
+          This permanently deletes this profile and its browsing data, vault, node data, and keys.
+          This cannot be undone.
         </p>
         <div class="modal-actions">
           <button type="button" class="secondary-btn" data-delete-cancel>Cancel</button>
-          <button type="button" class="primary-btn danger" data-delete-confirm>Delete Profile</button>
+          <button type="button" class="primary-btn danger" data-delete-confirm>
+            Delete Profile
+          </button>
         </div>
       </div>
     </div>
@@ -604,8 +580,15 @@
     <script src="scripts/hover-tooltip.js"></script>
     <script>
       const managerList = document.getElementById('profile-manager-list');
+      const statsEl = document.getElementById('stats');
       const deleteModal = document.getElementById('delete-modal');
       const profileToast = document.getElementById('profile-toast');
+
+      // Header count line, like history's "N entries" and downloads'
+      // "N downloads" (#256). Counts the cards actually on screen.
+      const setStats = (text) => {
+        if (statsEl) statsEl.textContent = text;
+      };
 
       const esc = (s) =>
         String(s == null ? '' : s).replace(
@@ -669,18 +652,21 @@
           </button>`;
 
         if (!profiles?.length) {
+          setStats('0 profiles');
           managerList.innerHTML =
             '<div class="profile-manager-empty">No profiles found</div>' + createTile;
           return;
         }
 
-        const cards = profiles
-          // Hide any profile whose optimistic delete is still in flight: an
-          // unrelated onProfileUpdated refresh can fire before the deletion
-          // lands in the registry, and we don't want it to briefly re-render
-          // the card the user just removed. The delete path clears the id on
-          // completion (or failure, followed by a refresh that restores it).
-          .filter((profile) => !pendingDeleteIds.has(profile.id))
+        // Hide any profile whose optimistic delete is still in flight: an
+        // unrelated onProfileUpdated refresh can fire before the deletion
+        // lands in the registry, and we don't want it to briefly re-render
+        // the card the user just removed. The delete path clears the id on
+        // completion (or failure, followed by a refresh that restores it).
+        const shown = profiles.filter((profile) => !pendingDeleteIds.has(profile.id));
+        setStats(`${shown.length} profile${shown.length === 1 ? '' : 's'}`);
+
+        const cards = shown
           .map((profile) => {
             const isUnregistered = profile.isUnregistered === true;
             const isActive = profile.isActive === true;
@@ -754,6 +740,7 @@
           }
           renderProfiles(result.profiles || []);
         } catch (err) {
+          setStats('Profile list unavailable');
           managerList.innerHTML =
             '<div class="profile-manager-empty">Profile list unavailable</div>';
           logError('Failed to load profiles', err);
@@ -858,9 +845,7 @@
         // re-render the card before the deletion lands in the registry.
         closeDeleteModal();
         pendingDeleteIds.add(profileId);
-        managerList
-          ?.querySelector(`[data-profile-id="${CSS.escape(profileId)}"]`)
-          ?.remove();
+        managerList?.querySelector(`[data-profile-id="${CSS.escape(profileId)}"]`)?.remove();
         try {
           const result = await freedomAPI.deleteProfile?.(profileId, confirmDisplayName);
           if (!result?.success) {

@@ -54,7 +54,7 @@ const SIZE_SAFETY_MARGIN = 1.5;
  */
 async function selectBestBatch(estimatedSizeBytes, options = {}) {
   const bee = getBee();
-  const batches = await bee.getPostageBatches();
+  const batches = await bee.stamp.getAll();
 
   const requiredBytes = estimatedSizeBytes * SIZE_SAFETY_MARGIN;
 

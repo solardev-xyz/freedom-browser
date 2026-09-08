@@ -8,10 +8,14 @@
  * reads and signing continue through Freedom's existing EIP-1193 bridge.
  */
 
+const crypto = require('crypto');
+const path = require('path');
+const { pathToFileURL } = require('url');
 const { ethers } = require('ethers');
 const log = require('../logger');
 const chainData = require('../networks/chain-data-router');
 const networkRegistry = require('../networks/network-registry');
+const { getPermissionKey } = require('../../shared/origin-utils');
 const { registerWebRequestHandler } = require('../webrequest-dispatcher');
 const {
   runWithPrivateLogContext,
@@ -20,13 +24,21 @@ const {
 
 const HTML_SELECTOR = '0x33c34ac3';
 const PROVENANCE_HEADER = 'X-Freedom-Onchain-App-Provenance';
+const GATE_HEADER = 'X-Freedom-Onchain-App-Gate';
+const APPROVAL_HEADER = 'X-Freedom-Onchain-App-Approval';
 const DEFAULT_CHAIN_ID = 1;
 const MAX_HTML_BYTES = 8 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 30_000;
+const PENDING_DOCUMENT_TTL_MS = 5 * 60 * 1000;
+const MAX_PENDING_DOCUMENTS = 8;
+const MAX_APPROVED_DOCUMENTS = 1024;
 const ETHEREUM_ADDRESS_RE = /^0x[0-9a-f]{40}$/i;
 const HTML_RESULT_INTERFACE = new ethers.Interface(['function html() view returns (string)']);
 const provenanceByWebContentsId = new Map();
 const observedWebContentsIds = new Set();
+const ONCHAIN_INTERSTITIAL_URL = pathToFileURL(
+  path.join(__dirname, '../../renderer/pages/onchain-unverified.html')
+).toString();
 
 const ONCHAIN_APP_CSP = [
   "default-src 'none'",
@@ -117,6 +129,71 @@ function buildOnchainProvenance(html, app, chainResult = {}) {
   };
 }
 
+function documentApprovalKey(app, htmlHash) {
+  return `${app.chainId}:${app.address.toLowerCase()}:${htmlHash.toLowerCase()}`;
+}
+
+function createOnchainAppTrustState({
+  now = () => Date.now(),
+  createToken = () => crypto.randomBytes(32).toString('base64url'),
+} = {}) {
+  const pendingDocuments = new Map();
+  const approvedDocuments = new Set();
+
+  const prunePending = () => {
+    const currentTime = now();
+    for (const [token, candidate] of pendingDocuments) {
+      if (candidate.expiresAt <= currentTime) pendingDocuments.delete(token);
+    }
+    while (pendingDocuments.size >= MAX_PENDING_DOCUMENTS) {
+      pendingDocuments.delete(pendingDocuments.keys().next().value);
+    }
+  };
+
+  return {
+    isApproved(app, htmlHash) {
+      return approvedDocuments.has(documentApprovalKey(app, htmlHash));
+    },
+
+    stage(candidate) {
+      prunePending();
+      const token = createToken();
+      if (!/^[A-Za-z0-9_-]{43}$/.test(token) || pendingDocuments.has(token)) {
+        throw new Error('failed to create a unique onchain app approval token');
+      }
+      pendingDocuments.set(token, {
+        ...candidate,
+        expiresAt: now() + PENDING_DOCUMENT_TTL_MS,
+      });
+      return token;
+    },
+
+    consume(token, requestUrl, app) {
+      if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(token)) return null;
+      const candidate = pendingDocuments.get(token);
+      pendingDocuments.delete(token);
+      if (
+        !candidate ||
+        candidate.expiresAt <= now() ||
+        candidate.requestUrl !== documentUrl(requestUrl) ||
+        candidate.app.chainId !== app.chainId ||
+        candidate.app.address !== app.address
+      ) {
+        return null;
+      }
+
+      const approvalKey = documentApprovalKey(app, candidate.provenance.htmlHash);
+      if (!approvedDocuments.has(approvalKey) && approvedDocuments.size >= MAX_APPROVED_DOCUMENTS) {
+        approvedDocuments.delete(approvedDocuments.values().next().value);
+      }
+      approvedDocuments.add(approvalKey);
+      return candidate;
+    },
+  };
+}
+
+const standaloneTrustState = createOnchainAppTrustState();
+
 function encodeOnchainProvenance(provenance) {
   return Buffer.from(JSON.stringify(provenance), 'utf8').toString('base64url');
 }
@@ -158,6 +235,82 @@ function htmlResponse(html, app, chainResult, method) {
     [PROVENANCE_HEADER]: encodeOnchainProvenance(provenance),
   };
   return new Response(method === 'HEAD' ? null : html, { status: 200, headers });
+}
+
+function requestHeader(request, name) {
+  if (request?.headers?.get) return request.headers.get(name);
+  const wanted = name.toLowerCase();
+  for (const [key, value] of Object.entries(request?.headers || {})) {
+    if (key.toLowerCase() === wanted) return Array.isArray(value) ? value[0] : value;
+  }
+  return null;
+}
+
+function trustEndpoint(trust = {}) {
+  return trust.agreed?.[0] || trust.prover || trust.queried?.[0] || trust.method || 'unknown';
+}
+
+function hasTrustConflict(trust = {}) {
+  return Array.isArray(trust.dissented) && trust.dissented.length > 0;
+}
+
+function buildOnchainInterstitialUrl({ app, provenance, requestUrl, token = null }) {
+  const url = new URL(ONCHAIN_INTERSTITIAL_URL);
+  const trust = provenance.trust || {};
+  url.searchParams.set('target', documentUrl(requestUrl));
+  url.searchParams.set('network', provenance.network);
+  url.searchParams.set('chain', String(app.chainId));
+  url.searchParams.set('contract', app.address);
+  url.searchParams.set('hash', provenance.htmlHash);
+  url.searchParams.set('source', trustEndpoint(trust));
+  if (token) url.searchParams.set('token', token);
+  if (hasTrustConflict(trust)) {
+    url.searchParams.set('conflict', '1');
+    url.searchParams.set('dissented', trust.dissented.join(', '));
+  }
+  return url.toString();
+}
+
+function encodeGateUrl(location) {
+  return Buffer.from(location, 'utf8').toString('base64url');
+}
+
+function decodeGateUrl(value, requestUrl) {
+  if (typeof value !== 'string' || !value || value.length > 16_384) return null;
+  try {
+    const location = Buffer.from(value, 'base64url').toString('utf8');
+    const url = new URL(location);
+    const expected = new URL(ONCHAIN_INTERSTITIAL_URL);
+    if (url.protocol !== 'file:' || url.pathname !== expected.pathname) return null;
+
+    const target = url.searchParams.get('target');
+    const app = parseOnchainAppUrl(target);
+    if (!app || documentUrl(target) !== documentUrl(requestUrl)) return null;
+    if (url.searchParams.get('chain') !== String(app.chainId)) return null;
+    if (url.searchParams.get('contract') !== app.address) return null;
+    if (!/^0x[0-9a-f]{64}$/i.test(url.searchParams.get('hash') || '')) return null;
+
+    const conflict = url.searchParams.get('conflict') === '1';
+    const token = url.searchParams.get('token') || '';
+    if (!conflict && !/^[A-Za-z0-9_-]{43}$/.test(token)) return null;
+    if (conflict && token) return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+function interstitialResponse(location) {
+  return new Response('Freedom blocked unverified onchain application code.', {
+    status: 451,
+    headers: {
+      'Content-Type': 'text/plain; charset=utf-8',
+      [GATE_HEADER]: encodeGateUrl(location),
+      'Cache-Control': 'no-store',
+      'Referrer-Policy': 'no-referrer',
+      'X-Content-Type-Options': 'nosniff',
+    },
+  });
 }
 
 function abortError(message) {
@@ -209,7 +362,11 @@ function decodeHtmlResult(result) {
 
 async function handleOnchainAppRequest(
   request,
-  { chainRequest = chainData.request, timeoutMs = REQUEST_TIMEOUT_MS } = {}
+  {
+    chainRequest = chainData.request,
+    timeoutMs = REQUEST_TIMEOUT_MS,
+    trustState = standaloneTrustState,
+  } = {}
 ) {
   const method = (request.method || 'GET').toUpperCase();
   if (method !== 'GET' && method !== 'HEAD') {
@@ -226,6 +383,19 @@ async function handleOnchainAppRequest(
     );
   }
 
+  if (method === 'GET') {
+    const approvalToken = requestHeader(request, APPROVAL_HEADER);
+    const approvedCandidate = trustState.consume(approvalToken, request.url, app);
+    if (approvedCandidate) {
+      return htmlResponse(
+        approvedCandidate.html,
+        approvedCandidate.app,
+        approvedCandidate.chainResult,
+        method
+      );
+    }
+  }
+
   try {
     const chainResult = await withDeadline(
       Promise.resolve(
@@ -233,13 +403,37 @@ async function handleOnchainAppRequest(
           app.chainId,
           'eth_call',
           [{ to: app.address, data: HTML_SELECTOR }, 'latest'],
-          { includeTrust: true }
+          {
+            includeTrust: true,
+            // The document fetch is the first app-driven read. Give it the
+            // same per-origin latency budget and adaptive fall-through as the
+            // EIP-1193 calls the loaded document will make afterwards.
+            routingContext: { origin: getPermissionKey(request.url) },
+          }
         )
       ),
       timeoutMs,
       request.signal
     );
     const html = decodeHtmlResult(chainResult?.result);
+    const provenance = buildOnchainProvenance(html, app, chainResult || {});
+    const trustLevel = provenance.trust?.level;
+    const trusted = trustLevel === 'verified' || trustLevel === 'user-configured';
+    if (method === 'GET' && !trusted && !trustState.isApproved(app, provenance.htmlHash)) {
+      const conflict = hasTrustConflict(provenance.trust);
+      const token = conflict
+        ? null
+        : trustState.stage({
+            app,
+            chainResult: chainResult || {},
+            html,
+            provenance,
+            requestUrl: documentUrl(request.url),
+          });
+      return interstitialResponse(
+        buildOnchainInterstitialUrl({ app, provenance, requestUrl: request.url, token })
+      );
+    }
     return htmlResponse(html, app, chainResult || {}, method);
   } catch (error) {
     const loggedUrl = redactUrlForLog(request.url);
@@ -278,9 +472,55 @@ function documentUrl(value) {
   }
 }
 
+// Strip the gate header from a response that is not going to a top-level
+// navigation. Returns the remaining headers, or null when there was nothing
+// to strip (so the dispatcher chain is left untouched).
+function withoutGateHeader(responseHeaders) {
+  const wanted = GATE_HEADER.toLowerCase();
+  let stripped = false;
+  const remaining = {};
+  for (const [key, value] of Object.entries(responseHeaders || {})) {
+    if (key.toLowerCase() === wanted) {
+      stripped = true;
+      continue;
+    }
+    remaining[key] = value;
+  }
+  return stripped ? remaining : null;
+}
+
 function captureOnchainProvenance(details) {
-  if (details?.resourceType !== 'mainFrame' || details.statusCode !== 200) return null;
+  if (details?.resourceType !== 'mainFrame') {
+    // Defence in depth behind guardOnchainAppRequest: the gate header carries
+    // the single-use approval token, and Chromium enforces no CORS on a
+    // custom-scheme response — so it must never reach a reader that is not
+    // Freedom's own top-level navigation, whatever future path served it.
+    if (!documentUrl(details?.url).startsWith('web3://')) return null;
+    const responseHeaders = withoutGateHeader(details?.responseHeaders);
+    return responseHeaders ? { responseHeaders } : null;
+  }
   if (!documentUrl(details.url).startsWith('web3://')) return null;
+  const gateUrl = decodeGateUrl(responseHeader(details.responseHeaders, GATE_HEADER), details.url);
+  if (gateUrl && details.statusCode === 451) {
+    const contents = details.webContents;
+    if (contents) {
+      // Leave the webRequest callback stack before replacing the blocked
+      // response. Starting the file navigation synchronously from
+      // onHeadersReceived makes Chromium abort the replacement itself.
+      setImmediate(() => {
+        if (contents.isDestroyed?.()) return;
+        try {
+          Promise.resolve(contents.loadURL?.(gateUrl)).catch((error) => {
+            log.warn(`[onchain-app] failed to open trust interstitial: ${error?.message || error}`);
+          });
+        } catch (error) {
+          log.warn(`[onchain-app] failed to open trust interstitial: ${error?.message || error}`);
+        }
+      });
+    }
+    return null;
+  }
+  if (details.statusCode !== 200) return null;
   const encoded = responseHeader(details.responseHeaders, PROVENANCE_HEADER);
   const provenance = decodeOnchainProvenance(encoded);
   const contents = details.webContents;
@@ -300,7 +540,36 @@ function captureOnchainProvenance(details) {
   return null;
 }
 
+/**
+ * onBeforeRequest guard: drop every `web3:` request that is not a top-level
+ * navigation.
+ *
+ * An onchain app is only ever a top-level document — `frame-ancestors 'none'`
+ * plus `X-Frame-Options: DENY` say so, and its own CSP denies it any
+ * subresource fetch — so nothing legitimate loads this scheme as a
+ * subresource. Web content could, though: nothing in a custom-scheme request
+ * reaching `protocol.handle` is trustworthy (Chromium sends no `Origin`
+ * header for one and does not enforce CORS on the response either), so a
+ * plain `fetch('web3://<app>.eip155-1/')` from a hostile page used to read
+ * the 451 gate response in full — including the single-use approval token —
+ * replay it with the approval header, and silently pre-approve unverified
+ * app code for the whole session before the user ever saw the interstitial.
+ * The same reachability let any page grind the staged-document FIFO and evict
+ * a real user's pending token.
+ *
+ * The initiating request's resource type, taken from the network layer before
+ * the handler runs, is the only value the main process can trust here. Fails
+ * closed: a request Chromium cannot attribute to a main frame is cancelled.
+ */
+function guardOnchainAppRequest(details) {
+  if (!/^web3:/i.test(details?.url || '')) return null;
+  if (details.resourceType === 'mainFrame') return null;
+  log.warn('[onchain-app] Blocked a web3: request that is not a top-level navigation');
+  return { cancel: true };
+}
+
 function installOnchainProvenanceCapture() {
+  registerWebRequestHandler('onBeforeRequest', 'onchain-app-guard', guardOnchainAppRequest);
   registerWebRequestHandler(
     'onHeadersReceived',
     'onchain-provenance',
@@ -328,9 +597,12 @@ function registerOnchainAppProtocol(targetSession, { privatePartition = null } =
     return;
   }
   const isPrivate = !!privatePartition;
+  const trustState = createOnchainAppTrustState();
   try {
     targetSession.protocol.handle('web3', (request) =>
-      runWithPrivateLogContext(isPrivate, () => handleOnchainAppRequest(request))
+      runWithPrivateLogContext(isPrivate, () =>
+        handleOnchainAppRequest(request, { trustState })
+      )
     );
     log.info('[onchain-app] web3: handler registered');
   } catch (error) {
@@ -339,7 +611,9 @@ function registerOnchainAppProtocol(targetSession, { privatePartition = null } =
 }
 
 module.exports = {
+  APPROVAL_HEADER,
   DEFAULT_CHAIN_ID,
+  GATE_HEADER,
   HTML_SELECTOR,
   MAX_HTML_BYTES,
   ONCHAIN_APP_CSP,
@@ -347,13 +621,16 @@ module.exports = {
   REQUEST_TIMEOUT_MS,
   PROVENANCE_HEADER,
   buildOnchainProvenance,
+  buildOnchainInterstitialUrl,
   captureOnchainProvenance,
   decodeOnchainProvenance,
   decodeHtmlResult,
   encodeOnchainProvenance,
+  guardOnchainAppRequest,
   handleOnchainAppRequest,
   installOnchainProvenanceCapture,
   parseOnchainAppUrl,
+  createOnchainAppTrustState,
   registerOnchainProvenanceIpc,
   registerOnchainAppProtocol,
 };

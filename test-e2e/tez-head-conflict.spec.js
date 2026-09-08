@@ -58,6 +58,12 @@ test('a Tezos chain-head disagreement renders the conflict interstitial', async 
     .toContain('chain head #400');
 
   expect(rendered.text).toContain('lagged.tez');
+  // The interstitial is chrome, not content (#235): the address bar keeps the
+  // name the user typed, never the interstitial's own
+  // `file:///…/pages/ens-conflict.html` path. Read once (not through a
+  // retrying matcher) now that the interstitial has rendered — the address bar
+  // is repainted by the same did-navigate that committed this page.
+  expect(await input.inputValue()).toBe('lagged.tez');
   expect(rendered.text).toContain('rpc-one.test');
   expect(rendered.text).toContain('chain head #1000');
   expect(rendered.text).toContain('rpc-two.test');

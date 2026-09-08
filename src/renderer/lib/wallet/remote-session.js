@@ -62,7 +62,7 @@ function probeRelay(url, timeoutMs = 4000) {
 // to the server. Interim test deployment; final hostname TBD.
 const BRIDGE_ORIGIN = 'https://bridge.freedom.baby';
 
-// The openlv SDK (168 KiB vendor bundle) is only needed once a signing
+// The openlv SDK (80 KiB vendor bundle) is only needed once a signing
 // job actually arrives — keep it off the renderer boot path.
 let vendorPromise = null;
 const loadVendorOpenlv = () => (vendorPromise ??= import('../../vendor/openlv.esm.js'));
@@ -80,6 +80,24 @@ export const PHASE_STATUS_TEXT = {
   'switching-chain': 'Connected — approve the network switch on your phone…',
   'awaiting-approval': 'Connected — confirm on your phone…',
 };
+
+/**
+ * Wait for the peer-to-peer link, or fail when the session gives up.
+ *
+ * openlv 0.2.0 dropped `waitForLink()` in favour of observables, and
+ * `until()` only ever resolves — so the DISCONNECTED terminal state
+ * (signaling error, no common transport, or the SDK's own transport
+ * link deadline) has to be turned back into a rejection here, otherwise
+ * a failed pairing would hang until main's job timeout.
+ */
+async function waitForLink(session) {
+  const status = await session.status.until(
+    (value) => value === 'connected' || value === 'disconnected',
+  );
+  if (status === 'disconnected') {
+    throw new Error(session.error?.get() || 'Session failed to connect');
+  }
+}
 
 /** Wallet SDKs answer `{result}` / `{error:{code,message}}` envelopes; tolerate bare values. */
 function unwrapResponse(payload) {
@@ -138,6 +156,8 @@ export function createRemoteSessionBroker({
     jobs.delete(jobId);
     job.settled = true; // an attempt still in createSession must go stale
     job.abortAttempt?.(new Error('Session closed'));
+    job.unsubscribeStatus?.();
+    job.unsubscribeStatus = null;
     if (job.session) {
       Promise.resolve(job.session.close()).catch((err) => {
         console.warn('[RemoteSession] session close failed:', err.message);
@@ -228,7 +248,10 @@ export function createRemoteSessionBroker({
    */
   async function runJob({ jobId, method, params, chain }, kind, respond) {
     if (jobs.has(jobId)) return;
-    const entry = { jobId, method, params, chain, kind, respond, session: null, settled: false, attempt: 0 };
+    const entry = {
+      jobId, method, params, chain, kind, respond,
+      session: null, settled: false, attempt: 0, unsubscribeStatus: null,
+    };
     jobs.set(jobId, entry);
     await runAttempt(entry);
   }
@@ -257,9 +280,10 @@ export function createRemoteSessionBroker({
       const sdk = openlv || (await loadVendorOpenlv());
       const relay = await resolveSignaling();
       if (stale()) return;
+      // Since 0.2.0 the signaling layer is not passed in: createSession
+      // loads the backend named by the relay's `p` (always 'mqtt' here).
       const session = await sdk.createSession(
         relay,
-        sdk.mqtt,
         [sdk.webrtc()],
         onIncomingMessage,
       );
@@ -283,14 +307,19 @@ export function createRemoteSessionBroker({
         bridgeUrl: `${bridgeOrigin}/#${uri}`,
       });
 
-      session.emitter.on('state_change', (state) => {
-        if (!stale() && state?.status) {
-          emit({ jobId, kind, phase: state.status, method });
+      // Status is an observable since 0.2.0 (subscribe replays the
+      // current value, so no state can slip past between create and
+      // subscribe). The values are the same strings the old
+      // `state_change` event carried, which is what PHASE_STATUS_TEXT
+      // keys off.
+      entry.unsubscribeStatus = session.status.subscribe((status) => {
+        if (!stale() && status) {
+          emit({ jobId, kind, phase: status, method });
         }
       });
 
       await session.connect();
-      await session.waitForLink();
+      await Promise.race([waitForLink(session), aborted]);
       if (stale()) return;
 
       if (chain) {
@@ -375,6 +404,8 @@ export function createRemoteSessionBroker({
       const oldSession = entry.session;
       entry.session = null;
       entry.abortAttempt?.(new Error('Superseded by a new code'));
+      entry.unsubscribeStatus?.();
+      entry.unsubscribeStatus = null;
       if (oldSession) {
         Promise.resolve(oldSession.close()).catch(() => {});
       }

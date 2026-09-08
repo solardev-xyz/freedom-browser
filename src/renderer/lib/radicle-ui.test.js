@@ -180,8 +180,102 @@ describe('radicle-ui', () => {
     expect(ctx.clearIntervalMock).not.toHaveBeenCalled();
     expect(ctx.elements.radicleInfoPanel.classList.contains('visible')).toBe(false);
     expect(ctx.elements.radiclePeersCount.textContent).toBe('0');
-    expect(ctx.elements.radicleReposCount.textContent).toBe('--');
+    // Counters share one empty state with the rest of the Nodes menu (#227).
+    expect(ctx.elements.radicleReposCount.textContent).toBe('0');
     expect(ctx.elements.radicleVersionText.textContent).toBe('libradicle v0.6.1');
+  });
+
+  test('an unknown seeded-repository count renders 0, like the other counters', async () => {
+    const ctx = await loadRadicleModule({
+      antMenuOpen: true,
+      currentRadicleStatus: 'running',
+      windowRadicle: true,
+      statusResult: { status: 'running', error: null },
+    });
+
+    ctx.mod.initRadicleUi();
+    ctx.mod.startRadicleInfoUpdates();
+    await flushMicrotasks();
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    // reposCount absent (older/partial payload) — must not fall back to '--'
+    // while the sibling peers row shows a number.
+    ctx.getStatusHandler()({
+      status: 'running',
+      error: null,
+      info: { success: true, count: 3, version: '0.6.1' },
+    });
+    expect(ctx.elements.radiclePeersCount.textContent).toBe('3');
+    expect(ctx.elements.radicleReposCount.textContent).toBe('0');
+  });
+
+  test('an unknown connected-peer count renders 0, like the other counters', async () => {
+    const ctx = await loadRadicleModule({
+      antMenuOpen: true,
+      currentRadicleStatus: 'running',
+      windowRadicle: true,
+      statusResult: { status: 'running', error: null },
+    });
+
+    ctx.mod.initRadicleUi();
+    ctx.mod.startRadicleInfoUpdates();
+    await flushMicrotasks();
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    // The mirror of the case above: count absent from a successful payload
+    // must not render the literal 'undefined' while the sibling repos row
+    // shows a number.
+    ctx.getStatusHandler()({
+      status: 'running',
+      error: null,
+      info: { success: true, reposCount: 2, version: '0.6.1' },
+    });
+    expect(ctx.elements.radiclePeersCount.textContent).toBe('0');
+    expect(ctx.elements.radicleReposCount.textContent).toBe('2');
+
+    // A non-integer count (a string from an older/looser payload) is empty
+    // state too, not a coerced number.
+    ctx.getStatusHandler()({
+      status: 'running',
+      error: null,
+      info: { success: true, count: null, reposCount: 2, version: '0.6.1' },
+    });
+    expect(ctx.elements.radiclePeersCount.textContent).toBe('0');
+  });
+
+  test('an unreported version renders the menu-wide Unknown placeholder', async () => {
+    // #253: this row used to fall back to '--' while the sibling Swarm/IPFS
+    // rows fell back to a blank cell and Myotis to a bare product name.
+    const ctx = await loadRadicleModule({
+      antMenuOpen: true,
+      currentRadicleStatus: 'running',
+      windowRadicle: true,
+      statusResult: { status: 'running', error: null },
+      // The node is up but has not reported a version yet.
+      connectionsResult: { success: true, count: 1, reposCount: 1 },
+    });
+
+    ctx.mod.initRadicleUi();
+    ctx.mod.startRadicleInfoUpdates();
+    await flushMicrotasks();
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    ctx.getStatusHandler()({
+      status: 'running',
+      error: null,
+      info: { success: true, count: 1, reposCount: 1 },
+    });
+    expect(ctx.elements.radicleVersionText.textContent).toBe('Unknown');
+
+    ctx.getStatusHandler()({
+      status: 'running',
+      error: null,
+      info: { success: true, count: 1, reposCount: 1, version: '0.7.1' },
+    });
+    expect(ctx.elements.radicleVersionText.textContent).toBe('libradicle v0.7.1');
   });
 
   test('updates Radicle status lines, toggle state, and running transitions', async () => {

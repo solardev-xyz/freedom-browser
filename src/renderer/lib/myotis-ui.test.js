@@ -124,6 +124,38 @@ describe('myotis-ui', () => {
     expect(ctx.api.stop).toHaveBeenCalled();
   });
 
+  test('a running client with nothing to report shows the menu-wide placeholders', async () => {
+    // #252: Finalized Block used to read '--' while every sibling counter in
+    // the same menu read '0' — Gnosis keeps that state for as long as it has
+    // not produced a finalized block. #253: the Version row used to fall back
+    // to the bare product name 'Myotis'.
+    const ctx = await loadMyotisUi();
+    ctx.mod.initMyotisUi();
+
+    ctx.getStatusHandler()({
+      supported: true,
+      available: true,
+      running: true,
+      state: 'ready',
+      peerCount: 0,
+    });
+    expect(ctx.elements.peers.textContent).toBe('0');
+    expect(ctx.elements.block.textContent).toBe('0');
+    expect(ctx.elements.version.textContent).toBe('Unknown');
+
+    ctx.getStatusHandler()({
+      supported: true,
+      available: true,
+      running: true,
+      state: 'ready',
+      chainId: 100,
+      peerCount: 0,
+    });
+    expect(ctx.elements.gnosisPeers.textContent).toBe('0');
+    expect(ctx.elements.gnosisBlock.textContent).toBe('0');
+    expect(ctx.elements.gnosisVersion.textContent).toBe('Unknown');
+  });
+
   test('disables runtime controls when the profile disables Myotis', async () => {
     const ctx = await loadMyotisUi({
       initialStatus: {

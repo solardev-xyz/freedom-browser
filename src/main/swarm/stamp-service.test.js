@@ -23,16 +23,24 @@ const mockDepositTokens = jest.fn();
 
 jest.mock('@ethersphere/bee-js', () => ({
   Bee: jest.fn().mockImplementation(() => ({
-    getPostageBatches: mockGetPostageBatches,
-    getStorageCost: mockGetStorageCost,
-    buyStorage: mockBuyStorage,
-    getWalletBalance: mockGetWalletBalance,
-    getDurationExtensionCost: mockGetDurationExtensionCost,
-    getSizeExtensionCost: mockGetSizeExtensionCost,
-    extendStorageDuration: mockExtendStorageDuration,
-    extendStorageSize: mockExtendStorageSize,
-    getChequebookBalance: mockGetChequebookBalance,
-    depositTokens: mockDepositTokens,
+    stamp: {
+      getAll: mockGetPostageBatches,
+    },
+    storage: {
+      getCost: mockGetStorageCost,
+      buy: mockBuyStorage,
+      getDurationExtensionCost: mockGetDurationExtensionCost,
+      getSizeExtensionCost: mockGetSizeExtensionCost,
+      extendDuration: mockExtendStorageDuration,
+      extendSize: mockExtendStorageSize,
+    },
+    wallet: {
+      getBalance: mockGetWalletBalance,
+    },
+    chequebook: {
+      getBalance: mockGetChequebookBalance,
+      deposit: mockDepositTokens,
+    },
   })),
   Size: {
     fromGigabytes: jest.fn((gb) => ({ gb })),

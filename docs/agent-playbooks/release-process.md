@@ -83,7 +83,15 @@ Run `npm outdated --json` and triage:
 
   Only bundle the bump if all three checks pass **and** the verification budget for manual cross-platform smoke testing (mandatory for Chromium-level changes, since `npm test` will not catch web-platform behavior shifts) is available. Otherwise defer to a dedicated release cycle — Electron majors in particular are usually large enough to lead their own release ("`Upgraded Electron 41 to 42 (Chromium 148, Node 24.15)`" as a top-line `Changed` entry, matching `0.7.0`'s "Upgraded Electron to 41").
 
+A patch or minor bump can add a **native addon** to a dependency that had none — and `install-app-deps` will not tell you, because a Node-API prebuild is never rebuilt (same blind spot as better-sqlite3 above, arrived at from the other direction). Watch for a new `prebuilds/` directory or a new `node` condition in the package's `exports` map in the diff of `npm outdated`'s candidates, and validate the affected feature at _runtime under Electron_, not just under `node`: an addon that is clean in a plain `node` process can still crash Electron's main process, which links a different allocator and a differently-configured V8. See "Known regressions and in-repo workarounds" below for the one case we carry.
+
 Apply approved bumps with `npm update` (matches `0.7.1`'s `chore(deps): refresh in-range bumps` commit). This updates `package-lock.json` to the resolved versions without touching the declared `^` ranges in `package.json`, because the ranges already permit those versions. Use `npm install <pkg>@<version>` only when you need to widen a `^` range or pin an exact version. Re-run `npm ci && npm run lint && npm test` before committing to catch regressions.
+
+### Known regressions and in-repo workarounds
+
+Bumps that are held back, or taken only together with a workaround, are recorded here so a later `npm update` does not silently undo them. Each entry says what to re-check before removing it.
+
+- **`@corpus-core/colibri-stateless` — pinned exact, native addon force-disabled.** 2.0.5 (2026-08-14) added a native N-API addon (`prebuilds/<platform>-<arch>/colibri_native.node`) plus a `node` conditional export that prefers it over the WASM build 2.0.4 shipped exclusively. Electron's main process matches that `node` condition, and the addon segfaults the process while verifying an `eth_call` proof — i.e. every ENS content-hash lookup, so typing an `.eth` name closed the browser (found by the `e2e-ant` job's `test-e2e/live/eth-sites.spec.js` during the 0.8.5-rc.4 dependency review, [#267](https://github.com/solardev-xyz/freedom-browser/pull/267)). The same JS is clean on stock `node`, so it is not our usage. `src/main/ens/colibri-runtime.js` sets upstream's `C4_DISABLE_NATIVE=1` before the package is required, which restores the pre-2.0.5 runtime *choice* — the WASM verifier. It does **not** restore the last known-good verifier bytes: `c4w.wasm` itself changed across the bump (2.0.4 sha256 `32eb265c…`, 1118419 bytes; 2.0.6 `7bd999c2…`, 1130756 bytes), so proof behaviour still has to be re-validated on every bump rather than assumed unchanged. `package.json` keeps an exact pin (no `^`) because the workaround depends on that opt-out continuing to exist. `src/main/ens/colibri-runtime.test.js` fails if the opt-out is dropped, if anything requires the package directly, or if a bump renames the upstream escape hatch. Observed as of 2026-09-08 against 2.0.5/2.0.6 on Electron 43.0.0 and 43.6.0; before removing the workaround, re-run the native path on the current release (`C4_DISABLE_NATIVE` unset) through `npm run test:e2e:live -- test-e2e/live/eth-sites.spec.js`. No upstream issue was filed: [#292](https://github.com/solardev-xyz/freedom-browser/pull/292) §6 carries a ready-to-file draft that was left as a maintainer decision, so check `corpus-core/c4`'s issues and release notes for the crash directly (and file that draft if nothing covers it) rather than expecting a linked tracking issue.
 
 ### Audit warnings
 
@@ -93,7 +101,7 @@ After updating, run `npm audit` and decide per advisory:
 - **Auto-fixable but `--force` required** (downgrades a top-level dep across a major): do **not** take the auto-fix. Add an `overrides` block in `package.json` pinning just the transitive to a non-vulnerable version. `0.7.1` did exactly this for `uuid` under `@metamask/utils`; the same pattern applies to anything where the auto-fix would regress a direct dependency.
 - **Not exploitable in our usage**: document why in the commit body (`0.7.1`'s commit explains the `uuid.v3/v5/v6` advisory is unreachable from our import graph).
 
-### Bundled binaries (Ant, freedom-ipfs, Radicle)
+### Bundled binaries (Ant, freedom-ipfs, Radicle, Arti)
 
 Ant is the exception to the "resolve latest" rule: `scripts/fetch-ant.js` pins a known-good tag (`PINNED_RELEASE_TAG` in the script) so CI and releases install the exact version that was tested. To bump Ant, change the pin in the script **together with** `PINNED_SHA256SUMS_DIGEST` (the sha256 of the new release's `SHA256SUMS` asset — the in-repo trust root that makes a later swap of the release assets detectable; compute it with `shasum -a 256` on the freshly downloaded file) and let CI validate it; `ANT_RELEASE_TAG` (a tag, or `latest`) overrides for local testing only and skips the digest check. Every bump must also keep the real-binary integration test green (`src/main/identity/__tests__/integration/bee-to-ant-migration.test.js`, run in the `e2e-onboarding-identity` CI job) — it guards the invariant that antd never self-creates `keys/swarm.key`, which the upgrade-path identity migration depends on.
 
@@ -106,16 +114,20 @@ The remaining fetch scripts use their pinned upstream release metadata.
 | Ant (`scripts/fetch-ant.js`)                          | `https://api.github.com/repos/freedom-hq/ant/releases/tags/<PINNED_RELEASE_TAG>` (pinned in the script; `ANT_RELEASE_TAG` overrides) |
 | freedom-ipfs (`scripts/fetch-freedom-ipfs-native.js`) | pinned GitHub release in the fetch script                                                                                            |
 | libradicle (`scripts/fetch-radicle-addon.js`)         | pinned GitHub release in the fetch script                                                                                            |
+| Arti (`scripts/fetch-arti.js`)                        | `ARTI_VERSION` in the script — a crates.io version, built from source (`ARTI_VERSION` overrides for local testing)                   |
 
 To check whether the bundled binary is stale, compare its self-reported version against the source above:
 
 ```
 ./ant-bin/<arch>/antd --version
+./arti-bin/<platform>-<arch>/arti --version
 ```
 
 For native addons, compare the pinned release in its fetch script against the release you intend to ship, then update the asset name/checksum together.
 
-For each binary/addon that's behind, re-run its fetch script (`npm run ant:download` / `ipfs:download` / `radicle:download`) and verify the result still passes `npm run check-binaries`. Downloaded binary directories are gitignored, so the refresh usually produces no file-tree change. Document versions in the changelog and the matching build commit.
+Arti is the one binary compiled rather than downloaded, so its bump has two extra steps. Read the [Arti changelog](https://gitlab.torproject.org/tpo/core/arti/-/blob/main/CHANGELOG.md) across the whole range for CLI and `arti.toml` changes — `src/main/tor-manager.js` drives the binary by `arti proxy -c <config>` and by config keys, and Arti removes long-deprecated options at major versions (2.0.0 dropped `proxy.socks_port`). Then bump `MIN_RUST_VERSION` in the fetch script alongside `ARTI_VERSION` when the release raises its MSRV: the release runners reuse a preinstalled toolchain when one is present, and this check turns a too-old one into an immediate failure instead of a compile error minutes into the build.
+
+For each binary/addon that's behind, re-run its fetch script (`npm run ant:download` / `ipfs:download` / `radicle:download` / `tor:download`, the last one being the Arti build above) and verify the result still passes `npm run check-binaries`. Downloaded binary directories are gitignored, so the refresh usually produces no file-tree change. Document versions in the changelog and the matching build commit.
 
 ### Commit style
 
@@ -134,9 +146,10 @@ Per `changelog-process.md` § Categorising dependency updates, dependency update
 
 Follow `changelog-process.md` in full. Key points for release branches:
 
-- The baseline for `git log` is the last `package.json` version bump commit.
-- Replace the `## [Unreleased]` heading with `## [<version>] - <YYYY-MM-DD>` using the date from `git show -s --format="%ad" --date=short HEAD`.
+- **Baseline is the previous release's tag** (`git rev-list -n 1 v<prev>`), not "the last version bump commit" — on a release branch the last bump is the `cut <version>-rc.N` commit and would yield an empty range. Sweep merged PRs in that window as well as commits; read PR descriptions, not titles.
+- **Two phases.** During the candidate loop the section stays under `## [Unreleased]`: write and review it early (ideally before `rc.1`, at the latest while `rc.1` is being tested) so testers read the same notes the release will ship. When the bare version is cut, replace the heading with `## [<version>] - <YYYY-MM-DD>` (date from `git show -s --format="%ad" --date=short HEAD`) in the same commit as the version bump or right after it.
 - Do **not** leave an empty `## [Unreleased]` section behind. The first user-facing change after the release re-introduces the heading above the latest version.
+- `CHANGELOG.md` is not read by §4 (verify) or by candidate builds (§5, `rc.N` tags), so those run in parallel with the review. The **final** tag (§5) and the website update (§7) freeze the changelog state visible to end users and must wait until the reviewed text is on the release branch.
 
 Commit style:
 
@@ -144,9 +157,12 @@ Commit style:
 docs(changelog): add user-facing <version> release notes
 ```
 
-**Review gate (when drafted by an agent).** If the changelog entries were drafted by an agent — or by anyone other than the releaser — **do not create the `docs(changelog): …` commit yet**. Leave the `CHANGELOG.md` edits unstaged (or staged, but uncommitted) on the release branch, present the diff to the releaser, and wait for explicit approval before committing. Iterating in the working tree is cheaper than amending a commit, and avoids the `git commit --amend` ambiguity for agents whose tooling discourages amending without an explicit user request. `CHANGELOG.md` is not read by §4 (verify) or by candidate builds (§5, `rc.N` tags), so those can run in parallel with the review. The **final** tag (§5) and the website update (§7) freeze the changelog state visible to end users and must wait until the commit lands.
+**Review gate (when drafted by an agent).** Agent-drafted changelog text is not committed to the release branch until the releaser has approved it. Two ways to hold that, pick by who is drafting:
 
-If the changelog is already committed when a correction is requested (e.g. the releaser drafted it themselves, or this gate was missed), amend the existing `docs(changelog): …` commit rather than stacking a second changelog commit.
+- _Releaser working in their own checkout with an agent:_ leave the `CHANGELOG.md` edits unstaged, present the diff, create the `docs(changelog): …` commit only after explicit approval. Corrections before approval are edits in the working tree, not amends.
+- _Agent working on its own branch (the alan flow used for 0.8.5):_ the agent opens a PR **against `release/<version>`** (explicit `--base`; the default is `main`) touching only `CHANGELOG.md`, with a per-entry "verified against" list in the description. The PR is the presentation; the releaser's merge is the approval. Corrections land as further commits on the PR branch — do not amend — and the PR description must state which entries changed and any judgement calls left for the releaser (category placement, whether to announce a feature whose PR is still open, link targets). Expect more than one round: the 0.8.5 changelog took an alan review plus two maintainer-directed fix rounds before merge. `alan fix <repo> <pr> "<numbered instructions>"` is the tool for those rounds.
+
+Either way, run the side-by-side comparison in `changelog-process.md` § Review gate against the previous shipped section before presenting, and again after each fix round; the rules there were written from what the 0.8.5 draft got wrong.
 
 ## 4. Verify before tagging
 
@@ -155,6 +171,15 @@ CI covers what `npm test` and `npm run lint` used to cover here: every push to t
 **License check.** `NOTICES`, `LICENSE_AUDIT.md`, and `licenses-audit.json` attribute the bundled Ant binary as MIT OR Apache-2.0, matching the `LICENSE-MIT` / `LICENSE-APACHE` that `https://github.com/freedom-hq/ant` now publishes. Before tagging, confirm the upstream license is unchanged and update those three files if it differs.
 
 **Source-tree spot check.** `npm ci && npm start` once on the release branch and confirm the About/version surface shows the number you just set. This catches a broken tree before you spend a 25-minute CI run on it.
+
+**UI consistency audit**, once per cycle, on the release branch before the first release candidate is tagged. Nothing in CI renders the light theme, so theme and sibling-drift bugs only surface when someone looks: the 0.8.5 audit found 28 of them (#223–#242, #249–#260), including a Settings page that had been dark-only for a month. Run the tour in both themes from the release branch:
+
+```
+NODE_PATH=$PWD/node_modules xvfb-run -a -s "-screen 0 1440x900x24" \
+  node .claude/skills/run-freedom/tour.js both
+```
+
+It writes `<d|l>-<nn>-<surface>.png` for every chrome surface, settings section and internal page into `/tmp/freedom-shots` (override with `SHOTS_DIR`), takes about four minutes per theme, and exits non-zero listing any step that failed — a failed step contaminates the shots after it, so re-run rather than reading past it. Then walk the shots against `ui-consistency.md`: each surface next to its nearest sibling, in both themes, plus that playbook's checklist (heading sizes, button style and verb, input fonts, focus rings, empty states, counters, shortcut label format). File what you find as issues on the milestone; fix on the release branch what is worth holding the release for and let the rest ride to the next cycle. Skipping this step is how a cycle ships with no light-theme coverage at all.
 
 **CI is green** on the release branch head you are about to tag (`gh pr checks` on the branch's PR, or the Actions tab). The release workflow does not gate on CI, so a red branch produces a red release.
 
@@ -195,12 +220,12 @@ Windows arm64 is intentionally not built (never shipped on `freedom.baby`, no My
 
 ## 6. Manual cross-platform smoke testing
 
-CI now launches every artifact it packages (steps 1, 2 and 6 below), but only on a runner and only through those three checks. Smoke testing each artifact on a real instance of its target OS still catches packaging-class bugs that `npm test`, the on-host `npm start` spot check (§4) and the automated legs cannot:
+CI now launches every artifact it packages (steps 1, 2, 3, 5 and 6 below), but only on a runner and only through those checks. The automated legs already block a wrong native-module ABI (the launch leg fails), a missing or wrong-arch bundled binary or addon (`antd`, freedom-ipfs, `libradicle.node`, and Arti where bundled — the node legs fail naming the node), and the `extraResources` / asar-unpack mistakes those imply. Smoke testing each artifact on a real instance of its target OS still catches what a runner cannot:
 
-- Wrong native-module ABI for the target arch (e.g. `better-sqlite3.node` linked for the wrong NODE_MODULE_VERSION, or a x64 binary in an arm64 package)
-- Missing or wrong-arch bundled binary/addon in `extraResources` (`antd.exe`, freedom-ipfs, `libradicle.node`, Arti)
-- `electron-builder` configuration mistakes (asar unpack rules, `extraResources` paths, NSIS installer flags, Gatekeeper / SmartScreen interaction)
-- Platform-specific code paths (file system paths, native menus, IPC permissions, system trust store, default-browser hooks)
+- Gatekeeper and SmartScreen interaction on a real first launch (the runner only asks `spctl`; Windows is unsigned and prompts)
+- Platform-specific code paths the specs do not exercise (native menus, system trust store, default-browser and URL-scheme hooks, file dialogs)
+- Real-network retrieval over the bundled nodes (`bzz://`, `ipfs://`, `rad://`, onion) — CI asserts the nodes start, not that they fetch
+- Upgrade in place from the previous final with a real profile
 
 Test the **candidate** pre-releases in full; re-check the **final** draft in short form (launch + version on each platform), since it is the same tree plus the version and changelog commits.
 
@@ -253,7 +278,7 @@ For each platform, run through:
 5. **Bundled nodes**: confirm Ant, native IPFS, and Radicle start cleanly (Radicle ships on macOS, Linux, and Windows). The nodes manager or the relevant `freedom://` settings page surfaces this — a "node failed to start" red badge or a missing native addon/API port is the failure mode
 6. **Persistence**: change one trivial setting (e.g. theme), close the app fully, reopen, confirm the change stuck
 
-**Every platform runs steps 1, 2 and 6 automatically.** The four `smoke-*` jobs in `.github/workflows/release.yml` drive the run's own artifacts with the `packaged` Playwright project (`npm run test:e2e:packaged` — launch, version, persistence), each on a runner of the target OS and arch, and each twice because every platform ships two things a user can install: macOS the app copied out of the mounted `.dmg` and the app from the `-mac.zip`; Linux (x64 and arm64) `/opt/Freedom/freedom` from the installed `.deb` and the binary inside the extracted AppImage; Windows `%LOCALAPPDATA%\Programs\freedom-browser\Freedom.exe` from the silently installed NSIS package and `Freedom.exe` from the portable zip. `release` depends on all four jobs, so an artifact that cannot launch, reports the wrong version, or loses a setting across a restart never reaches a release page. Each job passes the tag version as `FREEDOM_E2E_EXPECTED_VERSION`, which is exactly the step-2 check; a signed mac run additionally asserts `spctl` accepts the app copied out of the disk image. Steps 3–5 (navigation, headline feature, bundled nodes) and the upgrade-from-previous-version pass are **not** automated on any platform and are still done by hand as described above. To run the automated legs yourself against any packaged build:
+**Every platform runs steps 1, 2, 3, 5 and 6 automatically.** The four `smoke-*` jobs in `.github/workflows/release.yml` drive the run's own artifacts with two Playwright projects (`npm run test:e2e:packaged` runs both), each on a runner of the target OS and arch, and each twice because every platform ships two things a user can install: macOS the app copied out of the mounted `.dmg` and the app from the `-mac.zip`; Linux (x64 and arm64) `/opt/Freedom/freedom` from the installed `.deb` and the binary inside the extracted AppImage; Windows `%LOCALAPPDATA%\Programs\freedom-browser\Freedom.exe` from the silently installed NSIS package and `Freedom.exe` from the portable zip. `packaged` covers steps 1, 2 and 6 (launch, version, persistence) with the app's nodes and network stubbed out; `packaged-live` launches the same artifact without the test harness and covers steps 3 and 5 — a local page and `https://example.com` render with the shield in its default state, and the bundled Ant (including a `/health` call on the port the app publishes), native IPFS and Radicle each reach "running". Tor is asserted the same way wherever the build bundles Arti — the shipped `arti` binary must run (`arti --version`) and the node must reach "running" — and is reported as a skip with its reason where the build bundles none (Windows, and any build made without `npm run tor:download`) or where Arti cannot bootstrap a circuit inside `tor-manager`'s own ~120s budget, which is a property of the runner's network path rather than of the artifact. `release` depends on all four jobs, so an artifact that cannot launch, reports the wrong version, cannot render a page, cannot start its nodes, or loses a setting across a restart never reaches a release page. Each job passes the tag version as `FREEDOM_E2E_EXPECTED_VERSION`, which is exactly the step-2 check; a signed mac run additionally asserts `spctl` accepts the app copied out of the disk image. Step 4 (headline feature), the wallet, and the upgrade-from-previous-version pass are **not** automated on any platform and are still done by hand as described above. To run the automated legs yourself against any packaged build:
 
 ```bash
 FREEDOM_E2E_EXECUTABLE="$PWD/dist/linux-unpacked/freedom" \

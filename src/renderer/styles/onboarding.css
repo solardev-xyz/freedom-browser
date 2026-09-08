@@ -257,11 +257,6 @@
   font-family: inherit;
 }
 
-.onboarding-form .form-input:focus {
-  outline: none;
-  border-color: var(--accent);
-}
-
 .onboarding-form .mnemonic-input {
   font-family: monospace;
   resize: none;
@@ -491,11 +486,6 @@
   font-size: 14px;
   font-family: monospace;
   text-align: center;
-}
-
-.verify-input-group input:focus {
-  outline: none;
-  border-color: var(--accent);
 }
 
 .verify-input-group input.error {

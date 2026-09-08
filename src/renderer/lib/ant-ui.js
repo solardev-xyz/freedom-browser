@@ -1,6 +1,7 @@
 // Bee/Swarm node UI controls
 import { state, buildAntUrl, getDisplayMessage } from './state.js';
 import { pushDebug } from './debug.js';
+import { UNKNOWN, versionText } from './ui-format.js';
 
 // DOM elements (initialized in initAntUi)
 let beeToggleBtn = null;
@@ -29,7 +30,9 @@ export const stopAntInfoPolling = () => {
   if (beePeersCount) beePeersCount.textContent = '0';
   if (beeNetworkPeers) beeNetworkPeers.textContent = '0';
   if (beeVersionText)
-    beeVersionText.textContent = state.antVersionFetched ? state.antVersionValue : '';
+    beeVersionText.textContent = versionText(
+      state.antVersionFetched ? state.antVersionValue : ''
+    );
 };
 
 const fetchConnectedPeers = async () => {
@@ -94,12 +97,12 @@ const fetchAntVersionOnce = async () => {
       const antSemver = rawVersion.includes('/') ? rawVersion.split('/').pop() : rawVersion;
       state.antVersionValue = antSemver ? `Ant v${antSemver}` : '';
       state.antVersionFetched = true;
-      if (beeVersionText) beeVersionText.textContent = state.antVersionValue;
+      if (beeVersionText) beeVersionText.textContent = versionText(state.antVersionValue);
     } else if (beeVersionText) {
-      beeVersionText.textContent = '';
+      beeVersionText.textContent = UNKNOWN;
     }
   } catch {
-    if (beeVersionText) beeVersionText.textContent = '';
+    if (beeVersionText) beeVersionText.textContent = UNKNOWN;
   }
 };
 
@@ -176,7 +179,7 @@ export const updateAntUi = (status, error) => {
 export const resetAntVersion = () => {
   state.antVersionFetched = false;
   state.antVersionValue = '';
-  if (beeVersionText) beeVersionText.textContent = '';
+  if (beeVersionText) beeVersionText.textContent = UNKNOWN;
 };
 
 const setToggleDisabled = (disabled) => {

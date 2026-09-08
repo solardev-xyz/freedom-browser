@@ -11,7 +11,7 @@ import { escapeHtml, truncateAddress, formatRawTokenBalance, timeAgo } from './w
 // rows — the cleaner-looking default while we live with how busy the
 // section feels. Bump back to 5 (or any small N) to re-enable the list.
 const LIMIT = 0;
-const EMPTY_HTML = '<div class="recent-payments-empty">No payments yet.</div>';
+const EMPTY_HTML = '<div class="recent-payments-empty">No payments yet</div>';
 
 // Status values we have CSS classes for (sidebar.css). Anything else
 // falls back to the muted 'no-receipt' style so a new backend status

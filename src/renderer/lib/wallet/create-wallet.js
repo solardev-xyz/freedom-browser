@@ -220,7 +220,7 @@ async function handleCreateWalletSubmit() {
 
   if (createWalletSubmitBtn) {
     createWalletSubmitBtn.disabled = true;
-    createWalletSubmitBtn.textContent = 'Creating...';
+    createWalletSubmitBtn.textContent = 'Creating…';
   }
 
   try {

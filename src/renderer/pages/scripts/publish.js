@@ -319,7 +319,7 @@ function renderHistory(entries) {
   historyClearBtn?.classList.toggle('hidden', entries.length === 0);
 
   if (entries.length === 0) {
-    historyList.innerHTML = '<div class="publish-history-empty">No publishes yet.</div>';
+    historyList.innerHTML = '<div class="publish-history-empty">No publishes yet</div>';
     return;
   }
 

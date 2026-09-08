@@ -1,6 +1,7 @@
 // Radicle node UI controls
 import { state, getDisplayMessage } from './state.js';
 import { pushDebug } from './debug.js';
+import { countText, versionText } from './ui-format.js';
 
 // DOM elements (initialized in initRadicleUi)
 let radicleToggleBtn = null;
@@ -19,30 +20,37 @@ let radicleBinaryAvailable = true;
 export const stopRadicleInfoUpdates = () => {
   radicleInfoPanel?.classList.remove('visible');
   if (radiclePeersCount) radiclePeersCount.textContent = '0';
-  if (radicleReposCount) radicleReposCount.textContent = '--';
-  if (radicleVersionText) radicleVersionText.textContent = state.radicleVersionFetched ? state.radicleVersionValue : '';
+  if (radicleReposCount) radicleReposCount.textContent = '0';
+  if (radicleVersionText)
+    radicleVersionText.textContent = versionText(
+      state.radicleVersionFetched ? state.radicleVersionValue : ''
+    );
 };
 
 const isDisabledForProfile = () => state.registry.radicle?.mode === 'disabled';
 
 const applyRadicleInfo = (info) => {
   if (!radicleInfoPanel?.classList.contains('visible')) return;
-  if (info.success && radiclePeersCount) {
-    radiclePeersCount.textContent = String(info.count);
-  } else if (radiclePeersCount) {
-    radiclePeersCount.textContent = '0';
+  // Counters in this menu share one empty state: '0', never '--' (#227, #252).
+  // The non-numeric Version row shares the menu's other placeholder,
+  // 'Unknown' (#253). Both counter rows guard on Number.isInteger so a partial
+  // payload renders the empty state rather than the literal 'undefined'/'null'.
+  if (radiclePeersCount) {
+    radiclePeersCount.textContent = countText(
+      info.success && Number.isInteger(info.count) ? info.count : null
+    );
   }
   if (radicleReposCount) {
-    radicleReposCount.textContent = Number.isInteger(info.reposCount)
-      ? String(info.reposCount)
-      : '--';
+    radicleReposCount.textContent = countText(
+      Number.isInteger(info.reposCount) ? info.reposCount : null
+    );
   }
   if (typeof info.version === 'string' && info.version) {
     state.radicleVersionValue = `libradicle v${info.version}`;
     state.radicleVersionFetched = true;
   }
   if (radicleVersionText) {
-    radicleVersionText.textContent = state.radicleVersionValue || '--';
+    radicleVersionText.textContent = versionText(state.radicleVersionValue);
   }
 };
 
@@ -62,9 +70,9 @@ const refreshRadicleInfo = async () => {
       applyRadicleInfo(info);
     } catch {
       if (radiclePeersCount) radiclePeersCount.textContent = '0';
-      if (radicleReposCount) radicleReposCount.textContent = '--';
+      if (radicleReposCount) radicleReposCount.textContent = '0';
       if (radicleVersionText) {
-        radicleVersionText.textContent = state.radicleVersionValue || '--';
+        radicleVersionText.textContent = versionText(state.radicleVersionValue);
       }
     }
   }
