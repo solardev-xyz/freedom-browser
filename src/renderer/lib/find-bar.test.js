@@ -482,6 +482,53 @@ describe('find-bar', () => {
     expect(secondWebview.findInPage).not.toHaveBeenCalled();
   });
 
+  test('switching tabs mid-typing leaves no count for a query never searched', async () => {
+    const firstWebview = createFakeWebview();
+    const secondWebview = createFakeWebview();
+    let active = firstWebview;
+    const ctx = await loadFindBarModule({
+      webview: firstWebview,
+      initOptions: { getActiveWebview: () => active },
+    });
+
+    ctx.mod.openFindBar();
+    await flushMicrotasks();
+    await typeQuery(ctx, 'needle');
+    firstWebview.dispatch('found-in-page', {
+      result: { activeMatchOrdinal: 1, matches: 3, finalUpdate: true },
+    });
+    expect(ctx.count.textContent).toBe('1/3');
+
+    // Type a new query over it and switch tabs before the debounce fires: the
+    // queued run is dropped, so 'banana' is never searched anywhere.
+    ctx.input.value = 'banana';
+    ctx.input.dispatch('input');
+    active = secondWebview;
+    ctx.mod.notifyFindBarTabSwitched();
+    jest.advanceTimersByTime(ctx.mod.FIND_DEBOUNCE_MS);
+    await flushMicrotasks();
+    expect(firstWebview.findInPage).toHaveBeenCalledTimes(1);
+    expect(firstWebview.findInPage).toHaveBeenCalledWith('needle');
+    expect(secondWebview.findInPage).not.toHaveBeenCalled();
+    // The 'needle' highlights go with the dropped run — nothing on that tab
+    // still describes them.
+    expect(firstWebview.stopFindInPage).toHaveBeenCalledWith('clearSelection');
+
+    // Back on that tab: the typed query, and no count claiming to be its
+    // result.
+    active = firstWebview;
+    ctx.mod.notifyFindBarTabSwitched();
+    expect(ctx.mod.isFindBarOpen()).toBe(true);
+    expect(ctx.input.value).toBe('banana');
+    expect(ctx.count.textContent).toBe('');
+    expect(ctx.prevBtn.disabled).toBe(true);
+    expect(ctx.nextBtn.disabled).toBe(true);
+
+    // Enter searches what the bar shows, from scratch.
+    ctx.input.dispatch('keydown', { key: 'Enter', shiftKey: false, preventDefault: jest.fn() });
+    expect(firstWebview.findInPage).toHaveBeenLastCalledWith('banana');
+  });
+
   test('a completed debounce still searches after a later close/reopen cycle', async () => {
     const ctx = await loadFindBarModule();
     ctx.mod.openFindBar();

@@ -383,6 +383,67 @@ test('two tabs keep their own query, count and highlights', async ({
   await expect(counter).toHaveText('1/2');
 });
 
+// Find-as-you-type is debounced, so a tab switch can land between the last
+// keystroke and the search it scheduled. The queued run is dropped (it would
+// otherwise search the tab being switched *to*), which leaves that tab with a
+// query it never searched — its old count and its old highlights must not be
+// left standing under it.
+test('switching tabs mid-typing leaves no count for a query that was never searched', async ({
+  window,
+  electronApp,
+  harness,
+}) => {
+  const firstTab = window.locator('[data-test="tab"][data-tab-id="1"]');
+  const bar = window.locator('[data-test="find-bar"]');
+  const input = window.locator('[data-test="find-bar-input"]');
+  const counter = window.locator('[data-test="find-bar-count"]');
+
+  await loadFixturePage(window, harness);
+  const clean = await guestShot(electronApp, SAMPLE_BZZ_HASH);
+
+  await openFindBar(window);
+  await input.fill('needle');
+  await expect(counter).toHaveText('1/3');
+  await expect
+    .poll(async () => Buffer.compare(await guestShot(electronApp, SAMPLE_BZZ_HASH), clean), {
+      message: 'Waiting for the match highlights to be painted',
+    })
+    .not.toBe(0);
+
+  // A second tab to switch to, then back to the searched one.
+  await window.locator('[data-test="new-tab-btn"]').click();
+  await expect(window.locator('[data-test="tab"][data-tab-id="2"]')).toHaveClass(/active/);
+  await firstTab.click();
+  await expect(counter).toHaveText('1/3');
+
+  // Type over the query and switch tabs inside the debounce window. Both
+  // happen in one renderer task so the 200 ms timer provably cannot fire
+  // between them — the race the user hits by typing and hitting Ctrl+Tab.
+  await window.evaluate(() => {
+    const findInput = document.querySelector('[data-test="find-bar-input"]');
+    findInput.value = 'banana';
+    findInput.dispatchEvent(new Event('input', { bubbles: true }));
+    document.querySelector('[data-test="tab"][data-tab-id="2"]').click();
+  });
+  await expect(bar).toBeHidden();
+
+  // Back on the searched tab: the query the user typed, and no count or
+  // highlights claiming to be its result.
+  await firstTab.click();
+  await expect(bar).toBeVisible();
+  await expect(input).toHaveValue('banana');
+  await expect(counter).toHaveText('');
+  await expect
+    .poll(async () => Buffer.compare(await guestShot(electronApp, SAMPLE_BZZ_HASH), clean), {
+      message: 'Waiting for the stale needle highlights to be cleared',
+    })
+    .toBe(0);
+
+  // The bar is live, not wedged: Enter searches what it shows.
+  await input.press('Enter');
+  await expect(counter).toHaveText('0/0');
+});
+
 // A main-frame navigation that starts and never commits (here: a link served
 // as an attachment, so it downloads) leaves the user on the same page.
 // Chrome ends find sessions at commit, so nothing about the live session

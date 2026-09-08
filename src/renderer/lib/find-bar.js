@@ -116,6 +116,12 @@ const activeSession = () => getSession(activeWebview());
 
 let debounceTimer = null;
 
+// The session a queued find-as-you-type run belongs to (null when nothing is
+// queued). Only the foreground tab can own the timer, but "foreground" moves:
+// by the time a tab switch cancels the run, the tab it was typed into is a
+// background one, and this is what still points at it.
+let debounceSession = null;
+
 // Monotonic id for selection-prefill requests. The selection read is
 // asynchronous, so by the time it resolves the world may have moved on;
 // only the latest request is allowed to apply its result.
@@ -177,10 +183,17 @@ const handleFoundInPage = (session) => (event) => {
 // against whatever webview is active *then*, resurrecting a session the
 // user already dismissed (highlights + found-in-page listener with no
 // visible bar) or searching the tab they just switched to.
+//
+// Returns the session the dropped run was typed into, so a caller that does
+// not itself submit or end that session can settle it (see
+// dropUnsearchedResults); null when nothing was queued.
 const cancelPendingFind = () => {
-  if (!debounceTimer) return;
+  if (!debounceTimer) return null;
   clearTimeout(debounceTimer);
   debounceTimer = null;
+  const session = debounceSession;
+  debounceSession = null;
+  return session;
 };
 
 // Invalidate any in-flight selection prefill. The selection read is async
@@ -226,6 +239,24 @@ const stopSession = (session, { clearHighlights = true } = {}) => {
     session.listener = null;
   }
   if (clearHighlights) clearFindHighlights(webview);
+};
+
+// Settle a tab whose queued find-as-you-type run was dropped before it ran.
+// Its bar now shows the newly typed query while its count and its painted
+// highlights still describe the previous one (`submitted`), and nothing on
+// that tab will reconcile the two until the user acts again — so switching
+// back would show, say, "banana" over a "1/3" count with the "needle"
+// matches still painted, a result for text that was never searched. End the
+// dead session instead: the query stays in the bar, the count blanks and
+// prev/next disable, exactly the state a tab that has typed but not yet
+// searched is in, and Enter starts the real search.
+const dropUnsearchedResults = (session) => {
+  if (!session?.webview) return;
+  if (session.query === session.submitted) return;
+  stopSession(session);
+  if (session === activeSession()) {
+    paintResult(null);
+  }
 };
 
 // Stop a tab's live search because its page has been replaced, keeping the
@@ -381,8 +412,11 @@ export const closeFindBar = () => {
 // so switching back shows exactly what the user left there, as Chrome does.
 export const notifyFindBarTabSwitched = () => {
   // The pending find-as-you-type keystrokes belong to the tab the user just
-  // left; running them now would search the incoming tab instead.
-  cancelPendingFind();
+  // left; running them now would search the incoming tab instead. Dropping
+  // the run is not enough on its own: it leaves that tab holding a count and
+  // highlights for the query it was last searched for, under the newer one
+  // the user typed over it, so its now-stale session goes with it.
+  dropUnsearchedResults(cancelPendingFind());
   cancelPendingPrefill();
   renderActiveSession();
 };
@@ -481,8 +515,10 @@ export const initFindBar = ({ getActiveWebview: getWebview } = {}) => {
     const typingSession = getSession(activeWebview(), { create: true });
     typingSession.query = findInput.value;
     if (debounceTimer) clearTimeout(debounceTimer);
+    debounceSession = typingSession;
     debounceTimer = setTimeout(() => {
       debounceTimer = null;
+      debounceSession = null;
       startFind(findInput.value);
     }, FIND_DEBOUNCE_MS);
   });
