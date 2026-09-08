@@ -1129,7 +1129,7 @@
             <div id="custom-search-provider-list"></div>
             <div class="rpc-block" style="border-top: none">
               <button type="button" class="btn" id="add-search-provider">
-                + Add a search engine
+                Add search engine
               </button>
             </div>
             <div class="rpc-block search-provider-form" id="search-provider-form" hidden>
@@ -1187,7 +1187,7 @@
           <div class="card" style="margin-top: 12px">
             <div class="rpc-block" style="border-top: none">
               <button type="button" class="btn" id="manage-profiles-link">
-                Manage all profiles →
+                Manage profiles
               </button>
             </div>
           </div>
@@ -2521,7 +2521,7 @@
 
         swarmModeHelp.textContent =
           'Ultra-light — read-only. Set up publishing to switch to light mode.';
-        showAction('Set up publishing →', () => {
+        showAction('Set up publishing', () => {
           freedomAPI.openPublishSetup().catch(() => {});
         });
       };
@@ -2977,7 +2977,7 @@
               <span class="net-row-name">${name}</span>
               <span class="net-row-sub">${sub}</span>
             </span>
-            <span class="net-chevron">›</span>
+            <span class="net-chevron" aria-hidden="true">›</span>
           </button>`;
 
         // A standalone action button in its own card (12px top margin).
@@ -3007,7 +3007,7 @@
               chain to manage its RPC and prover endpoints.
             </p>
             <div class="card">${rows}</div>
-            ${cardButton('+ Add a chain', 'add-chain')}`;
+            ${cardButton('Add chain', 'add-chain')}`;
         };
 
         // --- add-chain flow ------------------------------------------
@@ -3322,7 +3322,7 @@
             <div class="card">${accessRows(cid, 'broadcast', broadcastOrder)}</div>
 
             ${section('Your RPCs', 'Endpoints you added — tried first.', mine, 'No custom RPCs yet')}
-            ${cardButton('+ Add a custom RPC', 'add-endpoint')}
+            ${cardButton('Add RPC', 'add-endpoint')}
             ${endpointForm ? endpointFormHtml() : ''}
 
             ${
@@ -3800,7 +3800,7 @@
             label: 'Myotis light client',
             help: 'Local P2P resolution. ENS prefers finalized state; newer ENS records and WNS/GNS use a cryptographically verified optimistic beacon head.',
             link: '#nodes',
-            linkLabel: 'Node settings →',
+            linkLabel: 'Node settings',
           },
           {
             id: 'colibri',
@@ -3812,14 +3812,14 @@
             label: 'RPC quorum',
             help: 'Multiple independent RPC endpoints must return byte-identical answers at one anchored block.',
             link: '#chains/1',
-            linkLabel: 'Manage endpoints →',
+            linkLabel: 'Manage endpoints',
           },
           {
             id: 'direct',
             label: 'Direct RPC',
             help: 'Uses one configured endpoint. This is not cryptographic verification and is disabled by default.',
             link: '#chains/1',
-            linkLabel: 'Configure →',
+            linkLabel: 'Configure',
           },
         ];
         const METHOD_IDS = new Set(METHODS.map((method) => method.id));
