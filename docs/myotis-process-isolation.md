@@ -13,9 +13,10 @@ sandbox** or an aggregate CPU/memory limit.
 - Per chain: two native read/broadcast operations, sixteen queued requests,
   and one independent status request. Requests have a ten-second total budget,
   including queue time. Router reads retain their configured/interactive budget;
-  expiration of a dispatched route also stops the unhealthy chain generation.
-- Expiring an unsent queued request removes only that request. Expiring active
-  work makes the child unavailable, rejects pending callers, stops admission,
+  expiration permits configured fallback without stopping the chain. The route
+  slot remains held until the underlying manager request settles.
+- The process manager's own deadlines govern native health. Expiring an unsent
+  queued request removes only that request. Expiring active work makes the child unavailable, rejects pending callers, stops admission,
   and starts shutdown. Native permits remain held until the matching reply or
   verified process exit. Status has a three-second deadline and freshness limit;
   main's synchronous queries read only a small scalar snapshot.
@@ -30,6 +31,10 @@ sandbox** or an aggregate CPU/memory limit.
   Native stop acknowledgements, IPC disconnect and a kill request are not exit.
 - A failed generation has a fifteen-second restart cooldown. Recovery is manual
   through the existing Start control; there is no automatic restart loop.
+  If exit is unconfirmed, Start remains blocked for that browser session and
+  status and the chain control's tooltip report
+  `Myotis exit unconfirmed; restart blocked`. Restarting the browser does not
+  bypass a durable active record; see recovery below.
   Ethereum and Gnosis have separate failure domains and controls.
 - App shutdown disables new work immediately, before closing windows, and awaits
   both chain stop results alongside other nodes. Read fallbacks still obey the
@@ -117,8 +122,11 @@ must supply helpers built on the corresponding host; the build never downloads
 a compiler. Existing fetch scripts still fetch only the pinned addon.
 `extraResources` includes the helper. macOS explicitly signs only the added
 `Contents/Resources/myotis-node/myotis-supervisor` through `mac.binaries`;
-existing app/helper entitlements are unchanged. RunAsNode fuse compatibility,
-ASAR script loading, native addon ABI/loading, helper signing, and notarized
+`scripts/sign-myotis-helper.js` overrides only that exact file's signing options
+with hardened runtime and the empty `config/entitlements.myotis-supervisor.plist`.
+Existing app/Electron-helper entitlements and other signing options are preserved.
+RunAsNode fuse compatibility, ASAR script loading, native addon ABI/loading,
+helper signing, and notarized
 package behavior require qualification of the actual shipped artifact.
 
 ## Source basis and remaining qualification

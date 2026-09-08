@@ -85,6 +85,9 @@ describe('myotis-manager', () => {
     clients[0].stop.mockImplementation(async () => { clients[0].accepting = false; return false; });
     await expect(mod.stopMyotis()).resolves.toBe(false);
     await expect(mod.startMyotis()).resolves.toBe(false);
+    expect(mod.publicStatus()).toMatchObject({
+      state: 'error', error: 'Myotis exit unconfirmed; restart blocked', running: false,
+    });
     expect(clients).toHaveLength(1);
     const shutdown = mod.stopAllMyotis({ shutdown: true });
     await expect(mod.startMyotis({ chainId: 100 })).resolves.toBe(false);

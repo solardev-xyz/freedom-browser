@@ -305,10 +305,6 @@ function isReady(chainId = 1) {
   return updateReadiness(instance, getStatus(chainId));
 }
 
-function markUnhealthy(chainId = 1) {
-  instanceFor(chainId).client?.fail('Myotis read deadline exceeded');
-}
-
 function getAvailabilityEpoch(chainId = 1) {
   return instanceFor(chainId).availabilityEpoch;
 }
@@ -472,7 +468,6 @@ module.exports = {
   onReadyTransition,
   onAvailabilityTransition,
   getAvailabilityEpoch,
-  markUnhealthy,
   resolveEnsRecord,
   resolveContenthash,
   resolveAddress,

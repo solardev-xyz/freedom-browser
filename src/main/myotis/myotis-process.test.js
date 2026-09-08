@@ -77,6 +77,8 @@ describe('MyotisProcess', () => {
     const pending = Array.from({ length: 4 }, () => processClient.request('call', [], 100).catch((e) => e));
     const sent = child.send.mock.calls.filter(([m]) => m.type === 'request').map(([m]) => m);
     jest.advanceTimersByTime(100);
+    expect(processClient.accepting).toBe(false);
+    expect(callbacks.onUnavailable).toHaveBeenCalledTimes(1);
     expect(processClient.active.size).toBe(2);
     expect(processClient.queue).toHaveLength(0);
     await expect(processClient.request('call')).rejects.toThrow('unavailable');

@@ -544,17 +544,15 @@ async function requestViaMyotis(
     const afterStatus = myotis.getStatus?.(chainId) || {};
     return { result, trust: myotisTrust(beforeStatus, afterStatus) };
   });
-  // The manager rejects stopped callers but retains native admission until
-  // completion or verified child exit. Later sources can answer immediately.
+  // A routing deadline limits caller patience, not native health. Keep this
+  // slot until the manager settles; its own deadline retains native admission
+  // until completion or verified child exit. Fallback can answer meanwhile.
   requestPromise.then(() => releaseMyotisSlot(chainId), () => releaseMyotisSlot(chainId));
   return withSourceDeadline(
     requestPromise,
     'Myotis',
     Math.max(1, budgetMs - (Date.now() - startedAt))
-  ).catch((error) => {
-    if (error.failureKind === 'timeout') myotis.markUnhealthy?.(chainId);
-    throw error;
-  });
+  );
 }
 
 async function requestColibri(chainId, method, params, routeKey = null, deadlineMs = null) {

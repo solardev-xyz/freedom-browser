@@ -95,6 +95,7 @@
       "identity": "Solar Dev Ltd (46XPHRBLH5)",
       "hardenedRuntime": true,
       "binaries": ["Contents/Resources/myotis-node/myotis-supervisor"],
+      "sign": "./scripts/sign-myotis-helper.js",
       "gatekeeperAssess": false,
       "extendInfo": {
         "LSMultipleInstancesProhibited": false
