@@ -99,9 +99,70 @@ function validatedAgentExitRoot() {
   return root;
 }
 
+function writeAgentExitEvidence(target, value) {
+  try {
+    const captured = { ...value };
+    if (value.receipt) {
+      captured.receipt = { ...value.receipt };
+      captured.outputCapture = {};
+      for (const field of ['stdout', 'stderr']) {
+        const bytes = Buffer.from(value.receipt[field] || '');
+        if (bytes.length > 4096) {
+          captured.receipt[field] = bytes.subarray(0, 4096).toString('utf8');
+          captured.outputCapture[`${field}BytesOmitted`] = bytes.length - 4096;
+        }
+      }
+    }
+    const bytes = Buffer.from(JSON.stringify({ recordedAt: Date.now(), ...captured }));
+    if (bytes.length > 256 * 1024) throw new Error('Agent exit evidence exceeded its byte limit');
+    fs.writeFileSync(target, bytes, { mode: 0o600, flag: 'wx' });
+  } catch {
+    // An observation failure must not change native execution or its result.
+    // The external driver requires these files and reports missing evidence.
+    log.warn('[TestHarness] Could not persist Agent exit evidence');
+  }
+}
+
+function observeAgentExitExecution(executor, command, receiptPath, supervisorPath) {
+  const originalExecute = executor.execute;
+  const originalSpawn = executor.spawnProcess;
+  const restore = () => {
+    if (executor.execute === execute) executor.execute = originalExecute;
+    if (executor.spawnProcess === spawn) executor.spawnProcess = originalSpawn;
+  };
+  function spawn(executable, args, options) {
+    const child = originalSpawn.call(this, executable, args, options);
+    if (args.includes(command) && args[0] === '--supervise') {
+      if (executor.spawnProcess === spawn) executor.spawnProcess = originalSpawn;
+      writeAgentExitEvidence(supervisorPath, { pid: child.pid ?? null, executable });
+    }
+    return child;
+  }
+  async function execute(policy, request) {
+    const target = request.command === '/bin/sh' && request.args?.[2] === 'freedom-workspace' &&
+      request.args?.[4] === command;
+    if (!target) return originalExecute.call(this, policy, request);
+    try {
+      const receipt = await originalExecute.call(this, policy, request);
+      writeAgentExitEvidence(receiptPath, { receipt });
+      return receipt;
+    } finally {
+      restore();
+    }
+  }
+  executor.execute = execute;
+  if (typeof originalSpawn === 'function') executor.spawnProcess = spawn;
+  return restore;
+}
+
 async function prepareAgentExitScenario(agentRuntime, request) {
+  if (!isTestMode()) throw new Error('Agent exit fixture requires test mode');
   const mode = request?.mode;
   const token = request?.token;
+  const expirySeconds = request?.expirySeconds ?? 15;
+  if (!Number.isInteger(expirySeconds) || expirySeconds < 1 || expirySeconds > 15) {
+    throw new Error('Agent exit fixture expiry must be an integer from 1 to 15 seconds');
+  }
   const failureInjection = request?.failureInjection ?? null;
   if (!APP_EXIT_MODES.has(mode)) throw new Error('Unknown Agent application-exit mode');
   if (!APP_EXIT_TOKEN_PATTERN.test(token || '')) {
@@ -121,17 +182,30 @@ async function prepareAgentExitScenario(agentRuntime, request) {
     throw new Error('Agent application-exit fixture requires the app-owned Agent runtime');
   }
   const root = validatedAgentExitRoot();
+  const controller = agentRuntime.workspaceController;
   const base = {
     mode,
     token,
-    appOwnedService: true,
-    appOwnedWorkspaceController: true,
-    appOwnedProcessManager: true,
+    appOwnedService: agentRuntime.service.workspaceController === controller,
+    appOwnedWorkspaceController: agentRuntime.workspacePreviewController.workspaceController === controller,
+    appOwnedProcessManager: Boolean(controller.processManager) &&
+      agentRuntime.service.workspaceController?.processManager === controller.processManager,
   };
   if (mode === 'idle') return base;
 
+  const receiptPath = path.join(root, `${token}-executor.json`);
+  const terminalPath = path.join(root, `${token}-terminal.json`);
+  const supervisorPath = path.join(root, `${token}-supervisor.json`);
+  const intentPath = path.join(root, `${token}-intent.json`);
+  if (mode === 'running') {
+    if ([intentPath, receiptPath, terminalPath, supervisorPath].some((file) => fs.existsSync(file))) {
+      throw new Error('Agent exit fixture token has already been used');
+    }
+    // Reserve the token before workspace preparation or any command launch.
+    fs.writeFileSync(intentPath, JSON.stringify({ mode, token, expirySeconds, recordedAt: Date.now() }),
+      { mode: 0o600, flag: 'wx' });
+  }
   const conversationId = `app_exit_${crypto.randomBytes(10).toString('hex')}`;
-  const controller = agentRuntime.workspaceController;
   await controller.enable(conversationId);
   const workspace = controller.getWorkspace(conversationId);
   const workspaceRoot = controller.leases.get(workspace.workspaceId).workspaceRoot;
@@ -142,8 +216,17 @@ async function prepareAgentExitScenario(agentRuntime, request) {
     const pidPath = path.join(workspaceRoot, 'running.pid');
     const readyPath = path.join(workspaceRoot, 'running.ready');
     const heartbeatPath = path.join(workspaceRoot, 'running-heartbeat');
+    const expiryPath = path.join(workspaceRoot, 'running-expiry.json');
     const source = [
-      'import http.server, pathlib, sys, threading, time',
+      'import signal, time',
+      'signal.signal(signal.SIGALRM, signal.SIG_DFL)',
+      'alarm_before = time.monotonic_ns()',
+      'wall_before = time.time_ns()',
+      `signal.alarm(${expirySeconds})`,
+      'wall_after = time.time_ns()',
+      'alarm_after = time.monotonic_ns()',
+      'import http.server, json, os, pathlib, sys, threading, time',
+      `pathlib.Path('running-expiry.json').write_text(json.dumps({'pid': os.getpid(), 'parentPid': os.getppid(), 'alarmArmedBeforeMonotonicNs': alarm_before, 'alarmArmedAfterMonotonicNs': alarm_after, 'alarmArmedBeforeWallNs': wall_before, 'alarmArmedAfterWallNs': wall_after, 'expirySeconds': ${expirySeconds}}))`,
       'port = int(sys.argv[1])',
       "pathlib.Path('running.pid').write_text(str(__import__('os').getpid()))",
       "heartbeat = pathlib.Path('running-heartbeat')",
@@ -166,18 +249,28 @@ async function prepareAgentExitScenario(agentRuntime, request) {
       'server.serve_forever()',
     ].join('\n');
     await fs.promises.writeFile(path.join(workspaceRoot, scriptName), source);
-    const command = `python3 ${scriptName} ${port} ${token}`;
+    const command = `exec python3 ${scriptName} ${port} ${token}`;
     const permission = await controller.prepareCommandPermissions(
       conversationId,
       { network: 'full' },
       { command, workingDirectory: '.' }
     );
     controller.grantCommandPermissions(conversationId, permission.prepared, 'once');
-    const started = await controller.startProcess(conversationId, {
-      command,
-      previewPort: port,
-      yieldMs: 500,
-    });
+    const restoreObserver = observeAgentExitExecution(controller.executor, command, receiptPath, supervisorPath);
+    let started;
+    try {
+      started = await controller.startProcess(conversationId, {
+        command,
+        previewPort: port,
+        yieldMs: 500,
+        onTerminal: (terminal) => writeAgentExitEvidence(terminalPath, { terminal }),
+      });
+    } catch (error) {
+      restoreObserver();
+      throw error;
+    }
+    // Yielding is not terminal: preserve observation until the actual execution
+    // settles, including when readiness fails and the driver initiates cleanup.
     await waitForPath(readyPath);
     const preview = agentRuntime.workspacePreviewController.createProcessPreview(
       conversationId,
@@ -194,6 +287,14 @@ async function prepareAgentExitScenario(agentRuntime, request) {
       runningProjection: started.workspace,
       ownedProcesses: [{ role: 'managed-server', pid: Number(fs.readFileSync(pidPath, 'utf8')) }],
       heartbeatPath,
+      expirySeconds,
+      expiryPath,
+      receiptPath,
+      // This mapped observer is suppressed after a controller shutdown deadline.
+      // Its absence must be judged alongside raw receipt and shutdown-log evidence.
+      terminalPath,
+      supervisorPath,
+      intentPath,
       preview: {
         port,
         url: preview.url,
@@ -940,6 +1041,7 @@ module.exports = {
   createAgentWalletTestOptions,
   isTestMode,
   installTestHarness,
+  prepareAgentExitScenario,
   // Exposed so private-window sessions (created after startup) get the same
   // fixture-driven protocol stubs as the default session in test mode. The
   // fixture maps are shared module state, so per-session registration is all
