@@ -111,8 +111,10 @@
 }
 
 /* Covers both the main hamburger rows and the flyout rows (shared .menu-item).
-   The default hover is a white overlay, invisible on the light menu bg. */
-[data-theme='light'] .menu-item:hover:not(:disabled) {
+   The default hover is a white overlay, invisible on the light menu bg. The
+   open-flyout row shares the hover treatment, as it does in the dark theme. */
+[data-theme='light'] .menu-item:hover:not(:disabled),
+[data-theme='light'] .menu-item-has-flyout.flyout-open > .menu-item {
   background: rgba(0, 0, 0, 0.1);
 }
 

@@ -1,6 +1,8 @@
 const fs = require('fs');
 const path = require('path');
 
+const { SUBMENU_CLOSE_DELAY_MS } = require('./submenu-hover.js');
+
 const originalWindow = global.window;
 const originalDocument = global.document;
 
@@ -59,6 +61,15 @@ const loadMenusModule = async ({
   const beeMenuButton = createElement();
   const beeMenuDropdown = createElement();
   const webviewElement = createElement();
+  // Profiles flyout (#301). The wrapper holds BOTH the trigger row and the
+  // flyout, so `contains` is what tells a sibling row apart from the submenu.
+  const profileMenuBtn = createElement();
+  const profileFlyout = createElement();
+  profileFlyout.hidden = true;
+  const profileMenuWrap = createElement();
+  profileMenuWrap.contains = jest.fn(
+    (node) => node === profileMenuWrap || node === profileMenuBtn || node === profileFlyout
+  );
   const beePeersCount = createElement();
   const beeNetworkPeers = createElement();
   const beeVersionText = createElement();
@@ -142,6 +153,9 @@ const loadMenusModule = async ({
         'check-updates-btn': checkUpdatesBtn,
         'bee-menu-button': beeMenuButton,
         'bee-menu-dropdown': beeMenuDropdown,
+        'profile-menu-wrap': profileMenuWrap,
+        'profile-menu-btn': profileMenuBtn,
+        'profile-menu': profileFlyout,
         'bzz-webview': webviewElement,
         'bee-peers-count': beePeersCount,
         'bee-network-peers': beeNetworkPeers,
@@ -198,6 +212,9 @@ const loadMenusModule = async ({
       beeMenuButton,
       beeMenuDropdown,
       webviewElement,
+      profileMenuWrap,
+      profileMenuBtn,
+      profileFlyout,
       beePeersCount,
       beeNetworkPeers,
       beeVersionText,
@@ -600,6 +617,92 @@ describe('menus', () => {
     menus.setAntMenuOpen(false);
 
     expect(elements.beeVersionText.textContent).toBe('Unknown');
+  });
+
+  // #301: Chrome's submenu model — only one submenu open at a time, so a
+  // hover/focus on any other hamburger row dismisses the Profiles flyout. The
+  // pointer path keeps a short intent delay because the flyout is anchored to
+  // the LEFT of the menu: travelling into it from the Profiles row crosses the
+  // rows below first, and cutting that move off is the bug this delay avoids.
+  describe('profiles flyout dismissal (#301)', () => {
+    const openFlyout = async () => {
+      const loaded = await loadMenusModule();
+      loaded.menus.initMenus();
+      loaded.menus.setMenuOpen(true);
+      loaded.elements.profileFlyout.hidden = false;
+      return loaded;
+    };
+
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    test('hovering a sibling row closes it, after the intent delay', async () => {
+      const { elements } = await openFlyout();
+
+      elements.menuDropdown.handlers.mouseover({ target: elements.newTabMenuBtn });
+      jest.advanceTimersByTime(SUBMENU_CLOSE_DELAY_MS - 1);
+      expect(elements.profileFlyout.hidden).toBe(false);
+
+      jest.advanceTimersByTime(1);
+      expect(elements.profileFlyout.hidden).toBe(true);
+      expect(elements.profileMenuBtn.setAttribute).toHaveBeenCalledWith('aria-expanded', 'false');
+      expect(elements.profileMenuWrap.classList.remove).toHaveBeenCalledWith('flyout-open');
+    });
+
+    test('a diagonal move into the flyout during the delay keeps it open', async () => {
+      const { elements } = await openFlyout();
+
+      // Cross the row below the Profiles row on the way to the flyout …
+      elements.menuDropdown.handlers.mouseover({ target: elements.newTabMenuBtn });
+      jest.advanceTimersByTime(SUBMENU_CLOSE_DELAY_MS - 20);
+      // … and land in the flyout before the close fires.
+      elements.menuDropdown.handlers.mouseover({ target: elements.profileFlyout });
+      jest.advanceTimersByTime(5000);
+
+      expect(elements.profileFlyout.hidden).toBe(false);
+    });
+
+    test('hovering the Profiles row itself never closes it', async () => {
+      const { elements } = await openFlyout();
+
+      elements.menuDropdown.handlers.mouseover({ target: elements.profileMenuBtn });
+      jest.advanceTimersByTime(5000);
+
+      expect(elements.profileFlyout.hidden).toBe(false);
+    });
+
+    test('focus on a sibling row closes it at once; focus inside it does not', async () => {
+      const { elements } = await openFlyout();
+
+      // Keyboard moves are deliberate: no intent delay, or the flyout would
+      // sit over the row that just took focus.
+      elements.menuDropdown.handlers.focusin({ target: elements.newTabMenuBtn });
+      expect(elements.profileFlyout.hidden).toBe(true);
+
+      // Tabbing through the flyout's own rows leaves it open.
+      elements.profileFlyout.hidden = false;
+      elements.menuDropdown.handlers.focusin({ target: elements.profileFlyout });
+      expect(elements.profileFlyout.hidden).toBe(false);
+    });
+
+    test('a pending close is dropped when the hamburger itself closes', async () => {
+      const { menus, elements } = await openFlyout();
+
+      elements.menuDropdown.handlers.mouseover({ target: elements.newTabMenuBtn });
+      menus.setMenuOpen(false);
+      expect(elements.profileFlyout.hidden).toBe(true);
+
+      // The stale timer must not fire against a flyout the user has since
+      // reopened (reopening happens on hover, well inside the delay window).
+      elements.profileFlyout.hidden = false;
+      jest.advanceTimersByTime(5000);
+      expect(elements.profileFlyout.hidden).toBe(false);
+    });
   });
 
   test('closes menus on outside clicks, webview interaction, and window blur', async () => {

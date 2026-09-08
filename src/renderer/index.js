@@ -17,6 +17,7 @@ import {
   setOnNewTab,
   setOnMenuOpening,
   closeMenus,
+  hideProfileFlyout,
 } from './lib/menus.js';
 import { initSettingsEffects, initTheme } from './lib/settings-ui.js';
 import {
@@ -365,10 +366,20 @@ async function initProfileIndicator() {
   let activeProfile = null;
   let creatingProfile = false;
 
+  // Hiding routes through menus.js so every close path — this one, the
+  // hamburger closing, and a sibling row being hovered/focused (#301) — leaves
+  // exactly the same state behind (hidden, aria-expanded, row highlight).
   const setMenuOpen = (open) => {
     if (!menu) return;
-    menu.hidden = !open;
-    indicator.setAttribute('aria-expanded', String(open));
+    if (!open) {
+      hideProfileFlyout();
+      return;
+    }
+    menu.hidden = false;
+    // Keep the Profiles row highlighted while its flyout is up, the way a
+    // hovered row is — otherwise nothing says which row owns the flyout.
+    menuWrap?.classList.add('flyout-open');
+    indicator.setAttribute('aria-expanded', 'true');
   };
 
   const setMenuStatus = (message, kind = '') => {
@@ -512,11 +523,13 @@ async function initProfileIndicator() {
     }
   };
 
-  // macOS-style submenu: open after a short hover delay. It deliberately does
-  // NOT close on mouse-out — once open it stays until a click lands outside it
-  // (handled below). The flyout is a child of #menu-dropdown, so the hamburger's
-  // outside-click handler treats flyout clicks as inside — the hamburger stays
-  // open with it. Timing lives in the shared attachSubmenuHover helper.
+  // macOS/Chrome-style submenu: open after a short hover delay. Leaving the
+  // wrapper for empty menu chrome does NOT close it — it stays until something
+  // dismisses it: a hover/focus on another hamburger row (menus.js, #301), a
+  // click outside (handled below), or the hamburger closing. The flyout is a
+  // child of #menu-dropdown, so the hamburger's outside-click handler treats
+  // flyout clicks as inside — the hamburger stays open with it. Timing lives in
+  // the shared attachSubmenuHover helper.
   const openFlyout = () => {
     // Don't open while the hamburger itself is closed (the dropdown — and thus
     // this wrapper — isn't rendered), e.g. if a hover open-timer fires just
