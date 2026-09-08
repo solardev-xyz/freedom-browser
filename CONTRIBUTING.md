@@ -44,7 +44,10 @@ Pull requests should:
 - Explain the problem and the chosen approach.
 - Describe user-visible impact and risk.
 - List the checks actually run.
-- Include screenshots or recordings for visible UI changes.
+- Include screenshots or recordings for visible UI changes. For anything under
+  `src/renderer/`, before/after screenshots in **both** themes are required —
+  see the pull request template and
+  [docs/agent-playbooks/ui-consistency.md](docs/agent-playbooks/ui-consistency.md).
 - Remain available for review questions and follow-up changes.
 
 Draft pull requests are welcome for early feedback. Maintainers decide whether and when a contribution fits the product roadmap.

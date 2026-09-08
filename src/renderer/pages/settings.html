@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:;"
+      content="default-src 'none'; script-src 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src data:;"
     />
     <title>Settings</title>
     <link
@@ -12,28 +12,8 @@
       type="image/svg+xml"
       href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjOGI5NDllIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+PGNpcmNsZSBjeD0iMTIiIGN5PSIxMiIgcj0iMyIvPjxwYXRoIGQ9Ik0xOS40IDE1YTEuNjUgMS42NSAwIDAgMCAuMzMgMS44MmwuMDYuMDZhMiAyIDAgMSAxLTIuODMgMi44M2wtLjA2LS4wNmExLjY1IDEuNjUgMCAwIDAtMS44Mi0uMzMgMS42NSAxLjY1IDAgMCAwLTEgMS41MVYyMWEyIDIgMCAwIDEtNCAwdi0uMDlBMS42NSAxLjY1IDAgMCAwIDkgMTkuNGExLjY1IDEuNjUgMCAwIDAtMS44Mi4zM2wtLjA2LjA2YTIgMiAwIDEgMS0yLjgzLTIuODNsLjA2LS4wNmExLjY1IDEuNjUgMCAwIDAgLjMzLTEuODIgMS42NSAxLjY1IDAgMCAwLTEuNTEtMUgzYTIgMiAwIDAgMSAwLTRoLjA5QTEuNjUgMS42NSAwIDAgMCA0LjYgOWExLjY1IDEuNjUgMCAwIDAtLjMzLTEuODJsLS4wNi0uMDZhMiAyIDAgMSAxIDIuODMtMi44M2wuMDYuMDZhMS42NSAxLjY1IDAgMCAwIDEuODIuMzNIOWExLjY1IDEuNjUgMCAwIDAgMS0xLjUxVjNhMiAyIDAgMCAxIDQgMHYuMDlhMS42NSAxLjY1IDAgMCAwIDEgMS41MSAxLjY1IDEuNjUgMCAwIDAgMS44Mi0uMzNsLjA2LS4wNmEyIDIgMCAxIDEgMi44MyAyLjgzbC0uMDYuMDZhMS42NSAxLjY1IDAgMCAwLS4zMyAxLjgyVjlhMS42NSAxLjY1IDAgMCAwIDEuNTEgMUgyMWEyIDIgMCAwIDEgMCA0aC0uMDlhMS42NSAxLjY1IDAgMCAwLTEuNTEgMXoiLz48L3N2Zz4="
     />
+    <link rel="stylesheet" href="styles/theme.css" />
     <style>
-      /* Internal pages follow Settings > Appearance, not the OS colour scheme:
-         the webview preload resolves the setting and stamps `data-theme` on
-         <html> before first paint (#233). Declaring `color-scheme` from the
-         same attribute keeps scrollbars and form controls in step. */
-      :root {
-        color-scheme: dark;
-        --bg: #0d1117;
-        --bg-elev: #161b22;
-        --bg-card: #21262d;
-        --border: #30363d;
-        --border-strong: #484f58;
-        --text: #c9d1d9;
-        --text-muted: #8b949e;
-        --text-subtle: #6e7681;
-        --accent: #58a6ff;
-        --accent-muted: rgba(88, 166, 255, 0.12);
-        --danger: #f85149;
-        --success: #3fb950;
-        --warn: #d29922;
-      }
-
       *,
       *::before,
       *::after {
@@ -52,7 +32,7 @@
           -apple-system,
           BlinkMacSystemFont,
           sans-serif;
-        background: linear-gradient(135deg, #0d1117 0%, #161b22 50%, #21262d 100%);
+        background: var(--page-gradient);
         color: var(--text);
         min-height: 100vh;
       }
@@ -71,7 +51,7 @@
         height: 100vh;
         padding: 40px 20px 40px 32px;
         border-right: 1px solid var(--border);
-        background: rgba(13, 17, 23, 0.6);
+        background: var(--sidebar-translucent);
         backdrop-filter: blur(6px);
         display: flex;
         flex-direction: column;
@@ -220,7 +200,7 @@
 
       .row.sub {
         padding-left: 40px;
-        background: rgba(22, 27, 34, 0.6);
+        background: var(--row-sub-bg);
       }
 
       .row.disabled {
@@ -346,7 +326,7 @@
       .resolver-config {
         padding: 14px 18px 14px 94px;
         border-bottom: 1px solid var(--border);
-        background: rgba(22, 27, 34, 0.6);
+        background: var(--row-sub-bg);
       }
 
       .resolver-config-line {
@@ -433,7 +413,7 @@
         top: 2px;
         width: 16px;
         height: 16px;
-        background: #8b949e;
+        background: var(--text-muted);
         border-radius: 50%;
         transition:
           transform 0.15s,
@@ -447,7 +427,7 @@
 
       .toggle input:checked + .slider::before {
         transform: translateX(16px);
-        background: #ffffff;
+        background: var(--toggle-knob-on);
       }
 
       .toggle input:disabled + .slider {
@@ -459,7 +439,7 @@
       .rpc-block {
         padding: 16px 18px;
         border-top: 1px solid var(--border);
-        background: rgba(22, 27, 34, 0.5);
+        background: var(--rpc-block-bg);
       }
 
       .rpc-block.hidden {
@@ -811,51 +791,6 @@
         display: flex;
         flex-direction: column;
         gap: 8px;
-      }
-
-      /* Light theme. The palette rule is written as `html[data-theme='light']`
-         so it outweighs the `:root` defaults above; everything else sits under
-         a `:where()` wrapper, which holds the scope at zero specificity so each
-         rule weighs exactly what it did as a media query. */
-      html[data-theme='light'] {
-        color-scheme: light;
-        --bg: #ffffff;
-        --bg-elev: #ffffff;
-        --bg-card: #ffffff;
-        --border: #d0d7de;
-        --border-strong: #8c959f;
-        --text: #24292f;
-        --text-muted: #57606a;
-        --text-subtle: #8c959f;
-        --accent: #0969da;
-        --accent-muted: rgba(9, 105, 218, 0.1);
-        --danger: #cf222e;
-        --success: #1a7f37;
-        --warn: #9a6700;
-      }
-
-      :where(html[data-theme='light']) {
-        body {
-          background: linear-gradient(135deg, #ffffff 0%, #f6f8fa 50%, #f0f2f5 100%);
-        }
-
-        .sidebar {
-          background: rgba(255, 255, 255, 0.6);
-        }
-
-        .row.sub,
-        .rpc-block,
-        .resolver-config {
-          background: #f6f8fa;
-        }
-
-        .toggle .slider::before {
-          background: #57606a;
-        }
-
-        .toggle input:checked + .slider::before {
-          background: #ffffff;
-        }
       }
     </style>
   </head>
@@ -1312,9 +1247,8 @@
               <div class="row-body">
                 <p class="row-label">Start Ethereum light client (Myotis)</p>
                 <p class="row-help" id="myotis-launch-help">
-                  Experimental: a fully peer-to-peer Ethereum node — name resolution
-                  verified against the chain itself, no RPC provider involved.
-                  Takes effect on next launch.
+                  Experimental: a fully peer-to-peer Ethereum node — name resolution verified
+                  against the chain itself, no RPC provider involved. Takes effect on next launch.
                 </p>
               </div>
               <div class="row-control">
@@ -1328,8 +1262,8 @@
               <div class="row-body">
                 <p class="row-label">Start Gnosis light client (Myotis)</p>
                 <p class="row-help" id="myotis-gnosis-launch-help">
-                  Starts the independent Gnosis P2P client for verified wallet,
-                  transaction, and dapp reads. Takes effect on next launch.
+                  Starts the independent Gnosis P2P client for verified wallet, transaction, and
+                  dapp reads. Takes effect on next launch.
                 </p>
               </div>
               <div class="row-control">
@@ -1418,8 +1352,8 @@
               <div class="row-body">
                 <p class="row-label">Prefer verified answers</p>
                 <p class="row-help">
-                  Keep an unverified answer as a fallback while later enabled methods try to
-                  produce a verified result.
+                  Keep an unverified answer as a fallback while later enabled methods try to produce
+                  a verified result.
                 </p>
               </div>
               <div class="row-control">
@@ -1436,9 +1370,7 @@
             <div class="row">
               <div class="row-body">
                 <p class="row-label">When only an unverified answer is available</p>
-                <p class="row-help">
-                  Unverified answers always keep the amber shield indicator.
-                </p>
+                <p class="row-help">Unverified answers always keep the amber shield indicator.</p>
               </div>
               <div class="row-control">
                 <select id="unverified-ens-action">
@@ -1601,8 +1533,14 @@
             </div>
             <div class="row" data-tor>
               <div class="row-body">
-                <p class="row-label">Enable Tor (.onion access) <span style="color: var(--text-muted); font-weight: 400">(Beta)</span></p>
-                <p class="row-help">Routes only <code>.onion</code> addresses through the bundled Tor (Arti) client. Clearnet traffic stays direct.</p>
+                <p class="row-label">
+                  Enable Tor (.onion access)
+                  <span style="color: var(--text-muted); font-weight: 400">(Beta)</span>
+                </p>
+                <p class="row-help">
+                  Routes only <code>.onion</code> addresses through the bundled Tor (Arti) client.
+                  Clearnet traffic stays direct.
+                </p>
               </div>
               <div class="row-control">
                 <label class="toggle">
@@ -1692,7 +1630,8 @@
                 ? 'libradicle addon not installed for this platform.'
                 : defaultRadicleLaunchHelp;
           }
-          if (radicleLaunchRow) radicleLaunchRow.classList.toggle('disabled', disabled || !available);
+          if (radicleLaunchRow)
+            radicleLaunchRow.classList.toggle('disabled', disabled || !available);
         } catch {
           // Every piece of row state a previous successful run may have set
           // has to come back with the checkbox — otherwise a transient status
@@ -2067,9 +2006,12 @@
           externalFields: [
             { key: 'externalApi', label: 'API', placeholder: 'http://127.0.0.1:1633' },
           ],
-          endpointLines: (config, service) => [
-            config?.externalApi || service?.api || (config?.apiPort ? `http://127.0.0.1:${config.apiPort}` : null),
-          ].filter(Boolean),
+          endpointLines: (config, service) =>
+            [
+              config?.externalApi ||
+                service?.api ||
+                (config?.apiPort ? `http://127.0.0.1:${config.apiPort}` : null),
+            ].filter(Boolean),
         },
         {
           protocol: 'ipfs',
@@ -2098,15 +2040,16 @@
           externalFields: [
             { key: 'externalSocks', label: 'SOCKS5', placeholder: '127.0.0.1:9150' },
           ],
-          endpointLines: (config, service) => [
-            config?.externalSocks
-              ? `SOCKS5 ${config.externalSocks}`
-              : service?.socks
-                ? `SOCKS5 ${service.socks}`
-                : config?.socksPort
-                  ? `SOCKS5 127.0.0.1:${config.socksPort}`
-                  : null,
-          ].filter(Boolean),
+          endpointLines: (config, service) =>
+            [
+              config?.externalSocks
+                ? `SOCKS5 ${config.externalSocks}`
+                : service?.socks
+                  ? `SOCKS5 ${service.socks}`
+                  : config?.socksPort
+                    ? `SOCKS5 127.0.0.1:${config.socksPort}`
+                    : null,
+            ].filter(Boolean),
         },
       ];
 
@@ -2145,10 +2088,12 @@
         }));
 
       const renderModeOptions = (protocol, mode) =>
-        (SERVICE_DEFINITIONS[protocol]?.modes || ['managed', 'disabled']).map(
-          (value) =>
-            `<option value="${value}"${mode === value ? ' selected' : ''}>${NODE_MODE_LABELS[value]}</option>`
-        ).join('');
+        (SERVICE_DEFINITIONS[protocol]?.modes || ['managed', 'disabled'])
+          .map(
+            (value) =>
+              `<option value="${value}"${mode === value ? ' selected' : ''}>${NODE_MODE_LABELS[value]}</option>`
+          )
+          .join('');
 
       const renderExternalEditor = (protocol, config, mode) => {
         const definition = SERVICE_DEFINITIONS[protocol];
@@ -3326,9 +3271,7 @@
           const defaultReadOrder = supportsVerifiedSources
             ? ['myotis', 'colibri', 'quorum', 'direct']
             : ['colibri', 'quorum', 'direct'];
-          const defaultBroadcastOrder = supportsVerifiedSources
-            ? ['myotis', 'direct']
-            : ['direct'];
+          const defaultBroadcastOrder = supportsVerifiedSources ? ['myotis', 'direct'] : ['direct'];
           const readOrder = config.networks[cid]?.access?.readOrder || defaultReadOrder;
           const broadcastOrder =
             config.networks[cid]?.access?.broadcastOrder || defaultBroadcastOrder;
@@ -3463,11 +3406,14 @@
           const network = config.networks[cid] || {};
           const key = kind === 'broadcast' ? 'broadcastOrder' : 'readOrder';
           const supportsVerifiedSources = cid === '1' || cid === '100';
-          const fallback = kind === 'broadcast'
-            ? (supportsVerifiedSources ? ['myotis', 'direct'] : ['direct'])
-            : (supportsVerifiedSources
+          const fallback =
+            kind === 'broadcast'
+              ? supportsVerifiedSources
+                ? ['myotis', 'direct']
+                : ['direct']
+              : supportsVerifiedSources
                 ? ['myotis', 'colibri', 'quorum', 'direct']
-                : ['colibri', 'quorum', 'direct']);
+                : ['colibri', 'quorum', 'direct'];
           const order = [...(network.access?.[key] || fallback)];
           const from = order.indexOf(source);
           let to = target ? order.indexOf(target) : from + direction;
@@ -3479,9 +3425,11 @@
           // spreading it would freeze builtin defaults (e.g. broadcastOrder)
           // into the user config, so a future app update to a builtin order
           // would be silently ignored for this user.
-          await mutate(() => freedomAPI.updateNetwork(cid, {
-            access: { [key]: order },
-          }));
+          await mutate(() =>
+            freedomAPI.updateNetwork(cid, {
+              access: { [key]: order },
+            })
+          );
         };
         const runChainSearch = async (query) => {
           const seq = ++searchSeq;
@@ -3547,12 +3495,14 @@
             await mutate(() => freedomAPI.resetEndpointSourceCoverage(id, cid));
             return;
           }
-          await mutate(() => freedomAPI.upsertEndpointSource(id, {
-            role: 'prover',
-            keyed: false,
-            name: current?.name || 'Colibri (corpus.core)',
-            coverage: { ...(current?.coverage || {}), [cid]: url },
-          }));
+          await mutate(() =>
+            freedomAPI.upsertEndpointSource(id, {
+              role: 'prover',
+              keyed: false,
+              name: current?.name || 'Colibri (corpus.core)',
+              coverage: { ...(current?.coverage || {}), [cid]: url },
+            })
+          );
         });
 
         section.addEventListener('dragstart', (e) => {
@@ -3749,7 +3699,10 @@
             const c = addState?.picked;
             if (!c) return;
             const failConfirm = (error) => {
-              if (!addState) { setStatus(error, 'error'); return; }
+              if (!addState) {
+                setStatus(error, 'error');
+                return;
+              }
               addState.error = error;
               render();
             };
@@ -3773,16 +3726,31 @@
             const decimals = decimalsRaw === '' ? 18 : Number(decimalsRaw);
             const manual = { chainId, name, symbol, decimalsRaw, rpc };
             const failManual = (error, focusId = 'man-rpc') => {
-              if (!addState) { setStatus(error, 'error'); return; }
+              if (!addState) {
+                setStatus(error, 'error');
+                return;
+              }
               addState.manual = manual;
               addState.error = error;
               render();
               $(focusId)?.focus();
             };
-            if (!chainId) { failManual('Chain ID is required', 'man-chainid'); return; }
-            if (!name) { failManual('Chain name is required', 'man-name'); return; }
-            if (!symbol) { failManual('Currency symbol is required', 'man-symbol'); return; }
-            if (!rpc) { failManual('RPC URL is required'); return; }
+            if (!chainId) {
+              failManual('Chain ID is required', 'man-chainid');
+              return;
+            }
+            if (!name) {
+              failManual('Chain name is required', 'man-name');
+              return;
+            }
+            if (!symbol) {
+              failManual('Currency symbol is required', 'man-symbol');
+              return;
+            }
+            if (!rpc) {
+              failManual('RPC URL is required');
+              return;
+            }
             if (!Number.isInteger(decimals) || decimals < 0) {
               failManual('Currency decimals must be a non-negative whole number', 'man-decimals');
               return;
@@ -3922,7 +3890,11 @@
           }
 
           const hasProver = activeSources('prover').length > 0;
-          setBadge('colibri', hasProver ? 'Verified' : 'No prover', hasProver ? 'verified' : 'warning');
+          setBadge(
+            'colibri',
+            hasProver ? 'Verified' : 'No prover',
+            hasProver ? 'verified' : 'warning'
+          );
           setBadge(
             'quorum',
             `${currentQuorum.m} of ${currentQuorum.k}`,
@@ -4034,12 +4006,15 @@
           // Preserve interaction order when several controls are changed in
           // quick succession. IPC responses are not guaranteed to complete in
           // the same order the renderer dispatched them.
-          policySave = policySave.catch(() => {}).then(async () => {
-            const result = await freedomAPI.updateNetwork('1', { verification });
-            if (result?.success === false) throw new Error(result.error || 'Policy was not saved');
-            config.networks['1'].verification = verification;
-            setPolicyStatus('Resolution policy saved.', 'success');
-          });
+          policySave = policySave
+            .catch(() => {})
+            .then(async () => {
+              const result = await freedomAPI.updateNetwork('1', { verification });
+              if (result?.success === false)
+                throw new Error(result.error || 'Policy was not saved');
+              config.networks['1'].verification = verification;
+              setPolicyStatus('Resolution policy saved.', 'success');
+            });
           return policySave;
         };
 
@@ -4048,15 +4023,18 @@
             return Promise.reject(new Error('Resolution policy is not loaded yet'));
           }
           const quorum = { ...currentQuorum };
-          quorumSave = quorumSave.catch(() => {}).then(async () => {
-            const result = await freedomAPI.updateNetwork('1', { quorum });
-            if (result?.success === false) throw new Error(result.error || 'Quorum was not saved');
-            config.networks['1'].quorum = {
-              ...(config.networks['1'].quorum || {}),
-              ...quorum,
-            };
-            setPolicyStatus('RPC quorum saved.', 'success');
-          });
+          quorumSave = quorumSave
+            .catch(() => {})
+            .then(async () => {
+              const result = await freedomAPI.updateNetwork('1', { quorum });
+              if (result?.success === false)
+                throw new Error(result.error || 'Quorum was not saved');
+              config.networks['1'].quorum = {
+                ...(config.networks['1'].quorum || {}),
+                ...quorum,
+              };
+              setPolicyStatus('RPC quorum saved.', 'success');
+            });
           return quorumSave;
         };
 
@@ -4100,12 +4078,12 @@
             const res = await freedomAPI.getNetworkConfig();
             if (!res || !res.success) throw new Error('Network configuration unavailable');
             config = { networks: res.networks || {}, sources: res.sources || [] };
-            if (!config.networks['1']) throw new Error('Ethereum network configuration unavailable');
+            if (!config.networks['1'])
+              throw new Error('Ethereum network configuration unavailable');
             const verification = config.networks?.['1']?.verification || {};
             const configured = Array.isArray(verification.order)
               ? verification.order.filter(
-                  (method, index, all) =>
-                    METHOD_IDS.has(method) && all.indexOf(method) === index
+                  (method, index, all) => METHOD_IDS.has(method) && all.indexOf(method) === index
                 )
               : [];
             enabledOrder = configured.length
@@ -4118,8 +4096,7 @@
             currentQuorum = { k, m };
 
             const prover = (config.sources || []).find(
-              (source) =>
-                source.role === 'prover' && source.coverage?.['1'] && !source.removed
+              (source) => source.role === 'prover' && source.coverage?.['1'] && !source.removed
             );
             proverId = prover?.id || 'colibri-corpus';
             currentProverUrl = prover && prover.builtin === false ? prover.coverage['1'] : '';
@@ -4304,9 +4281,7 @@
           }
           if (gnosisLaunchRow && gnosisLaunchToggle) {
             const supported = myotisGnosisStatus?.supported !== false;
-            const available = myotisGnosisStatus
-              ? Boolean(myotisGnosisStatus.available)
-              : true;
+            const available = myotisGnosisStatus ? Boolean(myotisGnosisStatus.available) : true;
             const disabled = myotisGnosisStatus?.state === 'disabled';
             gnosisLaunchRow.hidden = !supported;
             gnosisLaunchToggle.disabled =

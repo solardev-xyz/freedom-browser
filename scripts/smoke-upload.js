@@ -8,11 +8,11 @@
  *
  * Flow (mirrors stamp-service.js + publish-service.js):
  *   1. GET /node            — assert the node reports a publish-capable mode
- *   2. getStorageCost       — price a small batch
- *   3. buyStorage           — purchase a postage batch (waitForUsable: false)
- *   4. getPostageBatches    — poll until the new batch is usable
- *   5. uploadFile           — upload content stamped with that batch
- *   6. downloadFile         — read it back and assert the bytes match
+ *   2. storage.getCost      — price a small batch
+ *   3. storage.buy          — purchase a postage batch (waitForUsable: false)
+ *   4. stamp.getAll         — poll until the new batch is usable
+ *   5. file.upload          — upload content stamped with that batch
+ *   6. file.download        — read it back and assert the bytes match
  *
  * Usage:
  *   ANT_API=http://127.0.0.1:1633 node scripts/smoke-upload.js
@@ -53,7 +53,7 @@ async function waitForUsableBatch(bee, batchId, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   let lastSeen = 'unknown';
   while (Date.now() < deadline) {
-    const batches = await bee.getPostageBatches();
+    const batches = await bee.stamp.getAll();
     const match = batches.find((b) => toHex(b.batchID).toLowerCase() === batchId.toLowerCase());
     if (match) {
       lastSeen = `usable=${match.usable}`;
@@ -80,10 +80,10 @@ async function main() {
   if (batchId) {
     log('buy', `skipped — reusing SMOKE_BATCH_ID=${batchId}`);
   } else {
-    const cost = await bee.getStorageCost(Size.fromGigabytes(SIZE_GB), Duration.fromDays(DAYS));
+    const cost = await bee.storage.getCost(Size.fromGigabytes(SIZE_GB), Duration.fromDays(DAYS));
     log('cost', `~${cost.toSignificantDigits(4)} xBZZ`);
 
-    const bought = await bee.buyStorage(
+    const bought = await bee.storage.buy(
       Size.fromGigabytes(SIZE_GB),
       Duration.fromDays(DAYS),
       { waitForUsable: false },
@@ -99,7 +99,7 @@ async function main() {
 
   const deferred = process.env.SMOKE_DEFERRED !== 'false';
   const payload = `freedom-ant-upload-smoke ${new Date().toISOString()} ${Math.random()}`;
-  const uploaded = await bee.uploadFile(batchId, payload, 'smoke.txt', {
+  const uploaded = await bee.file.upload(batchId, payload, 'smoke.txt', {
     pin: true,
     deferred,
     contentType: 'text/plain',
@@ -113,7 +113,7 @@ async function main() {
   let lastErr;
   for (let i = 1; i <= attempts; i++) {
     try {
-      const got = await bee.downloadFile(reference);
+      const got = await bee.file.download(reference);
       const text = got.data.toUtf8 ? got.data.toUtf8() : got.data.toString();
       if (text !== payload) {
         throw new Error(`download mismatch:\n  sent: ${payload}\n  got:  ${text}`);

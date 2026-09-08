@@ -4,14 +4,21 @@
     <meta charset="UTF-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; style-src 'unsafe-inline'; img-src 'self';"
+      content="default-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self';"
     />
     <title>Private Browsing</title>
+    <link rel="stylesheet" href="styles/theme.css" />
     <style>
       /* Private windows keep dark styling in both themes (see body below), so
          this page pins `color-scheme` rather than following `data-theme` —
-         without it Chromium paints a light scrollbar on the dark page (#233). */
-      html {
+         without it Chromium paints a light scrollbar on the dark page (#233).
+         The pin repeats the shared sheet's own `html[data-theme='light']`
+         selector: it has to match that specificity to outweigh
+         `styles/theme.css`, which every internal page links (#261). Colours
+         below stay literal because this page is plum-on-dark in both themes,
+         so it has no palette to share. */
+      html,
+      html[data-theme='light'] {
         color-scheme: dark;
       }
       html,

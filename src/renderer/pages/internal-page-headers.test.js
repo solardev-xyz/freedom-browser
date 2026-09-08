@@ -11,14 +11,16 @@
  *
  * Each page ships its own inline stylesheet, so nothing but a test compares
  * them. This reads all five and asserts the header they are supposed to share.
+ *
+ * Since #261 the palette itself lives in `styles/theme.css`, which every page
+ * links: the header's accent is `var(--accent)` on all five, and the pair it
+ * resolves to is asserted once, against that file.
  */
 
 const fs = require('fs');
 const path = require('path');
 
-// Dark value → light override. Both are literals on the pages that predate
-// the token palette; `profiles.html` gets them from `--accent`, which is
-// declared as exactly this pair.
+// Dark value → light override, as `styles/theme.css` declares them.
 const ACCENT = { dark: '#58a6ff', light: '#0969da' };
 
 // `links.html` is the link-behaviour dev harness, not a shipped surface: it
@@ -33,12 +35,10 @@ const PAGES = [
   { file: 'profiles.html', selector: '.page-title', icon: true },
 ];
 
-const LIGHT_WRAPPER = ":where(html[data-theme='light'])";
-
 const read = (file) => fs.readFileSync(path.join(__dirname, file), 'utf8');
 
-// Comments are stripped up front so every offset below — rule positions and
-// the light wrapper's — is measured on the same string.
+// Comments are stripped up front so every offset below is measured on the same
+// string.
 const styleOf = (html) => {
   const match = html.match(/<style\b[^>]*>([\s\S]*?)<\/style>/);
   if (!match) throw new Error('no inline <style> block');
@@ -47,9 +47,8 @@ const styleOf = (html) => {
 
 /**
  * Innermost `selector { body }` pairs, with their offset. Not a CSS parser:
- * the light theme is one level of nesting, and matching innermost braces
- * yields its inner rules flat, which is all these assertions need. The
- * wrapper's own offset then tells dark rules from light overrides.
+ * the pages are flat since the light blocks moved to `styles/theme.css`, and
+ * matching innermost braces is all these assertions need.
  */
 const rulesOf = (css) =>
   [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((match) => ({
@@ -63,18 +62,20 @@ const declaration = (body, property) => {
   return match ? match[1].trim() : null;
 };
 
-/** The rule for `selector`, on the dark side of the sheet or the light one. */
-const ruleFor = (css, selector, { light = false } = {}) => {
-  const wrapper = css.indexOf(LIGHT_WRAPPER);
-  expect(wrapper).toBeGreaterThan(-1);
-  const matches = rulesOf(css).filter(
-    (rule) =>
-      rule.selector.split(',').some((part) => part.trim() === selector) &&
-      (light ? rule.index > wrapper : rule.index < wrapper)
+/** The rule for `selector`. */
+const ruleFor = (css, selector) => {
+  const matches = rulesOf(css).filter((rule) =>
+    rule.selector.split(',').some((part) => part.trim() === selector)
   );
   // Later rule wins, exactly as the cascade sees it.
   return matches.length ? matches[matches.length - 1] : null;
 };
+
+// The shared palette: `html { … }` for dark, `html[data-theme='light'] { … }`
+// for light. Read once — it is the only place either value is written now.
+const THEME = styleOf(`<style>${read(path.join('styles', 'theme.css'))}</style>`);
+const paletteValue = (scope, token) =>
+  declaration(rulesOf(THEME).find((rule) => rule.selector === scope).body, token);
 
 describe.each(PAGES)('$file header', ({ file, selector, icon }) => {
   const html = read(file);
@@ -93,18 +94,12 @@ describe.each(PAGES)('$file header', ({ file, selector, icon }) => {
   });
 
   test('is painted in the shared accent, in both themes', () => {
-    const color = declaration(header.body, 'color');
-    if (color === 'var(--accent)') {
-      // Token pages: the palette has to resolve to the same pair.
-      expect(declaration(ruleFor(css, ':root').body, '--accent')).toBe(ACCENT.dark);
-      const lightPalette = rulesOf(css).find((rule) =>
-        rule.selector.startsWith("html[data-theme='light']")
-      );
-      expect(declaration(lightPalette.body, '--accent')).toBe(ACCENT.light);
-      return;
-    }
-    expect(color).toBe(ACCENT.dark);
-    expect(declaration(ruleFor(css, selector, { light: true }).body, 'color')).toBe(ACCENT.light);
+    // Every page paints the title from the token now (#261), so a page that
+    // reintroduces a literal — the #256 drift — fails here rather than passing
+    // with a second blue of its own.
+    expect(declaration(header.body, 'color')).toBe('var(--accent)');
+    expect(paletteValue('html', '--accent')).toBe(ACCENT.dark);
+    expect(paletteValue("html[data-theme='light']", '--accent')).toBe(ACCENT.light);
   });
 
   test('carries an inline icon and a subtitle line', () => {
@@ -119,14 +114,14 @@ describe.each(PAGES)('$file header', ({ file, selector, icon }) => {
 
   test('focus rings use the accent, not a second blue', () => {
     // The drift that made Payments visibly different was not only the title:
-    // its input focus ring and tx links carried the same off-accent hue.
+    // its input focus ring and tx links carried the same off-accent hue. A
+    // focus ring painted with a literal is that drift coming back — the pages
+    // have no light block to correct it in any more.
     for (const rule of rulesOf(css)) {
-      const wrapper = css.indexOf(LIGHT_WRAPPER);
-      const expected = rule.index > wrapper ? ACCENT.light : ACCENT.dark;
       if (!rule.selector.includes(':focus')) continue;
       const border = declaration(rule.body, 'border-color');
-      if (!border || !border.startsWith('#')) continue;
-      expect([expected, border]).toEqual([expected, expected]);
+      if (!border) continue;
+      expect([rule.selector, border]).toEqual([rule.selector, 'var(--accent)']);
     }
   });
 });

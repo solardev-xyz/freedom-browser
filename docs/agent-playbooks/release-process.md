@@ -83,7 +83,15 @@ Run `npm outdated --json` and triage:
 
   Only bundle the bump if all three checks pass **and** the verification budget for manual cross-platform smoke testing (mandatory for Chromium-level changes, since `npm test` will not catch web-platform behavior shifts) is available. Otherwise defer to a dedicated release cycle — Electron majors in particular are usually large enough to lead their own release ("`Upgraded Electron 41 to 42 (Chromium 148, Node 24.15)`" as a top-line `Changed` entry, matching `0.7.0`'s "Upgraded Electron to 41").
 
+A patch or minor bump can add a **native addon** to a dependency that had none — and `install-app-deps` will not tell you, because a Node-API prebuild is never rebuilt (same blind spot as better-sqlite3 above, arrived at from the other direction). Watch for a new `prebuilds/` directory or a new `node` condition in the package's `exports` map in the diff of `npm outdated`'s candidates, and validate the affected feature at _runtime under Electron_, not just under `node`: an addon that is clean in a plain `node` process can still crash Electron's main process, which links a different allocator and a differently-configured V8. See "Known regressions and in-repo workarounds" below for the one case we carry.
+
 Apply approved bumps with `npm update` (matches `0.7.1`'s `chore(deps): refresh in-range bumps` commit). This updates `package-lock.json` to the resolved versions without touching the declared `^` ranges in `package.json`, because the ranges already permit those versions. Use `npm install <pkg>@<version>` only when you need to widen a `^` range or pin an exact version. Re-run `npm ci && npm run lint && npm test` before committing to catch regressions.
+
+### Known regressions and in-repo workarounds
+
+Bumps that are held back, or taken only together with a workaround, are recorded here so a later `npm update` does not silently undo them. Each entry says what to re-check before removing it.
+
+- **`@corpus-core/colibri-stateless` — pinned exact, native addon force-disabled.** 2.0.5 (2026-08-14) added a native N-API addon (`prebuilds/<platform>-<arch>/colibri_native.node`) plus a `node` conditional export that prefers it over the WASM build 2.0.4 shipped exclusively. Electron's main process matches that `node` condition, and the addon segfaults the process while verifying an `eth_call` proof — i.e. every ENS content-hash lookup, so typing an `.eth` name closed the browser (found by the `e2e-ant` job's `test-e2e/live/eth-sites.spec.js` during the 0.8.5-rc.4 dependency review, [#267](https://github.com/solardev-xyz/freedom-browser/pull/267)). The same JS is clean on stock `node`, so it is not our usage. `src/main/ens/colibri-runtime.js` sets upstream's `C4_DISABLE_NATIVE=1` before the package is required, which restores the pre-2.0.5 runtime *choice* — the WASM verifier. It does **not** restore the last known-good verifier bytes: `c4w.wasm` itself changed across the bump (2.0.4 sha256 `32eb265c…`, 1118419 bytes; 2.0.6 `7bd999c2…`, 1130756 bytes), so proof behaviour still has to be re-validated on every bump rather than assumed unchanged. `package.json` keeps an exact pin (no `^`) because the workaround depends on that opt-out continuing to exist. `src/main/ens/colibri-runtime.test.js` fails if the opt-out is dropped, if anything requires the package directly, or if a bump renames the upstream escape hatch. Observed as of 2026-09-08 against 2.0.5/2.0.6 on Electron 43.0.0 and 43.6.0; before removing the workaround, re-run the native path on the current release (`C4_DISABLE_NATIVE` unset) through `npm run test:e2e:live -- test-e2e/live/eth-sites.spec.js`. No upstream issue was filed: [#292](https://github.com/solardev-xyz/freedom-browser/pull/292) §6 carries a ready-to-file draft that was left as a maintainer decision, so check `corpus-core/c4`'s issues and release notes for the crash directly (and file that draft if nothing covers it) rather than expecting a linked tracking issue.
 
 ### Audit warnings
 
@@ -159,6 +167,15 @@ CI covers what `npm test` and `npm run lint` used to cover here: every push to t
 **License check.** `NOTICES`, `LICENSE_AUDIT.md`, and `licenses-audit.json` attribute the bundled Ant binary as MIT OR Apache-2.0, matching the `LICENSE-MIT` / `LICENSE-APACHE` that `https://github.com/freedom-hq/ant` now publishes. Before tagging, confirm the upstream license is unchanged and update those three files if it differs.
 
 **Source-tree spot check.** `npm ci && npm start` once on the release branch and confirm the About/version surface shows the number you just set. This catches a broken tree before you spend a 25-minute CI run on it.
+
+**UI consistency audit**, once per cycle, on the release branch before the first release candidate is tagged. Nothing in CI renders the light theme, so theme and sibling-drift bugs only surface when someone looks: the 0.8.5 audit found 28 of them (#223–#242, #249–#260), including a Settings page that had been dark-only for a month. Run the tour in both themes from the release branch:
+
+```
+NODE_PATH=$PWD/node_modules xvfb-run -a -s "-screen 0 1440x900x24" \
+  node .claude/skills/run-freedom/tour.js both
+```
+
+It writes `<d|l>-<nn>-<surface>.png` for every chrome surface, settings section and internal page into `/tmp/freedom-shots` (override with `SHOTS_DIR`), takes about four minutes per theme, and exits non-zero listing any step that failed — a failed step contaminates the shots after it, so re-run rather than reading past it. Then walk the shots against `ui-consistency.md`: each surface next to its nearest sibling, in both themes, plus that playbook's checklist (heading sizes, button style and verb, input fonts, focus rings, empty states, counters, shortcut label format). File what you find as issues on the milestone; fix on the release branch what is worth holding the release for and let the rest ride to the next cycle. Skipping this step is how a cycle ships with no light-theme coverage at all.
 
 **CI is green** on the release branch head you are about to tag (`gh pr checks` on the branch's PR, or the Actions tab). The release workflow does not gate on CI, so a red branch produces a red release.
 
