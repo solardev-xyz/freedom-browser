@@ -4,7 +4,7 @@
  * its inventory (`scripts/update-renderer-color-literals.js`).
  *
  * Both have to agree exactly on which files are swept, which are exempt and
- * what a "pair" is, or `npm run lint:colors -- --write` would produce an
+ * what a "pair" is, or `npm run styles:inventory -- --write` would produce an
  * inventory the guard immediately rejects.
  */
 

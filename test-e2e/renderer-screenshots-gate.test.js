@@ -44,6 +44,18 @@ describe('screenshotGate', () => {
   });
 });
 
+// A workflow with its comments stripped. `ci.yml` documents the local update
+// command in prose (`Locally: xvfb-run -a npm run test:e2e:screenshots:update`),
+// which contains every substring the assertions below look for — asserting
+// against the raw file would pass on a job rewritten to a bare
+// `npx playwright test …`, and the spec would then skip itself in CI forever
+// while this test stayed green.
+const workflowSteps = (relative) =>
+  read(relative)
+    .split('\n')
+    .filter((line) => !/^\s*#/.test(line))
+    .join('\n');
+
 describe('the invocations that are meant to enable it', () => {
   const scripts = JSON.parse(read('package.json')).scripts;
 
@@ -55,13 +67,24 @@ describe('the invocations that are meant to enable it', () => {
   );
 
   it('CI compares through the npm script rather than a bare playwright run', () => {
-    expect(read('.github/workflows/ci.yml')).toContain('xvfb-run -a npm run test:e2e:screenshots');
+    // The `run:` step itself, so a job switched to `npx playwright test …`
+    // (which would skip every screenshot, silently and greenly) fails here.
+    expect(workflowSteps('.github/workflows/ci.yml')).toContain(
+      'run: xvfb-run -a npm run test:e2e:screenshots'
+    );
   });
 
-  it('a change to the gate itself makes CI run the screenshot job', () => {
-    // `renderer-changed` decides whether the visual jobs run at all; this file
-    // can turn them into no-ops, so it belongs in that path filter.
-    expect(read('.github/workflows/ci.yml')).toContain('screenshot-gate');
+  it.each([
+    ['the gate itself', 'screenshot-gate'],
+    ['the screenshot baselines', 'test-e2e/__screenshots__/'],
+    ['the contrast baseline', 'test-e2e/theme-contrast-baseline'],
+    ['the npm scripts that launch them', 'package\\.json'],
+  ])('a change to %s makes CI run the visual jobs', (_what, pattern) => {
+    // `renderer-changed` decides whether the visual jobs run at all. Each of
+    // these can decide what those jobs compare against — or turn them into
+    // no-ops — so each belongs in that path filter; a baseline-adoption PR
+    // touches nothing else at all.
+    expect(workflowSteps('.github/workflows/ci.yml')).toContain(pattern);
   });
 
   it('the default harness suite does not set it, so the spec stays opt-in there', () => {

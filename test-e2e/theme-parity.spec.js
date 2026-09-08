@@ -43,8 +43,11 @@ const { pageFor, closeMenus, closeSidebar, dismissOnboarding, go } = require(
 
 // WCAG 2.2 AA for text. Large text (>= 24px, or >= 18.66px bold) is allowed
 // 3:1 by the standard; the surfaces here are dense UI chrome, so the spec holds
-// everything to 4.5 and lists the large-text allowance only where a heading
-// genuinely relies on it.
+// everything to 4.5 and a surface has to ask for the large-text allowance
+// explicitly (`allowLarge: true`) — no surface does today, and a heading that
+// only clears 3:1 is recorded in the baseline like every other gap rather than
+// exempted wholesale. A default-on allowance would have let a 7:1 heading
+// regress to 3.1:1 in one theme with nothing to show for it.
 const AA = 4.5;
 const AA_LARGE = 3;
 // Placeholder text is held to 3:1 rather than 4.5:1, and only because nothing
@@ -268,8 +271,34 @@ const gapKey = ({ surface, theme, el }) => `${surface}|${theme}|${el}`;
 const recorded = new Map(BASELINE.gaps.map((g) => [gapKey(g), g]));
 /** Filled during an update run, written out by the afterAll below. */
 const collected = new Map();
+/** `surface|theme` for every surface this worker actually walked. */
+const visited = new Set();
 
-async function assertSurface(page, { label, theme, allowLarge = true, minSamples = 1 }) {
+// Both of the whole-file checks below — rewriting the baseline on an update
+// run, and the "no recorded surface went unvisited" ratchet — read state this
+// module accumulates across the file's tests. Playwright starts a *fresh*
+// worker after a failed test, and this module is loaded again in it with that
+// state empty, so either check would otherwise be working from whichever
+// fraction of the spec the current worker happened to run: an update run that
+// flaked once would write a baseline holding only the surfaces walked after
+// the restart. So both are gated on this worker having finished every test
+// declared in the file — which a `-g` filter or a retry also fails, and both
+// of those are equally unable to speak for the whole baseline.
+const declaredTests = new Set();
+const finishedTests = new Set();
+/** Records a test title as it is declared, and returns it for `test()`. */
+const declare = (title) => {
+  declaredTests.add(title);
+  return title;
+};
+// eslint-disable-next-line no-empty-pattern
+test.afterEach(({}, testInfo) => {
+  if (testInfo.status === testInfo.expectedStatus) finishedTests.add(testInfo.title);
+});
+const sawWholeSpec = () => finishedTests.size === declaredTests.size;
+
+async function assertSurface(page, { label, theme, allowLarge = false, minSamples = 1 }) {
+  visited.add(`${label}|${theme}`);
   const state = await page.evaluate(PROBE);
 
   // The chrome window declares only the *light* theme on `<html>` — dark is the
@@ -353,16 +382,52 @@ async function assertSurface(page, { label, theme, allowLarge = true, minSamples
 // An update run rewrites the baseline from what it just measured. Deliberately
 // gated on an env var and its own npm script, so no ordinary run can quietly
 // absorb a regression.
+//
+// The same hook carries the other half of the ratchet: the per-surface check in
+// `assertSurface` can only notice a recorded gap that vanished from a surface it
+// *visited*, so a `check()` call that gets renamed or deleted strands its
+// entries — the baseline keeps them, nothing ever measures them again, and the
+// surface silently stops being covered. That is a whole-file question, so it is
+// answered here.
 test.afterAll(() => {
-  if (!UPDATE) return;
-  const gaps = [...collected.values()].sort((a, b) =>
-    gapKey(a) < gapKey(b) ? -1 : gapKey(a) > gapKey(b) ? 1 : 0
-  );
-  fs.writeFileSync(
-    BASELINE_FILE,
-    `${JSON.stringify({ issue: BASELINE.issue, total: gaps.length, gaps }, null, 2)}\n`
-  );
-  console.log(`wrote ${gaps.length} recorded contrast gaps to ${BASELINE_FILE}`);
+  if (UPDATE) {
+    if (!sawWholeSpec()) {
+      throw new Error(
+        `refusing to rewrite ${path.basename(BASELINE_FILE)}: this worker finished ` +
+          `${finishedTests.size} of the ${declaredTests.size} tests in this file, so it ` +
+          `measured only some of the surfaces the baseline covers and writing now would ` +
+          `silently drop the rest. Rerun the whole spec: ` +
+          `xvfb-run -a npm run test:e2e:theme-parity:update`
+      );
+    }
+    const gaps = [...collected.values()].sort((a, b) =>
+      gapKey(a) < gapKey(b) ? -1 : gapKey(a) > gapKey(b) ? 1 : 0
+    );
+    fs.writeFileSync(
+      BASELINE_FILE,
+      `${JSON.stringify({ issue: BASELINE.issue, total: gaps.length, gaps }, null, 2)}\n`
+    );
+    console.log(`wrote ${gaps.length} recorded contrast gaps to ${BASELINE_FILE}`);
+    return;
+  }
+
+  // Only a run that walked the whole file can tell "nobody visits this surface
+  // any more" from "this worker did not get that far".
+  if (!sawWholeSpec()) return;
+  const stranded = [
+    ...new Set(
+      BASELINE.gaps
+        .filter((g) => !visited.has(`${g.surface}|${g.theme}`))
+        .map((g) => `${g.surface} [${g.theme}]`)
+    ),
+  ];
+  if (stranded.length) {
+    throw new Error(
+      `these surfaces have recorded gaps in ${path.basename(BASELINE_FILE)} but nothing in ` +
+        `this spec walks them any more, so their entries are never checked again — either ` +
+        `restore the check() call or delete their entries:\n  ${stranded.join('\n  ')}`
+    );
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -385,7 +450,7 @@ for (const theme of ['dark', 'light']) {
   test.describe(`theme parity: ${theme}`, () => {
     test.use({ seedSettings: { theme, showBookmarkBar: true } });
 
-    test(`chrome surfaces render legibly in ${theme}`, async ({ electronApp, window }) => {
+    test(declare(`chrome surfaces render legibly in ${theme}`), async ({ electronApp, window }) => {
       // One app launch walked through a dozen surfaces; the per-test budget is
       // the walk, not any single assertion.
       test.setTimeout(240_000);
@@ -436,48 +501,48 @@ for (const theme of ['dark', 'light']) {
       await closeMenus(window);
     });
 
-    test(`wallet and permission subscreens render legibly in ${theme}`, async ({
-      electronApp,
-      window,
-    }) => {
-      test.setTimeout(240_000);
-      const ctx = { app: electronApp, win: window };
-      const check = (label, opts) => assertSurface(window, { label, theme, ...opts });
+    test(
+      declare(`wallet and permission subscreens render legibly in ${theme}`),
+      async ({ electronApp, window }) => {
+        test.setTimeout(240_000);
+        const ctx = { app: electronApp, win: window };
+        const check = (label, opts) => assertSurface(window, { label, theme, ...opts });
 
-      const resolve = await recipes.stubWalletIpc(ctx);
-      await recipes.sendForm(ctx);
-      await check('send form', { minSamples: 2 });
+        const resolve = await recipes.stubWalletIpc(ctx);
+        await recipes.sendForm(ctx);
+        await check('send form', { minSamples: 2 });
 
-      await window.fill('#send-amount', '0.001');
-      await window.click('#send-continue-btn');
-      await window.waitForSelector('#send-review-view', { state: 'visible' });
-      await check('send review', { minSamples: 2 });
-      await window.click('#send-confirm-btn');
-      await window.waitForSelector('#send-pending-view', { state: 'visible' });
-      await resolve({ success: true, hash: '0xfeedface', recorded: true });
-      await window.waitForSelector('#send-success-view', { state: 'visible' });
-      await check('send success');
+        await window.fill('#send-amount', '0.001');
+        await window.click('#send-continue-btn');
+        await window.waitForSelector('#send-review-view', { state: 'visible' });
+        await check('send review', { minSamples: 2 });
+        await window.click('#send-confirm-btn');
+        await window.waitForSelector('#send-pending-view', { state: 'visible' });
+        await resolve({ success: true, hash: '0xfeedface', recorded: true });
+        await window.waitForSelector('#send-success-view', { state: 'visible' });
+        await check('send success');
 
-      await recipes.dappTxApproval(ctx);
-      await check('dApp transaction approval', { minSamples: 2 });
-      await recipes.dappSign(ctx);
-      await check('dApp sign', { minSamples: 2 });
-      await recipes.dappConnect(ctx);
-      await check('dApp connect', { minSamples: 2 });
-      for (const kind of ['connect', 'publish', 'messaging', 'feed']) {
-        await recipes.swarmApproval(ctx, kind);
-        await check(`Swarm ${kind} approval`, { minSamples: 2 });
+        await recipes.dappTxApproval(ctx);
+        await check('dApp transaction approval', { minSamples: 2 });
+        await recipes.dappSign(ctx);
+        await check('dApp sign', { minSamples: 2 });
+        await recipes.dappConnect(ctx);
+        await check('dApp connect', { minSamples: 2 });
+        for (const kind of ['connect', 'publish', 'messaging', 'feed']) {
+          await recipes.swarmApproval(ctx, kind);
+          await check(`Swarm ${kind} approval`, { minSamples: 2 });
+        }
+
+        // #249 itself: the manage-permissions screens, whose site origin used to
+        // render white on the light theme's white sidebar. This assertion fails
+        // at 1.0:1 the moment those rules go back to quoting a token the chrome
+        // palette does not define.
+        await recipes.dappPermissions(ctx);
+        await check('dApp manage permissions', { minSamples: 3 });
       }
+    );
 
-      // #249 itself: the manage-permissions screens, whose site origin used to
-      // render white on the light theme's white sidebar. This assertion fails
-      // at 1.0:1 the moment those rules go back to quoting a token the chrome
-      // palette does not define.
-      await recipes.dappPermissions(ctx);
-      await check('dApp manage permissions', { minSamples: 3 });
-    });
-
-    test(`internal pages render legibly in ${theme}`, async ({ electronApp, window }) => {
+    test(declare(`internal pages render legibly in ${theme}`), async ({ electronApp, window }) => {
       test.setTimeout(240_000);
       const ctx = { app: electronApp, win: window };
 
@@ -497,24 +562,27 @@ for (const theme of ['dark', 'light']) {
       }
     });
 
-    test(`failure-path pages render legibly in ${theme}`, async ({ electronApp, window }) => {
-      test.setTimeout(180_000);
-      const ctx = { app: electronApp, win: window };
+    test(
+      declare(`failure-path pages render legibly in ${theme}`),
+      async ({ electronApp, window }) => {
+        test.setTimeout(180_000);
+        const ctx = { app: electronApp, win: window };
 
-      await recipes.errorPage(ctx);
-      const error = await pageFor(electronApp, '/pages/error.html');
-      expect(error, 'error page not found').toBeTruthy();
-      await assertSurface(error, { label: 'error page', theme });
+        await recipes.errorPage(ctx);
+        const error = await pageFor(electronApp, '/pages/error.html');
+        expect(error, 'error page not found').toBeTruthy();
+        await assertSurface(error, { label: 'error page', theme });
 
-      await recipes.tezInterstitial(ctx, 'unverified');
-      const unverified = await pageFor(electronApp, '/pages/ens-unverified.html');
-      expect(unverified, 'unverified interstitial not found').toBeTruthy();
-      await assertSurface(unverified, { label: 'unverified interstitial', theme, minSamples: 2 });
+        await recipes.tezInterstitial(ctx, 'unverified');
+        const unverified = await pageFor(electronApp, '/pages/ens-unverified.html');
+        expect(unverified, 'unverified interstitial not found').toBeTruthy();
+        await assertSurface(unverified, { label: 'unverified interstitial', theme, minSamples: 2 });
 
-      await recipes.tezInterstitial(ctx, 'conflict');
-      const conflict = await pageFor(electronApp, '/pages/ens-conflict.html');
-      expect(conflict, 'conflict interstitial not found').toBeTruthy();
-      await assertSurface(conflict, { label: 'conflict interstitial', theme, minSamples: 2 });
-    });
+        await recipes.tezInterstitial(ctx, 'conflict');
+        const conflict = await pageFor(electronApp, '/pages/ens-conflict.html');
+        expect(conflict, 'conflict interstitial not found').toBeTruthy();
+        await assertSurface(conflict, { label: 'conflict interstitial', theme, minSamples: 2 });
+      }
+    );
   });
 }

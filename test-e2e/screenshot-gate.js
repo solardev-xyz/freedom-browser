@@ -9,7 +9,11 @@
 // Kept out of the spec so it can be unit-tested (see
 // `renderer-screenshots-gate.test.js`) — jest never loads `*.spec.js`.
 
-const STABLE_TEXT_VAR = 'FREEDOM_E2E_STABLE_TEXT';
+// The launcher owns the flag — it is what turns it into `--disable-lcd-text`
+// — so the gate reads the name from there rather than spelling it a second
+// time: two independent literals drift the moment either side is renamed.
+const { STABLE_TEXT_VAR } = require('./packaged-launch');
+
 const PLATFORM_OVERRIDE_VAR = 'FREEDOM_SCREENSHOTS';
 
 /**

@@ -197,6 +197,20 @@ describe('renderer colour literals (#261)', () => {
       'color: hsl(210 30% 8%)',
       'background: hsla(210, 30%, 8%, 0.5)',
     ]);
+    // CSS Color 4 notations, for the same reason hsl() is here: they paint the
+    // same colours, Chromium ships them, and a guard that does not know them is
+    // a documented way round it.
+    expect(
+      pairs('.a { background: oklch(60% 0.1 240); color: oklab(0.6 0.1 -0.1 / 50%) }')
+    ).toEqual(['background: oklch(60% 0.1 240)', 'color: oklab(0.6 0.1 -0.1 / 50%)']);
+    expect(pairs('.a { color: lch(60% 40 240); background: lab(60% 20 -30) }')).toEqual([
+      'color: lch(60% 40 240)',
+      'background: lab(60% 20 -30)',
+    ]);
+    expect(pairs('.a { color: hwb(240 20% 10%); background: color(display-p3 1 0 0) }')).toEqual([
+      'color: hwb(240 20% 10%)',
+      'background: color(display-p3 1 0 0)',
+    ]);
     expect(pairs('.a { color: black; border: 1px solid RebeccaPurple }')).toEqual([
       'color: black',
       'border: RebeccaPurple',

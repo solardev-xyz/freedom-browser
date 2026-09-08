@@ -261,11 +261,22 @@ const luminance = ({ r, g, b }) => (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
 
 /**
  * Every colour literal notation the guard rejects, in one pass over a
- * declaration value: hex, `rgb()`/`rgba()`, `hsl()`/`hsla()` and the CSS named
- * colours. The functional forms are matched loosely (`name(` up to the first
- * `)`) rather than by channel grammar, because the point here is "a literal was
- * written", not "what colour is it" — a malformed `rgb(` must not slip through
- * on a grammar mismatch.
+ * declaration value: hex, `rgb()`/`rgba()`, `hsl()`/`hsla()`, the modern
+ * CSS Color 4 notations (`hwb()`, `lab()`, `lch()`, `oklab()`, `oklch()`,
+ * `color()`) and the CSS named colours. The functional forms are matched
+ * loosely (`name(` up to the first `)`) rather than by channel grammar,
+ * because the point here is "a literal was written", not "what colour is it"
+ * — a malformed `rgb(` must not slip through on a grammar mismatch.
+ *
+ * The modern notations are here for the same reason `hsl()` is: nothing in the
+ * renderer writes one today, and a guard that only knows the three notations
+ * the tree happens to use is a guard with a documented way round it —
+ * `background: oklch(60% 0.1 240)` would pass where the identical colour as
+ * `hsl()` fails.
+ *
+ * The leading `(?<![\w-])` is what keeps `color(` from matching the tail of a
+ * property-ish token in a value (`background-color(`); `color-mix(` never
+ * matches, because these forms require the `(` to follow the name directly.
  *
  * `#` sequences that are not a legal hex colour length are skipped: those are
  * fragment URLs (`fill: url(#grad)` — already masked) and ids, not colours.
@@ -273,7 +284,7 @@ const luminance = ({ r, g, b }) => (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
 const COLOR_LITERAL = new RegExp(
   [
     String.raw`#[0-9a-fA-F]+\b`,
-    String.raw`\b(?:rgba?|hsla?)\([^)]*\)`,
+    String.raw`(?<![\w-])(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\([^)]*\)`,
     NAMED_COLOR_TOKEN.source,
   ].join('|'),
   'g'
