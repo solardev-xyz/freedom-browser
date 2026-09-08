@@ -136,6 +136,19 @@
          same heading for the Shortcuts list; that rule stays on its own
          selector because `settings-styles.test.js` pins it by prelude
          (#223). */
+      /* A section title that carries a section-level action (#272). */
+      .section-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin: 0 0 16px 0;
+      }
+
+      .section-header .section-title {
+        margin: 0;
+      }
+
       .subsection-title {
         margin: 20px 0 8px 0;
         font-size: 12px;
@@ -1386,7 +1399,12 @@
 
         <!-- Site Permissions -->
         <section class="section" id="permissions">
-          <h2 class="section-title">Site Permissions</h2>
+          <div class="section-header">
+            <h2 class="section-title">Site Permissions</h2>
+            <button type="button" class="btn danger" id="permissions-revoke-all" disabled>
+              Remove all
+            </button>
+          </div>
           <div id="permissions-view"></div>
         </section>
 
@@ -4499,6 +4517,7 @@
       // listed here — they expire with the app anyway.
       (() => {
         const view = $('permissions-view');
+        const revokeAll = $('permissions-revoke-all');
         if (!view) return;
 
         const PERMISSION_LABELS = {
@@ -4514,35 +4533,13 @@
         const render = (all) => {
           const origins = Object.keys(all || {}).sort();
 
-          const intro = `
-            <div class="card" style="margin-bottom: 16px">
-              <div class="row">
-                <div class="row-body">
-                  <p class="row-label">Decisions you asked Freedom to remember</p>
-                  <p class="row-help">
-                    When a site asks to use your camera, microphone, notifications,
-                    clipboard, location, or MIDI devices, Freedom prompts you.
-                    Remembered answers are listed here. Everything else is denied
-                    by default.
-                  </p>
-                </div>
-                <div class="row-control">
-                  <button class="btn danger" data-action="revoke-all" ${
-                    origins.length === 0 ? 'disabled' : ''
-                  }>
-                    Remove all
-                  </button>
-                </div>
-              </div>
-            </div>`;
+          if (revokeAll) revokeAll.disabled = origins.length === 0;
 
           if (origins.length === 0) {
-            view.innerHTML =
-              intro +
-              `<div class="card"><div class="row"><div class="row-body">
-                 <p class="row-label">No stored site permissions</p>
-                 <p class="row-help">Allow or Block a site's request with
-                 “Remember for this site” checked and the decision appears here.</p>
+            view.innerHTML = `<div class="card"><div class="row"><div class="row-body">
+                 <p class="row-label">No saved permissions</p>
+                 <p class="row-help">Sites you allow or block with
+                 “Remember for this site” appear here.</p>
                </div></div></div>`;
             return;
           }
@@ -4584,7 +4581,7 @@
             })
             .join('');
 
-          view.innerHTML = intro + cards;
+          view.innerHTML = cards;
         };
 
         const reload = async () => {
@@ -4598,6 +4595,15 @@
           }
         };
 
+        revokeAll?.addEventListener('click', async () => {
+          try {
+            await freedomAPI.revokeAllSitePermissions();
+          } catch (err) {
+            console.error('[settings] site-permission revoke failed:', err);
+          }
+          reload();
+        });
+
         view.addEventListener('click', async (e) => {
           const btn = e.target.closest('button[data-action]');
           if (!btn) return;
@@ -4607,8 +4613,6 @@
               await freedomAPI.revokeSitePermission(origin, permission);
             } else if (action === 'revoke-origin') {
               await freedomAPI.revokeSitePermissionOrigin(origin);
-            } else if (action === 'revoke-all') {
-              await freedomAPI.revokeAllSitePermissions();
             }
           } catch (err) {
             console.error('[settings] site-permission revoke failed:', err);
