@@ -50,7 +50,9 @@
 // region a later change actually breaks. The guest `<webview>` is masked on the
 // *chrome* surfaces for the same reason in reverse: what a menu looks like must
 // not depend on the page behind it (and the new-tab artwork behind it is a
-// megabyte of PNG per baseline).
+// megabyte of PNG per baseline). On the surfaces where the guest *is* the
+// subject, the one strip it paints that does not settle — its own native
+// scrollbar — is masked instead; see `guestScrollbarMask`.
 
 const path = require('path');
 
@@ -94,6 +96,65 @@ const VOLATILE = [
 
 const maskFor = (page, extra = []) =>
   [...VOLATILE, ...extra].map((selector) => page.locator(selector));
+
+// The guest's native scrollbar, as something `mask` can be given.
+//
+// Chromium paints a `<webview>`'s scrollbar from its own compositor layer, and
+// on a scrolling internal page that layer is bistable: the same section — whose
+// `scrollHeight`/`clientHeight` measure identical on every run — paints a thumb
+// of two different lengths, and a capture lands on either one both across runs
+// and seconds apart inside a single run, so it is not something a longer wait
+// settles. Measured on `settings#ens`, the flip is ~1 600 px, 83% of this
+// spec's whole `maxDiffPixelRatio` budget, spent on scroll chrome that is not
+// the subject of the baseline. Left of the strip everything still compares, and
+// a section that grows or shrinks still shows up there.
+//
+// `mask` only takes locators and the scrollbar lives inside the guest, which is
+// a different page from the one being captured — so the strip is masked by
+// parking a fixed, transparent, pointer-events-free element over it in the
+// window itself.
+const GUEST_SCROLLBAR_MASK = 'screenshot-guest-scrollbar-mask';
+// Wide enough for Chromium's 9px Linux scrollbar plus the guest's own border.
+const GUEST_SCROLLBAR_WIDTH = 14;
+
+async function guestScrollbarMask(win) {
+  const boxes = await Promise.all(
+    (await win.locator('webview').all()).map((locator) => locator.boundingBox().catch(() => null))
+  );
+  const box = boxes.find((b) => b && b.width > 0 && b.height > 0);
+  if (!box) return [];
+  await win.evaluate(
+    ({ id, rect }) => {
+      let el = document.getElementById(id);
+      if (!el) {
+        el = document.createElement('div');
+        el.id = id;
+        document.body.appendChild(el);
+      }
+      // Assigned through CSSOM rather than a style attribute, so the window's
+      // CSP has nothing to say about it.
+      Object.assign(el.style, {
+        position: 'fixed',
+        pointerEvents: 'none',
+        background: 'transparent',
+        left: `${rect.left}px`,
+        top: `${rect.top}px`,
+        width: `${rect.width}px`,
+        height: `${rect.height}px`,
+      });
+    },
+    {
+      id: GUEST_SCROLLBAR_MASK,
+      rect: {
+        left: box.x + box.width - GUEST_SCROLLBAR_WIDTH,
+        top: box.y,
+        width: GUEST_SCROLLBAR_WIDTH,
+        height: box.height,
+      },
+    }
+  );
+  return [win.locator(`#${GUEST_SCROLLBAR_MASK}`)];
+}
 
 /**
  * One baseline. Soft on purpose: a walk through 25 surfaces should report every
@@ -210,9 +271,13 @@ test.describe('renderer screenshots', () => {
       test(`internal pages and interstitials (${theme})`, async ({ electronApp, window }) => {
         test.setTimeout(300_000);
         const ctx = { app: electronApp, win: window };
-        const shot = (name, opts) => snap(window, `${theme}-${name}`, opts);
-
+        // The guest page is the subject here, so it is not masked — only the
+        // strip its scrollbar paints in. See `guestScrollbarMask`.
         await recipes.tezInterstitial(ctx, 'unverified');
+        const scrollbar = await guestScrollbarMask(window);
+        const shot = (name, opts = {}) =>
+          snap(window, `${theme}-${name}`, { mask: scrollbar, ...opts });
+
         await shot('25-tez-unverified');
         await recipes.tezInterstitial(ctx, 'conflict');
         await shot('26-tez-conflict');
@@ -250,17 +315,21 @@ test.describe('renderer screenshots', () => {
         // the same 14 rendered states, a third of the wall clock, which is what
         // keeps the CI job inside its budget.
         const page = await recipes.settings(ctx, SECTIONS[0]);
-        await snap(window, `${theme}-30-settings-${SECTIONS[0]}`);
+        // Every section in this walk scrolls. See `guestScrollbarMask`.
+        const scrollbar = await guestScrollbarMask(window);
+        const shot = (name) => snap(window, `${theme}-${name}`, { mask: scrollbar });
+
+        await shot(`30-settings-${SECTIONS[0]}`);
         for (const [i, section] of SECTIONS.entries()) {
           if (i === 0) continue;
           await page.evaluate((hash) => {
             location.hash = hash;
           }, section);
           await page.waitForTimeout(600);
-          await snap(window, `${theme}-${30 + i}-settings-${section}`);
+          await shot(`${30 + i}-settings-${section}`);
         }
         await recipes.shortcutConflict(ctx);
-        await snap(window, `${theme}-45-settings-shortcut-conflict`);
+        await shot('45-settings-shortcut-conflict');
       });
 
       test(`private window (${theme})`, async ({ electronApp, window }) => {

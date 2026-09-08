@@ -23,15 +23,17 @@ const ISSUE = 'https://github.com/solardev-xyz/freedom-browser/issues/261';
 const SKIP_DIRS = new Set(['vendor', 'assets', 'images', 'scripts']);
 
 /**
- * The token files: the one place a colour literal is the *point*. #261 item 2
- * adds a shared internal-page theme file; both of the names it might take are
- * listed here already so that PR does not have to touch this guard.
+ * The token files: the one place a colour literal is the *point*. The chrome
+ * window paints from the first three; #261 item 2 (#287) moved every internal
+ * page's palette into `pages/styles/theme.css`, so that is the fourth. Every
+ * entry has to name a file that exists — `renderer-styles.test.js` asserts the
+ * set against the tree, so a speculative name cannot sit here as a free pass
+ * waiting for someone to create the file.
  */
 const TOKEN_FILES = new Set([
   'styles/variables.css',
   'styles/light-theme.css',
   'styles/private.css',
-  'styles/theme.css',
   'pages/styles/theme.css',
 ]);
 

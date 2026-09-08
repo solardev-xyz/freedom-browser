@@ -152,11 +152,18 @@ describe('renderer colour literals (#261)', () => {
   test('the token files are the only unconditional exemption', () => {
     // The exemption is what makes the guard usable, so it stays small and
     // explicit: a palette file, not "any file with `theme` in the name".
+    // The first three are the chrome window's palette; `pages/styles/theme.css`
+    // is the internal pages' one, added by #261 item 2 (#287).
     expect([...TOKEN_FILES].filter((rel) => SOURCES.includes(rel)).sort()).toEqual([
+      'pages/styles/theme.css',
       'styles/light-theme.css',
       'styles/private.css',
       'styles/variables.css',
     ]);
+    // Every exemption names a file that is actually in the tree: a name listed
+    // for a file that does not exist yet is a free pass nobody would notice
+    // being taken.
+    expect([...TOKEN_FILES].filter((rel) => !SOURCES.includes(rel))).toEqual([]);
     // …and none of them may appear in the inventory as well.
     expect(Object.keys(known).filter((rel) => TOKEN_FILES.has(rel))).toEqual([]);
   });
