@@ -80,7 +80,7 @@ HANDLE, followed by `WaitForSingleObject` and `GetExitCodeProcess`. A job close
 requests cleanup; the receipt proves only the trusted direct child's exit,
 not completion of hypothetical descendants. The bounded receipt also records
 `forced` separately from the child exit code. The Windows x64 helper compiled
-successfully in CI at `09989259`; runtime behavior remains unqualified (see
+successfully in PR CI for head `09989259`; runtime behavior remains unqualified (see
 the CI checkpoint below).
 
 The addon child receives only null stdio and its Node IPC endpoint. It does not
@@ -185,11 +185,19 @@ Windows, signing/packaging or aggregate resource-containment qualification.
 
 ### CI checkpoint — 2026-09-08
 
-For PR #295 at commit `09989259ea693023c452da8f266a4b66c719cb20`,
-[CI run 34271769830](https://github.com/solardev-xyz/freedom-browser/actions/runs/34271769830)
-passed lint and the full test job: 208 suites / 3,845 tests passed, with
-5 suites / 18 tests skipped. These are CI results, separate from the provisional
-primary-Mac dependency reuse described above.
+For PR #295 with head `09989259ea693023c452da8f266a4b66c719cb20`,
+[PR CI run 34271769830](https://github.com/solardev-xyz/freedom-browser/actions/runs/34271769830)
+tested synthetic merge `13a23f6ad9d4e7dd03581aca8d2e142e24c102cb` into newer
+main `584f7e08262a3b5348ea02a048e8659b450d1671`. Lint passed; the full test job
+reported 208 suites / 3,845 tests passed, with 5 suites / 18 tests skipped.
+This is merge-result evidence, not a standalone `09989259` test pass.
+
+Separately, [push CI run 34274266660](https://github.com/solardev-xyz/freedom-browser/actions/runs/34274266660)
+checked out actual head `c915e1384e6f3f3390458d3a168cf2c89b9fd486`: lint passed,
+with 204 suites / 3,828 tests passed and 5 suites / 18 tests skipped. The differing
+counts reflect different main baselines; this branch did not remove tests.
+Both CI checkpoints are separate from the provisional primary-Mac dependency
+reuse and the exact `c915e138` nine-case disposable runtime campaign.
 
 The [Windows Myotis job](https://github.com/solardev-xyz/freedom-browser/actions/runs/34271769830/job/102214820294)
 activated the installed MSVC developer shell and successfully ran
@@ -202,15 +210,17 @@ real-addon behavior and actual application Quit remain separate gates.
 
 Reviewed logs: `/tmp/freedom-pr295-windows-myotis-job.log`, lines 491–510
 (build) and 572–576 (skip); `/tmp/freedom-pr295-tests.log`, lines 3750–3751
-(test totals). No local execution or new tests were performed for this
-documentation checkpoint.
+(test totals) and lines 92/119 (synthetic merge checkout). The push run's log is
+`/tmp/freedom-pr295-c915-tests.log`, lines 92/106 (actual head checkout) and
+3718–3719 (test totals). No new tests were performed for this documentation
+checkpoint.
 
 Required disposable-host matrix before promoting the PR out of draft:
 
 | Area | Required evidence |
 | --- | --- |
 | POSIX helper | Linux/macOS compile; real fd3 transport; natural exit; blocked read/start/status/stop; parent-control loss at startup stages; unknown supervisor loss; verified terminal and durable quarantine/recovery |
-| Windows helper | x64 MSVC compile passed at `09989259`; still required: CRT fd3 mapping; explicit inheritance; suspended launch/job failure paths; retained-HANDLE termination; control loss; durable records; unsigned and signed package behavior |
+| Windows helper | x64 MSVC compile passed in PR CI for head `09989259`; still required: CRT fd3 mapping; explicit inheritance; suspended launch/job failure paths; retained-HANDLE termination; control loss; durable records; unsigned and signed package behavior |
 | Concurrency | Queue/caller timeouts never refill native admission; stale generation/reply rejection; independent chains and bounded polling; main DNS/file liveness |
 | App lifecycle | Actual Quit reaches OS exit; chain stop/restart cannot reuse a live directory; profile stale-lock recovery cannot bypass quarantine |
 | Packaging | Exact candidate/dependencies, helper inclusion/signatures, RunAsNode fuse, ASAR/native loading, all supported release targets |
