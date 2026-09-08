@@ -1,6 +1,7 @@
 // Myotis embedded Ethereum light-client controls in the Nodes menu.
 import { state } from './state.js';
 import { pushDebug } from './debug.js';
+import { countText, versionText as versionLabel } from './ui-format.js';
 
 let toggleButton = null;
 let toggleSwitch = null;
@@ -73,9 +74,9 @@ const updateControls = (status) => {
   infoPanel?.classList.toggle('visible', state.antMenuOpen && running);
   if (stateText) stateText.textContent = stateLabel(status);
   if (peersCount) peersCount.textContent = String(status?.peerCount ?? 0);
-  if (finalizedBlock) finalizedBlock.textContent = status?.finalizedBlockNumber || '--';
+  if (finalizedBlock) finalizedBlock.textContent = countText(status?.finalizedBlockNumber);
   if (versionText) {
-    versionText.textContent = status?.version ? `Myotis v${status.version}` : 'Myotis';
+    versionText.textContent = versionLabel(status?.version && `Myotis v${status.version}`);
   }
 };
 
@@ -112,9 +113,9 @@ const updateGnosisControls = (status) => {
   gnosis.info?.classList.toggle('visible', state.antMenuOpen && running);
   if (gnosis.state) gnosis.state.textContent = stateLabel(status);
   if (gnosis.peers) gnosis.peers.textContent = String(status?.peerCount ?? 0);
-  if (gnosis.block) gnosis.block.textContent = status?.finalizedBlockNumber || '--';
+  if (gnosis.block) gnosis.block.textContent = countText(status?.finalizedBlockNumber);
   if (gnosis.version) {
-    gnosis.version.textContent = status?.version ? `Myotis v${status.version}` : 'Myotis';
+    gnosis.version.textContent = versionLabel(status?.version && `Myotis v${status.version}`);
   }
 };
 

@@ -1357,7 +1357,7 @@
               type="search"
               id="shortcut-search"
               class="rpc-input"
-              placeholder="Search shortcuts"
+              placeholder="Search shortcuts…"
               spellcheck="false"
             />
             <button type="button" class="btn" id="shortcuts-restore-defaults">
@@ -1824,7 +1824,7 @@
                   </div>`
               )
               .join('')
-          : '<div class="profile-node-empty">No custom search engines yet.</div>';
+          : '<div class="profile-node-empty">No custom search engines yet</div>';
       };
 
       const applySearchSettings = (settings) => {
@@ -2788,7 +2788,7 @@
           const visible = entries.filter(matchesQuery);
           if (!visible.length) {
             view.innerHTML =
-              '<div class="card"><div class="profile-node-empty">No shortcuts match your search.</div></div>';
+              '<div class="card"><div class="profile-node-empty">No shortcuts match your search</div></div>';
             return;
           }
           const categories = [];
@@ -3056,7 +3056,7 @@
             return '<div class="rpc-block" style="border-top: none"><p class="rpc-hint">Loading…</p></div>';
           }
           if (!addState.results.length) {
-            return '<div class="rpc-block" style="border-top: none"><p class="rpc-hint">No chains found.</p></div>';
+            return '<div class="rpc-block" style="border-top: none"><p class="rpc-hint">No chains found</p></div>';
           }
           return addState.results
             .map((c) => {
@@ -3208,7 +3208,7 @@
               <div class="rpc-block" style="border-top: none">
                 <p class="row-label" style="margin-bottom: 8px">${f.mode === 'edit' ? 'Edit endpoint' : 'Add endpoint'}</p>
                 <div class="rpc-row" style="margin-bottom: 8px">
-                  <input type="text" class="rpc-input" id="ep-url" placeholder="https://... or http://localhost:8545" spellcheck="false" value="${esc(f.url)}" />
+                  <input type="text" class="rpc-input" id="ep-url" placeholder="https://… or http://localhost:8545" spellcheck="false" value="${esc(f.url)}" />
                 </div>
                 ${f.error ? `<p class="rpc-status error" style="margin-bottom: 8px">${esc(f.error)}</p>` : ''}
                 <button type="button" class="btn" data-action="save-endpoint">Save</button>
@@ -3360,7 +3360,7 @@
             <p class="row-help" style="margin-bottom: 12px">Signed transactions use P2P first, with RPC as the compatibility fallback.</p>
             <div class="card">${accessRows(cid, 'broadcast', broadcastOrder)}</div>
 
-            ${section('Your RPCs', 'Endpoints you added — tried first.', mine, 'No custom RPCs yet.')}
+            ${section('Your RPCs', 'Endpoints you added — tried first.', mine, 'No custom RPCs yet')}
             ${cardButton('+ Add a custom RPC', 'add-endpoint')}
             ${endpointForm ? endpointFormHtml() : ''}
 
@@ -4387,7 +4387,7 @@
           const providers = config.sources.filter((s) => s.keyed);
           const body = providers.length
             ? `<div class="card">${providers.map(providerRow).join('')}</div>`
-            : '<div class="card"><div class="rpc-block" style="border-top: none"><p class="rpc-hint">No keyed providers available.</p></div></div>';
+            : '<div class="card"><div class="rpc-block" style="border-top: none"><p class="rpc-hint">No keyed providers available</p></div></div>';
           view.innerHTML = `
             <h2 class="section-title">RPC Providers</h2>
             <p class="row-help" style="margin-bottom: 16px">

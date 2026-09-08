@@ -93,7 +93,7 @@ export function identityModeLabel(identity) {
 
 export function truncateAddress(address) {
   if (!address || address.length <= 18) return address || '--';
-  return `${address.slice(0, 8)}...${address.slice(-6)}`;
+  return `${address.slice(0, 8)}…${address.slice(-6)}`;
 }
 
 function orderIdentities(state) {
