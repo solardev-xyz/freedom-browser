@@ -2426,7 +2426,7 @@
           control.className = 'row-control';
           const removeBtn = document.createElement('button');
           removeBtn.type = 'button';
-          removeBtn.className = 'btn danger';
+          removeBtn.className = 'btn';
           removeBtn.textContent = 'Remove';
           removeBtn.addEventListener('click', async () => {
             await freedomAPI.adblockRemoveAllowlistHost(host).catch(() => {});
@@ -2981,10 +2981,10 @@
           </button>`;
 
         // A standalone action button in its own card (12px top margin).
-        const cardButton = (label, action) => `
+        const cardButton = (label, action, variant = '') => `
           <div class="card" style="margin-top: 12px">
             <div class="rpc-block" style="border-top: none">
-              <button type="button" class="btn" data-action="${action}">${label}</button>
+              <button type="button" class="btn${variant ? ' ' + variant : ''}" data-action="${action}">${label}</button>
             </div>
           </div>`;
 
@@ -3149,7 +3149,7 @@
                 <span class="slider"></span></label>`;
           } else {
             controls = `<button type="button" class="btn" data-action="edit-source" data-id="${esc(src.id)}">Edit</button>
-               <button type="button" class="btn" data-action="delete-source" data-id="${esc(src.id)}" title="Remove" aria-label="Remove">✕</button>`;
+               <button type="button" class="btn" data-action="delete-source" data-id="${esc(src.id)}">Remove</button>`;
           }
 
           return `
@@ -3347,7 +3347,7 @@
                 : ''
             }
 
-            ${isCustom ? cardButton('Remove this chain', 'remove-chain') : ''}`;
+            ${isCustom ? cardButton('Remove this chain', 'remove-chain', 'danger') : ''}`;
         };
 
         const render = () => {
@@ -4568,7 +4568,7 @@
                       <p class="row-label" style="word-break: break-all">${esc(origin)}</p>
                     </div>
                     <div class="row-control">
-                      <button class="btn" data-action="revoke-origin"
+                      <button class="btn danger" data-action="revoke-origin"
                         data-origin="${esc(origin)}">Remove site</button>
                     </div>
                   </div>
