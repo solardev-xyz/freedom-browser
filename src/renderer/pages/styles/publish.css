@@ -1,7 +1,8 @@
+/* Internal pages follow Settings > Appearance, not the OS colour scheme: the
+   webview preload resolves the setting and stamps `data-theme` on <html>
+   before first paint (#233). Declaring `color-scheme` from the same attribute
+   keeps scrollbars and form controls in step (#250). */
 :root {
-  /* This page ships a dark palette only, so it pins `color-scheme` instead of
-     following `data-theme`; without it Chromium paints a light scrollbar on
-     the dark page (#233). */
   color-scheme: dark;
   --bg: #1e1e1e;
   --surface: #2a2a2a;
@@ -12,6 +13,22 @@
   --danger: #f44336;
   --warn: #ff9800;
   --success: #4caf50;
+}
+
+/* Light theme (#250). The palette rule carries specificity on purpose — it has
+   to outweigh the `:root` defaults above, so it is *not* wrapped in the
+   zero-specificity `:where()` used for the rule overrides further down. */
+html[data-theme='light'] {
+  color-scheme: light;
+  --bg: #ffffff;
+  --surface: #f6f8fa;
+  --border: #d0d7de;
+  --text: #24292f;
+  --muted: #57606a;
+  --accent: #1a73e8;
+  --danger: #b3261e;
+  --warn: #8a5a07;
+  --success: #1f7a34;
 }
 
 * {
@@ -422,4 +439,14 @@ html, body {
 
 .hidden {
   display: none !important;
+}
+
+/* Light theme (#250). Everything above paints from the palette, so the light
+   theme is the palette rule at the top of this file plus the one hard-coded
+   surface below. `:where()` holds the wrapper at zero specificity, so the rule
+   under it weighs exactly what the rule it overrides does. */
+:where(html[data-theme='light']) {
+  .publish-action-card:hover:not(:disabled) {
+    background: #eaeef2;
+  }
 }
