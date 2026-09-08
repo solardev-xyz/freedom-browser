@@ -1405,9 +1405,12 @@ describe('ipc-handlers', () => {
 
   // Regression coverage for the three clipboard breakages that
   // docs/audits/electron-44-compatibility-2026-09.md (B2) found on Electron
-  // 44.2.0. They are exercised against a mock of 44's clipboard surface so
-  // they fail here, on the Electron 43 we ship today, rather than only in the
-  // one e2e job that a `npm ci` failure was hiding.
+  // 44.2.0. They landed before the Electron 44 bump, against a mock of 44's
+  // clipboard surface, so that they failed on the Electron 43 shipping at the
+  // time rather than only in the one e2e job a `npm ci` failure was hiding.
+  // The app now ships Electron 44, so this mock matches the real surface; the
+  // `writeImage` assertion in the block above is what still pins the legacy
+  // Electron <= 43 branch of `writeImageToClipboard`.
   describe('clipboard handlers on the Electron 44 clipboard surface', () => {
     test('clipboard:read-text resolves a structured-cloneable string, never a promise', async () => {
       const ctx = loadElectron44ClipboardModule({
