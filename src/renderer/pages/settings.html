@@ -84,6 +84,14 @@
 
       /* `display: flex` below outranks the UA's `[hidden] { display: none }`,
          so search filtering has to hide the item explicitly. */
+      /* Chrome separates its settings groups with a rule; #268 puts one
+         before the last two entries. */
+      .nav-rule {
+        height: 1px;
+        margin: 8px 4px;
+        background: var(--border);
+      }
+
       .nav-item[hidden] {
         display: none;
       }
@@ -713,6 +721,15 @@
         display: none;
       }
 
+      /* Startup rows relocated into their node row (#268). They keep their
+         own markup — label, helper and disabled state all still apply — so
+         only the row chrome needs neutralising inside the node card. */
+      .profile-node-status .row {
+        padding: 6px 0 0 0;
+        border-bottom: 0;
+        gap: 12px;
+      }
+
       /* The Swarm mode readout, relocated into the Swarm node row (#275).
          Not `.profile-node-mode` — that name is already taken above by the
          mode pill. */
@@ -883,6 +900,22 @@
           />
         </div>
         <nav class="nav" id="nav">
+          <button type="button" class="nav-item" data-target="profile">
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M20 21a8 8 0 0 0-16 0"></path>
+              <circle cx="12" cy="7" r="4"></circle>
+            </svg>
+            Profile
+          </button>
           <button type="button" class="nav-item" data-target="appearance">
             <svg
               width="16"
@@ -922,55 +955,6 @@
             </svg>
             Search
           </button>
-          <button type="button" class="nav-item" data-target="profile">
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <path d="M20 21a8 8 0 0 0-16 0"></path>
-              <circle cx="12" cy="7" r="4"></circle>
-            </svg>
-            Profile
-          </button>
-          <button type="button" class="nav-item" data-target="nodes">
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
-              <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
-              <line x1="6" y1="6" x2="6.01" y2="6"></line>
-              <line x1="6" y1="18" x2="6.01" y2="18"></line>
-            </svg>
-            Nodes
-          </button>
-          <button type="button" class="nav-item" data-target="startup">
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
-            </svg>
-            Startup
-          </button>
           <button type="button" class="nav-item" data-target="downloads">
             <svg
               width="16"
@@ -1008,7 +992,22 @@
             </svg>
             Shortcuts
           </button>
-          <button type="button" class="nav-item" data-target="chains">
+          <button type="button" class="nav-item" data-target="privacy">
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+            </svg>
+            Privacy and security
+          </button>
+          <button type="button" class="nav-item" data-target="networks">
             <svg
               width="16"
               height="16"
@@ -1025,9 +1024,9 @@
               <line x1="11" y1="7.5" x2="6" y2="16.5"></line>
               <line x1="13" y1="7.5" x2="18" y2="16.5"></line>
             </svg>
-            Chains
+            Networks
           </button>
-          <button type="button" class="nav-item" data-target="rpc">
+          <button type="button" class="nav-item" data-target="nodes">
             <svg
               width="16"
               height="16"
@@ -1038,59 +1037,15 @@
               stroke-linecap="round"
               stroke-linejoin="round"
             >
-              <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"></path>
+              <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
+              <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
+              <line x1="6" y1="6" x2="6.01" y2="6"></line>
+              <line x1="6" y1="18" x2="6.01" y2="18"></line>
             </svg>
-            RPC Providers
+            Nodes
           </button>
-          <button type="button" class="nav-item" data-target="ens">
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <polygon points="12 2 4 12 12 16 20 12 12 2"></polygon>
-              <polygon points="4 14 12 22 20 14 12 18 4 14"></polygon>
-            </svg>
-            Name Resolution
-          </button>
-          <button type="button" class="nav-item" data-target="adblock">
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <circle cx="12" cy="12" r="10"></circle>
-              <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"></line>
-            </svg>
-            Ad Blocking
-          </button>
-          <button type="button" class="nav-item" data-target="permissions">
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <path d="M12 2 L4 6 L4 12 C4 17 7.5 21 12 22 C16.5 21 20 17 20 12 L20 6 Z"></path>
-              <path d="m9 12 2 2 4-4"></path>
-            </svg>
-            Site Permissions
-          </button>
-          <button type="button" class="nav-item" data-target="experimental" id="nav-experimental">
+          <div class="nav-rule" role="separator"></div>
+          <button type="button" class="nav-item" data-target="advanced" id="nav-experimental">
             <svg
               width="16"
               height="16"
@@ -1106,9 +1061,9 @@
               <path d="M8.5 2h7"></path>
               <path d="M14 9.3a6.5 6.5 0 1 1-4 0"></path>
             </svg>
-            Experimental
+            Advanced
           </button>
-          <button type="button" class="nav-item" data-target="updates">
+          <button type="button" class="nav-item" data-target="about">
             <svg
               width="16"
               height="16"
@@ -1119,10 +1074,11 @@
               stroke-linecap="round"
               stroke-linejoin="round"
             >
-              <polyline points="23 4 23 10 17 10"></polyline>
-              <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+              <circle cx="12" cy="12" r="10"></circle>
+              <line x1="12" y1="16" x2="12" y2="12"></line>
+              <line x1="12" y1="8" x2="12.01" y2="8"></line>
             </svg>
-            Updates
+            About Freedom
           </button>
         </nav>
       </aside>
@@ -1288,9 +1244,9 @@
 
         <!-- Startup -->
         <section class="section" id="startup">
-          <h2 class="section-title">Startup</h2>
+          <h3 class="subsection-title">Tor</h3>
           <div class="card">
-            <div class="row">
+            <div class="row" id="ant-launch-row">
               <div class="row-body">
                 <p class="row-label">Start Swarm node</p>
                 <p class="row-help">Restart to apply.</p>
@@ -1302,7 +1258,7 @@
                 </label>
               </div>
             </div>
-            <div class="row">
+            <div class="row" id="ipfs-launch-row">
               <div class="row-body">
                 <p class="row-label">Start IPFS node</p>
                 <p class="row-help">Restart to apply.</p>
@@ -1431,7 +1387,7 @@
           <p class="row-help" style="margin-bottom: 16px">
             How Freedom resolves <code>.eth</code>, <code>.box</code>, <code>.wei</code>, and
             <code>.gwei</code> names. These records live on Ethereum — manage RPC endpoints under
-            <a href="#chains">Chains settings</a>.
+            <a href="#networks">Networks settings</a>.
           </p>
           <h3 class="subsection-title">Resolution order</h3>
           <p class="row-help" style="margin: 0 0 12px 0">
@@ -1475,21 +1431,12 @@
           </div>
         </section>
 
-        <!-- Site Permissions -->
-        <section class="section" id="permissions">
-          <div class="section-header">
-            <h2 class="section-title">Site Permissions</h2>
-            <button type="button" class="btn danger" id="permissions-revoke-all" disabled>
-              Remove all
-            </button>
-          </div>
-          <div id="permissions-view"></div>
-        </section>
 
         <!-- Experimental -->
         <!-- Ad Blocking -->
         <section class="section" id="adblock">
-          <h2 class="section-title">Ad Blocking</h2>
+          <h2 class="section-title">Privacy and security</h2>
+          <h3 class="subsection-title" style="margin-top: 0">Ad blocking</h3>
           <div class="card">
             <div class="row" id="adblock-enabled-row">
               <div class="row-body">
@@ -1590,8 +1537,18 @@
           </p>
         </section>
 
+        <!-- Site Permissions -->
+        <section class="section" id="permissions">
+          <div class="section-header">
+            <h3 class="subsection-title">Site permissions</h3>
+            <button type="button" class="btn danger" id="permissions-revoke-all" disabled>
+              Remove all
+            </button>
+          </div>
+          <div id="permissions-view"></div>
+        </section>
         <section class="section" id="experimental">
-          <h2 class="section-title">Experimental</h2>
+          <h2 class="section-title">Advanced</h2>
           <div class="card">
             <div class="row">
               <div class="row-body">
@@ -1630,8 +1587,15 @@
 
         <!-- Updates -->
         <section class="section" id="updates">
-          <h2 class="section-title">Updates</h2>
+          <h2 class="section-title">About Freedom</h2>
           <div class="card">
+            <div class="row">
+              <div class="row-body">
+                <p class="row-label">Version</p>
+                <p class="row-help" id="about-version">—</p>
+              </div>
+              <div class="row-control"></div>
+            </div>
             <div class="row">
               <div class="row-body">
                 <p class="row-label">Automatically check for updates</p>
@@ -1760,6 +1724,22 @@
         cancelButton: $('cancel-search-provider'),
         status: $('search-provider-status'),
       };
+
+      // Which startup rows belong to which node row (#268).
+      const STARTUP_ROWS = {
+        bee: ['ant-launch-row'],
+        ipfs: ['ipfs-launch-row'],
+        myotis: ['myotis-launch-row', 'myotis-gnosis-launch-row'],
+        radicle: ['radicle-launch-row'],
+      };
+      // About Freedom's version line. The app stamps its version into the
+      // user agent, so this needs no new IPC; a manual "Check for updates"
+      // button does, and is not mocked here.
+      const aboutVersion = $('about-version');
+      if (aboutVersion) {
+        const stamped = /\bFreedom(?:Dev)?\/([^\s]+)/.exec(navigator.userAgent);
+        aboutVersion.textContent = stamped ? stamped[1] : 'unknown';
+      }
 
       const swarmModeRow = $('swarm-mode-row');
       const swarmModeHelp = $('swarm-mode-help');
@@ -2030,19 +2010,73 @@
       // chrome can render freedom://settings/<section> in the address bar.
       const navItems = [...document.querySelectorAll('.nav-item')];
       const SECTIONS = navItems.map((i) => i.dataset.target).filter(Boolean);
-      const DEFAULT_SECTION = SECTIONS[0] || 'appearance';
+      const DEFAULT_SECTION = SECTIONS[0] || 'profile';
 
-      // The section is the part before any `/` sub-route, so a deep link
-      // like #chains/1 (a chain detail) still resolves to `chains`.
-      const resolveSection = (hash) => {
-        const candidate = (hash || '').replace(/^#/, '').toLowerCase().split('/')[0];
-        return SECTIONS.includes(candidate) ? candidate : DEFAULT_SECTION;
+      // Since #268 a nav entry can own more than one `<section>` panel:
+      // Privacy and security holds ad blocking and site permissions,
+      // Networks holds the chain list, the API keys and name resolution,
+      // Nodes holds the node list and what is left of Startup.
+      const NAV_PANELS = {
+        profile: ['profile'],
+        appearance: ['appearance'],
+        search: ['search'],
+        downloads: ['downloads'],
+        shortcuts: ['shortcuts'],
+        privacy: ['adblock', 'permissions'],
+        networks: ['chains', 'rpc', 'ens'],
+        nodes: ['nodes', 'startup'],
+        advanced: ['experimental'],
+        about: ['updates'],
+      };
+      const ALL_PANELS = [...new Set(Object.values(NAV_PANELS).flat())];
+
+      // Hashes that named a nav item before the regroup still resolve, so
+      // bookmarks and the app's own deep links (freedom://settings/rpc from
+      // the wallet, freedom://settings/ens from the ENS interstitial) keep
+      // working; canonicalizeHash then rewrites them to the new route.
+      const LEGACY_ROUTES = {
+        chains: 'networks',
+        rpc: 'networks/keys',
+        ens: 'networks/names',
+        adblock: 'privacy',
+        permissions: 'privacy',
+        startup: 'nodes',
+        experimental: 'advanced',
+        updates: 'about',
       };
 
-      const showSection = (section) => {
-        for (const id of SECTIONS) {
+      // The canonical route for a hash: `<section>` or `<section>/<sub>`.
+      const resolveRoute = (hash) => {
+        const raw = (hash || '').replace(/^#/, '').toLowerCase();
+        const [head, ...rest] = raw.split('/');
+        if (LEGACY_ROUTES[head]) {
+          // Only the chain detail carries a sub-route worth keeping.
+          return head === 'chains' && rest[0]
+            ? `${LEGACY_ROUTES[head]}/${rest.join('/')}`
+            : LEGACY_ROUTES[head];
+        }
+        return SECTIONS.includes(head) ? raw : DEFAULT_SECTION;
+      };
+
+      const resolveSection = (hash) => resolveRoute(hash).split('/')[0];
+
+      // Which panels a route shows. Networks' sub-routes pick one of its
+      // three; every other entry shows all of its panels together.
+      const panelsFor = (section, sub) => {
+        if (section === 'networks') {
+          if (sub === 'keys') return ['rpc'];
+          if (sub === 'names') return ['ens'];
+          return ['chains'];
+        }
+        return NAV_PANELS[section] || [];
+      };
+
+      const showSection = (route) => {
+        const [section, sub] = String(route).split('/');
+        const visible = panelsFor(section, sub);
+        for (const id of ALL_PANELS) {
           const el = document.getElementById(id);
-          if (el) el.classList.toggle('hidden', id !== section);
+          if (el) el.classList.toggle('hidden', !visible.includes(id));
         }
         navItems.forEach((item) =>
           item.classList.toggle('active', item.dataset.target === section)
@@ -2083,13 +2117,11 @@
       // existing Settings tab, or a typo, is the same case as a bad first
       // load. history.replaceState keeps it out of the back/forward stack.
       const canonicalizeHash = () => {
-        const section = resolveSection(location.hash);
-        const raw = location.hash.replace(/^#/, '').toLowerCase();
-        // A bare section or one of its sub-routes (e.g. chains/1) is canonical.
-        if (raw !== section && !raw.startsWith(section + '/')) {
-          history.replaceState(null, '', `#${section}`);
+        const route = resolveRoute(location.hash);
+        if (location.hash.replace(/^#/, '').toLowerCase() !== route) {
+          history.replaceState(null, '', `#${route}`);
         }
-        return section;
+        return route;
       };
 
       window.addEventListener('hashchange', () => {
@@ -2276,6 +2308,7 @@
                 ${details}
                 ${renderExternalEditor(protocol, config, mode)}
                 ${protocol === 'bee' ? '<div data-swarm-mode-slot></div>' : ''}
+                <div data-startup-slot="${protocol}"></div>
               </div>
             </div>`;
         });
@@ -2288,6 +2321,18 @@
         if (swarmSlot && swarmModeRow) {
           swarmModeRow.hidden = false;
           swarmSlot.appendChild(swarmModeRow);
+        }
+        // Same for the "Start … when Freedom opens" rows, which used to be
+        // their own nav item (#268). Myotis owns two — Ethereum and Gnosis.
+        for (const [protocol, rowIds] of Object.entries(STARTUP_ROWS)) {
+          const slot = profileFields.nodesCard.querySelector(
+            `[data-startup-slot="${protocol}"]`
+          );
+          if (!slot) continue;
+          for (const rowId of rowIds) {
+            const row = document.getElementById(rowId);
+            if (row) slot.appendChild(row);
+          }
         }
       };
 
@@ -3110,8 +3155,9 @@
 
         // The chain whose detail is open, parsed from the hash; null = list.
         const openChainId = () => {
-          const parts = location.hash.replace(/^#/, '').toLowerCase().split('/');
-          return parts[0] === 'chains' && parts[1] ? parts[1] : null;
+          const parts = resolveRoute(location.hash).split('/');
+          // `keys` and `names` are the other two Networks sub-routes.
+          return parts[0] === 'networks' && /^\d+$/.test(parts[1] || '') ? parts[1] : null;
         };
 
         // A master-list button row: name + sub-line, trailing chevron.
@@ -3431,7 +3477,7 @@
             }</div>`;
 
           view.innerHTML = `
-            <button type="button" class="back-link" data-action="back">‹ Chains</button>
+            <button type="button" class="back-link" data-action="back">‹ Networks</button>
             <h2 class="section-title">${esc(chainName(cid))}</h2>
             <p class="row-help" style="margin-bottom: 16px">chain ${esc(cid)}${isCustom ? ' · custom chain' : ''}</p>
 
@@ -3498,7 +3544,7 @@
           // chain since removed) must not leave the chain sub-route in the
           // address bar over a list, and must say why.
           if (cid && authoritative) {
-            history.replaceState(null, '', '#chains');
+            history.replaceState(null, '', '#networks');
             renderList();
             setStatus('That chain is no longer configured.', 'error');
             return;
@@ -3605,7 +3651,7 @@
             setStatus('', '');
             addState = null;
             await reload();
-            location.hash = 'chains/' + def.chainId;
+            location.hash = 'networks/' + def.chainId;
           } catch (err) {
             const message = err?.message || 'Could not add chain';
             if (onError) onError(message);
@@ -3700,9 +3746,9 @@
           const id = btn.dataset.id;
 
           if (action === 'open-chain') {
-            location.hash = 'chains/' + btn.dataset.chain;
+            location.hash = 'networks/' + btn.dataset.chain;
           } else if (action === 'back') {
-            location.hash = 'chains';
+            location.hash = 'networks';
           } else if (action === 'add-endpoint') {
             endpointForm = { mode: 'add', id: null, url: '' };
             render();
@@ -3774,7 +3820,7 @@
           } else if (action === 'delete-source') {
             await mutate(() => freedomAPI.removeEndpointSource(id));
           } else if (action === 'open-rpc-page') {
-            location.hash = 'rpc';
+            location.hash = 'networks/keys';
           } else if (action === 'remove-chain') {
             const cid = openChainId();
             if (!cid) return;
@@ -3791,7 +3837,7 @@
                 return;
               }
               setStatus('', '');
-              location.hash = 'chains';
+              location.hash = 'networks';
             } catch (err) {
               setStatus(err?.message || 'Could not remove chain', 'error');
             }
@@ -3919,7 +3965,7 @@
         // (config may have changed elsewhere). The transient add/edit form
         // is cleared on any navigation.
         window.addEventListener('hashchange', () => {
-          if (resolveSection(location.hash) !== 'chains') return;
+          if (resolveRoute(location.hash) !== 'networks' && !openChainId()) return;
           clearTimeout(searchTimer);
           endpointForm = null;
           addState = null;
@@ -3951,13 +3997,13 @@
           {
             id: 'quorum',
             ...NETWORK_SOURCE_COPY.quorum,
-            link: '#chains/1',
+            link: '#networks/1',
             linkLabel: 'Manage endpoints',
           },
           {
             id: 'direct',
             ...NETWORK_SOURCE_COPY.direct,
-            link: '#chains/1',
+            link: '#networks/1',
             linkLabel: 'Configure',
           },
         ];
@@ -4447,7 +4493,7 @@
         };
 
         window.addEventListener('hashchange', () => {
-          if (location.hash.replace(/^#/, '').toLowerCase() === 'ens') refresh();
+          if (resolveRoute(location.hash) === 'networks/names') refresh();
         });
         freedomAPI.onSettingsUpdated?.((settings) => {
           if (settings?.networkConfigUpdated) refresh();
@@ -4529,11 +4575,12 @@
             ? `<div class="card">${providers.map(providerRow).join('')}</div>`
             : '<div class="card"><div class="rpc-block" style="border-top: none"><p class="rpc-hint">No keyed providers available</p></div></div>';
           view.innerHTML = `
-            <h2 class="section-title">RPC Providers</h2>
+            <button type="button" class="back-link" data-action="back-to-networks">‹ Networks</button>
+            <h2 class="section-title">API keys</h2>
             <p class="row-help" style="margin-bottom: 16px">
               Commercial RPC providers. Add an API key to use one — a single
               key covers every chain that provider serves. Keyless public
-              RPCs are managed per chain under Chains settings.
+              RPCs are managed per chain under Networks settings.
             </p>
             ${body}`;
         };
@@ -4572,6 +4619,10 @@
           const action = btn.dataset.action;
           const id = btn.dataset.id;
 
+          if (action === 'back-to-networks') {
+            location.hash = 'networks';
+            return;
+          }
           if (action === 'edit-key') {
             keyFor = id;
             render();
@@ -4624,7 +4675,7 @@
 
         // Re-sync on navigation into this section.
         window.addEventListener('hashchange', () => {
-          if (resolveSection(location.hash) !== 'rpc') return;
+          if (resolveRoute(location.hash) !== 'networks/keys') return;
           keyFor = null;
           reload();
         });
@@ -4750,7 +4801,7 @@
 
         // Re-sync on navigation into this section.
         window.addEventListener('hashchange', () => {
-          if (resolveSection(location.hash) !== 'permissions') return;
+          if (resolveSection(location.hash) !== 'privacy') return;
           reload();
         });
 

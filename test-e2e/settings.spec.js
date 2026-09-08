@@ -114,7 +114,7 @@ test('name resolution methods can be reordered, enabled, and persisted as one po
   window,
 }) => {
   await window.evaluate(() => document.getElementById('settings-btn')?.click());
-  await settingsEval(window, `location.hash = 'ens'`);
+  await settingsEval(window, `location.hash = 'networks/names'`);
   await expect
     .poll(() => settingsEval(window, `document.querySelectorAll('[data-method]').length`))
     .toBe(4);
@@ -168,7 +168,7 @@ test('name resolution methods can be reordered, enabled, and persisted as one po
     })()`
   );
   expect(nodeSettingsHash).toBe('#nodes');
-  await settingsEval(window, `location.hash = 'ens'`);
+  await settingsEval(window, `location.hash = 'networks/names'`);
 
   await settingsEval(
     window,
@@ -242,8 +242,8 @@ test('Ethereum and Gnosis expose verified chain sources and independent Myotis s
 }) => {
   await window.evaluate(() => document.getElementById('settings-btn')?.click());
   await expect
-    .poll(() => settingsEval(window, `location.hash = 'chains/100'; location.hash`))
-    .toBe('#chains/100');
+    .poll(() => settingsEval(window, `location.hash = 'networks/100'; location.hash`))
+    .toBe('#networks/100');
 
   await expect
     .poll(() =>
@@ -332,8 +332,8 @@ test('custom-chain access order can be reordered from its rendered defaults', as
   );
   expect(added).toMatchObject({ success: true });
   await expect
-    .poll(() => settingsEval(window, `location.hash = 'chains/777'; location.hash`))
-    .toBe('#chains/777');
+    .poll(() => settingsEval(window, `location.hash = 'networks/777'; location.hash`))
+    .toBe('#networks/777');
   await expect
     .poll(() =>
       settingsEval(
