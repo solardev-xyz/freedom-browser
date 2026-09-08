@@ -67,9 +67,38 @@ describe('myotis-manager', () => {
     const calls = clients[0].request.mock.calls.length;
     for (let i = 0; i < 100; i++) { mod.publicStatus(); mod.getStatus(); mod.isReady(); }
     expect(clients[0].request).toHaveBeenCalledTimes(calls);
-    jest.setSystemTime(Date.now() + 3001);
+    jest.setSystemTime(Date.now() + 6001);
     expect(mod.getStatus()).toBeNull();
     expect(mod.isReady()).toBe(false);
+  });
+
+  test('slow status keeps readiness until soft staleness, then recovers without replacing the pending request', async () => {
+    const { mod, clients, status } = loadManager();
+    await mod.startMyotis();
+    const client = clients[0];
+    let complete;
+    client.request.mockImplementation(() => new Promise((resolve) => { complete = resolve; }));
+    const epoch = mod.getAvailabilityEpoch();
+    await jest.advanceTimersByTimeAsync(3500); // poll starts at 1s; reply latency is 2.5s
+    expect(mod.isReady()).toBe(true);
+    expect(mod.getAvailabilityEpoch()).toBe(epoch);
+    expect(client.request).toHaveBeenLastCalledWith('status', [], 10000);
+    client.options.onStatus(status); complete(status);
+    await jest.advanceTimersByTimeAsync(1);
+
+    // The next poll occupies its one slot past freshness. Routing becomes
+    // unavailable honestly, while native admission and the generation survive.
+    await jest.advanceTimersByTimeAsync(6000);
+    expect(mod.isReady()).toBe(false);
+    const calls = client.request.mock.calls.length;
+    await jest.advanceTimersByTimeAsync(1000);
+    expect(client.request).toHaveBeenCalledTimes(calls);
+    expect(client.accepting).toBe(true);
+    expect(client.stop).not.toHaveBeenCalled();
+    client.options.onStatus(status); complete(status);
+    await Promise.resolve();
+    expect(mod.isReady()).toBe(true);
+    expect(clients).toHaveLength(1);
   });
 
   test('does not create any process when disabled', async () => {

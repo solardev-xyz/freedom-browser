@@ -63,6 +63,13 @@ int main(int argc, char **argv) {
   /* Node's private IPC fd must be exactly the separately inherited fd 3. */
   const char *ipc = getenv("NODE_CHANNEL_FD");
   if (!ipc || strcmp(ipc, "3") != 0) return 64;
+  /* Terminal/session group signals must not kill the sole wait owner between
+   * active and retired. Before this point no new record or child exists.
+   * Parent loss still revokes stdin; the execution child resets dispositions.
+   * SIGKILL/supervisor loss remains an unknown outcome requiring quarantine.
+   */
+  if (signal(SIGINT, SIG_IGN) == SIG_ERR || signal(SIGTERM, SIG_IGN) == SIG_ERR ||
+      signal(SIGHUP, SIG_IGN) == SIG_ERR) return 65;
   signal(SIGCHLD, SIG_DFL);
   signal(SIGPIPE, SIG_IGN);
   sigset_t empty;

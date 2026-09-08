@@ -15,7 +15,8 @@ const { getMyotisDataDir } = require('../profile-paths');
 const { MyotisProcess } = require('./myotis-process');
 const MYOTIS_VERSION = '0.1.7';
 const AVAILABILITY_POLL_MS = 1000;
-const STATUS_FRESH_MS = 3000;
+const STATUS_FRESH_MS = 6000;
+const STATUS_REQUEST_MS = 10000;
 const RECOVERY_COOLDOWN_MS = 15000;
 
 const NETWORKS = new Map([
@@ -203,7 +204,7 @@ function pollStatus(instance) {
   if (instance.statusPending) return;
   instance.statusPending = true;
   const client = instance.client;
-  client.request('status', [], STATUS_FRESH_MS).catch(() => {
+  client.request('status', [], STATUS_REQUEST_MS).catch(() => {
     if (instance.client === client) {
       instance.lastStatus = null;
       publishAvailability(instance, false, 'status-unavailable');

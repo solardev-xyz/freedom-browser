@@ -112,6 +112,22 @@ describe('MyotisProcess', () => {
     await Promise.all(pending);
   });
 
+  test('retains the pending status permit until the ten-second hard deadline stops the generation', async () => {
+    ready();
+    const status = processClient.request('status', [], 10000).catch((error) => error);
+    jest.advanceTimersByTime(6001);
+    expect(processClient.accepting).toBe(true);
+    expect(processClient.active.size).toBe(1);
+    await expect(processClient.request('status')).rejects.toThrow('already pending');
+    jest.advanceTimersByTime(3999);
+    expect(processClient.accepting).toBe(false);
+    expect(processClient.active.size).toBe(1);
+    expect(callbacks.onUnavailable).toHaveBeenCalledTimes(1);
+    verifiedExit();
+    expect(processClient.active.size).toBe(0);
+    await status;
+  });
+
   test('queued deadlines remove only unsent work and do not retire healthy native work', async () => {
     ready();
     const active = [processClient.request('call').catch((e) => e), processClient.request('call').catch((e) => e)];

@@ -18,8 +18,11 @@ sandbox** or an aggregate CPU/memory limit.
 - The process manager's own deadlines govern native health. Expiring an unsent
   queued request removes only that request. Expiring active work makes the child unavailable, rejects pending callers, stops admission,
   and starts shutdown. Native permits remain held until the matching reply or
-  verified process exit. Status has a three-second deadline and freshness limit;
-  main's synchronous queries read only a small scalar snapshot.
+  verified process exit. Status has a separate ten-second hard request deadline
+  and a six-second cache freshness limit. Staleness disables routing without
+  stopping the generation or releasing its single pending status permit; a
+  late status reply can restore readiness. Main's synchronous queries read only
+  a small scalar snapshot.
 - Startup is bounded to fifteen seconds. Graceful native stop gets 1.5 seconds,
   then main closes the native supervisor's control pipe. The supervisor owns
   termination; JavaScript never signals a PID or calls `ChildProcess.kill`.
@@ -63,7 +66,11 @@ is still unreaped, permanently retires signal authority, then performs the sole
 `waitpid`. No handler or second thread reaps it. The child waits behind a gate;
 control and ownership exist before executable release. EOF/error on the parent
 control pipe revokes the child. Supervisor loss itself does not promise POSIX
-child cleanup; it leaves durable quarantine.
+child cleanup; it leaves durable quarantine. Before creating an active record,
+the supervisor ignores SIGINT, SIGTERM and SIGHUP so terminal/session group
+signals cannot kill the sole wait owner; the execution child resets them to
+default. Parent-control EOF still revokes the child. SIGKILL and other actual
+supervisor-loss cases still require quarantine.
 
 Windows: `CreateProcessW` creates the child suspended, with a mandatory
 `PROC_THREAD_ATTRIBUTE_JOB_LIST` and explicit inherited-handle list. The private
