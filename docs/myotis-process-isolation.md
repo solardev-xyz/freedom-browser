@@ -157,6 +157,11 @@ linked read-only: installed Jest 30.4.2 / babel-jest 30.4.1 differ from this bas
 lock's 30.5.1 versions; ESLint 10.6.0 and Electron 43.0.0 are installed. This is
 provisional tooling evidence, not an exact-lock install or a packaged pass.
 
+A separate disposable macOS arm64 campaign at `098149e7` passed the eight
+benign-fixture supervisor cases once. See the [exact runtime, artifact hashes
+and evidence limits](myotis-supervisor-qualification.md#disposable-mac-checkpoint--2026-09-08).
+It is not a real-addon, Windows, signing, app-Quit or full `e662127c` runtime pass.
+
 Required disposable-host matrix before promoting the PR out of draft:
 
 | Area | Required evidence |

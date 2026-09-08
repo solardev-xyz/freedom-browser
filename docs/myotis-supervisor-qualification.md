@@ -4,8 +4,40 @@ This follow-up harness is **not executed on the primary Mac**. It is intended
 for coordinator-managed disposable Linux/macOS hosts with existing Electron 43
 and an already installed compiler. It loads no real Myotis addon and makes no
 network/provider/blockchain request. It neither downloads software nor launches
-the Freedom application. The harness is currently source/pure-unit reviewed
-only; its existence is not a qualification pass.
+the Freedom application. The disposable Mac checkpoint below qualifies only
+the recorded finite campaign; the remaining product gates still apply.
+
+## Disposable Mac checkpoint — 2026-09-08
+
+Commit `098149e7155393b1ce719e7e71ad1c6a38c409e3` passed all eight cases below
+in one campaign (exit 0, `inputsUnchanged: true`), using the benign JS fixture.
+Runtime: Electron 43.0.0, Node 24.17.0, libuv 1.52.1, macOS 15.6 arm64;
+compiler: Apple clang 17 with installed SDK 15.5. No primary-Mac runtime test
+was performed.
+
+The coordinator retained remote evidence at
+`/private/tmp/freedom-myotis-qualification-1plan72i` and verified all 75 text
+member hashes in the local `/tmp/freedom-mac-098149e7-evidence.json` export.
+The hashes were also checked when recording this checkpoint.
+
+| Artifact | SHA-256 |
+| --- | --- |
+| Native source | `ca4f72d62ca3b5d4b87078ee12e6f60682ac13589eca4742bbabf164423d684d` |
+| Compiled helper | `217f71c48045ad982704a0ba7b72d234328e353fc796f1f09755aec59d6fcfb5` |
+| Evidence archive | `a8c4360e06bd506122234495c21809ded8a3a5bdb465af0f57b37ea0645826cf` |
+
+In the parent-controller-loss case, the harness asserted the generation-matched
+old retired record before guarded reuse/lock release, but did **not** separately
+snapshot that record: only the successor record is retained. The controller's
+OS exit was observed; the old supervisor's OS exit was not. Control EOF is the
+separate case with full native receipt and observed supervisor OS exit.
+
+Native helper, process, child and harness sources are byte-identical between
+`098149e7` and `e662127c`; this is **not** a full `e662127c` runtime pass. The
+campaign does not qualify the real addon, Windows, signing/packaging, app Quit,
+supervisor loss or the broader matrix below. No rerun was made for this update.
+
+## Running on an authorized disposable host
 
 Build the target supervisor from the candidate source using existing tools:
 
