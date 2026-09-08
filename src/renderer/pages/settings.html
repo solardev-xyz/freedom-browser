@@ -1410,7 +1410,7 @@
         <section class="section" id="adblock">
           <h2 class="section-title">Ad Blocking</h2>
           <div class="card">
-            <div class="row">
+            <div class="row" id="adblock-enabled-row">
               <div class="row-body">
                 <p class="row-label">Enable ad blocking</p>
                 <p class="row-help" id="adblock-status">Loading…</p>
@@ -1425,7 +1425,7 @@
             <div class="row sub" id="adblock-ads-row">
               <div class="row-body">
                 <p class="row-label">Block ads</p>
-                <p class="row-help" id="adblock-ads-help">EasyList</p>
+                <p class="row-help" id="adblock-ads-help"></p>
               </div>
               <div class="row-control">
                 <label class="toggle">
@@ -1437,7 +1437,7 @@
             <div class="row sub" id="adblock-privacy-row">
               <div class="row-body">
                 <p class="row-label">Block trackers</p>
-                <p class="row-help" id="adblock-privacy-help">EasyPrivacy</p>
+                <p class="row-help" id="adblock-privacy-help"></p>
               </div>
               <div class="row-control">
                 <label class="toggle">
@@ -1449,7 +1449,7 @@
             <div class="row sub" id="adblock-cookies-row">
               <div class="row-body">
                 <p class="row-label">Block cookie banners</p>
-                <p class="row-help" id="adblock-cookies-help">Fanboy Cookiemonster</p>
+                <p class="row-help" id="adblock-cookies-help"></p>
               </div>
               <div class="row-control">
                 <label class="toggle">
@@ -1461,7 +1461,7 @@
             <div class="row sub" id="adblock-annoyances-row">
               <div class="row-body">
                 <p class="row-label">Block other annoyances</p>
-                <p class="row-help" id="adblock-annoyances-help">Fanboy Annoyances</p>
+                <p class="row-help" id="adblock-annoyances-help"></p>
               </div>
               <div class="row-control">
                 <label class="toggle">
@@ -1503,8 +1503,9 @@
             <div id="adblock-allowlist-list"></div>
           </div>
           <p class="row-help" style="margin-top: 16px">
-            Filter lists © The EasyList authors (https://easylist.to/), redistributed under CC
-            BY-SA.
+            Filter lists © the
+            <a href="https://easylist.to/" target="_blank" rel="noreferrer">EasyList authors</a>,
+            redistributed under CC BY-SA.
           </p>
         </section>
 
@@ -2379,15 +2380,26 @@
         applyAdblockGating();
       };
 
+      // With no filter lists the engine cannot run, so every control in the
+      // section is inert — say so once and disable them, rather than leaving
+      // six live toggles above a line that says blocking is inactive.
+      let adblockUnavailable = false;
+
       const applyAdblockGating = () => {
+        const usable = !adblockUnavailable;
+        fields.adblockEnabled.disabled = !usable;
+        $('adblock-enabled-row')?.classList.toggle('disabled', !usable);
+        const gate = (row, field) => {
+          setFieldEnabled(fields.adblockEnabled, row, field);
+          if (!usable) {
+            row?.classList.add('disabled');
+            if (field) field.disabled = true;
+          }
+        };
         for (const { id, field } of ADBLOCK_CATEGORIES) {
-          setFieldEnabled(fields.adblockEnabled, $(`adblock-${id}-row`), field);
+          gate($(`adblock-${id}-row`), field);
         }
-        setFieldEnabled(
-          fields.adblockEnabled,
-          $('adblock-autoupdate-row'),
-          fields.adblockAutoUpdate
-        );
+        gate($('adblock-autoupdate-row'), fields.adblockAutoUpdate);
       };
 
       // Rule counts / list version come from the main-process engine, not
@@ -2396,18 +2408,20 @@
       const renderAdblockStatus = async () => {
         try {
           const status = await freedomAPI.adblockGetStatus();
+          adblockUnavailable = !status.engineReady && !status.listsVersion;
           $('adblock-status').textContent = status.engineReady
             ? `Filter lists ${status.listsVersion} · engine active`
             : status.listsVersion
               ? `Filter lists ${status.listsVersion} · engine preparing…`
-              : 'No filter lists bundled — blocking is inactive.';
+              : 'No filter lists available. Ad blocking cannot run.';
           for (const { id } of ADBLOCK_CATEGORIES) {
             const meta = status.categories?.[id];
             if (meta?.ruleCount) {
               $(`adblock-${id}-help`).textContent =
-                `${meta.title} · ${meta.ruleCount.toLocaleString()} rules`;
+                `${meta.ruleCount.toLocaleString()} rules`;
             }
           }
+          applyAdblockGating();
         } catch {
           $('adblock-status').textContent = 'Status unavailable.';
         }
