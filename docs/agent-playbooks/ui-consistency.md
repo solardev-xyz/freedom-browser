@@ -17,6 +17,30 @@ or in the page's own light block (internal pages). Every new rule in
 `@media (prefers-color-scheme: light)` block too; `settings-styles.test.js`
 enforces this.
 
+Since #261, `src/renderer/renderer-styles.test.js` enforces the rule
+mechanically over _every_ stylesheet, inline `<style>` block and `style=""`
+attribute under `src/renderer/`: a new hex, `rgb()`, `hsl()` or named colour
+fails the unit suite. Two ways out, and only two:
+
+- paint from a `var(--token)`; or
+- annotate the declaration when the colour genuinely is not a theme surface —
+  a drop shadow, a protocol's brand colour, a node's status green, the fixed
+  contrast pair on a filled accent button:
+
+  ```css
+  /* theme-literal: Swarm's brand orange, the badge's identity, not a surface */
+  background: #f7931a;
+  ```
+
+  The comment goes on the declaration's own line or the line directly above it,
+  and has to say _why_. A trailing annotation covers its own line only.
+
+`src/renderer/renderer-color-literals.json` records the literals that predate
+the guard — mostly the per-page palettes #261 item 2 exists to delete. It is a
+ratchet: a pair that is not in it fails, and a pair in it that no longer appears
+fails too. After removing literals, run `npm run styles:inventory -- --write`
+and commit the shrunken file.
+
 **Both themes, always.** Every surface renders in dark and light. The chrome
 reads the theme from `data-theme` on `<html>`; internal pages must follow the
 same Appearance setting (see #233), not only the OS scheme.
@@ -51,6 +75,30 @@ History and Downloads ("No history yet", "No downloads yet").
 **Address bar.** Never show a `file://` path; interstitials keep the name the
 user typed, error pages keep the requested URL. Tab and history titles come
 from the page that is actually shown.
+
+## What CI checks for you (#261 item 1)
+
+These run on every PR that touches `src/renderer/`, the run-freedom harness or
+the specs themselves; run them locally before pushing rather than finding out
+from a red check.
+
+| Check                           | Command                                            | Catches                                                            |
+| ------------------------------- | -------------------------------------------------- | ------------------------------------------------------------------ |
+| Colour literals + brace balance | `npm test -- src/renderer/renderer-styles.test.js` | #223, and any new hard-coded colour                                |
+| Theme parity + WCAG contrast    | `xvfb-run -a npm run test:e2e:theme-parity`        | #224, #233, #249 — anything that renders illegibly in either theme |
+| Screenshot baselines            | `xvfb-run -a npm run test:e2e:screenshots`         | any unintended repaint of a surface the tour visits                |
+
+Baselines are rendered on Linux and compared on Linux only, and both screenshot
+scripts set `FREEDOM_E2E_STABLE_TEXT=1` (Chromium's LCD text antialiasing flips
+between subpixel and greyscale as composited layers come and go, which repaints
+every glyph). Always run them through the npm script, never a bare
+`playwright test`.
+
+To adopt a change you meant to make: `xvfb-run -a npm run test:e2e:screenshots:update`, then read
+`git diff --stat test-e2e/__screenshots__/` before committing. When a CI run
+disagrees with a local one, take CI's: download the `renderer-screenshots-diff`
+artifact from the failed job and run
+`node scripts/apply-screenshot-baselines.js <unzipped-artifact>`.
 
 ## Checks before opening or approving a PR that touches the renderer
 
