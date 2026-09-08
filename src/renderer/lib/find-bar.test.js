@@ -265,7 +265,7 @@ describe('find-bar', () => {
     expect(ctx.count.textContent).toBe('');
   });
 
-  test('closeFindBar stops the session on the searched webview even after the active tab changed', async () => {
+  test('closing only ends the foreground tab session, never a background one', async () => {
     const firstWebview = createFakeWebview();
     const secondWebview = createFakeWebview();
     let active = firstWebview;
@@ -278,17 +278,141 @@ describe('find-bar', () => {
     await flushMicrotasks();
     await typeQuery(ctx, 'needle');
 
-    // Simulate a tab switch: the active webview changes, then tabs.js
-    // closes the bar. Highlights must be cleared on the *searched* webview,
-    // and focus must NOT be stolen from the incoming tab.
+    // Tab switch: the second tab has no find session of its own, so the bar
+    // hides — and closing it there must not reach into the first tab's live
+    // session (its highlights stay until the user goes back and closes it).
     active = secondWebview;
-    ctx.mod.closeFindBar();
+    ctx.mod.notifyFindBarTabSwitched();
+    expect(ctx.mod.isFindBarOpen()).toBe(false);
 
+    ctx.mod.closeFindBar();
+    expect(firstWebview.stopFindInPage).not.toHaveBeenCalled();
+    expect(secondWebview.stopFindInPage).not.toHaveBeenCalled();
+
+    // Back on the searched tab: its own bar, query and count come back...
+    active = firstWebview;
+    ctx.mod.notifyFindBarTabSwitched();
+    expect(ctx.mod.isFindBarOpen()).toBe(true);
+    expect(ctx.input.value).toBe('needle');
+
+    // ...and closing there is what finally clears its highlights.
+    ctx.mod.closeFindBar();
     expect(firstWebview.stopFindInPage).toHaveBeenCalledWith('clearSelection');
     expect(secondWebview.stopFindInPage).not.toHaveBeenCalled();
-    expect(firstWebview.focus).not.toHaveBeenCalled();
-    expect(secondWebview.focus).not.toHaveBeenCalled();
+  });
+
+  test('each tab keeps its own bar, query and match count across switches', async () => {
+    const firstWebview = createFakeWebview();
+    const secondWebview = createFakeWebview();
+    let active = firstWebview;
+    const ctx = await loadFindBarModule({
+      webview: firstWebview,
+      initOptions: { getActiveWebview: () => active },
+    });
+
+    ctx.mod.openFindBar();
+    await flushMicrotasks();
+    await typeQuery(ctx, 'needle');
+    firstWebview.dispatch('found-in-page', {
+      result: { activeMatchOrdinal: 1, matches: 3, finalUpdate: true },
+    });
+    expect(ctx.count.textContent).toBe('1/3');
+
+    // Second tab: its own query and its own count.
+    active = secondWebview;
+    ctx.mod.notifyFindBarTabSwitched();
     expect(ctx.mod.isFindBarOpen()).toBe(false);
+    expect(ctx.count.textContent).toBe('');
+
+    ctx.mod.openFindBar();
+    await flushMicrotasks();
+    expect(ctx.input.value).toBe('');
+    await typeQuery(ctx, 'banana');
+    expect(secondWebview.findInPage).toHaveBeenCalledWith('banana');
+    secondWebview.dispatch('found-in-page', {
+      result: { activeMatchOrdinal: 1, matches: 2, finalUpdate: true },
+    });
+    expect(ctx.count.textContent).toBe('1/2');
+
+    // Switching back restores the first tab's state, not the second's.
+    active = firstWebview;
+    ctx.mod.notifyFindBarTabSwitched();
+    expect(ctx.mod.isFindBarOpen()).toBe(true);
+    expect(ctx.input.value).toBe('needle');
+    expect(ctx.count.textContent).toBe('1/3');
+
+    // Neither switch ended a session: both tabs keep their highlights.
+    expect(firstWebview.stopFindInPage).not.toHaveBeenCalled();
+    expect(secondWebview.stopFindInPage).not.toHaveBeenCalled();
+  });
+
+  test('a background tab result repaints only that tab, not the visible bar', async () => {
+    const firstWebview = createFakeWebview();
+    const secondWebview = createFakeWebview();
+    let active = firstWebview;
+    const ctx = await loadFindBarModule({
+      webview: firstWebview,
+      initOptions: { getActiveWebview: () => active },
+    });
+
+    ctx.mod.openFindBar();
+    await flushMicrotasks();
+    await typeQuery(ctx, 'needle');
+
+    active = secondWebview;
+    ctx.mod.notifyFindBarTabSwitched();
+    ctx.mod.openFindBar();
+    await flushMicrotasks();
+    await typeQuery(ctx, 'banana');
+    secondWebview.dispatch('found-in-page', {
+      result: { activeMatchOrdinal: 1, matches: 2, finalUpdate: true },
+    });
+    expect(ctx.count.textContent).toBe('1/2');
+
+    // A late scoping update from the backgrounded tab must not repaint the
+    // foreground tab's counter...
+    firstWebview.dispatch('found-in-page', {
+      result: { activeMatchOrdinal: 4, matches: 9, finalUpdate: true },
+    });
+    expect(ctx.count.textContent).toBe('1/2');
+
+    // ...but it is remembered, and shown when that tab comes back.
+    active = firstWebview;
+    ctx.mod.notifyFindBarTabSwitched();
+    expect(ctx.count.textContent).toBe('4/9');
+  });
+
+  test('closing a tab drops its find state without touching the dead webview', async () => {
+    const firstWebview = createFakeWebview();
+    const secondWebview = createFakeWebview();
+    let active = firstWebview;
+    const ctx = await loadFindBarModule({
+      webview: firstWebview,
+      initOptions: { getActiveWebview: () => active },
+    });
+
+    ctx.mod.openFindBar();
+    await flushMicrotasks();
+    await typeQuery(ctx, 'needle');
+
+    // tabs.js closes the tab: state goes with it, and stopFindInPage is not
+    // called on a guest that is being torn down.
+    ctx.mod.notifyFindBarTabClosed(firstWebview);
+    expect(firstWebview.stopFindInPage).not.toHaveBeenCalled();
+    expect(ctx.mod.isFindBarOpen()).toBe(false);
+
+    // A late found-in-page from the dying guest cannot repaint the bar.
+    firstWebview.dispatch('found-in-page', {
+      result: { activeMatchOrdinal: 2, matches: 7, finalUpdate: true },
+    });
+    expect(ctx.count.textContent).toBe('');
+
+    // The freed state must not be resurrected for the next tab either.
+    active = secondWebview;
+    ctx.mod.notifyFindBarTabSwitched();
+    ctx.mod.openFindBar();
+    await flushMicrotasks();
+    expect(ctx.input.value).toBe('');
   });
 
   test('closing while the searched tab is still active returns focus to the page', async () => {
@@ -375,7 +499,7 @@ describe('find-bar', () => {
     expect(ctx.webview.findInPage).toHaveBeenCalledWith('haystack');
   });
 
-  test('navigation resets results but keeps the bar open; Enter re-runs a full search', async () => {
+  test('a navigation started with the bar open ends the session and closes the bar', async () => {
     const ctx = await loadFindBarModule();
     ctx.mod.openFindBar();
     await flushMicrotasks();
@@ -383,26 +507,101 @@ describe('find-bar', () => {
     emitFoundInPage(ctx, { activeMatchOrdinal: 2, matches: 5, finalUpdate: true });
     expect(ctx.count.textContent).toBe('2/5');
 
-    ctx.mod.notifyFindBarNavigated();
-
-    expect(ctx.mod.isFindBarOpen()).toBe(true);
+    // The outgoing document's highlights are cleared before it commits (and
+    // before it can reach the back/forward cache still painted, #300).
+    ctx.mod.notifyFindBarNavigationStarted(ctx.webview);
+    expect(ctx.webview.stopFindInPage).toHaveBeenCalledWith('clearSelection');
     expect(ctx.count.textContent).toBe('');
-    expect(ctx.input.value).toBe('needle');
-    // Chromium already dropped the highlights on navigation — no extra
-    // stopFindInPage call that could race the new document.
-    expect(ctx.webview.stopFindInPage).not.toHaveBeenCalled();
 
-    ctx.webview.findInPage.mockClear();
-    ctx.input.dispatch('keydown', { key: 'Enter', shiftKey: false, preventDefault: jest.fn() });
-    // Fresh search (no findNext options) because the session was reset.
-    expect(ctx.webview.findInPage).toHaveBeenCalledWith('needle');
+    // Chrome hides the bar at commit when it was visible when the
+    // navigation started.
+    ctx.mod.notifyFindBarNavigated(ctx.webview);
+    expect(ctx.mod.isFindBarOpen()).toBe(false);
+    expect(ctx.count.textContent).toBe('');
+
+    // The query survives for the next open, the way Chrome prepopulates it.
+    ctx.mod.openFindBar();
+    await flushMicrotasks();
+    expect(ctx.input.value).toBe('needle');
   });
 
-  test('notifyFindBarNavigated is a no-op while the bar is closed', async () => {
+  test('a navigation that reports no start still ends the session at commit', async () => {
+    const ctx = await loadFindBarModule();
+    ctx.mod.openFindBar();
+    await flushMicrotasks();
+    await typeQuery(ctx, 'needle');
+
+    ctx.mod.notifyFindBarNavigated(ctx.webview);
+
+    expect(ctx.webview.stopFindInPage).toHaveBeenCalledWith('clearSelection');
+    expect(ctx.mod.isFindBarOpen()).toBe(false);
+  });
+
+  test('a bar opened after the navigation started stays open, with no search re-run', async () => {
     const ctx = await loadFindBarModule();
 
-    expect(() => ctx.mod.notifyFindBarNavigated()).not.toThrow();
+    // Navigation starts while the bar is closed...
+    ctx.mod.notifyFindBarNavigationStarted(ctx.webview);
+    // ...and the user opens the bar during the load: they mean to search the
+    // incoming page, so Chrome leaves the bar open at commit (crbug 469819146)
+    // but never re-runs the query by itself.
+    ctx.mod.openFindBar();
+    await flushMicrotasks();
+    ctx.mod.notifyFindBarNavigated(ctx.webview);
+
+    expect(ctx.mod.isFindBarOpen()).toBe(true);
+    expect(ctx.webview.findInPage).not.toHaveBeenCalled();
+  });
+
+  test('a background tab navigation closes that tab bar, not the foreground one', async () => {
+    const firstWebview = createFakeWebview();
+    const secondWebview = createFakeWebview();
+    let active = firstWebview;
+    const ctx = await loadFindBarModule({
+      webview: firstWebview,
+      initOptions: { getActiveWebview: () => active },
+    });
+
+    ctx.mod.openFindBar();
+    await flushMicrotasks();
+    await typeQuery(ctx, 'needle');
+
+    active = secondWebview;
+    ctx.mod.notifyFindBarTabSwitched();
+    ctx.mod.openFindBar();
+    await flushMicrotasks();
+    await typeQuery(ctx, 'banana');
+    secondWebview.dispatch('found-in-page', {
+      result: { activeMatchOrdinal: 1, matches: 2, finalUpdate: true },
+    });
+
+    // The backgrounded tab navigates (a redirect, a timer): its own session
+    // ends, the visible bar keeps showing the foreground tab untouched.
+    ctx.mod.notifyFindBarNavigationStarted(firstWebview);
+    ctx.mod.notifyFindBarNavigated(firstWebview);
+
+    expect(firstWebview.stopFindInPage).toHaveBeenCalledWith('clearSelection');
+    expect(ctx.mod.isFindBarOpen()).toBe(true);
+    expect(ctx.input.value).toBe('banana');
+    expect(ctx.count.textContent).toBe('1/2');
+
+    // Returning to it shows a closed bar, not a stale count from the page
+    // that navigated away.
+    active = firstWebview;
+    ctx.mod.notifyFindBarTabSwitched();
+    expect(ctx.mod.isFindBarOpen()).toBe(false);
+  });
+
+  test('the navigation hooks are no-ops for a tab that never opened the bar', async () => {
+    const ctx = await loadFindBarModule();
+
+    expect(() => {
+      ctx.mod.notifyFindBarNavigationStarted(ctx.webview);
+      ctx.mod.notifyFindBarNavigated(ctx.webview);
+      ctx.mod.notifyFindBarTabClosed(ctx.webview);
+    }).not.toThrow();
     expect(ctx.count.textContent).toBe('');
+    expect(ctx.webview.stopFindInPage).not.toHaveBeenCalled();
   });
 
   test('clearing the query ends the session and blanks the counter', async () => {
@@ -496,13 +695,13 @@ describe('find-bar', () => {
     // The page navigates while the selection read is still in flight. The
     // webview object survives navigation, so only the generation bump in
     // the navigation hook can invalidate the read from the old document.
-    ctx.mod.notifyFindBarNavigated();
+    ctx.mod.notifyFindBarNavigationStarted(webview);
+    ctx.mod.notifyFindBarNavigated(webview);
 
     deferred.resolve('selection from the old document');
     await flushMicrotasks();
 
-    expect(ctx.mod.isFindBarOpen()).toBe(true);
-    expect(ctx.input.value).toBe('');
+    expect(ctx.mod.isFindBarOpen()).toBe(false);
     expect(webview.findInPage).not.toHaveBeenCalled();
   });
 
@@ -536,8 +735,9 @@ describe('find-bar', () => {
     webview.executeJavaScript.mockReturnValue(deferred.promise);
     const ctx = await loadFindBarModule({ webview });
 
-    ctx.input.value = 'typed query';
     ctx.mod.openFindBar();
+    ctx.input.value = 'typed query';
+    ctx.input.dispatch('input');
     ctx.input.dispatch('keydown', { key: 'Enter', preventDefault: () => {} });
 
     deferred.resolve('page selection');
@@ -554,8 +754,9 @@ describe('find-bar', () => {
     webview.executeJavaScript.mockReturnValue(deferred.promise);
     const ctx = await loadFindBarModule({ webview });
 
-    ctx.input.value = 'typed query';
     ctx.mod.openFindBar();
+    ctx.input.value = 'typed query';
+    ctx.input.dispatch('input');
     ctx.nextBtn.dispatch('click');
 
     deferred.resolve('page selection');

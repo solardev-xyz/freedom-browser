@@ -14,7 +14,12 @@ import { getPrivatePartition, isPrivateWindow } from './private-mode.js';
 import { setupWebviewProvider, setActiveWebview } from './dapp-provider.js';
 import { setupSwarmProvider } from './swarm-provider.js';
 import { setupRadicleProvider } from './radicle-provider.js';
-import { closeFindBar, notifyFindBarNavigated } from './find-bar.js';
+import {
+  notifyFindBarNavigated,
+  notifyFindBarNavigationStarted,
+  notifyFindBarTabClosed,
+  notifyFindBarTabSwitched,
+} from './find-bar.js';
 import { matchesShortcut } from './shortcuts.js';
 import {
   clearLinkStatus,
@@ -460,6 +465,15 @@ const createWebview = (tabId, initialUrl) => {
 
   // Create named event handlers so they can be removed later
   const handlers = {
+    // Main-frame, cross-document navigation is about to leave this page:
+    // end its find session before the outgoing document commits (and
+    // possibly enters the back/forward cache still painted with find
+    // highlights). Whether the bar itself closes is decided at commit,
+    // from the open/closed state recorded here — Chrome's rule.
+    'did-start-navigation': (event) => {
+      if (event.isMainFrame === false || event.isInPlace) return;
+      notifyFindBarNavigationStarted(webview);
+    },
     'did-start-loading': () => {
       const tab = tabState.tabs.find((t) => t.id === tabId);
       if (tab) {
@@ -638,12 +652,12 @@ const createWebview = (tabId, initialUrl) => {
           renderTabs();
         }
       }
-      // Navigation invalidates find-in-page results for the foreground
-      // tab; the bar stays open with its query so Enter re-searches on
-      // the new page.
-      if (tabId === tabState.activeTabId) {
-        notifyFindBarNavigated();
-      }
+      // A committed navigation ends this tab's find session (Chrome closes
+      // the bar unless the user opened it after the navigation started).
+      // Every tab reports it, not just the foreground one: find state is
+      // per tab, so a background tab that navigates must not keep a bar or
+      // a match count that no longer describes its page.
+      notifyFindBarNavigated(webview);
       if (tabId === tabState.activeTabId && onWebviewEvent) {
         onWebviewEvent('did-navigate', { tabId, event });
       }
@@ -1271,6 +1285,10 @@ export const closeTab = (tabId) => {
     tab.audioStateTimer = null;
   }
 
+  // Drop this tab's find state (bar, query, count) with the tab itself,
+  // rather than leaving the detached webview keyed in the find module.
+  notifyFindBarTabClosed(tab.webview);
+
   // Remove event listeners before removing webview (prevents memory leak)
   cleanupWebview(tab.webview);
 
@@ -1493,11 +1511,12 @@ export const switchTab = (tabId, options = {}) => {
   setLinkStatusSide(tab.linkStatusInLeftZone ? 'right' : 'left');
   tabState.activeTabId = tabId;
 
-  // Find state follows the foreground page: close the bar and clear the
-  // outgoing tab's highlights. Called after the activeTabId flip so the
-  // close never returns focus to the (now background) searched webview —
-  // the find module captured that webview when its session started.
-  closeFindBar();
+  // Find state lives on the tab (Chrome's model): re-render the bar for the
+  // incoming tab — its own query, its own count, hidden if it never opened
+  // one — and leave the outgoing tab's session running so switching back
+  // shows it exactly as the user left it. Called after the activeTabId flip
+  // so the find module reads the incoming tab's state.
+  notifyFindBarTabSwitched();
 
   // Hide all webviews, show active one
   for (const t of tabState.tabs) {
