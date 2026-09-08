@@ -58,6 +58,12 @@ describe('the invocations that are meant to enable it', () => {
     expect(read('.github/workflows/ci.yml')).toContain('xvfb-run -a npm run test:e2e:screenshots');
   });
 
+  it('a change to the gate itself makes CI run the screenshot job', () => {
+    // `renderer-changed` decides whether the visual jobs run at all; this file
+    // can turn them into no-ops, so it belongs in that path filter.
+    expect(read('.github/workflows/ci.yml')).toContain('screenshot-gate');
+  });
+
   it('the default harness suite does not set it, so the spec stays opt-in there', () => {
     expect(scripts['test:e2e']).not.toContain(STABLE_TEXT_VAR);
   });

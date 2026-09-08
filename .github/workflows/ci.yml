@@ -768,7 +768,7 @@ jobs:
           git fetch --no-tags origin "$BASE"
           changed=$(git diff --name-only "origin/$BASE...HEAD")
           echo "$changed"
-          if echo "$changed" | grep -Eq '^(src/renderer/|test-e2e/(theme-parity|renderer-screenshots)\.spec\.js|test-e2e/fixtures\.js|\.claude/skills/run-freedom/|playwright\.config\.js|\.github/workflows/ci\.yml)'; then
+          if echo "$changed" | grep -Eq '^(src/renderer/|test-e2e/(theme-parity|renderer-screenshots)\.spec\.js|test-e2e/(fixtures|packaged-launch|screenshot-gate)\.js|\.claude/skills/run-freedom/|playwright\.config\.js|\.github/workflows/ci\.yml)'; then
             echo "renderer=true" >> "$GITHUB_OUTPUT"
           else
             echo "renderer=false" >> "$GITHUB_OUTPUT"
