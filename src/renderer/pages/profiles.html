@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:;"
+      content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src data:;"
     />
     <title>Profiles</title>
     <link
@@ -12,28 +12,8 @@
       type="image/svg+xml"
       href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjOGI5NDllIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+PHBhdGggZD0iTTIwIDIxYTggOCAwIDAgMC0xNiAwIi8+PGNpcmNsZSBjeD0iMTIiIGN5PSI3IiByPSI0Ii8+PC9zdmc+"
     />
+    <link rel="stylesheet" href="styles/theme.css" />
     <style>
-      /* Internal pages follow Settings > Appearance, not the OS colour scheme:
-         the webview preload resolves the setting and stamps `data-theme` on
-         <html> before first paint (#233). Declaring `color-scheme` from the
-         same attribute keeps scrollbars and form controls in step. */
-      :root {
-        color-scheme: dark;
-        --bg: #0d1117;
-        --bg-elev: #161b22;
-        --bg-card: #21262d;
-        --border: #30363d;
-        --border-strong: #484f58;
-        --text: #c9d1d9;
-        --text-muted: #8b949e;
-        --text-subtle: #6e7681;
-        --accent: #58a6ff;
-        --accent-muted: rgba(88, 166, 255, 0.12);
-        --danger: #f85149;
-        --success: #3fb950;
-        --warn: #d29922;
-      }
-
       *,
       *::before,
       *::after {
@@ -54,7 +34,7 @@
           sans-serif;
         /* Fixed attachment keeps the gradient covering the full viewport even
            when the page scrolls, so it never truncates at the bottom. */
-        background: linear-gradient(135deg, #0d1117 0%, #161b22 50%, #21262d 100%) fixed;
+        background: var(--page-gradient-profiles);
         color: var(--text);
         min-height: 100vh;
       }
@@ -118,7 +98,7 @@
       .btn.primary {
         background: var(--accent);
         border-color: var(--accent);
-        color: #0d1117;
+        color: var(--bg);
         font-weight: 600;
       }
 
@@ -383,15 +363,10 @@
       }
 
       /* Delete confirmation modal — mirrors the app chrome's Create Profile
-         modal (src/renderer/styles/modal.css) so the two look identical. The
-         chrome palette is scoped here via --m-* tokens. */
+         modal (src/renderer/styles/modal.css) so the two look identical. It
+         paints from the chrome-flavoured --m-* tokens in styles/theme.css
+         rather than this page's own palette. */
       .modal-overlay {
-        --m-bg: #1a1a1a;
-        --m-border: #4a4a4a;
-        --m-text: #c7c7c7;
-        --m-muted: #c7c7c7;
-        --m-accent: #8ab4f8;
-        --m-danger: #f28b82;
         position: fixed;
         inset: 0;
         display: flex;
@@ -530,46 +505,6 @@
         opacity: 0.55;
         cursor: default;
       }
-
-      /* Light theme. The palette rule is written as `html[data-theme='light']`
-         so it outweighs the `:root` defaults above; everything else sits under
-         a `:where()` wrapper, which holds the scope at zero specificity so each
-         rule weighs exactly what it did as a media query. */
-      html[data-theme='light'] {
-        color-scheme: light;
-        --bg: #ffffff;
-        --bg-elev: #ffffff;
-        --bg-card: #ffffff;
-        --border: #d0d7de;
-        --border-strong: #8c959f;
-        --text: #24292f;
-        --text-muted: #57606a;
-        --text-subtle: #8c959f;
-        --accent: #0969da;
-        --accent-muted: rgba(9, 105, 218, 0.1);
-        --danger: #cf222e;
-        --success: #1a7f37;
-        --warn: #9a6700;
-      }
-
-      :where(html[data-theme='light']) {
-        body {
-          background: linear-gradient(135deg, #ffffff 0%, #f6f8fa 50%, #f0f2f5 100%);
-        }
-
-        .btn.primary {
-          color: #ffffff;
-        }
-
-        .modal-overlay {
-          --m-bg: #ffffff;
-          --m-border: #dfe1e5;
-          --m-text: #202124;
-          --m-muted: #5f6368;
-          --m-accent: #1a73e8;
-          --m-danger: #d93025;
-        }
-      }
     </style>
   </head>
   <body>
@@ -625,12 +560,14 @@
           <span class="modal-profile-name" data-delete-name></span>
         </div>
         <p class="modal-copy">
-          This permanently deletes this profile and its browsing data, vault, node
-          data, and keys. This cannot be undone.
+          This permanently deletes this profile and its browsing data, vault, node data, and keys.
+          This cannot be undone.
         </p>
         <div class="modal-actions">
           <button type="button" class="secondary-btn" data-delete-cancel>Cancel</button>
-          <button type="button" class="primary-btn danger" data-delete-confirm>Delete Profile</button>
+          <button type="button" class="primary-btn danger" data-delete-confirm>
+            Delete Profile
+          </button>
         </div>
       </div>
     </div>
@@ -908,9 +845,7 @@
         // re-render the card before the deletion lands in the registry.
         closeDeleteModal();
         pendingDeleteIds.add(profileId);
-        managerList
-          ?.querySelector(`[data-profile-id="${CSS.escape(profileId)}"]`)
-          ?.remove();
+        managerList?.querySelector(`[data-profile-id="${CSS.escape(profileId)}"]`)?.remove();
         try {
           const result = await freedomAPI.deleteProfile?.(profileId, confirmDisplayName);
           if (!result?.success) {

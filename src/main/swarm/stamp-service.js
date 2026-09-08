@@ -77,7 +77,7 @@ function normalizeBatch(batch) {
  */
 async function getStamps() {
   const bee = getBee();
-  const batches = await bee.getPostageBatches();
+  const batches = await bee.stamp.getAll();
   return batches.map(normalizeBatch);
 }
 
@@ -87,7 +87,7 @@ async function getStamps() {
  */
 async function getStorageCost(sizeGB, durationDays) {
   const bee = getBee();
-  const cost = await bee.getStorageCost(
+  const cost = await bee.storage.getCost(
     Size.fromGigabytes(sizeGB),
     Duration.fromDays(durationDays)
   );
@@ -102,7 +102,7 @@ async function getStorageCost(sizeGB, durationDays) {
  */
 async function buyStorage(sizeGB, durationDays) {
   const bee = getBee();
-  const batchId = await bee.buyStorage(
+  const batchId = await bee.storage.buy(
     Size.fromGigabytes(sizeGB),
     Duration.fromDays(durationDays),
     { waitForUsable: false }, // Don't block — renderer polls for usability
@@ -119,7 +119,7 @@ async function buyStorage(sizeGB, durationDays) {
  */
 async function getDurationExtensionCost(batchIdHex, additionalDays) {
   const bee = getBee();
-  const cost = await bee.getDurationExtensionCost(
+  const cost = await bee.storage.getDurationExtensionCost(
     batchIdHex,
     Duration.fromDays(additionalDays)
   );
@@ -133,7 +133,7 @@ async function getDurationExtensionCost(batchIdHex, additionalDays) {
  */
 async function getSizeExtensionCost(batchIdHex, newSizeGB) {
   const bee = getBee();
-  const cost = await bee.getSizeExtensionCost(
+  const cost = await bee.storage.getSizeExtensionCost(
     batchIdHex,
     Size.fromGigabytes(newSizeGB)
   );
@@ -145,7 +145,7 @@ async function getSizeExtensionCost(batchIdHex, newSizeGB) {
  */
 async function extendStorageDuration(batchIdHex, additionalDays) {
   const bee = getBee();
-  const result = await bee.extendStorageDuration(
+  const result = await bee.storage.extendDuration(
     batchIdHex,
     Duration.fromDays(additionalDays),
     { timeout: BUY_TIMEOUT_MS }
@@ -161,7 +161,7 @@ async function extendStorageDuration(batchIdHex, additionalDays) {
  */
 async function extendStorageSize(batchIdHex, newSizeGB) {
   const bee = getBee();
-  const result = await bee.extendStorageSize(
+  const result = await bee.storage.extendSize(
     batchIdHex,
     Size.fromGigabytes(newSizeGB),
     { timeout: BUY_TIMEOUT_MS }
@@ -206,7 +206,7 @@ function registerSwarmIpc() {
 
       // Pre-check: verify xBZZ balance covers the estimated cost
       const bee = getBee();
-      const purchaseCost = await bee.getStorageCost(
+      const purchaseCost = await bee.storage.getCost(
         Size.fromGigabytes(sizeGB),
         Duration.fromDays(durationDays)
       );
@@ -268,7 +268,7 @@ function registerSwarmIpc() {
         return { success: false, error: 'Duration must be a positive number' };
       }
       // Pre-check xBZZ balance
-      const durCostBzz = await getBee().getDurationExtensionCost(batchId, Duration.fromDays(additionalDays));
+      const durCostBzz = await getBee().storage.getDurationExtensionCost(batchId, Duration.fromDays(additionalDays));
       const durInsufficient = await checkBzzBalance(durCostBzz);
       if (durInsufficient) {
         return { success: false, error: durInsufficient };
@@ -291,7 +291,7 @@ function registerSwarmIpc() {
         return { success: false, error: 'Size must be a positive number' };
       }
       // Pre-check xBZZ balance
-      const sizeCostBzz = await getBee().getSizeExtensionCost(batchId, Size.fromGigabytes(newSizeGB));
+      const sizeCostBzz = await getBee().storage.getSizeExtensionCost(batchId, Size.fromGigabytes(newSizeGB));
       const sizeInsufficient = await checkBzzBalance(sizeCostBzz);
       if (sizeInsufficient) {
         return { success: false, error: sizeInsufficient };
@@ -308,7 +308,7 @@ function registerSwarmIpc() {
   ipcMain.handle('swarm:get-chequebook-balance', async () => {
     try {
       const bee = getBee();
-      const bal = await bee.getChequebookBalance();
+      const bal = await bee.chequebook.getBalance();
       return {
         success: true,
         totalBalance: bal.totalBalance.toSignificantDigits(4),
@@ -337,7 +337,7 @@ function registerSwarmIpc() {
 
       const bee = getBee();
       const plurAmount = requiredPlur.toString();
-      const txId = await bee.depositTokens(plurAmount, undefined, { timeout: BUY_TIMEOUT_MS });
+      const txId = await bee.chequebook.deposit(plurAmount, undefined, { timeout: BUY_TIMEOUT_MS });
       const txHex = toHex(txId);
       log.info(`[StampService] Deposited ${amountBzz} xBZZ into chequebook (tx: ${txHex})`);
       return { success: true, transactionId: txHex };
@@ -356,7 +356,7 @@ function registerSwarmIpc() {
  */
 async function getBzzBalance() {
   const bee = getBee();
-  const walletData = await bee.getWalletBalance();
+  const walletData = await bee.wallet.getBalance();
   if (walletData?.bzzBalance && typeof walletData.bzzBalance.toPLURBigInt === 'function') {
     return walletData.bzzBalance.toPLURBigInt();
   }
@@ -395,7 +395,7 @@ const AUTO_DEPOSIT_BZZ = '1000000000000000'; // 0.1 xBZZ in PLUR
 async function autoDepositChequebookIfEmpty() {
   try {
     const bee = getBee();
-    const bal = await bee.getChequebookBalance();
+    const bal = await bee.chequebook.getBalance();
     const available = bal.availableBalance.toPLURBigInt();
 
     if (available > 0n) return; // Already funded
@@ -403,7 +403,7 @@ async function autoDepositChequebookIfEmpty() {
     const walletBal = await getBzzBalance();
     if (!walletBal || walletBal < BigInt(AUTO_DEPOSIT_BZZ)) return; // Not enough
 
-    await bee.depositTokens(AUTO_DEPOSIT_BZZ);
+    await bee.chequebook.deposit(AUTO_DEPOSIT_BZZ);
     log.info('[StampService] Auto-deposited 0.1 xBZZ into chequebook');
   } catch (err) {
     log.error('[StampService] Auto-deposit failed (non-fatal):', err.message);

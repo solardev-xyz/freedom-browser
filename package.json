@@ -253,7 +253,7 @@
     "@adraffy/ens-normalize": "^1.11.1",
     "@corpus-core/colibri-stateless": "2.0.6",
     "@ensdomains/content-hash": "^3.0.0",
-    "@ethersphere/bee-js": "^12.2.1",
+    "@ethersphere/bee-js": "^13.0.0",
     "@ghostery/adblocker": "^2.18.1",
     "@ledgerhq/hw-app-eth": "^7.8.8",
     "@ledgerhq/hw-transport-node-hid": "^6.33.5",

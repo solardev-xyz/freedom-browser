@@ -168,6 +168,15 @@ CI covers what `npm test` and `npm run lint` used to cover here: every push to t
 
 **Source-tree spot check.** `npm ci && npm start` once on the release branch and confirm the About/version surface shows the number you just set. This catches a broken tree before you spend a 25-minute CI run on it.
 
+**UI consistency audit**, once per cycle, on the release branch before the first release candidate is tagged. Nothing in CI renders the light theme, so theme and sibling-drift bugs only surface when someone looks: the 0.8.5 audit found 28 of them (#223–#242, #249–#260), including a Settings page that had been dark-only for a month. Run the tour in both themes from the release branch:
+
+```
+NODE_PATH=$PWD/node_modules xvfb-run -a -s "-screen 0 1440x900x24" \
+  node .claude/skills/run-freedom/tour.js both
+```
+
+It writes `<d|l>-<nn>-<surface>.png` for every chrome surface, settings section and internal page into `/tmp/freedom-shots` (override with `SHOTS_DIR`), takes about four minutes per theme, and exits non-zero listing any step that failed — a failed step contaminates the shots after it, so re-run rather than reading past it. Then walk the shots against `ui-consistency.md`: each surface next to its nearest sibling, in both themes, plus that playbook's checklist (heading sizes, button style and verb, input fonts, focus rings, empty states, counters, shortcut label format). File what you find as issues on the milestone; fix on the release branch what is worth holding the release for and let the rest ride to the next cycle. Skipping this step is how a cycle ships with no light-theme coverage at all.
+
 **CI is green** on the release branch head you are about to tag (`gh pr checks` on the branch's PR, or the Actions tab). The release workflow does not gate on CI, so a red branch produces a red release.
 
 ## 5. Build with CI: candidates and the final
