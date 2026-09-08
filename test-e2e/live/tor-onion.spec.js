@@ -13,7 +13,8 @@ const { test, expect, HAS_ARTI_BINARY, ARTI_BINARY_PATH } = require('../live-fix
 const DEFAULT_ONION_URL =
   'https://duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion/';
 // A word from the rendered page that does not also appear in the onion address
-// — see the sniffer below for why that matters.
+// — see the sniffer below for why that matters. Matched case-insensitively as a
+// literal substring, not as a regex, so an override may contain any character.
 const DEFAULT_ONION_CONTENT = 'privacy';
 const ONION_URL = process.env.FREEDOM_TOR_E2E_ONION_URL || DEFAULT_ONION_URL;
 // Only meaningful together with the URL: overriding the URL alone falls back to
@@ -47,8 +48,8 @@ const ONION_RENDER_SNIFFER = `
     if (location.origin !== ${JSON.stringify(new URL(ONION_URL).origin)}) return false;
     if (document.querySelector('#main-frame-error')) return false;
     const text = [document.title, document.body?.innerText || ''].join('\\n');
-    const marker = ${JSON.stringify(ONION_CONTENT)};
-    return marker ? new RegExp(marker, 'i').test(text) : text.trim().length > 0;
+    const marker = ${JSON.stringify(ONION_CONTENT.toLowerCase())};
+    return marker ? text.toLowerCase().includes(marker) : text.trim().length > 0;
   })()
 `;
 

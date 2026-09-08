@@ -7,10 +7,17 @@
  * to stay correct across bumps.
  */
 
-const { ARTI_VERSION, MIN_RUST_VERSION, compareVersions, checkRustVersion } = require('./fetch-arti');
+const {
+  ARTI_VERSION,
+  PINNED_ARTI_VERSION,
+  MIN_RUST_VERSION,
+  compareVersions,
+  checkRustVersion,
+} = require('./fetch-arti');
 
 describe('fetch-arti version pin', () => {
   test('pins a concrete Arti release', () => {
+    expect(PINNED_ARTI_VERSION).toMatch(/^\d+\.\d+\.\d+$/);
     expect(ARTI_VERSION).toMatch(/^\d+\.\d+\.\d+$/);
   });
 
@@ -35,13 +42,16 @@ describe('compareVersions', () => {
 
 describe('checkRustVersion', () => {
   let errorSpy;
+  let warnSpy;
 
   beforeEach(() => {
     errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
   });
 
   afterEach(() => {
     errorSpy.mockRestore();
+    warnSpy.mockRestore();
   });
 
   test('accepts a toolchain at the MSRV', () => {
@@ -58,7 +68,26 @@ describe('checkRustVersion', () => {
     const message = errorSpy.mock.calls.flat().join('\n');
     expect(message).toContain('1.89.0');
     expect(message).toContain(MIN_RUST_VERSION);
-    expect(message).toContain(ARTI_VERSION);
+    expect(message).toContain(PINNED_ARTI_VERSION);
+  });
+
+  // MIN_RUST_VERSION is the *pinned* release's MSRV. An ARTI_VERSION override
+  // (the documented local-testing escape hatch, e.g. falling back to a 1.x
+  // line) has its own, older MSRV, so an old toolchain must not block it.
+  test('warns instead of blocking when ARTI_VERSION overrides the pin', () => {
+    expect(checkRustVersion('cargo 1.89.0 (abcdef012 2025-08-01)', '1.4.6')).toBe(true);
+    expect(errorSpy).not.toHaveBeenCalled();
+    const message = warnSpy.mock.calls.flat().join('\n');
+    expect(message).toContain('1.89.0');
+    expect(message).toContain(MIN_RUST_VERSION);
+    expect(message).toContain('1.4.6');
+  });
+
+  test('still blocks a too-old toolchain when the override equals the pin', () => {
+    expect(checkRustVersion('cargo 1.89.0 (abcdef012 2025-08-01)', PINNED_ARTI_VERSION)).toBe(
+      false
+    );
+    expect(warnSpy).not.toHaveBeenCalled();
   });
 
   test('passes through output it cannot parse rather than blocking the build', () => {
