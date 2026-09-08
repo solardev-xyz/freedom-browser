@@ -178,10 +178,10 @@ Proposed shared table, written to the "less is more" bar:
 | `optimistic beacon head`, `finalized state`    | `settings.html:3833`                            | delete                                                         |
 | `WNS/GNS`                                      | `settings.html:3833`                            | delete — undefined acronyms, one use in any user-facing string |
 | `byte-identical answers at one anchored block` | `settings.html:3845`                            | "must give the same answer"                                    |
-| `quorum`                                       | `settings.html:3845`, `:3249`                   | "Several servers must agree"                                   |
+| `quorum`                                       | `settings.html:3844`, `:3248`                   | "Several servers must agree"                                   |
 | `prover` / `Prover endpoint`                   | `settings.html:3964`, `:3341`, `:3062`          | "Proof server", behind Advanced                                |
 | `corpus.core default`                          | `settings.html:3965`                            | "Leave empty to use the default."                              |
-| `light client`                                 | `settings.html:1331`, `:1329`, `:3832`, `:3240` | "Ethereum node" / "Gnosis node"                                |
+| `light client`                                 | `settings.html:1313`, `:1329`, `:3832`, `:3240` | "Ethereum node" / "Gnosis node"                                |
 | `P2P`                                          | `settings.html:1331`, `:3240`                   | spell out, or delete                                           |
 | `RPC`                                          | `settings.html:1040` and ~20 more               | keep inside the Networks detail; "server" in prose             |
 
@@ -276,7 +276,7 @@ are the same kind of row. `Start Swarm node` (`:1277`) and `Start IPFS node`
 (`:1288`) have no helper; the other three have 63, 156 and 119 characters. **B**
 makes it "all five, in three words".
 
-**D. A paragraph that should shrink or become a link.** `:1559-1562`, Allowlisted
+**D. A paragraph that should shrink or become a link.** `:1541-1544`, Allowlisted
 sites, 130 characters. Proposed: `Ad blocking is off on these sites and their
 subdomains.` (54); Chrome does not warn about reloads on its own exceptions list.
 
@@ -325,7 +325,7 @@ names — as a link, not the bare parenthesised URL it prints today.
 | `:1602-1613` | Enable Tor (.onion access) _(Beta)_       | an experiment ✓                                                                  |
 | `:1614-1624` | Start Tor when Freedom opens              | the fifth "start X when Freedom opens" toggle; the other four are in **Startup** |
 
-`(Beta)` is inline text at `:1571` and `:1604`
+`(Beta)` is inline text at `:1572` and `:1604`
 (`<span style="color: var(--text-muted); font-weight: 400">`), while the page
 already has a badge component — `.resolver-badge`, used for `Ready` / `Verified`
 / `2 of 3` / `Public endpoint`. Proposed: render `Beta` through it, without
@@ -342,7 +342,7 @@ F title-vs-nav: [ {"nav":"Startup","title":"Automatic Startup"},
                   {"nav":"Name Resolution","title":"Ethereum Name Resolution"}, … ]
 ```
 
-`settings.html:969` vs `:1273`, and `:1056` vs `:1401`. Chrome's page title is
+`settings.html:969` vs `:1273`, and `:1056` vs `:1403`. Chrome's page title is
 always character-identical to the nav entry that reached it; that identity is
 what confirms the click did what you meant.
 
@@ -377,7 +377,7 @@ earlier draft of this finding proposed dropping
 `.shortcut-category { text-transform: uppercase }` on the grounds that `TABS` /
 `PAGE` / `WINDOW` were the only all-caps text in Settings. That is no longer
 true and the proposal is withdrawn. #263 added `.subsection-title`
-(`settings.html:159-175`) — a byte-identical 12 px uppercase style — as the
+(`settings.html:159-166`) — a byte-identical 12 px uppercase style — as the
 house sub-heading for the chain-detail route, with a comment stating that
 `.shortcut-category` is deliberately the same rule. Uppercase is now the
 established convention for this heading level, so Shortcuts' headers are
@@ -402,10 +402,10 @@ suffix a literal `→`; one does not. All are the same `.btn`.
 | `:3227`      | `Add endpoint`          | —     |
 | `:4393`      | `Add key`               | —     |
 | `:1254-1256` | `Manage all profiles →` | `→`   |
-| `:2578`      | `Set up publishing →`   | `→`   |
+| `:2579`      | `Set up publishing →`   | `→`   |
 | `:3199`      | `Manage keys`           | —     |
 
-The same split runs through the ENS link labels (`Node settings →` `:3853`,
+The same split runs through the ENS link labels (`Node settings →` `:3835`,
 `Manage endpoints →` `:3847`, `Configure →` `:3854`). Because the glyph is text
 content it is also part of the accessible name — "plus Add a chain", "Manage all
 profiles right arrow". The chain list rows have the same problem: each announces
@@ -494,7 +494,7 @@ one section and none for the page also sets the wrong expectation: the user who
 finds the Shortcuts field concludes Settings has no search.
 
 Proposed: a `Search settings` input in the `<aside>` header under the `Settings`
-`<h2>` (`:873-882`), above the `<nav>`. Smallest useful version filters the 14
+`<h2>` (`:865-882`), above the `<nav>`. Smallest useful version filters the 14
 `.nav-item` labels; the version worth building indexes every `.row-label` /
 `.row-help` plus the `METHODS`/`accessMeta` copy tables and shows a flat result
 list with each row's section, as Chrome does. Placeholder `Search settings…`
@@ -502,7 +502,7 @@ list with each row's section, as Chrome does. Placeholder `Search settings…`
 `Search shortcuts…` (`:1378`), `Search chains by name or ID…` (`:3103`),
 `Search history…` (`history.html:489`), `Search downloads…`
 (`downloads.html:397`), `Search origins…` (`index.html:3858`),
-`Search site, address, or tx hash…` (`payments.html:394`) — so `…` is the house
+`Search site, address, or tx hash…` (`payments.html:398`) — so `…` is the house
 style #257 settled on, not a deviation.
 
 Evidence: `images/settings-01-nav.png` — the nav header has no field.
@@ -568,7 +568,7 @@ while this report was in review, which changed what is left to say about both:
   **closed**, fixed by #263 after this branch was cut. The chain-detail route
   renders one `h2.section-title` again (verified on the merged tree:
   `G chain-detail section-titles: ["H2:Ethereum"]`), and #263 added
-  `.subsection-title` at `settings.html:159-175` as the house sub-heading style.
+  `.subsection-title` at `settings.html:159-166` as the house sub-heading style.
   The fix landed on the chains route only, so Name Resolution is still on the
   old treatment — that remainder is finding 15 below, filed fresh rather than
   reopened, since #255's stated scope is satisfied.
@@ -588,7 +588,7 @@ landed, not by the original pass. Both are new gaps rather than regressions.
 
 ### 15. Name Resolution kept the old sub-heading treatment — [#283](https://github.com/solardev-xyz/freedom-browser/issues/283)
 
-#263 moved the chain detail to `h3.subsection-title` (`settings.html:159-175`,
+#263 moved the chain detail to `h3.subsection-title` (`settings.html:159-166`,
 a 12 px uppercase style). Name Resolution has the same shape — one page title,
 two sub-sections — and still renders them as `h3.row-label` with hand-written
 inline margins:
@@ -624,7 +624,7 @@ Proposed: swap `class="row-label" style="margin: …"` for
 `.subsection-title` already carries `margin: 20px 0 8px 0`. One line each.
 
 Not proposed: merging `.subsection-title` (`:159`) with the byte-identical
-`.shortcut-category` (`:738`). The comment at `:159-165` records that the
+`.shortcut-category` (`:738`). The comment at `:151-158` records that the
 duplication is deliberate because `settings-styles.test.js` pins the latter by
 prelude (#223); noted here only so it is not "cleaned up" later.
 
