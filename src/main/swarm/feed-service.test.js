@@ -93,15 +93,23 @@ function make404() {
 
 jest.mock('@ethersphere/bee-js', () => ({
   Bee: jest.fn().mockImplementation(() => ({
-    createFeedManifest: mockCreateFeedManifest,
-    makeFeedWriter: mockMakeFeedWriter,
-    makeFeedReader: mockMakeFeedReader,
-    getPostageBatches: mockGetPostageBatches,
+    feed: {
+      createManifest: mockCreateFeedManifest,
+      makeWriter: mockMakeFeedWriter,
+      makeReader: mockMakeFeedReader,
+    },
+    stamp: {
+      getAll: mockGetPostageBatches,
+    },
     calculateSingleOwnerChunkAddress: mockCalculateSingleOwnerChunkAddress,
-    downloadChunk: mockDownloadChunk,
+    chunk: {
+      download: mockDownloadChunk,
+    },
     unmarshalSingleOwnerChunk: mockUnmarshalSingleOwnerChunk,
     makeContentAddressedChunk: mockMakeContentAddressedChunk,
-    downloadData: mockDownloadData,
+    data: {
+      download: mockDownloadData,
+    },
   })),
   PrivateKey: MockPrivateKey,
   Topic: MockTopic,

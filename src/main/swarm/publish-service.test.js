@@ -16,11 +16,21 @@ const mockGetPostageBatches = jest.fn();
 
 jest.mock('@ethersphere/bee-js', () => ({
   Bee: jest.fn().mockImplementation(() => ({
-    uploadData: mockUploadData,
-    uploadFile: mockUploadFile,
-    uploadFilesFromDirectory: mockUploadFilesFromDirectory,
-    retrieveTag: mockRetrieveTag,
-    getPostageBatches: mockGetPostageBatches,
+    data: {
+      upload: mockUploadData,
+    },
+    file: {
+      upload: mockUploadFile,
+    },
+    collection: {
+      uploadFromDirectory: mockUploadFilesFromDirectory,
+    },
+    tag: {
+      get: mockRetrieveTag,
+    },
+    stamp: {
+      getAll: mockGetPostageBatches,
+    },
   })),
 }));
 
