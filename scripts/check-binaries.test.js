@@ -56,3 +56,20 @@ describe('Radicle build inputs', () => {
     expect(platformKey([], 'win32', 'arm64')).toBe('win-arm64');
   });
 });
+
+
+describe('Myotis supervisor build inputs', () => {
+  test.each([['mac', 'arm64'], ['linux', 'x64'], ['win', 'x64']])(
+    'requires a source-built helper on %s-%s', (os, arch) => {
+      fs.existsSync.mockImplementation((target) => !target.includes('myotis-supervisor'));
+      expect(checkBinaries([{ os, arch }])).toEqual([
+        expect.stringContaining(`myotis supervisor for ${os}-${arch}`),
+      ]);
+    }
+  );
+  test('packages both helper names and only adds the mac helper to explicit signing', () => {
+    const resource = packageJson.build.extraResources.find(({ to }) => to === 'myotis-node');
+    expect(resource.filter).toEqual(['myotis-node.node', 'myotis-supervisor', 'myotis-supervisor.exe']);
+    expect(packageJson.build.mac.binaries).toEqual(['Contents/Resources/myotis-node/myotis-supervisor']);
+  });
+});

@@ -297,7 +297,7 @@ export function startBalanceRefresh() {
   walletState.balanceRefreshInterval = setInterval(() => {
     // Only refresh if wallet tab is visible
     const walletTab = document.getElementById('tab-wallet');
-    if (walletTab && !walletTab.classList.contains('hidden') && walletState.fullAddresses.wallet) {
+    if (walletTab && !document.hidden && walletTab.checkVisibility() && walletState.fullAddresses.wallet) {
       refreshBalances();
     }
   }, walletState.BALANCE_REFRESH_MS);

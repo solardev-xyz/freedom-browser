@@ -7,6 +7,7 @@ const mockRegistry = {
 const mockMyotis = {
   NETWORKS: new Map([[1, {}], [100, {}]]),
   isReady: jest.fn(),
+  markUnhealthy: jest.fn(),
   getStatus: jest.fn(),
   getAccount: jest.fn(),
   ethCall: jest.fn(),
@@ -227,6 +228,15 @@ describe('chain-data-router', () => {
       '0xabc',
       'latest',
     ]);
+  });
+
+  test('does not fall through to another broadcaster after an uncertain Myotis outcome', async () => {
+    global.fetch = jest.fn();
+    mockMyotis.isReady.mockReturnValue(true);
+    const error = Object.assign(new Error('broadcast outcome uncertain'), { code: 'MYOTIS_BROADCAST_UNCERTAIN' });
+    mockMyotis.sendRawTransaction.mockRejectedValueOnce(error);
+    await expect(broadcastRawTransaction(100, '0xsigned')).rejects.toBe(error);
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
   test('uses Myotis P2P transaction broadcast before RPC', async () => {
@@ -580,6 +590,7 @@ describe('chain-data-router', () => {
     // still pass.
     const settled = await Promise.all(requests);
     expect(settled.map((entry) => entry.source)).toEqual(Array(6).fill('direct'));
+    expect(mockMyotis.markUnhealthy).toHaveBeenCalledWith(1);
     expect(mockMyotis.ethCall).toHaveBeenCalledTimes(1);
   });
 

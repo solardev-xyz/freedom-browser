@@ -13,6 +13,15 @@ The flow at a glance:
 3. Set the bare `<version>`, finalize the changelog, tag `v<version>` (§5). CI produces a draft release from the same tree that just passed. Re-check the draft's assets (§6, short form).
 4. Upload the draft's assets to `freedom.baby`, update the website, publish the draft (§7). Merge the branch into `main` (§8) and open the next dev cycle (§9).
 
+Myotis packaging also builds the checked-in native supervisor before binary
+preflight (`scripts/build.js`). Native macOS builds compile every requested
+architecture; Linux builds use the target host compiler; Windows release CI
+activates its already installed x64 MSVC tools. No supervisor step downloads a
+compiler. A foreign-target local build must supply the matching source-built
+helper in `myotis-bin/<os>-<arch>/`. See
+[Myotis isolation](../myotis-process-isolation.md) for outstanding runtime and
+Windows qualification; source compilation alone is not a release pass.
+
 ## 0. Create a release branch first
 
 All release work happens on a dedicated branch off `main`, never on `main` directly.
