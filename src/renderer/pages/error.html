@@ -11,7 +11,7 @@
          the title of whatever page the user was on before the failed
          navigation. See issue #236. `displayError()` keeps this in sync with
          the headline it picks for the specific failure. -->
-    <title>Content Unavailable</title>
+    <title>Content unavailable</title>
     <style>
       /* Internal pages follow Settings > Appearance, not the OS colour scheme:
          the webview preload resolves the setting and stamps `data-theme` on
@@ -113,7 +113,7 @@
   </head>
   <body>
     <div class="container">
-      <h1 id="title">Content Unavailable</h1>
+      <h1 id="title">Content unavailable</h1>
       <p id="description">
         This content could not be retrieved from the decentralized network. The address may be
         invalid, the content may no longer exist, or no peers are serving it.
@@ -255,7 +255,7 @@
 
         // Generic copy for non-dweb URLs (http/https, file:, anything we
         // don't recognize as a content-addressed scheme). The default
-        // "Content Unavailable / decentralized network" copy is misleading
+        // "Content unavailable / decentralized network" copy is misleading
         // when a plain HTTPS request fails — it implies the user is on a
         // peer-to-peer page when they aren't.
         if (!protocol) {

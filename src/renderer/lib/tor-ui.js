@@ -3,6 +3,7 @@
 // endpoint) and the Arti software version.
 import { state, getDisplayMessage } from './state.js';
 import { pushDebug } from './debug.js';
+import { versionText } from './ui-format.js';
 
 // DOM elements (initialized in initTorUi)
 let torToggleBtn = null;
@@ -27,7 +28,7 @@ const renderTorVersionLine = () => {
   const showBundledVersion = state.enableTorIntegration === true && !isExternalTorMode();
   if (torVersionRow) torVersionRow.hidden = !showBundledVersion;
   if (!torVersionText) return;
-  torVersionText.textContent = showBundledVersion ? torVersionValue : '';
+  torVersionText.textContent = showBundledVersion ? versionText(torVersionValue) : '';
 };
 
 const fetchTorVersionOnce = async () => {

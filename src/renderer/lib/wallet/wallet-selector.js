@@ -133,7 +133,7 @@ function renderWalletList() {
     }
 
     const truncatedAddress = wallet.address
-      ? `${wallet.address.slice(0, 6)}...${wallet.address.slice(-4)}`
+      ? `${wallet.address.slice(0, 6)}…${wallet.address.slice(-4)}`
       : '--';
 
     item.innerHTML = `

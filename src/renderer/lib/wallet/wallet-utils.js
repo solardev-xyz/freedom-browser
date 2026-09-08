@@ -11,7 +11,7 @@ export function truncateAddress(address, startChars = 6, endChars = 4) {
   if (!address || address.length <= startChars + endChars + 3) {
     return address;
   }
-  return `${address.slice(0, startChars)}...${address.slice(-endChars)}`;
+  return `${address.slice(0, startChars)}…${address.slice(-endChars)}`;
 }
 
 /** The wallet record for an index (defaults to the active account). */

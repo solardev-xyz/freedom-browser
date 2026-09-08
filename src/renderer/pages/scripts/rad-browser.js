@@ -63,7 +63,7 @@ new MutationObserver(updateHljsTheme).observe(document.documentElement, {
 });
 
 // Show RID in header
-displayRid.textContent = rid ? `rad://${rid}` : 'rad://...';
+displayRid.textContent = rid ? `rad://${rid}` : 'rad://…';
 
 // =============================================
 // UTILITIES
@@ -790,7 +790,7 @@ async function renderView(viewType, viewPath) {
     try {
       // Show loading indicator in tree area
       fileTreeEl.innerHTML =
-        '<div class="loading-inline"><div class="spinner"></div><span>Loading files...</span></div>';
+        '<div class="loading-inline"><div class="spinner"></div><span>Loading files…</span></div>';
 
       const [tree, readme] = await Promise.all([fetchTree(headSha, ''), fetchReadme(headSha)]);
 
@@ -808,7 +808,7 @@ async function renderView(viewType, viewPath) {
 
     try {
       fileTreeEl.innerHTML =
-        '<div class="loading-inline"><div class="spinner"></div><span>Loading files...</span></div>';
+        '<div class="loading-inline"><div class="spinner"></div><span>Loading files…</span></div>';
 
       const tree = await fetchTree(headSha, viewPath);
       renderLastCommit(tree.lastCommit);
@@ -824,7 +824,7 @@ async function renderView(viewType, viewPath) {
 
     try {
       fileViewerEl.innerHTML =
-        '<div class="loading-inline"><div class="spinner"></div><span>Loading file...</span></div>';
+        '<div class="loading-inline"><div class="spinner"></div><span>Loading file…</span></div>';
 
       const blob = await fetchBlob(headSha, viewPath);
       renderBlob(blob);
@@ -901,7 +901,7 @@ function renderRepoList(repos) {
   repoList.innerHTML = repos
     .map((repo) => {
       const repoRid = (repo.rid || '').replace('rad:', '');
-      const shortRid = repoRid.slice(0, 12) + '...';
+      const shortRid = repoRid.slice(0, 12) + '…';
       const repoData = repo.payloads?.['xyz.radicle.project']?.data || {};
       const name = repoData.name || repo.name || 'Unnamed';
       const desc = repoData.description || repo.description || 'No description';
@@ -968,7 +968,7 @@ function renderNetworkRepoList(repos) {
       const name = repoData.name || 'Unnamed';
       const desc = repoData.description || 'No description';
       const repoRid = (repo.rid || '').replace('rad:', '');
-      const shortRid = repoRid.slice(0, 12) + '...';
+      const shortRid = repoRid.slice(0, 12) + '…';
       const seeders = repo.seeding || 0;
 
       return `
@@ -1101,7 +1101,7 @@ async function seedRepository() {
 async function init() {
   if (params.get('error') === 'disabled') {
     const input = params.get('input') || '';
-    displayRid.textContent = input || 'rad://...';
+    displayRid.textContent = input || 'rad://…';
     showState('radicle-disabled');
     return;
   }
@@ -1109,7 +1109,7 @@ async function init() {
   // Handle invalid RID error (passed from navigation.js)
   if (params.get('error') === 'invalid-rid') {
     const input = params.get('input') || '';
-    displayRid.textContent = input ? `rad://${input}` : 'rad://...';
+    displayRid.textContent = input ? `rad://${input}` : 'rad://…';
     invalidRidInput.textContent = input || '(empty)';
     showState('invalid-rid');
     return;
@@ -1204,7 +1204,7 @@ async function init() {
       renderRepoHeader(meta);
       repoHeaderEl.insertAdjacentHTML(
         'beforeend',
-        '<div class="empty-state" style="margin-top:24px"><p>No commit history found for this repository.</p></div>'
+        '<div class="empty-state" style="margin-top:24px"><p>No commit history found for this repository</p></div>'
       );
       return;
     }

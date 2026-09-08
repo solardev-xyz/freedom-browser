@@ -17,9 +17,11 @@ const PAGES = [
   { name: 'home', url: 'freedom://home', file: '/pages/home.html', probe: 'body' },
   { name: 'history', url: 'freedom://history', file: '/pages/history.html', probe: 'h1' },
   { name: 'downloads', url: 'freedom://downloads', file: '/pages/downloads.html', probe: 'h1' },
-  // Not `h1`: the payments heading is brand blue in both palettes.
-  { name: 'payments', url: 'freedom://payments', file: '/pages/payments.html', probe: 'body' },
-  { name: 'profiles', url: 'freedom://profiles', file: '/pages/profiles.html', probe: 'body' },
+  // Both headings moved onto the shared accent pair (#58a6ff dark / #0969da
+  // light) in #256, so `h1` flips with the theme here like the rows above and
+  // exercises the accent that change standardised.
+  { name: 'payments', url: 'freedom://payments', file: '/pages/payments.html', probe: 'h1' },
+  { name: 'profiles', url: 'freedom://profiles', file: '/pages/profiles.html', probe: 'h1' },
   { name: 'settings', url: 'freedom://settings', file: '/pages/settings.html', probe: 'body' },
 ];
 

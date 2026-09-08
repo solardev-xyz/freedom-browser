@@ -387,14 +387,14 @@
       </svg>
       Downloads
     </h1>
-    <p class="subtitle" id="stats">Loading...</p>
+    <p class="subtitle" id="stats">Loading…</p>
 
     <div class="toolbar">
       <input
         type="text"
         class="search-input"
         id="search-input"
-        placeholder="Search downloads..."
+        placeholder="Search downloads…"
         autofocus
       />
       <div class="toolbar-right">
@@ -418,7 +418,7 @@
     </div>
 
     <div id="downloads-container">
-      <div class="loading">Loading downloads...</div>
+      <div class="loading">Loading downloads…</div>
     </div>
 
     <script>
@@ -581,7 +581,25 @@
         `;
       }
 
+      // Subtitle counter, shared by the sibling list pages (history, downloads,
+      // payments): pluralise the noun, and name how much of the whole list is
+      // showing while a filter is active (#254). Duplicated per page because
+      // these pages' CSP allows inline script only; the copies are held
+      // identical to src/renderer/lib/ui-format.js by
+      // src/renderer/pages/list-page-counters.test.js.
+      function formatCount(shown, total, singular, plural = `${singular}s`) {
+        const noun = total === 1 ? singular : plural;
+        return shown === total ? `${total} ${noun}` : `${shown} of ${total} ${noun}`;
+      }
+
+      function updateStats(shown) {
+        const active = allDownloads.filter((entry) => entry.state === 'in_progress').length;
+        const label = formatCount(shown, allDownloads.length, 'download');
+        statsEl.textContent = active ? `${label} — ${active} in progress` : label;
+      }
+
       function renderDownloads(entries) {
+        updateStats(entries?.length || 0);
         if (!entries || entries.length === 0) {
           container.innerHTML = `
             <div class="empty-state">
@@ -667,10 +685,6 @@
           }
 
           allDownloads = await freedomAPI.getDownloads();
-          const active = allDownloads.filter((entry) => entry.state === 'in_progress').length;
-          statsEl.textContent = active
-            ? `${allDownloads.length} downloads — ${active} in progress`
-            : `${allDownloads.length} downloads`;
           applyFilter();
         } catch (err) {
           console.error('Failed to load downloads:', err);

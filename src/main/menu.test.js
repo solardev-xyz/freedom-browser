@@ -46,7 +46,7 @@ function loadMenuModule(platform, options = {}) {
       }),
       [require.resolve('./updater')]: () => ({
         checkForUpdates: jest.fn(),
-        getInstallRelaunchMode: () => ({ menuLabel: 'Install Update and Restart...' }),
+        getInstallRelaunchMode: () => ({ menuLabel: 'Install Update and Restart…' }),
         isUpdateReady: () => false,
         installUpdate: jest.fn(),
       }),
@@ -148,7 +148,7 @@ describe('menu', () => {
       expect(profiles).toBeTruthy();
       const labels = profiles.submenu.map((item) => item.label ?? item.type);
       expect(labels).toEqual(
-        expect.arrayContaining(['Alpha', 'Beta', 'Create Profile...', 'Manage Profiles...'])
+        expect.arrayContaining(['Alpha', 'Beta', 'Create Profile…', 'Manage Profiles…'])
       );
 
       // Current profile is a checked + disabled checkbox; the other is a plain
@@ -196,7 +196,7 @@ describe('menu', () => {
       const { capturedTemplate } = loadMenuModule(platform);
       const file = findTopLabel(capturedTemplate, 'File');
 
-      expect(file?.submenu?.map((item) => item.label)).not.toContain('Manage Profiles...');
+      expect(file?.submenu?.map((item) => item.label)).not.toContain('Manage Profiles…');
     }
   });
 
@@ -251,6 +251,20 @@ describe('menu', () => {
     expect(capturedTemplate.some((item) => item.role === 'editMenu')).toBe(true);
     expect(capturedTemplate.some((item) => item.role === 'windowMenu')).toBe(true);
     expect(findTopLabel(capturedTemplate, 'Edit')).toBeFalsy();
+  });
+
+  // The `Check for Updates…` row lives only in the macOS appMenu, so the
+  // Linux/Windows templates — and any e2e run on them — can never show this
+  // label. It is the one native label that has to be asserted from a mocked
+  // darwin build, and it is the one #257 left on ASCII dots next to the
+  // hamburger flyout's `Check for Updates…`. See src/main/main-copy.test.js.
+  test('macOS appMenu update rows use the one ellipsis character', () => {
+    const { capturedTemplate } = loadMenuModule('darwin');
+    const appMenu = capturedTemplate.find((item) => item.role === 'appMenu');
+    const labels = appMenu.submenu.map((item) => item.label).filter(Boolean);
+
+    expect(labels).toContain('Check for Updates…');
+    expect(labels.filter((label) => label.includes('...'))).toEqual([]);
   });
 
   test('Edit menu carries Find in Page with CmdOrCtrl+F on every platform', () => {
