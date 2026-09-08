@@ -713,6 +713,25 @@
         display: none;
       }
 
+      /* The Swarm mode readout, relocated into the Swarm node row (#275).
+         Not `.profile-node-mode` — that name is already taken above by the
+         mode pill. */
+      .profile-node-swarm-mode {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-top: 6px;
+      }
+
+      .profile-node-swarm-mode > #swarm-mode-help {
+        flex: 1;
+      }
+
+      .profile-node-swarm-mode > .btn {
+        flex: none;
+        white-space: nowrap;
+      }
+
       .profile-node-field {
         display: grid;
         grid-template-columns: 84px minmax(0, 1fr);
@@ -1126,6 +1145,17 @@
                 </select>
               </div>
             </div>
+            <div class="row">
+              <div class="row-body">
+                <p class="row-label">Show IPFS load progress in the status bar</p>
+              </div>
+              <div class="row-control">
+                <label class="toggle">
+                  <input type="checkbox" id="show-ipfs-progress-status" />
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
             <div class="row" data-linux-only>
               <div class="row-body">
                 <p class="row-label">Tabs in title bar</p>
@@ -1249,6 +1279,10 @@
           <div class="card" id="profile-nodes-card">
             <div class="profile-node-empty">Loading…</div>
           </div>
+          <div id="swarm-mode-row" class="profile-node-swarm-mode" hidden>
+            <span class="profile-node-detail" id="swarm-mode-help">Loading…</span>
+            <button type="button" id="swarm-mode-action-btn" class="btn" hidden></button>
+          </div>
           <p id="profile-nodes-status" class="rpc-status"></p>
         </section>
 
@@ -1318,6 +1352,18 @@
               <div class="row-control">
                 <label class="toggle">
                   <input type="checkbox" id="start-myotis-gnosis-at-launch" />
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
+            <div class="row" id="start-tor-row" data-tor>
+              <div class="row-body">
+                <p class="row-label">Start Tor when Freedom opens</p>
+                <p class="row-help">Restart to apply.</p>
+              </div>
+              <div class="row-control">
+                <label class="toggle">
+                  <input type="checkbox" id="start-tor-at-launch" />
                   <span class="slider"></span>
                 </label>
               </div>
@@ -1551,7 +1597,7 @@
               <div class="row-body">
                 <p class="row-label">
                   Enable Identity &amp; Wallet
-                  <span style="color: var(--text-muted); font-weight: 400">(Beta)</span>
+                  <span class="resolver-badge">Beta</span>
                 </p>
               </div>
               <div class="row-control">
@@ -1561,31 +1607,11 @@
                 </label>
               </div>
             </div>
-            <div class="row">
-              <div class="row-body">
-                <p class="row-label">Show IPFS load progress in the status bar</p>
-              </div>
-              <div class="row-control">
-                <label class="toggle">
-                  <input type="checkbox" id="show-ipfs-progress-status" />
-                  <span class="slider"></span>
-                </label>
-              </div>
-            </div>
-            <div class="row" id="swarm-mode-row">
-              <div class="row-body">
-                <p class="row-label">Swarm node mode</p>
-                <p class="row-help" id="swarm-mode-help">Loading…</p>
-              </div>
-              <div class="row-control">
-                <button type="button" id="swarm-mode-action-btn" class="btn" hidden></button>
-              </div>
-            </div>
             <div class="row" data-tor>
               <div class="row-body">
                 <p class="row-label">
                   Enable Tor (.onion access)
-                  <span style="color: var(--text-muted); font-weight: 400">(Beta)</span>
+                  <span class="resolver-badge">Beta</span>
                 </p>
                 <p class="row-help">
                   Routes only <code>.onion</code> addresses through the bundled Tor (Arti) client.
@@ -1595,17 +1621,6 @@
               <div class="row-control">
                 <label class="toggle">
                   <input type="checkbox" id="enable-tor-integration" />
-                  <span class="slider"></span>
-                </label>
-              </div>
-            </div>
-            <div class="row sub" id="start-tor-row" data-tor>
-              <div class="row-body">
-                <p class="row-label">Start Tor when Freedom opens</p>
-              </div>
-              <div class="row-control">
-                <label class="toggle">
-                  <input type="checkbox" id="start-tor-at-launch" />
                   <span class="slider"></span>
                 </label>
               </div>
@@ -1746,6 +1761,7 @@
         status: $('search-provider-status'),
       };
 
+      const swarmModeRow = $('swarm-mode-row');
       const swarmModeHelp = $('swarm-mode-help');
       const swarmModeBtn = $('swarm-mode-action-btn');
       const profileFields = {
@@ -2259,11 +2275,20 @@
                 <div class="profile-node-status-line">${esc(statusLabel(service))}</div>
                 ${details}
                 ${renderExternalEditor(protocol, config, mode)}
+                ${protocol === 'bee' ? '<div data-swarm-mode-slot></div>' : ''}
               </div>
             </div>`;
         });
 
         profileFields.nodesCard.innerHTML = rows.join('');
+        // Move the live Swarm mode readout into the Swarm row. It is one
+        // persistent element (its handlers close over it), so it is
+        // re-parented rather than re-rendered.
+        const swarmSlot = profileFields.nodesCard.querySelector('[data-swarm-mode-slot]');
+        if (swarmSlot && swarmModeRow) {
+          swarmModeRow.hidden = false;
+          swarmSlot.appendChild(swarmModeRow);
+        }
       };
 
       const refreshProfileSection = async (force = false) => {
