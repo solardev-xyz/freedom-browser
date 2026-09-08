@@ -46,10 +46,14 @@ const MockBytes = {
 
 var mockBee = {
   url: 'http://127.0.0.1:1633',
-  gsocMine: mockGsocMine,
-  gsocSend: mockGsocSend,
-  pssSend: mockPssSend,
-  getNodeAddresses: mockGetNodeAddresses,
+  messaging: {
+    gsocMine: mockGsocMine,
+    gsocSend: mockGsocSend,
+    pssSend: mockPssSend,
+  },
+  connectivity: {
+    getNodeAddresses: mockGetNodeAddresses,
+  },
   calculateSingleOwnerChunkAddress: mockCalculateSingleOwnerChunkAddress,
 };
 

@@ -3,7 +3,9 @@ var mockGetPostageBatches = jest.fn();
 jest.mock('@ethersphere/bee-js', () => ({
   Bee: jest.fn().mockImplementation((url) => ({
     _testUrl: url,
-    getPostageBatches: mockGetPostageBatches,
+    stamp: {
+      getAll: mockGetPostageBatches,
+    },
   })),
 }));
 
