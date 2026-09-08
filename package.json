@@ -273,11 +273,26 @@
     "qrcode": "^1.5.4"
   },
   "overrides": {
+    "@ledgerhq/domain-service": {
+      "axios": "^1.20.0"
+    },
+    "@ledgerhq/evm-tools": {
+      "axios": "^1.20.0"
+    },
+    "@ledgerhq/hw-app-eth": {
+      "axios": "^1.20.0"
+    },
     "@metamask/utils": {
       "uuid": "^14.0.0"
     },
+    "aedes": {
+      "uuid": "^11.1.1"
+    },
     "ethers": {
       "ws": "^8.21.0"
+    },
+    "hyperid": {
+      "uuid": "^11.1.1"
     },
     "viem": {
       "ws": "^8.21.0"
