@@ -34,6 +34,7 @@ All notable changes to Freedom will be documented in this file.
 - Audio indicator on tabs playing sound; click it or use "Mute Tab" in the tab context menu to mute/unmute (mute survives navigation)
 - Contract-hosted onchain apps on `web3://<address>[:<chainId>]/` — the app itself lives in the contract, not on a web server:
   - Address-bar shield popover reporting the chain, block, contract and content hash behind the page
+  - Unverified reads stop at a warning page you can pass once; disagreeing sources block the load
   - The wallet provider is pinned to the app's chain; a page cannot switch it
   - Reasoning: the page is a contract read, not a hosted file; the shield reports whether that read was verified
 - Radicle repositories are browsable and writable from the browser — open a `rad:` URL the way you would a web page:
@@ -51,7 +52,7 @@ All notable changes to Freedom will be documented in this file.
   - Ledger hardware accounts, confirmed on the device, including x402 payments
   - Phone accounts over Open Lavatory: QR pairing, signing on the phone, including x402 payments
   - Safe multi-owner accounts on Gnosis, with a signing board owners sign in any order
-- Tor for `.onion` addresses through a bundled [Arti](https://gitlab.torproject.org/tpo/core/arti) 1.4.4 client, off by default under Settings > Experimental (clearnet traffic keeps connecting directly)
+- Tor for `.onion` addresses through a bundled [Arti](https://gitlab.torproject.org/tpo/core/arti) 2.6.0 client, off by default under Settings > Experimental (clearnet traffic keeps connecting directly)
   - Prompt to use a system Tor client, such as Tor Browser, instead of Arti
 
 ### Changed
@@ -74,17 +75,27 @@ All notable changes to Freedom will be documented in this file.
 - Uploads around 250 MiB no longer stall
 - Expired or invalid postage batches fail fast with a clear error instead of stalling uploads
 - macOS disk images pass Gatekeeper without an online check
+- Internal pages follow the theme picked under Settings > Appearance instead of the operating system's
+- Name-resolution warning pages show the typed name in the address bar and history instead of an on-disk file path
+- A failed page load titles itself instead of leaving the previous page's title on the tab and in history
+- The Publish and Payments pages and the sidebar's permission screens are readable on the light theme
 
 ### Security
 
 - Escape repository-supplied names and identifiers in the Radicle repository viewer's HTML attributes, blocking script execution from a crafted file name
 - `window.ethereum` responses reach only the document that made the request, so a reply arriving after a navigation cannot land in the next page
+- A remote page that mimics Freedom's error page can no longer choose what the address bar shows when you switch back to its tab
 - Updated bundled nodes:
   - [Ant](https://github.com/freedom-hq/ant) 0.5.33 to 0.5.44
 - Updated runtime dependencies:
-  - `@corpus-core/colibri-stateless` 1.1.30 to 2.0.4 (thanks @simon-jentzsch!)
+  - Electron 43.0.0 to 43.6.0 (Chromium 150.0.7871.46 to 150.0.7871.250, Node 24.17.0 to 24.20.0)
+  - `@corpus-core/colibri-stateless` 1.1.30 to 2.0.6 (thanks @simon-jentzsch!)
+  - `@ethersphere/bee-js` 12.2.2 to 13.0.0
   - `better-sqlite3` 12.11.1 to 13.0.3
   - `micro-key-producer` 0.9.0 to 0.10.2
+  - `@x402/core` 2.17.0 to 2.25.0
+  - `@x402/evm` 2.17.0 to 2.25.0
+  - `@scure/bip39` 2.2.0 to 2.4.0
 
 ## [0.8.0] - 2026-07-02
 
