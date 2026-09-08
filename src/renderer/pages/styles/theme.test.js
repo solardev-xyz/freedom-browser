@@ -41,12 +41,50 @@ const stripStrings = (css) => css.replace(/'[^']*'|"[^"]*"/g, (s) => ' '.repeat(
 
 const THEME_CSS = stripComments(THEME);
 
-/** Top-level `prelude { body }` pairs of a flat stylesheet. */
-const blocks = (css) =>
-  [...stripComments(css).matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(([, prelude, body]) => ({
-    prelude: prelude.replace(/\s+/g, ' ').trim(),
-    body,
-  }));
+/**
+ * Every `prelude { body }` pair in a stylesheet, nested ones included.
+ *
+ * This started as a flat `/([^{}]+)\{([^{}]*)\}/` sweep, which only ever
+ * matches the *innermost* block: given the pre-#261 shape
+ * `:where(html[data-theme='light']) { body { … } }` it reports `body` and the
+ * theme wrapper is never seen by any guard below. So walk the braces instead.
+ * `prelude` is the whole ancestor chain, so a wrapper is still visible on the
+ * rule it wraps; `body` is only that block's own declarations, never a nested
+ * block's.
+ */
+const blocks = (css) => {
+  const found = [];
+  const open = [];
+  let text = '';
+  for (const part of stripComments(css).split(/([{}])/)) {
+    if (part === '{') {
+      // Anything up to the last `;` belongs to the enclosing block; the rest
+      // (`… ; a > b`) is this block's prelude.
+      const cut = text.lastIndexOf(';');
+      if (open.length) open[open.length - 1].body += text.slice(0, cut + 1);
+      open.push({
+        prelude: text
+          .slice(cut + 1)
+          .replace(/\s+/g, ' ')
+          .trim(),
+        body: '',
+      });
+      text = '';
+    } else if (part === '}') {
+      const block = open.pop();
+      if (block) {
+        found.push({
+          prelude: [...open.map((b) => b.prelude), block.prelude].join(' ').trim(),
+          body: block.body + text,
+        });
+      }
+      text = '';
+    } else {
+      text += part;
+    }
+  }
+  return found;
+};
 
 const tokensOf = (body) =>
   new Map(
@@ -114,18 +152,30 @@ describe('the shared internal-page palette', () => {
   });
 
   test('no page declares a palette of its own (#261)', () => {
+    const shared = tokensOf(darkBlock.body);
     const offenders = [];
     for (const file of pageFiles) {
       const css = cssFor(file);
       for (const { prelude, body } of blocks(css)) {
-        if (/^(?::root|html)$/.test(prelude) && /--[\w-]+\s*:/.test(body)) {
-          offenders.push(`${file}: ${prelude} re-declares palette tokens`);
+        // Any selector, not just `:root`/`html`: re-pinning `--accent` on a
+        // container div is the same drift one level down, and the token still
+        // counts as "defined" to the #249 guard below.
+        for (const name of tokensOf(stripStrings(body)).keys()) {
+          if (shared.has(name)) {
+            offenders.push(`${file}: \`${prelude}\` re-declares the shared token ${name}`);
+          }
         }
         // `private.html` pins `color-scheme: dark` against the shared light
         // block on purpose (it is plum-on-dark in both themes); any other
-        // theme-scoped rule is a page-local palette coming back.
+        // theme-scoped rule is a page-local palette coming back — including
+        // one nested inside a wrapper, which is the shape #261 removed.
         if (/data-theme/.test(prelude) && file !== 'private.html') {
-          offenders.push(`${file}: ${prelude} scopes rules by theme`);
+          offenders.push(`${file}: \`${prelude}\` scopes rules by theme`);
+        }
+        // The page has no business asking the OS either: `theme.css` derives
+        // `color-scheme` from `data-theme`, which is the setting.
+        if (/prefers-color-scheme/.test(prelude)) {
+          offenders.push(`${file}: \`${prelude}\` scopes rules by OS theme`);
         }
       }
     }
