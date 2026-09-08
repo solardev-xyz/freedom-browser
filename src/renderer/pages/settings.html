@@ -1596,6 +1596,23 @@
       // freedomAPI is exposed globally by webview-preload.js via contextBridge.
       const $ = (id) => document.getElementById(id);
 
+      // One copy table for the four network sources, read by both the Name
+      // Resolution controller and the chain detail (#269). A help line is
+      // kept only where the row's badge does not already carry the fact:
+      // `Ready`/`Syncing`/`Off` for the local node, `2 of 3` for quorum.
+      const NETWORK_SOURCE_COPY = {
+        myotis: { label: 'Local node', help: '' },
+        colibri: {
+          label: 'Proof check',
+          help: 'A server answers; Freedom checks the proof itself.',
+        },
+        quorum: { label: 'Several servers must agree', help: '' },
+        direct: {
+          label: 'One server, unchecked',
+          help: 'Fastest, and the only option with nothing verifying the answer.',
+        },
+      };
+
       const fields = {
         themeMode: $('theme-mode'),
         searchProvider: $('search-provider'),
@@ -3212,24 +3229,7 @@
             </div>`;
         };
 
-        const accessMeta = {
-          myotis: {
-            label: 'Myotis P2P light client',
-            help: 'Verified locally against the chain; no RPC endpoint involved.',
-          },
-          colibri: {
-            label: 'Colibri cryptographic verification',
-            help: 'Verifies prover responses against the chain consensus.',
-          },
-          quorum: {
-            label: 'RPC quorum',
-            help: 'Requires matching responses from independently configured RPC endpoints.',
-          },
-          direct: {
-            label: 'Direct RPC',
-            help: 'Compatibility fallback using the first working configured endpoint.',
-          },
-        };
+        const accessMeta = NETWORK_SOURCE_COPY;
 
         const sourceStatus = (source, cid) => {
           if (source === 'myotis') {
@@ -3277,7 +3277,7 @@
                       <p class="row-label">${meta.label}</p>
                       <span class="resolver-badge">${esc(sourceStatus(source, cid))}</span>
                     </div>
-                    <p class="row-help">${meta.help}</p>
+                    ${meta.help ? `<p class="row-help">${meta.help}</p>` : ''}
                   </div>
                 </div>`;
             })
@@ -3829,27 +3829,20 @@
         const METHODS = [
           {
             id: 'myotis',
-            label: 'Myotis light client',
-            help: 'Local P2P resolution. ENS prefers finalized state; newer ENS records and WNS/GNS use a cryptographically verified optimistic beacon head.',
+            ...NETWORK_SOURCE_COPY.myotis,
             link: '#nodes',
             linkLabel: 'Node settings',
           },
-          {
-            id: 'colibri',
-            label: 'Colibri',
-            help: 'A remote prover produces the witness; Freedom verifies the cryptographic proof locally.',
-          },
+          { id: 'colibri', ...NETWORK_SOURCE_COPY.colibri },
           {
             id: 'quorum',
-            label: 'RPC quorum',
-            help: 'Multiple independent RPC endpoints must return byte-identical answers at one anchored block.',
+            ...NETWORK_SOURCE_COPY.quorum,
             link: '#chains/1',
             linkLabel: 'Manage endpoints',
           },
           {
             id: 'direct',
-            label: 'Direct RPC',
-            help: 'Uses one configured endpoint. This is not cryptographic verification and is disabled by default.',
+            ...NETWORK_SOURCE_COPY.direct,
             link: '#chains/1',
             linkLabel: 'Configure',
           },
@@ -4006,7 +3999,7 @@
                       <p class="row-label">${method.label}</p>
                       <span class="resolver-badge" data-method-status="${id}">Loading…</span>
                     </div>
-                    <p class="row-help">${method.help}</p>
+                    ${method.help ? `<p class="row-help">${method.help}</p>` : ''}
                     ${link}
                   </div>
                   <div class="resolver-controls">
