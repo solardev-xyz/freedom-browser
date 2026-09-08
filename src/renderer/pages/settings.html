@@ -694,12 +694,6 @@
         font-size: 12px;
       }
 
-      .profile-node-actions {
-        display: flex;
-        justify-content: flex-end;
-        margin-top: 8px;
-      }
-
       .btn.danger {
         border-color: rgba(248, 81, 73, 0.45);
         color: var(--danger);
@@ -2176,9 +2170,6 @@
                 <div class="profile-node-status-line">${esc(statusLabel(service))}</div>
                 ${details}
                 ${renderExternalEditor(protocol, config, mode)}
-                <div class="profile-node-actions">
-                  <button type="button" class="btn" data-save-node="${protocol}">Save</button>
-                </div>
               </div>
             </div>`;
         });
@@ -2281,18 +2272,12 @@
         }
       });
 
-      profileFields.nodesCard?.addEventListener('change', (event) => {
-        const modeSelect = event.target?.closest?.('[data-node-mode]');
-        if (!modeSelect) return;
-        setExternalEditorVisible(modeSelect.closest('.profile-node'), modeSelect.value);
-      });
-
-      profileFields.nodesCard?.addEventListener('click', async (event) => {
-        const saveButton = event.target?.closest?.('[data-save-node]');
-        if (!saveButton) return;
-
-        const row = saveButton.closest('.profile-node');
-        const protocol = saveButton.dataset.saveNode;
+      // Every other control on the page commits on change; these do too.
+      // `quiet` is for the mode dropdown: picking `external` before the
+      // endpoint fields are filled is not an error yet, it is the step
+      // before typing one — those fields commit on focusout.
+      const commitNodeConfig = async (row, { quiet = false } = {}) => {
+        const protocol = row?.dataset?.protocol;
         const mode = row?.querySelector('[data-node-mode]')?.value;
         if (!protocol || !mode) return;
 
@@ -2306,15 +2291,16 @@
             .filter((input) => !input.value.trim())
             .map((input) => input.previousElementSibling?.textContent || 'Endpoint');
           if (missing.length) {
-            setNodesStatus(
-              `External ${SERVICE_LABELS[protocol]} requires: ${missing.join(', ')}`,
-              'error'
-            );
+            if (!quiet) {
+              setNodesStatus(
+                `External ${SERVICE_LABELS[protocol]} requires: ${missing.join(', ')}`,
+                'error'
+              );
+            }
             return;
           }
         }
 
-        saveButton.disabled = true;
         setNodesStatus(`Saving ${SERVICE_LABELS[protocol]} node settings…`, 'testing');
         try {
           const result = await freedomAPI.updateProfileNodeConfig?.(protocol, config);
@@ -2326,9 +2312,22 @@
           await refreshRadicleLaunchStatus();
         } catch (err) {
           setNodesStatus(err?.message || 'Profile node settings were not saved', 'error');
-        } finally {
-          saveButton.disabled = false;
         }
+      };
+
+      profileFields.nodesCard?.addEventListener('change', (event) => {
+        const modeSelect = event.target?.closest?.('[data-node-mode]');
+        if (!modeSelect) return;
+        const row = modeSelect.closest('.profile-node');
+        setExternalEditorVisible(row, modeSelect.value);
+        commitNodeConfig(row, { quiet: true });
+      });
+
+      // The Colibri prover endpoint already commits this way (`focusout`).
+      profileFields.nodesCard?.addEventListener('focusout', (event) => {
+        const field = event.target?.closest?.('[data-endpoint-field]');
+        if (!field) return;
+        commitNodeConfig(field.closest('.profile-node'));
       });
 
       const currentFormState = () => ({
