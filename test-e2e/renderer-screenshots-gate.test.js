@@ -69,8 +69,18 @@ describe('the invocations that are meant to enable it', () => {
   it('CI compares through the npm script rather than a bare playwright run', () => {
     // The `run:` step itself, so a job switched to `npx playwright test …`
     // (which would skip every screenshot, silently and greenly) fails here.
-    expect(workflowSteps('.github/workflows/ci.yml')).toContain(
-      'run: xvfb-run -a npm run test:e2e:screenshots'
+    // Anchored to the end of the line, because `test:e2e:screenshots:update`
+    // — and any bare `--update-snapshots` argument — starts with the compare
+    // script's name: a job pointed at the update variant would rewrite the
+    // baselines in the runner's workspace and report success, comparing
+    // nothing while this test stayed green on a prefix match.
+    expect(workflowSteps('.github/workflows/ci.yml')).toMatch(
+      /^\s*run: xvfb-run -a npm run test:e2e:screenshots[ \t]*$/m
+    );
+    // …and no step anywhere in CI adopts baselines instead of comparing them,
+    // so the compare step can't be sidestepped by an extra update step either.
+    expect(workflowSteps('.github/workflows/ci.yml')).not.toMatch(
+      /run:.*(?:test:e2e:screenshots:update|--update-snapshots)/
     );
   });
 
