@@ -171,6 +171,10 @@ The candidate improves who owns original-group cleanup. It does not discover or 
 
 User-approved source transfer is complete. [The current-product evidence](evidence/macos-native-product-qualification-2026-09-08.md) retains source/artifact identities, the first aborted bounded group, and raw native receipts. Nine product assertions and three cleanup assertions passed before a test-monitor registration failure; no command was released after that failure, and all seven roots reported reaped. The corrected observer then supported a passing 89-assertion campaign across processes, reconciliation, previews and process controls, using the unchanged production implementation. All 53 command roots have independent exit observations and native reap receipts, with no watchdog intervention. Final group-KILL EPERM remains explicit uncertainty; five-minute handle expiry was skipped. Test-only finite app-exit support is committed as `dd96ec87`, with ordinary Jest/lint passing. Actual native Quit, browser-loss and supervisor-loss cases remain pending; this follow-up does not close the milestone.
 
+### Actual Electron-main test ownership — 2026-09-08
+
+[The independent launcher review](evidence/macos-electron-main-ownership-review-2026-09-08.md) rejected the first source-only Playwright app-loss harness. Node/libuv can reap multiple children before delivering their individual exit callbacks, while ChildProcess signaling still uses a stored numeric PID; Playwright also has independent numeric group-cleanup paths. This is a source-based counterexample, not a PID-reuse experiment or a production regression. The revised qualification watchdog must own the actual Electron main as its direct unreaped child, with a separate inspector client for test operations and native Quit. The original harness was not executed; corrected source and mock checks are pending.
+
 ## Existing qualification evidence recovered by inventory
 
 The remote assessment located 53 existing `/private/tmp/freedom-*.log` files and the unsigned packaged app; it did not rerun them. Selected evidence locations on **macmini**, not the primary Mac:
