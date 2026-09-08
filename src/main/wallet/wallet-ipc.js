@@ -22,6 +22,7 @@ const { getActiveWalletIndex } = require('../identity-manager');
 const { getEffectiveRpcUrls } = require('./rpc-manager');
 const chainData = require('../networks/chain-data-router');
 const { getSigner } = require('./signers');
+const { isVaultLockedError } = require('./vault-errors');
 
 /**
  * Validate that an RPC URL is a known, trusted endpoint.
@@ -304,22 +305,173 @@ function registerWalletIpc() {
     }
   });
 
-  // Capability-aware chain request. Myotis and Colibri are attempted before
-  // quorum/direct RPC according to the selected chain's access policy.
-  ipcMain.handle('wallet:chain-request', async (_event, { chainId, method, params }) => {
+  // Safe account lifecycle (chain-touching — see safe/safe-service.js).
+  // Lazily required so wallet-ipc doesn't load protocol-kit at startup.
+  ipcMain.handle('wallet:create-safe', async (_event, name, ownerIndexes, threshold) => {
     try {
-      if (!chainData.isReadMethod(method)) {
-        return { success: false, error: { code: 4200, message: 'Method not supported' } };
-      }
-      const response = await chainData.request(chainId, method, params || []);
-      return { success: true, ...response };
+      const { createSafeAccount } = require('./safe/safe-service');
+      const wallet = await createSafeAccount({ name, ownerIndexes, threshold });
+      return { success: true, wallet };
     } catch (err) {
-      return {
-        success: false,
-        error: { code: err.code || -32603, message: err.message, data: err.data },
-      };
+      return { success: false, error: err.message };
     }
   });
+
+  ipcMain.handle('wallet:get-safe-status', async (_event, index) => {
+    try {
+      const { getSafeStatus } = require('./safe/safe-service');
+      const status = await getSafeStatus(index);
+      return { success: true, status };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  ipcMain.handle('wallet:activate-safe', async (_event, index) => {
+    try {
+      const { activateSafe } = require('./safe/safe-service');
+      const result = await activateSafe(index);
+      return { success: true, ...result };
+    } catch (err) {
+      const code = err.code ?? (isVaultLockedError(err) ? 'VAULT_LOCKED' : undefined);
+      return { success: false, error: err.message, code };
+    }
+  });
+
+  // Safe sends — the signing board's granular API: build (+ silent free
+  // signatures), sign one owner per user action, execute as its own
+  // idempotent step, render from state. Half-signed transactions are
+  // persisted main-side; signature failures never destroy them.
+  const safeStateHandler = (fn) => async (_event, ...args) => {
+    try {
+      const state = await fn(...args);
+      return { success: true, state };
+    } catch (err) {
+      // A locked vault is recoverable — the renderer walks the user
+      // through the standard unlock and retries.
+      const code = err.code ?? (isVaultLockedError(err) ? 'VAULT_LOCKED' : undefined);
+      return { success: false, error: err.message, code };
+    }
+  };
+
+  ipcMain.handle(
+    'wallet:safe-send',
+    safeStateHandler((safeIndex, tx, display, chainId) => {
+      const { startSafeSend } = require('./safe/safe-transactions');
+      return startSafeSend({ safeIndex, tx, display, chainId });
+    })
+  );
+
+  ipcMain.handle(
+    'wallet:safe-sign',
+    safeStateHandler((safeIndex, ownerIndex) => {
+      const { signSafePending } = require('./safe/safe-transactions');
+      return signSafePending(safeIndex, ownerIndex);
+    })
+  );
+
+  ipcMain.handle(
+    'wallet:safe-execute',
+    safeStateHandler((safeIndex) => {
+      const { executeSafePending } = require('./safe/safe-transactions');
+      return executeSafePending(safeIndex);
+    })
+  );
+
+  ipcMain.handle(
+    'wallet:safe-state',
+    safeStateHandler((safeIndex) => {
+      const { getSafeSendState } = require('./safe/safe-transactions');
+      return getSafeSendState(safeIndex);
+    })
+  );
+
+  ipcMain.handle(
+    'wallet:safe-cancel-pending',
+    safeStateHandler((safeIndex) => {
+      const { cancelSafeSend } = require('./safe/safe-transactions');
+      cancelSafeSend(safeIndex);
+    })
+  );
+
+  ipcMain.handle('wallet:safe-pending-list', async () => {
+    try {
+      const { getAllSafeSendStates } = require('./safe/safe-transactions');
+      return { success: true, states: getAllSafeSendStates() };
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  });
+
+  // SafeMessage sessions — dApp message signing via EIP-1271 (see
+  // safe/safe-messages.js). Same granular board API as sends; complete
+  // returns the concatenated owner signatures instead of a state. Each
+  // session is bound to its requesting page: start takes the requester
+  // identity and returns a per-session token that every other call must
+  // present.
+  ipcMain.handle(
+    'wallet:safe-message-start',
+    safeStateHandler((safeIndex, request, display, requester) => {
+      const { startSafeMessage } = require('./safe/safe-messages');
+      return startSafeMessage({ safeIndex, request, display, requester });
+    })
+  );
+
+  ipcMain.handle(
+    'wallet:safe-message-sign',
+    safeStateHandler((safeIndex, ownerIndex, token) => {
+      const { signSafeMessage } = require('./safe/safe-messages');
+      return signSafeMessage(safeIndex, ownerIndex, token);
+    })
+  );
+
+  ipcMain.handle(
+    'wallet:safe-message-state',
+    safeStateHandler((safeIndex, token) => {
+      const { getSafeMessageState } = require('./safe/safe-messages');
+      return getSafeMessageState(safeIndex, token);
+    })
+  );
+
+  ipcMain.handle(
+    'wallet:safe-message-cancel',
+    safeStateHandler((safeIndex, token) => {
+      const { cancelSafeMessage } = require('./safe/safe-messages');
+      cancelSafeMessage(safeIndex, token);
+    })
+  );
+
+  ipcMain.handle('wallet:safe-message-complete', async (_event, safeIndex, token) => {
+    try {
+      const { completeSafeMessage } = require('./safe/safe-messages');
+      const { signature } = completeSafeMessage(safeIndex, token);
+      return { success: true, signature };
+    } catch (err) {
+      return { success: false, error: err.message, code: err.code };
+    }
+  });
+
+  // Capability-aware chain request. Myotis and Colibri are attempted before
+  // quorum/direct RPC according to the selected chain's access policy.
+  ipcMain.handle(
+    'wallet:chain-request',
+    async (_event, { chainId, method, params, routingContext }) => {
+      try {
+        if (!chainData.isReadMethod(method)) {
+          return { success: false, error: { code: 4200, message: 'Method not supported' } };
+        }
+        const response = await chainData.request(chainId, method, params || [], {
+          routingContext,
+        });
+        return { success: true, ...response };
+      } catch (err) {
+        return {
+          success: false,
+          error: { code: err.code || -32603, message: err.message, data: err.data },
+        };
+      }
+    }
+  );
 
   // Legacy endpoint-specific proxy retained for existing internal callers.
   ipcMain.handle('wallet:proxy-rpc', async (_event, { rpcUrl, method, params }) => {

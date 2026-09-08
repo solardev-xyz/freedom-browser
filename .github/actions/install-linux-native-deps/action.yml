@@ -7,7 +7,9 @@ runs:
     - name: Install native USB build dependencies
       shell: bash
       run: |
-        # Refresh the image's package index first; cached entries can point to
-        # package builds that Ubuntu mirrors have already rotated out.
-        sudo apt-get update
-        sudo apt-get install -y libudev-dev libusb-1.0-0-dev
+        # `install` refreshes the image's package index first; cached entries
+        # can point to package builds that Ubuntu mirrors have already rotated
+        # out. Both the refresh and the install run through the shared apt
+        # hardening wrapper so a stalled mirror is bounded and retried rather
+        # than hanging until the job's timeout-minutes.
+        "$GITHUB_WORKSPACE/scripts/ci/apt-hardening.sh" install libudev-dev libusb-1.0-0-dev

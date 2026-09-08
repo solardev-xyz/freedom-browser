@@ -712,12 +712,10 @@ body.agent-first-mode .agent-task-page-list .tab.agent-controlled.active {
 
 .agent-workspace-nav .address-input:focus {
   text-align: left;
-  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
 }
 
 .agent-workspace-nav .address-input[readonly]:focus {
   text-align: center;
-  border-color: transparent;
 }
 
 .agent-workspace-nav .trust-shield {
@@ -1402,12 +1400,6 @@ body.agent-first-mode .agent-workspace-body > .agent-workspace-scroll {
   min-height: 92px;
   line-height: 1.45;
   resize: vertical;
-}
-
-.agent-field input:focus,
-.agent-field select:focus,
-.agent-field textarea:focus {
-  border-color: var(--accent);
 }
 
 .agent-config-actions,

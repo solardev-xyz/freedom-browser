@@ -1,5 +1,5 @@
 // Navigation, webview, and address bar handling
-import { state } from './state.js';
+import { state, isRadicleDisabledForProfile } from './state.js';
 import { pushDebug } from './debug.js';
 import { updateBookmarkButtonVisibility } from './bookmarks-ui.js';
 import { updateGithubBridgeIcon } from './github-bridge-ui.js';
@@ -24,10 +24,12 @@ import {
   looksLikeBzzInput,
   deriveDisplayValue,
   deriveBzzBaseFromUrl,
-  deriveRadBaseFromUrl,
   buildEnsDisplayUri,
   isEnsBackedDisplay,
   isSupportedEnsTransport,
+  formatOnchainAppUrl,
+  formatOnchainAppDisplayUrl,
+  looksLikeOnchainAppInput,
 } from './url-utils.js';
 import { buildSearchUrl } from './search-utils.js';
 import {
@@ -35,6 +37,7 @@ import {
   getActiveTab,
   getActiveTabState,
   openInNewTabWithTarget,
+  setOnchainProvenanceChangeHandler,
   setWebviewEventHandler,
   updateActiveTabTitle,
   updateTabFavicon,
@@ -49,11 +52,16 @@ import {
 import {
   homeUrl,
   homeUrlNormalized,
-  errorUrlBase,
   internalPages,
   detectProtocol,
   isHistoryRecordable,
   getInternalPageName,
+  getOnchainInterstitialTarget,
+  getInterstitialDisplayName,
+  isErrorPageUrl,
+  isInterstitialPageUrl,
+  isOnchainInterstitialPageUrl,
+  isTrustInterstitialPageUrl,
   parseEnsInput,
   buildInternalPageUrl,
 } from './page-urls.js';
@@ -64,7 +72,13 @@ import {
   shouldLearnAutocomplete,
 } from './private-mode.js';
 import { parseEthereumUri } from './ethereum-uri.js';
-import { openSendFlow } from './wallet-ui.js';
+import {
+  openSendFlow,
+  SEND_FLOW_OK,
+  SEND_FLOW_DISABLED,
+  SEND_FLOW_PRIVATE,
+  SEND_FLOW_SETUP,
+} from './wallet-ui.js';
 import { walletState } from './wallet/wallet-state.js';
 import { formatWeiToDecimal } from './wallet/send.js';
 import { startIpfsProgressStatus, stopIpfsProgressStatus } from './ipfs-progress-status.js';
@@ -79,6 +93,11 @@ const getNavState = () => getActiveTabState() || {};
 // second is slack for a legitimate redirect. Anything beyond that is a
 // resolve→navigate loop, not a real site.
 const MAX_NAME_RESOLUTION_DEPTH = 3;
+
+// Shown (in the debug trail) when a rad: navigation is refused because the
+// active profile has Radicle disabled — the page itself explains the setting.
+const RADICLE_DISABLED_MESSAGE =
+  'Radicle is disabled for this profile. Enable it in Settings > Nodes';
 
 const isIpfsProgressUrl = (value) => {
   const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
@@ -252,9 +271,6 @@ const cancelPendingSwarmProbe = (navState) => {
 };
 
 const electronAPI = window.electronAPI;
-const RADICLE_DISABLED_MESSAGE =
-  'Radicle integration is disabled. Enable it in Settings > Experimental';
-
 // DOM elements (initialized in initNavigation)
 let addressInput = null;
 let navForm = null;
@@ -279,8 +295,6 @@ let bookmarkBarOverride = false;
 
 // Track previous active tab ID to save address bar state when switching
 let previousActiveTabId = null;
-
-
 
 // Last recorded URL to avoid duplicates in quick succession
 let lastRecordedUrl = null;
@@ -347,11 +361,7 @@ const setLoading = (isLoading, tabId = null) => {
 // no-op calls (every dispatch + every did-navigate on the hot path) don't
 // re-run `updateProtocolIcon`, which walks `state.ensTrustByName` and
 // invokes the trust-badge resolver on every call.
-const setAddressDisplayForTab = (
-  displayValue,
-  tabId,
-  { isViewingSourceForTab = false } = {}
-) => {
+const setAddressDisplayForTab = (displayValue, tabId, { isViewingSourceForTab = false } = {}) => {
   if (isActiveTab(tabId) || tabId === null) {
     if (addressInput.value !== displayValue) {
       addressInput.value = displayValue;
@@ -359,8 +369,7 @@ const setAddressDisplayForTab = (
     }
     return;
   }
-  const targetTab =
-    tabId !== null && tabId !== undefined ? getTabById(tabId) : null;
+  const targetTab = tabId !== null && tabId !== undefined ? getTabById(tabId) : null;
   if (!targetTab) return;
   if (targetTab.navigationState) {
     targetTab.navigationState.addressBarSnapshot = displayValue;
@@ -501,6 +510,7 @@ const toggleTrustPopover = () => {
   const badge = resolveTrustBadge({
     value: addressInput?.value || '',
     ensTrustByName: state.ensTrustByName,
+    onchainProvenance: getActiveTab()?.onchainProvenance,
   });
   if (!badge) return;
 
@@ -511,6 +521,7 @@ const toggleTrustPopover = () => {
   const statusEl = document.getElementById('trust-popover-status');
   const trustFieldsEl = document.getElementById('trust-popover-trust-fields');
   const contentEl = document.getElementById('trust-popover-content');
+  const contentTitleEl = document.getElementById('trust-popover-content-title');
   const contentFieldsEl = document.getElementById('trust-popover-content-fields');
 
   if (title) title.textContent = name;
@@ -523,7 +534,11 @@ const toggleTrustPopover = () => {
     level,
     uri: state.ensUriByName.get(name) || '',
     proto: state.ensProtocols.get(name),
+    onchainProvenance: badge.provenance,
   });
+  if (contentTitleEl) {
+    contentTitleEl.textContent = badge.kind === 'onchain' ? 'Loads from' : 'Resolves to';
+  }
 
   if (statusEl) {
     if (status === null) {
@@ -679,7 +694,6 @@ const updateProtocolIcon = () => {
     const protocol = resolveProtocolIconType({
       value: addressInput?.value || '',
       ensProtocols: state.ensProtocols,
-      enableRadicleIntegration: state.enableRadicleIntegration,
       currentPageSecure,
     });
     if (protocol) {
@@ -695,17 +709,20 @@ const updateProtocolIcon = () => {
     const badge = resolveTrustBadge({
       value: addressInput?.value || '',
       ensTrustByName: state.ensTrustByName,
+      onchainProvenance: getActiveTab()?.onchainProvenance,
     });
     if (badge) {
       trustShield.setAttribute('data-trust', badge.level);
       trustShield.setAttribute(
         'aria-label',
-        TRUST_ARIA_LABEL[badge.level] || 'Ethereum name resolution trust status'
+        badge.kind === 'onchain'
+          ? `Onchain application provenance: ${badge.level}`
+          : TRUST_ARIA_LABEL[badge.level] || 'Ethereum name resolution trust status'
       );
       trustShield.hidden = false;
     } else {
       trustShield.removeAttribute('data-trust');
-      trustShield.setAttribute('aria-label', 'Ethereum name resolution trust status');
+      trustShield.setAttribute('aria-label', 'Site provenance status');
       trustShield.hidden = true;
     }
 
@@ -861,27 +878,14 @@ const syncBzzBase = (nextBase) => {
     });
 };
 
-const syncRadBase = (nextBase) => {
-  const navState = getNavState();
-  if (!electronAPI || (!electronAPI.setRadBase && !electronAPI.clearRadBase)) {
-    return;
-  }
-  if (navState.currentRadBase === nextBase) {
-    return;
-  }
-  navState.currentRadBase = nextBase || null;
-  ensureWebContentsId()
-    .then((id) => {
-      if (!id) return;
-      if (navState.currentRadBase) {
-        electronAPI.setRadBase?.(id, navState.currentRadBase);
-      } else {
-        electronAPI.clearRadBase?.(id);
-      }
-    })
-    .catch((err) => {
-      console.error('Failed to sync rad base', err);
-    });
+// One message per openSendFlow refusal reason: the way out differs for each,
+// and telling a private-window user with a fully set-up wallet to flip a
+// Settings toggle that is already on leaves them nowhere to go (#240).
+const SEND_FLOW_REFUSAL_MESSAGES = {
+  [SEND_FLOW_DISABLED]: 'Enable Identity & Wallet (Settings → Experimental) to accept tips.',
+  [SEND_FLOW_PRIVATE]:
+    'Wallet is unavailable in private windows. Open a normal window to accept tips.',
+  [SEND_FLOW_SETUP]: 'Finish setting up Identity & Wallet to accept tips.',
 };
 
 // EIP-681 carries value in the chain's base unit (wei for ETH et al.); we
@@ -909,13 +913,13 @@ const handleEthereumUri = (value) => {
   }
 
   const amount = parsed.value ? formatWeiToDecimal(BigInt(parsed.value)) : undefined;
-  const opened = openSendFlow({
+  const result = openSendFlow({
     recipient: parsed.target,
     chainId: parsed.chainId,
     amount,
   });
-  if (!opened) {
-    alert('Enable Identity & Wallet (Settings → Experimental) to accept tips.');
+  if (result !== SEND_FLOW_OK) {
+    alert(SEND_FLOW_REFUSAL_MESSAGES[result] || SEND_FLOW_REFUSAL_MESSAGES[SEND_FLOW_DISABLED]);
   }
 };
 
@@ -1026,9 +1030,7 @@ const startBzzNavigationWithProbe = (webview, target, navState, displayUrl) => {
       // `aborted` aren't content failures — leave the cache alone.
       const ensNameForInvalidation = (() => {
         const match = (target.bzzLoadUrl || '').match(/^bzz:\/\/([^/?#]+)/i);
-        return match && parseEnsInput(`bzz://${match[1]}`)
-          ? match[1].toLowerCase()
-          : null;
+        return match && parseEnsInput(`bzz://${match[1]}`) ? match[1].toLowerCase() : null;
       })();
       const invalidateOnContentFailure = () => {
         if (!ensNameForInvalidation || !electronAPI?.invalidateEnsContent) return;
@@ -1041,9 +1043,7 @@ const startBzzNavigationWithProbe = (webview, target, navState, displayUrl) => {
         const message = awaitResult?.error?.message || 'failed to await probe';
         pushDebug(`[Swarm] Probe await failed: ${message}`);
         invalidateOnContentFailure();
-        webview.loadURL(
-          buildErrorPageUrl('swarm_content_not_found', errorDisplayUrl, errorExtras)
-        );
+        webview.loadURL(buildErrorPageUrl('swarm_content_not_found', errorDisplayUrl, errorExtras));
         return;
       }
 
@@ -1070,17 +1070,13 @@ const startBzzNavigationWithProbe = (webview, target, navState, displayUrl) => {
 
       if (outcome.reason === 'bee_unreachable') {
         pushDebug('[Swarm] Probe: Bee unreachable');
-        webview.loadURL(
-          buildErrorPageUrl('ERR_CONNECTION_REFUSED', errorDisplayUrl, errorExtras)
-        );
+        webview.loadURL(buildErrorPageUrl('ERR_CONNECTION_REFUSED', errorDisplayUrl, errorExtras));
         return;
       }
 
       pushDebug(`[Swarm] Probe failed (${outcome.reason}) — showing error page`);
       invalidateOnContentFailure();
-      webview.loadURL(
-        buildErrorPageUrl('swarm_content_not_found', errorDisplayUrl, errorExtras)
-      );
+      webview.loadURL(buildErrorPageUrl('swarm_content_not_found', errorDisplayUrl, errorExtras));
     })
     .catch((err) => {
       pushDebug(`[Swarm] Probe error: ${err?.message || err}`);
@@ -1121,8 +1117,7 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
   // that settles after a tab switch would clobber the foreground tab's
   // address bar with the resolved URL of a backgrounded tab.
   const targetTabId = getTabIdForWebview(webview);
-  const navState =
-    getTabById(targetTabId)?.navigationState || getNavState();
+  const navState = getTabById(targetTabId)?.navigationState || getNavState();
   if (!webview) {
     pushDebug('No active webview to load target');
     return;
@@ -1136,6 +1131,18 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
 
   // Handle view-source: URLs - need to resolve dweb URLs before loading
   if (value.startsWith('view-source:')) {
+    // …but never for one of our own trust interstitials. Those pages are
+    // chrome, not content: their source is the shell's own bundled HTML, and
+    // committing `view-source:file:///…/pages/onchain-unverified.html?…`
+    // publishes the gate's single-use approval token (and the on-disk
+    // implementation path) into the address bar, the tab title and the
+    // window title — the leak #235 exists to prevent, on every surface that
+    // repaints from the committed URL. The context menu hides the item; this
+    // also covers a typed or restored URL. See issue #235.
+    if (isTrustInterstitialPageUrl(value.slice(12))) {
+      pushDebug('[ViewSource] Refused: browser-owned trust interstitial');
+      return;
+    }
     isViewingSource = true; // Track that this tab is viewing source
     const innerUrl = value.slice(12); // 'view-source:'.length === 12
 
@@ -1167,7 +1174,9 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
           setLoading(false, capturedTabId);
           if (!result || result.type !== 'ok') {
             if (isActiveTab(capturedTabId)) {
-              alert(`${systemLabel} resolution failed for ${ens.name}: ${result?.reason || 'no response'}`);
+              alert(
+                `${systemLabel} resolution failed for ${ens.name}: ${result?.reason || 'no response'}`
+              );
             }
             return;
           }
@@ -1253,6 +1262,31 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
         `Unknown internal page: ${pageName}\nAvailable: ${Object.keys(internalPages).join(', ')}`
       );
     }
+    return;
+  }
+
+  // ERC-8244 contract-hosted applications. The standard `web3:` origin is
+  // scoped by both contract and chain (`web3://<address>.eip155-<chainId>/`), while
+  // the main-process handler reads the document through Freedom's verified
+  // chain-data router. No gateway URL or page-owned RPC endpoint is involved.
+  const onchainAppUrl = formatOnchainAppUrl(value);
+  if (onchainAppUrl) {
+    const displayValue = displayOverride || formatOnchainAppDisplayUrl(value) || onchainAppUrl;
+    setAddressDisplayForTab(displayValue, targetTabId);
+    navState.pendingTitleForUrl = onchainAppUrl;
+    navState.pendingNavigationUrl = onchainAppUrl;
+    navState.hasNavigatedDuringCurrentLoad = false;
+    webview.loadURL(onchainAppUrl);
+    pushDebug(`[Onchain App] Loading ${onchainAppUrl}`);
+    syncBzzBase(null);
+    return;
+  }
+  if (looksLikeOnchainAppInput(value)) {
+    pushDebug(`[Onchain App] Invalid web3 URL: ${value}`);
+    alert(
+      'Invalid onchain application URL. Expected web3://<contract>:<chainId>/ ' +
+        '(Ethereum mainnet is used when the chain is omitted).'
+    );
     return;
   }
 
@@ -1370,9 +1404,9 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
             ? result.uri
             : appendPublishedWebsiteSuffix(result.uri, ens.suffix);
           if (
-            result.trust?.level === 'unverified'
-            && state.blockUnverifiedEns
-            && !options.allowUnverifiedOnce
+            result.trust?.level === 'unverified' &&
+            state.blockUnverifiedEns &&
+            !options.allowUnverifiedOnce
           ) {
             capturedWebview.loadURL(
               buildInternalPageUrl('ens-unverified.html', { name: ens.name, uri: targetUri })
@@ -1414,9 +1448,9 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
         // Unverified = soft block. Interstitial lets the user continue once,
         // bypassing this check for the follow-up load.
         if (
-          result.trust?.level === 'unverified'
-          && state.blockUnverifiedEns
-          && !options.allowUnverifiedOnce
+          result.trust?.level === 'unverified' &&
+          state.blockUnverifiedEns &&
+          !options.allowUnverifiedOnce
         ) {
           pushDebug(`${systemLabel} unverified for ${ens.name} → interstitial`);
           capturedWebview.loadURL(
@@ -1435,8 +1469,8 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
         // unsupported protocols, but the `result.protocol` guard above
         // already rejects anything but bzz/ipfs/ipns.
         const transportDisplay =
-          buildEnsDisplayUri(result.protocol, ens.name, ens.suffix)
-          || `ens://${ens.name}${ens.suffix || ''}`;
+          buildEnsDisplayUri(result.protocol, ens.name, ens.suffix) ||
+          `ens://${ens.name}${ens.suffix || ''}`;
 
         // For ENS-backed dweb sites we want Chromium to load
         // `<scheme>://<name>/...` directly: the protocol handler resolves
@@ -1473,15 +1507,21 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
   }
 
   // Try Radicle (rad:RID or rad://RID)
-  if (value.trim().toLowerCase().startsWith('rad:') || value.trim().toLowerCase().startsWith('rad://')) {
-    if (!state.enableRadicleIntegration) {
+  if (
+    value.trim().toLowerCase().startsWith('rad:') ||
+    value.trim().toLowerCase().startsWith('rad://')
+  ) {
+    if (isRadicleDisabledForProfile()) {
+      // Radicle is off for this profile: the node can never start, so the
+      // generic connection-error panel ("enable Radicle in the Nodes menu")
+      // would point at a control this profile doesn't have. Send the user to
+      // the panel that explains the profile setting instead.
       pushDebug(RADICLE_DISABLED_MESSAGE);
       const disabledUrl = buildRadicleDisabledUrl(window.location.href, value.trim());
       addressInput.value = value.trim();
       navState.pendingNavigationUrl = disabledUrl;
       navState.hasNavigatedDuringCurrentLoad = false;
       webview.loadURL(disabledUrl);
-      syncRadBase(null);
       syncBzzBase(null);
       return;
     }
@@ -1503,12 +1543,14 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
       }
       pushDebug(`Loading ${radicleTarget.displayValue} via ${radicleTarget.targetUrl}`);
       // rad-browser.html handles its own API calls, no base sync needed
-      syncRadBase(null);
       syncBzzBase(null);
       return;
     }
     // Invalid Radicle ID — show error page
-    const withoutScheme = value.trim().replace(/^rad:\/\//i, '').replace(/^rad:/i, '');
+    const withoutScheme = value
+      .trim()
+      .replace(/^rad:\/\//i, '')
+      .replace(/^rad:/i, '');
     pushDebug(`Invalid Radicle ID: ${withoutScheme}`);
     const errorUrl = new URL('pages/rad-browser.html', window.location.href);
     errorUrl.searchParams.set('error', 'invalid-rid');
@@ -1517,7 +1559,6 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
     navState.pendingNavigationUrl = errorUrl.toString();
     navState.hasNavigatedDuringCurrentLoad = false;
     webview.loadURL(errorUrl.toString());
-    syncRadBase(null);
     syncBzzBase(null);
     return;
   }
@@ -1575,7 +1616,6 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
       navState.hasNavigatedDuringCurrentLoad = false;
       webview.loadURL(errorUrl);
       syncBzzBase(null);
-      syncRadBase(null);
       return;
     }
     const cidMatch = ipfsTarget.displayValue.match(/^ipfs:\/\/([A-Za-z0-9]+)/);
@@ -1597,7 +1637,6 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
     webview.loadURL(ipfsLoadUrl);
     pushDebug(`Loading ${ipfsTarget.displayValue} via ${ipfsLoadUrl}`);
     syncBzzBase(null);
-    syncRadBase(null);
     return;
   }
 
@@ -1631,7 +1670,6 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
     navState.hasNavigatedDuringCurrentLoad = false;
     webview.loadURL(errorUrl);
     syncBzzBase(null);
-    syncRadBase(null);
     return;
   }
 
@@ -1650,14 +1688,14 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
     });
     pushDebug(`[AddressBar] Loading target, set to: ${displayValue}`);
     syncBzzBase(target.baseUrl || null);
-    syncRadBase(null);
 
     // Augment with optional ENS-transport overrides. `swarmHash` lets the
     // probe target the resolved Swarm reference; `bzzLoadUrl` is what
     // Chromium actually loads, so the page's URL/origin stays ENS-named.
-    const augmented = options.bzzLoadUrl || options.swarmHash
-      ? { ...target, bzzLoadUrl: options.bzzLoadUrl, swarmHash: options.swarmHash }
-      : target;
+    const augmented =
+      options.bzzLoadUrl || options.swarmHash
+        ? { ...target, bzzLoadUrl: options.bzzLoadUrl, swarmHash: options.swarmHash }
+        : target;
 
     // Probe the Bee gateway first so the tab spinner stays active while the
     // node's peer set warms up; only load the webview once the content is
@@ -1675,7 +1713,6 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
     navState.hasNavigatedDuringCurrentLoad = false;
     webview.loadURL(value);
     syncBzzBase(null);
-    syncRadBase(null);
     return;
   }
 
@@ -1690,7 +1727,6 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
     webview.loadURL(value);
     pushDebug(`Loading ${value}`);
     syncBzzBase(null);
-    syncRadBase(null);
     return;
   }
 
@@ -1751,7 +1787,6 @@ export const loadHomePage = () => {
     return;
   }
   syncBzzBase(null);
-  syncRadBase(null);
   addressInput.value = '';
   updateProtocolIcon();
   navState.pendingNavigationUrl = homeUrlNormalized;
@@ -1776,7 +1811,7 @@ export const loadHomePage = () => {
 // Shared error-page retry logic used by both reload variants and the reload button
 const retryErrorPageOrReload = (webview, hard) => {
   const current = webview.getURL();
-  const originalUrl = getOriginalUrlFromErrorPage(current, errorUrlBase);
+  const originalUrl = getOriginalUrlFromErrorPage(current);
   if (originalUrl) {
     // Hard reload of an ENS error page also bypasses `ensResultCache` so the
     // recovery resolution actually re-runs under today's verification method
@@ -1789,7 +1824,7 @@ const retryErrorPageOrReload = (webview, hard) => {
     loadTarget(originalUrl);
     return;
   }
-  if (current.startsWith(errorUrlBase) || current.includes('/error.html?')) {
+  if (isErrorPageUrl(current)) {
     try {
       new URL(current);
     } catch (err) {
@@ -1818,7 +1853,9 @@ const retryErrorPageOrReload = (webview, hard) => {
   const ensInput = committedDisplay ? parseEnsInput(committedDisplay) : null;
   if (ensInput) {
     if (hard) invalidateContentName(ensInput);
-    pushDebug(`${hard ? 'Hard reload' : 'Reload'} re-resolving ${nameSystemLabelForName(ensInput.name)}: ${committedDisplay}`);
+    pushDebug(
+      `${hard ? 'Hard reload' : 'Reload'} re-resolving ${nameSystemLabelForName(ensInput.name)}: ${committedDisplay}`
+    );
     loadTarget(committedDisplay);
     return;
   }
@@ -1831,8 +1868,7 @@ const retryErrorPageOrReload = (webview, hard) => {
   // the plain reload — no re-probe, preserving the happy-path behaviour.
   const dwebScheme = committedDisplay.match(/^(ipfs|ipns|bzz):\/\//i)?.[1]?.toLowerCase();
   if (dwebScheme) {
-    const nodeUnavailable =
-      dwebScheme === 'bzz' ? !state.bzzRoutePrefix : isIpfsNodeUnavailable();
+    const nodeUnavailable = dwebScheme === 'bzz' ? !state.bzzRoutePrefix : isIpfsNodeUnavailable();
     if (nodeUnavailable) {
       pushDebug(
         `${hard ? 'Hard reload' : 'Reload'} dweb node unavailable — routing ${committedDisplay} to error page`
@@ -1900,13 +1936,39 @@ const handleNavigationEvent = (event) => {
         radicleApiPrefix: state.radicleApiPrefix,
         knownEnsNames: state.knownEnsNames,
       });
-      const displayUrl = `view-source:${displayInner || event.url}`;
+      // Fail safe if a view-source commit on the onchain trust gate lands
+      // anyway (session restore, a back/forward entry predating the refusal
+      // in `loadTarget`): a blank address bar and title, never the gate's own
+      // file:// URL with its single-use approval token. Same fail-safe the
+      // tab-switch surface applies. See issue #235.
+      const displayUrl = isOnchainInterstitialPageUrl(event.url)
+        ? ''
+        : `view-source:${displayInner || event.url}`;
       addressInput.value = displayUrl;
-      pushDebug(`[AddressBar] View source: ${displayUrl}`);
+      pushDebug(`[AddressBar] View source: ${displayUrl || '(withheld)'}`);
       navState.currentPageUrl = webviewUrl;
       // Update tab title to "view-source:<address>"
       updateActiveTabTitle(displayUrl);
       electronAPI?.setWindowTitle?.(displayUrl);
+      updateNavigationState();
+      updateBookmarkButtonVisibility();
+      updateGithubBridgeIcon();
+      updateProtocolIcon();
+      navState.addressBarSnapshot = addressInput.value;
+      return;
+    }
+
+    // A web3: protocol response can redirect to Freedom's browser-owned
+    // trust interstitial. Keep the requested app identity in chrome instead
+    // of exposing the implementation's file:// URL.
+    const onchainInterstitialTarget = getOnchainInterstitialTarget(event.url);
+    if (onchainInterstitialTarget) {
+      const displayUrl = formatOnchainAppDisplayUrl(onchainInterstitialTarget);
+      if (displayUrl) addressInput.value = displayUrl;
+      navState.pendingTitleForUrl = event.url;
+      navState.pendingNavigationUrl = event.url;
+      navState.currentPageUrl = event.url;
+      navState.hasNavigatedDuringCurrentLoad = true;
       updateNavigationState();
       updateBookmarkButtonVisibility();
       updateGithubBridgeIcon();
@@ -1955,7 +2017,17 @@ const handleNavigationEvent = (event) => {
       return;
     }
 
-    if (event.url.startsWith(errorUrlBase)) {
+    // Name-resolution interstitials (unverified soft block, head/contenthash
+    // conflict hard block) get the same treatment as the error page: the
+    // address bar keeps the name the user asked for, never the interstitial's
+    // own `file:///…/pages/ens-*.html` path (#235). The name is empty only if
+    // the page was opened without its `name` param — an empty address bar is
+    // the fail-safe there, since the on-disk path must not be shown either.
+    if (isInterstitialPageUrl(event.url)) {
+      const blockedName = getInterstitialDisplayName(event.url) || '';
+      addressInput.value = blockedName;
+      pushDebug(`[AddressBar] Interstitial -> Blocked name: ${blockedName || '(none)'}`);
+    } else if (isErrorPageUrl(event.url)) {
       try {
         const parsed = new URL(event.url);
         const originalUrl = parsed.searchParams.get('url');
@@ -2000,13 +2072,11 @@ const handleNavigationEvent = (event) => {
         pushDebug(`[AddressBar] Skipped update (already ${derived})`);
       }
 
-      // Sync bases for protocols still using the rewriter (bzz, rad).
+      // Sync the only protocol still using the HTTP request rewriter (bzz).
       // `ipfs:`/`ipns:` are standard schemes with main-process protocol
       // handlers, so the renderer doesn't track an IPFS base anymore.
       const bzzBase = deriveBzzBaseFromUrl(event.url);
-      const radBase = deriveRadBaseFromUrl(event.url);
       syncBzzBase(bzzBase);
-      syncRadBase(radBase);
     }
 
     navState.pendingTitleForUrl = event.url;
@@ -2080,10 +2150,6 @@ export const onSettingsChanged = (settings = null) => {
   }
 
   updateProtocolIcon();
-  if (!state.enableRadicleIntegration && addressInput?.value?.trim().toLowerCase().startsWith('rad:')) {
-    loadTarget(addressInput.value);
-    return;
-  }
   if (navState.currentPageUrl && navState.currentPageUrl.startsWith('bzz://')) {
     loadTarget(addressInput.value);
   }
@@ -2107,6 +2173,10 @@ export const initNavigation = () => {
   agentForwardBtn = document.getElementById('agent-workspace-forward');
   agentReloadBtn = document.getElementById('agent-workspace-reload');
   setAgentWorkspaceNavigationEditable(agentWorkspaceNavigationEditable);
+
+  setOnchainProvenanceChangeHandler((tabId) => {
+    if (isActiveTab(tabId)) updateProtocolIcon();
+  });
 
   if (trustShield) {
     // Don't stopPropagation: we want the click to bubble to the
@@ -2449,6 +2519,22 @@ export const initNavigation = () => {
           }
         } else if (data.channel === 'ens:open-settings') {
           loadTarget('freedom://settings', null, webview);
+        } else if (data.channel === 'onchain:continue-unverified') {
+          const payload = data.args?.[0] || {};
+          const target = formatOnchainAppUrl(payload.target);
+          const token = typeof payload.token === 'string' ? payload.token : '';
+          if (target && /^[A-Za-z0-9_-]{43}$/.test(token)) {
+            const displayUrl = formatOnchainAppDisplayUrl(target);
+            if (displayUrl) setAddressDisplayForTab(displayUrl, data.tabId);
+            webview.loadURL(target, {
+              extraHeaders: `X-Freedom-Onchain-App-Approval: ${token}`,
+            });
+          }
+        } else if (data.channel === 'onchain:retry') {
+          const target = formatOnchainAppUrl(data.args?.[0]?.target);
+          if (target) loadTarget(target, null, webview);
+        } else if (data.channel === 'onchain:open-rpc-settings') {
+          loadTarget('freedom://settings/rpc', null, webview);
         } else if (data.channel === 'link:navigate') {
           const payload = data.args?.[0] || {};
           const url = payload.url;
@@ -2537,9 +2623,6 @@ export const initNavigation = () => {
           // renderer doesn't track an IPFS base anymore.
           if (tabNavState.currentBzzBase) {
             syncBzzBase(tabNavState.currentBzzBase);
-          }
-          if (tabNavState.currentRadBase) {
-            syncRadBase(tabNavState.currentRadBase);
           }
           // Sync navigationState.currentPageUrl if tab.url is more recent
           if (data.tab.url && data.tab.url !== tabNavState.currentPageUrl) {

@@ -3,9 +3,10 @@
  *
  * IMPORTANT: this file is source-as-data. It never executes in a Node
  * context — the main process reads it as text and serves it to the
- * sandboxed webview preload, which injects it as a <script> body into the
- * target page's realm. Running inside the page means: no `require`, no
- * Electron APIs, no Node built-ins, no access to the preload's scope.
+ * sandboxed webview preload, which executes it in the target page's main
+ * world before document scripts run (with a DOM-script fallback). Running
+ * inside the page means: no `require`, no Electron APIs, no Node built-ins,
+ * no access to the preload's scope.
  * Anything this file needs from the main/preload side must arrive via
  * window.postMessage or the __FREEDOM_PROVIDER_CONFIG__ preamble.
  *
@@ -14,6 +15,10 @@
  * assert the provider shape).
  */
 (function () {
+  // A fallback after a partially successful early install must not replace
+  // the live provider or duplicate its EIP-6963/event listeners.
+  if (window.ethereum?.isFreedomBrowser) return;
+
   const pendingRequests = new Map();
   let requestId = 0;
   const eventListeners = {

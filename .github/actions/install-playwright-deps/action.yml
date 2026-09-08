@@ -1,0 +1,37 @@
+name: Install Playwright system dependencies
+description: >
+  Install the system libraries Playwright needs for the browsers this repo
+  actually drives, with deterministic apt behaviour (bounded, retried, mirror
+  fallback) instead of an unbounded `npx playwright install-deps`.
+
+inputs:
+  browsers:
+    description: >
+      Space-separated Playwright browser names to install dependencies for.
+      The E2E suites launch Electron (Chromium) only, so the default drops the
+      firefox/webkit dependency groups — 114 MB of gstreamer/libav/GTK-4
+      archives that were downloaded on every Linux leg and never used.
+    required: false
+    default: chromium
+
+runs:
+  using: composite
+  steps:
+    - name: Install Playwright system dependencies
+      shell: bash
+      env:
+        PLAYWRIGHT_BROWSERS: ${{ inputs.browsers }}
+      run: |
+        # Word splitting on PLAYWRIGHT_BROWSERS is intentional: it is a list.
+        "$GITHUB_WORKSPACE/scripts/ci/apt-hardening.sh" run -- \
+          npx playwright install-deps $PLAYWRIGHT_BROWSERS
+
+    - name: Verify Playwright system dependencies
+      shell: bash
+      env:
+        PLAYWRIGHT_BROWSERS: ${{ inputs.browsers }}
+      run: |
+        # Simulated install (`apt-get install -s`, no network): exits non-zero
+        # if anything the browsers need is still missing. This is what keeps
+        # the narrowed dependency set honest if Playwright's table changes.
+        npx playwright install-deps --dry-run $PLAYWRIGHT_BROWSERS

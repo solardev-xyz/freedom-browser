@@ -105,7 +105,7 @@ describe('profile external candidates', () => {
     });
   });
 
-  test('persists combined renderer choices for all detected default-port nodes', async () => {
+  test('ignores Radicle when probing default-port external nodes', async () => {
     const profile = createProfile();
     const updateNodeConfig = jest.fn();
     const decisions = await promptForDefaultExternalCandidates(profile, {
@@ -115,10 +115,7 @@ describe('profile external candidates', () => {
       },
       logger: { info: jest.fn() },
       now: '2026-05-26T00:00:00.000Z',
-      presentCandidates: jest.fn().mockResolvedValue({
-        bee: 'external',
-        radicle: 'managed',
-      }),
+      presentCandidates: jest.fn().mockResolvedValue({ bee: 'external' }),
       probeEndpoint: jest.fn().mockResolvedValue(true),
       updateNodeConfig,
     });
@@ -128,11 +125,6 @@ describe('profile external candidates', () => {
         protocol: 'bee',
         choice: 'external',
         endpoints: ['http://127.0.0.1:1633'],
-      },
-      {
-        protocol: 'radicle',
-        choice: 'managed',
-        endpoints: ['http://127.0.0.1:8780'],
       },
     ]);
     expect(updateNodeConfig).toHaveBeenCalledWith('bee', {
@@ -144,13 +136,7 @@ describe('profile external candidates', () => {
         endpoints: ['http://127.0.0.1:1633'],
       },
     });
-    expect(updateNodeConfig).toHaveBeenCalledWith('radicle', {
-      [EXTERNAL_CANDIDATE_PROMPT_KEY]: {
-        choice: 'managed',
-        checkedAt: '2026-05-26T00:00:00.000Z',
-        endpoints: ['http://127.0.0.1:8780'],
-      },
-    });
+    expect(updateNodeConfig).toHaveBeenCalledTimes(1);
   });
 
   test('persists external Tor when a default SOCKS endpoint is chosen', async () => {
@@ -301,7 +287,7 @@ describe('profile external candidates', () => {
           requestId: payload.requestId,
           choices: {
             bee: 'external',
-            radicle: 'managed',
+            tor: 'managed',
           },
         });
       });
@@ -313,11 +299,7 @@ describe('profile external candidates', () => {
       profile,
       [
         { protocol: 'bee', label: 'Swarm', endpoints: ['http://127.0.0.1:1633'] },
-        {
-          protocol: 'radicle',
-          label: 'Radicle',
-          endpoints: ['http://127.0.0.1:8780'],
-        },
+        { protocol: 'tor', label: 'Tor', endpoints: ['127.0.0.1:9150'] },
       ],
       {
         ipcMain,
@@ -334,16 +316,12 @@ describe('profile external candidates', () => {
       },
       candidates: [
         { protocol: 'bee', label: 'Swarm', endpoints: ['http://127.0.0.1:1633'] },
-        {
-          protocol: 'radicle',
-          label: 'Radicle',
-          endpoints: ['http://127.0.0.1:8780'],
-        },
+        { protocol: 'tor', label: 'Tor', endpoints: ['127.0.0.1:9150'] },
       ],
     });
     expect(choices).toEqual({
       bee: 'external',
-      radicle: 'managed',
+      tor: 'managed',
     });
   });
 

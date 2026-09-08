@@ -23,6 +23,11 @@ describe('navigation-utils', () => {
       expect(resolveProtocolIconType({ value: 'bzz://hash' })).toBe('swarm');
       expect(resolveProtocolIconType({ value: 'ipfs://cid' })).toBe('ipfs');
       expect(resolveProtocolIconType({ value: 'ipns://name' })).toBe('ipns');
+      expect(
+        resolveProtocolIconType({
+          value: 'web3://0x0000000000000000000000000000000000000000.eip155-1/',
+        })
+      ).toBe('onchain');
       expect(resolveProtocolIconType({ value: 'https://example.com' })).toBe('https');
     });
 
@@ -77,7 +82,7 @@ describe('navigation-utils', () => {
       expect(resolveProtocolIconType({ value: 'bzz://meinhard.eth/path' })).toBe('swarm');
     });
 
-    test('uses the neutral globe for internal pages and gates radicle on settings', async () => {
+    test('uses the neutral globe for internal pages and identifies Radicle URLs', async () => {
       const { resolveProtocolIconType } = await loadNavigationUtils();
 
       // Internal pages reuse the neutral http globe so the address bar
@@ -85,13 +90,7 @@ describe('navigation-utils', () => {
       // trust shield left behind by a previous navigation.
       expect(resolveProtocolIconType({ value: 'freedom://history' })).toBe('http');
       expect(resolveProtocolIconType({ value: 'freedom://settings' })).toBe('http');
-      expect(resolveProtocolIconType({ value: 'rad://rid' })).toBe('http');
-      expect(
-        resolveProtocolIconType({
-          value: 'rad://rid',
-          enableRadicleIntegration: true,
-        })
-      ).toBe('radicle');
+      expect(resolveProtocolIconType({ value: 'rad://rid' })).toBe('radicle');
     });
 
     test('prefers secure icon when the page is marked secure', async () => {
@@ -205,6 +204,31 @@ describe('navigation-utils', () => {
       );
     });
 
+    test('returns an onchain badge only when provenance matches the URL identity', async () => {
+      const { resolveTrustBadge } = await loadNavigationUtils();
+      const contract = '0x00000095643cffa7d9fae407a84dfcb6406456c6';
+      const provenance = {
+        chainId: 1,
+        contract,
+        trust: { level: 'verified', method: 'myotis' },
+      };
+
+      expect(resolveTrustBadge({
+        value: `web3://${contract}/swap`,
+        onchainProvenance: provenance,
+      })).toEqual({
+        kind: 'onchain',
+        level: 'verified',
+        name: 'web3://0x0000009564…b6406456c6',
+        trust: provenance.trust,
+        provenance,
+      });
+      expect(resolveTrustBadge({
+        value: `web3://${contract}:100/`,
+        onchainProvenance: provenance,
+      })).toBeNull();
+    });
+
     test('tolerates missing / empty arguments', async () => {
       const { resolveTrustBadge } = await loadNavigationUtils();
 
@@ -272,6 +296,40 @@ describe('navigation-utils', () => {
           copy: 'QmPSYsfe8CVrBMrbh3q8qjzQYnAmDX8H4xkERzvFBaYkMS',
           autoFit: 'QmPSYsfe8CVrBMrbh3q8qjzQYnAmDX8H4xkERzvFBaYkMS',
         },
+      ]);
+    });
+
+    test('onchain provenance reuses verification rows and identifies the loaded document', async () => {
+      const { buildTrustRows } = await loadNavigationUtils();
+      const contract = '0x00000095643CFfA7D9fae407a84dfCB6406456c6';
+      const htmlHash = `0x${'ab'.repeat(32)}`;
+
+      const result = buildTrustRows({
+        level: 'verified',
+        trust: {
+          level: 'verified',
+          method: 'myotis',
+          finality: 'optimistic',
+          block: 25_684_159,
+        },
+        onchainProvenance: {
+          chainId: 1,
+          network: 'Ethereum',
+          contract,
+          htmlHash,
+        },
+      });
+
+      expect(result.status).toBe('Onchain application retrieval verified');
+      expect(result.trustRows).toEqual([
+        { label: 'Verified by', display: 'Myotis light client', copy: '' },
+        { label: 'Evidence', display: 'Optimistic beacon proof (not finalized)', copy: '' },
+        { label: 'Block', display: '25684159', copy: '25684159' },
+      ]);
+      expect(result.contentRows).toEqual([
+        { label: 'Network', display: 'Ethereum', copy: '' },
+        { label: 'Contract', display: contract, copy: contract, autoFit: contract },
+        { label: 'HTML hash', display: htmlHash, copy: htmlHash, autoFit: htmlHash },
       ]);
     });
 

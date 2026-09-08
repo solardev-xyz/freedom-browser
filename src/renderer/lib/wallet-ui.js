@@ -7,6 +7,7 @@
 
 import { showOnboarding } from './onboarding.js';
 import { open as openSidebarPanel, isFeatureEnabled as isSidebarFeatureEnabled } from './sidebar.js';
+import { isPrivateWindow } from './private-mode.js';
 import { walletState } from './wallet/wallet-state.js';
 import { isSignatureInFlight, onSignatureFlightChange } from './wallet/signature-flight.js';
 import { truncateAddress, timeAgo } from './wallet/wallet-utils.js';
@@ -29,6 +30,9 @@ import { initWalletSettings, closeWalletSettings } from './wallet/wallet-setting
 import { initCreateWallet, openCreateWallet, closeCreateWallet } from './wallet/create-wallet.js';
 import { initConnectLedger, openConnectLedger, closeConnectLedger } from './wallet/connect-ledger.js';
 import { initConnectPhone, openConnectPhone, closeConnectPhone } from './wallet/connect-phone.js';
+import { initCreateSafe, openCreateSafe, closeCreateSafe } from './wallet/create-safe.js';
+import { initSafeSigning, closeSafeSigning } from './wallet/safe-signing.js';
+import { initSafePendingList, closeSafePendingList } from './wallet/safe-pending-list.js';
 import { initRemoteSession } from './wallet/remote-session.js';
 import { initRemoteSigningPanel } from './wallet/remote-signing-panel.js';
 import { initPublishSetup, openPublishSetup, closePublishSetup } from './wallet/publish-setup.js';
@@ -51,6 +55,7 @@ export { getSelectedChainId, setSelectedChainId };
 
 // DOM references owned by the coordinator
 let setupCta;
+let privateNotice;
 let swarmIdEl;
 let ipfsIdEl;
 let ipfsCopyBtn;
@@ -69,6 +74,7 @@ const IPFS_EPHEMERAL_TITLE =
 export function initWalletUi() {
   // Cache coordinator DOM references
   setupCta = document.getElementById('sidebar-setup-cta');
+  privateNotice = document.getElementById('sidebar-private-notice');
   walletState.identityView = document.getElementById('sidebar-identity');
   swarmIdEl = document.getElementById('sidebar-swarm-id');
   ipfsIdEl = document.getElementById('sidebar-ipfs-id');
@@ -93,13 +99,16 @@ export function initWalletUi() {
   initDappSign();
   initSend();
   initExportMnemonic(switchTab);
-  initWalletSelector(openCreateWallet, openConnectLedger, openConnectPhone);
+  initWalletSelector(openCreateWallet, openConnectLedger, openConnectPhone, openCreateSafe);
   initChainSwitcher();
   initReceive();
   initWalletSettings(switchTab);
   initCreateWallet();
   initConnectLedger();
   initConnectPhone();
+  initCreateSafe();
+  initSafeSigning();
+  initSafePendingList();
   initRemoteSession();
   initRemoteSigningPanel(); // after initRemoteSession — subscribes to its broker
   initPublishSetup();
@@ -190,6 +199,15 @@ function setupCoordinatorListeners() {
  * Update identity state - called on init and after state changes
  */
 export async function updateIdentityState() {
+  // Private windows inject no wallet providers and persist nothing, so the
+  // panel must not offer identity setup here: the "Get Started" CTA would
+  // walk the user into creating/unlocking a vault this window cannot use
+  // (#240). Say so instead — the same promise the private start page makes.
+  if (isPrivateWindow()) {
+    showView('private');
+    return;
+  }
+
   try {
     const status = await window.identity.getStatus();
 
@@ -218,10 +236,12 @@ export async function updateIdentityState() {
 function showView(view) {
   walletState.viewMode = view;
   setupCta?.classList.toggle('hidden', view !== 'setup');
+  privateNotice?.classList.toggle('hidden', view !== 'private');
   walletState.identityView?.classList.toggle('hidden', view !== 'identity');
 
+  // Only the identity view has tabs to switch between.
   const tabBar = document.querySelector('.sidebar-tabs');
-  tabBar?.classList.toggle('hidden', view === 'setup');
+  tabBar?.classList.toggle('hidden', view !== 'identity');
 }
 
 /**
@@ -361,7 +381,7 @@ async function updateSecurityStatus() {
  */
 export function openPublishSetupFlow() {
   if (!isSidebarFeatureEnabled()) return;
-  if (walletState.viewMode === 'setup') return;
+  if (walletState.viewMode !== 'identity') return;
   openSidebarPanel();
   switchTab('nodes');
   openPublishSetup();
@@ -371,21 +391,32 @@ export function openPublishSetupFlow() {
 // amount. Used by the ethereum: URI scheme handler (EIP-681) so static web
 // pages can offer "Tip" links that route straight into the send flow.
 //
-// Same bail conditions as openPublishSetupFlow.
+// Same bail conditions as openPublishSetupFlow, but reported back to the
+// caller: each refusal has a different way out for the user (turn the feature
+// on, open a normal window, finish identity setup), so a single boolean would
+// force the caller to guess — and guessing "enable the feature" at a user
+// whose wallet is already enabled leaves them no path forward (#240).
+// Returns 'ok' when the send screen opened, otherwise one of the reasons.
+export const SEND_FLOW_OK = 'ok';
+export const SEND_FLOW_DISABLED = 'disabled';
+export const SEND_FLOW_PRIVATE = 'private';
+export const SEND_FLOW_SETUP = 'setup';
+
 export function openSendFlow({ recipient, chainId, amount } = {}) {
-  if (!isSidebarFeatureEnabled()) return false;
-  if (walletState.viewMode === 'setup') return false;
+  if (!isSidebarFeatureEnabled()) return SEND_FLOW_DISABLED;
+  if (walletState.viewMode === 'private') return SEND_FLOW_PRIVATE;
+  if (walletState.viewMode !== 'identity') return SEND_FLOW_SETUP;
   openSidebarPanel();
   switchTab('wallet');
   openSend({ recipient, chainId, amount });
-  return true;
+  return SEND_FLOW_OK;
 }
 
 /**
  * Switch between Wallet and Identity tabs
  */
 function switchTab(tabName) {
-  if (walletState.viewMode === 'setup') return;
+  if (walletState.viewMode !== 'identity') return;
   // Swapping panels puts the identity view back on screen alongside a live
   // device confirmation the renderer cannot recall — and the cascade below
   // would tear that confirmation's neighbours down. The approval screen owns
@@ -425,7 +456,7 @@ function switchTab(tabName) {
  * wallet/signature-flight.js.
  */
 function closeAllSubscreens() {
-  if (walletState.viewMode === 'setup') return;
+  if (walletState.viewMode !== 'identity') return;
   if (isSignatureInFlight()) {
     console.warn('[WalletUI] Sub-screens not closed: a signature is in flight');
     return;
@@ -435,6 +466,9 @@ function closeAllSubscreens() {
   closeCreateWallet();
   closeConnectLedger();
   closeConnectPhone();
+  closeCreateSafe();
+  closeSafeSigning();
+  closeSafePendingList();
   closeReceive();
   closeWalletSettings();
   closeSend();

@@ -12,6 +12,7 @@ const registry = require('../networks/network-registry');
 
 // Cache providers by chain ID
 const providerCache = new Map();
+const eip1193Cache = new Map();
 
 // Provider configuration
 const PROVIDER_CONFIG = {
@@ -22,41 +23,79 @@ const PROVIDER_CONFIG = {
 };
 
 /**
- * Create a FallbackProvider for a given chain
+ * The chain's rpc-role endpoint pool as JsonRpcProviders: keyless builtin
+ * RPCs plus any keyed provider whose API key is configured, first URL
+ * being the preferred one.
  */
-function createFallbackProvider(chainId) {
-  const chain = getChain(chainId);
-  if (!chain) {
-    throw new Error(`Unsupported chain ID: ${chainId}`);
-  }
-
-  // The registry resolves the chain's rpc-role endpoint pool: keyless
-  // builtin RPCs plus any keyed provider whose API key is configured.
+function createProviderPool(chainId) {
   const rpcUrls = registry.getEndpoints(chainId, 'rpc');
 
   if (rpcUrls.length === 0) {
+    const chain = getChain(chainId);
     throw new Error(
-      `No RPC endpoints available for ${chain.name}. ` +
+      `No RPC endpoints available for ${chain ? chain.name : `chain ${chainId}`}. ` +
         'Please configure an RPC provider (Alchemy, Infura, or DRPC) in Settings.'
     );
   }
 
-  // Create providers from RPC URLs with priority
-  const providers = rpcUrls.map((url, index) => ({
-    provider: new JsonRpcProvider(url, chainId, {
-      staticNetwork: true,
-      batchMaxCount: 1, // Disable batching for public RPCs
-    }),
+  return rpcUrls.map(
+    (url) =>
+      new JsonRpcProvider(url, chainId, {
+        staticNetwork: true,
+        batchMaxCount: 1, // Disable batching for public RPCs
+      })
+  );
+}
+
+/**
+ * Create a FallbackProvider for a given chain
+ */
+function createFallbackProvider(chainId) {
+  if (!getChain(chainId)) {
+    throw new Error(`Unsupported chain ID: ${chainId}`);
+  }
+
+  const providers = createProviderPool(chainId).map((provider, index) => ({
+    provider,
     priority: index === 0 ? 1 : 2, // First URL has higher priority
     weight: index === 0 ? 2 : 1,
     stallTimeout: PROVIDER_CONFIG.stallTimeout,
   }));
 
-  const fallbackProvider = new FallbackProvider(providers, chainId, {
+  return new FallbackProvider(providers, chainId, {
     quorum: PROVIDER_CONFIG.quorum,
   });
+}
 
-  return fallbackProvider;
+/**
+ * EIP-1193 view of the chain's RPC pool, for libraries that consume a
+ * `request` interface (e.g. protocol-kit). FallbackProvider exposes no
+ * raw send, so this fails over URL-by-URL per request instead. Consumers
+ * only read through it (eth_call / eth_getCode / eth_chainId) — writes
+ * stay on the FallbackProvider paths — so retrying on the next URL is
+ * always safe.
+ *
+ * @param {number} chainId
+ * @returns {{request: (args: {method: string, params?: any[]}) => Promise<any>}}
+ */
+function getEip1193Provider(chainId) {
+  if (!eip1193Cache.has(chainId)) {
+    const providers = createProviderPool(chainId);
+    eip1193Cache.set(chainId, {
+      request: async ({ method, params }) => {
+        let lastError;
+        for (const provider of providers) {
+          try {
+            return await provider.send(method, params ?? []);
+          } catch (err) {
+            lastError = err;
+          }
+        }
+        throw lastError;
+      },
+    });
+  }
+  return eip1193Cache.get(chainId);
 }
 
 /**
@@ -132,11 +171,14 @@ function getProvider(chainId) {
  */
 function clearProviderCache(chainId) {
   if (chainId !== undefined) {
-    providerCache.delete(chainId);
-    providerCache.delete(String(chainId));
-    providerCache.delete(Number(chainId));
+    for (const cache of [providerCache, eip1193Cache]) {
+      cache.delete(chainId);
+      cache.delete(String(chainId));
+      cache.delete(Number(chainId));
+    }
   } else {
     providerCache.clear();
+    eip1193Cache.clear();
   }
 }
 
@@ -147,6 +189,7 @@ function clearProviderCache(chainId) {
 function onApiKeysChanged() {
   console.log('[ProviderManager] API keys changed, clearing provider cache');
   providerCache.clear();
+  eip1193Cache.clear();
   registry.invalidate();
 }
 
@@ -180,6 +223,7 @@ async function testProvider(chainId) {
 
 module.exports = {
   getProvider,
+  getEip1193Provider,
   clearProviderCache,
   onApiKeysChanged,
   getAllProviders,

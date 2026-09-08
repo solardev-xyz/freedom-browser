@@ -44,8 +44,17 @@ function safeWallet(wallet) {
     index: wallet.index,
     name: bounded(wallet.name, 80) || `Wallet ${wallet.index + 1}`,
     address: bounded(wallet.address, 80),
-    type: ['mnemonic', 'ledger', 'remote'].includes(wallet.type) ? wallet.type : 'mnemonic',
+    type: ['mnemonic', 'ledger', 'remote', 'safe'].includes(wallet.type) ? wallet.type : 'unknown',
   });
+}
+
+function assertSupportedSigningWallet(wallet) {
+  if (!['mnemonic', 'ledger', 'remote'].includes(wallet.type)) {
+    throw new AutomationError(
+      ERROR_CODES.CAPABILITY_UNAVAILABLE,
+      'Agent signing and transfers are unavailable for this wallet type; use Freedom’s wallet controls'
+    );
+  }
 }
 
 function normalizeDecision(value) {
@@ -141,6 +150,7 @@ class AgentWalletController {
         'The selected wallet account is unavailable'
       );
     }
+    assertSupportedSigningWallet(wallet);
     const recipient = await this.#resolveTransferRecipient(input.recipient);
     let atomicAmount;
     try {
@@ -472,6 +482,7 @@ class AgentWalletController {
       );
     }
 
+    assertSupportedSigningWallet(wallet);
     if (payload.method === 'eth_sendTransaction') {
       return this.#sendTransaction(context, payload, permissionKey, chain, wallet);
     }

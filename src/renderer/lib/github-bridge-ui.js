@@ -141,11 +141,6 @@ async function openPanel() {
   panel.classList.remove('hidden');
   resetSteps();
 
-  if (!state.enableRadicleIntegration) {
-    showPrereqError('Radicle integration is disabled. Enable it in Settings > Experimental');
-    return;
-  }
-
   // Check prerequisites
   const radicleStatus = state.currentRadicleStatus;
   if (radicleStatus !== 'running') {
@@ -188,11 +183,6 @@ function closePanel() {
  * Start the import process.
  */
 async function startImport() {
-  if (!state.enableRadicleIntegration) {
-    showPrereqError('Radicle integration is disabled. Enable it in Settings > Experimental');
-    return;
-  }
-
   // Re-check fast-changing prerequisites immediately before import.
   if (state.currentRadicleStatus !== 'running') {
     showPrereqError('Radicle node is not running. Enable it from the Nodes menu in the toolbar.');
@@ -333,14 +323,6 @@ async function refreshBridgeButtonForUrl(url) {
  */
 export async function updateGithubBridgeIcon() {
   if (!bridgeBtn) return;
-  if (!state.enableRadicleIntegration) {
-    bridgeBtn.classList.add('hidden');
-    if (panelOpen) {
-      closePanel();
-    }
-    return;
-  }
-
   const addressInput = document.getElementById('address-input');
   const url = addressInput?.value || '';
 

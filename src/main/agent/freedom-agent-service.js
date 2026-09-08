@@ -784,7 +784,7 @@ function normalizeNodeLifecycleApproval(value, recipient = {}) {
 
 function normalizeNodeRequestApproval(value, recipient = {}) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  const transports = { ant: 'http', radicle: 'http', ipfs: 'gateway' };
+  const transports = { ant: 'http', ipfs: 'gateway' };
   if (!transports[value.service] || value.transport !== transports[value.service]) return null;
   const request = value.request;
   if (!request || typeof request !== 'object' || Array.isArray(request)) return null;

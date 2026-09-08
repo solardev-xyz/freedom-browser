@@ -28,9 +28,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   startSwarmProbe: (hash, path) => ipcRenderer.invoke('bzz:start-probe', { hash, path }),
   awaitSwarmProbe: (id) => ipcRenderer.invoke('bzz:await-probe', { id }),
   cancelSwarmProbe: (id) => ipcRenderer.invoke('bzz:cancel-probe', { id }),
-  setRadBase: (webContentsId, baseUrl) =>
-    ipcRenderer.invoke('rad:set-base', { webContentsId, baseUrl }),
-  clearRadBase: (webContentsId) => ipcRenderer.invoke('rad:clear-base', { webContentsId }),
   setWindowTitle: (title) => ipcRenderer.send('window:set-title', title),
   closeWindow: () => ipcRenderer.send('window:close'),
   minimizeWindow: () => ipcRenderer.send('window:minimize'),
@@ -74,6 +71,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   resolveEnsAddress: (name) => ipcRenderer.invoke('ens:resolve-address', { name }),
   resolveEnsReverse: (address) => ipcRenderer.invoke('ens:resolve-reverse', { address }),
   invalidateEnsContent: (name) => ipcRenderer.invoke('ens:invalidate-content', { name }),
+  getOnchainAppProvenance: (webContentsId, url) =>
+    ipcRenderer.invoke('onchain-app:get-provenance', { webContentsId, url }),
   resolveTezosDomain: (name) => ipcRenderer.invoke('tezos-domains:resolve', { name }),
   invalidateTezosDomain: (name) => ipcRenderer.invoke('tezos-domains:invalidate', { name }),
   // History
@@ -421,6 +420,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('page:hard-reload', handler);
     return () => ipcRenderer.removeListener('page:hard-reload', handler);
   },
+  onZoomIn: (callback) => {
+    const handler = () => callback();
+    ipcRenderer.on('page:zoom-in', handler);
+    return () => ipcRenderer.removeListener('page:zoom-in', handler);
+  },
+  onZoomOut: (callback) => {
+    const handler = () => callback();
+    ipcRenderer.on('page:zoom-out', handler);
+    return () => ipcRenderer.removeListener('page:zoom-out', handler);
+  },
+  onZoomReset: (callback) => {
+    const handler = () => callback();
+    ipcRenderer.on('page:zoom-reset', handler);
+    return () => ipcRenderer.removeListener('page:zoom-reset', handler);
+  },
   onNextTab: (callback) => {
     const handler = () => callback();
     ipcRenderer.on('tab:next', handler);
@@ -666,8 +680,36 @@ contextBridge.exposeInMainWorld('wallet', {
   // RPC proxy (renderer CSP blocks direct fetch to external endpoints)
   proxyRpc: (rpcUrl, method, params) =>
     ipcRenderer.invoke('wallet:proxy-rpc', { rpcUrl, method, params }),
-  requestChain: (chainId, method, params) =>
-    ipcRenderer.invoke('wallet:chain-request', { chainId, method, params }),
+  requestChain: (chainId, method, params, routingContext) =>
+    ipcRenderer.invoke('wallet:chain-request', { chainId, method, params, routingContext }),
+
+  // Safe multisig accounts
+  createSafe: (name, ownerIndexes, threshold) =>
+    ipcRenderer.invoke('wallet:create-safe', name, ownerIndexes, threshold),
+  getSafeStatus: (index) => ipcRenderer.invoke('wallet:get-safe-status', index),
+  activateSafe: (index) => ipcRenderer.invoke('wallet:activate-safe', index),
+  // Safe sends (the signing board): every call returns {success, state}
+  // where state is the board's render model (null when nothing pending).
+  safeSend: (safeIndex, tx, display, chainId) =>
+    ipcRenderer.invoke('wallet:safe-send', safeIndex, tx, display, chainId),
+  safeSign: (safeIndex, ownerIndex) => ipcRenderer.invoke('wallet:safe-sign', safeIndex, ownerIndex),
+  safeExecute: (safeIndex) => ipcRenderer.invoke('wallet:safe-execute', safeIndex),
+  safeState: (safeIndex) => ipcRenderer.invoke('wallet:safe-state', safeIndex),
+  safeCancelPending: (index) => ipcRenderer.invoke('wallet:safe-cancel-pending', index),
+  safePendingList: () => ipcRenderer.invoke('wallet:safe-pending-list'),
+  // SafeMessage sessions (dApp message signing via EIP-1271). start
+  // binds the session to the requesting page ({origin, webContentsId})
+  // and returns state.token — required by every other call.
+  safeMessageStart: (safeIndex, request, display, requester) =>
+    ipcRenderer.invoke('wallet:safe-message-start', safeIndex, request, display, requester),
+  safeMessageSign: (safeIndex, ownerIndex, token) =>
+    ipcRenderer.invoke('wallet:safe-message-sign', safeIndex, ownerIndex, token),
+  safeMessageState: (safeIndex, token) =>
+    ipcRenderer.invoke('wallet:safe-message-state', safeIndex, token),
+  safeMessageCancel: (safeIndex, token) =>
+    ipcRenderer.invoke('wallet:safe-message-cancel', safeIndex, token),
+  safeMessageComplete: (safeIndex, token) =>
+    ipcRenderer.invoke('wallet:safe-message-complete', safeIndex, token),
 });
 
 contextBridge.exposeInMainWorld('ledger', {
@@ -855,6 +897,11 @@ contextBridge.exposeInMainWorld('radiclePermissions', {
 contextBridge.exposeInMainWorld('radicleProvider', {
   execute: (method, params, origin) =>
     ipcRenderer.invoke('radicle:provider-execute', { method, params, origin }),
+  onEvent: (callback) => {
+    const handler = (_event, value) => callback(value);
+    ipcRenderer.on('radicle:providerEvent', handler);
+    return () => ipcRenderer.removeListener('radicle:providerEvent', handler);
+  },
 });
 
 contextBridge.exposeInMainWorld('swarmFeedStore', {

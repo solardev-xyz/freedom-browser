@@ -267,7 +267,7 @@
               id="trust-shield"
               class="trust-shield"
               type="button"
-              aria-label="ENS resolution trust status"
+              aria-label="Site provenance status"
               aria-haspopup="dialog"
               aria-expanded="false"
               aria-controls="trust-popover"
@@ -331,7 +331,7 @@
               id="trust-popover"
               class="trust-popover"
               role="dialog"
-              aria-label="ENS trust details"
+              aria-label="Site provenance details"
               hidden
             >
               <div class="trust-popover-title" id="trust-popover-title"></div>
@@ -339,7 +339,7 @@
                 <div class="trust-popover-status" id="trust-popover-status"></div>
                 <div class="trust-popover-fields" id="trust-popover-trust-fields"></div>
                 <div class="trust-popover-content" id="trust-popover-content">
-                  <div class="trust-popover-section-title">Resolves to</div>
+                  <div class="trust-popover-section-title" id="trust-popover-content-title">Resolves to</div>
                   <div class="trust-popover-fields" id="trust-popover-content-fields"></div>
                 </div>
               </div>
@@ -430,6 +430,11 @@
                   d="m84.3 11 75.1 43.4v86.7l-75.1 43.4-75.1-43.4v-86.8zm0-10.3-84 48.5v97l84 48.5 84-48.5v-97z"
                   fill="#469ea2"
                 />
+              </svg>
+              <!-- Onchain application (Ethereum contract) -->
+              <svg class="icon-onchain" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 1.8 5.8 12 12 15.7 18.2 12 12 1.8Z" />
+                <path d="m5.8 13.3 6.2 8.9 6.2-8.9-6.2 3.6-6.2-3.6Z" />
               </svg>
               <!-- HTTP/Globe icon -->
               <svg
@@ -723,15 +728,15 @@
             </div>
             <div class="bee-info-row">
               <span class="bee-info-label">Connected Peers:</span>
-              <span id="bee-peers-count">--</span>
+              <span id="bee-peers-count">0</span>
             </div>
             <div class="bee-info-row">
               <span class="bee-info-label">Visible Peers:</span>
-              <span id="bee-network-peers">--</span>
+              <span id="bee-network-peers">0</span>
             </div>
             <div class="bee-info-row">
               <span class="bee-info-label">Version:</span>
-              <span id="bee-version-text"></span>
+              <span id="bee-version-text">Unknown</span>
             </div>
           </div>
 
@@ -750,7 +755,7 @@
           <div class="ipfs-info">
             <div class="ipfs-info-row">
               <span class="ipfs-info-label">Active Requests:</span>
-              <span id="ipfs-active-requests-count">--</span>
+              <span id="ipfs-active-requests-count">0</span>
             </div>
             <div class="ipfs-info-row">
               <span class="ipfs-info-label">Session Download:</span>
@@ -758,7 +763,7 @@
             </div>
             <div class="ipfs-info-row">
               <span class="ipfs-info-label">Version:</span>
-              <span id="ipfs-version-text"></span>
+              <span id="ipfs-version-text">Unknown</span>
             </div>
           </div>
 
@@ -785,11 +790,11 @@
             </div>
             <div class="ipfs-info-row">
               <span class="ipfs-info-label">Finalized Block:</span>
-              <span id="myotis-finalized-block">--</span>
+              <span id="myotis-finalized-block">0</span>
             </div>
             <div class="ipfs-info-row">
               <span class="ipfs-info-label">Version:</span>
-              <span id="myotis-version-text">Myotis</span>
+              <span id="myotis-version-text">Unknown</span>
             </div>
           </div>
 
@@ -814,11 +819,11 @@
             </div>
             <div class="ipfs-info-row">
               <span class="ipfs-info-label">Finalized Block:</span>
-              <span id="myotis-gnosis-finalized-block">--</span>
+              <span id="myotis-gnosis-finalized-block">0</span>
             </div>
             <div class="ipfs-info-row">
               <span class="ipfs-info-label">Version:</span>
-              <span id="myotis-gnosis-version-text">Myotis</span>
+              <span id="myotis-gnosis-version-text">Unknown</span>
             </div>
           </div>
 
@@ -830,12 +835,6 @@
             <button id="radicle-toggle-btn" class="menu-item radicle-toggle" type="button">
               <span class="radicle-toggle-label">
                 Radicle
-                <span
-                  class="radicle-external-badge"
-                  id="radicle-external-badge"
-                  title="Using system radicle-node (~/.radicle)"
-                  >external</span
-                >
                 <span class="radicle-toggle-switch" id="radicle-toggle-switch">
                   <span class="radicle-toggle-knob"></span>
                 </span>
@@ -852,11 +851,11 @@
               </div>
               <div class="radicle-info-row">
                 <span class="radicle-info-label">Seeded Repositories:</span>
-                <span id="radicle-repos-count"></span>
+                <span id="radicle-repos-count">0</span>
               </div>
               <div class="radicle-info-row">
                 <span class="radicle-info-label">Version:</span>
-                <span id="radicle-version-text"></span>
+                <span id="radicle-version-text">Unknown</span>
               </div>
             </div>
           </div>
@@ -881,7 +880,7 @@
               </div>
               <div class="tor-info-row">
                 <span class="tor-info-label">Version:</span>
-                <span id="tor-version-text"></span>
+                <span id="tor-version-text">Unknown</span>
               </div>
             </div>
           </div>
@@ -990,14 +989,14 @@
             </button>
             <div id="profile-menu" class="menu-dropdown menu-flyout" role="menu" hidden>
               <div id="profile-menu-list" class="menu-flyout-list">
-                <div class="menu-flyout-empty">Loading...</div>
+                <div class="menu-flyout-empty">Loading…</div>
               </div>
               <div class="menu-divider"></div>
               <button id="profile-create-btn" class="menu-item" type="button" role="menuitem">
-                <span class="menu-item-label">Create Profile...</span>
+                <span class="menu-item-label">Create Profile…</span>
               </button>
               <button id="profile-manage-btn" class="menu-item" type="button" role="menuitem">
-                <span class="menu-item-label">Manage Profiles...</span>
+                <span class="menu-item-label">Manage Profiles…</span>
               </button>
               <div
                 id="profile-menu-status"
@@ -1029,7 +1028,11 @@
           <!-- Group 2: Browser Data -->
           <button id="history-btn" class="menu-item" type="button">
             <span class="menu-item-label">History</span>
-            <span class="menu-item-shortcut" data-shortcut="CmdOrCtrl+Y"></span>
+            <span
+              class="menu-item-shortcut"
+              data-shortcut="Cmd+Y"
+              data-shortcut-other="Ctrl+H"
+            ></span>
           </button>
 
           <div class="menu-divider"></div>
@@ -1073,9 +1076,11 @@
           <div class="menu-divider"></div>
 
           <!-- Group 4: Page Actions -->
+          <!-- No Cmd/Ctrl+P hint: printing has no keyboard binding (it is
+               not in the shortcut registry), and advertising one here is
+               what put a phantom `Cmd+P` into docs/features.md. -->
           <button id="print-btn" class="menu-item" type="button">
-            <span class="menu-item-label">Print...</span>
-            <span class="menu-item-shortcut" data-shortcut="CmdOrCtrl+P"></span>
+            <span class="menu-item-label">Print…</span>
           </button>
 
           <div class="menu-divider"></div>
@@ -1945,6 +1950,27 @@
             </button>
           </div>
           <div class="sidebar-content">
+            <!-- Private windows: the identity & wallet are deliberately out of
+                 reach here (no providers injected, nothing persisted), so the
+                 panel says so instead of offering identity setup. -->
+            <div
+              id="sidebar-private-notice"
+              class="sidebar-private-notice hidden"
+              data-test="sidebar-private-notice"
+            >
+              <div class="setup-cta-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                  <rect x="3" y="11" width="18" height="10" rx="2" />
+                  <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                </svg>
+              </div>
+              <h3 class="setup-cta-title">Wallet is unavailable in private windows</h3>
+              <p class="setup-cta-text">
+                Your identity and wallet are persistent by design. Open a normal window
+                to use them.
+              </p>
+            </div>
+
             <!-- Setup CTA (shown if no vault) -->
             <div id="sidebar-setup-cta" class="sidebar-setup-cta hidden">
               <div class="setup-cta-icon">
@@ -2131,6 +2157,12 @@
                         </svg>
                         <span>Connect Phone / Other Device</span>
                       </button>
+                      <button type="button" class="wallet-selector-action" id="wallet-create-safe-btn">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                        </svg>
+                        <span>Create Multi-Owner Account</span>
+                      </button>
                     </div>
                   </div>
 
@@ -2158,12 +2190,27 @@
                     </button>
                   </div>
 
+                  <!-- Safe account status (activation / needs-funds blocking states) -->
+                  <div id="safe-status-card" class="safe-status-card hidden"></div>
+
                   <!-- Asset Balances (dynamically populated from chain registry) -->
                   <div id="asset-list" class="asset-list"></div>
 
                   <div class="balance-error hidden" id="balance-error">
                     <span class="balance-error-text" id="balance-error-text"></span>
                   </div>
+
+                  <!-- Unfinished Safe transactions (waiting for signatures) -->
+                  <button type="button" id="safe-pending-row" class="safe-pending-row hidden">
+                    <span class="safe-pending-row-label">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="10"/>
+                        <polyline points="12 6 12 12 16 14"/>
+                      </svg>
+                      Unfinished transactions
+                    </span>
+                    <span class="safe-pending-badge" id="safe-pending-count"></span>
+                  </button>
 
                   <!-- Recent payments (5 most recent; full list at freedom://payments) -->
                   <div class="recent-payments">
@@ -2422,7 +2469,7 @@
                           spellcheck="false"
                           style="
                             background: transparent;
-                            border: 1px solid var(--border-color, #3a3a3c);
+                            border: 1px solid var(--border);
                             border-radius: 4px;
                             padding: 2px 6px;
                             color: inherit;
@@ -2518,15 +2565,11 @@
 
             <!-- Export Mnemonic sub-screen -->
             <div id="sidebar-export-mnemonic" class="sidebar-subscreen hidden">
-              <div class="subscreen-header">
-                <button type="button" class="subscreen-back-btn" id="export-mnemonic-back">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="15 18 9 12 15 6" />
-                  </svg>
-                  <span>Back</span>
-                </button>
-                <h3 class="subscreen-title">Recovery Phrase</h3>
-              </div>
+              <div
+                class="subscreen-header"
+                data-back="export-mnemonic-back"
+                data-title="Recovery Phrase"
+              ></div>
 
               <!-- Unlock required state -->
               <div id="export-unlock-required" class="subscreen-content">
@@ -2594,15 +2637,11 @@
 
             <!-- Create Wallet sub-screen -->
             <div id="sidebar-create-wallet" class="sidebar-subscreen hidden">
-              <div class="subscreen-header">
-                <button type="button" class="subscreen-back-btn" id="create-wallet-back">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="15 18 9 12 15 6" />
-                  </svg>
-                  <span>Back</span>
-                </button>
-                <h3 class="subscreen-title">Create Wallet</h3>
-              </div>
+              <div
+                class="subscreen-header"
+                data-back="create-wallet-back"
+                data-title="Create Wallet"
+              ></div>
 
               <!-- Step 1: Unlock (shown if vault is locked) -->
               <div id="create-wallet-unlock" class="subscreen-content hidden">
@@ -2699,15 +2738,11 @@
 
             <!-- Connect Ledger sub-screen -->
             <div id="sidebar-connect-ledger" class="sidebar-subscreen hidden">
-              <div class="subscreen-header">
-                <button type="button" class="subscreen-back-btn" id="connect-ledger-back">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="15 18 9 12 15 6" />
-                  </svg>
-                  <span>Back</span>
-                </button>
-                <h3 class="subscreen-title">Connect Ledger</h3>
-              </div>
+              <div
+                class="subscreen-header"
+                data-back="connect-ledger-back"
+                data-title="Connect Ledger"
+              ></div>
 
               <!-- Step 1: Detect device -->
               <div id="connect-ledger-detect" class="subscreen-content hidden">
@@ -2724,7 +2759,7 @@
                   <strong>Ethereum</strong> app.
                 </p>
                 <div id="connect-ledger-status" class="connect-ledger-status">
-                  <span class="connect-ledger-status-spinner"></span>
+                  <span class="connect-ledger-status-spinner" id="connect-ledger-status-spinner"></span>
                   <span id="connect-ledger-status-text">Looking for your Ledger…</span>
                 </div>
               </div>
@@ -2803,15 +2838,11 @@
 
             <!-- Connect Phone sub-screen -->
             <div id="sidebar-connect-phone" class="sidebar-subscreen hidden">
-              <div class="subscreen-header">
-                <button type="button" class="subscreen-back-btn" id="connect-phone-back">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="15 18 9 12 15 6"/>
-                  </svg>
-                  <span>Back</span>
-                </button>
-                <h3 class="subscreen-title">Connect Phone</h3>
-              </div>
+              <div
+                class="subscreen-header"
+                data-back="connect-phone-back"
+                data-title="Connect Phone"
+              ></div>
 
               <!-- Step 1: Scan QR -->
               <div id="connect-phone-qr-step" class="subscreen-content hidden">
@@ -2878,17 +2909,107 @@
               </div>
             </div>
 
+            <!-- Create Safe (multi-owner account) sub-screen -->
+            <div id="sidebar-create-safe" class="sidebar-subscreen hidden">
+              <div
+                class="subscreen-header"
+                data-back="create-safe-back"
+                data-title="Multi-Owner Account"
+              ></div>
+
+              <!-- Step 1: Configure -->
+              <div id="create-safe-configure-step" class="subscreen-content hidden">
+                <p class="create-wallet-message">
+                  A multi-owner account (Safe) is controlled by your existing
+                  accounts together — lose one device and your funds stay safe.
+                </p>
+
+                <div class="safe-preset-row">
+                  <button type="button" class="safe-preset selected" id="safe-preset-backup"
+                          data-threshold="1" data-owners="2">
+                    <span class="safe-preset-title">Backup</span>
+                    <span class="safe-preset-detail">1 of 2 owners signs</span>
+                  </button>
+                  <button type="button" class="safe-preset" id="safe-preset-resilient"
+                          data-threshold="2" data-owners="3">
+                    <span class="safe-preset-title">Resilient</span>
+                    <span class="safe-preset-detail">2 of 3 owners sign</span>
+                  </button>
+                </div>
+
+                <p class="create-wallet-message" id="create-safe-owner-hint">Choose 2 owner accounts.</p>
+                <div id="create-safe-owner-list" class="connect-ledger-account-list"></div>
+
+                <input type="text" id="create-safe-name-input"
+                       class="create-wallet-input"
+                       placeholder="Name (e.g. Joint Account)"
+                       maxlength="32"
+                       autocomplete="off">
+
+                <button type="button" id="create-safe-submit" class="create-wallet-submit-btn" disabled>
+                  Create Account
+                </button>
+
+                <div id="create-safe-error" class="unlock-error hidden"></div>
+              </div>
+
+              <!-- Step 2: Success -->
+              <div id="create-safe-success" class="subscreen-content hidden">
+                <div class="create-wallet-success-icon">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                    <circle cx="12" cy="12" r="10"/>
+                    <polyline points="8 12 11 15 16 9"/>
+                  </svg>
+                </div>
+                <h4 class="create-wallet-success-title">Multi-Owner Account Created!</h4>
+
+                <div class="create-wallet-result">
+                  <span class="create-wallet-result-name" id="create-safe-result-name"></span>
+                  <code class="create-wallet-result-address" id="create-safe-result-address"></code>
+                </div>
+
+                <p class="create-wallet-message">
+                  This address can receive funds right away. Before it can
+                  send, it needs a one-time activation on Gnosis — you'll
+                  see an Activate button on the account.
+                </p>
+
+                <button type="button" id="create-safe-done" class="create-wallet-done-btn">
+                  Done
+                </button>
+              </div>
+            </div>
+
+            <!-- Safe signing board sub-screen -->
+            <div id="sidebar-safe-signing" class="sidebar-subscreen hidden">
+              <div
+                class="subscreen-header"
+                data-back="safe-signing-back"
+                data-title="Collect signatures"
+                data-title-id="safe-signing-title"
+              ></div>
+              <div class="subscreen-content" id="safe-signing-content"></div>
+            </div>
+
+            <!-- Unfinished Safe transactions sub-screen -->
+            <div id="sidebar-safe-pending" class="sidebar-subscreen hidden">
+              <div
+                class="subscreen-header"
+                data-back="safe-pending-back"
+                data-title="Unfinished Transactions"
+              ></div>
+              <div class="subscreen-content">
+                <p class="create-wallet-message">
+                  These transactions are waiting for owner signatures.
+                  Pick one to continue signing or discard it.
+                </p>
+                <div id="safe-pending-list" class="connect-ledger-account-list"></div>
+              </div>
+            </div>
+
             <!-- Receive sub-screen -->
             <div id="sidebar-receive" class="sidebar-subscreen hidden">
-              <div class="subscreen-header">
-                <button type="button" class="subscreen-back-btn" id="receive-back">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="15 18 9 12 15 6" />
-                  </svg>
-                  <span>Back</span>
-                </button>
-                <h3 class="subscreen-title">Receive</h3>
-              </div>
+              <div class="subscreen-header" data-back="receive-back" data-title="Receive"></div>
 
               <div class="subscreen-content">
                 <!-- QR Code -->
@@ -2919,15 +3040,11 @@
 
             <!-- Wallet Settings sub-screen -->
             <div id="sidebar-wallet-settings" class="sidebar-subscreen hidden">
-              <div class="subscreen-header">
-                <button type="button" class="subscreen-back-btn" id="wallet-settings-back">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="15 18 9 12 15 6" />
-                  </svg>
-                  <span>Back</span>
-                </button>
-                <h3 class="subscreen-title">Wallet Settings</h3>
-              </div>
+              <div
+                class="subscreen-header"
+                data-back="wallet-settings-back"
+                data-title="Wallet Settings"
+              ></div>
 
               <div class="subscreen-content">
                 <!-- Wallet name display -->
@@ -3045,15 +3162,7 @@
 
             <!-- Send sub-screen -->
             <div id="sidebar-send" class="sidebar-subscreen hidden">
-              <div class="subscreen-header">
-                <button type="button" class="subscreen-back-btn" id="send-back">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="15 18 9 12 15 6" />
-                  </svg>
-                  <span>Back</span>
-                </button>
-                <h3 class="subscreen-title">Send</h3>
-              </div>
+              <div class="subscreen-header" data-back="send-back" data-title="Send"></div>
 
               <!-- Input form view -->
               <div class="subscreen-content" id="send-input-view">
@@ -3241,7 +3350,7 @@
                   <div class="send-pending-spinner"></div>
                   <h3 class="send-pending-title">Sending Transaction</h3>
                   <p class="send-pending-text">
-                    Please wait while your transaction is being processed...
+                    Please wait while your transaction is being processed…
                   </p>
                 </div>
               </div>
@@ -3289,15 +3398,11 @@
 
             <!-- dApp Connect sub-screen -->
             <div id="sidebar-dapp-connect" class="sidebar-subscreen sidebar-modal hidden">
-              <div class="subscreen-header">
-                <button type="button" class="subscreen-back-btn" id="dapp-connect-back">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="15 18 9 12 15 6" />
-                  </svg>
-                  <span>Back</span>
-                </button>
-                <h3 class="subscreen-title">Connect</h3>
-              </div>
+              <div
+                class="subscreen-header"
+                data-back="dapp-connect-back"
+                data-title="Connect"
+              ></div>
 
               <div class="subscreen-content" id="dapp-connect-content">
                 <!-- Origin info -->
@@ -3323,7 +3428,7 @@
                           >Main Wallet</span
                         >
                         <code class="dapp-connect-wallet-address" id="dapp-connect-wallet-address"
-                          >0x0000...0000</code
+                          >0x0000…0000</code
                         >
                       </div>
                       <svg
@@ -3345,6 +3450,16 @@
                       </div>
                     </div>
                   </div>
+                </div>
+
+                <!-- Multi-owner (Safe) caveat -->
+                <div class="dapp-sign-warning hidden" id="dapp-connect-safe-note">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10"/>
+                    <line x1="12" y1="16" x2="12" y2="12"/>
+                    <line x1="12" y1="8" x2="12.01" y2="8"/>
+                  </svg>
+                  <span>Multi-owner account: works on Gnosis Chain and signs as a smart contract. Some apps can't verify contract signatures.</span>
                 </div>
 
                 <!-- Permissions info -->
@@ -3371,14 +3486,11 @@
 
             <!-- dApp Transaction Approval sub-screen -->
             <div id="sidebar-dapp-tx" class="sidebar-subscreen sidebar-modal hidden">
-              <div class="subscreen-header">
-                <button type="button" class="subscreen-back-btn" id="dapp-tx-back">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="15 18 9 12 15 6" />
-                  </svg>
-                </button>
-                <h3 class="subscreen-title">Confirm Transaction</h3>
-              </div>
+              <div
+                class="subscreen-header"
+                data-back="dapp-tx-back"
+                data-title="Confirm Transaction"
+              ></div>
 
               <div class="subscreen-content" id="dapp-tx-content">
                 <!-- Origin info -->
@@ -3391,7 +3503,7 @@
                 <div class="dapp-tx-details">
                   <div class="dapp-tx-row">
                     <span class="dapp-tx-label">To</span>
-                    <code class="dapp-tx-value dapp-tx-address" id="dapp-tx-to">0x0000...0000</code>
+                    <code class="dapp-tx-value dapp-tx-address" id="dapp-tx-to">0x0000…0000</code>
                   </div>
                   <div class="dapp-tx-row" id="dapp-tx-value-row">
                     <span class="dapp-tx-label">Value</span>
@@ -3491,14 +3603,11 @@
 
             <!-- dApp Message Signing sub-screen -->
             <div id="sidebar-dapp-sign" class="sidebar-subscreen sidebar-modal hidden">
-              <div class="subscreen-header">
-                <button type="button" class="subscreen-back-btn" id="dapp-sign-back">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="15 18 9 12 15 6" />
-                  </svg>
-                </button>
-                <h3 class="subscreen-title">Sign Message</h3>
-              </div>
+              <div
+                class="subscreen-header"
+                data-back="dapp-sign-back"
+                data-title="Sign Message"
+              ></div>
 
               <div class="subscreen-content" id="dapp-sign-content">
                 <!-- Origin info -->
@@ -3534,6 +3643,16 @@
                     >Only sign messages from sites you trust. Signing can authorize actions on your
                     behalf.</span
                   >
+                </div>
+
+                <!-- Multi-owner (Safe) caveat -->
+                <div class="dapp-sign-warning hidden" id="dapp-sign-safe-note">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10"/>
+                    <line x1="12" y1="16" x2="12" y2="12"/>
+                    <line x1="12" y1="8" x2="12.01" y2="8"/>
+                  </svg>
+                  <span>This multi-owner account signs as a smart contract. Some apps can't verify contract signatures — if the site rejects the signature, that's why.</span>
                 </div>
 
                 <!-- Unlock section -->
@@ -3609,14 +3728,11 @@
 
             <!-- x402 Payment Approval sub-screen -->
             <div id="sidebar-x402-approval" class="sidebar-subscreen sidebar-modal hidden">
-              <div class="subscreen-header">
-                <button type="button" class="subscreen-back-btn" id="x402-approval-back">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="15 18 9 12 15 6" />
-                  </svg>
-                </button>
-                <h3 class="subscreen-title">Payment Required</h3>
-              </div>
+              <div
+                class="subscreen-header"
+                data-back="x402-approval-back"
+                data-title="Payment Required"
+              ></div>
 
               <div class="subscreen-content">
                 <div class="dapp-tx-origin">
@@ -3824,9 +3940,7 @@
                  asked a phone account to sign (dapp tx/sign, send, x402).
                  Driven by remote-signing-panel.js off broker job events. -->
             <div id="sidebar-remote-signing" class="sidebar-subscreen sidebar-modal remote-signing-panel hidden">
-              <div class="subscreen-header">
-                <h3 class="subscreen-title">Confirm on Your Phone</h3>
-              </div>
+              <div class="subscreen-header" data-title="Confirm on Your Phone"></div>
               <div class="subscreen-content">
                 <p class="create-wallet-message" id="remote-signing-request-label">Signature request</p>
                 <div class="receive-qr-container">
@@ -3847,15 +3961,11 @@
 
             <!-- Publish Setup sub-screen -->
             <div id="sidebar-publish-setup" class="sidebar-subscreen hidden">
-              <div class="subscreen-header">
-                <button type="button" class="subscreen-back-btn" id="publish-setup-back">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="15 18 9 12 15 6" />
-                  </svg>
-                  <span>Back</span>
-                </button>
-                <h3 class="subscreen-title">Publish Setup</h3>
-              </div>
+              <div
+                class="subscreen-header"
+                data-back="publish-setup-back"
+                data-title="Publish Setup"
+              ></div>
 
               <div class="subscreen-content">
                 <p class="publish-setup-intro">Complete these steps to publish content on Swarm.</p>
@@ -3997,15 +4107,11 @@
 
             <!-- Stamp Manager sub-screen -->
             <div id="sidebar-stamp-manager" class="sidebar-subscreen hidden">
-              <div class="subscreen-header">
-                <button type="button" class="subscreen-back-btn" id="stamp-manager-back">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="15 18 9 12 15 6" />
-                  </svg>
-                  <span>Back</span>
-                </button>
-                <h3 class="subscreen-title">Storage</h3>
-              </div>
+              <div
+                class="subscreen-header"
+                data-back="stamp-manager-back"
+                data-title="Storage"
+              ></div>
 
               <div class="subscreen-content">
                 <!-- Batch list view -->
@@ -4056,15 +4162,11 @@
 
             <!-- Chequebook Deposit sub-screen -->
             <div id="sidebar-chequebook-deposit" class="sidebar-subscreen hidden">
-              <div class="subscreen-header">
-                <button type="button" class="subscreen-back-btn" id="chequebook-deposit-back">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="15 18 9 12 15 6" />
-                  </svg>
-                  <span>Back</span>
-                </button>
-                <h3 class="subscreen-title">Deposit to Chequebook</h3>
-              </div>
+              <div
+                class="subscreen-header"
+                data-back="chequebook-deposit-back"
+                data-title="Deposit to Chequebook"
+              ></div>
 
               <div class="subscreen-content">
                 <p class="stamp-manager-intro">
@@ -4103,15 +4205,11 @@
 
             <!-- Swarm Connect sub-screen -->
             <div id="sidebar-swarm-manifest" class="sidebar-subscreen sidebar-modal hidden">
-              <div class="subscreen-header">
-                <button type="button" class="subscreen-back-btn" id="swarm-manifest-back">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="15 18 9 12 15 6" />
-                  </svg>
-                  <span>Back</span>
-                </button>
-                <h3 class="subscreen-title">App permissions</h3>
-              </div>
+              <div
+                class="subscreen-header"
+                data-back="swarm-manifest-back"
+                data-title="App permissions"
+              ></div>
               <div class="subscreen-content">
                 <div class="swarm-connect-origin">
                   <div class="swarm-connect-site" id="swarm-manifest-name"></div>
@@ -4144,15 +4242,11 @@
 
             <!-- Swarm Connect sub-screen -->
             <div id="sidebar-swarm-connect" class="sidebar-subscreen sidebar-modal hidden">
-              <div class="subscreen-header">
-                <button type="button" class="subscreen-back-btn" id="swarm-connect-back">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="15 18 9 12 15 6" />
-                  </svg>
-                  <span>Back</span>
-                </button>
-                <h3 class="subscreen-title">Swarm Access</h3>
-              </div>
+              <div
+                class="subscreen-header"
+                data-back="swarm-connect-back"
+                data-title="Swarm Access"
+              ></div>
 
               <div class="subscreen-content" id="swarm-connect-content">
                 <div class="swarm-connect-origin">
@@ -4169,7 +4263,7 @@
                   </ul>
                 </div>
 
-                <div class="swarm-connect-warning">
+                <div class="swarm-connect-note">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <circle cx="12" cy="12" r="10" />
                     <line x1="12" y1="16" x2="12" y2="12" />
@@ -4192,7 +4286,7 @@
 
                 <div class="swarm-connect-actions">
                   <button type="button" class="swarm-connect-reject-btn" id="swarm-connect-reject">
-                    Cancel
+                    Reject
                   </button>
                   <button
                     type="button"
@@ -4207,15 +4301,11 @@
 
             <!-- Swarm Publish Approval sub-screen -->
             <div id="sidebar-swarm-publish-approve" class="sidebar-subscreen sidebar-modal hidden">
-              <div class="subscreen-header">
-                <button type="button" class="subscreen-back-btn" id="swarm-publish-back">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="15 18 9 12 15 6" />
-                  </svg>
-                  <span>Back</span>
-                </button>
-                <h3 class="subscreen-title">Confirm Publish</h3>
-              </div>
+              <div
+                class="subscreen-header"
+                data-back="swarm-publish-back"
+                data-title="Confirm Publish"
+              ></div>
 
               <div class="subscreen-content">
                 <div class="swarm-connect-origin">
@@ -4244,9 +4334,11 @@
 
                 <div class="swarm-connect-warning">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <circle cx="12" cy="12" r="10" />
-                    <line x1="12" y1="16" x2="12" y2="12" />
-                    <line x1="12" y1="8" x2="12.01" y2="8" />
+                    <path
+                      d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"
+                    />
+                    <line x1="12" y1="9" x2="12" y2="13" />
+                    <line x1="12" y1="17" x2="12.01" y2="17" />
                   </svg>
                   <span
                     >This will use your stamps and bandwidth. Content will be publicly accessible on
@@ -4261,7 +4353,7 @@
 
                 <div class="swarm-connect-actions">
                   <button type="button" class="swarm-connect-reject-btn" id="swarm-publish-reject">
-                    Cancel
+                    Reject
                   </button>
                   <button
                     type="button"
@@ -4275,19 +4367,13 @@
             </div>
 
             <!-- Swarm Messaging Approval sub-screen (PSS/GSOC) -->
-            <div
-              id="sidebar-swarm-messaging-approve"
-              class="sidebar-subscreen sidebar-modal hidden"
-            >
-              <div class="subscreen-header">
-                <button type="button" class="subscreen-back-btn" id="swarm-messaging-back">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="15 18 9 12 15 6" />
-                  </svg>
-                  <span>Back</span>
-                </button>
-                <h3 class="subscreen-title" id="swarm-messaging-title">Messaging Access</h3>
-              </div>
+            <div id="sidebar-swarm-messaging-approve" class="sidebar-subscreen sidebar-modal hidden">
+              <div
+                class="subscreen-header"
+                data-back="swarm-messaging-back"
+                data-title="Messaging Access"
+                data-title-id="swarm-messaging-title"
+              ></div>
 
               <div class="subscreen-content">
                 <div class="swarm-connect-origin">
@@ -4310,9 +4396,9 @@
 
                 <div class="swarm-connect-warning">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <circle cx="12" cy="12" r="10" />
-                    <line x1="12" y1="16" x2="12" y2="12" />
-                    <line x1="12" y1="8" x2="12.01" y2="8" />
+                    <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                    <line x1="12" y1="9" x2="12" y2="13"/>
+                    <line x1="12" y1="17" x2="12.01" y2="17"/>
                   </svg>
                   <span id="swarm-messaging-warning"
                     >Sending messages uses your stamps. Open subscriptions use bandwidth while the
@@ -4326,35 +4412,20 @@
                 </label>
 
                 <div class="swarm-connect-actions">
-                  <button
-                    type="button"
-                    class="swarm-connect-reject-btn"
-                    id="swarm-messaging-reject"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    class="swarm-connect-approve-btn"
-                    id="swarm-messaging-confirm"
-                  >
-                    Allow
-                  </button>
+                  <button type="button" class="swarm-connect-reject-btn" id="swarm-messaging-reject">Reject</button>
+                  <button type="button" class="swarm-connect-approve-btn" id="swarm-messaging-confirm">Allow</button>
                 </div>
               </div>
             </div>
 
             <!-- Swarm Feed Approval sub-screen -->
             <div id="sidebar-swarm-feed-approve" class="sidebar-subscreen sidebar-modal hidden">
-              <div class="subscreen-header">
-                <button type="button" class="subscreen-back-btn" id="swarm-feed-back">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="15 18 9 12 15 6" />
-                  </svg>
-                  <span>Back</span>
-                </button>
-                <h3 class="subscreen-title" id="swarm-feed-title">Feed Access</h3>
-              </div>
+              <div
+                class="subscreen-header"
+                data-back="swarm-feed-back"
+                data-title="Feed Access"
+                data-title-id="swarm-feed-title"
+              ></div>
 
               <div class="subscreen-content">
                 <div class="swarm-connect-origin">
@@ -4376,7 +4447,7 @@
                   <div id="swarm-feed-identity-selector"></div>
                 </div>
 
-                <div class="swarm-connect-warning">
+                <div class="swarm-connect-note">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <circle cx="12" cy="12" r="10" />
                     <line x1="12" y1="16" x2="12" y2="12" />
@@ -4443,7 +4514,7 @@
 
                 <div class="swarm-connect-actions">
                   <button type="button" class="swarm-connect-reject-btn" id="swarm-feed-reject">
-                    Cancel
+                    Reject
                   </button>
                   <button
                     type="button"
@@ -4459,15 +4530,12 @@
 
             <!-- Radicle Consent sub-screen (connect / seed / signing prompts) -->
             <div id="sidebar-radicle-consent" class="sidebar-subscreen sidebar-modal hidden">
-              <div class="subscreen-header">
-                <button type="button" class="subscreen-back-btn" id="radicle-consent-back">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="15 18 9 12 15 6" />
-                  </svg>
-                  <span>Back</span>
-                </button>
-                <h3 class="subscreen-title" id="radicle-consent-title">Radicle Access</h3>
-              </div>
+              <div
+                class="subscreen-header"
+                data-back="radicle-consent-back"
+                data-title="Radicle Access"
+                data-title-id="radicle-consent-title"
+              ></div>
 
               <div class="subscreen-content">
                 <div class="swarm-connect-origin">
@@ -4512,15 +4580,11 @@
 
             <!-- Vault Unlock sub-screen (standalone, used when auto-approve needs vault) -->
             <div id="sidebar-vault-unlock" class="sidebar-subscreen sidebar-modal hidden">
-              <div class="subscreen-header">
-                <button type="button" class="subscreen-back-btn" id="vault-unlock-back">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="15 18 9 12 15 6" />
-                  </svg>
-                  <span>Back</span>
-                </button>
-                <h3 class="subscreen-title">Unlock Vault</h3>
-              </div>
+              <div
+                class="subscreen-header"
+                data-back="vault-unlock-back"
+                data-title="Unlock Vault"
+              ></div>
 
               <div class="subscreen-content">
                 <div class="swarm-connect-origin">
@@ -4583,15 +4647,11 @@
 
             <!-- Wallet Permission Management sub-screen -->
             <div id="sidebar-dapp-permissions" class="sidebar-subscreen hidden">
-              <div class="subscreen-header">
-                <button type="button" class="subscreen-back-btn" id="dapp-perms-back">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="15 18 9 12 15 6" />
-                  </svg>
-                  <span>Back</span>
-                </button>
-                <h3 class="subscreen-title">Wallet Permissions</h3>
-              </div>
+              <div
+                class="subscreen-header"
+                data-back="dapp-perms-back"
+                data-title="Wallet Permissions"
+              ></div>
               <div class="subscreen-content">
                 <div class="perms-site" id="dapp-perms-site">site.eth</div>
                 <div class="perms-section">
@@ -4619,15 +4679,7 @@
 
             <!-- x402 Auto-Pay Management sub-screen -->
             <div id="sidebar-x402-permissions" class="sidebar-subscreen hidden">
-              <div class="subscreen-header">
-                <button type="button" class="subscreen-back-btn" id="x402-perms-back">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="15 18 9 12 15 6" />
-                  </svg>
-                  <span>Back</span>
-                </button>
-                <h3 class="subscreen-title">Auto-pay</h3>
-              </div>
+              <div class="subscreen-header" data-back="x402-perms-back" data-title="Auto-pay"></div>
               <div class="subscreen-content">
                 <div class="perms-site" id="x402-perms-site">site.eth</div>
                 <div id="x402-perms-error" class="x402-perms-error hidden" role="alert"></div>
@@ -4644,15 +4696,11 @@
 
             <!-- Swarm Permission Management sub-screen -->
             <div id="sidebar-swarm-permissions" class="sidebar-subscreen hidden">
-              <div class="subscreen-header">
-                <button type="button" class="subscreen-back-btn" id="swarm-perms-back">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="15 18 9 12 15 6" />
-                  </svg>
-                  <span>Back</span>
-                </button>
-                <h3 class="subscreen-title">Swarm Permissions</h3>
-              </div>
+              <div
+                class="subscreen-header"
+                data-back="swarm-perms-back"
+                data-title="Swarm Permissions"
+              ></div>
               <div class="subscreen-content">
                 <div class="perms-site" id="swarm-perms-site">site.eth</div>
                 <div class="perms-section">
@@ -4704,15 +4752,11 @@
 
             <!-- Publisher Identities sub-screen -->
             <div id="sidebar-publisher-identities" class="sidebar-subscreen hidden">
-              <div class="subscreen-header">
-                <button type="button" class="subscreen-back-btn" id="publisher-identities-back">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="15 18 9 12 15 6" />
-                  </svg>
-                  <span>Back</span>
-                </button>
-                <h3 class="subscreen-title">Publisher Identities</h3>
-              </div>
+              <div
+                class="subscreen-header"
+                data-back="publisher-identities-back"
+                data-title="Publisher Identities"
+              ></div>
 
               <div class="subscreen-content">
                 <div id="publisher-identity-list-view">
@@ -4720,13 +4764,13 @@
                     <input
                       type="text"
                       id="publisher-identity-filter"
-                      placeholder="Search origins..."
+                      placeholder="Search origins…"
                       autocomplete="off"
                     />
                   </div>
                   <div id="publisher-identity-list"></div>
                   <div class="publisher-identity-empty hidden" id="publisher-identity-empty">
-                    No publisher identities yet.
+                    No publisher identities yet
                   </div>
                 </div>
 
@@ -4743,19 +4787,11 @@
 
             <!-- Create Publisher Identity sub-screen -->
             <div id="sidebar-publisher-identity-create" class="sidebar-subscreen hidden">
-              <div class="subscreen-header">
-                <button
-                  type="button"
-                  class="subscreen-back-btn"
-                  id="publisher-identity-create-back"
-                >
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="15 18 9 12 15 6" />
-                  </svg>
-                  <span>Back</span>
-                </button>
-                <h3 class="subscreen-title">New Publisher Identity</h3>
-              </div>
+              <div
+                class="subscreen-header"
+                data-back="publisher-identity-create-back"
+                data-title="New Publisher Identity"
+              ></div>
               <div class="subscreen-content">
                 <div class="perms-site" id="publisher-identity-create-origin">site.eth</div>
                 <p class="create-wallet-message">
@@ -5249,7 +5285,7 @@
                   id="import-mnemonic"
                   class="form-input mnemonic-input"
                   rows="4"
-                  placeholder="Enter words separated by spaces..."
+                  placeholder="Enter words separated by spaces…"
                   spellcheck="false"
                   autocomplete="off"
                 ></textarea>
@@ -5342,7 +5378,7 @@
         <!-- Loading overlay -->
         <div class="onboarding-loading hidden" id="onboarding-loading">
           <div class="loading-spinner"></div>
-          <span class="loading-text" id="loading-text">Setting up your identity...</span>
+          <span class="loading-text" id="loading-text">Setting up your identity…</span>
         </div>
       </div>
     </dialog>

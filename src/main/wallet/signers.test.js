@@ -33,7 +33,7 @@ jest.mock('../identity-manager', () => ({
   // Mirrors identity-manager's HARDWARE_INDEX_BASE (inlined: jest.mock
   // factories may not close over out-of-scope constants).
   isHardwareWalletIndex: (index) => Number.isInteger(index) && index >= 1000000,
-  WALLET_TYPES: { MNEMONIC: 'mnemonic', LEDGER: 'ledger', REMOTE: 'remote' },
+  WALLET_TYPES: { MNEMONIC: 'mnemonic', LEDGER: 'ledger', REMOTE: 'remote', SAFE: 'safe' },
 }));
 jest.mock('../vault-timer', () => ({
   resetVaultAutoLockTimer: mockResetVaultAutoLockTimer,
@@ -204,10 +204,27 @@ describe('getSigner (ledger-backed dispatch)', () => {
   });
 
   test('a deleted hardware account fails loudly instead of falling through to the vault', () => {
+    // Deleting a Ledger leaves no record, so the type check can't fire.
+    // A stale reference to its index (dApp permission, publisher identity)
+    // must not reach the vault backend, which would derive and sign with a
+    // phantom mnemonic key at that index.
     mockGetWalletRecord.mockReturnValue(null);
-    expect(() => getSigner(1000000)).toThrow('Hardware wallet account no longer exists');
+    expect(() => getSigner(1000000)).toThrow('Device account no longer exists');
     expect(mockIdentity.exportPrivateKey).not.toHaveBeenCalled();
     expect(mockCreateLedgerBackend).not.toHaveBeenCalled();
+  });
+});
+
+describe('getSigner (safe records)', () => {
+  test('throws: a Safe is an account, not a signer', () => {
+    mockGetWalletRecord.mockReturnValue({
+      index: 5,
+      name: 'Joint account',
+      address: '0x41aD4887971f90BB3fE4d83eCa65177281283261',
+      type: 'safe',
+    });
+    expect(() => getSigner(5)).toThrow(/Safe account.*cannot sign directly/i);
+    expect(mockIdentity.exportPrivateKey).not.toHaveBeenCalled();
   });
 });
 

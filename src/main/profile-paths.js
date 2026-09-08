@@ -113,7 +113,7 @@ function getRadicleDataDir() {
    * IMPORTANT: Radicle is intentionally the one managed node whose data directory
    * does not always live inside the profile's userData directory.
    *
-   * radicle-node binds a Unix domain socket at:
+   * The embedded Radicle runtime binds a Unix domain socket at:
    *
    *   $RAD_HOME/node/control.sock
    *

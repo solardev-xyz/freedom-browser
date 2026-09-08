@@ -126,7 +126,7 @@ class SwarmPublicationController {
       options.verifyPublication ||
       (async (reference) => {
         const { getBee } = require('../swarm/swarm-service');
-        await getBee().downloadData(reference);
+        await getBee().data.download(reference);
         return true;
       });
     this.publicationIdFactory = options.publicationIdFactory || opaquePublicationId;

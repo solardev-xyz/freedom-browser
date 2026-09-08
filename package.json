@@ -1,8 +1,8 @@
 {
   "name": "freedom-browser",
-  "version": "0.8.1-dev",
+  "version": "0.8.5-dev",
   "license": "MPL-2.0",
-  "description": "Freedom – A browser for the decentralized web, with Swarm, IPFS, and ENS as first-class protocols.",
+  "description": "Freedom – A browser for the decentralized web, with Swarm, IPFS, onchain apps, and ENS as first-class protocols.",
   "author": {
     "name": "Freedom Team",
     "email": "browser@freedom.baby"
@@ -30,6 +30,7 @@
     "test:e2e:agent:freepi": "dotenv -e .env.agent-tests.local -- playwright test --project=harness test-e2e/agent-free-pi-live.spec.js",
     "test:e2e:agent:ollama": "dotenv -e .env.agent-tests.local -- playwright test --project=harness test-e2e/agent-ollama-live.spec.js",
     "test:e2e:live": "playwright test --project=live",
+    "test:e2e:packaged": "playwright test --project=packaged --project=packaged-live",
     "test:e2e:onboarding": "playwright test --project=live test-e2e/live/onboarding-identity.spec.js",
     "test:e2e:tor": "FREEDOM_LIVE_E2E_DISABLE_DEFAULT_NODES=1 playwright test --project=live test-e2e/live/tor-onion.spec.js",
     "test:agent-sandbox": "FREEDOM_REQUIRE_BWRAP=1 jest --runInBand src/main/agent/workspace-execution",
@@ -93,18 +94,17 @@
     "ipfs:reset": "rm -rf ipfs-data && echo 'Legacy repo-root IPFS data reset.'",
     "tor:download": "node scripts/fetch-arti.js",
     "tor:reset": "rm -rf tor-data && echo 'Tor data reset.'",
-    "radicle:download": "node scripts/fetch-radicle.js",
-    "radicle:init": "node scripts/init-radicle.js",
-    "radicle:status": "RADICLE_API=${RADICLE_API:-http://127.0.0.1:18780}; curl -s \"$RADICLE_API/\" | head -c 500",
-    "radicle:reset": "rm -rf radicle-data && echo 'Radicle data reset.'",
-    "identity:reset": "rm -rf ant-data ipfs-data radicle-data identity-data && echo 'All identity data reset (ant, ipfs, radicle, vault).'",
+    "radicle:download": "node scripts/fetch-radicle-addon.js",
+    "radicle:reset": "rm -rf radicle-data && echo 'Legacy repo-root Radicle data removed; managed profile data was not changed.'",
+    "identity:reset": "rm -rf ant-data ipfs-data radicle-data identity-data && echo 'Legacy repo-root Ant/IPFS/Radicle/identity data removed; managed profile data was not changed.'",
     "dapp:reset": "node scripts/reset-dapp-permissions.js",
     "vendor:openlv": "node scripts/bundle-openlv.js",
     "bridge:serve": "node scripts/serve-bridge.js",
     "openlv:ios-harness": "node scripts/openlv-ios-harness.js",
     "serve:updates": "node scripts/serve-updates.js",
     "start:test-updater": "ENABLE_DEV_UPDATER=true npm start",
-    "postinstall": "install-electron && electron-builder install-app-deps",
+    "postinstall": "install-electron && node scripts/better-sqlite3-prebuilds.js && electron-builder install-app-deps",
+    "radicle:build-addon": "node scripts/build-radicle-addon.js",
     "prestart": "node scripts/build-macos-workspace-supervisor.js",
     "build:workspace-supervisor": "node scripts/build-macos-workspace-supervisor.js"
   },
@@ -117,7 +117,8 @@
     },
     "publish": {
       "provider": "generic",
-      "url": "https://freedom.baby/downloads"
+      "url": "https://freedom.baby/downloads",
+      "channel": "latest"
     },
     "mac": {
       "target": [
@@ -134,12 +135,15 @@
       "entitlements": "config/entitlements.mac.plist",
       "entitlementsInherit": "config/entitlements.mac.plist",
       "notarize": true,
+      "files": [
+        "!**/node_modules/better-sqlite3/prebuilds/!(darwin-${arch}).node"
+      ],
       "extraResources": [
         {
           "from": "radicle-bin/${os}-${arch}/",
           "to": "radicle-bin",
           "filter": [
-            "**/*"
+            "libradicle.node"
           ]
         },
         {
@@ -178,12 +182,15 @@
         "x-scheme-handler/ipns",
         "x-scheme-handler/bzz"
       ],
+      "files": [
+        "!**/node_modules/better-sqlite3/prebuilds/!(linux-${arch}).node"
+      ],
       "extraResources": [
         {
           "from": "radicle-bin/${os}-${arch}/",
           "to": "radicle-bin",
           "filter": [
-            "**/*"
+            "libradicle.node"
           ]
         },
         {
@@ -209,12 +216,27 @@
         "bubblewrap"
       ]
     },
+    "nsis": {
+      "artifactName": "${productName}-Setup-${version}.${ext}"
+    },
     "win": {
       "target": [
         "nsis",
         "zip"
       ],
-      "icon": "assets/icon.png"
+      "icon": "assets/icon.png",
+      "files": [
+        "!**/node_modules/better-sqlite3/prebuilds/!(win32-${arch}).node"
+      ],
+      "extraResources": [
+        {
+          "from": "radicle-bin/${os}-${arch}/",
+          "to": "radicle-bin",
+          "filter": [
+            "libradicle.node"
+          ]
+        }
+      ]
     },
     "files": [
       "src/**/*",
@@ -268,14 +290,14 @@
     "beforePack": "./scripts/build-macos-workspace-supervisor.js"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=24.11.0 <25"
   },
   "devDependencies": {
     "@babel/core": "^8.0.1",
     "@babel/preset-env": "^8.0.2",
     "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.60.0",
-    "aedes": "^0.51.3",
+    "aedes": "^1.1.2",
     "babel-jest": "^30.4.1",
     "dotenv-cli": "^11.0.0",
     "electron": "^43.0.0",
@@ -289,29 +311,39 @@
   },
   "dependencies": {
     "@adraffy/ens-normalize": "^1.11.1",
-    "@corpus-core/colibri-stateless": "^2.0.1",
+    "@corpus-core/colibri-stateless": "2.0.6",
     "@earendil-works/pi-coding-agent": "0.84.2",
     "@ensdomains/content-hash": "^3.0.0",
-    "@ethersphere/bee-js": "^12.2.1",
+    "@ethersphere/bee-js": "^13.0.0",
     "@ghostery/adblocker": "^2.18.1",
     "@ledgerhq/hw-app-eth": "^7.8.8",
     "@ledgerhq/hw-transport-node-hid": "^6.33.5",
     "@metamask/browser-passworder": "^6.0.0",
-    "@openlv/core": "^0.0.2",
-    "@openlv/session": "^0.0.3",
+    "@openlv/core": "^0.2.0",
+    "@openlv/session": "^0.2.0",
+    "@safe-global/protocol-kit": "^8.0.3",
     "@scure/bip39": "^2.2.0",
     "@x402/core": "^2.12.0",
     "@x402/evm": "^2.12.0",
-    "better-sqlite3": "^12.10.0",
+    "better-sqlite3": "^13.0.3",
     "electron-log": "^5.4.4",
     "electron-updater": "^6.8.3",
     "ethers": "^6.16.0",
-    "micro-key-producer": "^0.9.0",
+    "micro-key-producer": "^0.10.0",
     "pdfjs-dist": "6.3.289",
     "proper-lockfile": "^4.1.2",
     "qrcode": "^1.5.4"
   },
   "overrides": {
+    "@ledgerhq/domain-service": {
+      "axios": "^1.20.0"
+    },
+    "@ledgerhq/evm-tools": {
+      "axios": "^1.20.0"
+    },
+    "@ledgerhq/hw-app-eth": {
+      "axios": "^1.20.0"
+    },
     "@metamask/utils": {
       "uuid": "^14.0.0"
     },

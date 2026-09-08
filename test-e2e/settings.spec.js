@@ -45,6 +45,71 @@ test('saveSettings persists across renderer reload', async ({ window }) => {
   await expect(window.locator('html')).toHaveAttribute('data-theme', 'light');
 });
 
+test('Radicle is first-class, profile-visible, and opt-in at startup', async ({
+  window,
+  electronApp,
+}) => {
+  const input = window.locator('[data-test="address-input"]');
+  await input.click();
+  await input.fill('freedom://settings/startup');
+  await input.press('Enter');
+
+  let settingsPage;
+  await expect
+    .poll(() => {
+      settingsPage = electronApp
+        .windows()
+        .find((page) => page.url().includes('/pages/settings.html'));
+      return Boolean(settingsPage);
+    })
+    .toBe(true);
+
+  await expect(settingsPage.locator('#enable-radicle-integration')).toHaveCount(0);
+  await expect(settingsPage.locator('#radicle-launch-row')).toBeVisible();
+  const startAtLaunch = settingsPage.locator('#start-radicle-at-launch');
+  // Toggle inputs are visually hidden by the custom slider CSS. Dispatch the
+  // same change events their visible labels produce.
+  const setRadicleStartup = (value) =>
+    settingsPage.evaluate((checked) => {
+      const field = document.getElementById('start-radicle-at-launch');
+      field.checked = checked;
+      field.dispatchEvent(new Event('change', { bubbles: true }));
+    }, value);
+  await setRadicleStartup(true);
+  await expect(startAtLaunch).toBeChecked();
+
+  await expect
+    .poll(() =>
+      window.evaluate(async () => {
+        const settings = await window.electronAPI.getSettings();
+        return settings.startRadicleAtLaunch;
+      })
+    )
+    .toBe(true);
+
+  await settingsPage.evaluate(() => {
+    location.hash = '#nodes';
+  });
+  const radicleNodeRow = settingsPage.locator('.profile-node[data-protocol="radicle"]');
+  await expect(radicleNodeRow).toHaveCount(1);
+  await expect(radicleNodeRow).toBeVisible();
+  const platform = await settingsPage.evaluate(() => window.freedomAPI.getPlatform());
+  if (platform === 'win32') {
+    await expect(settingsPage.locator('.profile-node[data-protocol="tor"]')).toHaveCount(0);
+  }
+
+  // Leave the shared fixture in its default state for later specs.
+  await setRadicleStartup(false);
+  await expect
+    .poll(() =>
+      window.evaluate(async () => {
+        const settings = await window.electronAPI.getSettings();
+        return settings.startRadicleAtLaunch;
+      })
+    )
+    .toBe(false);
+});
+
 test('name resolution methods can be reordered, enabled, and persisted as one policy', async ({
   window,
 }) => {

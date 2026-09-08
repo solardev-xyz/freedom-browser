@@ -7,16 +7,22 @@ Windows (see `release-process.md` §6).
 
 ## When to use this (vs. cross-building)
 
-`release-process.md` §5 cross-builds the Windows installer from the mac host
-(`npm run dist -- --win --x64`). That is correct for producing the *distributable*,
-but a mac cross-build is **not runnable on Windows for ad-hoc testing**:
-`better-sqlite3` is a native module that is `require`d at startup
-(`src/main/payment-history.js` → `src/main/index.js`), so an app packaged on macOS
-ships the darwin `.node` and crashes on launch under Windows.
+Release builds come from CI (`release-process.md` §5, `windows-latest` runner,
+x64 only). `release-process.md` Appendix A still documents cross-building the
+Windows installer from the mac host (`npm run dist -- --win --arm64` for this
+playbook's target) as a fallback. `better-sqlite3` is no longer a reason that
+artifact would fail to launch: it is a native module `require`d at startup
+(`src/main/payment-history.js` → `src/main/index.js`), but since v13 it ships a
+`win32-<arch>` prebuild that a `--win` build packages regardless of the build host,
+so the old "packaged on macOS ships the darwin `.node` and crashes under Windows"
+failure no longer applies.
 
-Build **natively inside the VM** when you need an app that actually launches on
-Windows. The VM compiles/fetches the correct native-module ABI and bundles the
-correct-arch Ant/IPFS binaries.
+Build **natively inside the VM** when you want to validate on real Windows rather
+than trust the cross-build — it exercises the other native dependencies and the
+correct-arch Ant/IPFS binaries and Radicle addon on their actual target. Running the
+cross-built installer on a Windows VM (`release-process.md` §6) covers the same
+ground and is cheaper; reach for a native in-VM build when that smoke test fails and
+you need to tell a packaging bug from a cross-build one.
 
 ## Prerequisites
 
@@ -24,8 +30,8 @@ correct-arch Ant/IPFS binaries.
   `/Applications/UTM.app/Contents/MacOS/utmctl`.
 - The VM's **QEMU guest agent** must be running (it ships with UTM's Windows
   guest tools). All automation below goes through it.
-- Node.js + npm + git installed inside the guest. Verify with the probe in the
-  cheat sheet below.
+- Native ARM64 Node.js + npm + git installed inside the guest. Verify with the
+  probe in the cheat sheet below.
 
 ### Obtaining the Windows VM
 
@@ -117,10 +123,42 @@ A UTM Windows VM on Apple Silicon is **Windows on ARM (arm64)**. Two traps:
   ```
 
   Expect `win32arm64` → build `--arm64`.
-- `better-sqlite3` has a prebuilt **win-arm64 Electron** binary, so `npm ci`'s
-  `electron-builder install-app-deps` finishes without needing Visual Studio
-  Build Tools (`buildFromSource=false`). If you ever target an arch with no
-  prebuild, you must install MSVC + Python in the guest first.
+
+- Since v13, `better-sqlite3` ships Node-API prebuilds for every supported target
+  _inside its own tarball_ (`node_modules/better-sqlite3/prebuilds/win32-arm64.node`
+  and friends) rather than downloading an Electron-version-specific binary. On its
+  own that is not enough to keep node-gyp out of `npm ci`: `@electron/rebuild`
+  classifies the package by its leftover `binding.gyp` and would run a node-gyp
+  configure that compiles nothing but still fetches Electron headers and invokes
+  `find-visualstudio`. `postinstall` therefore runs
+  `node scripts/better-sqlite3-prebuilds.js` _before_ the
+  `electron-builder install-app-deps` step, deleting that stale `binding.gyp` —
+  which is what actually lets `npm ci` finish without Visual Studio Build Tools and
+  without a network fetch for this module.
+
+  Note the prune is **unconditional in practice**: its guard is package-wide
+  (`prebuilds.length === 0`) because `postinstall` runs long before any build
+  target is known, and v13 always ships eight prebuilds — so `binding.gyp` is
+  always removed, and there is no per-target source-build fallback left. All six
+  targets we package (`{darwin,linux,win32}-{x64,arm64}`) do have a prebuild, and
+  `scripts/better-sqlite3-prebuilds.test.js` guards that; targeting an arch
+  without one would produce an app with no addon that throws at startup, so
+  `scripts/build.js` checks the target's prebuild before packaging and fails
+  loudly (`Error: better-sqlite3 ships no prebuilt addon for this target`)
+  instead. To build such a target, use the source-build escape hatch — note
+  `npm rebuild better-sqlite3` does **not** bring `binding.gyp` back (it only
+  re-runs lifecycle scripts; only an install that re-extracts the package
+  restores the file, and that immediately re-prunes it). Instead set
+  `FREEDOM_BS3_SOURCE_BUILD=1` for both the install and the build, which skips
+  the prune and the per-target guard:
+
+  ```
+  set FREEDOM_BS3_SOURCE_BUILD=1 && npm ci
+  set FREEDOM_BS3_SOURCE_BUILD=1 && npm run build -- --win --x64
+  ```
+
+  That path needs the node-gyp toolchain in the guest: Python and MSVC (Visual
+  Studio Build Tools) — the very prerequisites the prune otherwise removes.
 
 ## End-to-end build
 
@@ -134,12 +172,14 @@ All commands run via the `cmd.exe /c '… > log 2>&1'` + poll pattern from above
 
    Confirm `git -C C:\freedom-build\repo log --oneline -1` is the commit you expect.
 
-2. **Provide the Windows binaries.** `npm run check-binaries -- --win --arm64`
-   requires `ant-bin/win-arm64/antd.exe` and
-   `native/freedom-ipfs-node/prebuilds/win-arm64/freedom_ipfs_native.node`
-   (Radicle is intentionally skipped on Windows — see `scripts/check-binaries.js`).
+2. **Provide the Windows ARM64 binaries.**
+   `npm run check-binaries -- --win --arm64` requires
+   `ant-bin/win-arm64/antd.exe`,
+   `native/freedom-ipfs-node/prebuilds/win-arm64/freedom_ipfs_native.node`, and
+   `radicle-bin/win-arm64/libradicle.node`. Stage the Radicle addon with
+   `npm run radicle:download -- --win --arm64`.
    The Ant fetch needs auth, so the reliable path is to **push the local
-   binaries/addons** rather than download them in the guest:
+   Ant/IPFS binaries** rather than download them in the guest:
 
    ```
    "$UTMCTL" exec "<VM>" --cmd 'C:\Windows\System32\cmd.exe' '/c' 'mkdir C:\freedom-build\repo\ant-bin\win-arm64 2>nul & mkdir C:\freedom-build\repo\native\freedom-ipfs-node\prebuilds\win-arm64 2>nul'
@@ -156,8 +196,16 @@ All commands run via the `cmd.exe /c '… > log 2>&1'` + poll pattern from above
    cd /d C:\freedom-build\repo & npm ci
    ```
 
-   Success looks like `• finished moduleName=better-sqlite3 arch=arm64` and
-   `added N packages`.
+   Success looks like `added N packages`. Under v13 `better-sqlite3` no longer
+   appears in the `install-app-deps` module list at all — `postinstall` prunes its
+   `binding.gyp` first, so `@electron/rebuild` skips it and the prebuilt
+   `win32-arm64.node` is used as shipped. A `• preparing moduleName=better-sqlite3`
+   line means the prune did not run.
+
+   Other native dependencies are still rebuilt here and are unrelated to
+   `better-sqlite3`: `keccak` (via `@ledgerhq/hw-app-eth`) publishes prebuilds only
+   for `darwin-x64`/`linux-x64`/`win32-x64`, so on Windows-on-ARM it is compiled
+   from source and does need MSVC + Python in the guest.
 
 4. **Build the distributable:**
 
@@ -185,7 +233,8 @@ All commands run via the `cmd.exe /c '… > log 2>&1'` + poll pattern from above
 
 - The build is **unsigned**, so Windows SmartScreen/Defender shows
   "Windows protected your PC" → **More info → Run anyway**.
-- It is an **arm64** build; the bundled Ant/IPFS are the arm64 binaries.
+- It is an **arm64** build; the bundled Ant/IPFS/Radicle addons are the ARM64
+  variants (Ant may use the repository's x64-emulation fallback).
 - For issue-#90-class checks: onboarding → create a new wallet → "Setting up node
   identities" should complete without a "node data still in use" error.
 

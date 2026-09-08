@@ -2,8 +2,9 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { app } = require('electron');
 const { ethers } = require('ethers');
-const Colibri = require('@corpus-core/colibri-stateless').default;
-const { Strategy } = require('@corpus-core/colibri-stateless');
+// Never require the package directly — colibri-runtime pins the WASM runtime
+// (see the comment there; the 2.0.5+ native addon crashes Electron).
+const { Colibri, Strategy } = require('./colibri-runtime');
 const log = require('../logger');
 const registry = require('../networks/network-registry');
 const { universalResolverCall, universalResolverReverse, hostOf } = require('../ens-resolver');

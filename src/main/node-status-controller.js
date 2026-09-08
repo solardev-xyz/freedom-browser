@@ -9,7 +9,7 @@ const SAFE_MYOTIS_STATES = new Set([
   'ready',
   'error',
 ]);
-const SAFE_MODES = new Set(['bundled', 'reused', 'external', 'disabled', 'none']);
+const SAFE_MODES = new Set(['bundled', 'embedded', 'reused', 'external', 'disabled', 'none']);
 
 const NODE_DEFINITIONS = Object.freeze([
   Object.freeze({
@@ -162,8 +162,7 @@ class NodeStatusController {
       normalizeManagerNode(
         NODE_DEFINITIONS[2],
         radicle,
-        modeFor('radicle'),
-        settings?.enableRadicleIntegration === true
+        modeFor('radicle')
       ),
       normalizeManagerNode(
         NODE_DEFINITIONS[3],

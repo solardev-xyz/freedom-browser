@@ -21,13 +21,18 @@
  *   npm run build -- --mac --arm64 --unsigned --verbose
  *   npm run dist -- --mac --no-notarize
  *   npm run dist -- --linux --x64
+ *   npm run dist -- --win --x64
  *   npm run dist -- --win --arm64
  */
 
 const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const { isHostNativeBinary } = require('./native-binary-arch');
+const {
+  SOURCE_BUILD_ENV,
+  pruneSourceBuildFallback,
+  assertTargetPrebuild,
+} = require('./better-sqlite3-prebuilds');
 
 const args = process.argv.slice(2);
 
@@ -118,67 +123,52 @@ const cmd = useDotenv
   ? `dotenv -- electron-builder ${builderArgs.join(' ')}`
   : `electron-builder ${builderArgs.join(' ')}`;
 
-// 5. Protect the host-built better-sqlite3 binary during cross-platform builds.
-// electron-builder rebuilds native deps in node_modules for the TARGET platform,
-// which replaces the host binary (e.g. with a Windows DLL after `--win`) and
-// silently breaks history/favicons in local dev until a manual rebuild.
-const BS3_BINARY = path.join(
-  __dirname,
-  '..',
-  'node_modules',
-  'better-sqlite3',
-  'build',
-  'Release',
-  'better_sqlite3.node'
-);
-
-// isHostNativeBinary (see ./native-binary-arch.js) parses the real CPU
-// architecture from the binary headers — not just the file format — so a
-// same-platform cross-arch build (e.g. `--mac --x64` on an arm64 mac) is
-// also detected and restored.
-
-const hostPlatform = { darwin: 'mac', win32: 'win', linux: 'linux' }[process.platform];
-const crossBuild = platform !== hostPlatform || archs.some((a) => a !== process.arch);
-
-let bs3Snapshot = null;
-if (crossBuild && fs.existsSync(BS3_BINARY)) {
-  const current = fs.readFileSync(BS3_BINARY);
-  if (isHostNativeBinary(current)) {
-    bs3Snapshot = current;
-  }
+// 5. Keep better-sqlite3 out of the @electron/rebuild pass.
+// Since v13 it ships a prebuilt addon for every supported platform/arch in
+// node_modules/better-sqlite3/prebuilds/ (darwin/linux/linuxmusl/win32 x
+// x64/arm64) and the loader picks the one matching the *running* process, so
+// no rebuild is wanted — but its leftover binding.gyp makes @electron/rebuild
+// treat it as a node-gyp module, which cannot cross-compile. `postinstall`
+// already prunes that file, so this is normally a silent no-op; repeat it here
+// so a build still works after an install that skipped `postinstall`
+// (`npm ci --ignore-scripts`) or a manual restore of the file. Note `npm
+// rebuild better-sqlite3` does *not* restore it — it re-runs lifecycle scripts
+// and never re-extracts the tarball. See scripts/better-sqlite3-prebuilds.js.
+// No host-binary protection is needed either: a cross-build never overwrites a
+// host-specific build/Release/better_sqlite3.node — that file is not produced
+// at all — so local dev keeps working after `--win`/`--linux` builds.
+//
+// The prune's own guard is package-wide (it runs at install time, before any
+// target is known), so check the *target's* prebuild here: with binding.gyp
+// gone @electron/rebuild skips the module entirely, and a missing prebuild
+// would ship an app with no addon that throws at startup.
+// `FREEDOM_BS3_SOURCE_BUILD=1` opts out of both halves (guard and prune) so
+// @electron/rebuild source-builds the addon for a target with no prebuild.
+const { missing, overridden: sourceBuild } = assertTargetPrebuild({ platform, archs });
+if (sourceBuild) {
+  console.log(
+    `\n→ ${SOURCE_BUILD_ENV} is set: skipping better-sqlite3's prebuild check and binding.gyp ` +
+      `prune; @electron/rebuild will build it from source (needs Python + a C++ compiler).\n`
+  );
+} else if (missing.length > 0) {
+  console.error(
+    `Error: better-sqlite3 ships no prebuilt addon for this target (missing ${missing.join(', ')} ` +
+      `in node_modules/better-sqlite3/prebuilds/). Packaging would produce an app that throws at ` +
+      `startup. Add the target upstream, or build better-sqlite3 from source on the target ` +
+      `platform. \`npm rebuild better-sqlite3\` does NOT restore the pruned binding.gyp (it only ` +
+      `re-runs lifecycle scripts, it never re-extracts the package); the supported source-build ` +
+      `path is:\n` +
+      `  ${SOURCE_BUILD_ENV}=1 npm ci            # re-extracts better-sqlite3 with the prune skipped\n` +
+      `  ${SOURCE_BUILD_ENV}=1 npm run build -- ${args.join(' ') || '<target>'}\n` +
+      `which requires the node-gyp toolchain (Python + a C++ compiler; MSVC on Windows).`
+  );
+  process.exit(1);
 }
 
-function restoreHostNativeDeps() {
-  if (!crossBuild) return;
-  const afterBuild = fs.existsSync(BS3_BINARY) ? fs.readFileSync(BS3_BINARY) : null;
-  if (isHostNativeBinary(afterBuild)) return;
-  if (bs3Snapshot) {
-    // try/catch so a failed write-back (e.g. build/Release wiped by a failed
-    // cross-build) can't mask the original build error thrown past the finally.
-    try {
-      fs.writeFileSync(BS3_BINARY, bs3Snapshot);
-      console.log('\n→ Restored host better-sqlite3 binary (was replaced by cross-build)\n');
-      return;
-    } catch (err) {
-      console.error(`Warning: could not write back the snapshotted binary (${err.message})`);
-    }
-  }
-  console.log('\n→ Rebuilding native deps for the host platform\n');
-  try {
-    // Same command as our postinstall; electron-builder is a declared devDependency.
-    execSync('npx electron-builder install-app-deps', { stdio: 'inherit' });
-  } catch {
-    console.error(
-      '\nERROR: could not restore host better-sqlite3 binary after cross-build. ' +
-        'Local dev is broken until you run `npx electron-builder install-app-deps`.\n'
-    );
-    process.exitCode = 1;
-  }
-}
+const { removed } = pruneSourceBuildFallback();
+if (removed)
+  console.log("\n→ Pruned better-sqlite3's unused binding.gyp (prebuilt addons in use)\n");
 
+// 6. Run the build.
 console.log(`\n→ Running: ${cmd}\n`);
-try {
-  execSync(cmd, { stdio: 'inherit', env });
-} finally {
-  restoreHostNativeDeps();
-}
+execSync(cmd, { stdio: 'inherit', env });

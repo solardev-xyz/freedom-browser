@@ -4,11 +4,15 @@ const { promisify } = require('util');
 const path = require('path');
 const fs = require('fs');
 const https = require('https');
-const http = require('http');
 const IPC = require('../shared/ipc-channels');
 const { success, failure, validateNonEmptyString } = require('./ipc-contract');
-const { getRadicleBinaryPath, getRadicleDataPath, getActivePort } = require('./radicle-manager');
-const { loadSettings } = require('./settings-store');
+const {
+  getRadicleDataPath,
+  getCurrentStatus,
+  isDisabledForProfile,
+  STATUS,
+} = require('./radicle-manager');
+const embedded = require('./radicle-embedded');
 const { createProfileTempDir } = require('./profile-paths');
 
 const execFileAsync = promisify(execFile);
@@ -85,162 +89,6 @@ function lookupBridge(owner, repo) {
   if (!validateNonEmptyString(owner) || !validateNonEmptyString(repo)) return null;
   loadBridgeMap();
   return bridgeMapCache.get(toBridgeRepoKey(owner, repo)) || null;
-}
-
-function fetchLocalRepos(port) {
-  return new Promise((resolve) => {
-    const req = http.get(`http://127.0.0.1:${port}/api/v1/repos?show=all`, { timeout: 3000 }, (res) => {
-      if (res.statusCode !== 200) {
-        res.resume();
-        resolve([]);
-        return;
-      }
-      let raw = '';
-      res.on('data', (chunk) => { raw += chunk; });
-      res.on('end', () => {
-        try {
-          const repos = JSON.parse(raw);
-          resolve(Array.isArray(repos) ? repos : []);
-        } catch {
-          resolve([]);
-        }
-      });
-    });
-
-    req.on('error', () => resolve([]));
-    req.on('timeout', () => {
-      req.destroy();
-      resolve([]);
-    });
-  });
-}
-
-function fetchLocalRepoRemotes(port, rid) {
-  return new Promise((resolve) => {
-    const req = http.get(
-      `http://127.0.0.1:${port}/api/v1/repos/rad:${rid}/remotes`,
-      { timeout: 3000 },
-      (res) => {
-        if (res.statusCode !== 200) {
-          res.resume();
-          resolve([]);
-          return;
-        }
-        let raw = '';
-        res.on('data', (chunk) => { raw += chunk; });
-        res.on('end', () => {
-          try {
-            const remotes = JSON.parse(raw);
-            resolve(Array.isArray(remotes) ? remotes : []);
-          } catch {
-            resolve([]);
-          }
-        });
-      }
-    );
-
-    req.on('error', () => resolve([]));
-    req.on('timeout', () => {
-      req.destroy();
-      resolve([]);
-    });
-  });
-}
-
-function fetchGitHubRepoInfo(owner, repo) {
-  return new Promise((resolve) => {
-    const req = https.get(
-      `https://api.github.com/repos/${owner}/${repo}`,
-      { headers: { 'User-Agent': 'Freedom-Browser' }, timeout: 5000 },
-      (res) => {
-        if (res.statusCode !== 200) {
-          res.resume();
-          resolve(null);
-          return;
-        }
-        let data = '';
-        res.on('data', (chunk) => { data += chunk; });
-        res.on('end', () => {
-          try {
-            resolve(JSON.parse(data));
-          } catch {
-            resolve(null);
-          }
-        });
-      }
-    );
-
-    req.on('error', () => resolve(null));
-    req.on('timeout', () => {
-      req.destroy();
-      resolve(null);
-    });
-  });
-}
-
-function fetchGitHubHeadSha(owner, repo, branch) {
-  return new Promise((resolve) => {
-    const req = https.get(
-      `https://api.github.com/repos/${owner}/${repo}/commits/${encodeURIComponent(branch)}`,
-      { headers: { 'User-Agent': 'Freedom-Browser' }, timeout: 5000 },
-      (res) => {
-        if (res.statusCode !== 200) {
-          res.resume();
-          resolve(null);
-          return;
-        }
-        let data = '';
-        res.on('data', (chunk) => { data += chunk; });
-        res.on('end', () => {
-          try {
-            const parsed = JSON.parse(data);
-            resolve(typeof parsed?.sha === 'string' ? parsed.sha : null);
-          } catch {
-            resolve(null);
-          }
-        });
-      }
-    );
-
-    req.on('error', () => resolve(null));
-    req.on('timeout', () => {
-      req.destroy();
-      resolve(null);
-    });
-  });
-}
-
-async function findLegacyBridgeByHeadMatch(port, owner, repo, repos) {
-  const ghRepo = await fetchGitHubRepoInfo(owner, repo);
-  const defaultBranch = ghRepo?.default_branch;
-  if (!validateNonEmptyString(defaultBranch)) return null;
-
-  const githubHeadSha = await fetchGitHubHeadSha(owner, repo, defaultBranch);
-  if (!validateNonEmptyString(githubHeadSha)) return null;
-
-  const targetName = repo.toLowerCase();
-  const exactNameCandidates = repos.filter((item) => {
-    const localName = (item?.payloads?.['xyz.radicle.project']?.data?.name || item?.name || '').toLowerCase();
-    return localName === targetName;
-  });
-  const candidates = exactNameCandidates.length > 0 ? exactNameCandidates : repos;
-
-  for (const candidate of candidates) {
-    const rid = normalizeRid(candidate?.rid || '');
-    if (!rid) continue;
-
-    const remotes = await fetchLocalRepoRemotes(port, rid);
-    const hasMatchingHead = remotes.some((remote) => {
-      const heads = remote?.heads || {};
-      return Object.values(heads).some((sha) => sha === githubHeadSha);
-    });
-
-    if (hasMatchingHead) {
-      return rid;
-    }
-  }
-
-  return null;
 }
 
 /**
@@ -331,28 +179,23 @@ async function checkGitAvailable() {
 }
 
 /**
- * Check if required Radicle bridge binaries are available.
+ * Check if the native Radicle bridge is ready.
  */
 function checkRadicleBridgeAvailable() {
-  const radPath = getRadicleBinaryPath('rad');
-  const gitRemoteRadPath = getRadicleBinaryPath('git-remote-rad');
-
-  if (!fs.existsSync(radPath)) {
+  if (!embedded.isAvailable()) {
     return {
       available: false,
-      code: 'RADICLE_CLI_MISSING',
-      error: 'Radicle CLI (rad) not found',
+      code: 'RADICLE_ADDON_MISSING',
+      error: 'Native Radicle addon not found',
     };
   }
-
-  if (!fs.existsSync(gitRemoteRadPath)) {
+  if (getCurrentStatus().status !== STATUS.RUNNING) {
     return {
       available: false,
-      code: 'GIT_REMOTE_RAD_MISSING',
-      error: 'Radicle Git bridge (git-remote-rad) not found',
+      code: 'RADICLE_NOT_RUNNING',
+      error: 'Radicle node is not running',
     };
   }
-
   return { available: true };
 }
 
@@ -430,15 +273,15 @@ async function checkExistingBridge(url) {
     return success({ bridged: true, rid: knownRid });
   }
 
-  // Best-effort detection for pre-map imports where the source URL was used
-  // in the fallback project description.
-  const port = getActivePort();
-  if (!port) return success({ bridged: false });
-
   const marker = `github.com/${parsed.owner}/${parsed.repo}`.toLowerCase();
-  const repos = await fetchLocalRepos(port);
+  let repos;
+  try {
+    repos = await embedded.listRepos();
+  } catch {
+    return success({ bridged: false });
+  }
   for (const repo of repos) {
-    const description = repo?.payloads?.['xyz.radicle.project']?.data?.description || '';
+    const description = repo?.description || '';
     if (description.toLowerCase().includes(marker)) {
       const rid = normalizeRid(repo?.rid || '');
       if (rid) {
@@ -446,12 +289,6 @@ async function checkExistingBridge(url) {
         return success({ bridged: true, rid });
       }
     }
-  }
-
-  const legacyRid = await findLegacyBridgeByHeadMatch(port, parsed.owner, parsed.repo, repos);
-  if (legacyRid) {
-    rememberBridge(parsed.owner, parsed.repo, legacyRid);
-    return success({ bridged: true, rid: legacyRid });
   }
 
   return success({ bridged: false });
@@ -471,13 +308,6 @@ function getFriendlyImportError(err, fallbackMessage) {
     return {
       code: 'NETWORK_UNAVAILABLE',
       message: 'Network unavailable. Please check your internet connection and try again.',
-    };
-  }
-
-  if (lower.includes('git-remote-rad') && lower.includes('not found')) {
-    return {
-      code: 'GIT_REMOTE_RAD_MISSING',
-      message: 'Radicle Git bridge (git-remote-rad) is not available.',
     };
   }
 
@@ -528,22 +358,9 @@ function fetchGitHubDescription(owner, repo) {
 }
 
 /**
- * Build environment object for rad / git-remote-rad commands.
- */
-function getRadicleEnv() {
-  const radBinDir = path.dirname(getRadicleBinaryPath('git-remote-rad'));
-  return {
-    ...process.env,
-    RAD_HOME: getRadicleDataPath(),
-    RAD_PASSPHRASE: '',
-    PATH: `${radBinDir}${path.delimiter}${process.env.PATH}`,
-  };
-}
-
-/**
  * Import a public GitHub repository into Radicle.
  *
- * Steps: validate → check git → clone → detect branch → rad init → git push rad
+ * Steps: validate → check git → clone → native Radicle import.
  * Progress events are sent to the caller via IPC.
  */
 async function importGitHubRepo(url, sender) {
@@ -569,7 +386,7 @@ async function importGitHubRepo(url, sender) {
       );
     }
 
-    // Step 2: Check CLI and network prerequisites
+    // Step 2: Check native Radicle and network prerequisites
     sendProgress({ step: 'checking-prereqs', message: 'Checking prerequisites...' });
     const prereqCheck = await checkImportPrerequisites();
     if (!prereqCheck.success) {
@@ -580,9 +397,6 @@ async function importGitHubRepo(url, sender) {
         { step: prereqCheck.step || prereqStep }
       );
     }
-
-    const radPath = getRadicleBinaryPath('rad');
-    const radicleEnv = getRadicleEnv();
 
     // Step 4: Clone
     sendProgress({ step: 'cloning', message: `Cloning ${validation.owner}/${validation.repo}...` });
@@ -609,58 +423,31 @@ async function importGitHubRepo(url, sender) {
     // Step 6: Fetch description from GitHub API (best-effort)
     const description = await fetchGitHubDescription(validation.owner, validation.repo);
 
-    // Step 7: rad init
+    // Step 7: import directly into the in-process Radicle storage.
     sendProgress({ step: 'initializing', message: 'Initializing Radicle project...' });
-    const initArgs = [
-      'init',
-      '--name', validation.repo,
-      '--description', description || `Imported from github.com/${validation.owner}/${validation.repo}`,
-      '--default-branch', defaultBranch,
-      '--public',
-      '--no-confirm',
-    ];
-
-    const { stdout: initOut, stderr: initErr } = await execFileAsync(
-      radPath, initArgs,
-      { cwd: repoDir, env: radicleEnv, timeout: 60000 }
+    const { rid } = await embedded.importRepo(
+      repoDir,
+      validation.repo,
+      description || `Imported from github.com/${validation.owner}/${validation.repo}`,
+      defaultBranch
     );
-
-    // Parse RID from output
-    const ridMatch = (initOut + initErr).match(/rad:z[a-zA-Z0-9]+/);
-    const rid = ridMatch ? ridMatch[0] : null;
-
-    if (!rid) {
-      console.warn('[GitHubBridge] Could not parse RID from rad init output:', initOut, initErr);
-    }
-
-    // Step 8: Push all branches
-    sendProgress({ step: 'pushing', message: 'Pushing to Radicle network...' });
-    await execFileAsync('git', ['push', 'rad', '--all'], {
-      cwd: repoDir,
-      env: radicleEnv,
-      timeout: 300000, // 5 minutes
-    });
-
-    // Step 9: Push tags (best-effort)
-    try {
-      await execFileAsync('git', ['push', 'rad', '--tags'], {
-        cwd: repoDir,
-        env: radicleEnv,
-        timeout: 120000, // 2 minutes
-      });
-    } catch (tagErr) {
-      console.warn('[GitHubBridge] Tag push failed (non-critical):', tagErr.message);
+    const normalizedRid =
+      typeof rid === 'string' && /^rad:z[1-9A-HJ-NP-Za-km-z]{20,60}$/.test(rid)
+        ? rid
+        : null;
+    if (!normalizedRid) {
+      throw new Error('Native Radicle import returned an invalid repository ID');
     }
 
     sendProgress({ step: 'success', message: 'Repository seeded successfully!' });
-    console.log(`[GitHubBridge] Success: ${validation.owner}/${validation.repo} -> ${rid}`);
-    if (rid) {
-      rememberBridge(validation.owner, validation.repo, rid);
-    }
+    console.log(
+      `[GitHubBridge] Success: ${validation.owner}/${validation.repo} -> ${normalizedRid}`
+    );
+    rememberBridge(validation.owner, validation.repo, normalizedRid);
 
     return {
       ...success(),
-      rid: rid ? rid.replace('rad:', '') : null,
+      rid: normalizedRid.slice(4),
       name: validation.repo,
       owner: validation.owner,
       description,
@@ -725,8 +512,8 @@ function cleanupTempDirs() {
 function registerGithubBridgeIpc() {
   console.log('[GitHubBridge] Registering IPC handlers');
   const radicleDisabledFailure = () =>
-    failure('RADICLE_DISABLED', 'Radicle integration is disabled. Enable it in Settings > Experimental');
-  const ensureRadicleEnabled = () => loadSettings().enableRadicleIntegration === true;
+    failure('RADICLE_DISABLED', 'Radicle is disabled for this profile');
+  const ensureRadicleEnabled = () => !isDisabledForProfile();
 
   ipcMain.handle(IPC.GITHUB_BRIDGE_IMPORT, async (event, url) => {
     if (!ensureRadicleEnabled()) {

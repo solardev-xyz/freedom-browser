@@ -2447,11 +2447,11 @@ async function readMyotisReverse(normalizedAddress) {
           trust: forwardOutcome.trust,
         };
       }
-    } catch (err) {
-      log.info(
-        `[${nameSystem.id}] myotis forward verification failed for ${nameForLog(normalizedAddress)}: ` +
-        `${err.message}`
-      );
+      } catch (err) {
+        log.info(
+          `[${nameSystem.id}] myotis forward verification failed for ${nameForLog(normalizedAddress)}: ` +
+          `${err.message}`
+        );
     }
 
     const invalid = unverifiedReverseResult(
@@ -2616,11 +2616,11 @@ async function resolveContractBackedReverseWithMethod(method, normalizedAddress,
           };
         }
       }
-    } catch (err) {
-      log.info(
-        `[${nameSystem.id}] ${method} forward verification failed for ${nameForLog(normalizedAddress)}: ` +
-        `${err.message}`
-      );
+      } catch (err) {
+        log.info(
+          `[${nameSystem.id}] ${method} forward verification failed for ${nameForLog(normalizedAddress)}: ` +
+          `${err.message}`
+        );
     }
 
     firstUnverified ||= unverifiedReverseResult(

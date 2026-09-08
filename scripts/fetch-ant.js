@@ -5,17 +5,18 @@ const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 
 // Fetches the Ant (`antd`) Swarm light node. Ant is a bee-compatible drop-in
-// published at solardev-xyz/ant; its release assets follow a bee-style os/arch
-// keyword scheme, which the per-target matcher below relies on. The binary
-// shipped is `antd` (not `bee`) and it installs into `ant-bin/<os>-<arch>/`.
+// published at freedom-hq/ant (formerly solardev-xyz/ant); its release assets
+// follow a bee-style os/arch keyword scheme, which the per-target matcher below
+// relies on. The binary shipped is `antd` (not `bee`) and it installs into
+// `ant-bin/<os>-<arch>/`.
 const OUTPUT_DIR = path.join(__dirname, '..', 'ant-bin');
-const ANT_REPO = process.env.ANT_REPO || 'solardev-xyz/ant';
+const ANT_REPO = process.env.ANT_REPO || 'freedom-hq/ant';
 // The known-good Ant release this app version is built and CI-tested against.
 // Bump deliberately (with a CI run) — do NOT float on `latest`, or releases
 // could ship a different Ant than CI validated. Override via ANT_RELEASE_TAG
 // for local testing of newer releases; set it to `latest` to resolve the
 // repo's most recent published release.
-const PINNED_RELEASE_TAG = 'v0.5.43';
+const PINNED_RELEASE_TAG = 'v0.5.44';
 // In-repo trust root for the pinned release: the sha256 of its SHA256SUMS
 // asset, recorded at pin time (trust-on-first-use by the author). The release
 // downloads its SHA256SUMS from the same GitHub release as the binaries, so
@@ -23,41 +24,88 @@ const PINNED_RELEASE_TAG = 'v0.5.43';
 // together. Verifying the sums file against a digest committed here makes
 // that tampering detectable. Update alongside PINNED_RELEASE_TAG on every
 // deliberate bump: `shasum -a 256` the freshly downloaded SHA256SUMS.
-const PINNED_SHA256SUMS_DIGEST =
-  'ba9d97564a0e8631371bf036bdb33e0a9c7986493a7dca2406907f30e9bb900d';
+const PINNED_SHA256SUMS_DIGEST = '8b29de81c31ec267ed53cdeb4eefb11e23b819f5c1abb76837060632986427ff';
 const ANT_RELEASE_TAG = process.env.ANT_RELEASE_TAG || PINNED_RELEASE_TAG;
 
-function fetchReleaseOnce() {
+const API_HOST = 'api.github.com';
+// GitHub answers an API request for a *renamed* repo with a 301 to the new
+// canonical location rather than serving it, so a fetch that treats anything
+// other than 200 as fatal turns an upstream rename into a hard CI failure
+// (solardev-xyz/ant → freedom-hq/ant broke every job that downloads antd).
+// Following redirects makes the next rename degrade to an extra hop.
+const REDIRECT_STATUS_CODES = [301, 302, 303, 307, 308];
+const MAX_REDIRECTS = 5;
+
+function releaseUrl() {
+  const releasePath =
+    ANT_RELEASE_TAG === 'latest'
+      ? `/repos/${ANT_REPO}/releases/latest`
+      : `/repos/${ANT_REPO}/releases/tags/${ANT_RELEASE_TAG}`;
+  return `https://${API_HOST}${releasePath}`;
+}
+
+function fetchReleaseOnce(url = releaseUrl(), redirectCount = 0) {
   return new Promise((resolve, reject) => {
     const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
     const headers = {
       'User-Agent': 'Freedom-Updater',
       Accept: 'application/vnd.github+json',
     };
-    if (token) {
+    // Only ever send the token to GitHub's own API host. A redirect can point
+    // anywhere, and forwarding Authorization off-host would leak CI's
+    // GITHUB_TOKEN to a third party.
+    if (token && new URL(url).host === API_HOST) {
       headers.Authorization = `Bearer ${token}`;
     }
 
-    const releasePath =
-      ANT_RELEASE_TAG === 'latest'
-        ? `/repos/${ANT_REPO}/releases/latest`
-        : `/repos/${ANT_REPO}/releases/tags/${ANT_RELEASE_TAG}`;
-
-    const options = {
-      hostname: 'api.github.com',
-      path: releasePath,
-      headers,
-    };
-
     https
-      .get(options, (res) => {
+      .get(url, { headers }, (res) => {
+        if (REDIRECT_STATUS_CODES.includes(res.statusCode)) {
+          // Drain the redirect body so the socket can be reused, and let the
+          // redirected request own completion from here.
+          res.resume();
+          if (redirectCount >= MAX_REDIRECTS) {
+            reject(new Error(`Too many redirects fetching release (${url})`));
+            return;
+          }
+          // Guard the missing header explicitly: `new URL(undefined, base)`
+          // resolves to `<base origin>/undefined` rather than throwing, which
+          // would send the next hop somewhere meaningless.
+          if (!res.headers.location) {
+            reject(new Error(`Redirect ${res.statusCode} with no Location header (${url})`));
+            return;
+          }
+          let location;
+          try {
+            location = new URL(res.headers.location, url);
+          } catch {
+            reject(
+              new Error(`Invalid redirect fetching release (${url}): ${res.headers.location}`)
+            );
+            return;
+          }
+          if (location.protocol !== 'https:') {
+            reject(new Error(`Refusing non-HTTPS redirect fetching release (${url})`));
+            return;
+          }
+          console.warn(
+            `Release fetch redirected to ${location.href} — upstream repo may have moved`
+          );
+          fetchReleaseOnce(location.href, redirectCount + 1).then(resolve, reject);
+          return;
+        }
         let data = '';
+        res.on('error', reject);
         res.on('data', (chunk) => (data += chunk));
         res.on('end', () => {
-          if (res.statusCode === 200) {
+          if (res.statusCode !== 200) {
+            reject(new Error(`Failed to fetch release (${url}): ${res.statusCode}`));
+            return;
+          }
+          try {
             resolve(JSON.parse(data));
-          } else {
-            reject(new Error(`Failed to fetch release (${releasePath}): ${res.statusCode}`));
+          } catch (err) {
+            reject(new Error(`Invalid JSON from release fetch (${url}): ${err.message}`));
           }
         });
       })
@@ -89,19 +137,48 @@ async function fetchRelease() {
 // timeout (a hung binary download can otherwise burn a whole e2e job).
 const REQUEST_TIMEOUT_MS = 60000;
 
-function downloadFileOnce(url, dest) {
+function downloadFileOnce(url, dest, redirectCount = 0) {
   return new Promise((resolve, reject) => {
     const file = fs.createWriteStream(dest);
+    let settled = false;
     const fail = (err) => {
+      if (settled) return;
+      settled = true;
       file.close();
       fs.unlink(dest, () => reject(err));
     };
     const req = https
       .get(url, { headers: { 'User-Agent': 'Freedom-Updater' } }, (response) => {
-        if (response.statusCode === 302 || response.statusCode === 301) {
+        response.on('error', fail);
+        if (REDIRECT_STATUS_CODES.includes(response.statusCode)) {
+          if (redirectCount >= MAX_REDIRECTS) {
+            fail(new Error(`Too many redirects while downloading ${url}`));
+            return;
+          }
+          if (!response.headers.location) {
+            fail(new Error(`Redirect ${response.statusCode} with no Location header for ${url}`));
+            return;
+          }
+          let location;
+          try {
+            location = new URL(response.headers.location, url);
+          } catch {
+            fail(new Error(`Invalid redirect while downloading ${url}`));
+            return;
+          }
+          if (location.protocol !== 'https:') {
+            fail(new Error(`Refusing non-HTTPS redirect while downloading ${url}`));
+            return;
+          }
+          // The redirected request owns completion from here. Ignore any late
+          // error emitted by the response we are deliberately draining.
+          settled = true;
+          response.resume();
           file.close();
           fs.unlink(dest, () => {
-            downloadFileOnce(response.headers.location, dest).then(resolve).catch(reject);
+            downloadFileOnce(location.href, dest, redirectCount + 1)
+              .then(resolve)
+              .catch(reject);
           });
           return;
         }
@@ -110,9 +187,13 @@ function downloadFileOnce(url, dest) {
           return;
         }
         response.pipe(file);
-        file.on('finish', () => {
-          file.close(resolve);
-        });
+        file.on('finish', () =>
+          file.close(() => {
+            if (settled) return;
+            settled = true;
+            resolve();
+          })
+        );
         file.on('error', fail);
       })
       .on('error', fail);
@@ -218,8 +299,7 @@ async function main() {
     for (const target of targets) {
       const asset = assets.find(
         (a) =>
-          a.name !== 'SHA256SUMS' &&
-          target.keywords.every((k) => a.name.toLowerCase().includes(k))
+          a.name !== 'SHA256SUMS' && target.keywords.every((k) => a.name.toLowerCase().includes(k))
       );
 
       if (!asset) {
@@ -245,22 +325,34 @@ async function main() {
       }
       const actual = sha256File(tempDest);
       if (actual !== expected) {
-        throw new Error(
-          `Checksum mismatch for ${asset.name}: expected ${expected}, got ${actual}`
-        );
+        throw new Error(`Checksum mismatch for ${asset.name}: expected ${expected}, got ${actual}`);
       }
       console.log(`Verified checksum for ${asset.name}`);
 
       // execFileSync with an args vector: the asset name is attacker-influenced
       // (the checksum above covers content, not filename) and must never reach
       // a shell.
+      //
+      // Archives are extracted with cwd = targetDir and a bare file name: on
+      // Windows the absolute path `D:\a\...` makes GNU tar (first on PATH in
+      // Git Bash) treat `D` as a remote host and fail. Windows also ships no
+      // `unzip`, so use its own bsdtar, which reads zip and tar.gz alike.
+      const isWindows = process.platform === 'win32';
+      const tarBin = isWindows
+        ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe')
+        : 'tar';
+      const extractOpts = { cwd: targetDir, stdio: 'inherit' };
       if (asset.name.endsWith('.tar.gz') || asset.name.endsWith('.tgz')) {
         console.log(`Extracting ${asset.name}...`);
-        execFileSync('tar', ['-xzf', tempDest, '-C', targetDir]);
+        execFileSync(tarBin, ['-xzf', path.basename(tempDest)], extractOpts);
         fs.unlinkSync(tempDest);
       } else if (asset.name.endsWith('.zip')) {
         console.log(`Extracting ${asset.name}...`);
-        execFileSync('unzip', ['-o', tempDest, '-d', targetDir]);
+        if (isWindows) {
+          execFileSync(tarBin, ['-xf', path.basename(tempDest)], extractOpts);
+        } else {
+          execFileSync('unzip', ['-o', path.basename(tempDest)], extractOpts);
+        }
         fs.unlinkSync(tempDest);
       } else {
         fs.renameSync(tempDest, destFile);
@@ -317,4 +409,9 @@ async function main() {
   }
 }
 
-main();
+if (require.main === module) {
+  main();
+}
+
+// Exported for unit tests; `npm run ant:download` still runs main() above.
+module.exports = { fetchReleaseOnce, releaseUrl, parseChecksums, ANT_REPO, PINNED_RELEASE_TAG };

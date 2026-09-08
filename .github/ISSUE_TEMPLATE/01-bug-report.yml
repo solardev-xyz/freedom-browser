@@ -1,0 +1,124 @@
+name: Bug report
+description: Report reproducible behavior that is not working as expected
+title: '[Bug]: '
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve Freedom. Do not include seed phrases, private keys, tokens, credentials, private URLs, or unredacted sensitive logs.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched the existing issues for this problem.
+          required: true
+        - label: I read the [contribution guidelines](https://github.com/solardev-xyz/freedom-browser/blob/main/CONTRIBUTING.md).
+          required: true
+
+  - type: input
+    id: freedom-version
+    attributes:
+      label: Freedom version
+      description: Find this under Menu → About. For a source build, include the commit SHA.
+      placeholder: 0.8.0 or 0123abcd
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install-source
+    attributes:
+      label: Installation source
+      options:
+        - Official download (freedom.baby)
+        - GitHub release
+        - Built from source
+        - Other or unofficial package
+    validations:
+      required: true
+
+  - type: dropdown
+    id: operating-system
+    attributes:
+      label: Operating system
+      multiple: true
+      options:
+        - macOS
+        - Windows
+        - Ubuntu
+        - Other Linux
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: system-details
+    attributes:
+      label: System version and architecture
+      description: Include the OS version, CPU architecture, and Wayland or X11 on Linux.
+      placeholder: macOS 26.1 arm64; Windows 11 x64; Ubuntu 26.04 x64 Wayland
+    validations:
+      required: true
+
+  - type: textarea
+    id: target
+    attributes:
+      label: What were you trying to open or do?
+      description: Describe the feature, protocol, name, or sanitized content reference involved.
+      placeholder: I opened an ipfs:// URL from the address bar and…
+    validations:
+      required: true
+
+  - type: dropdown
+    id: node-mode
+    attributes:
+      label: Relevant node configuration
+      options:
+        - Default managed node
+        - External or system node
+        - Not applicable
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Give the smallest sequence that consistently demonstrates the problem.
+      placeholder: |
+        1. Open…
+        2. Enter…
+        3. Observe…
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include the exact visible error or failure mode.
+    validations:
+      required: true
+
+  - type: input
+    id: last-working-version
+    attributes:
+      label: Last known working version
+      description: Leave blank if this never worked or you do not know.
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Sanitized logs, screenshots, or other context
+      description: Remove credentials, keys, personal paths, private URLs, and other sensitive data before attaching anything.

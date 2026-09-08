@@ -18,6 +18,7 @@ const isBookmarkableUrl = (url) => {
     url.startsWith('bzz://') ||
     url.startsWith('ipfs://') ||
     url.startsWith('ipns://') ||
+    url.startsWith('web3://') ||
     url.startsWith('rad://') ||
     url.startsWith('ens://') ||
     url.startsWith('http://') ||

@@ -24,20 +24,6 @@ const DEFAULT_EXTERNAL_NODE_CANDIDATES = {
       },
     ],
   },
-  radicle: {
-    label: 'Radicle',
-    endpoints: ['http://127.0.0.1:8780'],
-    externalConfig: {
-      mode: 'external',
-      externalHttp: 'http://127.0.0.1:8780',
-    },
-    probes: [
-      {
-        url: 'http://127.0.0.1:8780/',
-        method: 'GET',
-      },
-    ],
-  },
   tor: {
     label: 'Tor',
     endpoints: ['SOCKS5 127.0.0.1:9150'],

@@ -4,7 +4,12 @@ import { closeMenus } from './menus.js';
 import { hideBookmarkContextMenu } from './bookmarks-ui.js';
 import { showMenuBackdrop, hideMenuBackdrop } from './menu-backdrop.js';
 import { setupWebviewContextMenu } from './page-context-menu.js';
-import { homeUrl, getInternalPageName, internalPages } from './page-urls.js';
+import {
+  homeUrl,
+  getInternalPageName,
+  getOnchainInterstitialTarget,
+  internalPages,
+} from './page-urls.js';
 import { getPrivatePartition, isPrivateWindow } from './private-mode.js';
 import { setupWebviewProvider, setActiveWebview } from './dapp-provider.js';
 import { setupSwarmProvider } from './swarm-provider.js';
@@ -17,6 +22,7 @@ import {
   showLinkStatus,
   setLinkStatusSide,
 } from './link-status.js';
+import { formatOnchainAppDisplayUrl } from './url-utils.js';
 
 const electronAPI = window.electronAPI;
 
@@ -158,12 +164,17 @@ let webviewPreloadPath = null;
 
 // Event handler references (set by navigation.js)
 let onWebviewEvent = null;
+let onOnchainProvenanceChange = null;
 let onLoadTarget = null;
 let onReload = null;
 let onHardReload = null;
 
 export const setWebviewEventHandler = (handler) => {
   onWebviewEvent = handler;
+};
+
+export const setOnchainProvenanceChangeHandler = (handler) => {
+  onOnchainProvenanceChange = handler;
 };
 
 export const setLoadTargetHandler = (handler) => {
@@ -276,8 +287,9 @@ export const isActiveTab = (tabId) =>
 
 /**
  * Get the committed display URL for a specific webview.
- * Reads from the tab's `committedDisplayUrl` — the last URL committed
- * by a `did-navigate` event for this tab's webview. Never falls back
+ * Reads from the tab's `committedDisplayUrl` — the user-facing identity of
+ * the last URL committed by a `did-navigate` event for this tab's webview.
+ * Never falls back
  * to the live address bar input or to `addressBarSnapshot`, which is
  * transient draft/restoration state (overwritten on `focusin` and on
  * `tab-switched`, so it can carry unsubmitted typed-but-not-yet-loaded
@@ -321,16 +333,15 @@ const createNavigationState = () => ({
   // names). Reload and other commit-keyed decisions must NOT key on it; use
   // `committedDisplayUrl` instead.
   addressBarSnapshot: '',
-  // `committedDisplayUrl` is the URL Chromium committed for this tab's
-  // last navigation (`webview.getURL()` at did-navigate time, including
-  // any view-source: prefix). It's written only by tabs.js' per-webview
-  // did-navigate handler — never by focusin, tab-switched, or
-  // setAddressDisplayForTab — so it stays a stable identity for the
-  // active page even while the user is mid-typing or while a slow
-  // navigation is in flight. Reload reads this to decide whether the
-  // current page is ENS-backed, and `getDisplayUrlForWebview` returns
-  // it so provider permission keys never see unsubmitted drafts or
-  // pending destinations.
+  // `committedDisplayUrl` is the user-facing identity of the URL Chromium
+  // committed for this tab's last navigation. For most schemes it equals
+  // `webview.getURL()`; onchain apps reverse-map their synthetic Chromium
+  // origin to the standard `web3://<contract>:<chainId>/` form. It's written
+  // only by tabs.js' per-webview did-navigate handler — never by focusin,
+  // tab-switched, or setAddressDisplayForTab — so it stays a stable identity
+  // for the active page even while the user is mid-typing or while a slow
+  // navigation is in flight. The actual navigation URL remains in `tab.url`
+  // and `currentPageUrl`.
   committedDisplayUrl: '',
   committedNavigationSequence: 0,
   cachedWebContentsId: null,
@@ -454,6 +465,37 @@ const isPrivateStartUrl = (url) =>
     typeof url === 'string' &&
     url.startsWith('file:') &&
     url.endsWith('/pages/private.html'));
+
+const refreshOnchainProvenance = async (tab, url) => {
+  if (!tab?.navigationState) return;
+  const sequence = tab.navigationState.committedNavigationSequence;
+  tab.onchainProvenance = null;
+  onOnchainProvenanceChange?.(tab.id);
+  if (!url.startsWith('web3://') || !electronAPI?.getOnchainAppProvenance) return;
+
+  let webContentsId;
+  try {
+    webContentsId = tab.webview.getWebContentsId();
+  } catch {
+    return;
+  }
+
+  try {
+    const provenance = await electronAPI.getOnchainAppProvenance(webContentsId, url);
+    const current = tabState.tabs.find((candidate) => candidate.id === tab.id);
+    if (
+      !current ||
+      current.navigationState?.committedNavigationSequence !== sequence ||
+      current.url !== url
+    ) {
+      return;
+    }
+    current.onchainProvenance = provenance || null;
+    onOnchainProvenanceChange?.(current.id);
+  } catch (err) {
+    pushDebug(`[Tabs] Onchain provenance lookup failed: ${err.message}`);
+  }
+};
 
 // Create a webview element
 const createWebview = (tabId, initialUrl) => {
@@ -594,6 +636,7 @@ const createWebview = (tabId, initialUrl) => {
         // Use webview.getURL() for full URL (includes view-source: prefix)
         // event.url doesn't include the view-source: prefix
         const webviewUrl = webview.getURL();
+        const previousUrl = tab.url;
         tab.url = webviewUrl;
         tab.hasCertError = false; // Reset cert error on new navigation
         // Track view-source state directly on tab for reliable detection in page-title-updated
@@ -608,9 +651,37 @@ const createWebview = (tabId, initialUrl) => {
         // loadURL runs; clobbering the previous commit there would lose
         // the actual page identity.
         if (tab.navigationState && event.url && event.url !== 'about:blank') {
-          tab.navigationState.committedDisplayUrl = webviewUrl;
+          const interstitialTarget = getOnchainInterstitialTarget(webviewUrl);
+          tab.navigationState.committedDisplayUrl =
+            formatOnchainAppDisplayUrl(interstitialTarget || webviewUrl) || webviewUrl;
           tab.navigationState.committedNavigationSequence += 1;
         }
+        // A committed main-frame navigation replaces the document, so the
+        // previous page's title must not survive it. Chromium fires
+        // `page-title-updated` only when the new document actually declares a
+        // title, so without this reset a titleless page — or one whose
+        // <title> arrives late — keeps showing the previous page's title, and
+        // the history entry written at did-stop-loading records it too. That
+        // is issue #236: the Swarm error page inherited "RPC servers
+        // disagreed" from the page visited before it. Clearing to the empty
+        // title renders as "New Tab", which is already what a titleless page
+        // loaded into a fresh tab shows. Same-URL commits (reload) keep their
+        // title so a reload doesn't flicker; view-source titles are owned by
+        // navigation.js and set right after this handler forwards the event.
+        if (
+          event.url &&
+          event.url !== 'about:blank' &&
+          webviewUrl !== previousUrl &&
+          !tab.isViewingSource &&
+          tab.title
+        ) {
+          tab.title = '';
+          renderTabs();
+          if (tabId === tabState.activeTabId) {
+            electronAPI?.setWindowTitle?.('');
+          }
+        }
+        void refreshOnchainProvenance(tab, webviewUrl);
         // Clear any stale favicon from the previous page when navigating to
         // an internal page — page-favicon-updated will paint one back in if
         // the page declares a <link rel="icon">.
@@ -1263,6 +1334,7 @@ export const createTab = (url = null) => {
     isMuted: false,
     webview,
     navigationState: createNavigationState(),
+    onchainProvenance: null,
   };
 
   tabState.tabs.push(tab);

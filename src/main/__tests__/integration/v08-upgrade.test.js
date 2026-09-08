@@ -380,7 +380,7 @@ describe('v0.8.0 upgrade path (end-to-end, in place)', () => {
 
   // A v0.7.x install kept its Radicle identity in a profile-local
   // radicle-data/. On upgrade the default profile is catalog-managed, so the
-  // Radicle home moves to the short, app-owned <appRoot>/R/<slot> (radicle-node
+  // Radicle home moves to the short, app-owned <appRoot>/R/<slot> (the runtime
   // canonicalizes RAD_HOME before binding its control.sock, which has a hard
   // sockaddr_un length limit). This exercises copyProfileRadicleDataIfNeeded on
   // the full upgrade path — the pre-upgrade identity must be carried across.

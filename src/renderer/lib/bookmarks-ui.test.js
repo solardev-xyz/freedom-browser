@@ -330,6 +330,15 @@ describe('bookmarks-ui', () => {
     ctx.elements.addressInput.value = 'file:///internal-page.html';
     await ctx.mod.updateBookmarkButtonVisibility();
     expect(ctx.elements.addBookmarkBtn.classList.contains('hidden')).toBe(true);
+
+    // Onchain apps are bookmarkable like every other native scheme — the
+    // address bar carries the standard `web3://<contract>:<chainId>` form,
+    // not the internal `.eip155-<chainId>` origin.
+    ctx.elements.addressInput.value = 'web3://0x00000095643CFfA7D9fae407a84dfCB6406456c6:1/';
+    await ctx.mod.updateBookmarkButtonVisibility();
+    expect(ctx.elements.addBookmarkBtn.classList.contains('hidden')).toBe(false);
+
+    consoleError.mockRestore();
   });
 
   test('opens the add bookmark modal and saves a new bookmark', async () => {

@@ -1,5 +1,18 @@
-import { applyEnsNamePreservation, deriveDisplayValue } from './url-utils.js';
-import { getInternalPageName, parseEnsInput } from './page-urls.js';
+import {
+  applyEnsNamePreservation,
+  deriveDisplayValue,
+  formatOnchainAppDisplayUrl,
+  parseOnchainAppUrl,
+} from './url-utils.js';
+import {
+  getInternalPageName,
+  getInterstitialDisplayName,
+  getOnchainInterstitialTarget,
+  isErrorPageUrl,
+  isInterstitialPageUrl,
+  isOnchainInterstitialPageUrl,
+  parseEnsInput,
+} from './page-urls.js';
 import { isDwebNameHost } from './origin-utils.js';
 
 // Extract the Ethereum name from an address bar value, or null if the value isn't
@@ -12,8 +25,34 @@ const extractEnsName = (normalizedValue) => parseEnsInput(normalizedValue)?.name
 // (non-name URLs, or names we haven't resolved this session). Otherwise
 // returns `{ level, name, trust }` so the shield can render and the popover
 // can fill in details.
-export const resolveTrustBadge = ({ value = '', ensTrustByName = new Map() } = {}) => {
+const onchainIdentity = (value) => {
+  const parsed = parseOnchainAppUrl(value);
+  if (!parsed) return null;
+  return { contract: parsed.address, chainId: parsed.chainId };
+};
+
+export const resolveTrustBadge = ({
+  value = '',
+  ensTrustByName = new Map(),
+  onchainProvenance = null,
+} = {}) => {
   const normalizedValue = value.toLowerCase();
+  const identity = onchainIdentity(normalizedValue);
+  if (
+    identity &&
+    onchainProvenance?.trust?.level &&
+    Number(onchainProvenance.chainId) === identity.chainId &&
+    onchainProvenance.contract?.toLowerCase() === identity.contract
+  ) {
+    const shortContract = `${identity.contract.slice(0, 12)}…${identity.contract.slice(-10)}`;
+    return {
+      kind: 'onchain',
+      level: onchainProvenance.trust.level,
+      name: `web3://${shortContract}`,
+      trust: onchainProvenance.trust,
+      provenance: onchainProvenance,
+    };
+  }
   const ensName = extractEnsName(normalizedValue);
   if (!ensName) return null;
   const trust = ensTrustByName.get(ensName);
@@ -49,6 +88,14 @@ export const getTrustStatusSentence = (statusKey, trust = {}) => {
     return `${nameSystemLabel(trust)} resolution not verified`;
   }
   return TRUST_STATUS_SENTENCE[statusKey] || null;
+};
+
+const getOnchainTrustStatusSentence = (level) => {
+  if (level === 'verified') return 'Onchain application retrieval verified';
+  if (level === 'user-configured') return 'Loaded with your configured RPC';
+  if (level === 'unverified') return 'Onchain application retrieval not verified';
+  if (level === 'conflict') return 'Verification failed: RPCs disagree';
+  return null;
 };
 
 // Long-form warning for a recipient name whose forward lookup completed
@@ -122,6 +169,26 @@ const buildContentRows = ({ uri = '', proto = '' } = {}) => {
   return contentRows;
 };
 
+const buildOnchainContentRows = (provenance) => [
+  {
+    label: 'Network',
+    display: provenance.network || `Chain ${provenance.chainId}`,
+    copy: '',
+  },
+  {
+    label: 'Contract',
+    display: provenance.contract,
+    copy: provenance.contract,
+    autoFit: provenance.contract,
+  },
+  {
+    label: 'HTML hash',
+    display: provenance.htmlHash,
+    copy: provenance.htmlHash,
+    autoFit: provenance.htmlHash,
+  },
+];
+
 // Pure helper that turns a `(trust, level, uri, proto)` tuple into the
 // data the popover renders: a status sentence and two ordered arrays of
 // row descriptors for the trust and content sections. Each row is
@@ -134,12 +201,18 @@ export const buildTrustRows = ({
   level = '',
   uri = '',
   proto = '',
+  onchainProvenance = null,
 } = {}) => {
   const method = trust.method;
   const isColibri = level === 'verified' && method === 'colibri';
   const isMyotis = method === 'myotis';
   const statusKey = isColibri ? 'verified-colibri' : level;
-  const status = getTrustStatusSentence(statusKey, trust);
+  const status = onchainProvenance
+    ? getOnchainTrustStatusSentence(level)
+    : getTrustStatusSentence(statusKey, trust);
+  const contentRows = () => onchainProvenance
+    ? buildOnchainContentRows(onchainProvenance)
+    : buildContentRows({ uri, proto });
 
   const agreed = Array.isArray(trust.agreed) ? trust.agreed : [];
   const queried = Array.isArray(trust.queried) ? trust.queried : [];
@@ -173,7 +246,7 @@ export const buildTrustRows = ({
       copy: '',
     });
     pushBlockRow();
-    return { status, trustRows, contentRows: buildContentRows({ uri, proto }) };
+    return { status, trustRows, contentRows: contentRows() };
   }
 
   if (isColibri) {
@@ -192,7 +265,7 @@ export const buildTrustRows = ({
         autoFit: trust.prover,
       });
     }
-    return { status, trustRows, contentRows: buildContentRows({ uri, proto }) };
+    return { status, trustRows, contentRows: contentRows() };
   }
 
   // RPC-backed methods use the same summary fields while keeping the status
@@ -269,13 +342,12 @@ export const buildTrustRows = ({
     });
   }
 
-  return { status, trustRows, contentRows: buildContentRows({ uri, proto }) };
+  return { status, trustRows, contentRows: contentRows() };
 };
 
 export const resolveProtocolIconType = ({
   value = '',
   ensProtocols = new Map(),
-  enableRadicleIntegration = false,
   currentPageSecure = false,
 } = {}) => {
   const normalizedValue = value.toLowerCase();
@@ -288,9 +360,8 @@ export const resolveProtocolIconType = ({
   if (normalizedValue.startsWith('bzz://')) return 'swarm';
   if (normalizedValue.startsWith('ipfs://')) return 'ipfs';
   if (normalizedValue.startsWith('ipns://')) return 'ipns';
-  if (normalizedValue.startsWith('rad://')) {
-    return enableRadicleIntegration ? 'radicle' : 'http';
-  }
+  if (normalizedValue.startsWith('web3://')) return 'onchain';
+  if (normalizedValue.startsWith('rad://')) return 'radicle';
   // Internal pages aren't network-served, but we still surface the
   // neutral globe (same icon `rad://` falls back to when its integration
   // is disabled) so the address bar always carries some leading mark
@@ -484,6 +555,37 @@ export const deriveSwitchedTabDisplay = ({
   }
 
   const strippedUrl = url.startsWith('view-source:') ? url.slice(12) : url;
+  // A tab parked on a name-resolution interstitial restores the blocked name
+  // (`lagged.tez`), never the interstitial's `file://` path — same rule the
+  // active-tab did-navigate handler applies, and on the same input: the test
+  // is against the committed URL itself, not the `view-source:` inner URL, so
+  // both surfaces agree on what counts as an interstitial. The name is empty
+  // only when the page was opened without its `name` param; an empty address
+  // bar is the fail-safe there, since the on-disk path must not be shown
+  // either. See #235.
+  if (isInterstitialPageUrl(url)) {
+    return getInterstitialDisplayName(url) || '';
+  }
+
+  // The onchain trust gate is the same kind of page, but carries the blocked
+  // app in `target=` instead of `name=`: restore the `web3://` app identity
+  // the active-tab did-navigate handler shows, never the gate's own `file://`
+  // URL — which additionally carries the single-use approval token. An
+  // unparseable/absent target falls back to an empty address bar rather than
+  // the on-disk path, same fail-safe as the name interstitials. See #235.
+  //
+  // Unlike the name interstitials above, the test runs on the *stripped* URL
+  // as well: `view-source:` of the gate is refused at dispatch, but if such a
+  // tab exists anyway (session restore, a pre-fix history entry) a switch
+  // back to it must not repaint the token into the address bar either — so
+  // that case fails safe to a blank address bar rather than
+  // `view-source:<gate URL>`.
+  if (isOnchainInterstitialPageUrl(strippedUrl)) {
+    if (strippedUrl !== url) return '';
+    const target = getOnchainInterstitialTarget(url);
+    return (target && formatOnchainAppDisplayUrl(target)) || '';
+  }
+
   // A tab parked on `pages/error.html?...&url=<original>` should restore the
   // friendly original target (e.g. `ipfs://vitalik.eth`), not the raw
   // `file://.../error.html?...` URL Chromium actually committed. Mirrors the
@@ -530,14 +632,14 @@ export const getBookmarkBarState = ({
   };
 };
 
-export const getOriginalUrlFromErrorPage = (url, errorUrlBase = '') => {
-  if (!url) {
-    return null;
-  }
-
-  const isErrorPage =
-    (errorUrlBase && url.startsWith(errorUrlBase)) || url.includes('/error.html?');
-  if (!isErrorPage) {
+// The friendly target an error page is standing in for, or null when `url`
+// isn't *our* error page. The chrome test is `isErrorPageUrl` (exact match on
+// the shell's own `pages/error.html`) rather than a `/error.html?` substring:
+// the `url` param is echoed straight into the address bar and the protocol
+// icon, so a remote `https://evil.test/error.html?url=bzz://vitalik.eth` would
+// otherwise get to pick both while rendering attacker HTML. See #235.
+export const getOriginalUrlFromErrorPage = (url) => {
+  if (!isErrorPageUrl(url)) {
     return null;
   }
 

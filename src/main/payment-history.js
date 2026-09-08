@@ -25,7 +25,13 @@ const DB_FILE = 'payment-history.sqlite';
 const LEGACY_JSON_FILE = 'x402-receipts.json';
 const MIGRATED_SUFFIX = '.migrated';
 
-const KINDS = Object.freeze({ X402: 'x402', WALLET_SEND: 'wallet-send', DAPP_SEND: 'dapp-send' });
+const KINDS = Object.freeze({
+  X402: 'x402',
+  WALLET_SEND: 'wallet-send',
+  DAPP_SEND: 'dapp-send',
+  SAFE_SEND: 'safe-send',
+  SAFE_DEPLOY: 'safe-deploy',
+});
 const STATUSES = Object.freeze({
   PENDING: 'pending',
   CONFIRMED: 'confirmed',

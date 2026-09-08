@@ -2,7 +2,6 @@ const { createDocument, createElement } = require('../../../test/helpers/fake-do
 
 const originalWindow = global.window;
 const originalDocument = global.document;
-const originalFetch = global.fetch;
 
 const flushMicrotasks = async () => {
   await Promise.resolve();
@@ -14,7 +13,6 @@ const loadRadicleModule = async (options = {}) => {
 
   const state = {
     antMenuOpen: options.antMenuOpen ?? false,
-    enableRadicleIntegration: options.enableRadicleIntegration ?? true,
     currentRadicleStatus: options.currentRadicleStatus || 'stopped',
     radicleVersionFetched: options.radicleVersionFetched ?? false,
     radicleVersionValue: options.radicleVersionValue || '',
@@ -28,7 +26,6 @@ const loadRadicleModule = async (options = {}) => {
       },
     },
   };
-  const buildRadicleUrl = jest.fn((endpoint) => `http://radicle.test${endpoint}`);
   const getDisplayMessage = jest.fn(() => {
     return state.registry.radicle.tempMessage || state.registry.radicle.statusMessage;
   });
@@ -74,7 +71,14 @@ const loadRadicleModule = async (options = {}) => {
             .mockResolvedValue({ available: options.binaryAvailable ?? true }),
           getConnections: jest
             .fn()
-            .mockResolvedValue(options.connectionsResult || { success: true, count: 5 }),
+            .mockResolvedValue(
+              options.connectionsResult || {
+                success: true,
+                count: 5,
+                reposCount: 7,
+                version: '0.4.0',
+              }
+            ),
           start: jest
             .fn()
             .mockResolvedValue(options.startResult || { status: 'running', error: null }),
@@ -92,21 +96,6 @@ const loadRadicleModule = async (options = {}) => {
   const setIntervalMock = jest.spyOn(global, 'setInterval').mockImplementation(() => intervalId++);
   const clearIntervalMock = jest.spyOn(global, 'clearInterval').mockImplementation(() => {});
 
-  global.fetch =
-    options.fetchImpl ||
-    jest.fn(async (url) => {
-      if (url.endsWith('/api/v1/stats')) {
-        return {
-          ok: true,
-          json: async () => ({ repos: { total: 7 } }),
-        };
-      }
-
-      return {
-        ok: true,
-        json: async () => ({ version: '1.2.3-buildhash' }),
-      };
-    });
   global.window = {
     radicle: radicleApi,
     addEventListener: jest.fn((event, handler) => {
@@ -117,7 +106,6 @@ const loadRadicleModule = async (options = {}) => {
 
   jest.doMock('./state.js', () => ({
     state,
-    buildRadicleUrl,
     getDisplayMessage,
   }));
   jest.doMock('./debug.js', () => debugMocks);
@@ -127,7 +115,6 @@ const loadRadicleModule = async (options = {}) => {
   return {
     mod,
     state,
-    buildRadicleUrl,
     getDisplayMessage,
     debugMocks,
     setIntervalMock,
@@ -154,48 +141,146 @@ describe('radicle-ui', () => {
   afterEach(() => {
     global.window = originalWindow;
     global.document = originalDocument;
-    global.fetch = originalFetch;
     jest.restoreAllMocks();
   });
 
-  test('starts and stops Radicle info polling and populates stats', async () => {
+  test('loads an initial Radicle snapshot and applies pushed info updates', async () => {
     const ctx = await loadRadicleModule({
       antMenuOpen: true,
-      enableRadicleIntegration: true,
       currentRadicleStatus: 'running',
       windowRadicle: true,
       statusResult: { status: 'running', error: null },
     });
 
     ctx.mod.initRadicleUi();
-    ctx.mod.startRadicleInfoPolling();
+    ctx.mod.startRadicleInfoUpdates();
     await flushMicrotasks();
     await flushMicrotasks();
     await flushMicrotasks();
 
     expect(ctx.radicleApi.getConnections).toHaveBeenCalled();
-    expect(ctx.buildRadicleUrl).toHaveBeenCalledWith('/api/v1/stats');
-    expect(ctx.buildRadicleUrl).toHaveBeenCalledWith('/');
     expect(ctx.elements.radicleInfoPanel.classList.contains('visible')).toBe(true);
     expect(ctx.elements.radiclePeersCount.textContent).toBe('5');
     expect(ctx.elements.radicleReposCount.textContent).toBe('7');
-    expect(ctx.elements.radicleVersionText.textContent).toBe('1.2.3');
+    expect(ctx.elements.radicleVersionText.textContent).toBe('libradicle v0.4.0');
     expect(ctx.state.radicleVersionFetched).toBe(true);
-    expect(ctx.setIntervalMock).toHaveBeenCalledWith(expect.any(Function), 2000);
+    expect(ctx.setIntervalMock).not.toHaveBeenCalled();
 
-    ctx.mod.stopRadicleInfoPolling();
+    ctx.getStatusHandler()({
+      status: 'running',
+      error: null,
+      info: { success: true, count: 8, reposCount: 9, version: '0.6.1' },
+    });
+    expect(ctx.elements.radiclePeersCount.textContent).toBe('8');
+    expect(ctx.elements.radicleReposCount.textContent).toBe('9');
+    expect(ctx.elements.radicleVersionText.textContent).toBe('libradicle v0.6.1');
 
-    expect(ctx.clearIntervalMock).toHaveBeenCalled();
+    ctx.mod.stopRadicleInfoUpdates();
+
+    expect(ctx.clearIntervalMock).not.toHaveBeenCalled();
     expect(ctx.elements.radicleInfoPanel.classList.contains('visible')).toBe(false);
     expect(ctx.elements.radiclePeersCount.textContent).toBe('0');
-    expect(ctx.elements.radicleReposCount.textContent).toBe('');
-    expect(ctx.elements.radicleVersionText.textContent).toBe('1.2.3');
+    // Counters share one empty state with the rest of the Nodes menu (#227).
+    expect(ctx.elements.radicleReposCount.textContent).toBe('0');
+    expect(ctx.elements.radicleVersionText.textContent).toBe('libradicle v0.6.1');
+  });
+
+  test('an unknown seeded-repository count renders 0, like the other counters', async () => {
+    const ctx = await loadRadicleModule({
+      antMenuOpen: true,
+      currentRadicleStatus: 'running',
+      windowRadicle: true,
+      statusResult: { status: 'running', error: null },
+    });
+
+    ctx.mod.initRadicleUi();
+    ctx.mod.startRadicleInfoUpdates();
+    await flushMicrotasks();
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    // reposCount absent (older/partial payload) — must not fall back to '--'
+    // while the sibling peers row shows a number.
+    ctx.getStatusHandler()({
+      status: 'running',
+      error: null,
+      info: { success: true, count: 3, version: '0.6.1' },
+    });
+    expect(ctx.elements.radiclePeersCount.textContent).toBe('3');
+    expect(ctx.elements.radicleReposCount.textContent).toBe('0');
+  });
+
+  test('an unknown connected-peer count renders 0, like the other counters', async () => {
+    const ctx = await loadRadicleModule({
+      antMenuOpen: true,
+      currentRadicleStatus: 'running',
+      windowRadicle: true,
+      statusResult: { status: 'running', error: null },
+    });
+
+    ctx.mod.initRadicleUi();
+    ctx.mod.startRadicleInfoUpdates();
+    await flushMicrotasks();
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    // The mirror of the case above: count absent from a successful payload
+    // must not render the literal 'undefined' while the sibling repos row
+    // shows a number.
+    ctx.getStatusHandler()({
+      status: 'running',
+      error: null,
+      info: { success: true, reposCount: 2, version: '0.6.1' },
+    });
+    expect(ctx.elements.radiclePeersCount.textContent).toBe('0');
+    expect(ctx.elements.radicleReposCount.textContent).toBe('2');
+
+    // A non-integer count (a string from an older/looser payload) is empty
+    // state too, not a coerced number.
+    ctx.getStatusHandler()({
+      status: 'running',
+      error: null,
+      info: { success: true, count: null, reposCount: 2, version: '0.6.1' },
+    });
+    expect(ctx.elements.radiclePeersCount.textContent).toBe('0');
+  });
+
+  test('an unreported version renders the menu-wide Unknown placeholder', async () => {
+    // #253: this row used to fall back to '--' while the sibling Swarm/IPFS
+    // rows fell back to a blank cell and Myotis to a bare product name.
+    const ctx = await loadRadicleModule({
+      antMenuOpen: true,
+      currentRadicleStatus: 'running',
+      windowRadicle: true,
+      statusResult: { status: 'running', error: null },
+      // The node is up but has not reported a version yet.
+      connectionsResult: { success: true, count: 1, reposCount: 1 },
+    });
+
+    ctx.mod.initRadicleUi();
+    ctx.mod.startRadicleInfoUpdates();
+    await flushMicrotasks();
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    ctx.getStatusHandler()({
+      status: 'running',
+      error: null,
+      info: { success: true, count: 1, reposCount: 1 },
+    });
+    expect(ctx.elements.radicleVersionText.textContent).toBe('Unknown');
+
+    ctx.getStatusHandler()({
+      status: 'running',
+      error: null,
+      info: { success: true, count: 1, reposCount: 1, version: '0.7.1' },
+    });
+    expect(ctx.elements.radicleVersionText.textContent).toBe('libradicle v0.7.1');
   });
 
   test('updates Radicle status lines, toggle state, and running transitions', async () => {
     const ctx = await loadRadicleModule({
       antMenuOpen: true,
-      enableRadicleIntegration: true,
       currentRadicleStatus: 'stopped',
       statusMessage: 'Radicle: Connected',
       windowRadicle: false,
@@ -208,14 +293,6 @@ describe('radicle-ui', () => {
     expect(ctx.elements.radicleStatusLabel.textContent).toBe('Radicle:');
     expect(ctx.elements.radicleStatusValue.textContent).toBe('Connected');
     expect(ctx.elements.radicleStatusRow.classList.contains('visible')).toBe(true);
-
-    ctx.state.registry.radicle.mode = 'reused';
-    ctx.mod.updateRadicleToggleState();
-    expect(ctx.elements.radicleToggleBtn.classList.contains('external')).toBe(true);
-
-    ctx.state.registry.radicle.mode = 'none';
-    ctx.mod.updateRadicleToggleState();
-    expect(ctx.elements.radicleToggleBtn.classList.contains('external')).toBe(false);
 
     ctx.mod.updateRadicleUi('starting');
     expect(ctx.elements.radicleToggleSwitch.classList.contains('running')).toBe(true);
@@ -230,47 +307,45 @@ describe('radicle-ui', () => {
     expect(ctx.debugMocks.pushDebug).toHaveBeenCalledWith('Radicle Error: offline');
 
     ctx.mod.updateRadicleUi('stopped');
-    expect(ctx.elements.radicleStatusRow.classList.contains('visible')).toBe(false);
+    expect(ctx.elements.radicleStatusRow.classList.contains('visible')).toBe(true);
   });
 
-  test('initializes Radicle controls and reacts to settings changes and toggle actions', async () => {
+  test('keeps Radicle visible and disables controls when the addon is unavailable', async () => {
     const ctx = await loadRadicleModule({
       antMenuOpen: true,
-      enableRadicleIntegration: false,
       currentRadicleStatus: 'stopped',
       binaryAvailable: false,
       statusResult: { status: 'stopped', error: null },
     });
 
-    ctx.radicleApi.checkBinary
-      .mockResolvedValueOnce({ available: false })
-      .mockResolvedValueOnce({ available: true });
+    ctx.mod.initRadicleUi();
+    await flushMicrotasks();
+
+    expect(ctx.elements.radicleNodesSection.classList.contains('hidden')).toBe(false);
+    expect(ctx.elements.radicleToggleBtn.classList.contains('disabled')).toBe(true);
+    expect(ctx.debugMocks.pushDebug).toHaveBeenCalledWith(
+      'libradicle addon not found - toggle disabled'
+    );
+    expect(ctx.radicleApi.onStatusUpdate).toHaveBeenCalledWith(expect.any(Function));
+    expect(ctx.radicleApi.getStatus).not.toHaveBeenCalled();
+    expect(ctx.setIntervalMock).not.toHaveBeenCalled();
+
+    ctx.elements.radicleToggleBtn.dispatch('click');
+    expect(ctx.radicleApi.start).not.toHaveBeenCalled();
+  });
+
+  test('starts and stops the first-class Radicle node from the Nodes menu', async () => {
+    const ctx = await loadRadicleModule({
+      antMenuOpen: true,
+      currentRadicleStatus: 'stopped',
+      binaryAvailable: true,
+      statusResult: { status: 'stopped', error: null },
+    });
 
     ctx.mod.initRadicleUi();
     await flushMicrotasks();
 
-    expect(ctx.elements.radicleNodesSection.classList.contains('hidden')).toBe(true);
-    expect(ctx.elements.radicleToggleBtn.classList.contains('disabled')).toBe(true);
-    expect(ctx.debugMocks.pushDebug).toHaveBeenCalledWith(
-      'Radicle binaries not found - toggle disabled'
-    );
-    expect(ctx.radicleApi.onStatusUpdate).toHaveBeenCalledWith(expect.any(Function));
-    expect(ctx.radicleApi.getStatus).toHaveBeenCalled();
-    expect(ctx.setIntervalMock).toHaveBeenCalledWith(expect.any(Function), 5000);
-
-    ctx.elements.radicleToggleBtn.dispatch('click');
-    expect(ctx.radicleApi.start).not.toHaveBeenCalled();
-
-    ctx.windowHandlers['settings:updated']({
-      detail: {
-        enableRadicleIntegration: true,
-      },
-    });
-    await flushMicrotasks();
-
-    expect(ctx.state.enableRadicleIntegration).toBe(true);
     expect(ctx.elements.radicleNodesSection.classList.contains('hidden')).toBe(false);
-    expect(ctx.radicleApi.checkBinary).toHaveBeenCalledTimes(2);
     expect(ctx.elements.radicleToggleBtn.classList.contains('disabled')).toBe(false);
 
     ctx.elements.radicleToggleBtn.dispatch('click');

@@ -2,7 +2,7 @@
 // offline against an isolated pre-baked node (see radicle-fixtures.js).
 //
 // Flow:
-//   1. Wait for the managed radicle-node + httpd to come up.
+//   1. Wait for the embedded native node to come up.
 //   2. Open canopy (production build, local static server) in a tab and
 //      browse the fixture repo — asserts the rad: protocol handler serves
 //      repo data to a web page (WP0 path).
@@ -10,15 +10,15 @@
 //   4. Open a new issue through canopy's UI → signing consent → assert the
 //      issue lands (read back through the rad: scheme).
 //
-// Prereqs: radicle binaries (npm run radicle:download) and a canopy build
+// Prereqs: the libradicle addon (npm run radicle:download) and a canopy build
 // (npm run build in ../canopy). Skips gracefully when either is missing.
 
 const {
   test,
   expect,
-  HAS_RADICLE_BINARIES,
+  HAS_RADICLE_ADDON,
   HAS_CANOPY_DIST,
-  RAD_BIN,
+  RADICLE_ADDON,
   CANOPY_DIST,
 } = require('../radicle-fixtures');
 
@@ -54,8 +54,8 @@ const navigate = async (window, url) => {
 
 test.describe('radicle provider e2e', () => {
   test.skip(
-    !HAS_RADICLE_BINARIES,
-    `Radicle E2E needs the rad binary at ${RAD_BIN}. Run \`npm run radicle:download\`.`
+    !HAS_RADICLE_ADDON,
+    `Radicle E2E needs the addon at ${RADICLE_ADDON}. Run \`npm run radicle:download\`.`
   );
   test.skip(
     !HAS_CANOPY_DIST,
@@ -66,7 +66,7 @@ test.describe('radicle provider e2e', () => {
     window,
     radicleEnv,
   }) => {
-    const { rid, canopyUrl } = radicleEnv;
+    const { rid, secondCommit, canopyUrl } = radicleEnv;
 
     // (1) Node up — poll the host-chrome radicle status API.
     await expect
@@ -77,8 +77,24 @@ test.describe('radicle provider e2e', () => {
       })
       .toBe('running');
 
+    // A valid direct rad: URL must reach the repository viewer even when the
+    // repo is unavailable; route readiness must never masquerade as RID
+    // validation failure.
+    const reportedRid = 'z4V1sjrXqjvFdnCUbxPFqd5p4DtH5';
+    await navigate(window, `rad://${reportedRid}`);
+    await waitForWebview(
+      window,
+      `(() => {
+        const invalid = document.querySelector('#invalid-rid-error');
+        const settled = document.querySelector('#error-state:not(.hidden)') ||
+          document.querySelector('#success-state:not(.hidden)');
+        return invalid?.classList.contains('hidden') && !!settled;
+      })()`,
+      'a structurally valid direct rad URL should not show Invalid Radicle ID'
+    );
+
     // (2) Open canopy at the fixture repo. Reads go fetch('rad:<rid>/…')
-    // through the protocol handler into the local httpd.
+    // through the protocol handler into native storage.
     await navigate(window, `${canopyUrl}/#/${rid}`);
     await waitForWebview(
       window,
@@ -89,6 +105,32 @@ test.describe('radicle provider e2e', () => {
       window,
       `[...document.querySelectorAll('td a')].some((a) => a.textContent.includes('README.md'))`,
       'file tree should list README.md'
+    );
+    await waitForWebview(
+      window,
+      `document.body.textContent.includes('2 commits') &&
+       document.body.textContent.includes('1 branch') &&
+       document.body.textContent.includes('1 contributor')`,
+      'canopy should render native repository stats'
+    );
+
+    // Native historical reads: list both fixture commits, then render the
+    // structured first-parent diff for the newest one.
+    await navigate(window, `${canopyUrl}/#/${rid}/commits`);
+    await waitForWebview(
+      window,
+      `document.body.textContent.includes('update fixture files') &&
+       document.body.textContent.includes('initial commit')`,
+      'commit history should render from native storage'
+    );
+    await navigate(window, `${canopyUrl}/#/${rid}/commits/${secondCommit}`);
+    await waitForWebview(
+      window,
+      `document.body.textContent.includes('update fixture files') &&
+       document.body.textContent.includes('2 files changed') &&
+       document.body.textContent.includes('README.md') &&
+       document.body.textContent.includes('new.txt')`,
+      'commit detail should render its structured native diff'
     );
 
     // (3) Connect. The button lives in canopy (webview); the consent modal
@@ -211,6 +253,19 @@ test.describe('radicle provider e2e', () => {
       window,
       `document.body.textContent.includes('No seeds for it are currently reachable')`,
       'zero reachable seeds should be called out specifically'
+    );
+    await waitForWebview(
+      window,
+      `window.radicle.listSeededRepos().then((repos) =>
+        repos.some((repo) => repo.rid === '${unknownRid}'))`,
+      'failed first fetch should remain visible as an active seeding policy'
+    );
+    await navigate(window, `${canopyUrl}/#/seeded`);
+    await waitForWebview(
+      window,
+      `document.body.textContent.includes('${unknownRid}') &&
+       document.body.textContent.includes('Awaiting first successful fetch')`,
+      'canopy should render policy-only repositories without missing metadata'
     );
   });
 });

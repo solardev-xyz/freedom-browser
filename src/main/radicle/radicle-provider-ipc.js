@@ -22,31 +22,34 @@
  *
  * Seeding is honest about replication: radicle_seed writes the policy and
  * kicks off a background fetch, returning immediately with an initial
- * status. Progress is polled via radicle_getSeedStatus; radicle_sync
- * restarts the fetch (the retry path). See seed-status.js.
+ * status. Progress is pushed through the provider's `seedStatus` event;
+ * radicle_getSeedStatus remains the snapshot/reload path, and radicle_sync
+ * restarts the fetch (the retry path) for repos that are already seeded —
+ * it can never start seeding a new one. See seed-status.js.
  */
 
-const { ipcMain } = require('electron');
+const { ipcMain, BrowserWindow } = require('electron');
 const log = require('../logger');
 const IPC = require('../../shared/ipc-channels');
-const { loadSettings } = require('../settings-store');
-const { getRadicleApiUrl } = require('../service-registry');
+const embedded = require('../radicle-embedded');
 const {
   getCurrentStatus,
   getConnections,
   seedRepository,
   unseedRepository,
   getSeedFetchStatus,
+  unsubscribeSeedStatus,
   refetchRepository,
   validateAndNormalizeRid,
   getNodeAlias,
   setNodeAlias,
+  isDisabledForProfile,
   STATUS,
 } = require('../radicle-manager');
 const cob = require('./cob-service');
 const permissions = require('./radicle-permissions');
 
-const SPEC_VERSION = '0.1';
+const SPEC_VERSION = '0.2';
 
 const ERRORS = {
   USER_REJECTED: { code: 4001, message: 'User rejected the request' },
@@ -63,7 +66,10 @@ function providerError(base, message, data) {
   return err;
 }
 
-// method -> required tier
+// method -> required grant this process checks. The node-tier per-repo
+// consent prompt for `radicle_seed`/`radicle_unseed` is the renderer's
+// (radicle-provider.js NODE_METHODS): both are recorded here as needing
+// the connection grant, and neither reaches main without its prompt.
 const METHOD_TIERS = {
   radicle_requestAccess: 'connection',
   radicle_getCapabilities: 'none',
@@ -82,6 +88,8 @@ const METHOD_TIERS = {
 };
 
 const KNOWN_METHODS = new Set(Object.keys(METHOD_TIERS));
+const PUSH_METHODS = new Set(['radicle_seed', 'radicle_sync', 'radicle_getSeedStatus']);
+const seedStatusBroadcasters = new Map();
 
 // Methods that report or change grant/node state rather than requiring a
 // running node — a dApp must be able to connect (and disconnect) while
@@ -92,16 +100,36 @@ const WORKS_WHILE_STOPPED = new Set([
   'radicle_disconnect',
 ]);
 
-function integrationEnabled() {
-  return loadSettings().enableRadicleIntegration === true;
-}
-
 function nodeRunning() {
   return getCurrentStatus().status === STATUS.RUNNING;
 }
 
+function getSeedStatusBroadcaster(origin) {
+  let broadcast = seedStatusBroadcasters.get(origin);
+  if (broadcast) return broadcast;
+  broadcast = (data) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.webContents.isDestroyed()) {
+        win.webContents.send(IPC.RADICLE_PROVIDER_EVENT, {
+          event: 'seedStatus',
+          origin,
+          data,
+        });
+      }
+    }
+  };
+  seedStatusBroadcasters.set(origin, broadcast);
+  return broadcast;
+}
+
+function removeSeedStatusBroadcaster(origin) {
+  const broadcast = seedStatusBroadcasters.get(origin);
+  if (broadcast) unsubscribeSeedStatus(broadcast);
+  seedStatusBroadcasters.delete(origin);
+}
+
 function unavailableReason(origin) {
-  if (!integrationEnabled()) return 'integration-disabled';
+  if (isDisabledForProfile()) return 'profile-disabled';
   if (!permissions.getPermission(origin)) return 'not-connected';
   const { status } = getCurrentStatus();
   if (status !== STATUS.RUNNING) {
@@ -147,25 +175,11 @@ async function handleGetNodeStatus(origin) {
 }
 
 async function handleListSeededRepos() {
-  // The local httpd's repo listing is the cheapest structured source.
-  const apiUrl = getRadicleApiUrl();
-  if (!apiUrl) throw providerError(ERRORS.UNAVAILABLE, 'Radicle node is not ready');
-  let res;
   try {
-    res = await fetch(`${apiUrl}/api/v1/repos?show=all&perPage=500`);
-  } catch {
-    throw providerError(ERRORS.UNAVAILABLE, 'Radicle httpd unreachable');
+    return await embedded.listSeededRepos();
+  } catch (err) {
+    throw providerError(ERRORS.INTERNAL, err.message || 'repo listing failed');
   }
-  if (!res.ok) throw providerError(ERRORS.INTERNAL, `repo listing failed (${res.status})`);
-  const repos = await res.json();
-  return repos.map((repo) => {
-    const project = repo?.payloads?.['xyz.radicle.project']?.data ?? {};
-    return {
-      rid: repo.rid,
-      name: project.name ?? repo.rid,
-      description: project.description ?? '',
-    };
-  });
 }
 
 function requireRidParam(params) {
@@ -178,9 +192,11 @@ function requireRidParam(params) {
   return fullRid;
 }
 
-async function handleSeed(origin, params) {
+async function handleSeed(origin, params, onSeedStatus) {
   const rid = requireRidParam(params);
-  const result = await seedRepository(rid);
+  const result = onSeedStatus
+    ? await seedRepository(rid, onSeedStatus)
+    : await seedRepository(rid);
   if (!result.success) {
     throw providerError(ERRORS.INTERNAL, result.error?.message || 'seed failed', {
       reason: 'seed_failed',
@@ -200,12 +216,23 @@ async function handleUnseed(origin, params) {
   return { rid, seeded: false };
 }
 
-async function handleSync(origin, params) {
+async function handleSync(origin, params, onSeedStatus) {
   const rid = requireRidParam(params);
   // Non-blocking: (re)start the background fetch and report where it
-  // stands. The dApp polls radicle_getSeedStatus for the outcome.
-  const result = refetchRepository(rid);
+  // stands. Subsequent transitions are emitted as `seedStatus` events.
+  const result = onSeedStatus
+    ? await refetchRepository(rid, onSeedStatus)
+    : await refetchRepository(rid);
   if (!result.success) {
+    // sync is the retry path for a repo the user already seeded; it must
+    // not become a second, promptless way to start seeding one (the
+    // native fetch writes the policy). radicle_seed — with its per-repo
+    // consent prompt — is the only way in.
+    if (result.error?.code === 'NOT_SEEDED') {
+      throw providerError(ERRORS.INVALID_PARAMS, result.error.message, {
+        reason: 'not_seeded',
+      });
+    }
     throw providerError(ERRORS.INTERNAL, result.error?.message || 'sync failed', {
       reason: 'sync_failed',
     });
@@ -213,9 +240,11 @@ async function handleSync(origin, params) {
   return { rid, status: result.status };
 }
 
-async function handleGetSeedStatus(origin, params) {
+async function handleGetSeedStatus(origin, params, onSeedStatus) {
   const rid = requireRidParam(params);
-  const result = getSeedFetchStatus(rid);
+  const result = onSeedStatus
+    ? await getSeedFetchStatus(rid, onSeedStatus)
+    : await getSeedFetchStatus(rid);
   if (!result.success) {
     throw providerError(ERRORS.INTERNAL, result.error?.message || 'status unavailable', {
       reason: 'status_failed',
@@ -249,16 +278,16 @@ async function handleCobWrite(fn, params) {
  * @param {object} params
  * @param {string} origin - display-URL-derived origin from the renderer
  */
-async function executeRadicleMethod(method, params = {}, origin) {
+async function executeRadicleMethod(method, params = {}, origin, { onSeedStatus } = {}) {
   if (!KNOWN_METHODS.has(method)) {
     throw providerError(ERRORS.UNSUPPORTED_METHOD, `Unknown method: ${method}`);
   }
   if (!origin || typeof origin !== 'string') {
     throw providerError(ERRORS.UNAUTHORIZED, 'Missing origin');
   }
-  if (!integrationEnabled()) {
-    throw providerError(ERRORS.UNAVAILABLE, 'Radicle integration is disabled', {
-      reason: 'integration-disabled',
+  if (isDisabledForProfile()) {
+    throw providerError(ERRORS.UNAVAILABLE, 'Radicle is disabled for this profile', {
+      reason: 'profile-disabled',
     });
   }
 
@@ -298,17 +327,18 @@ async function executeRadicleMethod(method, params = {}, origin) {
     case 'radicle_listSeededRepos':
       return handleListSeededRepos();
     case 'radicle_seed':
-      return handleSeed(origin, params);
+      return handleSeed(origin, params, onSeedStatus);
     case 'radicle_unseed':
       return handleUnseed(origin, params);
     case 'radicle_sync':
-      return handleSync(origin, params);
+      return handleSync(origin, params, onSeedStatus);
     case 'radicle_getSeedStatus':
-      return handleGetSeedStatus(origin, params);
+      return handleGetSeedStatus(origin, params, onSeedStatus);
     case 'radicle_disconnect':
       // An origin may relinquish its own grant (connection AND signing) —
       // the inverse of requestAccess, no consent needed.
       permissions.revokePermission(origin);
+      removeSeedStatusBroadcaster(origin);
       return { connected: false };
     case 'radicle_getIdentity':
       return handleCobWrite(() => cob.getIdentity(), params);
@@ -339,10 +369,15 @@ function registerRadicleProviderIpc() {
   });
 
   ipcMain.handle(IPC.RADICLE_PROVIDER_EXECUTE, async (_event, { method, params, origin } = {}) => {
+    const hadBroadcaster = seedStatusBroadcasters.has(origin);
+    const onSeedStatus = PUSH_METHODS.has(method)
+      ? getSeedStatusBroadcaster(origin)
+      : undefined;
     try {
-      const result = await executeRadicleMethod(method, params, origin);
+      const result = await executeRadicleMethod(method, params, origin, { onSeedStatus });
       return { result };
     } catch (err) {
+      if (onSeedStatus && !hadBroadcaster) removeSeedStatusBroadcaster(origin);
       if (err && typeof err.code === 'number') {
         return { error: err };
       }

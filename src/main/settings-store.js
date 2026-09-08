@@ -26,10 +26,10 @@ const RENAMED_KEYS = {
   beeNodeMode: 'antNodeMode',
   startBeeAtLaunch: 'startAntAtLaunch',
 };
+const REMOVED_KEYS = new Set(['enableRadicleIntegration']);
 
 const DEFAULT_SETTINGS = {
   theme: 'system',
-  enableRadicleIntegration: false,
   enableIdentityWallet: true,
   antNodeMode: 'ultraLight',
   startAntAtLaunch: true,
@@ -92,6 +92,26 @@ const DEFAULT_SETTINGS = {
 };
 
 let cachedSettings = null;
+
+// Shortcut remaps sanitizeOverrides had to revert because their chord is now
+// taken by another shortcut's default or fixed alias. Kept in memory (id →
+// { accelerator, conflictId, conflict }) so Settings > Shortcuts can tell
+// the user which remap went away instead of it just vanishing.
+let revertedShortcutOverrides = {};
+
+const getRevertedShortcutOverrides = () => revertedShortcutOverrides;
+
+// One notice per dropped remap, shared by the load and the save path so
+// neither can prune a binding silently: both write the same log line and
+// both feed getRevertedShortcutOverrides() → the Settings > Shortcuts row.
+function recordRevertedOverrides(target) {
+  return ({ id, accelerator, conflict }) => {
+    target[id] = { accelerator, conflictId: conflict.id, conflict: conflict.description };
+    log.warn(
+      `[shortcuts] Reverted remap ${id} → ${accelerator}: that combination is now used by "${conflict.description}".`
+    );
+  };
+}
 
 const SEARCH_TERMS_PLACEHOLDER = '{searchTerms}';
 const CUSTOM_SEARCH_PROVIDER_LIMIT = 50;
@@ -172,6 +192,16 @@ function migrateRenamedKeys(parsed) {
   return migrated;
 }
 
+function migrateRemovedKeys(parsed) {
+  let migrated = false;
+  for (const key of REMOVED_KEYS) {
+    if (!Object.prototype.hasOwnProperty.call(parsed, key)) continue;
+    delete parsed[key];
+    migrated = true;
+  }
+  return migrated;
+}
+
 function loadSettings() {
   if (cachedSettings) {
     return cachedSettings;
@@ -183,8 +213,9 @@ function loadSettings() {
       const data = fs.readFileSync(filePath, 'utf-8');
       const parsed = JSON.parse(data);
       const keysMigrated = migrateRenamedKeys(parsed);
+      const removedKeysMigrated = migrateRemovedKeys(parsed);
       const structuredSettingsChanged = normalizeStructuredSettings(parsed);
-      const settingsChanged = keysMigrated || structuredSettingsChanged;
+      const settingsChanged = keysMigrated || removedKeysMigrated || structuredSettingsChanged;
       if (settingsChanged) {
         try {
           fs.writeFileSync(filePath, JSON.stringify(parsed, null, 2), 'utf-8');
@@ -202,11 +233,19 @@ function loadSettings() {
   }
 
   // Defense against hand-edited or stale files: only registry-known,
-  // editable, valid shortcut remaps survive into the live settings.
+  // editable, valid, conflict-free shortcut remaps survive into the live
+  // settings. A remap recorded while its chord was free but since claimed
+  // by a new default or fixed alias is reverted here (it would otherwise
+  // fire alongside the new binding on a single press); the file itself is
+  // rewritten without it by the next settings save, which persists this
+  // sanitized map.
+  const reverted = {};
   cachedSettings.shortcutOverrides = sanitizeOverrides(
     cachedSettings.shortcutOverrides,
-    process.platform
+    process.platform,
+    { onDrop: recordRevertedOverrides(reverted) }
   );
+  revertedShortcutOverrides = reverted;
 
   // Apply theme to nativeTheme
   applyNativeTheme(cachedSettings.theme);
@@ -256,10 +295,29 @@ function saveSettings(newSettings) {
         if (!Object.prototype.hasOwnProperty.call(newSettings, key)) continue;
 
         if (key === 'shortcutOverrides') {
-          const sanitized = sanitizeOverrides(newSettings[key], process.platform);
-          if (JSON.stringify(sanitized) !== JSON.stringify(previous[key] || {})) {
+          // The conflict pass has to run here too, not just at load: this is
+          // the generic settings write (any internal page can hand it a whole
+          // overrides map), and Reset is the one interactive action that can
+          // *create* a conflict — restoring an entry's default may claim a
+          // chord a sibling was remapped onto, which setOverride never gets
+          // to check. Dropping it live is right; dropping it silently is not,
+          // so save-path drops go through the same notice as the load path.
+          const dropped = {};
+          const sanitized = sanitizeOverrides(newSettings[key], process.platform, {
+            onDrop: recordRevertedOverrides(dropped),
+          });
+          const overridesChanged =
+            JSON.stringify(sanitized) !== JSON.stringify(previous[key] || {});
+          if (overridesChanged) {
             merged[key] = sanitized;
             changed = true;
+          }
+          // The user has been in Settings > Shortcuts and rebound something —
+          // the older "we reverted your old remap" notices have been seen and
+          // acted on, so replace them with whatever this save itself dropped
+          // (usually nothing).
+          if (overridesChanged || Object.keys(dropped).length > 0) {
+            revertedShortcutOverrides = dropped;
           }
           continue;
         }
@@ -320,6 +378,21 @@ function registerSettingsIpc() {
   ipcMain.handle(IPC.SETTINGS_SAVE, (_event, newSettings) => {
     return saveSettings(newSettings);
   });
+
+  // Sync read for the sandboxed webview preload: internal pages need the
+  // Appearance theme at document-start, before their first paint, and cannot
+  // await the async SETTINGS_GET handler that early. Returns the raw setting
+  // ('system' | 'light' | 'dark'); the preload resolves 'system' against
+  // prefers-color-scheme, exactly as the page CSS used to.
+  ipcMain.on(IPC.GET_THEME, (event) => {
+    let theme = DEFAULT_SETTINGS.theme;
+    try {
+      theme = loadSettings().theme || DEFAULT_SETTINGS.theme;
+    } catch (err) {
+      log.error('Failed to read theme for internal page:', err.message);
+    }
+    event.returnValue = theme;
+  });
 }
 
 module.exports = {
@@ -329,4 +402,5 @@ module.exports = {
   // Exported for the parity test against the renderer copy in search-utils.js.
   normalizeSearchUrlTemplate,
   onSettingsChanged,
+  getRevertedShortcutOverrides,
 };

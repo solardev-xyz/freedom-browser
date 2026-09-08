@@ -96,7 +96,10 @@ async function loadDappTx() {
     networks: {
       getChains: jest.fn().mockResolvedValue({
         success: true,
-        chains: { 8453: { name: 'Base', nativeSymbol: 'ETH' } },
+        chains: {
+          8453: { name: 'Base', nativeSymbol: 'ETH' },
+          100: { name: 'Gnosis', nativeSymbol: 'xDAI' },
+        },
       }),
     },
     wallet: {
@@ -117,11 +120,19 @@ async function loadDappTx() {
 
   // The Ledger account bypasses the vault-unlock gate, the same as in the app.
   jest.doMock('./wallet-utils.js', () => ({
-    bypassUnlockGateForHardware: jest.fn((_index, _unlockEl, confirmBtn) => {
+    bypassUnlockGateForDevice: jest.fn((_index, _unlockEl, confirmBtn) => {
       if (confirmBtn) confirmBtn.disabled = false;
       return true;
     }),
+    bypassUnlockGateForSafe: jest.fn(() => false),
+    isSafeAccount: jest.fn(() => false),
+    renderSafeFeePayer: jest.fn(),
+    truncateAddress: jest.fn((address) => address),
     signingButtonLabel: jest.fn(() => 'Confirm on your Ledger…'),
+  }));
+  jest.doMock('./safe-signing.js', () => ({
+    openSafeSigningBoard: jest.fn(),
+    isSafeSigningBoardOpen: jest.fn(() => false),
   }));
   jest.doMock('./wallet-state.js', () => ({
     walletState: { identityView: createElement('div'), selectedChainId: 8453 },
@@ -139,18 +150,20 @@ async function loadDappTx() {
     data: '0x095ea7b300000000000000000000000000000000000000000000000000000000000000ff',
   };
 
-  async function openApproval() {
+  async function openApproval({ webview = {}, requestChainId } = {}) {
     const settled = { state: 'pending' };
-    const promise = mod.showDappTxApproval({}, 'https://app.example', txParams).then(
-      (hash) => {
-        settled.state = 'resolved';
-        settled.value = hash;
-      },
-      (err) => {
-        settled.state = 'rejected';
-        settled.value = err;
-      }
-    );
+    const promise = mod
+      .showDappTxApproval(webview, 'https://app.example', txParams, requestChainId)
+      .then(
+        (hash) => {
+          settled.state = 'resolved';
+          settled.value = hash;
+        },
+        (err) => {
+          settled.state = 'rejected';
+          settled.value = err;
+        }
+      );
     await flush();
     return { settled, promise };
   }
@@ -277,5 +290,49 @@ describe('dapp-tx approval lifecycle', () => {
 
     expect(second.settled).toMatchObject({ state: 'resolved', value: '0xhash' });
     expect(addTransactionAutoApprove).toHaveBeenCalledTimes(1);
+  });
+  test('an onchain app is quoted, signed and recorded on the chain it is pinned to', async () => {
+    const { elements, send, addTransactionAutoApprove, openApproval, txParams } =
+      await loadDappTx();
+    // Stored grant and the wallet's current selection both say Base (8453);
+    // the app's own origin is pinned to Gnosis (100) and must win. Anything
+    // else signs and broadcasts on a chain the app never asked for, while
+    // eth_chainId keeps reporting 0x64.
+    const webview = {
+      getURL: () => 'web3://0x00000095643cffa7d9fae407a84dfcb6406456c6.eip155-100/swap',
+    };
+    const { promise } = await openApproval({ webview });
+
+    expect(elements['dapp-tx-network'].textContent).toBe('Gnosis');
+    expect(window.wallet.estimateGas).toHaveBeenCalledWith(
+      expect.objectContaining({ chainId: 100 })
+    );
+    expect(window.wallet.getGasPrice).toHaveBeenCalledWith(100);
+
+    elements['dapp-tx-auto-approve'].checked = true;
+    elements['dapp-tx-approve'].dispatch('click');
+    send.resolve({ success: true, hash: '0xhash' });
+    await promise;
+
+    expect(window.wallet.dappSendTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({ chainId: 100 }),
+      LEDGER_INDEX,
+      expect.anything()
+    );
+    // The rule has to be filed under the chain the next request checks.
+    expect(addTransactionAutoApprove).toHaveBeenCalledWith(
+      'https://app.example',
+      txParams.to,
+      '0x095ea7b3',
+      100
+    );
+  });
+
+  test('the chain the provider resolved outranks the grant and the selection', async () => {
+    const { elements, openApproval } = await loadDappTx();
+    await openApproval({ requestChainId: 100 });
+
+    expect(elements['dapp-tx-network'].textContent).toBe('Gnosis');
+    expect(window.wallet.getGasPrice).toHaveBeenCalledWith(100);
   });
 });

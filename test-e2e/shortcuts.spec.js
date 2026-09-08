@@ -261,3 +261,140 @@ test('search filters the shortcut list', async ({ window }) => {
     )
   ).toBe('page.findInPage');
 });
+
+// The other half of the stale-override story covered in zoom.spec.js: when
+// the store reverts a remap on load because a newer default or fixed alias
+// took its chord, Settings > Shortcuts has to say so — a binding that just
+// silently snaps back to its default looks like the app lost the setting.
+test.describe('a remap the store reverted on load', () => {
+  test.use({
+    seedSettings: {
+      shortcutOverrides: {
+        'view.focusAddressBar': process.platform === 'darwin' ? 'Cmd+0' : 'Ctrl+0',
+      },
+    },
+  });
+
+  test('is shown as reset on its row, naming the shortcut that took the combo', async ({
+    window,
+  }) => {
+    await openShortcutsSettings(window);
+
+    const rowNote = () =>
+      inSettingsPage(
+        window,
+        `(() => {
+           const row = document.querySelector('.row[data-shortcut-id="view.focusAddressBar"]');
+           const note = row && row.querySelector('.shortcut-note');
+           return note ? note.textContent.replace(/\\s+/g, ' ').trim() : null;
+         })()`
+      );
+
+    await expect
+      .poll(rowNote, { message: 'Waiting for the reverted notice' })
+      .toContain('Actual Size');
+    expect(await rowNote()).toContain('was reset');
+    // The binding itself is back on its default, not the stale chord.
+    expect(await effectiveAccelerator(window, 'view.focusAddressBar')).toBe('CmdOrCtrl+L');
+  });
+});
+
+// A revert frees the reverted entry's default again — which a *second*
+// stored remap may be sitting on. Both remaps were legal when they were
+// recorded (Focus Address Bar moved to the then-free Cmd/Ctrl+0, New Tab
+// took the Cmd/Ctrl+L it freed), so the load pass has to keep going until
+// nothing collides: stopping after one walk leaves two actions on one
+// Cmd/Ctrl+L press.
+test.describe('a revert that cascades onto a second stored remap', () => {
+  test.use({
+    seedSettings: {
+      shortcutOverrides: {
+        'tab.new': process.platform === 'darwin' ? 'Cmd+L' : 'Ctrl+L',
+        'view.focusAddressBar': process.platform === 'darwin' ? 'Cmd+0' : 'Ctrl+0',
+      },
+    },
+  });
+
+  test('drops both, so one Cmd/Ctrl+L press does exactly one thing', async ({ window }) => {
+    const tabs = window.locator('[data-test="tab"]');
+    await expect
+      .poll(() => tabs.count(), { message: 'Waiting for the first tab', timeout: 15_000 })
+      .toBeGreaterThan(0);
+    const initialTabs = await tabs.count();
+
+    // Both stale remaps are gone from the live settings, not just the one
+    // whose chord a new default claimed.
+    await expect
+      .poll(
+        () =>
+          window.evaluate(() => window.electronAPI.getSettings().then((s) => s.shortcutOverrides)),
+        { message: 'Waiting for the sanitized overrides' }
+      )
+      .toEqual({});
+
+    // Press with the address bar deliberately unfocused: were tab.new's
+    // override still live, this same press would also open a tab.
+    await window.evaluate(() => document.activeElement?.blur?.());
+    await window.keyboard.press('ControlOrMeta+KeyL');
+
+    await expect
+      .poll(() => window.evaluate(() => document.activeElement?.id || null), {
+        message: 'Waiting for the address bar to take focus',
+      })
+      .toBe('address-input');
+    await window.waitForTimeout(500);
+    expect(await tabs.count()).toBe(initialTabs);
+  });
+});
+
+// The save path prunes conflicts too, because Reset is the one interactive
+// action that can create one: restoring a default takes its chord back from
+// whatever sibling was remapped onto it. That drop must be as visible as a
+// load-path one — the user reset one shortcut, not two.
+test.describe('a Reset that claims its default back from a sibling remap', () => {
+  test.use({
+    seedSettings: {
+      shortcutOverrides: {
+        'page.reload': process.platform === 'darwin' ? 'Cmd+Shift+U' : 'Ctrl+Shift+U',
+        'tab.new': process.platform === 'darwin' ? 'Cmd+R' : 'Ctrl+R',
+      },
+    },
+  });
+
+  test('says so on the sibling row instead of dropping it silently', async ({ window }) => {
+    await openShortcutsSettings(window);
+
+    // Both remaps survive the load — they only collide once Reload's
+    // default comes back.
+    expect(await effectiveAccelerator(window, 'tab.new')).toMatch(/^(Ctrl|Cmd)\+R$/);
+
+    const resetClicked = await inSettingsPage(
+      window,
+      `(() => {
+         const row = document.querySelector('.row[data-shortcut-id="page.reload"]');
+         const btn = row && row.querySelector('[data-action="reset"]');
+         if (!btn) return false;
+         btn.click();
+         return true;
+       })()`
+    );
+    expect(resetClicked).toBe(true);
+
+    const rowNote = () =>
+      inSettingsPage(
+        window,
+        `(() => {
+           const row = document.querySelector('.row[data-shortcut-id="tab.new"]');
+           const note = row && row.querySelector('.shortcut-note');
+           return note ? note.textContent.replace(/\\s+/g, ' ').trim() : null;
+         })()`
+      );
+
+    await expect
+      .poll(rowNote, { message: 'Waiting for the notice on the New Tab row' })
+      .toContain('Reload This Page');
+    expect(await rowNote()).toContain('was reset');
+    expect(await effectiveAccelerator(window, 'page.reload')).toBe('CmdOrCtrl+R');
+    expect(await effectiveAccelerator(window, 'tab.new')).toBe('CmdOrCtrl+T');
+  });
+});

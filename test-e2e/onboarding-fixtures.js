@@ -41,7 +41,6 @@ const SEED_SETTINGS = {
   startAntAtLaunch: true,
   startIpfsAtLaunch: false,
   startRadicleAtLaunch: false,
-  enableRadicleIntegration: false,
 };
 
 const test = base.extend({

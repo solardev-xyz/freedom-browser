@@ -14,7 +14,7 @@ const EXPECTED_DEBIAN_RUNTIME_DEPENDENCIES = Object.freeze([
 describe('Linux Debian package configuration', () => {
   test('materializes the pinned Electron runtime during a clean project install', () => {
     expect(packageMetadata.scripts.postinstall).toBe(
-      'install-electron && electron-builder install-app-deps'
+      'install-electron && node scripts/better-sqlite3-prebuilds.js && electron-builder install-app-deps'
     );
   });
 

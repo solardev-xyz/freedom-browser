@@ -7,10 +7,26 @@ import { isEnsHost, isTezosDomainHost } from './origin-utils.js';
 
 const ROUTABLE_PAGES = window.internalPages?.routable || {};
 
+// Resolve an internal page file to the shell's own `pages/<file>` URL.
+const internalPageUrl = (pageFile) => new URL(`pages/${pageFile}`, window.location.href).toString();
+
+// "Is this committed URL one of our own chrome pages?" Every such test must
+// compare against the *resolved* base URL above, never a `/<file>.html`
+// substring: a remote page is free to serve `https://evil.test/error.html` or
+// `https://evil.test/ens-conflict.html`, and a substring test would let it
+// impersonate chrome — taking over the address bar with its own `?url=` /
+// `?name=` value while the webview renders attacker HTML. Only the exact base
+// (optionally with a query string or fragment) counts. See issue #235.
+const matchesInternalPage = (url, base) =>
+  typeof url === 'string' &&
+  (url === base || url.startsWith(`${base}?`) || url.startsWith(`${base}#`));
+
 // URLs for pages
-export const homeUrl = new URL('pages/home.html', window.location.href).toString();
+export const homeUrl = internalPageUrl('home.html');
 export const homeUrlNormalized = homeUrl;
-export const errorUrlBase = new URL('pages/error.html', window.location.href).toString();
+export const errorUrlBase = internalPageUrl('error.html');
+
+export const isErrorPageUrl = (url) => matchesInternalPage(url, errorUrlBase);
 
 // Internal pages map for freedom:// protocol
 export const internalPages = Object.fromEntries(
@@ -35,6 +51,29 @@ export const buildInternalPageUrl = (pageFile, params = null) => {
   return url.toString();
 };
 
+// Name-resolution interstitials. These are chrome, not content: the shell
+// loads them into the webview when an ENS/Tezos name is blocked (unverified
+// soft block, head/contenthash conflict hard block). Like `error.html` they
+// carry the user-facing target in a query param, and — also like the error
+// page — their own `file:///…/pages/*.html` URL must never reach the address
+// bar, history, or any other chrome surface. See issue #235.
+const INTERSTITIAL_PAGE_URLS = ['ens-unverified.html', 'ens-conflict.html'].map(internalPageUrl);
+
+export const isInterstitialPageUrl = (url) =>
+  INTERSTITIAL_PAGE_URLS.some((base) => matchesInternalPage(url, base));
+
+// The user-facing name an interstitial is blocking (`lagged.tez`), or null
+// when `url` isn't an interstitial / carries no name. Mirrors
+// `getOriginalUrlFromErrorPage` for the error page.
+export const getInterstitialDisplayName = (url) => {
+  if (!isInterstitialPageUrl(url)) return null;
+  try {
+    return new URL(url).searchParams.get('name') || null;
+  } catch {
+    return null;
+  }
+};
+
 // Detect protocol from display URL for history recording
 export const detectProtocol = (url) => {
   if (!url) return 'unknown';
@@ -42,6 +81,7 @@ export const detectProtocol = (url) => {
   if (url.startsWith('bzz://')) return 'swarm';
   if (url.startsWith('ipfs://')) return 'ipfs';
   if (url.startsWith('ipns://')) return 'ipns';
+  if (url.startsWith('web3://')) return 'onchain';
   if (url.startsWith('rad:')) return 'radicle';
   if (url.startsWith('freedom-preview://')) return 'preview';
   if (url.startsWith('https://')) return 'https';
@@ -56,7 +96,19 @@ export const isHistoryRecordable = (displayUrl, internalUrl) => {
   if (displayUrl.startsWith('freedom-preview://') || displayUrl === 'Workspace preview')
     return false;
   if (displayUrl.startsWith('view-source:')) return false;
-  if (internalUrl?.includes('/error.html')) return false;
+  if (isErrorPageUrl(internalUrl)) return false;
+  // A blocked name never lands on real content, so the interstitial is no
+  // more history-worthy than the error page — and recording it would put the
+  // interstitial's `file://` path (and its "RPC servers disagreed" title)
+  // into the history list and the autocomplete dropdown.
+  if (isInterstitialPageUrl(internalUrl)) return false;
+  // Same for the onchain trust gate: the app's code has not run (soft block)
+  // or was refused outright (conflict hard block), so the `web3://` display
+  // URL never became a visit. Recording it would file the gate's warning
+  // title ("RPC servers disagreed about this app") against the app itself in
+  // history and autocomplete — and the once-per-URL dedup would then keep a
+  // later, actually-loaded visit from replacing it.
+  if (isOnchainInterstitialPageUrl(internalUrl)) return false;
   if (internalUrl === homeUrl || internalUrl === homeUrlNormalized) return false;
   return true;
 };
@@ -76,6 +128,45 @@ export const getInternalPageName = (url) => {
     }
   }
   return null;
+};
+
+// Trust interstitials are deliberately not routable freedom:// pages, but the
+// browser chrome must keep showing the app the user asked for while one is
+// visible. Like the ENS interstitials above, the onchain gate's own
+// `file:///…/pages/onchain-unverified.html?…` URL must never reach the
+// address bar, history, or any other chrome surface — it carries the
+// single-use approval token in a query param. Only `file:` URLs count, so a
+// remote look-alike path can never impersonate the gate. See issue #235.
+export const isOnchainInterstitialPageUrl = (url) => {
+  if (typeof url !== 'string' || !url || url.length > 8192) return false;
+  try {
+    const parsed = new URL(url);
+    return (
+      parsed.protocol === 'file:' && parsed.pathname.endsWith('/pages/onchain-unverified.html')
+    );
+  } catch {
+    return false;
+  }
+};
+
+// Either family of browser-owned trust interstitial: the name-resolution
+// pages above and the onchain gate. These are the shell's own documents, not
+// content the user navigated to, so chrome must never publish their
+// `file:///…/pages/*.html` URL — and `view-source:` of one is refused
+// outright rather than rendered, since the gate's URL carries the single-use
+// approval token. See issue #235.
+export const isTrustInterstitialPageUrl = (url) =>
+  isInterstitialPageUrl(url) || isOnchainInterstitialPageUrl(url);
+
+// Return only the bounded web3: target carried by our bundled gate page.
+export const getOnchainInterstitialTarget = (url) => {
+  if (!isOnchainInterstitialPageUrl(url)) return null;
+  try {
+    const target = new URL(url).searchParams.get('target');
+    return target && target.length <= 2048 && /^web3:\/\//i.test(target) ? target : null;
+  } catch {
+    return null;
+  }
 };
 
 // Parse Ethereum name input. Accepts:

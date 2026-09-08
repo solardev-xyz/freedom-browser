@@ -31,6 +31,23 @@ const acc = (id, platform = process.platform) =>
 const aliasAcc = (id, index, platform = process.platform) =>
   getAliasAccelerators(id, platform)[index];
 
+// Hidden rows carrying a shortcut's fixed aliases. An accelerator only fires
+// if a menu item owns it, but a second visible row per alias would duplicate
+// the action in the menu — so alias rows are `visible: false`, the same shape
+// as the hidden Force Reload item below.
+const aliasMenuItems = (id, label, channel, platform = process.platform) =>
+  getAliasAccelerators(id, platform).map((accelerator) => ({
+    label,
+    accelerator,
+    visible: false,
+    click: () => {
+      const win = getTargetWindow();
+      if (win) {
+        win.webContents.send(channel);
+      }
+    },
+  }));
+
 // Rebuild the application menu when the user remaps shortcuts so the new
 // accelerators take effect without a restart.
 onSettingsChanged((merged, previous) => {
@@ -130,7 +147,7 @@ function buildProfilesSubmenu() {
 
   submenu.push(
     {
-      label: 'Create Profile...',
+      label: 'Create Profile…',
       click: () => {
         // Open the shared chrome create-modal in the focused window.
         const win = getTargetWindow();
@@ -140,7 +157,7 @@ function buildProfilesSubmenu() {
       },
     },
     {
-      label: 'Manage Profiles...',
+      label: 'Manage Profiles…',
       click: () => {
         log.info('[menu] Manage Profiles clicked');
         openProfilesManager();
@@ -314,6 +331,50 @@ function buildViewSubmenu({ isFullScreen: fullScreen, showAppDevtools }) {
       },
     },
     { type: 'separator' },
+    // Zoom targets the active <webview>, so it goes through the renderer
+    // rather than Electron's zoomIn/zoomOut/resetZoom roles — those step
+    // zoomLevel on the focused webContents (the chrome, when the address
+    // bar has focus) and carry accelerators this registry cannot remap.
+    // Each visible row is followed by hidden rows for its registry aliases
+    // (Ctrl+Shift+=, Ctrl+Plus, keypad) so those chords fire too without
+    // duplicating the action in the menu.
+    {
+      id: 'zoom-in',
+      label: 'Zoom In',
+      accelerator: acc('page.zoomIn'),
+      click: () => {
+        const win = getTargetWindow();
+        if (win) {
+          win.webContents.send('page:zoom-in');
+        }
+      },
+    },
+    ...aliasMenuItems('page.zoomIn', 'Zoom In', 'page:zoom-in'),
+    {
+      id: 'zoom-out',
+      label: 'Zoom Out',
+      accelerator: acc('page.zoomOut'),
+      click: () => {
+        const win = getTargetWindow();
+        if (win) {
+          win.webContents.send('page:zoom-out');
+        }
+      },
+    },
+    ...aliasMenuItems('page.zoomOut', 'Zoom Out', 'page:zoom-out'),
+    {
+      id: 'zoom-reset',
+      label: 'Actual Size',
+      accelerator: acc('page.zoomReset'),
+      click: () => {
+        const win = getTargetWindow();
+        if (win) {
+          win.webContents.send('page:zoom-reset');
+        }
+      },
+    },
+    ...aliasMenuItems('page.zoomReset', 'Actual Size', 'page:zoom-reset'),
+    { type: 'separator' },
     {
       id: 'fullscreen',
       label: fullScreen ? 'Exit Full Screen' : 'Enter Full Screen',
@@ -436,7 +497,7 @@ function buildHistorySubmenu() {
 function buildFindMenuItem() {
   return {
     id: 'find-in-page',
-    label: 'Find in Page...',
+    label: 'Find in Page…',
     accelerator: acc('page.findInPage'),
     click: () => {
       const win = getTargetWindow();
@@ -553,13 +614,13 @@ function setupApplicationMenu() {
           },
         },
         {
-          label: 'Check for Updates...',
+          label: 'Check for Updates…',
           enabled: false,
         },
       ]
     : [
         {
-          label: 'Check for Updates...',
+          label: 'Check for Updates…',
           click: () => {
             checkForUpdates();
           },

@@ -312,6 +312,9 @@
    Setup CTA (No vault state)
    ============================================ */
 
+/* Private-window state: same layout as the setup CTA, minus the call to
+   action — there is nothing to set up from a private window. */
+.sidebar-private-notice,
 .sidebar-setup-cta {
   display: flex;
   flex-direction: column;
@@ -836,10 +839,6 @@
   border-radius: 8px;
   outline: none;
   transition: border-color 0.15s ease;
-}
-
-.password-input:focus {
-  border-color: var(--accent);
 }
 
 .password-input::placeholder {
@@ -2754,7 +2753,7 @@
 
 .x402-perm-input,
 .x402-perm-select {
-  background: var(--input-background, rgba(255, 255, 255, 0.04));
+  background: rgba(127, 127, 127, 0.08);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 7px 9px;
@@ -2787,12 +2786,6 @@
   font-weight: 500;
   color: var(--muted);
   pointer-events: none;
-}
-
-.x402-perm-input:focus,
-.x402-perm-select:focus {
-  outline: none;
-  border-color: #2775ca;
 }
 
 /* --- x402 grant editor on the approval card ----------------------- */
@@ -2861,7 +2854,7 @@
 
 .x402-grant input[type="number"],
 .x402-grant-select {
-  background: var(--input-background, rgba(255, 255, 255, 0.04));
+  background: rgba(127, 127, 127, 0.08);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 7px 9px;
@@ -2893,12 +2886,6 @@
   font-weight: 500;
   color: var(--foreground-muted);
   pointer-events: none;
-}
-
-.x402-grant input[type="number"]:focus,
-.x402-grant-select:focus {
-  outline: none;
-  border-color: #2775ca;
 }
 
 /* Visual hint that the inputs are inert when the toggle is off —
@@ -3003,7 +2990,13 @@
   font-weight: 700;
 }
 
-.swarm-connect-warning {
+/* Callouts on the Swarm/Radicle approval screens. Two kinds, the same pair the
+   dApp screens already use (#239): amber + triangle glyph warns about the
+   consequence of the action being confirmed (`.dapp-tx-warning`), blue + "i"
+   glyph explains what the access being granted means (`.dapp-sign-warning`).
+   The icon lives in the markup, so a callout that changes kind changes both. */
+.swarm-connect-warning,
+.swarm-connect-note {
   display: flex;
   align-items: flex-start;
   gap: 10px;
@@ -3017,12 +3010,22 @@
   line-height: 1.4;
 }
 
-.swarm-connect-warning svg {
+.swarm-connect-warning svg,
+.swarm-connect-note svg {
   width: 18px;
   height: 18px;
   flex-shrink: 0;
   color: #f59e0b;
   margin-top: 1px;
+}
+
+.swarm-connect-note {
+  background: rgba(59, 130, 246, 0.1);
+  border-color: rgba(59, 130, 246, 0.3);
+}
+
+.swarm-connect-note svg {
+  color: rgb(59, 130, 246);
 }
 
 .auto-approve-badge {
@@ -3033,7 +3036,7 @@
   text-transform: uppercase;
   letter-spacing: 0.5px;
   border-radius: 4px;
-  background: var(--accent-muted, rgba(99, 102, 241, 0.15));
+  background: rgba(99, 102, 241, 0.15);
   color: var(--accent, #6366f1);
   margin-left: 6px;
   flex-shrink: 0;
@@ -3044,10 +3047,16 @@
   cursor: pointer;
 }
 
+/* Manage-permissions screens (Wallet / Auto-pay / Swarm). These paint from the
+   palette in styles/variables.css — `--text`, `--muted`, `--border` — like the
+   rest of the sidebar. They used to quote `--text-primary`/`--text-secondary`/
+   `--text-tertiary`/`--bg-elevated`, which are defined nowhere, so the dark
+   literal fallback won in both themes and the site origin rendered white on
+   the light theme's white sidebar (#249). See styles/theme-tokens.test.js. */
 .perms-site {
   font-size: 14px;
   font-weight: 600;
-  color: var(--text-primary, #fff);
+  color: var(--text);
   padding: 8px 0 16px;
   word-break: break-all;
 }
@@ -3059,7 +3068,7 @@
 .perms-section-header {
   font-size: 12px;
   font-weight: 600;
-  color: var(--text-secondary, #888);
+  color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
   margin-bottom: 8px;
@@ -3075,7 +3084,7 @@
 
 .perms-label {
   font-size: 13px;
-  color: var(--text-primary, #ccc);
+  color: var(--text);
 }
 
 .perms-tx-list {
@@ -3086,7 +3095,7 @@
 
 .perms-empty {
   font-size: 12px;
-  color: var(--text-tertiary, #666);
+  color: var(--muted);
   padding: 8px 0;
 }
 
@@ -3097,7 +3106,7 @@
   gap: 8px;
   padding: 8px;
   border-radius: 6px;
-  background: var(--bg-elevated, rgba(255,255,255,0.03));
+  background: rgba(127, 127, 127, 0.12);
 }
 
 .perms-tx-info {
@@ -3111,13 +3120,13 @@
 .perms-tx-addr,
 .perms-tx-selector {
   font-size: 11px;
-  font-family: var(--mono, monospace);
-  color: var(--text-secondary, #aaa);
+  font-family: var(--font-mono, monospace);
+  color: var(--muted);
 }
 
 .perms-tx-chain {
   font-size: 10px;
-  color: var(--text-tertiary, #666);
+  color: var(--muted);
 }
 
 .perms-tx-remove {
@@ -3127,7 +3136,7 @@
   border: 1px solid var(--border, rgba(255,255,255,0.1));
   border-radius: 4px;
   background: transparent;
-  color: var(--text-secondary, #aaa);
+  color: var(--muted);
   cursor: pointer;
 }
 
@@ -3164,7 +3173,7 @@
   margin-top: 16px;
   cursor: pointer;
   font-size: 12px;
-  color: var(--text-secondary, #888);
+  color: var(--muted);
   line-height: 1.4;
 }
 
@@ -3188,7 +3197,7 @@
 
 .swarm-manifest-row {
   padding: 12px;
-  border: 1px solid var(--sidebar-border, rgba(127, 127, 127, 0.25));
+  border: 1px solid var(--border);
   border-radius: 8px;
 }
 
@@ -3200,7 +3209,7 @@
 .swarm-manifest-description,
 .swarm-manifest-choice-note {
   margin-top: 4px;
-  color: var(--sidebar-text-secondary, #8b8b8b);
+  color: var(--muted);
   font-size: 12px;
   line-height: 1.4;
 }
@@ -3220,7 +3229,7 @@
   font-weight: 600;
   cursor: pointer;
   border: 1px solid transparent;
-  transition: background 0.15s, border-color 0.15s;
+  transition: background 0.15s, border-color 0.15s, opacity 0.15s;
 }
 
 .swarm-connect-reject-btn {
@@ -3233,13 +3242,18 @@
   background: var(--hover);
 }
 
+/* The one approval primary: filled `--accent`, like `.dapp-tx-approve-btn`,
+   `.dapp-connect-approve-btn` and the wallet's own Confirm. These screens used
+   to fill themselves `#f59e0b` (orange), which read as a different, more
+   alarming class of action than the blue Confirm/Sign/Connect sitting next to
+   them in the same sidebar (#239). */
 .swarm-connect-approve-btn {
-  background: #f59e0b;
+  background: var(--accent);
   color: #fff;
 }
 
 .swarm-connect-approve-btn:hover:not(:disabled) {
-  background: #d97706;
+  opacity: 0.9;
 }
 
 .swarm-connect-approve-btn:disabled {
@@ -3297,97 +3311,14 @@
   margin-bottom: 10px;
 }
 
-.swarm-feed-identity-help {
-  margin: 8px 0 0;
-  font-size: 12px;
-  color: var(--muted);
-  line-height: 1.4;
-}
-
-.swarm-feed-identity-option {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  padding: 10px 12px;
-  margin-bottom: 6px;
-  background: var(--toolbar);
-  border-radius: 8px;
-  cursor: pointer;
-  border: 1px solid var(--border);
-  transition: border-color 0.15s;
-}
-
-.swarm-feed-identity-option:has(input:checked) {
-  border-color: #f59e0b;
-}
-
-.swarm-feed-identity-option input[type="radio"] {
-  margin-top: 2px;
-  accent-color: #f59e0b;
-}
-
-.swarm-feed-identity-label {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.swarm-feed-identity-name {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--foreground);
-}
-
-.swarm-feed-identity-desc {
-  font-size: 12px;
-  color: var(--muted);
-  line-height: 1.3;
-}
-
-.swarm-feed-current-identity {
-  margin-bottom: 16px;
-  padding: 12px;
-  background: var(--toolbar);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-}
-
-.swarm-feed-current-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 8px;
-}
-
-.swarm-feed-current-label {
-  font-size: 12px;
-  color: var(--muted);
-}
-
-.swarm-feed-current-name {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--foreground);
-  text-align: right;
-}
-
-.swarm-feed-current-desc {
-  margin: 0 0 10px;
-  font-size: 12px;
-  color: var(--muted);
-  line-height: 1.4;
-}
-
-.swarm-feed-manage-btn {
-  padding: 0;
-  background: transparent;
-  border: 0;
-  color: #f59e0b;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-}
+/* Feed Access renders its picker into `#swarm-feed-identity-selector` through
+   `publisher-identity-selector.js`, which brings its own `.wallet-selector-*`
+   classes. The hand-rolled radio list and "current identity" card this section
+   used to style are gone from the markup; their rules were removed with #239's
+   amber sweep, since two of them (the radio `accent-color` / checked border and
+   the manage button's text colour) were the last `#f59e0b` left on this screen
+   and would have put orange back next to the blue primary if the markup ever
+   came back. The two rules above are the section's only live ones. */
 
 /* ============================================
    Publisher Identities List
@@ -3405,11 +3336,6 @@
   border-radius: 8px;
   color: var(--foreground);
   font-size: 13px;
-}
-
-.publisher-identity-search input:focus {
-  outline: none;
-  border-color: #f59e0b;
 }
 
 .publisher-identity-search input::placeholder {
@@ -3857,10 +3783,6 @@
   box-sizing: border-box;
 }
 
-.create-wallet-input:focus {
-  border-color: var(--accent);
-}
-
 .create-wallet-input::placeholder {
   color: var(--muted);
 }
@@ -3968,7 +3890,7 @@
   letter-spacing: 0.5px;
   text-transform: uppercase;
   color: var(--accent, #6366f1);
-  background: var(--accent-muted, rgba(99, 102, 241, 0.15));
+  background: rgba(99, 102, 241, 0.15);
   border-radius: 4px;
   vertical-align: 1px;
 }
@@ -4010,6 +3932,11 @@
   border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 0.9s linear infinite;
+}
+
+/* Detection failed: the spinner is hidden from JS, so the line is text only. */
+.connect-ledger-status-failed {
+  color: var(--danger);
 }
 
 .connect-ledger-scheme-row {
@@ -4517,21 +4444,31 @@
   margin: 0 0 16px 0;
 }
 
+/* Destructive actions are outlined `--danger`, never filled (#259) — the same
+   treatment as `.perms-disconnect-btn` above and `.btn.danger` on the internal
+   pages, so deleting a wallet does not read as the screen's primary action. */
 .wallet-settings-delete-btn {
   width: 100%;
   padding: 10px 16px;
   font-size: 13px;
   font-weight: 500;
-  color: #fff;
-  background: var(--danger);
-  border: none;
+  color: var(--danger);
+  background: transparent;
+  border: 1px solid var(--danger);
   border-radius: 6px;
   cursor: pointer;
-  transition: opacity 0.15s ease;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease,
+    opacity 0.15s ease;
 }
 
-.wallet-settings-delete-btn:hover {
-  opacity: 0.9;
+/* `:not(:disabled)` like every other hover in this sheet: the main wallet
+   cannot be deleted (wallet-settings.js), and an inverted fill would read as
+   an enabled primary action through the disabled state's 0.5 opacity. */
+.wallet-settings-delete-btn:hover:not(:disabled) {
+  background: var(--danger);
+  color: #fff;
 }
 
 .wallet-settings-delete-btn:disabled {
@@ -4756,7 +4693,6 @@
 }
 
 .send-input:focus {
-  border-color: var(--accent);
   background: rgba(255, 255, 255, 0.08);
 }
 
@@ -5225,10 +5161,6 @@
   border: 1px solid var(--border);
   border-radius: 8px;
   outline: none;
-}
-
-.send-password-row .password-input:focus {
-  border-color: var(--accent);
 }
 
 .send-password-submit {
@@ -6482,5 +6414,339 @@
 }
 
 [data-theme="light"] .dapp-sign-reject-btn:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+/* ============================================
+   Safe (multi-owner) accounts
+   ============================================ */
+
+/* Preset choice: backup 1/2 · resilient 2/3 */
+.safe-preset-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.safe-preset {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text);
+}
+
+.safe-preset:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.safe-preset.selected {
+  border-color: var(--accent);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.safe-preset-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.safe-preset-detail {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+[data-theme="light"] .safe-preset {
+  background: rgba(0, 0, 0, 0.03);
+}
+
+[data-theme="light"] .safe-preset:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+[data-theme="light"] .safe-preset.selected {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+/* Status card: activation / needs-funds blocking states */
+.safe-status-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 0;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.safe-status-text {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.safe-status-text strong {
+  color: var(--text);
+}
+
+.safe-status-text code {
+  font-size: 11px;
+}
+
+.safe-status-btn {
+  align-self: flex-start;
+  padding: 6px 14px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.safe-status-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.safe-status-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.safe-status-btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.safe-status-btn.primary:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+[data-theme="light"] .safe-status-card {
+  background: rgba(0, 0, 0, 0.03);
+}
+
+[data-theme="light"] .safe-status-btn {
+  background: rgba(0, 0, 0, 0.03);
+}
+
+[data-theme="light"] .safe-status-btn:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.wallet-action-primary:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.safe-status-btn-row {
+  display: flex;
+  gap: 8px;
+}
+
+/* Safe signing board: per-owner rows with actions the user drives */
+.safe-signing-summary {
+  margin-bottom: 12px;
+}
+
+.safe-signing-what {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.safe-signing-meta {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.safe-signing-counter {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 12px;
+}
+
+.safe-signing-counter strong {
+  color: var(--text);
+}
+
+.safe-signing-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.safe-signing-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.safe-signing-row.signing {
+  border-color: var(--accent);
+}
+
+.safe-signing-row-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.safe-signing-row-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.safe-signing-row-type {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.safe-signing-row-note {
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+.safe-signing-row-note.error {
+  color: var(--danger);
+}
+
+.safe-signing-row-note.info {
+  color: var(--muted);
+}
+
+.safe-signing-row-state {
+  font-size: 12px;
+  color: var(--text);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.safe-signing-row-state.signed {
+  color: var(--secure-fg);
+  font-weight: 600;
+}
+
+.safe-signing-row-state.muted {
+  color: var(--muted);
+}
+
+.safe-signing-executing {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text);
+  padding: 12px 0;
+}
+
+.safe-signing-note {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.5;
+  margin-bottom: 8px;
+}
+
+.safe-signing-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  background: rgba(229, 83, 75, 0.08);
+  border: 1px solid rgba(229, 83, 75, 0.35);
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.safe-signing-banner-hint {
+  color: var(--muted);
+}
+
+.safe-signing-discard {
+  align-self: flex-start;
+  color: var(--danger);
+}
+
+[data-theme="light"] .safe-signing-row {
+  background: rgba(0, 0, 0, 0.03);
+}
+
+/* Unfinished Safe transactions: entry row above Recent payments */
+.safe-pending-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.safe-pending-row:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.safe-pending-row-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.safe-pending-row-label svg {
+  width: 15px;
+  height: 15px;
+  color: var(--muted);
+}
+
+.safe-pending-badge {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent);
+  border-radius: 9px;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.safe-pending-item-chevron {
+  color: var(--muted);
+  font-size: 16px;
+}
+
+[data-theme="light"] .safe-pending-row {
+  background: rgba(0, 0, 0, 0.03);
+}
+
+[data-theme="light"] .safe-pending-row:hover {
   background: rgba(0, 0, 0, 0.06);
 }

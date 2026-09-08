@@ -177,6 +177,7 @@ describe('signAndSendTransaction (signer-based)', () => {
       });
       expect(broadcastedRaw).toBeNull(); // never touched our provider's broadcast path
       expect(getTransaction).toHaveBeenCalledWith(hash);
+      expect(mockChainRequest).toHaveBeenCalledWith(8453, 'eth_getTransactionByHash', [hash]);
       expect(mockGetFeeQuote).not.toHaveBeenCalled();
       expect(result).toEqual({
         hash,

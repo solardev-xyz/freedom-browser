@@ -124,30 +124,21 @@ describe('NodeRequestController', () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
-  test('dispatches Radicle HTTP to its registry-selected endpoint', async () => {
-    const fetch = jest.fn(async () => new Response('[]', { status: 200 }));
-    const controller = new NodeRequestController({
-      getRadicleApiUrl: () => 'http://127.0.0.1:8780',
-      fetch,
+  test('rejects embedded Radicle raw requests before classification, approval, or dispatch', async () => {
+    const fetch = jest.fn();
+    const classifyEffect = jest.fn();
+    const requestApproval = jest.fn();
+    const controller = new NodeRequestController({ fetch });
+    await expect(controller.request({
+      service: 'radicle', transport: 'http',
+      request: { method: 'POST', path: '/api/v1/repos' },
+    }, { classifyEffect, requestApproval })).rejects.toMatchObject({
+      code: 'CAPABILITY_UNAVAILABLE',
+      message: expect.stringContaining('embedded node'),
     });
-    const input = {
-      service: 'radicle',
-      transport: 'http',
-      request: { method: 'GET', path: '/api/v1/repos' },
-    };
-
-    await expect(
-      controller.request(input, { classifyEffect: async () => classification(EFFECTS.READ) })
-    ).resolves.toMatchObject({
-      service: 'radicle',
-      transport: 'http',
-      response: { body: '[]' },
-      summary: { service: 'radicle', status: 200 },
-    });
-    expect(fetch).toHaveBeenCalledWith(
-      new URL('http://127.0.0.1:8780/api/v1/repos'),
-      expect.objectContaining({ method: 'GET', redirect: 'error' })
-    );
+    expect(fetch).not.toHaveBeenCalled();
+    expect(classifyEffect).not.toHaveBeenCalled();
+    expect(requestApproval).not.toHaveBeenCalled();
   });
 
   test('dispatches IPFS reads through the active native gateway instance', async () => {

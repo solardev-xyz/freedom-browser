@@ -175,6 +175,7 @@ const loadTabsModule = async (options = {}) => {
   jest.doMock('./link-status.js', () => linkStatusMocks);
   jest.doMock('./page-urls.js', () => ({
     homeUrl: options.homeUrl || HOME_URL,
+    getOnchainInterstitialTarget: () => null,
   }));
 
   const mod = await import('./tabs.js');

@@ -5,7 +5,6 @@
  * the identity is correctly recognized.
  */
 
-const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -17,8 +16,7 @@ const { injectRadicleKey } = require('../../injection');
 const TEST_MNEMONIC =
   'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
 
-// Find Radicle binary
-function getRadicleBinaryPath(binary = 'rad') {
+function getRadicleAddonPath() {
   const arch = process.arch;
   const platformMap = {
     darwin: 'mac',
@@ -26,25 +24,38 @@ function getRadicleBinaryPath(binary = 'rad') {
     win32: 'win',
   };
   const platform = platformMap[process.platform] || process.platform;
-  const binName = process.platform === 'win32' ? `${binary}.exe` : binary;
-
   const projectRoot = path.resolve(__dirname, '../../../../..');
-  const binPath = path.join(projectRoot, 'radicle-bin', `${platform}-${arch}`, binName);
+  const addonPath = path.join(
+    projectRoot,
+    'radicle-bin',
+    `${platform}-${arch}`,
+    'libradicle.node'
+  );
 
-  if (fs.existsSync(binPath)) {
-    return binPath;
-  }
-
-  return null;
+  return fs.existsSync(addonPath) ? addonPath : null;
 }
 
 describe('Radicle Integration', () => {
-  const radBinary = getRadicleBinaryPath('rad');
+  const addonPath = getRadicleAddonPath();
+  const addon = addonPath ? require(addonPath) : null;
   let tempDir;
+  let addonStarted = false;
+
+  const callAddon = async (name, ...args) => {
+    const value = JSON.parse(await addon[name](...args));
+    if (value.error) throw new Error(value.error);
+    return value;
+  };
+
+  const startAddon = async (alias) => {
+    const result = await callAddon('start', tempDir, alias);
+    addonStarted = true;
+    return result;
+  };
 
   beforeAll(() => {
-    if (!radBinary) {
-      console.log('Radicle binary not found, skipping integration tests');
+    if (!addon) {
+      console.log('libradicle addon not found, skipping native integration tests');
     }
   });
 
@@ -52,15 +63,19 @@ describe('Radicle Integration', () => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'radicle-test-'));
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    if (addonStarted) {
+      await callAddon('shutdown');
+      addonStarted = false;
+    }
     if (tempDir && fs.existsSync(tempDir)) {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
   });
 
-  const maybeTest = radBinary ? test : test.skip;
+  const maybeNativeTest = addon ? test : test.skip;
 
-  maybeTest('rad self reports correct DID after key injection', () => {
+  maybeNativeTest('native addon reports the injected DID', async () => {
     // 1. Derive keys
     const keys = deriveAllKeys(TEST_MNEMONIC);
     const expectedIdentity = createRadicleIdentity(
@@ -78,29 +93,15 @@ describe('Radicle Integration', () => {
     expect(fs.existsSync(path.join(tempDir, 'keys', 'radicle'))).toBe(true);
     expect(fs.existsSync(path.join(tempDir, 'keys', 'radicle.pub'))).toBe(true);
 
-    // 3. Run rad self to verify identity
-    const output = execSync(`"${radBinary}" self`, {
-      env: {
-        ...process.env,
-        RAD_HOME: tempDir,
-        RAD_PASSPHRASE: '', // Key is unencrypted
-      },
-      encoding: 'utf-8',
-    });
+    const started = await startAddon('TestNode');
+    const identity = await callAddon('identity');
 
-    console.log(`[Test] rad self output:\n${output}`);
-
-    // Extract DID from output (format: "DID did:key:z6Mk...")
-    const didMatch = output.match(/DID\s+(did:key:z[A-Za-z0-9]+)/);
-    expect(didMatch).not.toBeNull();
-
-    const actualDid = didMatch[1];
-    console.log(`[Test] Got DID: ${actualDid}`);
-
-    expect(actualDid).toBe(expectedIdentity.did);
+    expect(started.did).toBe(expectedIdentity.did);
+    expect(identity.did).toBe(expectedIdentity.did);
+    expect(identity.alias).toBe('TestNode');
   });
 
-  maybeTest('nodeId matches the DID suffix', () => {
+  test('nodeId matches the DID suffix', () => {
     const keys = deriveAllKeys(TEST_MNEMONIC);
     const expectedIdentity = createRadicleIdentity(
       keys.radicleKey.privateKey,
@@ -115,7 +116,7 @@ describe('Radicle Integration', () => {
     expect(expectedIdentity.nodeId.startsWith('z6Mk')).toBe(true);
   });
 
-  maybeTest('key files have correct format', () => {
+  test('key files have correct format', () => {
     const keys = deriveAllKeys(TEST_MNEMONIC);
 
     injectRadicleKey(tempDir, keys.radicleKey.privateKey, keys.radicleKey.publicKey, 'TestNode');
@@ -134,7 +135,7 @@ describe('Radicle Integration', () => {
     expect(config.node.alias).toBe('TestNode');
   });
 
-  maybeTest('private key has correct permissions', () => {
+  test('private key has correct permissions', () => {
     const keys = deriveAllKeys(TEST_MNEMONIC);
 
     injectRadicleKey(tempDir, keys.radicleKey.privateKey, keys.radicleKey.publicKey, 'TestNode');
@@ -148,20 +149,13 @@ describe('Radicle Integration', () => {
     }
   });
 
-  maybeTest('alias is correctly set', () => {
+  test('custom alias is written to the native profile', () => {
     const keys = deriveAllKeys(TEST_MNEMONIC);
 
     injectRadicleKey(tempDir, keys.radicleKey.privateKey, keys.radicleKey.publicKey, 'MyCustomAlias');
 
-    const output = execSync(`"${radBinary}" self`, {
-      env: {
-        ...process.env,
-        RAD_HOME: tempDir,
-        RAD_PASSPHRASE: '',
-      },
-      encoding: 'utf-8',
-    });
+    const config = JSON.parse(fs.readFileSync(path.join(tempDir, 'config.json'), 'utf-8'));
 
-    expect(output).toContain('MyCustomAlias');
+    expect(config.node.alias).toBe('MyCustomAlias');
   });
 });

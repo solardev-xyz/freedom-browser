@@ -17,12 +17,22 @@ const mockGetPostageBatches = jest.fn();
 
 jest.mock('@ethersphere/bee-js', () => ({
   Bee: jest.fn().mockImplementation(() => ({
-    uploadData: mockUploadData,
-    uploadFile: mockUploadFile,
-    uploadFilesFromDirectory: mockUploadFilesFromDirectory,
-    uploadCollection: mockUploadCollection,
-    retrieveTag: mockRetrieveTag,
-    getPostageBatches: mockGetPostageBatches,
+    data: {
+      upload: mockUploadData,
+    },
+    file: {
+      upload: mockUploadFile,
+    },
+    collection: {
+      upload: mockUploadCollection,
+      uploadFromDirectory: mockUploadFilesFromDirectory,
+    },
+    tag: {
+      get: mockRetrieveTag,
+    },
+    stamp: {
+      getAll: mockGetPostageBatches,
+    },
   })),
 }));
 
@@ -190,8 +200,10 @@ describe('publish-service', () => {
       jest.clearAllMocks();
     });
 
-    test('swarm:publish-data uploads via uploadFile and returns normalized result', async () => {
-      mockGetPostageBatches.mockResolvedValue([makeBatch('batch1', 1000000000, 86400)]);
+    test('swarm:publish-data uploads via file.upload and returns normalized result', async () => {
+      mockGetPostageBatches.mockResolvedValue([
+        makeBatch('batch1', 1000000000, 86400),
+      ]);
       mockUploadFile.mockResolvedValue({
         reference: makeRef('dataref123'),
         tagUid: 10,

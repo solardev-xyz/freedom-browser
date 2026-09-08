@@ -25,17 +25,12 @@ function defaultGetAntApiUrl() {
   return require('./service-registry').getAntApiUrl();
 }
 
-function defaultGetRadicleApiUrl() {
-  return require('./service-registry').getRadicleApiUrl();
-}
-
 function defaultServeIpfsRequest(request) {
   return require('./ipfs-manager').serveNativeGatewayRequest(request);
 }
 
 const SERVICE_PROTOCOLS = Object.freeze({
   ant: Object.freeze({ transport: 'http', wireProtocol: 'Bee HTTP API' }),
-  radicle: Object.freeze({ transport: 'http', wireProtocol: 'radicle-httpd HTTP API' }),
   ipfs: Object.freeze({ transport: 'gateway', wireProtocol: 'Freedom IPFS native gateway' }),
 });
 
@@ -221,7 +216,6 @@ function safeResponseHeaders(headers) {
 class NodeRequestController {
   constructor(options = {}) {
     this.getAntApiUrl = options.getAntApiUrl || defaultGetAntApiUrl;
-    this.getRadicleApiUrl = options.getRadicleApiUrl || defaultGetRadicleApiUrl;
     this.serveIpfsRequest = options.serveIpfsRequest || defaultServeIpfsRequest;
     this.fetch = options.fetch || globalThis.fetch;
     const legacyTimeoutMs = Number.isFinite(options.timeoutMs)
@@ -252,6 +246,12 @@ class NodeRequestController {
   }
 
   async request(input, context = {}) {
+    if (input.service === 'radicle') {
+      throw new AutomationError(
+        ERROR_CODES.CAPABILITY_UNAVAILABLE,
+        'Raw Radicle requests are unavailable for the embedded node; use node status or lifecycle controls'
+      );
+    }
     const protocol = SERVICE_PROTOCOLS[input.service];
     if (!protocol || protocol.transport !== input.transport) {
       throw new AutomationError(
@@ -523,7 +523,7 @@ class NodeRequestController {
   }
 
   #httpEndpointFor(service) {
-    const endpoint = service === 'ant' ? this.getAntApiUrl() : this.getRadicleApiUrl();
+    const endpoint = service === 'ant' ? this.getAntApiUrl() : null;
     if (!endpoint) {
       throw new AutomationError(
         ERROR_CODES.CAPABILITY_UNAVAILABLE,

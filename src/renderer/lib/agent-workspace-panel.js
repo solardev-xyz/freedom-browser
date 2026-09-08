@@ -379,7 +379,7 @@ export function createWorkspaceInspector(hosts) {
       }
     }
     if (!history.versions.length)
-      body.appendChild(element('p', 'agent-workspace-note', 'No versions saved yet.'));
+      body.appendChild(element('p', 'agent-workspace-note', 'No versions saved yet'));
     for (const version of history.versions) {
       const row = element('div', 'agent-workspace-version');
       row.appendChild(button(version.label, () => viewVersion(version)));

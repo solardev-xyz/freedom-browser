@@ -4,6 +4,16 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+    inputs:
+      myotis_force_live:
+        description: >-
+          Run the myotis-native-e2e live spec even though issue #200 keeps it
+          skipped (sets MYOTIS_E2E_IGNORE_KNOWN_STALL=1). This is how we check
+          whether a newer addon clears the upstream beacon wedge; a still-wedged
+          addon now aborts on the spec's stall guard in a few minutes rather
+          than burning the readiness budget.
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -26,7 +36,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: Install dependencies
@@ -66,7 +76,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: Install dependencies
@@ -102,7 +112,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: Install dependencies
@@ -132,6 +142,60 @@ jobs:
           FREEDOM_IPFS_NATIVE_SMOKE_TARGET: ${{ matrix.target }}
           FREEDOM_IPFS_NATIVE_SMOKE_LIVE: '0'
           FREEDOM_IPFS_NATIVE_SMOKE_ISSUE_102: '1'
+
+  # libradicle is the ONLY Radicle runtime — there is no executable fallback —
+  # so every release asset has to download, verify against the in-repo pinned
+  # checksums, load, and answer a native call on the platform it ships for.
+  # Modelled on myotis-addon-load. win-arm64 has no hosted runner: it is
+  # downloaded and checksum-verified on windows-latest (a foreign-arch library
+  # cannot be dlopen'ed), which is what catches a missing or re-published asset.
+  radicle-addon-load:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: mac-arm64
+            flags: --mac --arm64
+          - os: macos-15-intel
+            target: mac-x64
+            flags: --mac --x64
+          - os: ubuntu-latest
+            target: linux-x64
+            flags: --linux --x64
+          - os: ubuntu-24.04-arm
+            target: linux-arm64
+            flags: --linux --arm64
+          - os: windows-latest
+            target: win-x64
+            flags: --win --x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Download this runner's libradicle addon
+        run: npm run radicle:download -- ${{ matrix.flags }}
+
+      - name: Load addon and verify exports
+        run: node scripts/check-radicle-addon.js radicle-bin/${{ matrix.target }}/libradicle.node
+
+      # No hosted arm64 Windows runner exists, so the asset is at least proven
+      # to be published and to match the pinned SHA256SUMS.
+      - name: Verify the win-arm64 release asset
+        if: matrix.target == 'win-x64'
+        run: npm run radicle:download -- --win --arm64
 
   # Load every native Myotis addon target that release packaging requires.
   # The live network proof below remains one representative architecture per
@@ -167,7 +231,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: Install dependencies
@@ -195,6 +259,17 @@ jobs:
   # Cold sync can take 30-40 minutes. Cache restore/save are split so a timed
   # out first attempt still preserves its cleanly-stopped partial sync; a
   # re-run continues from that snapshot instead of starting from zero.
+  #
+  # CURRENTLY SKIPPED at the spec level, see issue #200: myotis v0.1.7 (the
+  # newest published release) bootstraps every cold start from a checkpoint
+  # embedded in the binary and then wedges — the catch-up applies beacon
+  # periods 1825 -> 1840 and can never obtain the update for period 1840, so
+  # readiness is unreachable. The job stayed green only while the cache chain
+  # carried a pre-stall warm snapshot forward; GitHub evicted it after 7 idle
+  # days and a cold start can no longer re-warm it. The remaining steps still
+  # cost a few minutes each, so the budgets below are sized for a real run
+  # (MYOTIS_E2E_IGNORE_KNOWN_STALL=1) rather than the 190-minute worst case
+  # that burned ~4 h of CI per push.
   myotis-native-e2e:
     # A feature branch with an open PR otherwise launches this 30-40 minute
     # live-network matrix twice (push + pull_request), doubling cost and exposure
@@ -214,7 +289,9 @@ jobs:
             target: win32-x64
             addon: myotis-bin/win-x64/myotis-node.node
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 190
+    # Spec budget is READY_TIMEOUT * 2 + 10 min = 60 min; the rest covers
+    # npm ci, Playwright deps, and the two addon downloads.
+    timeout-minutes: 75
 
     steps:
       - name: Check out repository
@@ -223,7 +300,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: Install Linux native USB build dependency
@@ -235,7 +312,7 @@ jobs:
 
       - name: Install Playwright system dependencies
         if: runner.os == 'Linux'
-        run: npx playwright install-deps
+        uses: ./.github/actions/install-playwright-deps
 
       - name: Download Myotis release addons
         run: npm run myotis:download
@@ -267,7 +344,18 @@ jobs:
         env:
           MYOTIS_DATA_DIR: ${{ runner.temp }}/myotis-data
           MYOTIS_NODE_PATH: ${{ github.workspace }}/${{ matrix.addon }}
-          MYOTIS_E2E_READY_TIMEOUT_MIN: '75'
+          # The one observed successful cold sync (run 32313049340) reached a
+          # verified read in ~18 min, almost all of it execution-layer peer
+          # hunting after the beacon client synced in 15 s. 25 min leaves
+          # headroom without inviting another 1.3 h stall: a wedged catch-up
+          # now aborts on the stall guard inside the spec instead.
+          MYOTIS_E2E_READY_TIMEOUT_MIN: '25'
+          # The stall window keeps its 3-minute default, which must stay below
+          # the readiness budget above for the guard to be reachable at all
+          # (test-e2e/live/myotis-sync-guard.js owns and unit-tests that
+          # invariant). Empty unless a maintainer forces the run from the
+          # workflow_dispatch input.
+          MYOTIS_E2E_IGNORE_KNOWN_STALL: ${{ inputs.myotis_force_live && '1' || '' }}
           FREEDOM_TEST_HIDE_WINDOW: '1'
         run: |
           if [ "$RUNNER_OS" = "Linux" ]; then
@@ -276,8 +364,42 @@ jobs:
             npm run test:e2e:live -- test-e2e/live/myotis-ens.spec.js
           fi
 
-      - name: Save Myotis sync snapshot
+      # Nothing runs the native client when the spec skips, so the data dir may
+      # not exist at all — actions/cache/save fails outright on a missing path,
+      # and saving an empty dir would shadow a genuinely warm snapshot on the
+      # next prefix restore.
+      #
+      # Evidence for each branch, so a future reader knows what is proven:
+      #   present=true  — ubuntu-latest and macos-14 (run 33450528176, cache
+      #                   restore hit), and windows-latest via a forced
+      #                   `myotis_force_live` dispatch, which populates the data
+      #                   dir before the stall guard aborts.
+      #   present=false — windows-latest (run 33450528176: cache miss + skip,
+      #                   the case that would have failed the job outright under
+      #                   the previous `if: always()` save).
+      - name: Check for a Myotis sync snapshot
+        id: myotis-snapshot
         if: always()
+        shell: bash
+        env:
+          MYOTIS_DATA_DIR: ${{ runner.temp }}/myotis-data
+        run: |
+          # runner.temp is a native path, so on Windows this arrives as
+          # 'D:\a\_temp/myotis-data'. Normalize to forward slashes before
+          # handing it to msys `ls`, which is the only separator form it is
+          # documented to accept, and echo the result so the branch taken is
+          # visible in the log.
+          dir="${MYOTIS_DATA_DIR//\\//}"
+          if [ -n "$(ls -A "$dir" 2>/dev/null)" ]; then
+            present=true
+          else
+            present=false
+          fi
+          echo "snapshot dir: $dir (present=$present)"
+          echo "present=$present" >> "$GITHUB_OUTPUT"
+
+      - name: Save Myotis sync snapshot
+        if: always() && steps.myotis-snapshot.outputs.present == 'true'
         uses: actions/cache/save@v4
         with:
           path: ${{ runner.temp }}/myotis-data
@@ -309,7 +431,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: Install Linux native USB build dependency
@@ -319,7 +441,7 @@ jobs:
         run: npm ci
 
       - name: Install Playwright system dependencies
-        run: npx playwright install-deps
+        uses: ./.github/actions/install-playwright-deps
 
       - name: Download adblock filter lists
         run: npm run adblock:download
@@ -332,6 +454,49 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: e2e-settings-traces
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # The keyboard shortcut registry is the only source of truth for menu
+  # accelerators, the renderer keydown fallback and the Settings > Shortcuts
+  # remap flow, and unit tests can only prove the three agree on paper. These
+  # two specs drive the real main → preload → renderer round trip, so a
+  # regression in it cannot pass unit-only CI (previously they ran locally
+  # only — see #180).
+  e2e-shortcuts-zoom:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Linux native USB build dependency
+        uses: ./.github/actions/install-linux-native-deps
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright system dependencies
+        uses: ./.github/actions/install-playwright-deps
+
+      - name: Run zoom + shortcuts E2E
+        run: xvfb-run -a npm run test:e2e -- test-e2e/zoom.spec.js test-e2e/shortcuts.spec.js
+
+      - name: Upload Playwright traces and screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-shortcuts-zoom-traces
           path: |
             test-results/
             playwright-report/
@@ -360,7 +525,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: Install Linux native USB build dependency
@@ -372,7 +537,7 @@ jobs:
 
       - name: Install Playwright system dependencies
         if: runner.os == 'Linux'
-        run: npx playwright install-deps
+        uses: ./.github/actions/install-playwright-deps
 
       - name: Download Ant (antd) binary
         # Version pinned in scripts/fetch-ant.js so CI tests exactly what releases ship.
@@ -430,7 +595,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: Install Linux native USB build dependency
@@ -441,7 +606,7 @@ jobs:
         run: npm ci
 
       - name: Install Playwright system dependencies
-        run: npx playwright install-deps
+        uses: ./.github/actions/install-playwright-deps
 
       - name: Download Ant (antd) binary
         # Version pinned in scripts/fetch-ant.js so CI tests exactly what releases ship.
@@ -484,7 +649,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: Install Linux native USB build dependency
@@ -496,7 +661,7 @@ jobs:
 
       - name: Install Playwright system dependencies
         if: runner.os == 'Linux'
-        run: npx playwright install-deps
+        uses: ./.github/actions/install-playwright-deps
 
       - name: Run address-bar clipboard E2E
         shell: bash
@@ -536,7 +701,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: Install Linux native USB build dependency
@@ -548,7 +713,7 @@ jobs:
 
       - name: Install Playwright system dependencies
         if: runner.os == 'Linux'
-        run: npx playwright install-deps
+        uses: ./.github/actions/install-playwright-deps
 
       - name: Run profile lifecycle E2E
         shell: bash

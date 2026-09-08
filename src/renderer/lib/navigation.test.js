@@ -42,7 +42,6 @@ const createTab = (id, url, overrides = {}) => {
     hasNavigatedDuringCurrentLoad: false,
     isWebviewLoading: false,
     currentBzzBase: null,
-    currentRadBase: null,
     addressBarSnapshot: '',
     committedDisplayUrl: '',
     cachedWebContentsId: null,
@@ -58,6 +57,7 @@ const createTab = (id, url, overrides = {}) => {
     favicon: overrides.favicon || null,
     webview,
     navigationState,
+    onchainProvenance: overrides.onchainProvenance || null,
   };
 };
 
@@ -67,13 +67,24 @@ const loadNavigationModule = async (options = {}) => {
   const homeUrl = 'file:///app/pages/home.html';
   const historyUrl = 'file:///app/pages/history.html';
   const errorUrlBase = 'file:///app/pages/error.html';
+  // Mirrors `page-urls.js`: chrome pages are matched on the shell's own
+  // resolved `pages/<file>` base, never a `/<file>.html` substring, so a
+  // remote look-alike path can't impersonate an internal page (#235).
+  const matchesInternalPage = (url, base) =>
+    typeof url === 'string' &&
+    (url === base || url.startsWith(`${base}?`) || url.startsWith(`${base}#`));
+  const isInterstitialPageUrlMock = (url) =>
+    ['file:///app/pages/ens-unverified.html', 'file:///app/pages/ens-conflict.html'].some((base) =>
+      matchesInternalPage(url, base)
+    );
+  const isOnchainInterstitialPageUrlMock = (url) =>
+    matchesInternalPage(url, 'file:///app/pages/onchain-unverified.html');
   const state = {
     bzzRoutePrefix: 'https://gateway.example/bzz/',
     ipfsRoutePrefix: 'https://gateway.example/ipfs/',
     ipnsRoutePrefix: 'https://gateway.example/ipns/',
-    radicleApiPrefix: 'http://127.0.0.1:8780/api/v1/repos/',
-    radicleBase: 'http://127.0.0.1:8780',
-    enableRadicleIntegration: options.enableRadicleIntegration || false,
+    radicleApiPrefix: 'radapi://local/api/v1/repos/',
+    radicleBase: 'radapi://local',
     currentRadicleStatus: options.currentRadicleStatus || 'running',
     currentIpfsStatus: options.currentIpfsStatus || 'running',
     registry: options.registry || { ipfs: { mode: 'bundled' } },
@@ -99,6 +110,16 @@ const loadNavigationModule = async (options = {}) => {
     startIpfsProgressStatus: jest.fn(),
     stopIpfsProgressStatus: jest.fn(),
   };
+  // navigation.js only reaches into wallet-ui.js for the ethereum: tip-link
+  // send flow; the reason constants mirror the real module so the refusal
+  // messages are asserted against the same strings production compares.
+  const walletUiMocks = {
+    openSendFlow: jest.fn(() => 'ok'),
+    SEND_FLOW_OK: 'ok',
+    SEND_FLOW_DISABLED: 'disabled',
+    SEND_FLOW_PRIVATE: 'private',
+    SEND_FLOW_SETUP: 'setup',
+  };
   const activeRef = {};
   const tabsRef = { list: [] };
   const tabsMocks = {
@@ -111,6 +132,9 @@ const loadNavigationModule = async (options = {}) => {
     getActiveTabState: jest.fn(() => activeRef.tab?.navigationState || null),
     setWebviewEventHandler: jest.fn((handler) => {
       tabsMocks.webviewEventHandler = handler;
+    }),
+    setOnchainProvenanceChangeHandler: jest.fn((handler) => {
+      tabsMocks.onchainProvenanceChangeHandler = handler;
     }),
     updateActiveTabTitle: jest.fn(),
     updateTabFavicon: jest.fn(),
@@ -165,7 +189,7 @@ const loadNavigationModule = async (options = {}) => {
       };
     }),
     getOriginalUrlFromErrorPage: jest.fn((url) => {
-      if (!url.includes('error.html')) return null;
+      if (!matchesInternalPage(url, errorUrlBase)) return null;
       try {
         return new URL(url).searchParams.get('url');
       } catch {
@@ -178,7 +202,7 @@ const loadNavigationModule = async (options = {}) => {
     resolveProtocolIconType: jest.fn(({ value, currentPageSecure }) => {
       if (currentPageSecure) return 'https';
       if (value?.startsWith('bzz://')) return 'swarm';
-      if (value?.startsWith('rad://') && state.enableRadicleIntegration) return 'radicle';
+      if (value?.startsWith('rad://')) return 'radicle';
       return value ? 'http' : 'http';
     }),
     resolveTrustBadge: jest.fn(({ value, ensTrustByName }) => {
@@ -227,10 +251,42 @@ const loadNavigationModule = async (options = {}) => {
         displayValue: input,
       };
     }),
+    formatOnchainAppUrl: jest.fn((input) => {
+      const raw = (input || '').trim();
+      const canonical = raw.match(/^web3:\/\/(0x[0-9a-f]{40})\.eip155-([0-9]+)([/?#].*)?$/i);
+      const friendly = raw.match(
+        /^web3:\/\/(0x[0-9a-f]{40})(?::([1-9][0-9]*))?(\/[^?#]*)?(\?[^#]*)?(#.*)?$/i
+      );
+      const match = canonical || friendly;
+      if (!match) return null;
+      const chainId = Number(match[2] || 1);
+      const rawSuffix = canonical
+        ? match[3] || '/'
+        : `${match[3] || '/'}${match[4] || ''}${match[5] || ''}`;
+      const suffix = rawSuffix.startsWith('/') ? rawSuffix : `/${rawSuffix}`;
+      return `web3://${match[1].toLowerCase()}.eip155-${chainId}${suffix}`;
+    }),
+    formatOnchainAppDisplayUrl: jest.fn((input) => {
+      const raw = (input || '').trim();
+      const canonical = raw.match(/^web3:\/\/(0x[0-9a-f]{40})\.eip155-([0-9]+)([/?#].*)?$/i);
+      const friendly = raw.match(
+        /^web3:\/\/(0x[0-9a-f]{40})(?::([1-9][0-9]*))?(\/[^?#]*)?(\?[^#]*)?(#.*)?$/i
+      );
+      const match = canonical || friendly;
+      if (!match) return null;
+      const chainId = Number(match[2] || 1);
+      const rawSuffix = canonical
+        ? match[3] || '/'
+        : `${match[3] || '/'}${match[4] || ''}${match[5] || ''}`;
+      const suffix = rawSuffix.startsWith('/') ? rawSuffix : `/${rawSuffix}`;
+      return `web3://${match[1].toLowerCase()}${chainId === 1 ? '' : `:${chainId}`}${suffix}`;
+    }),
+    looksLikeOnchainAppInput: jest.fn((input) => /^web3:/i.test((input || '').trim())),
     deriveDisplayValue: jest.fn((url) => `display:${url}`),
-    deriveBzzBaseFromUrl: jest.fn((url) => (url.includes('/bzz/') ? 'https://gateway.example/bzz/hash/' : null)),
+    deriveBzzBaseFromUrl: jest.fn((url) =>
+      url.includes('/bzz/') ? 'https://gateway.example/bzz/hash/' : null
+    ),
     deriveIpfsBaseFromUrl: jest.fn(() => null),
-    deriveRadBaseFromUrl: jest.fn(() => null),
     applyEnsNamePreservation: jest.fn((url) => url),
     buildEnsDisplayUri: jest.fn((protocol, name, suffix = '') => {
       if (!name) return null;
@@ -271,10 +327,27 @@ const loadNavigationModule = async (options = {}) => {
         Boolean(displayUrl) &&
         !displayUrl.startsWith('freedom://') &&
         !displayUrl.startsWith('view-source:') &&
-        !internalUrl.includes('/error.html')
+        !matchesInternalPage(internalUrl, errorUrlBase)
       );
     }),
     getInternalPageName: jest.fn((url) => (url === historyUrl ? 'history' : null)),
+    getOnchainInterstitialTarget: jest.fn(() => null),
+    isErrorPageUrl: jest.fn((url) => matchesInternalPage(url, errorUrlBase)),
+    isInterstitialPageUrl: jest.fn((url) => isInterstitialPageUrlMock(url)),
+    isOnchainInterstitialPageUrl: jest.fn((url) => isOnchainInterstitialPageUrlMock(url)),
+    isTrustInterstitialPageUrl: jest.fn(
+      (url) => isInterstitialPageUrlMock(url) || isOnchainInterstitialPageUrlMock(url)
+    ),
+    getInterstitialDisplayName: jest.fn((url) => {
+      if (!isInterstitialPageUrlMock(url)) {
+        return null;
+      }
+      try {
+        return new URL(url).searchParams.get('name') || null;
+      } catch {
+        return null;
+      }
+    }),
     parseEnsInput: jest.fn(() => null),
     buildInternalPageUrl: jest.fn((file, params = null) => {
       const base = `file:///app/pages/${file}`;
@@ -302,8 +375,6 @@ const loadNavigationModule = async (options = {}) => {
     addHistory: jest.fn().mockResolvedValue(undefined),
     setBzzBase: jest.fn(),
     clearBzzBase: jest.fn(),
-    setRadBase: jest.fn(),
-    clearRadBase: jest.fn(),
     startSwarmProbe: jest.fn((hash, path) => {
       const id = swarmProbeState.nextProbeId;
       swarmProbeState.startCalls.push({ id, hash, path });
@@ -344,6 +415,7 @@ const loadNavigationModule = async (options = {}) => {
   const trustPopoverStatus = createElement('div');
   const trustPopoverTrustFields = createElement('div');
   const trustPopoverContent = createElement('div');
+  const trustPopoverContentTitle = createElement('div');
   const trustPopoverContentFields = createElement('div');
   const trustPopoverTooltip = createElement('div');
   const agentNavForm = createElement('form');
@@ -371,6 +443,7 @@ const loadNavigationModule = async (options = {}) => {
       'trust-popover-status': trustPopoverStatus,
       'trust-popover-trust-fields': trustPopoverTrustFields,
       'trust-popover-content': trustPopoverContent,
+      'trust-popover-content-title': trustPopoverContentTitle,
       'trust-popover-content-fields': trustPopoverContentFields,
       'trust-popover-tooltip': trustPopoverTooltip,
       'agent-workspace-nav': agentNavForm,
@@ -423,7 +496,12 @@ const loadNavigationModule = async (options = {}) => {
   tabsRef.list = options.tabs || [firstTab];
   activeRef.tab = options.activeTab || firstTab;
 
-  jest.doMock('./state.js', () => ({ state }));
+  jest.doMock('./state.js', () => ({
+    state,
+    // Mirrors the real helper: the profile's Radicle mode is published into
+    // the service registry by the main process.
+    isRadicleDisabledForProfile: () => state.registry?.radicle?.mode === 'disabled',
+  }));
   jest.doMock('./debug.js', () => debugMocks);
   jest.doMock('./bookmarks-ui.js', () => bookmarksUiMocks);
   jest.doMock('./github-bridge-ui.js', () => githubBridgeUiMocks);
@@ -432,6 +510,7 @@ const loadNavigationModule = async (options = {}) => {
   jest.doMock('./url-utils.js', () => urlUtilsMocks);
   jest.doMock('./page-urls.js', () => pageUrlsMocks);
   jest.doMock('./ipfs-progress-status.js', () => ipfsProgressMocks);
+  jest.doMock('./wallet-ui.js', () => walletUiMocks);
 
   // Pin the shortcut matcher to Linux semantics (Ctrl-based combos) so the
   // keyboard-shortcut assertions below don't depend on the host platform.
@@ -447,6 +526,7 @@ const loadNavigationModule = async (options = {}) => {
     bookmarksUiMocks,
     githubBridgeUiMocks,
     ipfsProgressMocks,
+    walletUiMocks,
     tabsMocks,
     navigationUtilsMocks,
     urlUtilsMocks,
@@ -602,12 +682,9 @@ describe('navigation', () => {
     expect(ctx.activeRef.tab.webview.reload).toHaveBeenCalled();
     expect(ctx.activeRef.tab.webview.reloadIgnoringCache).toHaveBeenCalled();
 
-    ctx.state.enableRadicleIntegration = false;
     ctx.elements.addressInput.value = 'rad://zrepo123';
     ctx.mod.onSettingsChanged();
-    expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(
-      'file:///app/pages/rad-browser.html?error=disabled'
-    );
+    expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledTimes(1);
   });
 
   test('makes the shared address bar read-only only while Agent-first owns it', async () => {
@@ -793,9 +870,7 @@ describe('navigation', () => {
       ctx.mod.loadTarget('   ');
 
       expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
-      expect(ctx.debugMocks.pushDebug).toHaveBeenCalledWith(
-        'Ignoring empty input or invalid URL.'
-      );
+      expect(ctx.debugMocks.pushDebug).toHaveBeenCalledWith('Ignoring empty input or invalid URL.');
     });
 
     test('does not turn protocol input into a search', async () => {
@@ -806,6 +881,91 @@ describe('navigation', () => {
       ctx.mod.loadTarget('ipfs://bafybeigdyrzt');
 
       expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith('ipfs://bafybeigdyrzt');
+    });
+  });
+
+  describe('onchain application navigation', () => {
+    const ADDRESS = '0x00000095643CFfA7D9fae407a84dfCB6406456c6';
+    const CANONICAL = `web3://${ADDRESS.toLowerCase()}.eip155-1/`;
+
+    test('loads an ERC-8244 app through its canonical contract-and-chain origin', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+
+      ctx.mod.loadTarget(`web3://${ADDRESS}`);
+
+      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(CANONICAL);
+      expect(ctx.elements.addressInput.value).toBe(`web3://${ADDRESS.toLowerCase()}/`);
+      expect(ctx.activeRef.tab.navigationState.pendingNavigationUrl).toBe(CANONICAL);
+    });
+
+    test('preserves app routes while canonicalizing the origin', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      const target = `web3://${ADDRESS}:100/swap?token=eth#route`;
+
+      ctx.mod.loadTarget(target);
+
+      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(
+        `web3://${ADDRESS.toLowerCase()}.eip155-100/swap?token=eth#route`
+      );
+      expect(ctx.elements.addressInput.value).toBe(
+        `web3://${ADDRESS.toLowerCase()}:100/swap?token=eth#route`
+      );
+    });
+
+    test('refuses to view the source of the trust gate, on dispatch and on commit', async () => {
+      // #235: the gate's own `file:///…/pages/onchain-unverified.html?…` URL
+      // carries the single-use approval token. `view-source:` of it commits
+      // that URL, so every chrome surface that repaints from the committed
+      // URL — address bar, tab title, window title — would publish the token
+      // and the on-disk implementation path. The context menu hides the item;
+      // the dispatch refuses the navigation outright.
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      const gateUrl = `file:///app/pages/onchain-unverified.html?target=${encodeURIComponent(
+        CANONICAL
+      )}&token=aaaabbbbccccddddeeeeffff`;
+
+      ctx.activeRef.tab.webview.loadURL.mockClear();
+      ctx.elements.addressInput.value = '';
+      ctx.mod.loadTarget(`view-source:${gateUrl}`);
+
+      expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
+      expect(ctx.elements.addressInput.value).toBe('');
+
+      // Same for the name-resolution interstitials — same class of page.
+      ctx.mod.loadTarget('view-source:file:///app/pages/ens-conflict.html?name=lagged.tez');
+      expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
+
+      // Ordinary content still views its source.
+      ctx.mod.loadTarget('view-source:https://example.com/page');
+      // (`buildViewSourceNavigation` is mocked with a `load:` prefix here.)
+      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(
+        'load:view-source:https://example.com/page'
+      );
+
+      // Fail-safe on commit: if such a tab exists anyway (session restore, a
+      // back/forward entry predating the refusal above), the address bar and
+      // title stay blank rather than showing the token.
+      ctx.activeRef.tab.webview.getURL.mockReturnValue(`view-source:${gateUrl}`);
+      ctx.tabsMocks.webviewEventHandler('did-navigate', { event: { url: gateUrl } });
+
+      expect(ctx.elements.addressInput.value).toBe('');
+      expect(ctx.tabsMocks.updateActiveTabTitle).toHaveBeenCalledWith('');
+      expect(ctx.electronAPI.setWindowTitle).toHaveBeenCalledWith('');
+    });
+
+    test('surfaces malformed web3 intent instead of searching for it', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+
+      ctx.mod.loadTarget('web3://not-a-contract:1/');
+
+      expect(global.alert).toHaveBeenCalledWith(
+        expect.stringContaining('Invalid onchain application URL')
+      );
+      expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
     });
   });
 
@@ -842,9 +1002,7 @@ describe('navigation', () => {
 
       // After a successful probe we hand off to the `bzz:` protocol handler
       // rather than the raw gateway URL — see README "Swarm Content Retrieval".
-      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(
-        `bzz://${VALID_HASH}/`
-      );
+      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(`bzz://${VALID_HASH}/`);
       expect(ctx.activeRef.tab.navigationState.pendingSwarmProbeId).toBeNull();
     });
 
@@ -975,9 +1133,7 @@ describe('navigation', () => {
       // already been cleared, so the webview stays on its original URL.
       settleAwait(ctx, 'probe-1', { ok: true });
       await flushMicrotasks();
-      expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalledWith(
-        `bzz://${VALID_HASH}/`
-      );
+      expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalledWith(`bzz://${VALID_HASH}/`);
     });
 
     test('a second navigation cancels the first probe', async () => {
@@ -999,16 +1155,12 @@ describe('navigation', () => {
       // Settle the superseded first probe — result must be ignored.
       settleAwait(ctx, 'probe-1', { ok: true });
       await flushMicrotasks();
-      expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalledWith(
-        `bzz://${VALID_HASH}/`
-      );
+      expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalledWith(`bzz://${VALID_HASH}/`);
 
       // Settle the second probe with success — it should load the bzz:// URL.
       settleAwait(ctx, 'probe-2', { ok: true });
       await flushMicrotasks();
-      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(
-        `bzz://${secondHash}/`
-      );
+      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(`bzz://${secondHash}/`);
     });
 
     test('aborted outcome leaves the webview alone', async () => {
@@ -1096,6 +1248,41 @@ describe('navigation', () => {
       expect(loadedUrl).toContain('error=ERR_CONNECTION_REFUSED');
       expect(loadedUrl).toContain('protocol=ipfs');
       expect(loadedUrl).toContain(encodeURIComponent('ipfs://QmTest'));
+    });
+
+    // A profile with Radicle disabled can never start the node, so the
+    // generic connection-error panel would point at a toggle this profile
+    // does not have. The purpose-built panel explains the profile setting.
+    test('Radicle: a disabled profile lands on the explanatory disabled panel', async () => {
+      const ctx = await loadNavigationModule({
+        registry: { ipfs: { mode: 'bundled' }, radicle: { mode: 'disabled' } },
+      });
+      await ctx.mod.initNavigation();
+
+      ctx.mod.loadTarget('rad://zrepo123');
+      await flushMicrotasks();
+
+      expect(ctx.navigationUtilsMocks.buildRadicleDisabledUrl).toHaveBeenCalledWith(
+        expect.any(String),
+        'rad://zrepo123'
+      );
+      const loadedUrl = ctx.activeRef.tab.webview.loadURL.mock.calls.at(-1)[0];
+      expect(loadedUrl).toBe('file:///app/pages/rad-browser.html?error=disabled');
+      expect(ctx.urlUtilsMocks.formatRadicleUrl).not.toHaveBeenCalled();
+    });
+
+    test('Radicle: an enabled profile still routes to the repository viewer', async () => {
+      const ctx = await loadNavigationModule({
+        registry: { ipfs: { mode: 'bundled' }, radicle: { mode: 'embedded' } },
+      });
+      await ctx.mod.initNavigation();
+
+      ctx.mod.loadTarget('rad://zrepo123');
+      await flushMicrotasks();
+
+      expect(ctx.navigationUtilsMocks.buildRadicleDisabledUrl).not.toHaveBeenCalled();
+      const loadedUrl = ctx.activeRef.tab.webview.loadURL.mock.calls.at(-1)[0];
+      expect(loadedUrl).toContain('rad-browser.html?rid=zrepo123');
     });
 
     test('IPNS: error page carries protocol=ipns', async () => {
@@ -1219,6 +1406,73 @@ describe('navigation', () => {
       const loadedUrl = ctx.activeRef.tab.webview.loadURL.mock.calls.at(-1)[0];
       expect(loadedUrl).toBe('ipfs://QmTest');
       expect(loadedUrl).not.toContain('error.html');
+    });
+  });
+
+  describe('ethereum: tip links', () => {
+    // The chain registry has to be populated or handleEthereumUri bails before
+    // it ever reaches openSendFlow.
+    const loadWithChains = async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      const { walletState } = await import('./wallet/wallet-state.js');
+      walletState.registeredChains = { 100: { name: 'Gnosis' } };
+      return ctx;
+    };
+
+    test('opens the send flow with the parsed recipient, chain and amount', async () => {
+      const ctx = await loadWithChains();
+
+      ctx.mod.loadTarget('ethereum:0x1111111111111111111111111111111111111111@100?value=1e18');
+      await flushMicrotasks();
+
+      expect(ctx.walletUiMocks.openSendFlow).toHaveBeenCalledWith({
+        recipient: '0x1111111111111111111111111111111111111111',
+        chainId: 100,
+        amount: '1',
+      });
+      expect(global.alert).not.toHaveBeenCalled();
+      // Routing to the sidebar means no page load.
+      expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
+    });
+
+    // Each refusal has a different way out; the alert has to name the right
+    // one. Telling a private-window user to flip a Settings toggle that is
+    // already on leaves them with no path forward (#240).
+    test('explains a private window instead of pointing at the feature toggle', async () => {
+      const ctx = await loadWithChains();
+      ctx.walletUiMocks.openSendFlow.mockReturnValue('private');
+
+      ctx.mod.loadTarget('ethereum:0x1111111111111111111111111111111111111111@100');
+      await flushMicrotasks();
+
+      expect(global.alert).toHaveBeenCalledWith(
+        'Wallet is unavailable in private windows. Open a normal window to accept tips.'
+      );
+    });
+
+    test('points at the feature toggle only when the feature is off', async () => {
+      const ctx = await loadWithChains();
+      ctx.walletUiMocks.openSendFlow.mockReturnValue('disabled');
+
+      ctx.mod.loadTarget('ethereum:0x1111111111111111111111111111111111111111@100');
+      await flushMicrotasks();
+
+      expect(global.alert).toHaveBeenCalledWith(
+        'Enable Identity & Wallet (Settings → Experimental) to accept tips.'
+      );
+    });
+
+    test('points at onboarding when the wallet is enabled but not set up', async () => {
+      const ctx = await loadWithChains();
+      ctx.walletUiMocks.openSendFlow.mockReturnValue('setup');
+
+      ctx.mod.loadTarget('ethereum:0x1111111111111111111111111111111111111111@100');
+      await flushMicrotasks();
+
+      expect(global.alert).toHaveBeenCalledWith(
+        'Finish setting up Identity & Wallet to accept tips.'
+      );
     });
   });
 
@@ -1428,6 +1682,57 @@ describe('navigation', () => {
       expect(url.searchParams.get('uri')).toContain('ipfs://QmFake');
     });
 
+    test('committing an interstitial keeps the blocked name in the address bar', async () => {
+      // #235: the interstitials are chrome, not content. Their own
+      // `file:///…/pages/ens-*.html` URL must never reach the address bar —
+      // the user keeps seeing the name they asked for, exactly like the
+      // Swarm error page keeps `bzz://<hash>/`.
+      const ctx = await setupEnsDispatch({ blockUnverifiedEns: true });
+
+      ctx.tabsMocks.webviewEventHandler('did-navigate', {
+        event: {
+          url: 'file:///app/pages/ens-unverified.html?name=retry.tez&uri=ipfs%3A%2F%2FQmRetryTez',
+        },
+      });
+      expect(ctx.elements.addressInput.value).toBe('retry.tez');
+
+      ctx.tabsMocks.webviewEventHandler('did-navigate', {
+        event: {
+          url: 'file:///app/pages/ens-conflict.html?name=lagged.tez&block=%7B%7D&groups=%5B%5D',
+        },
+      });
+      expect(ctx.elements.addressInput.value).toBe('lagged.tez');
+
+      // Fail-safe: an interstitial without its `name` param still must not
+      // fall through to the raw file:// path.
+      ctx.tabsMocks.webviewEventHandler('did-navigate', {
+        event: { url: 'file:///app/pages/ens-conflict.html' },
+      });
+      expect(ctx.elements.addressInput.value).toBe('');
+    });
+
+    test('a remote page at an interstitial-look-alike path cannot spoof the address bar', async () => {
+      // #235 regression: `isInterstitialPageUrl` matched a `/ens-*.html`
+      // substring, so any remote page served at that path was treated as
+      // chrome — the address bar showed the attacker's `?name=` value (and
+      // the trust shield could badge it) while the webview rendered the
+      // attacker's HTML. Only the shell's own `pages/ens-*.html` is chrome.
+      const ctx = await setupEnsDispatch({ blockUnverifiedEns: true });
+
+      for (const hostile of [
+        'https://evil.test/ens-conflict.html?name=bank.eth',
+        'https://evil.test/pages/ens-unverified.html?name=bank.eth',
+        'https://evil.test/error.html?url=bzz%3A%2F%2Fvitalik.eth',
+      ]) {
+        ctx.tabsMocks.webviewEventHandler('did-navigate', { event: { url: hostile } });
+        expect(ctx.elements.addressInput.value).not.toBe('bank.eth');
+        expect(ctx.elements.addressInput.value).not.toBe('bzz://vitalik.eth');
+        // Falls through to the ordinary content path — `deriveDisplayValue`
+        // (mocked here as a `display:` prefix) renders the real URL.
+        expect(ctx.elements.addressInput.value).toBe(`display:${hostile}`);
+      }
+    });
+
     test('unverified proceeds normally when blockUnverifiedEns is off', async () => {
       const ctx = await setupEnsDispatch({ blockUnverifiedEns: false });
       const loadCalls = await dispatchEns(ctx, 'ens://ok.eth', {
@@ -1534,9 +1839,7 @@ describe('navigation', () => {
       ctx.mod.loadTarget('docs.example.tez/ignored');
       await flushMicrotasks();
 
-      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(
-        'https://example.com/landing'
-      );
+      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith('https://example.com/landing');
     });
 
     test('Tezos HTTP content appends the requested path to its published base path', async () => {
@@ -1853,9 +2156,7 @@ describe('navigation', () => {
       ctx.mod.loadTarget('bzz://vitalik.eth');
       await flushMicrotasks();
 
-      expect(global.alert).toHaveBeenCalledWith(
-        expect.stringMatching(/resolves to ipfs, not bzz/)
-      );
+      expect(global.alert).toHaveBeenCalledWith(expect.stringMatching(/resolves to ipfs, not bzz/));
       expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
       expect(ctx.electronAPI.startSwarmProbe).not.toHaveBeenCalled();
     });
@@ -1878,9 +2179,7 @@ describe('navigation', () => {
       ctx.mod.loadTarget('vitalik.eth');
       await flushMicrotasks();
 
-      expect(global.alert).not.toHaveBeenCalledWith(
-        expect.stringMatching(/resolves to ipfs, not/)
-      );
+      expect(global.alert).not.toHaveBeenCalledWith(expect.stringMatching(/resolves to ipfs, not/));
     });
 
     test('ipc-message ens:continue-unverified re-dispatches with allow flag', async () => {
@@ -1898,7 +2197,9 @@ describe('navigation', () => {
       ctx.mod.loadTarget('ens://retry.eth');
       await flushMicrotasks();
       expect(
-        ctx.activeRef.tab.webview.loadURL.mock.calls.find(([u]) => u.includes('ens-unverified.html'))
+        ctx.activeRef.tab.webview.loadURL.mock.calls.find(([u]) =>
+          u.includes('ens-unverified.html')
+        )
       ).toBeDefined();
 
       // Simulate interstitial "Continue once" sendToHost → tabs routes to
@@ -1932,7 +2233,9 @@ describe('navigation', () => {
       ctx.mod.loadTarget('retry.tez');
       await flushMicrotasks();
       expect(
-        ctx.activeRef.tab.webview.loadURL.mock.calls.find(([u]) => u.includes('ens-unverified.html'))
+        ctx.activeRef.tab.webview.loadURL.mock.calls.find(([u]) =>
+          u.includes('ens-unverified.html')
+        )
       ).toBeDefined();
 
       ctx.electronAPI.resolveTezosDomain.mockClear();
@@ -1961,6 +2264,66 @@ describe('navigation', () => {
 
       expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(
         'file:///app/pages/settings.html'
+      );
+    });
+
+    test('ipc-message onchain continue returns the approval token as a navigation header', async () => {
+      const ctx = await setupEnsDispatch();
+      const target = 'web3://0x00000095643cffA7d9FAe407A84DfCB6406456C6.eip155-1/';
+      const token = 'a'.repeat(43);
+
+      ctx.tabsMocks.webviewEventHandler('ipc-message', {
+        tabId: ctx.activeRef.tab.id,
+        channel: 'onchain:continue-unverified',
+        args: [{ target, token }],
+      });
+
+      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(target.toLowerCase(), {
+        extraHeaders: `X-Freedom-Onchain-App-Approval: ${token}`,
+      });
+    });
+
+    test('ipc-message onchain continue rejects malformed tokens', async () => {
+      const ctx = await setupEnsDispatch();
+
+      ctx.tabsMocks.webviewEventHandler('ipc-message', {
+        tabId: ctx.activeRef.tab.id,
+        channel: 'onchain:continue-unverified',
+        args: [
+          {
+            target: 'web3://0x00000095643cffA7d9FAe407A84DfCB6406456C6.eip155-1/',
+            token: 'bad\r\nX-Injected: yes',
+          },
+        ],
+      });
+
+      expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
+    });
+
+    test('ipc-message onchain conflict retry re-enters normal web3 navigation', async () => {
+      const ctx = await setupEnsDispatch();
+      const target = 'web3://0x00000095643cffA7d9FAe407A84DfCB6406456C6.eip155-1/';
+
+      ctx.tabsMocks.webviewEventHandler('ipc-message', {
+        tabId: ctx.activeRef.tab.id,
+        channel: 'onchain:retry',
+        args: [{ target }],
+      });
+
+      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(target.toLowerCase());
+    });
+
+    test('ipc-message onchain settings opens the RPC section', async () => {
+      const ctx = await setupEnsDispatch();
+
+      ctx.tabsMocks.webviewEventHandler('ipc-message', {
+        tabId: ctx.activeRef.tab.id,
+        channel: 'onchain:open-rpc-settings',
+        args: [],
+      });
+
+      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(
+        'file:///app/pages/settings.html#rpc'
       );
     });
 
@@ -2049,12 +2412,10 @@ describe('navigation', () => {
         const m = value.match(/^(?:(?:ens|bzz|ipfs|ipns):\/\/)?([^?/]+)(.*)?$/i);
         if (!m) return null;
         const name = m[1].toLowerCase();
-        return (
-          name.endsWith('.eth') ||
+        return name.endsWith('.eth') ||
           name.endsWith('.box') ||
           name.endsWith('.wei') ||
           name.endsWith('.gwei')
-        )
           ? { name, suffix: m[2] || '', assertedTransport }
           : null;
       });
@@ -2317,12 +2678,10 @@ describe('navigation', () => {
         const m = value.match(/^(?:(?:ens|bzz|ipfs|ipns):\/\/)?([^?/]+)(.*)?$/i);
         if (!m) return null;
         const name = m[1].toLowerCase();
-        return (
-          name.endsWith('.eth') ||
+        return name.endsWith('.eth') ||
           name.endsWith('.box') ||
           name.endsWith('.wei') ||
           name.endsWith('.gwei')
-        )
           ? { name, suffix: m[2] || '', assertedTransport }
           : null;
       });
@@ -2365,9 +2724,7 @@ describe('navigation', () => {
       };
       ctx.state.ensTrustByName.set('vitalik.eth', oldTrust);
       commitDisplay(ctx, 'bzz://vitalik.eth/');
-      ctx.activeRef.tab.webview.getURL.mockReturnValue(
-        `bzz://${'a'.repeat(64)}/`
-      );
+      ctx.activeRef.tab.webview.getURL.mockReturnValue(`bzz://${'a'.repeat(64)}/`);
       ctx.electronAPI.resolveEns.mockResolvedValue({
         type: 'ok',
         name: 'vitalik.eth',
@@ -2689,9 +3046,7 @@ describe('navigation', () => {
 
       // Step 5: switch back to Tab A. The tab-switched handler restores
       // addressInput.value from the snapshot.
-      ctx.navigationUtilsMocks.deriveSwitchedTabDisplay.mockReturnValueOnce(
-        'ipfs://vitalik.eth'
-      );
+      ctx.navigationUtilsMocks.deriveSwitchedTabDisplay.mockReturnValueOnce('ipfs://vitalik.eth');
       ctx.activeRef.tab = tabA;
       ctx.tabsMocks.webviewEventHandler('tab-switched', {
         tabId: tabA.id,

@@ -4,9 +4,10 @@
     <meta charset="UTF-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:;"
+      content="default-src 'none'; script-src 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src data:;"
     />
     <title>History</title>
+    <link rel="stylesheet" href="styles/theme.css" />
     <style>
       html,
       body {
@@ -19,8 +20,8 @@
           -apple-system,
           BlinkMacSystemFont,
           sans-serif;
-        background: linear-gradient(135deg, #0d1117 0%, #161b22 50%, #21262d 100%);
-        color: #c9d1d9;
+        background: var(--page-gradient);
+        color: var(--text);
         padding: 48px;
         box-sizing: border-box;
         min-height: 100vh;
@@ -28,7 +29,7 @@
       h1 {
         font-size: 28px;
         margin-bottom: 8px;
-        color: #58a6ff;
+        color: var(--accent);
         font-weight: 600;
         letter-spacing: -0.5px;
         display: flex;
@@ -36,7 +37,7 @@
         gap: 12px;
       }
       .subtitle {
-        color: #8b949e;
+        color: var(--text-muted);
         margin-bottom: 24px;
         font-size: 14px;
       }
@@ -50,27 +51,27 @@
         flex: 1;
         max-width: 400px;
         padding: 10px 16px;
-        background: #21262d;
-        border: 1px solid #30363d;
+        background: var(--bg-card);
+        border: 1px solid var(--border);
         border-radius: 8px;
-        color: #c9d1d9;
+        color: var(--text);
         font-size: 14px;
         font-family: inherit;
         outline: none;
         transition: border-color 0.15s;
       }
       .search-input:focus {
-        border-color: #58a6ff;
+        border-color: var(--accent);
       }
       .search-input::placeholder {
-        color: #6e7681;
+        color: var(--text-subtle);
       }
       .btn {
         padding: 10px 16px;
-        background: #21262d;
-        border: 1px solid #30363d;
+        background: var(--bg-card);
+        border: 1px solid var(--border);
         border-radius: 8px;
-        color: #c9d1d9;
+        color: var(--text);
         font-size: 14px;
         font-family: inherit;
         cursor: pointer;
@@ -80,15 +81,15 @@
         gap: 8px;
       }
       .btn:hover {
-        background: #30363d;
-        border-color: #484f58;
+        background: var(--bg-raised);
+        border-color: var(--border-strong);
       }
       .btn.danger {
-        color: #f85149;
+        color: var(--danger);
       }
       .btn.danger:hover {
-        border-color: #f85149;
-        background: #f8514915;
+        border-color: var(--danger);
+        background: var(--danger-bg);
       }
       .history-list {
         display: flex;
@@ -100,18 +101,18 @@
         align-items: center;
         gap: 16px;
         padding: 14px 16px;
-        background: rgba(22, 27, 34, 0.6);
+        background: var(--surface-translucent);
         border: 1px solid transparent;
         border-radius: 8px;
         cursor: pointer;
         transition: all 0.15s ease;
       }
       .history-item:hover {
-        background: #21262d;
-        border-color: #30363d;
+        background: var(--bg-card);
+        border-color: var(--border);
       }
       .history-item:active {
-        background: #30363d;
+        background: var(--bg-raised);
       }
       .favicon-container {
         position: relative;
@@ -127,18 +128,18 @@
         height: 24px;
         border-radius: 4px;
         object-fit: contain;
-        background: #21262d;
+        background: var(--bg-card-hover);
       }
       .favicon-placeholder {
         width: 24px;
         height: 24px;
         border-radius: 4px;
-        background: #21262d;
+        background: var(--bg-card-hover);
         display: flex;
         align-items: center;
         justify-content: center;
         font-size: 12px;
-        color: #6e7681;
+        color: var(--text-subtle);
       }
       /* Protocol icon shown when no favicon */
       .protocol-icon-full {
@@ -163,6 +164,10 @@
       .protocol-icon-full.ipns {
         background: #3fb95033;
         color: #3fb950;
+      }
+      .protocol-icon-full.onchain {
+        background: #8c8cff33;
+        color: #a8a8ff;
       }
       .protocol-icon-full.ens {
         background: #a371f733;
@@ -191,7 +196,7 @@
         font-weight: 600;
         text-transform: uppercase;
         letter-spacing: 0.3px;
-        border: 1px solid #0d1117;
+        border: 1px solid var(--bg);
         display: none;
       }
       .protocol-badge.show {
@@ -219,7 +224,7 @@
       }
       .history-title {
         font-size: 14px;
-        color: #f0f6fc;
+        color: var(--text-strong);
         margin-bottom: 4px;
         white-space: nowrap;
         overflow: hidden;
@@ -227,7 +232,7 @@
       }
       .history-url {
         font-size: 12px;
-        color: #58a6ff;
+        color: var(--accent);
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -237,7 +242,7 @@
         align-items: center;
         gap: 16px;
         flex-shrink: 0;
-        color: #6e7681;
+        color: var(--text-meta);
         font-size: 12px;
       }
       .history-time {
@@ -254,7 +259,7 @@
         background: transparent;
         border: none;
         border-radius: 4px;
-        color: #6e7681;
+        color: var(--text-meta);
         cursor: pointer;
         transition: all 0.15s;
       }
@@ -262,13 +267,13 @@
         opacity: 1;
       }
       .delete-btn:hover {
-        color: #f85149;
-        background: #f8514915;
+        color: var(--danger);
+        background: var(--danger-bg);
       }
       .empty-state {
         text-align: center;
         padding: 64px;
-        color: #6e7681;
+        color: var(--text-meta);
       }
       .empty-state svg {
         width: 64px;
@@ -283,7 +288,7 @@
       .loading {
         text-align: center;
         padding: 64px;
-        color: #6e7681;
+        color: var(--text-meta);
       }
       .stats {
         color: #6e7681;
@@ -292,12 +297,10 @@
       /* Sort dropdown */
       .sort-select {
         padding: 10px 32px 10px 16px;
-        background: #21262d
-          url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="%236e7681" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>')
-          no-repeat right 12px center;
-        border: 1px solid #30363d;
+        background: var(--bg-card) var(--select-chevron) no-repeat right 12px center;
+        border: 1px solid var(--border);
         border-radius: 8px;
-        color: #c9d1d9;
+        color: var(--text);
         font-size: 14px;
         font-family: inherit;
         cursor: pointer;
@@ -307,11 +310,11 @@
         transition: border-color 0.15s;
       }
       .sort-select:focus {
-        border-color: #58a6ff;
+        border-color: var(--accent);
       }
       .sort-select:hover {
-        background-color: #30363d;
-        border-color: #484f58;
+        background-color: var(--bg-raised);
+        border-color: var(--border-strong);
       }
       /* Date group headers */
       .date-group {
@@ -323,7 +326,7 @@
       .date-header {
         font-size: 13px;
         font-weight: 600;
-        color: #8b949e;
+        color: var(--text-muted);
         margin-bottom: 8px;
         padding: 0 4px;
         display: flex;
@@ -334,116 +337,13 @@
         content: '';
         flex: 1;
         height: 1px;
-        background: #30363d;
+        background: var(--border);
       }
       .toolbar-right {
         display: flex;
         gap: 12px;
         align-items: center;
         margin-left: auto;
-      }
-
-      /* Light theme */
-      @media (prefers-color-scheme: light) {
-        body {
-          background: linear-gradient(135deg, #ffffff 0%, #f6f8fa 50%, #f0f2f5 100%);
-          color: #24292f;
-        }
-        h1 {
-          color: #0969da;
-        }
-        .subtitle {
-          color: #57606a;
-        }
-        .search-input {
-          background: #ffffff;
-          border-color: #d0d7de;
-          color: #24292f;
-        }
-        .search-input:focus {
-          border-color: #0969da;
-        }
-        .search-input::placeholder {
-          color: #8c959f;
-        }
-        .btn {
-          background: #ffffff;
-          border-color: #d0d7de;
-          color: #24292f;
-        }
-        .btn:hover {
-          background: #f6f8fa;
-          border-color: #8c959f;
-        }
-        .btn.danger {
-          color: #cf222e;
-        }
-        .btn.danger:hover {
-          border-color: #cf222e;
-          background: #ffebe9;
-        }
-        .history-item {
-          background: rgba(255, 255, 255, 0.8);
-        }
-        .history-item:hover {
-          background: #ffffff;
-          border-color: #d0d7de;
-        }
-        .history-item:active {
-          background: #f6f8fa;
-        }
-        .favicon {
-          background: #f6f8fa;
-        }
-        .favicon-placeholder {
-          background: #f6f8fa;
-          color: #8c959f;
-        }
-        .protocol-badge {
-          border-color: #ffffff;
-        }
-        .history-title {
-          color: #24292f;
-        }
-        .history-url {
-          color: #0969da;
-        }
-        .history-meta {
-          color: #57606a;
-        }
-        .delete-btn {
-          color: #57606a;
-        }
-        .delete-btn:hover {
-          color: #cf222e;
-          background: #ffebe9;
-        }
-        .empty-state {
-          color: #57606a;
-        }
-        .loading {
-          color: #57606a;
-        }
-        .sort-select {
-          background: #ffffff
-            url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="%2357606a" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>')
-            no-repeat right 12px center;
-          border-color: #d0d7de;
-          color: #24292f;
-        }
-        .sort-select:focus {
-          border-color: #0969da;
-        }
-        .sort-select:hover {
-          background-color: #f6f8fa;
-          border-color: #8c959f;
-        }
-        .date-header {
-          color: #57606a;
-        }
-        .date-header::after {
-          background: #d0d7de;
-        }
       }
     </style>
   </head>
@@ -464,14 +364,14 @@
       </svg>
       Browsing History
     </h1>
-    <p class="subtitle" id="stats">Loading...</p>
+    <p class="subtitle" id="stats">Loading…</p>
 
     <div class="toolbar">
       <input
         type="text"
         class="search-input"
         id="search-input"
-        placeholder="Search history..."
+        placeholder="Search history…"
         autofocus
       />
       <div class="toolbar-right">
@@ -500,7 +400,7 @@
     </div>
 
     <div id="history-container">
-      <div class="loading">Loading history...</div>
+      <div class="loading">Loading history…</div>
     </div>
 
     <script>
@@ -670,8 +570,20 @@
         `;
       }
 
+      // Subtitle counter, shared by the sibling list pages (history, downloads,
+      // payments): pluralise the noun, and name how much of the whole list is
+      // showing while a filter is active (#254). Duplicated per page because
+      // these pages' CSP allows inline script only; the copies are held
+      // identical to src/renderer/lib/ui-format.js by
+      // src/renderer/pages/list-page-counters.test.js.
+      function formatCount(shown, total, singular, plural = `${singular}s`) {
+        const noun = total === 1 ? singular : plural;
+        return shown === total ? `${total} ${noun}` : `${shown} of ${total} ${noun}`;
+      }
+
       // Render history list with date grouping
       function renderHistory(entries) {
+        statsEl.textContent = formatCount(entries?.length || 0, allHistory.length, 'page');
         if (!entries || entries.length === 0) {
           container.innerHTML = `
             <div class="empty-state">
@@ -798,7 +710,6 @@
           }
 
           allHistory = await freedomAPI.getHistory();
-          statsEl.textContent = `${allHistory.length} entries`;
           renderHistory(allHistory);
         } catch (err) {
           console.error('Failed to load history:', err);

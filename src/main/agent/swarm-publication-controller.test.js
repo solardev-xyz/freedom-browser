@@ -334,3 +334,19 @@ describe('SwarmPublicationController', () => {
     });
   });
 });
+
+test('verifies publication through the default Bee v13 data adapter', async () => {
+  const download = jest.fn(async () => Buffer.from('published'));
+  jest.doMock('../swarm/swarm-service', () => ({ getBee: () => ({ data: { download } }) }));
+  const { controller } = createController({ verifyPublication: undefined });
+  try {
+    const result = await controller.publish(
+      { resourceId: 'folder_aaaaaaaaaaaaaaaaaaaa', indexDocument: 'index.html' },
+      { conversationId: 'conversation_test', requestApproval: async () => 'approved' }
+    );
+    expect(download).toHaveBeenCalledWith(REFERENCE);
+    expect(result).toMatchObject({ publication: { verified: true } });
+  } finally {
+    jest.dontMock('../swarm/swarm-service');
+  }
+});

@@ -9,6 +9,9 @@ const normalizeBaseUrl = (value) =>
 // Kubo-compatible loopback gateway; real loads go through ipfs:// / ipns://
 // and the main-process native freedom-ipfs request API.
 const NATIVE_IPFS_BASE = 'http://freedom-ipfs.localhost';
+// The embedded Radicle protocol is registered for the app lifetime. Node
+// readiness affects responses, not whether renderer navigation has a route.
+const NATIVE_RADICLE_BASE = 'radapi://local';
 const envAntApi = normalizeBaseUrl(window.nodeConfig?.antApi);
 
 export const state = {
@@ -81,11 +84,11 @@ export const state = {
   // bar value on focusin and tab-switched. Do not key reload or other
   // commit-sensitive decisions on this field; use `committedDisplayUrl`.
   addressBarSnapshot: '',
-  // URL of the last committed navigation (`webview.getURL()` at
-  // did-navigate time). Written only by tabs.js' per-webview did-navigate
-  // handler, so it stays stable when the user is mid-typing or while a
-  // navigation is still in flight. Used by reload and by
-  // `getDisplayUrlForWebview` for provider permission keying.
+  // User-facing identity of the last committed navigation. Written only by
+  // tabs.js' per-webview did-navigate handler, so it stays stable when the
+  // user is mid-typing or while a navigation is still in flight. Usually it
+  // equals `webview.getURL()`; synthetic onchain origins are reverse-mapped to
+  // their standard `web3://` form. The actual URL remains in per-tab state.
   committedDisplayUrl: '',
 
   // Webview
@@ -116,26 +119,22 @@ export const state = {
 
   // Radicle state
   currentRadicleStatus: 'stopped',
-  radicleInfoInterval: null,
   radicleVersionFetched: false,
   radicleVersionValue: '',
   suppressRadicleRunningStatus: false,
 
-  // Radicle Gateway config (updated from registry)
-  radicleBase: null,
+  // Canonical in-process Radicle API route. Keep this available while the
+  // node starts or is offline so valid RIDs never become validation errors.
+  radicleBase: NATIVE_RADICLE_BASE,
   get radicleApiPrefix() {
     return this.radicleBase ? `${this.radicleBase}/api/v1/repos/` : null;
   },
-
-  // Navigation state for Radicle
-  currentRadBase: null,
 
   // Tor (.onion) state
   currentTorStatus: 'stopped',
   suppressTorRunningStatus: false,
 
   // Feature flags
-  enableRadicleIntegration: false,
   enableTorIntegration: false,
   blockUnverifiedEns: true, // When true, unverified ENS resolutions route through an interstitial
 
@@ -170,6 +169,11 @@ export const buildRadicleUrl = (endpoint) => {
   return buildServiceUrl(base, endpoint, 'Radicle');
 };
 
+// True when the active profile has Radicle switched off entirely (Settings →
+// Nodes → Radicle → Disabled). The main process publishes the mode into the
+// service registry, so this stays a synchronous read for navigation.
+export const isRadicleDisabledForProfile = () => state.registry?.radicle?.mode === 'disabled';
+
 // Update registry state from main process
 export const updateRegistry = (newRegistry) => {
   state.registry = newRegistry;
@@ -177,11 +181,7 @@ export const updateRegistry = (newRegistry) => {
   state.antBase = normalizeBaseUrl(newRegistry.ant?.api) || envAntApi;
   state.ipfsBase = normalizeBaseUrl(newRegistry.ipfs?.gateway) || NATIVE_IPFS_BASE;
   state.ipfsApiBase = normalizeBaseUrl(newRegistry.ipfs?.api);
-  state.radicleBase = normalizeBaseUrl(newRegistry.radicle?.api);
-};
-
-export const setRadicleIntegrationEnabled = (enabled) => {
-  state.enableRadicleIntegration = enabled === true;
+  state.radicleBase = normalizeBaseUrl(newRegistry.radicle?.api) || NATIVE_RADICLE_BASE;
 };
 
 export const setTorIntegrationEnabled = (enabled) => {
@@ -200,7 +200,6 @@ export const setSearchProvider = (providerId, customProviders = []) => {
 // Sync renderer feature flags from a settings payload. Passing null (settings
 // unavailable) resets every flag to its default.
 export const applySettingsToState = (settings) => {
-  setRadicleIntegrationEnabled(settings?.enableRadicleIntegration === true);
   setTorIntegrationEnabled(settings?.enableTorIntegration === true);
   setBlockUnverifiedEns(settings?.blockUnverifiedEns !== false);
   setSearchProvider(settings?.searchProvider, settings?.customSearchProviders);

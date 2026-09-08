@@ -20,16 +20,12 @@ const DEFAULT_CATALOG_LOCK_RETRIES = {
 const PACKAGED_PORT_BASE = {
   beeApi: 11633,
   beeP2p: 12633,
-  radicleHttp: 18780,
-  radicleP2p: 18776,
   torSocks: 19150,
 };
 
 const DEV_PORT_BASE = {
   beeApi: 21633,
   beeP2p: 22633,
-  radicleHttp: 28780,
-  radicleP2p: 28776,
   torSocks: 29150,
 };
 
@@ -80,8 +76,6 @@ function getManagedPorts(slot, options = {}) {
   return {
     beeApi: base.beeApi + offset + slot,
     beeP2p: base.beeP2p + offset + slot,
-    radicleHttp: base.radicleHttp + offset + slot,
-    radicleP2p: base.radicleP2p + offset + slot,
     torSocks: base.torSocks + offset + slot,
   };
 }
@@ -104,9 +98,6 @@ function buildNodeConfig(ports) {
     },
     radicle: {
       mode: 'managed',
-      httpPort: ports.radicleHttp,
-      p2pPort: ports.radicleP2p,
-      externalHttp: null,
     },
     tor: {
       mode: 'managed',
@@ -135,9 +126,7 @@ function rebaseNodeConfig(nodes = {}, ports) {
       backend: 'myotis-native',
     },
     radicle: {
-      ...defaults.radicle,
-      mode: nodes.radicle?.mode || defaults.radicle.mode,
-      externalHttp: nodes.radicle?.externalHttp || null,
+      mode: nodes.radicle?.mode === 'disabled' ? 'disabled' : defaults.radicle.mode,
     },
     tor: {
       ...defaults.tor,
@@ -173,16 +162,7 @@ function fillMissingNodeConfig(nodes = {}, ports) {
       backend: 'myotis-native',
     },
     radicle: {
-      ...defaults.radicle,
-      ...(nodes.radicle || {}),
-      mode: nodes.radicle?.mode || defaults.radicle.mode,
-      httpPort: Number.isInteger(nodes.radicle?.httpPort)
-        ? nodes.radicle.httpPort
-        : defaults.radicle.httpPort,
-      p2pPort: Number.isInteger(nodes.radicle?.p2pPort)
-        ? nodes.radicle.p2pPort
-        : defaults.radicle.p2pPort,
-      externalHttp: nodes.radicle?.externalHttp || null,
+      mode: nodes.radicle?.mode === 'disabled' ? 'disabled' : defaults.radicle.mode,
     },
     tor: {
       ...defaults.tor,
@@ -230,8 +210,6 @@ function getReservedManagedPorts(appRoot, options = {}) {
 
     addIntegerPort(reservedPorts, nodes.bee?.apiPort);
     addIntegerPort(reservedPorts, nodes.bee?.p2pPort);
-    addIntegerPort(reservedPorts, nodes.radicle?.httpPort);
-    addIntegerPort(reservedPorts, nodes.radicle?.p2pPort);
     addIntegerPort(reservedPorts, nodes.tor?.socksPort);
   }
 
@@ -717,8 +695,8 @@ function deleteProfile(appRoot, profileId, expectedDisplayName, options = {}) {
      * "everything lives under the profile directory" rule.
      *
      * profile-paths.js stores catalog-managed Radicle homes at app-owned short
-     * paths (`R/<slot>` or dev `R/<checkoutHash>/<slot>`) because radicle-node
-     * creates `$RAD_HOME/node/control.sock` and Unix socket paths have a hard
+     * paths (`R/<slot>` or dev `R/<checkoutHash>/<slot>`) because the embedded
+     * runtime creates `$RAD_HOME/node/control.sock` and Unix socket paths have a hard
      * length limit. Deleting a profile must remove this sibling Radicle home too;
      * otherwise a later profile that reuses the freed slot could inherit the old
      * Radicle identity, node database, and seeded repository state.

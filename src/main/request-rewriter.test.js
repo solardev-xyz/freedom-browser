@@ -19,28 +19,12 @@ const {
   installRequestRewriter,
 } = require('./request-rewriter');
 const dispatcherMock = require('./webrequest-dispatcher');
-const { activeRadBases } = require('./state');
-const {
-  formatRadicleUrl,
-  deriveRadBaseFromUrl,
-  deriveDisplayValue,
-} = require('../renderer/lib/url-utils.js');
-
-jest.mock('./settings-store', () => ({
-  loadSettings: jest.fn(() => ({ enableRadicleIntegration: true })),
-}));
-const { loadSettings } = require('./settings-store');
 
 const BASE_URL = 'http://127.0.0.1:1633/bzz/abc123def456/';
 const VALID_HASH = 'a'.repeat(64);
 const VALID_ENCRYPTED_HASH = 'a'.repeat(128);
 
 describe('request-rewriter', () => {
-  afterEach(() => {
-    activeRadBases.clear();
-    loadSettings.mockReturnValue({ enableRadicleIntegration: true });
-  });
-
   // `bzz://`, `ipfs://`, `ipns://`, and `rad:`/`rad://` are owned by the
   // custom protocol handlers (bzz-protocol.js, ipfs-protocol.js,
   // rad-protocol.js) — requests for these schemes never reach webRequest,
@@ -89,6 +73,20 @@ describe('request-rewriter', () => {
     test('handles case-insensitive /BZZ/ path', () => {
       const result = shouldRewriteRequest('http://127.0.0.1:1633/BZZ/other-hash/file.js', BASE_URL);
       expect(result).toEqual({ shouldRewrite: false, reason: 'already_bzz_path' });
+    });
+
+    // The rad rewrite arm this exclusion belonged to is gone: Radicle is
+    // served in-process over rad:/radapi:, which never reach webRequest. A
+    // `/api/v1/repos/...` request here is an ordinary same-origin asset of
+    // the bzz page, and skipping it sent the request to the Bee node's real
+    // origin, where it 404s.
+    test('rewrites same-origin /api/v1/repos/ assets of a bzz page', () => {
+      expect(
+        shouldRewriteRequest('http://127.0.0.1:1633/api/v1/repos/index.json', BASE_URL)
+      ).toEqual({ shouldRewrite: true });
+      expect(buildRewriteTarget('http://127.0.0.1:1633/api/v1/repos/index.json', BASE_URL)).toBe(
+        'http://127.0.0.1:1633/bzz/abc123def456/api/v1/repos/index.json'
+      );
     });
 
     test('returns false with reason for cross-origin requests', () => {
@@ -238,114 +236,16 @@ describe('request-rewriter', () => {
     });
   });
 
-  describe('shouldRewriteRequest – Radicle paths', () => {
-    const RAD_BASE = 'http://127.0.0.1:8780/api/v1/repos/z3gqcJUoA1n9HaHKufZs5FCSGazv5/';
+  test('installRequestRewriter registers a single onBeforeRequest handler in the dispatcher', () => {
+    dispatcherMock._reset();
+    installRequestRewriter();
 
-    test('does not rewrite requests already on /api/v1/repos/ path', () => {
-      const result = shouldRewriteRequest(
-        'http://127.0.0.1:8780/api/v1/repos/z3gqcJUoA1n9HaHKufZs5FCSGazv5/tree/main',
-        RAD_BASE
-      );
-      expect(result.shouldRewrite).toBe(false);
-      expect(result.reason).toBe('already_rad_path');
+    const registered = dispatcherMock._getHandlers();
+    expect(registered).toHaveLength(1);
+    expect(registered[0]).toMatchObject({
+      event: 'onBeforeRequest',
+      name: 'request-rewriter',
     });
-
-    test('rewrites relative resource requests from a Radicle base', () => {
-      const result = shouldRewriteRequest('http://127.0.0.1:8780/some-relative-asset.js', RAD_BASE);
-      expect(result.shouldRewrite).toBe(true);
-    });
-
-    test('does not rewrite cross-origin requests', () => {
-      const result = shouldRewriteRequest('https://cdn.example.com/lib.js', RAD_BASE);
-      expect(result.shouldRewrite).toBe(false);
-    });
-  });
-
-  describe('integration: rad:// entry -> navigation -> rewrite -> display roundtrip', () => {
-    const SAMPLE_RID = 'z3gqcJUoA1n9HaHKufZs5FCSGazv5';
-    const RADICLE_BASE = 'http://127.0.0.1:8780';
-    const RADICLE_API_PREFIX = `${RADICLE_BASE}/api/v1/repos/`;
-
-    test('roundtrips rad:// URL through target, rewrite, and display value', () => {
-      const previousWindow = global.window;
-      try {
-        global.window = { location: { href: 'file:///app/index.html' } };
-
-        const entryUrl = `rad://${SAMPLE_RID}/tree/main/README.md`;
-
-        // Entry -> navigation target
-        const navTarget = formatRadicleUrl(entryUrl, RADICLE_BASE);
-        expect(navTarget).not.toBeNull();
-        expect(navTarget.displayValue).toBe(entryUrl);
-
-        // Scheme conversion is owned by the rad protocol handler
-        // (rad-protocol.js); this is the httpd URL shape a rad page's
-        // subresources resolve against.
-        const gatewayUrl = `${RADICLE_BASE}/api/v1/repos/${SAMPLE_RID}/tree/main/README.md`;
-
-        // Navigation-derived base enables same-origin relative request rewriting
-        const radBase = deriveRadBaseFromUrl(gatewayUrl);
-        expect(radBase).toBe(`${RADICLE_API_PREFIX}${SAMPLE_RID}/`);
-
-        const relativeRequest = `${RADICLE_BASE}/assets/code.css`;
-        expect(shouldRewriteRequest(relativeRequest, radBase)).toEqual({ shouldRewrite: true });
-        expect(buildRewriteTarget(relativeRequest, radBase)).toBe(
-          `${RADICLE_API_PREFIX}${SAMPLE_RID}/assets/code.css`
-        );
-
-        // Internal API URL -> display value in address bar
-        const display = deriveDisplayValue(
-          gatewayUrl,
-          'http://127.0.0.1:1633/bzz/',
-          'file:///app/home.html',
-          'http://127.0.0.1:8080/ipfs/',
-          'http://127.0.0.1:8080/ipns/',
-          RADICLE_API_PREFIX
-        );
-        expect(display).toBe(entryUrl);
-      } finally {
-        global.window = previousWindow;
-      }
-    });
-
-    test('rewrites same-origin Radicle requests', () => {
-      const webContentsId = 42;
-      activeRadBases.set(webContentsId, `${RADICLE_API_PREFIX}${SAMPLE_RID}/`);
-
-      const result = rewriteRequestForDispatch({
-        webContentsId,
-        url: `${RADICLE_BASE}/blob/main/src/index.js`,
-      });
-
-      expect(result).toEqual({
-        redirectURL: `${RADICLE_API_PREFIX}${SAMPLE_RID}/blob/main/src/index.js`,
-      });
-    });
-
-    test('does not rewrite Radicle requests when integration is disabled', () => {
-      loadSettings.mockReturnValue({ enableRadicleIntegration: false });
-      const webContentsId = 42;
-      activeRadBases.set(webContentsId, `${RADICLE_API_PREFIX}${SAMPLE_RID}/`);
-
-      const result = rewriteRequestForDispatch({
-        webContentsId,
-        url: `${RADICLE_BASE}/blob/main/src/index.js`,
-      });
-
-      expect(result).toBeNull();
-    });
-
-    test('installRequestRewriter registers a single onBeforeRequest handler in the dispatcher', () => {
-      dispatcherMock._reset();
-      installRequestRewriter();
-
-      const registered = dispatcherMock._getHandlers();
-      expect(registered).toHaveLength(1);
-      expect(registered[0]).toMatchObject({
-        event: 'onBeforeRequest',
-        name: 'request-rewriter',
-      });
-      expect(registered[0].handler).toBe(rewriteRequestForDispatch);
-    });
+    expect(registered[0].handler).toBe(rewriteRequestForDispatch);
   });
 });

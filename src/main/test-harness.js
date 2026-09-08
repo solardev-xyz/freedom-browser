@@ -6,7 +6,7 @@
  * mode is off, and nothing in this file runs at require time.
  *
  * Responsibilities:
- *   1. Register stub `bzz:` / `ipfs:` / `ipns:` protocol handlers backed by
+ *   1. Register stub `bzz:` / `ipfs:` / `ipns:` / `web3:` protocol handlers backed by
  *      an in-memory fixture map, so tests can assert against deterministic
  *      content without spinning up Bee or Kubo.
  *   2. Override the ENS resolver IPC handlers with a fixture-driven stub
@@ -587,6 +587,7 @@ function buildResponse(fixture, url) {
   const status = fixture.status ?? 200;
   const headers = {
     'Content-Type': fixture.contentType ?? 'text/html; charset=utf-8',
+    ...(fixture.headers || {}),
   };
   if (fixture.holdOpen === true) {
     const activity = contentFixtureActivity.get(url) || { started: 0, cancelled: 0 };
@@ -651,15 +652,15 @@ function registerStubProtocols(targetSession, { privatePartition = null } = {}) 
     return;
   }
   // PRIVATE MODE GUARD (request logging): the stubs stand in for the real
-  // bzz/ipfs/ipns (and http/https) handlers on private sessions too, so they
+  // bzz/ipfs/ipns/web3 (and http/https) handlers on private sessions too, so they
   // redact request URLs exactly as those do — otherwise the e2e assertion
   // that a private navigation leaves no trace in main.log would be testing
   // the harness instead of the app.
   const isPrivate = !!privatePartition;
-  // bzz/ipfs/ipns: harness owns these outright (custom standard schemes
+  // bzz/ipfs/ipns/web3: harness owns these outright (custom standard schemes
   // we register in production too — see src/main/swarm/bzz-protocol.js
   // etc.). Specs drive content via setContentFixture().
-  for (const scheme of ['bzz', 'ipfs', 'ipns']) {
+  for (const scheme of ['bzz', 'ipfs', 'ipns', 'web3']) {
     try {
       const handler = makeProtocolHandler(scheme);
       targetSession.protocol.handle(scheme, (request) =>

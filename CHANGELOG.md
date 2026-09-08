@@ -15,11 +15,6 @@ All notable changes to Freedom will be documented in this file.
   - Downloads are allowed but flagged and drop out of the downloads list when the window closes (files stay on disk); permission prompts work but decisions are session-only
   - Wallet and `window.ethereum` / `window.swarm` / `window.radicle` providers are unavailable in private windows (EIP-6963 silent); x402 payment interception is off
   - Honest private start page: what's protected (local traces) and what isn't (network observers, sites you log into, your IP)
-- Find in page (`Cmd+F` / `Ctrl+F`, also under Edit in the menu): overlay bar over the page with a live match counter, `Enter` / `Shift+Enter` to cycle matches, `Esc` to close
-- Download manager covering every download source, including `bzz://` and `ipfs://` content:
-  - Shelf card with live progress and cancel; Open / Show in Folder on completion
-  - `freedom://downloads` page (Cmd/Ctrl+Shift+J) with search, pause/resume, and Clear All
-  - "Ask where to save each file" toggle under Settings > Downloads
 - Per-site permission prompts for camera, microphone, notifications, clipboard reading, location, and MIDI, replacing the previous silent denial:
   - Prompt under the address bar with Allow / Block and "Remember for this site"
   - Remembered decisions per profile under Settings > Site Permissions, with per-site and remove-all revocation
@@ -34,8 +29,27 @@ All notable changes to Freedom will be documented in this file.
 
 ### Changed
 
-- Updated bundled [Ant](https://github.com/solardev-xyz/ant) to 0.5.36: fixes the ~250 MiB upload stall, adds upload-side Reed-Solomon encoding, end-to-end Swarm content encryption, local pinning, and ACT access control
+- Updated bundled [Ant](https://github.com/freedom-hq/ant) 0.5.33 to 0.5.44:
+  - Fixes the ~250 MiB upload stall
+  - Upload-side Reed-Solomon encoding, end-to-end Swarm content encryption, local pinning, and ACT access control
+  - Fewer intermittent upload failures under feed workloads, faster feed resolution
+  - Expired or invalid postage batches fail fast with a clear error instead of stalling uploads
+  - Freshly bought batches rejected by peers during propagation now recover on their own
+  - Encrypted point-to-point and broadcast messaging on the light node
 - The Swarm node's API now comes up instantly on start, so the node menu shows peers counting up live instead of sitting at 0 during startup
+- Radicle now runs as an embedded libradicle 0.7.1 addon instead of separate daemon, HTTP, and CLI processes:
+  - Native browsing, seeding, synchronization, unseeding, GitHub imports, and provider writes
+  - Live peer-level clone phases with cancellation, retry, and timeout handling
+  - Concurrent cold-start discovery across a device-ranked 14-node seed book
+  - Historical commit browsing with repository remotes, branches, commits, and contributor stats
+  - Profile-scoped identity, peer and repository counts, and addon version in the Nodes menu
+- Installers are about 15 MB smaller: each build now ships only the `better-sqlite3` native addon for its own platform and architecture instead of all eight upstream prebuilds
+
+### Security
+
+- Updated runtime dependencies:
+  - `better-sqlite3` 12.11.1 to 13.0.3
+  - `micro-key-producer` 0.9.0 to 0.10.2
 
 ## [0.8.0] - 2026-07-02
 
@@ -43,7 +57,7 @@ All notable changes to Freedom will be documented in this file.
 
 - In-house Rust implementations of the bundled Swarm and IPFS nodes, built for the upcoming mobile apps:
   - Reasoning: mobile needs small binaries and bounded memory; every platform gains speed and room for specialised node features
-- [Ant](https://github.com/solardev-xyz/ant) 0.5.33, a lean Swarm light node, replaces bundled Bee:
+- [Ant](https://github.com/freedom-hq/ant) 0.5.33, a lean Swarm light node, replaces bundled Bee:
   - Full Bee parity: retrieval, feeds, stamp purchase, publishing, and chequebook payments
   - Instant publishing setup (no more lengthy Gnosis chain-state download)
   - Node data and Swarm identity migrate in place on first launch

@@ -67,7 +67,6 @@ function loadWebContentsSetupModule(options = {}) {
   const state = require('./state');
 
   state.activeBzzBases.clear();
-  state.activeRadBases.clear();
 
   return {
     app,
@@ -92,7 +91,6 @@ describe('webcontents-setup', () => {
     });
 
     ctx.state.activeBzzBases.set(contents.id, new URL('http://127.0.0.1:1633/bzz/hash/'));
-    ctx.state.activeRadBases.set(contents.id, new URL('http://127.0.0.1:8780/api/v1/repos/rid/'));
 
     ctx.mod.registerWebContentsHandlers();
     ctx.app.emit('web-contents-created', {}, contents);
@@ -107,7 +105,6 @@ describe('webcontents-setup', () => {
 
     contents.emit('destroyed');
     expect(ctx.state.activeBzzBases.has(contents.id)).toBe(false);
-    expect(ctx.state.activeRadBases.has(contents.id)).toBe(false);
   });
 
   test('skips css injection for internal file pages and intercepts external window opens', () => {
@@ -219,6 +216,45 @@ describe('webcontents-setup', () => {
     expect(ctx.log.error).toHaveBeenCalledWith('[webcontents:33:webview] crashed event (legacy)');
     expect(ctx.log.warn).toHaveBeenCalledWith('[webcontents:33:webview] became unresponsive');
     expect(ctx.log.warn).toHaveBeenCalledWith('[webcontents:33:webview] responsive again');
+  });
+
+  test('blocks scripted navigation and popups from an onchain app', () => {
+    const parentWindow = { webContents: { id: 2, send: jest.fn() } };
+    const ctx = loadWebContentsSetupModule({ windows: [parentWindow] });
+    const contents = createContentsMock({
+      id: 34,
+      type: 'webview',
+      url: 'web3://0x00000095643cffa7d9fae407a84dfcb6406456c6.eip155-1/',
+    });
+
+    ctx.mod.registerWebContentsHandlers();
+    ctx.app.emit('web-contents-created', {}, contents);
+
+    const navigationEvent = { preventDefault: jest.fn() };
+    contents.emit('will-navigate', navigationEvent, 'https://evil.example/phish');
+    expect(navigationEvent.preventDefault).toHaveBeenCalled();
+    expect(parentWindow.webContents.send).not.toHaveBeenCalled();
+
+    expect(
+      contents.windowOpenHandler({ url: 'https://evil.example/popup', frameName: '_blank' })
+    ).toEqual({ action: 'deny' });
+    expect(parentWindow.webContents.send).not.toHaveBeenCalled();
+  });
+
+  test('routes a web3 link from a normal page through renderer navigation', () => {
+    const parentWindow = { webContents: { id: 2, send: jest.fn() } };
+    const ctx = loadWebContentsSetupModule({ windows: [parentWindow] });
+    const contents = createContentsMock({ id: 35, type: 'webview', url: 'https://example.com' });
+    const target = 'web3://0x00000095643cffa7d9fae407a84dfcb6406456c6.eip155-1/';
+
+    ctx.mod.registerWebContentsHandlers();
+    ctx.app.emit('web-contents-created', {}, contents);
+
+    const event = { preventDefault: jest.fn() };
+    contents.emit('will-navigate', event, target);
+
+    expect(event.preventDefault).toHaveBeenCalled();
+    expect(parentWindow.webContents.send).toHaveBeenCalledWith('navigate-to-url', target);
   });
 
   test('confines isolated preview pages to their exact origin and denies popups', () => {

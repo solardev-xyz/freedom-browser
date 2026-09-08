@@ -472,3 +472,39 @@ describe('AgentWalletController', () => {
     });
   });
 });
+
+describe('unsupported Agent wallet signing', () => {
+  const safe = { index: 1000, name: 'Team Safe', type: 'safe', address: '0x1111111111111111111111111111111111111111' };
+
+  test('preserves Safe identity in connection approval', async () => {
+    const { controller } = createHarness({ wallets: [safe] });
+    const approve = jest.fn(async () => ({ status: 'approved', walletIndex: safe.index }));
+    await controller.handleRequest(context(approve), request('eth_requestAccounts'));
+    expect(approve).toHaveBeenCalledWith(expect.objectContaining({
+      wallet: expect.objectContaining({ wallets: [safe] }),
+    }));
+  });
+
+  test.each(['personal_sign', 'eth_signTypedData_v4', 'eth_sendTransaction'])(
+    'rejects Safe %s before approval or signer access', async (method) => {
+      const { controller, dependencies } = createHarness({ wallets: [safe], permission: { walletIndex: safe.index } });
+      const approve = jest.fn();
+      const result = await controller.handleRequest(context(approve), request(method));
+      expect(result).toMatchObject({ handled: true, error: { message: expect.stringContaining('unavailable for this wallet type') } });
+      expect(approve).not.toHaveBeenCalled();
+      expect(dependencies.getSigner).not.toHaveBeenCalled();
+      expect(dependencies.signAndRecord).not.toHaveBeenCalled();
+    }
+  );
+
+  test('rejects a direct Safe transfer before estimation or approval', async () => {
+    const { controller, dependencies } = createHarness({ wallets: [safe] });
+    const requestApproval = jest.fn();
+    await expect(controller.transfer({
+      walletIndex: safe.index, recipient: safe.address, asset: 'xdai', chainId: 100, amount: '0.01',
+    }, { requestApproval })).rejects.toMatchObject({ code: ERROR_CODES.CAPABILITY_UNAVAILABLE });
+    expect(requestApproval).not.toHaveBeenCalled();
+    expect(dependencies.estimateGas).not.toHaveBeenCalled();
+    expect(dependencies.getSigner).not.toHaveBeenCalled();
+  });
+});

@@ -12,7 +12,6 @@ jest.mock('electron', () => ({
 jest.mock('./service-registry', () => ({
   getAntApiUrl: jest.fn(() => 'http://127.0.0.1:1633'),
   getIpfsGatewayUrl: jest.fn(() => 'http://localhost:8080'),
-  getRadicleApiUrl: () => 'http://127.0.0.1:8780',
 }));
 
 jest.mock('./logger', () => ({

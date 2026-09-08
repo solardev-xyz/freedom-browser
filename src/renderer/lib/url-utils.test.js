@@ -17,8 +17,11 @@ import {
   isValidRadicleId,
   parseRadicleInput,
   formatRadicleUrl,
-  deriveRadBaseFromUrl,
   deriveRadicleDisplayValue,
+  formatOnchainAppUrl,
+  formatOnchainAppDisplayUrl,
+  looksLikeOnchainAppInput,
+  parseOnchainAppUrl,
 } from './url-utils.js';
 
 const BZZ_ROUTE_PREFIX = 'http://127.0.0.1:1633/bzz/';
@@ -27,6 +30,66 @@ const IPNS_ROUTE_PREFIX = 'http://127.0.0.1:8080/ipns/';
 const HOME_URL = 'file:///app/home.html';
 
 describe('url-utils', () => {
+  describe('onchain application URLs', () => {
+    const ADDRESS = '0x00000095643CFfA7D9fae407a84dfCB6406456c6';
+    const LOWER_ADDRESS = ADDRESS.toLowerCase();
+
+    test('canonicalizes the address, chain, and root path', () => {
+      expect(formatOnchainAppUrl(`web3://${ADDRESS}:1`)).toBe(
+        `web3://${LOWER_ADDRESS}.eip155-1/`
+      );
+      expect(parseOnchainAppUrl(`web3://${ADDRESS}:100/swap?x=1#route`)).toEqual({
+        address: LOWER_ADDRESS,
+        chainId: 100,
+        displayUrl: `web3://${LOWER_ADDRESS}:100/swap?x=1#route`,
+        url: `web3://${LOWER_ADDRESS}.eip155-100/swap?x=1#route`,
+      });
+    });
+
+    test('defaults an omitted chain to mainnet and makes it visible', () => {
+      expect(formatOnchainAppUrl(`web3://${ADDRESS}/`)).toBe(
+        `web3://${LOWER_ADDRESS}.eip155-1/`
+      );
+    });
+
+    test('accepts the canonical CAIP-style origin and large chain IDs', () => {
+      expect(formatOnchainAppUrl(`web3://${LOWER_ADDRESS}.eip155-11155111/`)).toBe(
+        `web3://${LOWER_ADDRESS}.eip155-11155111/`
+      );
+      expect(
+        formatOnchainAppDisplayUrl(
+          `web3://${LOWER_ADDRESS}.eip155-11155111/swap?x=1#route`
+        )
+      ).toBe(`web3://${LOWER_ADDRESS}:11155111/swap?x=1#route`);
+    });
+
+    test('keeps Chromium origin encoding out of user-facing URLs', () => {
+      expect(formatOnchainAppDisplayUrl(`web3://${LOWER_ADDRESS}.eip155-1/`)).toBe(
+        `web3://${LOWER_ADDRESS}/`
+      );
+      expect(formatOnchainAppDisplayUrl(`web3://${ADDRESS}:1/swap`)).toBe(
+        `web3://${LOWER_ADDRESS}/swap`
+      );
+      expect(
+        formatOnchainAppDisplayUrl(`view-source:web3://${LOWER_ADDRESS}.eip155-100/`)
+      ).toBe(`view-source:web3://${LOWER_ADDRESS}:100/`);
+    });
+
+    test.each([
+      'web3://not-an-address:1/',
+      `web3://${ADDRESS}:0/`,
+      `web3://user@${ADDRESS}:1/`,
+      'https://example.com',
+    ])('rejects invalid app URL %s', (url) => {
+      expect(formatOnchainAppUrl(url)).toBeNull();
+    });
+
+    test('recognizes malformed web3 input as app intent', () => {
+      expect(looksLikeOnchainAppInput(' WEB3://invalid ')).toBe(true);
+      expect(looksLikeOnchainAppInput('https://example.com')).toBe(false);
+    });
+  });
+
   describe('ensureTrailingSlash', () => {
     test('adds slash if missing', () => {
       expect(ensureTrailingSlash('http://example.com')).toBe('http://example.com/');
@@ -337,6 +400,24 @@ describe('url-utils', () => {
     test('returns original url for non-bzz sites', () => {
       const url = 'https://google.com';
       expect(deriveDisplayValue(url, BZZ_ROUTE_PREFIX, HOME_URL)).toBe(url);
+    });
+
+    test('reverse-maps onchain navigation origins to standard display URLs', () => {
+      const address = '0x00000095643cffa7d9fae407a84dfcb6406456c6';
+      expect(
+        deriveDisplayValue(
+          `web3://${address}.eip155-1/swap?x=1#route`,
+          BZZ_ROUTE_PREFIX,
+          HOME_URL
+        )
+      ).toBe(`web3://${address}/swap?x=1#route`);
+      expect(
+        deriveDisplayValue(
+          `web3://${address}.eip155-100/swap?x=1#route`,
+          BZZ_ROUTE_PREFIX,
+          HOME_URL
+        )
+      ).toBe(`web3://${address}:100/swap?x=1#route`);
     });
 
     test('returns empty string for null/undefined/empty input', () => {
@@ -1141,6 +1222,7 @@ describe('url-utils', () => {
   describe('isValidRadicleId', () => {
     test('accepts valid Radicle ID', () => {
       expect(isValidRadicleId('z3gqcJUoA1n9HaHKufZs5FCSGazv5')).toBe(true);
+      expect(isValidRadicleId('z4V1sjrXqjvFdnCUbxPFqd5p4DtH5')).toBe(true);
     });
 
     test('accepts various valid RID lengths', () => {
@@ -1172,7 +1254,7 @@ describe('url-utils', () => {
   });
 
   describe('parseRadicleInput', () => {
-    const RAD_PREFIX = 'http://127.0.0.1:8780/api/v1/repos/';
+    const RAD_PREFIX = 'radapi://local/api/v1/repos/';
     const SAMPLE_RID = 'z3gqcJUoA1n9HaHKufZs5FCSGazv5';
 
     test('parses rad:RID', () => {
@@ -1214,49 +1296,27 @@ describe('url-utils', () => {
   });
 
   describe('formatRadicleUrl', () => {
+    test('formats a valid RID against the static embedded route', () => {
+      const rid = 'z4V1sjrXqjvFdnCUbxPFqd5p4DtH5';
+      const originalWindow = global.window;
+      global.window = { location: { href: 'file:///app/index.html' } };
+      try {
+        const result = formatRadicleUrl(`rad://${rid}`, 'radapi://local');
+        expect(result.displayValue).toBe(`rad://${rid}`);
+        expect(result.targetUrl).toContain(`rid=${rid}`);
+        expect(result.targetUrl).toContain('base=radapi%3A%2F%2Flocal');
+      } finally {
+        global.window = originalWindow;
+      }
+    });
+
     test('returns null when the Radicle base is not ready', () => {
       expect(formatRadicleUrl('rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5', null)).toBeNull();
     });
   });
 
-  describe('deriveRadBaseFromUrl', () => {
-    const RAD_BASE = 'http://127.0.0.1:8780/api/v1/repos/';
-    const SAMPLE_RID = 'z3gqcJUoA1n9HaHKufZs5FCSGazv5';
-
-    test('extracts base from Radicle API URL', () => {
-      const url = `${RAD_BASE}${SAMPLE_RID}/tree/main/README.md`;
-      expect(deriveRadBaseFromUrl(url)).toBe(`${RAD_BASE}${SAMPLE_RID}/`);
-    });
-
-    test('extracts base from URL object input', () => {
-      const url = new URL(`${RAD_BASE}${SAMPLE_RID}/commits`);
-      expect(deriveRadBaseFromUrl(url)).toBe(`${RAD_BASE}${SAMPLE_RID}/`);
-    });
-
-    test('returns null for legacy /projects/ path', () => {
-      const url = `http://127.0.0.1:8780/api/v1/projects/${SAMPLE_RID}/tree/main`;
-      expect(deriveRadBaseFromUrl(url)).toBeNull();
-    });
-
-    test('returns null for non-Radicle API paths', () => {
-      expect(deriveRadBaseFromUrl('http://127.0.0.1:8780/api/v1/')).toBeNull();
-      expect(deriveRadBaseFromUrl('http://127.0.0.1:8780/')).toBeNull();
-    });
-
-    test('returns null for invalid RID segment', () => {
-      const url = 'http://127.0.0.1:8780/api/v1/repos/not-a-rid/tree/main';
-      expect(deriveRadBaseFromUrl(url)).toBeNull();
-    });
-
-    test('returns null for invalid input values', () => {
-      expect(deriveRadBaseFromUrl(null)).toBeNull();
-      expect(deriveRadBaseFromUrl(undefined)).toBeNull();
-      expect(deriveRadBaseFromUrl('not-a-url')).toBeNull();
-    });
-  });
-
   describe('deriveRadicleDisplayValue', () => {
-    const RAD_PREFIX = 'http://127.0.0.1:8780/api/v1/repos/';
+    const RAD_PREFIX = 'radapi://local/api/v1/repos/';
     const SAMPLE_RID = 'z3gqcJUoA1n9HaHKufZs5FCSGazv5';
 
     test('converts API URL to rad:// display', () => {

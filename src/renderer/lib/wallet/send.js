@@ -10,7 +10,8 @@ import {
   beginSignatureFlight,
   endSignatureFlight,
 } from './signature-flight.js';
-import { escapeHtml, accountType, bypassUnlockGateForDevice } from './wallet-utils.js';
+import { escapeHtml, accountType, walletRecord, bypassUnlockGateForDevice, renderSafeFeePayer, isSafeDeployed, GNOSIS_CHAIN_ID } from './wallet-utils.js';
+import { openSafeSigningBoard } from './safe-signing.js';
 import { refreshBalances, getTokensWithBalance, getChainsWithBalance, sortTokens } from './balance-display.js';
 import {
   getTrustStatusSentence,
@@ -252,10 +253,55 @@ function setupSendScreen() {
   }
 }
 
-export function openSend(options = {}) {
+/** The active account's record when it is a Safe, else null. */
+function activeSafeWallet() {
+  const wallet = walletRecord();
+  return wallet?.type === 'safe' ? wallet : null;
+}
+
+/** Whether the active account can send at all (Safes need activation). */
+function sendBlockedReason() {
+  const safe = activeSafeWallet();
+  if (safe && !isSafeDeployed(safe)) {
+    return 'Activate this account on Gnosis before sending';
+  }
+  return null;
+}
+
+/**
+ * Send owns its button; the active-account refresh (safe-status.js)
+ * calls this whenever the account changes.
+ */
+export function updateSendAvailability() {
+  const sendBtn = document.getElementById('wallet-send-btn');
+  if (!sendBtn) return;
+  const reason = sendBlockedReason();
+  sendBtn.disabled = Boolean(reason);
+  sendBtn.title = reason || '';
+}
+
+export async function openSend(options = {}) {
   if (!walletState.fullAddresses.wallet) {
     console.error('[WalletUI] No wallet address available');
     return;
+  }
+  // Guards the programmatic openers (x402 top-up links etc.) — the
+  // Send button itself is disabled via updateSendAvailability.
+  const blockedReason = sendBlockedReason();
+  if (blockedReason) {
+    console.warn('[WalletUI] Send is not available:', blockedReason);
+    return;
+  }
+
+  // One pending SafeTx per Safe: while one is waiting for signatures,
+  // Send routes to its board instead of starting a second one.
+  const safe = activeSafeWallet();
+  if (safe) {
+    const pending = await window.wallet.safeState(safe.index);
+    if (pending.success && pending.state) {
+      openSafeSigningBoard(safe.index);
+      return;
+    }
   }
 
   // The send screen takes over the sidebar directly (it predates
@@ -297,6 +343,11 @@ export function closeSend() {
   sendScreen?.classList.add('hidden');
   walletState.identityView?.classList.remove('hidden');
   resetSendState();
+  if (activeSafeWallet()) {
+    // A safe send may have left (or consumed) a half-signed transaction —
+    // let the status card re-evaluate without a module cycle.
+    window.dispatchEvent(new CustomEvent('wallet:send-closed'));
+  }
 }
 
 function resetSendState() {
@@ -372,7 +423,7 @@ function showSendPendingView() {
     },
   }[accountType(walletState.activeWalletIndex)] || {
     title: 'Sending Transaction',
-    text: 'Please wait while your transaction is being processed...',
+    text: 'Please wait while your transaction is being processed…',
   };
   const title = sendPendingView?.querySelector('.send-pending-title');
   const text = sendPendingView?.querySelector('.send-pending-text');
@@ -429,7 +480,24 @@ function closeSendChainDropdown() {
   if (sendChainDropdown) sendChainDropdown.classList.add('hidden');
 }
 
+/**
+ * The chains this account can compose a send on. A Safe lives on exactly one
+ * chain, and the calldata composed for it is only meaningful there — offering
+ * the rest lets the user review a send labelled "Ethereum" that the executor
+ * can only ever run on Gnosis.
+ */
+function sendChainCandidates() {
+  const chains = getChainsWithBalance();
+  if (!activeSafeWallet()) return chains;
+  return chains.filter((chain) => chain.chainId === GNOSIS_CHAIN_ID);
+}
+
 function populateSendChainSelector() {
+  if (activeSafeWallet()) {
+    selectSendChain(GNOSIS_CHAIN_ID);
+    return;
+  }
+
   // Carry over the chain the user has active on the main wallet view, even
   // if it has no balance yet — their intent beats "pick the top chain with
   // funds". selectedChainId is null only in the "All chains" view.
@@ -450,7 +518,9 @@ function populateSendChainSelector() {
 }
 
 function applySendOpenOptions(options = {}) {
-  if (options.chainId) {
+  // A programmatic opener (an `ethereum:` tip link, an x402 top-up) may not
+  // know the account is a Safe; its chain hint never outranks the Safe's own.
+  if (options.chainId && !activeSafeWallet()) {
     selectSendChain(options.chainId);
   } else {
     populateSendChainSelector();
@@ -494,7 +564,7 @@ function renderSendChainList() {
 
   sendChainList.innerHTML = '';
 
-  const chainsWithBalance = getChainsWithBalance();
+  const chainsWithBalance = sendChainCandidates();
 
   if (chainsWithBalance.length === 0) {
     const emptyEl = document.createElement('div');
@@ -699,7 +769,7 @@ async function handleSendMax() {
 
     try {
       if (sendMaxBtn) {
-        sendMaxBtn.textContent = '...';
+        sendMaxBtn.textContent = '…';
         sendMaxBtn.disabled = true;
       }
 
@@ -779,6 +849,14 @@ function isEnsLikeName(value) {
 function validateAmount() {
   const amount = sendAmountInput?.value?.trim() || '';
 
+  // Without a selected asset there is nothing to send. (Vault-account
+  // sends fail this later in gas estimation, but the Safe path skips
+  // that — enforce it where the validation belongs.)
+  if (!sendTxState.selectedToken) {
+    showSendError('amount', 'Select an asset to send');
+    return false;
+  }
+
   if (!amount) {
     showSendError('amount', 'Amount is required');
     return false;
@@ -852,13 +930,13 @@ async function handleSendContinue() {
 
   if (sendContinueBtn) {
     sendContinueBtn.disabled = true;
-    sendContinueBtn.textContent = 'Loading...';
+    sendContinueBtn.textContent = 'Loading…';
   }
 
   try {
     let reverseLookup = Promise.resolve(null);
     if (recipientClass.type === 'ens') {
-      if (sendContinueBtn) sendContinueBtn.textContent = 'Resolving name...';
+      if (sendContinueBtn) sendContinueBtn.textContent = 'Resolving name…';
       const resolved = await resolveRecipientEns(recipientClass.value);
       if (!resolved) return; // error already surfaced on the recipient field
       sendTxState.recipient = resolved.address;
@@ -873,8 +951,11 @@ async function handleSendContinue() {
       reverseLookup = lookupPrimaryNameForAddress(recipientClass.value);
     }
 
-    if (sendContinueBtn) sendContinueBtn.textContent = 'Loading...';
-    const [, reverseResult] = await Promise.all([estimateTransactionGas(), reverseLookup]);
+    if (sendContinueBtn) sendContinueBtn.textContent = 'Loading…';
+    // Safe sends: the executor pays the (execTransaction) fee, quoted
+    // after signatures exist — there is no meaningful estimate here.
+    const gasEstimate = activeSafeWallet() ? Promise.resolve() : estimateTransactionGas();
+    const [, reverseResult] = await Promise.all([gasEstimate, reverseLookup]);
     if (reverseResult && !sendTxState.recipientResolution) {
       sendTxState.recipientResolution = reverseResult;
     }
@@ -1020,6 +1101,14 @@ function populateSendReview() {
 
   if (sendReviewNetwork) {
     sendReviewNetwork.textContent = chain?.name || `Chain ${sendTxState.chainId}`;
+  }
+
+  const safe = activeSafeWallet();
+  if (safe) {
+    // The executor EOA pays the execution fee, quoted after signing.
+    renderSafeFeePayer(sendReviewFee, safe.index);
+    if (sendReviewTotal) sendReviewTotal.textContent = `${sendTxState.amount} ${token?.symbol || ''}`;
+    return;
   }
 
   if (sendReviewFee && sendTxState.estimatedFee) {
@@ -1209,15 +1298,19 @@ async function handleSendConfirm() {
   if (sendConfirmBtn) sendConfirmBtn.disabled = true;
 
   showSendPendingView();
+  const safe = activeSafeWallet();
 
   // Claim the sidebar for the whole flight: wallet:send-transaction puts a
   // prompt on the device that the renderer cannot recall, so no other
   // approval surface may repaint over "Confirm on your Ledger" or tear it
   // down. Back is the other way out of this screen and must go too — see
   // signature-flight.js.
-  const flight = {};
+  // Safe sends hand off to their own signing board, whose open path needs
+  // to replace this screen; it therefore does not take the device-flight
+  // lock here.
+  const flight = safe ? null : {};
   sendFlight = flight;
-  beginSignatureFlight(flight);
+  if (flight) beginSignatureFlight(flight);
   if (sendBackBtn) sendBackBtn.disabled = true;
 
   try {
@@ -1256,11 +1349,39 @@ async function handleSendConfirm() {
     // History captures the *user-visible* counterparty + amount: the real
     // recipient (not the ERC-20 contract address) and the atomic amount
     // (not txParams.value which is 0 for token transfers).
-    const result = await window.wallet.sendTransaction(txParams, {
+    const display = {
       asset: token.address,
       toAddress: sendTxState.recipient,
       amount: amountResult.value,
-    });
+    };
+
+    if (safe) {
+      // Safe path: create the SafeTx (main silently adds the free vault
+      // signatures) and hand over to the signing board — collecting the
+      // remaining signatures is the user's task, at their pace.
+      const created = await window.wallet.safeSend(
+        safe.index,
+        { to: txParams.to, value: txParams.value, data: txParams.data },
+        {
+          ...display,
+          recipientName: sendTxState.recipientResolution?.name || null,
+          symbol: token.symbol,
+          decimals: token.decimals,
+          formattedAmount: sendTxState.amount,
+        },
+        // The chain the user actually composed on — main refuses anything
+        // the Safe does not live on rather than rebasing the calldata.
+        sendTxState.chainId
+      );
+      if (!created.success) {
+        throw new Error(created.error || 'Failed to create the transaction');
+      }
+      closeSend();
+      await openSafeSigningBoard(safe.index, created.state);
+      return;
+    }
+
+    const result = await window.wallet.sendTransaction(txParams, display);
 
     if (!result.success) {
       throw new Error(result.error || 'Transaction failed');
@@ -1281,8 +1402,8 @@ async function handleSendConfirm() {
     // The device prompt is answered (or the send never reached it), so the
     // sidebar is free again. Guarded on identity so a superseded flight
     // cannot release a lock a later send holds.
-    if (sendFlight === flight) sendFlight = null;
-    endSignatureFlight(flight);
+    if (flight && sendFlight === flight) sendFlight = null;
+    if (flight) endSignatureFlight(flight);
     if (sendBackBtn) sendBackBtn.disabled = false;
   }
 }

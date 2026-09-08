@@ -25,7 +25,6 @@ describe('service-registry', () => {
     expect(mod.getIpfsGatewayUrl()).toBeNull();
     expect(mod.getAntApiUrl()).toBeNull();
     expect(mod.getAntGatewayUrl()).toBeNull();
-    expect(mod.getRadicleApiUrl()).toBeNull();
     expect(mod.getService('myotis')).toEqual(
       expect.objectContaining({ mode: mod.MODE.NONE, api: null, gateway: null })
     );
@@ -44,21 +43,14 @@ describe('service-registry', () => {
       gateway: 'http://127.0.0.1:11633',
       mode: mod.MODE.BUNDLED,
     });
-    mod.updateService('radicle', {
-      api: 'http://127.0.0.1:18780',
-      gateway: 'http://127.0.0.1:18780',
-      mode: mod.MODE.BUNDLED,
-    });
     mod.updateService('myotis', {
       mode: mod.MODE.BUNDLED,
       statusMessage: 'Ready',
     });
-
     expect(mod.getIpfsApiUrl()).toBe('http://127.0.0.1:15001');
     expect(mod.getIpfsGatewayUrl()).toBe('http://localhost:18080');
     expect(mod.getAntApiUrl()).toBe('http://127.0.0.1:11633');
     expect(mod.getAntGatewayUrl()).toBe('http://127.0.0.1:11633');
-    expect(mod.getRadicleApiUrl()).toBe('http://127.0.0.1:18780');
     expect(mod.getService('myotis')).toEqual(
       expect.objectContaining({ mode: mod.MODE.BUNDLED, statusMessage: 'Ready' })
     );

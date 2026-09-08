@@ -11,6 +11,8 @@ const IPC = require('../shared/ipc-channels');
 // Node modes
 const MODE = {
   BUNDLED: 'bundled',
+  // In-process node via the libradicle napi addon (no spawned binaries).
+  EMBEDDED: 'embedded',
   REUSED: 'reused',
   EXTERNAL: 'external',
   DISABLED: 'disabled',
@@ -44,8 +46,8 @@ const registry = {
     tempMessageTimeout: null,
   },
   radicle: {
-    api: null,        // e.g., 'http://127.0.0.1:18780'
-    gateway: null,    // Same as api for radicle-httpd
+    api: null,        // radapi://local while the in-process node is running
+    gateway: null,
     mode: MODE.NONE,
     statusMessage: null,
     tempMessage: null,
@@ -87,11 +89,6 @@ const DEFAULTS = {
     apiPort: 1633,
     // Note: Newer Bee versions serve debug/gateway endpoints on the main API port
     p2pPort: 1634,
-    fallbackRange: 10,
-  },
-  radicle: {
-    httpPort: 8780,   // radicle-httpd port (avoids 8080 conflicts)
-    p2pPort: 8776,    // radicle-node P2P port
     fallbackRange: 10,
   },
   tor: {
@@ -270,13 +267,6 @@ function getAntGatewayUrl() {
 }
 
 /**
- * Get URL for Radicle API (radicle-httpd)
- */
-function getRadicleApiUrl() {
-  return registry.radicle.api;
-}
-
-/**
  * Get the Arti SOCKS proxy host:port (or default)
  */
 function getTorSocksUrl() {
@@ -308,7 +298,6 @@ module.exports = {
   getIpfsGatewayUrl,
   getAntApiUrl,
   getAntGatewayUrl,
-  getRadicleApiUrl,
   getTorSocksUrl,
   broadcastRegistryUpdate,
   registerServiceRegistryIpc,

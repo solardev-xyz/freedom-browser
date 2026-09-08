@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:;"
+      content="default-src 'none'; script-src 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src data:;"
     />
     <title>Settings</title>
     <link
@@ -12,23 +12,8 @@
       type="image/svg+xml"
       href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjOGI5NDllIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+PGNpcmNsZSBjeD0iMTIiIGN5PSIxMiIgcj0iMyIvPjxwYXRoIGQ9Ik0xOS40IDE1YTEuNjUgMS42NSAwIDAgMCAuMzMgMS44MmwuMDYuMDZhMiAyIDAgMSAxLTIuODMgMi44M2wtLjA2LS4wNmExLjY1IDEuNjUgMCAwIDAtMS44Mi0uMzMgMS42NSAxLjY1IDAgMCAwLTEgMS41MVYyMWEyIDIgMCAwIDEtNCAwdi0uMDlBMS42NSAxLjY1IDAgMCAwIDkgMTkuNGExLjY1IDEuNjUgMCAwIDAtMS44Mi4zM2wtLjA2LjA2YTIgMiAwIDEgMS0yLjgzLTIuODNsLjA2LS4wNmExLjY1IDEuNjUgMCAwIDAgLjMzLTEuODIgMS42NSAxLjY1IDAgMCAwLTEuNTEtMUgzYTIgMiAwIDAgMSAwLTRoLjA5QTEuNjUgMS42NSAwIDAgMCA0LjYgOWExLjY1IDEuNjUgMCAwIDAtLjMzLTEuODJsLS4wNi0uMDZhMiAyIDAgMSAxIDIuODMtMi44M2wuMDYuMDZhMS42NSAxLjY1IDAgMCAwIDEuODIuMzNIOWExLjY1IDEuNjUgMCAwIDAgMS0xLjUxVjNhMiAyIDAgMCAxIDQgMHYuMDlhMS42NSAxLjY1IDAgMCAwIDEgMS41MSAxLjY1IDEuNjUgMCAwIDAgMS44Mi0uMzNsLjA2LS4wNmEyIDIgMCAxIDEgMi44MyAyLjgzbC0uMDYuMDZhMS42NSAxLjY1IDAgMCAwLS4zMyAxLjgyVjlhMS42NSAxLjY1IDAgMCAwIDEuNTEgMUgyMWEyIDIgMCAwIDEgMCA0aC0uMDlhMS42NSAxLjY1IDAgMCAwLTEuNTEgMXoiLz48L3N2Zz4="
     />
+    <link rel="stylesheet" href="styles/theme.css" />
     <style>
-      :root {
-        --bg: #0d1117;
-        --bg-elev: #161b22;
-        --bg-card: #21262d;
-        --border: #30363d;
-        --border-strong: #484f58;
-        --text: #c9d1d9;
-        --text-muted: #8b949e;
-        --text-subtle: #6e7681;
-        --accent: #58a6ff;
-        --accent-muted: rgba(88, 166, 255, 0.12);
-        --danger: #f85149;
-        --success: #3fb950;
-        --warn: #d29922;
-      }
-
       *,
       *::before,
       *::after {
@@ -47,7 +32,7 @@
           -apple-system,
           BlinkMacSystemFont,
           sans-serif;
-        background: linear-gradient(135deg, #0d1117 0%, #161b22 50%, #21262d 100%);
+        background: var(--page-gradient);
         color: var(--text);
         min-height: 100vh;
       }
@@ -66,7 +51,7 @@
         height: 100vh;
         padding: 40px 20px 40px 32px;
         border-right: 1px solid var(--border);
-        background: rgba(13, 17, 23, 0.6);
+        background: var(--sidebar-translucent);
         backdrop-filter: blur(6px);
         display: flex;
         flex-direction: column;
@@ -143,6 +128,23 @@
         color: var(--text);
       }
 
+      /* Sub-heading inside a section (#255). A route carries exactly one
+         `.section-title`; anything nested under it uses this 12 px uppercase
+         category style or `h3.row-label`, never a second large heading
+         (docs/agent-playbooks/ui-consistency.md, lands with #247).
+         Deliberately identical to `.shortcut-category` below, which is the
+         same heading for the Shortcuts list; that rule stays on its own
+         selector because `settings-styles.test.js` pins it by prelude
+         (#223). */
+      .subsection-title {
+        margin: 20px 0 8px 0;
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.4px;
+        text-transform: uppercase;
+        color: var(--text-muted);
+      }
+
       .card {
         background: var(--bg-card);
         border: 1px solid var(--border);
@@ -180,13 +182,25 @@
         margin: 4px 0 0 0;
       }
 
+      /* Anchors inside settings copy (#234). A bare <a> in a help paragraph
+         used to fall through to the UA's default blue — barely readable on
+         the dark palette — while the resolver-row links carry `.row-help`
+         themselves and rendered muted. One rule covers both shapes: a link
+         inside a help paragraph, and a link that *is* one. */
+      .row-help a,
+      a.row-help {
+        color: var(--accent);
+        text-decoration: underline;
+        text-underline-offset: 2px;
+      }
+
       .row-control {
         flex-shrink: 0;
       }
 
       .row.sub {
         padding-left: 40px;
-        background: rgba(22, 27, 34, 0.6);
+        background: var(--row-sub-bg);
       }
 
       .row.disabled {
@@ -312,7 +326,7 @@
       .resolver-config {
         padding: 14px 18px 14px 94px;
         border-bottom: 1px solid var(--border);
-        background: rgba(22, 27, 34, 0.6);
+        background: var(--row-sub-bg);
       }
 
       .resolver-config-line {
@@ -399,7 +413,7 @@
         top: 2px;
         width: 16px;
         height: 16px;
-        background: #8b949e;
+        background: var(--text-muted);
         border-radius: 50%;
         transition:
           transform 0.15s,
@@ -413,7 +427,7 @@
 
       .toggle input:checked + .slider::before {
         transform: translateX(16px);
-        background: #ffffff;
+        background: var(--toggle-knob-on);
       }
 
       .toggle input:disabled + .slider {
@@ -425,7 +439,7 @@
       .rpc-block {
         padding: 16px 18px;
         border-top: 1px solid var(--border);
-        background: rgba(22, 27, 34, 0.5);
+        background: var(--rpc-block-bg);
       }
 
       .rpc-block.hidden {
@@ -683,6 +697,11 @@
       }
 
       .search-provider-actions {
+        display: flex;
+        flex-shrink: 0;
+        gap: 8px;
+      }
+
       /* Shortcuts */
       .shortcut-toolbar {
         display: flex;
@@ -695,6 +714,7 @@
         font-family: inherit;
       }
 
+      /* Same type styles as `.subsection-title` above (see the note there). */
       .shortcut-category {
         margin: 20px 0 8px 0;
         font-size: 12px;
@@ -771,46 +791,6 @@
         display: flex;
         flex-direction: column;
         gap: 8px;
-      }
-
-      /* Light theme */
-      @media (prefers-color-scheme: light) {
-        :root {
-          --bg: #ffffff;
-          --bg-elev: #ffffff;
-          --bg-card: #ffffff;
-          --border: #d0d7de;
-          --border-strong: #8c959f;
-          --text: #24292f;
-          --text-muted: #57606a;
-          --text-subtle: #8c959f;
-          --accent: #0969da;
-          --accent-muted: rgba(9, 105, 218, 0.1);
-          --danger: #cf222e;
-          --success: #1a7f37;
-          --warn: #9a6700;
-        }
-
-        body {
-          background: linear-gradient(135deg, #ffffff 0%, #f6f8fa 50%, #f0f2f5 100%);
-        }
-
-        .sidebar {
-          background: rgba(255, 255, 255, 0.6);
-        }
-
-        .row.sub,
-        .rpc-block {
-          background: #f6f8fa;
-        }
-
-        .toggle .slider::before {
-          background: #57606a;
-        }
-
-        .toggle input:checked + .slider::before {
-          background: #ffffff;
-        }
       }
     </style>
   </head>
@@ -1249,13 +1229,26 @@
                 </label>
               </div>
             </div>
+            <div class="row" id="radicle-launch-row">
+              <div class="row-body">
+                <p class="row-label">Start Radicle node</p>
+                <p class="row-help" id="radicle-launch-help">
+                  Starts this profile's embedded Radicle node when Freedom opens.
+                </p>
+              </div>
+              <div class="row-control">
+                <label class="toggle">
+                  <input type="checkbox" id="start-radicle-at-launch" />
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
             <div class="row" id="myotis-launch-row">
               <div class="row-body">
                 <p class="row-label">Start Ethereum light client (Myotis)</p>
                 <p class="row-help" id="myotis-launch-help">
-                  Experimental: a fully peer-to-peer Ethereum node — name resolution
-                  verified against the chain itself, no RPC provider involved.
-                  Takes effect on next launch.
+                  Experimental: a fully peer-to-peer Ethereum node — name resolution verified
+                  against the chain itself, no RPC provider involved. Takes effect on next launch.
                 </p>
               </div>
               <div class="row-control">
@@ -1269,8 +1262,8 @@
               <div class="row-body">
                 <p class="row-label">Start Gnosis light client (Myotis)</p>
                 <p class="row-help" id="myotis-gnosis-launch-help">
-                  Starts the independent Gnosis P2P client for verified wallet,
-                  transaction, and dapp reads. Takes effect on next launch.
+                  Starts the independent Gnosis P2P client for verified wallet, transaction, and
+                  dapp reads. Takes effect on next launch.
                 </p>
               </div>
               <div class="row-control">
@@ -1316,7 +1309,7 @@
               type="search"
               id="shortcut-search"
               class="rpc-input"
-              placeholder="Search shortcuts"
+              placeholder="Search shortcuts…"
               spellcheck="false"
             />
             <button type="button" class="btn" id="shortcuts-restore-defaults">
@@ -1359,8 +1352,8 @@
               <div class="row-body">
                 <p class="row-label">Prefer verified answers</p>
                 <p class="row-help">
-                  Keep an unverified answer as a fallback while later enabled methods try to
-                  produce a verified result.
+                  Keep an unverified answer as a fallback while later enabled methods try to produce
+                  a verified result.
                 </p>
               </div>
               <div class="row-control">
@@ -1377,9 +1370,7 @@
             <div class="row">
               <div class="row-body">
                 <p class="row-label">When only an unverified answer is available</p>
-                <p class="row-help">
-                  Unverified answers always keep the amber shield indicator.
-                </p>
+                <p class="row-help">Unverified answers always keep the amber shield indicator.</p>
               </div>
               <div class="row-control">
                 <select id="unverified-ens-action">
@@ -1540,35 +1531,16 @@
                 <button type="button" id="swarm-mode-action-btn" class="btn" hidden></button>
               </div>
             </div>
-            <div class="row" data-radicle>
-              <div class="row-body">
-                <p class="row-label">
-                  Enable Radicle integration
-                  <span style="color: var(--text-muted); font-weight: 400">(Beta)</span>
-                </p>
-              </div>
-              <div class="row-control">
-                <label class="toggle">
-                  <input type="checkbox" id="enable-radicle-integration" />
-                  <span class="slider"></span>
-                </label>
-              </div>
-            </div>
-            <div class="row sub" id="start-radicle-row" data-radicle>
-              <div class="row-body">
-                <p class="row-label">Start Radicle node when Freedom opens</p>
-              </div>
-              <div class="row-control">
-                <label class="toggle">
-                  <input type="checkbox" id="start-radicle-at-launch" />
-                  <span class="slider"></span>
-                </label>
-              </div>
-            </div>
             <div class="row" data-tor>
               <div class="row-body">
-                <p class="row-label">Enable Tor (.onion access) <span style="color: var(--text-muted); font-weight: 400">(Beta)</span></p>
-                <p class="row-help">Routes only <code>.onion</code> addresses through the bundled Tor (Arti) client. Clearnet traffic stays direct.</p>
+                <p class="row-label">
+                  Enable Tor (.onion access)
+                  <span style="color: var(--text-muted); font-weight: 400">(Beta)</span>
+                </p>
+                <p class="row-help">
+                  Routes only <code>.onion</code> addresses through the bundled Tor (Arti) client.
+                  Clearnet traffic stays direct.
+                </p>
               </div>
               <div class="row-control">
                 <label class="toggle">
@@ -1625,8 +1597,6 @@
         startMyotisGnosis: $('start-myotis-gnosis-at-launch'),
         unverifiedEnsAction: $('unverified-ens-action'),
         askWhereToSave: $('ask-where-to-save'),
-        enableRadicle: $('enable-radicle-integration'),
-        startRadicleRow: $('start-radicle-row'),
         startRadicle: $('start-radicle-at-launch'),
         enableTor: $('enable-tor-integration'),
         startTorRow: $('start-tor-row'),
@@ -1640,6 +1610,39 @@
         adblockCookies: $('adblock-cookies'),
         adblockAnnoyances: $('adblock-annoyances'),
         adblockAutoUpdate: $('adblock-autoupdate'),
+      };
+      const radicleLaunchRow = $('radicle-launch-row');
+      const radicleLaunchHelp = $('radicle-launch-help');
+      const defaultRadicleLaunchHelp = radicleLaunchHelp?.textContent || '';
+      const refreshRadicleLaunchStatus = async () => {
+        try {
+          const [profile, binary] = await Promise.all([
+            freedomAPI.getActiveProfile?.(),
+            freedomAPI.checkRadicleBinary?.(),
+          ]);
+          const disabled = profile?.nodes?.radicle?.mode === 'disabled';
+          const available = binary?.available !== false;
+          fields.startRadicle.disabled = disabled || !available;
+          if (radicleLaunchHelp) {
+            radicleLaunchHelp.textContent = disabled
+              ? 'Disabled for this profile under Settings → Nodes.'
+              : !available
+                ? 'libradicle addon not installed for this platform.'
+                : defaultRadicleLaunchHelp;
+          }
+          if (radicleLaunchRow)
+            radicleLaunchRow.classList.toggle('disabled', disabled || !available);
+        } catch {
+          // Every piece of row state a previous successful run may have set
+          // has to come back with the checkbox — otherwise a transient status
+          // failure leaves the row greyed out around a live control.
+          fields.startRadicle.disabled = false;
+          if (radicleLaunchHelp) {
+            radicleLaunchHelp.textContent =
+              'Radicle status could not be read. The startup preference can still be saved.';
+          }
+          if (radicleLaunchRow) radicleLaunchRow.classList.remove('disabled');
+        }
       };
 
       // id ties together the manifest category, the #adblock-<id>-row
@@ -1778,7 +1781,7 @@
                   </div>`
               )
               .join('')
-          : '<div class="profile-node-empty">No custom search engines yet.</div>';
+          : '<div class="profile-node-empty">No custom search engines yet</div>';
       };
 
       const applySearchSettings = (settings) => {
@@ -2003,9 +2006,12 @@
           externalFields: [
             { key: 'externalApi', label: 'API', placeholder: 'http://127.0.0.1:1633' },
           ],
-          endpointLines: (config, service) => [
-            config?.externalApi || service?.api || (config?.apiPort ? `http://127.0.0.1:${config.apiPort}` : null),
-          ].filter(Boolean),
+          endpointLines: (config, service) =>
+            [
+              config?.externalApi ||
+                service?.api ||
+                (config?.apiPort ? `http://127.0.0.1:${config.apiPort}` : null),
+            ].filter(Boolean),
         },
         {
           protocol: 'ipfs',
@@ -2022,15 +2028,8 @@
         {
           protocol: 'radicle',
           label: 'Radicle',
-          modes: ['managed', 'external', 'disabled'],
-          settingKey: 'enableRadicleIntegration',
-          hideOnWindows: true,
-          externalFields: [
-            { key: 'externalHttp', label: 'HTTP', placeholder: 'http://127.0.0.1:8780' },
-          ],
-          endpointLines: (config, service) => [
-            config?.externalHttp || service?.api || (config?.httpPort ? `http://127.0.0.1:${config.httpPort}` : null),
-          ].filter(Boolean),
+          modes: ['managed', 'disabled'],
+          endpointLines: () => ['Embedded libradicle native node'],
         },
         {
           protocol: 'tor',
@@ -2041,15 +2040,16 @@
           externalFields: [
             { key: 'externalSocks', label: 'SOCKS5', placeholder: '127.0.0.1:9150' },
           ],
-          endpointLines: (config, service) => [
-            config?.externalSocks
-              ? `SOCKS5 ${config.externalSocks}`
-              : service?.socks
-                ? `SOCKS5 ${service.socks}`
-                : config?.socksPort
-                  ? `SOCKS5 127.0.0.1:${config.socksPort}`
-                  : null,
-          ].filter(Boolean),
+          endpointLines: (config, service) =>
+            [
+              config?.externalSocks
+                ? `SOCKS5 ${config.externalSocks}`
+                : service?.socks
+                  ? `SOCKS5 ${service.socks}`
+                  : config?.socksPort
+                    ? `SOCKS5 127.0.0.1:${config.socksPort}`
+                    : null,
+            ].filter(Boolean),
         },
       ];
 
@@ -2088,10 +2088,12 @@
         }));
 
       const renderModeOptions = (protocol, mode) =>
-        (SERVICE_DEFINITIONS[protocol]?.modes || ['managed', 'disabled']).map(
-          (value) =>
-            `<option value="${value}"${mode === value ? ' selected' : ''}>${NODE_MODE_LABELS[value]}</option>`
-        ).join('');
+        (SERVICE_DEFINITIONS[protocol]?.modes || ['managed', 'disabled'])
+          .map(
+            (value) =>
+              `<option value="${value}"${mode === value ? ' selected' : ''}>${NODE_MODE_LABELS[value]}</option>`
+          )
+          .join('');
 
       const renderExternalEditor = (protocol, config, mode) => {
         const definition = SERVICE_DEFINITIONS[protocol];
@@ -2216,6 +2218,7 @@
       };
       setProfileRefreshActive(isProfileOrNodesSection());
       freedomAPI.onProfileUpdated?.(() => {
+        refreshRadicleLaunchStatus();
         if (isProfileOrNodesSection()) {
           refreshProfileSection(true);
         }
@@ -2305,6 +2308,7 @@
           }
           setNodesStatus('Saved. Restart the node to apply mode or endpoint changes.', 'success');
           await refreshProfileSection(true);
+          await refreshRadicleLaunchStatus();
         } catch (err) {
           setNodesStatus(err?.message || 'Profile node settings were not saved', 'error');
         } finally {
@@ -2320,8 +2324,7 @@
         startMyotisAtLaunch: fields.startMyotis.checked,
         startMyotisGnosisAtLaunch: fields.startMyotisGnosis.checked,
         askWhereToSave: fields.askWhereToSave.checked,
-        enableRadicleIntegration: isWindows ? false : fields.enableRadicle.checked,
-        startRadicleAtLaunch: isWindows ? false : fields.startRadicle.checked,
+        startRadicleAtLaunch: fields.startRadicle.checked,
         enableTorIntegration: isWindows ? false : fields.enableTor.checked,
         startTorAtLaunch: isWindows ? false : fields.startTor.checked,
         enableIdentityWallet: fields.enableIdentity.checked,
@@ -2345,7 +2348,6 @@
         fields.startMyotis.checked = settings.startMyotisAtLaunch === true;
         fields.startMyotisGnosis.checked = settings.startMyotisGnosisAtLaunch === true;
         fields.askWhereToSave.checked = settings.askWhereToSave === true;
-        fields.enableRadicle.checked = settings.enableRadicleIntegration === true;
         fields.startRadicle.checked = settings.startRadicleAtLaunch === true;
         fields.enableTor.checked = settings.enableTorIntegration === true;
         fields.startTor.checked = settings.startTorAtLaunch === true;
@@ -2359,7 +2361,6 @@
         fields.adblockCookies.checked = settings.adblockCookies === true;
         fields.adblockAnnoyances.checked = settings.adblockAnnoyances === true;
         fields.adblockAutoUpdate.checked = settings.adblockAutoUpdate !== false;
-        setFieldEnabled(fields.enableRadicle, fields.startRadicleRow, fields.startRadicle);
         setFieldEnabled(fields.enableTor, fields.startTorRow, fields.startTor);
         applyAdblockGating();
       };
@@ -2550,15 +2551,11 @@
       fields.startMyotis.addEventListener('change', save);
       fields.startMyotisGnosis.addEventListener('change', save);
       fields.askWhereToSave.addEventListener('change', save);
-      fields.enableRadicle.addEventListener('change', () => {
-        setFieldEnabled(fields.enableRadicle, fields.startRadicleRow, fields.startRadicle);
-        save();
-      });
       fields.startRadicle.addEventListener('change', save);
       fields.enableTor.addEventListener('change', () => {
         setFieldEnabled(fields.enableTor, fields.startTorRow, fields.startTor);
-        // Mirror Radicle: enabling the integration only reveals the controls —
-        // it does not start Tor. Starting is via the node-status menu toggle or
+        // Enabling the integration only reveals the controls — it does not
+        // start Tor. Starting is via the node-status menu toggle or
         // "Start Tor when Freedom opens". Disabling stops it (settings-ui.js).
         save();
       });
@@ -2609,12 +2606,10 @@
           const platform = await freedomAPI.getPlatform();
           isWindows = platform === 'win32';
           if (isWindows) {
-            // No official Radicle binaries for Windows yet; Arti is bundled
-            // for macOS/Linux only (built host-only from crates.io).
-            document
-              .querySelectorAll('[data-radicle], [data-tor]')
-              .forEach((el) => (el.style.display = 'none'));
-            if (resolveSection(location.hash) === 'profiles') {
+            // Arti is bundled for macOS/Linux only (built host-only from
+            // crates.io). Radicle has native Windows x64 and ARM64 addons.
+            document.querySelectorAll('[data-tor]').forEach((el) => (el.style.display = 'none'));
+            if (isProfileOrNodesSection()) {
               refreshProfileSection(true);
             }
           }
@@ -2638,6 +2633,7 @@
           applySearchSettings(settings);
           applyFormState(settings);
           renderSwarmModeRow(settings, registry);
+          refreshRadicleLaunchStatus();
         } catch {
           console.error('[settings] failed to load settings');
         }
@@ -2715,6 +2711,13 @@
           const aliasLine = entry.aliases.length
             ? `<p class="row-help">Also ${entry.aliases.map(kbd).join(' ')}</p>`
             : '';
+          // A remap the store reverted — at load because a newer default or
+          // fixed alias took its combination, or on a save (a Reset restoring
+          // a default that claims this row's chord) — say so on the row
+          // instead of letting the binding silently snap back to the default.
+          const revertedLine = entry.reverted
+            ? `<p class="shortcut-note">Your ${kbd(entry.reverted.formatted)} remap was reset — that combination is now used by “${esc(entry.reverted.conflict)}”.</p>`
+            : '';
           const warnLine =
             isRecording && entry.warnOnEdit
               ? '<p class="shortcut-note">Heads up: this is a common close gesture across apps — remapping it changes deep muscle memory.</p>'
@@ -2735,6 +2738,7 @@
               <div class="row-body">
                 <p class="row-label">${esc(entry.description)}</p>
                 ${aliasLine}
+                ${revertedLine}
                 ${warnLine}
                 ${notice ? `<p class="shortcut-note">${esc(notice)}</p>` : ''}
               </div>
@@ -2747,7 +2751,7 @@
           const visible = entries.filter(matchesQuery);
           if (!visible.length) {
             view.innerHTML =
-              '<div class="card"><div class="profile-node-empty">No shortcuts match your search.</div></div>';
+              '<div class="card"><div class="profile-node-empty">No shortcuts match your search</div></div>';
             return;
           }
           const categories = [];
@@ -3015,7 +3019,7 @@
             return '<div class="rpc-block" style="border-top: none"><p class="rpc-hint">Loading…</p></div>';
           }
           if (!addState.results.length) {
-            return '<div class="rpc-block" style="border-top: none"><p class="rpc-hint">No chains found.</p></div>';
+            return '<div class="rpc-block" style="border-top: none"><p class="rpc-hint">No chains found</p></div>';
           }
           return addState.results
             .map((c) => {
@@ -3039,8 +3043,10 @@
         const searchHtml = () => `
           <div class="card">
             <div class="rpc-block" style="border-top: none">
-              <input type="text" class="rpc-input" id="chain-search-input"
-                placeholder="Search chains by name or ID…" spellcheck="false" />
+              <div class="rpc-row">
+                <input type="text" class="rpc-input" id="chain-search-input"
+                  placeholder="Search chains by name or ID…" spellcheck="false" />
+              </div>
             </div>
           </div>
           <div class="card" id="chain-search-results" style="margin-top: 12px">${searchResultsHtml()}</div>
@@ -3165,7 +3171,7 @@
               <div class="rpc-block" style="border-top: none">
                 <p class="row-label" style="margin-bottom: 8px">${f.mode === 'edit' ? 'Edit endpoint' : 'Add endpoint'}</p>
                 <div class="rpc-row" style="margin-bottom: 8px">
-                  <input type="text" class="rpc-input" id="ep-url" placeholder="https://... or http://localhost:8545" spellcheck="false" value="${esc(f.url)}" />
+                  <input type="text" class="rpc-input" id="ep-url" placeholder="https://… or http://localhost:8545" spellcheck="false" value="${esc(f.url)}" />
                 </div>
                 ${f.error ? `<p class="rpc-status error" style="margin-bottom: 8px">${esc(f.error)}</p>` : ''}
                 <button type="button" class="btn" data-action="save-endpoint">Save</button>
@@ -3265,9 +3271,7 @@
           const defaultReadOrder = supportsVerifiedSources
             ? ['myotis', 'colibri', 'quorum', 'direct']
             : ['colibri', 'quorum', 'direct'];
-          const defaultBroadcastOrder = supportsVerifiedSources
-            ? ['myotis', 'direct']
-            : ['direct'];
+          const defaultBroadcastOrder = supportsVerifiedSources ? ['myotis', 'direct'] : ['direct'];
           const readOrder = config.networks[cid]?.access?.readOrder || defaultReadOrder;
           const broadcastOrder =
             config.networks[cid]?.access?.broadcastOrder || defaultBroadcastOrder;
@@ -3278,16 +3282,18 @@
             ? `<div class="card" style="margin-top: 12px">
                 <div class="rpc-block" style="border-top: none">
                   <p class="row-label" style="margin-bottom: 8px">Colibri prover endpoint</p>
-                  <input class="rpc-input" data-chain-prover="${esc(cid)}"
-                    data-source-id="${esc(proverSource?.id || 'colibri-corpus')}"
-                    value="${esc(proverSource?.coverage?.[cid] || '')}"
-                    placeholder="https://…" spellcheck="false" />
+                  <div class="rpc-row">
+                    <input class="rpc-input" data-chain-prover="${esc(cid)}"
+                      data-source-id="${esc(proverSource?.id || 'colibri-corpus')}"
+                      value="${esc(proverSource?.coverage?.[cid] || '')}"
+                      placeholder="https://…" spellcheck="false" />
+                  </div>
                 </div>
               </div>`
             : '';
 
           const section = (title, help, list, emptyHint) => `
-            <h2 class="section-title" style="margin-top: 20px">${title}</h2>
+            <h3 class="subsection-title">${title}</h3>
             <p class="row-help" style="margin-bottom: 12px">${help}</p>
             <div class="card">${
               list.length
@@ -3306,16 +3312,16 @@
               to the next source.
             </p>
 
-            <h2 class="section-title" style="margin-top: 20px">Read and verification order</h2>
+            <h3 class="subsection-title">Read and verification order</h3>
             <p class="row-help" style="margin-bottom: 12px">Drag sources into priority order.</p>
             <div class="card">${accessRows(cid, 'read', readOrder)}</div>
             ${proverConfig}
 
-            <h2 class="section-title" style="margin-top: 20px">Transaction broadcast</h2>
+            <h3 class="subsection-title">Transaction broadcast</h3>
             <p class="row-help" style="margin-bottom: 12px">Signed transactions use P2P first, with RPC as the compatibility fallback.</p>
             <div class="card">${accessRows(cid, 'broadcast', broadcastOrder)}</div>
 
-            ${section('Your RPCs', 'Endpoints you added — tried first.', mine, 'No custom RPCs yet.')}
+            ${section('Your RPCs', 'Endpoints you added — tried first.', mine, 'No custom RPCs yet')}
             ${cardButton('+ Add a custom RPC', 'add-endpoint')}
             ${endpointForm ? endpointFormHtml() : ''}
 
@@ -3400,11 +3406,14 @@
           const network = config.networks[cid] || {};
           const key = kind === 'broadcast' ? 'broadcastOrder' : 'readOrder';
           const supportsVerifiedSources = cid === '1' || cid === '100';
-          const fallback = kind === 'broadcast'
-            ? (supportsVerifiedSources ? ['myotis', 'direct'] : ['direct'])
-            : (supportsVerifiedSources
+          const fallback =
+            kind === 'broadcast'
+              ? supportsVerifiedSources
+                ? ['myotis', 'direct']
+                : ['direct']
+              : supportsVerifiedSources
                 ? ['myotis', 'colibri', 'quorum', 'direct']
-                : ['colibri', 'quorum', 'direct']);
+                : ['colibri', 'quorum', 'direct'];
           const order = [...(network.access?.[key] || fallback)];
           const from = order.indexOf(source);
           let to = target ? order.indexOf(target) : from + direction;
@@ -3416,9 +3425,11 @@
           // spreading it would freeze builtin defaults (e.g. broadcastOrder)
           // into the user config, so a future app update to a builtin order
           // would be silently ignored for this user.
-          await mutate(() => freedomAPI.updateNetwork(cid, {
-            access: { [key]: order },
-          }));
+          await mutate(() =>
+            freedomAPI.updateNetwork(cid, {
+              access: { [key]: order },
+            })
+          );
         };
         const runChainSearch = async (query) => {
           const seq = ++searchSeq;
@@ -3484,12 +3495,14 @@
             await mutate(() => freedomAPI.resetEndpointSourceCoverage(id, cid));
             return;
           }
-          await mutate(() => freedomAPI.upsertEndpointSource(id, {
-            role: 'prover',
-            keyed: false,
-            name: current?.name || 'Colibri (corpus.core)',
-            coverage: { ...(current?.coverage || {}), [cid]: url },
-          }));
+          await mutate(() =>
+            freedomAPI.upsertEndpointSource(id, {
+              role: 'prover',
+              keyed: false,
+              name: current?.name || 'Colibri (corpus.core)',
+              coverage: { ...(current?.coverage || {}), [cid]: url },
+            })
+          );
         });
 
         section.addEventListener('dragstart', (e) => {
@@ -3686,7 +3699,10 @@
             const c = addState?.picked;
             if (!c) return;
             const failConfirm = (error) => {
-              if (!addState) { setStatus(error, 'error'); return; }
+              if (!addState) {
+                setStatus(error, 'error');
+                return;
+              }
               addState.error = error;
               render();
             };
@@ -3710,16 +3726,31 @@
             const decimals = decimalsRaw === '' ? 18 : Number(decimalsRaw);
             const manual = { chainId, name, symbol, decimalsRaw, rpc };
             const failManual = (error, focusId = 'man-rpc') => {
-              if (!addState) { setStatus(error, 'error'); return; }
+              if (!addState) {
+                setStatus(error, 'error');
+                return;
+              }
               addState.manual = manual;
               addState.error = error;
               render();
               $(focusId)?.focus();
             };
-            if (!chainId) { failManual('Chain ID is required', 'man-chainid'); return; }
-            if (!name) { failManual('Chain name is required', 'man-name'); return; }
-            if (!symbol) { failManual('Currency symbol is required', 'man-symbol'); return; }
-            if (!rpc) { failManual('RPC URL is required'); return; }
+            if (!chainId) {
+              failManual('Chain ID is required', 'man-chainid');
+              return;
+            }
+            if (!name) {
+              failManual('Chain name is required', 'man-name');
+              return;
+            }
+            if (!symbol) {
+              failManual('Currency symbol is required', 'man-symbol');
+              return;
+            }
+            if (!rpc) {
+              failManual('RPC URL is required');
+              return;
+            }
             if (!Number.isInteger(decimals) || decimals < 0) {
               failManual('Currency decimals must be a non-negative whole number', 'man-decimals');
               return;
@@ -3859,7 +3890,11 @@
           }
 
           const hasProver = activeSources('prover').length > 0;
-          setBadge('colibri', hasProver ? 'Verified' : 'No prover', hasProver ? 'verified' : 'warning');
+          setBadge(
+            'colibri',
+            hasProver ? 'Verified' : 'No prover',
+            hasProver ? 'verified' : 'warning'
+          );
           setBadge(
             'quorum',
             `${currentQuorum.m} of ${currentQuorum.k}`,
@@ -3971,12 +4006,15 @@
           // Preserve interaction order when several controls are changed in
           // quick succession. IPC responses are not guaranteed to complete in
           // the same order the renderer dispatched them.
-          policySave = policySave.catch(() => {}).then(async () => {
-            const result = await freedomAPI.updateNetwork('1', { verification });
-            if (result?.success === false) throw new Error(result.error || 'Policy was not saved');
-            config.networks['1'].verification = verification;
-            setPolicyStatus('Resolution policy saved.', 'success');
-          });
+          policySave = policySave
+            .catch(() => {})
+            .then(async () => {
+              const result = await freedomAPI.updateNetwork('1', { verification });
+              if (result?.success === false)
+                throw new Error(result.error || 'Policy was not saved');
+              config.networks['1'].verification = verification;
+              setPolicyStatus('Resolution policy saved.', 'success');
+            });
           return policySave;
         };
 
@@ -3985,15 +4023,18 @@
             return Promise.reject(new Error('Resolution policy is not loaded yet'));
           }
           const quorum = { ...currentQuorum };
-          quorumSave = quorumSave.catch(() => {}).then(async () => {
-            const result = await freedomAPI.updateNetwork('1', { quorum });
-            if (result?.success === false) throw new Error(result.error || 'Quorum was not saved');
-            config.networks['1'].quorum = {
-              ...(config.networks['1'].quorum || {}),
-              ...quorum,
-            };
-            setPolicyStatus('RPC quorum saved.', 'success');
-          });
+          quorumSave = quorumSave
+            .catch(() => {})
+            .then(async () => {
+              const result = await freedomAPI.updateNetwork('1', { quorum });
+              if (result?.success === false)
+                throw new Error(result.error || 'Quorum was not saved');
+              config.networks['1'].quorum = {
+                ...(config.networks['1'].quorum || {}),
+                ...quorum,
+              };
+              setPolicyStatus('RPC quorum saved.', 'success');
+            });
           return quorumSave;
         };
 
@@ -4037,12 +4078,12 @@
             const res = await freedomAPI.getNetworkConfig();
             if (!res || !res.success) throw new Error('Network configuration unavailable');
             config = { networks: res.networks || {}, sources: res.sources || [] };
-            if (!config.networks['1']) throw new Error('Ethereum network configuration unavailable');
+            if (!config.networks['1'])
+              throw new Error('Ethereum network configuration unavailable');
             const verification = config.networks?.['1']?.verification || {};
             const configured = Array.isArray(verification.order)
               ? verification.order.filter(
-                  (method, index, all) =>
-                    METHOD_IDS.has(method) && all.indexOf(method) === index
+                  (method, index, all) => METHOD_IDS.has(method) && all.indexOf(method) === index
                 )
               : [];
             enabledOrder = configured.length
@@ -4055,8 +4096,7 @@
             currentQuorum = { k, m };
 
             const prover = (config.sources || []).find(
-              (source) =>
-                source.role === 'prover' && source.coverage?.['1'] && !source.removed
+              (source) => source.role === 'prover' && source.coverage?.['1'] && !source.removed
             );
             proverId = prover?.id || 'colibri-corpus';
             currentProverUrl = prover && prover.builtin === false ? prover.coverage['1'] : '';
@@ -4241,9 +4281,7 @@
           }
           if (gnosisLaunchRow && gnosisLaunchToggle) {
             const supported = myotisGnosisStatus?.supported !== false;
-            const available = myotisGnosisStatus
-              ? Boolean(myotisGnosisStatus.available)
-              : true;
+            const available = myotisGnosisStatus ? Boolean(myotisGnosisStatus.available) : true;
             const disabled = myotisGnosisStatus?.state === 'disabled';
             gnosisLaunchRow.hidden = !supported;
             gnosisLaunchToggle.disabled =
@@ -4342,7 +4380,7 @@
           const providers = config.sources.filter((s) => s.keyed);
           const body = providers.length
             ? `<div class="card">${providers.map(providerRow).join('')}</div>`
-            : '<div class="card"><div class="rpc-block" style="border-top: none"><p class="rpc-hint">No keyed providers available.</p></div></div>';
+            : '<div class="card"><div class="rpc-block" style="border-top: none"><p class="rpc-hint">No keyed providers available</p></div></div>';
           view.innerHTML = `
             <h2 class="section-title">RPC Providers</h2>
             <p class="row-help" style="margin-bottom: 16px">

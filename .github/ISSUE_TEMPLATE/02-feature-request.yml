@@ -1,0 +1,71 @@
+name: Feature request
+description: Propose an improvement grounded in a concrete user or developer need
+title: '[Feature]: '
+labels:
+  - enhancement
+body:
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched the existing issues for this request.
+          required: true
+        - label: I read the [contribution guidelines](https://github.com/solardev-xyz/freedom-browser/blob/main/CONTRIBUTING.md).
+          required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: Who needs this and what can they not do today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Describe the behavior or result, not only a proposed implementation.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - General browser UI
+        - Swarm
+        - IPFS or IPNS
+        - Radicle
+        - Tor (.onion access)
+        - Myotis Ethereum or Gnosis light client
+        - Naming and resolution
+        - Wallet or dApp integration
+        - Privacy, permissions, or security
+        - Downloads or storage
+        - Build, packaging, or developer tooling
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Include workarounds or related designs you evaluated.
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Add examples, screenshots, standards, or links that help explain the request.
+
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution
+      options:
+        - label: I may be able to help implement or test this.

@@ -14,14 +14,60 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-function createFakeSession() {
-  const link = deferred();
-  const response = deferred();
+/**
+ * Stand-in for @openlv/core's `observable`: `subscribe` replays the
+ * current value before any change, `until` resolves on the first
+ * matching value (including the current one) and never rejects.
+ */
+function fakeObservable(initial) {
+  let value = initial;
+  const listeners = new Set();
   return {
-    link,
+    get: () => value,
+    subscribe(listener) {
+      listeners.add(listener);
+      listener(value);
+      return () => listeners.delete(listener);
+    },
+    until(isMatch) {
+      return new Promise((resolve) => {
+        if (isMatch(value)) {
+          resolve(value);
+          return;
+        }
+        const listener = (next) => {
+          if (!isMatch(next)) return;
+          listeners.delete(listener);
+          resolve(next);
+        };
+        listeners.add(listener);
+      });
+    },
+    set(next) {
+      value = next;
+      for (const listener of [...listeners]) listener(next);
+    },
+  };
+}
+
+function createFakeSession() {
+  const response = deferred();
+  const status = fakeObservable('created');
+  const error = fakeObservable(undefined);
+  return {
+    status,
+    error,
+    // openlv 0.2.0 has no waitForLink(): the broker watches `status` and
+    // reads `error` when the session lands in 'disconnected'.
+    link: {
+      resolve: () => status.set('connected'),
+      reject: (err) => {
+        if (err?.message) error.set(err.message);
+        status.set('disconnected');
+      },
+    },
     response,
     connect: jest.fn(async () => {}),
-    waitForLink: jest.fn(() => link.promise),
     send: jest.fn(() => response.promise),
     close: jest.fn(async () => {}),
     getHandshakeParameters: () => ({
@@ -40,7 +86,6 @@ function createHarness() {
   const session = createFakeSession();
   const openlv = {
     createSession: jest.fn(async () => session),
-    mqtt: 'MQTT_LAYER',
     webrtc: jest.fn(() => 'WEBRTC_LAYER'),
     encodeConnectionURL: jest.fn(
       (p) => `openlv://${p.sessionId}@1?h=${p.h}&k=${p.k}&p=${p.p}&s=${encodeURIComponent(p.s)}`,
@@ -66,6 +111,9 @@ async function startBroker(harness) {
   const broker = createRemoteSessionBroker({
     openlv: harness.openlv,
     remoteSigner: harness.remoteSigner,
+    // Explicit relay: without it the broker PROBES the public brokers
+    // with a real WebSocket — a unit test must never touch the network.
+    signaling: { p: 'mqtt', s: 'wss://relay.test/mqtt' },
     bridgeOrigin: 'https://bridge.test',
   });
   broker.start();
@@ -87,10 +135,11 @@ describe('remote-session broker', () => {
     harness.handlers.request(JOB);
     await tick();
 
-    // Host session created over the injected signaling/transport layers.
+    // Host session created over the injected transport layer. Since
+    // openlv 0.2.0 the signaling backend is not passed in — createSession
+    // resolves it from the relay descriptor's `p`.
     expect(harness.openlv.createSession).toHaveBeenCalledWith(
       expect.objectContaining({ p: 'mqtt' }),
-      'MQTT_LAYER',
       ['WEBRTC_LAYER'],
       expect.any(Function),
     );
@@ -143,6 +192,79 @@ describe('remote-session broker', () => {
     expect(harness.remoteSigner.respond).toHaveBeenCalledWith({
       jobId: 'job-1',
       error: { rpcCode: 4001, message: 'User denied.' },
+    });
+  });
+
+  test('republishes SDK status changes as job phases the QR UIs can render', async () => {
+    const harness = createHarness();
+    const broker = await startBroker(harness);
+    const events = [];
+    broker.onJobEvent((e) => events.push(e));
+
+    harness.handlers.request(JOB);
+    await tick();
+
+    // Subscribing replays the session's current status, then every change.
+    for (const status of ['signaling', 'ready', 'linking']) {
+      harness.session.status.set(status);
+    }
+    await tick();
+
+    expect(events.filter((e) => e.phase === 'created')).toHaveLength(1);
+    expect(events.map((e) => e.phase)).toEqual(
+      expect.arrayContaining(['signaling', 'ready', 'linking']),
+    );
+    expect(events.every((e) => e.jobId === 'job-1' && e.kind === 'signing')).toBe(true);
+  });
+
+  test('stops republishing status once the job is settled', async () => {
+    const harness = createHarness();
+    const broker = await startBroker(harness);
+    const events = [];
+    broker.onJobEvent((e) => events.push(e));
+
+    harness.handlers.request(JOB);
+    await tick();
+    broker.cancelJob('job-1');
+    events.length = 0;
+
+    harness.session.status.set('linking');
+    await tick();
+    expect(events).toEqual([]);
+  });
+
+  test('a session that gives up before linking fails the job with the SDK error', async () => {
+    const harness = createHarness();
+    const broker = await startBroker(harness);
+    const events = [];
+    broker.onJobEvent((e) => events.push(e));
+
+    harness.handlers.request(JOB);
+    await tick();
+    harness.session.error.set('No common transport with peer');
+    harness.session.status.set('disconnected');
+    await tick();
+
+    expect(harness.remoteSigner.respond).toHaveBeenCalledWith({
+      jobId: 'job-1',
+      error: { code: 'REMOTE_UNKNOWN', message: 'No common transport with peer' },
+    });
+    expect(events.some((e) => e.phase === 'error')).toBe(true);
+    expect(harness.session.close).toHaveBeenCalled();
+  });
+
+  test('a silent disconnect still fails the job rather than hanging', async () => {
+    const harness = createHarness();
+    await startBroker(harness);
+
+    harness.handlers.request(JOB);
+    await tick();
+    harness.session.status.set('disconnected'); // no error reported
+    await tick();
+
+    expect(harness.remoteSigner.respond).toHaveBeenCalledWith({
+      jobId: 'job-1',
+      error: { code: 'REMOTE_UNKNOWN', message: 'Session failed to connect' },
     });
   });
 
@@ -210,7 +332,7 @@ describe('remote-session broker', () => {
 
     harness.handlers.request(JOB);
     await tick();
-    const onIncoming = harness.openlv.createSession.mock.calls[0][3];
+    const onIncoming = harness.openlv.createSession.mock.calls[0][2];
     await expect(onIncoming({ method: 'eth_accounts' })).resolves.toEqual({
       error: { code: -32601, message: 'Method not found' },
     });

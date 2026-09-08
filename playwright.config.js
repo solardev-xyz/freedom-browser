@@ -1,6 +1,6 @@
 // Playwright config for renderer E2E tests.
 //
-// Two projects:
+// Three projects:
 //   - `harness` (default `npm run test:e2e`): fixture-driven specs that run
 //     against the in-process test harness. No actual Ant, IPFS, ENS, or
 //     network. Fast, deterministic, safe in CI.
@@ -10,12 +10,37 @@
 //     and is slow (Swarm cold-start can take several minutes). Skipped
 //     automatically if the antd binary for the current platform isn't
 //     present.
+//   - `packaged` (part of `npm run test:e2e:packaged`): the release smoke
+//     test. Same harness stubs, but Electron is launched from a *built* binary
+//     named by `FREEDOM_E2E_EXECUTABLE` instead of from the source tree,
+//     which is what catches packaging-class bugs (see
+//     docs/agent-playbooks/release-process.md §6). Its `packaged-preflight`
+//     setup project fails the run before any spec starts when that variable
+//     is missing or does not name an executable file.
+//   - `packaged-live` (also part of `npm run test:e2e:packaged`): the same
+//     built binary, but launched through the *live* fixtures — no
+//     FREEDOM_TEST_MODE, so the artifact's own bundled nodes actually start
+//     and real navigation goes out to the network. Slow, hence `live`'s
+//     timeouts rather than `packaged`'s.
 //
 // Layout:
-//   - `test-e2e/live/**/*.spec.js`  → `live` project
-//   - `test-e2e/*.spec.js`          → `harness` project (everything else)
+//   - `test-e2e/live/**/*.spec.js`           → `live` project
+//   - `test-e2e/packaged/preflight.setup.js` → `packaged-preflight` project
+//   - `test-e2e/packaged/**/*.spec.js`       → `packaged` project
+//   - `test-e2e/packaged-live/**/*.spec.js`  → `packaged-live` project
+//   - `test-e2e/*.spec.js`                   → `harness` project (everything else)
 
 const { defineConfig } = require('@playwright/test');
+
+const PACKAGED_PROJECTS = ['packaged', 'packaged-live'];
+
+const packagedRequested =
+  Boolean(process.env.FREEDOM_E2E_EXECUTABLE) ||
+  process.argv.some(
+    (a, i, argv) =>
+      PACKAGED_PROJECTS.some((name) => a === `--project=${name}`) ||
+      (a === '--project' && PACKAGED_PROJECTS.includes(argv[i + 1]))
+  );
 
 module.exports = defineConfig({
   testDir: './test-e2e',
@@ -33,7 +58,7 @@ module.exports = defineConfig({
   projects: [
     {
       name: 'harness',
-      testMatch: /^(?!.*[\\/]live[\\/]).*\.spec\.js$/,
+      testMatch: /^(?!.*[\\/](?:live|packaged|packaged-live)[\\/]).*\.spec\.js$/,
       // Bee/IPFS startup is stubbed in test mode, but Electron + first-
       // window ready can still take 10–15s on cold cache. 30s gives
       // headroom without hiding genuine hangs.
@@ -51,5 +76,48 @@ module.exports = defineConfig({
       timeout: 10 * 60_000,
       expect: { timeout: 30_000 },
     },
+    // The `packaged*` projects are registered only when they are wanted:
+    // FREEDOM_E2E_EXECUTABLE set, or `--project packaged` / `--project
+    // packaged-live` on the command line. Otherwise a bare `npx playwright
+    // test` (no --project) would run them too and fail in the preflight
+    // instead of exercising harness+live.
+    ...(packagedRequested
+      ? [
+          {
+            // Runs automatically ahead of `packaged` / `packaged-live` (and only
+            // then): a missing or unusable FREEDOM_E2E_EXECUTABLE fails here,
+            // with the fix in the message, instead of launching Electron from
+            // source and reporting a green smoke test for an artifact nothing
+            // ever opened.
+            name: 'packaged-preflight',
+            testMatch: /[\\/]packaged[\\/]preflight\.setup\.js$/,
+            timeout: 10_000,
+          },
+          {
+            name: 'packaged',
+            testMatch: /[\\/]packaged[\\/].*\.spec\.js$/,
+            dependencies: ['packaged-preflight'],
+            // `harness` plus headroom: a just-installed package launches with a
+            // cold asar and cold shared libraries, and the persistence spec pays
+            // that cost twice in a single test (launch, quit, relaunch).
+            timeout: 120_000,
+            expect: { timeout: 10_000 },
+            retries: process.env.CI ? 2 : 0,
+          },
+          {
+            // The packaged artifact without the harness stubs: its bundled Ant /
+            // IPFS / Radicle / Arti actually start and navigation really goes to
+            // the network, so these carry `live`'s budgets rather than
+            // `packaged`'s. No retries for the same reason `live` has none — a
+            // node that only comes up on the second attempt is a finding, not a
+            // flake to paper over.
+            name: 'packaged-live',
+            testMatch: /[\\/]packaged-live[\\/].*\.spec\.js$/,
+            dependencies: ['packaged-preflight'],
+            timeout: 10 * 60_000,
+            expect: { timeout: 30_000 },
+          },
+        ]
+      : []),
   ],
 });

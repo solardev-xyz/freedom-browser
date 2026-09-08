@@ -14,10 +14,6 @@ const IN_FLIGHT_TITLE = 'Finish the confirmation on your device first';
 // State
 let isOpen = false;
 let featureEnabled = false;
-// The Radicle provider's consent prompts live in this sidebar too, and the
-// Radicle integration is gated independently of the identity wallet —
-// consent-driven opens must work when either flag is on.
-let radicleEnabled = false;
 
 // DOM references
 let sidebar;
@@ -42,12 +38,10 @@ export function initSidebar() {
     .getSettings()
     .then((settings) => {
       featureEnabled = settings?.enableIdentityWallet === true;
-      radicleEnabled = settings?.enableRadicleIntegration === true;
       applyFeatureVisibility();
     })
     .catch(() => {
       featureEnabled = false;
-      radicleEnabled = false;
       applyFeatureVisibility();
     });
 
@@ -55,7 +49,6 @@ export function initSidebar() {
   window.addEventListener('settings:updated', (event) => {
     const wasEnabled = featureEnabled;
     featureEnabled = event.detail?.enableIdentityWallet === true;
-    radicleEnabled = event.detail?.enableRadicleIntegration === true;
     applyFeatureVisibility();
     // Close sidebar if feature was just disabled while open
     if (wasEnabled && !featureEnabled && isOpen) {
@@ -152,7 +145,6 @@ function refuseSidebarClose() {
  * provider prompts must render without the identity-wallet flag.
  */
 export function openForConsent() {
-  if (!featureEnabled && !radicleEnabled) return;
   if (!isOpen) {
     isOpen = true;
     applyState();

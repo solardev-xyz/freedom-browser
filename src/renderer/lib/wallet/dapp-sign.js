@@ -14,7 +14,13 @@ import {
 } from './signature-flight.js';
 import { open as openSidebarPanel } from '../sidebar.js';
 import { executeSign } from '../dapp-provider.js';
-import { bypassUnlockGateForDevice, signingButtonLabel } from './wallet-utils.js';
+import {
+  bypassUnlockGateForDevice,
+  bypassUnlockGateForSafe,
+  signingButtonLabel,
+  isSafeAccount,
+} from './wallet-utils.js';
+import { isSafeSigningBoardOpen } from './safe-signing.js';
 
 // DOM references
 let dappSignScreen;
@@ -147,6 +153,12 @@ export async function showDappSignApproval(webview, permissionKey, method, param
       displayTypedDataMessage(params);
     }
 
+    // Multi-owner accounts sign as a smart contract — be upfront that
+    // not every dApp can verify EIP-1271 signatures.
+    document
+      .getElementById('dapp-sign-safe-note')
+      ?.classList.toggle('hidden', !isSafeAccount(permission.walletIndex));
+
     checkDappSignUnlockStatus().then(() => {
       // Another surface may have started a device signature while we were
       // checking vault status (the user could still click Pay on an x402
@@ -223,7 +235,7 @@ function formatTypedDataForDisplay(typedData) {
     if (typedData.domain.version) lines.push(`  Version: ${typedData.domain.version}`);
     if (typedData.domain.chainId) lines.push(`  Chain ID: ${typedData.domain.chainId}`);
     if (typedData.domain.verifyingContract) {
-      lines.push(`  Contract: ${typedData.domain.verifyingContract.slice(0, 10)}...`);
+      lines.push(`  Contract: ${typedData.domain.verifyingContract.slice(0, 10)}…`);
     }
     lines.push('');
   }
@@ -232,7 +244,7 @@ function formatTypedDataForDisplay(typedData) {
     lines.push('Message:');
     for (const [key, value] of Object.entries(typedData.message)) {
       const displayValue = typeof value === 'object' ? JSON.stringify(value) : String(value);
-      const truncated = displayValue.length > 50 ? displayValue.slice(0, 50) + '...' : displayValue;
+      const truncated = displayValue.length > 50 ? displayValue.slice(0, 50) + '…' : displayValue;
       lines.push(`  ${key}: ${truncated}`);
     }
   }
@@ -242,7 +254,10 @@ function formatTypedDataForDisplay(typedData) {
 
 async function checkDappSignUnlockStatus() {
   try {
-    if (bypassUnlockGateForDevice(dappSignPending?.walletIndex, dappSignUnlock, dappSignApproveBtn)) {
+    if (
+      bypassUnlockGateForDevice(dappSignPending?.walletIndex, dappSignUnlock, dappSignApproveBtn) ||
+      bypassUnlockGateForSafe(dappSignPending?.walletIndex, dappSignUnlock, dappSignApproveBtn)
+    ) {
       return;
     }
 
@@ -334,23 +349,24 @@ async function approveDappSign() {
   if (!dappSignPending || dappSignPending.signing) return;
 
   const request = dappSignPending;
-  const { permissionKey, walletIndex, method, params, resolve } = request;
+  const { permissionKey, walletIndex, method, params, resolve, webview } = request;
   // Snapshot the auto-approve intent now: the checkbox is shared DOM that
   // a later request can repopulate while this signature is in flight.
   const autoApprove = Boolean(dappSignAutoApproveCheckbox?.checked);
+  const safeAccount = isSafeAccount(walletIndex);
 
   try {
     request.signing = true;
     // Claim the sidebar for the whole flight: no other approval surface
     // may repaint over or tear down a live device confirmation.
-    beginSignatureFlight(request);
+    if (!safeAccount) beginSignatureFlight(request);
     if (dappSignApproveBtn) {
       dappSignApproveBtn.disabled = true;
       dappSignApproveBtn.textContent = signingButtonLabel(walletIndex);
     }
     setDappSignCancelEnabled(false);
 
-    const signature = await executeSign(method, params, walletIndex);
+    const signature = await executeSign(method, params, walletIndex, permissionKey, webview);
 
     if (autoApprove && permissionKey) {
       await window.dappPermissions.setSigningAutoApprove(permissionKey, true);
@@ -364,6 +380,12 @@ async function approveDappSign() {
       closeDappSign();
     }
   } catch (err) {
+    if (err?.code === 4001) {
+      // The user closed the Safe signing board — that IS the rejection.
+      rejectDappSign();
+      closeDappSign();
+      return;
+    }
     console.error('[WalletUI] dApp signing failed:', err);
     showDappSignError(err.message || 'Signing failed');
     if (dappSignApproveBtn) {
@@ -371,6 +393,12 @@ async function approveDappSign() {
       dappSignApproveBtn.textContent = 'Sign';
     }
     setDappSignCancelEnabled(true);
+    // The signing board may have replaced this screen (a Safe signature
+    // that failed to complete) — bring the approval back.
+    if (safeAccount) {
+      walletState.identityView?.classList.add('hidden');
+      dappSignScreen?.classList.remove('hidden');
+    }
   } finally {
     request.signing = false;
     endSignatureFlight(request);
@@ -394,7 +422,11 @@ function rejectDappSign() {
 
 function closeDappSign() {
   dappSignScreen?.classList.add('hidden');
-  walletState.identityView?.classList.remove('hidden');
+  // A Safe flow may still be showing the signing board (in-flow, not a
+  // modal) — restoring the identity view under it would double-render.
+  if (!isSafeSigningBoardOpen()) {
+    walletState.identityView?.classList.remove('hidden');
+  }
   dappSignPending = null;
   hideDappSignError();
   if (dappSignPasswordInput) dappSignPasswordInput.value = '';

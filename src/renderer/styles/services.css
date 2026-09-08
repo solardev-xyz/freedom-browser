@@ -253,24 +253,6 @@
   background: #4caf50;
 }
 
-/* Radicle external node badge */
-.radicle-external-badge {
-  display: none;
-  font-size: 9px;
-  padding: 1px 5px;
-  border-radius: 3px;
-  background: var(--border);
-  color: var(--muted);
-  font-weight: 500;
-  letter-spacing: 0.03em;
-  line-height: 1.4;
-  cursor: help;
-}
-
-.radicle-toggle.external .radicle-external-badge {
-  display: inline-block;
-}
-
 .ipfs-info {
   padding: 8px 14px 10px;
   display: flex;

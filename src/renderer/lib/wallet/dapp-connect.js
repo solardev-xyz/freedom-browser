@@ -6,10 +6,11 @@
 
 import { walletState, registerScreenHider, hideAllSubscreens } from './wallet-state.js';
 import { isSignatureInFlight, signatureInFlightError } from './signature-flight.js';
-import { escapeHtml } from './wallet-utils.js';
+import { escapeHtml, isSafeAccount, isSafeDeployed } from './wallet-utils.js';
 import { open as openSidebarPanel, isVisible as isSidebarVisible } from '../sidebar.js';
 import { getActiveWebview, emitAccountsChanged, getPermissionKey } from '../dapp-provider.js';
 import { showDappPermissions } from './permission-manage.js';
+import { parseOnchainAppUrl } from '../url-utils.js';
 
 // DOM references
 let dappConnectScreen;
@@ -155,6 +156,9 @@ function renderDappConnectWalletList() {
   dappConnectWalletList.innerHTML = '';
 
   for (const wallet of walletState.derivedWallets) {
+    // Safe accounts sign via EIP-1271, which needs the contract on
+    // chain — receive-only (undeployed) safes stay out of the list.
+    if (safeNotConnectable(wallet)) continue;
     const item = document.createElement('div');
     item.className = 'dapp-connect-wallet-item';
     if (wallet.index === dappConnectSelectedWalletIndex) {
@@ -162,7 +166,7 @@ function renderDappConnectWalletList() {
     }
 
     const truncatedAddress = wallet.address
-      ? `${wallet.address.slice(0, 6)}...${wallet.address.slice(-4)}`
+      ? `${wallet.address.slice(0, 6)}…${wallet.address.slice(-4)}`
       : '--';
 
     item.innerHTML = `
@@ -182,6 +186,11 @@ function renderDappConnectWalletList() {
   }
 }
 
+/** Undeployed safes can neither send nor answer EIP-1271 — not connectable. */
+function safeNotConnectable(wallet) {
+  return isSafeAccount(wallet.index) && !isSafeDeployed(wallet);
+}
+
 function selectDappConnectWallet(index) {
   dappConnectSelectedWalletIndex = index;
   const wallet = walletState.derivedWallets.find(w => w.index === index);
@@ -192,11 +201,16 @@ function selectDappConnectWallet(index) {
     }
     if (dappConnectWalletAddress) {
       const truncated = wallet.address
-        ? `${wallet.address.slice(0, 6)}...${wallet.address.slice(-4)}`
+        ? `${wallet.address.slice(0, 6)}…${wallet.address.slice(-4)}`
         : '--';
       dappConnectWalletAddress.textContent = truncated;
     }
   }
+
+  // Be upfront that a multi-owner account signs as a smart contract.
+  document
+    .getElementById('dapp-connect-safe-note')
+    ?.classList.toggle('hidden', !isSafeAccount(index));
 
   closeDappConnectWalletDropdown();
 }
@@ -215,7 +229,12 @@ export function showDappConnect(displayUrl, permissionKey, resolve, reject, webv
     return;
   }
 
-  dappConnectPending = { permissionKey, resolve, reject, webview };
+  // Pin the chain at prompt time from the app's own origin. The global chain
+  // can still move while the prompt is up (another tab's
+  // wallet_switchEthereumChain, or the user flipping the switcher), and a
+  // contract-hosted app's chain is not the user's to change anyway.
+  const pinnedChainId = parseOnchainAppUrl(displayUrl)?.chainId || null;
+  dappConnectPending = { permissionKey, resolve, reject, webview, pinnedChainId };
 
   if (dappConnectSite) {
     dappConnectSite.textContent = permissionKey || displayUrl || 'Unknown';
@@ -244,8 +263,16 @@ export function showDappConnect(displayUrl, permissionKey, resolve, reject, webv
     }
   }
 
-  dappConnectSelectedWalletIndex = walletState.activeWalletIndex;
-  selectDappConnectWallet(walletState.activeWalletIndex);
+  // Default to the active account; a receive-only (undeployed) safe
+  // can't serve a dApp, so fall back to the first connectable account.
+  let defaultIndex = walletState.activeWalletIndex;
+  const activeRecord = walletState.derivedWallets.find((w) => w.index === defaultIndex);
+  if (activeRecord && safeNotConnectable(activeRecord)) {
+    defaultIndex =
+      walletState.derivedWallets.find((w) => !safeNotConnectable(w))?.index ?? 0;
+  }
+  dappConnectSelectedWalletIndex = defaultIndex;
+  selectDappConnectWallet(defaultIndex);
 
   hideAllSubscreens();
   walletState.identityView?.classList.add('hidden');
@@ -264,7 +291,7 @@ function closeDappConnect() {
 async function approveDappConnect() {
   if (!dappConnectPending) return;
 
-  const { permissionKey, resolve, webview } = dappConnectPending;
+  const { permissionKey, resolve, webview, pinnedChainId } = dappConnectPending;
   const wallet = walletState.derivedWallets.find(w => w.index === dappConnectSelectedWalletIndex);
 
   if (!wallet) {
@@ -272,11 +299,13 @@ async function approveDappConnect() {
     return;
   }
 
+  const grantedChainId = pinnedChainId || walletState.selectedChainId;
+
   try {
     await window.dappPermissions.grantPermission(
       permissionKey,
       dappConnectSelectedWalletIndex,
-      walletState.selectedChainId
+      grantedChainId
     );
 
     const accounts = [wallet.address];
@@ -289,7 +318,7 @@ async function approveDappConnect() {
       });
       webview.send('dapp:provider-event', {
         event: 'connect',
-        data: { chainId: '0x' + walletState.selectedChainId.toString(16) },
+        data: { chainId: '0x' + grantedChainId.toString(16) },
       });
     }
 

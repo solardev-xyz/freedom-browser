@@ -190,6 +190,22 @@ describe('permissions-manager', () => {
     expect(typeof prompt.id).toBe('number');
   });
 
+  test('onchain prompts show the standard contract-and-chain identity', () => {
+    load();
+    const host = makeHost();
+    const address = '0x00000095643cffa7d9fae407a84dfcb6406456c6';
+    const internalUrl = `web3://${address}.eip155-100/swap`;
+    const guest = makeGuest(internalUrl, host);
+    const callback = request('notifications', { host, guest, url: internalUrl });
+
+    expect(callback).not.toHaveBeenCalled();
+    expect(lastPrompt(host)).toMatchObject({
+      origin: `web3://${address}:100`,
+      permission: 'notifications',
+      guestId: guest.id,
+    });
+  });
+
   test('allow + remember persists and later requests skip the prompt', async () => {
     load();
     const host = makeHost();

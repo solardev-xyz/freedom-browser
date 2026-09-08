@@ -1,25 +1,14 @@
-:root {
-  --bg: #1e1e1e;
-  --surface: #2a2a2a;
-  --border: #3a3a3a;
-  --text: #e0e0e0;
-  --muted: #888;
-  --accent: #1a73e8;
-  --danger: #f44336;
-  --warn: #ff9800;
-  --success: #4caf50;
-}
-
 * {
   box-sizing: border-box;
 }
 
-html, body {
+html,
+body {
   height: 100%;
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  background: var(--bg);
-  color: var(--text);
+  background: var(--pub-bg);
+  color: var(--pub-text);
 }
 
 .publish-app {
@@ -41,7 +30,7 @@ html, body {
 .publish-subtitle {
   margin: 0;
   font-size: 14px;
-  color: var(--muted);
+  color: var(--pub-muted);
 }
 
 /* Status banner */
@@ -55,12 +44,12 @@ html, body {
 
 .publish-banner.warn {
   background: rgba(255, 152, 0, 0.1);
-  color: var(--warn);
+  color: var(--pub-warn);
 }
 
 .publish-banner.error {
   background: rgba(244, 67, 54, 0.1);
-  color: var(--danger);
+  color: var(--pub-danger);
 }
 
 /* Action cards */
@@ -76,17 +65,19 @@ html, body {
   align-items: center;
   gap: 10px;
   padding: 24px 16px;
-  background: var(--surface);
-  border: 1px solid var(--border);
+  background: var(--pub-surface);
+  border: 1px solid var(--pub-border);
   border-radius: 12px;
   cursor: pointer;
-  transition: background-color 0.15s ease, border-color 0.15s ease;
-  color: var(--text);
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease;
+  color: var(--pub-text);
 }
 
 .publish-action-card:hover:not(:disabled) {
-  background: #333;
-  border-color: var(--accent);
+  background: var(--pub-card-hover);
+  border-color: var(--pub-accent);
 }
 
 .publish-action-card:disabled {
@@ -102,7 +93,7 @@ html, body {
 .publish-action-icon svg {
   width: 100%;
   height: 100%;
-  stroke: var(--accent);
+  stroke: var(--pub-accent);
 }
 
 .publish-action-label {
@@ -112,7 +103,7 @@ html, body {
 
 .publish-action-desc {
   font-size: 11px;
-  color: var(--muted);
+  color: var(--pub-muted);
   text-align: center;
 }
 
@@ -128,9 +119,9 @@ html, body {
   padding: 12px;
   font-size: 13px;
   font-family: monospace;
-  color: var(--text);
-  background: var(--surface);
-  border: 1px solid var(--border);
+  color: var(--pub-text);
+  background: var(--pub-surface);
+  border: 1px solid var(--pub-border);
   border-radius: 8px;
   resize: vertical;
   min-height: 120px;
@@ -138,7 +129,7 @@ html, body {
 
 .publish-textarea:focus {
   outline: none;
-  border-color: var(--accent);
+  border-color: var(--pub-accent);
 }
 
 .publish-submit-btn {
@@ -146,7 +137,7 @@ html, body {
   font-size: 13px;
   font-weight: 500;
   color: #fff;
-  background: var(--accent);
+  background: var(--pub-accent);
   border: none;
   border-radius: 8px;
   cursor: pointer;
@@ -160,7 +151,7 @@ html, body {
 .publish-cancel-btn {
   padding: 8px 16px;
   font-size: 12px;
-  color: var(--muted);
+  color: var(--pub-muted);
   background: transparent;
   border: none;
   cursor: pointer;
@@ -168,7 +159,7 @@ html, body {
 }
 
 .publish-cancel-btn:hover {
-  color: var(--text);
+  color: var(--pub-text);
 }
 
 /* Progress */
@@ -179,21 +170,21 @@ html, body {
 
 .publish-progress-text {
   font-size: 14px;
-  color: var(--muted);
+  color: var(--pub-muted);
   margin-bottom: 16px;
 }
 
 .publish-progress-bar {
   width: 100%;
   height: 4px;
-  background: var(--surface);
+  background: var(--pub-surface);
   border-radius: 2px;
   overflow: hidden;
 }
 
 .publish-progress-fill {
   height: 100%;
-  background: var(--accent);
+  background: var(--pub-accent);
   border-radius: 2px;
   width: 0;
   transition: width 0.3s ease;
@@ -202,15 +193,15 @@ html, body {
 /* Result */
 .publish-result {
   padding: 24px;
-  background: var(--surface);
-  border: 1px solid var(--border);
+  background: var(--pub-surface);
+  border: 1px solid var(--pub-border);
   border-radius: 12px;
 }
 
 .publish-result-title {
   font-size: 16px;
   font-weight: 500;
-  color: var(--success);
+  color: var(--pub-success);
   margin-bottom: 16px;
 }
 
@@ -223,14 +214,14 @@ html, body {
 
 .publish-result-label {
   font-size: 11px;
-  color: var(--muted);
+  color: var(--pub-muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
 
 .publish-result-link {
   font-size: 13px;
-  color: var(--accent);
+  color: var(--pub-accent);
   text-decoration: none;
   word-break: break-all;
 }
@@ -241,7 +232,7 @@ html, body {
 
 .publish-result-ref {
   font-size: 12px;
-  color: var(--text);
+  color: var(--pub-text);
   word-break: break-all;
   font-family: monospace;
 }
@@ -264,7 +255,7 @@ html, body {
 }
 
 .publish-copy-btn {
-  color: var(--accent);
+  color: var(--pub-accent);
   background: rgba(26, 115, 232, 0.1);
   border: 1px solid rgba(26, 115, 232, 0.25);
 }
@@ -275,7 +266,7 @@ html, body {
 
 .publish-open-btn {
   color: #fff;
-  background: var(--accent);
+  background: var(--pub-accent);
   border: none;
 }
 
@@ -287,14 +278,14 @@ html, body {
   margin-top: 16px;
   padding: 8px 16px;
   font-size: 12px;
-  color: var(--muted);
+  color: var(--pub-muted);
   background: transparent;
   border: none;
   cursor: pointer;
 }
 
 .publish-another-btn:hover {
-  color: var(--text);
+  color: var(--pub-text);
 }
 
 /* Error */
@@ -307,7 +298,7 @@ html, body {
 
 .publish-error-text {
   font-size: 14px;
-  color: var(--danger);
+  color: var(--pub-danger);
   margin-bottom: 16px;
   line-height: 1.4;
 }
@@ -316,7 +307,7 @@ html, body {
 .publish-history {
   margin-top: 40px;
   padding-top: 24px;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--pub-border);
 }
 
 .publish-history-header {
@@ -335,15 +326,15 @@ html, body {
 .publish-history-clear {
   padding: 4px 12px;
   font-size: 11px;
-  color: var(--muted);
+  color: var(--pub-muted);
   background: transparent;
-  border: 1px solid var(--border);
+  border: 1px solid var(--pub-border);
   border-radius: 4px;
   cursor: pointer;
 }
 
 .publish-history-clear:hover {
-  color: var(--text);
+  color: var(--pub-text);
 }
 
 .publish-history-list {
@@ -354,14 +345,14 @@ html, body {
 
 .publish-history-empty {
   font-size: 13px;
-  color: var(--muted);
+  color: var(--pub-muted);
   padding: 12px 0;
 }
 
 .publish-history-item {
   padding: 10px 12px;
-  background: var(--surface);
-  border: 1px solid var(--border);
+  background: var(--pub-surface);
+  border: 1px solid var(--pub-border);
   border-radius: 8px;
 }
 
@@ -383,25 +374,25 @@ html, body {
   border-radius: 3px;
 }
 
-.publish-history-item-status[data-status="completed"] {
+.publish-history-item-status[data-status='completed'] {
   background: rgba(76, 175, 80, 0.15);
-  color: var(--success);
+  color: var(--pub-success);
 }
 
-.publish-history-item-status[data-status="uploading"] {
+.publish-history-item-status[data-status='uploading'] {
   background: rgba(255, 152, 0, 0.15);
-  color: var(--warn);
+  color: var(--pub-warn);
 }
 
-.publish-history-item-status[data-status="failed"] {
+.publish-history-item-status[data-status='failed'] {
   background: rgba(244, 67, 54, 0.15);
-  color: var(--danger);
+  color: var(--pub-danger);
 }
 
 .publish-history-item-url {
   display: block;
   font-size: 12px;
-  color: var(--accent);
+  color: var(--pub-accent);
   text-decoration: none;
   word-break: break-all;
   margin-bottom: 4px;
@@ -413,7 +404,7 @@ html, body {
 
 .publish-history-item-time {
   font-size: 11px;
-  color: var(--muted);
+  color: var(--pub-muted);
 }
 
 .hidden {

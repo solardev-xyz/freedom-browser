@@ -177,7 +177,8 @@
 }
 
 /* Trust details popover, anchored below the address bar when the shield
-   is clicked. Populated by navigation.js from state.ensTrustByName.
+   is clicked. Populated by navigation.js from name-resolution or onchain
+   application provenance.
    Wider than the nodes and hamburger menus so verification evidence and
    endpoint names remain readable without sacrificing the shared chrome. */
 .trust-popover {
@@ -201,7 +202,7 @@
   display: none !important;
 }
 
-/* ENS name as headline — same colour, weight, and size as the Swarm /
+/* Resolved name or onchain origin as headline — same colour, weight, and size as the Swarm /
    IPFS labels in the nodes menu (.bee-toggle-label inside .menu-item:
    color: var(--text), 14px, regular). The 16px bottom margin matches
    the gap below the Swarm headline in the node menu (.menu-item's 8px
@@ -336,7 +337,7 @@
   display: none !important;
 }
 
-/* When the shield is visible (ENS pages), hide the address-bar protocol
+/* When the shield is visible, hide the address-bar protocol
    icon entirely — the popover surfaces the network as a "Network: IPFS /
    Swarm" text row, so a duplicate SVG next to the shield would be noise.
    The address-input padding then mirrors the non-ENS layout, accounting
@@ -387,6 +388,12 @@
 .protocol-icon[data-protocol='ipfs'] .icon-ipfs,
 .protocol-icon[data-protocol='ipns'] .icon-ipfs {
   display: block;
+}
+
+/* Contract-hosted ERC-8244 application */
+.protocol-icon[data-protocol='onchain'] .icon-onchain {
+  display: block;
+  fill: #8c8cff;
 }
 
 /* Radicle - purple/violet (matches Radicle branding) */

@@ -11,6 +11,7 @@ const FREEDOM_IPFS_NATIVE_PREBUILDS_DIR = path.join(
 );
 const FREEDOM_IPFS_NATIVE_ADDON = 'freedom_ipfs_native.node';
 const RADICLE_BIN_DIR = path.join(__dirname, '..', 'radicle-bin');
+const RADICLE_EMBEDDED_ADDON = 'libradicle.node';
 const MYOTIS_BIN_DIR = path.join(__dirname, '..', 'myotis-bin');
 // Targets the Myotis release publishes addons for (see scripts/fetch-myotis.js).
 // Anything else (e.g. win-arm64) is skipped with a notice — the app degrades
@@ -110,6 +111,11 @@ function checkBinaries(platforms) {
       missing.push(`freedom-ipfs native addon for ${platformDir}: ${freedomIpfsAddonPath}`);
     }
 
+    const addonPath = path.join(RADICLE_BIN_DIR, platformDir, RADICLE_EMBEDDED_ADDON);
+    if (!fs.existsSync(addonPath)) {
+      missing.push(`libradicle embedded addon for ${platformDir}: ${addonPath}`);
+    }
+
     // Myotis: required where the release publishes an addon; electron-builder
     // would otherwise silently skip the missing extraResources dir and ship a
     // build with the feature permanently unavailable.
@@ -121,19 +127,6 @@ function checkBinaries(platforms) {
     } else {
       console.log(`  (myotis-node: no addon published for ${platformDir} — skipping)`);
     }
-
-    // Radicle: no official Windows binaries yet — skip check for win targets
-    if (os !== 'win') {
-      const nodePath = path.join(RADICLE_BIN_DIR, platformDir, 'radicle-node');
-      const httpdPath = path.join(RADICLE_BIN_DIR, platformDir, 'radicle-httpd');
-
-      if (!fs.existsSync(nodePath)) {
-        missing.push(`radicle-node binary for ${platformDir}: ${nodePath}`);
-      }
-      if (!fs.existsSync(httpdPath)) {
-        missing.push(`radicle-httpd binary for ${platformDir}: ${httpdPath}`);
-      }
-    }
   }
 
   return missing;
@@ -141,7 +134,7 @@ function checkBinaries(platforms) {
 
 /**
  * Arti (Tor) is OPTIONAL and built from source via `npm run tor:download`
- * (cargo), unlike the prebuilt Bee/Radicle downloads. It is intentionally not
+ * (cargo), unlike the prebuilt node/addon downloads. It is intentionally not
  * a required build binary: when absent, Tor simply isn't bundled and the
  * in-app toggle stays disabled. We still create the per-platform resource dir
  * so electron-builder's `extraResources` entry resolves cleanly instead of
@@ -174,7 +167,9 @@ function main() {
     console.error('\nRun the following commands to download binaries:');
     console.error('  npm run ant:download');
     console.error('  npm run ipfs:download');
-    console.error('  npm run radicle:download');
+    for (const { os, arch } of platforms) {
+      console.error(`  npm run radicle:download -- --${os} --${arch}`);
+    }
     console.error('  npm run myotis:download');
     console.error('  npm run adblock:download\n');
     process.exit(1);
@@ -187,4 +182,8 @@ function main() {
   process.exit(0);
 }
 
-main();
+if (require.main === module) {
+  main();
+}
+
+module.exports = { getPlatformArch, checkBinaries, ensureOptionalArti, main };

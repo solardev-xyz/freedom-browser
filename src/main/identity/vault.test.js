@@ -245,7 +245,11 @@ describe('vault', () => {
       await new Promise((resolve) => setTimeout(resolve, 200));
 
       expect(isUnlocked()).toBe(false);
-    }, 1000);
+      // Generous outer timeout: the body runs two PBKDF2 key derivations
+      // (importVault + unlockVault, ~800ms each on slower hardware) plus the
+      // 200ms wait, so ~1.8s total. The 100ms auto-lock window above still
+      // carries the assertion; this only stops the test flaking on slow VMs.
+    }, 5000);
 
     test('does not auto-lock when timeout is 0', async () => {
       await importVault(tempDir, 'password123', TEST_MNEMONIC);

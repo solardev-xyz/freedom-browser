@@ -5,12 +5,17 @@ This software includes the following third-party components:
 Ant (antd, Swarm node)
   License: MIT OR Apache-2.0
   Copyright (c) solardev-xyz contributors
-  https://github.com/solardev-xyz/ant
+  https://github.com/freedom-hq/ant
 
 freedom-ipfs
   License: MIT OR Apache-2.0
   Copyright (c) 2026 Freedom IPFS contributors
   https://github.com/solardev-xyz/freedom-ipfs
+
+libradicle
+  License: MIT OR Apache-2.0
+  Copyright (c) solardev-xyz contributors
+  https://github.com/solardev-xyz/libradicle
 
 Electron
   License: MIT

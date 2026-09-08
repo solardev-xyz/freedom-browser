@@ -65,7 +65,7 @@ describe('updater profile relaunch behavior', () => {
     expect(mod.getInstallRelaunchMode()).toEqual({
       autoRunAfterInstall: true,
       actionLabel: 'Install now',
-      menuLabel: 'Install Update and Restart...',
+      menuLabel: 'Install Update and Restart…',
       readyMessage: null,
     });
   });
@@ -80,7 +80,7 @@ describe('updater profile relaunch behavior', () => {
     expect(mod.getInstallRelaunchMode()).toMatchObject({
       autoRunAfterInstall: false,
       actionLabel: 'Install and close',
-      menuLabel: 'Install Update and Close...',
+      menuLabel: 'Install Update and Close…',
     });
   });
 
@@ -94,7 +94,7 @@ describe('updater profile relaunch behavior', () => {
     expect(mod.getInstallRelaunchMode()).toMatchObject({
       autoRunAfterInstall: false,
       actionLabel: 'Install and close',
-      menuLabel: 'Install Update and Close...',
+      menuLabel: 'Install Update and Close…',
     });
   });
 

@@ -14,9 +14,47 @@
  * error states and calls cancelJob when the user closes the dialog.
  */
 
-// Default signaling relay (spec default). Carries only encrypted
-// handshake/negotiation frames — never wallet data in the clear.
-const DEFAULT_SIGNALING = { p: 'mqtt', s: 'wss://test.mosquitto.org:8081/mqtt' };
+// Public signaling relays, in preference order (the spec default
+// first). They carry only encrypted handshake/negotiation frames —
+// never wallet data in the clear — and the chosen relay rides inside
+// the QR, so the phone always joins the same one. Public test brokers
+// go down routinely; the broker probes for the first reachable one.
+const SIGNALING_CANDIDATES = [
+  'wss://test.mosquitto.org:8081/mqtt',
+  'wss://broker.emqx.io:8084/mqtt',
+  'wss://broker.hivemq.com:8884/mqtt',
+];
+
+// How long a probed relay is trusted before re-probing. Short: a relay
+// can die between sessions, and the probe is one WebSocket handshake.
+const RELAY_CACHE_MS = 60_000;
+
+/** One WebSocket handshake as a reachability check. */
+function probeRelay(url, timeoutMs = 4000) {
+  return new Promise((resolve) => {
+    let socket;
+    const timer = setTimeout(() => {
+      try { socket?.close(); } catch { /* already dead */ }
+      resolve(false);
+    }, timeoutMs);
+    try {
+      socket = new WebSocket(url, ['mqtt']);
+    } catch {
+      clearTimeout(timer);
+      resolve(false);
+      return;
+    }
+    socket.onopen = () => {
+      clearTimeout(timer);
+      socket.close();
+      resolve(true);
+    };
+    socket.onerror = () => {
+      clearTimeout(timer);
+      resolve(false);
+    };
+  });
+}
 
 // Where the dual-purpose QR sends phones without an openlv-native wallet
 // (solardev-xyz/freedom-bridge must be deployed at this origin). The
@@ -24,7 +62,7 @@ const DEFAULT_SIGNALING = { p: 'mqtt', s: 'wss://test.mosquitto.org:8081/mqtt' }
 // to the server. Interim test deployment; final hostname TBD.
 const BRIDGE_ORIGIN = 'https://bridge.freedom.baby';
 
-// The openlv SDK (168 KiB vendor bundle) is only needed once a signing
+// The openlv SDK (80 KiB vendor bundle) is only needed once a signing
 // job actually arrives — keep it off the renderer boot path.
 let vendorPromise = null;
 const loadVendorOpenlv = () => (vendorPromise ??= import('../../vendor/openlv.esm.js'));
@@ -42,6 +80,24 @@ export const PHASE_STATUS_TEXT = {
   'switching-chain': 'Connected — approve the network switch on your phone…',
   'awaiting-approval': 'Connected — confirm on your phone…',
 };
+
+/**
+ * Wait for the peer-to-peer link, or fail when the session gives up.
+ *
+ * openlv 0.2.0 dropped `waitForLink()` in favour of observables, and
+ * `until()` only ever resolves — so the DISCONNECTED terminal state
+ * (signaling error, no common transport, or the SDK's own transport
+ * link deadline) has to be turned back into a rejection here, otherwise
+ * a failed pairing would hang until main's job timeout.
+ */
+async function waitForLink(session) {
+  const status = await session.status.until(
+    (value) => value === 'connected' || value === 'disconnected',
+  );
+  if (status === 'disconnected') {
+    throw new Error(session.error?.get() || 'Session failed to connect');
+  }
+}
 
 /** Wallet SDKs answer `{result}` / `{error:{code,message}}` envelopes; tolerate bare values. */
 function unwrapResponse(payload) {
@@ -64,7 +120,7 @@ export function createRemoteSessionBroker({
   remoteSigner = window.remoteSigner,
   signaling = globalThis.window?.nodeConfig?.openlvSignaling
     ? { p: 'mqtt', s: globalThis.window.nodeConfig.openlvSignaling }
-    : DEFAULT_SIGNALING,
+    : null, // null → probe SIGNALING_CANDIDATES per session
   bridgeOrigin = BRIDGE_ORIGIN,
 } = {}) {
   /** jobId → { session, settled, respond } */
@@ -100,6 +156,8 @@ export function createRemoteSessionBroker({
     jobs.delete(jobId);
     job.settled = true; // an attempt still in createSession must go stale
     job.abortAttempt?.(new Error('Session closed'));
+    job.unsubscribeStatus?.();
+    job.unsubscribeStatus = null;
     if (job.session) {
       Promise.resolve(job.session.close()).catch((err) => {
         console.warn('[RemoteSession] session close failed:', err.message);
@@ -143,6 +201,45 @@ export function createRemoteSessionBroker({
     return switchChain();
   }
 
+  // Probed-relay cache: {signaling, at}
+  let cachedRelay = null;
+
+  /**
+   * The signaling relay for a new session: the explicit override when
+   * one was injected (env/tests), else the first reachable public
+   * candidate (cached briefly — these brokers go down routinely).
+   */
+  async function resolveSignaling() {
+    if (signaling) return signaling;
+    if (cachedRelay && Date.now() - cachedRelay.at < RELAY_CACHE_MS) {
+      return cachedRelay.signaling;
+    }
+    for (const url of SIGNALING_CANDIDATES) {
+      if (await probeRelay(url)) {
+        cachedRelay = { signaling: { p: 'mqtt', s: url }, at: Date.now() };
+        return cachedRelay.signaling;
+      }
+    }
+    throw new Error('No signaling relay reachable — check your internet connection and try again');
+  }
+
+  /**
+   * Typed-data signature belonging to the user's own Safe (an owner
+   * co-signing) — 'safe' for a SafeTx, 'safe-message' for the EIP-1271
+   * SafeMessage wrap, null for ordinary dApp requests.
+   */
+  function safeSignatureContext(method, params) {
+    if (method !== 'eth_signTypedData_v4') return null;
+    try {
+      const { primaryType } = JSON.parse(params[1]);
+      if (primaryType === 'SafeTx') return 'safe';
+      if (primaryType === 'SafeMessage') return 'safe-message';
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
   /**
    * Host a session for one request and deliver the outcome via `respond`
    * — main's IPC reply for signing jobs, a local promise for the
@@ -151,7 +248,10 @@ export function createRemoteSessionBroker({
    */
   async function runJob({ jobId, method, params, chain }, kind, respond) {
     if (jobs.has(jobId)) return;
-    const entry = { jobId, method, params, chain, kind, respond, session: null, settled: false, attempt: 0 };
+    const entry = {
+      jobId, method, params, chain, kind, respond,
+      session: null, settled: false, attempt: 0, unsubscribeStatus: null,
+    };
     jobs.set(jobId, entry);
     await runAttempt(entry);
   }
@@ -178,9 +278,12 @@ export function createRemoteSessionBroker({
 
     try {
       const sdk = openlv || (await loadVendorOpenlv());
+      const relay = await resolveSignaling();
+      if (stale()) return;
+      // Since 0.2.0 the signaling layer is not passed in: createSession
+      // loads the backend named by the relay's `p` (always 'mqtt' here).
       const session = await sdk.createSession(
-        signaling,
-        sdk.mqtt,
+        relay,
         [sdk.webrtc()],
         onIncomingMessage,
       );
@@ -197,18 +300,26 @@ export function createRemoteSessionBroker({
         kind,
         phase: 'qr',
         method,
+        // A Safe signature is the user's own multi-owner account at
+        // work, not a dApp request — the panel words it accordingly.
+        context: safeSignatureContext(method, params) || 'dapp',
         uri,
         bridgeUrl: `${bridgeOrigin}/#${uri}`,
       });
 
-      session.emitter.on('state_change', (state) => {
-        if (!stale() && state?.status) {
-          emit({ jobId, kind, phase: state.status, method });
+      // Status is an observable since 0.2.0 (subscribe replays the
+      // current value, so no state can slip past between create and
+      // subscribe). The values are the same strings the old
+      // `state_change` event carried, which is what PHASE_STATUS_TEXT
+      // keys off.
+      entry.unsubscribeStatus = session.status.subscribe((status) => {
+        if (!stale() && status) {
+          emit({ jobId, kind, phase: status, method });
         }
       });
 
       await session.connect();
-      await session.waitForLink();
+      await Promise.race([waitForLink(session), aborted]);
       if (stale()) return;
 
       if (chain) {
@@ -242,8 +353,11 @@ export function createRemoteSessionBroker({
     } catch (err) {
       if (stale()) return; // failures of a torn-down session are noise
       console.error('[RemoteSession] job failed:', err);
-      emit({ jobId, kind, phase: 'error', method, error: { message: err.message } });
-      settle(jobId, { error: { code: 'REMOTE_UNKNOWN', message: err.message } });
+      // Non-Error rejections (SDK internals) must not collapse into the
+      // generic registry text — surface what actually happened.
+      const message = err?.message || String(err);
+      emit({ jobId, kind, phase: 'error', method, error: { message } });
+      settle(jobId, { error: { code: 'REMOTE_UNKNOWN', message } });
     }
   }
 
@@ -290,6 +404,8 @@ export function createRemoteSessionBroker({
       const oldSession = entry.session;
       entry.session = null;
       entry.abortAttempt?.(new Error('Superseded by a new code'));
+      entry.unsubscribeStatus?.();
+      entry.unsubscribeStatus = null;
       if (oldSession) {
         Promise.resolve(oldSession.close()).catch(() => {});
       }

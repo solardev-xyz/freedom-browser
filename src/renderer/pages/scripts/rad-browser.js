@@ -12,6 +12,7 @@ const PUBLIC_SEED = 'https://seed.radicle.xyz';
 // App state
 let repoMeta = null; // Repo metadata from API root
 let headSha = null; // HEAD commit SHA
+let pinnedRevision = false; // true when the URL selects a historical commit
 let projectName = ''; // Repo name
 let currentView = null; // 'root' | 'tree' | 'blob'
 let currentPath = ''; // Current path within repo
@@ -42,20 +43,27 @@ const fileTreeEl = document.getElementById('file-tree-container');
 const fileViewerEl = document.getElementById('file-viewer-container');
 const readmeEl = document.getElementById('readme-container');
 
-// Set up highlight.js theme based on color scheme
+// Set up highlight.js theme from the resolved Appearance theme. The webview
+// preload stamps `data-theme` on <html> before this script runs and rewrites
+// it whenever the setting (or, under "system", the OS scheme) changes, so the
+// syntax theme follows the same source of truth as the stylesheet instead of
+// reading prefers-color-scheme directly (#233).
 function updateHljsTheme() {
   const link = document.getElementById('hljs-theme');
-  if (window.matchMedia('(prefers-color-scheme: light)').matches) {
+  if (document.documentElement.getAttribute('data-theme') === 'light') {
     link.href = '../vendor/hljs-github-light.css';
   } else {
     link.href = '../vendor/hljs-github-dark.css';
   }
 }
 updateHljsTheme();
-window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', updateHljsTheme);
+new MutationObserver(updateHljsTheme).observe(document.documentElement, {
+  attributes: true,
+  attributeFilter: ['data-theme'],
+});
 
 // Show RID in header
-displayRid.textContent = rid ? `rad://${rid}` : 'rad://...';
+displayRid.textContent = rid ? `rad://${rid}` : 'rad://…';
 
 // =============================================
 // UTILITIES
@@ -63,13 +71,70 @@ displayRid.textContent = rid ? `rad://${rid}` : 'rad://...';
 
 // Safe in both text and quoted-attribute contexts. The textContent →
 // innerHTML trick escapes & < > but NOT quotes, and this page interpolates
-// httpd-supplied names (file paths, RIDs) into data-* attributes — a file
+// repository-supplied names (file paths, RIDs) into data-* attributes — a file
 // named `x" onmouseover="…` would break out and run with full freedomAPI
 // access on this privileged internal page.
 const HTML_ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 
 function escapeHtml(str) {
   return String(str ?? '').replace(/[&<>"']/g, (ch) => HTML_ESCAPES[ch]);
+}
+
+const FULL_REVISION_RE = /^[0-9a-f]{40}$/;
+
+function parseViewerPath(rawPath) {
+  const path = String(rawPath || '').replace(/^\/+/, '');
+  const [view, revision, ...rest] = path.split('/');
+  if ((view === 'tree' || view === 'blob') && FULL_REVISION_RE.test(revision || '')) {
+    const contentPath = rest.join('/');
+    return {
+      logicalPath: contentPath ? `${view}/${contentPath}` : '',
+      revision,
+    };
+  }
+  return { logicalPath: path, revision: null };
+}
+
+function serializeViewerPath(logicalPath, revision) {
+  if (!revision) return logicalPath;
+  if (logicalPath.startsWith('blob/')) {
+    return `blob/${revision}/${logicalPath.slice(5)}`;
+  }
+  const treePath = logicalPath.startsWith('tree/') ? logicalPath.slice(5) : '';
+  return `tree/${revision}${treePath ? `/${treePath}` : ''}`;
+}
+
+// Which commit the viewer reads at. An explicit object id carried by the
+// deep link always wins — including when the repository has no resolvable
+// head (no project payload, no usable remote), where it is the only thing
+// that makes the repo browsable at all.
+function resolveRevision(repoHead, requestedRevision) {
+  return requestedRevision
+    ? { sha: requestedRevision, pinned: true }
+    : { sha: repoHead || null, pinned: false };
+}
+
+// Repository entry names are arbitrary text to this page — `100%.md`,
+// `notes#1.md` and `a?b.txt` are all legal file names. The main-process
+// boundary decodeURIComponent()s every path segment and rejects invalid
+// escape sequences, so each segment must be encoded here: unencoded, `%`
+// makes the decode throw (400) and `#`/`?` truncate the request URL.
+function encodePathSegments(rawPath) {
+  return String(rawPath ?? '')
+    .split('/')
+    .filter((segment) => segment !== '')
+    .map((segment) => encodeURIComponent(segment))
+    .join('/');
+}
+
+// Internal viewer URL for a repository. The RID comes from a seed node's
+// repository listing — attacker-controlled data — so it is encoded rather
+// than interpolated: a value like `zabc&base=https://evil.example` would
+// otherwise inject a `base` parameter that wins `URLSearchParams.get()` and
+// point this privileged page's API reads at another origin.
+function buildViewerHref(itemRid, apiBase) {
+  const query = new URLSearchParams({ rid: String(itemRid ?? ''), base: String(apiBase ?? '') });
+  return `rad-browser.html?${query.toString()}`;
 }
 
 function timeAgo(timestamp) {
@@ -263,31 +328,37 @@ function handleMarkdownLinkClick(event) {
 // DATA FETCHING
 // =============================================
 
+// Repo-scoped API root. The RID is encoded as a single path segment (the
+// main process decodes it back before validating), so it can never widen
+// the path it sits in.
+const repoApiRoot = `${base}/api/v1/repos/rad:${encodeURIComponent(rid ?? '')}`;
+
 async function fetchRepoMeta() {
-  const res = await fetch(`${base}/api/v1/repos/rad:${rid}`);
+  const res = await fetch(repoApiRoot);
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return await res.json();
 }
 
 async function fetchTree(sha, path) {
-  const url = path
-    ? `${base}/api/v1/repos/rad:${rid}/tree/${sha}/${path}`
-    : `${base}/api/v1/repos/rad:${rid}/tree/${sha}/`;
+  const encoded = encodePathSegments(path);
+  const url = encoded
+    ? `${repoApiRoot}/tree/${sha}/${encoded}`
+    : `${repoApiRoot}/tree/${sha}/`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return await res.json();
 }
 
 async function fetchBlob(sha, path) {
-  const res = await fetch(`${base}/api/v1/repos/rad:${rid}/blob/${sha}/${path}`);
+  const res = await fetch(`${repoApiRoot}/blob/${sha}/${encodePathSegments(path)}`);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return await res.json();
 }
 
 async function fetchReadme(sha) {
   try {
-    const res = await fetch(`${base}/api/v1/repos/rad:${rid}/readme/${sha}`);
+    const res = await fetch(`${repoApiRoot}/readme/${sha}`);
     if (!res.ok) return null;
     return await res.json();
   } catch {
@@ -297,7 +368,7 @@ async function fetchReadme(sha) {
 
 async function fetchStats(sha) {
   try {
-    const res = await fetch(`${base}/api/v1/repos/rad:${rid}/stats/tree/${sha}`);
+    const res = await fetch(`${repoApiRoot}/stats/tree/${sha}`);
     if (!res.ok) return null;
     return await res.json();
   } catch {
@@ -307,7 +378,7 @@ async function fetchStats(sha) {
 
 async function fetchRemotes() {
   try {
-    const res = await fetch(`${base}/api/v1/repos/rad:${rid}/remotes`);
+    const res = await fetch(`${repoApiRoot}/remotes`);
     if (!res.ok) return [];
     return await res.json();
   } catch {
@@ -343,34 +414,12 @@ function getHeadFromRemotes(remotes, defaultBranch) {
   return null;
 }
 
-// Fetch repo payload via CLI (workaround for radicle-httpd bug)
-async function fetchPayloadViaCli() {
-  if (!window.freedomAPI?.getRadicleRepoPayload) {
-    return null;
-  }
-  try {
-    const result = await window.freedomAPI.getRadicleRepoPayload(rid);
-    if (result.success && result.payload) {
-      return result.payload;
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
 // =============================================
 // RENDERING
 // =============================================
 
-// Track if we used CLI fallback for metadata
-let usedCliFallback = false;
-
-function renderRepoHeader(meta, cliPayload = null) {
-  // Prefer HTTP API data, fall back to CLI payload
-  const httpProject = meta.payloads?.['xyz.radicle.project']?.data;
-  const cliProject = cliPayload?.['xyz.radicle.project'];
-  const project = httpProject || cliProject || {};
+function renderRepoHeader(meta) {
+  const project = meta.payloads?.['xyz.radicle.project']?.data || {};
 
   const name = project.name || `rad:${rid}`;
   const desc = project.description || '';
@@ -411,7 +460,6 @@ function renderRepoHeader(meta, cliPayload = null) {
           <span class="value">${visibility}</span>
         </div>
       </div>
-      ${usedCliFallback ? '<div class="metadata-notice">Metadata loaded via CLI fallback (httpd issue)</div>' : ''}
     `;
   repoHeaderEl.innerHTML = html;
 }
@@ -713,8 +761,9 @@ async function navigate(newPath) {
 
   // Update URL
   const url = new URL(window.location);
-  if (newPath) {
-    url.searchParams.set('path', newPath);
+  const serializedPath = serializeViewerPath(newPath, pinnedRevision ? headSha : null);
+  if (serializedPath) {
+    url.searchParams.set('path', serializedPath);
   } else {
     url.searchParams.delete('path');
   }
@@ -741,7 +790,7 @@ async function renderView(viewType, viewPath) {
     try {
       // Show loading indicator in tree area
       fileTreeEl.innerHTML =
-        '<div class="loading-inline"><div class="spinner"></div><span>Loading files...</span></div>';
+        '<div class="loading-inline"><div class="spinner"></div><span>Loading files…</span></div>';
 
       const [tree, readme] = await Promise.all([fetchTree(headSha, ''), fetchReadme(headSha)]);
 
@@ -759,7 +808,7 @@ async function renderView(viewType, viewPath) {
 
     try {
       fileTreeEl.innerHTML =
-        '<div class="loading-inline"><div class="spinner"></div><span>Loading files...</span></div>';
+        '<div class="loading-inline"><div class="spinner"></div><span>Loading files…</span></div>';
 
       const tree = await fetchTree(headSha, viewPath);
       renderLastCommit(tree.lastCommit);
@@ -775,7 +824,7 @@ async function renderView(viewType, viewPath) {
 
     try {
       fileViewerEl.innerHTML =
-        '<div class="loading-inline"><div class="spinner"></div><span>Loading file...</span></div>';
+        '<div class="loading-inline"><div class="spinner"></div><span>Loading file…</span></div>';
 
       const blob = await fetchBlob(headSha, viewPath);
       renderBlob(blob);
@@ -852,7 +901,7 @@ function renderRepoList(repos) {
   repoList.innerHTML = repos
     .map((repo) => {
       const repoRid = (repo.rid || '').replace('rad:', '');
-      const shortRid = repoRid.slice(0, 12) + '...';
+      const shortRid = repoRid.slice(0, 12) + '…';
       const repoData = repo.payloads?.['xyz.radicle.project']?.data || {};
       const name = repoData.name || repo.name || 'Unnamed';
       const desc = repoData.description || repo.description || 'No description';
@@ -883,7 +932,7 @@ function renderRepoList(repos) {
   repoList.querySelectorAll('.repo-item').forEach((item) => {
     item.addEventListener('click', () => {
       const itemRid = item.dataset.rid;
-      window.location.href = `rad-browser.html?rid=${itemRid}&base=${encodeURIComponent(base)}`;
+      window.location.href = buildViewerHref(itemRid, base);
     });
   });
 }
@@ -919,7 +968,7 @@ function renderNetworkRepoList(repos) {
       const name = repoData.name || 'Unnamed';
       const desc = repoData.description || 'No description';
       const repoRid = (repo.rid || '').replace('rad:', '');
-      const shortRid = repoRid.slice(0, 12) + '...';
+      const shortRid = repoRid.slice(0, 12) + '…';
       const seeders = repo.seeding || 0;
 
       return `
@@ -948,7 +997,7 @@ function renderNetworkRepoList(repos) {
   networkList.querySelectorAll('.repo-item').forEach((item) => {
     item.addEventListener('click', () => {
       const itemRid = item.dataset.rid;
-      window.location.href = `rad-browser.html?rid=${itemRid}&base=${encodeURIComponent(base)}`;
+      window.location.href = buildViewerHref(itemRid, base);
     });
   });
 }
@@ -961,9 +1010,22 @@ function getErrorMessage(resultOrError) {
   return 'Unknown error';
 }
 
-async function pollSeedStatus() {
-  const result = await window.freedomAPI.getRadicleSeedStatus?.(rid);
-  return result?.success ? result.status : null;
+function seedProgressText(status) {
+  const progress = status?.progress;
+  switch (progress?.phase) {
+    case 'resolving':
+      return `Found ${progress.candidates} candidate peer${progress.candidates === 1 ? '' : 's'}…`;
+    case 'connecting':
+      return `Connecting to ${progress.addr || progress.nid} (${progress.index}/${progress.total})…`;
+    case 'fetching':
+      return `Fetching repository (${progress.index}/${progress.total})…`;
+    case 'peer-failed':
+      return `Trying another seed (${progress.index}/${progress.total})…`;
+    default:
+      return status.seedersKnown != null
+        ? `Fetching from the network… (${status.seedersKnown} seeds known)`
+        : 'Fetching from the network…';
+  }
 }
 
 async function seedRepository() {
@@ -973,42 +1035,62 @@ async function seedRepository() {
   seedStatus.className = 'seed-status show seeding';
   seedStatus.textContent = 'Setting seeding policy…';
 
+  let unsubscribe = () => {};
+  let timeout;
   try {
     if (!window.freedomAPI?.seedRadicle) {
       throw new Error('Freedom API not available');
     }
-    // seedRadicle writes the policy and starts a background network
-    // fetch — the repo is NOT local yet. Poll the honest fetch status
-    // and only reload once the repository actually landed.
+    let resolveTerminal;
+    let rejectTerminal;
+    const terminal = new Promise((resolve, reject) => {
+      resolveTerminal = resolve;
+      rejectTerminal = reject;
+    });
+    const requestedRid = `rad:${rid}`;
+    const handleStatus = (status) => {
+      if (!status || status.rid !== requestedRid) return;
+      if (status.inStorage || status.state === 'fetched') {
+        resolveTerminal(status);
+      } else if (status.state === 'failed') {
+        rejectTerminal(
+          new Error(
+            status.lastError || 'The network fetch failed — no seed could deliver the repository'
+          )
+        );
+      } else if (status.state === 'cancelled') {
+        rejectTerminal(new Error('The network fetch was cancelled'));
+      } else {
+        seedStatus.textContent = seedProgressText(status);
+      }
+    };
+
+    unsubscribe = window.freedomAPI.onRadicleSeedStatus?.(handleStatus) || (() => {});
+
+    // seedRadicle writes the policy and starts a background network fetch.
+    // Status transitions arrive over IPC; the invoke result is also fed into
+    // the same handler so a fetch that completes immediately cannot race us.
     const result = await window.freedomAPI.seedRadicle(rid);
     if (!result.success) throw new Error(getErrorMessage(result));
-
-    const deadline = Date.now() + 240_000;
-    while (Date.now() < deadline) {
-      const status = await pollSeedStatus();
-      if (!status) break;
-      if (status.inStorage || status.state === 'fetched') {
-        seedStatus.className = 'seed-status show success';
-        seedStatus.textContent = 'Repository fetched! Reloading…';
-        setTimeout(() => window.location.reload(), 800);
-        return;
-      }
-      if (status.state === 'failed') {
-        throw new Error(
-          status.lastError || 'The network fetch failed — no seed could deliver the repository'
-        );
-      }
-      seedStatus.textContent =
-        status.seedersKnown != null
-          ? `Fetching from the network… (${status.seedersKnown} seeds known)`
-          : 'Fetching from the network…';
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-    }
-    throw new Error('The fetch is still running in the background — reload this page later');
+    handleStatus(result.status);
+    timeout = setTimeout(
+      () =>
+        rejectTerminal(
+          new Error('The fetch is still running in the background — reload this page later')
+        ),
+      240_000
+    );
+    await terminal;
+    seedStatus.className = 'seed-status show success';
+    seedStatus.textContent = 'Repository fetched! Reloading…';
+    setTimeout(() => window.location.reload(), 800);
   } catch (err) {
     seedBtn.disabled = false;
     seedStatus.className = 'seed-status show error';
     seedStatus.textContent = `Could not fetch repository: ${err.message}`;
+  } finally {
+    if (timeout) clearTimeout(timeout);
+    unsubscribe();
   }
 }
 
@@ -1019,7 +1101,7 @@ async function seedRepository() {
 async function init() {
   if (params.get('error') === 'disabled') {
     const input = params.get('input') || '';
-    displayRid.textContent = input || 'rad://...';
+    displayRid.textContent = input || 'rad://…';
     showState('radicle-disabled');
     return;
   }
@@ -1027,7 +1109,7 @@ async function init() {
   // Handle invalid RID error (passed from navigation.js)
   if (params.get('error') === 'invalid-rid') {
     const input = params.get('input') || '';
-    displayRid.textContent = input ? `rad://${input}` : 'rad://...';
+    displayRid.textContent = input ? `rad://${input}` : 'rad://…';
     invalidRidInput.textContent = input || '(empty)';
     showState('invalid-rid');
     return;
@@ -1090,20 +1172,9 @@ async function init() {
 
     // Success — we have the repo
     repoMeta = meta;
-    let cliPayload = null;
-    const httpProject = meta.payloads?.['xyz.radicle.project'];
-    headSha = httpProject?.meta?.head;
-    let defaultBranch = httpProject?.data?.defaultBranch;
-
-    // Fallback: if HTTP API is missing project payload, try CLI
-    if (!httpProject) {
-      cliPayload = await fetchPayloadViaCli();
-      if (cliPayload?.['xyz.radicle.project']) {
-        usedCliFallback = true;
-        const cliProject = cliPayload['xyz.radicle.project'];
-        defaultBranch = defaultBranch || cliProject.defaultBranch;
-      }
-    }
+    const projectPayload = meta.payloads?.['xyz.radicle.project'];
+    headSha = projectPayload?.meta?.head;
+    let defaultBranch = projectPayload?.data?.defaultBranch;
 
     // Fallback: if no head SHA from project payload, try to get it from remotes
     if (!headSha) {
@@ -1115,25 +1186,34 @@ async function init() {
       }
     }
 
+    // A direct `rad://RID/tree/<commit>/...` or `/blob/<commit>/...`
+    // pins all reads and subsequent in-repo navigation to that commit.
+    // Resolved BEFORE the no-head bail-out below: an explicit object id in
+    // the link is a revision the API can serve on its own, so a repo whose
+    // head is unresolvable (no project payload, no usable remote) is still
+    // browsable through the pinned link.
+    const requested = parseViewerPath(params.get('path'));
+    const urlPath = requested.logicalPath;
+    const resolved = resolveRevision(headSha, requested.revision);
+    headSha = resolved.sha;
+    pinnedRevision = resolved.pinned;
+
     if (!headSha) {
-      // Still no head SHA — can't browse files
+      // No head SHA and no pinned revision — can't browse files
       showState('success');
-      renderRepoHeader(meta, cliPayload);
+      renderRepoHeader(meta);
       repoHeaderEl.insertAdjacentHTML(
         'beforeend',
-        '<div class="empty-state" style="margin-top:24px"><p>No commit history found for this repository.</p></div>'
+        '<div class="empty-state" style="margin-top:24px"><p>No commit history found for this repository</p></div>'
       );
       return;
     }
 
     showState('success');
-    renderRepoHeader(meta, cliPayload);
+    renderRepoHeader(meta);
 
-    // Fetch stats in background
+    // Stats follow the selected revision, not necessarily default-branch HEAD.
     fetchStats(headSha).then(renderStats);
-
-    // Check if we have a path from URL (for back/forward or direct link)
-    const urlPath = params.get('path') || '';
 
     // Set initial state in history
     if (!history.state) {

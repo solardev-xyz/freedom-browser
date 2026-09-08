@@ -7,12 +7,11 @@ function createController(overrides = {}) {
     getRegistry: async () => ({
       ant: { mode: 'bundled', api: 'http://127.0.0.1:11633' },
       ipfs: { mode: 'bundled', gateway: '/private/profile/ipfs' },
-      radicle: { mode: 'external', api: 'http://127.0.0.1:18780' },
+      radicle: { mode: 'embedded', api: 'radapi://local' },
       tor: { mode: 'bundled', socks: '127.0.0.1:19150' },
       myotis: { mode: 'bundled' },
     }),
     getSettings: async () => ({
-      enableRadicleIntegration: true,
       enableTorIntegration: false,
     }),
     getAntStatus: async () => ({ status: 'running', error: null }),
@@ -64,7 +63,7 @@ describe('NodeStatusController', () => {
           implementation: 'Radicle Node',
           protocols: ['rad'],
           state: 'error',
-          mode: 'external',
+          mode: 'embedded',
           running: false,
           ready: false,
           recovery: 'Open Freedom’s Nodes panel for recovery details.',
@@ -131,5 +130,22 @@ describe('NodeStatusController', () => {
     });
     expect(JSON.stringify(result)).not.toContain('secret Ant failure');
     expect(JSON.stringify(result)).not.toContain(String(Number.MAX_SAFE_INTEGER));
+  });
+});
+
+test.each(['running', 'stopped'])('reports embedded Radicle %s without the retired feature flag', async (status) => {
+  const result = await createController({ getRadicleStatus: async () => ({ status }) }).status();
+  expect(result.nodes.find((node) => node.id === 'radicle')).toMatchObject({
+    state: status, mode: 'embedded', ready: status === 'running',
+  });
+});
+
+test('reports Radicle disabled for the active profile', async () => {
+  const result = await createController({
+    getRegistry: async () => ({ radicle: { mode: 'disabled' } }),
+    getRadicleStatus: async () => ({ status: 'stopped' }),
+  }).status();
+  expect(result.nodes.find((node) => node.id === 'radicle')).toMatchObject({
+    state: 'disabled', mode: 'disabled', ready: false,
   });
 });

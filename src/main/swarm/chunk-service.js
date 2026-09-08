@@ -116,7 +116,7 @@ async function publishChunk(data, options = {}) {
   const chunk = bee.makeContentAddressedChunk(data, options.span);
   const batchId = await selectChunkBatch();
 
-  await bee.uploadChunk(batchId, chunk, { pin: true, deferred: false });
+  await bee.chunk.upload(batchId, chunk, { pin: true, deferred: false });
 
   return {
     reference: toHex(chunk.address),
@@ -129,7 +129,7 @@ async function readChunk(reference) {
   let raw;
 
   try {
-    raw = await bee.downloadChunk(reference);
+    raw = await bee.chunk.download(reference);
   } catch (err) {
     if (isChunkNotFoundError(err)) {
       throw makeSemanticError('chunk_not_found', `Chunk not found: ${reference}`, err);
@@ -183,7 +183,7 @@ async function readSingleOwnerChunk(params) {
   let raw;
 
   try {
-    raw = await bee.downloadChunk(reference);
+    raw = await bee.chunk.download(reference);
   } catch (err) {
     if (isChunkNotFoundError(err)) {
       throw makeSemanticError('chunk_not_found', 'Single Owner Chunk not found', err);

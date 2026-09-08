@@ -5,23 +5,56 @@
 //
 //   MYOTIS_NODE_PATH=/path/to/myotis-node.node \
 //   MYOTIS_DATA_DIR=/path/to/warm-data \
+//   MYOTIS_E2E_IGNORE_KNOWN_STALL=1 \
 //   npx playwright test --project=live myotis-ens
+//
+// Budgets (minutes): MYOTIS_E2E_READY_TIMEOUT_MIN caps each chain's readiness
+// wait, MYOTIS_E2E_STALL_TIMEOUT_MIN caps how long a beacon light client may
+// make zero catch-up progress before the wait gives up. The stall window must
+// stay strictly below the readiness window or the guard can never fire — see
+// myotis-sync-guard.js, which owns both defaults and warns on an inverted pair.
 const path = require('path');
 const { test, expect } = require('../live-fixtures');
+const {
+  envFlagEnabled,
+  resolveTimeoutBudgets,
+  createStallTracker,
+} = require('./myotis-sync-guard');
 
 const repoRoot = path.resolve(__dirname, '..', '..');
 const MYOTIS_ENABLED = Boolean(process.env.MYOTIS_NODE_PATH);
+
+// The pinned addon (biafra23/myotis v0.1.7, the newest published release)
+// bootstraps every COLD start from a checkpoint embedded in the binary and
+// then wedges: the catch-up applies periods 1825 -> 1840 and can never obtain
+// the update for period 1840, so `beaconState` never leaves CATCHING_UP and
+// readiness — which requires SYNCED — is unreachable. Deterministic, not
+// network weather, and not fixable from this repo: the checkpoint is compiled
+// in, the napi surface is only create(network, dataDir)/start(handle), and the
+// binary exposes no MYOTIS_* knobs. See issue #200 for the captured evidence.
+// Set MYOTIS_E2E_IGNORE_KNOWN_STALL=1 to run anyway — that is how we check
+// whether a newer addon (or a warm MYOTIS_DATA_DIR) clears the stall.
+const KNOWN_STALL_ISSUE = 'https://github.com/solardev-xyz/freedom-browser/issues/200';
+const IGNORE_KNOWN_STALL = envFlagEnabled('MYOTIS_E2E_IGNORE_KNOWN_STALL');
 
 // Cold sync can take many minutes; a warm data dir reaches ready in ~10-30 s.
 // CI lets the production app perform the one and only native-client launch,
 // so it grants the cold-sync budget directly instead of pre-warming through a
 // separate process whose immediate restart can inherit peer backoff.
-const configuredReadyTimeoutMinutes = Number(process.env.MYOTIS_E2E_READY_TIMEOUT_MIN);
-const READY_TIMEOUT_MINUTES = Number.isFinite(configuredReadyTimeoutMinutes) &&
-  configuredReadyTimeoutMinutes > 0
-  ? configuredReadyTimeoutMinutes
-  : 5;
+//
+// A light client that is genuinely catching up advances (currentPeriod,
+// finalizedSlot) in seconds — the last successful cold run applied nine
+// periods in 15 s. When neither moves for minutes the sync is wedged, not
+// slow, and no extra budget rescues it. Abort on the stall instead of sitting
+// out the whole readiness budget (which cost ~1.3 h per platform before).
+const budgets = resolveTimeoutBudgets();
+if (budgets.warning) console.warn(budgets.warning);
+const READY_TIMEOUT_MINUTES = budgets.readyTimeoutMinutes;
 const READY_TIMEOUT_MS = READY_TIMEOUT_MINUTES * 60 * 1000;
+const STALL_TIMEOUT_MINUTES = budgets.stallTimeoutMinutes;
+const STALL_TIMEOUT_MS = STALL_TIMEOUT_MINUTES * 60 * 1000;
+
+const POLL_INTERVAL_MS = 5000;
 
 function readinessSummary(state) {
   const status = state?.status || {};
@@ -36,6 +69,39 @@ function readinessSummary(state) {
     probeStatus: state?.probe?.status || null,
     probeError: state?.probe?.error || null,
   };
+}
+
+// Poll `read()` until `satisfied()`, bounded by both the readiness budget and
+// the beacon-sync stall guard. Shared by the Ethereum and Gnosis waits so a
+// wedged client on either chain fails fast with the same diagnostics.
+async function waitForVerifiedRead({ label, read, satisfied }) {
+  const deadline = Date.now() + READY_TIMEOUT_MS;
+  let lastReadinessLog = '';
+  const stall = createStallTracker(Date.now());
+  for (;;) {
+    const state = await read();
+    const serializedSummary = JSON.stringify(readinessSummary(state));
+    if (serializedSummary !== lastReadinessLog) {
+      console.log(`[myotis-e2e] waiting for ${label}:`, serializedSummary);
+      lastReadinessLog = serializedSummary;
+    }
+    if (satisfied(state)) return state;
+
+    const stalledForMs = stall.update(state.status, Date.now());
+    if (stalledForMs !== null && stalledForMs > STALL_TIMEOUT_MS) {
+      throw new Error(
+        `${label} Myotis light client sync is wedged: no beacon progress for ` +
+          `${STALL_TIMEOUT_MINUTES} min (see ${KNOWN_STALL_ISSUE}); ` +
+          `last state: ${JSON.stringify(state)}`
+      );
+    }
+    if (Date.now() > deadline) {
+      throw new Error(
+        `${label} myotis never served a verified read; last state: ${JSON.stringify(state)}`
+      );
+    }
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+  }
 }
 
 async function resolveRecordsThroughMyotis(electronApp, paths, options) {
@@ -122,6 +188,11 @@ async function resolveRecordsThroughMyotis(electronApp, paths, options) {
 
 test.describe('myotis live ENS resolution', () => {
   test.skip(!MYOTIS_ENABLED, 'MYOTIS_NODE_PATH not set — myotis spike disabled');
+  test.skip(
+    MYOTIS_ENABLED && !IGNORE_KNOWN_STALL,
+    `myotis v0.1.7 cold sync wedges at beacon period 1840 upstream (${KNOWN_STALL_ISSUE}) — ` +
+      'set MYOTIS_E2E_IGNORE_KNOWN_STALL=1 to run this spec anyway'
+  );
 
   test('P2P node serves ENS and NameNFT records through Freedom; page renders', async ({
     electronApp,
@@ -136,40 +207,28 @@ test.describe('myotis live ENS resolution', () => {
     //    briefly restore a SYNCED beacon snapshot before the live peer context
     //    needed by ENS reads has settled, so status alone is not sufficient.
     const managerPath = path.join(repoRoot, 'src', 'main', 'myotis', 'myotis-manager.js');
-    const deadline = Date.now() + READY_TIMEOUT_MS;
-    let status;
-    let lastReadinessLog = '';
-    for (;;) {
-      // eslint-disable-next-line no-empty-pattern
-      status = await electronApp.evaluate(async ({}, p) => {
-        // Playwright's evaluate sandbox has no `require` global; go through
-        // the main process's own module system instead.
-        const m = process.mainModule.require(p);
-        const ready = m.isReady();
-        let probe = null;
-        if (ready) {
-          try {
-            probe = await m.resolveContenthash('vitalik.eth');
-          } catch (err) {
-            probe = { error: err.message };
+    const status = await waitForVerifiedRead({
+      label: 'Ethereum',
+      read: () =>
+        // eslint-disable-next-line no-empty-pattern
+        electronApp.evaluate(async ({}, p) => {
+          // Playwright's evaluate sandbox has no `require` global; go through
+          // the main process's own module system instead.
+          const m = process.mainModule.require(p);
+          const ready = m.isReady();
+          let probe = null;
+          if (ready) {
+            try {
+              probe = await m.resolveContenthash('vitalik.eth');
+            } catch (err) {
+              probe = { error: err.message };
+            }
           }
-        }
-        return { ready, probe, status: m.getStatus() };
-      }, managerPath);
-      const summary = readinessSummary(status);
-      const serializedSummary = JSON.stringify(summary);
-      if (serializedSummary !== lastReadinessLog) {
-        console.log('[myotis-e2e] waiting for Ethereum:', serializedSummary);
-        lastReadinessLog = serializedSummary;
-      }
-      if (status.ready && status.probe?.status === 'ok' && status.probe.verified === true) break;
-      if (Date.now() > deadline) {
-        throw new Error(
-          `myotis never served a verified read; last state: ${JSON.stringify(status)}`
-        );
-      }
-      await new Promise((r) => setTimeout(r, 5000));
-    }
+          return { ready, probe, status: m.getStatus() };
+        }, managerPath),
+      satisfied: (state) =>
+        state.ready && state.probe?.status === 'ok' && state.probe.verified === true,
+    });
     console.log(
       '[myotis-e2e] node ready and direct read verified:',
       JSON.stringify({ status: status.status, probe: status.probe }).slice(0, 1000)
@@ -228,45 +287,29 @@ test.describe('myotis live ENS resolution', () => {
     // 3. Gnosis uses a second native handle and profile-local state directory.
     // Prove both the native account path and Freedom's capability router while
     // the already-verified Ethereum client remains running.
-    let gnosis;
-    const gnosisDeadline = Date.now() + READY_TIMEOUT_MS;
-    let lastGnosisReadinessLog = '';
-    for (;;) {
-      // eslint-disable-next-line no-empty-pattern
-      gnosis = await electronApp.evaluate(async ({}, { managerPath: p, address }) => {
-        const m = process.mainModule.require(p);
-        m.startMyotis({ chainId: 100 });
-        const ready = m.isReady(100);
-        let account = null;
-        if (ready) {
-          try {
-            account = await m.getAccount(address, 100);
-          } catch (err) {
-            account = { error: err.message };
+    await waitForVerifiedRead({
+      label: 'Gnosis',
+      read: () =>
+        // eslint-disable-next-line no-empty-pattern
+        electronApp.evaluate(async ({}, { managerPath: p, address }) => {
+          const m = process.mainModule.require(p);
+          m.startMyotis({ chainId: 100 });
+          const ready = m.isReady(100);
+          let probe = null;
+          if (ready) {
+            try {
+              probe = await m.getAccount(address, 100);
+            } catch (err) {
+              probe = { error: err.message };
+            }
           }
-        }
-        return { ready, account, status: m.getStatus(100) };
-      }, { managerPath, address: '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045' });
-      const summary = readinessSummary({
-        ready: gnosis.ready,
-        probe: gnosis.account,
-        status: gnosis.status,
-      });
-      const serializedSummary = JSON.stringify(summary);
-      if (serializedSummary !== lastGnosisReadinessLog) {
-        console.log('[myotis-e2e] waiting for Gnosis:', serializedSummary);
-        lastGnosisReadinessLog = serializedSummary;
-      }
-      if (
-        gnosis.ready &&
-        gnosis.account?.peerProofValid === true &&
-        gnosis.account?.beaconChainVerified === true
-      ) break;
-      if (Date.now() > gnosisDeadline) {
-        throw new Error(`Gnosis Myotis never served a verified read: ${JSON.stringify(gnosis)}`);
-      }
-      await new Promise((r) => setTimeout(r, 5000));
-    }
+          return { ready, probe, status: m.getStatus(100) };
+        }, { managerPath, address: '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045' }),
+      satisfied: (state) =>
+        state.ready &&
+        state.probe?.peerProofValid === true &&
+        state.probe?.beaconChainVerified === true,
+    });
 
     const routerPath = path.join(repoRoot, 'src', 'main', 'networks', 'chain-data-router.js');
     const routedGnosis = await electronApp.evaluate(

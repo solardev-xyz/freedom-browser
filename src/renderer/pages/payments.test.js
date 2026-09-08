@@ -161,7 +161,7 @@ describe('payments internal page', () => {
     await ctx.elements['search-input'].fire('input');
 
     expect(ctx.elements.stats.textContent).toBe('0 of 1 payment');
-    expect(ctx.elements.results.innerHTML).toContain('No payments match your filters.');
+    expect(ctx.elements.results.innerHTML).toContain('No payments match your filters');
 
     ctx.elements['search-input'].value = 'pay.example';
     await ctx.elements['search-input'].fire('input');
@@ -195,7 +195,7 @@ describe('payments internal page', () => {
     expect(ctx.confirm).toHaveBeenCalledWith('Clear all payment history? This cannot be undone.');
     expect(ctx.freedomAPI.clearPayments).toHaveBeenCalled();
     expect(ctx.elements.stats.textContent).toBe('0 payments');
-    expect(ctx.elements.results.innerHTML).toContain('No payments yet.');
+    expect(ctx.elements.results.innerHTML).toContain('No payments yet');
 
     ctx.freedomAPI.getPayments.mockClear();
     ctx.getPaymentRecordedHandler()();

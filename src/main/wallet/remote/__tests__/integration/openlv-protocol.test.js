@@ -18,8 +18,7 @@
 const { Wallet, verifyMessage, verifyTypedData, getBytes } = require('ethers');
 
 const { createSession, connectSession } = require('@openlv/session');
-const { encodeConnectionURL } = require('@openlv/core');
-const { mqtt } = require('@openlv/signaling/mqtt');
+const { encodeConnectionURL, observable } = require('@openlv/core');
 
 const { startLocalMqttBroker } = require('../../../../../../test/helpers/local-mqtt-broker');
 
@@ -41,49 +40,55 @@ const phoneWallet = new Wallet(TEST_PRIVATE_KEY);
 function relayTransport() {
   const { EventEmitter } = require('eventemitter3');
 
-  return ({ isHost, subsend, onmessage }) => {
-    const emitter = new EventEmitter();
-    let connected = false;
-    let stopped = false;
+  // Since @openlv/transport 0.1.0 a transport layer is a
+  // {transportId, create} pair — the id is what the two peers negotiate
+  // over in the capabilities handshake — and since 0.2.0 its state is an
+  // observable rather than a 'state_change' event.
+  return {
+    transportId: 'relay',
+    create: ({ isHost, subsend, onmessage }) => {
+      const emitter = new EventEmitter();
+      const [status, setStatus] = observable('standby');
+      let stopped = false;
 
-    const setConnected = () => {
-      if (connected) return;
-      connected = true;
-      emitter.emit('state_change', 'connected');
-    };
+      const connected = () => status.get() === 'connected';
+      const setConnected = () => {
+        if (!connected()) setStatus('connected');
+      };
 
-    return {
-      type: 'relay',
-      emitter,
-      // The host re-offers until the client answers — its signaling can
-      // reach the encrypted state a beat before the client's does.
-      setup: async () => {
-        if (!isHost) return;
-        for (let i = 0; i < 40 && !connected && !stopped; i++) {
-          await subsend({ type: 'offer', payload: 'relay' });
-          await new Promise((resolve) => setTimeout(resolve, 250));
-        }
-      },
-      teardown: async () => {
-        stopped = true;
-      },
-      send: async (message) => {
-        // App traffic tunnels as a "candidate" negotiation frame — the
-        // only free-form payload carrier in the transport message set.
-        await subsend({ type: 'candidate', payload: JSON.stringify(message) });
-      },
-      handle: async (message) => {
-        if (message.type === 'offer') {
-          await subsend({ type: 'answer', payload: 'relay' });
-          setConnected();
-        } else if (message.type === 'answer') {
-          setConnected();
-        } else if (message.type === 'candidate') {
-          onmessage(JSON.parse(message.payload));
-        }
-      },
-      waitFor: async () => {},
-    };
+      return {
+        type: 'relay',
+        emitter,
+        status,
+        // The host re-offers until the client answers — its signaling can
+        // reach the encrypted state a beat before the client's does.
+        setup: async () => {
+          if (!isHost) return;
+          for (let i = 0; i < 40 && !connected() && !stopped; i++) {
+            await subsend({ type: 'offer', payload: 'relay' });
+            await new Promise((resolve) => setTimeout(resolve, 250));
+          }
+        },
+        teardown: async () => {
+          stopped = true;
+        },
+        send: async (message) => {
+          // App traffic tunnels as a "candidate" negotiation frame — the
+          // only free-form payload carrier in the transport message set.
+          await subsend({ type: 'candidate', payload: JSON.stringify(message) });
+        },
+        handle: async (message) => {
+          if (message.type === 'offer') {
+            await subsend({ type: 'answer', payload: 'relay' });
+            setConnected();
+          } else if (message.type === 'answer') {
+            setConnected();
+          } else if (message.type === 'candidate') {
+            onmessage(JSON.parse(message.payload));
+          }
+        },
+      };
+    },
   };
 }
 
@@ -129,9 +134,6 @@ describe('openlv protocol round-trip (real stack, local broker)', () => {
   const send = (message) => hostSession.send(message, 10000, 15000);
 
   beforeAll(async () => {
-    // The @openlv packages log every protocol step unconditionally.
-    jest.spyOn(console, 'log').mockImplementation(() => {});
-
     broker = await startLocalMqttBroker();
     relayedFrames = [];
     broker.aedes.on('publish', (packet) => {
@@ -144,9 +146,10 @@ describe('openlv protocol round-trip (real stack, local broker)', () => {
     receivedRequests = [];
 
     // Freedom's role: host a session, hand out the URI (the QR content).
+    // No signaling layer argument since 0.2.0: createSession loads the
+    // backend named by `p` itself.
     hostSession = await createSession(
       { p: 'mqtt', s: broker.url },
-      mqtt,
       [relayTransport()],
       async () => ({ error: { code: -32601, message: 'Method not found' } }),
     );
@@ -158,7 +161,11 @@ describe('openlv protocol round-trip (real stack, local broker)', () => {
 
     await hostSession.connect();
     await phoneSession.connect();
-    await hostSession.waitForLink();
+    // waitForLink() is gone in 0.2.0 — wait on the status observable.
+    const linked = await hostSession.status.until(
+      (status) => status === 'connected' || status === 'disconnected',
+    );
+    expect(linked).toBe('connected');
   });
 
   afterAll(async () => {

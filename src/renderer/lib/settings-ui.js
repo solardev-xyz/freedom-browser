@@ -8,7 +8,6 @@ const electronAPI = window.electronAPI;
 let previous = {
   theme: 'system',
   antNodeMode: 'ultraLight',
-  enableRadicleIntegration: false,
   enableTorIntegration: false,
 };
 
@@ -28,7 +27,6 @@ export const initTheme = async () => {
   previous = {
     theme: settings?.theme || 'system',
     antNodeMode: settings?.antNodeMode === 'light' ? 'light' : 'ultraLight',
-    enableRadicleIntegration: settings?.enableRadicleIntegration === true,
     enableTorIntegration: settings?.enableTorIntegration === true,
   };
   applyTheme(previous.theme);
@@ -80,16 +78,11 @@ export const initSettingsEffects = (onSettingsChanged) => {
     previous = {
       theme: next.theme || 'system',
       antNodeMode: next.antNodeMode === 'light' ? 'light' : 'ultraLight',
-      enableRadicleIntegration: next.enableRadicleIntegration === true,
       enableTorIntegration: next.enableTorIntegration === true,
     };
 
     if (prev.theme !== previous.theme) {
       applyTheme(previous.theme);
-    }
-
-    if (prev.enableRadicleIntegration && !previous.enableRadicleIntegration) {
-      window.radicle?.stop?.().catch(() => {});
     }
 
     if (prev.enableTorIntegration && !previous.enableTorIntegration) {

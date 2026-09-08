@@ -19,7 +19,6 @@ const loadGithubBridgeModule = async (options = {}) => {
   jest.resetModules();
 
   const state = {
-    enableRadicleIntegration: options.enableRadicleIntegration ?? true,
     currentRadicleStatus: options.currentRadicleStatus || 'running',
   };
   const bridgeBtn = createElement('button', {
@@ -202,7 +201,6 @@ describe('github-bridge-ui', () => {
     await ctx.mod.updateGithubBridgeIcon();
     expect(ctx.elements.bridgeBtn.classList.contains('hidden')).toBe(true);
 
-    ctx.state.enableRadicleIntegration = false;
     ctx.windowHandlers['settings:updated']();
     await flushMicrotasks();
     expect(ctx.elements.bridgeBtn.classList.contains('hidden')).toBe(true);
@@ -255,7 +253,7 @@ describe('github-bridge-ui', () => {
 
   test('shows prereq and import errors and supports retry', async () => {
     const ctx = await loadGithubBridgeModule({
-      enableRadicleIntegration: false,
+      currentRadicleStatus: 'stopped',
     });
 
     ctx.mod.initGithubBridgeUi();
@@ -265,10 +263,9 @@ describe('github-bridge-ui', () => {
 
     expect(ctx.elements.prereqErrorState.classList.contains('hidden')).toBe(false);
     expect(ctx.elements.prereqTextEl.textContent).toBe(
-      'Radicle integration is disabled. Enable it in Settings > Experimental'
+      'Radicle node is not running. Enable it from the Nodes menu in the toolbar.'
     );
 
-    ctx.state.enableRadicleIntegration = true;
     ctx.state.currentRadicleStatus = 'running';
     ctx.githubBridge.import.mockResolvedValueOnce({
       success: false,

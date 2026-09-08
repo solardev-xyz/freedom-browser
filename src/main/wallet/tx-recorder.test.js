@@ -67,6 +67,27 @@ describe('tx-recorder', () => {
     }));
   });
 
+  test('context.fromAddress overrides the signer address (Safe txs: from = safe, executor in metadata)', async () => {
+    await signAndRecord({
+      to: '0xsafe',
+      value: '0',
+      chainId: 100,
+    }, fakeSigner, {
+      kind: 'safe-send',
+      fromAddress: '0xsafe',
+      toAddress: '0xrecipient',
+      amount: '1000',
+      metadata: { safeAddress: '0xsafe', executor: '0xfrom' },
+    });
+
+    expect(mockAppend).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'safe-send',
+      fromAddress: '0xsafe',
+      toAddress: '0xrecipient',
+      metadata: { safeAddress: '0xsafe', executor: '0xfrom' },
+    }));
+  });
+
   test('surfaces recorded:false when the broadcast succeeds but history append fails', async () => {
     mockAppend.mockImplementationOnce(() => {
       throw new Error('db closed');

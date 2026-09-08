@@ -66,6 +66,16 @@ describe('dapp-permissions — origin normalization consistency', () => {
     ['ipfs://QmHash/docs', 'ipfs://QmHash'],
     ['ipns://host/guide', 'ipns://host'],
     ['rad://z123abc/tree', 'rad://z123abc'],
+
+    // Onchain application aliases share a friendly contract-and-chain key.
+    [
+      'web3://0x00000095643cffa7d9fae407a84dfcb6406456c6.eip155-1/swap',
+      'web3://0x00000095643cffa7d9fae407a84dfcb6406456c6',
+    ],
+    [
+      'web3://0x00000095643cffa7d9fae407a84dfcb6406456c6:100/swap',
+      'web3://0x00000095643cffa7d9fae407a84dfcb6406456c6:100',
+    ],
   ];
 
   test.each(cases)(

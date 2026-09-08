@@ -449,6 +449,218 @@ describe('identity-manager ledger accounts', () => {
   });
 });
 
+describe('identity-manager safe accounts', () => {
+  let tmpDir;
+  let envSnapshot;
+  let identityManager;
+  let ownerIndexes;
+
+  const SAFE_ADDRESS = '0x41aD4887971f90BB3fE4d83eCa65177281283261';
+  const LEDGER_ADDRESS = '0x209693Bc6afc0C5328bA36FaF03C514EF312287C';
+  const SALT = '20260710';
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'identity-manager-safe-'));
+    envSnapshot = snapshotEnv();
+    process.env.FREEDOM_IDENTITY_DATA = tmpDir;
+    identityManager = loadMainModule(require.resolve('./identity-manager'), {
+      userDataDir: tmpDir,
+      extraMocks: {
+        [require.resolve('./identity')]: () => ({
+          getMnemonic: jest.fn(() => null), // vault locked — safe ops must not need it
+          isUnlocked: jest.fn(() => false),
+        }),
+      },
+    }).mod;
+  });
+
+  afterEach(() => {
+    restoreEnv(envSnapshot);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function writeVaultMeta(meta) {
+    fs.writeFileSync(path.join(tmpDir, 'vault-meta.json'), JSON.stringify(meta, null, 2), 'utf-8');
+  }
+
+  function readVaultMeta() {
+    return JSON.parse(fs.readFileSync(path.join(tmpDir, 'vault-meta.json'), 'utf-8'));
+  }
+
+  async function seedOwners() {
+    writeVaultMeta({
+      activeWalletIndex: 0,
+      addresses: { userWallet: '0x0000000000000000000000000000000000000001' },
+      derivedWallets: [
+        { index: 0, name: 'Main Wallet', address: '0x0000000000000000000000000000000000000001' },
+      ],
+    });
+    const ledger = await identityManager.addLedgerWallet(
+      'My Stax',
+      LEDGER_ADDRESS,
+      "44'/60'/0'/0/0"
+    );
+    ownerIndexes = [0, ledger.index];
+  }
+
+  const addSafe = (name = 'Joint', overrides = {}) =>
+    identityManager.addSafeWallet(name, {
+      address: SAFE_ADDRESS,
+      owners: ownerIndexes,
+      threshold: 1,
+      saltNonce: SALT,
+      ...overrides,
+    });
+
+  test('addSafeWallet appends a typed record with init params frozen in vault-meta', async () => {
+    await seedOwners();
+
+    const wallet = await addSafe();
+
+    expect(wallet).toEqual({
+      index: 1000001,
+      name: 'Joint',
+      address: SAFE_ADDRESS,
+      type: 'safe',
+      owners: ownerIndexes,
+      threshold: 1,
+      saltNonce: SALT,
+      deployed: {},
+    });
+    expect(readVaultMeta().derivedWallets[2]).toMatchObject({
+      type: 'safe',
+      owners: ownerIndexes,
+      threshold: 1,
+      saltNonce: SALT,
+    });
+  });
+
+  test('addSafeWallet auto-names and works with the vault locked', async () => {
+    await seedOwners();
+    const wallet = await addSafe('');
+    expect(wallet.name).toBe('Safe 1');
+  });
+
+  test('addSafeWallet enforces the 1/2 and 2/3 presets only', async () => {
+    await seedOwners();
+    const phone = await identityManager.addRemoteWallet(
+      'My Phone',
+      '0x70997970C51812dc3A010C7d01b50e0d17dc79C8'
+    );
+    const threeOwners = [...ownerIndexes, phone.index];
+
+    // 2/2 is deliberately not offered (lose either device → bricked)
+    await expect(addSafe('Bad', { threshold: 2 })).rejects.toThrow(/1 of 2 or 2 of 3/);
+    await expect(addSafe('Bad', { owners: threeOwners, threshold: 3 })).rejects.toThrow(/1 of 2 or 2 of 3/);
+    await expect(addSafe('Bad', { owners: [0], threshold: 1 })).rejects.toThrow(/1 of 2 or 2 of 3/);
+    // valid 2/3
+    await expect(addSafe('Resilient', { owners: threeOwners, threshold: 2 })).resolves.toMatchObject({
+      threshold: 2,
+    });
+  });
+
+  test('addSafeWallet rejects unknown, duplicate, and safe owners', async () => {
+    await seedOwners();
+
+    await expect(addSafe('Bad', { owners: [0, 99] })).rejects.toThrow(/99/);
+    await expect(addSafe('Bad', { owners: [0, 0] })).rejects.toThrow(/duplicate/i);
+
+    const safe = await addSafe();
+    await expect(
+      addSafe('Nested', {
+        address: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8',
+        owners: [0, safe.index],
+      })
+    ).rejects.toThrow(/cannot own/i);
+  });
+
+  test('record seams expose the safe fields', async () => {
+    await seedOwners();
+    const wallet = await addSafe();
+
+    expect(identityManager.getWalletRecord(wallet.index)).toMatchObject({
+      type: 'safe',
+      address: SAFE_ADDRESS,
+      owners: ownerIndexes,
+      threshold: 1,
+      saltNonce: SALT,
+      deployed: {},
+    });
+
+    const wallets = await identityManager.getDerivedWallets();
+    expect(wallets[2]).toMatchObject({ type: 'safe', owners: ownerIndexes, threshold: 1 });
+
+    await expect(identityManager.getUserWalletKey(wallet.index))
+      .rejects.toThrow('This account has no derivable private key');
+  });
+
+  test('markSafeDeployed persists per-chain deployment state', async () => {
+    await seedOwners();
+    const wallet = await addSafe();
+
+    await identityManager.markSafeDeployed(wallet.index, 100);
+
+    expect(identityManager.getWalletRecord(wallet.index).deployed).toEqual({ 100: true });
+    expect(readVaultMeta().derivedWallets[2].deployed).toEqual({ 100: true });
+
+    await expect(identityManager.markSafeDeployed(0, 100)).rejects.toThrow(/not a Safe/i);
+  });
+
+  test('an owner of a safe cannot be deleted while the safe exists', async () => {
+    await seedOwners();
+    const safe = await addSafe();
+
+    await expect(identityManager.deleteDerivedWallet(ownerIndexes[1])).rejects.toThrow(/owner of "Joint"/);
+
+    // deleting the safe frees its owners
+    await identityManager.deleteDerivedWallet(safe.index);
+    await expect(identityManager.deleteDerivedWallet(ownerIndexes[1])).resolves.toBeUndefined();
+  });
+
+  test('deleting a Safe discards its pending SafeTx and live message session', async () => {
+    await seedOwners();
+    const safe = await addSafe();
+
+    // Half-signed leftovers are keyed by the Safe's WALLET INDEX — they
+    // must go with the record, or a later account reusing the index
+    // would inherit (or be blocked by) them.
+    const { setPending, getPending } = require('./wallet/safe/pending-store');
+    const messageSessions = require('./wallet/safe/message-sessions');
+    setPending(safe.index, { safeTxHash: '0xdead', threshold: 1, signatures: [] });
+    const detach = jest.fn();
+    messageSessions.setSession(safe.index, { token: 'session-token', detach });
+
+    await identityManager.deleteDerivedWallet(safe.index);
+
+    expect(getPending(safe.index)).toBeNull();
+    expect(messageSessions.getSession(safe.index)).toBeNull();
+    expect(detach).toHaveBeenCalled(); // webContents lifecycle listeners unhooked
+    // the on-disk store no longer carries the entry either
+    const pendingFile = path.join(tmpDir, 'safe-pending.json');
+    expect(JSON.parse(fs.readFileSync(pendingFile, 'utf-8'))).toEqual({});
+  });
+
+  test('an account created after deleting the highest-index Safe starts with a clean slate', async () => {
+    await seedOwners();
+    const safe = await addSafe(); // highest index in the vault
+
+    const { setPending, getPending } = require('./wallet/safe/pending-store');
+    setPending(safe.index, { safeTxHash: '0xdead', threshold: 1, signatures: [] });
+
+    await identityManager.deleteDerivedWallet(safe.index);
+
+    // Device-account indexes are monotonic and never reused, even after a
+    // highest-index Safe is deleted.
+    const successor = await identityManager.addRemoteWallet(
+      'New Phone',
+      '0x70997970C51812dc3A010C7d01b50e0d17dc79C8'
+    );
+    expect(successor.index).toBe(safe.index + 1);
+    expect(getPending(successor.index)).toBeNull();
+    expect(require('./wallet/safe/message-sessions').getSession(successor.index)).toBeNull();
+  });
+});
+
 /**
  * A wallet's `index` is both the account id every persisted reference
  * stores (dApp permissions, Swarm publisher identities, activeWalletIndex)

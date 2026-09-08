@@ -39,12 +39,203 @@ READ_METHODS.add('web3_sha3');
 const DEFAULT_READ_ORDER = ['myotis', 'colibri', 'quorum', 'direct'];
 const DEFAULT_NON_MYOTIS_READ_ORDER = ['colibri', 'quorum', 'direct'];
 const DEFAULT_BROADCAST_ORDER = ['myotis', 'direct'];
+const INTERACTIVE_SOURCE_DEADLINE_MS = 2000;
+const SOURCE_TIMEOUT_COOLDOWNS_MS = [15_000, 30_000, 60_000];
+// Myotis' blocking N-API reads use libuv's shared worker pool and cannot be
+// cancelled after an interactive deadline. Keep only one outstanding read so
+// a stalled execution peer cannot occupy every worker and starve the DNS/file
+// work needed by Colibri and RPC fallbacks.
+//
+// Contended readers *queue* for that slot inside their own source deadline
+// rather than failing fast. Failing fast would make the second of any two
+// concurrent reads skip Myotis deterministically — silently downgrading a
+// verified wallet read (getTokenBalance issues balanceOf + decimals in a
+// Promise.all) and failing a Myotis-terminal readOrder outright — even
+// against a perfectly healthy peer.
+const MAX_MYOTIS_IN_FLIGHT = 1;
+// The queue is still bounded: past this depth the slot is demonstrably not
+// turning over inside anyone's deadline, so refuse rather than park unbounded
+// work behind a stalled native read.
+const MAX_MYOTIS_QUEUED = 16;
+const MAX_COLIBRI_IN_FLIGHT = 8;
+const MAX_COLIBRI_IN_FLIGHT_PER_ROUTE = 2;
+const MAX_ADAPTIVE_SOURCE_ROUTES = 1024;
+
+// These are deliberately process-local. A source that struggles with one
+// app's call shape should not reorder the user's chain policy, affect another
+// app, or stay demoted after Freedom restarts.
+const adaptiveSourceState = new Map();
+let myotisInFlight = 0;
+const myotisSlotWaiters = [];
+const colibriInFlight = new Set();
+const colibriInFlightByRoute = new Map();
 
 class SourceUnavailableError extends Error {
-  constructor(message) {
+  constructor(message, failureKind = null) {
     super(message);
     this.name = 'SourceUnavailableError';
+    this.failureKind = failureKind;
   }
+}
+
+class SourceDeadlineError extends SourceUnavailableError {
+  constructor(source, timeoutMs) {
+    super(`${source} exceeded its ${timeoutMs}ms interactive deadline`, 'timeout');
+    this.name = 'SourceDeadlineError';
+  }
+}
+
+function safeErrorMessage(error) {
+  return (error?.message || String(error))
+    .replace(/0x[0-9a-fA-F]{128,}/g, (hex) =>
+      `${hex.slice(0, 10)}…(${Math.floor((hex.length - 2) / 2)} bytes)`)
+    .replace(/\s+/g, ' ')
+    .slice(0, 500);
+}
+
+function normalizeRoutingOrigin(routingContext) {
+  const origin = routingContext?.origin;
+  if (typeof origin !== 'string') return null;
+  // The renderer supplies its canonical permission key. Do not lowercase it
+  // again here: content-addressed identifiers such as CIDv0 are case-sensitive.
+  const normalized = origin.trim();
+  const hasControlCharacter = [...normalized].some((character) => {
+    const code = character.charCodeAt(0);
+    return code <= 31 || code === 127;
+  });
+  if (!normalized || normalized.length > 2048 || hasControlCharacter) {
+    return null;
+  }
+  return normalized;
+}
+
+function requestTarget(method, params) {
+  let target;
+  if (CALL_OBJECT_METHODS.has(method)) target = params?.[0]?.to;
+  else if (['eth_getBalance', 'eth_getCode', 'eth_getStorageAt',
+    'eth_getTransactionCount'].includes(method)) target = params?.[0];
+  else if (method === 'eth_getLogs') target = params?.[0]?.address;
+  if (Array.isArray(target)) {
+    const addresses = target
+      .filter((address) => typeof address === 'string' && /^0x[0-9a-f]{40}$/i.test(address))
+      .map((address) => address.toLowerCase())
+      .sort();
+    return addresses.length ? addresses.join(',') : '*';
+  }
+  return typeof target === 'string' && /^0x[0-9a-f]{40}$/i.test(target.trim())
+    ? target.trim().toLowerCase()
+    : '*';
+}
+
+function adaptiveRouteKey(source, chainId, method, params, routingContext) {
+  const origin = normalizeRoutingOrigin(routingContext);
+  if (!origin) return null;
+  return JSON.stringify([source, Number(chainId), origin, method, requestTarget(method, params)]);
+}
+
+function isCapacityFailure(error) {
+  if (error?.failureKind === 'capacity') return true;
+  const message = safeErrorMessage(error);
+  return /out of gas|execution (?:gas|resource) limit|exceeds? (?:the )?(?:gas|execution) limit/i
+    .test(message);
+}
+
+function failureKind(error) {
+  if (isCapacityFailure(error)) return 'capacity';
+  if (error?.failureKind === 'timeout' || error?.name === 'AbortError') return 'timeout';
+  return null;
+}
+
+function adaptiveSourceUnavailable(routeKey, now = Date.now()) {
+  if (!routeKey) return false;
+  const state = adaptiveSourceState.get(routeKey);
+  if (!state) return false;
+  return state.sessionBlocked === true || state.openUntil > now;
+}
+
+function recordAdaptiveSuccess(routeKey) {
+  if (!routeKey) return;
+  // A deterministic execution ceiling is a capability boundary for this app
+  // session, not a health fluctuation. A lighter concurrent call succeeding
+  // against the same contract must not erase it.
+  if (adaptiveSourceState.get(routeKey)?.sessionBlocked) return;
+  adaptiveSourceState.delete(routeKey);
+}
+
+function setAdaptiveSourceState(routeKey, state) {
+  if (!adaptiveSourceState.has(routeKey) &&
+      adaptiveSourceState.size >= MAX_ADAPTIVE_SOURCE_ROUTES) {
+    adaptiveSourceState.delete(adaptiveSourceState.keys().next().value);
+  }
+  adaptiveSourceState.set(routeKey, state);
+}
+
+function recordAdaptiveFailure(routeKey, error, now = Date.now()) {
+  if (!routeKey) return;
+  const kind = failureKind(error);
+  if (!kind) return;
+  const previous = adaptiveSourceState.get(routeKey) || {
+    timeoutCount: 0,
+    openUntil: 0,
+    sessionBlocked: false,
+  };
+  if (kind === 'capacity') {
+    setAdaptiveSourceState(routeKey, { ...previous, sessionBlocked: true });
+    return;
+  }
+  const timeoutCount = previous.timeoutCount + 1;
+  const cooldownMs = SOURCE_TIMEOUT_COOLDOWNS_MS[
+    Math.min(timeoutCount - 1, SOURCE_TIMEOUT_COOLDOWNS_MS.length - 1)
+  ];
+  setAdaptiveSourceState(routeKey, {
+    ...previous,
+    timeoutCount,
+    openUntil: now + cooldownMs,
+  });
+}
+
+function configuredSourceTimeoutMs(chainId) {
+  const network = registry.getNetwork(chainId) || {};
+  return Math.max(500, Number(network.quorum?.timeoutMs) || 5000);
+}
+
+// The two-second budget is a *fall-through* allowance, not a global ceiling.
+// Spending it only pays off when a later source can still answer and a page
+// the user is watching is waiting on the result. Applied unconditionally it
+// silently downgrades a verified answer to an unverified single-endpoint one
+// (any wallet read on a network slower than 2s), and where the source is the
+// last one configured it turns a read that would have succeeded into a
+// failure. So: cap only an app-driven read that still has somewhere to fall
+// through to; everyone else keeps the chain's configured timeout.
+function sourceDeadlineMs(chainId, { interactive, hasFallbackSource }) {
+  const configured = configuredSourceTimeoutMs(chainId);
+  return interactive && hasFallbackSource
+    ? Math.min(configured, INTERACTIVE_SOURCE_DEADLINE_MS)
+    : configured;
+}
+
+function withSourceDeadline(promise, source, timeoutMs = INTERACTIVE_SOURCE_DEADLINE_MS) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new SourceDeadlineError(source, timeoutMs)), timeoutMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      }
+    );
+  });
+}
+
+function clearAdaptiveRoutingForTest() {
+  adaptiveSourceState.clear();
+  myotisInFlight = 0;
+  myotisSlotWaiters.length = 0;
+  colibriInFlight.clear();
+  colibriInFlightByRoute.clear();
 }
 
 function isReadMethod(method) {
@@ -291,20 +482,129 @@ async function requestMyotis(chainId, method, params) {
   throw new SourceUnavailableError(`Myotis does not support ${method}`);
 }
 
-async function requestColibri(chainId, method, params) {
+function releaseMyotisSlot() {
+  const next = myotisSlotWaiters.shift();
+  // Hand the slot straight over rather than counting it down and back up.
+  if (next) next();
+  else myotisInFlight = Math.max(0, myotisInFlight - 1);
+}
+
+// Returns null when the queue is full. `granted` is null when the slot was
+// free, so an uncontended read never pays for a timer it cannot need.
+function acquireMyotisSlot() {
+  if (myotisInFlight < MAX_MYOTIS_IN_FLIGHT) {
+    myotisInFlight += 1;
+    return { granted: null, abandon: () => {} };
+  }
+  if (myotisSlotWaiters.length >= MAX_MYOTIS_QUEUED) return null;
+  let grant;
+  const granted = new Promise((resolve) => {
+    grant = resolve;
+  });
+  myotisSlotWaiters.push(grant);
+  return {
+    granted,
+    abandon: () => {
+      const index = myotisSlotWaiters.indexOf(grant);
+      if (index >= 0) myotisSlotWaiters.splice(index, 1);
+      // The slot was handed over as the deadline fired: pass it along rather
+      // than leaking it to a caller that has already fallen through.
+      else granted.then(releaseMyotisSlot);
+    },
+  };
+}
+
+async function requestViaMyotis(
+  chainId,
+  method,
+  params,
+  { includeTrust = false, deadlineMs = null } = {}
+) {
+  const budgetMs = deadlineMs || configuredSourceTimeoutMs(chainId);
+  const slot = acquireMyotisSlot();
+  if (!slot) {
+    throw new SourceUnavailableError('Myotis has too many reads queued for this workload');
+  }
+  const startedAt = Date.now();
+  if (slot.granted) {
+    // One budget covers the queue wait *and* the read, so serializing never
+    // costs a caller more than a solo read against the same source would.
+    try {
+      await withSourceDeadline(slot.granted, 'Myotis', budgetMs);
+    } catch (err) {
+      slot.abandon();
+      throw err;
+    }
+  }
+
+  const requestPromise = Promise.resolve().then(async () => {
+    // Sample the head inside the tracked promise: a native binding that throws
+    // synchronously must reject this request (which releases the slot below)
+    // rather than escape before the release handler is attached.
+    const beforeStatus = includeTrust ? myotis.getStatus?.(chainId) || {} : null;
+    const result = await requestMyotis(chainId, method, params);
+    if (!includeTrust) return result;
+    const afterStatus = myotis.getStatus?.(chainId) || {};
+    return { result, trust: myotisTrust(beforeStatus, afterStatus) };
+  });
+  // Native reads run on libuv workers and cannot currently be cancelled.
+  // Keep timed-out work accounted for until it really settles so a busy page
+  // cannot exhaust the worker pool while later sources answer its requests.
+  requestPromise.then(releaseMyotisSlot, releaseMyotisSlot);
+  return withSourceDeadline(
+    requestPromise,
+    'Myotis',
+    Math.max(1, budgetMs - (Date.now() - startedAt))
+  );
+}
+
+async function requestColibri(chainId, method, params, routeKey = null, deadlineMs = null) {
   if (COLIBRI_UNSUPPORTED.has(method)) {
     throw new SourceUnavailableError(`Colibri does not support ${method}`);
   }
   if (!registry.getEndpoints(chainId, 'prover').length) {
     throw new SourceUnavailableError('No Colibri prover configured');
   }
+  const inFlightKey = routeKey || JSON.stringify([
+    'colibri',
+    Number(chainId),
+    method,
+    requestTarget(method, params),
+  ]);
+  const routeInFlight = colibriInFlightByRoute.get(inFlightKey) || 0;
+  if (colibriInFlight.size >= MAX_COLIBRI_IN_FLIGHT ||
+      routeInFlight >= MAX_COLIBRI_IN_FLIGHT_PER_ROUTE) {
+    throw new SourceUnavailableError('Colibri is already processing this workload');
+  }
   // Keep the WASM-backed verifier lazy; most startup paths do not need it.
   const { requestViaColibri } = require('../ens/colibri-resolver');
-  return requestViaColibri(chainId, method, params);
+  const requestPromise = Promise.resolve().then(() => requestViaColibri(chainId, method, params));
+  colibriInFlight.add(requestPromise);
+  colibriInFlightByRoute.set(inFlightKey, routeInFlight + 1);
+  const release = () => {
+    colibriInFlight.delete(requestPromise);
+    const remaining = (colibriInFlightByRoute.get(inFlightKey) || 1) - 1;
+    if (remaining > 0) colibriInFlightByRoute.set(inFlightKey, remaining);
+    else colibriInFlightByRoute.delete(inFlightKey);
+  };
+  // A timed-out WASM/prover operation cannot currently be cancelled. Keep it
+  // tracked until it really settles so repeated page calls cannot accumulate
+  // unbounded background work.
+  requestPromise.then(release, release);
+  // A prover call is never left unbounded: without a fall-through budget it
+  // still has to settle inside the chain's configured timeout.
+  return withSourceDeadline(
+    requestPromise,
+    'Colibri',
+    deadlineMs || configuredSourceTimeoutMs(chainId)
+  );
 }
 
-async function requestRpcUrl(url, method, params, timeoutMs) {
+async function requestRpcUrl(url, method, params, timeoutMs, { signal } = {}) {
   const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (signal?.aborted) controller.abort();
+  else signal?.addEventListener?.('abort', abort, { once: true });
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(url, {
@@ -324,6 +624,7 @@ async function requestRpcUrl(url, method, params, timeoutMs) {
     return data.result;
   } finally {
     clearTimeout(timer);
+    signal?.removeEventListener?.('abort', abort);
   }
 }
 
@@ -335,39 +636,245 @@ function stableValue(value) {
   return JSON.stringify(value);
 }
 
-async function requestQuorum(chainId, method, params) {
+function endpointHost(url) {
+  try {
+    return new URL(url).host;
+  } catch {
+    return '';
+  }
+}
+
+function isUserConfiguredRpc(chainId, url) {
+  const cid = String(chainId);
+  const source = registry.getEndpointSources(chainId, 'rpc').find(
+    (entry) => !entry.keyed && entry.coverage?.[cid] === url
+  );
+  if (!source) return false;
+  const metadata = registry.getEndpointSourceList().find((entry) => entry.id === source.id);
+  return Boolean(metadata && !metadata.builtin && !metadata.removed && !metadata.keyed);
+}
+
+function myotisTrust(beforeStatus = {}, afterStatus = {}) {
+  const beforeBlock = beforeStatus.optimisticBlockNumber ?? null;
+  const afterBlock = afterStatus.optimisticBlockNumber ?? null;
+  // The generic Myotis call executes at its optimistic head. Only label the
+  // answer with a block when that head stayed stable around the call; a
+  // separately sampled newer head must never be presented as the call's block.
+  const block = beforeBlock !== null && beforeBlock === afterBlock ? afterBlock : null;
+  return {
+    level: 'verified',
+    method: 'myotis',
+    finality: 'optimistic',
+    proof: 'P2P light client (optimistic beacon root — attested, not finalized)',
+    block,
+    agreed: ['myotis-p2p'],
+    dissented: [],
+    queried: ['myotis-p2p'],
+    quorum: { k: 1, m: 1, achieved: true },
+  };
+}
+
+function colibriTrust(chainId) {
+  const [proverUrl] = registry.getEndpoints(chainId, 'prover');
+  const prover = endpointHost(proverUrl);
+  return {
+    level: 'verified',
+    method: 'colibri',
+    prover,
+    proof: registry.getNetwork(chainId)?.zkProof === false
+      ? 'Sync-committee proof'
+      : 'ZK sync-committee proof',
+    block: null,
+    agreed: prover ? [prover] : [],
+    dissented: [],
+    queried: prover ? [prover] : [],
+    quorum: { k: 1, m: 1, achieved: true },
+  };
+}
+
+async function requestQuorum(
+  chainId,
+  method,
+  params,
+  { includeTrust = false, allowDirectFallback = false, deadlineMs = null } = {}
+) {
   const network = registry.getNetwork(chainId) || {};
   const quorum = network.quorum || {};
   const k = Math.max(1, Number(quorum.k) || 3);
   const m = Math.max(1, Math.min(k, Number(quorum.m) || 2));
-  const timeoutMs = Math.max(500, Number(quorum.timeoutMs) || 5000);
+  const configuredTimeoutMs = Math.max(500, Number(quorum.timeoutMs) || 5000);
+  const timeoutMs = deadlineMs
+    ? Math.min(configuredTimeoutMs, deadlineMs)
+    : configuredTimeoutMs;
+  const endpointTimeoutMs = allowDirectFallback ? configuredTimeoutMs : timeoutMs;
   const urls = registry.getEndpoints(chainId, 'rpc').slice(0, k);
   if (urls.length < m) throw new SourceUnavailableError(`RPC quorum needs ${m} endpoints`);
 
-  const settled = await Promise.allSettled(
-    urls.map((url) => requestRpcUrl(url, method, params, timeoutMs))
-  );
-  const groups = new Map();
-  for (const entry of settled) {
-    if (entry.status !== 'fulfilled') continue;
-    const key = stableValue(entry.value);
-    const group = groups.get(key) || { count: 0, value: entry.value };
-    group.count += 1;
-    groups.set(key, group);
-    if (group.count >= m) return group.value;
-  }
-  throw new SourceUnavailableError(`RPC quorum did not reach ${m} matching responses`);
+  return new Promise((resolve, reject) => {
+    const controllers = urls.map(() => new AbortController());
+    const groups = new Map();
+    const fulfilledUrls = [];
+    const directCandidates = [];
+    const errors = [];
+    let pending = urls.length;
+    let finished = false;
+    let verificationImpossible = false;
+    let verificationTimer;
+
+    const abortPending = () => controllers.forEach((controller) => controller.abort());
+    const finish = () => {
+      finished = true;
+      clearTimeout(verificationTimer);
+      abortPending();
+    };
+    const succeed = (group) => {
+      if (finished) return;
+      finish();
+      if (!includeTrust) {
+        resolve(group.value);
+        return;
+      }
+      const agreedUrls = new Set(group.urls);
+      resolve({
+        result: group.value,
+        trust: {
+          level: 'verified',
+          method: 'quorum',
+          block: null,
+          agreed: group.urls.map(endpointHost).filter(Boolean),
+          dissented: fulfilledUrls
+            .filter((url) => !agreedUrls.has(url))
+            .map(endpointHost)
+            .filter(Boolean),
+          queried: urls.map(endpointHost).filter(Boolean),
+          quorum: { k: urls.length, m, achieved: true },
+        },
+      });
+    };
+    const fail = () => {
+      if (finished) return;
+      finish();
+      const capacityFailures = errors.filter(isCapacityFailure).length;
+      const timedOut = errors.some((error) => failureKind(error) === 'timeout');
+      const error = new SourceUnavailableError(
+        `RPC quorum did not reach ${m} matching responses`,
+        capacityFailures >= m ? 'capacity' : timedOut ? 'timeout' : null
+      );
+      // Direct would accept one endpoint's answer without agreement. Preserve
+      // the highest-priority successful quorum member so the next configured
+      // Direct tier can reuse it rather than issuing the same RPC again.
+      const directFallback = directCandidates.sort((a, b) => a.index - b.index)[0];
+      if (directFallback) {
+        const fallbackKey = stableValue(directFallback.result);
+        error.directFallback = {
+          ...directFallback,
+          agreedUrls: directCandidates
+            .filter((candidate) => stableValue(candidate.result) === fallbackKey)
+            .map((candidate) => candidate.url),
+          dissentedUrls: directCandidates
+            .filter((candidate) => stableValue(candidate.result) !== fallbackKey)
+            .map((candidate) => candidate.url),
+          queriedUrls: urls,
+          quorum: { k: urls.length, m, achieved: false },
+        };
+      }
+      error.directAttemptedUrls = urls;
+      reject(error);
+    };
+    const rejectIfImpossible = () => {
+      if (finished) return;
+      const largestGroup = Math.max(0, ...[...groups.values()].map((group) => group.count));
+      if (largestGroup + pending >= m) return;
+      verificationImpossible = true;
+      // If every completed member failed, let an already-running member finish
+      // within Direct's compatibility budget. Its answer cannot restore
+      // quorum, but it can satisfy the Direct tier without a duplicate request.
+      if (!allowDirectFallback || directCandidates.length || pending === 0) fail();
+    };
+
+    verificationTimer = setTimeout(() => {
+      if (finished) return;
+      verificationImpossible = true;
+      if (!allowDirectFallback || directCandidates.length || pending === 0) fail();
+    }, timeoutMs);
+
+    urls.forEach((url, index) => {
+      requestRpcUrl(url, method, params, endpointTimeoutMs, {
+        signal: controllers[index].signal,
+      }).then(
+        (value) => {
+          if (finished) return;
+          pending -= 1;
+          fulfilledUrls.push(url);
+          directCandidates.push({ index, url, result: value });
+          const key = stableValue(value);
+          const group = groups.get(key) || { count: 0, value, urls: [] };
+          group.count += 1;
+          group.urls.push(url);
+          groups.set(key, group);
+          if (group.count >= m) succeed(group);
+          else if (verificationImpossible) fail();
+          else rejectIfImpossible();
+        },
+        (error) => {
+          if (finished) return;
+          pending -= 1;
+          errors.push(error);
+          rejectIfImpossible();
+        }
+      );
+    });
+  });
 }
 
-async function requestDirect(chainId, method, params) {
+function directResponse(chainId, url, result, includeTrust, evidence = null) {
+  if (!includeTrust) return result;
+  const host = endpointHost(url);
+  const userConfigured = isUserConfiguredRpc(chainId, url);
+  const agreed = evidence?.agreedUrls?.map(endpointHost).filter(Boolean) || (host ? [host] : []);
+  const dissented = evidence?.dissentedUrls?.map(endpointHost).filter(Boolean) || [];
+  const queried = evidence?.queriedUrls?.map(endpointHost).filter(Boolean) || (host ? [host] : []);
+  return {
+    result,
+    trust: {
+      level: userConfigured ? 'user-configured' : 'unverified',
+      method: 'direct',
+      block: null,
+      agreed,
+      dissented,
+      queried,
+      quorum: evidence?.quorum || { k: 1, m: 1, achieved: false },
+    },
+  };
+}
+
+async function requestDirect(
+  chainId,
+  method,
+  params,
+  { includeTrust = false, directFallback = null, attemptedUrls = [] } = {}
+) {
   const network = registry.getNetwork(chainId) || {};
   const timeoutMs = Math.max(500, Number(network.quorum?.timeoutMs) || 5000);
   const urls = registry.getEndpoints(chainId, 'rpc');
   if (!urls.length) throw new SourceUnavailableError('No RPC endpoint configured');
+  if (directFallback && urls.includes(directFallback.url) &&
+      Object.prototype.hasOwnProperty.call(directFallback, 'result')) {
+    return directResponse(
+      chainId,
+      directFallback.url,
+      directFallback.result,
+      includeTrust,
+      directFallback
+    );
+  }
+  const attempted = new Set(attemptedUrls);
   let lastError;
   for (const url of urls) {
+    if (attempted.has(url)) continue;
     try {
-      return await requestRpcUrl(url, method, params, timeoutMs);
+      const result = await requestRpcUrl(url, method, params, timeoutMs);
+      return directResponse(chainId, url, result, includeTrust);
     } catch (err) {
       lastError = err;
     }
@@ -401,15 +908,53 @@ async function requestDirectFeeQuote(chainId) {
   throw lastError || new SourceUnavailableError('All RPC endpoints failed');
 }
 
-async function requestSource(source, chainId, method, params) {
-  if (source === 'myotis') return requestMyotis(chainId, method, params);
-  if (source === 'colibri') return requestColibri(chainId, method, params);
-  if (source === 'quorum') return requestQuorum(chainId, method, params);
-  if (source === 'direct') return requestDirect(chainId, method, params);
+async function requestSource(
+  source,
+  chainId,
+  method,
+  params,
+  {
+    includeTrust = false,
+    routeKey = null,
+    directFallback = null,
+    directAttemptedUrls = [],
+    allowDirectFallback = false,
+    deadlineMs = null,
+  } = {}
+) {
+  if (source === 'myotis') {
+    return requestViaMyotis(chainId, method, params, {
+      includeTrust,
+      deadlineMs,
+    });
+  }
+  if (source === 'colibri') {
+    const result = await requestColibri(chainId, method, params, routeKey, deadlineMs);
+    return includeTrust ? { result, trust: colibriTrust(chainId) } : result;
+  }
+  if (source === 'quorum') {
+    return requestQuorum(chainId, method, params, {
+      includeTrust,
+      allowDirectFallback,
+      deadlineMs,
+    });
+  }
+  if (source === 'direct') {
+    return requestDirect(chainId, method, params, {
+      includeTrust,
+      directFallback,
+      attemptedUrls: directAttemptedUrls,
+    });
+  }
   throw new SourceUnavailableError(`Unknown chain source: ${source}`);
 }
 
-async function request(chainId, method, rawParams = []) {
+async function request(
+  chainId,
+  method,
+  rawParams = [],
+  { includeTrust = false, routingContext = null } = {}
+) {
   if (!isReadMethod(method)) throw new Error(`Unsupported read method: ${method}`);
   const network = registry.getNetwork(chainId);
   if (!network) throw new Error(`Unsupported chain ID: ${chainId}`);
@@ -417,21 +962,56 @@ async function request(chainId, method, rawParams = []) {
   const supportsMyotis = myotis.NETWORKS?.has(Number(chainId)) === true;
   const order = network.access?.readOrder ||
     (supportsMyotis ? DEFAULT_READ_ORDER : DEFAULT_NON_MYOTIS_READ_ORDER);
+  // Only a page-driven read (an app supplies its routing context) trades
+  // verification for interactive latency. Wallet-internal reads have no user
+  // watching a frame and keep the chain's configured timeout.
+  const interactive = normalizeRoutingOrigin(routingContext) !== null;
   const failures = [];
   let lastRpcError = null;
-  for (const source of order) {
+  let directFallback = null;
+  let directAttemptedUrls = [];
+  for (let sourceIndex = 0; sourceIndex < order.length; sourceIndex += 1) {
+    const source = order[sourceIndex];
     if (DIRECT_ONLY_METHODS.has(method) && source !== 'direct') continue;
+    const routeKey = source === 'myotis' || source === 'colibri' || source === 'quorum'
+      ? adaptiveRouteKey(source, chainId, method, params, routingContext)
+      : null;
+    if (adaptiveSourceUnavailable(routeKey)) {
+      failures.push(`${source}: temporarily bypassed for this app workload`);
+      continue;
+    }
     try {
-      const result = await requestSource(source, Number(chainId), method, params);
+      const sourceResult = await requestSource(source, Number(chainId), method, params, {
+        includeTrust,
+        routeKey,
+        directFallback: source === 'direct' ? directFallback : null,
+        directAttemptedUrls: source === 'direct' ? directAttemptedUrls : [],
+        allowDirectFallback: source === 'quorum' && order[sourceIndex + 1] === 'direct',
+        deadlineMs: sourceDeadlineMs(Number(chainId), {
+          interactive,
+          hasFallbackSource: sourceIndex + 1 < order.length,
+        }),
+      });
+      recordAdaptiveSuccess(routeKey);
+      const result = includeTrust ? sourceResult.result : sourceResult;
       return {
         result,
         source,
         verified: source === 'myotis' || source === 'colibri' || source === 'quorum',
+        ...(includeTrust && sourceResult.trust ? { trust: sourceResult.trust } : {}),
       };
     } catch (err) {
-      failures.push(`${source}: ${err.message}`);
+      if (source === 'quorum') {
+        if (err.directFallback) directFallback = err.directFallback;
+        if (Array.isArray(err.directAttemptedUrls)) {
+          directAttemptedUrls = err.directAttemptedUrls;
+        }
+      }
+      recordAdaptiveFailure(routeKey, err);
+      const message = safeErrorMessage(err);
+      failures.push(`${source}: ${message}`);
       if (!(err instanceof SourceUnavailableError)) lastRpcError = err;
-      log.verbose(`[chain-data] ${chainId} ${method} via ${source} failed: ${err.message}`);
+      log.verbose(`[chain-data] ${chainId} ${method} via ${source} failed: ${message}`);
     }
   }
   if (lastRpcError) throw lastRpcError;
@@ -526,4 +1106,5 @@ module.exports = {
   broadcastRawTransaction,
   requestRpcUrl,
   SourceUnavailableError,
+  clearAdaptiveRoutingForTest,
 };

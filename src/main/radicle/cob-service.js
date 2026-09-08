@@ -1,24 +1,15 @@
 /**
  * Radicle COB (collaborative object) write service.
  *
- * Backend for the window.radicle provider's signing-tier methods. Every
- * write shells out to the bundled `rad` CLI against the active RAD_HOME —
- * COB operations work storage-only via `--repo <rid>`, no working copy.
- * Args are discrete argv entries (never a shell), so payload content can't
- * inject options or commands.
- *
- * Writes announce to the network by default (the node gossips them); the
- * radicle node must be RUNNING or the CLI fails.
+ * Backend for the window.radicle provider's signing-tier methods. Writes
+ * go directly through the in-process libradicle addon and its COB stores.
  */
 
-const log = require('../logger');
-const { runRad, validateAndNormalizeRid, getActiveRadHome } = require('../radicle-manager');
+const embedded = require('../radicle-embedded');
+const { validateAndNormalizeRid } = require('../radicle-manager');
 
 // COB ids as returned by the CLI / accepted by it (full or truncated hex).
 const COB_ID_RE = /^[0-9a-f]{6,40}$/;
-// `rad issue open` prints "│ Issue   <40-hex> │" — the only 40-hex token
-// labelled Issue in the output.
-const ISSUE_ID_OUT_RE = /Issue\s+([0-9a-f]{40})/;
 
 const LIMITS = {
   maxTitleBytes: 200,
@@ -58,32 +49,10 @@ function requireText(value, { field, reason, maxBytes, allowEmpty = false }) {
   return value;
 }
 
-/**
- * Extract the created COB id from `-q` output. The id is printed on its
- * own line, but announce chatter ("No seeds found for …") may follow it,
- * so scan for the hex line instead of taking the last one.
- */
-function parseQuietCobId(stdout, operation) {
-  const line = stdout
-    .split('\n')
-    .map((l) => l.trim())
-    .find((l) => /^[0-9a-f]{40}$/.test(l));
-  if (!line) {
-    log.warn(`[cob-service] ${operation}: could not parse id from quiet output`);
-    throw Object.assign(new Error(`${operation} succeeded but id could not be determined`), {
-      reason: 'cli_failed',
-    });
-  }
-  return line;
-}
-
-/** Map CLI failures to a stable error shape for the provider layer. */
-function cliError(err, operation) {
-  const stderr = err.stderr?.toString() || '';
-  log.error(`[cob-service] ${operation} failed: ${err.message} ${stderr}`);
-  const e = new Error(stderr.trim().split('\n').pop() || err.message);
-  e.reason = /not found/i.test(stderr) ? 'repo_not_found' : 'cli_failed';
-  return e;
+function nativeError(err) {
+  if (/announce refs failed/i.test(err.message)) err.reason = 'announce_failed';
+  else err.reason = /not found/i.test(err.message) ? 'repo_not_found' : 'native_failed';
+  return err;
 }
 
 /**
@@ -98,7 +67,7 @@ async function createIssue({ rid, title, description, labels } = {}) {
     maxBytes: LIMITS.maxBodyBytes,
   });
 
-  const args = ['issue', 'open', '--repo', fullRid, '--title', title, '--description', description];
+  let normalizedLabels = [];
   if (labels !== undefined) {
     if (!Array.isArray(labels) || labels.length > LIMITS.maxLabels) {
       throw new CobValidationError('invalid_labels', 'labels must be an array (max 10)');
@@ -110,26 +79,14 @@ async function createIssue({ rid, title, description, labels } = {}) {
         maxBytes: LIMITS.maxLabelBytes,
       });
     }
-    if (labels.length) args.push('--labels', labels.join(','));
+    normalizedLabels = labels;
   }
 
-  // Deliberately NOT -q: unlike `issue comment`, `issue open -q` prints
-  // nothing at all (verified on rad 1.9.1), so the id must be parsed from
-  // the verbose output.
-  let stdout;
   try {
-    ({ stdout } = await runRad(args));
+    return await embedded.createIssue(fullRid, title, description, normalizedLabels);
   } catch (err) {
-    throw cliError(err, 'createIssue');
+    throw nativeError(err);
   }
-  const match = ISSUE_ID_OUT_RE.exec(stdout);
-  if (!match) {
-    log.warn('[cob-service] createIssue: could not parse issue id from output');
-    throw Object.assign(new Error('issue created but id could not be determined'), {
-      reason: 'cli_failed',
-    });
-  }
-  return { id: match[1] };
 }
 
 /**
@@ -140,21 +97,18 @@ async function commentIssue({ rid, issueId, body, replyTo } = {}) {
   requireCobId(issueId, 'invalid_id');
   requireText(body, { field: 'body', reason: 'invalid_body', maxBytes: LIMITS.maxBodyBytes });
 
-  const args = ['issue', 'comment', issueId, '--repo', fullRid, '--message', body, '-q'];
   if (replyTo !== undefined) {
     requireCobId(replyTo, 'invalid_id');
-    args.push('--reply-to', replyTo);
   }
 
   try {
-    const { stdout } = await runRad(args);
-    return { id: parseQuietCobId(stdout, 'commentIssue') };
+    return await embedded.commentIssue(fullRid, issueId, body, replyTo);
   } catch (err) {
-    throw cliError(err, 'commentIssue');
+    throw nativeError(err);
   }
 }
 
-const ISSUE_STATES = { open: '--open', closed: '--closed', solved: '--solved' };
+const ISSUE_STATES = new Set(['open', 'closed', 'solved']);
 
 /**
  * Transition issue state. @returns {Promise<{id: string, state: string}>}
@@ -162,16 +116,14 @@ const ISSUE_STATES = { open: '--open', closed: '--closed', solved: '--solved' };
 async function editIssueState({ rid, issueId, state } = {}) {
   const fullRid = requireRid(rid);
   requireCobId(issueId, 'invalid_id');
-  const flag = ISSUE_STATES[state];
-  if (!flag) {
+  if (!ISSUE_STATES.has(state)) {
     throw new CobValidationError('invalid_state', "state must be 'open', 'closed' or 'solved'");
   }
 
   try {
-    await runRad(['issue', 'state', issueId, '--repo', fullRid, flag, '-q']);
-    return { id: issueId, state };
+    return await embedded.editIssueState(fullRid, issueId, state);
   } catch (err) {
-    throw cliError(err, 'editIssueState');
+    throw nativeError(err);
   }
 }
 
@@ -187,46 +139,28 @@ async function commentPatch({ rid, patchId, body, revisionId } = {}) {
   requireText(body, { field: 'body', reason: 'invalid_body', maxBytes: LIMITS.maxBodyBytes });
 
   try {
-    const { stdout } = await runRad([
-      'patch',
-      'comment',
-      target,
-      '--repo',
-      fullRid,
-      '--message',
-      body,
-      '-q',
-    ]);
-    return { id: parseQuietCobId(stdout, 'commentPatch') };
+    return await embedded.commentPatch(fullRid, target, body);
   } catch (err) {
-    throw cliError(err, 'commentPatch');
+    throw nativeError(err);
   }
 }
 
 /**
- * The user's Radicle identity. Immutable for a given RAD_HOME, so the two
- * CLI spawns are memoized per home — getNodeStatus may be polled.
+ * The user's Radicle identity. Memoized while the node is running.
  * @returns {Promise<{did, nid, alias}>}
  */
-let identityCache = null; // { radHome, identity }
+let identityCache = null;
 /** Invalidate the memoized identity (e.g. after an alias change). */
 function clearIdentityCache() {
   identityCache = null;
 }
 async function getIdentity() {
-  const radHome = getActiveRadHome();
-  if (identityCache?.radHome === radHome) return identityCache.identity;
+  if (identityCache) return identityCache;
   try {
-    const [didOut, aliasOut] = await Promise.all([
-      runRad(['self', '--did']),
-      runRad(['self', '--alias']),
-    ]);
-    const did = didOut.stdout.trim();
-    const identity = { did, nid: did.replace(/^did:key:/, ''), alias: aliasOut.stdout.trim() };
-    identityCache = { radHome, identity };
-    return identity;
+    identityCache = await embedded.identity();
+    return identityCache;
   } catch (err) {
-    throw cliError(err, 'getIdentity');
+    throw nativeError(err);
   }
 }
 

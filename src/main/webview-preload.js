@@ -113,6 +113,85 @@ if (typeof window !== 'undefined') {
   });
 }
 
+// APPEARANCE THEME (internal pages only)
+//
+// Settings > Appearance promises to apply to "both the browser chrome and
+// internal pages", but the chrome is the only renderer that reads the
+// setting: every internal page used to style itself from
+// `@media (prefers-color-scheme: …)` alone. `nativeTheme.themeSource` does
+// not reach `prefers-color-scheme` in the renderer on every platform (Linux
+// in particular — see #233), so on a system whose scheme differs from the
+// app setting the result was a dark toolbar over white pages.
+//
+// The preload runs at document-start, before any page script or first paint,
+// so it resolves the setting here and stamps the answer on <html> as
+// `data-theme="dark" | "light"`. Pages carry their light palette under
+// `:where(html[data-theme='light'])` and declare `color-scheme` from the same
+// attribute, so scrollbars and form controls follow too.
+//
+// 'system' keeps behaving exactly as it does today: it resolves through
+// `prefers-color-scheme` and tracks OS changes live.
+const THEME_ATTRIBUTE = 'data-theme';
+const prefersDarkQuery =
+  typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+    ? window.matchMedia('(prefers-color-scheme: dark)')
+    : null;
+
+// Dark is every internal page's default palette, so an unreadable/unknown
+// setting and a missing matchMedia both fall back to it.
+const resolveTheme = (theme) => {
+  if (theme === 'light' || theme === 'dark') return theme;
+  return prefersDarkQuery && !prefersDarkQuery.matches ? 'light' : 'dark';
+};
+
+function installInternalPageTheme() {
+  let configuredTheme = 'system';
+  try {
+    configuredTheme = ipcRenderer.sendSync('internal:get-theme') || 'system';
+  } catch {
+    // Main process unavailable (teardown): fall through to 'system'.
+  }
+
+  const applyTheme = () => {
+    const root = document.documentElement;
+    if (!root) return false;
+    root.setAttribute(THEME_ATTRIBUTE, resolveTheme(configuredTheme));
+    return true;
+  };
+
+  // At document-start <html> may not exist yet. Observing `document` lets us
+  // stamp the attribute the instant the element is parsed, still before the
+  // stylesheet paints, instead of waiting for DOMContentLoaded (which would
+  // flash the wrong theme).
+  if (!applyTheme() && typeof MutationObserver === 'function') {
+    const observer = new MutationObserver(() => {
+      if (applyTheme()) observer.disconnect();
+    });
+    observer.observe(document, { childList: true });
+  }
+
+  // Live updates: the Appearance dropdown saves through the settings store,
+  // which broadcasts to every webContents including these webviews.
+  const onSettingsUpdated = (_event, settings) => {
+    configuredTheme = settings?.theme || 'system';
+    applyTheme();
+  };
+  ipcRenderer.on('settings:updated', onSettingsUpdated);
+  const unsubscribe = () => {
+    ipcRenderer.removeListener('settings:updated', onSettingsUpdated);
+    activeSubscriptions.delete(unsubscribe);
+  };
+  activeSubscriptions.add(unsubscribe);
+
+  prefersDarkQuery?.addEventListener('change', () => {
+    if (configuredTheme !== 'light' && configuredTheme !== 'dark') applyTheme();
+  });
+}
+
+if (isInternalPage()) {
+  installInternalPageTheme();
+}
+
 const guardInternalSubscription = (name, channel) => (callback) => {
   if (!isInternalPage()) {
     console.warn(`[freedomAPI] blocked subscription "${name}" on non-internal page`);
@@ -140,7 +219,29 @@ const findClosestAnchor = (start) => {
 const getRawDwebHref = (anchor) => {
   const rawHref = anchor?.getAttribute?.('href')?.trim();
   if (!rawHref) return null;
-  if (/^(ipfs|ipns):\/\//i.test(rawHref)) return rawHref;
+  if (/^(ipfs|ipns|web3):\/\//i.test(rawHref)) return rawHref;
+  return null;
+};
+
+const getHostRoutedHref = (anchor) => {
+  const rawHref = anchor?.getAttribute?.('href')?.trim();
+  if (!rawHref) return null;
+  const rawDwebHref = getRawDwebHref(anchor);
+  if (rawDwebHref) return rawDwebHref;
+  if (globalThis.location?.protocol === 'web3:') {
+    if (anchor?.hasAttribute?.('download')) return null;
+    try {
+      const resolved = new URL(rawHref, globalThis.location.href);
+      if (
+        ['web3:', 'http:', 'https:', 'bzz:', 'ipfs:', 'ipns:', 'rad:', 'ens:',
+          'freedom:', 'ethereum:'].includes(resolved.protocol)
+      ) {
+        return resolved.toString();
+      }
+    } catch {
+      return null;
+    }
+  }
   return null;
 };
 
@@ -154,6 +255,9 @@ const getRawDwebHref = (anchor) => {
 // both handled here so the new-window code path (Chromium →
 // setWindowOpenHandler → tab:new-with-url in the main process) never gets
 // the lowercased URL — see `src/main/webcontents-setup.js#setWindowOpenHandler`.
+// The same early path preserves Freedom's friendly
+// `web3://<contract>:<chain>` input before Chromium rejects the bare all-hex
+// host; renderer navigation canonicalizes it to `<contract>.eip155-<chain>`.
 //
 // Two listeners — one each for `click` (primary button) and `auxclick`
 // (non-primary, i.e. middle/right). Per the UI Events spec, modern
@@ -170,8 +274,13 @@ const handleDwebLinkActivation = (event) => {
   if (event.button !== 0 && event.button !== 1) return;
 
   const anchor = findClosestAnchor(event.target);
-  const href = getRawDwebHref(anchor);
+  const href = getHostRoutedHref(anchor);
   if (!href) return;
+
+  // Onchain documents cannot navigate themselves. Only a real user
+  // activation may ask the browser chrome to leave the isolated app; a page
+  // dispatching a synthetic click is equivalent to a scripted redirect.
+  if (globalThis.location?.protocol === 'web3:' && event.isTrusted !== true) return;
 
   // Mirror Chromium's link disposition heuristic: middle-click,
   // ctrl/cmd-click, shift-click, or `target="_blank"` open in a new tab;
@@ -340,6 +449,9 @@ contextBridge.exposeInMainWorld('freedomAPI', {
   getActiveProfile: guardInternal('getActiveProfile', () =>
     ipcRenderer.invoke('profile:get-active')
   ),
+  checkRadicleBinary: guardSettingsPage('checkRadicleBinary', () =>
+    ipcRenderer.invoke('radicle:checkBinary')
+  ),
   onProfileUpdated: guardInternalSubscription('onProfileUpdated', 'profile:updated'),
   listProfiles: guardInternal('listProfiles', () => ipcRenderer.invoke('profile:list')),
   createProfile: guardProfileManagerPage('createProfile', (profile) =>
@@ -477,6 +589,19 @@ contextBridge.exposeInMainWorld('freedomAPI', {
     ipcRenderer.sendToHost('ens:open-settings');
   }),
 
+  // Signals from the onchain-app trust interstitial. The opaque approval
+  // token is minted and consumed by the web3: protocol handler; the shell
+  // only carries it back on the next top-level navigation.
+  onchainContinueUnverified: guardInternal('onchainContinueUnverified', (payload) => {
+    ipcRenderer.sendToHost('onchain:continue-unverified', payload);
+  }),
+  onchainRetry: guardInternal('onchainRetry', (target) => {
+    ipcRenderer.sendToHost('onchain:retry', { target });
+  }),
+  onchainOpenRpcSettings: guardInternal('onchainOpenRpcSettings', () => {
+    ipcRenderer.sendToHost('onchain:open-rpc-settings');
+  }),
+
   // Favicons
   getCachedFavicon: guardInternal('getCachedFavicon', (url) =>
     ipcRenderer.invoke('favicon:get-cached', url)
@@ -487,15 +612,13 @@ contextBridge.exposeInMainWorld('freedomAPI', {
   getRadicleStatus: guardInternal('getRadicleStatus', () =>
     ipcRenderer.invoke('radicle:getStatus')
   ),
-  getRadicleRepoPayload: guardInternal('getRadicleRepoPayload', (rid) =>
-    ipcRenderer.invoke('radicle:getRepoPayload', rid)
-  ),
   syncRadicleRepo: guardInternal('syncRadicleRepo', (rid) =>
     ipcRenderer.invoke('radicle:syncRepo', rid)
   ),
   getRadicleSeedStatus: guardInternal('getRadicleSeedStatus', (rid) =>
     ipcRenderer.invoke('radicle:getSeedStatus', rid)
   ),
+  onRadicleSeedStatus: guardInternalSubscription('onRadicleSeedStatus', 'radicle:seedStatusUpdate'),
 
   // Clipboard
   copyText: guardInternal('copyText', (text) => ipcRenderer.invoke('clipboard:copy-text', text)),
@@ -662,23 +785,37 @@ ipcRenderer.on('context-menu-action', (_event, action, data) => {
 // no injection, no bridges. Nothing announces via EIP-6963.
 if (PROVIDERS_ENABLED) {
   try {
-    const script = document.createElement('script');
-    script.textContent = ETHEREUM_INJECT_SOURCE;
-
-    // Inject before any page scripts run
-    const inject = () => {
-      const head = document.head || document.documentElement;
-      head.insertBefore(script, head.firstChild);
-      script.remove();
-    };
-
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', inject, { once: true });
-    } else {
-      inject();
-    }
+    // Preloads finish before Chromium executes the document's inline scripts.
+    // Execute Freedom's trusted provider source synchronously in the page's
+    // main world so an eager dapp may capture `window.ethereum` while parsing.
+    // A DOMContentLoaded <script> was too late: apps that saved the initial
+    // undefined value could never recover even though the provider appeared
+    // later. `new Function` runs only our packaged source fetched over sync
+    // IPC; contract HTML never contributes code to this compilation step.
+    const installProvider = new Function(ETHEREUM_INJECT_SOURCE);
+    contextBridge.executeInMainWorld({ func: installProvider });
   } catch (err) {
-    console.error('[webview-preload] Failed to inject ethereum provider:', err);
+    console.error('[webview-preload] Failed early ethereum provider injection:', err);
+
+    // Defensive compatibility fallback for an Electron/runtime regression.
+    // The provider source is idempotent, so a partially completed early
+    // install will not be replaced or receive duplicate listeners.
+    try {
+      const script = document.createElement('script');
+      script.textContent = ETHEREUM_INJECT_SOURCE;
+      const inject = () => {
+        const head = document.head || document.documentElement;
+        head.insertBefore(script, head.firstChild);
+        script.remove();
+      };
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', inject, { once: true });
+      } else {
+        inject();
+      }
+    } catch (fallbackErr) {
+      console.error('[webview-preload] Failed fallback ethereum provider injection:', fallbackErr);
+    }
   }
 
   // Bridge postMessage from page to IPC
@@ -897,7 +1034,7 @@ try {
     (function() {
       const pendingRequests = new Map();
       let requestId = 0;
-      const eventListeners = { connect: [], disconnect: [] };
+      const eventListeners = { connect: [], disconnect: [], seedStatus: [] };
 
       function emitEvent(event, data) {
         if (eventListeners[event]) {
@@ -915,7 +1052,8 @@ try {
             pendingRequests.set(id, { resolve, reject });
             window.postMessage({ type: 'FREEDOM_RADICLE_REQUEST', id, method, params: params || {} }, '*');
             // Execution itself is prompt — seed/sync hand the network fetch
-            // to a background tracker (poll radicle_getSeedStatus). But the
+            // to a background tracker (seedStatus events report progress;
+            // radicle_getSeedStatus restores a snapshot after reload). But the
             // methods below can first block on a consent prompt while the
             // user deliberates; timing those out at 60s rejects the page
             // promise while the grant and the write still land in main, so

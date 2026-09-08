@@ -161,6 +161,22 @@ export function showRadicleSeedApproval(permissionKey, rid, owner) {
   });
 }
 
+export function showRadicleUnseedApproval(permissionKey, rid, owner) {
+  return prompt({
+    owner,
+    title: 'Stop seeding this repository?',
+    origin: permissionKey,
+    wants: `asks your node to stop seeding ${rid}`,
+    allows: [
+      'Remove the seeding policy for this repository',
+      'Cancel any fetch of it still in progress',
+    ],
+    warning:
+      'Your node stops sharing this repository with the Radicle network until you seed it again.',
+    approveLabel: 'Stop seeding',
+  });
+}
+
 export function showRadicleSigningApproval(permissionKey, owner) {
   return prompt({
     owner,

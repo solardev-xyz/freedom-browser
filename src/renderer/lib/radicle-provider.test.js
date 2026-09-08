@@ -41,6 +41,7 @@ const loadProvider = async (options = {}) => {
   const consentMocks = {
     showRadicleConnect: jest.fn(() => Promise.resolve()),
     showRadicleSeedApproval: jest.fn(() => Promise.resolve()),
+    showRadicleUnseedApproval: jest.fn(() => Promise.resolve()),
     showRadicleSigningApproval: jest.fn(() => Promise.resolve()),
     dismissRadicleConsent: jest.fn(),
   };
@@ -54,14 +55,20 @@ const loadProvider = async (options = {}) => {
   };
 
   const execute = jest.fn(async () => ({ result: 'ok' }));
+  let providerEventHandler = null;
 
   global.window = {
     electronAPI: {
-      getSettings: jest.fn(async () => ({ enableRadicleIntegration: true })),
     },
     addEventListener: jest.fn(),
     radiclePermissions: permissions,
-    radicleProvider: { execute },
+    radicleProvider: {
+      execute,
+      onEvent: jest.fn((handler) => {
+        providerEventHandler = handler;
+        return jest.fn();
+      }),
+    },
   };
 
   jest.doMock('./dapp-provider.js', () => ({
@@ -87,7 +94,16 @@ const loadProvider = async (options = {}) => {
     });
   };
 
-  return { mod, webview, sendRequest, state, consentMocks, permissions, execute };
+  return {
+    mod,
+    webview,
+    sendRequest,
+    state,
+    consentMocks,
+    permissions,
+    execute,
+    emitProviderEvent: (event) => providerEventHandler(event),
+  };
 };
 
 const responsesSentTo = (webview) =>
@@ -100,6 +116,30 @@ describe('radicle-provider', () => {
   });
 
   describe('happy paths (same document throughout)', () => {
+    test('routes pushed seed status only to the matching current origin', async () => {
+      const { webview, state, emitProviderEvent } = await loadProvider();
+      const status = { rid: 'rad:z371PVmDHdjJucejRoRYJcDEvD5pp', state: 'fetching' };
+
+      emitProviderEvent({
+        event: 'seedStatus',
+        origin: 'https://app.example',
+        data: status,
+      });
+      expect(webview.send).toHaveBeenCalledWith('radicle:provider-event', {
+        event: 'seedStatus',
+        data: status,
+      });
+
+      webview.send.mockClear();
+      state.displayUrl = 'https://other.example';
+      emitProviderEvent({
+        event: 'seedStatus',
+        origin: 'https://app.example',
+        data: status,
+      });
+      expect(webview.send).not.toHaveBeenCalled();
+    });
+
     test('signing request prompts, grants, executes, and responds', async () => {
       const { webview, sendRequest, consentMocks, permissions, execute } = await loadProvider({
         permission: { origin: 'https://app.example' },
@@ -300,6 +340,101 @@ describe('radicle-provider', () => {
       await flushMicrotasks();
 
       expect(webview.send).not.toHaveBeenCalled();
+    });
+  });
+  // Node tier: both directions of the seeding policy take a per-repo prompt.
+  // `unseed` used to run off the bare connection grant, so a connected origin
+  // could enumerate the user's repos with radicle_listSeededRepos and drop
+  // their seeding policies silently.
+  describe('per-repo consent for seeding policy changes', () => {
+    test('unseed prompts per repo before reaching main', async () => {
+      const { webview, sendRequest, consentMocks, execute } = await loadProvider({
+        permission: { origin: 'https://app.example' },
+      });
+
+      sendRequest({ id: 20, method: 'radicle_unseed', params: { rid: 'rad:zExample' } });
+      await flushMicrotasks();
+
+      expect(consentMocks.showRadicleUnseedApproval).toHaveBeenCalledWith(
+        'https://app.example',
+        'rad:zExample',
+        webview
+      );
+      expect(execute).toHaveBeenCalledWith(
+        'radicle_unseed',
+        { rid: 'rad:zExample' },
+        'https://app.example'
+      );
+    });
+
+    test('a rejected unseed prompt never touches the node', async () => {
+      const { webview, sendRequest, consentMocks, execute } = await loadProvider({
+        permission: { origin: 'https://app.example' },
+      });
+      consentMocks.showRadicleUnseedApproval.mockRejectedValue({
+        code: 4001,
+        message: 'User rejected the request',
+      });
+
+      sendRequest({ id: 21, method: 'radicle_unseed', params: { rid: 'rad:zExample' } });
+      await flushMicrotasks();
+
+      expect(execute).not.toHaveBeenCalled();
+      expect(responsesSentTo(webview)).toEqual([
+        [
+          'radicle:provider-response',
+          { id: 21, result: null, error: { code: 4001, message: 'User rejected the request', data: undefined } },
+        ],
+      ]);
+    });
+
+    test('unseed approval that lands after a navigation is not executed', async () => {
+      const approval = deferred();
+      const { webview, sendRequest, consentMocks, execute } = await loadProvider({
+        permission: { origin: 'https://app.example' },
+      });
+      consentMocks.showRadicleUnseedApproval.mockReturnValue(approval.promise);
+
+      sendRequest({ id: 22, method: 'radicle_unseed', params: { rid: 'rad:zExample' } });
+      await flushMicrotasks();
+      webview.dispatch('did-navigate', { url: 'https://evil.example' });
+      approval.resolve();
+      await flushMicrotasks();
+
+      expect(execute).not.toHaveBeenCalled();
+      expect(responsesSentTo(webview)).toHaveLength(0);
+    });
+
+    test('the origin-level node auto-approve still covers both directions', async () => {
+      const { sendRequest, consentMocks, execute } = await loadProvider({
+        permission: { origin: 'https://app.example' },
+        autoApprove: true,
+      });
+
+      sendRequest({ id: 23, method: 'radicle_unseed', params: { rid: 'rad:zExample' } });
+      sendRequest({ id: 24, method: 'radicle_seed', params: { rid: 'rad:zExample' } });
+      await flushMicrotasks();
+
+      expect(consentMocks.showRadicleUnseedApproval).not.toHaveBeenCalled();
+      expect(consentMocks.showRadicleSeedApproval).not.toHaveBeenCalled();
+      expect(execute).toHaveBeenCalledTimes(2);
+    });
+
+    test('sync stays promptless — main gates it on an existing seeding policy', async () => {
+      const { sendRequest, consentMocks, execute } = await loadProvider({
+        permission: { origin: 'https://app.example' },
+      });
+
+      sendRequest({ id: 25, method: 'radicle_sync', params: { rid: 'rad:zExample' } });
+      await flushMicrotasks();
+
+      expect(consentMocks.showRadicleUnseedApproval).not.toHaveBeenCalled();
+      expect(consentMocks.showRadicleSeedApproval).not.toHaveBeenCalled();
+      expect(execute).toHaveBeenCalledWith(
+        'radicle_sync',
+        { rid: 'rad:zExample' },
+        'https://app.example'
+      );
     });
   });
 });

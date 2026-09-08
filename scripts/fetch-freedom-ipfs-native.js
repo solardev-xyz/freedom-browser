@@ -246,8 +246,18 @@ async function installPrebuilt() {
     const prebuildDir = prebuildDirForTarget(target);
     fs.rmSync(prebuildDir, { recursive: true, force: true });
     fs.mkdirSync(prebuildDir, { recursive: true });
-    run('tar', ['-xzf', archive, '-C', prebuildDir, ADDON_FILENAME]);
+    // Extract next to the archive with a bare file name, then copy: on
+    // Windows an absolute `D:\\...` argument makes GNU tar (first on PATH in
+    // Git Bash) treat `D` as a remote host, and a relative -C target can
+    // still cross drives (temp dir vs. workspace). Windows' own bsdtar is
+    // used there so the result does not depend on which tar wins on PATH.
+    const tarBin =
+      process.platform === 'win32'
+        ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe')
+        : 'tar';
+    run(tarBin, ['-xzf', path.basename(archive), ADDON_FILENAME], { cwd: tmpDir });
     const prebuildAddon = path.join(prebuildDir, ADDON_FILENAME);
+    fs.copyFileSync(path.join(tmpDir, ADDON_FILENAME), prebuildAddon);
     console.log(`[freedom-ipfs-native] installed packaged addon ${prebuildAddon}`);
     if (platformKey === currentPlatformKey()) {
       copyAddon(prebuildAddon, addonPath);

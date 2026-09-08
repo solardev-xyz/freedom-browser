@@ -39,7 +39,6 @@ const loadSettingsModule = async (options = {}) => {
     initialSettings = {
       theme: 'system',
       antNodeMode: 'ultraLight',
-      enableRadicleIntegration: false,
     },
     prefersDark = true,
     beeStatusResult = { status: 'running', error: null },
@@ -62,8 +61,6 @@ const loadSettingsModule = async (options = {}) => {
   const serviceRegistry = {
     getRegistry: jest.fn().mockResolvedValue(registryResult),
   };
-  const radicleStopResult = { catch: jest.fn() };
-  const radicle = { stop: jest.fn(() => radicleStopResult) };
   const debugMocks = { pushDebug: jest.fn() };
 
   const documentElement = {
@@ -76,7 +73,6 @@ const loadSettingsModule = async (options = {}) => {
     electronAPI,
     ant: beeApi,
     serviceRegistry,
-    radicle,
     matchMedia: jest.fn(() => mediaQueryList),
   };
   global.document = { documentElement };
@@ -91,7 +87,6 @@ const loadSettingsModule = async (options = {}) => {
     electronAPI,
     beeApi,
     serviceRegistry,
-    radicle,
     debugMocks,
     mediaQueryList,
     documentElement,
@@ -148,7 +143,6 @@ describe('settings-ui', () => {
     await emitSettingsUpdated(eventTarget, {
       theme: 'light',
       antNodeMode: 'light',
-      enableRadicleIntegration: false,
     });
     await flushMicrotasks();
 
@@ -175,7 +169,6 @@ describe('settings-ui', () => {
     await emitSettingsUpdated(eventTarget, {
       theme: 'system',
       antNodeMode: 'light',
-      enableRadicleIntegration: false,
     });
     await flushMicrotasks();
 
@@ -186,28 +179,6 @@ describe('settings-ui', () => {
     expect(debugMocks.pushDebug).toHaveBeenCalledWith(
       'Swarm light mode setting saved. Using an existing Swarm node, so the change only applies to bundled nodes.'
     );
-  });
-
-  test('initSettingsEffects stops Radicle when the integration is disabled', async () => {
-    const { mod, eventTarget, radicle } = await loadSettingsModule({
-      initialSettings: {
-        theme: 'system',
-        antNodeMode: 'ultraLight',
-        enableRadicleIntegration: true,
-      },
-    });
-
-    await mod.initTheme();
-    mod.initSettingsEffects();
-
-    await emitSettingsUpdated(eventTarget, {
-      theme: 'system',
-      antNodeMode: 'ultraLight',
-      enableRadicleIntegration: false,
-    });
-    await flushMicrotasks();
-
-    expect(radicle.stop).toHaveBeenCalled();
   });
 
   test('initSettingsEffects does not restart Bee when bee mode is unchanged', async () => {
@@ -221,7 +192,6 @@ describe('settings-ui', () => {
     await emitSettingsUpdated(eventTarget, {
       theme: 'system',
       antNodeMode: 'light',
-      enableRadicleIntegration: false,
     });
     await flushMicrotasks();
 

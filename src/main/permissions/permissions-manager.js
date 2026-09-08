@@ -124,7 +124,7 @@ function permissionKeysForRequest(permission, details) {
 // name, a dweb-scheme key, or a scheme://host[:port] web origin. Anything
 // else is its raw-string fallback and must not become a storage key.
 const VALID_ORIGIN_KEY_SHAPE =
-  /^(?:[a-z0-9-]+\.(?:eth|box|wei|gwei)|(?:ipfs|ipns|bzz|rad):\/\/[^/?#\s]+|https?:\/\/[^/?#\s]+)$/i;
+  /^(?:[a-z0-9-]+\.(?:eth|box|wei|gwei)|(?:ipfs|ipns|bzz|rad):\/\/[^/?#\s]+|web3:\/\/0x[0-9a-f]{40}(?::[1-9][0-9]*)?|https?:\/\/[^/?#\s]+)$/i;
 
 /**
  * Derive the permission-store origin for a request. Uses the frame's
