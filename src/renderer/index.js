@@ -66,6 +66,7 @@ import {
 import { pushDebug } from './lib/debug.js';
 import { initOnboarding } from './lib/onboarding.js';
 import { initSidebar } from './lib/sidebar.js';
+import { renderSubscreenHeaders } from './lib/subscreen-header.js';
 import { initRadicleConsent } from './lib/radicle-consent.js';
 import { initRadicleAlias } from './lib/radicle-alias.js';
 import { initWalletUi, openPublishSetupFlow } from './lib/wallet-ui.js';
@@ -723,6 +724,11 @@ document.addEventListener('open-url-new-tab', (e) => {
 
 // Initialize all modules
 window.addEventListener('DOMContentLoaded', async () => {
+  // First, and synchronously: every sidebar sub-screen's Back button and
+  // title only exist once this has run, and the init*() calls below cache
+  // them by id.
+  renderSubscreenHeaders();
+
   try {
     applySettingsToState(await electronAPI.getSettings());
   } catch {

@@ -8,6 +8,12 @@
     />
     <title>Private Browsing</title>
     <style>
+      /* Private windows keep dark styling in both themes (see body below), so
+         this page pins `color-scheme` rather than following `data-theme` —
+         without it Chromium paints a light scrollbar on the dark page (#233). */
+      html {
+        color-scheme: dark;
+      }
       html,
       body {
         height: 100%;

@@ -317,23 +317,39 @@ const backgroundValues = (node) => [
 ];
 
 const LIGHT_MEDIA = /^@media\s*\(\s*prefers-color-scheme:\s*light\s*\)$/;
-const lightBlock = topLevel.find((node) => LIGHT_MEDIA.test(node.prelude));
+// Since #233 the light theme is scoped by the `data-theme` attribute the
+// webview preload stamps on <html> from Settings > Appearance, not by the OS
+// scheme. `:where()` keeps the wrapper at zero specificity, so the rules under
+// it weigh exactly what they did as a media query; the palette rule that has
+// to outweigh the `:root` defaults is written without it.
+//
+// These match the *shape* only: `maskOpaqueSpans` blanks the contents of
+// quoted strings, so the prelude that reaches the tree reads
+// `:where(html[data-theme='     '])`. The value itself is pinned against the
+// unmasked source in the test below.
+const LIGHT_WRAPPER = /^:where\(\s*html\[data-theme=(['"])\s*\1\]\s*\)$/;
+const LIGHT_PALETTE = /^html\[data-theme=(['"])\s*\1\]$/;
+const isLightScope = (prelude) =>
+  LIGHT_MEDIA.test(prelude) || LIGHT_WRAPPER.test(prelude) || LIGHT_PALETTE.test(prelude);
+const lightBlock = topLevel.find((node) => LIGHT_WRAPPER.test(node.prelude));
+const lightPalette = topLevel.find((node) => LIGHT_PALETTE.test(node.prelude));
 
-// Which colour scheme an at-rule scopes its contents to. Rules under a `light`
-// query are the overrides; rules under a `dark` one never paint the light
-// theme. Everything else — top level, `@media (max-width: …)`, `@supports`,
-// `@container` — does, so it is swept.
+// Which colour scheme a rule scopes its contents to. Rules under a `light`
+// query — or under the `data-theme='light'` wrapper — are the overrides; rules
+// under a `dark` one never paint the light theme. Everything else — top level,
+// `@media (max-width: …)`, `@supports`, `@container` — does, so it is swept.
 const schemeOf = (prelude, inherited) => {
-  if (/prefers-color-scheme:\s*light/.test(prelude)) return 'light';
+  if (isLightScope(prelude)) return 'light';
   if (/prefers-color-scheme:\s*dark/.test(prelude)) return 'dark';
   return inherited;
 };
 
 /**
  * Every style rule under `root` at any depth, tagged with the colour scheme its
- * enclosing at-rules scope it to and the at-rule preludes it sits under. The
- * sweep walks this rather than `topLevel`, so a dark background added inside a
- * future `@media (max-width: 600px)` block cannot slip past it.
+ * enclosing rules scope it to and the preludes it sits under. The sweep walks
+ * this rather than `topLevel`, so a dark background added inside a future
+ * `@media (max-width: 600px)` block — or inside the light-theme wrapper —
+ * cannot slip past it.
  */
 function scopedRules(root, scheme = 'any', context = []) {
   return root.children.flatMap((child) => {
@@ -341,7 +357,11 @@ function scopedRules(root, scheme = 'any', context = []) {
     if (isAtRule(child)) {
       return scopedRules(child, schemeOf(child.prelude, scheme), nextContext);
     }
-    return [{ rule: child, scheme, context }, ...scopedRules(child, scheme, nextContext)];
+    const childScheme = schemeOf(child.prelude, scheme);
+    return [
+      { rule: child, scheme: childScheme, context },
+      ...scopedRules(child, childScheme, nextContext),
+    ];
   });
 }
 
@@ -398,25 +418,45 @@ describe('settings.html inline stylesheet', () => {
     expect((css.match(/\{/g) || []).length).toBe((css.match(/\}/g) || []).length);
   });
 
-  test('no top-level style rule contains nested rules', () => {
-    // The stylesheet is flat: only at-rules (@media) group other rules. A style
-    // rule that has grown children means an earlier rule lost its closing brace
-    // and swallowed everything after it.
+  test('only the light-theme wrapper contains nested rules', () => {
+    // The stylesheet is flat apart from the one deliberate grouping style rule
+    // — the `:where(html[data-theme='light'])` wrapper (#233) — plus at-rules.
+    // Any *other* style rule that has grown children means an earlier rule lost
+    // its closing brace and swallowed everything after it.
     const nested = topLevel
       .filter((node) => !isAtRule(node) && node.children.length > 0)
+      .filter((node) => !LIGHT_WRAPPER.test(node.prelude))
       .map((node) => `${node.prelude} (swallowed ${node.children.length} rules)`);
     expect(nested).toEqual([]);
   });
 
-  test('the light-theme media query is a top-level rule', () => {
-    // Matched with the same whitespace-tolerant regex the `lightBlock` lookup
-    // uses: a cosmetic reformat (`prefers-color-scheme:light`) must not fail a
-    // stylesheet that still works.
-    expect(topLevel.map((node) => node.prelude).filter((p) => LIGHT_MEDIA.test(p))).toHaveLength(1);
-    // …and it still carries the palette it exists for.
-    const root = lightBlock.children.find((node) => node.prelude === ':root');
-    expect(root).toBeDefined();
-    expect(declaration(root, '--bg')).toEqual(['#ffffff']);
+  test('the light theme is scoped by data-theme, not the OS colour scheme', () => {
+    // #233: Settings > Appearance is the source of truth for internal pages.
+    // The page must not fall back to `prefers-color-scheme` anywhere, or a
+    // dark-themed app on a light desktop paints this page light again.
+    expect(css).not.toMatch(/prefers-color-scheme/);
+
+    // Exactly one wrapper, at the top level, matched with a whitespace-tolerant
+    // regex: a cosmetic reformat must not fail a sheet that still works.
+    expect(topLevel.map((node) => node.prelude).filter((p) => LIGHT_WRAPPER.test(p))).toHaveLength(
+      1
+    );
+    // The mask hides the attribute *value* from the tree, so pin both scopes
+    // against the raw source — `[data-theme='dark']` has the same masked shape.
+    expect(SOURCE).toContain(":where(html[data-theme='light'])");
+    expect(SOURCE).toContain("html[data-theme='light'] {");
+
+    // …and the palette it exists for is declared on a *specificity-carrying*
+    // selector, because it has to outweigh the `:root` defaults above it.
+    // Written inside the zero-specificity `:where()` wrapper it would lose.
+    expect(lightPalette).toBeDefined();
+    expect(declaration(lightPalette, '--bg')).toEqual(['#ffffff']);
+
+    // Scrollbars and form controls follow the same attribute (the second half
+    // of #233 — the Shortcuts/Name Resolution sections scroll).
+    const root = topLevel.find((node) => node.prelude === ':root');
+    expect(declaration(root, 'color-scheme')).toEqual(['dark']);
+    expect(declaration(lightPalette, 'color-scheme')).toEqual(['light']);
   });
 
   test('the rules dropped by #223 are top-level and non-empty', () => {
@@ -452,6 +492,33 @@ describe('settings.html inline stylesheet', () => {
   test('every hard-coded dark background has a *light* light-theme override', () => {
     expect(lightBlock).toBeDefined();
     expect(missingLightOverrides(sheet)).toEqual([]);
+  });
+
+  test('anchors in settings copy are styled, in both shapes (#234)', () => {
+    // Settings copy carries links two ways: inside a help paragraph
+    // (`<p class="row-help">… <a href="#chains">Chains settings</a></p>`) and
+    // as the paragraph itself (`<a class="row-help" href=…>Configure →</a>`).
+    // Neither may fall through to the UA's default blue, which is barely
+    // readable on the dark palette. One rule has to cover both.
+    const styled = new Set(
+      topLevel
+        .filter((node) => !isAtRule(node) && declaration(node, 'color').includes('var(--accent)'))
+        .flatMap(selectorsOf)
+    );
+    expect(styled).toContain('.row-help a');
+    expect(styled).toContain('a.row-help');
+
+    // And every anchor the page actually ships is one of those two shapes.
+    const anchors = [...SOURCE.matchAll(/<a\s+([^>]*)>/g)].map(([, attrs]) => attrs);
+    expect(anchors.length).toBeGreaterThan(0);
+    const unstyled = anchors.filter((attrs) => !/class="[^"]*\brow-help\b/.test(attrs));
+    for (const attrs of unstyled) {
+      // A bare <a> is fine as long as it sits inside a `.row-help` paragraph;
+      // the ones that do are all written inline in such a paragraph.
+      const at = SOURCE.indexOf(`<a ${attrs}>`);
+      const paragraph = SOURCE.lastIndexOf('<p', at);
+      expect(SOURCE.slice(paragraph, at)).toMatch(/class="[^"]*\brow-help\b/);
+    }
   });
 
   // --- self-tests: the guards above only guard while they can still see -----

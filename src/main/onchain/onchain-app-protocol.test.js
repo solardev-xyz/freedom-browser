@@ -16,11 +16,16 @@ const { ethers } = require('ethers');
 const chainData = require('../networks/chain-data-router');
 const log = require('../logger');
 const {
+  APPROVAL_HEADER,
+  GATE_HEADER,
   HTML_SELECTOR,
   MAX_HTML_BYTES,
   ONCHAIN_APP_CSP,
   PROVENANCE_HEADER,
   decodeOnchainProvenance,
+  createOnchainAppTrustState,
+  captureOnchainProvenance,
+  guardOnchainAppRequest,
   handleOnchainAppRequest,
   parseOnchainAppUrl,
   registerOnchainAppProtocol,
@@ -33,11 +38,15 @@ const appUrl = (chainId = 1, path = '/') =>
   `web3://${ADDRESS.toLowerCase()}.eip155-${chainId}${path}`;
 
 function request(url, method = 'GET', signal = undefined) {
-  return { url, method, signal };
+  return { url, method, signal, headers: new Headers() };
 }
 
 function encodedHtml(html) {
   return ABI.encodeFunctionResult('html', [html]);
+}
+
+function gateUrl(response) {
+  return new URL(Buffer.from(response.headers.get(GATE_HEADER), 'base64url').toString('utf8'));
 }
 
 describe('parseOnchainAppUrl', () => {
@@ -91,7 +100,10 @@ describe('handleOnchainAppRequest', () => {
       1,
       'eth_call',
       [{ to: CANONICAL_ADDRESS, data: HTML_SELECTOR }, 'latest'],
-      { includeTrust: true }
+      {
+        includeTrust: true,
+        routingContext: { origin: `web3://${ADDRESS.toLowerCase()}` },
+      }
     );
     expect(response.status).toBe(200);
     await expect(response.text()).resolves.toBe(html);
@@ -137,16 +149,191 @@ describe('handleOnchainAppRequest', () => {
       100,
       'eth_call',
       expect.any(Array),
-      { includeTrust: true }
+      {
+        includeTrust: true,
+        routingContext: { origin: `web3://${ADDRESS.toLowerCase()}:100` },
+      }
     );
+  });
+
+  test('lets a user-configured RPC serve an app without a warning', async () => {
+    const html = '<h1>trusted RPC app</h1>';
+    const response = await handleOnchainAppRequest(request(appUrl()), {
+      chainRequest: jest.fn(async () => ({
+        result: encodedHtml(html),
+        trust: {
+          level: 'user-configured',
+          method: 'direct',
+          agreed: ['node.example'],
+          dissented: [],
+          queried: ['node.example'],
+        },
+      })),
+      trustState: createOnchainAppTrustState(),
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe(html);
+  });
+
+  test('gates public-RPC HTML, then serves the exact cached bytes after approval', async () => {
+    const html = '<h1>unverified app</h1><script>window.executed = true</script>';
+    const changedHtml = '<h1>changed app</h1>';
+    const trustState = createOnchainAppTrustState({
+      createToken: () => 'a'.repeat(43),
+    });
+    const chainRequest = jest
+      .fn()
+      .mockResolvedValueOnce({
+        result: encodedHtml(html),
+        trust: {
+          level: 'unverified',
+          method: 'direct',
+          agreed: ['rpc.example'],
+          dissented: [],
+          queried: ['rpc.example'],
+        },
+      })
+      .mockResolvedValueOnce({
+        result: encodedHtml(html),
+        trust: {
+          level: 'unverified',
+          method: 'direct',
+          agreed: ['rpc.example'],
+          dissented: [],
+          queried: ['rpc.example'],
+        },
+      })
+      .mockResolvedValueOnce({
+        result: encodedHtml(changedHtml),
+        trust: {
+          level: 'unverified',
+          method: 'direct',
+          agreed: ['rpc.example'],
+          dissented: [],
+          queried: ['rpc.example'],
+        },
+      });
+
+    const blocked = await handleOnchainAppRequest(request(appUrl()), {
+      chainRequest,
+      trustState,
+    });
+    expect(blocked.status).toBe(451);
+    const interstitial = gateUrl(blocked);
+    expect(interstitial.pathname).toMatch(/\/pages\/onchain-unverified\.html$/);
+    expect(interstitial.searchParams.get('target')).toBe(appUrl());
+    expect(interstitial.searchParams.get('source')).toBe('rpc.example');
+    expect(interstitial.searchParams.get('hash')).toBe(ethers.keccak256(ethers.toUtf8Bytes(html)));
+    const token = interstitial.searchParams.get('token');
+    expect(token).toBe('a'.repeat(43));
+
+    const approvedRequest = request(appUrl());
+    approvedRequest.headers.set(APPROVAL_HEADER, token);
+    const approved = await handleOnchainAppRequest(approvedRequest, {
+      chainRequest,
+      trustState,
+    });
+    expect(approved.status).toBe(200);
+    await expect(approved.text()).resolves.toBe(html);
+    expect(chainRequest).toHaveBeenCalledTimes(1);
+
+    const unchanged = await handleOnchainAppRequest(request(appUrl()), {
+      chainRequest,
+      trustState,
+    });
+    expect(unchanged.status).toBe(200);
+    await expect(unchanged.text()).resolves.toBe(html);
+
+    const changed = await handleOnchainAppRequest(request(appUrl()), {
+      chainRequest,
+      trustState,
+    });
+    expect(changed.status).toBe(451);
+    expect(gateUrl(changed).searchParams.get('hash')).toBe(
+      ethers.keccak256(ethers.toUtf8Bytes(changedHtml))
+    );
+  });
+
+  test('blocks conflicting RPC answers without issuing a continue token', async () => {
+    const response = await handleOnchainAppRequest(request(appUrl()), {
+      chainRequest: jest.fn(async () => ({
+        result: encodedHtml('<h1>first answer</h1>'),
+        trust: {
+          level: 'unverified',
+          method: 'direct',
+          agreed: ['a.example'],
+          dissented: ['b.example'],
+          queried: ['a.example', 'b.example'],
+        },
+      })),
+      trustState: createOnchainAppTrustState(),
+    });
+
+    expect(response.status).toBe(451);
+    const interstitial = gateUrl(response);
+    expect(interstitial.searchParams.get('conflict')).toBe('1');
+    expect(interstitial.searchParams.get('dissented')).toBe('b.example');
+    expect(interstitial.searchParams.has('token')).toBe(false);
+  });
+
+  test('rejects expired approval tokens', async () => {
+    let time = 10;
+    let sequence = 0;
+    const trustState = createOnchainAppTrustState({
+      now: () => time,
+      createToken: () => `${String(sequence++).padStart(43, 'a')}`,
+    });
+    const chainRequest = jest.fn(async () => ({
+      result: encodedHtml('<h1>app</h1>'),
+      trust: { level: 'unverified', method: 'direct', agreed: ['rpc.example'] },
+    }));
+
+    const blocked = await handleOnchainAppRequest(request(appUrl()), {
+      chainRequest,
+      trustState,
+    });
+    const token = gateUrl(blocked).searchParams.get('token');
+    time += 5 * 60 * 1000 + 1;
+    const expiredRequest = request(appUrl());
+    expiredRequest.headers.set(APPROVAL_HEADER, token);
+
+    const expired = await handleOnchainAppRequest(expiredRequest, {
+      chainRequest,
+      trustState,
+    });
+    expect(expired.status).toBe(451);
+    expect(chainRequest).toHaveBeenCalledTimes(2);
+  });
+
+  test('binds approval tokens to the exact requested document URL', async () => {
+    let sequence = 0;
+    const trustState = createOnchainAppTrustState({
+      createToken: () => String(sequence++).padStart(43, 'a'),
+    });
+    const chainRequest = jest.fn(async () => ({
+      result: encodedHtml('<h1>app</h1>'),
+      trust: { level: 'unverified', method: 'direct', agreed: ['rpc.example'] },
+    }));
+    const blocked = await handleOnchainAppRequest(request(appUrl()), {
+      chainRequest,
+      trustState,
+    });
+    const wrongTarget = request(appUrl(1, '/other'));
+    wrongTarget.headers.set(APPROVAL_HEADER, gateUrl(blocked).searchParams.get('token'));
+
+    const stillBlocked = await handleOnchainAppRequest(wrongTarget, {
+      chainRequest,
+      trustState,
+    });
+
+    expect(stillBlocked.status).toBe(451);
+    expect(chainRequest).toHaveBeenCalledTimes(2);
   });
 
   test('rejects non-read methods without touching chain data', async () => {
     const chainRequest = jest.fn();
-    const response = await handleOnchainAppRequest(
-      request(appUrl(), 'POST'),
-      { chainRequest }
-    );
+    const response = await handleOnchainAppRequest(request(appUrl(), 'POST'), { chainRequest });
     expect(response.status).toBe(405);
     expect(response.headers.get('allow')).toBe('GET, HEAD');
     expect(chainRequest).not.toHaveBeenCalled();
@@ -183,6 +370,126 @@ describe('handleOnchainAppRequest', () => {
       timeoutMs: 5,
     });
     expect(response.status).toBe(504);
+  });
+});
+
+describe('captureOnchainProvenance trust gate', () => {
+  test('opens only the validated bundled interstitial for a blocked main frame', async () => {
+    const html = '<h1>unverified app</h1>';
+    const blocked = await handleOnchainAppRequest(request(appUrl()), {
+      chainRequest: jest.fn(async () => ({
+        result: encodedHtml(html),
+        trust: { level: 'unverified', method: 'direct', agreed: ['rpc.example'] },
+      })),
+      trustState: createOnchainAppTrustState({ createToken: () => 'a'.repeat(43) }),
+    });
+    const contents = {
+      isDestroyed: jest.fn(() => false),
+      loadURL: jest.fn(() => Promise.resolve()),
+    };
+
+    captureOnchainProvenance({
+      resourceType: 'mainFrame',
+      statusCode: blocked.status,
+      url: appUrl(),
+      responseHeaders: { [GATE_HEADER]: [blocked.headers.get(GATE_HEADER)] },
+      webContents: contents,
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(contents.loadURL).toHaveBeenCalledWith(gateUrl(blocked).toString());
+  });
+
+  test('ignores a gate header bound to another app URL', async () => {
+    const blocked = await handleOnchainAppRequest(request(appUrl()), {
+      chainRequest: jest.fn(async () => ({
+        result: encodedHtml('<h1>unverified app</h1>'),
+        trust: { level: 'unverified', method: 'direct', agreed: ['rpc.example'] },
+      })),
+      trustState: createOnchainAppTrustState({ createToken: () => 'a'.repeat(43) }),
+    });
+    const contents = { loadURL: jest.fn() };
+
+    captureOnchainProvenance({
+      resourceType: 'mainFrame',
+      statusCode: blocked.status,
+      url: appUrl(1, '/another-path'),
+      responseHeaders: { [GATE_HEADER]: [blocked.headers.get(GATE_HEADER)] },
+      webContents: contents,
+    });
+
+    expect(contents.loadURL).not.toHaveBeenCalled();
+  });
+
+  test('strips the approval token from a response that is not a navigation', async () => {
+    const blocked = await handleOnchainAppRequest(request(appUrl()), {
+      chainRequest: jest.fn(async () => ({
+        result: encodedHtml('<h1>unverified app</h1>'),
+        trust: { level: 'unverified', method: 'direct', agreed: ['rpc.example'] },
+      })),
+      trustState: createOnchainAppTrustState({ createToken: () => 'a'.repeat(43) }),
+    });
+    const contents = { loadURL: jest.fn() };
+
+    const result = captureOnchainProvenance({
+      resourceType: 'xhr',
+      statusCode: blocked.status,
+      url: appUrl(),
+      responseHeaders: {
+        'Cache-Control': ['no-store'],
+        [GATE_HEADER]: [blocked.headers.get(GATE_HEADER)],
+      },
+      webContents: contents,
+    });
+
+    expect(result).toEqual({ responseHeaders: { 'Cache-Control': ['no-store'] } });
+    expect(JSON.stringify(result)).not.toContain('a'.repeat(43));
+    expect(contents.loadURL).not.toHaveBeenCalled();
+  });
+
+  test('leaves unrelated subresource responses untouched', () => {
+    expect(
+      captureOnchainProvenance({
+        resourceType: 'image',
+        statusCode: 200,
+        url: 'https://example.com/logo.png',
+        responseHeaders: { 'Content-Type': ['image/png'] },
+      })
+    ).toBeNull();
+  });
+});
+
+describe('guardOnchainAppRequest', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  test('allows a top-level navigation to an onchain app', () => {
+    expect(
+      guardOnchainAppRequest({ url: appUrl(), resourceType: 'mainFrame' })
+    ).toBeNull();
+    expect(log.warn).not.toHaveBeenCalled();
+  });
+
+  // The gate is only meaningful if web content cannot reach it: a page that
+  // can fetch the 451 response reads the single-use approval token out of it
+  // (no CORS is enforced on custom-scheme responses), replays it, and
+  // pre-approves unverified app code for the session with no interstitial.
+  test.each(['subFrame', 'xhr', 'image', 'script', 'other', undefined])(
+    'cancels a %s request for an onchain app',
+    (resourceType) => {
+      expect(guardOnchainAppRequest({ url: appUrl(), resourceType })).toEqual({ cancel: true });
+    }
+  );
+
+  test('cancels a mixed-case web3 URL that is not a navigation', () => {
+    expect(
+      guardOnchainAppRequest({ url: `WEB3://${ADDRESS}.eip155-1/`, resourceType: 'xhr' })
+    ).toEqual({ cancel: true });
+  });
+
+  test('ignores requests for every other scheme', () => {
+    expect(guardOnchainAppRequest({ url: 'https://example.com/', resourceType: 'xhr' })).toBeNull();
+    expect(guardOnchainAppRequest({ url: 'ipfs://cid/x', resourceType: 'subFrame' })).toBeNull();
+    expect(guardOnchainAppRequest({})).toBeNull();
   });
 });
 

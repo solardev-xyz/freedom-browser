@@ -312,6 +312,9 @@
    Setup CTA (No vault state)
    ============================================ */
 
+/* Private-window state: same layout as the setup CTA, minus the call to
+   action — there is nothing to set up from a private window. */
+.sidebar-private-notice,
 .sidebar-setup-cta {
   display: flex;
   flex-direction: column;
@@ -836,10 +839,6 @@
   border-radius: 8px;
   outline: none;
   transition: border-color 0.15s ease;
-}
-
-.password-input:focus {
-  border-color: var(--accent);
 }
 
 .password-input::placeholder {
@@ -2789,12 +2788,6 @@
   pointer-events: none;
 }
 
-.x402-perm-input:focus,
-.x402-perm-select:focus {
-  outline: none;
-  border-color: #2775ca;
-}
-
 /* --- x402 grant editor on the approval card ----------------------- */
 /* Checkbox + inline editors for cap amount + reset window. Shares
    visual language with the perm-manage subscreen so users see the
@@ -2893,12 +2886,6 @@
   font-weight: 500;
   color: var(--foreground-muted);
   pointer-events: none;
-}
-
-.x402-grant input[type="number"]:focus,
-.x402-grant-select:focus {
-  outline: none;
-  border-color: #2775ca;
 }
 
 /* Visual hint that the inputs are inert when the toggle is off —
@@ -3407,11 +3394,6 @@
   font-size: 13px;
 }
 
-.publisher-identity-search input:focus {
-  outline: none;
-  border-color: #f59e0b;
-}
-
 .publisher-identity-search input::placeholder {
   color: var(--muted);
 }
@@ -3857,10 +3839,6 @@
   box-sizing: border-box;
 }
 
-.create-wallet-input:focus {
-  border-color: var(--accent);
-}
-
 .create-wallet-input::placeholder {
   color: var(--muted);
 }
@@ -4010,6 +3988,11 @@
   border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 0.9s linear infinite;
+}
+
+/* Detection failed: the spinner is hidden from JS, so the line is text only. */
+.connect-ledger-status-failed {
+  color: var(--danger);
 }
 
 .connect-ledger-scheme-row {
@@ -4756,7 +4739,6 @@
 }
 
 .send-input:focus {
-  border-color: var(--accent);
   background: rgba(255, 255, 255, 0.08);
 }
 
@@ -5225,10 +5207,6 @@
   border: 1px solid var(--border);
   border-radius: 8px;
   outline: none;
-}
-
-.send-password-row .password-input:focus {
-  border-color: var(--accent);
 }
 
 .send-password-submit {
