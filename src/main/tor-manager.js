@@ -185,6 +185,12 @@ function writeArtiConfig(dataDir, socksPort) {
     }
   }
   // TOML strings need forward slashes even on Windows; JSON.stringify escapes safely.
+  //
+  // `proxy.socks_listen` is the only supported spelling: Arti 2.0.0 removed the
+  // long-deprecated `proxy.socks_port`. A bare integer means "listen on that
+  // port on localhost"; note that Arti reads a literal `0` as "disabled", not
+  // as "pick a free port" (that spelling is `"auto"`), so the port resolved by
+  // findAvailablePort() is always a real one.
   const toml = [
     '[proxy]',
     `socks_listen = ${socksPort}`,
@@ -432,7 +438,12 @@ async function getArtiVersion() {
   try {
     const { stdout, stderr } = await execFileAsync(artiPath, ['--version'], { timeout: 5000 });
     const out = `${stdout || ''}${stderr || ''}`.trim();
-    // `arti --version` prints e.g. "arti 1.4.4"; fall back to raw output.
+    // `arti --version` prints clap's long version — a first line of
+    // "Arti <version>" followed by the runtime and optional-feature lines:
+    //   Arti 2.6.0
+    //   using runtime: TokioNativeTlsRuntime { .. }
+    //   optional features: <none>
+    // Take the first version-shaped token; fall back to the raw output.
     const match = out.match(/(\d+\.\d+\.\d+[^\s]*)/);
     cachedVersion = match ? match[1] : out;
     return success({ name: 'Arti', version: cachedVersion });

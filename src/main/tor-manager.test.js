@@ -142,6 +142,21 @@ describe('tor-manager paths and config', () => {
     }
   });
 
+  test('writeArtiConfig avoids the config keys Arti 2.0 removed', () => {
+    // Arti 2.0.0 deleted the long-deprecated `proxy.socks_port` / `proxy.dns_port`
+    // options; a config that still used them would abort the bundled client at
+    // startup, which surfaces to the user only as "Tor failed to start".
+    const { mod } = loadTorManager();
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tor-cfg-legacy-'));
+    try {
+      const toml = fs.readFileSync(mod.writeArtiConfig(dataDir, 9155), 'utf-8');
+      expect(toml).not.toMatch(/^\s*socks_port\s*=/m);
+      expect(toml).not.toMatch(/^\s*dns_port\s*=/m);
+    } finally {
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
   test('checkBinary returns false when the arti binary is absent', () => {
     const realExistsSync = fs.existsSync;
     jest.spyOn(fs, 'existsSync').mockImplementation((target) => {
@@ -331,9 +346,12 @@ describe('tor-manager IPC', () => {
       await mod.startTor({ checkDefaultExternalCandidate: true });
       await flushMicrotasks();
 
+      // Pin the whole CLI invocation, not just the subcommand: `arti proxy -c
+      // <file>` is the contract this manager drives, and it is what has to be
+      // re-checked against the pin in scripts/fetch-arti.js on every bump.
       expect(spawn).toHaveBeenCalledWith(
         expect.stringContaining('arti'),
-        expect.arrayContaining(['proxy']),
+        ['proxy', '-c', path.join(mod.getTorDataPath(), 'arti.toml')],
         expect.any(Object)
       );
 
@@ -342,6 +360,39 @@ describe('tor-manager IPC', () => {
     } finally {
       fs.rmSync(userDataDir, { recursive: true, force: true });
     }
+  });
+
+  test('getArtiVersion parses the Arti 2.x multi-line --version output', async () => {
+    const realExistsSync = fs.existsSync;
+    jest.spyOn(fs, 'existsSync').mockImplementation((target) => {
+      if (String(target).includes(`${path.sep}arti-bin${path.sep}`)) return true;
+      return realExistsSync(target);
+    });
+    // `arti --version` prints clap's long version: the version line followed by
+    // the runtime and optional-feature lines. Only the version belongs in the UI.
+    const execFile = jest.fn((file, args, options, callback) => {
+      callback(null, {
+        stdout: 'Arti 2.6.0\nusing runtime: TokioNativeTlsRuntime { .. }\noptional features: <none>\n',
+        stderr: '',
+      });
+    });
+    execFile[require('util').promisify.custom] = () =>
+      Promise.resolve({
+        stdout: 'Arti 2.6.0\nusing runtime: TokioNativeTlsRuntime { .. }\noptional features: <none>\n',
+        stderr: '',
+      });
+
+    const { mod } = loadTorManager({
+      enableTorIntegration: true,
+      extraMocks: {
+        child_process: () => ({ spawn: jest.fn(), execFile }),
+      },
+    });
+
+    const res = await mod.getArtiVersion();
+    expect(res.success).toBe(true);
+    expect(res.name).toBe('Arti');
+    expect(res.version).toBe('2.6.0');
   });
 
   test('getArtiVersion fails when the binary is absent', async () => {

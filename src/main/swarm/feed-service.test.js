@@ -93,15 +93,23 @@ function make404() {
 
 jest.mock('@ethersphere/bee-js', () => ({
   Bee: jest.fn().mockImplementation(() => ({
-    createFeedManifest: mockCreateFeedManifest,
-    makeFeedWriter: mockMakeFeedWriter,
-    makeFeedReader: mockMakeFeedReader,
-    getPostageBatches: mockGetPostageBatches,
+    feed: {
+      createManifest: mockCreateFeedManifest,
+      makeWriter: mockMakeFeedWriter,
+      makeReader: mockMakeFeedReader,
+    },
+    stamp: {
+      getAll: mockGetPostageBatches,
+    },
     calculateSingleOwnerChunkAddress: mockCalculateSingleOwnerChunkAddress,
-    downloadChunk: mockDownloadChunk,
+    chunk: {
+      download: mockDownloadChunk,
+    },
     unmarshalSingleOwnerChunk: mockUnmarshalSingleOwnerChunk,
     makeContentAddressedChunk: mockMakeContentAddressedChunk,
-    downloadData: mockDownloadData,
+    data: {
+      download: mockDownloadData,
+    },
   })),
   PrivateKey: MockPrivateKey,
   Topic: MockTopic,
@@ -233,7 +241,7 @@ describe('feed-service', () => {
   });
 
   describe('createFeed', () => {
-    test('calls createFeedManifest with correct args', async () => {
+    test('calls feed.createManifest with correct args', async () => {
       mockCreateFeedManifest.mockResolvedValue(new MockReference(MOCK_MANIFEST_REF));
       mockBatchForAutoSelect();
 
@@ -635,7 +643,7 @@ describe('feed-service', () => {
       expect(result.payload.toString('utf8')).toBe('HELLO-WORLD');
     });
 
-    test('passes Topic object directly to makeFeedReader', async () => {
+    test('passes Topic object directly to feed.makeReader', async () => {
       const topic = new MockTopic('cd'.repeat(32));
       const reader = createMockReader({
         downloadPayloadResult: {
