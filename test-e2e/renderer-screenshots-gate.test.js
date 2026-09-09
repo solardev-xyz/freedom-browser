@@ -56,6 +56,14 @@ const workflowSteps = (relative) =>
     .filter((line) => !/^\s*#/.test(line))
     .join('\n');
 
+const workflowsDir = path.join(repoRoot, '.github/workflows');
+const everyWorkflowStep = () =>
+  fs
+    .readdirSync(workflowsDir)
+    .filter((name) => /\.ya?ml$/.test(name))
+    .map((name) => workflowSteps(path.join('.github/workflows', name)))
+    .join('\n');
+
 describe('the invocations that are meant to enable it', () => {
   const scripts = JSON.parse(read('package.json')).scripts;
 
@@ -77,10 +85,16 @@ describe('the invocations that are meant to enable it', () => {
     expect(workflowSteps('.github/workflows/ci.yml')).toMatch(
       /^\s*run: xvfb-run -a npm run test:e2e:screenshots[ \t]*$/m
     );
-    // …and no step anywhere in CI adopts baselines instead of comparing them,
+    // …and no step in any workflow adopts baselines instead of comparing them,
     // so the compare step can't be sidestepped by an extra update step either.
-    expect(workflowSteps('.github/workflows/ci.yml')).not.toMatch(
-      /run:.*(?:test:e2e:screenshots:update|--update-snapshots)/
+    // Matched against the whole comment-stripped workflow rather than against a
+    // `run:` line: a block scalar puts the command on the *next* line (`run: |`
+    // then `xvfb-run -a npm run test:e2e:screenshots:update`), which a
+    // `/run:.*update/` pattern never reaches, and the compare-step assertion
+    // above stays satisfied by the untouched step. `apply-screenshot-baselines`
+    // is the same sidestep by another route.
+    expect(everyWorkflowStep()).not.toMatch(
+      /test:e2e:screenshots:update|--update-snapshots|apply-screenshot-baselines/
     );
   });
 
