@@ -113,7 +113,7 @@ describe('shortcuts IPC', () => {
         'view.focusAddressBar': {
           accelerator: 'Ctrl+0',
           conflictId: 'page.zoomReset',
-          conflict: 'Actual Size',
+          conflict: 'Actual size',
         },
       },
     });
@@ -122,7 +122,7 @@ describe('shortcuts IPC', () => {
 
     expect(byId['view.focusAddressBar'].reverted).toEqual({
       formatted: 'Ctrl+0',
-      conflict: 'Actual Size',
+      conflict: 'Actual size',
     });
     expect(byId['view.focusAddressBar'].accelerator).toBe('CmdOrCtrl+L');
     expect(byId['page.zoomReset'].reverted).toBeNull();
@@ -168,7 +168,7 @@ describe('shortcuts IPC', () => {
       expect(byId['tab.new'].accelerator).toBe('CmdOrCtrl+T');
       expect(byId['tab.new'].reverted).toEqual({
         formatted: 'Ctrl+R',
-        conflict: 'Reload This Page',
+        conflict: 'Reload this page',
       });
       expect(byId['page.reload'].reverted).toBeNull();
     } finally {

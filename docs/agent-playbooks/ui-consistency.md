@@ -41,10 +41,12 @@ screens' orange primary was the one exception until #239.
 **Which actions are destructive (#284).** #259 settled how a destructive button
 looks; this is which ones qualify. Red is for an action that discards stored
 user data and cannot be undone from the screen you are on — "Remove all",
-"Remove site", "Remove this chain", removing a custom search engine. A
-single-row removal that is one click from being re-added in the same view stays
-a plain `.btn` — a single remembered permission, an ad-blocking allowlist host,
-an RPC endpoint. Apply the rule to every sibling in a set, not to the one row
+"Remove site", "Remove this chain", removing a custom search engine, removing a
+keyed RPC provider's API key (the key is write-only once saved, so "Add key"
+means pasting it back from the provider's dashboard, not undoing the removal).
+A single-row removal that is one click from being re-added in the same view
+stays a plain `.btn` — a single remembered permission, an ad-blocking allowlist
+host, an RPC endpoint. Apply the rule to every sibling in a set, not to the one row
 that prompted the change: on Settings the split ran three/four inside a single
 card, with the disabled-most-of-the-time button painted red and the two that
 destroy a specific user decision looking like ordinary secondary actions. A

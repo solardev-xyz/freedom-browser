@@ -2712,11 +2712,13 @@
 
         const kbd = (text) => `<kbd class="shortcut-kbd">${esc(text)}</kbd>`;
 
+        // The banner names the colliding shortcut the way its own row does
+        // (sentence case, #277) — the two sit inside one card.
         const renderConflict = (state) => {
           const { conflict } = state;
           const message = conflict.fixed
-            ? `${esc(state.formatted)} is already used by “${esc(conflict.description)}” and cannot be reassigned. Pick a different combination.`
-            : `${esc(state.formatted)} is already used by “${esc(conflict.description)}”. Swap the bindings so “${esc(conflict.description)}” becomes ${kbd(conflict.swapFormatted)}?`;
+            ? `${esc(state.formatted)} is already used by “${esc(conflict.settingsLabel)}” and cannot be reassigned. Pick a different combination.`
+            : `${esc(state.formatted)} is already used by “${esc(conflict.settingsLabel)}”. Swap the bindings so “${esc(conflict.settingsLabel)}” becomes ${kbd(conflict.swapFormatted)}?`;
           return `
             <div class="row shortcut-conflict" data-shortcut-id="${esc(state.id)}">
               <div class="row-body"><p class="row-label">${message}</p></div>
@@ -4386,7 +4388,7 @@
           }
           const controls = p.hasKey
             ? `<button type="button" class="btn" data-action="edit-key" data-id="${esc(p.id)}">Replace key</button>
-               <button type="button" class="btn" data-action="remove-key" data-id="${esc(p.id)}">Remove</button>`
+               <button type="button" class="btn danger" data-action="remove-key" data-id="${esc(p.id)}">Remove</button>`
             : `<button type="button" class="btn" data-action="edit-key" data-id="${esc(p.id)}">Add key</button>`;
           return `
             <div class="row">
@@ -4585,6 +4587,10 @@
           try {
             render(await freedomAPI.getSitePermissions());
           } catch (err) {
+            // The button lives in the section header now, outside the view
+            // this replaces, so the error render has to disable it itself —
+            // offering to wipe state the page just said it cannot read.
+            if (revokeAll) revokeAll.disabled = true;
             view.innerHTML = `<div class="card"><div class="row"><div class="row-body">
               <p class="row-label">Could not load site permissions</p>
               <p class="row-help">${esc(err?.message || String(err))}</p>

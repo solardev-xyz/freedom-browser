@@ -155,11 +155,14 @@ describe('settings.html destructive actions follow one rule (#284)', () => {
   // Danger: discards stored data and cannot be undone from this screen.
   // Plain: a single-row removal, one click from being re-added in the view it
   // was removed from. `docs/agent-playbooks/ui-consistency.md` carries the rule.
-  test('the four data-discarding removals are the danger-styled ones', () => {
+  test('the five data-discarding removals are the danger-styled ones', () => {
     expect(SOURCE).toMatch(/class="btn danger" id="permissions-revoke-all"/);
     expect(SOURCE).toMatch(/class="btn danger" data-action="revoke-origin"/);
     expect(SOURCE).toMatch(/class="btn danger" data-search-action="remove"/);
     expect(SOURCE).toContain("cardButton('Remove this chain', 'remove-chain', 'danger')");
+    // A saved provider API key: write-only once stored, so "Add key" is a
+    // fresh paste from the provider's dashboard, not an undo.
+    expect(SOURCE).toMatch(/class="btn danger" data-action="remove-key"/);
   });
 
   test('the three re-addable removals are plain', () => {

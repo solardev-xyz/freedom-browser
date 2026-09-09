@@ -475,7 +475,7 @@ describe('override resolution', () => {
         {
           id: 'view.focusAddressBar',
           accelerator: 'Ctrl+0',
-          conflict: { id: 'page.zoomReset', description: 'Actual Size', fixed: false },
+          conflict: { id: 'page.zoomReset', settingsLabel: 'Actual size', fixed: false },
         },
       ]);
       // The other two chords this PR's zoom entries took, same story.
@@ -494,7 +494,7 @@ describe('override resolution', () => {
       expect(cleaned).toEqual({});
       expect(drops[0].conflict).toEqual({
         id: 'page.zoomIn',
-        description: 'Zoom In',
+        settingsLabel: 'Zoom in',
         fixed: true,
       });
       expect(sanitizeOverrides({ 'tab.new': 'Ctrl+numadd' }, 'linux')).toEqual({});
@@ -573,14 +573,14 @@ describe('override resolution', () => {
         {
           id: 'view.focusAddressBar',
           accelerator: 'Ctrl+0',
-          conflict: { id: 'page.zoomReset', description: 'Actual Size', fixed: false },
+          conflict: { id: 'page.zoomReset', settingsLabel: 'Actual size', fixed: false },
         },
         {
           id: 'tab.new',
           accelerator: 'Ctrl+L',
           conflict: {
             id: 'view.focusAddressBar',
-            description: 'Focus Address Bar',
+            settingsLabel: 'Focus address bar',
             fixed: false,
           },
         },
@@ -662,7 +662,7 @@ describe('findConflict', () => {
   test('detects collisions with effective primaries', () => {
     expect(findConflict('tab.new', 'CmdOrCtrl+W', {}, 'darwin')).toEqual({
       id: 'tab.close',
-      description: 'Close Tab',
+      settingsLabel: 'Close tab',
       fixed: false,
     });
     // Overrides shift what conflicts: tab.close remapped away frees Cmd+W.
@@ -672,12 +672,12 @@ describe('findConflict', () => {
   test('collisions with fixed aliases and non-editable entries are fixed', () => {
     expect(findConflict('tab.new', 'Ctrl+Tab', {}, 'linux')).toEqual({
       id: 'tab.next',
-      description: 'Next Tab',
+      settingsLabel: 'Next tab',
       fixed: true,
     });
     expect(findConflict('tab.new', 'Ctrl+Alt+I', {}, 'linux')).toEqual({
       id: 'devtools.toggle',
-      description: 'Developer Tools',
+      settingsLabel: 'Developer tools',
       fixed: true,
     });
     // Ctrl+F4 alias only exists on win/linux.
@@ -910,7 +910,7 @@ describe('zoom binding reachability across layouts and the keypad', () => {
       // …but they are real registry bindings, so nothing else may take them.
       expect(findConflict('tab.new', 'CmdOrCtrl+numsub', {}, platform)).toEqual({
         id: 'page.zoomOut',
-        description: 'Zoom Out',
+        settingsLabel: 'Zoom out',
         fixed: true,
       });
     }

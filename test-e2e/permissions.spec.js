@@ -231,6 +231,64 @@ test('Settings > Site Permissions lists remembered decisions and revoke-all clea
     .toBe(true);
 });
 
+// #272 sibling: the button moved out of `#permissions-view`, so a render it
+// no longer contains cannot take it away. A read that fails after a
+// successful one used to leave a live red "Remove all" beside the error
+// card — offering to wipe state the page just said it cannot read.
+test('a failed permissions re-read disables Remove all beside the error', async ({
+  window,
+  electronApp,
+}) => {
+  // One saved decision, then a read that throws — no fixture page needed.
+  await electronApp.evaluate(({ ipcMain }) => {
+    globalThis.__permReadFails = false;
+    ipcMain.removeHandler('permissions:get-all');
+    ipcMain.handle('permissions:get-all', () => {
+      if (globalThis.__permReadFails) throw new Error('permissions.json is unreadable');
+      return { 'https://example.test': { notifications: 'allow' } };
+    });
+  });
+
+  const input = window.locator('[data-test="address-input"]');
+  await input.click();
+  await input.fill('freedom://settings/permissions');
+  await input.press('Enter');
+
+  const revokeAllState = () =>
+    evalInWebview(
+      window,
+      `(() => {
+         const button = document.getElementById('permissions-revoke-all');
+         if (!button) return null;
+         return {
+           disabled: button.disabled,
+           view: document.getElementById('permissions-view').textContent.replace(/\\s+/g, ' ').trim(),
+         };
+       })()`
+    );
+
+  await expect
+    .poll(revokeAllState, {
+      message: 'Waiting for the saved decision to render',
+      timeout: 10_000,
+    })
+    .toMatchObject({ disabled: false });
+
+  // A re-sync into the section — the same path a hashchange takes.
+  await electronApp.evaluate(() => {
+    globalThis.__permReadFails = true;
+  });
+  await evalInWebview(
+    window,
+    "location.hash = '#appearance'; location.hash = '#permissions'; true"
+  );
+
+  await expect
+    .poll(revokeAllState, { message: 'Waiting for the load-error card', timeout: 10_000 })
+    .toMatchObject({ disabled: true });
+  expect((await revokeAllState()).view).toContain('Could not load site permissions');
+});
+
 test('Escape dismisses the prompt as deny-once and the site can ask again', async ({
   window,
   harness,

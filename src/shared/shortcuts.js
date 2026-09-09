@@ -657,23 +657,35 @@ function getEffectiveAccelerator(entryOrId, overrides, platform) {
 /**
  * First shortcut whose effective binding collides with `accelerator`,
  * excluding `entryOrId` itself. Returns null or
- * { id, description, fixed } — `fixed: true` means the collision is with
+ * { id, settingsLabel, fixed } — `fixed: true` means the collision is with
  * a fixed alias (or a non-editable entry) and cannot be swapped away.
+ *
+ * Every consumer of this name is a Settings > Shortcuts surface (the
+ * conflict banner, the reverted-remap row notice), which labels its rows
+ * `settingsLabel`, so the conflict names the colliding shortcut the same
+ * way — carrying `description` here is what put one shortcut on screen in
+ * two casings at once (#277).
  */
 function findConflict(entryOrId, accelerator, overrides, platform) {
   const self = typeof entryOrId === 'string' ? entryOrId : entryOrId?.id;
   const normalized = normalizeAccelerator(accelerator, platform);
   if (!normalized) return null;
 
+  const conflict = (entry, fixed) => ({
+    id: entry.id,
+    settingsLabel: entry.settingsLabel || entry.description,
+    fixed,
+  });
+
   for (const entry of SHORTCUTS) {
     if (entry.id === self) continue;
     const effective = getEffectiveAccelerator(entry, overrides, platform);
     if (effective && normalizeAccelerator(effective, platform) === normalized) {
-      return { id: entry.id, description: entry.description, fixed: entry.editable === false };
+      return conflict(entry, entry.editable === false);
     }
     for (const alias of getAliasAccelerators(entry, platform)) {
       if (normalizeAccelerator(alias, platform) === normalized) {
-        return { id: entry.id, description: entry.description, fixed: true };
+        return conflict(entry, true);
       }
     }
   }
