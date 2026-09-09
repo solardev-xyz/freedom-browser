@@ -84,6 +84,9 @@ one final owned attempt, reports uncertainty and exits. Its exit/closed gates
 provide the parent-loss backstop, **not** an observed completion receipt.
 Permission failure does not cause early retirement of a still-owned live handle.
 
+The gate's exec-failure F is informational: it does not itself kill I. M is allowed
+to report its actual natural exit (normally127); the final exec_failed reason is
+kept separate from ownership failure. Cancellation/deadlines still apply.
 Requested cancellation and actual M status are separate. A racing zero remains
 zero; cancellation does not fabricate SIGKILL. Killing I may prevent I from
 recording M, in which case M's status stays unknown even when namespace teardown
@@ -173,7 +176,9 @@ or proof. These are scheduling-dependent engineering bounds, not realtime SLAs.
 
 ## Build, compatibility and deployment
 
-Only Linux x64 is supported by this helper/build. Minimum kernel interface set:
+Only Linux x64 is supported by this helper. Other Linux architecture packages
+continue with a helper resource directory and workspace backend unavailable;
+they are not advertised as qualified. Minimum kernel interface set:
 unprivileged user namespaces and maps, PID namespaces, clone3 with CLONE_PIDFD,
 pidfd_open, pidfd_send_signal, waitid(P_PIDFD), close_range, prctl NNP/PDEATHSIG,
 procfs and ordinary pipes/poll. Version floor is Linux 5.9 (close_range), but a
@@ -183,8 +188,10 @@ No clone/pidfd_open race fallback, Node kill, numeric/group signal, privileged
 helper, VM or downloaded replacement exists.
 
 Build with `npm run build:linux-workspace-supervisor` using installed GCC/headers.
-Development preparation and Linux beforePack include it. Other Linux target
-builds fail explicitly rather than shipping a guessed architecture. No lock or
+Development preparation accepts an exact prebuilt helper without GCC; without a
+prebuilt helper or installed GCC it warns and allows application startup with
+the workspace backend unavailable. Supported x64 packaging remains strict.
+Linux beforePack includes the helper only for x64. No lock or
 dependency change. Manifest binds protocol, source SHA256, ELF SHA256, x64 and
 minimum kernel. Runtime hashes the opened O_NOFOLLOW binary and executes that
 same inode through inherited fd5. Packaging copies binary+manifest outside asar;

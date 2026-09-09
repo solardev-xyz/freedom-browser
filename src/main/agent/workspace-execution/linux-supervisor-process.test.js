@@ -144,3 +144,29 @@ test('platform and ELF gates deny unsupported facilities and architectures', () 
     expect(supported(...tuple)).toBe(false);
   expect(validElf(Buffer.alloc(64))).toBe(false);
 });
+
+test('pre-spawn abort carries positive no-creation evidence', async () => {
+  const signal = AbortSignal.abort(); const f = fixture({ signal });
+  expect(await f.promise).toMatchObject({ notSpawned: true, requested: true, final: null, ownerExit: null, error: null });
+  expect(f.spawnProcess).not.toHaveBeenCalled();
+});
+test('READY release throw is a control failure, not malformed status', async () => {
+  const f = fixture();
+  f.child.stdio[3].write = () => { throw new Error('closed'); };
+  f.child.stdio[4].write(ready);
+  f.end(finalRecord({ reason: 'cancelled', released: false, execAttempted: false }));
+  const result = await f.promise;
+  expect(result.error).toBe('LINUX_OWNER_CONTROL_FAILED');
+  expect(result.notSpawned).toBe(false); expect(f.child.kill).not.toHaveBeenCalled();
+});
+test('READY after ended control cannot release', async () => {
+  const f = fixture(); f.child.stdio[3].end(); f.child.stdio[4].write(ready);
+  f.end(finalRecord({ reason: 'control_eof', released: false, execAttempted: false }));
+  expect((await f.promise).error).toBe('LINUX_OWNER_CONTROL_FAILED'); expect(f.controls).toEqual([]);
+});
+test('exec-failure FINAL preserves original monitor127 with complete cleanup', async () => {
+  const f = fixture(); f.child.stdio[4].write(ready);
+  f.end(finalRecord({ reason: 'exec_failed', monitorCode: 127 }));
+  const result = await f.promise;
+  expect(result.code).toBe(127); expect(result.error).toBeNull(); expect(cleanupProven(result.final)).toBe(true);
+});

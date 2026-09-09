@@ -444,6 +444,8 @@ describe('Bubblewrap backend contract', () => {
     expect(receipt.completeDescendantTermination).toBe(complete);
     expect(receipt.survivorsPossible).toBe(!complete);
     expect(receipt.terminationGuarantee).toBe(complete ? 'namespace_scoped' : 'unknown');
+    expect(receipt.terminationScope).toBe(complete ? 'pid_namespace' : 'unknown');
+    if (state === 'cancelled') expect(receipt.error?.code).toBe(complete ? undefined : 'LINUX_OWNER_INCOMPLETE');
     expect(receipt.exitCode).toBe(final.monitorObserved === false ? null : code);
   });
   test('unavailable owner denies capability without invoking an unowned fallback', async () => {
@@ -451,5 +453,31 @@ describe('Bubblewrap backend contract', () => {
     const result = await detectBubblewrapCapabilities({ binary: '/usr/bin/true', runOwner });
     expect(result.available).toBe(false); expect(result.denial.code).toBe('LINUX_OWNER_UNAVAILABLE');
     expect(runOwner).toHaveBeenCalledTimes(1);
+  });
+  test.each([true, false])('positive pre-spawn abort evidence versus merely lost status: %s', async (notSpawned) => {
+    const fixture = await createFixture(); fixtureRoots.push(fixture.fixtureRoot);
+    const policy = await createWorkspaceExecutionPolicy({ workspaceRoot: fixture.workspaceRoot });
+    const executor = new BubblewrapExecutor({
+      resolveOwner: async () => ({ executablePath: '/trusted/owner', close: async () => {} }),
+      runOwner: async () => ({ stdout: '', stderr: '', requested: true, notSpawned, final: null, ownerExit: null, error: null }),
+    });
+    executor.capabilities = { available: true };
+    const receipt = await executor.execute(policy, { command: '/usr/bin/true' });
+    expect(receipt.state).toBe(notSpawned ? 'cancelled' : 'failed');
+    expect(receipt.sideEffects).toBe(notSpawned ? 'none' : 'unknown');
+    expect(receipt.error?.code).toBe(notSpawned ? undefined : 'LINUX_OWNER_INCOMPLETE');
+    expect(receipt.terminationScope).toBe('unknown');
+  });
+  test('exec failure is COMMAND_FAILED127, not ownership failure', async () => {
+    const fixture = await createFixture(); fixtureRoots.push(fixture.fixtureRoot);
+    const policy = await createWorkspaceExecutionPolicy({ workspaceRoot: fixture.workspaceRoot });
+    const executor = new BubblewrapExecutor({
+      resolveOwner: async () => ({ executablePath: '/trusted/owner', close: async () => {} }),
+      runOwner: async () => completedOwner({ code: 127, final: { reason: 'exec_failed' } }),
+    });
+    executor.capabilities = { available: true };
+    expect(await executor.execute(policy, { command: '/usr/bin/true' })).toMatchObject({
+      state: 'failed', exitCode: 127, error: { code: 'COMMAND_FAILED' }, completeDescendantTermination: true,
+    });
   });
 });

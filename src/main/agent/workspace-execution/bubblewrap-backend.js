@@ -744,18 +744,21 @@ class BubblewrapExecutor {
     const cleanupDiagnostics = await this.cleanupStagingDirectory(launch.stagingDirectory);
     const final = result.final;
     const complete = cleanupProven(final);
-    const cancelled = final && ['cancelled', 'control_eof'].includes(final.reason);
+    // Absence of FINAL alone could mean lost status, not a pre-spawn abort.
+    const notSpawned = result.notSpawned === true && result.requested && !final && !result.ownerExit && !result.error;
+    const cancelled = notSpawned || (final && ['cancelled', 'control_eof'].includes(final.reason));
     const timedOut = final?.reason === 'timed_out';
-    const normal = final?.reason === 'completed' && complete && !result.error &&
-      result.transportComplete && result.ownerExit?.code === 0;
+    const confirmed = complete && !result.error && result.transportComplete &&
+      result.ownerExit?.code === 0 && !result.ownerExit?.signal;
+    const normal = ['completed', 'exec_failed'].includes(final?.reason) && confirmed;
     const denied = final && !final.released && (complete || !final.created);
     const sandboxStarted = result.stdout.startsWith(markerPrefix);
     const state = timedOut ? EXECUTION_STATES.TIMED_OUT : cancelled ? EXECUTION_STATES.CANCELLED :
       denied ? EXECUTION_STATES.SANDBOX_DENIED :
-      normal ? (result.code === 0 ? EXECUTION_STATES.COMPLETED : EXECUTION_STATES.FAILED) :
+      normal ? (result.code === 0 && final.reason !== 'exec_failed' ? EXECUTION_STATES.COMPLETED : EXECUTION_STATES.FAILED) :
         EXECUTION_STATES.FAILED;
     const finishedAt = this.now();
-    // Only a validated native release-state record can establish no side effects.
+    // Validated native release state or an explicit never-spawned abort only.
     const receipt = {
       backend: 'linux-bubblewrap', state, startedAt, finishedAt,
       durationMs: Math.max(0, finishedAt - startedAt),
@@ -765,9 +768,9 @@ class BubblewrapExecutor {
       stdout: sandboxStarted ? result.stdout.slice(markerPrefix.length) : '',
       stderr: sandboxStarted ? result.stderr : '', stdoutTruncated: !!result.stdoutTruncated, stderrTruncated: !!result.stderrTruncated,
       terminationGuarantee: complete ? 'namespace_scoped' : 'unknown',
-      sideEffects: final && !final.released ? 'none' : 'unknown',
+      sideEffects: notSpawned || (final && !final.released) ? 'none' : 'unknown',
       survivorsPossible: !complete, completeDescendantTermination: complete,
-      terminationScope: 'pid_namespace',
+      terminationScope: complete ? 'pid_namespace' : 'unknown',
       capabilities: { backend: 'linux-bubblewrap', aggregateResourceLimits: false,
         cancellationGuarantee: complete ? 'namespace_scoped' : 'unknown',
         networkPosture: policy.network,
@@ -781,7 +784,7 @@ class BubblewrapExecutor {
         transportComplete: !!result.transportComplete, requestedCancellation: !!result.requested,
         ...(cleanupDiagnostics || {}) },
     };
-    if (!normal) receipt.error = { code: result.error || (denied ? 'SANDBOX_INITIALIZATION_FAILED' : 'LINUX_OWNER_INCOMPLETE'),
+    if (!normal && !notSpawned && !(confirmed && (cancelled || timedOut))) receipt.error = { code: result.error || (denied ? 'SANDBOX_INITIALIZATION_FAILED' : 'LINUX_OWNER_INCOMPLETE'),
       message: 'Linux workspace execution did not produce a confirmed normal completion' };
     else if (state === EXECUTION_STATES.FAILED) receipt.error = {
       code: 'COMMAND_FAILED', message: 'The sandboxed command exited unsuccessfully' };

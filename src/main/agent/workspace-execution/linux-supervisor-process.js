@@ -67,12 +67,14 @@ async function runLinuxOwner(binary, args, options = {}) {
   }
   return new Promise((resolve) => {
     let child, done = false, transport = null, timer = null, cancellationTimer = null, final = null;
-    let error = null, requested = false, ownerExit = null, outEnd = false, errEnd = false, statusEnd = false;
+    let error = null, requested = false, notSpawned = false, ownerExit = null, outEnd = false, errEnd = false, statusEnd = false;
     const outputs = { stdout: { chunks: [], bytes: 0, truncated: false }, stderr: { chunks: [], bytes: 0, truncated: false } };
     function abort() {
       if (done) return;
       requested = true;
-      if (child?.stdio?.[3] && !child.stdio[3].destroyed && !child.stdio[3].writableEnded) child.stdio[3].end('A');
+      if (child?.stdio?.[3] && !child.stdio[3].destroyed && !child.stdio[3].writableEnded) {
+        try { child.stdio[3].end('A'); } catch { error ||= 'LINUX_OWNER_CONTROL_FAILED'; }
+      }
       if (child && !cancellationTimer) cancellationTimer = setTimeout(() => {
         error ||= 'LINUX_OWNER_CANCELLATION_UNCONFIRMED'; finish();
       }, 2000 + TRANSPORT_MS);
@@ -88,7 +90,7 @@ async function runLinuxOwner(binary, args, options = {}) {
       resolve({ code: final?.monitorObserved ? final.monitorCode : null,
         signal: final?.monitorSignal || null, stdout: text('stdout'), stderr: text('stderr'),
         stdoutTruncated: outputs.stdout.truncated, stderrTruncated: outputs.stderr.truncated,
-        final, ownerExit, requested, error,
+        final, ownerExit, requested, notSpawned, error,
         transportComplete: outEnd && errEnd && statusEnd && !!ownerExit });
     }
     function terminalDrain() {
@@ -97,8 +99,8 @@ async function runLinuxOwner(binary, args, options = {}) {
     }
     options.signal?.addEventListener('abort', abort, { once: true });
     if (options.signal?.aborted) {
-      requested = true;
-      runtime.close().then(() => finish()); return;
+      requested = true; notSpawned = true;
+      runtime.close().catch(() => { error = 'LINUX_OWNER_FD_CLOSE_FAILED'; }).then(finish); return;
     }
     try {
       child = (options.spawnProcess || spawn)('/proc/self/fd/5',
@@ -109,7 +111,16 @@ async function runLinuxOwner(binary, args, options = {}) {
     }
     runtime.close().catch(() => { error = 'LINUX_OWNER_FD_CLOSE_FAILED'; abort(); });
     const wire = parser(runtime.sourceSha256, () => {
-      if (!requested && !options.signal?.aborted) child.stdio[3].write('G');
+      if (requested || options.signal?.aborted) return;
+      const control = child.stdio[3];
+      if (!control || control.destroyed || control.writableEnded) {
+        error ||= 'LINUX_OWNER_CONTROL_FAILED'; abort(); return;
+      }
+      try { control.write('G'); } catch {
+        // A transport/release race is not malformed native status.
+        if (!requested && !options.signal?.aborted) error ||= 'LINUX_OWNER_CONTROL_FAILED';
+        abort();
+      }
     });
     for (const name of ['stdout', 'stderr']) {
       child[name].on('data', (chunk) => {

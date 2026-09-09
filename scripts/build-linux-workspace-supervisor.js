@@ -6,11 +6,15 @@ const { execFileSync } = require('child_process');
 const { SOURCE_PATH, SUPERVISOR_NAME, digest, validElf } =
   require('../src/main/agent/workspace-execution/linux-supervisor-runtime');
 
-function buildLinuxWorkspaceSupervisor(architecture = process.arch) {
-  if (process.platform !== 'linux' || architecture !== 'x64')
-    throw new Error('Linux workspace owner currently requires Linux x64');
+function buildLinuxWorkspaceSupervisor(architecture = process.arch, { development = false } = {}) {
+  if (process.platform !== 'linux') throw new Error('Linux workspace owner requires a Linux build host');
+  if (!['x64', 'arm64', 'armv7l', 'ia32', 'universal'].includes(architecture)) throw new Error('Unknown target architecture');
+  if (architecture !== 'x64') {
+    // Keep the package resource path present, but never ship a guessed helper.
+    fs.mkdirSync(path.resolve(__dirname, '../out/linux-workspace-owner', architecture), { recursive: true });
+    return;
+  }
   const compiler = '/usr/bin/gcc';
-  if (!fs.existsSync(compiler)) throw new Error('Installed GCC required; no compiler will be downloaded');
   const sourceSha256 = digest(fs.readFileSync(SOURCE_PATH));
   const directory = path.resolve(__dirname, '../out/linux-workspace-owner/x64');
   const binaryPath = path.join(directory, SUPERVISOR_NAME);
@@ -21,6 +25,13 @@ function buildLinuxWorkspaceSupervisor(architecture = process.arch) {
     if (manifest.protocol === 1 && manifest.architecture === architecture && manifest.minimumKernel === '5.9' &&
         manifest.sourceSha256 === sourceSha256 && manifest.binarySha256 === digest(binary) && validElf(binary)) return;
   } catch { /* Build only from installed tools and this checkout's source. */ }
+  if (!fs.existsSync(compiler)) {
+    if (development) {
+      console.warn('Linux workspace owner unavailable: installed GCC missing; application startup continues');
+      return;
+    }
+    throw new Error('Installed GCC required; no compiler will be downloaded');
+  }
   fs.mkdirSync(directory, { recursive: true });
   const pending = path.join(directory, `${SUPERVISOR_NAME}.building-${process.pid}`);
   execFileSync(compiler, ['-std=c11', '-Wall', '-Wextra', '-Werror', '-O2',

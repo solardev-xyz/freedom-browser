@@ -207,6 +207,7 @@ static int gate(int argc, char **argv) {
     /* Marker is transport readiness, never original terminal/exec proof. */
     if (dprintf(1, "%s\n", argv[2]) < 0) return 125;
     execvp(argv[3], argv + 3);
+    (void)dprintf(2, "Workspace command exec failed (errno %d)\n", errno);
     (void)byte_write(6, 'F');
     return 127;
 }
@@ -366,7 +367,7 @@ int main(int argc, char **argv) {
             else if (n == 1) {
                 if (event == 'R' && o.armed && !o.ready) o.ready = true;
                 else if (event == 'E' && o.released && !exec_attempted) exec_attempted = true;
-                else if (event == 'F' && exec_attempted && !exec_failed) { exec_failed=true; request_stop(&o, "exec_failed"); }
+                else if (event == 'F' && exec_attempted && !exec_failed) exec_failed=true;
                 else request_stop(&o, "protocol_error");
             } else if (errno != EAGAIN && errno != EINTR) request_stop(&o, "protocol_error");
         }
@@ -385,8 +386,9 @@ int main(int argc, char **argv) {
                 if (now >= (cleanup_end ? cleanup_end : deadline + CLEANUP_MS)) { o.uncertain=true; break; }
                 continue;
             }
-            if (!o.reason) request_stop(&o, m_seen && !exec_failed && o.released &&
-                (probe || exec_attempted) && o.actual.code == 0 ? "completed" : "setup_failed");
+            if (!o.reason) request_stop(&o, m_seen && o.released &&
+                (probe || exec_attempted) && o.actual.code == 0
+                ? (exec_failed ? "exec_failed" : "completed") : "setup_failed");
             break;
         }
         if (cleanup_end && now >= cleanup_end) {

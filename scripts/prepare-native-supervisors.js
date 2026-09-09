@@ -3,7 +3,7 @@ const linuxWorkspace = require('./build-linux-workspace-supervisor');
 const myotis = require('./build-myotis-supervisor');
 
 function prepareDevelopment(platform = process.platform) {
-  if (platform === 'linux') { linuxWorkspace.buildLinuxWorkspaceSupervisor(); return; }
+  if (platform === 'linux') { linuxWorkspace.buildLinuxWorkspaceSupervisor(process.arch, { development: true }); return; }
   if (platform !== 'darwin') return;
   workspace.buildMacosWorkspaceSupervisor();
   myotis.buildSupervisor();
