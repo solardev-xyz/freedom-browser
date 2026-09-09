@@ -253,20 +253,6 @@ function buildFileSubmenu(isMac) {
     },
     { type: 'separator' },
     {
-      id: 'downloads',
-      label: 'Downloads',
-      accelerator: acc('downloads.show'),
-      click: () => {
-        const win = getTargetWindow();
-        if (win) {
-          // Singleton internal page: the renderer focuses an existing
-          // freedom://downloads tab instead of opening a duplicate.
-          win.webContents.send('tab:new-with-url', 'freedom://downloads');
-        }
-      },
-    },
-    { type: 'separator' },
-    {
       label: 'New Window',
       accelerator: acc('window.new'),
       click: () => {
@@ -476,8 +462,27 @@ function buildViewSubmenu({ isFullScreen: fullScreen, showAppDevtools }) {
   return submenu;
 }
 
-function buildHistorySubmenu() {
-  return [
+// Downloads lives where Chrome puts it: the Window menu on macOS, next to
+// History on Linux/Windows (#326). One builder so the two placements can never
+// drift in label, accelerator or behaviour.
+function buildDownloadsMenuItem() {
+  return {
+    id: 'downloads',
+    label: 'Downloads',
+    accelerator: acc('downloads.show'),
+    click: () => {
+      const win = getTargetWindow();
+      if (win) {
+        // Singleton internal page: the renderer focuses an existing
+        // freedom://downloads tab instead of opening a duplicate.
+        win.webContents.send('tab:new-with-url', 'freedom://downloads');
+      }
+    },
+  };
+}
+
+function buildHistorySubmenu(isMac) {
+  const submenu = [
     {
       label: 'Show All History',
       accelerator: acc('history.showAll'),
@@ -489,6 +494,32 @@ function buildHistorySubmenu() {
       },
     },
   ];
+
+  // On macOS the item belongs to the Window menu instead (Chrome:
+  // Window > Downloads ⇧⌘J), so it is not repeated here.
+  if (!isMac) {
+    submenu.push({ type: 'separator' }, buildDownloadsMenuItem());
+  }
+
+  return submenu;
+}
+
+// Keep the `windowMenu` role (native label + macOS window-list semantics) but
+// spell out its submenu so Downloads can be appended — the same shape the
+// `editMenu` role uses for Find in Page. The listed roles mirror the role's
+// default macOS submenu.
+function buildWindowMenuEntry() {
+  return {
+    role: 'windowMenu',
+    submenu: [
+      { role: 'minimize' },
+      { role: 'zoom' },
+      { type: 'separator' },
+      buildDownloadsMenuItem(),
+      { type: 'separator' },
+      { role: 'front' },
+    ],
+  };
 }
 
 // Find in Page needs a custom click handler (main → renderer IPC), so it
@@ -568,7 +599,7 @@ function buildSharedMenuEntries(ctx) {
         showAppDevtools: !isPackaged,
       }),
     },
-    { label: 'History', submenu: buildHistorySubmenu() },
+    { label: 'History', submenu: buildHistorySubmenu(isMac) },
     { label: 'Profiles', submenu: buildProfilesSubmenu() },
   ];
 }
@@ -577,7 +608,7 @@ function buildDarwinMenuTemplate(ctx) {
   return [
     { role: 'appMenu', submenu: buildAppMenuSubmenu(ctx.updateMenuItems) },
     ...buildSharedMenuEntries(ctx),
-    { role: 'windowMenu' },
+    buildWindowMenuEntry(),
   ];
 }
 
