@@ -1825,12 +1825,75 @@ export const openInNewTabWithTarget = (url, targetName, options = {}) => {
   return newTab;
 };
 
+// The window's tab already showing internal page `pageName`, or undefined.
+//
+// `tab.url` holds the resolved `file://…/pages/<page>.html` form once loaded,
+// but the `freedom://<page>` form while the tab is still resolving — match both.
+const findInternalPageTab = (pageName) =>
+  tabState.tabs.find((tab) => {
+    if (!tab.url) return false;
+    // Resolved file://…/pages/<page>.html form (page already loaded).
+    if ((getInternalPageName(tab.url) || '').split('/')[0] === pageName) return true;
+    // Unresolved freedom://<page>[/<sub>] form while the tab is still resolving.
+    // Matching by base page (sub-path and all) lets a rapid second open of
+    // e.g. freedom://settings/profile reuse the in-flight tab instead of
+    // racing it to a duplicate. getInternalPageName only recognises the
+    // resolved file:// form, so this arm is what covers the resolving window.
+    return freedomInternalPageTarget(tab.url)?.pageName === pageName;
+  });
+
+// A tab with nothing in it: this window's new-tab page (`home.html` /
+// `private.html`, in either the friendly or the resolved form) or the
+// `about:blank` a window opened with an `initialUrl` parks on while the
+// target resolves. Chrome overwrites such a tab rather than opening another
+// one next to it (`ShowSingletonTabOverwritingNTP`); anything else is content
+// the user would lose.
+const isEmptyTab = (tab) => {
+  if (!tab) return false;
+  const url = tab.url || tab.navigationState?.currentPageUrl || '';
+  return !url || url === 'about:blank' || isNewTabPageUrl(url);
+};
+
+/**
+ * Where a chrome-initiated `freedom://<page>` navigation should land, following
+ * Chrome's singleton-tab model for its own internal pages: an existing tab wins
+ * over a new one, and an empty tab is overwritten rather than left behind.
+ *
+ * Called by `loadTarget` (the funnel every chrome navigation goes through: the
+ * hamburger menu's Settings item, an address-bar commit, a bookmark, a
+ * same-tab link click, an interstitial's "open settings" button), which owns
+ * the in-place navigation itself.
+ *
+ * @param {string} pageName - internal page name, e.g. 'settings'
+ * @param {string|null} [subPath] - optional section within the page
+ * @param {object|null} [currentWebview] - webview the navigation targets
+ * @returns {boolean} true when this handled the open (an existing tab was
+ *   focused, or a new tab created) and the caller must not navigate
+ *   `currentWebview`; false when the caller should navigate it in place.
+ */
+export const routeInternalPageNavigation = (pageName, subPath = null, currentWebview = null) => {
+  if (!pageName) return false;
+  const currentTab = getTabById(getTabIdForWebview(currentWebview));
+  const existingTab = findInternalPageTab(pageName);
+
+  // Already the page's own tab: navigate in place. This is both the ordinary
+  // "Settings while on Settings" re-open and the second leg of the reuse path
+  // below, which re-enters `loadTarget` with the focused tab's own webview to
+  // route it to a sub-path — the in-place answer is what terminates it.
+  if (existingTab && currentTab && existingTab.id === currentTab.id) return false;
+
+  // No tab to reuse and nothing to lose here: overwrite this one, as Chrome
+  // does when Settings is opened from a fresh New Tab.
+  if (!existingTab && isEmptyTab(currentTab)) return false;
+
+  openOrFocusInternalPage(pageName, subPath);
+  return true;
+};
+
 /**
  * Open an internal page (e.g. 'profiles', 'settings') in its own tab. If a tab
- * already has that page open, switch to it instead of opening a duplicate.
- *
- * `tab.url` holds the resolved `file://…/pages/<page>.html` form once loaded,
- * but the `freedom://<page>` form while the tab is still resolving — match both.
+ * already has that page open (`findInternalPageTab`), switch to it instead of
+ * opening a duplicate.
  *
  * An optional `subPath` (e.g. 'profile' for `freedom://settings/profile`)
  * routes the page to a section: a reused tab is navigated there, and a freshly
@@ -1853,17 +1916,7 @@ export const openOrFocusInternalPage = (pageName, subPath = null, options = {}) 
 
   const fullUrl = subPath ? `freedom://${pageName}/${subPath}` : `freedom://${pageName}`;
 
-  const existingTab = tabState.tabs.find((tab) => {
-    if (!tab.url) return false;
-    // Resolved file://…/pages/<page>.html form (page already loaded).
-    if ((getInternalPageName(tab.url) || '').split('/')[0] === pageName) return true;
-    // Unresolved freedom://<page>[/<sub>] form while the tab is still resolving.
-    // Matching by base page (sub-path and all) lets a rapid second open of
-    // e.g. freedom://settings/profile reuse the in-flight tab instead of
-    // racing it to a duplicate. getInternalPageName only recognises the
-    // resolved file:// form, so this arm is what covers the resolving window.
-    return freedomInternalPageTarget(tab.url)?.pageName === pageName;
-  });
+  const existingTab = findInternalPageTab(pageName);
 
   if (existingTab) {
     pushDebug(`${background ? 'Routing' : 'Focusing'} existing ${pageName} tab ${existingTab.id}`);

@@ -1457,6 +1457,93 @@ describe('tabs ui behavior', () => {
     expect(mod.getActiveTab().id).toBe(opened.id);
   });
 
+  // #325: the chrome paths (hamburger menu, address bar, bookmark, same-tab
+  // link) reach the internal pages through `loadTarget`, which asks
+  // `routeInternalPageNavigation` where the open belongs. Chrome's model:
+  // focus the page's tab if it exists, overwrite an empty New Tab if not, and
+  // otherwise open a new tab rather than navigating the current page away.
+  describe('routeInternalPageNavigation', () => {
+    const SETTINGS_URL = 'file:///app/pages/settings.html';
+
+    const setup = async () => {
+      const { mod } = await loadTabsModule({
+        internalPages: { settings: SETTINGS_URL, home: HOME_URL },
+      });
+      mod.setLoadTargetHandler(jest.fn());
+      await mod.initTabs();
+      return mod;
+    };
+
+    test('overwrites an empty New Tab when the page has no tab yet', async () => {
+      const mod = await setup();
+      const newTabPage = mod.getActiveTab();
+
+      // False = "navigate this tab in place", which is what loadTarget then
+      // does. No tab is created and none is switched to.
+      expect(mod.routeInternalPageNavigation('settings', null, newTabPage.webview)).toBe(false);
+      expect(mod.getTabs()).toHaveLength(1);
+      expect(mod.getActiveTab().id).toBe(newTabPage.id);
+    });
+
+    test('opens a new tab from a page with content', async () => {
+      const mod = await setup();
+      const pageTab = mod.createTab('https://example.com/');
+
+      expect(mod.routeInternalPageNavigation('settings', null, pageTab.webview)).toBe(true);
+      expect(mod.getTabs()).toHaveLength(3); // new-tab page, example.com, settings
+      const settingsTab = mod.getTabs().at(-1);
+      expect(settingsTab.url).toBe('freedom://settings');
+      expect(mod.getActiveTab().id).toBe(settingsTab.id);
+      // The page the user was reading is still that page — `true` tells
+      // loadTarget not to navigate it.
+      expect(pageTab.url).toBe('https://example.com/');
+    });
+
+    test('focuses the existing Settings tab instead of duplicating it', async () => {
+      const mod = await setup();
+      const pageTab = mod.createTab('https://example.com/');
+      mod.routeInternalPageNavigation('settings', null, pageTab.webview);
+      const settingsTab = mod.getActiveTab();
+      settingsTab.url = SETTINGS_URL; // as the resolved page commits it
+
+      // Back on a fresh New Tab, the regression from #325: this opened a
+      // second Settings tab (in place) rather than focusing the first.
+      const newTab = mod.createTab();
+      expect(mod.routeInternalPageNavigation('settings', null, newTab.webview)).toBe(true);
+      expect(mod.getTabs()).toHaveLength(4); // no fifth tab
+      expect(mod.getActiveTab().id).toBe(settingsTab.id);
+    });
+
+    test('routes a sub-path into the reused tab and terminates on its own tab', async () => {
+      jest.useFakeTimers();
+      const mod = await setup();
+      const onLoadTarget = jest.fn();
+      mod.setLoadTargetHandler(onLoadTarget);
+      const pageTab = mod.createTab('https://example.com/');
+      mod.routeInternalPageNavigation('settings', null, pageTab.webview);
+      const settingsTab = mod.getActiveTab();
+      settingsTab.url = SETTINGS_URL;
+
+      // A deep link from another tab reuses this one and re-navigates it to
+      // the section, through that tab's own webview.
+      expect(mod.routeInternalPageNavigation('settings', 'shortcuts', pageTab.webview)).toBe(true);
+      expect(mod.getTabs()).toHaveLength(3);
+      jest.runOnlyPendingTimers();
+      expect(onLoadTarget).toHaveBeenCalledWith(
+        'freedom://settings/shortcuts',
+        null,
+        settingsTab.webview
+      );
+
+      // That re-navigation re-enters loadTarget with the focused tab's own
+      // webview: answering "this tab" is what stops it looping.
+      expect(mod.routeInternalPageNavigation('settings', 'shortcuts', settingsTab.webview)).toBe(
+        false
+      );
+      expect(mod.getTabs()).toHaveLength(3);
+    });
+  });
+
   // #303: Chrome resolves the modifier before the `target` attribute — a
   // Ctrl/Cmd+click never re-navigates the window a name already points at,
   // which when that window is the current tab would navigate the page out from

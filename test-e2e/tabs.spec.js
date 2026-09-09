@@ -395,6 +395,139 @@ const ctrlClick = async (window, point) => {
   await window.keyboard.up('Control');
 };
 
+const tabSnapshot = (window) =>
+  window.evaluate(() =>
+    [...document.querySelectorAll('[data-test="tab"]')].map((tab) => ({
+      id: tab.dataset.tabId,
+      title: tab.querySelector('.tab-title')?.textContent,
+      active: tab.classList.contains('active'),
+    }))
+  );
+
+// Open Settings the way a user does — hamburger menu → Settings — and retry the
+// whole gesture until `expected` (a tab snapshot) holds.
+//
+// The gesture can be lost before it reaches the item: a webview guest that
+// attaches while the menu is up takes the keyboard, which blurs the chrome
+// window, and menus.js closes every menu on `window.blur`. The item click then
+// lands on nothing and the menu simply re-opens on the next attempt, exactly as
+// a user would re-open it. That is pre-existing app behaviour, unrelated to the
+// singleton rule under test — and re-opening Settings is idempotent *because*
+// of that rule, so retrying cannot manufacture a pass: a build that duplicates
+// the tab fails the snapshot on the first attempt and on every later one.
+const openSettingsFromMenu = (window, expected) =>
+  expect(async () => {
+    await window.locator('#menu-button').click();
+    await expect(window.locator('#settings-btn')).toBeVisible({ timeout: 2_000 });
+    await window.locator('#settings-btn').click({ timeout: 2_000 });
+    await expect(window.locator('#menu-backdrop')).toBeHidden({ timeout: 2_000 });
+    expect(await tabSnapshot(window)).toEqual(expected);
+  }).toPass({ timeout: 30_000, intervals: [500, 1_000, 2_000] });
+
+// The `location.hash` of the Settings guest — the page's own source of truth
+// for which section is shown (`resolveSection`/`showSection` in settings.html).
+const settingsHash = (window) =>
+  window.evaluate(async () => {
+    const webview = [...document.querySelectorAll('webview')].find((candidate) => {
+      try {
+        return /settings\.html/.test(candidate.getURL() || '');
+      } catch {
+        return false;
+      }
+    });
+    if (!webview || typeof webview.executeJavaScript !== 'function') return null;
+    try {
+      return await webview.executeJavaScript('location.hash');
+    } catch {
+      return null;
+    }
+  });
+
+// #325: every `freedom://` internal page is a singleton tab. The regression
+// this covers was in the *chrome* paths — the hamburger menu's Settings item
+// and an address-bar commit both went straight to `loadTarget`, which
+// navigated whatever tab was in front, so a second open next to an existing
+// Settings tab produced a duplicate rather than focusing it.
+test('opening Settings from the hamburger menu and the address bar reuses one tab', async ({
+  window,
+}) => {
+  const tabs = window.locator('[data-test="tab"]');
+  const SETTINGS_TAB = { id: '1', title: 'Settings', active: true };
+  const NEW_TAB = { id: '2', title: 'New Tab', active: false };
+
+  // 1. From the empty New Tab the window starts on, Settings takes that tab
+  //    over rather than leaving an unused NTP behind (Chrome's
+  //    ShowSingletonTabOverwritingNTP).
+  await openSettingsFromMenu(window, [SETTINGS_TAB]);
+
+  // 2. Re-opening Settings from the Settings tab is a no-op, not a second tab.
+  await openSettingsFromMenu(window, [SETTINGS_TAB]);
+
+  // 3. From a *new* empty tab, the menu focuses the existing Settings tab —
+  //    the duplicate in the bug report ("Settings", "Settings").
+  await window.locator('[data-test="new-tab-btn"]').click();
+  await expect(tabs).toHaveCount(2);
+  await expectActiveTab(window, 2);
+  await openSettingsFromMenu(window, [SETTINGS_TAB, NEW_TAB]);
+
+  // 4. Typing the URL in the second tab's address bar does the same.
+  await window.locator('[data-test="tab"][data-tab-id="2"]').click();
+  await expectActiveTab(window, 2);
+  const input = window.locator('[data-test="address-input"]');
+  await input.click();
+  await input.fill('freedom://settings');
+  await input.press('Enter');
+  await expect
+    .poll(() => tabSnapshot(window), {
+      message: 'Waiting for the address-bar commit to focus the existing Settings tab',
+      timeout: 15_000,
+    })
+    .toEqual([SETTINGS_TAB, NEW_TAB]);
+
+  // 5. A sub-path deep link reuses that same tab and routes it to the section.
+  await window.locator('[data-test="tab"][data-tab-id="2"]').click();
+  await expectActiveTab(window, 2);
+  await input.click();
+  await input.fill('freedom://settings/shortcuts');
+  await input.press('Enter');
+  await expect
+    .poll(() => tabSnapshot(window), {
+      message: 'Waiting for the deep link to focus the existing Settings tab',
+      timeout: 15_000,
+    })
+    .toEqual([SETTINGS_TAB, NEW_TAB]);
+  await expect
+    .poll(() => settingsHash(window), {
+      message: 'Waiting for the reused Settings tab to route to the Shortcuts section',
+      timeout: 15_000,
+    })
+    .toBe('#shortcuts');
+});
+
+// #325, the other half of the Chrome model: with no Settings tab to focus and
+// a *non-empty* tab in front, Settings opens in a new tab instead of
+// navigating the page the user is reading out from under them.
+test('opening Settings from a page with content opens a new tab', async ({ window, harness }) => {
+  await harness.setContentFixture(PAGE_A, {
+    body: '<!doctype html><title>Page A</title><p>a</p>',
+  });
+  const input = window.locator('[data-test="address-input"]');
+  await input.click();
+  await input.fill(PAGE_A);
+  await input.press('Enter');
+  await expect
+    .poll(async () => (await tabTitles(window)).map((tab) => tab.title), {
+      message: 'Waiting for Page A to load',
+      timeout: 15_000,
+    })
+    .toEqual(['Page A']);
+
+  await openSettingsFromMenu(window, [
+    { id: '1', title: 'Page A', active: false },
+    { id: '2', title: 'Settings', active: true },
+  ]);
+});
+
 // #303: a `freedom://` internal page is a singleton tab, but the singleton
 // rule must not outrank the disposition. Ctrl+click on a freedom:// link had
 // the tab-reuse branch run before `background` was consulted, so it switched

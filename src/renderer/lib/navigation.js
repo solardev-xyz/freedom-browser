@@ -45,6 +45,7 @@ import {
   getActiveTab,
   getActiveTabState,
   openInNewTabWithTarget,
+  routeInternalPageNavigation,
   setOnchainProvenanceChangeHandler,
   setWebviewEventHandler,
   updateActiveTabTitle,
@@ -1278,6 +1279,20 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
     const subPath = fbMatch[2]?.toLowerCase() || null;
     const pageUrl = internalPages[pageName];
     if (pageUrl) {
+      // Every internal page is a singleton, as in Chrome: an open Settings
+      // (History, Profiles, …) tab is focused rather than duplicated, whether
+      // the open came from the hamburger menu, the address bar, a bookmark, a
+      // same-tab link or an interstitial button — the paths that all funnel
+      // through here. `routeInternalPageNavigation` owns that decision and
+      // returns false only when *this* tab is the right place to land: it is
+      // already the page's tab, or it is an empty New Tab to overwrite. The
+      // link paths that never reach loadTarget (a new-tab/background link
+      // activation, `tab:new-with-url`) keep their own singleton branch in
+      // `openInNewTabWithTarget`. See #325.
+      if (routeInternalPageNavigation(pageName, subPath, webview)) {
+        pushDebug(`Routed internal page to its own tab: ${pageName}${subPath ? `/${subPath}` : ''}`);
+        return;
+      }
       const targetUrl = subPath ? `${pageUrl}#${subPath}` : pageUrl;
       webview.loadURL(targetUrl);
       pushDebug(`Loading internal page: ${pageName}${subPath ? `/${subPath}` : ''}`);

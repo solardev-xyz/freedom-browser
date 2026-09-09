@@ -127,6 +127,10 @@ const loadNavigationModule = async (options = {}) => {
     webviewEventHandler: null,
     createTab: jest.fn(),
     openInNewTabWithTarget: jest.fn(),
+    // "This tab is the right place to land" is the default answer, i.e. the
+    // in-place navigation every pre-existing freedom:// test in this file
+    // assumes. The singleton routing itself is covered in tabs-ui.test.js.
+    routeInternalPageNavigation: jest.fn(() => false),
     getActiveWebview: jest.fn(() => activeRef.tab?.webview || null),
     getActiveTab: jest.fn(() => activeRef.tab || null),
     getActiveTabState: jest.fn(() => activeRef.tab?.navigationState || null),
@@ -991,6 +995,41 @@ describe('navigation', () => {
       ctx.mod.loadTarget('ipfs://bafybeigdyrzt');
 
       expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith('ipfs://bafybeigdyrzt');
+    });
+  });
+
+  // #325: a chrome-driven `freedom://` navigation is routed by the tab layer
+  // first — an open Settings tab is focused instead of duplicated. Before the
+  // fix this branch went straight to `webview.loadURL`, so the hamburger menu
+  // and the address bar produced a second Settings tab next to the first.
+  describe('internal-page singleton routing', () => {
+    test('asks the tab layer where a freedom:// page should land', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      await flushMicrotasks();
+
+      ctx.mod.loadTarget('freedom://settings/shortcuts');
+
+      expect(ctx.tabsMocks.routeInternalPageNavigation).toHaveBeenCalledWith(
+        'settings',
+        'shortcuts',
+        ctx.activeRef.tab.webview
+      );
+      // Answered "this tab": navigated in place, sub-path as the fragment.
+      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith(
+        'file:///app/pages/settings.html#shortcuts'
+      );
+    });
+
+    test('leaves the current tab alone when the page was routed elsewhere', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      await flushMicrotasks();
+      ctx.tabsMocks.routeInternalPageNavigation.mockReturnValueOnce(true);
+
+      ctx.mod.loadTarget('freedom://settings');
+
+      expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
     });
   });
 
