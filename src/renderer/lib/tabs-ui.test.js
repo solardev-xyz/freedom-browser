@@ -172,9 +172,16 @@ const loadTabsModule = async (options = {}) => {
   jest.doMock('./menu-backdrop.js', () => backdropMocks);
   jest.doMock('./page-context-menu.js', () => pageContextMenuMocks);
   jest.doMock('./link-status.js', () => linkStatusMocks);
+  // `internalPages` is opt-in per test: with the default empty map no
+  // `freedom://<page>` URL is a recognised internal page, which is the shape
+  // every pre-existing test in this file assumes.
+  const internalPages = options.internalPages || {};
   jest.doMock('./page-urls.js', () => ({
     homeUrl: options.homeUrl || HOME_URL,
     getOnchainInterstitialTarget: () => null,
+    internalPages,
+    getInternalPageName: (url) =>
+      Object.entries(internalPages).find(([, pageUrl]) => pageUrl === url)?.[0] || null,
   }));
 
   const mod = await import('./tabs.js');
@@ -1285,6 +1292,80 @@ describe('tabs ui behavior', () => {
     expect(mod.getActiveTab().id).toBe(foregroundTab.id);
   });
 
+  // #303: a `freedom://` internal page is a singleton tab, but that must not
+  // outrank the disposition — Ctrl/Cmd+click on a `freedom://settings` link
+  // inside a page (e.g. a web3:// onchain app, whose preload forwards
+  // freedom: hrefs) has to leave the user on the page they are reading.
+  test('a background open of a freedom:// page does not switch away from the current tab', async () => {
+    jest.useFakeTimers();
+    const { mod } = await loadTabsModule({
+      internalPages: { settings: 'file:///app/pages/settings.html' },
+    });
+    const onLoadTarget = jest.fn();
+    mod.setLoadTargetHandler(onLoadTarget);
+    await mod.initTabs();
+
+    const activeTab = mod.getActiveTab();
+    const activeFocus = jest.spyOn(activeTab.webview, 'focus');
+
+    // No settings tab yet: created hidden, in the background.
+    const opened = mod.openInNewTabWithTarget('freedom://settings', null, { background: true });
+    expect(mod.getTabs()).toHaveLength(2);
+    expect(mod.getActiveTab().id).toBe(activeTab.id);
+    expect(opened.webview.classList.contains('hidden')).toBe(true);
+    expect(activeFocus).not.toHaveBeenCalled();
+
+    // A second background open reuses the singleton tab and routes it to the
+    // requested section — into that tab's own webview, still without switching.
+    const reused = mod.openInNewTabWithTarget('freedom://settings/profile', null, {
+      background: true,
+    });
+    expect(reused.id).toBe(opened.id);
+    expect(mod.getTabs()).toHaveLength(2);
+    expect(mod.getActiveTab().id).toBe(activeTab.id);
+    jest.runOnlyPendingTimers();
+    expect(onLoadTarget).toHaveBeenCalledWith('freedom://settings/profile', null, opened.webview);
+
+    // Without the flag the singleton is focused, exactly as before.
+    const focused = mod.openInNewTabWithTarget('freedom://settings', null);
+    expect(focused.id).toBe(opened.id);
+    expect(mod.getActiveTab().id).toBe(opened.id);
+  });
+
+  // #303: Chrome resolves the modifier before the `target` attribute — a
+  // Ctrl/Cmd+click never re-navigates the window a name already points at,
+  // which when that window is the current tab would navigate the page out from
+  // under the user.
+  test('a background open of a named target opens a new tab instead of reusing it', async () => {
+    jest.useFakeTimers();
+    const { mod } = await loadTabsModule();
+    const onLoadTarget = jest.fn();
+    mod.setLoadTargetHandler(onLoadTarget);
+    await mod.initTabs();
+
+    // A plain click on <a target="foo"> opens the tab and registers the name.
+    const named = mod.openInNewTabWithTarget('ipfs://one', 'foo');
+    expect(mod.getActiveTab().id).toBe(named.id);
+    jest.runOnlyPendingTimers();
+    onLoadTarget.mockClear();
+
+    // Ctrl+click on a second target="foo" link, from inside that very tab.
+    const opened = mod.openInNewTabWithTarget('ipfs://two', 'foo', { background: true });
+    expect(opened.id).not.toBe(named.id);
+    expect(mod.getTabs()).toHaveLength(3);
+    expect(mod.getActiveTab().id).toBe(named.id);
+    expect(opened.webview.classList.contains('hidden')).toBe(true);
+    jest.runOnlyPendingTimers();
+    // The tab the user is reading was never re-navigated; the new one was.
+    expect(onLoadTarget).not.toHaveBeenCalledWith('ipfs://two', null, named.webview);
+    expect(onLoadTarget).toHaveBeenCalledWith('ipfs://two', null, opened.webview);
+
+    // The fresh tab took the name over, so an unmodified click reuses it.
+    const reused = mod.openInNewTabWithTarget('ipfs://three', 'foo');
+    expect(reused.id).toBe(opened.id);
+    expect(mod.getTabs()).toHaveLength(3);
+  });
+
   // #303: the main process forwards the disposition Chromium derived from the
   // click's modifiers over `tab:new-with-url`.
   test('tab:new-with-url honours the background and new-window dispositions', async () => {
@@ -1340,6 +1421,68 @@ describe('tabs ui behavior', () => {
     expect(elements.tabContextMenu.classList.contains('hidden')).toBe(false);
     mod.closeTab(secondTab.id);
     expect(elements.tabContextMenu.classList.contains('hidden')).toBe(true);
+  });
+
+  // #315: re-activating the tab that is already foreground (Ctrl+1 on tab 1
+  // while tab 1 is active) is still an activation — it has to dismiss the
+  // menu, which is anchored to some other tab with every destructive item
+  // live. The dismissal therefore runs before switchTab's already-foreground
+  // early return, without taking any of the swap's other side effects with it.
+  test('a tab context menu is dismissed by re-activating the already-active tab', async () => {
+    const { mod, elements, linkStatusMocks } = await loadTabsModule();
+    await mod.initTabs();
+
+    const firstTab = mod.getActiveTab();
+    const secondTab = mod.createTab('https://second.example');
+    mod.switchTab(firstTab.id);
+
+    // Menu open over tab 2 while tab 1 is the active one.
+    findTabElement(elements.tabBar, secondTab.id).dispatch('contextmenu', {
+      preventDefault: jest.fn(),
+      stopPropagation: jest.fn(),
+      clientX: 20,
+      clientY: 30,
+    });
+    expect(elements.tabContextMenu.classList.contains('hidden')).toBe(false);
+
+    linkStatusMocks.clearLinkStatus.mockClear();
+    mod.switchTab(firstTab.id);
+
+    expect(elements.tabContextMenu.classList.contains('hidden')).toBe(true);
+    // Still an early return otherwise: no find-bar close, no webview re-hide.
+    expect(mod.getActiveTab().id).toBe(firstTab.id);
+    expect(linkStatusMocks.clearLinkStatus).not.toHaveBeenCalled();
+  });
+
+  // #311: the strip only scrolls the active tab back into view on activation,
+  // so the two other things that reflow it — a window resize, and closing a
+  // tab that sits left of the viewport — could leave the active tab past an
+  // edge, unreachable, until the next tab switch.
+  test('the active tab is scrolled back into view on a resize and on a close', async () => {
+    const { mod, elements, windowHandlers } = await loadTabsModule();
+    await mod.initTabs();
+
+    const firstTab = mod.getActiveTab();
+    mod.createTab('https://second.example');
+    const thirdTab = mod.createTab('https://third.example');
+    const thirdTabEl = findTabElement(elements.tabBar, thirdTab.id);
+    thirdTabEl.scrollIntoView = jest.fn();
+
+    windowHandlers.resize();
+    expect(thirdTabEl.scrollIntoView).toHaveBeenCalledWith({
+      block: 'nearest',
+      inline: 'nearest',
+    });
+
+    // Closing a tab to the left of the active one takes its width out of the
+    // strip and slides everything after it.
+    thirdTabEl.scrollIntoView.mockClear();
+    mod.closeTab(firstTab.id);
+    expect(mod.getActiveTab().id).toBe(thirdTab.id);
+    expect(thirdTabEl.scrollIntoView).toHaveBeenCalledWith({
+      block: 'nearest',
+      inline: 'nearest',
+    });
   });
 
   // #315: belt and braces — if some future path leaves a menu up over a tab

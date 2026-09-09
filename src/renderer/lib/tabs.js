@@ -1379,6 +1379,12 @@ export const closeTab = (tabId) => {
   }
 
   renderTabs();
+  // Closing a tab reflows the strip: one that sat left of the viewport takes
+  // its width with it and slides the active tab towards (or past) an edge.
+  // `renderTabs` only repaints the fades, so scroll the active tab back too —
+  // the close that promoted a new active tab already went through `switchTab`,
+  // this covers the closes that did not (#311).
+  scrollActiveTabIntoView();
   pushTabMenuState();
   pushDebug(`Closed tab ${tabId}`);
 };
@@ -1545,16 +1551,25 @@ export const hideTabContextMenu = () => {
 export const switchTab = (tabId, options = {}) => {
   const tab = tabState.tabs.find((t) => t.id === tabId);
   if (!tab) return;
-  // Already foreground — nothing to swap, and running the swap anyway has
-  // real side effects (closing an open find bar, re-hiding webviews).
-  if (tabState.activeTabId === tabId) return;
 
   // Any tab activation dismisses the tab context menu, whatever caused it.
   // A strip *click* already reached the document-click listener; a keyboard
-  // switch (Ctrl+Tab, Ctrl+PageDown, Ctrl+1..8) did not, leaving the menu open
-  // over the tab you just left with Close Tab / Close Others / Close to the
-  // Right / Pin / Mute all still bound to it. See #315.
+  // switch (Ctrl+Tab, Ctrl+PageDown) did not, leaving the menu open over the
+  // tab you just left with Close Tab / Close Others / Close to the Right /
+  // Pin / Mute all still bound to it. See #315.
+  //
+  // Dismissal happens *before* the already-foreground early return below:
+  // activating the tab that is already foreground (the address bar's
+  // "switch to open tab" suggestion for the current tab, or any future
+  // select-tab-by-index binding) is still an activation, and the menu it
+  // leaves up is anchored to another tab with every destructive item live.
+  // Hiding an already-hidden menu is a no-op, so this costs nothing on the
+  // ordinary path.
   hideTabContextMenu();
+
+  // Already foreground — nothing to swap, and running the swap anyway has
+  // real side effects (closing an open find bar, re-hiding webviews).
+  if (tabState.activeTabId === tabId) return;
 
   // Reset the link-hover preview before swapping active tabs:
   // - immediate clear so the previous tab's URL never trails into the new tab
@@ -1644,9 +1659,11 @@ export const switchTab = (tabId, options = {}) => {
  * be intercepted before Chromium lowercases the host).
  *
  * `options.background` opens the tab without leaving the current one — the
- * Ctrl/Cmd+click and middle-click disposition (#303). A *reused* named target
- * is still navigated in place but likewise not switched to, so the modifier
- * means the same thing whether or not the name already had a tab.
+ * Ctrl/Cmd+click and middle-click disposition (#303). It also suppresses named
+ * -target *reuse*: as in Chrome, the modifier wins over the `target` attribute
+ * and always yields a fresh background tab (which then takes the name), rather
+ * than navigating the named — possibly current — tab in place. It carries into
+ * the `freedom://` internal-page singleton branch below for the same reason.
  *
  * @param {string} url - target URL
  * @param {string|null} targetName - HTML `target` attribute, if any
@@ -1679,19 +1696,32 @@ export const openInNewTabWithTarget = (url, targetName, options = {}) => {
   // (settings/profile) reuses the base page's tab and routes it to that section.
   if (!targetName) {
     const internal = freedomInternalPageTarget(url);
-    if (internal) return openOrFocusInternalPage(internal.pageName, internal.subPath);
+    // `background` carries through: a Ctrl/Cmd+click or middle-click on a
+    // `freedom://` link must leave the user where they are, exactly like every
+    // other background open (#303). Without it the singleton branch below
+    // switched to (or foreground-created) the internal page's tab regardless
+    // of the disposition Chromium had already derived.
+    if (internal)
+      return openOrFocusInternalPage(internal.pageName, internal.subPath, { background });
   }
 
-  if (targetName && namedTargets.has(targetName)) {
+  // A named target is only *reused* for an unmodified activation. Chrome
+  // resolves the modifier first: Ctrl/Cmd+click and middle-click always open a
+  // new background tab, they never re-navigate the window the `target` names —
+  // which, when the named tab is the one the user is reading, would navigate
+  // the page out from under them, the opposite of what the modifier asks for
+  // (#303). The fresh tab takes over the name, as Chromium's own
+  // `CreateNewWindow` does with the activation's frame name.
+  if (targetName && !background && namedTargets.has(targetName)) {
     const existingTabId = namedTargets.get(targetName);
     const existingTab = tabState.tabs.find((t) => t.id === existingTabId);
     if (existingTab) {
       pushDebug(`Reusing tab ${existingTabId} for target "${targetName}": ${url}`);
-      if (!background) switchTab(existingTabId);
+      switchTab(existingTabId);
       setTimeout(() => {
         if (onLoadTarget) {
-          // Same reason as `createTab`: name the webview so a background
-          // re-navigation cannot land in whatever tab happens to be active.
+          // Same reason as `createTab`: name the webview so a re-navigation
+          // cannot land in whatever tab happens to be active.
           onLoadTarget(url, null, existingTab.webview);
         }
       }, 50);
@@ -1731,12 +1761,19 @@ export const openInNewTabWithTarget = (url, targetName, options = {}) => {
  * opened tab is created on the deep link. Tab matching is always by base page,
  * so the edit pencil's `settings/profile` reuses a plain `settings` tab.
  *
+ * `options.background` (a Ctrl/Cmd+click or middle-click on a `freedom://`
+ * link, #303) keeps the user on the page they are reading: an existing tab is
+ * still routed to the requested section, and a new one is created hidden — in
+ * neither case is it switched to.
+ *
  * @param {string} pageName - internal page name, e.g. 'profiles'
  * @param {string|null} [subPath] - optional section within the page
+ * @param {{ background?: boolean }} [options] - opening disposition
  * @returns {object|null} the focused or newly created tab, or null on noop
  */
-export const openOrFocusInternalPage = (pageName, subPath = null) => {
+export const openOrFocusInternalPage = (pageName, subPath = null, options = {}) => {
   if (!pageName) return null;
+  const background = !!options.background;
 
   const fullUrl = subPath ? `freedom://${pageName}/${subPath}` : `freedom://${pageName}`;
 
@@ -1753,19 +1790,20 @@ export const openOrFocusInternalPage = (pageName, subPath = null) => {
   });
 
   if (existingTab) {
-    pushDebug(`Focusing existing ${pageName} tab ${existingTab.id}`);
-    switchTab(existingTab.id);
-    // Route the reused tab to the requested section. switchTab makes it active,
-    // so onLoadTarget lands in its webview. (Same switch-then-load handoff the
-    // named-target reuse path above uses.) Bare pages need no re-navigation.
+    pushDebug(`${background ? 'Routing' : 'Focusing'} existing ${pageName} tab ${existingTab.id}`);
+    if (!background) switchTab(existingTab.id);
+    // Route the reused tab to the requested section. The webview is named
+    // explicitly — as the named-target reuse path above does — so a background
+    // re-navigation lands in that tab rather than in whichever one the user is
+    // still looking at. Bare pages need no re-navigation.
     if (subPath && onLoadTarget) {
-      setTimeout(() => onLoadTarget(fullUrl), 50);
+      setTimeout(() => onLoadTarget(fullUrl, null, existingTab.webview), 50);
     }
     return existingTab;
   }
 
-  pushDebug(`Opening ${pageName} in a new tab`);
-  return createTab(fullUrl);
+  pushDebug(`Opening ${pageName} in a new${background ? ' background' : ''} tab`);
+  return createTab(fullUrl, { background });
 };
 
 // Initialize tabs module
@@ -1838,7 +1876,10 @@ export const initTabs = async () => {
   // themselves (trackpad/shift-wheel), not just with the programmatic
   // `scrollActiveTabIntoView` ones (#311).
   tabBar?.addEventListener('scroll', updateTabStripOverflow, { passive: true });
-  window.addEventListener('resize', updateTabStripOverflow);
+  // A resize changes how much of the strip is visible, so the active tab can
+  // end up past the new edge — the same "a tab you cannot see or click" bug
+  // #311 is about. Scroll it back rather than only repainting the fades.
+  window.addEventListener('resize', scrollActiveTabIntoView);
 
   // Fetch webview preload path for internal pages
   try {

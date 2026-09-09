@@ -12,6 +12,23 @@ const { test, expect, SAMPLE_BZZ_HASH } = require('./fixtures');
 const PAGE_A = `bzz://${SAMPLE_BZZ_HASH}/`;
 const PAGE_B = `bzz://${'b'.repeat(64)}/`;
 
+// A guest swallows input for a moment after it attaches, so the first click on
+// a freshly rendered page can be lost — and a lost *link* click is a false
+// failure, not a regression. Spend that window on an empty part of the page
+// (bottom-right of the webview, clear of every fixture's links) so the click
+// under test is the second one. Deliberately not a retry loop: retrying the
+// activation itself could paper over the very dispositions being asserted.
+async function wakeGuest(window) {
+  const spot = await window.evaluate(() => {
+    const wv = document.querySelector('webview:not(.hidden)');
+    if (!wv) return null;
+    const rect = wv.getBoundingClientRect();
+    return { x: rect.right - 12, y: rect.bottom - 12 };
+  });
+  if (spot) await window.mouse.click(spot.x, spot.y);
+  await window.waitForTimeout(150);
+}
+
 // Serve a page whose only content is a link to `PAGE_B`, and open it in the
 // active tab. Returns the link's coordinates in *window* space, so
 // `page.mouse` clicks go through the real hit-test path into the guest.
@@ -56,8 +73,18 @@ async function openLinkPage(window, harness) {
       { message: 'Waiting for the link fixture to render', timeout: 15_000 }
     )
     .toBe(true);
+  // Spend the guest's post-attach input-swallow window before the caller's
+  // click on the link — see `wakeGuest`.
+  await wakeGuest(window);
   return point;
 }
+
+// The tab element of the tab *before* the active one carries `before-active`,
+// which `toHaveClass(/active/)` also matches — so "tab N is the active one" is
+// asserted against the single `.active` element by id rather than by a regex
+// over one tab's class string.
+const expectActiveTab = (window, tabId) =>
+  expect(window.locator('[data-test="tab"].active')).toHaveAttribute('data-tab-id', String(tabId));
 
 const tabTitles = (window) =>
   window.evaluate(() =>
@@ -111,11 +138,11 @@ test('clicking a tab activates it', async ({ window }) => {
   // Open a second tab; new tabs become active automatically.
   await window.locator('[data-test="new-tab-btn"]').click();
   await expect(tabs).toHaveCount(2);
-  await expect(window.locator('[data-test="tab"][data-tab-id="2"]')).toHaveClass(/active/);
+  await expectActiveTab(window, 2);
 
   // Switch back to the first tab.
   await window.locator('[data-test="tab"][data-tab-id="1"]').click();
-  await expect(window.locator('[data-test="tab"][data-tab-id="1"]')).toHaveClass(/active/);
+  await expectActiveTab(window, 1);
   await expect(window.locator('[data-test="tab"][data-tab-id="2"]')).not.toHaveClass(/active/);
 });
 
@@ -162,7 +189,7 @@ test('switching tabs focuses the page, not the tab button', async ({
   // Keyboard switch (Ctrl+Tab) has to do the same — that was the mirror-image
   // half of the bug, which left focus on the *outgoing* tab's button.
   await clickMenuItem(electronApp, 'next-tab');
-  await expect(window.locator('[data-test="tab"][data-tab-id="2"]')).toHaveClass(/active/);
+  await expectActiveTab(window, 2);
   await expect
     .poll(
       () =>
@@ -188,7 +215,7 @@ test('ctrl+click and middle-click open a background tab', async ({ window, harne
 
   await expect(tabs).toHaveCount(2);
   // Still on Page A, and its tab is still the active one.
-  await expect(window.locator('[data-test="tab"][data-tab-id="1"]')).toHaveClass(/active/);
+  await expectActiveTab(window, 1);
   await expect(window.locator('[data-test="tab"][data-tab-id="2"]')).not.toHaveClass(/active/);
   // The background tab's webview must be hidden — it is created after the
   // switch that would otherwise have hidden it.
@@ -199,7 +226,7 @@ test('ctrl+click and middle-click open a background tab', async ({ window, harne
   // Middle-click behaves the same way.
   await window.mouse.click(point.x, point.y, { button: 'middle' });
   await expect(tabs).toHaveCount(3);
-  await expect(window.locator('[data-test="tab"][data-tab-id="1"]')).toHaveClass(/active/);
+  await expectActiveTab(window, 1);
 
   // The background tabs really did load Page B (a background tab that never
   // navigates would pass every assertion above).
@@ -209,6 +236,157 @@ test('ctrl+click and middle-click open a background tab', async ({ window, harne
       timeout: 15_000,
     })
     .toEqual(['Page A', 'Page B', 'Page B']);
+});
+
+// Coordinates, in *window* space, of an element in the foreground guest.
+async function pointInGuest(window, selector) {
+  let point;
+  await expect
+    .poll(
+      async () => {
+        point = await window.evaluate(async (sel) => {
+          const wv = document.querySelector('webview:not(.hidden)');
+          if (!wv || typeof wv.executeJavaScript !== 'function') return null;
+          try {
+            const box = await wv.executeJavaScript(
+              `(() => { const a = document.querySelector(${JSON.stringify(sel)});` +
+                'if (!a) return null; const r = a.getBoundingClientRect();' +
+                'return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()'
+            );
+            if (!box) return null;
+            const rect = wv.getBoundingClientRect();
+            return { x: rect.x + box.x, y: rect.y + box.y };
+          } catch {
+            return null;
+          }
+        }, selector);
+        return !!point;
+      },
+      { message: `Waiting for ${selector} to render in the guest`, timeout: 15_000 }
+    )
+    .toBe(true);
+  return point;
+}
+
+const ctrlClick = async (window, point) => {
+  await window.keyboard.down('Control');
+  await window.mouse.click(point.x, point.y);
+  await window.keyboard.up('Control');
+};
+
+// #303: a `freedom://` internal page is a singleton tab, but the singleton
+// rule must not outrank the disposition. Ctrl+click on a freedom:// link had
+// the tab-reuse branch run before `background` was consulted, so it switched
+// the user onto Settings — the exact "stay on this page" behaviour the
+// modifier asks for.
+test('ctrl+click on a freedom:// link opens the internal page in the background', async ({
+  window,
+  harness,
+}) => {
+  await harness.setContentFixture(PAGE_A, {
+    body:
+      '<!doctype html><title>Page A</title><style>body{margin:0;padding:40px}' +
+      'a{display:inline-block;padding:20px;font-size:24px}</style>' +
+      '<a id="settings" href="freedom://settings">settings</a>',
+  });
+  const input = window.locator('[data-test="address-input"]');
+  await input.click();
+  await input.fill(PAGE_A);
+  await input.press('Enter');
+
+  const point = await pointInGuest(window, '#settings');
+  await wakeGuest(window);
+  await ctrlClick(window, point);
+
+  await expect(window.locator('[data-test="tab"]')).toHaveCount(2);
+  // Still on Page A: the Settings tab was opened behind it, hidden.
+  await expectActiveTab(window, 1);
+  expect(
+    await window.evaluate(() => document.querySelectorAll('webview:not(.hidden)').length)
+  ).toBe(1);
+  // The background tab really is Settings (a tab that never navigated would
+  // pass every assertion above).
+  await expect
+    .poll(async () => (await tabTitles(window)).map((tab) => tab.title), {
+      message: 'Waiting for the background Settings tab to load',
+      timeout: 15_000,
+    })
+    .toEqual(['Page A', 'Settings']);
+
+  // A second Ctrl+click reuses the singleton tab rather than opening a
+  // duplicate — and still leaves the user on Page A.
+  await ctrlClick(window, point);
+  await expect(window.locator('[data-test="tab"]')).toHaveCount(2);
+  await expectActiveTab(window, 1);
+});
+
+// #303: Chrome resolves the modifier before the `target` attribute — a
+// Ctrl+click never re-navigates the window a name already points at. When that
+// window is the tab the user is reading, reuse navigated the page out from
+// under them, the opposite of what the modifier asks for.
+//
+// Driven over `ipfs://`, not `bzz://`, on purpose: only `ipfs:`/`ipns:`/`web3:`
+// hrefs (and everything on a `web3:` page) are intercepted by
+// webview-preload's own disposition heuristic, which forwards the `target`
+// attribute in every disposition. A `bzz://` link goes out through Chromium's
+// `setWindowOpenHandler` instead, and Chromium has already dropped the frame
+// name by then — so a bzz fixture would pass with or without this fix.
+test('ctrl+click on a named-target link opens a new tab instead of reusing the named one', async ({
+  window,
+  harness,
+}) => {
+  const IPFS_A = `ipfs://bafybeib${'a'.repeat(51)}/`;
+  const IPFS_B = `ipfs://bafybeib${'b'.repeat(51)}/`;
+  const IPFS_C = `ipfs://bafybeib${'c'.repeat(51)}/`;
+  // Page B lives in the tab named "foo" and links to Page C with the same
+  // target — the self-targeting case from the audit.
+  await harness.setContentFixture(IPFS_A, {
+    body:
+      '<!doctype html><title>Page A</title><style>body{margin:0;padding:40px}' +
+      'a{display:inline-block;padding:20px;font-size:24px}</style>' +
+      `<a id="lnk" target="foo" href="${IPFS_B}">b</a>`,
+  });
+  await harness.setContentFixture(IPFS_B, {
+    body:
+      '<!doctype html><title>Page B</title><style>body{margin:0;padding:40px}' +
+      'a{display:inline-block;padding:20px;font-size:24px}</style>' +
+      `<a id="lnk" target="foo" href="${IPFS_C}">c</a>`,
+  });
+  await harness.setContentFixture(IPFS_C, {
+    body: '<!doctype html><title>Page C</title><h1>C</h1>',
+  });
+
+  const input = window.locator('[data-test="address-input"]');
+  await input.click();
+  await input.fill(IPFS_A);
+  await input.press('Enter');
+
+  // Plain click: Page B opens in a new foreground tab, which takes the name.
+  const linkInA = await pointInGuest(window, '#lnk');
+  await wakeGuest(window);
+  await window.mouse.click(linkInA.x, linkInA.y);
+  await expect(window.locator('[data-test="tab"]')).toHaveCount(2);
+  await expectActiveTab(window, 2);
+  await expect
+    .poll(async () => (await tabTitles(window)).map((tab) => tab.title), {
+      message: 'Waiting for the named tab to load Page B',
+      timeout: 15_000,
+    })
+    .toEqual(['Page A', 'Page B']);
+
+  // Ctrl+click the target="foo" link *inside* that tab: a third tab opens in
+  // the background and Page B stays where it is.
+  const linkInB = await pointInGuest(window, '#lnk');
+  await wakeGuest(window);
+  await ctrlClick(window, linkInB);
+  await expect(window.locator('[data-test="tab"]')).toHaveCount(3);
+  await expectActiveTab(window, 2);
+  await expect
+    .poll(async () => (await tabTitles(window)).map((tab) => tab.title), {
+      message: 'Waiting for the background tab to load Page C',
+      timeout: 15_000,
+    })
+    .toEqual(['Page A', 'Page B', 'Page C']);
 });
 
 // #303: Ctrl+Shift+click promotes the same link to a FOREGROUND tab.
@@ -222,7 +400,7 @@ test('ctrl+shift+click opens a foreground tab', async ({ window, harness }) => {
   await window.keyboard.up('Control');
 
   await expect(window.locator('[data-test="tab"]')).toHaveCount(2);
-  await expect(window.locator('[data-test="tab"][data-tab-id="2"]')).toHaveClass(/active/);
+  await expectActiveTab(window, 2);
 });
 
 // #303: Shift+click opens a new *window*, not a tab in this one.
@@ -290,7 +468,7 @@ test('the tab strip scrolls instead of clipping, keeping the active tab visible'
     document.querySelector('.tabs-container').scrollLeft = 0;
   });
   await clickMenuItem(electronApp, 'next-tab');
-  await expect(window.locator('[data-test="tab"][data-tab-id="1"]')).toHaveClass(/active/);
+  await expectActiveTab(window, 1);
   const wrapped = await measure();
   expect(wrapped.activeTabId).toBe('1');
   expect(wrapped.activeVisible).toBe(true);
@@ -316,7 +494,7 @@ test('the tab context menu closes on a keyboard tab switch and on a tab close', 
 
   await openMenuOnFirstTab();
   await clickMenuItem(electronApp, 'next-tab');
-  await expect(window.locator('[data-test="tab"][data-tab-id="2"]')).toHaveClass(/active/);
+  await expectActiveTab(window, 2);
   await expect(menu).toBeHidden();
   // Both tabs are still there: the switch dismissed the menu rather than
   // leaving Close Tab / Close Others live against the tab just left.
