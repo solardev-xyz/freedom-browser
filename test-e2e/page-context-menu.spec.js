@@ -218,6 +218,37 @@ test('withholds the item over a password field', async ({ window, harness }) => 
   await expect(searchItem(window)).toBeHidden();
 });
 
+// The bullets travel with the selection, not with the element the menu was
+// raised over: the page keeps the password field's selection live and fires a
+// synthetic `contextmenu` at an unrelated paragraph, so nothing in the event
+// target's ancestor chain is a password field.
+test('withholds the item for a password selection raised from another element', async ({
+  window,
+  harness,
+}) => {
+  await openFixture(window, harness);
+
+  await window.evaluate(async () => {
+    const webview = document.querySelector('webview:not(.hidden)');
+    await webview.executeJavaScript(`(() => {
+      const field = document.getElementById('password');
+      field.focus();
+      field.setSelectionRange(0, field.value.length);
+      document.getElementById('short').dispatchEvent(new MouseEvent('contextmenu', {
+        bubbles: true, cancelable: true, clientX: 30, clientY: 30
+      }));
+      return true;
+    })()`);
+  });
+
+  await expect(menu(window)).toBeVisible();
+  await window.screenshot({ path: '/tmp/page-context-menu-password-synthetic.png' });
+  // The selection group is up — so the masking bullets really did reach
+  // chrome as a selection, and the guard is what withholds the item.
+  await expect(window.locator('#page-context-menu [data-action="copy"]')).toBeVisible();
+  await expect(searchItem(window)).toBeHidden();
+});
+
 test('withholds the item when nothing is selected', async ({ window, harness }) => {
   await openFixture(window, harness);
 

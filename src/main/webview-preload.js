@@ -756,6 +756,23 @@ window.addEventListener(
       element = element.parentElement;
     }
 
+    // The walk above only sees the field the menu was raised over, but the
+    // selection Chromium reports comes from the focused field wherever that
+    // is: a page can select a password field's contents and then dispatch a
+    // synthetic `contextmenu` at some unrelated element, and the bullets would
+    // reach chrome unflagged. Take the flag from the selection's own source
+    // too. A collapsed range in the focused field means the reported selection
+    // came from the page, not from the field, so the menu is offered normally.
+    const focused = document.activeElement;
+    if (
+      context.selectedText &&
+      focused?.tagName === 'INPUT' &&
+      String(focused.type).toLowerCase() === 'password' &&
+      focused.selectionStart !== focused.selectionEnd
+    ) {
+      context.isPasswordField = true;
+    }
+
     // Decide after page handlers have run (setTimeout fires after the
     // event dispatch completes; a microtask would run between listeners).
     setTimeout(() => {

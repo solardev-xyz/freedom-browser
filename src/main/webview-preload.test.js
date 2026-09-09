@@ -504,6 +504,66 @@ describe('webview-preload', () => {
     }
   });
 
+  // The masking bullets travel with the *selection*, not with the element the
+  // menu was raised over: a page can select a password field's contents and
+  // dispatch a synthetic `contextmenu` somewhere else entirely, and the walk
+  // up the target's ancestors never sees the field.
+  test('flags a password-field selection raised from an unrelated element', async () => {
+    const passwordField = {
+      tagName: 'INPUT',
+      type: 'password',
+      selectionStart: 0,
+      selectionEnd: 6,
+    };
+    const { windowCaptureHandlers, ipcRenderer } = loadWebviewPreloadModule({
+      selectionText: '••••••',
+      location: { href: 'https://example.com/form', protocol: 'https:', pathname: '/form' },
+      documentOverrides: { activeElement: passwordField },
+    });
+
+    windowCaptureHandlers.contextmenu({
+      clientX: 4,
+      clientY: 5,
+      target: { tagName: 'DIV', parentElement: { tagName: 'BODY' } },
+      defaultPrevented: false,
+    });
+    await flushTimers();
+
+    expect(ipcRenderer.sendToHost).toHaveBeenCalledWith(
+      'context-menu',
+      expect.objectContaining({ selectedText: '••••••', isPasswordField: true })
+    );
+  });
+
+  // The complement: a focused password field with no selection of its own
+  // means the reported selection is the page's, so the item is offered.
+  test('offers a page selection while a password field is merely focused', async () => {
+    const passwordField = {
+      tagName: 'INPUT',
+      type: 'password',
+      selectionStart: 3,
+      selectionEnd: 3,
+    };
+    const { windowCaptureHandlers, ipcRenderer } = loadWebviewPreloadModule({
+      selectionText: 'otters',
+      location: { href: 'https://example.com/form', protocol: 'https:', pathname: '/form' },
+      documentOverrides: { activeElement: passwordField },
+    });
+
+    windowCaptureHandlers.contextmenu({
+      clientX: 4,
+      clientY: 5,
+      target: { tagName: 'P', parentElement: { tagName: 'BODY' } },
+      defaultPrevented: false,
+    });
+    await flushTimers();
+
+    expect(ipcRenderer.sendToHost).toHaveBeenCalledWith(
+      'context-menu',
+      expect.objectContaining({ selectedText: 'otters', isPasswordField: false })
+    );
+  });
+
   test('forwards a selection made inside an ordinary text field', async () => {
     const { windowCaptureHandlers, ipcRenderer } = loadWebviewPreloadModule({
       selectionText: 'typed query',

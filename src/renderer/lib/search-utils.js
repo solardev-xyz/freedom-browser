@@ -69,10 +69,15 @@ const resolveCustomProvider = (providerId, customProviders) => {
   const searchUrlTemplate = normalizeSearchUrlTemplate(provider?.searchUrlTemplate);
   if (!searchUrlTemplate) return null;
   const label = typeof provider?.name === 'string' ? provider.name.trim() : '';
-  // A stored custom provider always carries a name (settings-store rejects one
-  // without it), but a hand-edited settings.json need not — fall back to the
-  // default engine's label rather than putting an empty name on a menu item.
-  return { label: label || SEARCH_PROVIDERS[DEFAULT_SEARCH_PROVIDER].label, searchUrlTemplate };
+  // A nameless entry is refused whole, not labelled with the default engine's
+  // name: naming one engine while `buildSearchUrl` searches with another
+  // provider's template is exactly the disagreement this helper exists to
+  // prevent. Refusing sends both the label and the URL to the default.
+  // (settings-store's normalizeCustomSearchProviders already drops a nameless
+  // provider on load and on save, so this only guards a value that never
+  // reached the store.)
+  if (!label) return null;
+  return { label, searchUrlTemplate };
 };
 
 // The provider `providerId` actually resolves to. Kept alongside buildSearchUrl

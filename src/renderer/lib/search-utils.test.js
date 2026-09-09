@@ -127,11 +127,16 @@ describe('search-utils', () => {
       expect(buildSearchUrl('cats', 'custom:missing', customProviders)).toBe(
         'https://duckduckgo.com/?q=cats'
       );
-      expect(
-        getSearchProviderLabel('custom:nameless', [
-          { id: 'nameless', searchUrlTemplate: 'https://search.example/?q={searchTerms}' },
-        ])
-      ).toBe('DuckDuckGo');
+      // A nameless entry (impossible through the store, only through a
+      // hand-edited settings.json) is refused on both counts rather than
+      // wearing the default engine's name over the custom template's URL.
+      const nameless = [
+        { id: 'nameless', searchUrlTemplate: 'https://search.example/?q={searchTerms}' },
+      ];
+      expect(getSearchProviderLabel('custom:nameless', nameless)).toBe('DuckDuckGo');
+      expect(buildSearchUrl('cats', 'custom:nameless', nameless)).toBe(
+        'https://duckduckgo.com/?q=cats'
+      );
     });
   });
 
