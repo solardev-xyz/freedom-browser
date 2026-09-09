@@ -1,18 +1,13 @@
 {
   "schema": 1,
-  "sourceCommit": "02a183d86474a263cf8e85e5c2c2399672645535",
+  "sourceCommit": "a416cb0ffe779cc85d6124883a809638f013163e",
   "cargoLockSha256": "1f0c580d933559bc5f66e60613d53053fe1528c0b1e2dc2b0981295419d25961",
   "abi": 25,
   "artifacts": {
-    "linux-x64": {
-      "sha256": "b20a93ef75af038813609ecb854f97441b62345a7ceb8dc1625e95de7f9a9792",
-      "profile": "debug",
-      "sizeBytes": 280699328
-    },
     "darwin-arm64": {
-      "sha256": "9c93d1209fb981eda50b85df2cc9381be91c85aeefb2171e3412baa87b6e3fc5",
+      "sha256": "8f0cb38605b633491a182e8d1b7655d83e02a0c5a11a7c6aa11dd7d1d5654d77",
       "profile": "debug",
-      "sizeBytes": 51290696
+      "sizeBytes": 51294792
     }
   }
 }

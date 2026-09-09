@@ -8,47 +8,52 @@ by this integration work. This is not a release or qualification completion.
 
 ## Patched native source and local activation
 
-`config/myotis-integration.json` pins source
-`02a183d86474a263cf8e85e5c2c2399672645535`, exact ABI **25**, and
+`config/myotis-integration.json` pins checkpoint-refresh source
+`a416cb0ffe779cc85d6124883a809638f013163e` (the reliability candidate
+`02a183d8` plus the two checkpoint updates), exact ABI **25**, and unchanged
 `rust/Cargo.lock` SHA-256
 `1f0c580d933559bc5f66e60613d53053fe1528c0b1e2dc2b0981295419d25961`.
-Only these already-built debug Node addons are configured:
+The currently configured debug addon is:
 
 | Target | Exact bytes | SHA-256 |
 | --- | ---: | --- |
-| Linux x64 | 280699328 | `b20a93ef75af038813609ecb854f97441b62345a7ceb8dc1625e95de7f9a9792` |
-| macOS arm64 | 51290696 | `9c93d1209fb981eda50b85df2cc9381be91c85aeefb2171e3412baa87b6e3fc5` |
+| macOS arm64 | 51294792 | `8f0cb38605b633491a182e8d1b7655d83e02a0c5a11a7c6aa11dd7d1d5654d77` |
 
-The Mac compile/link-only evidence is retained at
-`/private/tmp/myotis-mac-arm64-debug-02a183d8-20260909.DdZzko/PROVENANCE.md`:
+The compile/link-only evidence is retained at
+`/private/tmp/myotis-checkpoint-native-evidence-20260909.3KRDLe/PROVENANCE.md`:
 Cargo/rustc 1.94.1, Apple clang 17, SDK 15.4, offline locked native-host debug
-build with two jobs. The artifact is ARM64 Mach-O DYLIB with Node registration
-exports; its code-signature load command is not notarization or runtime evidence.
-The evidence manifest hash is
-`e144c687e2b768cf3d9031766a13418ef91bd00c4d6c7203d00f3db249a73a01`.
-Debug unwind behavior differs from release panic-abort. Neither artifact was
-loaded or activated during this source adaptation.
+build with two jobs. Its evidence-manifest SHA-256 is
+`8d8ec09bde1f30e7a354d5ab46684d0c7149023238c53381c08a9903e7698ce1`.
+The artifact is ARM64 Mach-O DYLIB with Node registration exports. Debug unwind
+behavior differs from release panic-abort; static inspection is not runtime or
+notarization evidence.
 
 For a fresh checkout, activate the retained local Mac file with:
 
 ```sh
-npm run myotis:activate -- --target darwin-arm64 --file /private/tmp/myotis-mac-arm64-debug-02a183d8-20260909.DdZzko/myotis-node.darwin-arm64.node
+npm run myotis:activate -- --target darwin-arm64 --file /private/tmp/myotis-checkpoint-native-evidence-20260909.3KRDLe/myotis-node.darwin-arm64.node
 ```
 
-On the authorized Linux host, use the same command with `--target linux-x64`
-and the absolute path to its already-present exact pinned addon. The command
-never downloads, builds or loads native code. It streams verification/copy in
-64 KiB chunks from one opened regular-file descriptor, enforces the exact byte
-size and a 1 GiB ceiling, and creates `myotis-bin/<os>-<arch>/myotis-node.node`
-and `myotis-artifact.json` exclusively. Existing files are never overwritten or
-deleted; an interrupted/invalid copy has no trusted manifest and fails closed.
-Do not clear such output automatically; preserve it for coordinator disposition.
+The earlier Linux x64 artifact (source `02a183d8`, 280699328 bytes, SHA-256
+`b20a93ef75af038813609ecb854f97441b62345a7ceb8dc1625e95de7f9a9792`)
+is retained as historical evidence. Linux is now unconfigured until an artifact
+is built from the refreshed source; the old binary is not relabeled with the new
+commit. Windows and Mac x64 also remain unconfigured.
+
+Activation never downloads, builds or loads native code. It streams verification
+and copy in 64 KiB chunks from one opened regular-file descriptor, enforces the
+exact byte size and a 1 GiB ceiling, and creates
+`myotis-bin/<os>-<arch>/myotis-node.node` and `myotis-artifact.json` exclusively.
+Existing files are never overwritten or deleted. To refresh this local checkout,
+the coordinator preserved both previous files outside the checkout before
+activation. An interrupted/invalid copy has no trusted manifest and fails closed;
+do not clear such output automatically.
 
 Packaging preflight and child-before-load check the same bounded manifest,
 source/lock/target/ABI/hash pin. Main's status path only does cheap discovery,
-not binary hashing. Unconfigured targets (including Windows and Mac x64) need a
-separately reviewed exact artifact pin; there is no old-addon or release-download
-fallback. `myotis:download` explicitly refuses in this test branch.
+not binary hashing. Unconfigured targets need a separately reviewed exact artifact
+pin; there is no old-addon or release-download fallback. `myotis:download`
+explicitly refuses in this test branch.
 
 Verification is provenance consistency, not adversarial immutable loader
 ownership: the trusted local pathname can change between verification and native
@@ -96,13 +101,13 @@ signer/retries. Both resource sets and empty-entitlement files remain separate.
 
 ## Evidence limits and next gates
 
-Only lint and finite mocked tests ran for this adaptation. The read-only donor
-link has Jest 30.4.2 / babel-jest 30.4.1 instead of lock 30.5.1, and Electron
-43.0.0 instead of lock 43.6.0 (builder 26.15.3 matches). These checks are
-provisional. The existing merge CI's 14 failures in three workspace suites were
+At the initial source-adaptation checkpoint, only lint and finite mocked tests
+ran. The then-used read-only donor link had Jest 30.4.2 / babel-jest 30.4.1 instead of lock 30.5.1, and Electron
+43.0.0 instead of lock 43.6.0 (builder 26.15.3 matches). Those checks were
+provisional. The later prepared-checkout section records exact-dependency checks. The existing merge CI's 14 failures in three workspace suites were
 reported identical before this Myotis merge; this task neither fixes them nor
-claims a historical green uplift. Exact-lock runtime prerequisites remain
-missing on inventoried hosts; no acquisition is authorized.
+claims a historical green uplift. Exact-lock runtime prerequisites were then missing on inventoried hosts; later
+user-approved acquisition prepared the primary Mac checkout as recorded below.
 
 The inherited `qualify-myotis-supervisor.js` and benign addon are **historical,
 unmodified isolation fixtures**, incompatible with this integration's ABI 25
@@ -111,17 +116,17 @@ remain attributed to their original commits; they do not qualify this branch.
 Do not run that harness as current integration evidence. Any integration runtime
 harness is a separately reviewed follow-up with fresh authorization and bounds.
 
-Pending: exact runtime prerequisites, child ABI/method handshake, real patched-
-addon read/status/stop,
+Runtime gates include real patched-addon read/status/stop,
 actual app Quit, supported Windows artifacts/HANDLE/CRT/job behavior, signed
-macOS/ASAR/RunAsNode packaging and integration workflow qualification. No app,
-addon, E2E, blocked/fatal or native runtime fixture ran on the primary Mac.
+macOS/ASAR/RunAsNode packaging and integration workflow qualification. No automated app, addon, E2E, blocked/fatal or native runtime fixture was run
+on the primary Mac by the coordinator. Later user smoke observations are recorded below.
 
 ## Local activation checkpoint — 2026-09-09
 
 The coordinator activated the macOS arm64 addon in the separate integration
 checkout at exact source candidate `5483e051fcbca5057a6f968a1436bc7086f3e554`
-using `node scripts/activate-myotis-local.js` with the target and file above.
+using `node scripts/activate-myotis-local.js` with the then-pinned `02a183d8`
+artifact retained under `/private/tmp/myotis-mac-arm64-debug-02a183d8-20260909.DdZzko/`.
 Activation exited 0; an independent `verifyArtifact`
 read confirmed the source, lock, ABI, target, exact 51290696 bytes and pinned
 `9c93d1209fb981eda50b85df2cc9381be91c85aeefb2171e3412baa87b6e3fc5` hash.
@@ -164,7 +169,7 @@ coordinator finished preparing this checkout for a manual macOS arm64 smoke test
   Its bundle version and enabled RunAsNode fuse were checked without launching it.
 - Ant **0.5.44**, freedom-ipfs **0.4.3**, and libradicle **0.7.1** were installed
   only after the repository's pinned archive/checksum-manifest checks passed.
-  The exact patched Myotis addon remains as pinned above. Both supervisor helpers
+  The patched Myotis addon at this checkpoint was the `02a183d8` artifact. Both supervisor helpers
   were built from local source with the installed Apple compiler.
 - The existing node-hid **2.1.2** arm64 N-API binding was copied from the original
   checkout after matching package versions and loader bytes; its SHA-256 is
@@ -198,5 +203,56 @@ Enable Myotis for the desired chain in the Nodes controls before testing the
 agent, so the test exercises the patched path. A fresh profile may require model
 provider setup/sign-in. No credentials or profile data were copied. The coordinator
 did not launch Electron/Freedom, start a node, or run a real-addon lifecycle or
-Quit fixture on the primary Mac. Actual startup, model workflow and Quit behavior
-remain the manual smoke test's evidence; disposable qualification remains open.
+Quit fixture on the primary Mac. Actual startup, model workflow and Quit behavior are established by manual smoke
+evidence only where explicitly recorded below; disposable qualification remains open.
+
+
+## Fresh checkpoint correction — 2026-09-09
+
+The user's first manual launch showed **Stale anchor** for both chains, with
+zero peers/blocks. The initial `02a183d8` addon embedded August 20 checkpoints,
+which exceeded ABI 25's default age bounds on September 9. That launch did not
+establish working Myotis sync or a model workflow using verified reads.
+
+The replacement source `a416cb0f` updates only the mainnet/Gnosis checkpoint
+regions in Java, Rust and their existing parity assertions, plus provenance docs:
+
+| Chain | Finalized slot | Period | Canonical block root |
+| --- | ---: | ---: | --- |
+| Ethereum | 15176160 | 1852 | `db3103e254917f717261c1afced9d8c46200125000a27f58419cd5b8ac863a31` |
+| Gnosis | 29989088 | 3660 | `b8e6abc95beb93a5c8ccf3b92171edd5a5ca2f99a1c588b1a2519488f04910d4` |
+
+Finalized discovery and canonical block-root queries agreed across three
+mainnet operators and two Gnosis operators. The two gnosischain.com endpoints
+count as one operator. No JDK/Gradle was installed: local Python validation and
+source rendering followed the existing `refreshOneCheckpoint` algorithm and
+three-region templates, without acquiring software. Public bootstrap responses
+were also available and their BeaconBlockHeader SSZ hashes matched the selected
+roots. This proves HTTP data availability/header consistency, not Myotis p2p
+bootstrap, committee-proof validation or continuous update availability.
+
+All five finite Rust parity/config/age-gate checks passed. Parent-only manual
+source review found no blocker; ABI, lock, Sepolia and weak-subjectivity rules
+are unchanged. The source is retained on test-only branch
+`test/checkpoint-refresh-20260909` in
+`/private/tmp/myotis-checkpoint-refresh-20260909`; neither reliability PR changed.
+The Mac build was copied through the existing activation gate and independently
+reverified. Previous local addon/manifest files are preserved at
+`/private/tmp/freedom-myotis-checkpoint-replaced-20260909-t5r0ijkl/`.
+Activation evidence: `/private/tmp/freedom-checkpoint-activation-20260909.json`.
+All 41 native evidence file hashes were independently verified. Integration
+checks with the prepared locked dependencies passed **7 focused suites / 70
+tests**, lint, and macOS binary preflight. Logs are retained at
+`/private/tmp/freedom-checkpoint-refresh-tests-20260909.log` and
+`/private/tmp/freedom-checkpoint-refresh-lint-20260909.log`.
+
+With no newer persisted snapshot, these anchors first age out at **September 10,
+20:06:20 UTC for Gnosis** and **September 24, 14:14:47 UTC for Ethereum**.
+A node that keeps syncing may have a newer persisted anchor. The refresh does
+not bypass the age guard or make static checkpoints permanently usable.
+
+Quit and relaunch the same checkout/profile using the command above. The Nodes
+version should now show **a416cb0f (ABI 25)**. The profile and all ownership
+records were left intact; no node, app, native lifecycle or Quit fixture was
+launched by the coordinator. Successful sync, agent reads and actual Quit remain
+for the user's smoke test and subsequent disposable qualification.

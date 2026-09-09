@@ -1,4 +1,5 @@
 const path = require('path');
+const integrationPin = require('../../../config/myotis-integration.json');
 const IPC = require('../../shared/ipc-channels');
 const { createIpcMainMock, loadMainModule } = require('../../../test/helpers/main-process-test-utils');
 
@@ -58,7 +59,7 @@ describe('myotis-manager', () => {
     expect(clients.map((client) => client.options.dataDir)).toEqual([
       path.join(dataDir, 'mainnet'), path.join(dataDir, 'gnosis'),
     ]);
-    expect(mod.publicStatus()).toMatchObject({ state: 'ready', version: '02a183d8', abi: 25 });
+    expect(mod.publicStatus()).toMatchObject({ state: 'ready', version: integrationPin.sourceCommit.slice(0, 8), abi: 25 });
     await mod.stopMyotis(100);
     expect(mod.publicStatus(100).state).toBe('off');
     expect(mod.isReady(1)).toBe(true);

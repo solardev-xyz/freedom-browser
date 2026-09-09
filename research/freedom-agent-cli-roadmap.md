@@ -2814,7 +2814,7 @@ Verification after this checkpoint:
 
 Only `test/agent-myotis-integration` combines Agent `ae668a24` and isolation
 `3ff2c3fc` through merge `99177c068f7a5d161187c4e183193d12b4de07f7`.
-The separate PR/Agent branches retain their independence. The integration pins
+The separate PR/Agent branches retain their independence. The initial integration pinned
 patched Myotis `02a183d86474a263cf8e85e5c2c2399672645535`, exact ABI 25 and its
 Cargo.lock hash; [activation/provenance and runtime gates](../docs/myotis-integration.md)
 record the distinct Linux/Mac debug byte pins and coordinator-only local activation.
@@ -2844,6 +2844,22 @@ patched-addon lifecycle, actual Quit, Windows and signed-package gates remain op
   unchanged. No app, node, or real-addon lifecycle was launched; user smoke and
   disposable qualification are still pending. The integration guide records the
   launch command, fresh profile, retained acquisition evidence and optional Tor gap.
+
+- **2026-09-09 — Correct stale checkpoints before continuing the smoke test.**
+  The user's initial launch showed both Myotis chains parked at Stale anchor;
+  the August 20 embedded roots were outside their age bounds. Test-only native
+  source `a416cb0ffe779cc85d6124883a809638f013163e` refreshes Ethereum/Gnosis
+  from independently agreeing finalized root responses (three/two operators),
+  with matching public bootstrap header hashes. Five finite native checks,
+  manual source review, 7 integration suites / 70 tests, lint and binary preflight
+  passed. The offline-built Mac addon was repinned and
+  activated; the old addon/manifest were preserved, both PR branches and profile
+  data left intact. ABI 25 and age protection remain unchanged. Linux's older
+  artifact is now unconfigured pending a matching-source rebuild. Gnosis's new
+  cold-start anchor ages out September 10 at 20:06:20 UTC without a newer
+  persisted snapshot. See the integration guide for exact source/artifact hashes,
+  expiry times and evidence limits; working p2p sync, model reads and Quit remain
+  to be demonstrated after relaunch.
 
 ## Final target statement
 
