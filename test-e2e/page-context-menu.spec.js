@@ -13,12 +13,22 @@ const PAGE = `bzz://${SAMPLE_BZZ_HASH}/`;
 
 const LONG_TEXT = 'Freedom is a browser for the decentralized web with search from the address bar';
 
+// A select-all-sized selection: one sentence repeated past the 1024-code-point
+// query cap, so the clamp has a word boundary to cut on well inside the budget.
+const HUGE_SENTENCE = 'the otter carried a smooth stone under its arm across the cold river. ';
+const HUGE_TEXT = HUGE_SENTENCE.repeat(200).trim();
+
 const FIXTURE_BODY =
   '<!doctype html><title>Selection fixture</title>' +
   '<style>body{margin:0;padding:24px;font-size:18px}textarea{width:90%;height:80px;font-size:18px}</style>' +
   `<p id="short">otters</p><p id="long">${LONG_TEXT}</p>` +
   `<textarea id="field">${LONG_TEXT}</textarea>` +
-  '<input id="password" type="password" value="hunter2 secret">';
+  '<input id="password" type="password" value="hunter2 secret">' +
+  `<p id="huge">${HUGE_TEXT}</p>` +
+  // A login form rendered inside an open shadow root, the shape LWC/Stencil
+  // and embedded auth widgets ship. Populated from the test, not an inline
+  // script, so the fixture needs no script-src of its own.
+  '<div id="shadow-host"></div>';
 
 // Load the fixture into the active tab and wait for it to render.
 async function openFixture(window, harness) {
@@ -77,6 +87,35 @@ function selectAndOpenMenu(window, id, { field = false } = {}) {
       })()`);
     },
     { id, field }
+  );
+}
+
+// Build the fixture's open shadow root with a password field inside it, then
+// select that field's value. `target` says which element the synthetic
+// `contextmenu` is dispatched at: the shadow field itself (the event is
+// `composed`, so it reaches the preload's window-level capture listener
+// retargeted to the host) or `#short`, an unrelated element in the light DOM.
+function selectShadowPasswordAndOpenMenu(window, { target = 'shadow' } = {}) {
+  return window.evaluate(
+    async ({ target: where }) => {
+      const webview = document.querySelector('webview:not(.hidden)');
+      await webview.executeJavaScript(`(() => {
+        const host = document.getElementById('shadow-host');
+        const root = host.shadowRoot || host.attachShadow({ mode: 'open' });
+        root.innerHTML = '<input id="pw" type="password" value="hunter2 secret">';
+        const field = root.getElementById('pw');
+        field.focus();
+        field.setSelectionRange(0, field.value.length);
+        const from = ${where === 'shadow' ? 'field' : "document.getElementById('short')"};
+        const rect = from.getBoundingClientRect();
+        from.dispatchEvent(new MouseEvent('contextmenu', {
+          bubbles: true, cancelable: true, composed: true,
+          clientX: Math.round(rect.left + 10), clientY: Math.round(rect.top + 10),
+        }));
+        return true;
+      })()`);
+    },
+    { target }
   );
 }
 
@@ -247,6 +286,66 @@ test('withholds the item for a password selection raised from another element', 
   // chrome as a selection, and the guard is what withholds the item.
   await expect(window.locator('#page-context-menu [data-action="copy"]')).toBeVisible();
   await expect(searchItem(window)).toBeHidden();
+});
+
+// `event.target` retargets to the shadow host for a node inside an open shadow
+// root, and `element.parentElement` is null at the boundary, so an ancestor
+// walk from the retargeted target never sees the field. `document.activeElement`
+// retargets to the host too. Both guards have to pierce the root or the
+// masking bullets are offered as a search query.
+test('withholds the item over a password field inside an open shadow root', async ({
+  window,
+  harness,
+}) => {
+  await openFixture(window, harness);
+  await selectShadowPasswordAndOpenMenu(window, { target: 'shadow' });
+
+  await expect(menu(window)).toBeVisible();
+  await expect(window.locator('#page-context-menu [data-action="copy"]')).toBeVisible();
+  await expect(searchItem(window)).toBeHidden();
+});
+
+test('withholds the item for a shadow-root password selection raised elsewhere', async ({
+  window,
+  harness,
+}) => {
+  await openFixture(window, harness);
+  await selectShadowPasswordAndOpenMenu(window, { target: 'light' });
+
+  await expect(menu(window)).toBeVisible();
+  await expect(window.locator('#page-context-menu [data-action="copy"]')).toBeVisible();
+  await expect(searchItem(window)).toBeHidden();
+});
+
+// A select-all search must not build a query the size of the document: the URL
+// is navigated to and written verbatim into the history DB, and past Chromium's
+// own maximum URL length the navigation is dropped with no error page at all.
+test('clamps a select-all sized selection to a bounded query', async ({ window, harness }) => {
+  await openFixture(window, harness);
+  await selectAndOpenMenu(window, 'huge');
+
+  await expect(searchItem(window)).toBeVisible();
+  await searchItem(window).click();
+
+  const url = await window.locator('[data-test="address-input"]').inputValue();
+  expect(url.startsWith('https://duckduckgo.com/?q=')).toBe(true);
+  const query = decodeURIComponent(url.slice('https://duckduckgo.com/?q='.length));
+  expect(query.length).toBeLessThanOrEqual(1024);
+  // Clamped, not emptied: the head of the selection is what gets searched, cut
+  // on a word boundary.
+  expect(HUGE_TEXT.startsWith(query)).toBe(true);
+  expect(query.length).toBeGreaterThan(512);
+  // And the clamped URL is what history stores, not the whole page.
+  await expect
+    .poll(
+      () =>
+        window.evaluate(async () => {
+          const entries = (await window.electronAPI?.getHistory?.({ limit: 10 })) || [];
+          return Math.max(0, ...entries.map((entry) => (entry?.url || '').length));
+        }),
+      { message: 'Waiting for the search to reach history', timeout: 10_000 }
+    )
+    .toBeLessThan(2048);
 });
 
 test('withholds the item when nothing is selected', async ({ window, harness }) => {

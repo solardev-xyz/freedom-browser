@@ -666,6 +666,42 @@ contextBridge.exposeInMainWorld('freedomAPI', {
 // Context Menu Handler (works on all pages)
 // ============================================
 
+// The elements a `contextmenu` really passed through, innermost first, up to
+// (but not including) `document.body` — the same bound the plain ancestor walk
+// this replaces stopped at. Falls back to the ancestor chain if the event
+// carries no `composedPath` (a hand-rolled object in a unit test).
+const composedElementPath = (event) => {
+  const path = [];
+  const composed = typeof event.composedPath === 'function' ? event.composedPath() : null;
+  if (composed && composed.length) {
+    for (const node of composed) {
+      if (node === document.body) break;
+      // Elements only: the path also carries shadow roots, the document and
+      // the window, none of which have tagName/parentElement.
+      if (node && node.nodeType === 1) path.push(node);
+    }
+    return path;
+  }
+  let element = event.target;
+  while (element && element !== document.body) {
+    path.push(element);
+    element = element.parentElement;
+  }
+  return path;
+};
+
+// The element that really holds focus. `document.activeElement` retargets to
+// the shadow host for a node inside an open shadow root, so a password field a
+// site renders in a shadow tree would read as an ordinary `<div>`/custom
+// element here; each root's own `activeElement` walks the rest of the way down.
+const deepActiveElement = () => {
+  let element = document.activeElement;
+  while (element?.shadowRoot?.activeElement) {
+    element = element.shadowRoot.activeElement;
+  }
+  return element;
+};
+
 // Get context information when right-clicking.
 //
 // Registered on window in the capture phase: window is the first node in the
@@ -699,9 +735,16 @@ window.addEventListener(
       context.selectedText = selection.toString();
     }
 
-    // Walk up the DOM tree to find links, images, etc.
-    let element = event.target;
-    while (element && element !== document.body) {
+    // Walk from the real target outwards to find links, images, etc.
+    //
+    // `event.target` is retargeted to the shadow *host* for anything inside an
+    // open shadow root, and `element.parentElement` is null at a shadow
+    // boundary anyway, so an ancestor walk alone never sees the element a site
+    // actually rendered inside a shadow tree (LWC/Stencil components, embedded
+    // auth widgets). `composedPath()` is the event's real capture path — the
+    // inner nodes first, then each host, in the same inner-to-outer order the
+    // walk used — so it covers the light DOM and every open root above it. #330.
+    for (const element of composedElementPath(event)) {
       // Check for links
       if (element.tagName === 'A' && element.href) {
         context.linkUrl = getRawDwebHref(element) || element.href;
@@ -752,8 +795,6 @@ window.addEventListener(
           context.isPasswordField = true;
         }
       }
-
-      element = element.parentElement;
     }
 
     // The walk above only sees the field the menu was raised over, but the
@@ -763,7 +804,7 @@ window.addEventListener(
     // reach chrome unflagged. Take the flag from the selection's own source
     // too. A collapsed range in the focused field means the reported selection
     // came from the page, not from the field, so the menu is offered normally.
-    const focused = document.activeElement;
+    const focused = deepActiveElement();
     if (
       context.selectedText &&
       focused?.tagName === 'INPUT' &&

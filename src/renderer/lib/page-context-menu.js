@@ -7,6 +7,7 @@ import { deriveDisplayValue, applyEnsNamePreservation } from './url-utils.js';
 import { isTrustInterstitialPageUrl } from './page-urls.js';
 import {
   buildSearchUrl,
+  clampSearchSelection,
   formatSearchMenuSelection,
   getSearchProviderLabel,
 } from './search-utils.js';
@@ -362,11 +363,16 @@ const handleAction = async (action, { background = false } = {}) => {
         pushDebug('Refusing to search the selection in a password field');
         break;
       }
-      // The full selection is the query — the elision in the label is only
-      // what the menu row shows. buildSearchUrl trims and encodes it, the same
-      // call the address bar makes for typed input that is not a URL. #330.
+      // The selection is the query, clamped to SEARCH_SELECTION_MAX the way
+      // Chrome clamps its own context-menu selection text — a select-all on a
+      // long page must not build a query the size of the document, which would
+      // be navigated to and stored in history verbatim (and silently dropped
+      // once it runs past Chromium's maximum URL length). The elision in the
+      // label is separate, and only what the menu row shows. buildSearchUrl
+      // then trims and encodes it, the same call the address bar makes for
+      // typed input that is not a URL. #330.
       const searchUrl = buildSearchUrl(
-        currentContext.selectedText,
+        clampSearchSelection(currentContext.selectedText),
         state.searchProvider,
         state.customSearchProviders
       );

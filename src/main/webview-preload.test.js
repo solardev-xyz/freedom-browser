@@ -535,6 +535,105 @@ describe('webview-preload', () => {
     );
   });
 
+  // A site that renders its login form inside an open shadow root (LWC,
+  // Stencil, embedded auth widgets) defeats both guards on its own:
+  // `event.target` retargets to the shadow host, and `parentElement` is null
+  // at the shadow boundary, so an ancestor walk from the retargeted target
+  // never reaches the field. `composedPath()` is the path the event really
+  // took, hosts included.
+  test('flags a password field inside an open shadow root via the composed path', async () => {
+    const host = { tagName: 'LOGIN-FORM', nodeType: 1, parentElement: { tagName: 'BODY' } };
+    const shadowField = { tagName: 'INPUT', type: 'password', nodeType: 1, parentElement: null };
+    const { windowCaptureHandlers, ipcRenderer } = loadWebviewPreloadModule({
+      selectionText: '•••••••••••••',
+      location: { href: 'https://example.com/login', protocol: 'https:', pathname: '/login' },
+    });
+
+    windowCaptureHandlers.contextmenu({
+      clientX: 4,
+      clientY: 5,
+      // What a listener outside the shadow tree sees.
+      target: host,
+      // What actually happened.
+      composedPath: () => [shadowField, { nodeType: 11 }, host],
+      defaultPrevented: false,
+    });
+    await flushTimers();
+
+    expect(ipcRenderer.sendToHost).toHaveBeenCalledWith(
+      'context-menu',
+      expect.objectContaining({
+        selectedText: '•••••••••••••',
+        isEditable: true,
+        isPasswordField: true,
+      })
+    );
+  });
+
+  // The same field, but the menu is raised at an unrelated element, so the
+  // composed path never touches it either — this is the activeElement guard,
+  // which retargets to the host just as `event.target` does and has to descend
+  // through the root's own `activeElement` to find the field.
+  test('flags a shadow-root password selection raised from an unrelated element', async () => {
+    const shadowField = {
+      tagName: 'INPUT',
+      type: 'password',
+      selectionStart: 0,
+      selectionEnd: 13,
+    };
+    const host = { tagName: 'LOGIN-FORM', shadowRoot: { activeElement: shadowField } };
+    const { windowCaptureHandlers, ipcRenderer } = loadWebviewPreloadModule({
+      selectionText: '•••••••••••••',
+      location: { href: 'https://example.com/login', protocol: 'https:', pathname: '/login' },
+      documentOverrides: { activeElement: host },
+    });
+
+    windowCaptureHandlers.contextmenu({
+      clientX: 4,
+      clientY: 5,
+      target: { tagName: 'P', nodeType: 1, parentElement: { tagName: 'BODY' } },
+      defaultPrevented: false,
+    });
+    await flushTimers();
+
+    expect(ipcRenderer.sendToHost).toHaveBeenCalledWith(
+      'context-menu',
+      expect.objectContaining({ selectedText: '•••••••••••••', isPasswordField: true })
+    );
+  });
+
+  // The composed path also carries the ordinary link/image context a shadow
+  // root used to hide entirely — the walk that missed the password field
+  // missed everything else inside a web component too.
+  test('reads a link inside an open shadow root from the composed path', async () => {
+    const host = { tagName: 'ARTICLE-CARD', nodeType: 1, parentElement: { tagName: 'BODY' } };
+    const link = {
+      tagName: 'A',
+      nodeType: 1,
+      href: 'https://linked.example/story',
+      textContent: 'Read more',
+      getAttribute: () => null,
+      parentElement: null,
+    };
+    const { windowCaptureHandlers, ipcRenderer } = loadWebviewPreloadModule({
+      location: { href: 'https://example.com/feed', protocol: 'https:', pathname: '/feed' },
+    });
+
+    windowCaptureHandlers.contextmenu({
+      clientX: 4,
+      clientY: 5,
+      target: host,
+      composedPath: () => [link, { nodeType: 11 }, host],
+      defaultPrevented: false,
+    });
+    await flushTimers();
+
+    expect(ipcRenderer.sendToHost).toHaveBeenCalledWith(
+      'context-menu',
+      expect.objectContaining({ linkUrl: 'https://linked.example/story', linkText: 'Read more' })
+    );
+  });
+
   // The complement: a focused password field with no selection of its own
   // means the reported selection is the page's, so the item is offered.
   test('offers a page selection while a password field is merely focused', async () => {

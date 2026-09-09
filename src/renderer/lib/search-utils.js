@@ -108,6 +108,49 @@ export const buildSearchUrl = (query, providerId, customProviders = []) => {
 // past the toolbar surfaces beside it.
 export const SEARCH_MENU_SELECTION_MAX = 32;
 
+// How much of a selection a selection search actually sends — the same 1024
+// Chrome caps its own context-menu selection text at (`kMaxSelectionTextLength`
+// in content/browser/renderer_host/render_frame_host_impl.cc), counted in code
+// points here rather than UTF-16 units. The cap is not cosmetic: an uncapped
+// select-all search on a long article or log builds a query string the size of
+// the page, which is navigated to and written verbatim into the history DB —
+// where it then sits in the history page and in autocomplete. Past Chromium's
+// own maximum URL length the navigation is dropped with no error page at all,
+// leaving a blank tab, and real engines answer 414 far below that anyway.
+export const SEARCH_SELECTION_MAX = 1024;
+
+// Refuse to cut a clamped selection down to a scrap: below this share of the
+// budget the word boundary is worse than a hard cut mid-token.
+const SEARCH_SELECTION_MIN_BOUNDARY = SEARCH_SELECTION_MAX / 2;
+
+// The query a `Search <Engine> for "…"` click sends, clamped to the cap above.
+// Counted by code point so an astral character is never cut through the middle
+// of its surrogate pair, and cut on the last whitespace run inside the budget
+// so the query does not end mid-word. A selection short enough to send whole is
+// returned untouched — `buildSearchUrl` still trims and encodes it.
+export const clampSearchSelection = (selection) => {
+  if (typeof selection !== 'string') return '';
+  // A code point is never fewer than one UTF-16 unit, so a string this short
+  // cannot exceed the cap — and this is the case every ordinary selection
+  // takes, which keeps the code-point split below off the common path.
+  if (selection.length <= SEARCH_SELECTION_MAX) return selection;
+
+  const characters = [...selection];
+  if (characters.length <= SEARCH_SELECTION_MAX) return selection;
+
+  const head = characters.slice(0, SEARCH_SELECTION_MAX).join('');
+  // The budget ran out exactly on a break: the head already ends on a whole
+  // word, so there is nothing to cut back to.
+  if (/\s/u.test(characters[SEARCH_SELECTION_MAX])) return head.trimEnd();
+
+  // Otherwise the head ends mid-word — drop back to the last break inside it,
+  // unless that would leave a scrap (a selection with no break in the whole
+  // budget: a hash, a base64 blob), in which case cut it hard.
+  const trimmed = head.trimEnd();
+  const boundary = trimmed.search(/\s+\S*$/u);
+  return boundary >= SEARCH_SELECTION_MIN_BOUNDARY ? trimmed.slice(0, boundary) : head;
+};
+
 // The quoted part of that item: whitespace collapsed to single spaces (a
 // selection spanning several lines must stay one menu row) and elided with a
 // single-character ellipsis once it runs past the budget. Returns '' for a

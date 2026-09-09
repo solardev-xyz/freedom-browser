@@ -3,8 +3,10 @@ import path from 'path';
 import {
   SEARCH_PROVIDERS,
   SEARCH_MENU_SELECTION_MAX,
+  SEARCH_SELECTION_MAX,
   DEFAULT_SEARCH_PROVIDER,
   buildSearchUrl,
+  clampSearchSelection,
   formatSearchMenuSelection,
   getSearchProviderLabel,
   normalizeSearchUrlTemplate,
@@ -182,6 +184,64 @@ describe('search-utils', () => {
       expect(formatSearchMenuSelection('   \n\t ')).toBe('');
       expect(formatSearchMenuSelection(null)).toBe('');
       expect(formatSearchMenuSelection(undefined)).toBe('');
+    });
+  });
+
+  describe('clampSearchSelection', () => {
+    test('returns a selection that fits the cap untouched', () => {
+      expect(clampSearchSelection('otters')).toBe('otters');
+      // Newlines and runs of whitespace survive: only the length is capped.
+      expect(clampSearchSelection('two\nlines  here')).toBe('two\nlines  here');
+      expect(clampSearchSelection('a'.repeat(SEARCH_SELECTION_MAX))).toBe(
+        'a'.repeat(SEARCH_SELECTION_MAX)
+      );
+    });
+
+    test('clamps a select-all sized selection to the cap', () => {
+      // The shape the finding reproduced: right-click after Ctrl+A on a long
+      // article or log, which built a 1.5 MB URL that went into history — and
+      // past Chromium's maximum URL length was dropped with no error page.
+      const huge = 'the otter carried a smooth stone. '.repeat(50_000);
+      const clamped = clampSearchSelection(huge);
+      expect(clamped.length).toBeLessThanOrEqual(SEARCH_SELECTION_MAX);
+      expect(huge.startsWith(clamped)).toBe(true);
+      // Cut on a word boundary, and not down to a scrap.
+      expect(clamped.endsWith('stone.')).toBe(true);
+      expect(clamped.length).toBeGreaterThan(SEARCH_SELECTION_MAX / 2);
+    });
+
+    test('cuts a single unbroken token hard rather than down to a scrap', () => {
+      // No whitespace at all: there is no boundary to prefer.
+      expect(clampSearchSelection('x'.repeat(SEARCH_SELECTION_MAX * 3))).toBe(
+        'x'.repeat(SEARCH_SELECTION_MAX)
+      );
+      // One boundary, but far too early — cutting there would send three
+      // characters instead of the kilobyte the user selected.
+      const earlyBreak = `abc ${'y'.repeat(SEARCH_SELECTION_MAX * 3)}`;
+      expect(clampSearchSelection(earlyBreak)).toBe(earlyBreak.slice(0, SEARCH_SELECTION_MAX));
+    });
+
+    test('never cuts through a surrogate pair', () => {
+      const clamped = clampSearchSelection('🦦'.repeat(SEARCH_SELECTION_MAX * 2));
+      expect([...clamped]).toHaveLength(SEARCH_SELECTION_MAX);
+      expect(clamped).not.toContain('�');
+    });
+
+    test('returns an empty string for a non-string selection', () => {
+      expect(clampSearchSelection(null)).toBe('');
+      expect(clampSearchSelection(undefined)).toBe('');
+      expect(clampSearchSelection(12)).toBe('');
+    });
+
+    test('bounds the URL a selection search can build', () => {
+      const url = buildSearchUrl(
+        clampSearchSelection('otter '.repeat(500_000)),
+        DEFAULT_SEARCH_PROVIDER
+      );
+      // Well inside every engine's request-line limit, and inside Chromium's
+      // own maximum URL length by three orders of magnitude.
+      expect(url.length).toBeLessThan(4096);
+      expect(url.startsWith('https://duckduckgo.com/?q=otter')).toBe(true);
     });
   });
 });

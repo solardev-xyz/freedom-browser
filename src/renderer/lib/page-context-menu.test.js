@@ -890,6 +890,32 @@ describe('page-context-menu', () => {
       expect(pushDebug).toHaveBeenCalledWith('Searching for the selection');
     });
 
+    test('clamps a select-all sized selection instead of building a huge URL', async () => {
+      const { mod, pageContextMenu } = await loadPageContextMenuModule();
+      const { SEARCH_SELECTION_MAX } = await import('./search-utils.js');
+      await mod.initPageContextMenu();
+
+      // Ctrl+A on a long article or log. Uncapped this built a query the size
+      // of the page, which was navigated to and written into the history DB —
+      // and past Chromium's maximum URL length was dropped with no error page.
+      mod.showPageContextMenu(20, 30, {
+        pageUrl: 'https://example.com/log',
+        selectedText: 'the otter carried a smooth stone. '.repeat(50_000),
+      });
+      global.document.dispatchEvent.mockClear();
+
+      await triggerMenuAction(pageContextMenu, 'search-selection');
+
+      const [dispatched] = global.document.dispatchEvent.mock.calls.at(-1);
+      expect(dispatched.type).toBe('open-url-new-tab');
+      expect(dispatched.detail.url.length).toBeLessThan(4096);
+      expect(dispatched.detail.url.startsWith('https://duckduckgo.com/?q=the%20otter')).toBe(true);
+      const query = decodeURIComponent(
+        dispatched.detail.url.slice('https://duckduckgo.com/?q='.length)
+      );
+      expect(query.length).toBeLessThanOrEqual(SEARCH_SELECTION_MAX);
+    });
+
     test('a Ctrl/Cmd-clicked item opens the search behind the current tab', async () => {
       const { mod, pageContextMenu } = await loadPageContextMenuModule();
       await mod.initPageContextMenu();
