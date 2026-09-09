@@ -79,6 +79,9 @@ class MyotisProcess {
       execArgv: [process.execPath],
       stdio: ['pipe', 'pipe', 'ignore', 'ipc'],
       serialization: 'json',
+      // Keep the native owner out of libuv's Windows kill-on-parent-exit job
+      // so it can process control EOF and retire its child. Pipes stay referenced.
+      detached: process.platform === 'win32',
     });
     this.child.on('message', (message) => this.receive(message));
     this.child.once('exit', (code, signal) => {

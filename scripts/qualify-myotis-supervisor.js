@@ -41,11 +41,23 @@ function parseArguments(args) {
   assert(path.isAbsolute(args[2]), 'Evidence directory must be absolute');
   return path.resolve(args[2]);
 }
-function readRecord(dataDir) {
-  const value = fs.readFileSync(path.join(dataDir, '.freedom-myotis-owner'), 'utf8');
-  assert(value.length <= 96, 'Oversized native record');
-  return value;
+function readRecord(dataDir, io = fs) {
+  const fd = io.openSync(path.join(dataDir, '.freedom-myotis-owner'), 'r');
+  try {
+    const bytes = Buffer.alloc(97);
+    const size = io.readSync(fd, bytes, 0, bytes.length, 0);
+    assert(size <= 96, 'Oversized native record');
+    return bytes.toString('utf8', 0, size);
+  } finally { io.closeSync(fd); }
 }
+function ownerSnapshot(dataDir, io = fs) {
+  try { return { observedAtMs: Date.now(), record: readRecord(dataDir, io) }; }
+  catch (error) {
+    return { observedAtMs: Date.now(), record: null,
+      error: ['ENOENT', 'EACCES', 'EPERM', 'EBUSY'].includes(error.code) ? error.code : 'invalid-or-unreadable' };
+  }
+}
+
 function validateTerminal(client, forced, platform = process.platform) {
   assert.equal(client.exited, true, 'No native receipt + OS exit proof');
   assert.equal(client.supervisorExit?.code, 0);
@@ -164,6 +176,9 @@ async function parentLoss(dir, groupSignal = false) {
     controller.once('exit', (code, signal) => resolve({ code, signal }));
     controller.once('error', reject);
   }), 20000, 'parent controller exit');
+  // Persist actual controller exit even if the subsequent retirement wait fails.
+  writeJson(path.join(dir, 'controller-exit.json'), { controllerExit: exit, generation: generation || null,
+    oldSupervisorOsExitDirectlyObserved: false });
   assert.equal(exit.code, groupSignal ? null : 0);
   assert.equal(exit.signal, groupSignal ? 'SIGTERM' : null);
   assert(generation);
@@ -212,6 +227,8 @@ async function runHarness(root) {
     } catch (error) {
       accepting = false;
       result = { name, passed: false, error: error.message };
+      // Snapshot before cleanup; never clear a record or reinterpret a timeout.
+      writeJson(path.join(dir, 'owner-record-on-failure.json'), ownerSnapshot(path.join(dir, 'data')));
     }
     // Bounded owned-control cleanup only. Unknown exit is retained as failure.
     for (const client of owned) {
@@ -320,4 +337,4 @@ if (require.main === module) {
     : runHarness(parseArguments(process.argv.slice(2)));
   task.catch((error) => { console.error(error.message); process.exitCode = 1; });
 }
-module.exports = { parseArguments, validateTerminal, requireRuntime, controllerOptions };
+module.exports = { parseArguments, validateTerminal, requireRuntime, controllerOptions, ownerSnapshot };

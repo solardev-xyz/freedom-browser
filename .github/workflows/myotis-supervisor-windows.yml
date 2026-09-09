@@ -101,5 +101,7 @@ jobs:
         with:
           name: myotis-windows-node-${{ github.sha }}-${{ github.run_attempt }}
           path: ${{ env.EVIDENCE_ROOT }}/
+          # Only this task-owned evidence tree; include its native .owner records.
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 14

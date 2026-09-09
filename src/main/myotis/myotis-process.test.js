@@ -12,6 +12,7 @@ describe('MyotisProcess', () => {
     child = new EventEmitter();
     child.send = jest.fn((_message, cb) => cb?.(null));
     child.kill = jest.fn();
+    child.unref = jest.fn();
     child.stdout = new EventEmitter();
     child.stdin = new EventEmitter();
     child.stdin.end = jest.fn();
@@ -50,6 +51,26 @@ describe('MyotisProcess', () => {
       expect(['ELECTRON_RUN_AS_NODE', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'TMPDIR', 'LANG', 'LC_ALL', 'TZ']).toContain(key);
     }
     expect(options.stdio).toEqual(['pipe', 'pipe', 'ignore', 'ipc']);
+  });
+
+  test.each(['win32', 'darwin', 'linux'])('supervisor detach is Windows-only and preserves observed pipes on %s', (platform) => {
+    const descriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+    try {
+      Object.defineProperty(process, 'platform', { ...descriptor, value: platform });
+      const { MyotisProcess } = require('./myotis-process');
+      new MyotisProcess({ addonPath: '/addon.node', network: 'mainnet', dataDir: '/data', ...callbacks });
+      const options = fork.mock.calls.at(-1)[2];
+      expect(options.detached).toBe(platform === 'win32');
+      expect(options.stdio).toEqual(['pipe', 'pipe', 'ignore', 'ipc']);
+      expect(options.serialization).toBe('json');
+      expect(options.execArgv).toEqual([process.execPath]);
+      expect(child.listenerCount('exit')).toBeGreaterThan(0);
+      expect(child.stdout.listenerCount('end')).toBeGreaterThan(0);
+      expect(child.unref).not.toHaveBeenCalled();
+      expect(child.kill).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(process, 'platform', descriptor);
+    }
   });
 
   test('bounds native admission and queue, with independently bounded status', async () => {

@@ -226,3 +226,54 @@ Electron 43, ASAR, RunAsNode fuses, real ABI22 native teardown, actual app Quit,
 and signing remain separate qualification gates. Historical `098149e7` and
 `c915e138` Mac results above retain their exact source/runtime attribution;
 changes to this harness do not extend those passes.
+
+### Windows partial runtime checkpoint and scoped correction — 2026-09-09
+
+[Run 34338572209](https://github.com/solardev-xyz/freedom-browser/actions/runs/34338572209)
+checked out exact `dff65fb8ad22ad59eb4f46fb2ea063785db6ca4d` and compiled the
+native helper. The nine-case campaign **failed**: its first eight cases passed,
+then `parent-controller-loss` failed with `Native durable retirement not
+observed`. Inputs were unchanged. No wait or pass criterion is being relaxed.
+The earlier run `34337971585` failed workflow validation before any job ran.
+
+Runtime: preinstalled Node 22.23.2 / libuv 1.51.0, Windows x64, runner image
+`win25-vs2026` version `20260824.214.3`, OS `10.0.26100.0`. Helper SHA256:
+`4b4b5739762a2c726ae7fc6d7d953b22701f5cebb6b50dcb318bc2988072c922`.
+The downloaded helper hash was independently checked without execution.
+Evidence is retained at
+`/private/tmp/freedom-windows-dff65fb8-evidence-20260909`; the controller-ready
+record and fixture init/create/start/stop events establish that its runtime
+opt-in and fd3 startup succeeded. The old supervisor exit was not observed;
+the failed wait alone does not prove how it died. The upload omitted hidden
+owner files, and the old harness did not persist controller exit before that
+wait failed. These omissions prevent stronger reconstruction of this attempt.
+
+[Exact Node 22.23.2 libuv source](https://raw.githubusercontent.com/nodejs/node/v22.23.2/deps/uv/src/win/process.c)
+creates a kill-on-parent-exit job and assigns non-detached spawned children to
+it (lines 65–91 and 1016–1034). That provides a source-backed explanation for
+controller loss killing the supervisor before retirement, consistent with the
+observed failure; it is an inference, not a captured supervisor exit result.
+The correction sets `detached: true` **only on Windows product supervisor
+spawn**, retaining control/report/IPC pipes and exit observation. There is no
+`unref`, new signaling, native C change, POSIX detachment or record clearing.
+The supervisor's own mandatory child JobList and retained-HANDLE contract stay
+unchanged. The original finite parent-loss case remains the runtime check.
+
+The same libuv code creates detached processes suspended and then resumes
+them (lines 988–1040). Parent death between those operations can strand an
+unexecuted supervisor. No addon child or active owner record exists at that
+stage, but this correction does **not** establish complete startup cleanup or
+resource containment. It does not request general ancestor-job breakaway or
+promise survival of unrelated job termination. After supervisor execution,
+its existing control-EOF checks and native ownership rules still apply.
+
+The harness now persists `controller-exit.json` immediately after observed
+controller OS exit, before assertions and the unchanged retirement wait. Any
+case failure writes `owner-record-on-failure.json` before cleanup, using a
+single descriptor read capped at 97 bytes to detect the 96-byte record bound;
+missing/unreadable/oversized records are explicit, never cleared. Upload includes
+hidden files **only within the task-owned evidence root**, preserving actual
+owner records as well as bounded plaintext failure snapshots. Subsequent
+retirement cannot reclassify a timed-out case as passed. A reviewed new campaign
+is required; the partial run above does not qualify this correction, Electron,
+a real addon, actual app Quit, signing or supervisor-crash cleanup.

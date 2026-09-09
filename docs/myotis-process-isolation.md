@@ -72,6 +72,13 @@ signals cannot kill the sole wait owner; the execution child resets them to
 default. Parent-control EOF still revokes the child. SIGKILL and other actual
 supervisor-loss cases still require quarantine.
 
+Windows supervisor spawn uses `detached: true` to avoid libuv's parent-owned
+kill-on-close job, retaining every pipe and the observed process handle without
+`unref`. This lets the running native owner handle control EOF. The libuv
+pre-resume parent-death window can still strand an unexecuted supervisor; this
+is not full startup containment or ancestor-job escape. See the
+[partial Windows campaign and correction](myotis-supervisor-qualification.md#windows-partial-runtime-checkpoint-and-scoped-correction--2026-09-09).
+
 Windows: `CreateProcessW` creates the child suspended, with a mandatory
 `PROC_THREAD_ATTRIBUTE_JOB_LIST` and explicit inherited-handle list. The private
 job uses kill-on-close and assignment occurs at creation, before resume. No

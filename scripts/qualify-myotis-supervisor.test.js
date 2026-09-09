@@ -1,5 +1,5 @@
 // Pure validation tests only. No fixture, Electron or supervisor is launched.
-const { parseArguments, validateTerminal, requireRuntime, controllerOptions } = require('./qualify-myotis-supervisor');
+const { parseArguments, validateTerminal, requireRuntime, controllerOptions, ownerSnapshot } = require('./qualify-myotis-supervisor');
 
 function terminal() {
   return { exited: true, generation: 'current', supervisorExit: { code: 0, signal: null },
@@ -81,4 +81,21 @@ test('Windows forced receipt requires both explicit force evidence and its nativ
   value.terminalReceipt.exitCode = 78;
   expect(() => validateTerminal(value, true, 'win32')).toThrow();
   expect(() => validateTerminal(terminal(), false, 'win32')).not.toThrow();
+});
+
+
+test('failure snapshot bounds descriptor reads and preserves active record without clearing it', () => {
+  const record = 'v1 active 00000000-0000-0000-0000-000000000001\n';
+  const io = { openSync: jest.fn(() => 4), closeSync: jest.fn(),
+    readSync: jest.fn((_fd, buffer, offset, length) => {
+      expect(length).toBe(97);
+      return buffer.write(record, offset, length);
+    }) };
+  expect(ownerSnapshot('/owned/data', io).record).toBe(record);
+  expect(io.openSync).toHaveBeenCalledWith(require('path').join('/owned/data', '.freedom-myotis-owner'), 'r');
+  expect(io.closeSync).toHaveBeenCalledWith(4);
+  io.readSync.mockImplementation(() => 97);
+  expect(ownerSnapshot('/owned/data', io)).toMatchObject({ record: null, error: 'invalid-or-unreadable' });
+  io.openSync.mockImplementation(() => { throw Object.assign(new Error('private path'), { code: 'ENOENT' }); });
+  expect(ownerSnapshot('/owned/data', io)).toMatchObject({ record: null, error: 'ENOENT' });
 });
