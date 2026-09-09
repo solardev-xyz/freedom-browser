@@ -273,6 +273,13 @@ const createNavigationState = () => ({
   // names). Reload and other commit-keyed decisions must NOT key on it; use
   // `committedDisplayUrl` instead.
   addressBarSnapshot: '',
+  // Chrome's per-tab "user input in progress": the uncommitted address-bar
+  // edit for this tab (a string, possibly empty) or `null` when the user has
+  // no edit in flight. Owned by `address-bar-edit.js`. While it is a string,
+  // navigation commits leave the address input alone (#305) and a switch back
+  // to this tab restores the draft and its selection (#314).
+  addressBarPendingInput: null,
+  addressBarPendingSelection: null,
   // `committedDisplayUrl` is the user-facing identity of the URL Chromium
   // committed for this tab's last navigation. For most schemes it equals
   // `webview.getURL()`; onchain apps reverse-map their synthetic Chromium
@@ -1536,9 +1543,17 @@ export const switchTab = (tabId, options = {}) => {
     electronAPI?.setWindowTitle?.(tab.title);
   }
 
-  // Notify navigation module
+  // Notify navigation module. `fromAddressBarCommit` marks a switch the
+  // address bar itself commanded (a picked "switch to tab" suggestion): the
+  // text in the bar at that moment is the *target* tab's URL or the leftover
+  // query, so the tab we're leaving must not adopt it as its display.
   if (onWebviewEvent) {
-    onWebviewEvent('tab-switched', { tabId, tab, isNewTab: options.isNewTab || false });
+    onWebviewEvent('tab-switched', {
+      tabId,
+      tab,
+      isNewTab: options.isNewTab || false,
+      fromAddressBarCommit: options.fromAddressBarCommit || false,
+    });
   }
 
   renderTabs();
@@ -1821,7 +1836,11 @@ export const initTabs = async () => {
           activeTab.suppressNextStopTimer = null;
         }, 200);
       }
-      onLoadTarget(url);
+      // The page navigated itself (a link click or a scripted `location`
+      // change to a custom scheme); the main process cancelled it and handed
+      // it back here. Flagged as page-initiated so it repaints the address
+      // bar only when the user isn't mid-edit. See #305.
+      onLoadTarget(url, null, null, { pageInitiated: true });
     }
   });
 

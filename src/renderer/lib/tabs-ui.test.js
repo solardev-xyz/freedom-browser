@@ -528,7 +528,11 @@ describe('tabs ui behavior', () => {
       const { webview } = activeTab;
 
       electronHandlers.navigateToUrl('bzz://meinhard.eth');
-      expect(onLoadTarget).toHaveBeenCalledWith('bzz://meinhard.eth');
+      // Flagged page-initiated: a scripted/link navigation the main process
+      // bounced back here must not discard an address-bar edit (#305).
+      expect(onLoadTarget).toHaveBeenCalledWith('bzz://meinhard.eth', null, null, {
+        pageInitiated: true,
+      });
       // Simulate the `loadTarget` dispatch flipping the spinner on (the
       // ENS branch in navigation.js does this synchronously).
       activeTab.isLoading = true;
@@ -725,7 +729,11 @@ describe('tabs ui behavior', () => {
       // suppressNextStop (in case the paired did-stop-loading is still
       // in flight, which is exactly what's about to happen here).
       electronHandlers.navigateToUrl('bzz://meinhard.eth');
-      expect(onLoadTarget).toHaveBeenCalledWith('bzz://meinhard.eth');
+      // Flagged page-initiated: a scripted/link navigation the main process
+      // bounced back here must not discard an address-bar edit (#305).
+      expect(onLoadTarget).toHaveBeenCalledWith('bzz://meinhard.eth', null, null, {
+        pageInitiated: true,
+      });
       expect(activeTab.suppressNextStop).toBe(true);
       expect(activeTab.suppressNextStopTimer).not.toBeNull();
 
@@ -967,7 +975,9 @@ describe('tabs ui behavior', () => {
 
     electronHandlers.navigateToUrl('https://navigate.example');
     electronHandlers.loadUrl('https://load.example');
-    expect(onLoadTarget).toHaveBeenCalledWith('https://navigate.example');
+    expect(onLoadTarget).toHaveBeenCalledWith('https://navigate.example', null, null, {
+      pageInitiated: true,
+    });
     expect(onLoadTarget).toHaveBeenCalledWith('https://load.example');
 
     electronHandlers.focusAddressBar();
