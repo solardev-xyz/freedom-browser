@@ -91,6 +91,7 @@ import { walletState } from './wallet/wallet-state.js';
 import { formatWeiToDecimal } from './wallet/send.js';
 import { startIpfsProgressStatus, stopIpfsProgressStatus } from './ipfs-progress-status.js';
 import { TOOLTIP_HOVER_DELAY_MS } from './hover-tooltip.js';
+import { boundPopoverToViewport } from './popover-bounds.js';
 import { matchesShortcut } from './shortcuts.js';
 
 // Helper to get active tab's navigation state (with fallback to empty object)
@@ -529,6 +530,12 @@ const setTrustPopoverOpen = (open) => {
   if (!trustPopover || !trustShield) return;
   trustPopover.hidden = !open;
   trustShield.setAttribute('aria-expanded', open ? 'true' : 'false');
+  if (open) {
+    // A long provenance list must scroll inside the popover rather than run
+    // off the bottom of the window — the shared chrome-popover bound (#324).
+    trustPopover.scrollTop = 0;
+    boundPopoverToViewport(trustPopover);
+  }
   resetTrustTooltip();
   if (!open) {
     trustPopoverDisplayed = null;
@@ -2312,6 +2319,10 @@ export const initNavigation = () => {
   // document (out-of-process frame), so a document-click listener alone
   // misses them. window.blur fires when focus shifts to the webview,
   // which covers any click into loaded page content.
+  //
+  // Deliberately the raw `blur`, not `onWindowDeactivated` (#328): this
+  // popover raises no `#menu-backdrop`, so the guest-focus blur the shared
+  // helper filters out is exactly the signal that dismisses it here.
   window.addEventListener('blur', () => {
     if (trustPopover && !trustPopover.hidden) setTrustPopoverOpen(false);
   });

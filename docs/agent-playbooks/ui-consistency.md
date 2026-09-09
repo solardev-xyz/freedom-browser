@@ -77,6 +77,48 @@ use the `row-help` link style, not the default anchor.
 `--`. Shortcut hints render as `Ctrl+T` on Linux/Windows and `⌘T` on macOS in
 every surface (hamburger menu, Shortcuts settings, tooltips).
 
+**Popovers are bounded, the chrome is not scrollable.** Every dropdown,
+flyout, context menu and popover in the chrome carries `.chrome-popover`
+(`styles/popovers.css`) and is opened through `lib/popover-bounds.js`:
+`boundPopoverToViewport` for an anchored popover, `placePopoverAtPoint` for a
+pointer-anchored context menu (clamp, flip up, then scroll). That is what keeps
+a menu inside the window — `html, body { overflow: hidden }` means an
+unbounded one would clip rather than scroll, and before #324 it scrolled the
+toolbar away instead. A new popover joins the mechanism rather than growing its
+own `max-height`; `styles/popovers.test.js` fails a popover that forgets the
+class, and it works out what a popover *is* from the sheets themselves —
+anything positioned `fixed`/`absolute` at menu tier (z-index ≥ 9999) — so a
+brand-new class name is enrolled without editing the test. A surface at that
+tier that genuinely is not a popover (the backdrop, a corner toast, a tooltip)
+goes in that file's `NOT_POPOVERS` map with its reason.
+
+**Dismissing on focus loss goes through `lib/window-deactivation.js`.** A
+window `blur` in the chrome does not mean the user left the window: a
+`<webview>` guest taking the keyboard raises the same event, and every tab
+activation hands the page focus (#304) with the guest's ack landing
+asynchronously — late enough to tear down a menu the user has just opened and
+swallow the click on its way (#328). A surface that raises `#menu-backdrop`
+(so a click into the page is already caught in the chrome) dismisses through
+`onWindowDeactivated`, never a raw `blur` listener. The trust and permission
+popovers are the two documented exceptions: they raise no backdrop, so the
+guest-focus blur is what closes them on a click into page content. This is a
+claim about every surface, so it is checked as one: `window-deactivation.test.js`
+sweeps `lib/` for the modules that call `showMenuBackdrop()` and fails any that
+does not also register `onWindowDeactivated` — six today, including both
+bookmarks menus.
+
+**A surface that raises the backdrop owns the keyboard too.** The backdrop
+makes a menu modal over the page for the *pointer*; `lib/menu-backdrop.js`
+does the same for the keyboard, through `onGuestTookKeyboard` — the exact
+complement of `onWindowDeactivated`. Without it the guest ack above leaves the
+page holding the keyboard under an open menu, and neither Escape (#306) nor
+Enter on a row reaches the shell's `document` handlers, so the menu can only be
+dismissed with the mouse. The reclaim is deferred one turn of the event loop:
+focusing inside the `blur` handler only moves the embedder's `activeElement`
+back while the guest still ends up with the keys. `page-context-menu.js` keeps
+its own version of this (it is raised from inside the guest and hands focus
+back on close, #319).
+
 **Empty states.** Internal pages use the icon + one-line message pattern of
 History and Downloads ("No history yet", "No downloads yet").
 

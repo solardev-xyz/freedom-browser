@@ -24,6 +24,8 @@ import {
 } from './find-bar.js';
 import { matchesShortcut } from './shortcuts.js';
 import { isModalDialogOpen } from './modal-dialog.js';
+import { placePopoverAtPoint } from './popover-bounds.js';
+import { onWindowDeactivated } from './window-deactivation.js';
 import {
   clearLinkStatus,
   clearHoverStatus,
@@ -1558,19 +1560,10 @@ const showContextMenu = (x, y, tabId) => {
     closeOthersBtn.disabled = otherTabs.length === 0;
   }
 
-  // Position menu
-  tabContextMenu.style.left = `${x}px`;
-  tabContextMenu.style.top = `${y}px`;
+  // Position menu: clamped into the viewport, flipped up when the space below
+  // the pointer is too small, scrolling inside when neither side fits (#324).
   tabContextMenu.classList.remove('hidden');
-
-  // Adjust if menu goes off screen
-  const rect = tabContextMenu.getBoundingClientRect();
-  if (rect.right > window.innerWidth) {
-    tabContextMenu.style.left = `${window.innerWidth - rect.width - 8}px`;
-  }
-  if (rect.bottom > window.innerHeight) {
-    tabContextMenu.style.top = `${window.innerHeight - rect.height - 8}px`;
-  }
+  placePopoverAtPoint(tabContextMenu, x, y);
 };
 
 // Hide context menu
@@ -2033,7 +2026,9 @@ export const initTabs = async () => {
     e.preventDefault();
     hideTabContextMenu();
   });
-  window.addEventListener('blur', hideTabContextMenu);
+  // Window deactivation only: a `<webview>` guest taking the keyboard raises
+  // the same event while the window is still active (#328).
+  onWindowDeactivated(hideTabContextMenu);
   // (The `focus`/`mousedown` dismissal that used to hang off
   // `document.getElementById('bzz-webview')` is gone: webviews are created
   // id-less, so that lookup was always null and the listeners never existed.

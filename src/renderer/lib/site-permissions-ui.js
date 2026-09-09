@@ -26,6 +26,7 @@ import { getActiveWebview, getDisplayUrlForWebview } from './tabs.js';
 import { getPermissionKey } from './origin-utils.js';
 import { isModalDialogOpen } from './modal-dialog.js';
 import { pushDebug } from './debug.js';
+import { boundPopoverToViewport } from './popover-bounds.js';
 
 // Storage-key → human noun (indicator popover, settings mirror this).
 const PERMISSION_LABELS = {
@@ -182,6 +183,11 @@ const showNextPrompt = () => {
   }
 
   promptEl.hidden = false;
+  // Shown first, then bounded: in a short window the prompt's own bottom would
+  // otherwise be clipped by the pinned document rather than scrolled to, the
+  // same rule its sibling `.permission-popover` follows (#328).
+  promptEl.scrollTop = 0;
+  boundPopoverToViewport(promptEl);
   pushDebug(
     isNotice
       ? `[permissions] showing macOS-denied notice (${keys.join('+')})`
@@ -220,6 +226,12 @@ const setPopoverOpen = (open) => {
   if (!popoverEl || !indicatorBtn) return;
   popoverEl.hidden = !open;
   indicatorBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  if (open) {
+    // A site with many remembered permissions must scroll inside the popover
+    // rather than run off the bottom of the window (#324).
+    popoverEl.scrollTop = 0;
+    boundPopoverToViewport(popoverEl);
+  }
 };
 
 const renderPopover = () => {
@@ -422,6 +434,10 @@ export const initSitePermissionsUi = () => {
   // Firefox; it still dismisses on click-away in the chrome and Esc,
   // is withdrawn by main when the requesting document navigates or
   // dies, and grants nothing by itself.
+  //
+  // Deliberately the raw `blur`, not `onWindowDeactivated` (#328): this
+  // popover raises no `#menu-backdrop`, so the guest-focus blur the shared
+  // helper filters out is exactly the signal that dismisses it here.
   window.addEventListener('blur', () => {
     setPopoverOpen(false);
   });
