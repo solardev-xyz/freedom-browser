@@ -166,7 +166,7 @@ Myotis libuv behavior, Windows, exact-lock dependencies, signed/notarized
 packaging, live chain fallback, or actual application Quit. See the separate
 [product contract and remaining matrix](myotis-process-isolation.md).
 
-## Windows Node-only campaign (source prepared; runtime pending)
+## Windows Node-only campaign (runtime checkpoint below)
 
 The dedicated `myotis-supervisor-windows.yml` workflow runs only on relevant
 pushes to `feature/myotis-process-isolation`, or a future manual dispatch. A
@@ -274,6 +274,55 @@ single descriptor read capped at 97 bytes to detect the 96-byte record bound;
 missing/unreadable/oversized records are explicit, never cleared. Upload includes
 hidden files **only within the task-owned evidence root**, preserving actual
 owner records as well as bounded plaintext failure snapshots. Subsequent
-retirement cannot reclassify a timed-out case as passed. A reviewed new campaign
-is required; the partial run above does not qualify this correction, Electron,
-a real addon, actual app Quit, signing or supervisor-crash cleanup.
+retirement cannot reclassify a timed-out case as passed. The partial run above
+does not qualify this correction, Electron, a real addon, actual app Quit,
+signing or supervisor-crash cleanup; the subsequent campaign is recorded below.
+
+
+### Windows Node-only pass — fa14433f, 2026-09-09
+
+[Run 34339755062](https://github.com/solardev-xyz/freedom-browser/actions/runs/34339755062)
+checked out exact `fa14433f933ce3e1bf8eeaab6c5acc5209f7dc47`. One finite campaign
+passed **9/9 cases**, with `inputsUnchanged: true` and no reported unconfirmed
+generations; all job steps succeeded.
+This qualifies the listed supervisor cases under **Node 22.23.2 / libuv 1.51.0
+on Windows x64**, using the benign JS addon fixture. It does not turn the earlier
+failed `dff65fb8` attempt into a pass.
+
+Runner: `win25-vs2026`, image `20260907.229.1`, OS `10.0.26100.0`; installed
+MSVC tools `14.51.36231` (`cl.exe` version `14.51.36256.0`) and SDK
+`10.0.26100.0`. No npm install, Electron/addon download or tool acquisition was
+used. The source-built helper SHA256 is
+`8f1139568990a618f2598c0c41f0df3e67adf2b27623373be2d1b54efb26f414`.
+The runner-recorded Node executable SHA256 is
+`0d0f5e39f9f3d9587bc19f73eab3c2c9c4903fd02d6dbf9c853dd81b3d95fad4`.
+
+Read-only inspection of retained evidence at
+`/private/tmp/freedom-windows-fa14433f-evidence-20260909` matched the helper bytes
+to their manifest hash and all six source/lock inputs to exact `fa14433f` Git
+content with Windows CRLF checkout conversion. The Node hash agrees between
+manifest and build transcript; the Node executable was not uploaded and was
+not independently rehashed locally. The coordinator independently verified the
+nine-case results, controller/record/reuse evidence and helper/source hashes;
+the retained local file inventory is
+`/private/tmp/freedom-windows-fa14433f-local-inventory.json`. These are provenance
+checks, not fresh execution or an exact-lock Electron qualification.
+
+The ordinary terminal cases retain generation-matched native receipts and
+actual supervisor OS exit 0; forced cases include explicit force evidence and
+child exit 1 / signal 0. Active-record rejection remains a rejected start,
+not a terminal child proof. For parent-controller loss, `controller-exit.json`
+records controller OS exit 0 / signal null; `old-retired-record.json` preserves
+the matching old generation before a distinct successor acquires the directory.
+The successor has its own receipt, observed supervisor exit and retired record.
+The **old supervisor OS exit is still unobserved**. Hidden native owner records
+are included in this upload.
+
+This is fd3/CRT, post-launch control EOF, retained-HANDLE termination, mandatory
+child job-assignment path, retirement and guarded-reuse evidence under the
+recorded Node runtime. It is not Electron transport, real native-addon/ABI22
+teardown, actual app Quit, job-crash/supervisor-loss or descendant cleanup,
+all-startup containment, ancestor-job escape, ASAR, fuse or signing qualification.
+The detached pre-resume residual above remains accepted and unqualified.
+No runtime fixture or application ran on the primary Mac; no tests were rerun
+for this documentation checkpoint.

@@ -87,8 +87,10 @@ HANDLE, followed by `WaitForSingleObject` and `GetExitCodeProcess`. A job close
 requests cleanup; the receipt proves only the trusted direct child's exit,
 not completion of hypothetical descendants. The bounded receipt also records
 `forced` separately from the child exit code. The Windows x64 helper compiled
-successfully in PR CI for head `09989259`; runtime behavior remains unqualified (see
-the CI checkpoint below).
+successfully in PR CI for head `09989259`. A later
+[nine-case Windows Node-only campaign at `fa14433f`](myotis-supervisor-qualification.md#windows-node-only-pass--fa14433f-2026-09-09)
+passed under Node 22.23.2; Electron transport, real-addon behavior and the
+remaining startup/supervisor-loss/packaging gates remain separate.
 
 The addon child receives only null stdio and its Node IPC endpoint. It does not
 inherit the native receipt writer, control endpoint, ownership lock or Windows
@@ -227,7 +229,7 @@ Required disposable-host matrix before promoting the PR out of draft:
 | Area | Required evidence |
 | --- | --- |
 | POSIX helper | Linux/macOS compile; real fd3 transport; natural exit; blocked read/start/status/stop; parent-control loss at startup stages; unknown supervisor loss; verified terminal and durable quarantine/recovery |
-| Windows helper | x64 MSVC compile passed in PR CI for head `09989259`; still required: CRT fd3 mapping; explicit inheritance; suspended launch/job failure paths; retained-HANDLE termination; control loss; durable records; unsigned and signed package behavior |
+| Windows helper | x64 MSVC and nine Node-only supervisor cases passed at `fa14433f`; still required: Electron transport and real-addon behavior, untested startup/job failure and supervisor-loss paths, unsigned and signed package behavior |
 | Concurrency | Queue/caller timeouts never refill native admission; stale generation/reply rejection; independent chains and bounded polling; main DNS/file liveness |
 | App lifecycle | Actual Quit reaches OS exit; chain stop/restart cannot reuse a live directory; profile stale-lock recovery cannot bypass quarantine |
 | Packaging | Exact candidate/dependencies, helper inclusion/signatures, RunAsNode fuse, ASAR/native loading, all supported release targets |
