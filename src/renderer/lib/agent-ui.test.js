@@ -2030,6 +2030,16 @@ describe('Agent UI', () => {
     expect(startAgent.mock.calls[0][1]).toContain('permissions');
   });
 
+  test('disables saved server restart when previous exit is unconfirmed', async () => {
+    const state = { status: 'ready', conversationId: 'conversation_server', transcript: [],
+      workspace: { processes: [], commands: [], servers: [{ serverId: `workspace_server_${'a'.repeat(24)}`,
+        command: 'npm run dev', workingDirectory: 'game', state: 'exit_unconfirmed', previewPort: 5173 }] } };
+    const ctx = await loadAgentUi({ electronAPI: { getAgentState: jest.fn(async () => ({ ok: true, state })) } });
+    const row = ctx.elements['agent-process-panel-list'].children[0];
+    expect(row.children[1].textContent).toContain('Exit unconfirmed');
+    expect(row.children[2].children[0].disabled).toBe(true);
+  });
+
   test('opens a saved session and continues without silently adopting the current page', async () => {
     const sessions = [
       {

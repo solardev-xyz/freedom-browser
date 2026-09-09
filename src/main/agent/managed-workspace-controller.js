@@ -1850,6 +1850,7 @@ class ManagedWorkspaceController {
       sideEffects: receipt.sideEffects || 'unknown',
       survivorsPossible: receipt.survivorsPossible === true,
       completeDescendantTermination: receipt.completeDescendantTermination === true,
+      ...(previewPort && { processExitConfirmed: this.servers.recordCompletion(conversationId, previewPort, receipt) }),
       ...(error && { error }),
     });
     // A backend that misses the shutdown deadline must not write to a closed store.

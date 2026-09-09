@@ -3015,6 +3015,12 @@ Restart checks current permission before Stop, refuses unconfirmed termination
 or occupied ports, and launches a fresh managed process. Reattach opens only the
 current owned generation. Cold definitions show **Needs restart**, never a claim
 that a historical process was adopted or all historical descendants are gone.
+Restart uses backend exit evidence rather than a cancelled label: original-root
+exit/reap on macOS, namespace teardown on Linux. An uncertain completed launch
+marks its port **Exit unconfirmed** and disables saved-server restart for that
+browser session, including after the terminal handle expires. Permissions and
+the current generation are rechecked before Stop. This does not add a macOS
+descendant guarantee or persist a cleanup claim across browser restarts.
 
 Server HTML receives a WebSocket adapter whose bounded same-origin requests go
 through main to only the declared loopback port. Text/binary messages and HMR

@@ -33,6 +33,14 @@ application lifetime. Existing platform cleanup limitations still apply. The
 existing four-active-process and thirty-minute process lifetime limits remain in
 force; saving a definition does not make its process permanent.
 
+A cancelled label alone does not prove process exit. Restart requires the
+backend's confirmed original-root exit/reap on macOS or namespace teardown on
+Linux. An uncertain completion leaves the port marked **Exit unconfirmed** and
+blocks saved-server restart for that browser session, even after its process
+handle expires. This does not strengthen macOS descendant cleanup. The marker
+is session-local; reopening Freedom is not proof of cleanup, and the ordinary
+occupied-port check still applies to a fresh launch.
+
 Saved preview origins remain stable. Within the current browser lifetime an
 existing page detects a replacement process and reloads; old socket credentials
 and connections are revoked. After reopening Freedom, use the saved server's

@@ -945,7 +945,7 @@ function createWorkspaceServerItem(server) {
   });
   item.dataset.serverId = server.serverId;
   item.querySelector('.agent-process-meta').textContent =
-    `${running ? 'Running' : server.state === 'needs_restart' ? 'Needs restart' : server.state === 'restarting' ? 'Restarting' : 'Stopped'} · ${server.workingDirectory} · Port ${server.previewPort}`;
+    `${running ? 'Running' : server.state === 'exit_unconfirmed' ? 'Exit unconfirmed' : server.state === 'needs_restart' ? 'Needs restart' : server.state === 'restarting' ? 'Restarting' : 'Stopped'} · ${server.workingDirectory} · Port ${server.previewPort}`;
   if (!running) {
     item.querySelector('.agent-process-live-dot').remove();
     item.querySelector('.agent-process-actions').replaceChildren();
@@ -954,7 +954,7 @@ function createWorkspaceServerItem(server) {
   restart.type = 'button';
   restart.textContent = running ? 'Restart with Agent' : 'Start with Agent';
   restart.title = 'Uses the saved command and checks current permissions before launch';
-  restart.disabled = Boolean(currentRunId) || server.state === 'restarting';
+  restart.disabled = Boolean(currentRunId) || ['restarting', 'exit_unconfirmed'].includes(server.state);
   restart.addEventListener('click', () => {
     if (currentRunId) return;
     restart.disabled = true;
@@ -968,7 +968,7 @@ function renderWorkspaceProcesses(processes, servers = []) {
   workspaceProcesses = Array.isArray(processes) ? processes.filter(validWorkspaceProcess) : [];
   const saved = Array.isArray(servers) ? servers.filter(server =>
     /^workspace_server_[a-f0-9]{24}$/.test(server?.serverId || '') &&
-    ['running', 'stopped', 'restarting', 'needs_restart'].includes(server.state) &&
+    ['running', 'stopped', 'restarting', 'needs_restart', 'exit_unconfirmed'].includes(server.state) &&
     typeof server.command === 'string' && server.command.length <= 500 &&
     typeof server.workingDirectory === 'string' && server.workingDirectory.length <= 1024 &&
     Number.isInteger(server.previewPort) && server.previewPort >= 1024 && server.previewPort <= 65535 &&

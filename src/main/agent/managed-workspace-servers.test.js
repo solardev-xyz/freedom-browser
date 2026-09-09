@@ -1,6 +1,6 @@
 'use strict';
 
-const { ManagedWorkspaceServers } = require('./managed-workspace-servers');
+const { ManagedWorkspaceServers, confirmedServerExit } = require('./managed-workspace-servers');
 const id = `workspace_server_${'a'.repeat(24)}`;
 const recipe = { serverId: id, command: 'npm run dev', workingDirectory: 'game', port: 5173, previewToken: 'b'.repeat(40) };
 const launch = { command: recipe.command, workingDirectory: recipe.workingDirectory, previewPort: recipe.port };
@@ -10,7 +10,7 @@ describe('saved workspace server restart', () => {
   beforeEach(() => {
     store = { listServers: owner => owner === 'one' ? [recipe] : [] };
     processes = { inspect: jest.fn(() => ({ state: 'running' })),
-      terminate: jest.fn(async () => ({ state: 'cancelled', receipt: {} })) };
+      terminate: jest.fn(async () => ({ state: 'cancelled', receipt: { processExitConfirmed: true } })) };
     start = jest.fn(async () => ({ state: 'running', processId: 'new' }));
     assertNetwork = jest.fn(async () => {}); checkPort = jest.fn(async () => {});
     servers = new ManagedWorkspaceServers({ store, processes, start, assertNetwork, checkPort });
@@ -39,14 +39,14 @@ describe('saved workspace server restart', () => {
     const first = servers.restart('one', id, launch);
     const second = servers.restart('one', id, launch);
     await expect(second).rejects.toThrow('already');
-    finish({ state: 'cancelled' }); await first;
+    finish({ state: 'cancelled', receipt: { processExitConfirmed: true } }); await first;
     expect(start).toHaveBeenCalledTimes(1);
   });
 
   test('uncertain Stop and occupied ports never authorize a replacement', async () => {
     processes.terminate.mockResolvedValue({ state: 'running' });
     await expect(servers.restart('one', id, launch)).rejects.toThrow('unconfirmed');
-    processes.terminate.mockResolvedValue({ state: 'cancelled' });
+    processes.terminate.mockResolvedValue({ state: 'cancelled', receipt: { processExitConfirmed: true } });
     checkPort.mockRejectedValue(new Error('Port occupied'));
     await expect(servers.restart('one', id, launch)).rejects.toThrow('occupied');
     expect(start).not.toHaveBeenCalled();
@@ -75,5 +75,43 @@ describe('saved workspace server restart', () => {
     expect(processes.terminate).not.toHaveBeenCalled();
     servers.deleteConversation('one');
     expect(servers.bindings.size).toBe(0);
+  });
+
+  test('does not treat a cancelled label as proof of exit, even after its process handle expires', async () => {
+    processes.terminate.mockResolvedValue({ state: 'cancelled', receipt: {} });
+    await expect(servers.restart('one', id, launch)).rejects.toThrow('unconfirmed');
+    expect(checkPort).not.toHaveBeenCalled();
+    servers.recordCompletion('one', recipe.port, { backend: 'macos-seatbelt', state: 'cancelled' });
+    servers.bindings.clear();
+    expect(servers.get('one', id).state).toBe('exit_unconfirmed');
+    await expect(servers.restart('one', id, launch)).rejects.toThrow('unconfirmed');
+    expect(start).not.toHaveBeenCalled();
+    servers.deleteConversation('one');
+    expect(servers.unconfirmedPorts.size).toBe(0);
+  });
+
+  test('derives direct-root or namespace exit from backend evidence without claiming all Mac descendants', () => {
+    const mac = { backend: 'macos-seatbelt', state: 'cancelled', survivorsPossible: true,
+      completeDescendantTermination: false, diagnostics: { nativeSupervisor: true,
+        nativeRootExitObserved: true, nativeRootReaped: true, nativeCleanupUncertain: false } };
+    expect(confirmedServerExit(mac)).toBe(true);
+    for (const facts of [{ nativeRootReaped: false }, { nativeCleanupUncertain: true }, { supervisorProtocolFailed: true }]) {
+      expect(confirmedServerExit({ ...mac, diagnostics: { ...mac.diagnostics, ...facts } })).toBe(false);
+    }
+    expect(confirmedServerExit({ backend: 'linux-bubblewrap', state: 'cancelled',
+      terminationGuarantee: 'namespace_scoped', terminationScope: 'pid_namespace',
+      survivorsPossible: false, completeDescendantTermination: true })).toBe(true);
+  });
+
+  test('rechecks completion and generation after an asynchronous permission check', async () => {
+    assertNetwork.mockImplementation(async () => {
+      servers.recordCompletion('one', recipe.port, { state: 'cancelled' });
+    });
+    await expect(servers.restart('one', id, launch)).rejects.toThrow('unconfirmed');
+    servers.unconfirmedPorts.clear();
+    assertNetwork.mockImplementation(async () => { servers.bindings.set(id, 'replacement'); });
+    await expect(servers.restart('one', id, launch)).rejects.toThrow('changed');
+    expect(processes.terminate).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
   });
 });

@@ -540,6 +540,7 @@ describe('ManagedWorkspaceController', () => {
     );
     expect(fullNetworkReceipt.networkPosture).toBe('full');
     expect(fullNetworkReceipt.previewPort).toBe(4_173);
+    expect(fullNetworkReceipt.processExitConfirmed).toBe(true);
 
     await expect(
       controller.execute('conversation_one', {

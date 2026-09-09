@@ -14,6 +14,7 @@ class ManagedWorkspaceServers {
     Object.assign(this, { store, processes, assertNetwork, start, checkPort });
     this.bindings = new Map();
     this.restarting = new Set();
+    this.unconfirmedPorts = new Map();
   }
 
   list(conversationId) {
@@ -22,7 +23,8 @@ class ManagedWorkspaceServers {
       let process;
       try { process = processId && this.processes.inspect(conversationId, processId); } catch { /* Terminal handles expire. */ }
       return { ...server, state: this.restarting.has(server.serverId) ? 'restarting' :
-        process?.state === 'running' ? 'running' : processId ? 'stopped' : 'needs_restart',
+        process?.state === 'running' ? 'running' : this.unconfirmedPorts.get(conversationId)?.has(server.port)
+          ? 'exit_unconfirmed' : processId ? 'stopped' : 'needs_restart',
       ...(process?.state === 'running' && { processId }) };
     });
   }
@@ -36,6 +38,16 @@ class ManagedWorkspaceServers {
 
   deleteConversation(conversationId) {
     for (const server of this.store.listServers?.(conversationId) || []) this.bindings.delete(server.serverId);
+    this.unconfirmedPorts.delete(conversationId);
+  }
+
+  recordCompletion(conversationId, port, receipt) {
+    const confirmed = confirmedServerExit(receipt);
+    if (!confirmed) {
+      if (!this.unconfirmedPorts.has(conversationId)) this.unconfirmedPorts.set(conversationId, new Set());
+      this.unconfirmedPorts.get(conversationId).add(port);
+    }
+    return confirmed;
   }
 
   remember(conversationId, request, process) {
@@ -49,6 +61,7 @@ class ManagedWorkspaceServers {
 
   async restart(conversationId, id, request = {}) {
     const server = this.get(conversationId, id);
+    if (this.unconfirmedPorts.get(conversationId)?.has(server.port)) throw serverError('Previous server exit is unconfirmed');
     if (this.restarting.has(id)) throw serverError('Server restart already in progress');
     if (request.command !== server.command || (request.workingDirectory || '.') !== server.workingDirectory || request.previewPort !== server.port) {
       throw serverError('The saved server command changed; review it again');
@@ -57,11 +70,14 @@ class ManagedWorkspaceServers {
     await this.assertNetwork(conversationId, server, request);
     if (request.signal?.aborted) throw serverError('Server restart stopped');
     if (this.restarting.has(id)) throw serverError('Server restart already in progress');
+    if (this.unconfirmedPorts.get(conversationId)?.has(server.port)) throw serverError('Previous server exit is unconfirmed');
+    const current = this.get(conversationId, id);
+    if (current.processId !== server.processId) throw serverError('Server changed while checking permissions; review it again');
     this.restarting.add(id);
     try {
       if (server.processId) {
         const stopped = await this.processes.terminate(conversationId, server.processId, { waitMs: 5000, signal: request.signal });
-        if (stopped.state === 'running' || stopped.receipt?.error) throw serverError('Previous server exit is unconfirmed');
+        if (stopped.state === 'running' || stopped.receipt?.processExitConfirmed !== true) throw serverError('Previous server exit is unconfirmed');
       }
       if (request.signal?.aborted) throw serverError('Server restart stopped');
       await this.checkPort(server.port);
@@ -71,6 +87,19 @@ class ManagedWorkspaceServers {
       return result;
     } finally { this.restarting.delete(id); }
   }
+}
+
+// Cancellation is a requested state, not exit evidence. Main derives this
+// bounded fact from the current backend's original-instance completion receipt.
+function confirmedServerExit(receipt) {
+  if (!receipt || !['completed', 'failed', 'cancelled', 'timed_out', 'sandbox_denied'].includes(receipt.state)) return false;
+  if (receipt.survivorsPossible === false && receipt.completeDescendantTermination === true &&
+      ((receipt.backend === 'linux-bubblewrap' && receipt.terminationGuarantee === 'namespace_scoped' && receipt.terminationScope === 'pid_namespace') ||
+        (receipt.terminationGuarantee === 'not_applicable' && receipt.sideEffects === 'none'))) return true;
+  const facts = receipt.diagnostics;
+  return receipt.backend === 'macos-seatbelt' && facts?.nativeSupervisor === true &&
+    facts.nativeRootExitObserved === true && facts.nativeRootReaped === true &&
+    facts.nativeCleanupUncertain === false && !facts.supervisorExitedAbnormally && !facts.supervisorProtocolFailed;
 }
 
 // This is a collision check, not cryptographic listener ownership. The approved
@@ -83,4 +112,4 @@ function assertPortFree(port) {
   });
 }
 
-module.exports = { ManagedWorkspaceServers, assertPortFree };
+module.exports = { ManagedWorkspaceServers, assertPortFree, confirmedServerExit };
