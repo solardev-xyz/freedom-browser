@@ -7,7 +7,7 @@ const { test, expect } = require('./fixtures');
 async function openAdblockSettings(window, electronApp) {
   const input = window.locator('[data-test="address-input"]');
   await input.click();
-  await input.fill('freedom://settings/adblock');
+  await input.fill('freedom://settings/privacy');
   await input.press('Enter');
 
   // The settings page renders inside a <webview>; its guest webContents
@@ -44,31 +44,33 @@ test('adblock section shows iOS-matching defaults and engine status', async ({
   await expect(page.locator('#adblock-status')).toContainText('Filter lists');
 });
 
-test('ad blocking and site permissions are separate navigable sections', async ({
+test('ad blocking and site permissions share the Privacy and security section', async ({
   window,
   electronApp,
 }) => {
+  // Since #268 they are one nav entry with two panels, and the hashes that
+  // used to name them still resolve to it.
   const page = await openAdblockSettings(window, electronApp);
-  const adblockNav = page.locator('.nav-item[data-target="adblock"]');
-  const permissionsNav = page.locator('.nav-item[data-target="permissions"]');
+  const privacyNav = page.locator('.nav-item[data-target="privacy"]');
 
-  await expect(adblockNav).toHaveCount(1);
-  await expect(adblockNav).toContainText('Ad Blocking');
-  await expect(permissionsNav).toHaveCount(1);
-  await expect(permissionsNav).toContainText('Site Permissions');
-  await expect(adblockNav).toHaveClass(/active/);
+  await expect(privacyNav).toHaveCount(1);
+  await expect(privacyNav).toContainText('Privacy and security');
+  await expect(privacyNav).toHaveClass(/active/);
   await expect(page.locator('#adblock')).not.toHaveClass(/hidden/);
-
-  await permissionsNav.click();
-  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#permissions');
-  await expect(permissionsNav).toHaveClass(/active/);
   await expect(page.locator('#permissions')).not.toHaveClass(/hidden/);
-  await expect(page.locator('#adblock')).toHaveClass(/hidden/);
 
-  await adblockNav.click();
-  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#adblock');
-  await expect(adblockNav).toHaveClass(/active/);
+  await page.evaluate(() => {
+    location.hash = 'permissions';
+  });
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#privacy');
+  await expect(privacyNav).toHaveClass(/active/);
   await expect(page.locator('#adblock')).not.toHaveClass(/hidden/);
+
+  const shortcutsNav = page.locator('.nav-item[data-target="shortcuts"]');
+  await shortcutsNav.click();
+  await expect.poll(() => page.evaluate(() => location.hash)).toBe('#shortcuts');
+  await expect(page.locator('#adblock')).toHaveClass(/hidden/);
+  await expect(page.locator('#permissions')).toHaveClass(/hidden/);
 });
 
 test('allowlist hosts can be added and removed through the section', async ({

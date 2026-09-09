@@ -177,13 +177,10 @@ test('Settings > Site Permissions lists remembered decisions and revoke-all clea
     .toContain(`bzz://${SAMPLE_BZZ_HASH}`);
   expect(await readView()).toContain('Notifications');
 
-  await evalInWebview(
-    window,
-    "document.querySelector('#permissions-view button[data-action=\"revoke-all\"]').click(); true"
-  );
-  await expect
-    .poll(readView, { timeout: 5_000 })
-    .toContain('No stored site permissions');
+  // Since #272 the section-level action sits next to the `<h2>`, outside
+  // the rendered list.
+  await evalInWebview(window, "document.getElementById('permissions-revoke-all').click(); true");
+  await expect.poll(readView, { timeout: 5_000 }).toContain('No saved permissions');
 });
 
 test('Escape dismisses the prompt as deny-once and the site can ask again', async ({

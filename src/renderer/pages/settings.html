@@ -69,10 +69,32 @@
         gap: 10px;
       }
 
+      /* Page-level search, above the nav — Chrome's placement (#281). The
+         field is a normal `.rpc-input` in an `.rpc-row`, so it is sized the
+         same way every other text field on the page is. */
+      .settings-search {
+        margin: 0 0 12px 0;
+      }
+
       .nav {
         display: flex;
         flex-direction: column;
         gap: 2px;
+      }
+
+      /* `display: flex` below outranks the UA's `[hidden] { display: none }`,
+         so search filtering has to hide the item explicitly. */
+      /* Chrome separates its settings groups with a rule; #268 puts one
+         before the last two entries. */
+      .nav-rule {
+        height: 1px;
+        margin: 8px 4px;
+        background: var(--border);
+      }
+
+      .nav-item[hidden],
+      .nav-rule[hidden] {
+        display: none;
       }
 
       .nav-item {
@@ -136,6 +158,22 @@
          same heading for the Shortcuts list; that rule stays on its own
          selector because `settings-styles.test.js` pins it by prelude
          (#223). */
+      /* A section title that carries a section-level action (#272). */
+      .section-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin: 0 0 16px 0;
+      }
+
+      /* The heading in that header is the sub-panel style (Site permissions
+         is one of Privacy's two panels), whose own vertical margins would
+         offset it against the button the flex row centres it with. */
+      .section-header .subsection-title {
+        margin: 0;
+      }
+
       .subsection-title {
         margin: 20px 0 8px 0;
         font-size: 12px;
@@ -292,6 +330,24 @@
         align-items: center;
         flex-wrap: wrap;
         gap: 8px;
+      }
+
+      /* Per-row progressive disclosure (#270): the technical name and the
+         mechanism live here, collapsed, so the visible layer carries no
+         term a user would have to look up. */
+      .row-advanced {
+        margin-top: 6px;
+      }
+
+      .row-advanced > summary {
+        cursor: pointer;
+        color: var(--text-muted);
+        font-size: 12px;
+        width: fit-content;
+      }
+
+      .row-advanced > .row-help {
+        margin-top: 6px;
       }
 
       .resolver-badge {
@@ -669,6 +725,34 @@
         display: none;
       }
 
+      /* Startup rows relocated into their node row (#268). They keep their
+         own markup — label, helper and disabled state all still apply — so
+         only the row chrome needs neutralising inside the node card. */
+      .profile-node-status .row {
+        padding: 6px 0 0 0;
+        border-bottom: 0;
+        gap: 12px;
+      }
+
+      /* The Swarm mode readout, relocated into the Swarm node row (#275).
+         Not `.profile-node-mode` — that name is already taken above by the
+         mode pill. */
+      .profile-node-swarm-mode {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-top: 6px;
+      }
+
+      .profile-node-swarm-mode > #swarm-mode-help {
+        flex: 1;
+      }
+
+      .profile-node-swarm-mode > .btn {
+        flex: none;
+        white-space: nowrap;
+      }
+
       .profile-node-field {
         display: grid;
         grid-template-columns: 84px minmax(0, 1fr);
@@ -679,12 +763,6 @@
       .profile-node-field label {
         color: var(--text-muted);
         font-size: 12px;
-      }
-
-      .profile-node-actions {
-        display: flex;
-        justify-content: flex-end;
-        margin-top: 8px;
       }
 
       .btn.danger {
@@ -815,7 +893,33 @@
           </svg>
           Settings
         </h2>
+        <div class="rpc-row settings-search">
+          <input
+            type="search"
+            id="settings-search"
+            class="rpc-input"
+            placeholder="Search settings…"
+            spellcheck="false"
+            aria-label="Search settings"
+          />
+        </div>
         <nav class="nav" id="nav">
+          <button type="button" class="nav-item" data-target="profile">
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M20 21a8 8 0 0 0-16 0"></path>
+              <circle cx="12" cy="7" r="4"></circle>
+            </svg>
+            Profile
+          </button>
           <button type="button" class="nav-item" data-target="appearance">
             <svg
               width="16"
@@ -855,54 +959,6 @@
             </svg>
             Search
           </button>
-          <button type="button" class="nav-item" data-target="profile">
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <path d="M20 21a8 8 0 0 0-16 0"></path>
-              <circle cx="12" cy="7" r="4"></circle>
-            </svg>
-            Profile
-          </button>
-          <button type="button" class="nav-item" data-target="nodes">
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <ellipse cx="12" cy="5" rx="9" ry="3"></ellipse>
-              <path d="M3 5v14a9 3 0 0 0 18 0V5"></path>
-              <path d="M3 12a9 3 0 0 0 18 0"></path>
-            </svg>
-            Nodes
-          </button>
-          <button type="button" class="nav-item" data-target="startup">
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
-            </svg>
-            Startup
-          </button>
           <button type="button" class="nav-item" data-target="downloads">
             <svg
               width="16"
@@ -940,7 +996,22 @@
             </svg>
             Shortcuts
           </button>
-          <button type="button" class="nav-item" data-target="chains">
+          <button type="button" class="nav-item" data-target="privacy">
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+            </svg>
+            Privacy and security
+          </button>
+          <button type="button" class="nav-item" data-target="networks">
             <svg
               width="16"
               height="16"
@@ -957,9 +1028,9 @@
               <line x1="11" y1="7.5" x2="6" y2="16.5"></line>
               <line x1="13" y1="7.5" x2="18" y2="16.5"></line>
             </svg>
-            Chains
+            Networks
           </button>
-          <button type="button" class="nav-item" data-target="rpc">
+          <button type="button" class="nav-item" data-target="nodes">
             <svg
               width="16"
               height="16"
@@ -970,58 +1041,15 @@
               stroke-linecap="round"
               stroke-linejoin="round"
             >
-              <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"></path>
+              <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
+              <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
+              <line x1="6" y1="6" x2="6.01" y2="6"></line>
+              <line x1="6" y1="18" x2="6.01" y2="18"></line>
             </svg>
-            RPC Providers
+            Nodes
           </button>
-          <button type="button" class="nav-item" data-target="ens">
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <polygon points="12 2 4 12 12 16 20 12 12 2"></polygon>
-              <polygon points="4 14 12 22 20 14 12 18 4 14"></polygon>
-            </svg>
-            Name Resolution
-          </button>
-          <button type="button" class="nav-item" data-target="adblock">
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
-            </svg>
-            Ad Blocking
-          </button>
-          <button type="button" class="nav-item" data-target="permissions">
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <path d="M12 2 L4 6 L4 12 C4 17 7.5 21 12 22 C16.5 21 20 17 20 12 L20 6 Z"></path>
-              <path d="m9 12 2 2 4-4"></path>
-            </svg>
-            Site Permissions
-          </button>
-          <button type="button" class="nav-item" data-target="experimental" id="nav-experimental">
+          <div class="nav-rule" role="separator"></div>
+          <button type="button" class="nav-item" data-target="advanced" id="nav-experimental">
             <svg
               width="16"
               height="16"
@@ -1037,9 +1065,9 @@
               <path d="M8.5 2h7"></path>
               <path d="M14 9.3a6.5 6.5 0 1 1-4 0"></path>
             </svg>
-            Experimental
+            Advanced
           </button>
-          <button type="button" class="nav-item" data-target="updates">
+          <button type="button" class="nav-item" data-target="about">
             <svg
               width="16"
               height="16"
@@ -1050,10 +1078,11 @@
               stroke-linecap="round"
               stroke-linejoin="round"
             >
-              <polyline points="23 4 23 10 17 10"></polyline>
-              <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+              <circle cx="12" cy="12" r="10"></circle>
+              <line x1="12" y1="16" x2="12" y2="12"></line>
+              <line x1="12" y1="8" x2="12.01" y2="8"></line>
             </svg>
-            Updates
+            About Freedom
           </button>
         </nav>
       </aside>
@@ -1074,6 +1103,17 @@
                   <option value="dark">Dark</option>
                   <option value="system">System</option>
                 </select>
+              </div>
+            </div>
+            <div class="row">
+              <div class="row-body">
+                <p class="row-label">Show IPFS load progress in the status bar</p>
+              </div>
+              <div class="row-control">
+                <label class="toggle">
+                  <input type="checkbox" id="show-ipfs-progress-status" />
+                  <span class="slider"></span>
+                </label>
               </div>
             </div>
             <div class="row" data-linux-only>
@@ -1129,7 +1169,7 @@
             <div id="custom-search-provider-list"></div>
             <div class="rpc-block" style="border-top: none">
               <button type="button" class="btn" id="add-search-provider">
-                + Add a search engine
+                Add search engine
               </button>
             </div>
             <div class="rpc-block search-provider-form" id="search-provider-form" hidden>
@@ -1171,7 +1211,6 @@
             <div class="row">
               <div class="row-body">
                 <p class="row-label">Name</p>
-                <p class="row-help">The display name for the current profile.</p>
               </div>
               <div class="row-control profile-name-control">
                 <input
@@ -1187,7 +1226,7 @@
           <div class="card" style="margin-top: 12px">
             <div class="rpc-block" style="border-top: none">
               <button type="button" class="btn" id="manage-profiles-link">
-                Manage all profiles →
+                Manage profiles
               </button>
             </div>
           </div>
@@ -1200,16 +1239,25 @@
           <div class="card" id="profile-nodes-card">
             <div class="profile-node-empty">Loading…</div>
           </div>
+          <div id="swarm-mode-row" class="profile-node-swarm-mode" hidden>
+            <span class="profile-node-detail" id="swarm-mode-help">Loading…</span>
+            <button type="button" id="swarm-mode-action-btn" class="btn" hidden></button>
+          </div>
           <p id="profile-nodes-status" class="rpc-status"></p>
         </section>
 
         <!-- Startup -->
+        <!-- The rows' home until renderProfileNodes re-parents each one into
+             the node it belongs to. It is what the user sees before the
+             first render and if the profile fetch fails, so the heading has
+             to name all of them, not whichever one is left over. -->
         <section class="section" id="startup">
-          <h2 class="section-title">Automatic Startup</h2>
-          <div class="card">
-            <div class="row">
+          <h3 class="subsection-title">Startup</h3>
+          <div class="card" id="startup-card">
+            <div class="row" id="ant-launch-row">
               <div class="row-body">
                 <p class="row-label">Start Swarm node</p>
+                <p class="row-help">Restart to apply.</p>
               </div>
               <div class="row-control">
                 <label class="toggle">
@@ -1218,9 +1266,10 @@
                 </label>
               </div>
             </div>
-            <div class="row">
+            <div class="row" id="ipfs-launch-row">
               <div class="row-body">
                 <p class="row-label">Start IPFS node</p>
+                <p class="row-help">Restart to apply.</p>
               </div>
               <div class="row-control">
                 <label class="toggle">
@@ -1232,9 +1281,7 @@
             <div class="row" id="radicle-launch-row">
               <div class="row-body">
                 <p class="row-label">Start Radicle node</p>
-                <p class="row-help" id="radicle-launch-help">
-                  Starts this profile's embedded Radicle node when Freedom opens.
-                </p>
+                <p class="row-help" id="radicle-launch-help">Restart to apply.</p>
               </div>
               <div class="row-control">
                 <label class="toggle">
@@ -1245,11 +1292,11 @@
             </div>
             <div class="row" id="myotis-launch-row">
               <div class="row-body">
-                <p class="row-label">Start Ethereum light client (Myotis)</p>
-                <p class="row-help" id="myotis-launch-help">
-                  Experimental: a fully peer-to-peer Ethereum node — name resolution verified
-                  against the chain itself, no RPC provider involved. Takes effect on next launch.
+                <p class="row-label">
+                  Start Ethereum node
+                  <span class="resolver-badge">Beta</span>
                 </p>
+                <p class="row-help" id="myotis-launch-help">Restart to apply.</p>
               </div>
               <div class="row-control">
                 <label class="toggle">
@@ -1260,15 +1307,27 @@
             </div>
             <div class="row" id="myotis-gnosis-launch-row">
               <div class="row-body">
-                <p class="row-label">Start Gnosis light client (Myotis)</p>
-                <p class="row-help" id="myotis-gnosis-launch-help">
-                  Starts the independent Gnosis P2P client for verified wallet, transaction, and
-                  dapp reads. Takes effect on next launch.
+                <p class="row-label">
+                  Start Gnosis node
+                  <span class="resolver-badge">Beta</span>
                 </p>
+                <p class="row-help" id="myotis-gnosis-launch-help">Restart to apply.</p>
               </div>
               <div class="row-control">
                 <label class="toggle">
                   <input type="checkbox" id="start-myotis-gnosis-at-launch" />
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
+            <div class="row" id="start-tor-row" data-tor>
+              <div class="row-body">
+                <p class="row-label">Start Tor when Freedom opens</p>
+                <p class="row-help">Restart to apply.</p>
+              </div>
+              <div class="row-control">
+                <label class="toggle">
+                  <input type="checkbox" id="start-tor-at-launch" />
                   <span class="slider"></span>
                 </label>
               </div>
@@ -1283,9 +1342,7 @@
             <div class="row">
               <div class="row-body">
                 <p class="row-label">Ask where to save each file</p>
-                <p class="row-help">
-                  When off, files are saved to your Downloads folder automatically.
-                </p>
+                <p class="row-help">Otherwise: ~/Downloads</p>
               </div>
               <div class="row-control">
                 <label class="toggle">
@@ -1334,13 +1391,14 @@
 
         <!-- Ethereum Name Resolution — a focused lens on the Ethereum network -->
         <section class="section" id="ens">
-          <h2 class="section-title">Ethereum Name Resolution</h2>
+          <button type="button" class="back-link" id="ens-back">‹ Networks</button>
+          <h2 class="section-title">Name Resolution</h2>
           <p class="row-help" style="margin-bottom: 16px">
             How Freedom resolves <code>.eth</code>, <code>.box</code>, <code>.wei</code>, and
             <code>.gwei</code> names. These records live on Ethereum — manage RPC endpoints under
-            <a href="#chains">Chains settings</a>.
+            <a href="#networks">Networks settings</a>.
           </p>
-          <h3 class="row-label" style="margin: 0 0 8px 0">Resolution order</h3>
+          <h3 class="subsection-title">Resolution order</h3>
           <p class="row-help" style="margin: 0 0 12px 0">
             Freedom tries enabled methods from top to bottom. Drag the handle to change priority;
             with the handle focused, the arrow keys work too.
@@ -1365,7 +1423,7 @@
             </div>
           </div>
 
-          <h3 class="row-label" style="margin: 22px 0 8px 0">Safety</h3>
+          <h3 class="subsection-title">Safety</h3>
           <div class="card">
             <div class="row">
               <div class="row-body">
@@ -1382,18 +1440,14 @@
           </div>
         </section>
 
-        <!-- Site Permissions -->
-        <section class="section" id="permissions">
-          <h2 class="section-title">Site Permissions</h2>
-          <div id="permissions-view"></div>
-        </section>
 
         <!-- Experimental -->
         <!-- Ad Blocking -->
         <section class="section" id="adblock">
-          <h2 class="section-title">Ad Blocking</h2>
+          <h2 class="section-title">Privacy and security</h2>
+          <h3 class="subsection-title" style="margin-top: 0">Ad blocking</h3>
           <div class="card">
-            <div class="row">
+            <div class="row" id="adblock-enabled-row">
               <div class="row-body">
                 <p class="row-label">Enable ad blocking</p>
                 <p class="row-help" id="adblock-status">Loading…</p>
@@ -1408,7 +1462,7 @@
             <div class="row sub" id="adblock-ads-row">
               <div class="row-body">
                 <p class="row-label">Block ads</p>
-                <p class="row-help" id="adblock-ads-help">EasyList</p>
+                <p class="row-help" id="adblock-ads-help"></p>
               </div>
               <div class="row-control">
                 <label class="toggle">
@@ -1420,7 +1474,7 @@
             <div class="row sub" id="adblock-privacy-row">
               <div class="row-body">
                 <p class="row-label">Block trackers</p>
-                <p class="row-help" id="adblock-privacy-help">EasyPrivacy</p>
+                <p class="row-help" id="adblock-privacy-help"></p>
               </div>
               <div class="row-control">
                 <label class="toggle">
@@ -1432,7 +1486,7 @@
             <div class="row sub" id="adblock-cookies-row">
               <div class="row-body">
                 <p class="row-label">Block cookie banners</p>
-                <p class="row-help" id="adblock-cookies-help">Fanboy Cookiemonster</p>
+                <p class="row-help" id="adblock-cookies-help"></p>
               </div>
               <div class="row-control">
                 <label class="toggle">
@@ -1444,7 +1498,7 @@
             <div class="row sub" id="adblock-annoyances-row">
               <div class="row-body">
                 <p class="row-label">Block other annoyances</p>
-                <p class="row-help" id="adblock-annoyances-help">Fanboy Annoyances</p>
+                <p class="row-help" id="adblock-annoyances-help"></p>
               </div>
               <div class="row-control">
                 <label class="toggle">
@@ -1470,10 +1524,7 @@
             <div class="row">
               <div class="row-body">
                 <p class="row-label">Allowlisted sites</p>
-                <p class="row-help">
-                  Ad blocking is turned off on these sites, including their subdomains. Changes
-                  apply to pages loaded afterwards — reload open tabs.
-                </p>
+                <p class="row-help">Ad blocking is off on these sites and their subdomains.</p>
               </div>
               <div class="row-control">
                 <input
@@ -1489,19 +1540,30 @@
             <div id="adblock-allowlist-list"></div>
           </div>
           <p class="row-help" style="margin-top: 16px">
-            Filter lists © The EasyList authors (https://easylist.to/), redistributed under CC
-            BY-SA.
+            Filter lists © the
+            <a href="https://easylist.to/" target="_blank" rel="noreferrer">EasyList authors</a>,
+            redistributed under CC BY-SA.
           </p>
         </section>
 
+        <!-- Site Permissions -->
+        <section class="section" id="permissions">
+          <div class="section-header">
+            <h3 class="subsection-title">Site permissions</h3>
+            <button type="button" class="btn danger" id="permissions-revoke-all" disabled>
+              Remove all
+            </button>
+          </div>
+          <div id="permissions-view"></div>
+        </section>
         <section class="section" id="experimental">
-          <h2 class="section-title">Experimental</h2>
+          <h2 class="section-title">Advanced</h2>
           <div class="card">
             <div class="row">
               <div class="row-body">
                 <p class="row-label">
                   Enable Identity &amp; Wallet
-                  <span style="color: var(--text-muted); font-weight: 400">(Beta)</span>
+                  <span class="resolver-badge">Beta</span>
                 </p>
               </div>
               <div class="row-control">
@@ -1511,31 +1573,11 @@
                 </label>
               </div>
             </div>
-            <div class="row">
-              <div class="row-body">
-                <p class="row-label">Show IPFS load progress in the status bar</p>
-              </div>
-              <div class="row-control">
-                <label class="toggle">
-                  <input type="checkbox" id="show-ipfs-progress-status" />
-                  <span class="slider"></span>
-                </label>
-              </div>
-            </div>
-            <div class="row" id="swarm-mode-row">
-              <div class="row-body">
-                <p class="row-label">Swarm node mode</p>
-                <p class="row-help" id="swarm-mode-help">Loading…</p>
-              </div>
-              <div class="row-control">
-                <button type="button" id="swarm-mode-action-btn" class="btn" hidden></button>
-              </div>
-            </div>
             <div class="row" data-tor>
               <div class="row-body">
                 <p class="row-label">
                   Enable Tor (.onion access)
-                  <span style="color: var(--text-muted); font-weight: 400">(Beta)</span>
+                  <span class="resolver-badge">Beta</span>
                 </p>
                 <p class="row-help">
                   Routes only <code>.onion</code> addresses through the bundled Tor (Arti) client.
@@ -1549,24 +1591,20 @@
                 </label>
               </div>
             </div>
-            <div class="row sub" id="start-tor-row" data-tor>
-              <div class="row-body">
-                <p class="row-label">Start Tor when Freedom opens</p>
-              </div>
-              <div class="row-control">
-                <label class="toggle">
-                  <input type="checkbox" id="start-tor-at-launch" />
-                  <span class="slider"></span>
-                </label>
-              </div>
-            </div>
           </div>
         </section>
 
         <!-- Updates -->
         <section class="section" id="updates">
-          <h2 class="section-title">Updates</h2>
+          <h2 class="section-title">About Freedom</h2>
           <div class="card">
+            <div class="row">
+              <div class="row-body">
+                <p class="row-label">Version</p>
+                <p class="row-help" id="about-version">—</p>
+              </div>
+              <div class="row-control"></div>
+            </div>
             <div class="row">
               <div class="row-body">
                 <p class="row-label">Automatically check for updates</p>
@@ -1586,6 +1624,37 @@
     <script>
       // freedomAPI is exposed globally by webview-preload.js via contextBridge.
       const $ = (id) => document.getElementById(id);
+
+      // One copy table for the four network sources, read by both the Name
+      // Resolution controller and the chain detail (#269). A help line is
+      // kept only where the row's badge does not already carry the fact:
+      // `Ready`/`Syncing`/`Off` for the local node, `2 of 3` for quorum.
+      const NETWORK_SOURCE_COPY = {
+        myotis: {
+          label: 'Local node',
+          help: '',
+          advanced:
+            'Myotis — a peer-to-peer Ethereum light client running inside Freedom. ENS lookups use finalized state; newer record types use a verified optimistic beacon head.',
+        },
+        colibri: {
+          label: 'Proof check',
+          help: 'A server answers; Freedom checks the proof itself.',
+          advanced:
+            'Colibri — a remote prover produces the witness and Freedom verifies the cryptographic proof locally, against chain consensus.',
+        },
+        quorum: {
+          label: 'Several servers must agree',
+          help: '',
+          advanced:
+            'RPC quorum — several independently configured endpoints are asked at one anchored block, and the answer counts only if they return byte-identical results.',
+        },
+        direct: {
+          label: 'One server, unchecked',
+          help: 'Fastest, and the only option with nothing verifying the answer.',
+          advanced:
+            'Direct RPC — one configured endpoint answers and nothing verifies the response. Disabled by default.',
+        },
+      };
 
       const fields = {
         themeMode: $('theme-mode'),
@@ -1665,6 +1734,68 @@
         status: $('search-provider-status'),
       };
 
+      // Which startup rows belong to which node row (#268). Tor is here
+      // too: its node row already renders the slot, and without this entry
+      // the slot stays empty while the row it is for sits in the Startup
+      // card behind it.
+      const STARTUP_ROWS = {
+        bee: ['ant-launch-row'],
+        ipfs: ['ipfs-launch-row'],
+        myotis: ['myotis-launch-row', 'myotis-gnosis-launch-row'],
+        radicle: ['radicle-launch-row'],
+        tor: ['start-tor-row'],
+      };
+      // Resolved once, up front. renderProfileNodes re-parents these rows
+      // into the node card it rebuilds from innerHTML, so from the second
+      // render on they are no longer in the document and a fresh
+      // getElementById would return null — holding the elements keeps them
+      // (and their handlers) alive across every re-render.
+      const startupRows = new Map(
+        Object.entries(STARTUP_ROWS).map(([protocol, rowIds]) => [
+          protocol,
+          rowIds.map((rowId) => $(rowId)).filter(Boolean),
+        ])
+      );
+      // Once every row has moved into the node it belongs to, the Startup
+      // card has nothing left for its heading to label, so the section goes
+      // with them. A row whose node is not on the list (Tor with the
+      // integration off) keeps it — and its heading honest.
+      const startupSection = $('startup');
+      const startupCard = $('startup-card');
+      const syncStartupSection = () => {
+        if (!startupSection || !startupCard) return;
+        // A row the platform sweep hid (`[data-tor]` on Windows) does not
+        // count — an empty card under a heading is what this avoids.
+        startupSection.hidden = ![...startupCard.querySelectorAll('.row')].some(
+          (row) => row.style.display !== 'none'
+        );
+      };
+      // The failure path wipes the node card, which is where the rows live
+      // by then: bring the ones it took back home so the toggles stay
+      // reachable (and labelled) until a later refresh succeeds. Rows still
+      // in the card are left where they are, so nothing is reordered.
+      const homeStartupRows = () => {
+        if (!startupCard) return;
+        const rows = [...startupRows.values()].flat();
+        // Nothing to bring back: leave the card alone, so a refresh that
+        // keeps failing does not re-parent (and blur) a row every 5s.
+        if (rows.some((row) => row.parentElement !== startupCard)) {
+          // Re-appended in node order, so the rows that come back do not
+          // land behind whichever one never left.
+          for (const row of rows) startupCard.appendChild(row);
+        }
+        syncStartupSection();
+      };
+      // About Freedom's version line. The app stamps its version into the
+      // user agent, so this needs no new IPC; a manual "Check for updates"
+      // button does, and is not mocked here.
+      const aboutVersion = $('about-version');
+      if (aboutVersion) {
+        const stamped = /\bFreedom(?:Dev)?\/([^\s]+)/.exec(navigator.userAgent);
+        aboutVersion.textContent = stamped ? stamped[1] : 'unknown';
+      }
+
+      const swarmModeRow = $('swarm-mode-row');
       const swarmModeHelp = $('swarm-mode-help');
       const swarmModeBtn = $('swarm-mode-action-btn');
       const profileFields = {
@@ -1933,19 +2064,83 @@
       // chrome can render freedom://settings/<section> in the address bar.
       const navItems = [...document.querySelectorAll('.nav-item')];
       const SECTIONS = navItems.map((i) => i.dataset.target).filter(Boolean);
-      const DEFAULT_SECTION = SECTIONS[0] || 'appearance';
+      const DEFAULT_SECTION = SECTIONS[0] || 'profile';
 
-      // The section is the part before any `/` sub-route, so a deep link
-      // like #chains/1 (a chain detail) still resolves to `chains`.
-      const resolveSection = (hash) => {
-        const candidate = (hash || '').replace(/^#/, '').toLowerCase().split('/')[0];
-        return SECTIONS.includes(candidate) ? candidate : DEFAULT_SECTION;
+      // Since #268 a nav entry can own more than one `<section>` panel:
+      // Privacy and security holds ad blocking and site permissions,
+      // Networks holds the chain list, the API keys and name resolution,
+      // Nodes holds the node list and what is left of Startup.
+      const NAV_PANELS = {
+        profile: ['profile'],
+        appearance: ['appearance'],
+        search: ['search'],
+        downloads: ['downloads'],
+        shortcuts: ['shortcuts'],
+        privacy: ['adblock', 'permissions'],
+        networks: ['chains', 'rpc', 'ens'],
+        nodes: ['nodes', 'startup'],
+        advanced: ['experimental'],
+        about: ['updates'],
+      };
+      const ALL_PANELS = [...new Set(Object.values(NAV_PANELS).flat())];
+
+      // Hashes that named a nav item before the regroup still resolve, so
+      // bookmarks and the app's own deep links (freedom://settings/rpc from
+      // the wallet, freedom://settings/ens from the ENS interstitial) keep
+      // working; canonicalizeHash then rewrites them to the new route.
+      const LEGACY_ROUTES = {
+        chains: 'networks',
+        rpc: 'networks/keys',
+        ens: 'networks/names',
+        adblock: 'privacy',
+        permissions: 'privacy',
+        startup: 'nodes',
+        experimental: 'advanced',
+        updates: 'about',
       };
 
-      const showSection = (section) => {
-        for (const id of SECTIONS) {
+      // The only real sub-routes: Networks' two sibling panels and a chain
+      // detail (`networks/<chainId>`). No other section has one, so any
+      // other tail is junk and resolves to the section root — the chain id
+      // is checked for shape here and for existence by the chains
+      // controller, which drops one it cannot show (#280).
+      const isSubRoute = (section, sub) =>
+        section === 'networks' &&
+        (sub === 'keys' || sub === 'names' || /^\d+$/.test(sub || ''));
+
+      // The canonical route for a hash: `<section>` or `<section>/<sub>`.
+      const resolveRoute = (hash) => {
+        const raw = (hash || '').replace(/^#/, '').toLowerCase();
+        const [head, ...rest] = raw.split('/');
+        if (LEGACY_ROUTES[head]) {
+          // Only the chain detail carries a sub-route worth keeping.
+          return head === 'chains' && isSubRoute('networks', rest[0])
+            ? `networks/${rest[0]}`
+            : LEGACY_ROUTES[head];
+        }
+        if (!SECTIONS.includes(head)) return DEFAULT_SECTION;
+        return isSubRoute(head, rest[0]) ? `${head}/${rest[0]}` : head;
+      };
+
+      const resolveSection = (hash) => resolveRoute(hash).split('/')[0];
+
+      // Which panels a route shows. Networks' sub-routes pick one of its
+      // three; every other entry shows all of its panels together.
+      const panelsFor = (section, sub) => {
+        if (section === 'networks') {
+          if (sub === 'keys') return ['rpc'];
+          if (sub === 'names') return ['ens'];
+          return ['chains'];
+        }
+        return NAV_PANELS[section] || [];
+      };
+
+      const showSection = (route) => {
+        const [section, sub] = String(route).split('/');
+        const visible = panelsFor(section, sub);
+        for (const id of ALL_PANELS) {
           const el = document.getElementById(id);
-          if (el) el.classList.toggle('hidden', id !== section);
+          if (el) el.classList.toggle('hidden', !visible.includes(id));
         }
         navItems.forEach((item) =>
           item.classList.toggle('active', item.dataset.target === section)
@@ -1955,6 +2150,37 @@
         // stale scroll offset from a taller prior section.
         window.scrollTo({ top: 0 });
       };
+
+      // Smallest useful version of page search: filter the nav by label.
+      // A flat result list indexing every row label and helper is the fuller
+      // version the issue describes.
+      const settingsSearch = $('settings-search');
+      const navRules = [...document.querySelectorAll('.nav-rule')];
+      // A rule only separates two groups while both still have a visible
+      // entry; filtering that empties one side would leave it dangling
+      // under (or over) the single item that matched.
+      const syncNavRules = () => {
+        const visibleItem = (rule, step) => {
+          for (let el = rule[step]; el; el = el[step]) {
+            if (el.classList.contains('nav-item') && !el.hidden) return true;
+          }
+          return false;
+        };
+        for (const rule of navRules) {
+          rule.hidden = !(
+            visibleItem(rule, 'previousElementSibling') &&
+            visibleItem(rule, 'nextElementSibling')
+          );
+        }
+      };
+      settingsSearch?.addEventListener('input', () => {
+        const query = settingsSearch.value.trim().toLowerCase();
+        for (const item of navItems) {
+          const label = (item.textContent || '').trim().toLowerCase();
+          item.hidden = query !== '' && !label.includes(query);
+        }
+        syncNavRules();
+      });
 
       navItems.forEach((item) => {
         item.addEventListener('click', () => {
@@ -1967,22 +2193,25 @@
         });
       });
 
+      // Normalize the URL to the section actually shown, so
+      // freedom://settings becomes freedom://settings/appearance and a hash
+      // naming no section does not stay in the address bar. Runs on first
+      // load *and* on every hashchange — a stale bookmark opened in an
+      // existing Settings tab, or a typo, is the same case as a bad first
+      // load. history.replaceState keeps it out of the back/forward stack.
+      const canonicalizeHash = () => {
+        const route = resolveRoute(location.hash);
+        if (location.hash.replace(/^#/, '').toLowerCase() !== route) {
+          history.replaceState(null, '', `#${route}`);
+        }
+        return route;
+      };
+
       window.addEventListener('hashchange', () => {
-        showSection(resolveSection(location.hash));
+        showSection(canonicalizeHash());
       });
 
-      // On first load, normalize the URL so freedom://settings becomes
-      // freedom://settings/appearance in the address bar. history.replaceState
-      // keeps this out of the back/forward stack.
-      const initialSection = resolveSection(location.hash);
-      const initialRawHash = location.hash.replace(/^#/, '').toLowerCase();
-      // A bare section or one of its sub-routes (e.g. chains/1) is canonical.
-      const initialHashIsCanonical =
-        initialRawHash === initialSection || initialRawHash.startsWith(initialSection + '/');
-      if (!initialHashIsCanonical) {
-        history.replaceState(null, '', `#${initialSection}`);
-      }
-      showSection(initialSection);
+      showSection(canonicalizeHash());
 
       const setFieldEnabled = (checkbox, container, ...inputs) => {
         const enabled = checkbox?.checked === true;
@@ -2161,14 +2390,37 @@
                 <div class="profile-node-status-line">${esc(statusLabel(service))}</div>
                 ${details}
                 ${renderExternalEditor(protocol, config, mode)}
-                <div class="profile-node-actions">
-                  <button type="button" class="btn" data-save-node="${protocol}">Save</button>
-                </div>
+                ${protocol === 'bee' ? '<div data-swarm-mode-slot></div>' : ''}
+                <div data-startup-slot="${protocol}"></div>
               </div>
             </div>`;
         });
 
         profileFields.nodesCard.innerHTML = rows.join('');
+        // Move the live Swarm mode readout into the Swarm row. It is one
+        // persistent element (its handlers close over it), so it is
+        // re-parented rather than re-rendered.
+        const swarmSlot = profileFields.nodesCard.querySelector('[data-swarm-mode-slot]');
+        if (swarmSlot && swarmModeRow) {
+          swarmModeRow.hidden = false;
+          swarmSlot.appendChild(swarmModeRow);
+        }
+        // Same for the "Start … when Freedom opens" rows, which used to be
+        // their own nav item (#268). Myotis owns two — Ethereum and Gnosis.
+        for (const [protocol, rows] of startupRows) {
+          // No node row for this protocol on this render — Tor with the
+          // integration off, or any node on a platform that hides it. Its
+          // rows go home to the Startup card instead of staying in the card
+          // this render just wiped, where they would be detached and gone.
+          const home =
+            profileFields.nodesCard.querySelector(`[data-startup-slot="${protocol}"]`) ||
+            startupCard;
+          if (!home) continue;
+          for (const row of rows) {
+            if (row.parentElement !== home) home.appendChild(row);
+          }
+        }
+        syncStartupSection();
       };
 
       const refreshProfileSection = async (force = false) => {
@@ -2198,6 +2450,7 @@
         } catch {
           profileFields.nodesCard.innerHTML =
             '<div class="profile-node-empty">Profile data unavailable</div>';
+          homeStartupRows();
         }
       };
 
@@ -2266,18 +2519,12 @@
         }
       });
 
-      profileFields.nodesCard?.addEventListener('change', (event) => {
-        const modeSelect = event.target?.closest?.('[data-node-mode]');
-        if (!modeSelect) return;
-        setExternalEditorVisible(modeSelect.closest('.profile-node'), modeSelect.value);
-      });
-
-      profileFields.nodesCard?.addEventListener('click', async (event) => {
-        const saveButton = event.target?.closest?.('[data-save-node]');
-        if (!saveButton) return;
-
-        const row = saveButton.closest('.profile-node');
-        const protocol = saveButton.dataset.saveNode;
+      // Every other control on the page commits on change; these do too.
+      // `quiet` is for the mode dropdown: picking `external` before the
+      // endpoint fields are filled is not an error yet, it is the step
+      // before typing one — those fields commit on focusout.
+      const commitNodeConfig = async (row, { quiet = false } = {}) => {
+        const protocol = row?.dataset?.protocol;
         const mode = row?.querySelector('[data-node-mode]')?.value;
         if (!protocol || !mode) return;
 
@@ -2291,15 +2538,16 @@
             .filter((input) => !input.value.trim())
             .map((input) => input.previousElementSibling?.textContent || 'Endpoint');
           if (missing.length) {
-            setNodesStatus(
-              `External ${SERVICE_LABELS[protocol]} requires: ${missing.join(', ')}`,
-              'error'
-            );
+            if (!quiet) {
+              setNodesStatus(
+                `External ${SERVICE_LABELS[protocol]} requires: ${missing.join(', ')}`,
+                'error'
+              );
+            }
             return;
           }
         }
 
-        saveButton.disabled = true;
         setNodesStatus(`Saving ${SERVICE_LABELS[protocol]} node settings…`, 'testing');
         try {
           const result = await freedomAPI.updateProfileNodeConfig?.(protocol, config);
@@ -2311,9 +2559,22 @@
           await refreshRadicleLaunchStatus();
         } catch (err) {
           setNodesStatus(err?.message || 'Profile node settings were not saved', 'error');
-        } finally {
-          saveButton.disabled = false;
         }
+      };
+
+      profileFields.nodesCard?.addEventListener('change', (event) => {
+        const modeSelect = event.target?.closest?.('[data-node-mode]');
+        if (!modeSelect) return;
+        const row = modeSelect.closest('.profile-node');
+        setExternalEditorVisible(row, modeSelect.value);
+        commitNodeConfig(row, { quiet: true });
+      });
+
+      // The Colibri prover endpoint already commits this way (`focusout`).
+      profileFields.nodesCard?.addEventListener('focusout', (event) => {
+        const field = event.target?.closest?.('[data-endpoint-field]');
+        if (!field) return;
+        commitNodeConfig(field.closest('.profile-node'));
       });
 
       const currentFormState = () => ({
@@ -2365,15 +2626,26 @@
         applyAdblockGating();
       };
 
+      // With no filter lists the engine cannot run, so every control in the
+      // section is inert — say so once and disable them, rather than leaving
+      // six live toggles above a line that says blocking is inactive.
+      let adblockUnavailable = false;
+
       const applyAdblockGating = () => {
+        const usable = !adblockUnavailable;
+        fields.adblockEnabled.disabled = !usable;
+        $('adblock-enabled-row')?.classList.toggle('disabled', !usable);
+        const gate = (row, field) => {
+          setFieldEnabled(fields.adblockEnabled, row, field);
+          if (!usable) {
+            row?.classList.add('disabled');
+            if (field) field.disabled = true;
+          }
+        };
         for (const { id, field } of ADBLOCK_CATEGORIES) {
-          setFieldEnabled(fields.adblockEnabled, $(`adblock-${id}-row`), field);
+          gate($(`adblock-${id}-row`), field);
         }
-        setFieldEnabled(
-          fields.adblockEnabled,
-          $('adblock-autoupdate-row'),
-          fields.adblockAutoUpdate
-        );
+        gate($('adblock-autoupdate-row'), fields.adblockAutoUpdate);
       };
 
       // Rule counts / list version come from the main-process engine, not
@@ -2382,18 +2654,20 @@
       const renderAdblockStatus = async () => {
         try {
           const status = await freedomAPI.adblockGetStatus();
+          adblockUnavailable = !status.engineReady && !status.listsVersion;
           $('adblock-status').textContent = status.engineReady
             ? `Filter lists ${status.listsVersion} · engine active`
             : status.listsVersion
               ? `Filter lists ${status.listsVersion} · engine preparing…`
-              : 'No filter lists bundled — blocking is inactive.';
+              : 'No filter lists available. Ad blocking cannot run.';
           for (const { id } of ADBLOCK_CATEGORIES) {
             const meta = status.categories?.[id];
             if (meta?.ruleCount) {
               $(`adblock-${id}-help`).textContent =
-                `${meta.title} · ${meta.ruleCount.toLocaleString()} rules`;
+                `${meta.ruleCount.toLocaleString()} rules`;
             }
           }
+          applyAdblockGating();
         } catch {
           $('adblock-status').textContent = 'Status unavailable.';
         }
@@ -2426,7 +2700,7 @@
           control.className = 'row-control';
           const removeBtn = document.createElement('button');
           removeBtn.type = 'button';
-          removeBtn.className = 'btn danger';
+          removeBtn.className = 'btn';
           removeBtn.textContent = 'Remove';
           removeBtn.addEventListener('click', async () => {
             await freedomAPI.adblockRemoveAllowlistHost(host).catch(() => {});
@@ -2521,7 +2795,7 @@
 
         swarmModeHelp.textContent =
           'Ultra-light — read-only. Set up publishing to switch to light mode.';
-        showAction('Set up publishing →', () => {
+        showAction('Set up publishing', () => {
           freedomAPI.openPublishSetup().catch(() => {});
         });
       };
@@ -2681,7 +2955,12 @@
         const matchesQuery = (entry) => {
           const q = query.trim().toLowerCase();
           if (!q) return true;
-          return [entry.description, entry.category, entry.formatted, entry.accelerator]
+          return [
+            entry.settingsLabel || entry.description,
+            entry.category,
+            entry.formatted,
+            entry.accelerator,
+          ]
             .concat(entry.aliases)
             .join(' ')
             .toLowerCase()
@@ -2736,7 +3015,7 @@
           return `
             <div class="row" data-shortcut-id="${esc(entry.id)}">
               <div class="row-body">
-                <p class="row-label">${esc(entry.description)}</p>
+                <p class="row-label">${esc(entry.settingsLabel || entry.description)}</p>
                 ${aliasLine}
                 ${revertedLine}
                 ${warnLine}
@@ -2927,13 +3206,13 @@
         load();
       })();
 
-      // ── Chains settings page ────────────────────────────────────────
+      // ── Networks settings page ──────────────────────────────────────
       // Master-detail controller for the #chains section: a list of
       // chains, each drilling into a per-chain detail view of that chain's
-      // endpoint sources. Hash-routed — #chains is the list,
-      // #chains/<chainId> a detail. Talks to the registry via
-      // freedomAPI's networks:* bridge; every mutation re-fetches and
-      // re-renders so the view mirrors the registry.
+      // endpoint sources, plus the way into Networks' other two panels.
+      // Hash-routed — #networks is the list, #networks/<chainId> a detail.
+      // Talks to the registry via freedomAPI's networks:* bridge; every
+      // mutation re-fetches and re-renders so the view mirrors the registry.
       (() => {
         const section = $('chains');
         const view = $('chains-view');
@@ -2964,27 +3243,30 @@
 
         // The chain whose detail is open, parsed from the hash; null = list.
         const openChainId = () => {
-          const parts = location.hash.replace(/^#/, '').toLowerCase().split('/');
-          return parts[0] === 'chains' && parts[1] ? parts[1] : null;
+          const parts = resolveRoute(location.hash).split('/');
+          // `keys` and `names` are the other two Networks sub-routes.
+          return parts[0] === 'networks' && /^\d+$/.test(parts[1] || '') ? parts[1] : null;
         };
 
         // A master-list button row: name + sub-line, trailing chevron.
-        // `name`/`sub` must already be escaped; `attr` is a data-attribute
-        // string the click handler reads.
-        const navRow = ({ name, sub, action, attr, disabled }) => `
+        // `name`/`sub` must already be escaped; `attr` is an optional
+        // data-attribute string the click handler reads — a row whose action
+        // needs no argument omits it, so it defaults to empty rather than
+        // interpolating `undefined` into the tag.
+        const navRow = ({ name, sub, action, attr = '', disabled }) => `
           <button type="button" class="net-row" data-action="${action}" ${attr}${disabled ? ' disabled' : ''}>
             <span class="net-row-text">
               <span class="net-row-name">${name}</span>
               <span class="net-row-sub">${sub}</span>
             </span>
-            <span class="net-chevron">›</span>
+            <span class="net-chevron" aria-hidden="true">›</span>
           </button>`;
 
         // A standalone action button in its own card (12px top margin).
-        const cardButton = (label, action) => `
+        const cardButton = (label, action, variant = '') => `
           <div class="card" style="margin-top: 12px">
             <div class="rpc-block" style="border-top: none">
-              <button type="button" class="btn" data-action="${action}">${label}</button>
+              <button type="button" class="btn${variant ? ' ' + variant : ''}" data-action="${action}">${label}</button>
             </div>
           </div>`;
 
@@ -3000,14 +3282,32 @@
               })
             )
             .join('');
+          // Networks' other two panels — `networks/names` (Name Resolution)
+          // and `networks/keys` (API keys) — render as their own sections,
+          // so this list is the only place that can reach them. Without
+          // these rows both are hash-only.
+          const subPages =
+            navRow({
+              name: 'Name Resolution',
+              sub: 'How .eth, .box, .wei and .gwei names resolve',
+              action: 'open-names',
+            }) +
+            navRow({
+              name: 'API keys',
+              sub: 'Keys for commercial RPC providers',
+              action: 'open-rpc-page',
+            });
           view.innerHTML = `
-            <h2 class="section-title">Chains</h2>
+            <h2 class="section-title">Networks</h2>
             <p class="row-help" style="margin-bottom: 16px">
               The chains Freedom resolves names and balances on. Select a
               chain to manage its RPC and prover endpoints.
             </p>
+            <h3 class="subsection-title">Chains</h3>
             <div class="card">${rows}</div>
-            ${cardButton('+ Add a chain', 'add-chain')}`;
+            ${cardButton('Add chain', 'add-chain')}
+            <h3 class="subsection-title">Names and keys</h3>
+            <div class="card">${subPages}</div>`;
         };
 
         // --- add-chain flow ------------------------------------------
@@ -3115,7 +3415,7 @@
             return;
           }
           view.innerHTML = `
-            <button type="button" class="back-link" data-action="cancel-add">‹ Chains</button>
+            <button type="button" class="back-link" data-action="cancel-add">‹ Networks</button>
             <h2 class="section-title">Add a chain</h2>
             <p class="row-help" style="margin-bottom: 16px">
               Search the public chain catalogue, or enter a chain manually.
@@ -3149,7 +3449,7 @@
                 <span class="slider"></span></label>`;
           } else {
             controls = `<button type="button" class="btn" data-action="edit-source" data-id="${esc(src.id)}">Edit</button>
-               <button type="button" class="btn" data-action="delete-source" data-id="${esc(src.id)}" title="Remove" aria-label="Remove">✕</button>`;
+               <button type="button" class="btn" data-action="delete-source" data-id="${esc(src.id)}">Remove</button>`;
           }
 
           return `
@@ -3180,24 +3480,7 @@
             </div>`;
         };
 
-        const accessMeta = {
-          myotis: {
-            label: 'Myotis P2P light client',
-            help: 'Verified locally against the chain; no RPC endpoint involved.',
-          },
-          colibri: {
-            label: 'Colibri cryptographic verification',
-            help: 'Verifies prover responses against the chain consensus.',
-          },
-          quorum: {
-            label: 'RPC quorum',
-            help: 'Requires matching responses from independently configured RPC endpoints.',
-          },
-          direct: {
-            label: 'Direct RPC',
-            help: 'Compatibility fallback using the first working configured endpoint.',
-          },
-        };
+        const accessMeta = NETWORK_SOURCE_COPY;
 
         const sourceStatus = (source, cid) => {
           if (source === 'myotis') {
@@ -3245,7 +3528,7 @@
                       <p class="row-label">${meta.label}</p>
                       <span class="resolver-badge">${esc(sourceStatus(source, cid))}</span>
                     </div>
-                    <p class="row-help">${meta.help}</p>
+                    ${meta.help ? `<p class="row-help">${meta.help}</p>` : ''}
                   </div>
                 </div>`;
             })
@@ -3281,7 +3564,7 @@
           const proverConfig = supportsVerifiedSources
             ? `<div class="card" style="margin-top: 12px">
                 <div class="rpc-block" style="border-top: none">
-                  <p class="row-label" style="margin-bottom: 8px">Colibri prover endpoint</p>
+                  <p class="row-label" style="margin-bottom: 8px">Proof server</p>
                   <div class="rpc-row">
                     <input class="rpc-input" data-chain-prover="${esc(cid)}"
                       data-source-id="${esc(proverSource?.id || 'colibri-corpus')}"
@@ -3302,7 +3585,7 @@
             }</div>`;
 
           view.innerHTML = `
-            <button type="button" class="back-link" data-action="back">‹ Chains</button>
+            <button type="button" class="back-link" data-action="back">‹ Networks</button>
             <h2 class="section-title">${esc(chainName(cid))}</h2>
             <p class="row-help" style="margin-bottom: 16px">chain ${esc(cid)}${isCustom ? ' · custom chain' : ''}</p>
 
@@ -3318,11 +3601,11 @@
             ${proverConfig}
 
             <h3 class="subsection-title">Transaction broadcast</h3>
-            <p class="row-help" style="margin-bottom: 12px">Signed transactions use P2P first, with RPC as the compatibility fallback.</p>
+            <p class="row-help" style="margin-bottom: 12px">Signed transactions use the local node first, with a server as the fallback.</p>
             <div class="card">${accessRows(cid, 'broadcast', broadcastOrder)}</div>
 
             ${section('Your RPCs', 'Endpoints you added — tried first.', mine, 'No custom RPCs yet')}
-            ${cardButton('+ Add a custom RPC', 'add-endpoint')}
+            ${cardButton('Add RPC', 'add-endpoint')}
             ${endpointForm ? endpointFormHtml() : ''}
 
             ${
@@ -3347,17 +3630,34 @@
                 : ''
             }
 
-            ${isCustom ? cardButton('Remove this chain', 'remove-chain') : ''}`;
+            ${isCustom ? cardButton('Remove this chain', 'remove-chain', 'danger') : ''}`;
         };
 
-        const render = () => {
+        // `authoritative` marks the render that follows a completed
+        // config fetch. Only that one may declare a chain id unknown: the
+        // instant list<->detail swap on hashchange runs against the cached
+        // config, which legitimately does not know about a chain added
+        // elsewhere a moment ago.
+        const render = (authoritative = false) => {
           if (addState) {
             renderAdd();
             return;
           }
           const cid = openChainId();
-          if (cid && config.networks[cid]) renderDetail(cid);
-          else renderList();
+          if (cid && config.networks[cid]) {
+            renderDetail(cid);
+            return;
+          }
+          // A chain id that is not configured (a bookmarked detail for a
+          // chain since removed) must not leave the chain sub-route in the
+          // address bar over a list, and must say why.
+          if (cid && authoritative) {
+            history.replaceState(null, '', '#networks');
+            renderList();
+            setStatus('That chain is no longer configured.', 'error');
+            return;
+          }
+          renderList();
         };
 
         const reload = async () => {
@@ -3373,7 +3673,7 @@
             }
             config = { networks: res.networks || {}, sources: res.sources || [] };
             myotisStatuses = { 1: ethereumMyotis, 100: gnosisMyotis };
-            render();
+            render(true);
           } catch {
             setStatus('Failed to load network configuration', 'error');
           }
@@ -3459,7 +3759,7 @@
             setStatus('', '');
             addState = null;
             await reload();
-            location.hash = 'chains/' + def.chainId;
+            location.hash = 'networks/' + def.chainId;
           } catch (err) {
             const message = err?.message || 'Could not add chain';
             if (onError) onError(message);
@@ -3554,9 +3854,9 @@
           const id = btn.dataset.id;
 
           if (action === 'open-chain') {
-            location.hash = 'chains/' + btn.dataset.chain;
+            location.hash = 'networks/' + btn.dataset.chain;
           } else if (action === 'back') {
-            location.hash = 'chains';
+            location.hash = 'networks';
           } else if (action === 'add-endpoint') {
             endpointForm = { mode: 'add', id: null, url: '' };
             render();
@@ -3628,7 +3928,9 @@
           } else if (action === 'delete-source') {
             await mutate(() => freedomAPI.removeEndpointSource(id));
           } else if (action === 'open-rpc-page') {
-            location.hash = 'rpc';
+            location.hash = 'networks/keys';
+          } else if (action === 'open-names') {
+            location.hash = 'networks/names';
           } else if (action === 'remove-chain') {
             const cid = openChainId();
             if (!cid) return;
@@ -3645,7 +3947,7 @@
                 return;
               }
               setStatus('', '');
-              location.hash = 'chains';
+              location.hash = 'networks';
             } catch (err) {
               setStatus(err?.message || 'Could not remove chain', 'error');
             }
@@ -3773,7 +4075,7 @@
         // (config may have changed elsewhere). The transient add/edit form
         // is cleared on any navigation.
         window.addEventListener('hashchange', () => {
-          if (resolveSection(location.hash) !== 'chains') return;
+          if (resolveRoute(location.hash) !== 'networks' && !openChainId()) return;
           clearTimeout(searchTimer);
           endpointForm = null;
           addState = null;
@@ -3794,32 +4096,31 @@
         const policyStatus = $('ens-policy-status');
         if (!list || !preferVerified) return;
 
+        // Back to the Networks list this page is reached from, the same way
+        // the chain detail and the API keys page go back.
+        $('ens-back')?.addEventListener('click', () => {
+          location.hash = 'networks';
+        });
+
         const METHODS = [
           {
             id: 'myotis',
-            label: 'Myotis light client',
-            help: 'Local P2P resolution. ENS prefers finalized state; newer ENS records and WNS/GNS use a cryptographically verified optimistic beacon head.',
+            ...NETWORK_SOURCE_COPY.myotis,
             link: '#nodes',
-            linkLabel: 'Node settings →',
+            linkLabel: 'Node settings',
           },
-          {
-            id: 'colibri',
-            label: 'Colibri',
-            help: 'A remote prover produces the witness; Freedom verifies the cryptographic proof locally.',
-          },
+          { id: 'colibri', ...NETWORK_SOURCE_COPY.colibri },
           {
             id: 'quorum',
-            label: 'RPC quorum',
-            help: 'Multiple independent RPC endpoints must return byte-identical answers at one anchored block.',
-            link: '#chains/1',
-            linkLabel: 'Manage endpoints →',
+            ...NETWORK_SOURCE_COPY.quorum,
+            link: '#networks/1',
+            linkLabel: 'Manage endpoints',
           },
           {
             id: 'direct',
-            label: 'Direct RPC',
-            help: 'Uses one configured endpoint. This is not cryptographic verification and is disabled by default.',
-            link: '#chains/1',
-            linkLabel: 'Configure →',
+            ...NETWORK_SOURCE_COPY.direct,
+            link: '#networks/1',
+            linkLabel: 'Configure',
           },
         ];
         const METHOD_IDS = new Set(METHODS.map((method) => method.id));
@@ -3933,8 +4234,8 @@
                 configRow = `<div class="resolver-config" data-method-config="colibri">
                       <div class="resolver-config-line">
                         <div class="row-body">
-                          <p class="row-label">Prover endpoint</p>
-                          <p class="row-help">Leave empty to use the corpus.core default.</p>
+                          <p class="row-label">Proof server</p>
+                          <p class="row-help">Leave empty to use the default.</p>
                         </div>
                         <input type="text" id="ens-prover-url" class="rpc-input"
                           placeholder="https://mainnet1.colibri-proof.tech" spellcheck="false" />
@@ -3945,7 +4246,7 @@
                       <div class="resolver-config-line">
                         <div class="row-body">
                           <p class="row-label">Agreement threshold</p>
-                          <p class="row-help">Require matching responses from independently configured RPC providers. ${activeSources('rpc').length} currently available.</p>
+                          <p class="row-help">How many servers must agree. ${activeSources('rpc').length} currently available.</p>
                         </div>
                         <div class="resolver-quorum-fields">
                           Require
@@ -3974,7 +4275,15 @@
                       <p class="row-label">${method.label}</p>
                       <span class="resolver-badge" data-method-status="${id}">Loading…</span>
                     </div>
-                    <p class="row-help">${method.help}</p>
+                    ${method.help ? `<p class="row-help">${method.help}</p>` : ''}
+                    ${
+                      method.advanced
+                        ? `<details class="row-advanced">
+                             <summary>Advanced</summary>
+                             <p class="row-help">${method.advanced}</p>
+                           </details>`
+                        : ''
+                    }
                     ${link}
                   </div>
                   <div class="resolver-controls">
@@ -4300,7 +4609,7 @@
         };
 
         window.addEventListener('hashchange', () => {
-          if (location.hash.replace(/^#/, '').toLowerCase() === 'ens') refresh();
+          if (resolveRoute(location.hash) === 'networks/names') refresh();
         });
         freedomAPI.onSettingsUpdated?.((settings) => {
           if (settings?.networkConfigUpdated) refresh();
@@ -4382,11 +4691,12 @@
             ? `<div class="card">${providers.map(providerRow).join('')}</div>`
             : '<div class="card"><div class="rpc-block" style="border-top: none"><p class="rpc-hint">No keyed providers available</p></div></div>';
           view.innerHTML = `
-            <h2 class="section-title">RPC Providers</h2>
+            <button type="button" class="back-link" data-action="back-to-networks">‹ Networks</button>
+            <h2 class="section-title">API keys</h2>
             <p class="row-help" style="margin-bottom: 16px">
               Commercial RPC providers. Add an API key to use one — a single
               key covers every chain that provider serves. Keyless public
-              RPCs are managed per chain under Chains settings.
+              RPCs are managed per chain under Networks settings.
             </p>
             ${body}`;
         };
@@ -4425,6 +4735,10 @@
           const action = btn.dataset.action;
           const id = btn.dataset.id;
 
+          if (action === 'back-to-networks') {
+            location.hash = 'networks';
+            return;
+          }
           if (action === 'edit-key') {
             keyFor = id;
             render();
@@ -4477,7 +4791,7 @@
 
         // Re-sync on navigation into this section.
         window.addEventListener('hashchange', () => {
-          if (resolveSection(location.hash) !== 'rpc') return;
+          if (resolveRoute(location.hash) !== 'networks/keys') return;
           keyFor = null;
           reload();
         });
@@ -4492,6 +4806,7 @@
       // listed here — they expire with the app anyway.
       (() => {
         const view = $('permissions-view');
+        const revokeAll = $('permissions-revoke-all');
         if (!view) return;
 
         const PERMISSION_LABELS = {
@@ -4507,35 +4822,13 @@
         const render = (all) => {
           const origins = Object.keys(all || {}).sort();
 
-          const intro = `
-            <div class="card" style="margin-bottom: 16px">
-              <div class="row">
-                <div class="row-body">
-                  <p class="row-label">Decisions you asked Freedom to remember</p>
-                  <p class="row-help">
-                    When a site asks to use your camera, microphone, notifications,
-                    clipboard, location, or MIDI devices, Freedom prompts you.
-                    Remembered answers are listed here. Everything else is denied
-                    by default.
-                  </p>
-                </div>
-                <div class="row-control">
-                  <button class="btn danger" data-action="revoke-all" ${
-                    origins.length === 0 ? 'disabled' : ''
-                  }>
-                    Remove all
-                  </button>
-                </div>
-              </div>
-            </div>`;
+          if (revokeAll) revokeAll.disabled = origins.length === 0;
 
           if (origins.length === 0) {
-            view.innerHTML =
-              intro +
-              `<div class="card"><div class="row"><div class="row-body">
-                 <p class="row-label">No stored site permissions</p>
-                 <p class="row-help">Allow or Block a site's request with
-                 “Remember for this site” checked and the decision appears here.</p>
+            view.innerHTML = `<div class="card"><div class="row"><div class="row-body">
+                 <p class="row-label">No saved permissions</p>
+                 <p class="row-help">Sites you allow or block with
+                 “Remember for this site” appear here.</p>
                </div></div></div>`;
             return;
           }
@@ -4568,7 +4861,7 @@
                       <p class="row-label" style="word-break: break-all">${esc(origin)}</p>
                     </div>
                     <div class="row-control">
-                      <button class="btn" data-action="revoke-origin"
+                      <button class="btn danger" data-action="revoke-origin"
                         data-origin="${esc(origin)}">Remove site</button>
                     </div>
                   </div>
@@ -4577,7 +4870,7 @@
             })
             .join('');
 
-          view.innerHTML = intro + cards;
+          view.innerHTML = cards;
         };
 
         const reload = async () => {
@@ -4591,6 +4884,15 @@
           }
         };
 
+        revokeAll?.addEventListener('click', async () => {
+          try {
+            await freedomAPI.revokeAllSitePermissions();
+          } catch (err) {
+            console.error('[settings] site-permission revoke failed:', err);
+          }
+          reload();
+        });
+
         view.addEventListener('click', async (e) => {
           const btn = e.target.closest('button[data-action]');
           if (!btn) return;
@@ -4600,8 +4902,6 @@
               await freedomAPI.revokeSitePermission(origin, permission);
             } else if (action === 'revoke-origin') {
               await freedomAPI.revokeSitePermissionOrigin(origin);
-            } else if (action === 'revoke-all') {
-              await freedomAPI.revokeAllSitePermissions();
             }
           } catch (err) {
             console.error('[settings] site-permission revoke failed:', err);
@@ -4617,7 +4917,7 @@
 
         // Re-sync on navigation into this section.
         window.addEventListener('hashchange', () => {
-          if (resolveSection(location.hash) !== 'permissions') return;
+          if (resolveSection(location.hash) !== 'privacy') return;
           reload();
         });
 

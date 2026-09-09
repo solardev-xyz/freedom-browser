@@ -110,11 +110,201 @@ test('Radicle is first-class, profile-visible, and opt-in at startup', async ({
     .toBe(false);
 });
 
+// The startup rows are re-parented into the node card, which
+// renderProfileNodes rebuilds from innerHTML on every refresh (the 5s
+// interval, a profile update, a node-config commit). Re-entering the section
+// forces exactly that second render.
+test('Nodes keeps its startup toggles across a re-render', async ({ window }) => {
+  const startupRows = `[...document.querySelectorAll('#profile-nodes-card [data-startup-slot] .row')]
+    .map((row) => row.id)`;
+  const expected = [
+    'ant-launch-row',
+    'ipfs-launch-row',
+    'myotis-launch-row',
+    'myotis-gnosis-launch-row',
+    'radicle-launch-row',
+  ];
+
+  await window.evaluate(() => document.getElementById('settings-btn')?.click());
+  await settingsEval(window, `location.hash = 'nodes'`);
+  await expect.poll(() => settingsEval(window, startupRows)).toEqual(expected);
+
+  await settingsEval(window, `location.hash = 'appearance'`);
+  await settingsEval(window, `location.hash = 'nodes'`);
+  await expect.poll(() => settingsEval(window, startupRows)).toEqual(expected);
+  // The toggles are the same live elements, so their handlers still work.
+  const setIpfsStartup = (value) =>
+    settingsEval(
+      window,
+      `(() => {
+        const toggle = document.getElementById('start-ipfs-at-launch');
+        toggle.checked = ${value};
+        toggle.dispatchEvent(new Event('change', { bubbles: true }));
+      })()`
+    );
+  const persistedIpfsStartup = () =>
+    settingsEval(window, `window.freedomAPI.getSettings().then((s) => s.startIpfsAtLaunch)`);
+
+  await setIpfsStartup(false);
+  await expect.poll(persistedIpfsStartup).toBe(false);
+  // Leave the shared fixture in its default state for later specs.
+  await setIpfsStartup(true);
+  await expect.poll(persistedIpfsStartup).toBe(true);
+});
+
+// Whatever is left in the Startup card is what its heading labels, so the
+// heading names the rows rather than whichever node happens to keep one.
+test('the Startup card is labelled by what it still holds', async ({ window }) => {
+  await window.evaluate(() => document.getElementById('settings-btn')?.click());
+  await settingsEval(window, `location.hash = 'nodes'`);
+
+  await expect
+    .poll(() =>
+      settingsEval(
+        window,
+        `({
+          heading: document.querySelector('#startup .subsection-title').textContent.trim(),
+          left: [...document.querySelectorAll('#startup-card .row')].map((row) => row.id),
+          torSlotEmpty: [...document.querySelectorAll('[data-startup-slot]')]
+            .some((slot) => slot.children.length === 0)
+        })`
+      )
+    )
+    // Tor's node row only renders with the integration enabled, so with it
+    // off the Tor startup row is the one the card keeps — and no rendered
+    // slot is left standing empty.
+    .toEqual({ heading: 'Startup', left: ['start-tor-row'], torSlotEmpty: false });
+
+  // With the integration on, Tor gets its node row, that row's slot takes
+  // the last startup row, and the emptied card goes with its heading.
+  const setTor = (value) =>
+    settingsEval(window, `window.freedomAPI.saveSettings({ enableTorIntegration: ${value} })`);
+  await setTor(true);
+  await expect
+    .poll(() =>
+      settingsEval(
+        window,
+        `({
+          torSlot: [...document.querySelectorAll('[data-startup-slot="tor"] .row')]
+            .map((row) => row.id),
+          left: [...document.querySelectorAll('#startup-card .row')].map((row) => row.id),
+          startupHidden: document.getElementById('startup').hidden
+        })`
+      )
+    )
+    .toEqual({ torSlot: ['start-tor-row'], left: [], startupHidden: true });
+
+  // Leave the shared fixture in its default state for later specs.
+  await setTor(false);
+  await expect
+    .poll(() => settingsEval(window, `document.getElementById('startup').hidden`))
+    .toBe(false);
+});
+
+// A row whose action takes no argument passes no `attr`, an unknown
+// sub-route belongs to no section, and a rule separates nothing once search
+// has emptied one of its two sides.
+test('nav rows, sub-routes and the group rule carry nothing spurious', async ({ window }) => {
+  await window.evaluate(() => document.getElementById('settings-btn')?.click());
+  await settingsEval(window, `location.hash = 'networks'`);
+  await expect
+    .poll(() =>
+      settingsEval(window, `document.querySelectorAll('#chains [data-action]').length > 0`)
+    )
+    .toBe(true);
+  expect(await settingsEval(window, `document.querySelectorAll('[undefined]').length`)).toBe(0);
+
+  // A tail no section owns is dropped; Networks' own three are kept.
+  for (const [hash, canonical] of [
+    ['networks/bogus', '#networks'],
+    ['privacy/xyz', '#privacy'],
+    ['shortcuts/1', '#shortcuts'],
+    ['networks/names', '#networks/names'],
+    ['networks/keys', '#networks/keys'],
+    ['chains/1', '#networks/1'],
+  ]) {
+    await settingsEval(window, `location.hash = '${hash}'`);
+    await expect.poll(() => settingsEval(window, `location.hash`)).toBe(canonical);
+  }
+
+  const navState = `({
+    items: [...document.querySelectorAll('.nav-item')].filter((i) => !i.hidden).length,
+    rules: [...document.querySelectorAll('.nav-rule')].filter((r) => !r.hidden).length
+  })`;
+  const search = (value) =>
+    settingsEval(
+      window,
+      `(() => {
+        const field = document.getElementById('settings-search');
+        field.value = ${JSON.stringify(value)};
+        field.dispatchEvent(new Event('input', { bubbles: true }));
+      })()`
+    );
+
+  const all = await settingsEval(window, navState);
+  expect(all).toEqual({ items: 10, rules: 1 });
+  await search('networks');
+  expect(await settingsEval(window, navState)).toEqual({ items: 1, rules: 0 });
+  // Both sides matching keeps it.
+  await search('a');
+  expect((await settingsEval(window, navState)).rules).toBe(1);
+  // Leave the shared fixture in its default state for later specs.
+  await search('');
+  expect(await settingsEval(window, navState)).toEqual(all);
+});
+
+// Networks' other two panels render as their own sections, so the chain list
+// is the only place that can reach them.
+test('Networks links to Name Resolution and API keys', async ({ window }) => {
+  await window.evaluate(() => document.getElementById('settings-btn')?.click());
+  await settingsEval(window, `location.hash = 'networks'`);
+  await expect
+    .poll(() =>
+      settingsEval(
+        window,
+        `[...document.querySelectorAll('#chains [data-action^="open-"]:not([data-chain])')]
+          .map((row) => row.dataset.action)`
+      )
+    )
+    .toEqual(['open-names', 'open-rpc-page']);
+
+  await settingsEval(window, `document.querySelector('[data-action="open-names"]').click()`);
+  await expect
+    .poll(() =>
+      settingsEval(
+        window,
+        `({
+          hash: location.hash,
+          resolution: !document.getElementById('ens').classList.contains('hidden'),
+          methods: document.querySelectorAll('#ens [data-method]').length
+        })`
+      )
+    )
+    .toEqual({ hash: '#networks/names', resolution: true, methods: 4 });
+
+  // …and back, the way the chain detail and API keys pages already go back.
+  await settingsEval(window, `document.querySelector('#ens .back-link').click()`);
+  await expect.poll(() => settingsEval(window, `location.hash`)).toBe('#networks');
+
+  await settingsEval(window, `document.querySelector('[data-action="open-rpc-page"]').click()`);
+  await expect
+    .poll(() =>
+      settingsEval(
+        window,
+        `({
+          hash: location.hash,
+          keys: !document.getElementById('rpc').classList.contains('hidden')
+        })`
+      )
+    )
+    .toEqual({ hash: '#networks/keys', keys: true });
+});
+
 test('name resolution methods can be reordered, enabled, and persisted as one policy', async ({
   window,
 }) => {
   await window.evaluate(() => document.getElementById('settings-btn')?.click());
-  await settingsEval(window, `location.hash = 'ens'`);
+  await settingsEval(window, `location.hash = 'networks/names'`);
   await expect
     .poll(() => settingsEval(window, `document.querySelectorAll('[data-method]').length`))
     .toBe(4);
@@ -168,7 +358,7 @@ test('name resolution methods can be reordered, enabled, and persisted as one po
     })()`
   );
   expect(nodeSettingsHash).toBe('#nodes');
-  await settingsEval(window, `location.hash = 'ens'`);
+  await settingsEval(window, `location.hash = 'networks/names'`);
 
   await settingsEval(
     window,
@@ -242,8 +432,8 @@ test('Ethereum and Gnosis expose verified chain sources and independent Myotis s
 }) => {
   await window.evaluate(() => document.getElementById('settings-btn')?.click());
   await expect
-    .poll(() => settingsEval(window, `location.hash = 'chains/100'; location.hash`))
-    .toBe('#chains/100');
+    .poll(() => settingsEval(window, `location.hash = 'networks/100'; location.hash`))
+    .toBe('#networks/100');
 
   await expect
     .poll(() =>
@@ -332,8 +522,8 @@ test('custom-chain access order can be reordered from its rendered defaults', as
   );
   expect(added).toMatchObject({ success: true });
   await expect
-    .poll(() => settingsEval(window, `location.hash = 'chains/777'; location.hash`))
-    .toBe('#chains/777');
+    .poll(() => settingsEval(window, `location.hash = 'networks/777'; location.hash`))
+    .toBe('#networks/777');
   await expect
     .poll(() =>
       settingsEval(
