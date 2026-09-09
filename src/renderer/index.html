@@ -4081,7 +4081,10 @@
     </div>
 
     <!-- Page Context Menu -->
-    <div id="page-context-menu" class="context-menu hidden">
+    <!-- `tabindex="-1"` so the menu can take the keyboard away from the guest
+         page it was raised over: an Escape that lands in the `<webview>` never
+         reaches the shell's keydown handler. Not tab-reachable. -->
+    <div id="page-context-menu" class="context-menu hidden" tabindex="-1">
       <!-- Page actions (shown when clicking on page background) -->
       <div class="context-menu-group" data-group="page">
         <button class="context-menu-item" data-action="back">Back</button>

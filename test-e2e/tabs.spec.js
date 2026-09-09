@@ -202,6 +202,73 @@ test('switching tabs focuses the page, not the tab button', async ({
     .toMatch(/^WEBVIEW/);
 });
 
+// The other side of #304: with focus living in the guest after every tab
+// switch, a keypress no longer reaches the shell's own `keydown` handlers — so
+// the page context menu (the one chrome surface raised from *inside* the
+// guest) has to take the keyboard while it is up, the way a native menu does,
+// or Escape never dismisses it and every item stays live.
+test('the page context menu takes the keyboard from the page and hands it back', async ({
+  window,
+  harness,
+}) => {
+  await harness.setContentFixture(PAGE_A, {
+    body: '<!doctype html><title>Page A</title><p>a</p>',
+  });
+
+  const input = window.locator('[data-test="address-input"]');
+  await input.click();
+  await input.fill(PAGE_A);
+  await input.press('Enter');
+
+  // Switch away and back, which is what leaves the guest holding focus.
+  await window.locator('[data-test="new-tab-btn"]').click();
+  await expect(window.locator('[data-test="tab"]')).toHaveCount(2);
+  await window.locator('[data-test="tab"][data-tab-id="1"]').click();
+  await expectActiveTab(window, 1);
+  const focusedTag = () =>
+    window.evaluate(() => `${document.activeElement?.tagName}.${document.activeElement?.id || ''}`);
+  await expect
+    .poll(focusedTag, { message: 'Waiting for the page to take focus after the tab switch' })
+    .toMatch(/^WEBVIEW/);
+
+  // Right-click inside the guest, through the real hit-test path.
+  await wakeGuest(window);
+  const spot = await window.evaluate(() => {
+    const rect = document.querySelector('webview:not(.hidden)').getBoundingClientRect();
+    return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+  });
+  await window.mouse.click(spot.x, spot.y, { button: 'right' });
+
+  const menu = window.locator('#page-context-menu');
+  await expect(menu).toBeVisible();
+  // The shell, not the guest, owns the keyboard while the menu is up.
+  await expect
+    .poll(focusedTag, { message: 'Waiting for the menu to take focus' })
+    .toBe('DIV.page-context-menu');
+
+  await window.keyboard.press('Escape');
+  await expect(menu).toBeHidden();
+  // …and the page gets it back, so scrolling and typing keep working — read
+  // from the guest itself, not just from the chrome document's activeElement.
+  await expect
+    .poll(focusedTag, { message: 'Waiting for the page to get focus back' })
+    .toMatch(/^WEBVIEW/);
+  await expect
+    .poll(
+      () =>
+        window.evaluate(async () => {
+          const wv = document.querySelector('webview:not(.hidden)');
+          try {
+            return await wv.executeJavaScript('document.hasFocus()');
+          } catch {
+            return null;
+          }
+        }),
+      { message: 'Waiting for the guest to report the keyboard back' }
+    )
+    .toBe(true);
+});
+
 // #303: Ctrl/Cmd+click and middle-click open a BACKGROUND tab — the tab is
 // created and loads, but the current page stays active and keeps focus.
 test('ctrl+click and middle-click open a background tab', async ({ window, harness }) => {
