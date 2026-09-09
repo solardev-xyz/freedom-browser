@@ -97,8 +97,34 @@ refusal, SQLite migration/reopen and renderer controls. Light/dark static UI
 checks use the existing Chromium installation. No Freedom app, native sandbox
 or process-loss fixture ran on the primary development Mac.
 
-Actual Electron custom-scheme/Vite compatibility and real sandboxed restart are
-separate disposable-host checks; record their exact candidate/runtime when run.
+The disposable-Mac transport check passed **28 browser assertions** at exact
+`378f89629c592fd3380918570b27d49003a16c85` on 2026-09-09. It used the real
+preview controller/socket/client modules, Electron 43.0.0 and ws 8.21.0 from an
+existing installation (lock versions are 44.3.0 and 8.21.3). Text, binary buffer
+copying, subprotocol/query-token forwarding, destination and cross-preview
+rejection, stop revocation and stable-origin generation reload/reconnection all
+passed. A simulated HMR message changed the DOM without navigation. The browser
+and four registered framework helpers had observed kernel exit status zero;
+the browser was retired before sole reap, without intervention or unknown exits.
+
+The fixture used a fake process/recipe registry and a benign loopback server.
+It does not establish real Vite compatibility, actual sandboxed server restart,
+SQLite lifecycle, live-model behavior or full-app Quit. Those remain separate
+checks. The first attempt aborted in AppKit registration before JavaScript under
+the tool's restricted context; the unchanged comparison passed with host tool
+permission. That failure remains retained and is not counted as a transport pass.
+
+Evidence remains on the disposable Mac under
+`/private/tmp/freedom-preview-browser-kz_mqdap/evidence/run-cx7sycr0` (pass) and
+`run-y09wop_9` (startup failure). The coordinator independently verified all
+11 passing export members, all 975 candidate file bytes/modes, browser assertions,
+and original exit/retirement/reap records. Passing evidence JSON SHA-256:
+`e1385b6d23ebb757c7ba738b3a16200bf014ebea803f0544a3d8972ad94c9af3`;
+reviewed source-bundle SHA-256:
+`48953a40f0c8e6fee75d955ee1502edb17cb991058656a4fc26c13d615542f95`.
+Local copies are retained in `/private/tmp/freedom-preview-mac-pass-20260909`
+and `/private/tmp/freedom-preview-mac-failure-20260909`.
+
 Existing Linux/macOS substrate results do not qualify these new paths. Separate
 HMR ports, SSE, workers/service workers, automatic crash restarts, saved-server
 editing/removal UI and live model behavior are not established by this change.

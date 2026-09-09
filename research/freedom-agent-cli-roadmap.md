@@ -3037,8 +3037,17 @@ SQLite schema/reopen, permission/termination ordering, cross-generation socket
 rejection, bounded congestion retry, binary copying and UI controls. Static
 workspace cards were inspected in light and dark themes with existing Chromium.
 Installed donor Jest 30.4.2/babel-jest 30.4.1 differ from lock 30.5.1; no packages
-were installed. Actual custom-scheme browser/HMR and sandboxed lifecycle checks
-remain separately scoped disposable-host evidence, not inferred from mocks.
+were installed. A subsequent disposable-Mac check at exact `378f8962` passed
+**28 browser assertions** with real custom-scheme HTTP/WebSocket transport,
+text/binary messages, subprotocols, cross-preview rejection, stop revocation,
+DOM hot update without navigation, and generation reload/reconnection on the
+same origin. Browser and four registered helpers exited with observed status
+zero, with no intervention or unknown exits. The fixture used Electron 43.0.0 /
+ws 8.21.0 (lock 44.3.0 / 8.21.3), a simulated HMR protocol and fake process/recipe
+registry. Real Vite, sandboxed restart and live-model acceptance remain open.
+An earlier restricted-context AppKit startup abort remains a separate failure;
+the unchanged host-permission comparison passed. See the linked contract for
+retained evidence and scope.
 
 Full CI run **34399029003 passed** at preview candidate `378f8962` (native
 Myotis e2e remains skipped). A subsequent activity-path correction makes every
@@ -3047,6 +3056,12 @@ update their original transcript row after natural completion or shutdown,
 including completion before the initial running outcome. **Two affected suites /
 91 tests and lint passed** for that correction; it does not change the browser
 transport modules under disposable qualification.
+
+Final restart exit-evidence correction `d10500c6` passed **118 affected tests**,
+lint, manual source review and full CI **34401982342**. Full CI also passed at
+`77105e60` (**34400389667**). The three preview transport modules are byte-identical
+between the disposable candidate `378f8962` and `d10500c6`; the later restart and
+activity corrections are not being relabeled as exact-head runtime evidence.
 
 The earlier **14 workspace/Git/history CI failures are fixed** at `4dde9f9b`:
 Linux realpath/symlink fixture behavior and coverage instrumentation of serialized
