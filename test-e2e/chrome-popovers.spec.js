@@ -223,19 +223,29 @@ test('a context menu raised at the bottom edge opens upwards', async ({
   const menu = window.locator('#page-context-menu');
   await expect(menu).toBeVisible();
 
-  const placed = await window.evaluate((y) => {
-    const el = document.getElementById('page-context-menu');
-    const rect = el.getBoundingClientRect();
-    return {
-      insideViewport: rect.bottom <= window.innerHeight && rect.top >= 0,
-      // Chrome flips the menu up when there is no room below the pointer.
-      flippedAboveThePointer: rect.bottom <= y + 1,
-      docScrollHeight: document.documentElement.scrollHeight,
-      innerHeight: window.innerHeight,
-    };
-  }, spot.y);
+  // The page menu is shown at the raw pointer position first and placed in the
+  // next animation frame (its visible groups were only just switched, so its
+  // height is not final until then) — so poll rather than read once.
+  const placement = () =>
+    window.evaluate((y) => {
+      const el = document.getElementById('page-context-menu');
+      const rect = el.getBoundingClientRect();
+      return {
+        insideViewport: rect.bottom <= window.innerHeight && rect.top >= 0,
+        // Chrome flips the menu up when there is no room below the pointer.
+        flippedAboveThePointer: rect.bottom <= y + 1,
+        docScrollHeight: document.documentElement.scrollHeight,
+        innerHeight: window.innerHeight,
+      };
+    }, spot.y);
 
-  expect(placed.insideViewport).toBe(true);
+  await expect
+    .poll(() => placement().then((p) => p.insideViewport), {
+      message: 'Waiting for the context menu to be placed inside the viewport',
+    })
+    .toBe(true);
+
+  const placed = await placement();
   expect(placed.flippedAboveThePointer).toBe(true);
   expect(placed.docScrollHeight).toBe(placed.innerHeight);
 });
