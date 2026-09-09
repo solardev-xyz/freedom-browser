@@ -628,3 +628,125 @@ test('the tab context menu closes on a keyboard tab switch and on a tab close', 
   await expect(window.locator('[data-test="tab"]')).toHaveCount(1);
   await expect(menu).toBeHidden();
 });
+
+// #308: a context menu describes one document. Raise a link menu on page A,
+// let page A navigate itself to page B, and the menu used to still be up over
+// B — with Open Link in New Tab / Copy Link Address still bound to A's link.
+test('the page context menu closes when the page navigates under it', async ({
+  window,
+  harness,
+}) => {
+  const PAGE_C = `bzz://${'c'.repeat(64)}/`;
+
+  await harness.setContentFixture(PAGE_A, {
+    body:
+      '<!doctype html><title>Page A</title><style>body{margin:0;padding:40px}' +
+      'a{display:inline-block;padding:20px;font-size:24px}</style>' +
+      `<a id="lnk" href="${PAGE_C}">link to C</a>`,
+  });
+  await harness.setContentFixture(PAGE_B, {
+    body: '<!doctype html><title>Page B</title><h1>Page B - no links here</h1>',
+  });
+  await harness.setContentFixture(PAGE_C, {
+    body: '<!doctype html><title>Page C</title><h1>Page C</h1>',
+  });
+
+  const input = window.locator('[data-test="address-input"]');
+  await input.click();
+  await input.fill(PAGE_A);
+  await input.press('Enter');
+
+  let point;
+  await expect
+    .poll(
+      async () => {
+        point = await window.evaluate(async () => {
+          const wv = document.querySelector('webview:not(.hidden)');
+          if (!wv || typeof wv.executeJavaScript !== 'function') return null;
+          try {
+            const box = await wv.executeJavaScript(
+              "(() => { const a = document.getElementById('lnk'); if (!a) return null;" +
+                'const r = a.getBoundingClientRect();' +
+                'return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()'
+            );
+            if (!box) return null;
+            const rect = wv.getBoundingClientRect();
+            return { x: rect.x + box.x, y: rect.y + box.y };
+          } catch {
+            return null;
+          }
+        });
+        return !!point;
+      },
+      { message: 'Waiting for the link fixture to render', timeout: 15_000 }
+    )
+    .toBe(true);
+
+  // Right-click page A's link.
+  await wakeGuest(window);
+  await window.mouse.click(point.x, point.y, { button: 'right' });
+  const menu = window.locator('#page-context-menu');
+  await expect(menu).toBeVisible();
+  await expect(menu.locator('[data-group="link"]')).toHaveClass(/visible/);
+
+  // Page A navigates itself out from under the open menu — the client-side
+  // redirect from the bug report, driven deterministically rather than on a
+  // timer so the right-click above can't race it.
+  await window.evaluate(
+    (url) =>
+      document
+        .querySelector('webview:not(.hidden)')
+        .executeJavaScript(`location.href = ${JSON.stringify(url)}`),
+    PAGE_B
+  );
+  await expect
+    .poll(
+      () => window.evaluate(() => document.querySelector('webview:not(.hidden)')?.getURL?.() || ''),
+      { message: 'Waiting for the navigation to commit', timeout: 15_000 }
+    )
+    .toContain('bbbb');
+
+  // The menu is gone, so nothing of page A's is left to click...
+  await expect(menu).toBeHidden();
+  await expect(window.locator('#menu-backdrop')).toBeHidden();
+  // ...and no tab was opened for page A's link.
+  await expect(window.locator('[data-test="tab"]')).toHaveCount(1);
+});
+
+// #308: the same rule for a tab switch — the menu belongs to the document it
+// was raised on, not to whichever tab is in front.
+test('the page context menu closes on a tab switch', async ({ window, harness, electronApp }) => {
+  await harness.setContentFixture(PAGE_A, {
+    body: '<!doctype html><title>Page A</title><p>page a</p>',
+  });
+
+  const input = window.locator('[data-test="address-input"]');
+  await input.click();
+  await input.fill(PAGE_A);
+  await input.press('Enter');
+
+  // A second tab to switch to, opened before the menu goes up: while the menu
+  // is open `#menu-backdrop` covers the window, so any *mouse* path would
+  // dismiss it through the click-away listener and prove nothing.
+  await window.locator('[data-test="new-tab-btn"]').click();
+  await expect(window.locator('[data-test="tab"]')).toHaveCount(2);
+  await window.locator('[data-test="tab"][data-tab-id="1"]').click();
+  await expectActiveTab(window, 1);
+
+  await wakeGuest(window);
+  const spot = await window.evaluate(() => {
+    const rect = document.querySelector('webview:not(.hidden)').getBoundingClientRect();
+    return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+  });
+  await window.mouse.click(spot.x, spot.y, { button: 'right' });
+  const menu = window.locator('#page-context-menu');
+  await expect(menu).toBeVisible();
+
+  // Keyboard switch (Ctrl+Tab), driven through the application menu item the
+  // accelerator maps to — see `clickMenuItem`.
+  await clickMenuItem(electronApp, 'next-tab');
+  await expectActiveTab(window, 2);
+
+  await expect(menu).toBeHidden();
+  await expect(window.locator('#menu-backdrop')).toBeHidden();
+});

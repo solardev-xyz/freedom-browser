@@ -256,6 +256,94 @@ describe('site-permissions-ui prompt tab-scoping', () => {
     expect(promptVisible()).toBe(false);
     expect(api.respondToPrompt).not.toHaveBeenCalled();
   });
+
+  // #306: Escape closes only the innermost open surface, as in Chrome, and
+  // consumes the press while doing it — navigation.js's window-level Escape
+  // (stop loading + restore the address bar) stands down on `defaultPrevented`,
+  // so dismissing a prompt over a still-loading page can't cancel that load.
+  test('Escape consumes the press only when it actually dismisses the prompt', () => {
+    const idle = { key: 'Escape', preventDefault: jest.fn() };
+    doc.handlers.keydown(idle);
+    expect(idle.preventDefault).not.toHaveBeenCalled();
+
+    sendRequest({ id: 16, origin: 'https://a.example', keys: ['camera'], guestId: 1 });
+    expect(promptVisible()).toBe(true);
+
+    const escape = { key: 'Escape', preventDefault: jest.fn() };
+    doc.handlers.keydown(escape);
+    expect(promptVisible()).toBe(false);
+    expect(api.respondToPrompt).toHaveBeenCalledWith({
+      id: 16,
+      decision: 'dismiss',
+      remember: false,
+    });
+    expect(escape.preventDefault).toHaveBeenCalled();
+  });
+
+  // #306, dialog sibling: a page can request a permission at any moment,
+  // including while a modal <dialog> (the bookmark editor, the profile-create
+  // or external-node prompt, onboarding) is up. The prompt then sits behind
+  // the dialog's top layer, inert and un-answerable, and every gesture in that
+  // state belongs to the dialog. Answering the prompt from one of them denies
+  // the page's request behind the user's back — and the Escape's
+  // `preventDefault()` additionally cancels the dialog's own close request, so
+  // the dialog stays open too.
+  const openModalDialog = () => {
+    const dialog = createElement('dialog');
+    dialog.setAttribute('open', '');
+    doc.body.appendChild(dialog);
+    return dialog;
+  };
+
+  test('a modal dialog owns the Escape: the prompt behind it is neither dismissed nor consumed', () => {
+    sendRequest({ id: 17, origin: 'https://a.example', keys: ['notifications'], guestId: 1 });
+    expect(promptVisible()).toBe(true);
+
+    const dialog = openModalDialog();
+    const escape = { key: 'Escape', preventDefault: jest.fn() };
+    doc.handlers.keydown(escape);
+
+    expect(promptVisible()).toBe(true);
+    expect(api.respondToPrompt).not.toHaveBeenCalled();
+    // Cancelling the press here would suppress the dialog's built-in cancel.
+    expect(escape.preventDefault).not.toHaveBeenCalled();
+
+    // Once the dialog is gone the prompt is the innermost surface again, and
+    // the next press dismisses it as a deny-once.
+    dialog.remove();
+    const next = { key: 'Escape', preventDefault: jest.fn() };
+    doc.handlers.keydown(next);
+    expect(promptVisible()).toBe(false);
+    expect(api.respondToPrompt).toHaveBeenCalledWith({
+      id: 17,
+      decision: 'dismiss',
+      remember: false,
+    });
+    expect(next.preventDefault).toHaveBeenCalled();
+  });
+
+  test('a click inside a modal dialog is not a click-away from the prompt behind it', () => {
+    sendRequest({ id: 18, origin: 'https://a.example', keys: ['camera'], guestId: 1 });
+    expect(promptVisible()).toBe(true);
+
+    const dialog = openModalDialog();
+    const field = createElement('input');
+    dialog.appendChild(field);
+    doc.handlers.click({ target: field });
+
+    expect(promptVisible()).toBe(true);
+    expect(api.respondToPrompt).not.toHaveBeenCalled();
+
+    // With the dialog closed, an ordinary click-away still dismisses.
+    dialog.remove();
+    doc.handlers.click({ target: doc.body });
+    expect(promptVisible()).toBe(false);
+    expect(api.respondToPrompt).toHaveBeenCalledWith({
+      id: 18,
+      decision: 'dismiss',
+      remember: false,
+    });
+  });
 });
 
 describe('site-permissions-ui popover revoke label', () => {

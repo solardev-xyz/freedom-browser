@@ -685,11 +685,15 @@ describe('autocomplete', () => {
       },
     });
 
-    webviewElement.handlers.focus();
-    webviewElement.handlers.mousedown();
     windowHandlers.blur();
 
     expect(dropdown.classList.add).toHaveBeenCalledWith('hidden');
+    // The `#bzz-webview` focus/mousedown dismissal is gone: webviews are
+    // created id-less, so the lookup was always null and those listeners never
+    // existed (#306). The fake DOM does resolve that id, so this asserts they
+    // are really gone rather than merely never firing.
+    expect(webviewElement.handlers.focus).toBeUndefined();
+    expect(webviewElement.handlers.mousedown).toBeUndefined();
 
     electronAPI.getHistory.mockRejectedValueOnce(new Error('history unavailable'));
     await mod.refreshCache();

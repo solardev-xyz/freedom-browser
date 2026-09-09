@@ -16,6 +16,15 @@ const AUTO_DISMISS_MS = 5000;
 // id -> { el, nameEl, statusEl, barEl, fillEl, actionsEl, actionsKey, dismissTimer }
 const cards = new Map();
 
+// Downloads the user dismissed by hand. A dismiss on a running download used
+// to last until the next progress tick (250 ms, downloads-manager.js) and then
+// the card came straight back, over and over for the length of the transfer;
+// Chrome never resurrects an item the user closed. Ids are store rowids
+// (SQLite AUTOINCREMENT, or the private store's monotonic negative sequence),
+// so an id is never handed to a second download and a remembered dismissal
+// cannot leak onto an unrelated card. The set lives as long as the window.
+const dismissed = new Set();
+
 let shelfEl = null;
 
 // Human-readable byte count: 999 B, 1.2 KB, 34.5 MB, ...
@@ -70,7 +79,12 @@ export const downloadStatusText = (download) => {
 export const isSettledState = (state) =>
   state === 'completed' || state === 'cancelled' || state === 'interrupted';
 
-const dismissCard = (id) => {
+// `byUser` marks the dismissals the shelf must remember: the × and the
+// completed-file actions are the user saying "I'm done with this card", so no
+// later update may re-create it. The auto-dismiss timer is not one of those —
+// it fires on a settled download that will send no further updates anyway.
+const dismissCard = (id, { byUser = false } = {}) => {
+  if (byUser) dismissed.add(id);
   const card = cards.get(id);
   if (!card) return;
   if (card.dismissTimer) clearTimeout(card.dismissTimer);
@@ -115,7 +129,9 @@ const buildCard = (id) => {
   const actionsEl = document.createElement('div');
   actionsEl.className = 'download-card-actions';
 
-  const closeBtn = makeButton('×', 'download-card-close', 'download-close', () => dismissCard(id));
+  const closeBtn = makeButton('×', 'download-card-close', 'download-close', () =>
+    dismissCard(id, { byUser: true })
+  );
   closeBtn.setAttribute('aria-label', 'Dismiss');
 
   el.appendChild(main);
@@ -155,7 +171,7 @@ const runFileAction = async (downloadId, label, invoke) => {
     pushDebug(`[downloads] ${label} failed for ${downloadId}: ${error}`);
     return;
   }
-  dismissCard(downloadId);
+  dismissCard(downloadId, { byUser: true });
 };
 
 const renderActions = (card, download) => {
@@ -202,6 +218,10 @@ const actionsKey = (download) => {
 // Apply one `downloads:updated` payload to the shelf. Exported for tests.
 export const handleDownloadUpdate = (download) => {
   if (!shelfEl || !download || typeof download.id !== 'number') return;
+  // A card the user closed stays closed, however many more updates main sends
+  // for it. The download itself is untouched — it keeps running, and
+  // freedom://downloads still lists it; only the shelf card is gone.
+  if (dismissed.has(download.id)) return;
 
   let card = cards.get(download.id);
   const isNew = !card;
@@ -253,5 +273,6 @@ export const initDownloadsUi = () => {
 // Test-only: reset module state between specs.
 export const _resetForTest = () => {
   for (const id of [...cards.keys()]) dismissCard(id);
+  dismissed.clear();
   shelfEl = null;
 };

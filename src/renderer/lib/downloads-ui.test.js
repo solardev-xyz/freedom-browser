@@ -195,8 +195,8 @@ describe('downloads-ui', () => {
       await Promise.resolve();
       await Promise.resolve();
 
-      // The open click dismissed the card; a fresh completed update spawns a
-      // new card which auto-dismisses after the timeout.
+      // The open click dismissed the card, and a repeat of the same update
+      // does not bring it back (#309).
       expect(shelfEl.children).toHaveLength(0);
       updateHandler({
         id: 3,
@@ -205,9 +205,79 @@ describe('downloads-ui', () => {
         received_bytes: 10,
         total_bytes: 10,
       });
+      expect(shelfEl.children).toHaveLength(0);
+    });
+
+    test('an untouched settled card auto-dismisses after the timeout', async () => {
+      await loadModule();
+
+      updateHandler({
+        id: 33,
+        filename: 'done.pdf',
+        state: 'completed',
+        received_bytes: 10,
+        total_bytes: 10,
+      });
       expect(shelfEl.children).toHaveLength(1);
       jest.advanceTimersByTime(5000);
       expect(shelfEl.children).toHaveLength(0);
+    });
+
+    // #309: main emits a progress tick every 250 ms, so a dismiss that is not
+    // remembered is undone almost immediately — the card blinked out and came
+    // back for the length of the transfer.
+    test('a card dismissed mid-download stays dismissed across later updates', async () => {
+      await loadModule();
+
+      updateHandler({
+        id: 4,
+        filename: 'big.iso',
+        state: 'progressing',
+        received_bytes: 1000,
+        total_bytes: 100000,
+      });
+      expect(shelfEl.children).toHaveLength(1);
+
+      const closeBtn = shelfEl.children[0].querySelector('[data-test="download-close"]');
+      closeBtn.dispatch('click');
+      expect(shelfEl.children).toHaveLength(0);
+
+      // The next progress tick, and every one after it, is ignored...
+      updateHandler({
+        id: 4,
+        filename: 'big.iso',
+        state: 'progressing',
+        received_bytes: 2000,
+        total_bytes: 100000,
+      });
+      updateHandler({
+        id: 4,
+        filename: 'big.iso',
+        state: 'progressing',
+        received_bytes: 90000,
+        total_bytes: 100000,
+      });
+      expect(shelfEl.children).toHaveLength(0);
+
+      // ...as is the terminal update when the download finishes.
+      updateHandler({
+        id: 4,
+        filename: 'big.iso',
+        state: 'completed',
+        received_bytes: 100000,
+        total_bytes: 100000,
+      });
+      expect(shelfEl.children).toHaveLength(0);
+
+      // The dismissal is scoped to that download: another one still shows.
+      updateHandler({
+        id: 5,
+        filename: 'other.iso',
+        state: 'progressing',
+        received_bytes: 10,
+        total_bytes: 100,
+      });
+      expect(shelfEl.children).toHaveLength(1);
     });
 
     test('a failed Open keeps the card and surfaces the error', async () => {

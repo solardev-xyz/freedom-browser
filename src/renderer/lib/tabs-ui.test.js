@@ -139,6 +139,7 @@ const loadTabsModule = async (options = {}) => {
   };
   const pageContextMenuMocks = {
     setupWebviewContextMenu: jest.fn(),
+    notifyPageContextMenuNavigated: jest.fn(),
   };
   const linkStatusMocks = {
     clearLinkStatus: jest.fn(),
@@ -957,6 +958,26 @@ describe('tabs ui behavior', () => {
     documentHandlers.click({ target: createElement('div') });
     expect(backdropMocks.hideMenuBackdrop).toHaveBeenCalled();
 
+    // Escape takes the menu down, and consumes the press while doing it:
+    // navigation.js's window-level Escape (stop loading + restore the address
+    // bar) stands down on `defaultPrevented`, so dismissing this menu over a
+    // still-loading page doesn't also cancel that load (#306).
+    firstTabEl.dispatch('contextmenu', {
+      preventDefault: jest.fn(),
+      stopPropagation: jest.fn(),
+      clientX: 20,
+      clientY: 30,
+    });
+    const escape = { key: 'Escape', preventDefault: jest.fn() };
+    documentHandlers.keydown(escape);
+    expect(elements.tabContextMenu.classList.contains('hidden')).toBe(true);
+    expect(escape.preventDefault).toHaveBeenCalled();
+
+    // With the menu already down the press is left for the surfaces behind it.
+    const escapeAgain = { key: 'Escape', preventDefault: jest.fn() };
+    documentHandlers.keydown(escapeAgain);
+    expect(escapeAgain.preventDefault).not.toHaveBeenCalled();
+
     firstTabEl.dispatch('contextmenu', {
       preventDefault: jest.fn(),
       stopPropagation: jest.fn(),
@@ -1525,6 +1546,76 @@ describe('tabs ui behavior', () => {
     expect(elements.tabContextMenu.classList.contains('hidden')).toBe(false);
     mod.closeTab(secondTab.id);
     expect(elements.tabContextMenu.classList.contains('hidden')).toBe(true);
+  });
+
+  // #306, dialog sibling: a modal <dialog> raised over the tab menu (the
+  // external-node prompt arrives from main on its own schedule) is the top
+  // layer, so the press is its close request — and it cannot mark the press
+  // the way this handler does. Consuming it here would cancel that close.
+  test('a modal dialog above the tab context menu owns the Escape', async () => {
+    const { mod, elements, documentHandlers } = await loadTabsModule();
+    await mod.initTabs();
+
+    const firstTab = mod.getActiveTab();
+    const firstTabEl = findTabElement(elements.tabBar, firstTab.id);
+    firstTabEl.dispatch('contextmenu', {
+      preventDefault: jest.fn(),
+      stopPropagation: jest.fn(),
+      clientX: 20,
+      clientY: 30,
+    });
+    expect(elements.tabContextMenu.classList.contains('hidden')).toBe(false);
+
+    const dialog = createElement('dialog');
+    dialog.setAttribute('open', '');
+    global.document.body.appendChild(dialog);
+
+    const escape = { key: 'Escape', preventDefault: jest.fn() };
+    documentHandlers.keydown(escape);
+    expect(elements.tabContextMenu.classList.contains('hidden')).toBe(false);
+    expect(escape.preventDefault).not.toHaveBeenCalled();
+
+    dialog.remove();
+    const next = { key: 'Escape', preventDefault: jest.fn() };
+    documentHandlers.keydown(next);
+    expect(elements.tabContextMenu.classList.contains('hidden')).toBe(true);
+    expect(next.preventDefault).toHaveBeenCalled();
+  });
+
+  // #308: the page context menu belongs to the document it was raised on, so
+  // tabs.js reports every navigation (and every tab activation) to it — the
+  // same hook the find bar already had. Without it the menu floated over the
+  // next page still offering the previous page's link.
+  test('a navigation and a tab switch both report to the page context menu', async () => {
+    const { mod, pageContextMenuMocks } = await loadTabsModule();
+    await mod.initTabs();
+
+    const firstTab = mod.getActiveTab();
+    const secondTab = mod.createTab('https://second.example');
+    mod.switchTab(firstTab.id);
+    pageContextMenuMocks.notifyPageContextMenuNavigated.mockClear();
+
+    // A committed navigation names the webview it happened in, so a menu
+    // raised over another tab is left alone.
+    firstTab.webview.dispatch('did-navigate', { url: 'https://redirected.example' });
+    expect(pageContextMenuMocks.notifyPageContextMenuNavigated).toHaveBeenCalledWith(
+      firstTab.webview
+    );
+
+    // A same-document navigation is a navigation too.
+    pageContextMenuMocks.notifyPageContextMenuNavigated.mockClear();
+    firstTab.webview.dispatch('did-navigate-in-page', {
+      url: 'https://redirected.example#section',
+    });
+    expect(pageContextMenuMocks.notifyPageContextMenuNavigated).toHaveBeenCalledWith(
+      firstTab.webview
+    );
+
+    // A tab switch dismisses it outright: the page it describes is no longer
+    // the one on screen.
+    pageContextMenuMocks.notifyPageContextMenuNavigated.mockClear();
+    mod.switchTab(secondTab.id);
+    expect(pageContextMenuMocks.notifyPageContextMenuNavigated).toHaveBeenCalledWith();
   });
 
   // #315: re-activating the tab that is already foreground (Ctrl+1 on tab 1
