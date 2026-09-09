@@ -936,7 +936,11 @@ describe('page-context-menu', () => {
       }
     });
 
-    test('is withheld — and refuses — over a password field', async () => {
+    // The preload sets `withholdSelection` for a password field and for any
+    // selection it cannot attribute to a readable one — a field inside a
+    // closed shadow root, where the masking bullets are indistinguishable
+    // from ordinary text. Both reach chrome as the same flag.
+    test('is withheld — and refuses — for a withheld selection', async () => {
       const { mod, pageContextMenu, searchSelectionBtn, pushDebug } =
         await loadPageContextMenuModule();
       await mod.initPageContextMenu();
@@ -946,7 +950,7 @@ describe('page-context-menu', () => {
         pageUrl: 'https://example.com/login',
         selectedText: '••••••••',
         isEditable: true,
-        isPasswordField: true,
+        withholdSelection: true,
       });
       expect(searchSelectionBtn.classList.contains('hidden')).toBe(true);
 
@@ -954,9 +958,7 @@ describe('page-context-menu', () => {
       await triggerMenuAction(pageContextMenu, 'search-selection');
 
       expect(global.document.dispatchEvent).not.toHaveBeenCalled();
-      expect(pushDebug).toHaveBeenCalledWith(
-        'Refusing to search the selection in a password field'
-      );
+      expect(pushDebug).toHaveBeenCalledWith('Refusing to search a withheld selection');
     });
 
     test('does nothing when the context carries no selection', async () => {

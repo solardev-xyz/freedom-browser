@@ -25,9 +25,9 @@ const FIXTURE_BODY =
   `<textarea id="field">${LONG_TEXT}</textarea>` +
   '<input id="password" type="password" value="hunter2 secret">' +
   `<p id="huge">${HUGE_TEXT}</p>` +
-  // A login form rendered inside an open shadow root, the shape LWC/Stencil
-  // and embedded auth widgets ship. Populated from the test, not an inline
-  // script, so the fixture needs no script-src of its own.
+  // Where the test hangs a shadow root holding a login form, the shape
+  // LWC/Stencil and embedded auth widgets ship. Populated from the test, not an
+  // inline script, so the fixture needs no script-src of its own.
   '<div id="shadow-host"></div>';
 
 // Load the fixture into the active tab and wait for it to render.
@@ -90,19 +90,33 @@ function selectAndOpenMenu(window, id, { field = false } = {}) {
   );
 }
 
-// Build the fixture's open shadow root with a password field inside it, then
-// select that field's value. `target` says which element the synthetic
-// `contextmenu` is dispatched at: the shadow field itself (the event is
-// `composed`, so it reaches the preload's window-level capture listener
-// retargeted to the host) or `#short`, an unrelated element in the light DOM.
-function selectShadowPasswordAndOpenMenu(window, { target = 'shadow' } = {}) {
+// Build a shadow root inside the fixture with a field in it, select that
+// field's value, and raise the menu.
+//
+// `mode` is the root's own mode: an *open* root is reachable through
+// `composedPath()` and through `host.shadowRoot.activeElement`, a *closed* one
+// through neither — `composedPath()` stops at the host and `host.shadowRoot`
+// is null, so nothing outside the component can identify the field at all.
+// `target` says which element the synthetic `contextmenu` is dispatched at:
+// the shadow field itself (the event is `composed`, so it reaches the
+// preload's window-level capture listener retargeted to the host) or `#short`,
+// an unrelated element in the light DOM. `type` is the field's input type.
+function selectShadowFieldAndOpenMenu(
+  window,
+  { mode = 'open', target = 'shadow', type = 'password' } = {}
+) {
   return window.evaluate(
-    async ({ target: where }) => {
+    async ({ mode: rootMode, target: where, type: fieldType }) => {
       const webview = document.querySelector('webview:not(.hidden)');
       await webview.executeJavaScript(`(() => {
-        const host = document.getElementById('shadow-host');
-        const root = host.shadowRoot || host.attachShadow({ mode: 'open' });
-        root.innerHTML = '<input id="pw" type="password" value="hunter2 secret">';
+        // A fresh host per call: a root's mode is fixed once attached, and a
+        // closed one cannot be read back off the host to be replaced.
+        const anchor = document.getElementById('shadow-host');
+        anchor.textContent = '';
+        const host = document.createElement('div');
+        anchor.appendChild(host);
+        const root = host.attachShadow({ mode: ${JSON.stringify(rootMode)} });
+        root.innerHTML = '<input id="pw" type=${JSON.stringify(fieldType)} value="hunter2 secret">';
         const field = root.getElementById('pw');
         field.focus();
         field.setSelectionRange(0, field.value.length);
@@ -115,7 +129,7 @@ function selectShadowPasswordAndOpenMenu(window, { target = 'shadow' } = {}) {
         return true;
       })()`);
     },
-    { target }
+    { mode, target, type }
   );
 }
 
@@ -288,29 +302,53 @@ test('withholds the item for a password selection raised from another element', 
   await expect(searchItem(window)).toBeHidden();
 });
 
-// `event.target` retargets to the shadow host for a node inside an open shadow
-// root, and `element.parentElement` is null at the boundary, so an ancestor
-// walk from the retargeted target never sees the field. `document.activeElement`
-// retargets to the host too. Both guards have to pierce the root or the
-// masking bullets are offered as a search query.
-test('withholds the item over a password field inside an open shadow root', async ({
+// `event.target` retargets to the shadow host for a node inside a shadow root,
+// and `element.parentElement` is null at the boundary, so an ancestor walk from
+// the retargeted target never sees the field. `document.activeElement` retargets
+// to the host too. An *open* root can be pierced from both sides; a *closed*
+// one from neither, so the preload has to fall back on the document range —
+// collapsed, because the text is the field's own selection — and withhold what
+// it cannot attribute. Either way the masking bullets must never be offered as
+// a search query.
+for (const [article, mode] of [
+  ['an', 'open'],
+  ['a', 'closed'],
+]) {
+  test(`withholds the item over a password field inside ${article} ${mode} shadow root`, async ({
+    window,
+    harness,
+  }) => {
+    await openFixture(window, harness);
+    await selectShadowFieldAndOpenMenu(window, { mode, target: 'shadow' });
+
+    await expect(menu(window)).toBeVisible();
+    await expect(window.locator('#page-context-menu [data-action="copy"]')).toBeVisible();
+    await expect(searchItem(window)).toBeHidden();
+  });
+
+  test(`withholds the item for ${article} ${mode} shadow-root password selection raised elsewhere`, async ({
+    window,
+    harness,
+  }) => {
+    await openFixture(window, harness);
+    await selectShadowFieldAndOpenMenu(window, { mode, target: 'light' });
+
+    await expect(menu(window)).toBeVisible();
+    await expect(window.locator('#page-context-menu [data-action="copy"]')).toBeVisible();
+    await expect(searchItem(window)).toBeHidden();
+  });
+}
+
+// The documented cost of failing closed: an ordinary field inside a closed root
+// is withheld too, since from outside the component it is indistinguishable
+// from the password one. An open root keeps the item (covered by the text-field
+// case above), so this is not a blanket ban on shadow DOM.
+test('withholds the item for an ordinary field inside a closed shadow root', async ({
   window,
   harness,
 }) => {
   await openFixture(window, harness);
-  await selectShadowPasswordAndOpenMenu(window, { target: 'shadow' });
-
-  await expect(menu(window)).toBeVisible();
-  await expect(window.locator('#page-context-menu [data-action="copy"]')).toBeVisible();
-  await expect(searchItem(window)).toBeHidden();
-});
-
-test('withholds the item for a shadow-root password selection raised elsewhere', async ({
-  window,
-  harness,
-}) => {
-  await openFixture(window, harness);
-  await selectShadowPasswordAndOpenMenu(window, { target: 'light' });
+  await selectShadowFieldAndOpenMenu(window, { mode: 'closed', target: 'shadow', type: 'text' });
 
   await expect(menu(window)).toBeVisible();
   await expect(window.locator('#page-context-menu [data-action="copy"]')).toBeVisible();

@@ -72,9 +72,12 @@ const updateSearchSelectionItem = (context) => {
   const searchBtn = pageContextMenu?.querySelector('[data-action="search-selection"]');
   if (!searchBtn) return;
 
-  // A password field's "selection" is the masking bullets (see
-  // webview-preload.js), never worth quoting on a menu or sending to an engine.
-  const selection = context?.isPasswordField
+  // The preload withholds a selection it cannot publish safely: a password
+  // field's "selection" is the masking bullets, and a selection it cannot
+  // attribute to a readable field at all (a form control inside a closed
+  // shadow root) may be those same bullets. See webview-preload.js — neither
+  // is worth quoting on a menu or sending to an engine.
+  const selection = context?.withholdSelection
     ? ''
     : formatSearchMenuSelection(context?.selectedText);
   searchBtn.classList.toggle('hidden', !selection);
@@ -356,11 +359,11 @@ const handleAction = async (action, { background = false } = {}) => {
       break;
 
     case 'search-selection': {
-      // The item is hidden over a password field (see showPageContextMenu);
+      // The item is hidden for a withheld selection (see showPageContextMenu);
       // refuse here too, so a stale context or a scripted click can't send the
       // masked value to a search engine.
-      if (currentContext.isPasswordField) {
-        pushDebug('Refusing to search the selection in a password field');
+      if (currentContext.withholdSelection) {
+        pushDebug('Refusing to search a withheld selection');
         break;
       }
       // The selection is the query, clamped to SEARCH_SELECTION_MAX the way
