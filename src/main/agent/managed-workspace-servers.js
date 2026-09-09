@@ -99,7 +99,8 @@ function confirmedServerExit(receipt) {
   const facts = receipt.diagnostics;
   return receipt.backend === 'macos-seatbelt' && facts?.nativeSupervisor === true &&
     facts.nativeRootExitObserved === true && facts.nativeRootReaped === true &&
-    facts.nativeCleanupUncertain === false && !facts.supervisorExitedAbnormally && !facts.supervisorProtocolFailed;
+    ['completed', 'cancelled', 'timed_out', 'setup_failed'].includes(facts.nativeReason) &&
+    !facts.supervisorExitedAbnormally && !facts.supervisorProtocolFailed;
 }
 
 // This is a collision check, not cryptographic listener ownership. The approved

@@ -3062,6 +3062,13 @@ lint, manual source review and full CI **34401982342**. Full CI also passed at
 `77105e60` (**34400389667**). The three preview transport modules are byte-identical
 between the disposable candidate `378f8962` and `d10500c6`; the later restart and
 activity corrections are not being relabeled as exact-head runtime evidence.
+Cross-checking retained macOS receipts found that confirmed root exit/reap can
+coexist with final group-KILL EPERM. Restart now uses the validated native
+terminal reason plus original-root exit/reap, rather than requiring the broader
+cleanup-uncertainty flag to be false. Failed/unknown native ownership still
+blocks restart; descendant guarantees are unchanged. **58 focused tests and
+lint passed** for this metadata/predicate correction; native supervisor source
+and preview transport are unchanged.
 
 The earlier **14 workspace/Git/history CI failures are fixed** at `4dde9f9b`:
 Linux realpath/symlink fixture behavior and coverage instrumentation of serialized

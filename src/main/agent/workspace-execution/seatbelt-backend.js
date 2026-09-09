@@ -689,6 +689,7 @@ class SeatbeltExecutor {
     });
     const diagnostics = Object.freeze({
       nativeSupervisor: true,
+      nativeReason: native?.reason || 'unknown',
       processGroupFinalKillAttempted: native?.groupVerified === true && native.finalKillAttempted,
       nativeRootExitObserved: native?.rootExitObserved === true,
       nativeRootReaped: native?.rootReaped === true,

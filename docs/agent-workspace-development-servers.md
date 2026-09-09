@@ -40,6 +40,10 @@ blocks saved-server restart for that browser session, even after its process
 handle expires. This does not strengthen macOS descendant cleanup. The marker
 is session-local; reopening Freedom is not proof of cleanup, and the ordinary
 occupied-port check still applies to a fresh launch.
+On macOS, a valid root exit/reap with a normal native terminal reason remains
+usable when final group signaling reports EPERM. Root ownership failure or a
+missing/failed native receipt still blocks restart; the ordinary descendant
+uncertainty and collision check remain unchanged.
 
 Saved preview origins remain stable. Within the current browser lifetime an
 existing page detects a replacement process and reloads; old socket credentials

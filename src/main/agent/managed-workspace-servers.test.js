@@ -93,9 +93,12 @@ describe('saved workspace server restart', () => {
   test('derives direct-root or namespace exit from backend evidence without claiming all Mac descendants', () => {
     const mac = { backend: 'macos-seatbelt', state: 'cancelled', survivorsPossible: true,
       completeDescendantTermination: false, diagnostics: { nativeSupervisor: true,
-        nativeRootExitObserved: true, nativeRootReaped: true, nativeCleanupUncertain: false } };
+        nativeReason: 'cancelled', nativeRootExitObserved: true, nativeRootReaped: true, nativeCleanupUncertain: false } };
     expect(confirmedServerExit(mac)).toBe(true);
-    for (const facts of [{ nativeRootReaped: false }, { nativeCleanupUncertain: true }, { supervisorProtocolFailed: true }]) {
+    expect(confirmedServerExit({ ...mac, diagnostics: { ...mac.diagnostics,
+      nativeCleanupUncertain: true, processGroupSignalErrors: [{ code: 'EPERM' }] } })).toBe(true);
+    for (const facts of [{ nativeRootReaped: false }, { nativeRootExitObserved: false },
+      { nativeReason: 'supervisor_failed' }, { nativeReason: undefined }, { supervisorProtocolFailed: true }]) {
       expect(confirmedServerExit({ ...mac, diagnostics: { ...mac.diagnostics, ...facts } })).toBe(false);
     }
     expect(confirmedServerExit({ backend: 'linux-bubblewrap', state: 'cancelled',

@@ -247,6 +247,9 @@ describe('macOS Seatbelt backend contract', () => {
     expect(receipt).toMatchObject({ state: expected, stdout: 'finished',
       terminationGuarantee: 'best_effort', survivorsPossible: true, completeDescendantTermination: false,
       terminationScope: 'original_process_group', diagnostics: { nativeSupervisor: true } });
+    expect(receipt.diagnostics.nativeReason).toBe(missing ? 'unknown' : reason);
+    const { confirmedServerExit } = require('../managed-workspace-servers');
+    expect(confirmedServerExit(receipt)).toBe(!missing && reason !== 'supervisor_failed');
     if (expected === 'failed') expect(receipt.error).toEqual({
       code: 'WORKSPACE_SUPERVISOR_FAILED', message: 'The native workspace supervisor failed',
     });
