@@ -516,6 +516,11 @@ jobs:
   # (#306), the second drives modified/middle clicks and a real HTML5 drag on
   # the bookmarks bar (#307) — dispositions and drag gestures a synthetic DOM
   # dispatch cannot exercise.
+  #
+  # `chrome-popovers.spec.js` likewise needs the real thing: it resizes the
+  # actual BrowserWindow and reads laid-out geometry (a menu's bottom edge, the
+  # chrome document's scrollHeight, where a context menu lands relative to the
+  # pointer), none of which a jsdom-less unit fake can produce (#324).
   e2e-tabs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -539,12 +544,13 @@ jobs:
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
 
-      - name: Run tabs + onchain-apps + menus + bookmarks E2E
+      - name: Run tabs + onchain-apps + menus + popovers + bookmarks E2E
         run: |
           xvfb-run -a npm run test:e2e -- \
             test-e2e/tabs.spec.js \
             test-e2e/onchain-apps.spec.js \
             test-e2e/menus.spec.js \
+            test-e2e/chrome-popovers.spec.js \
             test-e2e/bookmarks.spec.js
 
       - name: Upload Playwright traces and screenshots
