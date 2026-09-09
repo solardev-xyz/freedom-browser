@@ -45,18 +45,66 @@ const POPOVER_CLASSES = [
   'permission-popover',
 ];
 
+const tokensOf = (value) => value.split(/\s+/).filter(Boolean);
+
 /** Every `class="…"` attribute value in `html`, as arrays of tokens. */
 function classLists(html) {
-  return [...html.matchAll(/class="([^"]*)"/g)].map(([, value]) =>
-    value.split(/\s+/).filter(Boolean)
-  );
+  return [...html.matchAll(/class="([^"]*)"/g)].map(([, value]) => tokensOf(value));
 }
 
-/** Class strings assigned in renderer JS: `el.className = 'context-menu hidden'`. */
+/** Every string literal in `text`, whichever of the three quote styles it uses. */
+const literals = (text) =>
+  [...text.matchAll(/'([^'\n]*)'|"([^"\n]*)"|`([^`\n]*)`/g)].map((m) => m[1] ?? m[2] ?? m[3]);
+
+/**
+ * Class strings a renderer module puts on an element it builds at runtime.
+ *
+ * There is no single way to write that, so the sweep reads all of them: a
+ * popover assembled with `classList.add('context-menu', 'hidden')`, with a
+ * double-quoted or template-literal `className`, with `setAttribute('class',
+ * …)`, or as a `class="…"` attribute inside a markup template must be caught
+ * exactly like the `.className = '…'` form the shipped popovers happen to use
+ * today (#328). A guard that only knows one spelling is one refactor away from
+ * being green and blind.
+ */
 function assignedClassLists(source) {
-  return [...source.matchAll(/\.className\s*=\s*'([^']*)'/g)].map(([, value]) =>
-    value.split(/\s+/).filter(Boolean)
-  );
+  const lists = [];
+  const push = (value) => {
+    const tokens = tokensOf(value);
+    if (tokens.length) lists.push(tokens);
+  };
+
+  // `el.className = '…'` / `+= '…'`, any quote style.
+  for (const [, expression] of source.matchAll(/\.className\s*\+?=([^;\n]*)/g)) {
+    for (const value of literals(expression)) push(value);
+  }
+  // `el.classList.add('context-menu', 'hidden')` — one token per argument.
+  for (const [, args] of source.matchAll(/\.classList\.add\(([^)]*)\)/g)) {
+    push(literals(args).join(' '));
+  }
+  // `el.setAttribute('class', '…')`
+  for (const [, value] of source.matchAll(/\.setAttribute\(\s*['"`]class['"`]\s*,([^)]*)\)/g)) {
+    for (const one of literals(value)) push(one);
+  }
+  // `class="…"` inside a markup string the module builds.
+  for (const [, value] of source.matchAll(/\bclass=["']([^"'>]*)["']/g)) push(value);
+
+  return lists;
+}
+
+/** Every renderer module that can build chrome, `lib/` and its subdirectories. */
+function rendererModules(dir = RENDERER_DIR) {
+  const found = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    // `pages/` is a separate document with its own sheets — no chrome popovers.
+    if (entry.isDirectory()) {
+      if (entry.name !== 'pages' && entry.name !== 'styles') found.push(...rendererModules(full));
+    } else if (entry.name.endsWith('.js') && !entry.name.endsWith('.test.js')) {
+      found.push(full);
+    }
+  }
+  return found;
 }
 
 const isPopover = (tokens) => tokens.some((token) => POPOVER_CLASSES.includes(token));
@@ -71,15 +119,15 @@ describe('every chrome popover carries the shared bound (#324)', () => {
   });
 
   test('and in the popovers the renderer builds at runtime', () => {
-    const modules = fs
-      .readdirSync(path.join(RENDERER_DIR, 'lib'))
-      .filter((name) => name.endsWith('.js') && !name.endsWith('.test.js'));
+    const files = rendererModules();
+    // The walk really did reach the modules that build popovers.
+    expect(files.some((file) => file.endsWith(path.join('lib', 'bookmarks-ui.js')))).toBe(true);
 
     const missing = [];
-    for (const name of modules) {
-      for (const tokens of assignedClassLists(read(RENDERER_DIR, 'lib', name))) {
+    for (const file of files) {
+      for (const tokens of assignedClassLists(fs.readFileSync(file, 'utf8'))) {
         if (isPopover(tokens) && !tokens.includes('chrome-popover')) {
-          missing.push(`${name}: ${tokens.join(' ')}`);
+          missing.push(`${path.relative(RENDERER_DIR, file)}: ${tokens.join(' ')}`);
         }
       }
     }
@@ -95,12 +143,27 @@ describe('every chrome popover carries the shared bound (#324)', () => {
         .filter(isPopover)
         .filter((t) => !t.includes('chrome-popover'))
     ).toHaveLength(1);
-    expect(
-      assignedClassLists("el.className = 'bookmarks-overflow-menu hidden';").filter(isPopover)
-    ).toHaveLength(1);
+    // …however the renderer happens to spell it.
+    const forgetfulSources = [
+      "el.className = 'bookmarks-overflow-menu hidden';",
+      'el.className = "bookmarks-overflow-menu hidden";',
+      'el.className = `bookmarks-overflow-menu hidden`;',
+      "el.className += ' bookmarks-overflow-menu';",
+      "el.classList.add('bookmarks-overflow-menu', 'hidden');",
+      'el.setAttribute("class", "bookmarks-overflow-menu hidden");',
+      'wrap.innerHTML = `<div class="bookmarks-overflow-menu hidden"></div>`;',
+    ];
+    for (const source of forgetfulSources) {
+      expect([source, assignedClassLists(source).filter(isPopover).length]).toEqual([source, 1]);
+    }
     // …and it does not fire on the popovers' child rows, whose class names
-    // start with the same words.
+    // start with the same words, nor on an id/selector that reads like one.
     expect(classLists('<button class="context-menu-item"></button>').filter(isPopover)).toEqual([]);
+    expect(
+      assignedClassLists("el.classList.add('context-menu-item');\nq('#context-menu');").filter(
+        isPopover
+      )
+    ).toEqual([]);
   });
 
   test('every popover in the markup is one the shared sweep knows about', () => {

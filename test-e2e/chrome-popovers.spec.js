@@ -190,6 +190,28 @@ test('a menu left open while the window shrinks re-bounds itself', async ({
   expect(shrunk.scrollable).toBe(true);
 });
 
+test('a window too short for the minimum height still shows the whole box (#328)', async ({
+  window,
+  electronApp,
+}) => {
+  // The bound has a 96 px floor, so a scroll of two or three rows beats a
+  // sliver. In a window with less room than that under the menu's anchor the
+  // floor has to yield: scrolling moves the content *inside* the box, so a box
+  // whose own bottom edge is off-screen has a tail nothing can reach.
+  await setWindowSize(electronApp, window, 1000, 140);
+
+  await window.locator('#bee-menu-button').click();
+  await expect(window.locator('#bee-menu-dropdown')).toHaveClass(/open/);
+
+  const state = await popoverState(window, '#bee-menu-dropdown');
+  expect(state.insideViewport).toBe(true);
+  expect(state.docScrollHeight).toBe(state.innerHeight);
+  // Genuinely the case the floor used to win: the menu is anchored at ~87 px,
+  // leaving well under 96 px of room below it.
+  expect(state.bottom - state.top).toBeLessThan(96);
+  expect(state.scrollable).toBe(true);
+});
+
 test('a context menu raised at the bottom edge opens upwards', async ({
   window,
   electronApp,

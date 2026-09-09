@@ -78,11 +78,18 @@ describe('boundPopoverToViewport', () => {
     expect(el.style.maxHeight).toBe('505px');
   });
 
-  test('never squeezes a popover below the minimum height', () => {
+  test('keeps the bottom edge on screen rather than honour the floor (#328)', () => {
+    // An anchored popover's top is not ours to move, so in a window with less
+    // than POPOVER_MIN_HEIGHT below that top the floor has to yield: scrolling
+    // moves the content inside the box, so a box whose own bottom edge is
+    // off-screen has a tail nothing can bring back into view.
     setViewport(1200, 200);
     const el = createPopover({ top: 180, height: 300 });
 
-    expect(boundPopoverToViewport(el)).toBe(POPOVER_MIN_HEIGHT);
+    const applied = boundPopoverToViewport(el);
+    expect(applied).toBeLessThan(POPOVER_MIN_HEIGHT);
+    expect(applied).toBe(200 - 180 - POPOVER_VIEWPORT_MARGIN);
+    expect(180 + applied).toBeLessThanOrEqual(200 - POPOVER_VIEWPORT_MARGIN);
   });
 
   test('only ever tightens the sheet’s own cap, never loosens it', () => {
@@ -152,6 +159,34 @@ describe('placePopoverAtPoint', () => {
 
     expect(el.style.top).toBe('100px');
     expect(el.style.maxHeight).toBe(`${400 - 100 - POPOVER_VIEWPORT_MARGIN}px`);
+  });
+
+  test('opens the menu higher than the pointer to make room for the floor (#328)', () => {
+    // 180 px tall window, pointer near the bottom: neither side holds the
+    // minimum height, and the position here *is* ours to pick — so the menu
+    // moves up instead of hanging its last rows off the bottom edge.
+    setViewport(1200, 180);
+    const el = createPopover({ height: 600, width: 200 });
+
+    // Below the pointer there are 92 px, above it only 72: below is the roomier
+    // side, and still short of the 96 px floor.
+    placePopoverAtPoint(el, 300, 80);
+
+    const applied = parseFloat(el.style.maxHeight);
+    expect(applied).toBe(POPOVER_MIN_HEIGHT);
+    expect(parseFloat(el.style.top)).toBe(180 - POPOVER_VIEWPORT_MARGIN - POPOVER_MIN_HEIGHT);
+    expect(parseFloat(el.style.top) + applied).toBeLessThanOrEqual(180 - POPOVER_VIEWPORT_MARGIN);
+  });
+
+  test('and in a window shorter than the floor, fills what there is (#328)', () => {
+    setViewport(1200, 80);
+    const el = createPopover({ height: 600, width: 200 });
+
+    placePopoverAtPoint(el, 300, 60);
+
+    const applied = parseFloat(el.style.maxHeight);
+    expect(applied).toBe(80 - 2 * POPOVER_VIEWPORT_MARGIN);
+    expect(parseFloat(el.style.top)).toBe(POPOVER_VIEWPORT_MARGIN);
   });
 
   test('clamps horizontally against the right edge, then the left', () => {

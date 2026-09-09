@@ -26,9 +26,17 @@
 // menus already used when clamping horizontally.
 export const POPOVER_VIEWPORT_MARGIN = 8;
 
-// A popover is never squeezed below this: at that point a scroll of two or
-// three rows is more useful than a sliver, and the viewport clamp in
+// A popover is not squeezed below this: at that point a scroll of two or three
+// rows is more useful than a sliver, and the viewport clamp in
 // `placePopoverAtPoint` has already picked the roomier side.
+//
+// It is a floor, not a guarantee. It may never push a popover's *bottom* edge
+// past the window: scrolling moves the content inside the box, so an off-screen
+// tail of the box itself is unreachable — worse than the sliver it avoids
+// (#328). Where the position is ours to pick (`placePopoverAtPoint`) the menu
+// is moved up to make room for the floor; where it is not
+// (`boundPopoverToViewport`, anchored under a toolbar button) the room that is
+// actually there wins.
 export const POPOVER_MIN_HEIGHT = 96;
 
 const viewportHeight = () => window.innerHeight || document.documentElement?.clientHeight || 0;
@@ -49,9 +57,20 @@ const styleMaxHeight = (el) => {
   return Number.isFinite(px) ? px : Infinity;
 };
 
-/** Apply `available` px of room as a max-height, never loosening the sheet's. */
-const applyMaxHeight = (el, available) => {
-  const bounded = Math.min(Math.max(POPOVER_MIN_HEIGHT, Math.floor(available)), styleMaxHeight(el));
+/**
+ * Apply `available` px of room as a max-height, never loosening the sheet's.
+ *
+ * `ceiling` is the room the popover's own box has before its bottom edge leaves
+ * the window; the min-height floor may not be applied past it. It defaults to
+ * `available` — the case where the popover's top is fixed and the space below
+ * it is all there is.
+ */
+const applyMaxHeight = (el, available, ceiling = available) => {
+  const bounded = Math.min(
+    Math.max(POPOVER_MIN_HEIGHT, Math.floor(available)),
+    Math.max(0, Math.floor(ceiling)),
+    styleMaxHeight(el)
+  );
   el.style.maxHeight = `${bounded}px`;
   return bounded;
 };
@@ -114,9 +133,12 @@ export const placePopoverAtPoint = (el, x, y) => {
   } else if (spaceAbove > spaceBelow) {
     // Neither side fits — take the roomier one and scroll inside it.
     top = margin;
-    applyMaxHeight(el, spaceAbove);
+    applyMaxHeight(el, spaceAbove, vh - 2 * margin);
   } else {
-    applyMaxHeight(el, spaceBelow);
+    const applied = applyMaxHeight(el, spaceBelow, vh - 2 * margin);
+    // In a window too short for the minimum height, honouring it means opening
+    // the menu above the pointer so its bottom edge stays on screen (#328).
+    if (y + applied > vh - margin) top = vh - margin - applied;
   }
   if (top < margin) top = margin;
 
