@@ -17,7 +17,17 @@ const createElement = () => {
       remove: jest.fn(),
     },
     dataset: {},
+    style: {},
     textContent: '',
+    // Layout stand-in: `setRect` places the element the way a test needs it
+    // (the Profiles row's box, the flyout's own width).
+    _rect: { top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0 },
+    setRect(rect) {
+      this._rect = { ...this._rect, ...rect };
+    },
+    getBoundingClientRect() {
+      return { ...this._rect };
+    },
     setAttribute: jest.fn(),
     addEventListener: jest.fn((event, handler) => {
       handlers[event] = handler;
@@ -45,6 +55,10 @@ const loadMenusModule = async ({
   realAntUi = false,
 } = {}) => {
   jest.resetModules();
+
+  // Mutable so a test can put the window back in focus and prove the guest's
+  // `blur` is ignored (#328).
+  const windowFocusState = { hasFocus: false };
 
   const menuButton = createElement();
   const menuDropdown = createElement();
@@ -132,6 +146,8 @@ const loadMenusModule = async ({
   global.window = {
     electronAPI,
     nodeConfig: {},
+    innerWidth: 1200,
+    innerHeight: 800,
     addEventListener: jest.fn((event, handler) => {
       windowHandlers[event] = handler;
     }),
@@ -172,6 +188,10 @@ const loadMenusModule = async ({
     addEventListener: jest.fn((event, handler) => {
       documentHandlers[event] = handler;
     }),
+    // What `onWindowDeactivated` reads to tell a real window deactivation from
+    // the `blur` a `<webview>` guest raises when it takes the keyboard (#328).
+    // Default: the window really did lose focus.
+    hasFocus: jest.fn(() => windowFocusState.hasFocus),
   };
 
   jest.doMock('./tabs.js', () => tabsMocks);
@@ -225,6 +245,7 @@ const loadMenusModule = async ({
       beeInfoPanel,
       shortcutEls,
     },
+    windowFocusState,
     handlers: {
       documentHandlers,
       windowHandlers,
@@ -638,6 +659,53 @@ describe('menus', () => {
   // pointer path keeps a short intent delay because the flyout is anchored to
   // the LEFT of the menu: travelling into it from the Profiles row crosses the
   // rows below first, and cutting that move off is the bug this delay avoids.
+  // #328: the anchor clamped the flyout's right edge to the window but never
+  // its left. `mainWindow` sets no `minWidth`, so at innerWidth 460 the flyout
+  // sat at left -8 with its first characters off screen — and the chrome
+  // document is pinned now, so nothing could be scrolled to them.
+  describe('anchorProfileFlyout (#328)', () => {
+    // The hamburger is right-aligned and ~212 px wide, so its Profiles row
+    // starts 212 px in from the window's right edge; the flyout hangs 256 px
+    // to the LEFT of that row.
+    const FLYOUT_WIDTH = 256;
+    const ROW_INSET = 212;
+
+    // `left` is what the anchored flyout would actually lay out at — the real
+    // app's own numbers, since a right-anchored shrink-to-fit box cannot be
+    // predicted from its width alone.
+    const anchorAt = async (innerWidth, { left }) => {
+      const loaded = await loadMenusModule();
+      loaded.menus.initMenus();
+      loaded.elements.profileFlyout.hidden = false;
+      loaded.elements.profileFlyout.setRect({ left, width: FLYOUT_WIDTH, height: 200 });
+      loaded.elements.profileMenuWrap.setRect({
+        top: 120,
+        left: innerWidth - ROW_INSET,
+        width: ROW_INSET,
+      });
+      global.window.innerWidth = innerWidth;
+      loaded.menus.anchorProfileFlyout();
+      return loaded.elements.profileFlyout;
+    };
+
+    test('pins the left edge when the anchor would put it off screen', async () => {
+      // innerWidth 460, anchored `right: 212` → left -8, as measured in the
+      // running app.
+      const flyout = await anchorAt(460, { left: -8 });
+
+      expect(flyout.style.left).toBe('8px');
+      expect(flyout.style.right).toBe('auto');
+    });
+
+    test('and still anchors to the Profiles row when there is room', async () => {
+      const flyout = await anchorAt(1200, { left: 732 });
+
+      // The row's left edge, as `right: 100%` used to express.
+      expect(flyout.style.right).toBe(`${ROW_INSET}px`);
+      expect(flyout.style.left).toBe('auto');
+    });
+  });
+
   describe('profiles flyout dismissal (#301)', () => {
     const openFlyout = async () => {
       const loaded = await loadMenusModule();
@@ -754,6 +822,32 @@ describe('menus', () => {
     // never registered. Nothing may go back to hanging behaviour off it
     // (#306) — `#menu-backdrop` covers the window while a menu is open.
     expect(elements.webviewElement.addEventListener).not.toHaveBeenCalled();
+  });
+
+  // #328: a `<webview>` guest taking the keyboard raises the same window
+  // `blur`, and every tab activation hands the page focus (#304) — with the
+  // guest's ack arriving asynchronously, after the user has opened a menu.
+  // Closing on it tore the menu down under the pointer and the click that was
+  // already on its way landed on the page instead.
+  test('keeps the menus open when a webview guest takes focus, not the window', async () => {
+    const { menus, state, windowFocusState, handlers } = await loadMenusModule();
+
+    menus.initMenus();
+    menus.setMenuOpen(true);
+
+    windowFocusState.hasFocus = true;
+    handlers.windowHandlers.blur();
+    expect(state.menuOpen).toBe(true);
+
+    menus.setAntMenuOpen(true);
+    handlers.windowHandlers.blur();
+    expect(state.antMenuOpen).toBe(true);
+
+    // The window really going away still closes both.
+    windowFocusState.hasFocus = false;
+    handlers.windowHandlers.blur();
+    expect(state.menuOpen).toBe(false);
+    expect(state.antMenuOpen).toBe(false);
   });
 
   // #306: Escape is how every other dismissible surface in the chrome closes;

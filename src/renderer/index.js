@@ -19,6 +19,7 @@ import {
   setOnOpenDownloads,
   closeMenus,
   hideProfileFlyout,
+  anchorProfileFlyout,
 } from './lib/menus.js';
 import { initSettingsEffects, initTheme } from './lib/settings-ui.js';
 import {
@@ -79,7 +80,8 @@ import { attachSubmenuHover } from './lib/submenu-hover.js';
 import { isPrivateWindow } from './lib/private-mode.js';
 import { bindHoverTooltip } from './lib/hover-tooltip.js';
 import { initShortcuts } from './lib/shortcuts.js';
-import { onWindowLostFocus } from './lib/window-blur.js';
+import { initPopoverBounds } from './lib/popover-bounds.js';
+import { onWindowDeactivated } from './lib/window-deactivation.js';
 
 const electronAPI = window.electronAPI;
 
@@ -395,6 +397,10 @@ async function initProfileIndicator() {
     // hovered row is — otherwise nothing says which row owns the flyout.
     menuWrap?.classList.add('flyout-open');
     indicator.setAttribute('aria-expanded', 'true');
+    // Position it against the Profiles row and bound it to the viewport —
+    // it is `position: fixed` so the hamburger's own scrolling can't clip
+    // it (#324). Anchoring lives with hiding, in menus.js.
+    anchorProfileFlyout();
   };
 
   const setMenuStatus = (message, kind = '') => {
@@ -585,15 +591,12 @@ async function initProfileIndicator() {
     setMenuOpen(false);
   });
 
-  // Also dismiss when the window loses focus (e.g. alt-tab), matching the app's
-  // other transient menus (bookmarks, tab/context menus, autocomplete) and the
-  // old profile menu's behaviour — the flyout shouldn't linger over an inactive
-  // window.
-  // Not a bare `blur` listener: focus moving into one of this window's own
-  // `<webview>` guests fires that too, and the hamburger this flyout hangs off
-  // now survives that case — closing only the flyout would leave the two out of
-  // step. See `lib/window-blur.js`.
-  onWindowLostFocus(() => {
+  // Also dismiss when the window is deactivated (e.g. alt-tab), matching the
+  // app's other transient menus (bookmarks, tab/context menus, autocomplete)
+  // and the old profile menu's behaviour — the flyout shouldn't linger over an
+  // inactive window. A `<webview>` guest taking the keyboard is not that: it
+  // raises the same `blur` while the window is still active (#328).
+  onWindowDeactivated(() => {
     if (menu?.hidden !== false) return;
     closeProfileMenu();
   });
@@ -773,6 +776,9 @@ window.addEventListener('DOMContentLoaded', async () => {
   });
 
   initShortcuts(); // Live shortcut bindings — before any keydown consumers
+  // Every chrome popover bounds itself to the viewport and scrolls inside
+  // instead of growing past it (#324); this installs the window-level half.
+  initPopoverBounds();
   initMenuBackdrop(closeAllOverlays);
   initMenus();
   initAntUi();

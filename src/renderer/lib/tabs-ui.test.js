@@ -935,7 +935,9 @@ describe('tabs ui behavior', () => {
     expect(elements.closeRightBtn.disabled).toBe(false);
     expect(elements.closeOthersBtn.disabled).toBe(false);
     expect(elements.tabContextMenu.style.left).toBe('672px');
-    expect(elements.tabContextMenu.style.top).toBe('552px');
+    // Flipped up from the pointer rather than shoved against the window's
+    // bottom edge — the shared context-menu placement rule (#324).
+    expect(elements.tabContextMenu.style.top).toBe('550px');
 
     elements.tabContextMenu.dispatch('click', { target: elements.pinBtn });
     expect(mod.getTabs().find((tab) => tab.id === secondTab.id).pinned).toBe(true);

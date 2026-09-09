@@ -11,6 +11,11 @@ body,
 html {
   height: 100%;
   margin: 0;
+  /* The browser chrome is a fixed frame, not a scrollable page: the toolbar,
+     tab strip and sidebar are always where the user left them. Anything that
+     outgrows the window — a menu with every node enabled — scrolls inside
+     itself instead (see styles/popovers.css). #324. */
+  overflow: hidden;
   font-family:
     'Inter',
     -apple-system,

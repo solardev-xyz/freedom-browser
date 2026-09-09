@@ -7,7 +7,7 @@
 // the mouse. Chrome closes the open menu on Escape, innermost submenu first,
 // and gives the keyboard back to the button that opened it.
 
-const { test, expect, SAMPLE_BZZ_HASH } = require('./fixtures');
+const { test, expect, waitForPopoverFrame, SAMPLE_BZZ_HASH } = require('./fixtures');
 
 const menuState = (window) =>
   window.evaluate(() => ({
@@ -165,6 +165,10 @@ test('the hamburger lists Downloads directly after History, with its shortcut hi
       return wv?.getURL?.() || wv?.getAttribute?.('src') || '';
     });
 
+  // The row is in the DOM, but a synthetic click only reaches the chrome once
+  // the frame carrying the menu has gone out — until then the browser routes
+  // it to the `<webview>` behind it (see `waitForPopoverFrame`).
+  await waitForPopoverFrame(window);
   await window.locator('#downloads-btn').click();
   await expect.poll(() => menuState(window)).toMatchObject({ hamburger: false });
 
@@ -174,9 +178,10 @@ test('the hamburger lists Downloads directly after History, with its shortcut hi
   // Focusing that tab hands the keyboard to its <webview>. Settle on that
   // before driving the hamburger again, so the second open starts from a known
   // state rather than mid-transfer. (The transfer's window `blur` used to close
-  // the menu that came next, which is what made this test flake in CI; the
-  // dismissal now ignores an in-window guest blur — see the dedicated test
-  // below — so this wait is a settle point, not the thing carrying the test.)
+  // the menu that came next, which is what made this test flake in CI;
+  // `onWindowDeactivated` now ignores an in-window guest blur — see the
+  // dedicated test below — so this wait is a settle point, not the thing
+  // carrying the test.)
   await expect
     .poll(() => window.evaluate(() => document.activeElement?.tagName), { timeout: 10_000 })
     .toBe('WEBVIEW');
@@ -191,9 +196,14 @@ test('the hamburger lists Downloads directly after History, with its shortcut hi
 
   await window.locator('#menu-button').click();
   await expect.poll(() => menuState(window)).toMatchObject({ hamburger: true });
+  await waitForPopoverFrame(window);
   await window.locator('#downloads-btn').click();
   await expect.poll(activeUrl, { timeout: 10_000 }).toMatch(/pages\/downloads\.html/);
   await expect(tabs).toHaveCount(initialTabs + 1);
+
+  // The menu is gone and the keyboard is back in the chrome, not stranded in
+  // the guest that the second activation just handed the page focus to.
+  await expect.poll(() => menuState(window)).toMatchObject({ hamburger: false });
 });
 
 // A `<webview>` guest of this window taking focus fires the renderer's own
@@ -206,9 +216,13 @@ test('the hamburger lists Downloads directly after History, with its shortcut hi
 // menu closed between opening it and clicking the row, so the click reached
 // the page and the row never ran.
 //
-// Real window-level blur (alt-tab, another app) still dismisses: it arrives
-// from the main process as `menus:close` (`mainWindow.js` → `closeAllMenus`),
-// which is the accurate signal.
+// Real window-level blur (alt-tab, another app) still dismisses. The two are
+// told apart by `document.hasFocus()` in `lib/window-deactivation.js` (#328):
+// it stays true while focus is anywhere inside this window — a guest included
+// — and goes false only when the OS hands another window the keyboard.
+// `menu-backdrop.js` handles the other half of that same event, reclaiming the
+// keyboard for the chrome element the guest cut in front of, which is what the
+// `focused:` assertions below pin.
 test('a guest taking focus does not dismiss the open chrome menus', async ({ window }) => {
   // Exactly what a tab activation does, just issued explicitly so the transfer
   // provably lands while the menu is up.

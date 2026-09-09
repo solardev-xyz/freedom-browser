@@ -5,6 +5,8 @@ import { closeMenus } from './menus.js';
 import { showMenuBackdrop, hideMenuBackdrop } from './menu-backdrop.js';
 import { isModalDialogOpen } from './modal-dialog.js';
 import { normalizeLegacyEnsBookmarkUrl } from './url-utils.js';
+import { boundPopoverToViewport, placePopoverAtPoint } from './popover-bounds.js';
+import { onWindowDeactivated } from './window-deactivation.js';
 
 const electronAPI = window.electronAPI;
 
@@ -405,15 +407,22 @@ export const initBookmarks = () => {
 
     // Create overflow menu (appended to body to avoid overflow:hidden clipping)
     overflowMenu = document.createElement('div');
-    overflowMenu.className = 'bookmarks-overflow-menu hidden';
+    overflowMenu.className = 'bookmarks-overflow-menu chrome-popover hidden';
     document.body.appendChild(overflowMenu);
 
-    // Position the overflow menu relative to the button
+    // Position the overflow menu relative to the button.
+    //
+    // Only ever called on a *visible* menu: `boundPopoverToViewport` measures
+    // the menu's own top edge, and a `display: none` element measures at 0 —
+    // which bounded the menu to the whole window height and hung its bottom
+    // (and every entry down there) off the screen, where scrolling inside the
+    // box cannot reach it (#328).
     const positionOverflowMenu = () => {
-      if (!overflowBtn || !overflowMenu) return;
+      if (!overflowBtn || !overflowMenu || overflowMenu.classList.contains('hidden')) return;
       const btnRect = overflowBtn.getBoundingClientRect();
       overflowMenu.style.top = `${btnRect.bottom + 4}px`;
       overflowMenu.style.right = `${window.innerWidth - btnRect.right}px`;
+      boundPopoverToViewport(overflowMenu);
     };
 
     // Handle overflow button click
@@ -424,9 +433,12 @@ export const initBookmarks = () => {
       onContextMenuOpening?.();
 
       if (overflowMenu.classList.contains('hidden')) {
-        positionOverflowMenu();
         showMenuBackdrop();
         overflowMenu.classList.remove('hidden');
+        // Shown first, then placed and bounded — see positionOverflowMenu.
+        // Opens at the top, like every other chrome popover.
+        overflowMenu.scrollTop = 0;
+        positionOverflowMenu();
       } else {
         hideOverflowMenu();
       }
@@ -515,7 +527,7 @@ export const initBookmarks = () => {
 
   // Create context menu
   contextMenu = document.createElement('div');
-  contextMenu.className = 'context-menu hidden';
+  contextMenu.className = 'context-menu chrome-popover hidden';
   contextMenu.innerHTML = `
     <button class="context-menu-item" data-action="edit">Edit…</button>
     <button class="context-menu-item" data-action="delete">Delete</button>
@@ -572,11 +584,9 @@ export const initBookmarks = () => {
   // id-less, so that lookup was always null and the listeners never existed.
   // `#menu-backdrop` covers the window while one of these menus is open, so a click into
   // the page dismisses it through the document listener above. See #306.)
-  // A bare `blur`, not `window-blur.js`'s filtered one: these menus have no
-  // keyboard-ownership story yet, so surviving a guest-focus blur would leave
-  // one open with Escape (a `window` listener) unable to reach it. Same shape
-  // as the hamburger otherwise — tracked in #339.
-  window.addEventListener('blur', hideAllBookmarkMenus);
+  // Window deactivation only: a `<webview>` guest taking the keyboard raises
+  // the same event while the window is still active (#328).
+  onWindowDeactivated(hideAllBookmarkMenus);
 
   // Handle context menu actions
   contextMenu.addEventListener('click', async (event) => {
@@ -629,18 +639,9 @@ export const initBookmarks = () => {
       showMenuBackdrop();
 
       contextMenuTarget = hash;
-      contextMenu.style.left = `${event.clientX}px`;
-      contextMenu.style.top = `${event.clientY}px`;
       contextMenu.classList.remove('hidden');
-
-      // Adjust if menu goes off screen
-      const rect = contextMenu.getBoundingClientRect();
-      if (rect.right > window.innerWidth) {
-        contextMenu.style.left = `${window.innerWidth - rect.width - 8}px`;
-      }
-      if (rect.bottom > window.innerHeight) {
-        contextMenu.style.top = `${window.innerHeight - rect.height - 8}px`;
-      }
+      // Clamp / flip / bound, the shared rule for every chrome popover (#324).
+      placePopoverAtPoint(contextMenu, event.clientX, event.clientY);
     }
   };
 
