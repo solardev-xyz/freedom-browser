@@ -6,9 +6,12 @@
  *
  * `protocol.handle`-served custom schemes (bzz:, ipfs:, ipns:) route their
  * downloads through the Chromium download manager too, so decentralized
- * downloads land here alongside http(s) ones — verified against Electron 43
- * for attachment dispositions, `download`-attribute clicks, data: URIs, and
- * non-renderable main-frame navigations.
+ * downloads land here alongside http(s) ones — verified by hand against
+ * Electron 43 for attachment dispositions, `download`-attribute clicks,
+ * data: URIs, and non-renderable main-frame navigations. The Electron 43 -> 44
+ * bump re-ran only `test-e2e/downloads.spec.js` (the shelf and
+ * `freedom://downloads` paths); that four-case matrix has not been re-driven
+ * by hand since, so treat it as an Electron 43 observation.
  *
  * Persistence lives in downloads-store.js (per-profile downloads.sqlite)
  * for normal windows only. PRIVATE MODE GUARD (downloads): downloads from

@@ -45,6 +45,7 @@ const createElement = (initialClasses = []) => {
     style: {},
     dataset: {},
     disabled: false,
+    focus: jest.fn(),
     addEventListener: jest.fn((event, handler) => {
       handlers[event] = handler;
     }),
@@ -74,6 +75,7 @@ const loadPageContextMenuModule = async (options = {}) => {
       reloadIgnoringCache: jest.fn(),
       openDevTools: jest.fn(),
       send: jest.fn(),
+      focus: jest.fn(),
     },
     menuRect = {
       left: 0,
@@ -158,6 +160,8 @@ const loadPageContextMenuModule = async (options = {}) => {
       documentHandlers[event] = handler;
     }),
     dispatchEvent: jest.fn(),
+    // Nothing in the chrome document holds focus until a test says so.
+    activeElement: null,
   };
 
   global.navigator = {
@@ -531,6 +535,74 @@ describe('page-context-menu', () => {
     mod.showPageContextMenu(20, 30, { imageSrc: 'https://example.com/image.png' });
     await triggerMenuAction(pageContextMenu, 'copy-image-address');
     expect(electronAPI.copyText).toHaveBeenCalledWith('https://example.com/image.png');
+  });
+
+  test('takes the keyboard from the guest and hands it back to the same page', async () => {
+    const {
+      mod,
+      pageContextMenu,
+      activeWebview,
+      webviewContainer,
+      documentHandlers,
+      windowHandlers,
+    } = await loadPageContextMenuModule();
+
+    await mod.initPageContextMenu();
+
+    // Opening the menu pulls focus out of the guest. Without this, an Escape
+    // pressed over a focused `<webview>` never reaches the handler below —
+    // which is the normal state since tab activation focuses the page (#304).
+    mod.showPageContextMenu(20, 30, { pageUrl: 'https://example.com/page' });
+    expect(pageContextMenu.focus).toHaveBeenCalled();
+
+    // Escape dismisses and returns the keyboard to the page it was opened over.
+    global.document.activeElement = pageContextMenu;
+    pageContextMenu.contains.mockImplementation((el) => el === pageContextMenu);
+    documentHandlers.keydown({ key: 'Escape' });
+    expect(pageContextMenu.classList.add).toHaveBeenCalledWith('hidden');
+    expect(activeWebview.focus).toHaveBeenCalledTimes(1);
+
+    // A click that moved focus elsewhere in chrome (the address bar) dismisses
+    // the menu too — and must not yank focus back to the page.
+    mod.showPageContextMenu(20, 30, { pageUrl: 'https://example.com/page' });
+    global.document.activeElement = { id: 'address-input' };
+    documentHandlers.click({ target: {} });
+    expect(activeWebview.focus).toHaveBeenCalledTimes(1);
+
+    // A window blur hides the menu without pulling focus back into a window
+    // that is on its way out.
+    mod.showPageContextMenu(20, 30, { pageUrl: 'https://example.com/page' });
+    global.document.activeElement = pageContextMenu;
+    windowHandlers.blur();
+    expect(activeWebview.focus).toHaveBeenCalledTimes(1);
+
+    // An action that moved the foreground on (open-link-new-tab, view-source)
+    // leaves a different guest active: the new tab owns its own focus (#312),
+    // so the menu never focuses the page it was opened over after the fact.
+    mod.showPageContextMenu(20, 30, { pageUrl: 'https://example.com/page' });
+    global.document.activeElement = pageContextMenu;
+    webviewContainer.querySelector.mockReturnValue({ focus: jest.fn() });
+    documentHandlers.keydown({ key: 'Escape' });
+    expect(activeWebview.focus).toHaveBeenCalledTimes(1);
+  });
+
+  test('still dismisses when the context went away before the action ran', async () => {
+    const { mod, pageContextMenu, windowHandlers, backdrop } = await loadPageContextMenuModule();
+
+    await mod.initPageContextMenu();
+
+    mod.showPageContextMenu(20, 30, { pageUrl: 'https://example.com/page' });
+    // A window blur nulls the context; the menu can still be on screen when a
+    // click lands on it. The action is a no-op, but the menu must come down.
+    windowHandlers.blur();
+    pageContextMenu.classList.remove('hidden');
+    pageContextMenu.classList.add.mockClear();
+    backdrop.hideMenuBackdrop.mockClear();
+
+    await triggerMenuAction(pageContextMenu, 'reload');
+
+    expect(pageContextMenu.classList.add).toHaveBeenCalledWith('hidden');
+    expect(backdrop.hideMenuBackdrop).toHaveBeenCalled();
   });
 
   test('closes on outside interactions and wires webview ipc context-menu events', async () => {

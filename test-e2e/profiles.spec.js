@@ -201,6 +201,40 @@ test('use: switching to another profile via the chrome menu records a launch', a
   expect(active.id).not.toBe(target.id);
 });
 
+// --- flyout dismissal ------------------------------------------------------
+
+// #301: the flyout used to stay up while the pointer walked down the rest of
+// the hamburger. Chrome keeps one submenu open at a time and closes it as soon
+// as a sibling row is hovered, with a short grace period so a diagonal move
+// into the submenu isn't cut off.
+test('menu: hovering another hamburger row closes the profiles flyout', async ({ window }) => {
+  const flyout = window.locator('#profile-menu');
+  const hamburger = window.locator('#menu-dropdown');
+
+  await window.click('#menu-button');
+  await window.evaluate(() => document.getElementById('profile-menu-btn')?.click());
+  await expect(flyout).toBeVisible();
+
+  // Hovering a sibling row ("New Tab") dismisses it …
+  await window.hover('#new-tab-menu-btn');
+  await expect(flyout).toBeHidden();
+  // … and only the flyout: the hamburger it lives in stays open.
+  await expect(hamburger).toHaveClass(/\bopen\b/);
+  await expect(window.locator('#profile-menu-btn')).toHaveAttribute('aria-expanded', 'false');
+
+  // Hovering back on the Profiles row reopens it (the hover-open delay).
+  await window.hover('#profile-menu-btn');
+  await expect(flyout).toBeVisible();
+
+  // Keyboard navigation is unaffected: focus moving through the flyout's own
+  // rows keeps it open, focus landing on a sibling row closes it.
+  await window.locator('#profile-create-btn').focus();
+  await expect(flyout).toBeVisible();
+  await window.locator('#new-tab-menu-btn').focus();
+  await expect(flyout).toBeHidden();
+  await expect(hamburger).toHaveClass(/\bopen\b/);
+});
+
 // --- use / focus fast path -------------------------------------------------
 
 test('use: opening an already-running profile focuses it without recording a launch', async ({

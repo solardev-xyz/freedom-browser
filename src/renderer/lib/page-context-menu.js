@@ -13,6 +13,15 @@ let pageContextMenu = null;
 // Current context from webview
 let currentContext = null;
 
+// The webview the menu was opened over, captured when it is shown so the
+// keyboard can be handed back to exactly that page on dismissal — and never
+// to a different tab an action opened in the meantime.
+let menuWebview = null;
+
+// The active (foreground) guest, or null.
+const getActiveWebview = () =>
+  document.getElementById('webview-container')?.querySelector('webview:not(.hidden)') || null;
+
 // Convert internal gateway URL to dweb URL for display/copying
 const toDwebUrl = (url) => {
   if (!url) return url;
@@ -80,8 +89,8 @@ export const showPageContextMenu = (x, y, context) => {
   const forwardBtn = pageContextMenu.querySelector('[data-action="forward"]');
 
   // Get the webview from the active tab
-  const webviewContainer = document.getElementById('webview-container');
-  const activeWebview = webviewContainer?.querySelector('webview:not(.hidden)');
+  const activeWebview = getActiveWebview();
+  menuWebview = activeWebview;
 
   if (backBtn && activeWebview) {
     try {
@@ -106,6 +115,15 @@ export const showPageContextMenu = (x, y, context) => {
   pageContextMenu.style.top = `${y}px`;
   pageContextMenu.classList.remove('hidden');
 
+  // An open menu owns the keyboard. This is the one chrome surface raised from
+  // *inside* the guest page, so it is the only one that can be up while the
+  // `<webview>` still holds focus — and a keypress that lands in the guest
+  // never reaches the shell's own `keydown` handler, so Escape would not
+  // dismiss it. (Focusing the guest on every tab activation, #304, turned that
+  // from a rare state into the normal one.) Take focus here and hand it back
+  // to the page in `hidePageContextMenu`, the way a native menu does.
+  pageContextMenu.focus?.();
+
   // Adjust position if menu goes off screen
   requestAnimationFrame(() => {
     const rect = pageContextMenu.getBoundingClientRect();
@@ -126,24 +144,45 @@ export const showPageContextMenu = (x, y, context) => {
   });
 };
 
-// Hide the context menu
-export const hidePageContextMenu = () => {
+// Hide the context menu.
+//
+// `restoreFocus` hands the keyboard back to the page the menu was opened over
+// (see `showPageContextMenu`); pass `false` from paths that fire while the
+// window is already losing focus, so dismissal never pulls focus back in.
+export const hidePageContextMenu = ({ restoreFocus = true } = {}) => {
   if (pageContextMenu) {
     const wasVisible = !pageContextMenu.classList.contains('hidden');
+    // Only give the keyboard back when the menu still holds it: a click that
+    // moved focus elsewhere in chrome (the address bar, say) dismisses the
+    // menu too, and grabbing focus back for the page would undo that click.
+    const heldFocus = wasVisible && pageContextMenu.contains(document.activeElement);
     pageContextMenu.classList.add('hidden');
     if (wasVisible) {
       hideMenuBackdrop();
     }
+    // Never focus a *different* page: an action that opened a new tab has
+    // already moved the foreground on, and that tab owns its own focus
+    // (address bar on this window's new-tab page, #312).
+    if (restoreFocus && heldFocus && menuWebview && menuWebview === getActiveWebview()) {
+      menuWebview.focus?.();
+    }
   }
   currentContext = null;
+  menuWebview = null;
 };
 
 // Handle context menu action
 const handleAction = async (action) => {
-  if (!currentContext) return;
+  // A context that went missing (a window blur nulls it while the menu can
+  // still be on screen) means the action is a no-op — but the menu must come
+  // down all the same. Returning early used to leave it up with every item
+  // still live.
+  if (!currentContext) {
+    hidePageContextMenu();
+    return;
+  }
 
-  const webviewContainer = document.getElementById('webview-container');
-  const activeWebview = webviewContainer?.querySelector('webview:not(.hidden)');
+  const activeWebview = getActiveWebview();
 
   switch (action) {
     case 'back':
@@ -307,8 +346,9 @@ export const initPageContextMenu = async () => {
     }
   });
 
-  // Hide when window loses focus
-  window.addEventListener('blur', hidePageContextMenu);
+  // Hide when window loses focus — without the focus hand-back, which would
+  // pull the keyboard back into a window that is on its way out.
+  window.addEventListener('blur', () => hidePageContextMenu({ restoreFocus: false }));
 
   pushDebug('[PageContextMenu] Initialized');
 };

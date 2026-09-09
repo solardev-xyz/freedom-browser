@@ -280,13 +280,18 @@ const handleDwebLinkActivation = (event) => {
   // dispatching a synthetic click is equivalent to a scripted redirect.
   if (globalThis.location?.protocol === 'web3:' && event.isTrusted !== true) return;
 
-  // Mirror Chromium's link disposition heuristic: middle-click,
-  // ctrl/cmd-click, shift-click, or `target="_blank"` open in a new tab;
-  // a named `target` (anything not starting with `_`) reuses an existing
-  // tab with that name (or opens a new one if none exists); everything
-  // else navigates the current tab. (We don't distinguish foreground vs
-  // background tab here — same as freedom's existing `tab:new-with-url`
-  // flow which always opens foreground.)
+  // Mirror Chromium's link disposition heuristic (#303):
+  //
+  //   Ctrl/Cmd+click, middle-click        → background tab (stay on this page)
+  //   Ctrl/Cmd+Shift+click, Shift+middle  → foreground tab
+  //   Shift+click                         → new window
+  //   target="_blank" / named target      → foreground tab
+  //   anything else                       → this tab
+  //
+  // The modifiers win over the target attribute for foreground-vs-background,
+  // as in Chrome: Ctrl+clicking a `target="_blank"` link still leaves you on
+  // the current page. A named target is still forwarded in every case so the
+  // renderer can reuse that name's tab.
   //
   // The target attribute is forwarded so the host renderer can route
   // through the same named-tab reuse path that Chromium's
@@ -299,18 +304,24 @@ const handleDwebLinkActivation = (event) => {
   const target = anchor.getAttribute?.('target') || '';
   const isBlank = /^_blank$/i.test(target);
   const isNamedTarget = target && !target.startsWith('_');
-  const wantsNewTab =
-    event.button === 1 ||
-    event.metaKey ||
-    event.ctrlKey ||
-    event.shiftKey ||
-    isBlank ||
-    isNamedTarget;
+  const isMiddleClick = event.button === 1;
+  const wantsNewTab = isMiddleClick || event.metaKey || event.ctrlKey;
+
+  let disposition;
+  if (wantsNewTab) {
+    disposition = event.shiftKey ? 'newTab' : 'newBackgroundTab';
+  } else if (event.shiftKey) {
+    disposition = 'newWindow';
+  } else if (isBlank || isNamedTarget) {
+    disposition = 'newTab';
+  } else {
+    disposition = 'currentTab';
+  }
 
   event.preventDefault();
   ipcRenderer.sendToHost('link:navigate', {
     url: href,
-    disposition: wantsNewTab ? 'newTab' : 'currentTab',
+    disposition,
     target: target || null,
   });
 };

@@ -8,6 +8,7 @@ import { hideTabContextMenu, getActiveWebview } from './tabs.js';
 import { hideBookmarkContextMenu, hideOverflowMenu } from './bookmarks-ui.js';
 import { showMenuBackdrop, hideMenuBackdrop } from './menu-backdrop.js';
 import { formatAccelerator, matchesShortcut } from './shortcuts.js';
+import { SUBMENU_CLOSE_DELAY_MS } from './submenu-hover.js';
 
 const electronAPI = window.electronAPI;
 
@@ -47,6 +48,68 @@ export const setOnMenuOpening = (callback) => {
 let beeMenuButton = null;
 let beeMenuDropdown = null;
 let webviewElement = null;
+let profileMenuWrap = null;
+
+// --- Profiles flyout dismissal ---------------------------------------------
+//
+// Chrome's submenu model: only one submenu of a menu is open at a time, and it
+// closes as soon as another row of that menu is hovered — with a short intent
+// delay so a diagonal move from the parent row into the submenu isn't cut off
+// (the Profiles flyout is anchored to the LEFT of the hamburger, so travelling
+// into it from the Profiles row crosses the rows below it first).
+//
+// Opening the flyout lives with the flyout's own code (initProfileIndicator in
+// index.js); hiding it is owned here, the same reason setMenuOpen(false)
+// already collapsed it: the flyout is a child of #menu-dropdown and the
+// hamburger's lifecycle governs it. #301.
+let profileFlyoutCloseTimer = null;
+
+const cancelProfileFlyoutClose = () => {
+  if (profileFlyoutCloseTimer) {
+    clearTimeout(profileFlyoutCloseTimer);
+    profileFlyoutCloseTimer = null;
+  }
+};
+
+// The one place the flyout is hidden (index.js routes its own close through
+// here too), so the `hidden` attribute, the trigger's aria-expanded and the
+// row's open highlight can never drift apart.
+export const hideProfileFlyout = () => {
+  cancelProfileFlyoutClose();
+  const profileFlyout = document.getElementById('profile-menu');
+  if (profileFlyout) profileFlyout.hidden = true;
+  document.getElementById('profile-menu-wrap')?.classList.remove('flyout-open');
+  document.getElementById('profile-menu-btn')?.setAttribute('aria-expanded', 'false');
+};
+
+const isProfileFlyoutOpen = () => document.getElementById('profile-menu')?.hidden === false;
+
+// A pointer or focus landing anywhere in the hamburger that is not the
+// Profiles row or its flyout dismisses the flyout. Pointer moves get the
+// intent delay (SUBMENU_CLOSE_DELAY_MS — the same grace period
+// attachSubmenuHover uses for the reverse direction); keyboard focus does not,
+// since a Tab/arrow move is deliberate and leaving the flyout up would cover
+// the row that just took focus.
+const handleProfileFlyoutSibling = (target, { delay }) => {
+  if (!isProfileFlyoutOpen()) return;
+  // Inside the Profiles row or the flyout itself: not a sibling — this is the
+  // diagonal move the delay exists for, so abort a pending close.
+  if (profileMenuWrap?.contains(target)) {
+    cancelProfileFlyoutClose();
+    return;
+  }
+  if (!delay) {
+    hideProfileFlyout();
+    return;
+  }
+  // Keep the first schedule: the delay counts from entering the sibling row,
+  // not from the last mousemove within it.
+  if (profileFlyoutCloseTimer) return;
+  profileFlyoutCloseTimer = setTimeout(() => {
+    profileFlyoutCloseTimer = null;
+    hideProfileFlyout();
+  }, SUBMENU_CLOSE_DELAY_MS);
+};
 
 export const setMenuOpen = (open) => {
   state.menuOpen = open;
@@ -66,9 +129,7 @@ export const setMenuOpen = (open) => {
   } else {
     // Collapse the Profiles flyout when the hamburger closes (the flyout is a
     // child of #menu-dropdown, so its lifecycle is governed by the hamburger).
-    const profileFlyout = document.getElementById('profile-menu');
-    if (profileFlyout) profileFlyout.hidden = true;
-    document.getElementById('profile-menu-btn')?.setAttribute('aria-expanded', 'false');
+    hideProfileFlyout();
     if (!state.antMenuOpen) {
       hideMenuBackdrop();
     }
@@ -197,6 +258,18 @@ export const initMenus = () => {
   beeMenuButton = document.getElementById('bee-menu-button');
   beeMenuDropdown = document.getElementById('bee-menu-dropdown');
   webviewElement = document.getElementById('bzz-webview');
+  profileMenuWrap = document.getElementById('profile-menu-wrap');
+
+  // One submenu at a time: hovering or focusing any other hamburger row closes
+  // the Profiles flyout (#301). `mouseover`/`focusin` rather than
+  // `mouseenter`/`focus` because only the bubbling pair can be handled by a
+  // single listener on the dropdown, which also covers rows rendered later.
+  menuDropdown?.addEventListener('mouseover', (event) => {
+    handleProfileFlyoutSibling(event.target, { delay: true });
+  });
+  menuDropdown?.addEventListener('focusin', (event) => {
+    handleProfileFlyoutSibling(event.target, { delay: false });
+  });
 
   menuButton?.addEventListener('click', () => {
     setMenuOpen(!state.menuOpen);
