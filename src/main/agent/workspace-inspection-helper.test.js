@@ -6,12 +6,13 @@ const path = require('path');
 const { execFileSync } = require('child_process');
 const { WORKSPACE_FILE_HELPER } = require('./managed-workspace-controller');
 const { initializeWorkspaceGit } = require('./managed-workspace-git');
+const { workspaceGitCommand } = require('./workspace-git-command');
 
 describe('sandboxed workspace inspection', () => {
   let fixture;
   let workspace;
   const git = (...args) =>
-    execFileSync('/usr/bin/git', args, {
+    execFileSync(workspaceGitCommand(), args, {
       cwd: workspace,
       encoding: 'utf8',
       env: { PATH: '/usr/bin:/bin', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' },

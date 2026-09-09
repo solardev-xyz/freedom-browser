@@ -3,6 +3,10 @@
 // Use only installed Git within the existing system-toolchain sandbox boundary.
 // In particular, never execute macOS /usr/bin/git: it can launch the developer
 // tools installer when the real command-line tools are absent.
+// Serialized into a separate sandbox process: coverage counters would reference
+// the parent Jest environment. Keep this function uninstrumented; helper tests
+// still execute it, including in the coverage run.
+/* istanbul ignore next */
 function workspaceGitCommand(platform = process.platform, accessible) {
   const executable =
     platform === 'darwin'

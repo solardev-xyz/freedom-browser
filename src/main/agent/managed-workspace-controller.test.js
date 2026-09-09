@@ -587,10 +587,18 @@ describe('ManagedWorkspaceController', () => {
     const packageRoot = path.join(fixture, 'runtime');
     const bin = path.join(packageRoot, 'bin');
     await fs.promises.mkdir(bin, { recursive: true });
-    await fs.promises.writeFile(path.join(bin, 'tool'), '#!/bin/sh\n', { mode: 0o700 });
+    await fs.promises.writeFile(path.join(bin, 'tool-real'), '#!/bin/sh\n', { mode: 0o700 });
+    // Exercise canonicalization on every host, including hosts where /bin/sh is
+    // not itself a symlink. Only the fake managed-workspace path needs a stub.
+    await fs.promises.symlink('tool-real', path.join(bin, 'tool'));
+    const actualRealpath = fs.promises.realpath;
     jest
       .spyOn(fs.promises, 'realpath')
-      .mockImplementation(async (value) => path.resolve(String(value)));
+      .mockImplementation(async (value) =>
+        String(value).startsWith('/managed/')
+          ? path.resolve(String(value))
+          : actualRealpath(value)
+      );
     const actualStat = fs.promises.stat;
     jest.spyOn(fs.promises, 'stat').mockImplementation(async (value) =>
       String(value).startsWith('/managed/')

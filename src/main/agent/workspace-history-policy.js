@@ -3,6 +3,9 @@
 const HISTORY_LIMITS = Object.freeze({ files: 200, fileBytes: 64 * 1024, totalBytes: 512 * 1024 });
 
 // These functions also run inside the fixed sandbox helper. Keep them self-contained.
+// Parent-process coverage counters cannot be serialized into that child. The
+// history suite still exercises these functions under coverage via the helper.
+/* istanbul ignore next */
 function historyPathReason(value) {
   if (
     typeof value !== 'string' ||
@@ -62,6 +65,7 @@ function historyPathReason(value) {
   return null;
 }
 
+/* istanbul ignore next -- Also serialized into the sandbox helper (see above). */
 function historyContainsSecret(value) {
   const text = typeof value === 'string' ? value : value.toString('utf8');
   if (
