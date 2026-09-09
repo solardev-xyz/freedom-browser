@@ -1,4 +1,5 @@
 import { state } from './state.js';
+import { isModalDialogOpen } from './modal-dialog.js';
 
 // DOM references
 let bridgeBtn = null;
@@ -419,9 +420,15 @@ export function initGithubBridgeUi() {
     }
   });
 
-  // Close panel on Escape
+  // Close panel on Escape. Consumed (`preventDefault`) so navigation.js's
+  // window-level Escape doesn't also stop an in-flight page load — Chrome
+  // closes the innermost surface only. See #306.
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && panelOpen) {
+      // A modal <dialog> over the panel owns the press and cannot mark it —
+      // see `isModalDialogOpen`.
+      if (isModalDialogOpen()) return;
+      e.preventDefault();
       closePanel();
     }
   });

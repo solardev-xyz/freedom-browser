@@ -122,6 +122,13 @@ function notFoundResponse(url) {
   });
 }
 
+// `delayMs` holds the response open before answering, so a spec can act while
+// the tab is genuinely still loading — the stop/reload button in its `stop`
+// state, `webview.stop()` still meaningful. Without it there is no way to
+// observe an in-flight load in the harness project at all.
+const holdOpen = (ms) =>
+  ms > 0 ? new Promise((resolve) => setTimeout(resolve, ms)) : Promise.resolve();
+
 function makeProtocolHandler(scheme) {
   return async (request) => {
     const fixture = pickContentFixture(request.url);
@@ -129,6 +136,7 @@ function makeProtocolHandler(scheme) {
       log.info(`[test-harness] ${scheme}: 404 (no fixture) for ${redactUrlForLog(request.url)}`);
       return notFoundResponse(request.url);
     }
+    await holdOpen(fixture.delayMs);
     return buildResponse(fixture);
   };
 }

@@ -172,7 +172,7 @@ See [contract-hosted applications](protocols/onchain-apps.md) for the origin mod
   - `Cmd+Shift+W` / `Ctrl+Shift+W`: Toggle wallet sidebar
   - `F11`: Toggle fullscreen
   - `Cmd+Alt+I` / `Ctrl+Shift+I` / `F12`: Developer Tools (listed for reference; all three are locked, not remappable)
-- **Fixed Keys**: Not part of the registry above and not remappable — `Escape` stops loading or restores the address bar, and in the find bar `Enter` jumps to the next match, `Shift+Enter` to the previous, and `Esc` closes it.
+- **Fixed Keys**: Not part of the registry above and not remappable — `Escape` stops loading or restores the address bar, closes any open menu or popover (the hamburger and Nodes menus included; an open Profiles flyout closes first, the hamburger on a second press) and returns focus to the control that opened it, and in the find bar `Enter` jumps to the next match, `Shift+Enter` to the previous, and `Esc` closes it.
 - **Zoom**: The zoom bindings above act on the active page (the same target and 10% step as the hamburger menu's − / + controls, which stay in sync with them), not on the browser chrome. Only the first binding on each row is remappable; the rest are fixed aliases that always stay active, listed as "Also …" in Settings > Shortcuts. Zoom In carries them because `=` sits behind Shift on many layouts (German, Spanish, Italian, Swiss and the Nordic ones all put it on `Shift+0`), where `Cmd`/`Ctrl` + `=` alone can never fire. All three actions additionally answer to the numeric keypad — `Num +`, `Num -` and `Num 0` — which the accelerator parser treats as keys distinct from the main row. Each action appears once under View > Zoom In / Zoom Out / Actual Size; the alias rows are hidden.
 - **No Keyboard Binding**: Print has no shortcut; use the hamburger menu's Print entry.
 
@@ -181,6 +181,8 @@ See [contract-hosted applications](protocols/onchain-apps.md) for the origin mod
 - **Address Bar Star**: Click the star icon to bookmark or unbookmark the current page.
 - **Supported Protocols**: Bookmark any `bzz://`, `ipfs://`, `ipns://`, `web3://`, `rad://`, `freedom://`, `http://`, or `https://` URL. The legacy `ens://` form is bookmarkable too, so older bookmarks and the seeded `ens://` defaults keep working.
 - **Named Bookmarks**: Name and edit bookmarks via modal or right-click.
+- **Open Where You Want**: A plain click opens the bookmark in the current tab; `Cmd`/`Ctrl`+click or middle-click opens it in a background tab and leaves the page you are on alone (add `Shift` to switch to the new tab); `Shift`+click opens it in a new window.
+- **Reorder by Drag**: Drag an entry along the bookmarks bar to move it; the new order is saved and is the order the bar shows on the next launch.
 - **Bookmarks Bar**: Quick access below the toolbar, with an overflow menu when bookmarks don't fit. Always visible on the new tab page; toggle visibility on other pages with `Cmd+Shift+B` / `Ctrl+Shift+B` (persisted across sessions).
 
 ## Browsing History
