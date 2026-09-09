@@ -29,7 +29,9 @@ origin token. They contain no process ID or permission grant. On app restart
 they show **Needs restart**. Restart obtains current permissions and launches a
 fresh owned process; it never adopts a discovered PID or arbitrary port listener.
 An occupied port refuses launch, including a possible survivor from a previous
-application lifetime. Existing platform cleanup limitations still apply.
+application lifetime. Existing platform cleanup limitations still apply. The
+existing four-active-process and thirty-minute process lifetime limits remain in
+force; saving a definition does not make its process permanent.
 
 Saved preview origins remain stable. Within the current browser lifetime an
 existing page detects a replacement process and reloads; old socket credentials
