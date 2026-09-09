@@ -31,10 +31,15 @@ test('repro: second Downloads click', async ({ window }) => {
       return origToggle.apply(this, a);
     };
 
-    for (const type of ['pointerdown', 'mousedown', 'mouseup', 'click']) {
-      document.addEventListener(
+    for (const type of ['pointerdown', 'mousedown', 'mouseup', 'click', 'mousemove']) {
+      // `window` capture is the very first node in the capture path — earlier
+      // than anything Playwright itself installs on `document`.
+      window.addEventListener(
         type,
-        (e) => push(`${type} ${d(e.target)} @${Math.round(e.clientX)},${Math.round(e.clientY)}`),
+        (e) => {
+          if (type === 'mousemove' && window.__log.length > 400) return;
+          push(`${type} ${d(e.target)} @${Math.round(e.clientX)},${Math.round(e.clientY)}`);
+        },
         true
       );
     }
@@ -107,12 +112,29 @@ test('repro: second Downloads click', async ({ window }) => {
     )
     .toBe(true);
   console.log('GEOM-2 ' + JSON.stringify(await geom()));
+  const centre = await window.evaluate(() => {
+    const r = document.getElementById('downloads-btn').getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  });
   await window.locator('#downloads-btn').click();
   let ok = true;
   try {
     await expect.poll(activeUrl, { timeout: 6_000 }).toMatch(/pages\/downloads\.html/);
   } catch {
     ok = false;
+  }
+  if (!ok) {
+    // Bypass Playwright's actionability + hit-target interceptor entirely: a
+    // raw synthetic click at the same point. If this one also produces no DOM
+    // event, the input never reached the embedder frame at all.
+    await window.evaluate(() => window.__push('--- raw mouse.click ---'));
+    await window.mouse.click(centre.x, centre.y);
+    try {
+      await expect.poll(activeUrl, { timeout: 5_000 }).toMatch(/pages\/downloads\.html/);
+      await window.evaluate(() => window.__push('--- raw click WORKED ---'));
+    } catch {
+      await window.evaluate(() => window.__push('--- raw click ALSO FAILED ---'));
+    }
   }
   console.log('GEOM-3 ' + JSON.stringify(await geom()));
   console.log('TABS ' + (await window.evaluate(() => window.__tabsNow())));
