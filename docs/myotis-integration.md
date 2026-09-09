@@ -29,7 +29,7 @@ The evidence manifest hash is
 Debug unwind behavior differs from release panic-abort. Neither artifact was
 loaded or activated during this source adaptation.
 
-After immutable review, the coordinator can activate the retained local Mac file:
+For a fresh checkout, activate the retained local Mac file with:
 
 ```sh
 npm run myotis:activate -- --target darwin-arm64 --file /private/tmp/myotis-mac-arm64-debug-02a183d8-20260909.DdZzko/myotis-node.darwin-arm64.node
@@ -111,8 +111,40 @@ remain attributed to their original commits; they do not qualify this branch.
 Do not run that harness as current integration evidence. Any integration runtime
 harness is a separately reviewed follow-up with fresh authorization and bounds.
 
-Pending: coordinator local activation and hash verification, exact runtime
-prerequisites, child ABI/method handshake, real patched-addon read/status/stop,
+Pending: exact runtime prerequisites, child ABI/method handshake, real patched-
+addon read/status/stop,
 actual app Quit, supported Windows artifacts/HANDLE/CRT/job behavior, signed
 macOS/ASAR/RunAsNode packaging and integration workflow qualification. No app,
 addon, E2E, blocked/fatal or native runtime fixture ran on the primary Mac.
+
+## Local activation checkpoint — 2026-09-09
+
+The coordinator activated the macOS arm64 addon in the separate integration
+checkout at exact source candidate `5483e051fcbca5057a6f968a1436bc7086f3e554`
+using `node scripts/activate-myotis-local.js` with the target and file above.
+Activation exited 0; an independent `verifyArtifact`
+read confirmed the source, lock, ABI, target, exact 51290696 bytes and pinned
+`9c93d1209fb981eda50b85df2cc9381be91c85aeefb2171e3412baa87b6e3fc5` hash.
+The binary and manifest are ignored local files, not committed Git artifacts.
+This was copying and hashing only, with no addon load or app launch.
+
+Both disposable-host inventories found Electron 43.0.0, with no installed
+43.6.0 identified. Their existing dependency trees therefore do not establish
+an exact-lock integration runtime. Retained inventory replies are
+`/private/tmp/freedom-integration-mac-inventory-reply-20260909.md` and
+`/private/tmp/freedom-integration-linux-inventory-reply-20260909.md`.
+The Linux addon was rehashed successfully at its previously recorded path.
+
+The original Agent checkout stayed clean at `ae668a24`; its installed v0.1.7
+addon still hashes to
+`1b297652775793a028337c0a62508c62a93aa5650449afcc77e7f765a6462eda`.
+The isolation and Myotis PR branches were not changed. Future runtime runs
+should use a fresh, task-owned `--profile-dir` on a designated disposable host.
+
+Manual source-only review of `99177c06..5483e051` found no concrete blocker and
+confirmed the non-macOS prestart regression was fixed. The review executed no
+project code. Implementation validation reported eight focused suites / 123
+passing tests, then two overlapping process/platform suites / 20 passing tests
+after the startup correction, with lint passing. The dependency mismatch above
+still applies. Review record: `scratchpad/merge-99177c06-review.md` in the
+existing reviewer session.

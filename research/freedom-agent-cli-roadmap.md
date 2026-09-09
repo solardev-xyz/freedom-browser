@@ -2827,6 +2827,15 @@ merge's 14 known workspace-suite failures remain outside this task; historical
 CI/fake-addon passes are not uplifted to this integration. Exact-lock runtime,
 patched-addon lifecycle, actual Quit, Windows and signed-package gates remain open.
 
+- **2026-09-09 — Local integration artifact activated.** At source candidate
+  `5483e051`, the coordinator copied the pinned macOS arm64 debug addon into
+  the separate test checkout and independently verified its complete manifest
+  and SHA-256. No addon or app was loaded. Both inventoried disposable hosts
+  still have Electron 43.0.0 rather than locked 43.6.0; exact runtime prerequisites
+  and combined runtime qualification remain open. The original Agent checkout
+  and both PR branches remain unchanged. See the integration document's local
+  activation checkpoint for exact evidence.
+
 ## Final target statement
 
 > Freedom becomes an agent-native, malleable browser: users delegate high-level work to an embedded Pi-powered agent that acts through Freedom's semantic automation kernel and enforceable approval boundary across the ordinary and decentralized web, and can eventually ask it to create site customizations, extensions, dApps, and supported changes to Freedom itself through inspectable, permissioned, reversible build and installation workflows. A CLI or MCP surface may later expose the same kernel if real external demand warrants productizing it.
