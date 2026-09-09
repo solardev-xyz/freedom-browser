@@ -128,3 +128,56 @@ test('Escape closing a menu leaves an in-flight page load running', async ({ win
   await window.keyboard.press('Escape');
   await expect.poll(() => loadState(window)).toMatchObject({ reload: 'reload' });
 });
+
+// #326: Downloads sits directly after History in the hamburger, Chrome's
+// order (New tab, New window, New Incognito window, History, Downloads, …),
+// with its shortcut hint rendered like every other row's.
+test('the hamburger lists Downloads directly after History, with its shortcut hint', async ({
+  window,
+}) => {
+  await window.locator('#menu-button').click();
+  await expect(window.locator('#downloads-btn')).toBeVisible();
+
+  const rows = await window.evaluate(() =>
+    [...document.querySelectorAll('#menu-dropdown .menu-item')].map((el) => ({
+      id: el.id,
+      label: el.querySelector('.menu-item-label')?.textContent,
+      hint: el.querySelector('.menu-item-shortcut')?.textContent || '',
+    }))
+  );
+  const ids = rows.map((row) => row.id);
+  expect(ids.indexOf('downloads-btn')).toBe(ids.indexOf('history-btn') + 1);
+
+  const downloads = rows[ids.indexOf('downloads-btn')];
+  const history = rows[ids.indexOf('history-btn')];
+  expect(downloads.label).toBe('Downloads');
+  // Same hint format as its neighbour ('Ctrl+Shift+J' / '⇧⌘J'), never the
+  // unseparated 'CtrlShiftJ' form (#225).
+  expect(downloads.hint).toMatch(/^(Ctrl\+Shift\+J|⇧⌘J)$/);
+  expect(/[+]/.test(downloads.hint)).toBe(/[+]/.test(history.hint));
+
+  // Clicking it closes the menu and lands on the downloads page.
+  const tabs = window.locator('[data-test="tab"]');
+  const initialTabs = await tabs.count();
+  await window.locator('#downloads-btn').click();
+  await expect.poll(() => menuState(window)).toMatchObject({ hamburger: false });
+
+  await expect
+    .poll(
+      () =>
+        window.evaluate(() => {
+          const wv = document.querySelector('webview.active, webview:not(.hidden)');
+          return wv?.getURL?.() || wv?.getAttribute?.('src') || '';
+        }),
+      { timeout: 10_000 }
+    )
+    .toMatch(/pages\/downloads\.html/);
+  await expect(tabs).toHaveCount(initialTabs + 1);
+
+  // The internal-page singleton: a second open focuses that tab, it never
+  // opens a duplicate.
+  await window.locator('#menu-button').click();
+  await window.locator('#downloads-btn').click();
+  await window.waitForTimeout(500);
+  await expect(tabs).toHaveCount(initialTabs + 1);
+});

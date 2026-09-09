@@ -49,6 +49,7 @@ const loadMenusModule = async ({
   const menuButton = createElement();
   const menuDropdown = createElement();
   const historyBtn = createElement();
+  const downloadsBtn = createElement();
   const newTabMenuBtn = createElement();
   const newWindowMenuBtn = createElement();
   const zoomOutBtn = createElement();
@@ -142,6 +143,7 @@ const loadMenusModule = async ({
         'menu-button': menuButton,
         'menu-dropdown': menuDropdown,
         'history-btn': historyBtn,
+        'downloads-btn': downloadsBtn,
         'new-tab-menu-btn': newTabMenuBtn,
         'new-window-menu-btn': newWindowMenuBtn,
         'zoom-out-btn': zoomOutBtn,
@@ -200,6 +202,7 @@ const loadMenusModule = async ({
       menuButton,
       menuDropdown,
       historyBtn,
+      downloadsBtn,
       newTabMenuBtn,
       newWindowMenuBtn,
       zoomOutBtn,
@@ -291,6 +294,8 @@ describe('menus', () => {
         'Ctrl+N',
         'Ctrl+Shift+N',
         'Ctrl+H',
+        // Downloads sits directly after History, Chrome's order (#326).
+        'Ctrl+Shift+J',
         'Ctrl+Alt+I',
       ]);
     });
@@ -327,6 +332,7 @@ describe('menus', () => {
       '⌘N',
       '⇧⌘N',
       '⌘Y',
+      '⇧⌘J',
       '⌥⌘I',
     ]);
   });
@@ -385,8 +391,11 @@ describe('menus', () => {
     const onNewTab = jest.fn();
     const onOpenHistory = jest.fn();
 
+    const onOpenDownloads = jest.fn();
+
     menus.setOnNewTab(onNewTab);
     menus.setOnOpenHistory(onOpenHistory);
+    menus.setOnOpenDownloads(onOpenDownloads);
     menus.initMenus();
     await Promise.resolve();
 
@@ -399,6 +408,7 @@ describe('menus', () => {
     elements.newTabMenuBtn.handlers.click();
     elements.newWindowMenuBtn.handlers.click();
     elements.historyBtn.handlers.click();
+    elements.downloadsBtn.handlers.click();
     elements.zoomInBtn.handlers.click();
     elements.zoomOutBtn.handlers.click();
     elements.fullscreenBtn.handlers.click();
@@ -411,6 +421,9 @@ describe('menus', () => {
     expect(onNewTab).toHaveBeenCalled();
     expect(mocks.electronAPI.newWindow).toHaveBeenCalled();
     expect(onOpenHistory).toHaveBeenCalled();
+    // #326: the hamburger's Downloads row routes through its own callback
+    // (index.js sends it to the freedom://downloads singleton).
+    expect(onOpenDownloads).toHaveBeenCalled();
     expect(webview.setZoomFactor).toHaveBeenCalledWith(1.1);
     expect(webview.setZoomFactor).toHaveBeenCalledWith(1);
     expect(mocks.electronAPI.toggleFullscreen).toHaveBeenCalled();

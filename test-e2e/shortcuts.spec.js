@@ -398,3 +398,62 @@ test.describe('a Reset that claims its default back from a sibling remap', () =>
     expect(await effectiveAccelerator(window, 'tab.new')).toBe('CmdOrCtrl+T');
   });
 });
+
+// #326: Downloads is an application-menu item wherever Chrome puts it (macOS
+// Window menu, next to History on Linux/Windows) and its accelerator comes
+// from the registry — so a remap under Settings > Shortcuts re-labels the
+// native item too, without a restart.
+const downloadsMenuEntry = (electronApp) =>
+  electronApp.evaluate(({ Menu }) => {
+    const menu = Menu.getApplicationMenu();
+    for (const top of menu?.items || []) {
+      const hit = (top.submenu?.items || []).find((item) => item.id === 'downloads');
+      if (hit) return { parent: top.label, label: hit.label, accelerator: hit.accelerator };
+    }
+    return null;
+  });
+
+test("Downloads sits in the application menu at Chrome's position and follows the registry", async ({
+  electronApp,
+  window,
+}) => {
+  const platform = await electronApp.evaluate(() => process.platform);
+  const entry = await downloadsMenuEntry(electronApp);
+
+  expect(entry).toMatchObject({
+    label: 'Downloads',
+    // Chrome: Window > Downloads on macOS, alongside History elsewhere.
+    parent: platform === 'darwin' ? 'Window' : 'History',
+  });
+  expect(entry.accelerator).toBe('CmdOrCtrl+Shift+J');
+
+  await openShortcutsSettings(window);
+  expect(await effectiveAccelerator(window, 'downloads.show')).toBe('CmdOrCtrl+Shift+J');
+
+  // Remap it: the native item picks up the new accelerator (the menu rebuilds
+  // on the settings change).
+  await recordBinding(window, 'downloads.show', 'U', 'KeyU');
+  await expect
+    .poll(() => effectiveAccelerator(window, 'downloads.show'), {
+      message: 'Waiting for the override to persist',
+    })
+    .toMatch(/U$/);
+  const remapped = await effectiveAccelerator(window, 'downloads.show');
+  await expect
+    .poll(async () => (await downloadsMenuEntry(electronApp))?.accelerator, {
+      message: 'Waiting for the application menu to rebuild with the remapped accelerator',
+    })
+    .toBe(remapped);
+
+  // Restore defaults re-arms Cmd/Ctrl+Shift+J on the menu item.
+  const restored = await inSettingsPage(
+    window,
+    `(() => { document.getElementById('shortcuts-restore-defaults').click(); return true; })()`
+  );
+  expect(restored).toBe(true);
+  await expect
+    .poll(async () => (await downloadsMenuEntry(electronApp))?.accelerator, {
+      message: 'Waiting for the default accelerator to come back',
+    })
+    .toBe('CmdOrCtrl+Shift+J');
+});
