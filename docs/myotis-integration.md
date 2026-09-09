@@ -256,3 +256,24 @@ version should now show **a416cb0f (ABI 25)**. The profile and all ownership
 records were left intact; no node, app, native lifecycle or Quit fixture was
 launched by the coordinator. Successful sync, agent reads and actual Quit remain
 for the user's smoke test and subsequent disposable qualification.
+
+
+## User-reported combined smoke acceptance — 2026-09-09
+
+After the checkpoint refresh, the user reported a long-running coding agent
+session with many tool calls and no OpenAI connection disruptions, followed by
+Cmd+Q without a shutdown hang or hiccup. The prepared checkout at this report
+was `f1c10d8db94c50022ceea63b3dde1aca27596b3f`, using the pinned `a416cb0f`
+Mac arm64 debug addon described above. This is acceptance reported by the user;
+no automated run manifest or native stack capture was collected for that session.
+Myotis sync/peer state and actual occupied native requests during the session
+were not confirmed in the report.
+
+This supports the combined workflow's two user-visible outcomes. It does not
+independently qualify either standalone PR, every native cancellation path or
+Windows behavior. Targeted follow-up work is underway: an unmodified-addon
+load/ownership check, deterministic native scheduler tests on disposable Linux,
+standalone Freedom startup/read classification/native Quit on the disposable
+Mac, and supervisor runtime tests on GitHub's Windows runner. Test-only scheduler
+fixtures must be identified separately from production-addon reader/network
+evidence. Packaged signing and loading remain release qualification work.

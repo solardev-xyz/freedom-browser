@@ -2861,6 +2861,17 @@ patched-addon lifecycle, actual Quit, Windows and signed-package gates remain op
   expiry times and evidence limits; working p2p sync, model reads and Quit remain
   to be demonstrated after relaunch.
 
+- **2026-09-09 — User accepts the combined reliability smoke test.** After the
+  checkpoint refresh, the user reports a long coding agent session with many
+  tool calls and no OpenAI connection disruptions, then Cmd+Q without a hang or
+  hiccup. Prepared integration source was `f1c10d8d`, with the pinned `a416cb0f`
+  Mac arm64 addon. This is user-reported acceptance; chain sync/peer state and
+  occupied native requests were not captured. Independent native scheduler,
+  standalone Freedom Quit and GitHub Windows supervisor qualifications are
+  underway. They retain their own source/artifact attribution; this smoke test
+  does not replace them. See the [smoke acceptance record](../docs/myotis-integration.md#user-reported-combined-smoke-acceptance--2026-09-09).
+
+
 ## Final target statement
 
 > Freedom becomes an agent-native, malleable browser: users delegate high-level work to an embedded Pi-powered agent that acts through Freedom's semantic automation kernel and enforceable approval boundary across the ordinary and decentralized web, and can eventually ask it to create site customizations, extensions, dApps, and supported changes to Freedom itself through inspectable, permissioned, reversible build and installation workflows. A CLI or MCP surface may later expose the same kernel if real external demand warrants productizing it.
