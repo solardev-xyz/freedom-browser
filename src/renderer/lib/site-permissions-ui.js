@@ -26,6 +26,7 @@ import { getActiveWebview, getDisplayUrlForWebview } from './tabs.js';
 import { getPermissionKey } from './origin-utils.js';
 import { isModalDialogOpen } from './modal-dialog.js';
 import { pushDebug } from './debug.js';
+import { boundPopoverToViewport } from './popover-bounds.js';
 
 // Storage-key → human noun (indicator popover, settings mirror this).
 const PERMISSION_LABELS = {
@@ -220,6 +221,12 @@ const setPopoverOpen = (open) => {
   if (!popoverEl || !indicatorBtn) return;
   popoverEl.hidden = !open;
   indicatorBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  if (open) {
+    // A site with many remembered permissions must scroll inside the popover
+    // rather than run off the bottom of the window (#324).
+    popoverEl.scrollTop = 0;
+    boundPopoverToViewport(popoverEl);
+  }
 };
 
 const renderPopover = () => {

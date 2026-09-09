@@ -5,6 +5,7 @@ import { showMenuBackdrop, hideMenuBackdrop } from './menu-backdrop.js';
 import { isModalDialogOpen } from './modal-dialog.js';
 import { deriveDisplayValue, applyEnsNamePreservation } from './url-utils.js';
 import { isTrustInterstitialPageUrl } from './page-urls.js';
+import { placePopoverAtPoint } from './popover-bounds.js';
 
 const electronAPI = window.electronAPI;
 
@@ -140,23 +141,12 @@ export const showPageContextMenu = (x, y, context) => {
   // to the page in `hidePageContextMenu`, the way a native menu does.
   pageContextMenu.focus?.();
 
-  // Adjust position if menu goes off screen
+  // Clamp into the viewport, flipping up when the space below the pointer is
+  // too small and scrolling inside when neither side fits — the shared rule
+  // every chrome popover follows (#324). Deferred a frame because the visible
+  // groups were only just switched, so the menu's height is not final yet.
   requestAnimationFrame(() => {
-    const rect = pageContextMenu.getBoundingClientRect();
-    let newX = x;
-    let newY = y;
-
-    if (rect.right > window.innerWidth) {
-      newX = window.innerWidth - rect.width - 8;
-    }
-    if (rect.bottom > window.innerHeight) {
-      newY = window.innerHeight - rect.height - 8;
-    }
-    if (newX < 8) newX = 8;
-    if (newY < 8) newY = 8;
-
-    pageContextMenu.style.left = `${newX}px`;
-    pageContextMenu.style.top = `${newY}px`;
+    placePopoverAtPoint(pageContextMenu, x, y);
   });
 };
 

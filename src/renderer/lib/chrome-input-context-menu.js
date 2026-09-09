@@ -1,5 +1,6 @@
 // Right-click edit menu for chrome <input> elements (address bar, etc.).
 import { showMenuBackdrop, hideMenuBackdrop } from './menu-backdrop.js';
+import { placePopoverAtPoint } from './popover-bounds.js';
 
 const electronAPI = window.electronAPI;
 
@@ -100,17 +101,9 @@ function showChromeInputContextMenu(input, clientX, clientY, selection) {
     host.appendChild(contextMenu);
   }
 
-  contextMenu.style.left = `${clientX}px`;
-  contextMenu.style.top = `${clientY}px`;
   contextMenu.classList.remove('hidden');
-
-  const rect = contextMenu.getBoundingClientRect();
-  if (rect.right > window.innerWidth) {
-    contextMenu.style.left = `${window.innerWidth - rect.width - 8}px`;
-  }
-  if (rect.bottom > window.innerHeight) {
-    contextMenu.style.top = `${window.innerHeight - rect.height - 8}px`;
-  }
+  // Clamp / flip / bound, the shared rule for every chrome popover (#324).
+  placePopoverAtPoint(contextMenu, clientX, clientY);
 }
 
 async function writeClipboard(text) {

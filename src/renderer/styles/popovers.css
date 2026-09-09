@@ -1,0 +1,62 @@
+/* ========================================
+   Chrome popovers — one viewport bound (#324)
+   ========================================
+
+   Chrome's model: a popover that does not fit the window scrolls inside
+   itself, and the browser chrome never scrolls. `.chrome-popover` is the CSS
+   half of that rule and every dropdown, flyout, context menu and popover in
+   the chrome carries it — Nodes menu, hamburger menu, Profiles flyout, the tab
+   / page / chrome-input / bookmark context menus, the bookmarks overflow menu,
+   autocomplete, the trust and permission popovers.
+
+   The `max-height` itself is inline, set at open time by
+   `lib/popover-bounds.js` from the popover's own top offset, because only the
+   renderer knows where a menu ended up. This sheet owns everything that is the
+   same for all of them. `styles/base.css` pins the document so an overflowing
+   element can never scroll the toolbar away.
+
+   Imported after the component sheets so it is the last word on overflow for
+   these elements. */
+
+.chrome-popover {
+  overflow-y: auto;
+  /* A popover is its own scroll world: reaching its end must not hand the
+     gesture to whatever is behind it. */
+  overscroll-behavior: contain;
+  /* Horizontal overflow is a menu bug, never a scroll affordance: labels
+     already clip to "…" (.menu-item-label). Declared because `overflow-y` on
+     its own computes `overflow-x: visible` to `auto`, which would otherwise
+     add a second scrollbar. */
+  overflow-x: hidden;
+}
+
+/* Same scrollbar the sidebar's scrolling panes use, painted from the palette
+   so it follows the theme (`--border` / `--muted` are redefined under
+   `[data-theme='light']`), on the popover's own `--menu-bg` rather than the
+   page background. */
+.chrome-popover::-webkit-scrollbar {
+  width: 8px;
+}
+
+.chrome-popover::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.chrome-popover::-webkit-scrollbar-thumb {
+  background-color: var(--border);
+  border-radius: 4px;
+}
+
+.chrome-popover::-webkit-scrollbar-thumb:hover {
+  background-color: var(--muted);
+}
+
+/* The Profiles flyout hangs off the LEFT of the hamburger menu, which is now a
+   scroll container — an absolutely positioned child would be clipped by it.
+   `position: fixed` takes the flyout out of that clip (the hamburger has no
+   transform, so nothing else can become its containing block); menus.js
+   anchors it to the Profiles row at open time and re-anchors it while the
+   hamburger scrolls. */
+.menu-flyout.chrome-popover {
+  position: fixed;
+}

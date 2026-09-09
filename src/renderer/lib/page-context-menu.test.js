@@ -326,7 +326,10 @@ describe('page-context-menu', () => {
     expect(backdrop.showMenuBackdrop).toHaveBeenCalled();
     expect(pageContextMenu.classList.remove).toHaveBeenCalledWith('hidden');
     expect(pageContextMenu.style.left).toBe('672px');
-    expect(pageContextMenu.style.top).toBe('492px');
+    // Only 10 px below the pointer in a 600 px-tall window, so the menu opens
+    // *upwards* from it — its bottom edge lands on the click (#324). It used
+    // to be pushed down against the bottom edge instead, covering the pointer.
+    expect(pageContextMenu.style.top).toBe('490px');
 
     mod.showPageContextMenu(20, 30, { linkUrl: 'https://example.com/link' });
     mod.showPageContextMenu(5, 6, { selectedText: 'selected text' });

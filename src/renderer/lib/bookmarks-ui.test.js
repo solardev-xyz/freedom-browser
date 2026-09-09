@@ -527,7 +527,9 @@ describe('bookmarks-ui', () => {
     expect(ctx.menuBackdropMocks.showMenuBackdrop).toHaveBeenCalled();
     expect(contextMenu.classList.contains('hidden')).toBe(false);
     expect(contextMenu.style.left).toBe('372px');
-    expect(contextMenu.style.top).toBe('342px');
+    // No room below the pointer, plenty above: the menu flips up and its
+    // bottom edge lands on the click, the way Chrome's does (#324).
+    expect(contextMenu.style.top).toBe('340px');
 
     contextMenu.dispatch('click', {
       target: {

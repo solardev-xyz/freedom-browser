@@ -249,7 +249,7 @@
             </button>
             <div
               id="trust-popover"
-              class="trust-popover"
+              class="trust-popover chrome-popover"
               role="dialog"
               aria-label="Site provenance details"
               hidden
@@ -314,7 +314,7 @@
                  granted/blocked permissions with quick revoke. -->
             <div
               id="permission-popover"
-              class="permission-popover"
+              class="permission-popover chrome-popover"
               role="dialog"
               aria-label="Site permissions"
               hidden
@@ -583,7 +583,7 @@
               <button id="ghb-retry-btn" class="ghb-import-btn" type="button">Try Again</button>
             </div>
           </div>
-          <div id="autocomplete-dropdown" class="autocomplete-dropdown hidden" role="listbox">
+          <div id="autocomplete-dropdown" class="autocomplete-dropdown chrome-popover hidden" role="listbox">
             <!-- Suggestions inserted dynamically -->
           </div>
         </div>
@@ -631,7 +631,7 @@
             <circle cx="80" cy="76" r="11" class="net-node" />
           </svg>
         </button>
-        <div id="bee-menu-dropdown" class="bee-dropdown" role="menu">
+        <div id="bee-menu-dropdown" class="bee-dropdown chrome-popover" role="menu">
           <!-- Swarm Section -->
           <button id="bee-toggle-btn" class="menu-item bee-toggle" type="button">
             <span class="bee-toggle-label">
@@ -784,10 +784,13 @@
             <!-- Divider -->
             <div class="nodes-divider"></div>
 
-            <!-- Tor (.onion) Section -->
+            <!-- Tor Section. The section label is the bare product name, like
+                 every other node in this menu (Swarm, IPFS, Ethereum, Gnosis,
+                 Radicle); the ".onion" qualifier stays on the Settings row
+                 that turns the integration on. #323. -->
             <button id="tor-toggle-btn" class="menu-item tor-toggle" type="button">
               <span class="tor-toggle-label">
-                Tor (.onion)
+                Tor
                 <span class="tor-toggle-switch" id="tor-toggle-switch">
                   <span class="tor-toggle-knob"></span>
                 </span>
@@ -858,7 +861,7 @@
             <line x1="4" x2="20" y1="18" y2="18" vector-effect="non-scaling-stroke" />
           </svg>
         </button>
-        <div id="menu-dropdown" class="menu-dropdown" role="menu">
+        <div id="menu-dropdown" class="menu-dropdown chrome-popover" role="menu">
           <!-- Group 0: Profiles -->
           <div class="menu-item-has-flyout" id="profile-menu-wrap">
             <button
@@ -884,7 +887,7 @@
               <span class="menu-item-label" id="profile-current-name">Profile</span>
               <span class="menu-item-chevron" aria-hidden="true">›</span>
             </button>
-            <div id="profile-menu" class="menu-dropdown menu-flyout" role="menu" hidden>
+            <div id="profile-menu" class="menu-dropdown menu-flyout chrome-popover" role="menu" hidden>
               <div id="profile-menu-list" class="menu-flyout-list">
                 <div class="menu-flyout-empty">Loading…</div>
               </div>
@@ -4060,7 +4063,7 @@
     <!-- Chrome text-field context menu (address bar, etc.) -->
     <div
       id="chrome-input-context-menu"
-      class="context-menu hidden"
+      class="context-menu chrome-popover hidden"
       data-test="chrome-input-context-menu"
     >
       <button class="context-menu-item" data-action="cut">Cut</button>
@@ -4071,7 +4074,7 @@
     </div>
 
     <!-- Tab Context Menu -->
-    <div id="tab-context-menu" class="context-menu hidden">
+    <div id="tab-context-menu" class="context-menu chrome-popover hidden">
       <button class="context-menu-item" data-action="close">Close Tab</button>
       <button class="context-menu-item" data-action="close-others">Close Other Tabs</button>
       <button class="context-menu-item" data-action="close-right">Close Tabs to the Right</button>
@@ -4084,7 +4087,7 @@
     <!-- `tabindex="-1"` so the menu can take the keyboard away from the guest
          page it was raised over: an Escape that lands in the `<webview>` never
          reaches the shell's keydown handler. Not tab-reachable. -->
-    <div id="page-context-menu" class="context-menu hidden" tabindex="-1">
+    <div id="page-context-menu" class="context-menu chrome-popover hidden" tabindex="-1">
       <!-- Page actions (shown when clicking on page background) -->
       <div class="context-menu-group" data-group="page">
         <button class="context-menu-item" data-action="back">Back</button>

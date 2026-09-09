@@ -90,6 +90,7 @@ import { walletState } from './wallet/wallet-state.js';
 import { formatWeiToDecimal } from './wallet/send.js';
 import { startIpfsProgressStatus, stopIpfsProgressStatus } from './ipfs-progress-status.js';
 import { TOOLTIP_HOVER_DELAY_MS } from './hover-tooltip.js';
+import { boundPopoverToViewport } from './popover-bounds.js';
 import { matchesShortcut } from './shortcuts.js';
 
 // Helper to get active tab's navigation state (with fallback to empty object)
@@ -528,6 +529,12 @@ const setTrustPopoverOpen = (open) => {
   if (!trustPopover || !trustShield) return;
   trustPopover.hidden = !open;
   trustShield.setAttribute('aria-expanded', open ? 'true' : 'false');
+  if (open) {
+    // A long provenance list must scroll inside the popover rather than run
+    // off the bottom of the window — the shared chrome-popover bound (#324).
+    trustPopover.scrollTop = 0;
+    boundPopoverToViewport(trustPopover);
+  }
   resetTrustTooltip();
   if (!open) {
     trustPopoverDisplayed = null;

@@ -10,6 +10,7 @@ import { showMenuBackdrop, hideMenuBackdrop } from './menu-backdrop.js';
 import { isModalDialogOpen } from './modal-dialog.js';
 import { formatAccelerator, matchesShortcut } from './shortcuts.js';
 import { SUBMENU_CLOSE_DELAY_MS } from './submenu-hover.js';
+import { boundPopoverToViewport, POPOVER_VIEWPORT_MARGIN } from './popover-bounds.js';
 
 const electronAPI = window.electronAPI;
 
@@ -84,6 +85,24 @@ export const hideProfileFlyout = () => {
 
 const isProfileFlyoutOpen = () => document.getElementById('profile-menu')?.hidden === false;
 
+// Anchor the open flyout to the Profiles row and bound it to the viewport.
+//
+// The flyout is a `position: fixed` child of #menu-dropdown (see
+// styles/popovers.css): the hamburger is a scroll container now, and an
+// absolutely positioned child would be clipped by it. Fixed positioning escapes
+// that clip but not the anchoring, so the coordinates the CSS used to express
+// as `top: -4px; right: 100%` are computed here instead — at open time, on
+// every resize, and while the hamburger scrolls under it. #324.
+export const anchorProfileFlyout = () => {
+  const flyout = document.getElementById('profile-menu');
+  const wrap = profileMenuWrap || document.getElementById('profile-menu-wrap');
+  if (!flyout || !wrap || flyout.hidden) return;
+  const row = wrap.getBoundingClientRect();
+  flyout.style.right = `${Math.max(POPOVER_VIEWPORT_MARGIN, window.innerWidth - row.left)}px`;
+  flyout.style.top = `${Math.max(POPOVER_VIEWPORT_MARGIN, row.top - 4)}px`;
+  boundPopoverToViewport(flyout);
+};
+
 // A pointer or focus landing anywhere in the hamburger that is not the
 // Profiles row or its flyout dismisses the flyout. Pointer moves get the
 // intent delay (SUBMENU_CLOSE_DELAY_MS — the same grace period
@@ -126,6 +145,10 @@ export const setMenuOpen = (open) => {
     hideOverflowMenu();
     onMenuOpening?.();
     showMenuBackdrop();
+    // Chrome's model: the menu never grows past the window — it scrolls inside
+    // itself and the chrome stays put (#324).
+    if (menuDropdown) menuDropdown.scrollTop = 0;
+    boundPopoverToViewport(menuDropdown);
   } else {
     // Collapse the Profiles flyout when the hamburger closes (the flyout is a
     // child of #menu-dropdown, so its lifecycle is governed by the hamburger).
@@ -147,6 +170,11 @@ export const setAntMenuOpen = (open) => {
     hideOverflowMenu();
     onMenuOpening?.();
     showMenuBackdrop();
+    // With every node enabled this menu is ~650 px tall: taller than the
+    // window on a 1200x600 display, where it used to scroll the whole browser
+    // chrome and push its last section (Tor) off screen (#324).
+    if (beeMenuDropdown) beeMenuDropdown.scrollTop = 0;
+    boundPopoverToViewport(beeMenuDropdown);
     startAntInfoPolling();
     startIpfsInfoPolling();
     startMyotisInfoPolling();
@@ -269,6 +297,12 @@ export const initMenus = () => {
   menuDropdown?.addEventListener('focusin', (event) => {
     handleProfileFlyoutSibling(event.target, { delay: false });
   });
+
+  // The flyout is anchored in viewport coordinates (see anchorProfileFlyout),
+  // so it has to follow the Profiles row when the hamburger scrolls under it
+  // or the window changes size.
+  menuDropdown?.addEventListener('scroll', anchorProfileFlyout);
+  window.addEventListener('resize', anchorProfileFlyout);
 
   menuButton?.addEventListener('click', () => {
     setMenuOpen(!state.menuOpen);

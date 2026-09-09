@@ -5,6 +5,7 @@ import { closeMenus } from './menus.js';
 import { showMenuBackdrop, hideMenuBackdrop } from './menu-backdrop.js';
 import { isModalDialogOpen } from './modal-dialog.js';
 import { normalizeLegacyEnsBookmarkUrl } from './url-utils.js';
+import { boundPopoverToViewport, placePopoverAtPoint } from './popover-bounds.js';
 
 const electronAPI = window.electronAPI;
 
@@ -405,7 +406,7 @@ export const initBookmarks = () => {
 
     // Create overflow menu (appended to body to avoid overflow:hidden clipping)
     overflowMenu = document.createElement('div');
-    overflowMenu.className = 'bookmarks-overflow-menu hidden';
+    overflowMenu.className = 'bookmarks-overflow-menu chrome-popover hidden';
     document.body.appendChild(overflowMenu);
 
     // Position the overflow menu relative to the button
@@ -414,6 +415,7 @@ export const initBookmarks = () => {
       const btnRect = overflowBtn.getBoundingClientRect();
       overflowMenu.style.top = `${btnRect.bottom + 4}px`;
       overflowMenu.style.right = `${window.innerWidth - btnRect.right}px`;
+      boundPopoverToViewport(overflowMenu);
     };
 
     // Handle overflow button click
@@ -515,7 +517,7 @@ export const initBookmarks = () => {
 
   // Create context menu
   contextMenu = document.createElement('div');
-  contextMenu.className = 'context-menu hidden';
+  contextMenu.className = 'context-menu chrome-popover hidden';
   contextMenu.innerHTML = `
     <button class="context-menu-item" data-action="edit">Edit…</button>
     <button class="context-menu-item" data-action="delete">Delete</button>
@@ -625,18 +627,9 @@ export const initBookmarks = () => {
       showMenuBackdrop();
 
       contextMenuTarget = hash;
-      contextMenu.style.left = `${event.clientX}px`;
-      contextMenu.style.top = `${event.clientY}px`;
       contextMenu.classList.remove('hidden');
-
-      // Adjust if menu goes off screen
-      const rect = contextMenu.getBoundingClientRect();
-      if (rect.right > window.innerWidth) {
-        contextMenu.style.left = `${window.innerWidth - rect.width - 8}px`;
-      }
-      if (rect.bottom > window.innerHeight) {
-        contextMenu.style.top = `${window.innerHeight - rect.height - 8}px`;
-      }
+      // Clamp / flip / bound, the shared rule for every chrome popover (#324).
+      placePopoverAtPoint(contextMenu, event.clientX, event.clientY);
     }
   };
 

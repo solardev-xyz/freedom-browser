@@ -18,6 +18,7 @@ import {
   setOnMenuOpening,
   closeMenus,
   hideProfileFlyout,
+  anchorProfileFlyout,
 } from './lib/menus.js';
 import { initSettingsEffects, initTheme } from './lib/settings-ui.js';
 import {
@@ -78,6 +79,7 @@ import { attachSubmenuHover } from './lib/submenu-hover.js';
 import { isPrivateWindow } from './lib/private-mode.js';
 import { bindHoverTooltip } from './lib/hover-tooltip.js';
 import { initShortcuts } from './lib/shortcuts.js';
+import { initPopoverBounds } from './lib/popover-bounds.js';
 
 const electronAPI = window.electronAPI;
 
@@ -386,6 +388,10 @@ async function initProfileIndicator() {
     // hovered row is — otherwise nothing says which row owns the flyout.
     menuWrap?.classList.add('flyout-open');
     indicator.setAttribute('aria-expanded', 'true');
+    // Position it against the Profiles row and bound it to the viewport —
+    // it is `position: fixed` so the hamburger's own scrolling can't clip
+    // it (#324). Anchoring lives with hiding, in menus.js.
+    anchorProfileFlyout();
   };
 
   const setMenuStatus = (message, kind = '') => {
@@ -760,6 +766,9 @@ window.addEventListener('DOMContentLoaded', async () => {
   });
 
   initShortcuts(); // Live shortcut bindings — before any keydown consumers
+  // Every chrome popover bounds itself to the viewport and scrolls inside
+  // instead of growing past it (#324); this installs the window-level half.
+  initPopoverBounds();
   initMenuBackdrop(closeAllOverlays);
   initMenus();
   initAntUi();

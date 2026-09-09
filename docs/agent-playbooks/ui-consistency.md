@@ -77,6 +77,17 @@ use the `row-help` link style, not the default anchor.
 `--`. Shortcut hints render as `Ctrl+T` on Linux/Windows and `⌘T` on macOS in
 every surface (hamburger menu, Shortcuts settings, tooltips).
 
+**Popovers are bounded, the chrome is not scrollable.** Every dropdown,
+flyout, context menu and popover in the chrome carries `.chrome-popover`
+(`styles/popovers.css`) and is opened through `lib/popover-bounds.js`:
+`boundPopoverToViewport` for an anchored popover, `placePopoverAtPoint` for a
+pointer-anchored context menu (clamp, flip up, then scroll). That is what keeps
+a menu inside the window — `html, body { overflow: hidden }` means an
+unbounded one would clip rather than scroll, and before #324 it scrolled the
+toolbar away instead. A new popover joins the mechanism rather than growing its
+own `max-height`; `styles/popovers.test.js` fails a popover that forgets the
+class.
+
 **Empty states.** Internal pages use the icon + one-line message pattern of
 History and Downloads ("No history yet", "No downloads yet").
 

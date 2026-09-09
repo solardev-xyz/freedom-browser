@@ -4,6 +4,7 @@ import { getOpenTabs, switchTab, hideTabContextMenu } from './tabs.js';
 import { closeMenus } from './menus.js';
 import { hideBookmarkContextMenu } from './bookmarks-ui.js';
 import { showMenuBackdrop, hideMenuBackdrop } from './menu-backdrop.js';
+import { boundPopoverToViewport } from './popover-bounds.js';
 import {
   generateSuggestions as generateAutocompleteSuggestions,
   getPlaceholderLetter,
@@ -193,6 +194,11 @@ const show = () => {
   hideBookmarkContextMenu();
   showMenuBackdrop();
   dropdown.classList.remove('hidden');
+  // The list has its own 360 px cap, but on a short window even that reaches
+  // past the bottom edge: bound it to the viewport like every other chrome
+  // popover (#324).
+  dropdown.scrollTop = 0;
+  boundPopoverToViewport(dropdown);
   isOpen = true;
 };
 
