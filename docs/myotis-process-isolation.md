@@ -224,9 +224,27 @@ Reviewed logs: `/tmp/freedom-pr295-windows-myotis-job.log`, lines 491–510
 3718–3719 (test totals). No new tests were performed for this documentation
 checkpoint.
 
-Required disposable-host matrix before promoting the PR out of draft:
+Qualification and decision boundaries:
 
-| Area | Required evidence |
+- **External review:** the PR may leave draft for external review after the
+  agreed targeted runtime checks and source review, with exact evidence and
+  unresolved limits disclosed. Completing every release-platform check below
+  is not a prerequisite for requesting review.
+- **Merge and rollout:** source review and the agreed targeted qualification
+  inform a separate maintainer decision about the supported deployment scope.
+  Opening review or passing one runtime campaign does not itself authorize
+  merge or rollout. Unqualified behavior must remain explicit in that decision.
+- **Release preparation:** packaged-runtime compatibility, helper inclusion,
+  signing/notarization, RunAsNode fuses, ASAR loading and supported release
+  targets require their applicable checks before shipping those artifacts.
+
+The matrix tracks evidence and remaining work across these decisions; it is
+not a blanket draft-status gate. Untested startup and supervisor-loss paths,
+the Windows pre-resume residual, and resource/descendant-containment limits
+remain unqualified. No change of review status waives ownership/quarantine
+invariants or establishes guarantees beyond the recorded evidence.
+
+| Area | Evidence and remaining qualification |
 | --- | --- |
 | POSIX helper | Linux/macOS compile; real fd3 transport; natural exit; blocked read/start/status/stop; parent-control loss at startup stages; unknown supervisor loss; verified terminal and durable quarantine/recovery |
 | Windows helper | x64 MSVC and nine Node-only supervisor cases passed at `fa14433f`; still required: Electron transport and real-addon behavior, untested startup/job failure and supervisor-loss paths, unsigned and signed package behavior |
