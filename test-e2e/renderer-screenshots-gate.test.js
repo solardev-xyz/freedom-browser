@@ -7,6 +7,7 @@ const fs = require('fs');
 const path = require('path');
 
 const { screenshotGate, STABLE_TEXT_VAR } = require('./screenshot-gate');
+const { SCREENSHOT_DIR, baselineFiles } = require('./screenshot-baselines');
 
 const repoRoot = path.join(__dirname, '..');
 const read = (relative) => fs.readFileSync(path.join(repoRoot, relative), 'utf8');
@@ -64,6 +65,54 @@ const everyWorkflowStep = () =>
     .map((name) => workflowSteps(path.join('.github/workflows', name)))
     .join('\n');
 
+// YAML's folded block scalar joins its lines with a space before the shell ever
+// sees them, so a step written as
+//
+//     - run: >
+//         npm run test:e2e:screenshots --
+//         -u
+//
+// is the single command `npm run test:e2e:screenshots -- -u` — with no
+// backslash for the continuation branch in `ADOPTS_BASELINES` to follow, so the
+// ban walked straight past it. Fold those blocks back the way YAML does before
+// matching: consecutive lines join with a space, a blank line stays a line
+// break (so a legitimate later command in the same block cannot glue its own
+// `-u` onto an earlier screenshot run). Literal blocks (`run: |`) keep their
+// newlines and are left alone — the runner executes those line by line, which
+// is what the backslash branch is for.
+//
+// The block's indentation is measured from the mapping key, not from the start
+// of the line: under `- run: >` the sequence dash is part of the indentation,
+// so a sibling key on the *next* line (`  run:` beneath `- name: >`) sits at
+// the same level and ends the block rather than folding into it.
+const FOLDED_SCALAR_HEADER = /:[ \t]*>[-+]?\d*[-+]?[ \t]*$/;
+
+const foldBlockScalars = (yaml) => {
+  const lines = yaml.split('\n');
+  const out = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    out.push(lines[i]);
+    if (!FOLDED_SCALAR_HEADER.test(lines[i])) continue;
+
+    const keyIndent = lines[i].match(/^[ \t]*(?:-[ \t]+)*/)[0].length;
+    const paragraphs = [[]];
+    let end = i + 1;
+    for (; end < lines.length; end += 1) {
+      if (lines[end].trim() === '') {
+        paragraphs.push([]);
+        continue;
+      }
+      if (lines[end].match(/^[ \t]*/)[0].length <= keyIndent) break;
+      paragraphs[paragraphs.length - 1].push(lines[end].trim());
+    }
+    if (end === i + 1) continue;
+
+    out.push(paragraphs.map((paragraph) => paragraph.join(' ')).join('\n'));
+    i = end - 1;
+  }
+  return out.join('\n');
+};
+
 // Every spelling of "rewrite the baselines instead of comparing against them".
 // The long-form argument and the two npm/node entry points are plain
 // substrings; the short alias is not, because a bare `-u` is a legitimate token
@@ -106,8 +155,10 @@ describe('the invocations that are meant to enable it', () => {
     // `/run:.*update/` pattern never reaches, and the compare-step assertion
     // above stays satisfied by the untouched step. `apply-screenshot-baselines`
     // is the same sidestep by another route, and so is Playwright's short `-u`
-    // alias for `--update-snapshots` — see `ADOPTS_BASELINES`.
-    expect(everyWorkflowStep()).not.toMatch(ADOPTS_BASELINES);
+    // alias for `--update-snapshots` — see `ADOPTS_BASELINES`. Folded through
+    // `foldBlockScalars` first, or a `run: >` step splitting that alias across
+    // two lines reads as two commands here and as one to the runner.
+    expect(foldBlockScalars(everyWorkflowStep())).not.toMatch(ADOPTS_BASELINES);
   });
 
   // The assertion above only ever proves a *negative* about today's workflows:
@@ -125,8 +176,16 @@ describe('the invocations that are meant to enable it', () => {
       'the short alias, past a line continuation',
       '      - run: |\n          npm run test:e2e:screenshots -- \\\n            -u',
     ],
+    [
+      'the short alias, folded across a block scalar',
+      '      - run: >\n          npm run test:e2e:screenshots --\n          -u',
+    ],
+    [
+      'the short alias, folded across a chomped block scalar',
+      '      - run: >-\n          npx playwright test --project=harness\n          -u',
+    ],
   ])('the adopt-step ban recognises %s', (_what, step) => {
-    expect(step).toMatch(ADOPTS_BASELINES);
+    expect(foldBlockScalars(step)).toMatch(ADOPTS_BASELINES);
   });
 
   // …and the shell idioms it must not fire on, or a legitimate future step
@@ -142,8 +201,21 @@ describe('the invocations that are meant to enable it', () => {
       'a -u belonging to an unrelated later command',
       '      - run: npx playwright test\n      - run: sort -u out.txt',
     ],
+    [
+      // A blank line inside a folded scalar is a line break, not a space, so
+      // these stay the two commands the runner executes.
+      'a deduplicating pipe after a blank line in the same folded block',
+      '      - run: >\n          npm run test:e2e:screenshots\n\n          git diff --name-only | sort -u',
+    ],
+    [
+      // The block ends at the next key at the mapping's own level. Measuring
+      // the indent from the start of the line instead of from the key would
+      // fold this `run:` into the step's name and fire on the pair.
+      'a folded step name above an unrelated -u',
+      '      - name: >\n          Run npm run test:e2e:screenshots\n        run: git diff --name-only | sort -u',
+    ],
   ])('the adopt-step ban does not fire on %s', (_what, step) => {
-    expect(step).not.toMatch(ADOPTS_BASELINES);
+    expect(foldBlockScalars(step)).not.toMatch(ADOPTS_BASELINES);
   });
 
   it.each([
@@ -161,5 +233,45 @@ describe('the invocations that are meant to enable it', () => {
 
   it('the default harness suite does not set it, so the spec stays opt-in there', () => {
     expect(scripts['test:e2e']).not.toContain(STABLE_TEXT_VAR);
+  });
+});
+
+// The other half of the screenshot guard. Playwright only ever fails on a
+// baseline that is *missing*, so a surface cannot ship uncompared — but a
+// baseline that is still committed and no longer taken fails nothing at all.
+// Rename or delete a `snap()` name and its two PNGs stay in the tree for good,
+// present in every listing and every baseline diff, reading as regression
+// coverage the surface silently lost.
+//
+// `screenshot-baselines.js` is the list both sides answer to: the spec takes
+// every shot through `declared()`, and the committed files are checked against
+// it here — in a jest test rather than in the spec, so it runs on every `npm
+// test` instead of only on the Linux-and-stable-text runs the spec gates
+// itself to.
+describe('the committed baselines', () => {
+  const committed = () =>
+    fs
+      .readdirSync(path.join(repoRoot, SCREENSHOT_DIR))
+      .filter((name) => name.endsWith('.png'))
+      .sort();
+
+  it('are the directory the config actually writes and compares', () => {
+    // Or both assertions below read an empty directory and agree about nothing.
+    expect(read('playwright.config.js')).toContain(
+      `snapshotPathTemplate: '${SCREENSHOT_DIR}/{arg}{ext}'`
+    );
+    expect(committed().length).toBeGreaterThan(0);
+  });
+
+  it('strand nothing: every committed file is a surface the spec still takes', () => {
+    const declared = new Set(baselineFiles());
+    // Named individually rather than as a length: the failure is "these files
+    // are no longer compared — delete them, or restore the surface".
+    expect(committed().filter((file) => !declared.has(file))).toEqual([]);
+  });
+
+  it('cover every declared surface in both themes', () => {
+    const present = new Set(committed());
+    expect(baselineFiles().filter((file) => !present.has(file))).toEqual([]);
   });
 });

@@ -65,6 +65,7 @@ const { pageFor, closeMenus, closeSidebar, dismissOnboarding, go } = require(
   path.join(__dirname, '..', '.claude', 'skills', 'run-freedom', 'lib.js')
 );
 const { screenshotGate } = require('./screenshot-gate');
+const { THEMES, baselineFiles } = require('./screenshot-baselines');
 
 // Linux, and LCD text off. See `screenshot-gate.js` for both conditions and
 // why a run that meets neither has nothing to say.
@@ -156,6 +157,28 @@ async function guestScrollbarMask(win) {
   return [win.locator(`#${GUEST_SCROLLBAR_MASK}`)];
 }
 
+const BASELINE_FILES = baselineFiles();
+
+/**
+ * The file a surface compares against, having checked the surface is one
+ * `screenshot-baselines.js` knows about.
+ *
+ * That file is what the stranded-baseline check in
+ * `renderer-screenshots-gate.test.js` measures the committed PNGs against, so
+ * a name spelled only here would make the two files it does commit look
+ * stranded — and, the way that matters, a name only spelled *there* means a
+ * surface this spec stopped taking still has committed pixels reading as
+ * coverage. Soft, like the comparison itself: one run reports every surface
+ * that drifted, whichever way it drifted.
+ */
+function declared(name) {
+  const file = `${name}.png`;
+  expect
+    .soft(BASELINE_FILES, `${file} is not declared in test-e2e/screenshot-baselines.js`)
+    .toContain(file);
+  return file;
+}
+
 /**
  * One baseline. Soft on purpose: a walk through 25 surfaces should report every
  * surface that moved, not stop at the first one, so a single CI run produces
@@ -164,13 +187,13 @@ async function guestScrollbarMask(win) {
 async function snap(page, name, { mask = [], extra = [] } = {}) {
   await expect
     .soft(page)
-    .toHaveScreenshot(`${name}.png`, { ...COMPARE, mask: [...maskFor(page, extra), ...mask] });
+    .toHaveScreenshot(declared(name), { ...COMPARE, mask: [...maskFor(page, extra), ...mask] });
 }
 
 test.describe('renderer screenshots', () => {
   test.skip(!ENABLED, SKIP_REASON);
 
-  for (const theme of ['dark', 'light']) {
+  for (const theme of THEMES) {
     test.describe(`theme: ${theme}`, () => {
       test.use({ seedSettings: { theme, showBookmarkBar: true } });
 
@@ -353,7 +376,10 @@ test.describe('renderer screenshots', () => {
         // that cannot regress, and a megabyte of PNG in every baseline. The
         // crop still carries what can: the logo variant the theme picks, the
         // heading and body colours, and the type scale.
-        await expect.soft(page).toHaveScreenshot(`${theme}-49-page-home.png`, {
+        // Not through `snap()` — the clip replaces the masks — but through the
+        // same declaration, or this surface would be the one baseline the
+        // stranded check could not account for.
+        await expect.soft(page).toHaveScreenshot(declared(`${theme}-49-page-home`), {
           ...COMPARE,
           clip: { x: 0, y: 0, width: 640, height: 260 },
         });
