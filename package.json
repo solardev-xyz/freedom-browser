@@ -75,6 +75,7 @@
     "dist:linux:x64:docker": "docker run --rm -v \"$PWD\":/app -v /app/node_modules -v \"${ELECTRON_CACHE:-$HOME/Library/Caches/electron}\":/root/.cache/electron -w /app -e USE_SYSTEM_FPM=true --platform linux/amd64 node:24-trixie bash -c \"apt-get update && apt-get install -y ruby ruby-dev build-essential xz-utils && gem install fpm --no-document && npm ci && npm run radicle:download && npm run ipfs:download && npm run myotis:download && npm run dist -- --linux --x64\"",
     "adblock:download": "node scripts/fetch-adblock-lists.js",
     "ant:download": "node scripts/fetch-ant.js",
+    "myotis:build-supervisor": "node scripts/build-myotis-supervisor.js",
     "myotis:download": "node scripts/fetch-myotis.js",
     "myotis:smoke": "node scripts/smoke-myotis.js",
     "ant:init": "node scripts/init-ant.js",
@@ -105,7 +106,7 @@
     "start:test-updater": "ENABLE_DEV_UPDATER=true npm start",
     "postinstall": "install-electron && node scripts/better-sqlite3-prebuilds.js && electron-builder install-app-deps",
     "radicle:build-addon": "node scripts/build-radicle-addon.js",
-    "prestart": "node scripts/build-macos-workspace-supervisor.js",
+    "prestart": "node scripts/prepare-native-supervisors.js",
     "build:workspace-supervisor": "node scripts/build-macos-workspace-supervisor.js"
   },
   "build": {
@@ -128,6 +129,7 @@
       "icon": "assets/icon.png",
       "identity": "Solar Dev Ltd (46XPHRBLH5)",
       "hardenedRuntime": true,
+      "binaries": ["Contents/Resources/myotis-node/myotis-supervisor"],
       "gatekeeperAssess": false,
       "extendInfo": {
         "LSMultipleInstancesProhibited": false
@@ -162,7 +164,7 @@
           ]
         }
       ],
-      "sign": "./scripts/sign-macos-workspace-supervisor.js"
+      "sign": "./scripts/sign-native-supervisors.js"
     },
     "linux": {
       "target": [
@@ -268,7 +270,9 @@
         "from": "myotis-bin/${os}-${arch}/",
         "to": "myotis-node",
         "filter": [
-          "myotis-node.node"
+          "myotis-node.node",
+          "myotis-supervisor",
+          "myotis-supervisor.exe"
         ]
       },
       {
@@ -287,7 +291,7 @@
         "to": "default-bookmarks.json"
       }
     ],
-    "beforePack": "./scripts/build-macos-workspace-supervisor.js"
+    "beforePack": "./scripts/prepare-native-supervisors.js"
   },
   "engines": {
     "node": ">=24.11.0 <25"
