@@ -1075,6 +1075,22 @@ const startBzzNavigationWithProbe = (webview, target, navState, displayUrl) => {
     });
 };
 
+// `freedom://<page>[/<sub>]` (e.g. freedom://settings/appearance), the only
+// shape the internal-page branch below accepts.
+const FREEDOM_PAGE_PATTERN = /^freedom:\/\/([a-zA-Z0-9-]+)(?:\/([a-zA-Z0-9-]+))?\/?$/i;
+
+// `{ pageName, subPath }` for a recognised internal page, else null. Parsed up
+// front so `loadTarget` can settle *where* the open lands before it runs any
+// bookkeeping on the tab it may be about to leave alone; an unknown page name
+// stays null here and is reported by the branch further down.
+const parseInternalPageTarget = (value) => {
+  const match = typeof value === 'string' ? value.match(FREEDOM_PAGE_PATTERN) : null;
+  if (!match) return null;
+  const pageName = match[1].toLowerCase();
+  if (!Object.prototype.hasOwnProperty.call(internalPages, pageName)) return null;
+  return { pageName, subPath: match[2]?.toLowerCase() || null };
+};
+
 export const loadTarget = (value, displayOverride = null, targetWebview = null, options = {}) => {
   // `options.allowUnverifiedOnce` — skip the unverified-ENS interstitial
   // for this single call. Set by the ens-unverified page's "Continue once"
@@ -1119,6 +1135,25 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
   const navState = getTabById(targetTabId)?.navigationState || getNavState();
   if (!webview) {
     pushDebug('No active webview to load target');
+    return;
+  }
+
+  // An internal-page open can be answered by a *different* tab (Chrome's
+  // singleton rule — see the freedom:// branch below for the full story), in
+  // which case this tab is never navigated at all. Settle that before any of
+  // the entry bookkeeping underneath, all of which acts on *this* tab: a
+  // routed-away open must not cancel the in-flight Swarm probe this tab is
+  // still waiting on, nor end the address-bar draft the user has half-typed
+  // here (#314) — Chrome keeps both on a tab it leaves alone. When the answer
+  // is "this tab", the bookkeeping runs exactly as before and the branch below
+  // performs the in-place navigation.
+  const internalPageTarget = parseInternalPageTarget(value);
+  if (
+    internalPageTarget &&
+    routeInternalPageNavigation(internalPageTarget.pageName, internalPageTarget.subPath, webview)
+  ) {
+    const { pageName, subPath } = internalPageTarget;
+    pushDebug(`Routed internal page to its own tab: ${pageName}${subPath ? `/${subPath}` : ''}`);
     return;
   }
 
@@ -1273,7 +1308,7 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
   // (e.g. freedom://settings/appearance → pages/settings.html#appearance).
   // The sub-path is carried as a URL fragment so client-side routing inside
   // the page can show the matching section without a full reload.
-  const fbMatch = value.match(/^freedom:\/\/([a-zA-Z0-9-]+)(?:\/([a-zA-Z0-9-]+))?\/?$/i);
+  const fbMatch = value.match(FREEDOM_PAGE_PATTERN);
   if (fbMatch) {
     const pageName = fbMatch[1].toLowerCase();
     const subPath = fbMatch[2]?.toLowerCase() || null;
@@ -1284,17 +1319,14 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
       // the open came from the hamburger menu, the address bar, a bookmark, a
       // same-tab link or an interstitial button — the paths that all funnel
       // through here. `routeInternalPageNavigation` owns that decision and
-      // returns false only when *this* tab is the right place to land: it is
-      // already the page's tab, it is an empty New Tab to overwrite, or the
-      // page is a new-tab page (`freedom://home`, `freedom://private`), which
-      // is deliberately not a singleton and always navigates in place. The
-      // link paths that never reach loadTarget (a new-tab/background link
-      // activation, `tab:new-with-url`) keep their own singleton branch in
-      // `openInNewTabWithTarget`. See #325.
-      if (routeInternalPageNavigation(pageName, subPath, webview)) {
-        pushDebug(`Routed internal page to its own tab: ${pageName}${subPath ? `/${subPath}` : ''}`);
-        return;
-      }
+      // already ran it above (before the entry bookkeeping, so a routed-away
+      // open leaves this tab wholly untouched); reaching here means it
+      // answered "this tab": it is already the page's tab, it is an empty New
+      // Tab to overwrite, or the page is a new-tab page (`freedom://home`,
+      // `freedom://private`), which is deliberately not a singleton and always
+      // navigates in place. The link paths that never reach loadTarget (a
+      // new-tab/background link activation, `tab:new-with-url`) keep their own
+      // singleton branch in `openInNewTabWithTarget`. See #325.
       const targetUrl = subPath ? `${pageUrl}#${subPath}` : pageUrl;
       webview.loadURL(targetUrl);
       pushDebug(`Loading internal page: ${pageName}${subPath ? `/${subPath}` : ''}`);

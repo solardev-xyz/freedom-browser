@@ -504,6 +504,57 @@ test('opening Settings from the hamburger menu and the address bar reuses one ta
     .toBe('#shortcuts');
 });
 
+// A tab the open was routed *away* from is left entirely alone — not just its
+// webview. `loadTarget`'s entry bookkeeping (ending an uncommitted address-bar
+// edit, cancelling an in-flight Swarm probe) acts on the tab being navigated,
+// so it has to run after the routing decision, never before it: Chrome keeps
+// per-tab omnibox drafts across an open that lands somewhere else, and #314's
+// focus/selection restore depends on the draft still being there. See #325.
+test("opening Settings elsewhere keeps this tab's uncommitted draft (#314)", async ({
+  window,
+  harness,
+}) => {
+  await harness.setContentFixture(PAGE_A, {
+    body: '<!doctype html><title>Page A</title><p>a</p>',
+  });
+  const input = window.locator('[data-test="address-input"]');
+  await input.click();
+  await input.fill(PAGE_A);
+  await input.press('Enter');
+  await expect
+    .poll(async () => (await tabTitles(window)).map((tab) => tab.title), {
+      message: 'Waiting for Page A to load',
+      timeout: 15_000,
+    })
+    .toEqual(['Page A']);
+
+  // Half-type an address in tab 1 without committing it.
+  await input.click();
+  await input.fill('');
+  await window.keyboard.type('half-typed-draft');
+
+  // Settings opens from the menu and is correctly routed to its own tab.
+  await openSettingsFromMenu(window, [
+    { id: '1', title: 'Page A', active: false },
+    { id: '2', title: 'Settings', active: true },
+  ]);
+
+  // Back on tab 1 the draft is still there, focused with its caret restored —
+  // pre-fix the bar showed the page URL and the draft was gone.
+  await window.locator('[data-test="tab"][data-tab-id="1"]').click();
+  await expectActiveTab(window, 1);
+  await expect
+    .poll(
+      () =>
+        window.evaluate(() => {
+          const el = document.getElementById('address-input');
+          return { value: el.value, focused: document.activeElement === el };
+        }),
+      { message: 'Waiting for the draft to be restored', timeout: 15_000 }
+    )
+    .toEqual({ value: 'half-typed-draft', focused: true });
+});
+
 // #325, the other half of the Chrome model: with no Settings tab to focus and
 // a *non-empty* tab in front, Settings opens in a new tab instead of
 // navigating the page the user is reading out from under them.

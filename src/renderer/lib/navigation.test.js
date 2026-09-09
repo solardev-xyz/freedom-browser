@@ -1031,6 +1031,57 @@ describe('navigation', () => {
 
       expect(ctx.activeRef.tab.webview.loadURL).not.toHaveBeenCalled();
     });
+
+    // "Leaves the tab alone" is the whole tab, not just its webview: the entry
+    // bookkeeping at the top of loadTarget acts on the tab being navigated, so
+    // it has to run *after* the routing decision, never before it.
+    test('a routed-away open keeps the current tab\'s uncommitted draft (#314)', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      await flushMicrotasks();
+
+      ctx.elements.addressInput.value = 'half-typed-draft';
+      ctx.elements.addressInput.dispatch('input');
+      expect(ctx.activeRef.tab.navigationState.addressBarPendingInput).toBe('half-typed-draft');
+
+      // Settings opens from the hamburger menu and is routed to its own tab.
+      ctx.tabsMocks.routeInternalPageNavigation.mockReturnValueOnce(true);
+      ctx.mod.loadTarget('freedom://settings');
+      await flushMicrotasks();
+
+      expect(ctx.activeRef.tab.navigationState.addressBarPendingInput).toBe('half-typed-draft');
+      expect(ctx.elements.addressInput.value).toBe('half-typed-draft');
+
+      // The in-place answer still commits the bar, as every chrome-driven
+      // navigation does.
+      ctx.mod.loadTarget('freedom://settings');
+      await flushMicrotasks();
+      expect(ctx.activeRef.tab.navigationState.addressBarPendingInput).toBeNull();
+    });
+
+    test('a routed-away open leaves an in-flight Swarm probe running', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+
+      ctx.mod.loadTarget(`bzz://${'a'.repeat(64)}`);
+      await flushMicrotasks();
+      expect(ctx.activeRef.tab.navigationState.pendingSwarmProbeId).toBe('probe-1');
+
+      // Settings opens in its own tab while the probe is still in flight: the
+      // bzz navigation on this tab was never interrupted, so it must settle.
+      ctx.tabsMocks.routeInternalPageNavigation.mockReturnValueOnce(true);
+      ctx.mod.loadTarget('freedom://settings');
+      await flushMicrotasks();
+
+      expect(ctx.swarmProbeState.cancelCalls).toEqual([]);
+      expect(ctx.activeRef.tab.navigationState.pendingSwarmProbeId).toBe('probe-1');
+
+      // An open that *does* land here is a real navigation away, and cancels it.
+      ctx.mod.loadTarget('freedom://settings');
+      await flushMicrotasks();
+      expect(ctx.swarmProbeState.cancelCalls).toEqual(['probe-1']);
+      expect(ctx.activeRef.tab.navigationState.pendingSwarmProbeId).toBeNull();
+    });
   });
 
   describe('onchain application navigation', () => {

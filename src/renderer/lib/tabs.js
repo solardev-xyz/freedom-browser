@@ -1906,7 +1906,17 @@ export const routeInternalPageNavigation = (pageName, subPath = null, currentWeb
 
   // No tab to reuse and nothing to lose here: overwrite this one, as Chrome
   // does when Settings is opened from a fresh New Tab.
-  if (!existingTab && isEmptyTab(currentTab)) return false;
+  if (!existingTab && isEmptyTab(currentTab)) {
+    // Claim the page for this tab immediately. The caller's `loadURL` only
+    // reaches `tab.url` when `did-navigate` commits (~100 ms later), and until
+    // then `findInternalPageTab` sees an empty New Tab — so a second open
+    // arriving inside that window would find no tab and create the duplicate
+    // this rule exists to prevent. The friendly `freedom://` form is exactly
+    // what `createTab` parks on a freshly opened internal-page tab, and it is
+    // the form `findInternalPageTab`'s second arm matches. See #325.
+    currentTab.url = subPath ? `freedom://${pageName}/${subPath}` : `freedom://${pageName}`;
+    return false;
+  }
 
   openOrFocusInternalPage(pageName, subPath);
   return true;

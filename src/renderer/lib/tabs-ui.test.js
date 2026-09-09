@@ -1488,6 +1488,25 @@ describe('tabs ui behavior', () => {
       expect(mod.getActiveTab().id).toBe(newTabPage.id);
     });
 
+    // The overwrite above is not committed until `did-navigate` fires (~100 ms
+    // later), so the tab has to claim the page up front: a second open arriving
+    // inside that window otherwise finds no Settings tab and duplicates it —
+    // the race `findInternalPageTab`'s freedom:// arm exists to close.
+    test('claims the overwritten tab for the page while it is still resolving', async () => {
+      const mod = await setup();
+      const newTabPage = mod.getActiveTab();
+
+      expect(mod.routeInternalPageNavigation('settings', 'rpc', newTabPage.webview)).toBe(false);
+      expect(newTabPage.url).toBe('freedom://settings/rpc');
+
+      // A second open from another tab, before the first has committed, is
+      // answered by that same tab rather than by a new one.
+      const otherTab = mod.createTab('https://example.com/');
+      expect(mod.routeInternalPageNavigation('settings', null, otherTab.webview)).toBe(true);
+      expect(mod.getTabs()).toHaveLength(2);
+      expect(mod.getActiveTab().id).toBe(newTabPage.id);
+    });
+
     test('opens a new tab from a page with content', async () => {
       const mod = await setup();
       const pageTab = mod.createTab('https://example.com/');
