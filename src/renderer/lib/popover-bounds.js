@@ -22,6 +22,8 @@
 // Both leave the element with an inline `max-height`; `.chrome-popover` turns
 // the overflow into an internal scroll with a theme-matched scrollbar.
 
+import { pushDebug } from './debug.js';
+
 // Gap kept between a popover and the window edge — the same 8 px the context
 // menus already used when clamping horizontally.
 export const POPOVER_VIEWPORT_MARGIN = 8;
@@ -88,6 +90,18 @@ export const boundPopoverToViewport = (el) => {
   // Measure against the natural position, not against a bound left over from a
   // previous open at a different offset or window size.
   el.style.maxHeight = '';
+  // A popover that is not rendered yet reports `top: 0`, so a bound taken from
+  // there is one whole menu-top too generous and hangs the box's own bottom
+  // edge off the window — a tail nothing can reach, since scrolling moves the
+  // content inside the box and not the box (#328). Refuse the meaningless
+  // measurement and say so rather than applying it: callers show the popover
+  // first, then bound it. `getClientRects()` is the same visibility test
+  // `rebindOpenPopovers` uses — it also works for `position: fixed` popovers,
+  // whose `offsetParent` is always null.
+  if (typeof el.getClientRects === 'function' && el.getClientRects().length === 0) {
+    pushDebug('[popover] refused to bound a popover that is not rendered yet');
+    return 0;
+  }
   const { top } = el.getBoundingClientRect();
   return applyMaxHeight(el, viewportHeight() - top - POPOVER_VIEWPORT_MARGIN);
 };

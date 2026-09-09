@@ -410,9 +410,15 @@ export const initBookmarks = () => {
     overflowMenu.className = 'bookmarks-overflow-menu chrome-popover hidden';
     document.body.appendChild(overflowMenu);
 
-    // Position the overflow menu relative to the button
+    // Position the overflow menu relative to the button.
+    //
+    // Only ever called on a *visible* menu: `boundPopoverToViewport` measures
+    // the menu's own top edge, and a `display: none` element measures at 0 —
+    // which bounded the menu to the whole window height and hung its bottom
+    // (and every entry down there) off the screen, where scrolling inside the
+    // box cannot reach it (#328).
     const positionOverflowMenu = () => {
-      if (!overflowBtn || !overflowMenu) return;
+      if (!overflowBtn || !overflowMenu || overflowMenu.classList.contains('hidden')) return;
       const btnRect = overflowBtn.getBoundingClientRect();
       overflowMenu.style.top = `${btnRect.bottom + 4}px`;
       overflowMenu.style.right = `${window.innerWidth - btnRect.right}px`;
@@ -427,9 +433,12 @@ export const initBookmarks = () => {
       onContextMenuOpening?.();
 
       if (overflowMenu.classList.contains('hidden')) {
-        positionOverflowMenu();
         showMenuBackdrop();
         overflowMenu.classList.remove('hidden');
+        // Shown first, then placed and bounded — see positionOverflowMenu.
+        // Opens at the top, like every other chrome popover.
+        overflowMenu.scrollTop = 0;
+        positionOverflowMenu();
       } else {
         hideOverflowMenu();
       }

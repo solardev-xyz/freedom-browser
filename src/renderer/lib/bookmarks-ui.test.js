@@ -1,4 +1,5 @@
 const { createDocument, createElement, FakeElement } = require('../../../test/helpers/fake-dom.js');
+const realPopoverBounds = require('./popover-bounds.js');
 
 const originalWindow = global.window;
 const originalDocument = global.document;
@@ -175,6 +176,18 @@ const loadBookmarksModule = async (options = {}) => {
     showMenuBackdrop: jest.fn(),
     hideMenuBackdrop: jest.fn(),
   };
+  // The real bound, with the state of each popover at *measurement* time
+  // recorded alongside it. `boundPopoverToViewport` reads the element's own top
+  // edge, which a `display: none` element reports as 0, so "was it visible when
+  // we measured it" is the invariant worth pinning (#328).
+  const popoverBoundCalls = [];
+  const popoverBoundsMocks = {
+    ...realPopoverBounds,
+    boundPopoverToViewport: jest.fn((el) => {
+      popoverBoundCalls.push({ hidden: el?.classList?.contains('hidden') ?? null });
+      return realPopoverBounds.boundPopoverToViewport(el);
+    }),
+  };
 
   addBookmarkModal.showModal = jest.fn();
   addBookmarkModal.close = jest.fn(() => {
@@ -203,6 +216,7 @@ const loadBookmarksModule = async (options = {}) => {
   jest.doMock('./tabs.js', () => tabsMocks);
   jest.doMock('./menus.js', () => menuMocks);
   jest.doMock('./menu-backdrop.js', () => menuBackdropMocks);
+  jest.doMock('./popover-bounds.js', () => popoverBoundsMocks);
 
   const mod = await import('./bookmarks-ui.js');
 
@@ -213,6 +227,8 @@ const loadBookmarksModule = async (options = {}) => {
     tabsMocks,
     menuMocks,
     menuBackdropMocks,
+    popoverBoundsMocks,
+    popoverBoundCalls,
     windowHandlers,
     resizeObserverInstances: resizeObserverState.instances,
     activeTabRef,
@@ -306,6 +322,40 @@ describe('bookmarks-ui', () => {
     expect(onLoadTarget).toHaveBeenCalledWith('https://gamma.example');
     expect(overflowMenu.classList.contains('hidden')).toBe(true);
     expect(ctx.menuBackdropMocks.hideMenuBackdrop).toHaveBeenCalled();
+  });
+
+  // #328: the overflow menu used to be positioned and bounded while it was
+  // still `hidden`. `boundPopoverToViewport` measures the element's own top
+  // edge and `display: none` reports 0, so the applied max-height was one
+  // menu-top too large and the box's bottom hung off the window — a tail no
+  // amount of scrolling *inside* the box can reach. It is shown first now,
+  // like every other chrome popover.
+  test('the overflow menu is shown before it is positioned and bounded', async () => {
+    const ctx = await loadBookmarksModule({
+      initialBookmarks: [
+        { label: 'Alpha', target: 'https://alpha.example' },
+        { label: 'Beta', target: 'https://beta.example' },
+        { label: 'Gamma', target: 'https://gamma.example' },
+      ],
+    });
+
+    ctx.mod.initBookmarks();
+    await ctx.mod.loadBookmarks();
+    await flushMicrotasks();
+
+    const overflowMenu = ctx.helpers.getOverflowMenu();
+    // A leftover scroll offset from a previous open must not survive either.
+    overflowMenu.scrollTop = 120;
+    expect(ctx.popoverBoundCalls).toHaveLength(0);
+
+    ctx.helpers.getOverflowButton().dispatch('click', { stopPropagation: jest.fn() });
+
+    expect(overflowMenu.classList.contains('hidden')).toBe(false);
+    expect(ctx.popoverBoundsMocks.boundPopoverToViewport).toHaveBeenCalledWith(overflowMenu);
+    expect(ctx.popoverBoundCalls).toEqual([{ hidden: false }]);
+    // Anchored 4 px under the overflow button (whose fake rect ends at 24).
+    expect(overflowMenu.style.top).toBe('28px');
+    expect(overflowMenu.scrollTop).toBe(0);
   });
 
   // #306: Escape closes only the innermost open surface, as in Chrome. The

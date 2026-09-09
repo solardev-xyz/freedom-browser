@@ -112,6 +112,26 @@ describe('boundPopoverToViewport', () => {
     expect(boundPopoverToViewport(null)).toBe(0);
     expect(boundPopoverToViewport({})).toBe(0);
   });
+
+  // #328: the bookmarks overflow menu was positioned and bounded while still
+  // `display: none`, where the rect reads top 0 — the bound came out a whole
+  // menu-top too large and the box's own bottom, with the last few entries in
+  // it, sat off the bottom of the window. Every caller shows the popover
+  // first; a measurement taken before that is refused rather than applied, so
+  // the mistake cannot come back through a new caller.
+  test('refuses to bound a popover that is not rendered yet', () => {
+    setViewport(760, 340);
+    const hidden = createPopover({ top: 0, height: 900, visible: false });
+
+    expect(boundPopoverToViewport(hidden)).toBe(0);
+    // Not the wrong bound the hidden rect would have produced (340 - 0 - 8).
+    expect(hidden.style.maxHeight).toBe('');
+
+    // Shown, the same popover bounds from where it actually is.
+    const shown = createPopover({ top: 121, height: 900 });
+    expect(boundPopoverToViewport(shown)).toBe(340 - 121 - POPOVER_VIEWPORT_MARGIN);
+    expect(121 + (340 - 121 - POPOVER_VIEWPORT_MARGIN)).toBeLessThanOrEqual(340);
+  });
 });
 
 describe('placePopoverAtPoint', () => {

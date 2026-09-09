@@ -212,6 +212,72 @@ test('a window too short for the minimum height still shows the whole box (#328)
   expect(state.scrollable).toBe(true);
 });
 
+// #328: the bookmarks overflow menu was measured while it was still
+// `display: none`. A hidden element's `getBoundingClientRect().top` is 0, so
+// the bound came out `top` px too generous and the menu's own bottom edge
+// landed past the window — a tail nothing could scroll to, since scrolling
+// moves the content inside the box, not the box.
+test.describe('bookmarks overflow menu', () => {
+  // The bar is only drawn on the home page unless it is pinned; pin it, and
+  // leave the nodes alone — this menu has nothing to do with them.
+  test.use({ seedSettings: { showBookmarkBar: true } });
+
+  test('the bookmarks overflow menu is bounded from where it actually opens', async ({
+    window,
+    electronApp,
+  }) => {
+    // Enough bookmarks that the bar overflows in any window, and the menu is
+    // far taller than the room under the bookmarks bar.
+    await window.evaluate(async () => {
+      for (const existing of await window.electronAPI.getBookmarks()) {
+        await window.electronAPI.removeBookmark(existing.target);
+      }
+      for (let i = 0; i < 30; i++) {
+        await window.electronAPI.addBookmark({
+          label: `Bookmark number ${i}`,
+          target: `https://example.com/freedom-e2e/${i}`,
+        });
+      }
+    });
+    await window.reload();
+    await window.waitForSelector('[data-test="address-input"]');
+    await setWindowSize(electronApp, window, 760, 340);
+
+    const overflowBtn = window.locator('.bookmarks-overflow-btn');
+    await expect(overflowBtn).toBeVisible();
+    await overflowBtn.click();
+    await expect(window.locator('.bookmarks-overflow-menu')).toBeVisible();
+
+    const state = await popoverState(window, '.bookmarks-overflow-menu');
+    // Anchored under the bookmarks bar, not at the top of the window: the bound
+    // is only right if it was measured from there.
+    expect(state.top).toBeGreaterThan(50);
+    expect(state.insideViewport).toBe(true);
+    expect(state.docScrollHeight).toBe(state.innerHeight);
+    expect(state.scrollable).toBe(true);
+
+    // The last entry is reachable by scrolling the menu — the half that the
+    // off-screen tail broke.
+    const last = await scrollToItem(
+      window,
+      '.bookmarks-overflow-menu',
+      '.bookmarks-overflow-menu [data-test="bookmark-overflow-item"]:last-child'
+    );
+    expect(last.insideMenu).toBe(true);
+    expect(last.insideViewport).toBe(true);
+    expect(last.scrolledBy).toBeGreaterThan(0);
+
+    // Re-opening starts at the top again, like every other chrome popover.
+    await window.keyboard.press('Escape');
+    await expect(window.locator('.bookmarks-overflow-menu')).not.toBeVisible();
+    await overflowBtn.click();
+    await expect(window.locator('.bookmarks-overflow-menu')).toBeVisible();
+    expect(
+      await window.evaluate(() => document.querySelector('.bookmarks-overflow-menu').scrollTop)
+    ).toBe(0);
+  });
+});
+
 test('a context menu raised at the bottom edge opens upwards', async ({
   window,
   electronApp,
