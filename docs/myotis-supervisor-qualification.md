@@ -1,5 +1,9 @@
 # Finite disposable-host Myotis supervisor qualification
 
+> Historical ABI 22 isolation harness. It is unmodified and incompatible with
+> this branch's ABI 25 artifact/method gate and soft-read deadlines; do not run it
+> as current integration qualification. See [integration limits](myotis-integration.md).
+
 This follow-up harness is **not executed on the primary Mac**. It is intended
 for coordinator-managed disposable Linux/macOS hosts with existing Electron 43
 and an already installed compiler. It loads no real Myotis addon and makes no

@@ -1,3 +1,4 @@
+jest.mock('../src/main/myotis/myotis-artifact', () => ({ verifyArtifact: jest.fn() }));
 jest.mock('fs', () => ({
   existsSync: jest.fn(),
   mkdirSync: jest.fn(),
@@ -69,7 +70,7 @@ describe('Myotis supervisor build inputs', () => {
   );
   test('packages both helper names and only adds the mac helper to explicit signing', () => {
     const resource = packageJson.build.extraResources.find(({ to }) => to === 'myotis-node');
-    expect(resource.filter).toEqual(['myotis-node.node', 'myotis-supervisor', 'myotis-supervisor.exe']);
+    expect(resource.filter).toEqual(['myotis-node.node', 'myotis-artifact.json', 'myotis-supervisor', 'myotis-supervisor.exe']);
     expect(packageJson.build.mac.binaries).toEqual(['Contents/Resources/myotis-node/myotis-supervisor']);
   });
 });

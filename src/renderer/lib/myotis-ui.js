@@ -42,6 +42,8 @@ const stateLabel = (status) => {
   if (status.state === 'error') return 'Error';
   if (status.state === 'off') return 'Off';
   if (status.state === 'ready') return 'Ready';
+  if (status.beaconState === 'STALE_ANCHOR') return 'Stale anchor';
+  if (status.paused) return 'Paused';
   if (status.currentPeriod && status.targetPeriod) {
     return `Syncing ${status.currentPeriod}/${status.targetPeriod}`;
   }
@@ -65,7 +67,7 @@ const updateControls = (status) => {
     if (disabled) {
       toggleButton.title = 'Disabled for this profile in Settings';
     } else if (!available) {
-      toggleButton.title = 'Myotis native addon not found';
+      toggleButton.title = status?.error || 'Myotis native addon not found';
     } else if (status?.error) {
       toggleButton.title = status.error;
     } else {
@@ -78,7 +80,7 @@ const updateControls = (status) => {
   if (peersCount) peersCount.textContent = String(status?.peerCount ?? 0);
   if (finalizedBlock) finalizedBlock.textContent = countText(status?.finalizedBlockNumber);
   if (versionText) {
-    versionText.textContent = versionLabel(status?.version && `Myotis v${status.version}`);
+    versionText.textContent = versionLabel(status?.buildLabel || (status?.version && `Myotis v${status.version}`));
   }
 };
 
@@ -108,7 +110,7 @@ const updateGnosisControls = (status) => {
     gnosis.button.disabled = !controllable;
     gnosis.button.classList.toggle('disabled', !controllable);
     if (disabled) gnosis.button.title = 'Disabled for this profile in Settings';
-    else if (!available) gnosis.button.title = 'Myotis native addon not found';
+    else if (!available) gnosis.button.title = status?.error || 'Myotis native addon not found';
     else if (status?.error) gnosis.button.title = status.error;
     else gnosis.button.removeAttribute('title');
   }
@@ -118,7 +120,7 @@ const updateGnosisControls = (status) => {
   if (gnosis.peers) gnosis.peers.textContent = String(status?.peerCount ?? 0);
   if (gnosis.block) gnosis.block.textContent = countText(status?.finalizedBlockNumber);
   if (gnosis.version) {
-    gnosis.version.textContent = versionLabel(status?.version && `Myotis v${status.version}`);
+    gnosis.version.textContent = versionLabel(status?.buildLabel || (status?.version && `Myotis v${status.version}`));
   }
 };
 

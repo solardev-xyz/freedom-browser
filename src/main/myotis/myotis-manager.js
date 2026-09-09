@@ -13,7 +13,8 @@ const path = require('path');
 const { getMyotisDataDir } = require('../profile-paths');
 
 const { MyotisProcess } = require('./myotis-process');
-const MYOTIS_VERSION = '0.1.7';
+const { pin, configuredTarget } = require('./myotis-artifact');
+const MYOTIS_VERSION = pin.sourceCommit.slice(0, 8);
 const AVAILABILITY_POLL_MS = 1000;
 const STATUS_FRESH_MS = 6000;
 const STATUS_REQUEST_MS = 10000;
@@ -104,10 +105,11 @@ function publishAvailability(instance, ready, reason, force = false) {
   }
 }
 
-// Addon discovery, mirroring freedom-ipfs-native-binding: env override
-// (spike/testing) → dev fetch dir (scripts/fetch-myotis.js, per-platform
-// subdir) → packaged resources. Enabled iff one of them exists.
+// Cheap discovery only: no hashing in main status/polling. Every selected file
+// must pass the exact artifact manifest/hash gate in the child before loading.
+// A bad selected artifact never falls back to another candidate or older ABI.
 function addonPath() {
+  if (!configuredTarget()) return null;
   const osDir = { darwin: 'mac', linux: 'linux', win32: 'win' }[process.platform];
   const candidates = [
     process.env.MYOTIS_NODE_PATH,
@@ -295,7 +297,7 @@ function getStatus(chainId = 1) {
 // never as an error.
 function updateReadiness(instance, s) {
   const ready = Boolean(
-    s && s.beaconState === 'SYNCED' && s.elReaderAvailable === true && s.elHunting === false &&
+    s && s.running === true && s.paused !== true && s.beaconState === 'SYNCED' && s.elReaderAvailable === true && s.elHunting === false &&
     typeof s.snapPeers === 'number' && s.snapPeers > 0
   );
   publishAvailability(instance, ready, ready ? 'ready' : 'not-ready');
@@ -317,6 +319,7 @@ function getAvailabilityEpoch(chainId = 1) {
 function runningInstance(chainId = 1) {
   const instance = instanceFor(chainId);
   if (shuttingDown || instance.stopping || !instance.client?.accepting) throw new Error(`${instance.displayName} Myotis client is not running`);
+  if (!isReady(chainId)) throw new Error(`${instance.displayName} Myotis verified reader is not ready`);
   return instance;
 }
 
@@ -359,7 +362,13 @@ async function feeEstimate(chainId = 1) {
 
 async function sendRawTransaction(rawTransaction, chainId = 1) {
   const instance = runningInstance(chainId);
-  return instance.client.request('broadcast', [rawTransaction]);
+  const result = await instance.client.request('broadcast', [rawTransaction]);
+  if (!result || result.error || ['error', 'unavailable'].includes(result.status) || !(result.txHash || result.result)) {
+    const error = new Error('Myotis broadcast outcome uncertain; reconcile the original signed transaction');
+    error.code = 'MYOTIS_BROADCAST_UNCERTAIN';
+    throw error;
+  }
+  return result;
 }
 
 async function stopMyotis(chainId = 1) {
@@ -406,6 +415,9 @@ function publicStatus(chainId = 1) {
     supported,
     available,
     version: MYOTIS_VERSION,
+    buildLabel: `Myotis integration ${MYOTIS_VERSION} (ABI ${pin.abi})`,
+    sourceCommit: pin.sourceCommit,
+    abi: pin.abi,
     chainId: instance.chainId,
     network: instance.name,
     displayName: instance.displayName,
@@ -413,7 +425,8 @@ function publicStatus(chainId = 1) {
   if (isDisabledMyotisConfig()) {
     return { ...base, running: false, state: 'disabled' };
   }
-  if (!available) return { ...base, running: false, state: 'unavailable' };
+  if (!available) return { ...base, running: false, state: 'unavailable',
+    error: 'Myotis ABI 25 integration artifact unavailable; provision the exact pinned local addon (docs/myotis-integration.md)' };
   const error = instance.lastError;
   if (error) {
     return { ...base, running: false, state: 'error', error };
@@ -426,6 +439,10 @@ function publicStatus(chainId = 1) {
     running: true,
     state: ready ? 'ready' : 'syncing',
     beaconState: s.beaconState,
+    paused: s.paused,
+    wsBoundPeriods: s.wsBoundPeriods,
+    optimisticBlockNumber: s.optimisticBlockNumber,
+    executionBlockNumber: s.executionBlockNumber,
     currentPeriod: s.currentPeriod,
     targetPeriod: s.targetPeriod,
     peerCount: s.peerCount,

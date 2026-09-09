@@ -34,10 +34,17 @@ test.each(['arm64', 'x64'])('prepares both packaging helpers for macOS %s', asyn
   expect(myotis.buildForTargets).toHaveBeenCalledWith('mac', [arch]);
 });
 
-test('development preserves workspace preparation alongside Myotis', () => {
-  prepare.prepareDevelopment();
-  if (process.platform === 'darwin') expect(workspace.buildMacosWorkspaceSupervisor).toHaveBeenCalledTimes(1);
+test('macOS development preserves workspace preparation alongside Myotis', () => {
+  prepare.prepareDevelopment('darwin');
+  expect(workspace.buildMacosWorkspaceSupervisor).toHaveBeenCalledTimes(1);
   expect(myotis.buildSupervisor).toHaveBeenCalledTimes(1);
   expect(require('../package.json').scripts.prestart).toBe('node scripts/prepare-native-supervisors.js');
   expect(require('../package.json').build.beforePack).toBe('./scripts/prepare-native-supervisors.js');
+});
+
+
+test.each(['linux', 'win32'])('%s prestart invokes neither native compiler', (platform) => {
+  prepare.prepareDevelopment(platform);
+  expect(workspace.buildMacosWorkspaceSupervisor).not.toHaveBeenCalled();
+  expect(myotis.buildSupervisor).not.toHaveBeenCalled();
 });

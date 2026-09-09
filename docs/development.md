@@ -25,10 +25,17 @@ cd freedom-browser
 npm ci
 npm run ant:download
 npm run ipfs:download
-npm run myotis:download
 npm run myotis:build-supervisor
 npm start
 ```
+
+On this integration branch, macOS `npm start` uses the composed
+`prepare-native-supervisors.js` prestart hook for both workspace and Myotis
+helpers. Linux and Windows retain the explicit `npm run myotis:build-supervisor`
+command; prestart invokes neither compiler there. The composed `beforePack`
+hook remains strict for packaging. Myotis uses only the reviewed local ABI 25
+artifacts described in [the integration guide](myotis-integration.md); the old
+release download command is disabled on this test branch.
 
 Swarm and IPFS start automatically by default, while Radicle and Myotis are opt-in under **Settings → Automatic Startup**. Install the embedded Radicle addon with `npm run radicle:download` (macOS, Linux, and Windows x64/ARM64), then enable Radicle for the profile under **Settings → Nodes**. On macOS and Linux, install optional Tor support with `npm run tor:download`, then enable it under **Settings → Experimental**. Bundled Tor is unavailable on Windows.
 
@@ -38,8 +45,9 @@ Linux, or an **x64 MSVC developer shell** on Windows. No compiler is downloaded
 by the helper build. `npm run build` and `npm run dist` build it before binary
 checks, including each requested macOS architecture. Foreign targets require
 helpers built on the target host and placed in `myotis-bin/<os>-<arch>/`.
-Windows helper compilation/runtime remains unqualified for this candidate;
-missing tooling is a build blocker, not authorization to omit the helper.
+Prior PR CI compiled the Windows helper, but the patched integration addon and
+Windows runtime remain unqualified. Missing artifacts/tooling are packaging
+blockers, not authorization to omit either helper.
 See [Myotis isolation and qualification](myotis-process-isolation.md).
 
 ## Repository layout

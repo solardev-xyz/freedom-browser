@@ -1,5 +1,9 @@
 # Myotis process isolation
 
+> Historical isolation-branch contract and evidence. This combined test branch
+> applies the [ABI 25 integration overrides](myotis-integration.md), including
+> local artifact pins, soft caller deadlines and one native read per handle.
+
 Myotis v0.1.7 / ABI 22 remains pinned. Every addon call, including init,
 create, start, status, log draining and stop, runs outside Electron main.
 Each enabled chain has its own native supervisor and Electron-as-Node child.

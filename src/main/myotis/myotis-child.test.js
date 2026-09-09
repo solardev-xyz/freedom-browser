@@ -1,7 +1,7 @@
 const { EventEmitter } = require('events');
 const { runChild } = require('./myotis-child');
 
-function setup(abi = 22) {
+function setup(abi = 25) {
   const host = new EventEmitter();
   host.connected = true;
   host.send = jest.fn();
@@ -9,14 +9,17 @@ function setup(abi = 22) {
   const addon = {
     init: jest.fn(() => abi), create: jest.fn(() => 7), start: jest.fn(() => true), stop: jest.fn(),
     statusJson: jest.fn(() => JSON.stringify({ snapPeers: 2 })), drainLogs: jest.fn(),
+    ensRecordJson: jest.fn(), requestAccountJson: jest.fn(), estimateGasJson: jest.fn(),
+    feeEstimateJson: jest.fn(), sendRawTransactionJson: jest.fn(),
     ethCallJson: jest.fn(async () => '{"resultHex":"0x1234"}'),
   };
   const load = jest.fn(() => addon);
-  runChild(host, load);
+  const verify = jest.fn();
+  runChild(host, load, verify);
   const generation = 'current';
   const send = (message) => host.emit('message', { generation, ...message });
   const start = () => send({ type: 'start', addonPath: '/addon.node', network: 'mainnet', dataDir: '/profile/mainnet' });
-  return { host, addon, load, send, start };
+  return { host, addon, load, verify, send, start };
 }
 
 test('loads and starts native code only after explicit owned start; enforces ABI', () => {
@@ -33,7 +36,7 @@ test('runs status and bounded native work in child, refusing surplus native oper
   const resolvers = [];
   ctx.addon.ethCallJson.mockImplementation(() => new Promise((resolve) => resolvers.push(resolve)));
   for (let id = 1; id <= 3; id++) ctx.send({ type: 'request', id, op: 'call', args: [] });
-  expect(ctx.addon.ethCallJson).toHaveBeenCalledTimes(2);
+  expect(ctx.addon.ethCallJson).toHaveBeenCalledTimes(1);
   expect(ctx.host.send).toHaveBeenCalledWith(expect.objectContaining({ id: 3, ok: false }));
   ctx.send({ type: 'request', id: 4, op: 'status', args: [] });
   expect(ctx.addon.statusJson).toHaveBeenCalledWith(7);
@@ -61,4 +64,14 @@ test.each(['load', 'abi', 'create', 'start'])('reports only the bounded %s start
   ctx.start();
   expect(ctx.host.send).toHaveBeenCalledWith({ generation: 'current', type: 'started', ok: false, failure });
   expect(JSON.stringify(ctx.host.send.mock.calls)).not.toContain('secret');
+});
+
+
+test('refuses ABI22 and missing Node methods after verifying artifact before loading', () => {
+  const old = setup(22); old.start();
+  expect(old.host.send).toHaveBeenCalledWith(expect.objectContaining({ ok: false, failure: 'abi' }));
+  const missing = setup(); delete missing.addon.estimateGasJson; missing.start();
+  expect(missing.host.send).toHaveBeenCalledWith(expect.objectContaining({ ok: false, failure: 'methods' }));
+  expect(missing.verify.mock.invocationCallOrder[0]).toBeLessThan(missing.load.mock.invocationCallOrder[0]);
+  expect(missing.addon.create).not.toHaveBeenCalled();
 });

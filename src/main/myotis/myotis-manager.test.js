@@ -8,7 +8,7 @@ describe('myotis-manager', () => {
 
   function loadManager(mode = 'managed') {
     const clients = [];
-    const status = { beaconState: 'SYNCED', elReaderAvailable: true, elHunting: false, snapPeers: 2 };
+    const status = { running: true, paused: false, beaconState: 'SYNCED', elReaderAvailable: true, elHunting: false, snapPeers: 2 };
     class MockProcess {
       constructor(options) {
         this.options = options;
@@ -34,6 +34,9 @@ describe('myotis-manager', () => {
       ipcMain,
       extraMocks: {
         fs: () => ({ existsSync: () => true }),
+        [require.resolve('./myotis-artifact')]: () => ({
+          pin: require('../../../config/myotis-integration.json'), configuredTarget: () => true,
+        }),
         [require.resolve('./myotis-process')]: () => ({ MyotisProcess: MockProcess }),
         [require.resolve('../logger')]: () => ({ info: jest.fn(), warn: jest.fn() }),
         [require.resolve('../profile-paths')]: () => ({ getMyotisDataDir: (network) => path.join(dataDir, network) }),
@@ -55,7 +58,7 @@ describe('myotis-manager', () => {
     expect(clients.map((client) => client.options.dataDir)).toEqual([
       path.join(dataDir, 'mainnet'), path.join(dataDir, 'gnosis'),
     ]);
-    expect(mod.publicStatus()).toMatchObject({ state: 'ready', version: '0.1.7' });
+    expect(mod.publicStatus()).toMatchObject({ state: 'ready', version: '02a183d8', abi: 25 });
     await mod.stopMyotis(100);
     expect(mod.publicStatus(100).state).toBe('off');
     expect(mod.isReady(1)).toBe(true);
@@ -99,6 +102,17 @@ describe('myotis-manager', () => {
     await Promise.resolve();
     expect(mod.isReady()).toBe(true);
     expect(clients).toHaveLength(1);
+  });
+
+  test.each([
+    { running: false }, { paused: true }, { beaconState: 'STALE_ANCHOR' },
+    { beaconState: 'CATCHING_UP' }, { elReaderAvailable: false }, { snapPeers: 0 }, { elHunting: true },
+  ])('does not serve a started but unavailable native lifecycle: %s', async (change) => {
+    const { mod, clients, status } = loadManager();
+    await mod.startMyotis();
+    clients[0].options.onStatus({ ...status, ...change, bootstrapped: true });
+    expect(mod.isReady()).toBe(false);
+    expect(clients[0].request.mock.calls.every(([op]) => op === 'status')).toBe(true);
   });
 
   test('does not create any process when disabled', async () => {

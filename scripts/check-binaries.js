@@ -12,6 +12,7 @@ const FREEDOM_IPFS_NATIVE_PREBUILDS_DIR = path.join(
 const FREEDOM_IPFS_NATIVE_ADDON = 'freedom_ipfs_native.node';
 const RADICLE_BIN_DIR = path.join(__dirname, '..', 'radicle-bin');
 const RADICLE_EMBEDDED_ADDON = 'libradicle.node';
+const { verifyArtifact } = require('../src/main/myotis/myotis-artifact');
 const MYOTIS_BIN_DIR = path.join(__dirname, '..', 'myotis-bin');
 // Targets the Myotis release publishes addons for (see scripts/fetch-myotis.js).
 // Anything else (e.g. win-arm64) is skipped with a notice — the app degrades
@@ -123,6 +124,9 @@ function checkBinaries(platforms) {
       const myotisAddonPath = path.join(MYOTIS_BIN_DIR, platformDir, 'myotis-node.node');
       if (!fs.existsSync(myotisAddonPath)) {
         missing.push(`myotis-node addon for ${platformDir}: ${myotisAddonPath}`);
+      } else {
+        try { verifyArtifact(myotisAddonPath, `${{ mac: 'darwin', linux: 'linux', win: 'win32' }[os]}-${arch}`); }
+        catch (error) { missing.push(`Myotis integration artifact for ${platformDir}: ${error.message}`); }
       }
       const supervisorPath = path.join(MYOTIS_BIN_DIR, platformDir,
         `myotis-supervisor${os === 'win' ? '.exe' : ''}`);
@@ -175,7 +179,7 @@ function main() {
     for (const { os, arch } of platforms) {
       console.error(`  npm run radicle:download -- --${os} --${arch}`);
     }
-    console.error('  npm run myotis:download');
+    console.error('  npm run myotis:activate -- --target <platform-arch> --file <pinned-local-addon>');
     console.error('  npm run adblock:download\n');
     process.exit(1);
   }

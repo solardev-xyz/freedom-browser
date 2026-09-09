@@ -1,5 +1,10 @@
 # Freedom Browser
 
+> Combined Agent/Myotis test branch: use the [integration guide](docs/myotis-integration.md)
+> for exact local ABI 25 artifact activation and pending qualification gates.
+> Historical isolation and Agent PR evidence remains separately attributed.
+
+
 [![CI](https://github.com/solardev-xyz/freedom-browser/actions/workflows/ci.yml/badge.svg)](https://github.com/solardev-xyz/freedom-browser/actions/workflows/ci.yml)
 [![License: MPL-2.0](https://img.shields.io/badge/License-MPL_2.0-brightgreen.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-macOS%20|%20Linux%20|%20Windows-lightgrey)](https://freedom.baby)

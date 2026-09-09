@@ -2810,6 +2810,23 @@ Verification after this checkpoint:
 
 - **2026-09-05 — Close manual acceptance of the dependency-based app workflow.** The user confirms successful Three.js dependency installation and static preview, plus Vite development-server preview, editing across turns, production build, and Swarm publication in other hands-on tests. Record these as completed product acceptance rather than pending checks; exact-candidate platform qualification remains separate.
 
+## 2026-09-09 — Combined Agent/Myotis test integration checkpoint
+
+Only `test/agent-myotis-integration` combines Agent `ae668a24` and isolation
+`3ff2c3fc` through merge `99177c068f7a5d161187c4e183193d12b4de07f7`.
+The separate PR/Agent branches retain their independence. The integration pins
+patched Myotis `02a183d86474a263cf8e85e5c2c2399672645535`, exact ABI 25 and its
+Cargo.lock hash; [activation/provenance and runtime gates](../docs/myotis-integration.md)
+record the distinct Linux/Mac debug byte pins and coordinator-only local activation.
+No artifact activation/load, app run or runtime qualification occurred in this
+source adaptation. Caller expiry retains native admission; broadcasts remain
+uncertain without retries; stale-anchor consent is never automatic. Both native
+supervisors retain their own ownership, manifests and signing protections.
+Finite mock/lint evidence uses the disclosed donor-lock mismatch. The prior
+merge's 14 known workspace-suite failures remain outside this task; historical
+CI/fake-addon passes are not uplifted to this integration. Exact-lock runtime,
+patched-addon lifecycle, actual Quit, Windows and signed-package gates remain open.
+
 ## Final target statement
 
 > Freedom becomes an agent-native, malleable browser: users delegate high-level work to an embedded Pi-powered agent that acts through Freedom's semantic automation kernel and enforceable approval boundary across the ordinary and decentralized web, and can eventually ask it to create site customizations, extensions, dApps, and supported changes to Freedom itself through inspectable, permissioned, reversible build and installation workflows. A CLI or MCP surface may later expose the same kernel if real external demand warrants productizing it.

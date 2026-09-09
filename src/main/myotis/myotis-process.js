@@ -4,9 +4,10 @@ const path = require('path');
 const fs = require('fs');
 const { randomUUID } = require('crypto');
 
-const MAX_ACTIVE = 2;
+const MAX_ACTIVE = 1;
 const MAX_QUEUED = 16;
 const REQUEST_MS = 10000;
+const NATIVE_REQUEST_MS = 100000; // Host liveness policy, not native cancellation.
 const START_MS = 15000;
 const STOP_GRACE_MS = 1500;
 const EXIT_WAIT_MS = 5000;
@@ -33,7 +34,8 @@ function supervisorPath() {
 function statusSnapshot(status) {
   const snapshot = {};
   for (const key of ['beaconState', 'currentPeriod', 'targetPeriod', 'peerCount', 'snapPeers',
-    'finalizedBlockNumber', 'elReaderAvailable', 'elHunting']) {
+    'finalizedBlockNumber', 'executionBlockNumber', 'wsBoundPeriods', 'running', 'paused',
+    'elReaderAvailable', 'elHunting']) {
     const value = status?.[key];
     if (typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value)) ||
       (typeof value === 'string' && value.length <= 64)) snapshot[key] = value;
@@ -149,10 +151,12 @@ class MyotisProcess {
     if (message.type === 'started' && !this.stopping) {
       clearTimeout(this.startTimer);
       if (!message.ok) {
-        const failure = ['configuration', 'load', 'abi', 'create', 'start'].includes(message.failure)
+        const failure = ['configuration', 'artifact', 'load', 'methods', 'abi', 'create', 'start'].includes(message.failure)
           ? message.failure : 'unknown';
         this.report('startup-failed', { failure });
-        this.fail('Myotis native startup failed (check addon ABI and installation)');
+        this.fail(failure === 'artifact'
+          ? 'Myotis pinned artifact verification failed; see docs/myotis-integration.md for local activation'
+          : 'Myotis native startup failed (check addon ABI and installation)');
         return;
       }
       this.report('started');
@@ -166,7 +170,9 @@ class MyotisProcess {
     // A native completion (including a late one) can release its own slot.
     this.active.delete(request.id);
     clearTimeout(request.timer);
+    clearTimeout(request.nativeTimer);
     if (!this.stopping) {
+      if (request.expired) { this.pump(); return; }
       if (message.ok && JSON.stringify(message.result ?? null).length <= MAX_MESSAGE_BYTES) {
         if (request.op === 'status') this.onStatus(statusSnapshot(message.result));
         request.resolve(message.result);
@@ -191,7 +197,7 @@ class MyotisProcess {
       return Promise.reject(unavailable('Myotis request queue is full'));
     }
     return new Promise((resolve, reject) => {
-      const request = { op, args, resolve, reject };
+      const request = { op, args, resolve, reject, deadlineAt: Date.now() + timeoutMs };
       request.timer = setTimeout(() => {
         const index = this.queue.indexOf(request);
         if (index >= 0) {
@@ -199,9 +205,11 @@ class MyotisProcess {
           reject(unavailable('Myotis queue deadline exceeded'));
           return;
         }
-        // Timeout is NOT completion. Retain active permits and stop the child;
-        // no more native work is admitted until a new generation after exit.
-        this.fail('Myotis request timed out');
+        if (control) { this.fail('Myotis status timed out'); return; }
+        // Caller patience is not native completion or cancellation. Retain the
+        // actual native slot until its Promise reply or verified owner exit.
+        request.expired = true;
+        reject(unavailable('Myotis caller deadline exceeded', op === 'broadcast'));
       }, timeoutMs);
       if (control) this.dispatch(request);
       else {
@@ -214,13 +222,23 @@ class MyotisProcess {
   pump() {
     while (this.accepting && !this.stopping && this.queue.length &&
       [...this.active.values()].filter((entry) => entry.op !== 'status').length < MAX_ACTIVE) {
-      this.dispatch(this.queue.shift());
+      const request = this.queue.shift();
+      // A delayed timer callback must not forward already-expired queued work.
+      if (Date.now() >= request.deadlineAt) {
+        clearTimeout(request.timer);
+        request.reject(unavailable('Myotis queue deadline exceeded'));
+        continue;
+      }
+      this.dispatch(request);
     }
   }
 
   dispatch(request) {
     request.id = ++this.nextId;
     this.active.set(request.id, request);
+    if (request.op !== 'status') {
+      request.nativeTimer = setTimeout(() => this.fail('Myotis native liveness deadline exceeded'), NATIVE_REQUEST_MS);
+    }
     this.send({ type: 'request', id: request.id, op: request.op, args: request.args });
   }
 
@@ -241,6 +259,7 @@ class MyotisProcess {
     this.resolveStart(false);
     for (const request of [...this.queue, ...this.active.values()]) {
       clearTimeout(request.timer);
+      clearTimeout(request.nativeTimer);
       request.reject(unavailable('Myotis stopped',
         request.op === 'broadcast' && this.active.has(request.id)));
     }
@@ -291,6 +310,7 @@ class MyotisProcess {
     this.resolveStart(false);
     for (const request of [...this.queue, ...this.active.values()]) {
       clearTimeout(request.timer);
+      clearTimeout(request.nativeTimer);
       request.reject(unavailable('Myotis child exited',
         request.op === 'broadcast' && this.active.has(request.id)));
     }

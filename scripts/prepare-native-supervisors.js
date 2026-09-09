@@ -1,8 +1,11 @@
 const workspace = require('./build-macos-workspace-supervisor');
 const myotis = require('./build-myotis-supervisor');
 
-function prepareDevelopment() {
-  if (process.platform === 'darwin') workspace.buildMacosWorkspaceSupervisor();
+function prepareDevelopment(platform = process.platform) {
+  // Preserve the Agent branch's macOS-only automatic compiler boundary.
+  // Other hosts use the explicit Myotis build command; packaging stays strict.
+  if (platform !== 'darwin') return;
+  workspace.buildMacosWorkspaceSupervisor();
   myotis.buildSupervisor();
 }
 

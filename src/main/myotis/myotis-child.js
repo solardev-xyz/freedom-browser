@@ -1,6 +1,7 @@
 // Private child entry point. Never import this module into Electron main.
 // No profile policy, wallet signing, renderer IPC, or credentials live here.
-const EXPECTED_ABI = 22;
+const { pin, verifyArtifact } = require('./myotis-artifact');
+const EXPECTED_ABI = pin.abi;
 const MAX_MESSAGE_BYTES = 2 * 1024 * 1024;
 const OPERATIONS = Object.freeze({
   ens: 'ensRecordJson',
@@ -11,7 +12,7 @@ const OPERATIONS = Object.freeze({
   broadcast: 'sendRawTransactionJson',
 });
 
-function runChild(host = process, loadAddon = require) {
+function runChild(host = process, loadAddon = require, verify = verifyArtifact) {
   let addon;
   let handle = -1;
   let generation;
@@ -37,8 +38,13 @@ function runChild(host = process, loadAddon = require) {
       let failure = 'configuration';
       try {
         if (!['mainnet', 'gnosis'].includes(message.network)) throw new Error('network');
+        failure = 'artifact';
+        verify(message.addonPath);
         failure = 'load';
         addon = loadAddon(message.addonPath);
+        failure = 'methods';
+        if (['init', 'create', 'start', 'stop', 'statusJson', 'drainLogs', ...Object.values(OPERATIONS)]
+          .some((method) => typeof addon[method] !== 'function')) throw new Error('methods');
         failure = 'abi';
         if (addon.init() !== EXPECTED_ABI) throw new Error('ABI');
         failure = 'create';
@@ -61,7 +67,7 @@ function runChild(host = process, loadAddon = require) {
     lastId = id;
     const reply = (ok, result) => send({ type: 'reply', id, op, ok, result });
     if (JSON.stringify(args).length > MAX_MESSAGE_BYTES ||
-      (op !== 'status' && (!Object.hasOwn(OPERATIONS, op) || active >= 2))) {
+      (op !== 'status' && (!Object.hasOwn(OPERATIONS, op) || active >= 1))) {
       reply(false);
       return;
     }
