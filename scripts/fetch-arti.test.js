@@ -7,12 +7,17 @@
  * to stay correct across bumps.
  */
 
+const fs = require('fs');
+const path = require('path');
+
 const {
   ARTI_VERSION,
   PINNED_ARTI_VERSION,
   MIN_RUST_VERSION,
   compareVersions,
   checkRustVersion,
+  platformKey,
+  artiBinaryName,
 } = require('./fetch-arti');
 
 describe('fetch-arti version pin', () => {
@@ -23,6 +28,38 @@ describe('fetch-arti version pin', () => {
 
   test('declares the pinned release MSRV', () => {
     expect(MIN_RUST_VERSION).toMatch(/^\d+\.\d+\.\d+$/);
+  });
+});
+
+// The build output has to land where the app looks for it. tor-manager.js
+// derives that path from process.platform/process.arch with the same map, so
+// a host build on any of the three shipped platforms — Windows included since
+// the release workflow builds Arti there too — has to agree with it.
+describe('host output layout', () => {
+  test.each([
+    ['darwin', 'arm64', 'mac-arm64', 'arti'],
+    ['linux', 'x64', 'linux-x64', 'arti'],
+    ['linux', 'arm64', 'linux-arm64', 'arti'],
+    ['win32', 'x64', 'win-x64', 'arti.exe'],
+  ])('%s-%s builds into arti-bin/%s/%s', (platform, arch, dir, binName) => {
+    expect(platformKey(platform, arch)).toBe(dir);
+    expect(artiBinaryName(platform)).toBe(binName);
+  });
+
+  test('matches the directory and binary name tor-manager.js resolves', () => {
+    // Mirrors src/main/tor-manager.js#getArtiBinaryPath, which is the only
+    // consumer of this layout in a dev tree.
+    const torManager = fs.readFileSync(
+      path.join(__dirname, '..', 'src', 'main', 'tor-manager.js'),
+      'utf8'
+    );
+    expect(torManager).toContain("{ darwin: 'mac', linux: 'linux', win32: 'win' }");
+    expect(torManager).toContain("process.platform === 'win32' ? 'arti.exe' : 'arti'");
+  });
+
+  test('only Windows gets an .exe suffix', () => {
+    expect(artiBinaryName('darwin')).toBe('arti');
+    expect(artiBinaryName('linux')).toBe('arti');
   });
 });
 

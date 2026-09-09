@@ -6,20 +6,26 @@
  * crates.io, so we build from source with `cargo install`. This requires a
  * Rust toolchain (`cargo`) on the build machine.
  *
- * The binary is placed at `arti-bin/<platform>-<arch>/arti` to match the
- * layout that `src/main/tor-manager.js#getArtiBinaryPath` and the
- * electron-builder `extraResources` entries expect.
+ * The binary is placed at `arti-bin/<platform>-<arch>/arti` (`arti.exe` on
+ * Windows) to match the layout that
+ * `src/main/tor-manager.js#getArtiBinaryPath` and the electron-builder
+ * `extraResources` entries expect.
  *
  * Cross-compilation is out of scope here (it needs per-target toolchains), so
  * this builds for the host platform/arch only — mirroring how the Docker dist
  * jobs fetch the host-only libradicle addon.
  *
- * Build prerequisites beyond cargo, observed on Linux (the macOS and Linux
- * release runners build this with no extra setup step):
+ * Build prerequisites beyond cargo, observed on Linux (the macOS, Linux and
+ * Windows release runners build this with no extra setup step):
  *   - OpenSSL development headers (`libssl-dev`), for Arti's default
- *     `native-tls` runtime.
+ *     `native-tls` runtime. macOS and Windows use the OS TLS stack instead
+ *     (Secure Transport / SChannel) and need no equivalent package.
  *   - `libsqlite3-dev`, but only when `pkg-config` is installed: `libsqlite3-sys`
  *     then links the system SQLite instead of building its bundled copy.
+ *   - a C compiler for that bundled SQLite copy where no system one is
+ *     linked: Apple CLT on macOS, the x64 MSVC tools on Windows (the release
+ *     workflow builds inside the developer shell it already activates for
+ *     packaging, and downloads no compiler).
  *
  * Env:
  *   ARTI_VERSION   crates.io version to install (default: pinned below; an
@@ -47,10 +53,24 @@ const CARGO_BIN = process.env.CARGO_BIN || 'cargo';
 
 const OUTPUT_DIR = path.join(__dirname, '..', 'arti-bin');
 
-function platformKey() {
+/**
+ * Resource directory name for a host, e.g. `win-x64`. Kept identical to
+ * `getArtiBinaryPath()` in `src/main/tor-manager.js` — the app looks the
+ * binary up by exactly this name in a dev tree.
+ * @param {NodeJS.Platform} [platform]
+ * @param {string} [arch]
+ */
+function platformKey(platform = process.platform, arch = process.arch) {
   const platformMap = { darwin: 'mac', linux: 'linux', win32: 'win' };
-  const platform = platformMap[process.platform] || process.platform;
-  return `${platform}-${process.arch}`;
+  return `${platformMap[platform] || platform}-${arch}`;
+}
+
+/**
+ * Name cargo gives the built binary, and the name the app looks for.
+ * @param {NodeJS.Platform} [platform]
+ */
+function artiBinaryName(platform = process.platform) {
+  return platform === 'win32' ? 'arti.exe' : 'arti';
 }
 
 /** `cargo --version` output, or null when cargo is not runnable. */
@@ -122,7 +142,7 @@ function main() {
 
   const target = platformKey();
   const targetDir = path.join(OUTPUT_DIR, target);
-  const binName = process.platform === 'win32' ? 'arti.exe' : 'arti';
+  const binName = artiBinaryName();
   const destBin = path.join(targetDir, binName);
 
   fs.mkdirSync(targetDir, { recursive: true });
@@ -176,4 +196,6 @@ module.exports = {
   MIN_RUST_VERSION,
   compareVersions,
   checkRustVersion,
+  platformKey,
+  artiBinaryName,
 };

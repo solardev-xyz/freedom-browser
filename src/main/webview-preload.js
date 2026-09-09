@@ -461,6 +461,12 @@ contextBridge.exposeInMainWorld('freedomAPI', {
   checkRadicleBinary: guardSettingsPage('checkRadicleBinary', () =>
     ipcRenderer.invoke('radicle:checkBinary')
   ),
+  // Whether this build bundles an Arti binary — the settings page shows the
+  // Tor rows only where there is one to drive (or where the integration is
+  // already enabled). Same shape as checkRadicleBinary: `{ available }`.
+  checkTorBinary: guardSettingsPage('checkTorBinary', () =>
+    ipcRenderer.invoke('tor:checkBinary')
+  ),
   onProfileUpdated: guardInternalSubscription('onProfileUpdated', 'profile:updated'),
   listProfiles: guardInternal('listProfiles', () => ipcRenderer.invoke('profile:list')),
   createProfile: guardProfileManagerPage('createProfile', (profile) =>

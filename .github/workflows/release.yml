@@ -48,8 +48,9 @@ on:
         default: true
       bundle_tor:
         description: >-
-          macOS and Linux: build and bundle the Arti (Tor) client. Compiles
-          from crates.io with cargo and adds several minutes per job.
+          macOS, Linux and Windows x64: build and bundle the Arti (Tor)
+          client. Compiles from crates.io with cargo and adds several minutes
+          per job.
         type: boolean
         default: true
 
@@ -683,10 +684,17 @@ jobs:
 
   windows-x64:
     runs-on: windows-latest
-    timeout-minutes: 90
+    # 120 rather than the 90 the other non-mac jobs use: compiling Arti from
+    # crates.io adds the better part of half an hour on this runner.
+    timeout-minutes: 120
     defaults:
       run:
         shell: bash
+    env:
+      # Tag pushes always bundle Tor; dispatch runs follow their input
+      # (`inputs.*` is null on push, hence the OR). Same expression as the
+      # mac and Linux jobs.
+      BUNDLE_TOR: ${{ github.event_name == 'push' || inputs.bundle_tor }}
 
     steps:
       - name: Check out repository
@@ -738,6 +746,47 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           MYOTIS_DOWNLOAD_TARGET: win32-x64
 
+      # Same convention as the mac and Linux jobs: the runner image normally
+      # ships cargo, and if it ever does not, install a pinned rustup-init
+      # checked against a sha256 recorded here rather than running an
+      # unpinned installer off the network.
+      #
+      # Arti's dependency tree compiles C (bundled SQLite, ring), so the build
+      # runs inside the same already installed x64 MSVC developer shell the
+      # packaging step below uses — no compiler is downloaded here either.
+      # `arti.exe` lands in arti-bin/win-x64/ and reaches the package through
+      # the `win.extraResources` entry in package.json.
+      - name: Build Arti (Tor) client
+        if: env.BUNDLE_TOR == 'true'
+        shell: pwsh
+        env:
+          RUSTUP_VERSION: 1.28.2
+          RUSTUP_SHA256: 88d8258dcf6ae4f7a80c7d1088e1f36fa7025a1cfd1343731b4ee6f385121fc0
+        run: |
+          if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
+            Push-Location $env:RUNNER_TEMP
+            $url = "https://static.rust-lang.org/rustup/archive/$env:RUSTUP_VERSION/x86_64-pc-windows-msvc/rustup-init.exe"
+            Invoke-WebRequest -Uri $url -OutFile rustup-init.exe
+            $actual = (Get-FileHash rustup-init.exe -Algorithm SHA256).Hash.ToLower()
+            if ($actual -ne $env:RUSTUP_SHA256) {
+              throw "rustup-init.exe sha256 is $actual, expected $env:RUSTUP_SHA256"
+            }
+            ./rustup-init.exe -y --profile minimal --no-modify-path
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            Remove-Item rustup-init.exe
+            Pop-Location
+            $cargoBin = Join-Path $env:USERPROFILE '.cargo\bin'
+            $cargoBin | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+            $env:PATH = "$cargoBin;$env:PATH"
+          }
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (!$vs) { throw 'Installed x64 MSVC tools are required; no compiler will be downloaded.' }
+          Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+          Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
+          npm run tor:download
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       # No Windows code-signing certificate exists yet, so this installer is
       # unsigned (same as every release on freedom.baby so far) and SmartScreen
       # prompts on first run. scripts/build.js pins the update channel to
@@ -787,6 +836,10 @@ jobs:
     defaults:
       run:
         shell: bash
+    env:
+      # Must resolve to the same value as the build job's: it decides whether
+      # the artifact is expected to carry arti.exe at all.
+      BUNDLE_TOR: ${{ github.event_name == 'push' || inputs.bundle_tor }}
 
     steps:
       - name: Check out repository
@@ -881,6 +934,23 @@ jobs:
           Get-Item $exe | Format-List Name, Length, VersionInfo
           "FREEDOM_INSTALLED_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
+      # `packaged-live`'s Tor leg skips itself when a build bundles no Arti,
+      # so on its own it cannot tell "Tor is bundled and starts" from "Tor was
+      # never packaged". Assert the file the installer actually laid down:
+      # a dropped `win.extraResources` entry, or an Arti build that failed
+      # without failing its step, fails here instead of shipping silently.
+      - name: Assert the installed package bundles Arti (Tor)
+        if: env.BUNDLE_TOR == 'true'
+        run: |
+          installed="$(cygpath -u "$FREEDOM_INSTALLED_EXE")"
+          arti="$(dirname "$installed")/resources/arti-bin/arti.exe"
+          if [ ! -f "$arti" ]; then
+            echo "Expected the bundled Arti client at $arti" >&2
+            ls -la "$(dirname "$installed")/resources" >&2 || true
+            exit 1
+          fi
+          echo "Bundled arti.exe present ($(stat -c %s "$arti") bytes)"
+
       # No --no-sandbox here: Windows needs no sandbox opt-out, and passing one
       # would smoke-test a configuration no user runs.
       - name: Smoke-test the installed package
@@ -906,6 +976,20 @@ jobs:
             throw "The portable zip has no Freedom.exe at the root of $dest"
           }
           "FREEDOM_PORTABLE_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      # Same assertion as for the installed package: the two artifacts are
+      # packed separately, so a missing binary can appear in either one alone.
+      - name: Assert the portable zip bundles Arti (Tor)
+        if: env.BUNDLE_TOR == 'true'
+        run: |
+          portable="$(cygpath -u "$FREEDOM_PORTABLE_EXE")"
+          arti="$(dirname "$portable")/resources/arti-bin/arti.exe"
+          if [ ! -f "$arti" ]; then
+            echo "Expected the bundled Arti client at $arti" >&2
+            ls -la "$(dirname "$portable")/resources" >&2 || true
+            exit 1
+          fi
+          echo "Bundled arti.exe present ($(stat -c %s "$arti") bytes)"
 
       - name: Smoke-test the portable zip
         env:

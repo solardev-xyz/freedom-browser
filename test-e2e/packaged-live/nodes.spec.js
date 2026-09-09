@@ -219,15 +219,18 @@ test.describe('packaged bundled nodes', () => {
     });
 
     test('the bundled Arti binary starts, when the build bundles one', async ({ window }) => {
-      // Arti is only bundled when the build ran `npm run tor:download`: never
-      // on Windows (no arti in the win extraResources), and not on a
-      // `bundle_tor=false` dispatch run. Ask the app, which resolves the path
-      // through tor-manager's own getArtiBinaryPath() — resources/arti-bin/arti
-      // in a package — rather than guessing a layout from the outside.
+      // Arti is only bundled when the build ran `npm run tor:download` — every
+      // release platform does (Windows x64 included since #337), but a
+      // `bundle_tor=false` dispatch run and a cross-built package do not. Ask
+      // the app, which resolves the path through tor-manager's own
+      // getArtiBinaryPath() — resources/arti-bin/arti(.exe) in a package —
+      // rather than guessing a layout from the outside. The release
+      // workflow's Windows smoke job asserts that file separately, so this
+      // skip cannot hide a dropped `win.extraResources` entry there.
       const { available } = await window.evaluate(() => window.tor.checkBinary());
       test.skip(
         !available,
-        'This build bundles no Arti binary (expected on Windows and on builds made without `npm run tor:download`)'
+        'This build bundles no Arti binary (expected on builds made without `npm run tor:download`)'
       );
 
       // Executes resources/arti-bin/arti --version through the manager's own

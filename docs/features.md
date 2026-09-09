@@ -71,8 +71,8 @@ launching can use `open -n -a Freedom --args --profile=<id>`.
 - **Onion-only routing**: When enabled, Freedom routes only `.onion` hosts through the profile's Arti SOCKS5 proxy; clearnet and decentralized protocols remain direct.
 - **Fail-closed behavior**: If Arti stops unexpectedly, `.onion` requests fail instead of falling back to direct DNS.
 - **Profile isolation**: Managed Tor state, cache, endpoint, and private-window routing are profile-scoped.
-- **Optional binary**: Source builds require `npm run tor:download`; bundled Tor is currently available on macOS and Linux.
-- **Windows**: Arti is not bundled on Windows (it is built host-only from crates.io), so the Tor rows are hidden from the Experimental settings section on Windows builds and `.onion` access is unavailable.
+- **Optional binary**: Source builds require `npm run tor:download`; every published build bundles Tor — macOS arm64, Linux x64/arm64 and Windows x64.
+- **Bundled or nothing**: Arti is compiled host-only from crates.io, so each release runner builds its own platform's binary. The Tor rows are hidden from the Experimental settings section on any build that carries no Arti binary (a source build that skipped `npm run tor:download`), unless the integration is already enabled — an external Tor SOCKS proxy needs no bundled binary. No Windows ARM64 build is published; it would need the same build step on an ARM64 Windows runner.
 
 ## Integrated Radicle Node
 
@@ -277,7 +277,7 @@ Access built-in browser pages using the `freedom://` protocol:
 - **Ad Blocking**: Choose filter categories, automatic list updates, and per-host exemptions.
 - **Shortcuts**: Search and remap browser commands with conflict detection and per-command reset.
 - **Chains and RPC Providers**: Configure chain endpoints, keyed providers, and ENS verification behavior.
-- **Experimental**: Enable Identity & Wallet (Beta), Show IPFS load progress in the status bar, Swarm node mode, Enable Tor (.onion access) (Beta), and Start Tor when Freedom opens. The Tor rows are hidden on Windows builds. Radicle is no longer experimental — it is configured under **Settings → Nodes** and **Settings → Automatic Startup**.
+- **Experimental**: Enable Identity & Wallet (Beta), Show IPFS load progress in the status bar, Swarm node mode, Enable Tor (.onion access) (Beta), and Start Tor when Freedom opens. The Tor rows are hidden on builds that bundle no Arti binary (never on a published build; see the Tor section above). Radicle is no longer experimental — it is configured under **Settings → Nodes** and **Settings → Automatic Startup**.
 - **Auto-Updates**: Toggle automatic update checks (enabled by default).
 - **Protocol Icons**: Address bar shows Swarm (hexagon), IPFS (cube), onchain app (Ethereum diamond), Radicle (seedling), or HTTP (globe) icon based on current protocol. When a page also has a resolution/provenance trust status (a resolved Ethereum name, or a `web3://` app whose retrieval was verified), the trust shield takes that slot instead — so onchain apps normally show the shield and fall back to the diamond only when no provenance is available.
 - **Hamburger Menu**: Access browser features (Profile submenu, New Tab, New Window, New Private Window, History, Zoom, Print, Developer Tools, Settings, About Freedom, Check for Updates…).

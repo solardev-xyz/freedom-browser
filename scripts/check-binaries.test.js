@@ -5,7 +5,7 @@ jest.mock('fs', () => ({
 
 const fs = require('fs');
 const packageJson = require('../package.json');
-const { checkBinaries } = require('./check-binaries');
+const { checkBinaries, ensureOptionalArti } = require('./check-binaries');
 const { platformKey } = require('./fetch-radicle-addon');
 
 describe('Radicle build inputs', () => {
@@ -71,5 +71,66 @@ describe('Myotis supervisor build inputs', () => {
     const resource = packageJson.build.extraResources.find(({ to }) => to === 'myotis-node');
     expect(resource.filter).toEqual(['myotis-node.node', 'myotis-supervisor', 'myotis-supervisor.exe']);
     expect(packageJson.build.mac.binaries).toEqual(['Contents/Resources/myotis-node/myotis-supervisor']);
+  });
+});
+
+// Arti is optional everywhere (it is compiled, not downloaded), but every
+// target we ship packages it the same way — including Windows since #337.
+describe('Arti (Tor) build inputs', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  test.each(['mac', 'linux', 'win'])('packages the built binary on %s', (target) => {
+    const resource = packageJson.build[target].extraResources.find(({ to }) => to === 'arti-bin');
+
+    expect(resource).toMatchObject({
+      from: 'arti-bin/${os}-${arch}/',
+      filter: ['**/*'],
+    });
+  });
+
+  test('never blocks a build when the binary is missing', () => {
+    fs.existsSync.mockReturnValue(false);
+
+    expect(checkBinaries([{ os: 'win', arch: 'x64' }])).not.toContainEqual(
+      expect.stringContaining('arti')
+    );
+  });
+
+  // electron-builder resolves `from` before it copies, so the per-platform
+  // directory has to exist even for a build that bundles no Tor. Windows was
+  // skipped here while it shipped no Arti at all.
+  test.each([
+    ['mac', 'arm64', 'arti'],
+    ['linux', 'x64', 'arti'],
+    ['win', 'x64', 'arti.exe'],
+  ])('creates the %s-%s resource dir and looks for %s', (os, arch, binName) => {
+    fs.existsSync.mockReturnValue(false);
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+    ensureOptionalArti([{ os, arch }]);
+
+    expect(fs.existsSync).toHaveBeenCalledWith(expect.stringContaining(`${os}-${arch}`));
+    const probed = fs.existsSync.mock.calls.flat();
+    expect(probed.some((target) => target.endsWith(`${os}-${arch}/${binName}`))).toBe(true);
+    expect(fs.mkdirSync).toHaveBeenCalledWith(expect.stringContaining(`${os}-${arch}`), {
+      recursive: true,
+    });
+    expect(warn).toHaveBeenCalled();
+
+    warn.mockRestore();
+  });
+
+  test('leaves an already built binary alone', () => {
+    fs.existsSync.mockReturnValue(true);
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+    ensureOptionalArti([{ os: 'win', arch: 'x64' }]);
+
+    expect(fs.mkdirSync).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
+
+    warn.mockRestore();
   });
 });
