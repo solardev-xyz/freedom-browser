@@ -2388,7 +2388,7 @@ describe('FreedomAgentService', () => {
     expect(events.at(-1)).toMatchObject({ type: 'run_finished', status: 'cancelled' });
   });
 
-  test.each([false, true])('reconciles a yielded process into its finished turn during shutdown=%s', async (duringShutdown) => {
+  test.each([[false, 'bash'], [true, 'bash'], [false, 'workspace_server'], [true, 'workspace_server']])('reconciles a yielded process into its finished turn during shutdown=%s via %s', async (duringShutdown, toolName) => {
     const fake = createFakeSession();
     const historyStore = createHistoryStore();
     let workspaceOptions;
@@ -2408,7 +2408,7 @@ describe('FreedomAgentService', () => {
     };
     const createWorkspaceTools = jest.fn(async (options) => {
       workspaceOptions = options;
-      return [{ name: 'bash' }];
+      return [{ name: toolName }];
     });
     const { service } = createService(fake, {
       historyStore,
@@ -2421,7 +2421,7 @@ describe('FreedomAgentService', () => {
     fake.emit({
       type: 'tool_execution_start',
       toolCallId: 'call_workspace_server',
-      toolName: 'bash',
+      toolName,
       args: { command: 'node server.js' },
     });
     workspaceOptions.onToolOutcome({
@@ -2448,7 +2448,7 @@ describe('FreedomAgentService', () => {
     fake.emit({
       type: 'tool_execution_end',
       toolCallId: 'call_workspace_server',
-      toolName: 'bash',
+      toolName,
       isError: false,
     });
     fake.emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop' } });
@@ -2532,6 +2532,39 @@ describe('FreedomAgentService', () => {
       await shutdown;
       expect(service.getState()).toEqual({ status: 'disposed' });
     }
+  });
+
+  test('keeps a restarted server terminal receipt that arrives before its initial running outcome', async () => {
+    const fake = createFakeSession();
+    let workspaceOptions;
+    const workspaceController = {
+      getWorkspace: jest.fn(() => ({ workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa', enabled: true })),
+      disclosure: jest.fn(), enable: jest.fn(), execute: jest.fn(), cancelConversation: jest.fn(),
+      deleteConversation: jest.fn(), dispose: jest.fn(),
+    };
+    const { service } = createService(fake, { workspaceController,
+      createWorkspaceTools: jest.fn(async options => { workspaceOptions = options; return [{ name: 'workspace_server' }]; }),
+    });
+    await service.start(startOptions());
+    fake.emit({ type: 'tool_execution_start', toolCallId: 'restart_race', toolName: 'workspace_server', args: { action: 'restart' } });
+    const workspace = {
+      workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa', commandId: 'workspace_cmd_bbbbbbbbbbbbbbbbbbbbbbbb',
+      processId: 'workspace_process_cccccccccccccccccccccccc', kind: 'command', command: 'node server.js',
+      workingDirectory: '.', backend: 'linux-bubblewrap', networkPosture: 'full', state: 'completed',
+      exitCode: 0, terminationGuarantee: 'namespace_scoped', terminationScope: 'pid_namespace',
+      sideEffects: 'unknown', survivorsPossible: false, completeDescendantTermination: true,
+    };
+    workspaceOptions.onProcessTerminal({ toolCallId: 'restart_race', operation: 'bash', workspace });
+    workspaceOptions.onToolOutcome({ toolCallId: 'restart_race', operation: 'bash', status: 'succeeded',
+      workspace: { ...workspace, state: 'running', terminationGuarantee: 'pending', terminationScope: 'pending' },
+    });
+    fake.emit({ type: 'tool_execution_end', toolCallId: 'restart_race', toolName: 'workspace_server', isError: false });
+    fake.emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop' } });
+    fake.prompt.resolve(); await service.waitForIdle();
+    expect(service.getState().transcript[0].activity[0]).toMatchObject({ operation: 'workspace_server',
+      label: 'Ran node server.js', workspace: { state: 'completed', processId: workspace.processId },
+    });
+    await service.dispose();
   });
 
   test('finishes Stop at its deadline when both Pi abort and execution remain wedged', async () => {

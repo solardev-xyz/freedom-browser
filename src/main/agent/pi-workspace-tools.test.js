@@ -1150,7 +1150,15 @@ describe('reviewed workspace history tool', () => {
       conversationId: 'one', requestApproval: jest.fn(async () => 'approved'), onToolOutcome: outcome });
     const tool = tools.find(entry => entry.name === 'workspace_server');
     expect((await tool.execute('list', { action: 'list' })).details.servers[0].command).toBe('npm run dev');
+    expect(outcome).toHaveBeenCalledWith(expect.objectContaining({ toolCallId: 'list', operation: 'workspace_server',
+      status: 'succeeded', workspace: expect.objectContaining({ state: 'completed', sideEffects: 'none' }) }));
     await expect(tool.execute('attach', { action: 'reattach', serverId })).rejects.toThrow('stopped');
+    expect(outcome.mock.calls.filter(([event]) => event.toolCallId === 'attach')).toEqual([
+      [expect.objectContaining({ operation: 'workspace_server', status: 'failed' })],
+    ]);
+    const abort = new AbortController(); abort.abort();
+    await expect(tool.execute('aborted', { action: 'list' }, abort.signal)).rejects.toThrow('stopped');
+    expect(outcome.mock.calls.filter(([event]) => event.toolCallId === 'aborted')).toHaveLength(1);
     await tool.execute('restart', { action: 'restart', serverId });
     expect(controller.startProcess).toHaveBeenCalledWith('one', expect.objectContaining({
       restartServerId: serverId, command: 'npm run dev', workingDirectory: 'game', previewPort: 5173,

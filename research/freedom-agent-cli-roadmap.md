@@ -3034,6 +3034,14 @@ Installed donor Jest 30.4.2/babel-jest 30.4.1 differ from lock 30.5.1; no packag
 were installed. Actual custom-scheme browser/HMR and sandboxed lifecycle checks
 remain separately scoped disposable-host evidence, not inferred from mocks.
 
+Full CI run **34399029003 passed** at preview candidate `378f8962` (native
+Myotis e2e remains skipped). A subsequent activity-path correction makes every
+saved-server list/early failure settle its outcome and lets restarted commands
+update their original transcript row after natural completion or shutdown,
+including completion before the initial running outcome. **Two affected suites /
+91 tests and lint passed** for that correction; it does not change the browser
+transport modules under disposable qualification.
+
 The earlier **14 workspace/Git/history CI failures are fixed** at `4dde9f9b`:
 Linux realpath/symlink fixture behavior and coverage instrumentation of serialized
 helper functions were corrected. Full CI run **34391129598 succeeded** on that

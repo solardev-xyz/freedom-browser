@@ -288,6 +288,10 @@ function workspaceAction(operation, params = {}) {
     const names = Array.isArray(params.executables) ? params.executables.slice(0, 16) : [];
     return `Use ${names.join(', ') || 'requested executables'}`;
   }
+  if (operation === 'workspace_server') {
+    return params.action === 'list' ? 'List saved development servers' :
+      params.action === 'reattach' ? 'Reopen server preview' : 'Restart saved development server';
+  }
   if (operation === 'workspace_preview') {
     return params.processId ? 'Preview managed server' : `Preview ${target}`;
   }
@@ -307,6 +311,7 @@ function workspaceOperationKind(operation) {
     request_permissions: 'permission',
     write_stdin: 'process',
     workspace_preview: 'static_preview',
+    workspace_server: 'process',
   }[operation];
 }
 
@@ -1487,32 +1492,49 @@ async function createWorkspaceTools(options = {}) {
         action: { type: 'string', enum: ['list', 'restart', 'reattach'] },
         serverId: { type: 'string', pattern: '^workspace_server_[a-f0-9]{24}$' },
       }, required: ['action'], additionalProperties: false },
-      execute: async (toolCallId, params, signal) => {
-        if (signal?.aborted || options.getRunSignal?.()?.aborted) throw new Error('Workspace operation stopped');
-        if (params.action === 'list') {
-          const servers = controller.listServers(options.conversationId).map(server => ({
-            ...server, command: controller.getServer(options.conversationId, server.serverId).command,
-          }));
-          return { content: [{ type: 'text', text: JSON.stringify({ servers }) }], details: { servers } };
+      execute: async (toolCallId, params = {}, signal) => {
+        let delegated = false;
+        try {
+          if (signal?.aborted || options.getRunSignal?.()?.aborted) throw new Error('Stopped');
+          if (params.action === 'list') {
+            const servers = controller.listServers(options.conversationId).map(server => ({
+              ...server, command: controller.getServer(options.conversationId, server.serverId).command,
+            }));
+            const workspace = fileWorkspaceReceipt(controller, options.conversationId, 'ls', {}, 'completed', {
+              kind: 'process', backend: 'freedom-workspace-servers',
+              command: 'List saved development servers', entryCount: servers.length,
+            });
+            notify(options.onToolOutcome, { toolCallId, operation: 'workspace_server', status: 'succeeded', workspace });
+            return { content: [{ type: 'text', text: JSON.stringify({ servers }) }], details: { servers } };
+          }
+          if (!['restart', 'reattach'].includes(params.action)) throw new Error('Invalid action');
+          const server = controller.getServer(options.conversationId, params.serverId);
+          if (params.action === 'restart') {
+            // The wrapped bash owns its receipt and terminal callback. Do not
+            // emit a second outcome that could replace its running command.
+            delegated = true;
+            const launched = await tools[0].execute(toolCallId, {
+              command: server.command, workingDirectory: server.workingDirectory,
+              previewPort: server.port, restartServerId: server.serverId,
+            }, signal);
+            return { ...launched, content: [...(launched.content || []), {
+              type: 'text', text: 'If the server is running, call workspace_server with action reattach to reopen its preview.',
+            }] };
+          }
+          if (!server.processId || server.state !== 'running') throw new Error('Stopped server');
+          delegated = true;
+          return await createWorkspacePreviewTool(sdk, toolOptions).execute(
+            toolCallId, { processId: server.processId }, signal);
+        } catch (error) {
+          if (delegated) throw error;
+          const safe = new Error('Saved server operation unavailable or stopped. List servers and check current permissions before restarting.');
+          safe.code = 'WORKSPACE_PREVIEW_UNAVAILABLE';
+          notify(options.onToolOutcome, {
+            toolCallId, operation: 'workspace_server', status: 'failed', errorCode: safe.code,
+            workspace: fileWorkspaceReceipt(controller, options.conversationId, 'workspace_server', {}, 'failed', { kind: 'process' }),
+          });
+          throw safe;
         }
-        if (!['restart', 'reattach'].includes(params.action)) throw new Error('Invalid server action');
-        const server = controller.getServer(options.conversationId, params.serverId);
-        if (params.action === 'restart') {
-          const launched = await tools[0].execute(toolCallId, {
-            command: server.command, workingDirectory: server.workingDirectory,
-            previewPort: server.port, restartServerId: server.serverId,
-          }, signal);
-          return { ...launched, content: [...(launched.content || []), {
-            type: 'text', text: 'If the server is running, call workspace_server with action reattach to reopen its preview.',
-          }] };
-        }
-        const current = controller.getServer(options.conversationId, params.serverId);
-        if (!current.processId || current.state !== 'running') {
-          throw new Error('Saved server is stopped. Request current permissions and restart it; no process was reattached.');
-        }
-        const opened = await createWorkspacePreviewTool(sdk, toolOptions).execute(
-          toolCallId, { processId: current.processId }, signal);
-        return opened;
       },
     }));
   }

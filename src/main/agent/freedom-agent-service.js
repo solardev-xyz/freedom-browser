@@ -2426,7 +2426,9 @@ class FreedomAgentService {
         candidate.activity.some((item) => item.toolCallId === outcome.toolCallId)
       );
     const item = run?.activity.find((candidate) => candidate.toolCallId === outcome.toolCallId);
-    if (!run || !item || item.operation !== 'bash') return;
+    if (!run || !item || !['bash', 'workspace_server'].includes(item.operation)) return;
+    if (item.operation === 'workspace_server' &&
+        (workspace.kind !== 'command' || (item.workspace && item.workspace.kind !== 'command'))) return;
     if (item.workspace?.processId && item.workspace.processId !== workspace.processId) return;
     if (item.workspace?.commandId && item.workspace.commandId !== workspace.commandId) return;
     if (
@@ -2453,7 +2455,7 @@ class FreedomAgentService {
     const normalized = {
       type: 'tool_finished',
       toolCallId: outcome.toolCallId,
-      operation: 'bash',
+      operation: item.operation,
       status: errorCode ? 'failed' : 'succeeded',
       ...progress,
       ...(errorCode && { errorCode }),
