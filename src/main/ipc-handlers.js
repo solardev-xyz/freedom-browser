@@ -354,7 +354,7 @@ async function updateProfileNodeConfigFromIpc(protocol, patch) {
     if (protocol === 'myotis') {
       const myotisManager = require('./myotis/myotis-manager');
       if (validation.sanitized.mode === 'disabled') {
-        myotisManager.stopAllMyotis();
+        await myotisManager.stopAllMyotis();
       } else {
         for (const chainId of myotisManager.NETWORKS.keys()) {
           myotisManager.refreshMyotisStatus(chainId);

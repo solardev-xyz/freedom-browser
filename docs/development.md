@@ -26,10 +26,27 @@ npm ci
 npm run ant:download
 npm run ipfs:download
 npm run myotis:download
+npm run myotis:build-supervisor
 npm start
 ```
 
 Swarm and IPFS start automatically by default, while Radicle and Myotis are opt-in under **Settings → Automatic Startup**. Install the embedded Radicle addon with `npm run radicle:download` (macOS, Linux, and Windows x64/ARM64), then enable Radicle for the profile under **Settings → Nodes**. On macOS and Linux, install optional Tor support with `npm run tor:download`, then enable it under **Settings → Experimental**. Bundled Tor is unavailable on Windows.
+
+Myotis also requires its small supervisor built from checked-in source with an
+already installed C compiler: Apple clang/CLT on macOS, a native C compiler on
+Linux, or an **x64 MSVC developer shell** on Windows. No compiler is downloaded
+by the helper build. `npm run build` and `npm run dist` build it before binary
+checks, including each requested macOS architecture. Foreign targets require
+helpers built on the target host and placed in `myotis-bin/<os>-<arch>/`.
+The standalone Windows Node-only supervisor checks passed at `fa14433f`;
+that is not Electron or packaged-app qualification for this merged branch.
+Missing tooling is a build blocker, not authorization to omit the helper.
+On the Agent branch, macOS `npm start` prepares both native supervisors through
+`scripts/prepare-native-supervisors.js`; Linux/Windows development retains the
+explicit Myotis build command. The same hook prepares both packaging inputs,
+and `scripts/sign-native-supervisors.js` composes workspace manifest sealing
+with the Myotis helper's restricted entitlements.
+See [Myotis isolation and qualification](myotis-process-isolation.md).
 
 ## Repository layout
 

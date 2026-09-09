@@ -776,6 +776,7 @@ app.on('before-quit', async (event) => {
 
   event.preventDefault();
   isQuitting = true;
+  const myotisStopped = myotisManager.stopAllMyotis({ shutdown: true });
 
   runtimeIdleController?.stop();
   unregisterRuntimeDownloadActivity?.();
@@ -846,9 +847,14 @@ app.on('before-quit', async (event) => {
 
   log.info('[App] Waiting for Ant, IPFS, Myotis, Radicle, and Tor to stop...');
   shutdownDiagnostics.phase('nodes_stop_started');
-  myotisManager.stopAllMyotis();
-  await Promise.all([stopAnt(), stopIpfs(), stopRadicle(), stopTor()]);
-  log.info('[App] All processes stopped, quitting...');
+  const [myotisExits] = await Promise.all([myotisStopped, stopAnt(), stopIpfs(), stopRadicle(), stopTor()]);
+  if (myotisExits.some((exited) => !exited)) {
+    log.warn('[App] Myotis child exit unconfirmed; data-directory reuse remains blocked');
+  }
+  log.info(myotisExits.every(Boolean)
+    ? '[App] All processes stopped, quitting...'
+    : '[App] Quitting with Myotis exit unconfirmed');
+
   shutdownDiagnostics.phase('final_quit_requested');
   app.quit();
   shutdownDiagnostics.phase('final_quit_returned');
