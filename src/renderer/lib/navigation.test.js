@@ -738,6 +738,66 @@ describe('navigation', () => {
       expect(blurTarget.blur).toHaveBeenCalled();
     });
 
+    // A modal <dialog> (the bookmark add/edit editor, the profile-create and
+    // external-node prompts, onboarding) is the innermost surface too, but it
+    // has no listener to mark the press with: Escape reaches it as the
+    // platform's own close request, dispatched after every keydown listener
+    // has run. So this handler must stand down on "a dialog is open" and, just
+    // as importantly, leave the press *uncancelled* — a `preventDefault()`
+    // here cancels the close request outright, which is what left the bookmark
+    // editor needing a second Escape while it stopped the load on the first.
+    test('an open modal dialog owns the Escape, load and press both untouched', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+
+      const dialog = createElement('dialog');
+      dialog.setAttribute('open', '');
+      global.document.querySelector = jest.fn((selector) =>
+        selector === 'dialog[open]' ? dialog : null
+      );
+
+      ctx.activeRef.tab.navigationState.isWebviewLoading = true;
+      ctx.activeRef.tab.navigationState.currentPageUrl = 'https://slow.example';
+      ctx.elements.addressInput.value = 'https://slow.example';
+      ctx.elements.reloadBtn.dataset.state = 'stop';
+
+      // The dialog's own focused field: the editor's Name input.
+      const labelInput = createElement('input');
+      labelInput.blur = jest.fn();
+      global.document.activeElement = labelInput;
+
+      const event = { key: 'Escape', defaultPrevented: false, preventDefault: jest.fn() };
+      ctx.windowHandlers.keydown(event);
+
+      expect(ctx.activeRef.tab.webview.stop).not.toHaveBeenCalled();
+      expect(ctx.elements.reloadBtn.dataset.state).toBe('stop');
+      expect(ctx.elements.addressInput.value).toBe('https://slow.example');
+      expect(labelInput.blur).not.toHaveBeenCalled();
+      // Cancelling the press here would suppress the dialog's built-in cancel.
+      expect(event.preventDefault).not.toHaveBeenCalled();
+    });
+
+    test('once the dialog is closed the next Escape stops the load', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+
+      // No `dialog[open]` in the document — the editor has closed.
+      global.document.querySelector = jest.fn(() => null);
+
+      ctx.activeRef.tab.navigationState.isWebviewLoading = true;
+      ctx.activeRef.tab.navigationState.currentPageUrl = 'https://slow.example';
+      ctx.elements.reloadBtn.dataset.state = 'stop';
+
+      ctx.windowHandlers.keydown({
+        key: 'Escape',
+        defaultPrevented: false,
+        preventDefault: jest.fn(),
+      });
+
+      expect(ctx.activeRef.tab.webview.stop).toHaveBeenCalled();
+      expect(ctx.elements.reloadBtn.dataset.state).toBe('reload');
+    });
+
     test('the trust popover consumes the Escape that closes it', async () => {
       const ctx = await loadNavigationModule();
       await ctx.mod.initNavigation();

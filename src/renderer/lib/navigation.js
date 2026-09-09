@@ -108,6 +108,18 @@ export const setSuggestionPreviewProbe = (probe) => {
   isSuggestionPreviewActive = typeof probe === 'function' ? probe : () => false;
 };
 
+// True while a modal `<dialog>` is up (the bookmark add/edit editor, the
+// profile-create and external-node prompts, onboarding). Those are innermost
+// surfaces exactly like the menus, but they cannot mark the press with
+// `preventDefault()` the way the menus do: their Escape is the platform's own
+// close request, dispatched *after* every keydown listener has run and
+// cancelled outright by a `preventDefault()` from one of them. So the
+// stop-loading branch stands down while one is open instead — Chrome's order
+// again: this press belongs to the dialog (closing it, or being swallowed by
+// it, as onboarding's `cancel` handler chooses), and only the next one stops
+// the load. Every `<dialog>` in the chrome is shown with `showModal()`.
+const isModalDialogOpen = () => !!document.querySelector?.('dialog[open]');
+
 // Write a page-derived display value into the address bar, unless the user is
 // mid-edit. Chrome's omnibox keeps "user input in progress" text through any
 // navigation committing in the tab — a slow page finishing, a client-side
@@ -2807,6 +2819,10 @@ export const initNavigation = () => {
       // `window`, so their mark is already set by the time this runs;
       // `stopPropagation()` on a same-node listener could not have done it.
       if (event.defaultPrevented) return;
+      // A modal <dialog> owns the press the same way, but marks nothing — see
+      // `isModalDialogOpen`. Standing down here is what leaves its own
+      // Escape-to-cancel intact; a `preventDefault()` below would kill it.
+      if (isModalDialogOpen()) return;
       if (stopLoadingAndRestore()) {
         event.preventDefault();
         if (

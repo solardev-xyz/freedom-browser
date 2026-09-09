@@ -1,7 +1,7 @@
 // Bookmarks bar — add via the IPC the address-bar star uses, and assert
 // the bar reflects the new entry. Removal goes through the same IPC.
 
-const { test, expect } = require('./fixtures');
+const { test, expect, SAMPLE_BZZ_HASH } = require('./fixtures');
 
 // Force the bookmarks bar to be visible on every page. Without this the
 // bar is only shown on the home page, which complicates assertions when
@@ -137,4 +137,68 @@ test('bookmarks can be dragged into a new order, and the order survives a restar
   await window.reload();
   await window.waitForSelector('[data-test="address-input"]');
   await expect.poll(() => barOrder(window)).toEqual([BOOKMARK_TWO, BOOKMARK_ONE]);
+});
+
+// #306, dialog sibling: the bookmark add/edit editor is a modal <dialog>, and
+// a modal dialog is an innermost surface exactly like the menus — one Escape
+// closes it and nothing else. It cannot mark the press with
+// `preventDefault()` the way a menu handler does (its Escape is the
+// platform's own close request, dispatched after every keydown listener), so
+// navigation.js's window-level Escape has to stand down while one is open.
+// Before that guard the first Escape over an in-flight load stopped the load,
+// repainted the address bar, blurred the focused field *and* — because it
+// cancelled the press — left the dialog itself open, needing a second Escape.
+const editorLoadState = (window) =>
+  window.evaluate(() => ({
+    dialogOpen: !!document.getElementById('add-bookmark-modal')?.open,
+    reload: document.getElementById('reload-btn')?.dataset?.state || '',
+    address: document.getElementById('address-input')?.value || '',
+    focused: document.activeElement?.id || '',
+  }));
+
+test('Escape in the bookmark editor closes only the editor, not the load behind it', async ({
+  window,
+  harness,
+}) => {
+  await seedBookmarks(window);
+
+  // A fixture that holds its response open, so the tab is genuinely still
+  // loading while the editor is up (dweb pages routinely take seconds).
+  await harness.setContentFixture(`bzz://${SAMPLE_BZZ_HASH}/`, {
+    body: '<!doctype html><title>slow</title><h1>slow</h1>',
+    delayMs: 30000,
+  });
+
+  const input = window.locator('[data-test="address-input"]');
+  await input.click();
+  await input.fill(SAMPLE_BZZ_HASH);
+  await input.press('Enter');
+
+  // The stop/reload button in its `stop` state is the app's own signal that a
+  // load is in flight.
+  await expect.poll(() => editorLoadState(window)).toMatchObject({ reload: 'stop' });
+  const loading = await editorLoadState(window);
+
+  // Right-click a bookmark → Edit… is the editor's reachable entry point over a
+  // loading page (the address-bar star hides itself while the tab loads).
+  await window.locator('[data-test="bookmark-item"]').first().click({ button: 'right' });
+  await window.locator('.context-menu-item[data-action="edit"]').click();
+  await expect
+    .poll(() => editorLoadState(window))
+    .toMatchObject({ dialogOpen: true, focused: 'bookmark-label' });
+
+  await window.keyboard.press('Escape');
+
+  // One press: the editor is gone, and the load behind it is untouched — still
+  // in flight, with the address bar not repainted from the page snapshot.
+  await expect.poll(() => editorLoadState(window)).toMatchObject({ dialogOpen: false });
+  expect(await editorLoadState(window)).toMatchObject({
+    reload: 'stop',
+    address: loading.address,
+  });
+
+  // With nothing open, the very next Escape reaches the stop-loading handler —
+  // the behaviour the guard must not have removed.
+  await window.keyboard.press('Escape');
+  await expect.poll(() => editorLoadState(window)).toMatchObject({ reload: 'reload' });
 });
