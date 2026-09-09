@@ -578,6 +578,7 @@ app.on('before-quit', async (event) => {
 
   event.preventDefault();
   isQuitting = true;
+  const myotisStopped = myotisManager.stopAllMyotis({ shutdown: true });
 
   // Close all DevTools first to prevent crashes during cleanup
   log.info('[App] Closing all DevTools...');
@@ -622,9 +623,13 @@ app.on('before-quit', async (event) => {
   cleanupTempDirs();
 
   log.info('[App] Waiting for Ant, IPFS, Myotis, Radicle, and Tor to stop...');
-  myotisManager.stopAllMyotis();
-  await Promise.all([stopAnt(), stopIpfs(), stopRadicle(), stopTor()]);
-  log.info('[App] All processes stopped, quitting...');
+  const [myotisExits] = await Promise.all([myotisStopped, stopAnt(), stopIpfs(), stopRadicle(), stopTor()]);
+  if (myotisExits.some((exited) => !exited)) {
+    log.warn('[App] Myotis child exit unconfirmed; data-directory reuse remains blocked');
+  }
+  log.info(myotisExits.every(Boolean)
+    ? '[App] All processes stopped, quitting...'
+    : '[App] Quitting with Myotis exit unconfirmed');
 
   app.quit();
 });
