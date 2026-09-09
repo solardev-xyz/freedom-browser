@@ -29,21 +29,88 @@ const POPOVERS_CSS = read(STYLES_DIR, 'popovers.css');
 const BASE_CSS = read(STYLES_DIR, 'base.css');
 const STYLES_BUNDLE = read(RENDERER_DIR, 'styles.css');
 
+/** Every sheet the chrome bundle imports, in bundle order. */
+const CHROME_SHEETS = [...STYLES_BUNDLE.matchAll(/@import\s+'\.\/styles\/([\w-]+\.css)'/g)].map(
+  ([, name]) => ({ name, css: read(STYLES_DIR, name) })
+);
+
 /**
- * Class tokens that mark an element as a popover: something absolutely or
- * fixed-positioned that floats over the chrome and can outgrow the window.
- * `.menu-flyout` and `.bookmarks-overflow-menu` always come with one of these
- * on the same element, so listing the containers is enough.
+ * Every rule in `css` as `{ prelude, declarations }`, walking braces so a rule
+ * nested inside an at-rule wrapper (`@media`) is seen as its own rule and the
+ * wrapper is not mistaken for one.
+ */
+function rules(css) {
+  const text = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  const found = [];
+  const stack = [];
+  let buffer = '';
+  for (const ch of text) {
+    if (ch === '{') {
+      stack.push(buffer.trim());
+      buffer = '';
+    } else if (ch === '}') {
+      const prelude = stack.pop() ?? '';
+      // A wrapper's own text holds no declarations by the time its children
+      // have been consumed, so only real rules are recorded.
+      if (buffer.includes(':')) found.push({ prelude, declarations: buffer });
+      buffer = '';
+    } else {
+      buffer += ch;
+    }
+  }
+  return found;
+}
+
+// The band `#menu-backdrop` (9999) defines: everything that floats over the
+// whole chrome rather than inside one of its panes. The sidebar's own
+// in-panel dropdowns sit at 50-100 and scroll with the panel that contains
+// them, so they are not chrome popovers and are deliberately below this line.
+const MENU_TIER_Z_INDEX = 9999;
+
+const floatsOverTheChrome = (declarations) =>
+  /position:\s*(fixed|absolute)/.test(declarations) &&
+  [...declarations.matchAll(/z-index:\s*(-?\d+)/g)].some(([, z]) => Number(z) >= MENU_TIER_Z_INDEX);
+
+const classesIn = (prelude) => [...prelude.matchAll(/\.([A-Za-z][\w-]*)/g)].map(([, name]) => name);
+
+/**
+ * Menu-tier floating elements that are *not* popovers, each with the reason.
+ *
+ * This is the only hand-maintained half left, and it is the safe half: a name
+ * here is one the sweeps below deliberately ignore, and a name that stops
+ * matching the sheets fails its own test rather than quietly widening the
+ * exemption. Everything else at this tier has to be in the mechanism.
+ */
+const NOT_POPOVERS = {
+  'menu-backdrop': 'the full-window click catcher a popover raises, not a popover',
+  'chrome-popover': 'the marker class itself',
+  'download-shelf': 'a corner stack of cards with its own layout, never anchored or measured',
+  'update-toast': 'a corner toast, same',
+  'trust-shield': 'an address-bar button lifted over the backdrop, not a surface',
+  'trust-popover-tooltip': 'a pointer-following hint, pointer-events: none, one line tall',
+  'hover-tooltip': 'the same hint, generalised (lib/hover-tooltip.js)',
+};
+
+/**
+ * Class tokens that mark an element as a popover, *derived from the sheets*:
+ * anything the chrome paints at menu tier over the whole window, minus the
+ * documented non-popovers above.
+ *
+ * Hand-maintaining this list was the hole (#328): a new popover with a new
+ * class name carried neither `chrome-popover` nor a listed token, so both
+ * sweeps below stayed green while it sat outside the mechanism entirely —
+ * `.permission-prompt` was a live instance. A popover cannot float without a
+ * rule that says so, so the rule is what the sweep reads.
  */
 const POPOVER_CLASSES = [
-  'menu-dropdown',
-  'bee-dropdown',
-  'context-menu',
-  'autocomplete-dropdown',
-  'bookmarks-overflow-menu',
-  'trust-popover',
-  'permission-popover',
-];
+  ...new Set(
+    CHROME_SHEETS.flatMap(({ css }) =>
+      rules(css)
+        .filter(({ declarations }) => floatsOverTheChrome(declarations))
+        .flatMap(({ prelude }) => classesIn(prelude))
+    )
+  ),
+].filter((name) => !(name in NOT_POPOVERS));
 
 const tokensOf = (value) => value.split(/\s+/).filter(Boolean);
 
@@ -168,13 +235,99 @@ describe('every chrome popover carries the shared bound (#324)', () => {
 
   test('every popover in the markup is one the shared sweep knows about', () => {
     // The other direction: a `chrome-popover` on an element none of
-    // POPOVER_CLASSES matches means the list above has gone stale and the
-    // first test is no longer covering everything it should.
+    // POPOVER_CLASSES matches means the sweep and the sheets disagree about
+    // what a popover is, and the first test is no longer covering everything
+    // it should.
     const unknown = classLists(INDEX_HTML)
       .filter((tokens) => tokens.includes('chrome-popover'))
       .filter((tokens) => !isPopover(tokens))
       .map((tokens) => tokens.join(' '));
     expect(unknown).toEqual([]);
+  });
+});
+
+describe('what counts as a popover comes from the sheets, not a hand-kept list', () => {
+  test('every menu-tier floating surface is either a popover or a named exception', () => {
+    // The derived list is the whole point: a popover class nobody remembered
+    // to write down is still in it, because its own CSS rule put it there.
+    expect([...POPOVER_CLASSES].sort()).toEqual([
+      'autocomplete-dropdown',
+      'bee-dropdown',
+      'bookmarks-overflow-menu',
+      'context-menu',
+      'github-bridge-panel',
+      'menu-dropdown',
+      'permission-popover',
+      'permission-prompt',
+      'trust-popover',
+    ]);
+  });
+
+  test('every documented exception is still a rule in the sheets', () => {
+    // An exemption that no longer matches anything is an exemption that has
+    // silently widened: it would keep a *future* rule of that name out of the
+    // sweep. `chrome-popover` is the marker, not a floating rule of its own.
+    const atMenuTier = new Set(
+      CHROME_SHEETS.flatMap(({ css }) =>
+        rules(css)
+          .filter(({ declarations }) => floatsOverTheChrome(declarations))
+          .flatMap(({ prelude }) => classesIn(prelude))
+      )
+    );
+    const stale = Object.keys(NOT_POPOVERS).filter(
+      (name) => name !== 'chrome-popover' && !atMenuTier.has(name)
+    );
+    expect(stale).toEqual([]);
+  });
+
+  test('a brand-new popover class is picked up with no test edit at all', () => {
+    // The failure mode this replaced (#328): `.share-popover` lands in a
+    // sheet, carries neither `chrome-popover` nor any listed token, and both
+    // sweeps stay green. Now the rule that makes it float is what enrols it.
+    const sheet = `
+      /* a future surface */
+      .share-popover {
+        position: fixed;
+        z-index: 10000;
+        background: var(--menu-bg);
+      }
+      @media (prefers-color-scheme: light) {
+        .share-popover-row {
+          color: var(--text);
+        }
+      }
+    `;
+    const derived = rules(sheet)
+      .filter(({ declarations }) => floatsOverTheChrome(declarations))
+      .flatMap(({ prelude }) => classesIn(prelude));
+    expect(derived).toEqual(['share-popover']);
+
+    // …and with it in the list, the forward sweep flags the markup that forgot
+    // the class, exactly as it does for today's popovers.
+    const forgetful = '<div id="share" class="share-popover hidden"></div>';
+    const missing = classLists(forgetful).filter((tokens) =>
+      tokens.some((token) => derived.includes(token))
+    );
+    expect(missing).toHaveLength(1);
+    expect(missing[0]).not.toContain('chrome-popover');
+  });
+
+  test('an in-panel dropdown below the menu tier is not swept', () => {
+    // The sidebar's selectors (z-index 100) scroll with the pane that holds
+    // them; enrolling them would be a different mechanism, not this one.
+    const sheet = '.wallet-selector-dropdown { position: absolute; z-index: 100; }';
+    expect(rules(sheet).filter(({ declarations }) => floatsOverTheChrome(declarations))).toEqual(
+      []
+    );
+  });
+
+  test('the rule walker sees a rule nested inside an at-rule wrapper', () => {
+    const sheet =
+      '@media (min-width: 10px) { .nested-popover { position: fixed; z-index: 10000; } }';
+    const derived = rules(sheet)
+      .filter(({ declarations }) => floatsOverTheChrome(declarations))
+      .flatMap(({ prelude }) => classesIn(prelude));
+    expect(derived).toEqual(['nested-popover']);
   });
 });
 

@@ -209,6 +209,35 @@ describe('placePopoverAtPoint', () => {
     expect(parseFloat(el.style.top)).toBe(POPOVER_VIEWPORT_MARGIN);
   });
 
+  // The same hazard the anchored entry point already refuses (#328): a 0x0
+  // rect makes "fits below the pointer" win every time, so the menu would be
+  // left at the raw pointer with no bound and no flip.
+  test('refuses to place a popover that is not rendered yet', () => {
+    setViewport(760, 340);
+    const hidden = createPopover({ height: 900, visible: false });
+
+    placePopoverAtPoint(hidden, 300, 320);
+
+    expect(hidden.style.top).toBeUndefined();
+    expect(hidden.style.left).toBeUndefined();
+    expect(hidden.style.maxHeight).toBeUndefined();
+  });
+
+  test('clamps an anchor point the window no longer contains (#328)', () => {
+    // Reachable through the resize re-place below: the point is where the user
+    // right-clicked in the *old* window. Anchoring to it as-is would flip the
+    // menu's bottom edge onto a pointer that is off screen, i.e. put the whole
+    // menu off screen.
+    setViewport(1200, 200);
+    const el = createPopover({ height: 174, width: 200 });
+
+    placePopoverAtPoint(el, 40, 560);
+
+    const top = parseFloat(el.style.top);
+    expect(top).toBeGreaterThanOrEqual(POPOVER_VIEWPORT_MARGIN);
+    expect(top + 174).toBeLessThanOrEqual(200 - POPOVER_VIEWPORT_MARGIN);
+  });
+
   test('clamps horizontally against the right edge, then the left', () => {
     setViewport(1200, 600);
     const wide = createPopover({ height: 100, width: 300 });
@@ -233,6 +262,55 @@ describe('rebindOpenPopovers', () => {
     expect(open.style.maxHeight).toBe(`${500 - 87 - POPOVER_VIEWPORT_MARGIN}px`);
     expect(hidden.style.maxHeight).toBeUndefined();
     expect(document.querySelectorAll).toHaveBeenCalledWith('.chrome-popover');
+  });
+
+  // #328: a context menu opened 40 px above the bottom of a 1200x600 window
+  // and left up while the window shrinks to 1200x200 was re-bounded from its
+  // own top (386) — below the new `innerHeight` — so it took `max-height: 0px`
+  // and vanished while staying *open*: `#menu-backdrop` up at z-index 9999
+  // swallowing every click, the keyboard still on the invisible menu, and
+  // nothing on screen to explain it until the user pressed Escape.
+  test('re-places a pointer-anchored menu instead of collapsing it (#328)', () => {
+    setViewport(1200, 600);
+    const menu = createPopover({ height: 174, width: 200 });
+    global.document.querySelectorAll = jest.fn(() => [menu]);
+    placePopoverAtPoint(menu, 40, 560);
+    expect(parseFloat(menu.style.top)).toBe(560 - 174); // flipped up, as before
+
+    window.innerHeight = 200;
+    document.documentElement.clientHeight = 200;
+    rebindOpenPopovers();
+
+    const top = parseFloat(menu.style.top);
+    const applied = menu.style.maxHeight ? parseFloat(menu.style.maxHeight) : 174;
+    expect(applied).toBeGreaterThan(0);
+    expect(top).toBeGreaterThanOrEqual(POPOVER_VIEWPORT_MARGIN);
+    expect(top + Math.min(applied, 174)).toBeLessThanOrEqual(200 - POPOVER_VIEWPORT_MARGIN);
+  });
+
+  test('a resize is not a fresh open: the menu keeps the row it was scrolled to', () => {
+    setViewport(1200, 400);
+    const menu = createPopover({ height: 600, width: 200 });
+    global.document.querySelectorAll = jest.fn(() => [menu]);
+    placePopoverAtPoint(menu, 40, 300);
+    expect(menu.scrollTop).toBe(0);
+    menu.scrollTop = 120;
+
+    window.innerHeight = 380;
+    document.documentElement.clientHeight = 380;
+    rebindOpenPopovers();
+
+    expect(menu.scrollTop).toBe(120);
+  });
+
+  test('an anchored popover is still re-bounded from its live top edge', () => {
+    const anchored = createPopover({ top: 87, height: 647 });
+    setViewport(1200, 500, [anchored]);
+
+    rebindOpenPopovers();
+
+    expect(anchored.style.maxHeight).toBe(`${500 - 87 - POPOVER_VIEWPORT_MARGIN}px`);
+    expect(anchored.style.top).toBeUndefined();
   });
 
   test('a window resize re-runs the bound', () => {

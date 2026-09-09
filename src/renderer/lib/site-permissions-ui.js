@@ -183,6 +183,11 @@ const showNextPrompt = () => {
   }
 
   promptEl.hidden = false;
+  // Shown first, then bounded: in a short window the prompt's own bottom would
+  // otherwise be clipped by the pinned document rather than scrolled to, the
+  // same rule its sibling `.permission-popover` follows (#328).
+  promptEl.scrollTop = 0;
+  boundPopoverToViewport(promptEl);
   pushDebug(
     isNotice
       ? `[permissions] showing macOS-denied notice (${keys.join('+')})`

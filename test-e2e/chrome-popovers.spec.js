@@ -149,6 +149,19 @@ test('the hamburger menu and its Profiles flyout stay inside the window', async 
   expect(flyout.insideViewport).toBe(true);
   expect(flyout.overflowY).toBe('auto');
 
+  // #328: the anchor clamped the flyout's right edge to the window but never
+  // its left, so in a narrow window (mainWindow sets no minWidth) it started
+  // at left -8 — its first characters off screen, with a pinned document that
+  // cannot be scrolled to them.
+  await setWindowSize(electronApp, window, 460, 600);
+  const narrow = await window.evaluate(() => {
+    const rect = document.getElementById('profile-menu').getBoundingClientRect();
+    return { left: Math.round(rect.left), right: Math.round(rect.right) };
+  });
+  expect(narrow.left).toBeGreaterThanOrEqual(0);
+  expect(narrow.right).toBeLessThanOrEqual(460);
+  await setWindowSize(electronApp, window, 1200, 600);
+
   // Shrink the window until the hamburger genuinely overflows: same rule, the
   // menu scrolls and the chrome does not.
   await window.keyboard.press('Escape'); // flyout
@@ -278,6 +291,83 @@ test.describe('bookmarks overflow menu', () => {
   });
 });
 
+// #328: `.permission-prompt` was the one address-bar popover that never joined
+// the mechanism — no `.chrome-popover`, no bound — and the pinned document
+// turned its overflow from scrollable into clipped: in a 1000x220 window the
+// prompt's bottom landed at 235 against an `innerHeight` of 220, with a
+// `scrollHeight` of 220 and no way to reach the last 15 px.
+test('the permission prompt is bounded like its sibling popover', async ({
+  window,
+  electronApp,
+  harness,
+}) => {
+  const PAGE = 'bzz://' + 'd'.repeat(64) + '/';
+  await harness.setContentFixture(PAGE, {
+    body: [
+      '<!doctype html><title>permission fixture</title>',
+      '<button id="ask">ask</button><div id="out">none</div>',
+      '<script>',
+      "  document.getElementById('ask').addEventListener('click', () => {",
+      '    Notification.requestPermission().then((r) => {',
+      "      document.getElementById('out').textContent = r;",
+      '    });',
+      '  });',
+      '</script>',
+    ].join('\n'),
+  });
+
+  const input = window.locator('[data-test="address-input"]');
+  await input.click();
+  await input.fill(PAGE);
+  await input.press('Enter');
+  await expect(input).toHaveValue(PAGE);
+
+  // Run a script in the guest, tolerating the window before it has attached.
+  const inGuest = (script) =>
+    window.evaluate(async (code) => {
+      const wv = document.querySelector('webview:not(.hidden)');
+      if (!wv || typeof wv.executeJavaScript !== 'function') return null;
+      try {
+        return await wv.executeJavaScript(code);
+      } catch {
+        return null;
+      }
+    }, script);
+
+  await expect
+    .poll(() => inGuest("document.getElementById('out')?.textContent || null"), {
+      message: 'Waiting for the permission fixture page to load',
+      timeout: 10_000,
+    })
+    .toBe('none');
+
+  // The window the prompt did not fit in.
+  await setWindowSize(electronApp, window, 1000, 220);
+
+  await inGuest("document.getElementById('ask').click(); true");
+
+  const prompt = window.locator('[data-test="permission-prompt"]');
+  await expect(prompt).toBeVisible();
+
+  const state = await popoverState(window, '#permission-prompt');
+  expect(state.insideViewport).toBe(true);
+  expect(state.docScrollHeight).toBe(state.innerHeight);
+
+  // Its Allow button is what the clipped tail took with it: it is now reachable
+  // by scrolling inside the prompt, and it takes a pointer where it is drawn.
+  const allow = await scrollToItem(window, '#permission-prompt', '[data-test="permission-allow"]');
+  expect(allow.insideMenu).toBe(true);
+  expect(allow.insideViewport).toBe(true);
+
+  const hits = await window.evaluate(() => {
+    const btn = document.querySelector('[data-test="permission-allow"]');
+    const rect = btn.getBoundingClientRect();
+    const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    return btn === hit || btn.contains(hit);
+  });
+  expect(hits).toBe(true);
+});
+
 test('a context menu raised at the bottom edge opens upwards', async ({
   window,
   electronApp,
@@ -311,9 +401,9 @@ test('a context menu raised at the bottom edge opens upwards', async ({
   const menu = window.locator('#page-context-menu');
   await expect(menu).toBeVisible();
 
-  // The page menu is shown at the raw pointer position first and placed in the
-  // next animation frame (its visible groups were only just switched, so its
-  // height is not final until then) — so poll rather than read once.
+  // The menu is laid out `visibility: hidden` and revealed only once it has
+  // been placed, so "visible" already means "placed" — there is no frame in
+  // which it paints at the raw pointer hanging off the window (#328).
   const placement = () =>
     window.evaluate((y) => {
       const el = document.getElementById('page-context-menu');
@@ -327,15 +417,40 @@ test('a context menu raised at the bottom edge opens upwards', async ({
       };
     }, spot.y);
 
-  await expect
-    .poll(() => placement().then((p) => p.insideViewport), {
-      message: 'Waiting for the context menu to be placed inside the viewport',
-    })
-    .toBe(true);
-
   const placed = await placement();
+  expect(placed.insideViewport).toBe(true);
   expect(placed.flippedAboveThePointer).toBe(true);
   expect(placed.docScrollHeight).toBe(placed.innerHeight);
+
+  // #328: left open while the window shrinks past the menu's own top, the
+  // re-bind handed it `max-height: 0px` — invisible, but still open, with
+  // `#menu-backdrop` swallowing every click and the keyboard on a menu the
+  // user cannot see. A pointer-placed menu is re-placed from the point it was
+  // opened at instead, so it stays on screen and stays usable.
+  await setWindowSize(electronApp, window, 1200, 200);
+  await expect
+    .poll(
+      () =>
+        window.evaluate(() => {
+          const el = document.getElementById('page-context-menu');
+          const rect = el.getBoundingClientRect();
+          return {
+            onScreen: rect.height > 0 && rect.top >= 0 && rect.bottom <= window.innerHeight,
+            height: Math.round(rect.height),
+          };
+        }),
+      { message: 'Waiting for the open context menu to be re-placed in the smaller window' }
+    )
+    .toMatchObject({ onScreen: true });
+
+  // Still a working menu, not a sliver: its first row takes the pointer.
+  const reachable = await window.evaluate(() => {
+    const row = document.querySelector('#page-context-menu button:not(.hidden)');
+    const rect = row.getBoundingClientRect();
+    const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    return row === hit || row.contains(hit);
+  });
+  expect(reachable).toBe(true);
 });
 
 // Every row of a bounded, scrolling popover is still a working menu item:

@@ -119,3 +119,56 @@ describe('onGuestTookKeyboard', () => {
     }
   });
 });
+
+// The playbook rule (`docs/agent-playbooks/ui-consistency.md`) is a claim about
+// every surface, so it is checked against every surface rather than trusted:
+// a module that raises `#menu-backdrop` — i.e. is modal over the page for the
+// pointer — dismisses through `onWindowDeactivated`, never a raw `blur`, or
+// alt-tabbing away leaves it open over an inactive window. The bookmarks
+// overflow menu and the bookmark context menu were the two the rule did not
+// hold for before #328's `db53a8ef`; nothing may join them silently.
+describe('the playbook rule holds for every backdrop-raising surface', () => {
+  const fs = require('fs');
+  const path = require('path');
+
+  const LIB_DIR = __dirname;
+  const modules = fs
+    .readdirSync(LIB_DIR)
+    .filter((name) => name.endsWith('.js') && !name.endsWith('.test.js'))
+    .map((name) => ({ name, source: fs.readFileSync(path.join(LIB_DIR, name), 'utf8') }));
+
+  const raisesBackdrop = modules.filter(
+    ({ name, source }) => name !== 'menu-backdrop.js' && /\bshowMenuBackdrop\s*\(/.test(source)
+  );
+
+  test('the sweep found the modules that raise it', () => {
+    expect(raisesBackdrop.map(({ name }) => name).sort()).toEqual([
+      'autocomplete.js',
+      'bookmarks-ui.js',
+      'chrome-input-context-menu.js',
+      'menus.js',
+      'page-context-menu.js',
+      'tabs.js',
+    ]);
+  });
+
+  test('each of them dismisses through onWindowDeactivated', () => {
+    const rawBlur = [];
+    for (const { name, source } of raisesBackdrop) {
+      if (!/onWindowDeactivated\s*\(/.test(source)) rawBlur.push(name);
+    }
+    expect(rawBlur).toEqual([]);
+  });
+
+  test('and none of them listens for a bare window blur instead', () => {
+    // `window.addEventListener('blur', …)` is the exact call the module
+    // replaces: it fires when a guest takes the keyboard too, which is what
+    // tore a menu down under the user's pointer. An *element* `blur`
+    // (`input.addEventListener('blur', …)`, chrome-input-context-menu.js's
+    // selection reset) is a different event and not what this is about.
+    const offenders = raisesBackdrop
+      .filter(({ source }) => /\bwindow\.addEventListener\(\s*['"]blur['"]/.test(source))
+      .map(({ name }) => name);
+    expect(offenders).toEqual([]);
+  });
+});

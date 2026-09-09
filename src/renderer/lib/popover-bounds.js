@@ -45,6 +45,18 @@ const viewportHeight = () => window.innerHeight || document.documentElement?.cli
 const viewportWidth = () => window.innerWidth || document.documentElement?.clientWidth || 0;
 
 /**
+ * The pointer each context menu was placed at.
+ *
+ * A pointer-anchored menu's top is not a property of the window, so re-binding
+ * it from that top after the window shrank past it hands it `max-height: 0px`
+ * — invisible, but still open, with `#menu-backdrop` swallowing every click
+ * (#328). Remembering the point instead lets a resize re-run the whole
+ * placement (clamp, flip, bound) for the new window, so the menu stays on
+ * screen and stays usable.
+ */
+const placedAt = new WeakMap();
+
+/**
  * The popover's own `max-height` from the stylesheet, in px, or Infinity when
  * it has none. Read with the inline bound already cleared, so it is the sheet's
  * value and not ours.
@@ -121,29 +133,49 @@ export const boundPopoverToViewport = (el) => {
 export const placePopoverAtPoint = (el, x, y) => {
   if (!el?.getBoundingClientRect) return;
   const margin = POPOVER_VIEWPORT_MARGIN;
+  // The same refusal `boundPopoverToViewport` makes, for the same reason: a
+  // popover that is not rendered yet measures 0x0, and a zero height makes the
+  // "fits below the pointer" branch below always win — no bound, no flip, and
+  // the menu appears at the raw pointer hanging off the window. Callers show
+  // the popover first, then place it (#328).
+  if (typeof el.getClientRects === 'function' && el.getClientRects().length === 0) {
+    pushDebug('[popover] refused to place a popover that is not rendered yet');
+    return;
+  }
+  // Remember the pointer, not the resulting placement: `rebindOpenPopovers`
+  // re-runs this from the same point, so a resize re-decides the clamp and the
+  // flip for the window that is there now.
+  placedAt.set(el, { x, y });
+  const vw = viewportWidth();
+  const vh = viewportHeight();
+  // The pointer itself can be outside the window — not when the user right
+  // clicks, but on the resize re-place above, where the window may have shrunk
+  // past the point the menu was opened at. Anchoring to a point off screen
+  // puts the whole menu off screen (a flip lands its bottom edge on the
+  // pointer), so the anchor is clamped into the window first (#328).
+  const px = Math.min(Math.max(x, margin), Math.max(margin, vw - margin));
+  const py = Math.min(Math.max(y, margin), Math.max(margin, vh - margin));
   // Natural size first: an inline max-height from a previous open would make
   // the menu look shorter than it is and defeat the flip decision below.
   el.style.maxHeight = '';
-  el.style.left = `${x}px`;
-  el.style.top = `${y}px`;
+  el.style.left = `${px}px`;
+  el.style.top = `${py}px`;
 
   const rect = el.getBoundingClientRect();
-  const vw = viewportWidth();
-  const vh = viewportHeight();
 
-  let left = x;
-  if (x + rect.width > vw - margin) left = vw - rect.width - margin;
+  let left = px;
+  if (px + rect.width > vw - margin) left = vw - rect.width - margin;
   if (left < margin) left = margin;
 
-  const spaceBelow = vh - y - margin;
-  const spaceAbove = y - margin;
-  let top = y;
+  const spaceBelow = vh - py - margin;
+  const spaceAbove = py - margin;
+  let top = py;
   if (rect.height <= spaceBelow) {
     // Fits below the pointer: the common case, nothing to bound.
     el.style.maxHeight = '';
   } else if (rect.height <= spaceAbove) {
     // Flip up: the menu's bottom edge lands on the pointer.
-    top = y - rect.height;
+    top = py - rect.height;
   } else if (spaceAbove > spaceBelow) {
     // Neither side fits — take the roomier one and scroll inside it.
     top = margin;
@@ -152,7 +184,7 @@ export const placePopoverAtPoint = (el, x, y) => {
     const applied = applyMaxHeight(el, spaceBelow, vh - 2 * margin);
     // In a window too short for the minimum height, honouring it means opening
     // the menu above the pointer so its bottom edge stays on screen (#328).
-    if (y + applied > vh - margin) top = vh - margin - applied;
+    if (py + applied > vh - margin) top = vh - margin - applied;
   }
   if (top < margin) top = margin;
 
@@ -166,16 +198,29 @@ export const placePopoverAtPoint = (el, x, y) => {
  *
  * A menu opened in a tall window and left up while the window is resized (or
  * the display scale changes) would otherwise keep a stale bound and overflow
- * again. Anchored popovers are re-measured from their live top offset; a
- * context menu keeps the position it was opened at and is re-bounded from it,
- * so the visible part stays inside the shrunken window.
+ * again. Anchored popovers are re-measured from their live top offset.
+ *
+ * A pointer-anchored menu is *re-placed* from the point it was opened at, not
+ * re-bounded from where it currently sits: its top belongs to a window that no
+ * longer exists, and a window that shrank past that top would leave it bounded
+ * to `max-height: 0px` — invisible, yet still open with `#menu-backdrop`
+ * swallowing every click until the user happens to press Escape (#328).
  */
 export const rebindOpenPopovers = () => {
   for (const el of document.querySelectorAll('.chrome-popover')) {
     // `getClientRects()` is the visibility test that also works for the
     // `position: fixed` menus, whose `offsetParent` is always null.
     if (el.getClientRects().length === 0) continue;
-    boundPopoverToViewport(el);
+    const point = placedAt.get(el);
+    if (!point) {
+      boundPopoverToViewport(el);
+      continue;
+    }
+    // A resize is not a fresh open: the row the user had scrolled to stays
+    // where it was (the browser clamps it if the new bound is shorter).
+    const scrollTop = el.scrollTop;
+    placePopoverAtPoint(el, point.x, point.y);
+    el.scrollTop = scrollTop;
   }
 };
 

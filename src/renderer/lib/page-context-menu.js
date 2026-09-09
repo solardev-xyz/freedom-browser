@@ -128,26 +128,40 @@ export const showPageContextMenu = (x, y, context) => {
 
   showMenuBackdrop();
 
-  // Position the menu
+  // Lay the menu out without painting it. `placePopoverAtPoint` has to measure
+  // it to decide the clamp and the flip, and the measurement is deferred a
+  // frame because the visible groups were only just switched, so the height is
+  // not final yet — but the menu must not be *seen* at the raw pointer for
+  // that frame: near an edge it renders once hanging off the window, which the
+  // pinned document now clips rather than scrolls (#328). `visibility: hidden`
+  // still generates boxes, so the measurement is the real one; the `hidden`
+  // class (`display: none`) would not.
+  pageContextMenu.style.visibility = 'hidden';
   pageContextMenu.style.left = `${x}px`;
   pageContextMenu.style.top = `${y}px`;
   pageContextMenu.classList.remove('hidden');
 
-  // An open menu owns the keyboard. This is the one chrome surface raised from
-  // *inside* the guest page, so it is the only one that can be up while the
-  // `<webview>` still holds focus — and a keypress that lands in the guest
-  // never reaches the shell's own `keydown` handler, so Escape would not
-  // dismiss it. (Focusing the guest on every tab activation, #304, turned that
-  // from a rare state into the normal one.) Take focus here and hand it back
-  // to the page in `hidePageContextMenu`, the way a native menu does.
-  pageContextMenu.focus?.();
-
-  // Clamp into the viewport, flipping up when the space below the pointer is
-  // too small and scrolling inside when neither side fits — the shared rule
-  // every chrome popover follows (#324). Deferred a frame because the visible
-  // groups were only just switched, so the menu's height is not final yet.
   requestAnimationFrame(() => {
+    // Dismissed inside the frame we waited for (a navigation, Escape, a click
+    // on the backdrop): nothing to place, and `visibility` must not be cleared
+    // on a menu that is hidden again.
+    if (pageContextMenu.classList.contains('hidden')) return;
+    // Clamp into the viewport, flipping up when the space below the pointer is
+    // too small and scrolling inside when neither side fits — the shared rule
+    // every chrome popover follows (#324).
     placePopoverAtPoint(pageContextMenu, x, y);
+    pageContextMenu.style.visibility = '';
+
+    // An open menu owns the keyboard. This is the one chrome surface raised
+    // from *inside* the guest page, so it is the only one that can be up while
+    // the `<webview>` still holds focus — and a keypress that lands in the
+    // guest never reaches the shell's own `keydown` handler, so Escape would
+    // not dismiss it. (Focusing the guest on every tab activation, #304,
+    // turned that from a rare state into the normal one.) Take focus here and
+    // hand it back to the page in `hidePageContextMenu`, the way a native menu
+    // does — after the reveal, since a `visibility: hidden` element cannot
+    // take focus at all.
+    pageContextMenu.focus?.();
   });
 };
 

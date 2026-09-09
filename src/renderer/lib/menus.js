@@ -109,8 +109,20 @@ export const anchorProfileFlyout = () => {
   const wrap = profileMenuWrap || document.getElementById('profile-menu-wrap');
   if (!flyout || !wrap || flyout.hidden) return;
   const row = wrap.getBoundingClientRect();
+  flyout.style.left = 'auto';
   flyout.style.right = `${Math.max(POPOVER_VIEWPORT_MARGIN, window.innerWidth - row.left)}px`;
   flyout.style.top = `${Math.max(POPOVER_VIEWPORT_MARGIN, row.top - 4)}px`;
+  // Both edges, not just the right one. `mainWindow` sets no `minWidth`, and
+  // in a window narrow enough (innerWidth 460) the flyout anchored to the row
+  // starts at left -8: its first characters off screen, with a pinned document
+  // that cannot be scrolled to them. Measured rather than computed, because a
+  // right-anchored box is shrink-to-fit — its width depends on the very `right`
+  // a clamp would change. Pinning the left edge instead is stable: the sheet's
+  // `max-width` keeps the other edge inside. #328.
+  if (flyout.getBoundingClientRect().left < POPOVER_VIEWPORT_MARGIN) {
+    flyout.style.right = 'auto';
+    flyout.style.left = `${POPOVER_VIEWPORT_MARGIN}px`;
+  }
   boundPopoverToViewport(flyout);
 };
 
