@@ -681,6 +681,76 @@ describe('navigation', () => {
     expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledTimes(1);
   });
 
+  // #306: Escape means "close the innermost open surface" first and
+  // "stop loading" only last, as it does in Chrome. Every surface that
+  // consumes the press marks it with `preventDefault()`; this handler must
+  // stand down for that mark, or closing a menu over a still-loading page
+  // also cancels the load, repaints the address bar and blurs the focus the
+  // menu just handed back. `stopPropagation()` cannot substitute: menus.js's
+  // listener sits on the same `window` node, and same-node listeners still run.
+  describe('Escape stop-loading yields to a surface that consumed the press', () => {
+    test('a consumed Escape leaves an in-flight load alone', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+
+      ctx.activeRef.tab.navigationState.isWebviewLoading = true;
+      ctx.activeRef.tab.navigationState.currentPageUrl = 'https://slow.example';
+      ctx.elements.addressInput.value = 'https://slow.example';
+      ctx.elements.reloadBtn.dataset.state = 'stop';
+
+      const blurTarget = createElement('button');
+      blurTarget.blur = jest.fn();
+      global.document.activeElement = blurTarget;
+
+      ctx.windowHandlers.keydown({
+        key: 'Escape',
+        defaultPrevented: true,
+        preventDefault: jest.fn(),
+      });
+
+      expect(ctx.activeRef.tab.webview.stop).not.toHaveBeenCalled();
+      expect(ctx.elements.reloadBtn.dataset.state).toBe('stop');
+      // The menu handed the keyboard back to its own button; this handler must
+      // not take it away again.
+      expect(blurTarget.blur).not.toHaveBeenCalled();
+    });
+
+    test('an unconsumed Escape still stops the load', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+
+      ctx.activeRef.tab.navigationState.isWebviewLoading = true;
+      ctx.activeRef.tab.navigationState.currentPageUrl = 'https://slow.example';
+      ctx.elements.reloadBtn.dataset.state = 'stop';
+
+      const blurTarget = createElement('button');
+      blurTarget.blur = jest.fn();
+      global.document.activeElement = blurTarget;
+
+      ctx.windowHandlers.keydown({
+        key: 'Escape',
+        defaultPrevented: false,
+        preventDefault: jest.fn(),
+      });
+
+      expect(ctx.activeRef.tab.webview.stop).toHaveBeenCalled();
+      expect(ctx.elements.reloadBtn.dataset.state).toBe('reload');
+      expect(blurTarget.blur).toHaveBeenCalled();
+    });
+
+    test('the trust popover consumes the Escape that closes it', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+
+      ctx.elements.trustPopover.hidden = false;
+      const event = { key: 'Escape', preventDefault: jest.fn() };
+      global.document.handlers.keydown(event);
+
+      expect(ctx.elements.trustPopover.hidden).toBe(true);
+      expect(event.preventDefault).toHaveBeenCalled();
+    });
+  });
+
   test('processes webview lifecycle events and records history', async () => {
     const ctx = await loadNavigationModule({
       initialSettings: { showBookmarkBar: true, showIpfsProgressStatus: true },

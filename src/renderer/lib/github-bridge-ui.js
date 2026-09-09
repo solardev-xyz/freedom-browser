@@ -419,9 +419,12 @@ export function initGithubBridgeUi() {
     }
   });
 
-  // Close panel on Escape
+  // Close panel on Escape. Consumed (`preventDefault`) so navigation.js's
+  // window-level Escape doesn't also stop an in-flight page load — Chrome
+  // closes the innermost surface only. See #306.
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && panelOpen) {
+      e.preventDefault();
       closePanel();
     }
   });

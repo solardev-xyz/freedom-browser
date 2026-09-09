@@ -958,6 +958,26 @@ describe('tabs ui behavior', () => {
     documentHandlers.click({ target: createElement('div') });
     expect(backdropMocks.hideMenuBackdrop).toHaveBeenCalled();
 
+    // Escape takes the menu down, and consumes the press while doing it:
+    // navigation.js's window-level Escape (stop loading + restore the address
+    // bar) stands down on `defaultPrevented`, so dismissing this menu over a
+    // still-loading page doesn't also cancel that load (#306).
+    firstTabEl.dispatch('contextmenu', {
+      preventDefault: jest.fn(),
+      stopPropagation: jest.fn(),
+      clientX: 20,
+      clientY: 30,
+    });
+    const escape = { key: 'Escape', preventDefault: jest.fn() };
+    documentHandlers.keydown(escape);
+    expect(elements.tabContextMenu.classList.contains('hidden')).toBe(true);
+    expect(escape.preventDefault).toHaveBeenCalled();
+
+    // With the menu already down the press is left for the surfaces behind it.
+    const escapeAgain = { key: 'Escape', preventDefault: jest.fn() };
+    documentHandlers.keydown(escapeAgain);
+    expect(escapeAgain.preventDefault).not.toHaveBeenCalled();
+
     firstTabEl.dispatch('contextmenu', {
       preventDefault: jest.fn(),
       stopPropagation: jest.fn(),

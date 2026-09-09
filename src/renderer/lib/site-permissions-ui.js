@@ -386,10 +386,16 @@ export const initSitePermissionsUi = () => {
     }
   });
 
+  // A press that actually dismisses the prompt or closes the indicator
+  // popover is consumed (`preventDefault`), so navigation.js's window-level
+  // Escape doesn't also stop an in-flight page load — Chrome closes the
+  // innermost surface only. See #306.
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
+    const popoverOpen = Boolean(popoverEl && !popoverEl.hidden);
+    if (activePrompt || popoverOpen) e.preventDefault();
     dismissActivePrompt('escape');
-    if (popoverEl && !popoverEl.hidden) setPopoverOpen(false);
+    if (popoverOpen) setPopoverOpen(false);
   });
 
   // Focus loss only closes the indicator popover — never the prompt.

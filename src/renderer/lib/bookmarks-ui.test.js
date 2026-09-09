@@ -308,6 +308,41 @@ describe('bookmarks-ui', () => {
     expect(ctx.menuBackdropMocks.hideMenuBackdrop).toHaveBeenCalled();
   });
 
+  // #306: Escape closes only the innermost open surface, as in Chrome. The
+  // press is consumed while doing it, so navigation.js's window-level Escape
+  // (stop loading + restore the address bar) stands down on `defaultPrevented`
+  // and closing a bookmark menu over a loading page can't cancel that load.
+  test('Escape closes an open bookmark menu and consumes the press', async () => {
+    const ctx = await loadBookmarksModule({
+      initialBookmarks: [{ label: 'Alpha', target: 'https://alpha.example' }],
+    });
+
+    ctx.mod.initBookmarks();
+    await ctx.mod.loadBookmarks();
+    await flushMicrotasks();
+
+    // Nothing open: the press belongs to whatever is behind the bar.
+    const idle = { key: 'Escape', preventDefault: jest.fn() };
+    global.document.handlers.keydown(idle);
+    expect(idle.preventDefault).not.toHaveBeenCalled();
+
+    const contextMenu = ctx.helpers.getContextMenu();
+    const bookmarksInner = ctx.helpers.getBookmarksInner();
+    contextMenu.setRect({ right: 520, bottom: 420, width: 120, height: 50 });
+    bookmarksInner.dispatch('contextmenu', {
+      preventDefault: jest.fn(),
+      clientX: 20,
+      clientY: 30,
+      target: bookmarksInner.children[0].children[1],
+    });
+    expect(contextMenu.classList.contains('hidden')).toBe(false);
+
+    const escape = { key: 'Escape', preventDefault: jest.fn() };
+    global.document.handlers.keydown(escape);
+    expect(contextMenu.classList.contains('hidden')).toBe(true);
+    expect(escape.preventDefault).toHaveBeenCalled();
+  });
+
   test('updates add bookmark button visibility and bookmark state', async () => {
     const consoleError = jest.spyOn(console, 'error').mockImplementation(() => {});
     const ctx = await loadBookmarksModule({

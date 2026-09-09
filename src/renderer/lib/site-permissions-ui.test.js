@@ -256,6 +256,29 @@ describe('site-permissions-ui prompt tab-scoping', () => {
     expect(promptVisible()).toBe(false);
     expect(api.respondToPrompt).not.toHaveBeenCalled();
   });
+
+  // #306: Escape closes only the innermost open surface, as in Chrome, and
+  // consumes the press while doing it — navigation.js's window-level Escape
+  // (stop loading + restore the address bar) stands down on `defaultPrevented`,
+  // so dismissing a prompt over a still-loading page can't cancel that load.
+  test('Escape consumes the press only when it actually dismisses the prompt', () => {
+    const idle = { key: 'Escape', preventDefault: jest.fn() };
+    doc.handlers.keydown(idle);
+    expect(idle.preventDefault).not.toHaveBeenCalled();
+
+    sendRequest({ id: 16, origin: 'https://a.example', keys: ['camera'], guestId: 1 });
+    expect(promptVisible()).toBe(true);
+
+    const escape = { key: 'Escape', preventDefault: jest.fn() };
+    doc.handlers.keydown(escape);
+    expect(promptVisible()).toBe(false);
+    expect(api.respondToPrompt).toHaveBeenCalledWith({
+      id: 16,
+      decision: 'dismiss',
+      remember: false,
+    });
+    expect(escape.preventDefault).toHaveBeenCalled();
+  });
 });
 
 describe('site-permissions-ui popover revoke label', () => {

@@ -1933,11 +1933,15 @@ export const initTabs = async () => {
     }
   });
 
-  // Hide context menu on escape or when window loses focus
+  // Hide context menu on escape or when window loses focus. A press that
+  // actually closes the menu is consumed (`preventDefault`), so navigation.js's
+  // window-level Escape doesn't also stop an in-flight page load — Chrome
+  // closes the innermost surface only. See #306.
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') {
-      hideTabContextMenu();
-    }
+    if (e.key !== 'Escape') return;
+    if (!tabContextMenu || tabContextMenu.classList.contains('hidden')) return;
+    e.preventDefault();
+    hideTabContextMenu();
   });
   window.addEventListener('blur', hideTabContextMenu);
   // (The `focus`/`mousedown` dismissal that used to hang off

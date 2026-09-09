@@ -390,11 +390,15 @@ export const initPageContextMenu = async () => {
     }
   });
 
-  // Hide on escape
+  // Hide on escape. A press that actually closes the menu is consumed
+  // (`preventDefault`), so navigation.js's window-level Escape doesn't also
+  // stop an in-flight page load — Chrome closes the innermost surface only.
+  // See #306.
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') {
-      hidePageContextMenu();
-    }
+    if (e.key !== 'Escape') return;
+    if (!pageContextMenu || pageContextMenu.classList.contains('hidden')) return;
+    e.preventDefault();
+    hidePageContextMenu();
   });
 
   // Hide when window loses focus — without the focus hand-back, which would

@@ -531,6 +531,12 @@ export const initBookmarks = () => {
     }
   };
 
+  const anyBookmarkMenuOpen = () =>
+    Boolean(
+      (contextMenu && !contextMenu.classList.contains('hidden')) ||
+        (overflowMenu && !overflowMenu.classList.contains('hidden'))
+    );
+
   const hideAllBookmarkMenus = () => {
     hideBookmarkContextMenu();
     hideOverflowMenu();
@@ -547,10 +553,15 @@ export const initBookmarks = () => {
       hideBookmarkContextMenu();
     }
   });
+  // A press that actually closes one of these menus is consumed
+  // (`preventDefault`), so navigation.js's window-level Escape doesn't also
+  // stop an in-flight page load — Chrome closes the innermost surface only.
+  // See #306.
   document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') {
-      hideAllBookmarkMenus();
-    }
+    if (event.key !== 'Escape') return;
+    if (!anyBookmarkMenuOpen()) return;
+    event.preventDefault();
+    hideAllBookmarkMenus();
   });
   // (The `focus`/`mousedown` dismissal that used to hang off
   // `document.getElementById('bzz-webview')` is gone: webviews are created

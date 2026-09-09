@@ -337,6 +337,13 @@ export const initMenus = () => {
   // permission prompt, find bar); these two were the exception, and left the
   // full-window `#menu-backdrop` swallowing clicks with no keyboard way out.
   //
+  // Closing a surface *consumes* the press: `preventDefault()` marks it, and
+  // navigation.js's window-level Escape stands down on `defaultPrevented`.
+  // Chrome only ever closes the innermost surface, so dismissing a menu over a
+  // still-loading page must not also stop that load, repaint the address bar
+  // and blur the focus we just handed back. `stopPropagation()` cannot do this
+  // job: both listeners sit on `window`, and same-node listeners still run.
+  //
   // Keyboard fallback for the zoom accelerators, resolved through the shared
   // shortcut registry so user remaps apply live. Needed on the Linux
   // frameless setups where menu accelerators never reach the app — the same
@@ -352,12 +359,15 @@ export const initMenus = () => {
   window.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
       if (isProfileFlyoutOpen()) {
+        event.preventDefault();
         hideProfileFlyout();
         document.getElementById('profile-menu-btn')?.focus?.();
       } else if (state.menuOpen) {
+        event.preventDefault();
         setMenuOpen(false);
         menuButton?.focus?.();
       } else if (state.antMenuOpen) {
+        event.preventDefault();
         setAntMenuOpen(false);
         beeMenuButton?.focus?.();
       }

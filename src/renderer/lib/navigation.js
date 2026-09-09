@@ -2222,6 +2222,8 @@ export const initNavigation = () => {
   });
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && trustPopover && !trustPopover.hidden) {
+      // Consumed: the window-level Escape below must not also stop the load.
+      e.preventDefault();
       setTrustPopoverOpen(false);
     }
   });
@@ -2793,6 +2795,18 @@ export const initNavigation = () => {
       event.preventDefault();
       reloadPage();
     } else if (event.key === 'Escape') {
+      // Stop-loading is Escape's *last* meaning, the way it is in Chrome: one
+      // press closes only the innermost open surface. Every dismissible
+      // surface in the chrome (the hamburger and Nodes menus, the tab and page
+      // context menus, the bookmark menus, the trust popover, a permission
+      // prompt, the chrome-input context menu) calls `preventDefault()` when
+      // it consumes the press, and this handler stands down for it — otherwise
+      // closing a menu over a still-loading page would also cancel that load,
+      // repaint the address bar and blur the focus the menu just handed back.
+      // Those handlers all sit on `document` or, for menus.js, earlier on
+      // `window`, so their mark is already set by the time this runs;
+      // `stopPropagation()` on a same-node listener could not have done it.
+      if (event.defaultPrevented) return;
       if (stopLoadingAndRestore()) {
         event.preventDefault();
         if (

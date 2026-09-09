@@ -558,9 +558,20 @@ describe('page-context-menu', () => {
     // Escape dismisses and returns the keyboard to the page it was opened over.
     global.document.activeElement = pageContextMenu;
     pageContextMenu.contains.mockImplementation((el) => el === pageContextMenu);
-    documentHandlers.keydown({ key: 'Escape' });
+    const escape = { key: 'Escape', preventDefault: jest.fn() };
+    documentHandlers.keydown(escape);
     expect(pageContextMenu.classList.add).toHaveBeenCalledWith('hidden');
     expect(activeWebview.focus).toHaveBeenCalledTimes(1);
+    // Closing the menu consumes the press — navigation.js's window-level
+    // Escape (stop loading + restore the address bar) stands down on
+    // `defaultPrevented`, so dismissing a context menu raised over a loading
+    // page doesn't also cancel that load (#306).
+    expect(escape.preventDefault).toHaveBeenCalled();
+
+    // With the menu already down the press belongs to whatever is behind it.
+    const escapeAgain = { key: 'Escape', preventDefault: jest.fn() };
+    documentHandlers.keydown(escapeAgain);
+    expect(escapeAgain.preventDefault).not.toHaveBeenCalled();
 
     // A click that moved focus elsewhere in chrome (the address bar) dismisses
     // the menu too — and must not yank focus back to the page.
@@ -582,7 +593,7 @@ describe('page-context-menu', () => {
     mod.showPageContextMenu(20, 30, { pageUrl: 'https://example.com/page' });
     global.document.activeElement = pageContextMenu;
     webviewContainer.querySelector.mockReturnValue({ focus: jest.fn() });
-    documentHandlers.keydown({ key: 'Escape' });
+    documentHandlers.keydown({ key: 'Escape', preventDefault: jest.fn() });
     expect(activeWebview.focus).toHaveBeenCalledTimes(1);
   });
 

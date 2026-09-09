@@ -327,10 +327,19 @@ describe('github-bridge-ui', () => {
     await flushMicrotasks();
     expect(ctx.electronAPI.copyText).toHaveBeenCalledWith('rad:zexisting');
 
-    ctx.documentHandlers.keydown({
-      key: 'Escape',
-    });
+    const escape = { key: 'Escape', preventDefault: jest.fn() };
+    ctx.documentHandlers.keydown(escape);
     expect(ctx.elements.panel.classList.contains('hidden')).toBe(true);
+    // Closing the panel consumes the press — navigation.js's window-level
+    // Escape (stop loading) stands down on `defaultPrevented`, so dismissing
+    // this panel over a loading page doesn't also cancel the load (#306).
+    expect(escape.preventDefault).toHaveBeenCalled();
+
+    // With the panel already closed the press is left alone for the surfaces
+    // behind it.
+    const escapeAgain = { key: 'Escape', preventDefault: jest.fn() };
+    ctx.documentHandlers.keydown(escapeAgain);
+    expect(escapeAgain.preventDefault).not.toHaveBeenCalled();
 
     ctx.elements.bridgeBtn.classList.remove('hidden');
     ctx.elements.bridgeBtn.dispatch('click', {
