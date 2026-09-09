@@ -88,6 +88,29 @@ function registerBookmarksIpc() {
     return saveBookmarks(current);
   });
 
+  // Reorder the bar. The renderer sends the full list of targets in their new
+  // order (a bookmarks-bar drag, #307); anything the renderer did not name —
+  // an entry added by another window since it read the list — keeps its
+  // relative order at the end rather than being dropped.
+  ipcMain.handle(IPC.BOOKMARKS_REORDER, (_event, targets) => {
+    if (!Array.isArray(targets)) return false;
+    const current = loadBookmarks();
+    const byTarget = new Map(current.map((bookmark) => [bookmark.target, bookmark]));
+    const seen = new Set();
+    const ordered = [];
+    for (const target of targets) {
+      const bookmark = byTarget.get(target);
+      if (!bookmark || seen.has(target)) continue;
+      seen.add(target);
+      ordered.push(bookmark);
+    }
+    for (const bookmark of current) {
+      if (!seen.has(bookmark.target)) ordered.push(bookmark);
+    }
+    if (ordered.length !== current.length) return false;
+    return saveBookmarks(ordered);
+  });
+
   ipcMain.handle(IPC.BOOKMARKS_REMOVE, (_event, target) => {
     const current = loadBookmarks();
     const updated = current.filter((b) => b.target !== target);

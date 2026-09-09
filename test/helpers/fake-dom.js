@@ -69,6 +69,17 @@ const matchesSingleSelector = (element, selector) => {
     return element.dataset[dataAttr.key] === dataAttr.value;
   }
 
+  // Tag name plus a bare attribute-presence check, e.g. `dialog[open]` — the
+  // probe every chrome surface uses to spot an open modal dialog above it.
+  // Matches the attribute or the matching IDL property a real <dialog> keeps
+  // in sync with it.
+  const tagWithAttr = selector.match(/^([a-z]+)\[([a-z-]+)\]$/);
+  if (tagWithAttr) {
+    const [, tag, attr] = tagWithAttr;
+    if (element.tagName !== tag.toUpperCase()) return false;
+    return element.attributes?.[attr] !== undefined || element[attr] === true;
+  }
+
   const bareDataAttr = selector.match(/^\[data-([a-z-]+)\]$/);
   if (bareDataAttr) {
     const key = bareDataAttr[1].replace(/-([a-z])/g, (_, char) => char.toUpperCase());

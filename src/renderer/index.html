@@ -1034,6 +1034,12 @@
               data-shortcut-other="Ctrl+H"
             ></span>
           </button>
+          <!-- Downloads sits directly after History, Chrome's order (New tab,
+               New window, New Incognito window, History, Downloads, …). #326 -->
+          <button id="downloads-btn" class="menu-item" type="button">
+            <span class="menu-item-label">Downloads</span>
+            <span class="menu-item-shortcut" data-shortcut="CmdOrCtrl+Shift+J"></span>
+          </button>
 
           <div class="menu-divider"></div>
 
@@ -4991,7 +4997,10 @@
     </div>
 
     <!-- Page Context Menu -->
-    <div id="page-context-menu" class="context-menu hidden">
+    <!-- `tabindex="-1"` so the menu can take the keyboard away from the guest
+         page it was raised over: an Escape that lands in the `<webview>` never
+         reaches the shell's keydown handler. Not tab-reachable. -->
+    <div id="page-context-menu" class="context-menu hidden" tabindex="-1">
       <!-- Page actions (shown when clicking on page background) -->
       <div class="context-menu-group" data-group="page">
         <button class="context-menu-item" data-action="back">Back</button>

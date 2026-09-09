@@ -130,6 +130,25 @@ export const getInternalPageName = (url) => {
   return null;
 };
 
+// The internal pages that act as a window's *new-tab page*: `home` in a normal
+// window, `private` in a private window (`tabs.js#defaultNewTabUrl`). Chrome
+// treats its NTP and its Incognito NTP identically in the omnibox — both show
+// an EMPTY address bar and both take focus when the tab is opened — so both
+// names have to derive to an empty display value and both have to satisfy the
+// "this is a fresh empty tab" focus test. See issue #312.
+const NEW_TAB_PAGE_NAMES = new Set(['home', 'private']);
+
+// True for a new-tab-page URL in either form it appears in: the friendly
+// `freedom://home` / `freedom://private` one `tab.url` carries while the page
+// is still resolving, and the resolved `file://…/pages/<page>.html` one
+// Chromium commits.
+export const isNewTabPageUrl = (url) => {
+  if (!url || typeof url !== 'string') return false;
+  const friendly = /^freedom:\/\/([a-z0-9-]+)\/?$/i.exec(url);
+  const name = friendly ? friendly[1].toLowerCase() : getInternalPageName(url);
+  return !!name && NEW_TAB_PAGE_NAMES.has(name.split('/')[0]);
+};
+
 // Trust interstitials are deliberately not routable freedom:// pages, but the
 // browser chrome must keep showing the app the user asked for while one is
 // visible. Like the ENS interstitials above, the onchain gate's own

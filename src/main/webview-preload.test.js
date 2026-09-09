@@ -600,7 +600,7 @@ describe('webview-preload', () => {
     });
   });
 
-  test('intercepts modified clicks and target=_blank with newTab disposition', () => {
+  test('resolves modifiers into Chrome dispositions (background tab, foreground tab, new window)', () => {
     const makeAnchor = (target = '') => ({
       tagName: 'A',
       getAttribute: jest.fn((name) => {
@@ -617,15 +617,81 @@ describe('webview-preload', () => {
     // (UI Events spec). A previous implementation listened only to
     // `click` and checked `event.button === 1` inside, which is dead
     // code for real middle-clicks; fixed by registering both listeners.
+    // Dispositions match Chrome (#303): Ctrl/Cmd+click and middle-click open a
+    // BACKGROUND tab (you stay on the page you are reading), adding Shift
+    // promotes it to the foreground, and a bare Shift+click opens a window.
+    // Every one of these used to collapse into a single foreground `newTab`.
     const cases = [
-      { label: 'cmd-click', dispatchEvent: 'click', overrides: { metaKey: true } },
-      { label: 'ctrl-click', dispatchEvent: 'click', overrides: { ctrlKey: true } },
-      { label: 'shift-click', dispatchEvent: 'click', overrides: { shiftKey: true } },
-      { label: 'middle-click', dispatchEvent: 'auxclick', overrides: { button: 1 } },
-      { label: 'target=_blank', dispatchEvent: 'click', overrides: {}, target: '_blank' },
+      {
+        label: 'cmd-click',
+        dispatchEvent: 'click',
+        overrides: { metaKey: true },
+        expected: 'newBackgroundTab',
+      },
+      {
+        label: 'ctrl-click',
+        dispatchEvent: 'click',
+        overrides: { ctrlKey: true },
+        expected: 'newBackgroundTab',
+      },
+      {
+        label: 'ctrl-shift-click',
+        dispatchEvent: 'click',
+        overrides: { ctrlKey: true, shiftKey: true },
+        expected: 'newTab',
+      },
+      {
+        label: 'cmd-shift-click',
+        dispatchEvent: 'click',
+        overrides: { metaKey: true, shiftKey: true },
+        expected: 'newTab',
+      },
+      {
+        label: 'shift-click',
+        dispatchEvent: 'click',
+        overrides: { shiftKey: true },
+        expected: 'newWindow',
+      },
+      {
+        label: 'middle-click',
+        dispatchEvent: 'auxclick',
+        overrides: { button: 1 },
+        expected: 'newBackgroundTab',
+      },
+      {
+        label: 'shift-middle-click',
+        dispatchEvent: 'auxclick',
+        overrides: { button: 1, shiftKey: true },
+        expected: 'newTab',
+      },
+      {
+        label: 'target=_blank',
+        dispatchEvent: 'click',
+        overrides: {},
+        target: '_blank',
+        expected: 'newTab',
+      },
+      {
+        // Modifiers beat the target attribute, as in Chrome: Ctrl+clicking a
+        // `target="_blank"` link still leaves you on the current page.
+        label: 'ctrl-click on target=_blank',
+        dispatchEvent: 'click',
+        overrides: { ctrlKey: true },
+        target: '_blank',
+        expected: 'newBackgroundTab',
+      },
+      {
+        // A named target keeps its name in every disposition so the renderer's
+        // tab-reuse path still fires.
+        label: 'ctrl-click on a named target',
+        dispatchEvent: 'click',
+        overrides: { ctrlKey: true },
+        target: 'docs',
+        expected: 'newBackgroundTab',
+      },
     ];
 
-    for (const { label, dispatchEvent, overrides, target = '' } of cases) {
+    for (const { label, dispatchEvent, overrides, target = '', expected } of cases) {
       const { documentCaptureHandlers, ipcRenderer } = loadWebviewPreloadModule();
       const event = {
         target: makeAnchor(target),
@@ -640,12 +706,14 @@ describe('webview-preload', () => {
       };
       documentCaptureHandlers[dispatchEvent](event);
       expect(event.preventDefault).toHaveBeenCalled();
-      expect(ipcRenderer.sendToHost).toHaveBeenCalledWith('link:navigate', {
+      // `label` names the failing case in the assertion message.
+      expect({ label, ...ipcRenderer.sendToHost.mock.calls[0][1] }).toEqual({
+        label,
         url: 'ipfs://QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG',
-        disposition: 'newTab',
+        disposition: expected,
         target: target || null,
       });
-      void label;
+      expect(ipcRenderer.sendToHost.mock.calls[0][0]).toBe('link:navigate');
     }
   });
 

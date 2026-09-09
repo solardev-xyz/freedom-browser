@@ -16,7 +16,27 @@ const AUTO_DISMISS_MS = 5000;
 // id -> { el, nameEl, statusEl, barEl, fillEl, actionsEl, actionsKey, dismissTimer }
 const cards = new Map();
 
+// Downloads the user dismissed by hand. A dismiss on a running download used
+// to last until the next progress tick (250 ms, downloads-manager.js) and then
+// the card came straight back, over and over for the length of the transfer;
+// Chrome never resurrects an item the user closed. Ids are store rowids
+// (SQLite AUTOINCREMENT, or the private store's monotonic negative sequence),
+// so an id is never handed to a second download and a remembered dismissal
+// cannot leak onto an unrelated card. The set lives as long as the window.
+const dismissed = new Set();
+
 let shelfEl = null;
+// Footer row under the cards: "Full Download History" (Chrome's download
+// bubble has the same action in the same spot). Built lazily on the first
+// card and hidden again once the shelf empties. #326
+let historyRowEl = null;
+
+// Callback that opens freedom://downloads (set by index.js, which routes it
+// through the internal-page singleton — the tab is focused, never duplicated).
+let onOpenDownloadsPage = null;
+export const setOnOpenDownloadsPage = (callback) => {
+  onOpenDownloadsPage = callback;
+};
 
 // Human-readable byte count: 999 B, 1.2 KB, 34.5 MB, ...
 export const formatBytes = (bytes) => {
@@ -70,12 +90,18 @@ export const downloadStatusText = (download) => {
 export const isSettledState = (state) =>
   state === 'completed' || state === 'cancelled' || state === 'interrupted';
 
-const dismissCard = (id) => {
+// `byUser` marks the dismissals the shelf must remember: the × and the
+// completed-file actions are the user saying "I'm done with this card", so no
+// later update may re-create it. The auto-dismiss timer is not one of those —
+// it fires on a settled download that will send no further updates anyway.
+const dismissCard = (id, { byUser = false } = {}) => {
+  if (byUser) dismissed.add(id);
   const card = cards.get(id);
   if (!card) return;
   if (card.dismissTimer) clearTimeout(card.dismissTimer);
   card.el.remove();
   cards.delete(id);
+  syncHistoryRow();
 };
 
 const makeButton = (label, className, testId, onClick) => {
@@ -86,6 +112,33 @@ const makeButton = (label, className, testId, onClick) => {
   if (testId) btn.dataset.test = testId;
   btn.addEventListener('click', onClick);
   return btn;
+};
+
+// The shelf's one secondary action, under the cards: it is only meaningful
+// while the shelf is on screen, so it appears with the first card and goes
+// with the last one. Cards are appended as they arrive, so the row is
+// re-appended each time to stay at the bottom.
+const syncHistoryRow = () => {
+  if (!shelfEl) return;
+  if (cards.size === 0) {
+    historyRowEl?.remove();
+    return;
+  }
+  if (!historyRowEl) {
+    historyRowEl = document.createElement('div');
+    historyRowEl.className = 'download-shelf-footer';
+    historyRowEl.appendChild(
+      makeButton(
+        'Full Download History',
+        'download-shelf-link',
+        'download-shelf-history',
+        // Opens or focuses freedom://downloads through the internal-page
+        // singleton, the same path the menus use.
+        () => onOpenDownloadsPage?.()
+      )
+    );
+  }
+  shelfEl.appendChild(historyRowEl);
 };
 
 const buildCard = (id) => {
@@ -115,7 +168,9 @@ const buildCard = (id) => {
   const actionsEl = document.createElement('div');
   actionsEl.className = 'download-card-actions';
 
-  const closeBtn = makeButton('×', 'download-card-close', 'download-close', () => dismissCard(id));
+  const closeBtn = makeButton('×', 'download-card-close', 'download-close', () =>
+    dismissCard(id, { byUser: true })
+  );
   closeBtn.setAttribute('aria-label', 'Dismiss');
 
   el.appendChild(main);
@@ -134,6 +189,7 @@ const buildCard = (id) => {
   };
   cards.set(id, card);
   shelfEl.appendChild(el);
+  syncHistoryRow();
   return card;
 };
 
@@ -155,7 +211,7 @@ const runFileAction = async (downloadId, label, invoke) => {
     pushDebug(`[downloads] ${label} failed for ${downloadId}: ${error}`);
     return;
   }
-  dismissCard(downloadId);
+  dismissCard(downloadId, { byUser: true });
 };
 
 const renderActions = (card, download) => {
@@ -202,6 +258,10 @@ const actionsKey = (download) => {
 // Apply one `downloads:updated` payload to the shelf. Exported for tests.
 export const handleDownloadUpdate = (download) => {
   if (!shelfEl || !download || typeof download.id !== 'number') return;
+  // A card the user closed stays closed, however many more updates main sends
+  // for it. The download itself is untouched — it keeps running, and
+  // freedom://downloads still lists it; only the shelf card is gone.
+  if (dismissed.has(download.id)) return;
 
   let card = cards.get(download.id);
   const isNew = !card;
@@ -253,5 +313,9 @@ export const initDownloadsUi = () => {
 // Test-only: reset module state between specs.
 export const _resetForTest = () => {
   for (const id of [...cards.keys()]) dismissCard(id);
+  dismissed.clear();
+  historyRowEl?.remove();
+  historyRowEl = null;
+  onOpenDownloadsPage = null;
   shelfEl = null;
 };

@@ -154,6 +154,81 @@ describe('navigation-utils extracted helpers', () => {
     });
   });
 
+  // #312: a private window's start page is that window's new-tab page, so it
+  // derives to an EMPTY address bar — like the home page, and unlike every
+  // other internal page, which derives to its `freedom://<page>` name. Chrome
+  // shows an empty omnibox on the Incognito NTP too.
+  test('derives an empty address bar for the private start page, both forms', async () => {
+    const mod = await loadNavigationUtils({
+      home: 'home.html',
+      private: 'private.html',
+      settings: 'settings.html',
+    });
+    const common = {
+      bzzRoutePrefix: 'http://127.0.0.1:1633/bzz/',
+      homeUrlNormalized: 'file:///app/pages/home.html',
+    };
+
+    // Resolved form (committed by Chromium once the page loads).
+    expect(mod.deriveSwitchedTabDisplay({ url: 'file:///app/pages/private.html', ...common })).toBe(
+      ''
+    );
+    expect(mod.deriveDisplayAddress({ url: 'file:///app/pages/private.html', ...common })).toBe('');
+
+    // Friendly form (what `tab.url` carries while the tab is still resolving —
+    // this is the one that produced `freedom://private` in the address bar).
+    expect(mod.deriveSwitchedTabDisplay({ url: 'freedom://private', ...common })).toBe('');
+    expect(mod.deriveDisplayAddress({ url: 'freedom://private', ...common })).toBe('');
+
+    // Other internal pages are unaffected.
+    expect(
+      mod.deriveSwitchedTabDisplay({ url: 'file:///app/pages/settings.html', ...common })
+    ).toBe('freedom://settings');
+
+    // An uncommitted edit still wins over the empty new-tab derivation: a
+    // private new tab the user has already typed into comes back with the
+    // draft, not blanked. #314 layered on #312.
+    expect(
+      mod.deriveSwitchedTabDisplay({
+        url: 'freedom://private',
+        ...common,
+        addressBarPendingInput: 'half-typed',
+      })
+    ).toBe('half-typed');
+  });
+
+  test('restores an uncommitted address-bar edit on tab switch (#314)', async () => {
+    const mod = await loadNavigationUtils({ history: 'history.html' });
+
+    const base = {
+      url: 'https://committed.example/page',
+      bzzRoutePrefix: 'http://127.0.0.1:1633/bzz/',
+      homeUrlNormalized: 'file:///app/pages/home.html',
+    };
+
+    // A draft wins over the committed URL whether or not the tab is loading —
+    // that gate is exactly what discarded the edit before.
+    expect(
+      mod.deriveSwitchedTabDisplay({ ...base, addressBarPendingInput: 'half-typed-url' })
+    ).toBe('half-typed-url');
+    expect(
+      mod.deriveSwitchedTabDisplay({
+        ...base,
+        isLoading: true,
+        addressBarSnapshot: 'snapshot value',
+        addressBarPendingInput: 'half-typed-url',
+      })
+    ).toBe('half-typed-url');
+
+    // A bar the user emptied restores as empty, not as the committed URL.
+    expect(mod.deriveSwitchedTabDisplay({ ...base, addressBarPendingInput: '' })).toBe('');
+
+    // No draft (the normal case): unchanged behaviour.
+    expect(mod.deriveSwitchedTabDisplay({ ...base, addressBarPendingInput: null })).toBe(
+      'https://committed.example/page'
+    );
+  });
+
   test('derives switched tab display values for loading, internal pages, and view-source', async () => {
     const mod = await loadNavigationUtils({
       history: 'history.html',

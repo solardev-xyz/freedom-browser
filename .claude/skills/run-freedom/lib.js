@@ -78,8 +78,15 @@ function evalInWebview(win, code) {
   }, code);
 }
 
-// The Nodes/app menus leave #menu-backdrop open; Escape does not close them.
+// Dismiss the Nodes/app menus and whatever else is holding #menu-backdrop up.
+// Escape closes them since #306 (two presses: an open Profiles flyout takes the
+// first one); the backdrop click stays as the fallback, both for surfaces that
+// only dismiss on a click-out and for older checkouts.
 async function closeMenus(win) {
+  for (let i = 0; i < 2; i++) {
+    await win.keyboard.press('Escape');
+    await win.waitForTimeout(150);
+  }
   for (let i = 0; i < 3; i++) {
     const backdrop = await win.$('#menu-backdrop');
     if (backdrop && (await backdrop.isVisible())) {
@@ -89,7 +96,6 @@ async function closeMenus(win) {
       break;
     }
   }
-  await win.keyboard.press('Escape');
 }
 
 // Close the sidebar, dismissing whatever it is showing first. A no-op when the

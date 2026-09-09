@@ -16,7 +16,9 @@ import {
   setOnOpenHistory,
   setOnNewTab,
   setOnMenuOpening,
+  setOnOpenDownloads,
   closeMenus,
+  hideProfileFlyout,
 } from './lib/menus.js';
 import { initSettingsEffects, initTheme } from './lib/settings-ui.js';
 import {
@@ -56,6 +58,7 @@ import {
   stopPageLoading,
   onSettingsChanged,
   setOnHistoryRecorded,
+  setSuggestionPreviewProbe,
   closeTrustPopover,
   setAgentWorkspaceNavigationProjection,
   setAgentWorkspaceNavigationEditable,
@@ -63,11 +66,12 @@ import {
 import {
   initAutocomplete,
   setOnNavigate,
+  isSuggestionPreviewActive,
   refreshCache as refreshAutocompleteCache,
   hide as hideAutocomplete,
 } from './lib/autocomplete.js';
 import { initGithubBridgeUi, setOnOpenRadicleUrl } from './lib/github-bridge-ui.js';
-import { initDownloadsUi } from './lib/downloads-ui.js';
+import { initDownloadsUi, setOnOpenDownloadsPage } from './lib/downloads-ui.js';
 import { initMenuBackdrop } from './lib/menu-backdrop.js';
 import { initLinkStatus } from './lib/link-status.js';
 import { initSitePermissionsUi } from './lib/site-permissions-ui.js';
@@ -76,6 +80,7 @@ import { initPageContextMenu, hidePageContextMenu } from './lib/page-context-men
 import {
   initChromeInputContextMenu,
   hideChromeInputContextMenu,
+  CHROME_INPUT_IDS,
 } from './lib/chrome-input-context-menu.js';
 import { pushDebug } from './lib/debug.js';
 import { initOnboarding } from './lib/onboarding.js';
@@ -143,8 +148,18 @@ setLoadTargetHandler(loadTarget);
 setReloadHandler(reloadPage);
 setHardReloadHandler(hardReloadPage);
 setOnNavigate(loadTarget);
+// Escape ownership between the two handlers bound to the address input:
+// while a suggestion is previewed, autocomplete.js takes the press. #310.
+setSuggestionPreviewProbe(isSuggestionPreviewActive);
 setOnHistoryRecorded(refreshAutocompleteCache);
 setOnOpenHistory(() => loadTarget('freedom://history'));
+// Both Downloads entry points — the hamburger row and the shelf's Full
+// Download History action — share the internal-page singleton the application
+// menu's Downloads item already reaches through `tab:new-with-url`: an
+// existing freedom://downloads tab is focused instead of duplicated. #326
+const openDownloadsPage = () => openOrFocusInternalPage('downloads');
+setOnOpenDownloads(openDownloadsPage);
+setOnOpenDownloadsPage(openDownloadsPage);
 setOnNewTab(() => createTab());
 setOnOpenRadicleUrl((url) => loadTarget(url));
 electronAPI.onAutomationNavigate?.(({ rendererTabId, url }) => {
@@ -401,10 +416,20 @@ async function initProfileIndicator() {
   let activeProfile = null;
   let creatingProfile = false;
 
+  // Hiding routes through menus.js so every close path — this one, the
+  // hamburger closing, and a sibling row being hovered/focused (#301) — leaves
+  // exactly the same state behind (hidden, aria-expanded, row highlight).
   const setMenuOpen = (open) => {
     if (!menu) return;
-    menu.hidden = !open;
-    indicator.setAttribute('aria-expanded', String(open));
+    if (!open) {
+      hideProfileFlyout();
+      return;
+    }
+    menu.hidden = false;
+    // Keep the Profiles row highlighted while its flyout is up, the way a
+    // hovered row is — otherwise nothing says which row owns the flyout.
+    menuWrap?.classList.add('flyout-open');
+    indicator.setAttribute('aria-expanded', 'true');
   };
 
   const setMenuStatus = (message, kind = '') => {
@@ -548,11 +573,15 @@ async function initProfileIndicator() {
     }
   };
 
-  // macOS-style submenu: open after a short hover delay. It deliberately does
-  // NOT close on mouse-out — once open it stays until a click lands outside it
-  // (handled below). The flyout is a child of #menu-dropdown, so the hamburger's
-  // outside-click handler treats flyout clicks as inside — the hamburger stays
-  // open with it. Timing lives in the shared attachSubmenuHover helper.
+  // macOS/Chrome-style submenu: open after a short hover delay. It does NOT
+  // close on plain mouse-out; it stays until something dismisses it: a pointer
+  // or focus landing anywhere in the hamburger outside this wrapper — a sibling
+  // row, a divider, or the dropdown's own padding (menus.js, #301; the pointer
+  // path waits out SUBMENU_CLOSE_DELAY_MS, focus closes at once) — a click
+  // outside (handled below), or the hamburger closing. The flyout is a child of
+  // #menu-dropdown, so the hamburger's outside-click handler treats flyout
+  // clicks as inside — the hamburger stays open with it. Timing lives in the
+  // shared attachSubmenuHover helper.
   const openFlyout = () => {
     // Don't open while the hamburger itself is closed (the dropdown — and thus
     // this wrapper — isn't rendered), e.g. if a hover open-timer fires just
@@ -579,11 +608,11 @@ async function initProfileIndicator() {
   indicator.addEventListener('click', flyoutHover.openNow);
 
   // The flyout no longer closes on mouse-out, so dismiss it on click-out: a
-  // click inside the wrapper (trigger or flyout) keeps it open; a click on any
-  // other hamburger row collapses just the flyout. Clicks fully outside the
-  // hamburger are handled in menus.js, which hides the flyout when the dropdown
-  // closes. Pointerdown (not click) so the dismissal isn't pre-empted by a row
-  // that closes the whole menu on click.
+  // click inside the wrapper (trigger or flyout) keeps it open; a click
+  // anywhere else in the hamburger collapses just the flyout. Clicks fully
+  // outside the hamburger are handled in menus.js, which hides the flyout when
+  // the dropdown closes. Pointerdown (not click) so the dismissal isn't
+  // pre-empted by a row that closes the whole menu on click.
   document.addEventListener('pointerdown', (event) => {
     if (menu?.hidden !== false) return;
     if (menuWrap?.contains(event.target)) return;
@@ -808,7 +837,14 @@ window.addEventListener('DOMContentLoaded', async () => {
   }); // Embedded Pi agent panel
   initAutocomplete(); // Address bar autocomplete
   initPageContextMenu(); // Page context menu for webviews
-  initChromeInputContextMenu({ onOpening: onAnyMenuOpening }); // Address bar edit menu
+  // Cut/Copy/Paste/Select All for every editable chrome text field — the
+  // address bar, the find bar and the bookmark-edit dialog (#316). Passed in
+  // explicitly rather than left to the module's fallback so the list of chrome
+  // inputs is visible at the one call site that owns it.
+  initChromeInputContextMenu({
+    onOpening: onAnyMenuOpening,
+    inputs: CHROME_INPUT_IDS.map((id) => document.getElementById(id)),
+  });
   initOnboarding(); // Identity onboarding wizard
   initSidebar(); // Identity & wallet sidebar
   initWalletUi(); // Wallet & identity display in sidebar

@@ -143,13 +143,14 @@ function registerWebContentsHandlers() {
         }
       });
 
-      contents.setWindowOpenHandler(({ url, frameName }) => {
+      contents.setWindowOpenHandler(({ url, frameName, disposition }) => {
         if (contents.getURL().startsWith('freedom-preview://')) {
           log.info(`${tag} blocked an isolated preview window request`);
           return { action: 'deny' };
         }
         log.info(
-          `${tag} intercepted new window request: ${navUrlForLog(contents, url)} (target: ${frameName || 'none'})`
+          `${tag} intercepted new window request: ${navUrlForLog(contents, url)} ` +
+            `(target: ${frameName || 'none'}, disposition: ${disposition || 'default'})`
         );
         // Contract-hosted pages are not allowed to create windows themselves.
         // Trusted anchor activations are intercepted in webview-preload and
@@ -164,7 +165,19 @@ function registerWebContentsHandlers() {
           // Pass targetName for named link targets (e.g. target="mywindow")
           // Skip special targets (_blank, _self, _parent, _top) - they should use default behavior
           const isNamedTarget = frameName && !frameName.startsWith('_');
-          parentWindow.webContents.send('tab:new-with-url', url, isNamedTarget ? frameName : null);
+          // Chromium already resolved the activation's modifiers into a
+          // disposition: Ctrl/Cmd+click (and middle-click) give
+          // `background-tab`, Shift+click and sized `window.open` popups give
+          // `new-window`, a plain `target="_blank"` gives `foreground-tab`.
+          // Forward it instead of collapsing everything into a foreground tab
+          // the way this handler used to — that switched the user off the page
+          // they were reading on every Ctrl+click. See #303. The renderer turns
+          // `newWindow` back into the existing `window:new-with-url` request,
+          // which is where the private-window guard lives.
+          parentWindow.webContents.send('tab:new-with-url', url, isNamedTarget ? frameName : null, {
+            background: disposition === 'background-tab',
+            newWindow: disposition === 'new-window',
+          });
         }
         return { action: 'deny' };
       });

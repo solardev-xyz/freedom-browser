@@ -6,6 +6,7 @@ module.exports = {
   BOOKMARKS_ADD: 'bookmarks:add',
   BOOKMARKS_UPDATE: 'bookmarks:update',
   BOOKMARKS_REMOVE: 'bookmarks:remove',
+  BOOKMARKS_REORDER: 'bookmarks:reorder',
   BOOKMARKS_BAR_TOGGLE: 'bookmarks-bar:toggle',
 
   // Ant node management

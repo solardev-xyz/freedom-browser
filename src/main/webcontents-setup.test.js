@@ -137,7 +137,8 @@ describe('webcontents-setup', () => {
     expect(parentWindow.webContents.send).toHaveBeenCalledWith(
       'tab:new-with-url',
       'https://github.com/openai/project',
-      'named-tab'
+      'named-tab',
+      { background: false, newWindow: false }
     );
 
     const blankResult = contents.windowOpenHandler({
@@ -148,10 +149,62 @@ describe('webcontents-setup', () => {
     expect(parentWindow.webContents.send).toHaveBeenLastCalledWith(
       'tab:new-with-url',
       'https://example.com',
-      null
+      null,
+      { background: false, newWindow: false }
     );
     expect(ctx.log.info).toHaveBeenCalledWith(
       expect.stringContaining('intercepted new window request')
+    );
+  });
+
+  // #303: Chromium resolves the activation's modifiers into a disposition
+  // before it reaches this handler. Ctrl/Cmd+click and middle-click give
+  // `background-tab`, Shift+click (and sized `window.open` popups) give
+  // `new-window`. Both used to be collapsed into a foreground tab.
+  test('forwards the link disposition so modified clicks open in the background or a window', () => {
+    const parentWindow = { webContents: { id: 1, send: jest.fn() } };
+    const ctx = loadWebContentsSetupModule({ windows: [parentWindow] });
+    const contents = createContentsMock({ id: 23, type: 'webview', url: 'https://example.com/' });
+
+    ctx.mod.registerWebContentsHandlers();
+    ctx.app.emit('web-contents-created', {}, contents);
+
+    expect(
+      contents.windowOpenHandler({
+        url: 'https://example.com/bg',
+        frameName: '',
+        disposition: 'background-tab',
+      })
+    ).toEqual({ action: 'deny' });
+    expect(parentWindow.webContents.send).toHaveBeenLastCalledWith(
+      'tab:new-with-url',
+      'https://example.com/bg',
+      null,
+      { background: true, newWindow: false }
+    );
+
+    contents.windowOpenHandler({
+      url: 'https://example.com/win',
+      frameName: '',
+      disposition: 'new-window',
+    });
+    expect(parentWindow.webContents.send).toHaveBeenLastCalledWith(
+      'tab:new-with-url',
+      'https://example.com/win',
+      null,
+      { background: false, newWindow: true }
+    );
+
+    contents.windowOpenHandler({
+      url: 'https://example.com/fg',
+      frameName: '',
+      disposition: 'foreground-tab',
+    });
+    expect(parentWindow.webContents.send).toHaveBeenLastCalledWith(
+      'tab:new-with-url',
+      'https://example.com/fg',
+      null,
+      { background: false, newWindow: false }
     );
   });
 
@@ -380,7 +433,8 @@ describe('webcontents-setup', () => {
       expect(live.webContents.send).toHaveBeenCalledWith(
         'tab:new-with-url',
         'https://example.com/popup',
-        null
+        null,
+        { background: false, newWindow: false }
       );
       expect(dying.webContents.send).not.toHaveBeenCalled();
     });

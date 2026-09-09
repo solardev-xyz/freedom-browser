@@ -739,3 +739,63 @@ test('a private dweb request writes no URL to the persistent log', async ({
   expect(logText).toContain('bzz://<private>');
   expect(logText).not.toContain(SECRET_HASH);
 });
+
+// #312: a new tab in a private window focuses an EMPTY address bar, exactly
+// like a normal window's. Before the fix the private start page derived to
+// `freedom://private` in the bar, which meant the renderer's "this is a fresh
+// empty tab" test never fired: focus was left on <body> and typing went
+// nowhere until the user clicked the address bar.
+test('private window: New Tab focuses an empty address bar', async ({ window, electronApp }) => {
+  const addressState = (page) =>
+    page.evaluate(() => {
+      const input = document.getElementById('address-input');
+      return {
+        value: input?.value ?? null,
+        focused: document.activeElement === input,
+        activeElement: `${document.activeElement?.tagName}#${document.activeElement?.id || ''}`,
+        tabs: document.querySelectorAll('[data-test="tab"]').length,
+      };
+    });
+
+  // Control: a normal window's new tab already does this.
+  await window.locator('[data-test="new-tab-btn"]').click();
+  await expect
+    .poll(() => addressState(window), { message: 'normal window new tab' })
+    .toMatchObject({
+      value: '',
+      focused: true,
+      tabs: 2,
+    });
+
+  const priv = await openPrivateWindow(electronApp);
+
+  // The private window's *first* tab is on the private start page too, and
+  // shows an empty address bar rather than `freedom://private`.
+  await expect
+    .poll(() => priv.locator('[data-test="address-input"]').inputValue(), {
+      message: 'private window initial address bar',
+    })
+    .toBe('');
+
+  await priv.locator('[data-test="new-tab-btn"]').click();
+  await expect
+    .poll(() => addressState(priv), { message: 'private window new tab' })
+    .toMatchObject({
+      value: '',
+      focused: true,
+      activeElement: 'INPUT#address-input',
+      tabs: 2,
+    });
+
+  // The private start page is still what actually loaded — the empty address
+  // bar is a display rule, not a blank tab.
+  await expect
+    .poll(
+      () =>
+        priv.evaluate(
+          () => document.querySelector('webview:not(.hidden)')?.getAttribute('src') || ''
+        ),
+      { message: 'Waiting for the private start page to be the visible tab' }
+    )
+    .toContain('private.html');
+});
