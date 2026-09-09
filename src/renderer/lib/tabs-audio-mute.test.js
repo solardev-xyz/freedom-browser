@@ -147,7 +147,10 @@ const loadTabsModule = async (options = {}) => {
     showMenuBackdrop: jest.fn(),
     hideMenuBackdrop: jest.fn(),
   }));
-  jest.doMock('./page-context-menu.js', () => ({ setupWebviewContextMenu: jest.fn() }));
+  jest.doMock('./page-context-menu.js', () => ({
+    setupWebviewContextMenu: jest.fn(),
+    notifyPageContextMenuNavigated: jest.fn(),
+  }));
   jest.doMock('./link-status.js', () => ({
     clearLinkStatus: jest.fn(),
     clearHoverStatus: jest.fn(),

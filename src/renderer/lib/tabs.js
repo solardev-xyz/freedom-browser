@@ -3,7 +3,7 @@ import { pushDebug } from './debug.js';
 import { closeMenus } from './menus.js';
 import { hideBookmarkContextMenu } from './bookmarks-ui.js';
 import { showMenuBackdrop, hideMenuBackdrop } from './menu-backdrop.js';
-import { setupWebviewContextMenu } from './page-context-menu.js';
+import { setupWebviewContextMenu, notifyPageContextMenuNavigated } from './page-context-menu.js';
 import {
   homeUrl,
   getInternalPageName,
@@ -22,6 +22,7 @@ import {
   notifyFindBarTabSwitched,
 } from './find-bar.js';
 import { matchesShortcut } from './shortcuts.js';
+import { isModalDialogOpen } from './modal-dialog.js';
 import {
   clearLinkStatus,
   clearHoverStatus,
@@ -667,11 +668,20 @@ const createWebview = (tabId, initialUrl) => {
       // per tab, so a background tab that navigates must not keep a bar or
       // a match count that no longer describes its page.
       notifyFindBarNavigated(webview);
+      // ...and any page context menu raised on the document that just went
+      // away. Chrome's context menu never outlives its page: leaving it up
+      // meant Open Link in New Tab / Copy Link Address still acting on the
+      // previous page's link, over a document that no longer has it (#308).
+      notifyPageContextMenuNavigated(webview);
       if (tabId === tabState.activeTabId && onWebviewEvent) {
         onWebviewEvent('did-navigate', { tabId, event });
       }
     },
     'did-navigate-in-page': (event) => {
+      // A same-document navigation (an in-page anchor, a history.pushState
+      // route change) is still a navigation: the menu's link/selection context
+      // was read off the pre-navigation DOM. #308.
+      notifyPageContextMenuNavigated(webview);
       if (tabId === tabState.activeTabId && onWebviewEvent) {
         onWebviewEvent('did-navigate-in-page', { tabId, event });
       }
@@ -1593,6 +1603,10 @@ export const switchTab = (tabId, options = {}) => {
   // Hiding an already-hidden menu is a no-op, so this costs nothing on the
   // ordinary path.
   hideTabContextMenu();
+  // Same for the page context menu: it belongs to the document it was raised
+  // on, so a switch to another tab takes it down rather than leaving it
+  // floating over a page it knows nothing about (#308).
+  notifyPageContextMenuNavigated();
 
   // Already foreground — nothing to swap, and running the swap anyway has
   // real side effects (closing an open find bar, re-hiding webviews).
@@ -1920,11 +1934,19 @@ export const initTabs = async () => {
     }
   });
 
-  // Hide context menu on escape or when window loses focus
+  // Hide context menu on escape or when window loses focus. A press that
+  // actually closes the menu is consumed (`preventDefault`), so navigation.js's
+  // window-level Escape doesn't also stop an in-flight page load — Chrome
+  // closes the innermost surface only. See #306.
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') {
-      hideTabContextMenu();
-    }
+    if (e.key !== 'Escape') return;
+    if (!tabContextMenu || tabContextMenu.classList.contains('hidden')) return;
+    // A modal <dialog> raised over the menu (the external-node or
+    // profile-create prompt arrives on its own schedule) owns the press and
+    // cannot mark it — see `isModalDialogOpen`.
+    if (isModalDialogOpen()) return;
+    e.preventDefault();
+    hideTabContextMenu();
   });
   window.addEventListener('blur', hideTabContextMenu);
   // (The `focus`/`mousedown` dismissal that used to hang off

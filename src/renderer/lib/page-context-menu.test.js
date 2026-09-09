@@ -558,9 +558,20 @@ describe('page-context-menu', () => {
     // Escape dismisses and returns the keyboard to the page it was opened over.
     global.document.activeElement = pageContextMenu;
     pageContextMenu.contains.mockImplementation((el) => el === pageContextMenu);
-    documentHandlers.keydown({ key: 'Escape' });
+    const escape = { key: 'Escape', preventDefault: jest.fn() };
+    documentHandlers.keydown(escape);
     expect(pageContextMenu.classList.add).toHaveBeenCalledWith('hidden');
     expect(activeWebview.focus).toHaveBeenCalledTimes(1);
+    // Closing the menu consumes the press — navigation.js's window-level
+    // Escape (stop loading + restore the address bar) stands down on
+    // `defaultPrevented`, so dismissing a context menu raised over a loading
+    // page doesn't also cancel that load (#306).
+    expect(escape.preventDefault).toHaveBeenCalled();
+
+    // With the menu already down the press belongs to whatever is behind it.
+    const escapeAgain = { key: 'Escape', preventDefault: jest.fn() };
+    documentHandlers.keydown(escapeAgain);
+    expect(escapeAgain.preventDefault).not.toHaveBeenCalled();
 
     // A click that moved focus elsewhere in chrome (the address bar) dismisses
     // the menu too — and must not yank focus back to the page.
@@ -582,8 +593,37 @@ describe('page-context-menu', () => {
     mod.showPageContextMenu(20, 30, { pageUrl: 'https://example.com/page' });
     global.document.activeElement = pageContextMenu;
     webviewContainer.querySelector.mockReturnValue({ focus: jest.fn() });
-    documentHandlers.keydown({ key: 'Escape' });
+    documentHandlers.keydown({ key: 'Escape', preventDefault: jest.fn() });
     expect(activeWebview.focus).toHaveBeenCalledTimes(1);
+  });
+
+  // #306, dialog sibling: a modal <dialog> raised over the menu is the top
+  // layer, so the press is its own close request — and it cannot mark the
+  // press the way this handler does. Consuming it here would cancel that close
+  // outright, leaving the dialog open.
+  test('a modal dialog above the menu owns the Escape', async () => {
+    const { mod, pageContextMenu, documentHandlers } = await loadPageContextMenuModule();
+
+    await mod.initPageContextMenu();
+    mod.showPageContextMenu(20, 30, { pageUrl: 'https://example.com/page' });
+    pageContextMenu.classList.add.mockClear();
+
+    const dialog = { tagName: 'DIALOG' };
+    global.document.querySelector = jest.fn((selector) =>
+      selector === 'dialog[open]' ? dialog : null
+    );
+
+    const escape = { key: 'Escape', preventDefault: jest.fn() };
+    documentHandlers.keydown(escape);
+    expect(pageContextMenu.classList.add).not.toHaveBeenCalledWith('hidden');
+    expect(escape.preventDefault).not.toHaveBeenCalled();
+
+    // The dialog gone, the menu is innermost again and takes the next press.
+    global.document.querySelector = jest.fn(() => null);
+    const next = { key: 'Escape', preventDefault: jest.fn() };
+    documentHandlers.keydown(next);
+    expect(pageContextMenu.classList.add).toHaveBeenCalledWith('hidden');
+    expect(next.preventDefault).toHaveBeenCalled();
   });
 
   test('still dismisses when the context went away before the action ran', async () => {
@@ -603,6 +643,113 @@ describe('page-context-menu', () => {
 
     expect(pageContextMenu.classList.add).toHaveBeenCalledWith('hidden');
     expect(backdrop.hideMenuBackdrop).toHaveBeenCalled();
+  });
+
+  // #308: a context menu describes one document. A navigation in the tab it
+  // was raised on takes it down, and an action that somehow still reaches a
+  // navigated-away page is dropped rather than applied to the old page's link.
+  describe('navigation', () => {
+    const withUrl = (url) => ({
+      canGoBack: jest.fn(() => true),
+      canGoForward: jest.fn(() => false),
+      goBack: jest.fn(),
+      goForward: jest.fn(),
+      reloadIgnoringCache: jest.fn(),
+      openDevTools: jest.fn(),
+      send: jest.fn(),
+      focus: jest.fn(),
+      getURL: jest.fn(() => url),
+    });
+
+    test('a navigation in the menu\u2019s own tab dismisses it', async () => {
+      const activeWebview = withUrl('bzz://page-a/');
+      const { mod, pageContextMenu, backdrop } = await loadPageContextMenuModule({ activeWebview });
+      await mod.initPageContextMenu();
+
+      mod.showPageContextMenu(20, 30, {
+        pageUrl: 'bzz://page-a/',
+        linkUrl: 'bzz://page-c/',
+      });
+      pageContextMenu.classList.add.mockClear();
+      backdrop.hideMenuBackdrop.mockClear();
+
+      mod.notifyPageContextMenuNavigated(activeWebview);
+
+      expect(pageContextMenu.classList.add).toHaveBeenCalledWith('hidden');
+      expect(backdrop.hideMenuBackdrop).toHaveBeenCalled();
+      // The document the keyboard would go back to is the one that just went
+      // away, so the incoming page is left to take focus on its own terms.
+      expect(activeWebview.focus).not.toHaveBeenCalled();
+    });
+
+    test('a navigation in another tab leaves it alone', async () => {
+      const activeWebview = withUrl('bzz://page-a/');
+      const { mod, pageContextMenu } = await loadPageContextMenuModule({ activeWebview });
+      await mod.initPageContextMenu();
+
+      mod.showPageContextMenu(20, 30, { pageUrl: 'bzz://page-a/' });
+      pageContextMenu.classList.add.mockClear();
+
+      mod.notifyPageContextMenuNavigated(withUrl('bzz://other-tab/'));
+
+      expect(pageContextMenu.classList.add).not.toHaveBeenCalledWith('hidden');
+    });
+
+    test('a tab switch (no webview named) dismisses it', async () => {
+      const activeWebview = withUrl('bzz://page-a/');
+      const { mod, pageContextMenu } = await loadPageContextMenuModule({ activeWebview });
+      await mod.initPageContextMenu();
+
+      mod.showPageContextMenu(20, 30, { pageUrl: 'bzz://page-a/' });
+      pageContextMenu.classList.add.mockClear();
+
+      mod.notifyPageContextMenuNavigated();
+
+      expect(pageContextMenu.classList.add).toHaveBeenCalledWith('hidden');
+    });
+
+    test('an item clicked after the page moved on acts on nothing', async () => {
+      const activeWebview = withUrl('bzz://page-a/');
+      const { mod, pageContextMenu, pushDebug } = await loadPageContextMenuModule({
+        activeWebview,
+      });
+      await mod.initPageContextMenu();
+
+      mod.showPageContextMenu(20, 30, {
+        pageUrl: 'bzz://page-a/',
+        linkUrl: 'bzz://page-c/',
+      });
+
+      // The page redirected itself and nothing told the menu — the belt to the
+      // navigation braces above.
+      activeWebview.getURL.mockReturnValue('bzz://page-b/');
+      document.dispatchEvent.mockClear();
+      pageContextMenu.classList.add.mockClear();
+
+      await triggerMenuAction(pageContextMenu, 'open-link-new-tab');
+
+      expect(document.dispatchEvent).not.toHaveBeenCalled();
+      expect(pageContextMenu.classList.add).toHaveBeenCalledWith('hidden');
+      expect(pushDebug).toHaveBeenCalledWith(expect.stringContaining('navigated away'));
+    });
+
+    test('an item clicked on the page it was raised on still acts', async () => {
+      const activeWebview = withUrl('bzz://page-a/');
+      const { mod, pageContextMenu } = await loadPageContextMenuModule({ activeWebview });
+      await mod.initPageContextMenu();
+
+      mod.showPageContextMenu(20, 30, {
+        pageUrl: 'bzz://page-a/',
+        linkUrl: 'bzz://page-c/',
+      });
+      document.dispatchEvent.mockClear();
+
+      await triggerMenuAction(pageContextMenu, 'open-link-new-tab');
+
+      expect(document.dispatchEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'open-url-new-tab', detail: { url: 'bzz://page-c/' } })
+      );
+    });
   });
 
   test('closes on outside interactions and wires webview ipc context-menu events', async () => {

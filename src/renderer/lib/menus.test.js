@@ -24,6 +24,7 @@ const createElement = () => {
     }),
     contains: jest.fn(() => false),
     blur: jest.fn(),
+    focus: jest.fn(),
     print: jest.fn(),
   };
 };
@@ -722,7 +723,7 @@ describe('menus', () => {
     });
   });
 
-  test('closes menus on outside clicks, webview interaction, and window blur', async () => {
+  test('closes menus on outside clicks and window blur', async () => {
     const { menus, state, elements, handlers } = await loadMenusModule();
 
     menus.initMenus();
@@ -730,10 +731,120 @@ describe('menus', () => {
     menus.setAntMenuOpen(true);
 
     handlers.documentHandlers.click({ target: {} });
-    elements.webviewElement.handlers.focus();
     handlers.windowHandlers.blur();
 
     expect(state.menuOpen).toBe(false);
     expect(state.antMenuOpen).toBe(false);
+
+    // The `#bzz-webview` focus/mousedown dismissal is gone: webviews are
+    // created id-less, so that element never existed and the listeners were
+    // never registered. Nothing may go back to hanging behaviour off it
+    // (#306) — `#menu-backdrop` covers the window while a menu is open.
+    expect(elements.webviewElement.addEventListener).not.toHaveBeenCalled();
+  });
+
+  // #306: Escape is how every other dismissible surface in the chrome closes;
+  // these two menus were the exception, and left the modal backdrop up with no
+  // keyboard way out.
+  describe('Escape', () => {
+    // Returns the event so callers can assert on `preventDefault`: closing a
+    // surface consumes the press, and navigation.js's window-level Escape
+    // (stop loading + restore the address bar + blur) stands down on
+    // `defaultPrevented`. Both listeners sit on `window`, so `stopPropagation`
+    // could never have done this job — same-node listeners still run.
+    const pressEscape = (handlers) => {
+      const event = { key: 'Escape', preventDefault: jest.fn() };
+      handlers.windowHandlers.keydown(event);
+      return event;
+    };
+
+    test('closes the hamburger and returns focus to its button', async () => {
+      const { menus, state, elements, handlers } = await loadMenusModule();
+      menus.initMenus();
+      menus.setMenuOpen(true);
+      expect(state.menuOpen).toBe(true);
+
+      const event = pressEscape(handlers);
+
+      expect(state.menuOpen).toBe(false);
+      expect(elements.menuButton.focus).toHaveBeenCalled();
+      expect(event.preventDefault).toHaveBeenCalled();
+    });
+
+    test('closes the Nodes menu and returns focus to its button', async () => {
+      const { menus, state, elements, handlers } = await loadMenusModule();
+      menus.initMenus();
+      menus.setAntMenuOpen(true);
+      expect(state.antMenuOpen).toBe(true);
+
+      const event = pressEscape(handlers);
+
+      expect(state.antMenuOpen).toBe(false);
+      expect(elements.beeMenuButton.focus).toHaveBeenCalled();
+      expect(event.preventDefault).toHaveBeenCalled();
+    });
+
+    test('closes the Profiles flyout first, the hamburger on the second press', async () => {
+      const { menus, state, elements, handlers } = await loadMenusModule();
+      menus.initMenus();
+      menus.setMenuOpen(true);
+      elements.profileFlyout.hidden = false;
+
+      const first = pressEscape(handlers);
+      expect(elements.profileFlyout.hidden).toBe(true);
+      // The hamburger the flyout hangs off stays up, as in Chrome: the
+      // innermost surface closes first.
+      expect(state.menuOpen).toBe(true);
+      expect(elements.profileMenuBtn.focus).toHaveBeenCalled();
+      expect(first.preventDefault).toHaveBeenCalled();
+
+      const second = pressEscape(handlers);
+      expect(state.menuOpen).toBe(false);
+      expect(elements.menuButton.focus).toHaveBeenCalled();
+      expect(second.preventDefault).toHaveBeenCalled();
+    });
+
+    // Dialog sibling: the profile-create prompt the flyout itself opens, and
+    // the external-node prompt main can send at any moment, are modal
+    // <dialog>s — the top layer, above these menus. The press is the dialog's
+    // own close request and it cannot mark it the way these handlers do, so
+    // consuming it here would cancel that close outright.
+    test('a modal dialog above the menus owns the Escape', async () => {
+      const { menus, state, elements, handlers } = await loadMenusModule();
+      menus.initMenus();
+      menus.setMenuOpen(true);
+      elements.profileFlyout.hidden = false;
+
+      const dialog = { tagName: 'DIALOG' };
+      global.document.querySelector.mockImplementation((selector) =>
+        selector === 'dialog[open]' ? dialog : null
+      );
+
+      const blocked = pressEscape(handlers);
+      expect(elements.profileFlyout.hidden).toBe(false);
+      expect(state.menuOpen).toBe(true);
+      expect(blocked.preventDefault).not.toHaveBeenCalled();
+
+      // The dialog closed, the flyout is innermost again.
+      global.document.querySelector.mockImplementation(() => null);
+      const next = pressEscape(handlers);
+      expect(elements.profileFlyout.hidden).toBe(true);
+      expect(next.preventDefault).toHaveBeenCalled();
+    });
+
+    test('does nothing when no menu is open', async () => {
+      const { menus, state, elements, handlers } = await loadMenusModule();
+      menus.initMenus();
+
+      const event = pressEscape(handlers);
+
+      expect(state.menuOpen).toBe(false);
+      expect(state.antMenuOpen).toBe(false);
+      expect(elements.menuButton.focus).not.toHaveBeenCalled();
+      expect(elements.beeMenuButton.focus).not.toHaveBeenCalled();
+      // Nothing was consumed, so the press stays available to the surfaces
+      // behind these menus — notably navigation.js's stop-loading Escape.
+      expect(event.preventDefault).not.toHaveBeenCalled();
+    });
   });
 });

@@ -144,3 +144,72 @@ test('shelf cards dismiss manually and Clear All empties the downloads page', as
     )
     .toBe(0);
 });
+
+// #309: the × on a running download used to last exactly one progress tick —
+// main emits one every 250 ms, so the card blinked out and came straight back
+// for the length of the transfer. A data: URI download settles in one chunk,
+// so the in-flight payloads are fed to the shelf directly: this is the exact
+// `downloads:updated` shape main sends, applied through the real card UI.
+test('a card dismissed mid-download stays dismissed', async ({ window }) => {
+  const feed = (download) =>
+    window.evaluate(async (payload) => {
+      const mod = await import('./lib/downloads-ui.js');
+      mod.handleDownloadUpdate(payload);
+    }, download);
+
+  // Counted with a one-shot read, never a polling locator: a settled card
+  // auto-dismisses after 5 s, so a *retrying* "no cards" assertion would go
+  // green on the timer alone even with the card resurrected (it did, before
+  // this was written this way).
+  const cardCount = () =>
+    window.evaluate(() => document.querySelectorAll('#download-shelf .download-card').length);
+  const cardNames = () =>
+    window.evaluate(() =>
+      [...document.querySelectorAll('#download-shelf .download-card-name')].map(
+        (el) => el.textContent
+      )
+    );
+
+  const cards = window.locator('#download-shelf .download-card');
+  const tick = (received) => ({
+    id: 4242,
+    filename: 'big.iso',
+    state: 'progressing',
+    received_bytes: received,
+    total_bytes: 100_000,
+  });
+
+  await feed(tick(1_000));
+  await expect(cards).toHaveCount(1);
+  await expect(cards.locator('[data-test="download-cancel"]')).toBeVisible();
+
+  await cards.locator('[data-test="download-close"]').click();
+  expect(await cardCount()).toBe(0);
+
+  // The next progress ticks are ignored — this is the quarter-second the card
+  // used to come back in.
+  await feed(tick(2_000));
+  expect(await cardCount()).toBe(0);
+  await feed(tick(90_000));
+  expect(await cardCount()).toBe(0);
+
+  // ...as is the terminal update when the transfer finishes.
+  await feed({
+    id: 4242,
+    filename: 'big.iso',
+    state: 'completed',
+    received_bytes: 100_000,
+    total_bytes: 100_000,
+  });
+  expect(await cardCount()).toBe(0);
+
+  // Another download still shows: the dismissal is per item, not a mute.
+  await feed({
+    id: 4243,
+    filename: 'other.iso',
+    state: 'progressing',
+    received_bytes: 10,
+    total_bytes: 100,
+  });
+  expect(await cardNames()).toEqual(['other.iso']);
+});

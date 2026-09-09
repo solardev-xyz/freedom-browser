@@ -139,6 +139,7 @@ describe('preload', () => {
       [exposures.electronAPI, 'addBookmark', [{ label: 'Example', target: 'https://example.com' }], IPC.BOOKMARKS_ADD, [{ label: 'Example', target: 'https://example.com' }]],
       [exposures.electronAPI, 'updateBookmark', ['https://old.example', { label: 'New', target: 'https://new.example' }], IPC.BOOKMARKS_UPDATE, [{ originalTarget: 'https://old.example', bookmark: { label: 'New', target: 'https://new.example' } }]],
       [exposures.electronAPI, 'removeBookmark', ['https://example.com'], IPC.BOOKMARKS_REMOVE, ['https://example.com']],
+      [exposures.electronAPI, 'reorderBookmarks', [['https://b.example', 'https://a.example']], IPC.BOOKMARKS_REORDER, [['https://b.example', 'https://a.example']]],
       [exposures.electronAPI, 'resolveEns', ['myname.box'], IPC.ENS_RESOLVE, [{ name: 'myname.box' }]],
       [exposures.electronAPI, 'resolveEnsAddress', ['vitalik.eth'], IPC.ENS_RESOLVE_ADDRESS, [{ name: 'vitalik.eth' }]],
       [exposures.electronAPI, 'resolveEnsReverse', ['0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045'], IPC.ENS_RESOLVE_REVERSE, [{ address: '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045' }]],
