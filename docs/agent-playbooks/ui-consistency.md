@@ -88,6 +88,17 @@ toolbar away instead. A new popover joins the mechanism rather than growing its
 own `max-height`; `styles/popovers.test.js` fails a popover that forgets the
 class.
 
+**Dismissing on focus loss goes through `lib/window-deactivation.js`.** A
+window `blur` in the chrome does not mean the user left the window: a
+`<webview>` guest taking the keyboard raises the same event, and every tab
+activation hands the page focus (#304) with the guest's ack landing
+asynchronously — late enough to tear down a menu the user has just opened and
+swallow the click on its way (#328). A surface that raises `#menu-backdrop`
+(so a click into the page is already caught in the chrome) dismisses through
+`onWindowDeactivated`, never a raw `blur` listener. The trust and permission
+popovers are the two documented exceptions: they raise no backdrop, so the
+guest-focus blur is what closes them on a click into page content.
+
 **Empty states.** Internal pages use the icon + one-line message pattern of
 History and Downloads ("No history yet", "No downloads yet").
 

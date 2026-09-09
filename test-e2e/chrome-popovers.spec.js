@@ -271,3 +271,144 @@ test('a context menu raised at the bottom edge opens upwards', async ({
   expect(placed.flippedAboveThePointer).toBe(true);
   expect(placed.docScrollHeight).toBe(placed.innerHeight);
 });
+
+// Every row of a bounded, scrolling popover is still a working menu item:
+// nothing (the backdrop, the scrollbar, the Profiles flyout, the clipped box
+// itself) sits between the pointer and the row, and the keyboard reaches it.
+//
+// `rows` walks the menu row by row, scrolling each one into view inside the
+// menu first — the point of the bound is that an item off the bottom is
+// reachable by scrolling, so "reachable" has to be measured after that scroll,
+// not from the initial screenful.
+const sweepRows = (window, menuSelector) =>
+  window.evaluate((sel) => {
+    const menu = document.querySelector(sel);
+    const rows = [...menu.querySelectorAll('button')].filter(
+      (el) => el.getBoundingClientRect().height > 0
+    );
+    const out = [];
+    for (const row of rows) {
+      // Centre the row in the menu's box by hand rather than with
+      // `scrollIntoView`, so the scroll has definitely landed before the
+      // hit-test reads back.
+      const box = menu.getBoundingClientRect();
+      let rect = row.getBoundingClientRect();
+      menu.scrollTop += rect.top - box.top - (menu.clientHeight - rect.height) / 2;
+      rect = row.getBoundingClientRect();
+      const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+      // A node whose binary is missing is deliberately inert
+      // (`.bee-toggle.disabled` etc. in services.css) — it has nothing to
+      // swallow. Recorded rather than silently dropped.
+      const inert =
+        row.disabled === true || window.getComputedStyle(row).pointerEvents === 'none';
+      out.push({
+        id: row.id || row.className,
+        inert,
+        insideViewport: rect.top >= 0 && rect.bottom <= window.innerHeight,
+        // The row's centre belongs to the row: `elementFromPoint` respects
+        // stacking and clipping, so this is the same test the click will make.
+        reachable: inert || row === hit || row.contains(hit),
+        hit: hit ? `${hit.tagName}#${hit.id}.${hit.className}` : 'null',
+      });
+    }
+    menu.scrollTop = 0;
+    return out;
+  }, menuSelector);
+
+// Focus a row and press Enter, with the menu's own handlers held off: what is
+// under test is that the keypress reaches the row as a click, not what each of
+// a dozen rows then does (toggling a node, opening a window, printing).
+const activatesOnEnter = async (window, menuSelector, rowId) => {
+  await window.evaluate(
+    ({ sel, id }) => {
+      const menu = document.querySelector(sel);
+      window.__enterTarget = null;
+      window.__enterTrap = (event) => {
+        window.__enterTarget = event.target?.closest?.('button')?.id || event.target?.id || '';
+        event.preventDefault();
+        event.stopPropagation();
+      };
+      menu.addEventListener('click', window.__enterTrap, true);
+      document.getElementById(id).focus();
+    },
+    { sel: menuSelector, id: rowId }
+  );
+  await window.keyboard.press('Enter');
+  const target = await window.evaluate((sel) => {
+    document.querySelector(sel).removeEventListener('click', window.__enterTrap, true);
+    return window.__enterTarget;
+  }, menuSelector);
+  return target;
+};
+
+test('every row of the bounded hamburger and Nodes menus still takes a click and Enter', async ({
+  window,
+  electronApp,
+}) => {
+  // Short enough that both menus are genuinely bounded and scrolling — the
+  // state where a swallowed click would actually be the bound's fault.
+  await setWindowSize(electronApp, window, 1200, 420);
+
+  await window.locator('#menu-button').click();
+  await expect(window.locator('#menu-dropdown')).toHaveClass(/open/);
+  expect((await popoverState(window, '#menu-dropdown')).scrollable).toBe(true);
+  const hamburger = await sweepRows(window, '#menu-dropdown');
+  expect(hamburger.filter((row) => !row.inert).length).toBeGreaterThan(8);
+  expect(hamburger.filter((row) => !row.reachable || !row.insideViewport)).toEqual([]);
+  expect(await activatesOnEnter(window, '#menu-dropdown', 'downloads-btn')).toBe('downloads-btn');
+  await window.keyboard.press('Escape');
+
+  await window.locator('#bee-menu-button').click();
+  await expect(window.locator('#bee-menu-dropdown')).toHaveClass(/open/);
+  expect((await popoverState(window, '#bee-menu-dropdown')).scrollable).toBe(true);
+  const nodes = await sweepRows(window, '#bee-menu-dropdown');
+  expect(nodes.length).toBeGreaterThan(5);
+  expect(nodes.filter((row) => !row.reachable || !row.insideViewport)).toEqual([]);
+  // Enter on the first row this build actually leaves interactive — which
+  // node that is depends on the binaries present, so it is read off the sweep
+  // rather than named.
+  const liveNodeRow = nodes.find((row) => !row.inert && row.id);
+  expect(liveNodeRow).toBeDefined();
+  expect(await activatesOnEnter(window, '#bee-menu-dropdown', liveNodeRow.id)).toBe(
+    liveNodeRow.id
+  );
+});
+
+// #328: an Electron `<webview>` guest taking the keyboard fires a window
+// `blur` in the embedder even though the window is still the active one, and
+// every tab activation hands the page focus (#304). The guest's ack lands
+// asynchronously — tens of milliseconds later, i.e. after the user has already
+// opened a menu — and closing on that blur tore the menu down under the
+// pointer, so the click that was on its way landed on the page instead.
+test('a webview guest taking focus does not close the menu under the pointer', async ({
+  window,
+}) => {
+  await window.locator('#menu-button').click();
+  await expect(window.locator('#menu-dropdown')).toHaveClass(/open/);
+
+  // Exactly what a late tab-activation focus does, from the chrome's side.
+  await window.evaluate(() => document.querySelector('webview:not(.hidden)')?.focus());
+  await expect
+    .poll(() => window.evaluate(() => document.activeElement?.tagName))
+    .toBe('WEBVIEW');
+
+  // The window never went anywhere, so the menu is still up...
+  await expect(window.locator('#menu-dropdown')).toHaveClass(/open/);
+  await expect(window.locator('#menu-backdrop')).not.toHaveClass(/hidden/);
+
+  // ...and its rows still do their job.
+  const tabs = window.locator('[data-test="tab"]');
+  const before = await tabs.count();
+  await window.locator('#downloads-btn').click();
+  await expect
+    .poll(
+      () =>
+        window.evaluate(() => {
+          const wv = document.querySelector('webview.active, webview:not(.hidden)');
+          return wv?.getURL?.() || wv?.getAttribute?.('src') || '';
+        }),
+      { timeout: 10_000 }
+    )
+    .toMatch(/pages\/downloads\.html/);
+  await expect(tabs).toHaveCount(before + 1);
+});

@@ -46,6 +46,10 @@ const loadMenusModule = async ({
 } = {}) => {
   jest.resetModules();
 
+  // Mutable so a test can put the window back in focus and prove the guest's
+  // `blur` is ignored (#328).
+  const windowFocusState = { hasFocus: false };
+
   const menuButton = createElement();
   const menuDropdown = createElement();
   const historyBtn = createElement();
@@ -172,6 +176,10 @@ const loadMenusModule = async ({
     addEventListener: jest.fn((event, handler) => {
       documentHandlers[event] = handler;
     }),
+    // What `onWindowDeactivated` reads to tell a real window deactivation from
+    // the `blur` a `<webview>` guest raises when it takes the keyboard (#328).
+    // Default: the window really did lose focus.
+    hasFocus: jest.fn(() => windowFocusState.hasFocus),
   };
 
   jest.doMock('./tabs.js', () => tabsMocks);
@@ -225,6 +233,7 @@ const loadMenusModule = async ({
       beeInfoPanel,
       shortcutEls,
     },
+    windowFocusState,
     handlers: {
       documentHandlers,
       windowHandlers,
@@ -754,6 +763,32 @@ describe('menus', () => {
     // never registered. Nothing may go back to hanging behaviour off it
     // (#306) — `#menu-backdrop` covers the window while a menu is open.
     expect(elements.webviewElement.addEventListener).not.toHaveBeenCalled();
+  });
+
+  // #328: a `<webview>` guest taking the keyboard raises the same window
+  // `blur`, and every tab activation hands the page focus (#304) — with the
+  // guest's ack arriving asynchronously, after the user has opened a menu.
+  // Closing on it tore the menu down under the pointer and the click that was
+  // already on its way landed on the page instead.
+  test('keeps the menus open when a webview guest takes focus, not the window', async () => {
+    const { menus, state, windowFocusState, handlers } = await loadMenusModule();
+
+    menus.initMenus();
+    menus.setMenuOpen(true);
+
+    windowFocusState.hasFocus = true;
+    handlers.windowHandlers.blur();
+    expect(state.menuOpen).toBe(true);
+
+    menus.setAntMenuOpen(true);
+    handlers.windowHandlers.blur();
+    expect(state.antMenuOpen).toBe(true);
+
+    // The window really going away still closes both.
+    windowFocusState.hasFocus = false;
+    handlers.windowHandlers.blur();
+    expect(state.menuOpen).toBe(false);
+    expect(state.antMenuOpen).toBe(false);
   });
 
   // #306: Escape is how every other dismissible surface in the chrome closes;

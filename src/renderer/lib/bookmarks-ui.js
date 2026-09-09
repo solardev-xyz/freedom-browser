@@ -6,6 +6,7 @@ import { showMenuBackdrop, hideMenuBackdrop } from './menu-backdrop.js';
 import { isModalDialogOpen } from './modal-dialog.js';
 import { normalizeLegacyEnsBookmarkUrl } from './url-utils.js';
 import { boundPopoverToViewport, placePopoverAtPoint } from './popover-bounds.js';
+import { onWindowDeactivated } from './window-deactivation.js';
 
 const electronAPI = window.electronAPI;
 
@@ -574,7 +575,9 @@ export const initBookmarks = () => {
   // id-less, so that lookup was always null and the listeners never existed.
   // `#menu-backdrop` covers the window while one of these menus is open, so a click into
   // the page dismisses it through the document listener above. See #306.)
-  window.addEventListener('blur', hideAllBookmarkMenus);
+  // Window deactivation only: a `<webview>` guest taking the keyboard raises
+  // the same event while the window is still active (#328).
+  onWindowDeactivated(hideAllBookmarkMenus);
 
   // Handle context menu actions
   contextMenu.addEventListener('click', async (event) => {

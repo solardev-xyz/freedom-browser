@@ -81,6 +81,7 @@ import { isPrivateWindow } from './lib/private-mode.js';
 import { bindHoverTooltip } from './lib/hover-tooltip.js';
 import { initShortcuts } from './lib/shortcuts.js';
 import { initPopoverBounds } from './lib/popover-bounds.js';
+import { onWindowDeactivated } from './lib/window-deactivation.js';
 
 const electronAPI = window.electronAPI;
 
@@ -590,11 +591,12 @@ async function initProfileIndicator() {
     setMenuOpen(false);
   });
 
-  // Also dismiss when the window loses focus (e.g. alt-tab), matching the app's
-  // other transient menus (bookmarks, tab/context menus, autocomplete) and the
-  // old profile menu's behaviour — the flyout shouldn't linger over an inactive
-  // window.
-  window.addEventListener('blur', () => {
+  // Also dismiss when the window is deactivated (e.g. alt-tab), matching the
+  // app's other transient menus (bookmarks, tab/context menus, autocomplete)
+  // and the old profile menu's behaviour — the flyout shouldn't linger over an
+  // inactive window. A `<webview>` guest taking the keyboard is not that: it
+  // raises the same `blur` while the window is still active (#328).
+  onWindowDeactivated(() => {
     if (menu?.hidden !== false) return;
     closeProfileMenu();
   });

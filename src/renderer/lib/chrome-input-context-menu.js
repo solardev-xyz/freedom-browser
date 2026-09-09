@@ -1,6 +1,7 @@
 // Right-click edit menu for chrome <input> elements (address bar, etc.).
 import { showMenuBackdrop, hideMenuBackdrop } from './menu-backdrop.js';
 import { placePopoverAtPoint } from './popover-bounds.js';
+import { onWindowDeactivated } from './window-deactivation.js';
 
 const electronAPI = window.electronAPI;
 
@@ -300,5 +301,7 @@ export const initChromeInputContextMenu = (options = {}) => {
     hideChromeInputContextMenu();
   });
 
-  window.addEventListener('blur', hideChromeInputContextMenu);
+  // Window deactivation only: a `<webview>` guest taking the keyboard raises
+  // the same event while the window is still active (#328).
+  onWindowDeactivated(hideChromeInputContextMenu);
 };

@@ -5,6 +5,7 @@ import { closeMenus } from './menus.js';
 import { hideBookmarkContextMenu } from './bookmarks-ui.js';
 import { showMenuBackdrop, hideMenuBackdrop } from './menu-backdrop.js';
 import { boundPopoverToViewport } from './popover-bounds.js';
+import { onWindowDeactivated } from './window-deactivation.js';
 import {
   generateSuggestions as generateAutocompleteSuggestions,
   getPlaceholderLetter,
@@ -485,7 +486,9 @@ export const initAutocomplete = () => {
   // id-less, so that lookup was always null and the listeners never existed.
   // `#menu-backdrop` covers the window while the dropdown is open, so a click into
   // the page dismisses it through the document listener above. See #306.)
-  window.addEventListener('blur', hide);
+  // Window deactivation only: a `<webview>` guest taking the keyboard raises
+  // the same event while the window is still active (#328).
+  onWindowDeactivated(hide);
 
   // Load initial cache
   refreshCache();

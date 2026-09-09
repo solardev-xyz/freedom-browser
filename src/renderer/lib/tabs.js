@@ -24,6 +24,7 @@ import {
 import { matchesShortcut } from './shortcuts.js';
 import { isModalDialogOpen } from './modal-dialog.js';
 import { placePopoverAtPoint } from './popover-bounds.js';
+import { onWindowDeactivated } from './window-deactivation.js';
 import {
   clearLinkStatus,
   clearHoverStatus,
@@ -1940,7 +1941,9 @@ export const initTabs = async () => {
     e.preventDefault();
     hideTabContextMenu();
   });
-  window.addEventListener('blur', hideTabContextMenu);
+  // Window deactivation only: a `<webview>` guest taking the keyboard raises
+  // the same event while the window is still active (#328).
+  onWindowDeactivated(hideTabContextMenu);
   // (The `focus`/`mousedown` dismissal that used to hang off
   // `document.getElementById('bzz-webview')` is gone: webviews are created
   // id-less, so that lookup was always null and the listeners never existed.

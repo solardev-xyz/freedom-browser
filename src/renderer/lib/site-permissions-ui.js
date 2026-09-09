@@ -429,6 +429,10 @@ export const initSitePermissionsUi = () => {
   // Firefox; it still dismisses on click-away in the chrome and Esc,
   // is withdrawn by main when the requesting document navigates or
   // dies, and grants nothing by itself.
+  //
+  // Deliberately the raw `blur`, not `onWindowDeactivated` (#328): this
+  // popover raises no `#menu-backdrop`, so the guest-focus blur the shared
+  // helper filters out is exactly the signal that dismisses it here.
   window.addEventListener('blur', () => {
     setPopoverOpen(false);
   });

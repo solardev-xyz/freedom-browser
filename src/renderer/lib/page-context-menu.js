@@ -6,6 +6,7 @@ import { isModalDialogOpen } from './modal-dialog.js';
 import { deriveDisplayValue, applyEnsNamePreservation } from './url-utils.js';
 import { isTrustInterstitialPageUrl } from './page-urls.js';
 import { placePopoverAtPoint } from './popover-bounds.js';
+import { onWindowDeactivated } from './window-deactivation.js';
 
 const electronAPI = window.electronAPI;
 
@@ -395,9 +396,11 @@ export const initPageContextMenu = async () => {
     hidePageContextMenu();
   });
 
-  // Hide when window loses focus — without the focus hand-back, which would
-  // pull the keyboard back into a window that is on its way out.
-  window.addEventListener('blur', () => hidePageContextMenu({ restoreFocus: false }));
+  // Hide when the window is deactivated — without the focus hand-back, which
+  // would pull the keyboard back into a window that is on its way out. A
+  // `<webview>` guest taking the keyboard raises the same `blur` while the
+  // window is still active and must not close the menu (#328).
+  onWindowDeactivated(() => hidePageContextMenu({ restoreFocus: false }));
 
   pushDebug('[PageContextMenu] Initialized');
 };

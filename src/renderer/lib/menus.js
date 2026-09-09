@@ -11,6 +11,7 @@ import { isModalDialogOpen } from './modal-dialog.js';
 import { formatAccelerator, matchesShortcut } from './shortcuts.js';
 import { SUBMENU_CLOSE_DELAY_MS } from './submenu-hover.js';
 import { boundPopoverToViewport, POPOVER_VIEWPORT_MARGIN } from './popover-bounds.js';
+import { onWindowDeactivated } from './window-deactivation.js';
 
 const electronAPI = window.electronAPI;
 
@@ -508,6 +509,10 @@ export const initMenus = () => {
   // `#menu-backdrop` covers the window while a menu is open, so a click into
   // the page dismisses it through the document listener above. See #306.)
 
-  // Close menus when window loses focus (switching windows or backgrounding app)
-  window.addEventListener('blur', closeMenus);
+  // Close menus when the window loses focus (switching windows or
+  // backgrounding the app) — but not when a `<webview>` guest merely takes the
+  // keyboard, which fires the same event while the window is still the active
+  // one. A tab activation's guest focus lands asynchronously and can arrive
+  // after the user has opened this menu, which tore it down mid-click (#328).
+  onWindowDeactivated(closeMenus);
 };

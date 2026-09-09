@@ -2243,6 +2243,10 @@ export const initNavigation = () => {
   // document (out-of-process frame), so a document-click listener alone
   // misses them. window.blur fires when focus shifts to the webview,
   // which covers any click into loaded page content.
+  //
+  // Deliberately the raw `blur`, not `onWindowDeactivated` (#328): this
+  // popover raises no `#menu-backdrop`, so the guest-focus blur the shared
+  // helper filters out is exactly the signal that dismisses it here.
   window.addEventListener('blur', () => {
     if (trustPopover && !trustPopover.hidden) setTrustPopoverOpen(false);
   });
