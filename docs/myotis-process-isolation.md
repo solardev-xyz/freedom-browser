@@ -192,6 +192,16 @@ retired-record snapshots retained before both controller-loss reuses. Old
 supervisor OS exits remain unobserved; this is not real-addon, actual Quit,
 Windows, signing/packaging or aggregate resource-containment qualification.
 
+The [standalone Mac checkpoint at `3ff2c3fc`](myotis-supervisor-qualification.md#standalone-mac-real-addon-and-native-quit-checkpoint--2026-09-09)
+passed real ABI22 load/start, cached status, one native-error read and actual
+native Menu Quit, with original browser/supervisor/addon-child OS exit 0.
+It used Electron 43.0.0 and donor dependencies, not lock 43.6.0, and an
+unavailable-only safeStorage substitution. It did not establish a verified
+read, SYNCED readiness or native read occupancy at shutdown. The exact source,
+receipt provenance, framework SIGTERM exit, three prior failed harness attempts
+and other limits are retained in that checkpoint; the latest full PR head was
+not runtime-tested by that campaign.
+
 ### CI checkpoint — 2026-09-08
 
 For PR #295 with head `09989259ea693023c452da8f266a4b66c719cb20`,
@@ -224,6 +234,11 @@ Reviewed logs: `/tmp/freedom-pr295-windows-myotis-job.log`, lines 491–510
 3718–3719 (test totals). No new tests were performed for this documentation
 checkpoint.
 
+The agreed targeted checks for external review are now complete within their
+disclosed scopes, including the standalone Mac and Windows Node-only campaigns.
+This does not complete every matrix item or change merge, rollout or release
+authority.
+
 Qualification and decision boundaries:
 
 - **External review:** the PR may leave draft for external review after the
@@ -249,9 +264,9 @@ invariants or establishes guarantees beyond the recorded evidence.
 | POSIX helper | Linux/macOS compile; real fd3 transport; natural exit; blocked read/start/status/stop; parent-control loss at startup stages; unknown supervisor loss; verified terminal and durable quarantine/recovery |
 | Windows helper | x64 MSVC and nine Node-only supervisor cases passed at `fa14433f`; still required: Electron transport and real-addon behavior, untested startup/job failure and supervisor-loss paths, unsigned and signed package behavior |
 | Concurrency | Queue/caller timeouts never refill native admission; stale generation/reply rejection; independent chains and bounded polling; main DNS/file liveness |
-| App lifecycle | Actual Quit reaches OS exit; chain stop/restart cannot reuse a live directory; profile stale-lock recovery cannot bypass quarantine |
+| App lifecycle | Standalone Mac `3ff2c3fc`: real ABI22 start and native Menu Quit reached original browser/supervisor/child OS exit 0; occupied-read shutdown and other runtime coverage remain unqualified; stop/restart and profile recovery must preserve data-directory quarantine |
 | Packaging | Exact candidate/dependencies, helper inclusion/signatures, RunAsNode fuse, ASAR/native loading, all supported release targets |
-| Live use | Coordinator-authorized Myotis-enabled comparable session and actual Quit; configured fallback and uncertain-broadcast reconciliation, with no blind transaction retry |
+| Live use | Standalone Mac: one native-error read while SYNCING, no verified data; longer synced use, configured fallback and uncertain-broadcast reconciliation remain separate, with no blind transaction retry |
 
 The original shutdown evidence strongly implicates Myotis involvement, but does
 not prove the original streamed failure or the origins of all four native calls.

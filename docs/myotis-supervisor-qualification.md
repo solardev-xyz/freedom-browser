@@ -326,3 +326,98 @@ all-startup containment, ancestor-job escape, ASAR, fuse or signing qualificatio
 The detached pre-resume residual above remains accepted and unqualified.
 No runtime fixture or application ran on the primary Mac; no tests were rerun
 for this documentation checkpoint.
+
+### Standalone Mac real-addon and native Quit checkpoint — 2026-09-09
+
+The coordinator independently verified a **scoped pass** for
+`run-d30_uxul`: real-addon load/start, cached status, one native-error read and
+actual native Menu Quit. This ran standalone app commit
+`3ff2c3fc75f5007848c03f9b7cacb49ec60d06a0`, tree
+`9709e52bbe7f20658db97430c0f7413c5dc89a73`, with source-only driver
+`3d1e2ec18b83f998d8cc3084a1ed3da544040375`. It is not a runtime test of the
+latest full PR head or the combined Agent/Myotis integration branch.
+
+Pinned inputs (SHA256):
+
+| Input | Hash |
+| --- | --- |
+| Driver | `695a2e7d5c588efd8ed6210bfcf402faa07ca74c098773b876655cdb7d22ad35` |
+| Existing v0.1.7 / ABI22 Mac addon | `1b297652775793a028337c0a62508c62a93aa5650449afcc77e7f765a6462eda` |
+| Native supervisor | `027c518fb4fa1c7a65b35cfa88e196ea8c1cfaf89f89f17e5461673f9a5c7f61` |
+| Electron executable | `692ff0f6fbd10819a2bda2dfb9a976de520e03c909559d8541ab2b04caaeaaa5` |
+
+Runtime was installed Electron 43.0.0 / Node 24.17.0 / libuv 1.52.1 on disposable
+macOS arm64, in normal app mode with a fresh seeded profile and an
+unavailable-only `safeStorage` test substitution. It did not exercise the real
+keychain. Electron differs from lock 43.6.0; reused donor dependencies also
+differ (including `ws` 8.21.0 versus 8.21.3 and `better-sqlite3` 12.11.1 versus
+13.0.3). This is not an exact-lock or packaged-runtime pass.
+
+The driver observed off before Start, one successful Start, four cached-status
+samples over 1.5 seconds and exactly one zero-address `getAccount` result:
+`native-error`, `verifiedFlag: false`, `hasReason: false`. No detailed native
+reason or verified data was retained. Immediately before Quit, the chain was
+running, `SYNCING`, at current period 0 / target 1852 with zero peers and zero
+snap peers. `elReaderAvailable: true` in a cached sample establishes neither
+SYNCED readiness nor an occupied native read at shutdown. The driver did not
+query ABI directly; acceptance rests on the pinned child's exact ABI22 gate
+and the successful real started result.
+
+One shared `Menu.sendActionToFirstResponder('terminate:')` request was recorded
+before the action, with a returned marker and no fallback. The outer original
+kernel observations show browser **B**, inspector bridge **D**, supervisor
+**S** and addon child **C** each exiting with code 0. B/D signal authority was
+retired before their sole reaps, both status 0. Inspector detachment/EOF and log
+messages were not used as exit proof. One framework helper **F** exited by
+SIGTERM 15 during app/framework teardown; the other recorded F exits were 0.
+Do not describe every framework process as exiting zero.
+
+For generation `8b614411-4ca1-4966-a2b4-63677dd1119a`, actual `MyotisProcess`
+sanitized lifecycle evidence reports `classification: verified`, `receipt:
+reaped`, supervisor code 0, child exit 0 / signal 0 and `forced: false`, matching
+the durable retired record. Raw native receipt-pipe bytes were **not**
+intercepted. This product evidence is distinct from the independently observed
+original S/C kernel exits.
+
+The final campaign ran once, runner exit 0, in 2.113445 seconds from browser
+launch intent to final result; the driver phase was 1,695 ms. No errors,
+emergencies, unknown/unconfirmed instances or outer-harness **W** process
+signals were reported. Ten observed instances / peak ten are sampled counts,
+not a containment bound or a complete historical process count. All 715
+candidate source files and modes and the operational/input/runtime pins were
+verified before/after; only approved harness activation fields changed.
+
+Three earlier harness attempts remain preserved **failures**:
+
+- `run-anb18681`: invalid `require.main` entry proof before Myotis;
+  original-owner emergency B/D SIGKILL.
+- `run-vf1654xn`: deferred `require` undefined and a known framework recheck
+  race; fallback Quit, B/D exit 0, no emergency.
+- `run-jgss5ca8`: pre-exec child image misclassified, startup interrupted and
+  no read; fallback Quit, native retirement and B/D exit 0.
+
+The final run followed source-reviewed harness corrections to cached-module
+entry proof, capture, bounded original-event/exec observation and inspector
+detachment. There was no product fix or unrecorded retry. Prior local reviews
+remain at `/private/tmp/mac-first-failure-review`,
+`/private/tmp/mac-second-failure-review` and
+`/private/tmp/mac-third-failure-review`.
+
+Final raw originals remain remotely under
+`/private/tmp/freedom-pr295-entryproof-bk43igo_/evidence/run-d30_uxul`; local
+review copies and the coordinator's `ROOT-VERIFICATION.json` are under
+`/private/tmp/mac-final-pass-review`. All 21 exported representations were
+hash-verified locally; transformed copies are explicitly labeled and retain
+original hashes/sizes. The retained `/private/tmp/mac-final-pass.json.gz`
+archive SHA256 is
+`b9473cbc9a01007e71b62882d8fe72e85655c9b998354af18f65ad4ad03d05f3`;
+its 315,202-byte decoded export SHA256 is
+`b9f07229824da6e479f151ab21b254ac59acfd71e35fb514468df790ee5fa069`.
+
+This completes the agreed targeted standalone Mac check for external review
+with the disclosed scope. It establishes no verified read, SYNCED state,
+occupied-native-request shutdown, real keychain/provider behavior, release or
+signing qualification, descendant guarantee or resource containment. Historical
+fake-addon campaigns and Windows Node-only evidence keep their own attribution.
+No tests, runtime, acquisition or product changes accompanied this documentation
+checkpoint; no app/native fixture ran on the primary Mac.
