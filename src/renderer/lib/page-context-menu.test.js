@@ -597,6 +597,35 @@ describe('page-context-menu', () => {
     expect(activeWebview.focus).toHaveBeenCalledTimes(1);
   });
 
+  // #306, dialog sibling: a modal <dialog> raised over the menu is the top
+  // layer, so the press is its own close request — and it cannot mark the
+  // press the way this handler does. Consuming it here would cancel that close
+  // outright, leaving the dialog open.
+  test('a modal dialog above the menu owns the Escape', async () => {
+    const { mod, pageContextMenu, documentHandlers } = await loadPageContextMenuModule();
+
+    await mod.initPageContextMenu();
+    mod.showPageContextMenu(20, 30, { pageUrl: 'https://example.com/page' });
+    pageContextMenu.classList.add.mockClear();
+
+    const dialog = { tagName: 'DIALOG' };
+    global.document.querySelector = jest.fn((selector) =>
+      selector === 'dialog[open]' ? dialog : null
+    );
+
+    const escape = { key: 'Escape', preventDefault: jest.fn() };
+    documentHandlers.keydown(escape);
+    expect(pageContextMenu.classList.add).not.toHaveBeenCalledWith('hidden');
+    expect(escape.preventDefault).not.toHaveBeenCalled();
+
+    // The dialog gone, the menu is innermost again and takes the next press.
+    global.document.querySelector = jest.fn(() => null);
+    const next = { key: 'Escape', preventDefault: jest.fn() };
+    documentHandlers.keydown(next);
+    expect(pageContextMenu.classList.add).toHaveBeenCalledWith('hidden');
+    expect(next.preventDefault).toHaveBeenCalled();
+  });
+
   test('still dismisses when the context went away before the action ran', async () => {
     const { mod, pageContextMenu, windowHandlers, backdrop } = await loadPageContextMenuModule();
 

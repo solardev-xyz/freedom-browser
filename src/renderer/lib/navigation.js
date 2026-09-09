@@ -32,6 +32,7 @@ import {
   looksLikeOnchainAppInput,
 } from './url-utils.js';
 import { buildSearchUrl } from './search-utils.js';
+import { isModalDialogOpen } from './modal-dialog.js';
 import {
   applyInputSelection,
   captureInputSelection,
@@ -107,18 +108,6 @@ let isSuggestionPreviewActive = () => false;
 export const setSuggestionPreviewProbe = (probe) => {
   isSuggestionPreviewActive = typeof probe === 'function' ? probe : () => false;
 };
-
-// True while a modal `<dialog>` is up (the bookmark add/edit editor, the
-// profile-create and external-node prompts, onboarding). Those are innermost
-// surfaces exactly like the menus, but they cannot mark the press with
-// `preventDefault()` the way the menus do: their Escape is the platform's own
-// close request, dispatched *after* every keydown listener has run and
-// cancelled outright by a `preventDefault()` from one of them. So the
-// stop-loading branch stands down while one is open instead — Chrome's order
-// again: this press belongs to the dialog (closing it, or being swallowed by
-// it, as onboarding's `cancel` handler chooses), and only the next one stops
-// the load. Every `<dialog>` in the chrome is shown with `showModal()`.
-const isModalDialogOpen = () => !!document.querySelector?.('dialog[open]');
 
 // Write a page-derived display value into the address bar, unless the user is
 // mid-edit. Chrome's omnibox keeps "user input in progress" text through any
@@ -2234,6 +2223,10 @@ export const initNavigation = () => {
   });
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && trustPopover && !trustPopover.hidden) {
+      // A modal <dialog> is above this popover in the top layer, so the press
+      // is the dialog's — and consuming it here would cancel the dialog's own
+      // close request. See `isModalDialogOpen`.
+      if (isModalDialogOpen()) return;
       // Consumed: the window-level Escape below must not also stop the load.
       e.preventDefault();
       setTrustPopoverOpen(false);

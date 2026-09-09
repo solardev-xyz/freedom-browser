@@ -2,6 +2,7 @@
 import { state } from './state.js';
 import { pushDebug } from './debug.js';
 import { showMenuBackdrop, hideMenuBackdrop } from './menu-backdrop.js';
+import { isModalDialogOpen } from './modal-dialog.js';
 import { deriveDisplayValue, applyEnsNamePreservation } from './url-utils.js';
 import { isTrustInterstitialPageUrl } from './page-urls.js';
 
@@ -397,6 +398,9 @@ export const initPageContextMenu = async () => {
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
     if (!pageContextMenu || pageContextMenu.classList.contains('hidden')) return;
+    // A modal <dialog> raised over the menu owns the press and cannot mark it
+    // — see `isModalDialogOpen`.
+    if (isModalDialogOpen()) return;
     e.preventDefault();
     hidePageContextMenu();
   });

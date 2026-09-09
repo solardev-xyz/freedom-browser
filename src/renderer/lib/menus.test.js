@@ -804,6 +804,34 @@ describe('menus', () => {
       expect(second.preventDefault).toHaveBeenCalled();
     });
 
+    // Dialog sibling: the profile-create prompt the flyout itself opens, and
+    // the external-node prompt main can send at any moment, are modal
+    // <dialog>s — the top layer, above these menus. The press is the dialog's
+    // own close request and it cannot mark it the way these handlers do, so
+    // consuming it here would cancel that close outright.
+    test('a modal dialog above the menus owns the Escape', async () => {
+      const { menus, state, elements, handlers } = await loadMenusModule();
+      menus.initMenus();
+      menus.setMenuOpen(true);
+      elements.profileFlyout.hidden = false;
+
+      const dialog = { tagName: 'DIALOG' };
+      global.document.querySelector.mockImplementation((selector) =>
+        selector === 'dialog[open]' ? dialog : null
+      );
+
+      const blocked = pressEscape(handlers);
+      expect(elements.profileFlyout.hidden).toBe(false);
+      expect(state.menuOpen).toBe(true);
+      expect(blocked.preventDefault).not.toHaveBeenCalled();
+
+      // The dialog closed, the flyout is innermost again.
+      global.document.querySelector.mockImplementation(() => null);
+      const next = pressEscape(handlers);
+      expect(elements.profileFlyout.hidden).toBe(true);
+      expect(next.preventDefault).toHaveBeenCalled();
+    });
+
     test('does nothing when no menu is open', async () => {
       const { menus, state, elements, handlers } = await loadMenusModule();
       menus.initMenus();

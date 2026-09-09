@@ -22,6 +22,7 @@ import {
   notifyFindBarTabSwitched,
 } from './find-bar.js';
 import { matchesShortcut } from './shortcuts.js';
+import { isModalDialogOpen } from './modal-dialog.js';
 import {
   clearLinkStatus,
   clearHoverStatus,
@@ -1940,6 +1941,10 @@ export const initTabs = async () => {
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
     if (!tabContextMenu || tabContextMenu.classList.contains('hidden')) return;
+    // A modal <dialog> raised over the menu (the external-node or
+    // profile-create prompt arrives on its own schedule) owns the press and
+    // cannot mark it — see `isModalDialogOpen`.
+    if (isModalDialogOpen()) return;
     e.preventDefault();
     hideTabContextMenu();
   });

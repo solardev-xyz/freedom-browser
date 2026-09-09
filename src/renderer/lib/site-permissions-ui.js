@@ -24,6 +24,7 @@
 
 import { getActiveWebview, getDisplayUrlForWebview } from './tabs.js';
 import { getPermissionKey } from './origin-utils.js';
+import { isModalDialogOpen } from './modal-dialog.js';
 import { pushDebug } from './debug.js';
 
 // Storage-key → human noun (indicator popover, settings mirror this).
@@ -375,7 +376,20 @@ export const initSitePermissionsUi = () => {
   });
 
   // Click-away / Esc dismissal, mirroring the trust popover's handlers.
+  //
+  // Both stand down while a modal <dialog> is up. A page can request a
+  // permission at any moment — including while the bookmark editor, the
+  // profile-create/external-node prompt or onboarding is open — and the
+  // prompt then renders behind the dialog's top layer, inert and
+  // un-answerable. Every gesture in that state is aimed at the dialog: a
+  // click lands inside it (or on its backdrop), and the Escape is its own
+  // close request. Acting on either would deny the page's request from a
+  // press or click the user never aimed at the prompt, and the Escape's
+  // `preventDefault()` would additionally cancel the dialog's close outright,
+  // leaving it open. The prompt is held instead and becomes answerable the
+  // moment the dialog is gone. See `isModalDialogOpen` and #306.
   document.addEventListener('click', (e) => {
+    if (isModalDialogOpen()) return;
     if (activePrompt && !promptEl.hidden && !promptEl.contains(e.target)) {
       dismissActivePrompt('click-away');
     }
@@ -392,6 +406,7 @@ export const initSitePermissionsUi = () => {
   // innermost surface only. See #306.
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
+    if (isModalDialogOpen()) return;
     const popoverOpen = Boolean(popoverEl && !popoverEl.hidden);
     if (activePrompt || popoverOpen) e.preventDefault();
     dismissActivePrompt('escape');

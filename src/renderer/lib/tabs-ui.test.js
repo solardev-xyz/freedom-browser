@@ -1548,6 +1548,40 @@ describe('tabs ui behavior', () => {
     expect(elements.tabContextMenu.classList.contains('hidden')).toBe(true);
   });
 
+  // #306, dialog sibling: a modal <dialog> raised over the tab menu (the
+  // external-node prompt arrives from main on its own schedule) is the top
+  // layer, so the press is its close request — and it cannot mark the press
+  // the way this handler does. Consuming it here would cancel that close.
+  test('a modal dialog above the tab context menu owns the Escape', async () => {
+    const { mod, elements, documentHandlers } = await loadTabsModule();
+    await mod.initTabs();
+
+    const firstTab = mod.getActiveTab();
+    const firstTabEl = findTabElement(elements.tabBar, firstTab.id);
+    firstTabEl.dispatch('contextmenu', {
+      preventDefault: jest.fn(),
+      stopPropagation: jest.fn(),
+      clientX: 20,
+      clientY: 30,
+    });
+    expect(elements.tabContextMenu.classList.contains('hidden')).toBe(false);
+
+    const dialog = createElement('dialog');
+    dialog.setAttribute('open', '');
+    global.document.body.appendChild(dialog);
+
+    const escape = { key: 'Escape', preventDefault: jest.fn() };
+    documentHandlers.keydown(escape);
+    expect(elements.tabContextMenu.classList.contains('hidden')).toBe(false);
+    expect(escape.preventDefault).not.toHaveBeenCalled();
+
+    dialog.remove();
+    const next = { key: 'Escape', preventDefault: jest.fn() };
+    documentHandlers.keydown(next);
+    expect(elements.tabContextMenu.classList.contains('hidden')).toBe(true);
+    expect(next.preventDefault).toHaveBeenCalled();
+  });
+
   // #308: the page context menu belongs to the document it was raised on, so
   // tabs.js reports every navigation (and every tab activation) to it — the
   // same hook the find bar already had. Without it the menu floated over the

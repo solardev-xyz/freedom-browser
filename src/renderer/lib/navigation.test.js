@@ -809,6 +809,32 @@ describe('navigation', () => {
       expect(ctx.elements.trustPopover.hidden).toBe(true);
       expect(event.preventDefault).toHaveBeenCalled();
     });
+
+    // …unless a modal <dialog> is above it in the top layer: the press is the
+    // dialog's own close request then, and consuming it here would cancel it.
+    test('a modal dialog above the trust popover owns the Escape', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+
+      const dialog = createElement('dialog');
+      dialog.setAttribute('open', '');
+      global.document.querySelector = jest.fn((selector) =>
+        selector === 'dialog[open]' ? dialog : null
+      );
+
+      ctx.elements.trustPopover.hidden = false;
+      const blocked = { key: 'Escape', preventDefault: jest.fn() };
+      global.document.handlers.keydown(blocked);
+
+      expect(ctx.elements.trustPopover.hidden).toBe(false);
+      expect(blocked.preventDefault).not.toHaveBeenCalled();
+
+      global.document.querySelector = jest.fn(() => null);
+      const next = { key: 'Escape', preventDefault: jest.fn() };
+      global.document.handlers.keydown(next);
+      expect(ctx.elements.trustPopover.hidden).toBe(true);
+      expect(next.preventDefault).toHaveBeenCalled();
+    });
   });
 
   test('processes webview lifecycle events and records history', async () => {

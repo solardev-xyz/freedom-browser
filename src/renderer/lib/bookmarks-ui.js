@@ -3,6 +3,7 @@ import { pushDebug } from './debug.js';
 import { getActiveTab, hideTabContextMenu, openInNewTabWithTarget } from './tabs.js';
 import { closeMenus } from './menus.js';
 import { showMenuBackdrop, hideMenuBackdrop } from './menu-backdrop.js';
+import { isModalDialogOpen } from './modal-dialog.js';
 import { normalizeLegacyEnsBookmarkUrl } from './url-utils.js';
 
 const electronAPI = window.electronAPI;
@@ -560,6 +561,9 @@ export const initBookmarks = () => {
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return;
     if (!anyBookmarkMenuOpen()) return;
+    // A modal <dialog> raised over one of these menus owns the press and
+    // cannot mark it — see `isModalDialogOpen`.
+    if (isModalDialogOpen()) return;
     event.preventDefault();
     hideAllBookmarkMenus();
   });

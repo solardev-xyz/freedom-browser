@@ -7,6 +7,7 @@ import { startRadicleInfoUpdates, stopRadicleInfoUpdates } from './radicle-ui.js
 import { hideTabContextMenu, getActiveWebview } from './tabs.js';
 import { hideBookmarkContextMenu, hideOverflowMenu } from './bookmarks-ui.js';
 import { showMenuBackdrop, hideMenuBackdrop } from './menu-backdrop.js';
+import { isModalDialogOpen } from './modal-dialog.js';
 import { formatAccelerator, matchesShortcut } from './shortcuts.js';
 import { SUBMENU_CLOSE_DELAY_MS } from './submenu-hover.js';
 
@@ -358,6 +359,12 @@ export const initMenus = () => {
   // users zoom in, which is what they pressed. menus.test.js pins it.
   window.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
+      // A modal <dialog> raised over these menus (the profile-create prompt
+      // the flyout itself opens, the external-node prompt main can send at
+      // any moment) is above them in the top layer and cannot mark the press
+      // — see `isModalDialogOpen`. Its close comes first; the next press
+      // reaches the menu behind it.
+      if (isModalDialogOpen()) return;
       if (isProfileFlyoutOpen()) {
         event.preventDefault();
         hideProfileFlyout();

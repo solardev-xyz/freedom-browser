@@ -343,6 +343,47 @@ describe('bookmarks-ui', () => {
     expect(escape.preventDefault).toHaveBeenCalled();
   });
 
+  // #306, dialog sibling: a modal <dialog> raised over one of these menus is
+  // the top layer, so the press is its close request — and it cannot mark the
+  // press the way a menu handler does. Consuming it here would cancel that
+  // close outright, leaving the dialog open (and taking a menu down that the
+  // user could not even see).
+  test('a modal dialog above the menu owns the Escape', async () => {
+    const ctx = await loadBookmarksModule({
+      initialBookmarks: [{ label: 'Alpha', target: 'https://alpha.example' }],
+    });
+
+    ctx.mod.initBookmarks();
+    await ctx.mod.loadBookmarks();
+    await flushMicrotasks();
+
+    const contextMenu = ctx.helpers.getContextMenu();
+    const bookmarksInner = ctx.helpers.getBookmarksInner();
+    bookmarksInner.dispatch('contextmenu', {
+      preventDefault: jest.fn(),
+      clientX: 20,
+      clientY: 30,
+      target: bookmarksInner.children[0].children[1],
+    });
+    expect(contextMenu.classList.contains('hidden')).toBe(false);
+
+    const dialog = createElement('dialog');
+    dialog.setAttribute('open', '');
+    global.document.body.appendChild(dialog);
+
+    const escape = { key: 'Escape', preventDefault: jest.fn() };
+    global.document.handlers.keydown(escape);
+    expect(contextMenu.classList.contains('hidden')).toBe(false);
+    expect(escape.preventDefault).not.toHaveBeenCalled();
+
+    // The dialog gone, the menu is innermost again and takes the next press.
+    dialog.remove();
+    const next = { key: 'Escape', preventDefault: jest.fn() };
+    global.document.handlers.keydown(next);
+    expect(contextMenu.classList.contains('hidden')).toBe(true);
+    expect(next.preventDefault).toHaveBeenCalled();
+  });
+
   test('updates add bookmark button visibility and bookmark state', async () => {
     const consoleError = jest.spyOn(console, 'error').mockImplementation(() => {});
     const ctx = await loadBookmarksModule({

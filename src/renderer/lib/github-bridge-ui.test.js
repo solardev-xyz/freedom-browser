@@ -351,4 +351,33 @@ describe('github-bridge-ui', () => {
     });
     expect(ctx.elements.panel.classList.contains('hidden')).toBe(true);
   });
+
+  // #306, dialog sibling: a modal <dialog> raised over the panel is the top
+  // layer, so the press is its own close request — and consuming it here would
+  // cancel that close outright, leaving the dialog open.
+  test('a modal dialog above the panel owns the Escape', async () => {
+    const ctx = await loadGithubBridgeModule();
+
+    ctx.mod.initGithubBridgeUi();
+    await ctx.mod.updateGithubBridgeIcon();
+
+    ctx.elements.bridgeBtn.dispatch('click', { stopPropagation: jest.fn() });
+    await flushMicrotasks();
+    expect(ctx.elements.panel.classList.contains('hidden')).toBe(false);
+
+    const dialog = createElement('dialog');
+    dialog.setAttribute('open', '');
+    global.document.body.appendChild(dialog);
+
+    const escape = { key: 'Escape', preventDefault: jest.fn() };
+    ctx.documentHandlers.keydown(escape);
+    expect(ctx.elements.panel.classList.contains('hidden')).toBe(false);
+    expect(escape.preventDefault).not.toHaveBeenCalled();
+
+    dialog.remove();
+    const next = { key: 'Escape', preventDefault: jest.fn() };
+    ctx.documentHandlers.keydown(next);
+    expect(ctx.elements.panel.classList.contains('hidden')).toBe(true);
+    expect(next.preventDefault).toHaveBeenCalled();
+  });
 });
