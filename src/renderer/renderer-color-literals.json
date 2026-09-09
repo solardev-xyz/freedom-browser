@@ -1,6 +1,6 @@
 {
   "issue": "https://github.com/solardev-xyz/freedom-browser/issues/261",
-  "total": 267,
+  "total": 265,
   "files": {
     "pages/downloads.html": [
       "background: #388bfd33",
@@ -296,12 +296,10 @@
       "stroke: rgb(59, 130, 246)"
     ],
     "styles/tabs.css": [
-      "-webkit-mask-image: black",
       "background-color: rgba(255, 255, 255, 0.1)",
       "background: rgba(255, 255, 255, 0.1)",
       "background: rgba(255, 255, 255, 0.15)",
-      "border: rgba(255, 255, 255, 0.2)",
-      "mask-image: black"
+      "border: rgba(255, 255, 255, 0.2)"
     ]
   }
 }
