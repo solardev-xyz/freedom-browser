@@ -19,6 +19,7 @@ test('repro: second Downloads click', async ({ window }) => {
             : 'null';
     window.__log = [];
     const push = (m) => window.__log.push(`${Math.round(performance.now())} ${m}`);
+    window.__push = push;
 
     const dd = document.getElementById('menu-dropdown');
     const origToggle = DOMTokenList.prototype.toggle;
@@ -96,8 +97,29 @@ test('repro: second Downloads click', async ({ window }) => {
   await expect(window.locator('#downloads-btn')).toBeVisible();
   console.log('GEOM-1 ' + JSON.stringify(await geom()));
 
+  const centre1 = await window.evaluate(() => {
+    const r = document.getElementById('downloads-btn').getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  });
   await window.locator('#downloads-btn').click();
-  await expect.poll(activeUrl, { timeout: 10_000 }).toMatch(/pages\/downloads\.html/);
+  let first = true;
+  try {
+    await expect.poll(activeUrl, { timeout: 6_000 }).toMatch(/pages\/downloads\.html/);
+  } catch {
+    first = false;
+  }
+  if (!first) {
+    await window.evaluate(() => window.__push('--- FIRST click failed; raw mouse.click ---'));
+    await window.mouse.click(centre1.x, centre1.y);
+    try {
+      await expect.poll(activeUrl, { timeout: 5_000 }).toMatch(/pages\/downloads\.html/);
+      await window.evaluate(() => window.__push('--- raw click WORKED ---'));
+    } catch {
+      await window.evaluate(() => window.__push('--- raw click ALSO FAILED ---'));
+    }
+  }
+  console.log('FIRST CLICK OK = ' + first);
+  console.log('EARLY LOG\n' + (await window.evaluate(() => window.__log)).join('\n'));
   await expect
     .poll(() => window.evaluate(() => document.activeElement?.tagName), { timeout: 10_000 })
     .toBe('WEBVIEW');
