@@ -366,3 +366,199 @@ test('custom-chain access order can be reordered from its rendered defaults', as
     )
     .toEqual(['colibri', 'direct', 'quorum']);
 });
+
+// The settings page loads in a webview: `settingsEval` returns null until it
+// is there, so every pass below waits for the nav to render first.
+const openSettings = async (window, expect) => {
+  await window.evaluate(() => document.getElementById('settings-btn')?.click());
+  await expect
+    .poll(() => settingsEval(window, `document.querySelectorAll('.nav-item').length`), {
+      timeout: 15_000,
+    })
+    .toBe(14);
+};
+
+// ---------------------------------------------------------------------------
+// The copy and control-style findings of the 2026-09 settings UX audit, pinned
+// against what the running page renders. `settings-copy.test.js` pins the same
+// rules statically; these are the ones only the rendered page can answer —
+// the two sections whose heading comes from a view template, the Shortcuts
+// rows built from the IPC state, and the classes on a chain detail.
+// ---------------------------------------------------------------------------
+
+// #276: clicking a nav item has to land you on a page with that item's name.
+test('every nav item opens a section titled with its own label', async ({ window }) => {
+  await openSettings(window, expect);
+  const items = await settingsEval(
+    window,
+    `[...document.querySelectorAll('.nav-item')].map((item) => ({
+      target: item.dataset.target,
+      label: item.textContent.trim()
+    }))`
+  );
+  expect(items.length).toBe(14);
+
+  for (const { target, label } of items) {
+    await settingsEval(window, `location.hash = '${target}'`);
+    await expect
+      .poll(() =>
+        settingsEval(
+          window,
+          `(() => {
+            const section = document.getElementById('${target}');
+            if (!section || section.classList.contains('hidden')) return null;
+            const heading = section.querySelector('h2.section-title');
+            return heading ? heading.textContent.trim() : null;
+          })()`
+        )
+      )
+      // Startup used to open "Automatic Startup" and Name Resolution
+      // "Ethereum Name Resolution"; Chains and RPC Providers render their
+      // heading from a view template, so only this pass sees them.
+      .toBe(label);
+  }
+});
+
+// #277: Shortcuts was the only section whose row labels were Title Case,
+// because they are the registry's menu strings.
+test('Shortcuts rows are sentence case, and search reads the label it shows', async ({
+  window,
+}) => {
+  await openSettings(window, expect);
+  await settingsEval(window, `location.hash = 'shortcuts'`);
+
+  const labels = () =>
+    settingsEval(
+      window,
+      `[...document.querySelectorAll('#shortcuts-view .row .row-label')].map((el) => el.textContent.trim())`
+    );
+  await expect.poll(async () => (await labels()).length).toBeGreaterThan(20);
+
+  const rendered = await labels();
+  expect(rendered).toContain('New tab');
+  expect(rendered).toContain('Actual size');
+  expect(rendered).toContain('App developer tools');
+  // Sentence case: nothing after the first word carries a capital, the same
+  // bar every other row label on the page already meets.
+  const titleCased = rendered.filter((label) =>
+    label
+      .split(' ')
+      .slice(1)
+      .some((word) => /^[A-Z]/.test(word))
+  );
+  expect(titleCased).toEqual([]);
+
+  // The filter has to match what the row shows, not the string it replaced.
+  await settingsEval(
+    window,
+    `(() => {
+      const search = document.getElementById('shortcut-search');
+      search.value = 'new tab';
+      search.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`
+  );
+  await expect.poll(labels).toEqual(['New tab']);
+  await settingsEval(
+    window,
+    `(() => {
+      const search = document.getElementById('shortcut-search');
+      search.value = '';
+      search.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`
+  );
+});
+
+// #278: a glyph inside a button's text is part of its accessible name — a
+// screen reader said "plus Add a chain" and "Manage all profiles right arrow".
+// #284: and one rule for which removals are red, on the chain detail too.
+test('no rendered control bakes a glyph into its label, and removals follow the rule', async ({
+  window,
+}) => {
+  await openSettings(window, expect);
+  const targets = await settingsEval(
+    window,
+    `[...document.querySelectorAll('.nav-item')].map((item) => item.dataset.target)`
+  );
+
+  const glyphs = [];
+  for (const target of targets) {
+    await settingsEval(window, `location.hash = '${target}'`);
+    await expect
+      .poll(() =>
+        settingsEval(window, `!document.getElementById('${target}').classList.contains('hidden')`)
+      )
+      .toBe(true);
+    glyphs.push(
+      ...(await settingsEval(
+        window,
+        `[...document.querySelectorAll('.section:not(.hidden) button, .section:not(.hidden) a')]
+          .map((el) => (el.innerText || el.textContent || '').trim())
+          .filter((label) => label.startsWith('+') || label.includes('→') || label.includes('✕'))`
+      ))
+    );
+  }
+  expect(glyphs).toEqual([]);
+
+  // A custom chain is the one that can be removed, and the one that can carry
+  // a custom RPC endpoint — the two controls the finding split.
+  await expect
+    .poll(() => settingsEval(window, `typeof window.freedomAPI?.addChain`))
+    .toBe('function');
+  await settingsEval(
+    window,
+    `window.freedomAPI.addChain({
+      chainId: 424242,
+      name: 'GlyphNet',
+      nativeCurrency: { name: 'Glyph', symbol: 'GLY', decimals: 18 }
+    }, ['https://rpc.glyph.example'])`
+  );
+  // A user-added endpoint is the removable one — the chain's own `rpcUrls`
+  // render as built-in toggles, not as a row with a Remove.
+  await settingsEval(
+    window,
+    `window.freedomAPI.upsertEndpointSource('user-glyph', {
+      role: 'rpc',
+      keyed: false,
+      coverage: { '424242': 'https://rpc.glyph.example/user' }
+    })`
+  );
+  await expect
+    .poll(() => settingsEval(window, `location.hash = 'chains/424242'; location.hash`))
+    .toBe('#chains/424242');
+
+  await expect
+    .poll(() =>
+      settingsEval(
+        window,
+        `[...document.querySelectorAll('#chains-view button[data-action]')]
+          .filter((btn) => ['remove-chain', 'delete-source', 'add-endpoint'].includes(btn.dataset.action))
+          .map((btn) => ({ action: btn.dataset.action, cls: btn.className, label: btn.textContent.trim() }))`
+      )
+    )
+    .toEqual(
+      expect.arrayContaining([
+        // Discards the chain and its endpoints, and cannot be undone here.
+        { action: 'remove-chain', cls: 'btn danger', label: 'Remove this chain' },
+        // One endpoint, re-addable from this same view — plain, and it says
+        // the verb its six siblings say rather than a bare glyph.
+        { action: 'delete-source', cls: 'btn', label: 'Remove' },
+        { action: 'add-endpoint', cls: 'btn', label: 'Add RPC' },
+      ])
+    );
+
+  // The chevron is decorative, so a chain row announces as the chain.
+  await settingsEval(window, `location.hash = 'chains'`);
+  await expect
+    .poll(() =>
+      settingsEval(
+        window,
+        `[...document.querySelectorAll('#chains-view .net-chevron')]
+          .every((el) => el.getAttribute('aria-hidden') === 'true')`
+      )
+    )
+    .toBe(true);
+
+  // Leave the shared fixture as it was found.
+  await settingsEval(window, `window.freedomAPI.removeEndpointSource('user-glyph')`);
+  await settingsEval(window, `window.freedomAPI.removeChain('424242')`);
+});
