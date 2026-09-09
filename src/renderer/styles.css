@@ -17,6 +17,9 @@
 @import './styles/permissions.css';
 @import './styles/find-bar.css';
 @import './styles/onboarding.css';
+/* After every component sheet: the shared popover bound is the last word on
+   overflow for the chrome's menus and popovers (styles/popovers.css). */
+@import './styles/popovers.css';
 /* After every component sheet: the shared chrome-input focus ring is the
    last word on focus for text fields (see styles/inputs.css). */
 @import './styles/inputs.css';

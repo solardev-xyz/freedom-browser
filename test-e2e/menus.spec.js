@@ -7,7 +7,7 @@
 // the mouse. Chrome closes the open menu on Escape, innermost submenu first,
 // and gives the keyboard back to the button that opened it.
 
-const { test, expect, SAMPLE_BZZ_HASH } = require('./fixtures');
+const { test, expect, waitForPopoverFrame, SAMPLE_BZZ_HASH } = require('./fixtures');
 
 const menuState = (window) =>
   window.evaluate(() => ({
@@ -165,6 +165,10 @@ test('the hamburger lists Downloads directly after History, with its shortcut hi
       return wv?.getURL?.() || wv?.getAttribute?.('src') || '';
     });
 
+  // The row is in the DOM, but a synthetic click only reaches the chrome once
+  // the frame carrying the menu has gone out — until then the browser routes
+  // it to the `<webview>` behind it (see `waitForPopoverFrame`).
+  await waitForPopoverFrame(window);
   await window.locator('#downloads-btn').click();
   await expect.poll(() => menuState(window)).toMatchObject({ hamburger: false });
 
@@ -190,7 +194,12 @@ test('the hamburger lists Downloads directly after History, with its shortcut hi
 
   await window.locator('#menu-button').click();
   await expect.poll(() => menuState(window)).toMatchObject({ hamburger: true });
+  await waitForPopoverFrame(window);
   await window.locator('#downloads-btn').click();
   await expect.poll(activeUrl, { timeout: 10_000 }).toMatch(/pages\/downloads\.html/);
   await expect(tabs).toHaveCount(initialTabs + 1);
+
+  // The menu is gone and the keyboard is back in the chrome, not stranded in
+  // the guest that the second activation just handed the page focus to.
+  await expect.poll(() => menuState(window)).toMatchObject({ hamburger: false });
 });

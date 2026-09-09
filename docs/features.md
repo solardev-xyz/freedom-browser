@@ -31,7 +31,7 @@ Freedom manages nodes per browser profile:
 
 This means Freedom works seamlessly whether you:
 
-- Run it standalone (bundled Swarm and native IPFS nodes start automatically; Radicle and Myotis startup are opt-in under **Settings → Automatic Startup**)
+- Run it standalone (bundled Swarm and native IPFS nodes start automatically; Radicle and Myotis startup are opt-in under **Settings → Startup**)
 - Create multiple independent browser profiles with their own browser data, vault, and managed node state
 - Already have a system-wide Swarm daemon running and explicitly configure a profile to use it
 - Have port conflicts with other software (Freedom finds and records available profile ports)
@@ -80,7 +80,7 @@ launching can use `open -n -a Freedom --args --profile=<id>`.
 - **Native Provider Actions**: `window.radicle` seeding, identity, repository listing, COB writes, and GitHub imports all call the addon directly.
 - **Automatic Identity**: Creates a Radicle identity on first run (no manual setup required).
 - **Profile Control**: Enable or disable Radicle per profile under **Settings → Nodes**.
-- **Node Toggle**: Start and stop Radicle from the Nodes panel; automatic startup is opt-in under **Settings → Automatic Startup → Start Radicle node**.
+- **Node Toggle**: Start and stop Radicle from the Nodes panel; automatic startup is opt-in under **Settings → Startup → Start Radicle node**.
 - **Live Statistics**: View connected peers, seeded repos, addon version, and Node ID.
 - **Repository Seeding**: Seed Radicle repositories directly from the browser to help replicate them across the network.
 - **Windows**: The embedded node ships in the Windows x64 and ARM64 builds.
@@ -277,7 +277,7 @@ Access built-in browser pages using the `freedom://` protocol:
 - **Ad Blocking**: Choose filter categories, automatic list updates, and per-host exemptions.
 - **Shortcuts**: Search and remap browser commands with conflict detection and per-command reset.
 - **Chains and RPC Providers**: Configure chain endpoints, keyed providers, and ENS verification behavior.
-- **Experimental**: Enable Identity & Wallet (Beta), Show IPFS load progress in the status bar, Swarm node mode, Enable Tor (.onion access) (Beta), and Start Tor when Freedom opens. The Tor rows are hidden on Windows builds. Radicle is no longer experimental — it is configured under **Settings → Nodes** and **Settings → Automatic Startup**.
+- **Experimental**: Enable Identity & Wallet (Beta), Show IPFS load progress in the status bar, Swarm node mode, Enable Tor (.onion access) (Beta), and Start Tor when Freedom opens. The Tor rows are hidden on Windows builds. Radicle is no longer experimental — it is configured under **Settings → Nodes** and **Settings → Startup**.
 - **Auto-Updates**: Toggle automatic update checks (enabled by default).
 - **Protocol Icons**: Address bar shows Swarm (hexagon), IPFS (cube), onchain app (Ethereum diamond), Radicle (seedling), or HTTP (globe) icon based on current protocol. When a page also has a resolution/provenance trust status (a resolved Ethereum name, or a `web3://` app whose retrieval was verified), the trust shield takes that slot instead — so onchain apps normally show the shield and fall back to the diamond only when no provenance is available.
 - **Hamburger Menu**: Access browser features (Profile submenu, New Tab, New Window, New Private Window, History, Zoom, Print, Developer Tools, Settings, About Freedom, Check for Updates…).

@@ -294,6 +294,53 @@ describe('page-context-menu', () => {
     await expect(mod.initPageContextMenu()).resolves.toBeUndefined();
   });
 
+  // #328: the menu was unhidden at the raw pointer and clamped one frame
+  // later, so a right-click near an edge painted one frame of menu hanging off
+  // the window. The measurement still needs that frame (the visible groups
+  // were only just switched, so the height is not final) — what changed is
+  // that nothing is *painted* until the placement has happened.
+  test('is laid out invisibly and revealed only once it has been placed', async () => {
+    const { mod, pageContextMenu } = await loadPageContextMenuModule();
+    await mod.initPageContextMenu();
+
+    let frame = null;
+    global.requestAnimationFrame = jest.fn((callback) => {
+      frame = callback;
+      return 1;
+    });
+
+    mod.showPageContextMenu(790, 590, { pageUrl: 'https://example.com/page' });
+
+    // Laid out (so it can be measured) but not painted, and not focusable yet.
+    expect(pageContextMenu.classList.contains('hidden')).toBe(false);
+    expect(pageContextMenu.style.visibility).toBe('hidden');
+    expect(pageContextMenu.focus).not.toHaveBeenCalled();
+
+    frame();
+
+    expect(pageContextMenu.style.visibility).toBe('');
+    expect(pageContextMenu.style.top).toBe('490px'); // flipped up, as it was
+    expect(pageContextMenu.focus).toHaveBeenCalledTimes(1);
+  });
+
+  test('a menu dismissed inside that frame is not revealed after the fact', async () => {
+    const { mod, pageContextMenu } = await loadPageContextMenuModule();
+    await mod.initPageContextMenu();
+
+    let frame = null;
+    global.requestAnimationFrame = jest.fn((callback) => {
+      frame = callback;
+      return 1;
+    });
+
+    mod.showPageContextMenu(790, 590, { pageUrl: 'https://example.com/page' });
+    mod.hidePageContextMenu();
+    frame();
+
+    expect(pageContextMenu.classList.contains('hidden')).toBe(true);
+    expect(pageContextMenu.focus).not.toHaveBeenCalled();
+  });
+
   test('shows the correct group, updates navigation state, and repositions on screen bounds', async () => {
     const activeWebview = {
       canGoBack: jest.fn(() => true),
@@ -328,8 +375,17 @@ describe('page-context-menu', () => {
     expect(forwardBtn.disabled).toBe(true);
     expect(backdrop.showMenuBackdrop).toHaveBeenCalled();
     expect(pageContextMenu.classList.remove).toHaveBeenCalledWith('hidden');
+    // #328: the menu is laid out invisibly, placed, and only then revealed —
+    // so no frame ever paints it at the raw pointer hanging off the window,
+    // which the pinned chrome document now clips rather than scrolls. Focus
+    // comes after the reveal: a `visibility: hidden` element cannot take it.
+    expect(pageContextMenu.style.visibility).toBe('');
+    expect(pageContextMenu.focus).toHaveBeenCalled();
     expect(pageContextMenu.style.left).toBe('672px');
-    expect(pageContextMenu.style.top).toBe('492px');
+    // Only 10 px below the pointer in a 600 px-tall window, so the menu opens
+    // *upwards* from it — its bottom edge lands on the click (#324). It used
+    // to be pushed down against the bottom edge instead, covering the pointer.
+    expect(pageContextMenu.style.top).toBe('490px');
 
     mod.showPageContextMenu(20, 30, { linkUrl: 'https://example.com/link' });
     mod.showPageContextMenu(5, 6, { selectedText: 'selected text' });

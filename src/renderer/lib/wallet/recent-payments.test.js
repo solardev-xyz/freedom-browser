@@ -71,7 +71,7 @@ async function loadRecentPayments() {
 
   const listEl = new FakeElement();
   const viewAllLink = new FakeElement();
-  const createTab = jest.fn();
+  const openOrFocusInternalPage = jest.fn();
   const eventTarget = createWindowEventTarget();
   const payments = {
     getRecent: jest.fn().mockResolvedValue({ success: true, payments: [] }),
@@ -90,7 +90,7 @@ async function loadRecentPayments() {
     payments,
   };
 
-  jest.doMock('../tabs.js', () => ({ createTab }));
+  jest.doMock('../tabs.js', () => ({ openOrFocusInternalPage }));
   jest.doMock('./wallet-state.js', () => ({
     walletState: {
       registeredTokens: {
@@ -100,7 +100,7 @@ async function loadRecentPayments() {
   }));
 
   const mod = await import('./recent-payments.js');
-  return { mod, listEl, viewAllLink, createTab, payments, eventTarget };
+  return { mod, listEl, viewAllLink, openOrFocusInternalPage, payments, eventTarget };
 }
 
 describe('recent-payments sidebar section', () => {
@@ -121,7 +121,9 @@ describe('recent-payments sidebar section', () => {
 
     const clickEvent = await ctx.viewAllLink.fire('click');
     expect(clickEvent.preventDefault).toHaveBeenCalled();
-    expect(ctx.createTab).toHaveBeenCalledWith('freedom://payments');
+    // Singleton, not a second Payments tab: the sidebar goes through the same
+    // internal-page routing every other chrome surface uses (#325).
+    expect(ctx.openOrFocusInternalPage).toHaveBeenCalledWith('payments');
   });
 
   test('listens for payment mutations without hitting IPC while the mini-list limit is zero', async () => {
