@@ -35,6 +35,10 @@ let isOpen = false;
 // `originalSelection` keeps the caret/selection that went with it.
 let originalQuery = '';
 let originalSelection = null;
+// True once a keyboard preview has written a suggestion's URL over the typed
+// text (mouse hover only moves the highlight). It's what makes the first
+// Escape this module's to own — there is something to restore. See #310/#313.
+let previewWroteInput = false;
 
 // Callbacks
 let onNavigate = null;
@@ -201,6 +205,7 @@ export const hide = () => {
   dropdown.classList.add('hidden');
   isOpen = false;
   selectedIndex = -1;
+  previewWroteInput = false;
   currentSuggestions = [];
   originalQuery = '';
   originalSelection = null;
@@ -210,13 +215,17 @@ export const hide = () => {
 };
 
 /**
- * True while a suggestion is highlighted in an open dropdown — i.e. while the
- * address bar shows a previewed row rather than the user's own text. That is
- * exactly the state in which this module owns the Escape press (it returns to
- * the typed text); navigation.js reads it to stand down for that one press
- * and take over from the next. See #310.
+ * True while the address bar shows a *previewed* suggestion rather than the
+ * user's own text. That is exactly the state in which this module owns the
+ * Escape press (it returns to the typed text); navigation.js reads it to
+ * stand down for that one press and take over from the next. See #310.
+ *
+ * Keyed on whether a preview actually rewrote the input, not on the highlight:
+ * mouse hover moves the highlight without touching the bar's text, so an
+ * Escape after a mere hover has nothing to restore and must not cost the user
+ * an extra press — Chrome closes the list and reverts in one.
  */
-export const isSuggestionPreviewActive = () => isOpen && selectedIndex >= 0;
+export const isSuggestionPreviewActive = () => isOpen && previewWroteInput;
 
 /**
  * Update selection highlight
@@ -247,6 +256,7 @@ const captureTypedText = () => {
 /** Put the user's typed text (and caret) back, with nothing highlighted. */
 const restoreTypedText = () => {
   selectedIndex = -1;
+  previewWroteInput = false;
   updateSelection();
   addressInput.value = originalQuery;
   applyInputSelection(addressInput, originalSelection);
@@ -267,6 +277,7 @@ const previewRow = (index) => {
   selectedIndex = index;
   updateSelection();
   addressInput.value = currentSuggestions[selectedIndex]?.url || '';
+  previewWroteInput = true;
   // A previewed suggestion is still an uncommitted edit of this tab's address
   // bar: it survives page commits (#305) and tab switches (#314).
   setAddressBarEdit(addressInput.value, null);
@@ -358,8 +369,11 @@ const handleKeyDown = (e) => {
           // Picking a suggestion commits the omnibox: the tab we're leaving
           // no longer has an edit in progress. `loadTarget` does this for the
           // navigating branch below; the tab-switch branch has to do it here.
+          // `fromAddressBarCommit` tells the tab-switch handler not to adopt
+          // the bar's leftover text (the previewed target URL, or the query)
+          // as the leaving tab's page display.
           clearAddressBarEdit();
-          switchTab(suggestion.tabId);
+          switchTab(suggestion.tabId, { fromAddressBarCommit: true });
           addressInput.blur();
         } else if (onNavigate) {
           addressInput.value = suggestion.url;
@@ -379,7 +393,12 @@ const handleKeyDown = (e) => {
       // after that (focus the page). #310.
       e.preventDefault();
       e.stopPropagation();
-      if (selectedIndex >= 0) {
+      // Only a keyboard preview rewrote the bar; a hovered row left the typed
+      // text alone, so there is nothing to restore and navigation.js' handler
+      // (which ran first, having stood down only for a real preview) already
+      // reverted to the page URL. Writing `originalQuery` back here would undo
+      // that revert. #310.
+      if (previewWroteInput) {
         restoreTypedText();
       }
       hide();
@@ -412,9 +431,9 @@ const handleClick = (e) => {
   // If it's an open tab, switch to it
   if (tabId) {
     // Committing by mouse ends the edit for the tab we're leaving, same as
-    // the keyboard path.
+    // the keyboard path — including the "don't adopt the bar's text" flag.
     clearAddressBarEdit();
-    switchTab(parseInt(tabId, 10));
+    switchTab(parseInt(tabId, 10), { fromAddressBarCommit: true });
     addressInput.blur();
   } else if (url && onNavigate) {
     addressInput.value = url;

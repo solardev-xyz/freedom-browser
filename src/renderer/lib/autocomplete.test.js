@@ -423,7 +423,9 @@ describe('autocomplete', () => {
       preventDefault: jest.fn(),
     });
 
-    expect(tabsMocks.switchTab).toHaveBeenCalledWith(11);
+    // The switch is flagged as address-bar-driven so the tab being left does
+    // not adopt the previewed target URL as its own page display (#310 M3).
+    expect(tabsMocks.switchTab).toHaveBeenCalledWith(11, { fromAddressBarCommit: true });
     expect(addressInput.blur).toHaveBeenCalled();
     expect(backdropMocks.hideMenuBackdrop).toHaveBeenCalled();
     // Committing a suggestion ends the edit for the tab being left.
@@ -520,11 +522,14 @@ describe('autocomplete', () => {
     expect(addressInput.value).toBe('bzz');
 
     // Hovering a row moves the highlight, so Enter commits the row under the
-    // cursor rather than the typed text (#313).
+    // cursor rather than the typed text (#313) — but it leaves the bar's text
+    // alone, so it does not count as a preview and does not cost the user an
+    // extra Escape press (#310).
     dropdown.handlers.mousemove({
       target: { closest: () => ({ dataset: { index: '1' } }) },
     });
-    expect(mod.isSuggestionPreviewActive()).toBe(true);
+    expect(mod.isSuggestionPreviewActive()).toBe(false);
+    expect(addressInput.value).toBe('bzz');
     const onNavigate = jest.fn();
     mod.setOnNavigate(onNavigate);
     addressInput.handlers.keydown({ key: 'Enter', preventDefault: jest.fn() });
@@ -564,6 +569,43 @@ describe('autocomplete', () => {
     expect(escape.stopPropagation).toHaveBeenCalled();
     expect(addressInput.blur).not.toHaveBeenCalled();
     expect(mod.isSuggestionPreviewActive()).toBe(false);
+  });
+
+  test('escape after a mere hover leaves the bar to navigation.js (#310)', async () => {
+    jest.useFakeTimers();
+
+    const { mod, dropdown, addressInput } = await loadAutocompleteModule({
+      suggestionResolver: () => [
+        { title: 'First', url: 'https://first.example', protocol: 'https', type: 'history' },
+      ],
+    });
+
+    mod.initAutocomplete();
+    await flushMicrotasks();
+
+    addressInput.value = 'bzz';
+    addressInput.handlers.input();
+    jest.runAllTimers();
+    await flushMicrotasks();
+
+    // Hover highlights the row but never rewrites the bar…
+    dropdown.handlers.mousemove({
+      target: { closest: () => ({ dataset: { index: '0' } }) },
+    });
+    expect(addressInput.value).toBe('bzz');
+    expect(mod.isSuggestionPreviewActive()).toBe(false);
+
+    // …so this module has nothing to restore: it only closes the list, and
+    // navigation.js (whose listener ran first, since it stood down only for a
+    // real preview) keeps its revert to the page URL. One press, like Chrome.
+    addressInput.value = 'display:https://page-a.example/';
+    addressInput.handlers.keydown({
+      key: 'Escape',
+      preventDefault: jest.fn(),
+      stopPropagation: jest.fn(),
+    });
+    expect(addressInput.value).toBe('display:https://page-a.example/');
+    expect(dropdown.classList.add).toHaveBeenCalledWith('hidden');
   });
 
   test('handles click selection, empty queries, blur interactions, and refresh errors', async () => {
@@ -619,7 +661,7 @@ describe('autocomplete', () => {
         })),
       },
     });
-    expect(tabsMocks.switchTab).toHaveBeenCalledWith(11);
+    expect(tabsMocks.switchTab).toHaveBeenCalledWith(11, { fromAddressBarCommit: true });
 
     addressInput.value = 'navigate';
     addressInput.handlers.input();

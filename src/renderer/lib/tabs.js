@@ -1523,9 +1523,17 @@ export const switchTab = (tabId, options = {}) => {
     electronAPI?.setWindowTitle?.(tab.title);
   }
 
-  // Notify navigation module
+  // Notify navigation module. `fromAddressBarCommit` marks a switch the
+  // address bar itself commanded (a picked "switch to tab" suggestion): the
+  // text in the bar at that moment is the *target* tab's URL or the leftover
+  // query, so the tab we're leaving must not adopt it as its display.
   if (onWebviewEvent) {
-    onWebviewEvent('tab-switched', { tabId, tab, isNewTab: options.isNewTab || false });
+    onWebviewEvent('tab-switched', {
+      tabId,
+      tab,
+      isNewTab: options.isNewTab || false,
+      fromAddressBarCommit: options.fromAddressBarCommit || false,
+    });
   }
 
   renderTabs();

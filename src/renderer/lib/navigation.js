@@ -1089,6 +1089,13 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
   // the user drove the chrome once, at the *first* leg. See the
   // `clearAddressBarEdit` call below.
   //
+  // `options.keepsAddressBarEdit` — this call re-runs a navigation the tab is
+  // already on (reload / retry of an error page, a settings-driven refresh)
+  // rather than committing something the user typed. Chrome keeps user input
+  // in progress across a reload, and the plain `webview.reload()` sibling
+  // does too by construction, so these callers hold the draft as well.
+  // See the `clearAddressBarEdit` call below.
+  //
   // `options.bzzLoadUrl` / `options.swarmHash` — set by the ENS resolution
   // path when an ENS name resolves to Swarm content: the recursive call
   // into the bzz branch carries the ENS-named load URL plus the resolved
@@ -1136,7 +1143,12 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
   // possibly seconds ago, before a slow name lookup, so anything in the bar
   // now is a *new* draft the user started while the resolution was in flight.
   // Ending it here is the same clobber, one hop later (#305).
-  if (!options.pageInitiated && !options.continuesNavigation) {
+  //
+  // `options.keepsAddressBarEdit` marks the re-runs of the navigation the tab
+  // is already on (reload, error-page retry, a settings-driven refresh). They
+  // aren't a commit of the bar's contents, and the `webview.reload()` branch
+  // of the very same affordance holds the draft, so these must too.
+  if (!options.pageInitiated && !options.continuesNavigation && !options.keepsAddressBarEdit) {
     clearAddressBarEdit(navState);
   }
 
@@ -1825,7 +1837,9 @@ const retryErrorPageOrReload = (webview, hard) => {
       if (errorEns) invalidateContentName(errorEns);
     }
     pushDebug(`Retrying original URL from error page: ${originalUrl}`);
-    loadTarget(originalUrl);
+    // Reload is not a commit of the address bar: an uncommitted edit survives
+    // it, exactly as it does on the `webview.reload()` path at the tail.
+    loadTarget(originalUrl, null, null, { keepsAddressBarEdit: true });
     return;
   }
   if (isErrorPageUrl(current)) {
@@ -1860,7 +1874,7 @@ const retryErrorPageOrReload = (webview, hard) => {
     pushDebug(
       `${hard ? 'Hard reload' : 'Reload'} re-resolving ${nameSystemLabelForName(ensInput.name)}: ${committedDisplay}`
     );
-    loadTarget(committedDisplay);
+    loadTarget(committedDisplay, null, null, { keepsAddressBarEdit: true });
     return;
   }
 
@@ -1877,7 +1891,7 @@ const retryErrorPageOrReload = (webview, hard) => {
       pushDebug(
         `${hard ? 'Hard reload' : 'Reload'} dweb node unavailable — routing ${committedDisplay} to error page`
       );
-      loadTarget(committedDisplay);
+      loadTarget(committedDisplay, null, null, { keepsAddressBarEdit: true });
       return;
     }
   }
@@ -2146,17 +2160,26 @@ export const toggleBookmarkBar = async () => {
 // Called when settings change to refresh current page if needed
 export const onSettingsChanged = (settings = null) => {
   const navState = getNavState();
+  // Both refreshes below re-run the page the tab is *on*, so they key on
+  // `committedDisplayUrl` — written only by did-navigate — rather than the
+  // live input, which under the uncommitted-edit model can hold a half-typed
+  // draft the user never submitted (#305). Navigating to that draft (and
+  // ending the edit) because a settings broadcast happened to arrive is the
+  // clobber this PR exists to remove; they pass `keepsAddressBarEdit` for the
+  // same reason reload does.
+  const committedDisplay = (navState.committedDisplayUrl || '').trim();
   if (settings?.networkConfigUpdated === true) {
-    const currentAddress = (addressInput?.value || '').trim();
-    if (parseEnsInput(currentAddress)) {
-      loadTarget(currentAddress);
+    if (parseEnsInput(committedDisplay)) {
+      loadTarget(committedDisplay, null, null, { keepsAddressBarEdit: true });
       return;
     }
   }
 
   updateProtocolIcon();
   if (navState.currentPageUrl && navState.currentPageUrl.startsWith('bzz://')) {
-    loadTarget(addressInput.value);
+    loadTarget(committedDisplay || navState.currentPageUrl, null, null, {
+      keepsAddressBarEdit: true,
+    });
   }
 };
 
@@ -2265,7 +2288,8 @@ export const initNavigation = () => {
     const hadUserEdit = isAddressBarEditInProgress(navState);
     clearAddressBarEdit(navState);
     let pageDisplay = null;
-    if (!stopLoadingAndRestore() && navState.addressBarSnapshot) {
+    const stoppedLoad = stopLoadingAndRestore();
+    if (!stoppedLoad && navState.addressBarSnapshot) {
       pageDisplay = navState.addressBarSnapshot;
     } else if (navState.pendingTitleForUrl) {
       pageDisplay = deriveDisplayValue(
@@ -2276,6 +2300,13 @@ export const initNavigation = () => {
         state.ipnsRoutePrefix,
         state.radicleApiPrefix
       );
+    } else if (!stoppedLoad && typeof navState.addressBarSnapshot === 'string') {
+      // A page whose display *is* empty — the new-tab/home page — still has a
+      // permanent text to revert to: the empty string. Gating on truthiness
+      // instead left the typed fragment sitting in the bar with no edit
+      // tracking it any more, i.e. exactly the "neither the page URL nor a
+      // live edit" resting state #310 exists to remove.
+      pageDisplay = '';
     }
     const reverted = pageDisplay !== null && addressInput.value !== pageDisplay;
     if (pageDisplay !== null) {
@@ -2591,7 +2622,14 @@ export const initNavigation = () => {
                 captureInputSelection(addressInput),
                 prevTab.navigationState
               );
-            } else {
+            } else if (!data.fromAddressBarCommit) {
+              // A switch commanded by the address bar itself (a picked
+              // "switch to tab" suggestion) leaves the *target* tab's URL —
+              // or the leftover query — in the input, with the edit already
+              // cleared by the commit. Adopting that as the leaving tab's
+              // page display would make it the value Escape reverts to and
+              // the one `deriveSwitchedTabDisplay` paints while that tab
+              // loads, i.e. another tab's URL shown as this one's.
               prevTab.navigationState.addressBarSnapshot = addressInput.value;
             }
           }

@@ -2398,6 +2398,8 @@ describe('navigation', () => {
       ctx.state.ensUriByName.set('vitalik.eth', 'bzz://old-reference');
       ctx.elements.addressInput.value = 'bzz://vitalik.eth';
       ctx.elements.addressInput.dispatch('input');
+      // The refresh keys on the committed page, not on the live input.
+      ctx.activeRef.tab.navigationState.committedDisplayUrl = 'bzz://vitalik.eth';
       expect(ctx.elements.trustShield.hidden).toBe(false);
 
       ctx.electronAPI.resolveEns.mockReturnValue(new Promise(() => {}));
@@ -3401,6 +3403,132 @@ describe('navigation', () => {
       // committed URL again (`deriveSwitchedTabDisplay` is mocked here).
       expect(ctx.elements.addressInput.value).not.toBe('half-typed-url');
       expect(ctx.elements.addressInput.value).toBe('switched:https://active.example');
+    });
+
+    test('reloading an error/ENS page keeps the edit, like reloading a plain page does', async () => {
+      // Reload is not a commit of the address bar. On a plain page it is a
+      // bare `webview.reload()` and the draft survives by construction; the
+      // branches that have to route through `loadTarget` (error-page retry,
+      // ENS re-resolution, an unavailable dweb node) must behave the same.
+      const ctx = await loadNavigationModule();
+      ctx.pageUrlsMocks.parseEnsInput.mockImplementation((value) =>
+        /(^|\/\/)[^/]+\.eth/i.test(value) ? { name: 'vitalik.eth', suffix: '' } : null
+      );
+      await ctx.mod.initNavigation();
+
+      // 1. Error-page retry branch.
+      ctx.activeRef.tab.navigationState.committedDisplayUrl = 'https://failed.example/';
+      ctx.activeRef.tab.webview.getURL.mockReturnValue(
+        'file:///app/pages/error.html?url=https%3A%2F%2Ffailed.example%2F'
+      );
+      typeInAddressBar(ctx, 'half-typed-url');
+      ctx.elements.reloadBtn.dispatch('click', { shiftKey: false });
+      await flushMicrotasks();
+
+      expect(ctx.activeRef.tab.navigationState.addressBarPendingInput).toBe('half-typed-url');
+      expect(ctx.elements.addressInput.value).toBe('half-typed-url');
+
+      // …and the page committing underneath it still doesn't repaint the bar.
+      ctx.tabsMocks.webviewEventHandler('did-navigate', {
+        event: { url: 'https://failed.example/' },
+      });
+      expect(ctx.elements.addressInput.value).toBe('half-typed-url');
+
+      // 2. ENS re-resolution branch.
+      ctx.electronAPI.resolveEns.mockReturnValue(new Promise(() => {}));
+      ctx.activeRef.tab.navigationState.committedDisplayUrl = 'bzz://vitalik.eth/';
+      ctx.activeRef.tab.webview.getURL.mockReturnValue(`bzz://${'a'.repeat(64)}/`);
+      ctx.elements.reloadBtn.dispatch('click', { shiftKey: false });
+      await flushMicrotasks();
+
+      expect(ctx.electronAPI.resolveEns).toHaveBeenCalledWith('vitalik.eth');
+      expect(ctx.activeRef.tab.navigationState.addressBarPendingInput).toBe('half-typed-url');
+      expect(ctx.elements.addressInput.value).toBe('half-typed-url');
+
+      // The form submit is still what commits: it ends the edit.
+      ctx.elements.navForm.dispatch('submit', { preventDefault: jest.fn() });
+      expect(ctx.activeRef.tab.navigationState.addressBarPendingInput).toBeNull();
+    });
+
+    test('a settings refresh reloads the committed page, not a half-typed draft', async () => {
+      // A settings broadcast (e.g. a network config saved in another window)
+      // is not the user submitting the address bar: it must re-run the page
+      // the tab is on, and leave the draft alone.
+      const ctx = await loadNavigationModule();
+      ctx.pageUrlsMocks.parseEnsInput.mockImplementation((value) =>
+        /(^|\/\/)[^/]+\.eth/i.test(value) ? { name: 'vitalik.eth', suffix: '' } : null
+      );
+      await ctx.mod.initNavigation();
+      ctx.electronAPI.resolveEns.mockReturnValue(new Promise(() => {}));
+
+      ctx.activeRef.tab.navigationState.committedDisplayUrl = 'bzz://vitalik.eth/';
+      typeInAddressBar(ctx, 'half-typed.eth');
+
+      ctx.mod.onSettingsChanged({ networkConfigUpdated: true });
+      await flushMicrotasks();
+
+      expect(ctx.electronAPI.resolveEns).toHaveBeenCalledWith('vitalik.eth');
+      expect(ctx.activeRef.tab.navigationState.addressBarPendingInput).toBe('half-typed.eth');
+      expect(ctx.elements.addressInput.value).toBe('half-typed.eth');
+    });
+
+    test('Escape reverts to an empty page display in a single press (#310)', async () => {
+      // A new-tab page's display *is* the empty string. Gating the revert on
+      // snapshot truthiness left the typed fragment in the bar with nothing
+      // tracking it — neither the page URL nor a live edit.
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+
+      ctx.activeRef.tab.navigationState.addressBarSnapshot = '';
+      ctx.activeRef.tab.navigationState.pendingTitleForUrl = '';
+      typeInAddressBar(ctx, 'half-typed');
+
+      ctx.elements.addressInput.dispatch('keydown', { key: 'Escape', preventDefault: jest.fn() });
+      expect(ctx.elements.addressInput.value).toBe('');
+      expect(ctx.activeRef.tab.navigationState.addressBarPendingInput).toBeNull();
+      expect(ctx.elements.addressInput.select).toHaveBeenCalled();
+      expect(ctx.elements.addressInput.blur).not.toHaveBeenCalled();
+
+      // Nothing left to revert: the second press moves focus to the page.
+      ctx.elements.addressInput.dispatch('keydown', { key: 'Escape', preventDefault: jest.fn() });
+      expect(ctx.elements.addressInput.blur).toHaveBeenCalled();
+      expect(ctx.elements.addressInput.value).toBe('');
+    });
+
+    test('a switch-to-tab suggestion does not write its URL into the tab it leaves', async () => {
+      // autocomplete.js clears the edit and switches; the bar at that moment
+      // holds the *target* tab's URL (a previewed row) or the leftover query,
+      // so the tab being left must not adopt it as its page display.
+      const tabB = createTab(2, 'https://second.example', {
+        title: 'Second Tab',
+        webview: createWebview('https://second.example', { webContentsId: 22 }),
+      });
+      const ctx = await loadNavigationModule();
+      const tabA = ctx.activeRef.tab;
+      ctx.tabsRef.list = [tabA, tabB];
+      await ctx.mod.initNavigation();
+
+      ctx.tabsMocks.webviewEventHandler('did-navigate', {
+        event: { url: 'https://page-a.example/' },
+      });
+      ctx.tabsMocks.webviewEventHandler('tab-switched', {
+        tabId: tabA.id,
+        tab: tabA,
+        isNewTab: false,
+      });
+      expect(tabA.navigationState.addressBarSnapshot).toBe('display:https://page-a.example/');
+
+      // The dropdown previewed tab B's URL into the bar and committed it.
+      ctx.elements.addressInput.value = 'https://second.example';
+      ctx.activeRef.tab = tabB;
+      ctx.tabsMocks.webviewEventHandler('tab-switched', {
+        tabId: tabB.id,
+        tab: tabB,
+        isNewTab: false,
+        fromAddressBarCommit: true,
+      });
+
+      expect(tabA.navigationState.addressBarSnapshot).toBe('display:https://page-a.example/');
     });
   });
 });
