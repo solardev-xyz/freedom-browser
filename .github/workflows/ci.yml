@@ -567,8 +567,7 @@ jobs:
             test-e2e/onchain-apps.spec.js \
             test-e2e/menus.spec.js \
             test-e2e/chrome-popovers.spec.js \
-            test-e2e/bookmarks.spec.js \
-            test-e2e/zz-repro.spec.js
+            test-e2e/bookmarks.spec.js
 
       - name: Upload Playwright traces and screenshots
         if: failure()

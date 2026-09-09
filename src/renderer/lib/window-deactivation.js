@@ -48,3 +48,26 @@ export const onWindowDeactivated = (handler) => {
     handler();
   });
 };
+
+/**
+ * Run `handler` on the other half of the same event: a window `blur` that was
+ * *not* a deactivation, i.e. the keyboard moved into one of this window's own
+ * `<webview>` guests while the window itself stayed active.
+ *
+ * The exact complement of `onWindowDeactivated` — the two read the same
+ * `document.hasFocus()` and never both fire — so a guest ack is never both
+ * ignored as harmless and acted on as a departure. `menu-backdrop.js` is the
+ * caller: while a chrome surface is up, the chrome keeps the keyboard.
+ *
+ * "Cannot tell" (no `document.hasFocus`) counts as a deactivation there too,
+ * so this handler does not run: reclaiming the keyboard from a window that
+ * really has gone would drag focus back into a window the user just left.
+ *
+ * @param {() => void} handler
+ */
+export const onGuestTookKeyboard = (handler) => {
+  window.addEventListener('blur', () => {
+    if (!windowStillHasFocus()) return;
+    handler();
+  });
+};

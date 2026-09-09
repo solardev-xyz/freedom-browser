@@ -386,11 +386,11 @@ test('a webview guest taking focus does not close the menu under the pointer', a
   await window.locator('#menu-button').click();
   await expect(window.locator('#menu-dropdown')).toHaveClass(/open/);
 
-  // Exactly what a late tab-activation focus does, from the chrome's side.
+  // Exactly what a late tab-activation focus does, from the chrome's side. The
+  // backdrop takes the keyboard straight back (see the sibling test below), so
+  // what is asserted here is the surface, not who ends up holding it.
   await window.evaluate(() => document.querySelector('webview:not(.hidden)')?.focus());
-  await expect
-    .poll(() => window.evaluate(() => document.activeElement?.tagName))
-    .toBe('WEBVIEW');
+  await window.waitForTimeout(200);
 
   // The window never went anywhere, so the menu is still up...
   await expect(window.locator('#menu-dropdown')).toHaveClass(/open/);
@@ -412,3 +412,35 @@ test('a webview guest taking focus does not close the menu under the pointer', a
     .toMatch(/pages\/downloads\.html/);
   await expect(tabs).toHaveCount(before + 1);
 });
+
+// #328, the other half of the same ack: the guest does not just fire a `blur`,
+// it takes the *keyboard*. A menu is modal over the page — it raises
+// `#menu-backdrop` — so leaving the guest with the keyboard would leave a menu
+// that Escape (#306) and Enter on a row can no longer reach, dismissible only
+// with the mouse. `menu-backdrop.js` takes it straight back, to the element
+// that had it, the way `page-context-menu.js` has since #319.
+for (const menu of [
+  { name: 'hamburger', button: '#menu-button', dropdown: '#menu-dropdown' },
+  { name: 'Nodes', button: '#bee-menu-button', dropdown: '#bee-menu-dropdown' },
+]) {
+  test(`the ${menu.name} menu keeps the keyboard when a guest grabs it`, async ({ window }) => {
+    await window.locator(menu.button).click();
+    await expect(window.locator(menu.dropdown)).toHaveClass(/open/);
+
+    // Exactly what a late tab-activation focus does, from the chrome's side.
+    await window.evaluate(() => document.querySelector('webview:not(.hidden)')?.focus());
+
+    // The keyboard comes back to the button that opened the menu, and the
+    // window never went anywhere...
+    await expect
+      .poll(() => window.evaluate(() => document.activeElement?.id || ''), { timeout: 5_000 })
+      .toBe(menu.button.slice(1));
+    await expect(window.locator(menu.dropdown)).toHaveClass(/open/);
+
+    // ...so the keyboard still dismisses the menu. Without the reclaim the
+    // keypress goes to the page and the menu stays up forever.
+    await window.keyboard.press('Escape');
+    await expect(window.locator(menu.dropdown)).not.toHaveClass(/open/);
+    await expect(window.locator('#menu-backdrop')).toHaveClass(/hidden/);
+  });
+}

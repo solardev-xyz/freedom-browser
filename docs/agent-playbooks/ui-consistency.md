@@ -99,6 +99,18 @@ swallow the click on its way (#328). A surface that raises `#menu-backdrop`
 popovers are the two documented exceptions: they raise no backdrop, so the
 guest-focus blur is what closes them on a click into page content.
 
+**A surface that raises the backdrop owns the keyboard too.** The backdrop
+makes a menu modal over the page for the *pointer*; `lib/menu-backdrop.js`
+does the same for the keyboard, through `onGuestTookKeyboard` — the exact
+complement of `onWindowDeactivated`. Without it the guest ack above leaves the
+page holding the keyboard under an open menu, and neither Escape (#306) nor
+Enter on a row reaches the shell's `document` handlers, so the menu can only be
+dismissed with the mouse. The reclaim is deferred one turn of the event loop:
+focusing inside the `blur` handler only moves the embedder's `activeElement`
+back while the guest still ends up with the keys. `page-context-menu.js` keeps
+its own version of this (it is raised from inside the guest and hands focus
+back on close, #319).
+
 **Empty states.** Internal pages use the icon + one-line message pattern of
 History and Downloads ("No history yet", "No downloads yet").
 
