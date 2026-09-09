@@ -65,6 +65,7 @@ import { initPageContextMenu, hidePageContextMenu } from './lib/page-context-men
 import {
   initChromeInputContextMenu,
   hideChromeInputContextMenu,
+  CHROME_INPUT_IDS,
 } from './lib/chrome-input-context-menu.js';
 import { pushDebug } from './lib/debug.js';
 import { initOnboarding } from './lib/onboarding.js';
@@ -779,7 +780,14 @@ window.addEventListener('DOMContentLoaded', async () => {
   initTabs(); // Creates first tab and starts loading home page
   initAutocomplete(); // Address bar autocomplete
   initPageContextMenu(); // Page context menu for webviews
-  initChromeInputContextMenu({ onOpening: onAnyMenuOpening }); // Address bar edit menu
+  // Cut/Copy/Paste/Select All for every editable chrome text field — the
+  // address bar, the find bar and the bookmark-edit dialog (#316). Passed in
+  // explicitly rather than left to the module's fallback so the list of chrome
+  // inputs is visible at the one call site that owns it.
+  initChromeInputContextMenu({
+    onOpening: onAnyMenuOpening,
+    inputs: CHROME_INPUT_IDS.map((id) => document.getElementById(id)),
+  });
   initOnboarding(); // Identity onboarding wizard
   initSidebar(); // Identity & wallet sidebar
   initWalletUi(); // Wallet & identity display in sidebar

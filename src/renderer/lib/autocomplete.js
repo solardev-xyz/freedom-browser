@@ -459,7 +459,6 @@ const handleMouseMove = (e) => {
 export const initAutocomplete = () => {
   dropdown = document.getElementById('autocomplete-dropdown');
   addressInput = document.getElementById('address-input');
-  const webviewElement = document.getElementById('bzz-webview');
 
   if (!dropdown || !addressInput) {
     console.error('[Autocomplete] Required elements not found');
@@ -475,8 +474,11 @@ export const initAutocomplete = () => {
   dropdown.addEventListener('mousemove', handleMouseMove);
 
   // Close on webview interaction or window blur
-  webviewElement?.addEventListener('focus', hide);
-  webviewElement?.addEventListener('mousedown', hide);
+  // (The `focus`/`mousedown` dismissal that used to hang off
+  // `document.getElementById('bzz-webview')` is gone: webviews are created
+  // id-less, so that lookup was always null and the listeners never existed.
+  // `#menu-backdrop` covers the window while the dropdown is open, so a click into
+  // the page dismisses it through the document listener above. See #306.)
   window.addEventListener('blur', hide);
 
   // Load initial cache

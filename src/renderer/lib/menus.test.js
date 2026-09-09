@@ -24,6 +24,7 @@ const createElement = () => {
     }),
     contains: jest.fn(() => false),
     blur: jest.fn(),
+    focus: jest.fn(),
     print: jest.fn(),
   };
 };
@@ -722,7 +723,7 @@ describe('menus', () => {
     });
   });
 
-  test('closes menus on outside clicks, webview interaction, and window blur', async () => {
+  test('closes menus on outside clicks and window blur', async () => {
     const { menus, state, elements, handlers } = await loadMenusModule();
 
     menus.initMenus();
@@ -730,10 +731,76 @@ describe('menus', () => {
     menus.setAntMenuOpen(true);
 
     handlers.documentHandlers.click({ target: {} });
-    elements.webviewElement.handlers.focus();
     handlers.windowHandlers.blur();
 
     expect(state.menuOpen).toBe(false);
     expect(state.antMenuOpen).toBe(false);
+
+    // The `#bzz-webview` focus/mousedown dismissal is gone: webviews are
+    // created id-less, so that element never existed and the listeners were
+    // never registered. Nothing may go back to hanging behaviour off it
+    // (#306) — `#menu-backdrop` covers the window while a menu is open.
+    expect(elements.webviewElement.addEventListener).not.toHaveBeenCalled();
+  });
+
+  // #306: Escape is how every other dismissible surface in the chrome closes;
+  // these two menus were the exception, and left the modal backdrop up with no
+  // keyboard way out.
+  describe('Escape', () => {
+    const pressEscape = (handlers) => handlers.windowHandlers.keydown({ key: 'Escape' });
+
+    test('closes the hamburger and returns focus to its button', async () => {
+      const { menus, state, elements, handlers } = await loadMenusModule();
+      menus.initMenus();
+      menus.setMenuOpen(true);
+      expect(state.menuOpen).toBe(true);
+
+      pressEscape(handlers);
+
+      expect(state.menuOpen).toBe(false);
+      expect(elements.menuButton.focus).toHaveBeenCalled();
+    });
+
+    test('closes the Nodes menu and returns focus to its button', async () => {
+      const { menus, state, elements, handlers } = await loadMenusModule();
+      menus.initMenus();
+      menus.setAntMenuOpen(true);
+      expect(state.antMenuOpen).toBe(true);
+
+      pressEscape(handlers);
+
+      expect(state.antMenuOpen).toBe(false);
+      expect(elements.beeMenuButton.focus).toHaveBeenCalled();
+    });
+
+    test('closes the Profiles flyout first, the hamburger on the second press', async () => {
+      const { menus, state, elements, handlers } = await loadMenusModule();
+      menus.initMenus();
+      menus.setMenuOpen(true);
+      elements.profileFlyout.hidden = false;
+
+      pressEscape(handlers);
+      expect(elements.profileFlyout.hidden).toBe(true);
+      // The hamburger the flyout hangs off stays up, as in Chrome: the
+      // innermost surface closes first.
+      expect(state.menuOpen).toBe(true);
+      expect(elements.profileMenuBtn.focus).toHaveBeenCalled();
+
+      pressEscape(handlers);
+      expect(state.menuOpen).toBe(false);
+      expect(elements.menuButton.focus).toHaveBeenCalled();
+    });
+
+    test('does nothing when no menu is open', async () => {
+      const { menus, state, elements, handlers } = await loadMenusModule();
+      menus.initMenus();
+
+      pressEscape(handlers);
+
+      expect(state.menuOpen).toBe(false);
+      expect(state.antMenuOpen).toBe(false);
+      expect(elements.menuButton.focus).not.toHaveBeenCalled();
+      expect(elements.beeMenuButton.focus).not.toHaveBeenCalled();
+    });
   });
 });

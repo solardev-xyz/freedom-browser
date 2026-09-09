@@ -47,7 +47,6 @@ export const setOnMenuOpening = (callback) => {
 };
 let beeMenuButton = null;
 let beeMenuDropdown = null;
-let webviewElement = null;
 let profileMenuWrap = null;
 
 // --- Profiles flyout dismissal ---------------------------------------------
@@ -257,7 +256,6 @@ export const initMenus = () => {
   checkUpdatesBtn = document.getElementById('check-updates-btn');
   beeMenuButton = document.getElementById('bee-menu-button');
   beeMenuDropdown = document.getElementById('bee-menu-dropdown');
-  webviewElement = document.getElementById('bzz-webview');
   profileMenuWrap = document.getElementById('profile-menu-wrap');
 
   // One submenu at a time: hovering or focusing any other hamburger row closes
@@ -327,6 +325,18 @@ export const initMenus = () => {
     zoomReset();
   });
 
+  // Keyboard handling for the menus. Escape shares this listener with the zoom
+  // fallback below rather than adding a second one (#306).
+  //
+  // Escape dismisses the innermost open surface first, exactly like Chrome's
+  // menus: the Profiles flyout, then the hamburger it hangs off, then the Nodes
+  // menu — and hands the keyboard back to the control that opened it, so the
+  // next Tab continues from the toolbar rather than from the top of the
+  // document. Every other dismissible surface in the chrome already closed on
+  // Escape (tab and page context menus, bookmark menu, trust popover,
+  // permission prompt, find bar); these two were the exception, and left the
+  // full-window `#menu-backdrop` swallowing clicks with no keyboard way out.
+  //
   // Keyboard fallback for the zoom accelerators, resolved through the shared
   // shortcut registry so user remaps apply live. Needed on the Linux
   // frameless setups where menu accelerators never reach the app — the same
@@ -340,6 +350,19 @@ export const initMenus = () => {
   // the `-` its physical code implies). Zoom In is tested first so those
   // users zoom in, which is what they pressed. menus.test.js pins it.
   window.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      if (isProfileFlyoutOpen()) {
+        hideProfileFlyout();
+        document.getElementById('profile-menu-btn')?.focus?.();
+      } else if (state.menuOpen) {
+        setMenuOpen(false);
+        menuButton?.focus?.();
+      } else if (state.antMenuOpen) {
+        setAntMenuOpen(false);
+        beeMenuButton?.focus?.();
+      }
+      return;
+    }
     if (matchesShortcut(event, 'page.zoomIn')) {
       event.preventDefault();
       zoomIn();
@@ -411,8 +434,11 @@ export const initMenus = () => {
     }
   });
 
-  webviewElement?.addEventListener('focus', closeMenus);
-  webviewElement?.addEventListener('mousedown', closeMenus);
+  // (The `focus`/`mousedown` dismissal that used to hang off
+  // `document.getElementById('bzz-webview')` is gone: webviews are created
+  // id-less, so that lookup was always null and the listeners never existed.
+  // `#menu-backdrop` covers the window while a menu is open, so a click into
+  // the page dismisses it through the document listener above. See #306.)
 
   // Close menus when window loses focus (switching windows or backgrounding app)
   window.addEventListener('blur', closeMenus);

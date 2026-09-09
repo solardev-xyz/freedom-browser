@@ -518,3 +518,47 @@ test('a download link with the bar closed does not keep the bar open across the 
   await expect(window.locator('[data-test="find-bar"]')).toBeHidden();
   await expect(window.locator('[data-test="find-bar-count"]')).toHaveText('');
 });
+
+// #316: every editable text field in the browser chrome gets the same
+// Cut/Copy/Paste/Select All menu on right-click. The find bar had none at all,
+// one row below an address bar that did.
+test('right-clicking the find input gives the same edit menu as the address bar', async ({
+  window,
+  harness,
+  electronApp,
+}) => {
+  await loadFixturePage(window, harness);
+  await openFindBar(window);
+
+  const input = window.locator('[data-test="find-bar-input"]');
+  const menu = window.locator('[data-test="chrome-input-context-menu"]');
+  await input.fill('needle');
+  await expect(window.locator('[data-test="find-bar-count"]')).toHaveText('1/3');
+
+  await input.click({ button: 'right' });
+  await expect(menu).toBeVisible();
+  await expect(menu.getByRole('button', { name: 'Cut' })).toBeVisible();
+  await expect(menu.getByRole('button', { name: 'Copy' })).toBeVisible();
+  await expect(menu.getByRole('button', { name: 'Paste' })).toBeVisible();
+  await expect(menu.getByRole('button', { name: 'Select All' })).toBeVisible();
+
+  // Select All then Copy puts the query on the real clipboard — the menu acts
+  // on the find input, not on whatever the address bar happens to hold.
+  await menu.getByRole('button', { name: 'Select All' }).click();
+  await expect(menu).toBeHidden();
+  await input.click({ button: 'right' });
+  await menu.getByRole('button', { name: 'Copy' }).click();
+  await expect
+    .poll(() => electronApp.evaluate(({ clipboard }) => clipboard.readText()))
+    .toBe('needle');
+
+  // Escape closes the menu and leaves the bar itself up (innermost first);
+  // a second Escape then closes the bar, as it always did.
+  await input.click({ button: 'right' });
+  await expect(menu).toBeVisible();
+  await window.keyboard.press('Escape');
+  await expect(menu).toBeHidden();
+  await expect(window.locator('[data-test="find-bar"]')).toBeVisible();
+  await window.keyboard.press('Escape');
+  await expect(window.locator('[data-test="find-bar"]')).toBeHidden();
+});

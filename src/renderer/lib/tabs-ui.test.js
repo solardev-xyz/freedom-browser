@@ -139,6 +139,7 @@ const loadTabsModule = async (options = {}) => {
   };
   const pageContextMenuMocks = {
     setupWebviewContextMenu: jest.fn(),
+    notifyPageContextMenuNavigated: jest.fn(),
   };
   const linkStatusMocks = {
     clearLinkStatus: jest.fn(),
@@ -1525,6 +1526,42 @@ describe('tabs ui behavior', () => {
     expect(elements.tabContextMenu.classList.contains('hidden')).toBe(false);
     mod.closeTab(secondTab.id);
     expect(elements.tabContextMenu.classList.contains('hidden')).toBe(true);
+  });
+
+  // #308: the page context menu belongs to the document it was raised on, so
+  // tabs.js reports every navigation (and every tab activation) to it — the
+  // same hook the find bar already had. Without it the menu floated over the
+  // next page still offering the previous page's link.
+  test('a navigation and a tab switch both report to the page context menu', async () => {
+    const { mod, pageContextMenuMocks } = await loadTabsModule();
+    await mod.initTabs();
+
+    const firstTab = mod.getActiveTab();
+    const secondTab = mod.createTab('https://second.example');
+    mod.switchTab(firstTab.id);
+    pageContextMenuMocks.notifyPageContextMenuNavigated.mockClear();
+
+    // A committed navigation names the webview it happened in, so a menu
+    // raised over another tab is left alone.
+    firstTab.webview.dispatch('did-navigate', { url: 'https://redirected.example' });
+    expect(pageContextMenuMocks.notifyPageContextMenuNavigated).toHaveBeenCalledWith(
+      firstTab.webview
+    );
+
+    // A same-document navigation is a navigation too.
+    pageContextMenuMocks.notifyPageContextMenuNavigated.mockClear();
+    firstTab.webview.dispatch('did-navigate-in-page', {
+      url: 'https://redirected.example#section',
+    });
+    expect(pageContextMenuMocks.notifyPageContextMenuNavigated).toHaveBeenCalledWith(
+      firstTab.webview
+    );
+
+    // A tab switch dismisses it outright: the page it describes is no longer
+    // the one on screen.
+    pageContextMenuMocks.notifyPageContextMenuNavigated.mockClear();
+    mod.switchTab(secondTab.id);
+    expect(pageContextMenuMocks.notifyPageContextMenuNavigated).toHaveBeenCalledWith();
   });
 
   // #315: re-activating the tab that is already foreground (Ctrl+1 on tab 1

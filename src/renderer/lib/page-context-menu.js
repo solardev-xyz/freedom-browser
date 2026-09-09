@@ -18,6 +18,20 @@ let currentContext = null;
 // to a different tab an action opened in the meantime.
 let menuWebview = null;
 
+// The URL that webview was showing when the menu was raised. A context menu
+// describes one document: every item on it (the link, the image, the
+// selection, even Back/Forward's enabled state) was read off that page, so the
+// moment the page changes underneath, the whole menu is stale. #308.
+let menuPageUrl = null;
+
+const currentUrlOf = (webview) => {
+  try {
+    return webview?.getURL?.() || null;
+  } catch {
+    return null;
+  }
+};
+
 // The active (foreground) guest, or null.
 const getActiveWebview = () =>
   document.getElementById('webview-container')?.querySelector('webview:not(.hidden)') || null;
@@ -91,6 +105,7 @@ export const showPageContextMenu = (x, y, context) => {
   // Get the webview from the active tab
   const activeWebview = getActiveWebview();
   menuWebview = activeWebview;
+  menuPageUrl = currentUrlOf(activeWebview) || context.pageUrl || null;
 
   if (backBtn && activeWebview) {
     try {
@@ -169,6 +184,31 @@ export const hidePageContextMenu = ({ restoreFocus = true } = {}) => {
   }
   currentContext = null;
   menuWebview = null;
+  menuPageUrl = null;
+};
+
+// True when the menu is up but the page it describes is gone — the tab
+// navigated (a redirect, a slow load finishing, Back, a reload) or the
+// foreground moved to another tab. Chrome's context menu never outlives its
+// document; this is the belt to the navigation braces below, so even a
+// navigation nobody reported to us can't be acted on. #308.
+const contextIsStale = () => {
+  if (!menuWebview) return false;
+  if (menuWebview !== getActiveWebview()) return true;
+  const url = currentUrlOf(menuWebview);
+  return Boolean(menuPageUrl && url && url !== menuPageUrl);
+};
+
+// A navigation in `webview` (or in whichever tab owns the menu, when called
+// without one) dismisses the menu. Wired from the same per-tab navigation path
+// the find bar uses, tabs.js — a menu raised on page A must not still be
+// offering "Open Link in New Tab" over page B. #308.
+export const notifyPageContextMenuNavigated = (webview) => {
+  if (!pageContextMenu || pageContextMenu.classList.contains('hidden')) return;
+  if (webview && menuWebview && webview !== menuWebview) return;
+  // The page the keyboard would go back to is the one that just went away, so
+  // let the incoming document take focus on its own terms.
+  hidePageContextMenu({ restoreFocus: false });
 };
 
 // Handle context menu action
@@ -179,6 +219,17 @@ const handleAction = async (action) => {
   // still live.
   if (!currentContext) {
     hidePageContextMenu();
+    return;
+  }
+
+  // The page moved on since the menu was raised (a navigation that reached us
+  // through no event, a tab switch). Every item here refers to a document that
+  // is no longer on screen — opening its link, copying its address or
+  // view-sourcing it would act on a page the user is no longer looking at, so
+  // take the menu down and do nothing. #308.
+  if (contextIsStale()) {
+    pushDebug('[PageContextMenu] Dropping an action for a page that has navigated away');
+    hidePageContextMenu({ restoreFocus: false });
     return;
   }
 

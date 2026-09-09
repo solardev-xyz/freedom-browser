@@ -1,6 +1,6 @@
 // Bookmarks bar and modal UI
 import { pushDebug } from './debug.js';
-import { getActiveTab, hideTabContextMenu } from './tabs.js';
+import { getActiveTab, hideTabContextMenu, openInNewTabWithTarget } from './tabs.js';
 import { closeMenus } from './menus.js';
 import { showMenuBackdrop, hideMenuBackdrop } from './menu-backdrop.js';
 import { normalizeLegacyEnsBookmarkUrl } from './url-utils.js';
@@ -69,12 +69,39 @@ const BOOKMARK_GLOBE_SVG = `<svg class="bookmark-icon-default" viewBox="0 0 24 2
 // Store all bookmarks for overflow calculation
 let allBookmarks = [];
 
+// Which tab a bookmark activation should land in, from the mouse event that
+// triggered it — Chrome's dispositions, and the same rules the tab strip and
+// page links already follow (#303, #307):
+//
+//   Ctrl/Cmd+click, middle-click  -> background tab, current page untouched
+//   +Shift                        -> the same tab, but foregrounded
+//   Shift+click                   -> new window
+//   plain click                   -> this tab
+export const bookmarkDisposition = (event) => {
+  const middle = event?.type === 'auxclick' && event.button === 1;
+  if (middle || event?.ctrlKey || event?.metaKey) {
+    return event?.shiftKey ? 'foreground-tab' : 'background-tab';
+  }
+  if (event?.shiftKey) return 'new-window';
+  return 'current-tab';
+};
+
+// Drag state for bookmark reordering (mirrors the tab strip's, tabs.js).
+let draggedBookmarkTarget = null;
+let isDraggingBookmark = false;
+
 // Create a bookmark button element
 const createBookmarkButton = (item, isOverflowItem = false) => {
   const button = document.createElement('button');
   button.className = isOverflowItem ? 'bookmarks-overflow-item' : 'bookmark';
   button.dataset.hash = item.target;
   button.dataset.test = isOverflowItem ? 'bookmark-overflow-item' : 'bookmark-item';
+  // Bar entries reorder by drag, like Chrome's bookmarks bar (#307). The
+  // overflow menu is a transient popup — dragging inside it is not offered.
+  if (!isOverflowItem) {
+    button.draggable = true;
+    attachBookmarkDragHandlers(button, item.target);
+  }
 
   // Create icon container
   const iconContainer = document.createElement('span');
@@ -212,6 +239,96 @@ const renderBookmarks = async (items = []) => {
   });
 };
 
+// Persist the bar's order after a drag. The store keeps bookmarks as an
+// ordered list, so reordering is a single write of the new target order; the
+// renderer paints the new order first (a drag that visibly snaps back while an
+// IPC round-trips reads as a failed drag) and re-reads from the store if the
+// write is refused.
+const persistBookmarkOrder = async (ordered) => {
+  try {
+    const saved = await electronAPI?.reorderBookmarks?.(ordered.map((item) => item.target));
+    if (saved === false) {
+      pushDebug('Failed to save the new bookmark order');
+      await loadBookmarks();
+    }
+  } catch (err) {
+    console.error('Failed to save bookmark order', err);
+    pushDebug(`Failed to save bookmark order: ${err.message}`);
+    await loadBookmarks();
+  }
+};
+
+// Move `fromTarget` next to `toTarget` and save. Insert semantics match the
+// tab strip: the dragged item lands before the drop target when the pointer is
+// on its left half, after it otherwise.
+const moveBookmark = async (fromTarget, toTarget, insertBefore) => {
+  if (!fromTarget || !toTarget || fromTarget === toTarget) return;
+  const next = allBookmarks.map((item) => ({ ...item }));
+  const fromIndex = next.findIndex((item) => item.target === fromTarget);
+  if (fromIndex === -1) return;
+  const [moved] = next.splice(fromIndex, 1);
+  const targetIndex = next.findIndex((item) => item.target === toTarget);
+  if (targetIndex === -1) return;
+  next.splice(insertBefore ? targetIndex : targetIndex + 1, 0, moved);
+  await renderBookmarks(next);
+  await persistBookmarkOrder(next);
+  pushDebug(`Reordered bookmark ${fromTarget}`);
+};
+
+// The tab strip's four drag handlers (tabs.js), applied to a bar entry.
+const attachBookmarkDragHandlers = (button, target) => {
+  const clearDropIndicators = () => {
+    for (const el of bookmarksInner?.querySelectorAll('.bookmark') || []) {
+      el.classList.remove('drag-over-left', 'drag-over-right');
+    }
+  };
+
+  button.addEventListener('dragstart', (event) => {
+    isDraggingBookmark = true;
+    draggedBookmarkTarget = target;
+    button.classList.add('dragging');
+    if (event.dataTransfer) {
+      event.dataTransfer.effectAllowed = 'move';
+      event.dataTransfer.setData('text/plain', target);
+    }
+  });
+
+  button.addEventListener('dragend', () => {
+    draggedBookmarkTarget = null;
+    button.classList.remove('dragging');
+    clearDropIndicators();
+    // Let the click that ends the drag gesture pass before re-arming
+    // navigation, so a reorder never also opens the bookmark.
+    setTimeout(() => {
+      isDraggingBookmark = false;
+    }, 0);
+  });
+
+  button.addEventListener('dragover', (event) => {
+    if (draggedBookmarkTarget === null || draggedBookmarkTarget === target) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+    const rect = button.getBoundingClientRect();
+    const isLeft = event.clientX < rect.left + rect.width / 2;
+    button.classList.toggle('drag-over-left', isLeft);
+    button.classList.toggle('drag-over-right', !isLeft);
+  });
+
+  button.addEventListener('dragleave', () => {
+    button.classList.remove('drag-over-left', 'drag-over-right');
+  });
+
+  button.addEventListener('drop', (event) => {
+    event.preventDefault();
+    const dragged = draggedBookmarkTarget;
+    button.classList.remove('drag-over-left', 'drag-over-right');
+    if (dragged === null || dragged === target) return;
+    const rect = button.getBoundingClientRect();
+    const insertBefore = event.clientX < rect.left + rect.width / 2;
+    void moveBookmark(dragged, target, insertBefore);
+  });
+};
+
 export const loadBookmarks = async () => {
   if (!bookmarksBar) return;
   try {
@@ -332,7 +449,9 @@ export const initBookmarks = () => {
     }
   };
 
-  // Handle click on bookmarks (both bar and overflow menu)
+  // Handle activation of a bookmark (both bar and overflow menu). `event` is
+  // the click/auxclick that triggered it; its modifiers pick the disposition,
+  // exactly as they do on a link in the page (#307).
   const handleBookmarkClick = async (event) => {
     try {
       const eventTarget = event.target;
@@ -341,12 +460,35 @@ export const initBookmarks = () => {
       // Find the bookmark button (could be clicked on child elements)
       const bookmarkBtn = eventTarget.closest('.bookmark, .bookmarks-overflow-item');
       const storedTarget = bookmarkBtn?.dataset?.hash;
-      if (storedTarget && onLoadTarget) {
-        // Rewrite legacy ens://name.eth bookmarks to bare-name form so they
-        // re-enter the same ENS resolution flow as a typed name and pick up
-        // the new transport-aware display (e.g. bzz://name.eth, ipfs://name.eth).
-        // Non-ENS bookmark targets pass through unchanged.
-        const navigationTarget = normalizeLegacyEnsBookmarkUrl(storedTarget);
+      if (!storedTarget) return;
+      // A drag that ends over the bar also fires a click; that gesture was a
+      // reorder, not an activation.
+      if (isDraggingBookmark) return;
+
+      // Rewrite legacy ens://name.eth bookmarks to bare-name form so they
+      // re-enter the same ENS resolution flow as a typed name and pick up
+      // the new transport-aware display (e.g. bzz://name.eth, ipfs://name.eth).
+      // Non-ENS bookmark targets pass through unchanged.
+      const navigationTarget = normalizeLegacyEnsBookmarkUrl(storedTarget);
+      const disposition = bookmarkDisposition(event);
+
+      if (disposition === 'new-window') {
+        electronAPI?.openUrlInNewWindow?.(navigationTarget);
+        hideOverflowMenu();
+        return;
+      }
+
+      if (disposition !== 'current-tab') {
+        // Background/foreground tab: the page the user is on is untouched, so
+        // the address bar must keep showing it rather than the bookmark.
+        openInNewTabWithTarget(navigationTarget, null, {
+          background: disposition === 'background-tab',
+        });
+        hideOverflowMenu();
+        return;
+      }
+
+      if (onLoadTarget) {
         addressInput.value = navigationTarget;
         onLoadTarget(navigationTarget);
         hideOverflowMenu();
@@ -357,8 +499,18 @@ export const initBookmarks = () => {
     }
   };
 
+  // Middle-click arrives as `auxclick`, never as `click` — without this the
+  // gesture did nothing at all.
+  const handleBookmarkAuxClick = (event) => {
+    if (event.button !== 1) return;
+    event.preventDefault();
+    void handleBookmarkClick(event);
+  };
+
   bookmarksInner?.addEventListener('click', handleBookmarkClick);
   overflowMenu?.addEventListener('click', handleBookmarkClick);
+  bookmarksInner?.addEventListener('auxclick', handleBookmarkAuxClick);
+  overflowMenu?.addEventListener('auxclick', handleBookmarkAuxClick);
 
   // Create context menu
   contextMenu = document.createElement('div');
@@ -400,10 +552,11 @@ export const initBookmarks = () => {
       hideAllBookmarkMenus();
     }
   });
-  // Close when webview gets focus or is clicked
-  const webviewElement = document.getElementById('bzz-webview');
-  webviewElement?.addEventListener('focus', hideAllBookmarkMenus);
-  webviewElement?.addEventListener('mousedown', hideAllBookmarkMenus);
+  // (The `focus`/`mousedown` dismissal that used to hang off
+  // `document.getElementById('bzz-webview')` is gone: webviews are created
+  // id-less, so that lookup was always null and the listeners never existed.
+  // `#menu-backdrop` covers the window while one of these menus is open, so a click into
+  // the page dismisses it through the document listener above. See #306.)
   window.addEventListener('blur', hideAllBookmarkMenus);
 
   // Handle context menu actions
