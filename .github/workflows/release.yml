@@ -746,7 +746,15 @@ jobs:
       # GitHub rewrites spaces in release-asset names to dots, which would
       # break the `url:` latest-win-x64.yml records for the updater.
       - name: Build NSIS installer and portable zip
-        run: npm run dist -- --win --x64
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (!$vs) { throw 'Installed x64 MSVC tools are required; no compiler will be downloaded.' }
+          Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+          Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
+          npm run dist -- --win --x64
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Sanity-check the distributables
         run: |

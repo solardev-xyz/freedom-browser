@@ -17,6 +17,7 @@ const electronAPI = window.electronAPI;
 let menuButton = null;
 let menuDropdown = null;
 let historyBtn = null;
+let downloadsBtn = null;
 let newTabMenuBtn = null;
 let newWindowMenuBtn = null;
 let newPrivateWindowMenuBtn = null;
@@ -33,6 +34,15 @@ let checkUpdatesBtn = null;
 let onOpenHistory = null;
 export const setOnOpenHistory = (callback) => {
   onOpenHistory = callback;
+};
+
+// Callback for opening the downloads page (set by external module). It routes
+// through the freedom:// internal-page singleton in index.js, the same path the
+// application menu's Downloads item and the shelf's Full Download History
+// action use — one downloads tab, focused rather than duplicated. #326
+let onOpenDownloads = null;
+export const setOnOpenDownloads = (callback) => {
+  onOpenDownloads = callback;
 };
 
 // Callback for creating a new tab (set by external module)
@@ -244,6 +254,7 @@ export const initMenus = () => {
   menuButton = document.getElementById('menu-button');
   menuDropdown = document.getElementById('menu-dropdown');
   historyBtn = document.getElementById('history-btn');
+  downloadsBtn = document.getElementById('downloads-btn');
   newTabMenuBtn = document.getElementById('new-tab-menu-btn');
   newWindowMenuBtn = document.getElementById('new-window-menu-btn');
   newPrivateWindowMenuBtn = document.getElementById('new-private-window-menu-btn');
@@ -301,6 +312,12 @@ export const initMenus = () => {
   historyBtn?.addEventListener('click', () => {
     setMenuOpen(false);
     onOpenHistory?.();
+  });
+
+  // Downloads button
+  downloadsBtn?.addEventListener('click', () => {
+    setMenuOpen(false);
+    onOpenDownloads?.();
   });
 
   // Zoom controls

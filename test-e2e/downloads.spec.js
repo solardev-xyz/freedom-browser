@@ -213,3 +213,53 @@ test('a card dismissed mid-download stays dismissed', async ({ window }) => {
   });
   expect(await cardNames()).toEqual(['other.iso']);
 });
+
+// #326: Chrome's download bubble carries "Full download history" under the
+// items. The shelf's row must reach freedom://downloads through the
+// internal-page singleton — a second click focuses that tab, it never opens a
+// duplicate.
+test("the shelf's Full Download History action opens, then focuses, the downloads tab", async ({
+  window,
+  electronApp,
+}) => {
+  const tabs = window.locator('[data-test="tab"]');
+  const initialTabs = await tabs.count();
+
+  // No downloads yet, no row.
+  await expect(window.locator('[data-test="download-shelf-history"]')).toHaveCount(0);
+
+  await electronApp.evaluate(({ BrowserWindow }, dataUri) => {
+    BrowserWindow.getAllWindows()[0].webContents.downloadURL(dataUri);
+  }, DATA_URI);
+
+  const historyRow = window.locator('#download-shelf [data-test="download-shelf-history"]');
+  await expect(historyRow).toBeVisible({ timeout: 10_000 });
+  await expect(historyRow).toHaveText('Full Download History');
+
+  await historyRow.click();
+
+  const activeUrl = () =>
+    window.evaluate(() => {
+      const wv = document.querySelector('webview.active, webview:not(.hidden)');
+      return wv?.getURL?.() || wv?.getAttribute?.('src') || '';
+    });
+
+  await expect.poll(activeUrl, { timeout: 10_000 }).toMatch(/pages\/downloads\.html/);
+  await expect(tabs).toHaveCount(initialTabs + 1);
+
+  // The card auto-dismisses a few seconds after completion, so re-arm the
+  // shelf with a second download before clicking the row again.
+  await electronApp.evaluate(({ BrowserWindow }, dataUri) => {
+    BrowserWindow.getAllWindows()[0].webContents.downloadURL(dataUri);
+  }, DATA_URI);
+  await expect(historyRow).toBeVisible({ timeout: 10_000 });
+
+  // Second click focuses the existing downloads tab instead of opening a
+  // second one.
+  await window.locator(`[data-test="tab"]`).first().click();
+  await expect.poll(activeUrl, { timeout: 10_000 }).not.toMatch(/pages\/downloads\.html/);
+
+  await historyRow.click();
+  await expect.poll(activeUrl, { timeout: 10_000 }).toMatch(/pages\/downloads\.html/);
+  await expect(tabs).toHaveCount(initialTabs + 1);
+});

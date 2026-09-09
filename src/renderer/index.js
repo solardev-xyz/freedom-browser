@@ -16,6 +16,7 @@ import {
   setOnOpenHistory,
   setOnNewTab,
   setOnMenuOpening,
+  setOnOpenDownloads,
   closeMenus,
   hideProfileFlyout,
 } from './lib/menus.js';
@@ -56,7 +57,7 @@ import {
   hide as hideAutocomplete,
 } from './lib/autocomplete.js';
 import { initGithubBridgeUi, setOnOpenRadicleUrl } from './lib/github-bridge-ui.js';
-import { initDownloadsUi } from './lib/downloads-ui.js';
+import { initDownloadsUi, setOnOpenDownloadsPage } from './lib/downloads-ui.js';
 import { initMenuBackdrop } from './lib/menu-backdrop.js';
 import { initLinkStatus } from './lib/link-status.js';
 import { initSitePermissionsUi } from './lib/site-permissions-ui.js';
@@ -137,6 +138,13 @@ setOnNavigate(loadTarget);
 setSuggestionPreviewProbe(isSuggestionPreviewActive);
 setOnHistoryRecorded(refreshAutocompleteCache);
 setOnOpenHistory(() => loadTarget('freedom://history'));
+// Both Downloads entry points — the hamburger row and the shelf's Full
+// Download History action — share the internal-page singleton the application
+// menu's Downloads item already reaches through `tab:new-with-url`: an
+// existing freedom://downloads tab is focused instead of duplicated. #326
+const openDownloadsPage = () => openOrFocusInternalPage('downloads');
+setOnOpenDownloads(openDownloadsPage);
+setOnOpenDownloadsPage(openDownloadsPage);
 setOnNewTab(() => createTab());
 setOnOpenRadicleUrl((url) => loadTarget(url));
 // When any popover/menu opens, dismiss other transient surfaces so we
