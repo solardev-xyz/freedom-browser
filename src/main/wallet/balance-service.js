@@ -18,6 +18,7 @@ const ERC20_INTERFACE = new Interface(ERC20_ABI);
 
 // In-memory balance cache (for fast repeated lookups within session)
 const balanceCache = new Map();
+const balanceRefreshes = new Map();
 const CACHE_TTL_MS = 30000; // 30 seconds
 
 /**
@@ -76,7 +77,15 @@ async function getTokenBalance(address, tokenAddress, chainId, tokenInfo) {
  * Returns balances keyed by token key (e.g., "1:native", "100:0xdBF3...")
  * On fetch errors, preserves previous cached values instead of showing errors.
  */
-async function getAllBalances(address) {
+function getAllBalances(address) {
+  const key = address.toLowerCase();
+  if (balanceRefreshes.has(key)) return balanceRefreshes.get(key);
+  const refresh = fetchAllBalances(address).finally(() => balanceRefreshes.delete(key));
+  balanceRefreshes.set(key, refresh);
+  return refresh;
+}
+
+async function fetchAllBalances(address) {
   const cacheKey = `all:${address}`;
   const cached = balanceCache.get(cacheKey);
 

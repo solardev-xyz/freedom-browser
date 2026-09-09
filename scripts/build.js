@@ -28,6 +28,7 @@
 const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { buildForTargets } = require('./build-myotis-supervisor');
 const {
   SOURCE_BUILD_ENV,
   pruneSourceBuildFallback,
@@ -80,6 +81,11 @@ if (dist && process.env.FREEDOM_ALLOW_INTERIM_BRIDGE !== '1') {
     process.exit(1);
   }
 }
+
+// Build the owned Myotis helper from local source before binary preflight.
+// Native macOS builds cover every requested architecture; foreign targets
+// require a helper built with an already installed compiler on that target.
+buildForTargets(platform, archs);
 
 // 1. Check binaries for the target platform/arch
 const checkArgs = [`--${platform}`, ...archs.map((a) => `--${a}`)].join(' ');
