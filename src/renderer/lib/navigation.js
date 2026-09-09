@@ -1082,6 +1082,13 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
   // change replayed through `navigate-to-url`). It leaves any uncommitted
   // address-bar edit in place; see the `clearAddressBarEdit` call below.
   //
+  // `options.continuesNavigation` — this call is the second leg of a
+  // navigation that already ran the entry bookkeeping below (a name
+  // resolution settling, the search-provider fallback at the tail). Same
+  // effect as `pageInitiated` for the edit state, and for the same reason:
+  // the user drove the chrome once, at the *first* leg. See the
+  // `clearAddressBarEdit` call below.
+  //
   // `options.bzzLoadUrl` / `options.swarmHash` — set by the ENS resolution
   // path when an ENS name resolves to Swarm content: the recursive call
   // into the bzz branch carries the ENS-named load URL plus the resolved
@@ -1121,7 +1128,15 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
   // against — a scripted `location.href` to a custom scheme, which the main
   // process cancels and replays through here as `navigate-to-url`. Those must
   // leave a half-typed address alone, exactly like the `did-navigate` path.
-  if (!options.pageInitiated) {
+  //
+  // `options.continuesNavigation` marks loadTarget's own recursive calls (a
+  // name resolution settling, the search fallback). Those are not a second
+  // user action: for a page-driven navigation there was never an edit to end,
+  // and for a chrome-driven one the commit already ended it at the first leg —
+  // possibly seconds ago, before a slow name lookup, so anything in the bar
+  // now is a *new* draft the user started while the resolution was in flight.
+  // Ending it here is the same clobber, one hop later (#305).
+  if (!options.pageInitiated && !options.continuesNavigation) {
     clearAddressBarEdit(navState);
   }
 
@@ -1412,6 +1427,7 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
           pushDebug(`${systemLabel} resolved: ${ens.name} -> ${targetUri}`);
           loadTarget(targetUri, displayOverride || targetUri, capturedWebview, {
             nameResolutionDepth: resolutionDepth + 1,
+            continuesNavigation: true,
           });
           return;
         }
@@ -1476,7 +1492,10 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
         // rather than the resolved CID/hash. For Swarm the probe still
         // needs the actual hash to gate navigation on Bee warmth, so we
         // pass it separately as `swarmHash`.
-        const innerOptions = { nameResolutionDepth: resolutionDepth + 1 };
+        const innerOptions = {
+          nameResolutionDepth: resolutionDepth + 1,
+          continuesNavigation: true,
+        };
         if (result.protocol === 'bzz') {
           innerOptions.bzzLoadUrl = transportDisplay;
           innerOptions.swarmHash = result.decoded;
@@ -1514,7 +1533,7 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
       // the panel that explains the profile setting instead.
       pushDebug(RADICLE_DISABLED_MESSAGE);
       const disabledUrl = buildRadicleDisabledUrl(window.location.href, value.trim());
-      addressInput.value = value.trim();
+      setAddressDisplayForTab(value.trim(), targetTabId);
       navState.pendingNavigationUrl = disabledUrl;
       navState.hasNavigatedDuringCurrentLoad = false;
       webview.loadURL(disabledUrl);
@@ -1551,7 +1570,7 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
     const errorUrl = new URL('pages/rad-browser.html', window.location.href);
     errorUrl.searchParams.set('error', 'invalid-rid');
     errorUrl.searchParams.set('input', withoutScheme);
-    addressInput.value = value.trim();
+    setAddressDisplayForTab(value.trim(), targetTabId);
     navState.pendingNavigationUrl = errorUrl.toString();
     navState.hasNavigatedDuringCurrentLoad = false;
     webview.loadURL(errorUrl.toString());
@@ -1721,7 +1740,7 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
   const searchUrl = buildSearchUrl(value, state.searchProvider, state.customSearchProviders);
   if (searchUrl) {
     pushDebug(`[AddressBar] Searching for input via ${searchUrl}`);
-    loadTarget(searchUrl, null, webview);
+    loadTarget(searchUrl, null, webview, { continuesNavigation: true });
     return;
   }
 

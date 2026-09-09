@@ -273,6 +273,56 @@ test('a page commit does not overwrite text the user is typing (#305)', async ({
   });
 });
 
+test('a page-driven name resolution does not overwrite text the user is typing (#305)', async ({
+  window,
+  harness,
+}) => {
+  // Same shape as the test above, but the page redirects to an *ENS name*.
+  // That route takes an extra hop: the will-navigate bounce enters
+  // `loadTarget` page-initiated (which holds the edit), the name resolves
+  // asynchronously, and the resolution re-enters `loadTarget` to load the
+  // content. The continuation must stay page-initiated — otherwise it ends
+  // the edit the outer call just held and repaints over the typed text.
+  const RESOLVED_HASH = 'c'.repeat(64);
+  await harness.setEnsFixture('name.eth', {
+    type: 'ok',
+    name: 'name.eth',
+    protocol: 'bzz',
+    decoded: RESOLVED_HASH,
+    uri: `bzz://${RESOLVED_HASH}`,
+    trust: { level: 'verified', queried: ['a.test', 'b.test'], agreed: ['a.test', 'b.test'] },
+  });
+  await harness.setProbeFixture(RESOLVED_HASH, { ok: true });
+  await harness.setContentFixture('bzz://name.eth/', {
+    body: '<!doctype html><title>ResolvedName</title><h1>resolved</h1>',
+  });
+  await harness.setContentFixture(PAGE_A, {
+    body: `<!doctype html><title>PageA</title><h1>Page A</h1><script>setTimeout(() => { location.href = 'bzz://name.eth/'; }, 1200);</script>`,
+  });
+
+  await goTo(window, PAGE_A);
+
+  const draft = 'my-important-note.eth/deep/link';
+  await typeInAddressBar(window, draft);
+  expect(await addressState(window)).toMatchObject({ value: draft, focused: true });
+
+  // Let the scripted navigation resolve and commit.
+  await expect(window.locator('[data-test="tab"] .tab-title').first()).toHaveText('ResolvedName', {
+    timeout: 15_000,
+  });
+
+  const afterResolution = await addressState(window);
+  expect(afterResolution).toMatchObject({ value: draft, focused: true });
+  expect(afterResolution.selectionStart).toBe(draft.length);
+
+  // The resolved page's own display URL was still tracked underneath.
+  await window.keyboard.press('Escape');
+  expect(await addressState(window)).toMatchObject({
+    value: 'bzz://name.eth/',
+    focused: true,
+  });
+});
+
 test('an unsubmitted address-bar edit survives switching tabs and back (#314)', async ({
   window,
   harness,

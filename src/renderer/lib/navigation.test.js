@@ -3158,6 +3158,134 @@ describe('navigation', () => {
       expect(ctx.activeRef.tab.navigationState.addressBarPendingInput).toBeNull();
     });
 
+    // Bootstrap a module whose `parseEnsInput` recognises `<name>.eth` (bare
+    // or transport-prefixed) and whose resolver never settles on its own, so
+    // a test can hold a name resolution open across a user edit.
+    const setupDeferredEns = async () => {
+      const ctx = await loadNavigationModule();
+      ctx.pageUrlsMocks.parseEnsInput.mockImplementation((value) => {
+        const m = value.match(/^(?:(bzz|ipfs|ipns|ens):\/\/)?([^?/]+\.eth)(.*)?$/i);
+        if (!m) return null;
+        const scheme = m[1]?.toLowerCase();
+        return {
+          name: m[2].toLowerCase(),
+          suffix: m[3] || '',
+          assertedTransport: !scheme || scheme === 'ens' ? null : scheme,
+        };
+      });
+      await ctx.mod.initNavigation();
+      let settle;
+      ctx.electronAPI.resolveEns.mockReturnValue(
+        new Promise((resolve) => {
+          settle = resolve;
+        })
+      );
+      return {
+        ctx,
+        settle: async (result) => {
+          settle(result);
+          await flushMicrotasks();
+        },
+      };
+    };
+
+    const IPFS_RESOLUTION = {
+      type: 'ok',
+      name: 'name.eth',
+      protocol: 'ipfs',
+      uri: 'ipfs://QmResolved',
+      decoded: 'QmResolved',
+      trust: { level: 'verified', queried: ['a', 'b'], agreed: ['a', 'b'] },
+    };
+
+    test('a page-driven name resolution settling keeps the edit it was held for (#305)', async () => {
+      // The report's own repro: the page scripts `location.href` to a custom
+      // scheme, the main process bounces it back through `loadTarget` as
+      // page-initiated, and the name resolution finishes a second later. The
+      // resolution hop re-enters `loadTarget`; pre-fix that second entry ran
+      // the chrome-driven branch and cleared the edit the outer call had just
+      // held, so the resolved display painted straight over the typed text.
+      const { ctx, settle } = await setupDeferredEns();
+
+      typeInAddressBar(ctx, 'my-important-note.eth/deep/link');
+      ctx.mod.loadTarget('bzz://name.eth/', null, null, { pageInitiated: true });
+      await flushMicrotasks();
+      expect(ctx.elements.addressInput.value).toBe('my-important-note.eth/deep/link');
+
+      await settle({ ...IPFS_RESOLUTION, protocol: 'bzz', uri: `bzz://${'a'.repeat(64)}` });
+
+      expect(ctx.elements.addressInput.value).toBe('my-important-note.eth/deep/link');
+      expect(ctx.activeRef.tab.navigationState.addressBarPendingInput).toBe(
+        'my-important-note.eth/deep/link'
+      );
+      // The page's own display still lands in the snapshot, so Escape and a
+      // tab switch have the truthful URL to fall back to.
+      expect(ctx.activeRef.tab.navigationState.addressBarSnapshot).toBe('bzz://name.eth/');
+    });
+
+    test('a chrome-driven name resolution settling does not wipe a draft typed while it was in flight (#305)', async () => {
+      // Committing `name.eth` ends that edit at submit time. If the lookup
+      // takes a second and the user starts typing a new address meanwhile,
+      // the resolution hop must not end *that* edit — it is a new one the
+      // user has not committed.
+      const { ctx, settle } = await setupDeferredEns();
+
+      ctx.mod.loadTarget('name.eth');
+      await flushMicrotasks();
+      expect(ctx.activeRef.tab.navigationState.addressBarPendingInput).toBeNull();
+
+      typeInAddressBar(ctx, 'somewhere-else.example');
+      await settle(IPFS_RESOLUTION);
+
+      expect(ctx.elements.addressInput.value).toBe('somewhere-else.example');
+      expect(ctx.activeRef.tab.navigationState.addressBarPendingInput).toBe(
+        'somewhere-else.example'
+      );
+      expect(ctx.activeRef.tab.navigationState.addressBarSnapshot).toBe('ipfs://name.eth');
+      // …and the navigation itself still happened.
+      expect(ctx.activeRef.tab.webview.loadURL).toHaveBeenCalledWith('ipfs://name.eth');
+    });
+
+    test("loadTarget's rad: error branches hold the edit like every other branch (#305)", async () => {
+      // Both of these used to write `addressInput.value` directly, so they
+      // painted over a held edit (and over the foreground tab when the
+      // navigation targeted a background one). They go through the same
+      // per-tab helper as their siblings now.
+      const disabledCtx = await loadNavigationModule({
+        registry: { ipfs: { mode: 'bundled' }, radicle: { mode: 'disabled' } },
+      });
+      await disabledCtx.mod.initNavigation();
+      typeInAddressBar(disabledCtx, 'half-typed');
+      disabledCtx.mod.loadTarget('rad://zrepo123', null, null, { pageInitiated: true });
+      await flushMicrotasks();
+      expect(disabledCtx.elements.addressInput.value).toBe('half-typed');
+      expect(disabledCtx.activeRef.tab.navigationState.addressBarSnapshot).toBe('rad://zrepo123');
+
+      const invalidCtx = await loadNavigationModule();
+      await invalidCtx.mod.initNavigation();
+      typeInAddressBar(invalidCtx, 'half-typed');
+      invalidCtx.mod.loadTarget('rad:notarid', null, null, { pageInitiated: true });
+      await flushMicrotasks();
+      expect(invalidCtx.elements.addressInput.value).toBe('half-typed');
+      expect(invalidCtx.activeRef.tab.webview.loadURL.mock.calls.at(-1)[0]).toContain(
+        'error=invalid-rid'
+      );
+    });
+
+    test('the search fallback does not end an edit a page-driven navigation held (#305)', async () => {
+      // The tail of `loadTarget` re-enters itself with the built search URL.
+      // That inner call is the same navigation, not a second user action.
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+
+      typeInAddressBar(ctx, 'half-typed');
+      ctx.mod.loadTarget('some free text query', null, null, { pageInitiated: true });
+      await flushMicrotasks();
+
+      expect(ctx.elements.addressInput.value).toBe('half-typed');
+      expect(ctx.activeRef.tab.navigationState.addressBarPendingInput).toBe('half-typed');
+    });
+
     test('Escape reverts to the page URL keeping focus, and blurs only on the next press (#310)', async () => {
       const ctx = await loadNavigationModule();
       await ctx.mod.initNavigation();
