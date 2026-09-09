@@ -28,11 +28,11 @@ jobs:
     defaults:
       run:
         shell: pwsh
-    env:
-      EVIDENCE_ROOT: ${{ runner.temp }}/myotis-supervisor-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Create early-failure evidence root
         run: |
+          $env:EVIDENCE_ROOT = Join-Path $env:RUNNER_TEMP "myotis-supervisor-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          "EVIDENCE_ROOT=$env:EVIDENCE_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           New-Item -ItemType Directory -Path $env:EVIDENCE_ROOT -ErrorAction Stop | Out-Null
           [ordered]@{
             candidate = $env:GITHUB_SHA
