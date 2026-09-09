@@ -79,6 +79,7 @@ import { attachSubmenuHover } from './lib/submenu-hover.js';
 import { isPrivateWindow } from './lib/private-mode.js';
 import { bindHoverTooltip } from './lib/hover-tooltip.js';
 import { initShortcuts } from './lib/shortcuts.js';
+import { onWindowLostFocus } from './lib/window-blur.js';
 
 const electronAPI = window.electronAPI;
 
@@ -588,7 +589,11 @@ async function initProfileIndicator() {
   // other transient menus (bookmarks, tab/context menus, autocomplete) and the
   // old profile menu's behaviour — the flyout shouldn't linger over an inactive
   // window.
-  window.addEventListener('blur', () => {
+  // Not a bare `blur` listener: focus moving into one of this window's own
+  // `<webview>` guests fires that too, and the hamburger this flyout hangs off
+  // now survives that case — closing only the flyout would leave the two out of
+  // step. See `lib/window-blur.js`.
+  onWindowLostFocus(() => {
     if (menu?.hidden !== false) return;
     closeProfileMenu();
   });

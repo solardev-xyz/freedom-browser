@@ -124,6 +124,7 @@
   background: var(--menu-bg);
   border: 1px solid var(--border);
   border-radius: 10px;
+  /* theme-literal: drop shadow, not a surface: the same black scrim reads on either palette */
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
 }
 

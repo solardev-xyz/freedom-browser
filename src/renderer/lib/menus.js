@@ -10,6 +10,7 @@ import { showMenuBackdrop, hideMenuBackdrop } from './menu-backdrop.js';
 import { isModalDialogOpen } from './modal-dialog.js';
 import { formatAccelerator, matchesShortcut } from './shortcuts.js';
 import { SUBMENU_CLOSE_DELAY_MS } from './submenu-hover.js';
+import { onWindowLostFocus } from './window-blur.js';
 
 const electronAPI = window.electronAPI;
 
@@ -474,6 +475,19 @@ export const initMenus = () => {
   // `#menu-backdrop` covers the window while a menu is open, so a click into
   // the page dismisses it through the document listener above. See #306.)
 
-  // Close menus when window loses focus (switching windows or backgrounding app)
-  window.addEventListener('blur', closeMenus);
+  // Close menus when the window loses focus (switching windows or
+  // backgrounding the app) — but not when focus merely moved into one of this
+  // window's own `<webview>` guests, which fires the same event. An open menu
+  // takes the keyboard back in that case, so Escape keeps reaching the
+  // window-level handler above. See `window-blur.js`.
+  onWindowLostFocus(closeMenus, () => {
+    // Deferred out of the blur dispatch: the guest's own focus is still being
+    // applied while this runs, so a synchronous `focus()` moves
+    // `document.activeElement` but leaves the guest holding the keyboard —
+    // the menu would look focused and still swallow Escape.
+    setTimeout(() => {
+      if (state.antMenuOpen) beeMenuButton?.focus?.();
+      else if (state.menuOpen) menuButton?.focus?.();
+    }, 0);
+  });
 };
