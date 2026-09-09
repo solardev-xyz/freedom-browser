@@ -148,3 +148,55 @@ passing tests, then two overlapping process/platform suites / 20 passing tests
 after the startup correction, with lint passing. The dependency mismatch above
 still applies. Review record: `scratchpad/merge-99177c06-review.md` in the
 existing reviewer session.
+
+## Prepared local smoke checkout — 2026-09-09
+
+After the user approved the exact npm/Electron and bundled-release sources, the
+coordinator finished preparing this checkout for a manual macOS arm64 smoke test:
+
+- An independent `node_modules` was installed with `npm ci --ignore-scripts`
+  from the unchanged lock (`48f6528976c3c05e52339e90f636c3b0013c35d1bef5c300c8ae80894a705d1d`).
+  All 1157 installed lock entries match their declared versions. The prior donor
+  symlink was preserved outside the checkout; the donor was not changed.
+- Electron **43.6.0** was extracted from the approved official arm64 archive,
+  matching both the npm package's checksum and official `SHASUMS256.txt`:
+  `5183a2b15d013517386edd9f1ea8e3402755f6c3ea17893f92acb20052f3a2e7`.
+  Its bundle version and enabled RunAsNode fuse were checked without launching it.
+- Ant **0.5.44**, freedom-ipfs **0.4.3**, and libradicle **0.7.1** were installed
+  only after the repository's pinned archive/checksum-manifest checks passed.
+  The exact patched Myotis addon remains as pinned above. Both supervisor helpers
+  were built from local source with the installed Apple compiler.
+- The existing node-hid **2.1.2** arm64 N-API binding was copied from the original
+  checkout after matching package versions and loader bytes; its SHA-256 is
+  `9ccf39dddd2baffcd1340d74b0dbeeaed9072c39c3aef9f63b6ea6b410690dd4`.
+  Existing adblock data was copied after checking its manifest hashes. Native
+  prebuilds supplied by the locked packages are present; unneeded install hooks
+  and blanket native rebuilds were not run. Tor remains optional and absent.
+
+Validation with this dependency tree: **13 focused suites / 207 tests passed**,
+lint passed, and `node scripts/check-binaries.js --mac --arm64` passed. This
+replaces the earlier donor-version limitation for these local checks only.
+Evidence, complete acquisition URLs/integrities, archives, local reuse hashes,
+and logs are retained at `/private/tmp/freedom-integration-smoke-prep-20260909/`.
+Six pre-existing lock entries lacked integrity fields; their downloaded tarball
+cache integrity records and verified cached bytes are retained in that evidence
+without changing the lock.
+
+The stock Electron archive has linker/ad-hoc signatures and no bundle resource
+seal; strict bundle codesign verification does not pass, just as for the original
+43.0.0 development runtime. No signatures or system security settings were changed.
+This is an unpacked development checkout, not signed-package qualification.
+
+The user can launch with a separate fresh profile:
+
+```sh
+cd /Users/florian/Git/freedom-dev/freedom-myotis-integration
+npm start -- --profile-dir /private/tmp/freedom-myotis-smoke-20260909
+```
+
+Enable Myotis for the desired chain in the Nodes controls before testing the
+agent, so the test exercises the patched path. A fresh profile may require model
+provider setup/sign-in. No credentials or profile data were copied. The coordinator
+did not launch Electron/Freedom, start a node, or run a real-addon lifecycle or
+Quit fixture on the primary Mac. Actual startup, model workflow and Quit behavior
+remain the manual smoke test's evidence; disposable qualification remains open.

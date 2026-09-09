@@ -2836,6 +2836,15 @@ patched-addon lifecycle, actual Quit, Windows and signed-package gates remain op
   and both PR branches remain unchanged. See the integration document's local
   activation checkpoint for exact evidence.
 
+- **2026-09-09 — Integration checkout prepared for manual smoke testing.** After
+  explicit source approval, the separate checkout now has independent locked npm
+  dependencies, Electron 43.6.0, pinned Ant/IPFS/Radicle artifacts, patched Myotis,
+  and both compiled supervisors. Exact-dependency focused checks passed 13 suites /
+  207 tests; lint and macOS binary preflight passed. The original checkout remains
+  unchanged. No app, node, or real-addon lifecycle was launched; user smoke and
+  disposable qualification are still pending. The integration guide records the
+  launch command, fresh profile, retained acquisition evidence and optional Tor gap.
+
 ## Final target statement
 
 > Freedom becomes an agent-native, malleable browser: users delegate high-level work to an embedded Pi-powered agent that acts through Freedom's semantic automation kernel and enforceable approval boundary across the ordinary and decentralized web, and can eventually ask it to create site customizations, extensions, dApps, and supported changes to Freedom itself through inspectable, permissioned, reversible build and installation workflows. A CLI or MCP surface may later expose the same kernel if real external demand warrants productizing it.
