@@ -1767,7 +1767,7 @@ An ordinary launch followed by Cmd+Q, with no Agent interaction, reproduced a pr
 
 The installed addon checksum matched pinned Myotis `v0.1.7`. Source inspection found that pending calls retain `Arc<ElReader>` references while `stop()` only invokes reader shutdown if `Arc::try_unwrap` succeeds. This identifies a native pending-read shutdown gap consistent with the sample; the exact initiating application requests were not captured. At that diagnostic checkpoint, the fix remained outstanding: settle/cancel pending reads during native shutdown and verify actual process exit. A JavaScript promise timeout alone would leave native work outstanding. No dependency upgrade or native fix was made as part of those initial diagnostics.
 
-**2026-09-09 update:** [Myotis PR #420](https://github.com/biafra23/myotis/pull/420) implements bounded owned Node scheduling, cooperative request cancellation and cleanup; [Freedom PR #295](https://github.com/solardev-xyz/freedom-browser/pull/295) isolates each chain in a supervised process while retaining the existing ABI 22 addon. Both PRs are open and ready for review, but neither is merged as checked on 2026-09-09. Neither implementation is included on `feature/freedom-automation-kernel`; the combined code and test artifacts remain on the separate integration branch. Both fixes are implemented separately and the user has accepted the combined long-agent-session/clean-Quit smoke test. Targeted external-review evidence now includes eight disposable-Linux native A/B cases, nine Windows Node-only supervisor cases, and standalone macOS real-addon load/start/status/native-error-read followed by actual native Quit and independently observed browser/supervisor/child exit 0. This does not establish a successful verified blockchain read, active-reader cancellation, packaged/signing compatibility or release approval. Exact tested revisions and limits are recorded in the [qualification checkpoint](https://github.com/solardev-xyz/freedom-browser/blob/ab7dc9894e91aed5b22804d98159999bbb72f9d9/docs/myotis-integration.md#targeted-qualification-checkpoint--2026-09-09); PR review/merge and applicable release qualification remain separate steps.
+**2026-09-09 update:** [Myotis PR #420](https://github.com/biafra23/myotis/pull/420) implements bounded owned Node scheduling, cooperative request cancellation and cleanup; [Freedom PR #295](https://github.com/solardev-xyz/freedom-browser/pull/295) isolates each chain in a supervised process while retaining the existing ABI 22 addon. Freedom PR #295 merged into main at `79cab6b0` on 2026-09-09 and is now included on `feature/freedom-automation-kernel`, including the maintainer's POSIX start/Stop ownership-receipt correction `6e1f2874`. Myotis PR #420 remains open and ready for review at `02a183d8`. This Agent branch retains the released v0.1.7 / ABI 22 addon; the patched ABI 25 addon and test artifacts remain on the separate integration branch. Both fixes are implemented separately and the user has accepted the combined long-agent-session/clean-Quit smoke test. Targeted external-review evidence now includes eight disposable-Linux native A/B cases, nine Windows Node-only supervisor cases, and standalone macOS real-addon load/start/status/native-error-read followed by actual native Quit and independently observed browser/supervisor/child exit 0. This does not establish a successful verified blockchain read, active-reader cancellation, packaged/signing compatibility or release approval. Exact tested revisions and limits are recorded in the [qualification checkpoint](https://github.com/solardev-xyz/freedom-browser/blob/ab7dc9894e91aed5b22804d98159999bbb72f9d9/docs/myotis-integration.md#targeted-qualification-checkpoint--2026-09-09); PR review/merge and applicable release qualification remain separate steps.
 
 #### Qualification cadence and remaining gates
 
@@ -2915,13 +2915,48 @@ Retained local logs: `/private/tmp/freedom-main-sync-expanded.log` and
 `/private/tmp/freedom-main-sync-lint-final.log`.
 
 The Myotis progress entries above were copied as documentation from integration
-`ab7dc989`; their evidence links point to that frozen branch document. As checked
-on September 9, Freedom PR #295 (`d25bf49c`) and Myotis PR #420 (`02a183d8`) are
-both open and ready for review, neither merged. This Agent branch still uses its
-existing Myotis implementation; the test integration, patched native artifacts
-and ABI 25 adaptation remain separate. Selecting the next Agent roadmap task
+`ab7dc989`; their evidence links point to that frozen branch document. At this
+earlier checkpoint, Freedom PR #295 (`d25bf49c`) and Myotis PR #420 (`02a183d8`)
+were both open and ready for review, neither merged. The following checkpoint
+supersedes that Freedom PR status; the patched native artifacts and ABI 25
+adaptation remain separate. Selecting the next Agent roadmap task
 does not imply bringing those changes into this branch or accepting their
 remaining release gates.
+
+## 2026-09-09 — Merge accepted Freedom Myotis isolation into the Agent branch
+
+Freedom PR #295 merged into main at `79cab6b05d68987dc39c268ab4f11d2ae6078eac`.
+Agent merge `2c308ea3` (first parent `5fea3975`) incorporates that exact main,
+including maintainer correction `6e1f2874`: a POSIX child created while Stop
+arrives still reports ownership before its terminal receipt, avoiding a false
+unconfirmed-exit/quarantine result. `src/main/myotis/` is byte-identical to main.
+
+The merge starts Myotis shutdown before Agent disposal, retains the Agent
+shutdown diagnostics, and awaits Myotis's observed-exit results before final
+Quit. The combined build hooks prepare both supervisors and retain the
+macOS-only automatic development build boundary. Signing composes workspace
+leaf/manifest sealing with Myotis's empty helper entitlements; neither hook
+silently overrides the other. These small orchestration modules reuse the
+previously reviewed integration composition, without importing its ABI 25
+adaptation or native artifact pins.
+
+Lint and **22 focused suites / 221 tests passed**, covering Myotis manager,
+process and child mocks, native receipt source guards, chain routing, wallet
+balance behavior, Agent node status/lifecycle adapters, build/signing composition,
+and qualification-driver mocks. Retained logs are
+`/private/tmp/freedom-myotis-main-merge-tests-final.log` and
+`/private/tmp/freedom-myotis-main-merge-lint-final.log`. Existing dependency
+mismatches from the preceding checkpoint remain; no dependency acquisition,
+helper compilation/execution, application launch, signing or platform
+qualification occurred. Historical runtime evidence remains tied to its tested
+revisions, not this merge.
+
+The Agent branch now has Freedom's process isolation while still pinning
+**Myotis v0.1.7 / ABI 22**. Upstream Myotis PR #420 remains open, ready for review
+and unmerged at `02a183d8` as checked after the Freedom merge. The separate
+integration checkout still owns the patched-addon smoke-test setup; no claim
+of upstream native cancellation fixes or renewed Electron 44 runtime acceptance
+is made by this merge.
 
 ## Final target statement
 
