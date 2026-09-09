@@ -2720,8 +2720,9 @@ export const initNavigation = () => {
           }
           tabNavState.isWebviewLoading = isLoading;
           reloadBtn.dataset.state = isLoading ? 'stop' : 'reload';
-          // Where focus lands on a NEW tab. tabs.js focuses the page itself for
-          // every other kind of activation (#304) but defers this case here,
+          // Where focus lands on a NEW tab, and on a switch back to a tab that
+          // is sitting on the new-tab page. tabs.js focuses the page itself for
+          // every other kind of activation (#304) but defers these two here,
           // because only the address-bar derivation knows whether the tab
           // landed on this window's new-tab page.
           //
@@ -2733,9 +2734,20 @@ export const initNavigation = () => {
           // - Anything else (a link opened in a new foreground tab,
           //   view-source, …): focus the page, so focus is never stranded on
           //   the outgoing tab's now-hidden webview.
+          //
+          // Switching *back* to a tab already on the new-tab page takes the
+          // same rule: `home.html`/`private.html` have no focus target, so
+          // handing that guest the keyboard drops whatever the user types
+          // next. A tab carrying an uncommitted draft is excluded — the #314
+          // branch above already focused the bar *and* restored its selection,
+          // and re-focusing would only drop the selection. The condition is
+          // the exact complement of tabs.js' `switchTab` guard; keep the two
+          // in step or a switch ends up with the keyboard nowhere.
           const isEmptyNewTab =
             !isViewingSource && !addressInput.value && (isNewTabPageUrl(url) || !url);
-          if (data.isNewTab) {
+          const ownsFocusForThisSwitch =
+            data.isNewTab || (!isAddressBarEditInProgress(tabNavState) && isNewTabPageUrl(url));
+          if (ownsFocusForThisSwitch) {
             if (isEmptyNewTab) {
               addressInput.focus();
               // Match the explicit focus-address-bar shortcut (tabs.js), which

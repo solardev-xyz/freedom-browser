@@ -182,6 +182,15 @@ const loadTabsModule = async (options = {}) => {
     internalPages,
     getInternalPageName: (url) =>
       Object.entries(internalPages).find(([, pageUrl]) => pageUrl === url)?.[0] || null,
+    // Mirrors `page-urls.js#isNewTabPageUrl`: this window's new-tab page in
+    // both the friendly `freedom://` form and the resolved internal-page one
+    // (#312), for a normal window (`home`) and a private one (`private`).
+    isNewTabPageUrl: (url) =>
+      url === (options.homeUrl || HOME_URL) ||
+      url === 'freedom://home' ||
+      url === 'freedom://private' ||
+      url === internalPages.home ||
+      url === internalPages.private,
   }));
 
   const mod = await import('./tabs.js');
@@ -1186,6 +1195,10 @@ describe('tabs ui behavior', () => {
     await mod.initTabs();
 
     const firstTab = mod.getActiveTab();
+    // The window's first tab starts on the new-tab page, which defers focus to
+    // the address bar (see the next test) — navigate it to a real page so this
+    // one is about the ordinary page-focus rule.
+    firstTab.url = 'https://first.example';
     const secondTab = mod.createTab('https://second.example');
     const firstFocus = jest.spyOn(firstTab.webview, 'focus');
     const secondFocus = jest.spyOn(secondTab.webview, 'focus');
@@ -1198,6 +1211,44 @@ describe('tabs ui behavior', () => {
     mod.switchToNextTab();
     expect(mod.getActiveTab().id).toBe(secondTab.id);
     expect(secondFocus).toHaveBeenCalledTimes(1);
+    expect(firstFocus).toHaveBeenCalledTimes(1);
+  });
+
+  // #304, the switch-back case: a tab sitting on this window's new-tab page
+  // has no focus target in its guest (`home.html`/`private.html` are inert),
+  // so focusing the page there drops the keystroke the user is about to type.
+  // Chrome focuses the omnibox instead — which is navigation.js' `tab-switched`
+  // job, the same deferral a brand-new tab uses.
+  test('switchTab leaves the page unfocused for a tab on the new-tab page', async () => {
+    const { mod } = await loadTabsModule();
+    await mod.initTabs();
+
+    const firstTab = mod.getActiveTab();
+    const secondTab = mod.createTab('https://second.example');
+    const firstFocus = jest.spyOn(firstTab.webview, 'focus');
+    const secondFocus = jest.spyOn(secondTab.webview, 'focus');
+
+    // The first tab is still on the new-tab page it was opened with.
+    expect(firstTab.url).toBe(HOME_URL);
+    mod.switchTab(firstTab.id);
+    expect(mod.getActiveTab().id).toBe(firstTab.id);
+    expect(firstFocus).not.toHaveBeenCalled();
+    // The deferral is one-sided: the tab on a real page still gets the
+    // keyboard on the way back.
+    mod.switchTab(secondTab.id);
+    expect(secondFocus).toHaveBeenCalledTimes(1);
+
+    // …and once that tab has navigated somewhere real it is an ordinary tab
+    // again. `tab.url` is the friendly form; the resolved `file://…/home.html`
+    // one Chromium commits lands in `currentPageUrl`, and both have to count.
+    firstTab.url = 'https://first.example';
+    mod.switchTab(firstTab.id);
+    expect(firstFocus).toHaveBeenCalledTimes(1);
+
+    mod.switchTab(secondTab.id);
+    firstTab.url = null;
+    firstTab.navigationState.currentPageUrl = HOME_URL;
+    mod.switchTab(firstTab.id);
     expect(firstFocus).toHaveBeenCalledTimes(1);
   });
 
@@ -1214,6 +1265,9 @@ describe('tabs ui behavior', () => {
     await mod.initTabs();
 
     const firstTab = mod.getActiveTab();
+    // On a real page, so the new-tab-page deferral above isn't what's being
+    // measured — the draft has to carry this on its own.
+    firstTab.url = 'https://first.example';
     const secondTab = mod.createTab('https://second.example');
     const firstFocus = jest.spyOn(firstTab.webview, 'focus');
 
@@ -1244,6 +1298,9 @@ describe('tabs ui behavior', () => {
     await mod.initTabs();
 
     const firstTab = mod.getActiveTab();
+    // On a real page: the promoted tab gets the keyboard, unless it is sitting
+    // on the new-tab page, where the address bar takes it instead.
+    firstTab.url = 'https://first.example';
     const secondTab = mod.createTab('https://second.example');
     const firstFocus = jest.spyOn(firstTab.webview, 'focus');
 

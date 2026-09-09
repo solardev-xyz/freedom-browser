@@ -9,6 +9,7 @@ import {
   getInternalPageName,
   getOnchainInterstitialTarget,
   internalPages,
+  isNewTabPageUrl,
 } from './page-urls.js';
 import { getPrivatePartition, isPrivateWindow } from './private-mode.js';
 import { setupWebviewProvider, setActiveWebview } from './dapp-provider.js';
@@ -1636,26 +1637,40 @@ export const switchTab = (tabId, options = {}) => {
   // the tab button, and it is never stranded on the now-hidden outgoing
   // webview (#304).
   //
-  // Two cases are deliberately excluded and handed to the navigation module's
-  // `tab-switched` case instead, because both of them focus the *address bar*
-  // and only that module knows it:
+  // Three cases are deliberately excluded and handed to the navigation
+  // module's `tab-switched` case instead, because all of them focus the
+  // *address bar* and only that module knows it:
   //
   // - A brand-new tab: only the address-bar derivation knows whether the tab
   //   landed on this window's new-tab page (focus the address bar — #312) or
   //   on a real page opened from a link (focus the page).
+  // - An existing tab sitting on this window's new-tab page: the guest there
+  //   (`home.html` / `private.html`) has no focus target, so focusing it drops
+  //   the keystroke the user is about to type. Chrome focuses the omnibox when
+  //   you switch back to a tab on the NTP; the same `isNewTabPageUrl` test the
+  //   brand-new case uses recognises both forms of that URL.
   // - A tab left with an uncommitted address-bar edit: it comes back mid-edit
   //   with the bar focused and its selection restored (#314), so the page must
   //   not take the keyboard from under the draft. `addressBarPendingInput` is
   //   a string only while such an edit is in flight — see `address-bar-edit.js`,
   //   which owns the field this module declares in `createNavigationState`.
   //   (Read directly rather than through that module's helper: it imports
-  //   `tabs.js`, so importing it back would close an import cycle.)
+  //   `tabs.js`, so importing it back would close an import cycle.) A draft
+  //   outranks the new-tab-page rule: the bar is focused either way, but only
+  //   this branch restores the selection, so the URL test must not claim it.
   //
-  // Focusing here as well is not harmless in either case: `<webview>.focus()`
+  // Focusing here as well is not harmless in any of them: `<webview>.focus()`
   // hands focus to the guest asynchronously, so it lands *after* a synchronous
   // `addressInput.focus()` and takes the address bar's focus away again.
+  //
+  // The URL read mirrors navigation.js' `tab-switched` case exactly
+  // (`tab.url` first, then the navigation state's committed URL): the two
+  // conditions are complements, so any drift would leave a switch with the
+  // keyboard nowhere at all.
   const tabHasAddressBarEdit = typeof tab.navigationState?.addressBarPendingInput === 'string';
-  if (!options.isNewTab && !tabHasAddressBarEdit) {
+  const tabIsOnNewTabPage =
+    !tabHasAddressBarEdit && isNewTabPageUrl(tab.url || tab.navigationState?.currentPageUrl || '');
+  if (!options.isNewTab && !tabHasAddressBarEdit && !tabIsOnNewTabPage) {
     tab.webview?.focus?.();
   }
 

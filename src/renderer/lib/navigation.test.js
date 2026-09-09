@@ -2472,6 +2472,49 @@ describe('navigation', () => {
       expect(ctx.elements.addressInput.focus).not.toHaveBeenCalled();
       expect(webviewFocus).toHaveBeenCalled();
     });
+
+    // The switch-back case of the same rule: `home.html`/`private.html` have
+    // no focus target, so tabs.js hands an *existing* new-tab-page tab here
+    // too rather than focusing an inert guest that swallows the next keystroke.
+    test('switching back to a tab on the new-tab page focuses the address bar', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      ctx.elements.addressInput.focus.mockClear();
+
+      const tab = createTab(44, 'freedom://home');
+      const webviewFocus = jest.spyOn(tab.webview, 'focus');
+      ctx.tabsRef.list = [tab];
+      ctx.activeRef.tab = tab;
+      ctx.tabsMocks.webviewEventHandler('tab-switched', { tabId: tab.id, tab, isNewTab: false });
+
+      expect(ctx.elements.addressInput.value).toBe('');
+      expect(ctx.elements.addressInput.focus).toHaveBeenCalled();
+      expect(ctx.elements.addressInput.select).toHaveBeenCalled();
+      expect(webviewFocus).not.toHaveBeenCalled();
+    });
+
+    // …but not when that tab carries an uncommitted draft: the #314 branch has
+    // already focused the bar *and* restored its selection, and re-running the
+    // focus/select pair here would drop the selection the user left behind.
+    test('a draft on a new-tab-page tab keeps its restored selection', async () => {
+      const ctx = await loadNavigationModule();
+      await ctx.mod.initNavigation();
+      ctx.elements.addressInput.select.mockClear();
+
+      const tab = createTab(45, 'freedom://home');
+      tab.navigationState.addressBarPendingInput = 'half-typed';
+      tab.navigationState.addressBarPendingSelection = { start: 2, end: 6, direction: 'forward' };
+      const webviewFocus = jest.spyOn(tab.webview, 'focus');
+      ctx.tabsRef.list = [tab];
+      ctx.activeRef.tab = tab;
+      ctx.tabsMocks.webviewEventHandler('tab-switched', { tabId: tab.id, tab, isNewTab: false });
+
+      expect(ctx.elements.addressInput.value).toBe('half-typed');
+      expect(ctx.elements.addressInput.focus).toHaveBeenCalled();
+      // `select()` would replace the restored range with "select all".
+      expect(ctx.elements.addressInput.select).not.toHaveBeenCalled();
+      expect(webviewFocus).not.toHaveBeenCalled();
+    });
   });
 
   describe('trust shield', () => {

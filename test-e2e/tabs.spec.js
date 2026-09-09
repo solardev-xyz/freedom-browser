@@ -159,6 +159,9 @@ test('switching tabs focuses the page, not the tab button', async ({
   await harness.setContentFixture(PAGE_A, {
     body: '<!doctype html><title>Page A</title><p>a</p>',
   });
+  await harness.setContentFixture(PAGE_B, {
+    body: '<!doctype html><title>Page B</title><p>b</p>',
+  });
 
   const input = window.locator('[data-test="address-input"]');
   await input.click();
@@ -167,6 +170,12 @@ test('switching tabs focuses the page, not the tab button', async ({
 
   await window.locator('[data-test="new-tab-btn"]').click();
   await expect(window.locator('[data-test="tab"]')).toHaveCount(2);
+  // Put the second tab on a real page too: a tab still sitting on the new-tab
+  // page hands the keyboard to the address bar instead, which is the next
+  // test's subject.
+  await input.click();
+  await input.fill(PAGE_B);
+  await input.press('Enter');
 
   // Mouse switch back to the first tab.
   await window.locator('[data-test="tab"][data-tab-id="1"]').click();
@@ -200,6 +209,51 @@ test('switching tabs focuses the page, not the tab button', async ({
       { message: 'Waiting for the page to take focus after Ctrl+Tab' }
     )
     .toMatch(/^WEBVIEW/);
+});
+
+// #304, the other end of the same rule: a tab sitting on this window's new-tab
+// page has no focus target inside its guest (`home.html`/`private.html` are
+// inert documents), so handing it the keyboard means the next keystroke goes
+// nowhere. Chrome focuses the omnibox when you switch to a tab on the NTP.
+test('switching back to a tab on the new-tab page focuses the address bar', async ({
+  window,
+  electronApp,
+  harness,
+}) => {
+  await harness.setContentFixture(PAGE_A, {
+    body: '<!doctype html><title>Page A</title><p>a</p>',
+  });
+
+  const input = window.locator('[data-test="address-input"]');
+  await input.click();
+  await input.fill(PAGE_A);
+  await input.press('Enter');
+
+  // A second tab, left on the new-tab page.
+  await window.locator('[data-test="new-tab-btn"]').click();
+  await expect(window.locator('[data-test="tab"]')).toHaveCount(2);
+
+  // Away to the page tab (whose guest takes the keyboard) …
+  await window.locator('[data-test="tab"][data-tab-id="1"]').click();
+  const focusedTag = () =>
+    window.evaluate(() => `${document.activeElement?.tagName}.${document.activeElement?.id || ''}`);
+  await expect
+    .poll(focusedTag, { message: 'Waiting for the page to take focus' })
+    .toMatch(/^WEBVIEW/);
+
+  // … and back to the new-tab-page tab by keyboard (Ctrl+Tab), the case the
+  // user hits after a switch, not on a fresh tab.
+  await clickMenuItem(electronApp, 'next-tab');
+  await expectActiveTab(window, 2);
+  await expect
+    .poll(focusedTag, { message: 'Waiting for the address bar to take focus' })
+    .toBe('INPUT.address-input');
+  await expect(input).toHaveValue('');
+
+  // The point of focusing it: typing immediately goes into the address bar
+  // rather than being swallowed by the inert guest.
+  await window.keyboard.type('example.com');
+  await expect(input).toHaveValue('example.com');
 });
 
 // The other side of #304: with focus living in the guest after every tab

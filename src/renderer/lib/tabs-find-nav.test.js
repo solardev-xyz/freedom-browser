@@ -102,6 +102,10 @@ const loadModules = async () => {
   jest.doMock('./page-urls.js', () => ({
     homeUrl: HOME_URL,
     getOnchainInterstitialTarget: () => null,
+    // Mirrors `page-urls.js#isNewTabPageUrl` for this window's new-tab page,
+    // which `switchTab` consults to decide whether the page or the address bar
+    // gets the keyboard (#304).
+    isNewTabPageUrl: (url) => url === HOME_URL || url === 'freedom://private',
   }));
 
   const tabs = await import('./tabs.js');
