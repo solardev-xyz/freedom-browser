@@ -87,6 +87,9 @@ All notable changes to Freedom will be documented in this file.
 - The tab strip scrolls once the tabs stop fitting instead of clipping the ones past the edge
 - The tab context menu closes when the foreground tab changes instead of staying open over another tab
 - The Profiles flyout closes when another row of the browser menu is hovered instead of covering it
+- Escape closes the browser menu and the Nodes menu, like every other menu in the chrome
+- Bookmarks-bar items open in a background tab on Ctrl/Cmd-click or middle-click, and can be reordered by dragging
+- The page context menu closes on navigation instead of acting on the previous page's link
 - The Publish and Payments pages and the sidebar's permission screens are readable on the light theme
 
 ### Security
@@ -105,6 +108,8 @@ All notable changes to Freedom will be documented in this file.
   - `@x402/core` 2.17.0 to 2.25.0
   - `@x402/evm` 2.17.0 to 2.25.0
   - `@scure/bip39` 2.2.0 to 2.4.0
+  - `@openlv/core` 0.0.2 and `@openlv/session` 0.0.3 to 0.2.0
+  - `@ledgerhq/hw-app-eth` 7.8.8 to 7.8.17
 
 ## [0.8.0] - 2026-07-02
 
