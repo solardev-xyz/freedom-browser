@@ -8,7 +8,7 @@ const Database = require('better-sqlite3');
 const log = require('../logger');
 
 const DB_FILE = 'agent-workspaces.sqlite';
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 const WORKSPACE_DIRECTORY = 'agent-workspaces';
 const MAX_RETAINED_COMMANDS = 1_000;
 const COMMAND_STATES = new Set([
@@ -184,6 +184,18 @@ class AgentManagedWorkspaceStore {
     }
     if (version < 3) {
       this.db.exec(`ALTER TABLE agent_workspace_commands ADD COLUMN termination_scope TEXT;`);
+    }
+    if (version < 4) {
+      this.db.exec(`CREATE TABLE agent_workspace_servers (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL REFERENCES agent_workspaces(id) ON DELETE CASCADE,
+        conversation_id TEXT NOT NULL,
+        command_text TEXT NOT NULL,
+        working_directory TEXT NOT NULL,
+        port INTEGER NOT NULL,
+        preview_token TEXT NOT NULL UNIQUE,
+        UNIQUE(workspace_id, command_text, working_directory, port)
+      );`);
     }
     if (version < SCHEMA_VERSION) this.db.pragma(`user_version = ${SCHEMA_VERSION}`);
   }
@@ -395,6 +407,31 @@ class AgentManagedWorkspaceStore {
   markStaleRunningAsInterrupted() {
     const now = this.now();
     return this.#getStatements().interruptCommands.run(now, now).changes;
+  }
+
+  listServers(conversationId) {
+    return this.getDb().prepare(`SELECT id AS serverId, workspace_id AS workspaceId,
+      conversation_id AS conversationId, command_text AS command, working_directory AS workingDirectory,
+      port, preview_token AS previewToken FROM agent_workspace_servers WHERE conversation_id = ? ORDER BY rowid LIMIT 8`)
+      .all(requiredString(conversationId, 'Conversation ID', 160));
+  }
+
+  rememberServer(conversationId, request) {
+    const workspace = this.getForConversation(conversationId);
+    if (!workspace?.enabled) throw new Error('Workspace unavailable');
+    const command = requiredString(request.command, 'Server command', 4096);
+    const workingDirectory = requiredString(request.workingDirectory || '.', 'Server directory', 1024);
+    if (!Number.isSafeInteger(request.port) || request.port < 1024 || request.port > 65535) throw new Error('Invalid server port');
+    const previous = this.listServers(conversationId);
+    const existing = previous.find(server => server.command === command && server.workingDirectory === workingDirectory && server.port === request.port);
+    if (existing) return existing;
+    if (previous.length >= 8) throw new Error('Saved server limit reached');
+    const serverId = `workspace_server_${crypto.randomBytes(12).toString('hex')}`;
+    this.getDb().prepare(`INSERT INTO agent_workspace_servers
+      (id, workspace_id, conversation_id, command_text, working_directory, port, preview_token)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`).run(serverId, workspace.workspaceId, conversationId, command,
+      workingDirectory, request.port, crypto.randomBytes(20).toString('hex'));
+    return this.listServers(conversationId).find(server => server.serverId === serverId);
   }
 
   async deleteConversation(conversationId) {

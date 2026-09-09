@@ -201,6 +201,45 @@ describe('WorkspacePreviewController', () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
+  test('injects the socket adapter before application scripts and reattaches a saved origin to a fresh generation', async () => {
+    const serverId = `workspace_server_${'a'.repeat(24)}`;
+    let processId = `workspace_process_${'a'.repeat(24)}`;
+    const saved = { serverId, previewToken: 'b'.repeat(40), state: 'running' };
+    workspaceController.listServers = () => [{ ...saved, processId }];
+    workspaceController.getServer = () => ({ ...saved, processId });
+    workspaceController.inspectProcess = (_owner, id) => ({ workspace: {
+      processId: id, workspaceId: 'workspace_aaaaaaaaaaaaaaaaaaaa', state: id === processId ? 'running' : 'cancelled',
+      networkPosture: 'full', previewPort: 5173,
+    } });
+    const fetch = jest.fn(async () => new Response('<!doctype html><html><head><script type="module" src="/app.js"></script></head></html>', {
+      headers: { 'Content-Type': 'text/html' },
+    }));
+    const controller = new WorkspacePreviewController({ workspaceController, fetch });
+    controller.maxPreviews = 1;
+    const preview = controller.createProcessPreview('conversation_one', processId);
+    const oldKey = controller.previews.get('b'.repeat(40)).socketKey;
+    const response = await controller.handleRequest({ method: 'GET', url: preview.url });
+    const html = await response.text();
+    expect(html.startsWith('<!doctype html>')).toBe(true);
+    expect(html.indexOf('/.freedom-preview/client.js')).toBeLessThan(html.indexOf('/app.js'));
+    expect(response.headers.get('content-length')).toBe(String(Buffer.byteLength(html)));
+    const client = await controller.handleRequest({ method: 'GET', url: preview.url + '.freedom-preview/client.js' });
+    expect(await client.text()).toContain('window.WebSocket = PreviewWebSocket');
+    expect(fetch).toHaveBeenCalledTimes(1);
+    processId = `workspace_process_${'c'.repeat(24)}`;
+    const status = await controller.handleRequest({ method: 'GET', url: preview.url + '.freedom-preview/status' });
+    expect(await status.json()).toEqual({ processId });
+    expect(controller.createProcessPreview('conversation_one', processId).url).toBe(preview.url);
+    const endpoint = preview.url + '.freedom-preview/socket';
+    const socketRequest = key => new Request(endpoint, { method: 'POST', body: JSON.stringify({ key, action: 'open', url: 'ws://localhost:9999/' }) });
+    expect((await controller.handleRequest(socketRequest(oldKey))).status).toBe(403);
+    controller.socketRequests = 96;
+    expect((await controller.handleRequest(socketRequest(oldKey))).status).toBe(503);
+    controller.socketRequests = 0;
+    expect((await controller.handleRequest(socketRequest(controller.previews.get('b'.repeat(40)).socketKey))).status).toBe(403);
+    await controller.dispose();
+  });
+
   test('refuses server previews without a conversation-owned full-network process', () => {
     const processId = 'workspace_process_dddddddddddddddddddddddd';
     workspaceController.inspectProcess = jest.fn(() => ({

@@ -1126,4 +1126,39 @@ describe('reviewed workspace history tool', () => {
     await expect(tool.execute('call_three', { action: 'checkpoint', reviewIds: [] }, stopped.signal)).rejects.toThrow('stopped');
     expect(controller.reviewWorkspaceHistory).toHaveBeenCalledTimes(calls);
   });
+
+  test('restarts an exact saved command through bash and reattaches in a separate observed action', async () => {
+    const controller = createController();
+    controller.fullNetworkPermissionsEnabled.mockReturnValue(true);
+    const serverId = `workspace_server_${'a'.repeat(24)}`;
+    const processId = `workspace_process_${'b'.repeat(24)}`;
+    const server = { serverId, command: 'npm run dev', workingDirectory: 'game', port: 5173, state: 'stopped' };
+    controller.listServers = () => [{ serverId, command: server.command, workingDirectory: 'game', previewPort: 5173, state: server.state }];
+    controller.getServer = (_owner, id) => { if (id !== serverId) throw new Error('Unavailable'); return { ...server }; };
+    controller.startProcess.mockImplementation(async () => {
+      server.processId = processId; server.state = 'running';
+      return { state: 'running', processId, serverId, output: '', workspace: {
+        state: 'running', processId, command: server.command, networkPosture: 'full', previewPort: 5173,
+      } };
+    });
+    const previewController = { createPreview: jest.fn(), createProcessPreview: jest.fn(() => ({
+      kind: 'server', url: `freedom-preview://${'a'.repeat(40)}/`, processId, port: 5173,
+    })) };
+    const scopedController = { openWorkspacePreview: jest.fn(async () => ({ ok: true, result: { activeTabId: 'tab_server' } })) };
+    const outcome = jest.fn();
+    const tools = await createWorkspaceTools({ sdk: createSdk(), controller, previewController, scopedController,
+      conversationId: 'one', requestApproval: jest.fn(async () => 'approved'), onToolOutcome: outcome });
+    const tool = tools.find(entry => entry.name === 'workspace_server');
+    expect((await tool.execute('list', { action: 'list' })).details.servers[0].command).toBe('npm run dev');
+    await expect(tool.execute('attach', { action: 'reattach', serverId })).rejects.toThrow('stopped');
+    await tool.execute('restart', { action: 'restart', serverId });
+    expect(controller.startProcess).toHaveBeenCalledWith('one', expect.objectContaining({
+      restartServerId: serverId, command: 'npm run dev', workingDirectory: 'game', previewPort: 5173,
+    }));
+    expect(scopedController.openWorkspacePreview).not.toHaveBeenCalled();
+    expect(outcome.mock.calls.filter(([event]) => event.toolCallId === 'restart')).toHaveLength(1);
+    await tool.execute('attach', { action: 'reattach', serverId });
+    expect(previewController.createProcessPreview).toHaveBeenCalledWith('one', processId);
+    expect(scopedController.openWorkspacePreview).toHaveBeenCalledTimes(1);
+  });
 });

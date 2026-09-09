@@ -22,6 +22,7 @@ const WORKSPACE_TOOL_NAMES = Object.freeze([
   'request_permissions',
   'write_stdin',
   'workspace_preview',
+  'workspace_server',
   'workspace_history',
 ]);
 const READ_ONLY_WORKSPACE_OPERATIONS = new Set([
@@ -548,6 +549,10 @@ function workspaceBashTemplate(template, options = {}) {
             'Wait before returning a session ID for a command that is still running (optional; defaults to 10000 ms)',
         },
         ...(options.serverPreviewEnabled === true && {
+          restartServerId: {
+            type: 'string', pattern: '^workspace_server_[a-f0-9]{24}$',
+            description: 'Restart this saved server using its exact command, directory and port. Requires current permissions; stops the previous process before relaunch.',
+          },
           previewPort: {
             type: 'integer',
             minimum: 1_024,
@@ -1141,6 +1146,7 @@ function bashOperations(options, captureReceipt, toolParams = {}) {
       const previewPort = workspacePreviewPort(toolParams.previewPort);
       const process = await options.controller.startProcess(options.conversationId, {
         command,
+        ...(toolParams.restartServerId && { restartServerId: toolParams.restartServerId }),
         workingDirectory: virtualPathToWorkspaceRelative(cwd, { allowRoot: true }),
         signal: execution.signal,
         ...(Number.isFinite(execution.timeout) && { timeoutMs: execution.timeout * 1_000 }),
@@ -1163,7 +1169,7 @@ function bashOperations(options, captureReceipt, toolParams = {}) {
       if (process.state === 'running') {
         execution.onData(
           Buffer.from(
-            `${output.byteLength ? '\n' : ''}Command still running with session ID ${process.processId}. Use write_stdin to read more output, send input, or stop it.\n`,
+            `${output.byteLength ? '\n' : ''}Command still running with session ID ${process.processId}. Use write_stdin to read more output, send input, or stop it.${process.serverId ? ` Saved server: ${process.serverId}. Use workspace_server to reopen or restart it.` : ''}\n`,
             'utf8'
           )
         );
@@ -1473,6 +1479,43 @@ async function createWorkspaceTools(options = {}) {
   ];
   if (typeof controller.reviewWorkspaceHistory === 'function') tools.push(createWorkspaceHistoryTool(sdk, options));
   if (previewEnabled) tools.push(createWorkspacePreviewTool(sdk, toolOptions));
+  if (previewEnabled && serverPreviewEnabled && typeof controller.listServers === 'function') {
+    tools.push(sdk.defineTool({
+      name: 'workspace_server', label: 'Workspace server', executionMode: 'sequential',
+      description: 'List saved development servers, reattach a preview to its current owned process, or restart its exact saved command. Saved servers survive app restarts but grants and processes do not. Request current full-network/executable permissions for the exact listed command and directory before restart. Restart uses the normal bash path, stops the old process, checks for a port collision and launches a new owned process. After restart, call reattach to reopen its stable preview. Never attach to arbitrary localhost listeners. No automatic crash restart.',
+      parameters: { type: 'object', properties: {
+        action: { type: 'string', enum: ['list', 'restart', 'reattach'] },
+        serverId: { type: 'string', pattern: '^workspace_server_[a-f0-9]{24}$' },
+      }, required: ['action'], additionalProperties: false },
+      execute: async (toolCallId, params, signal) => {
+        if (signal?.aborted || options.getRunSignal?.()?.aborted) throw new Error('Workspace operation stopped');
+        if (params.action === 'list') {
+          const servers = controller.listServers(options.conversationId).map(server => ({
+            ...server, command: controller.getServer(options.conversationId, server.serverId).command,
+          }));
+          return { content: [{ type: 'text', text: JSON.stringify({ servers }) }], details: { servers } };
+        }
+        if (!['restart', 'reattach'].includes(params.action)) throw new Error('Invalid server action');
+        const server = controller.getServer(options.conversationId, params.serverId);
+        if (params.action === 'restart') {
+          const launched = await tools[0].execute(toolCallId, {
+            command: server.command, workingDirectory: server.workingDirectory,
+            previewPort: server.port, restartServerId: server.serverId,
+          }, signal);
+          return { ...launched, content: [...(launched.content || []), {
+            type: 'text', text: 'If the server is running, call workspace_server with action reattach to reopen its preview.',
+          }] };
+        }
+        const current = controller.getServer(options.conversationId, params.serverId);
+        if (!current.processId || current.state !== 'running') {
+          throw new Error('Saved server is stopped. Request current permissions and restart it; no process was reattached.');
+        }
+        const opened = await createWorkspacePreviewTool(sdk, toolOptions).execute(
+          toolCallId, { processId: current.processId }, signal);
+        return opened;
+      },
+    }));
+  }
   return tools;
 }
 

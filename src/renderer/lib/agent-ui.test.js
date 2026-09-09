@@ -2011,6 +2011,25 @@ describe('Agent UI', () => {
     expect(ctx.elements['agent-workspace-body'].classList.contains('has-processes')).toBe(false);
   });
 
+  test('shows saved stopped servers and requests restart through the Agent', async () => {
+    const serverId = `workspace_server_${'a'.repeat(24)}`;
+    const state = { status: 'ready', conversationId: 'conversation_server', transcript: [],
+      workspace: { processes: [], commands: [], servers: [{ serverId,
+        command: 'npm run dev', workingDirectory: 'game', state: 'stopped', previewPort: 5173 }] } };
+    const startAgent = jest.fn(async () => ({ ok: true, runId: 'run_server' }));
+    const ctx = await loadAgentUi({ electronAPI: {
+      getAgentState: jest.fn(async () => ({ ok: true, state })), startAgent,
+    } });
+    const panel = ctx.elements['agent-process-panel-list'];
+    expect(panel.children).toHaveLength(1);
+    expect(panel.children[0].children[1].textContent).toContain('Stopped');
+    const button = panel.children[0].children[2].children[0];
+    expect(button.textContent).toBe('Start with Agent');
+    button.dispatch('click'); await flush();
+    expect(startAgent.mock.calls[0][1]).toContain(serverId);
+    expect(startAgent.mock.calls[0][1]).toContain('permissions');
+  });
+
   test('opens a saved session and continues without silently adopting the current page', async () => {
     const sessions = [
       {

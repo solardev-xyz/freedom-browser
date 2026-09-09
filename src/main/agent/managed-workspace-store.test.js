@@ -63,6 +63,48 @@ describe('AgentManagedWorkspaceStore', () => {
     expect(store.getDb().pragma('user_version', { simple: true })).toBe(SCHEMA_VERSION);
   });
 
+  test('retains bounded server recipes without persisting processes or grants', async () => {
+    const workspace = await store.ensureForConversation('conversation_one');
+    store.enable(workspace.workspaceId, 'conversation_one', 'linux-bubblewrap');
+    const input = { command: 'npm run dev', workingDirectory: 'game', port: 5173 };
+    const server = store.rememberServer('conversation_one', input);
+    expect(store.rememberServer('conversation_one', input)).toEqual(server);
+    expect(server.serverId).toMatch(/^workspace_server_[a-f0-9]{24}$/);
+    expect(server.previewToken).toMatch(/^[a-f0-9]{40}$/);
+    expect(server.processId).toBeUndefined(); expect(server.grants).toBeUndefined();
+    store.close();
+    expect(store.listServers('conversation_one')).toEqual([server]);
+    expect(store.listServers('other')).toEqual([]);
+    for (let i = 0; i < 7; i++) store.rememberServer('conversation_one', { ...input, port: 5200 + i });
+    expect(() => store.rememberServer('conversation_one', { ...input, port: 5300 })).toThrow('limit');
+    await store.deleteConversation('conversation_one');
+    expect(store.listServers('conversation_one')).toEqual([]);
+  });
+
+  test('migrates and reopens server recipes with real SQLite constraints', async () => {
+    const { DatabaseSync } = require('node:sqlite');
+    class SqliteAdapter {
+      constructor(filename) { this.database = new DatabaseSync(filename); }
+      exec(sql) { this.database.exec(sql); }
+      prepare(sql) { return this.database.prepare(sql); }
+      close() { this.database.close(); }
+      pragma(sql, options = {}) {
+        const rows = this.database.prepare(`PRAGMA ${sql}`).all();
+        return options.simple ? Object.values(rows[0])[0] : rows;
+      }
+    }
+    store.close();
+    store = new AgentManagedWorkspaceStore({ userDataDir, Database: SqliteAdapter });
+    const workspace = await store.ensureForConversation('one');
+    store.enable(workspace.workspaceId, 'one', 'linux-bubblewrap');
+    const server = store.rememberServer('one', { command: 'npm run dev', port: 5173 });
+    store.close();
+    expect(store.listServers('one')).toEqual([server]);
+    expect(store.getDb().prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+    await store.deleteConversation('one');
+    expect(store.listServers('one')).toEqual([]);
+  });
+
   test('migrates an existing command ledger to preserve termination scope', () => {
     const database = store.getDb();
     database.pragma('user_version = 2');

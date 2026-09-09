@@ -1,6 +1,7 @@
 'use strict';
 
 const fs = require('fs');
+const { ManagedWorkspaceServers } = require('./managed-workspace-servers');
 const { WORKSPACE_HISTORY_HELPER } = require('./workspace-history-helper');
 const { ManagedWorkspaceHistory, WorkspaceHistoryError, fingerprint } = require('./managed-workspace-history');
 const crypto = require('crypto');
@@ -726,6 +727,19 @@ class ManagedWorkspaceController {
       });
     this.capabilityGrants = options.capabilityGrants || new WorkspaceCapabilityGrantStore();
     this.networkPermissionsEnabled = options.networkPermissionsEnabled !== false;
+    this.servers = new ManagedWorkspaceServers({
+      store: this.store, processes: this.processManager,
+      start: (owner, request) => this.startProcess(owner, request),
+      assertNetwork: async (owner, server, request) => {
+        const { lease } = await this.#enabledLease(owner, request);
+        const capabilities = await this.getCapabilities(request);
+        const directory = await this.#workingDirectory(lease, server.workingDirectory, capabilities.backend);
+        if (fullNetworkPostureForCapabilities(this.capabilityGrants.inspect(owner, {
+          command: server.command, workingDirectory: directory.relative,
+        })) !== NETWORK_POSTURES.FULL) throw new ManagedWorkspaceError('WORKSPACE_PREVIEW_NETWORK_REQUIRED',
+          'Restart requires current full-network permission for the saved launch command');
+      },
+    });
     this.hostCommandEnvironment = null;
     this.hostCommandEnvironmentPromise = null;
   }
@@ -769,6 +783,7 @@ class ManagedWorkspaceController {
           enabled: workspace.enabled,
           backend: workspace.backend,
           processes: this.listProcesses(conversationId),
+          ...(this.store.listServers && { servers: this.listServers(conversationId) }),
           commands: this.store.listCommands(conversationId, 50).map((command) => {
             const error = safeReceiptError(command.error);
             return {
@@ -1844,6 +1859,10 @@ class ManagedWorkspaceController {
   }
 
   async startProcess(conversationId, request = {}) {
+    if (request.restartServerId) {
+      const { restartServerId, ...launch } = request;
+      return this.servers.restart(conversationId, restartServerId, launch);
+    }
     const process = await this.processManager.start(conversationId, {
       ...request,
       timeoutMs: Number.isFinite(request.timeoutMs)
@@ -1857,7 +1876,21 @@ class ManagedWorkspaceController {
         },
       }),
     });
-    return this.#processResult(conversationId, process);
+    let server;
+    try { server = this.servers.remember(conversationId, request, process); }
+    catch { /* A persistence failure must not hide an already-running owned process. */ }
+    return Object.freeze({ ...this.#processResult(conversationId, process), ...(server && { serverId: server.serverId }) });
+  }
+
+  listServers(conversationId) {
+    return this.servers.list(conversationId).map(server => Object.freeze({
+      serverId: server.serverId, command: commandSummary(server.command), workingDirectory: server.workingDirectory,
+      previewPort: server.port, state: server.state, ...(server.processId && { processId: server.processId }),
+    }));
+  }
+
+  getServer(conversationId, serverId) {
+    return this.servers.get(conversationId, serverId);
   }
 
   async interactProcess(conversationId, processId, request = {}) {
@@ -1932,6 +1965,7 @@ class ManagedWorkspaceController {
 
   async deleteConversation(conversationId) {
     this.cancelConversation(conversationId);
+    this.servers.deleteConversation(conversationId);
     this.processManager.deleteConversation(conversationId);
     const workspace = this.store.getForConversation(conversationId);
     if (!workspace) return false;

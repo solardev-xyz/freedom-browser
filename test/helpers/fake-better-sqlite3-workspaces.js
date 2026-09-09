@@ -12,7 +12,7 @@ class FakeBetterSqlite3WorkspacesDatabase {
     if (existing) {
       this.state = existing;
     } else {
-      this.state = { workspaces: [], commands: [], userVersion: 0 };
+      this.state = { workspaces: [], commands: [], servers: [], userVersion: 0 };
       databases.set(filePath, this.state);
     }
   }
@@ -32,6 +32,15 @@ class FakeBetterSqlite3WorkspacesDatabase {
 
   prepare(sql) {
     const query = normalize(sql);
+    if (query.startsWith('INSERT INTO agent_workspace_servers')) {
+      return { run: (serverId, workspaceId, conversationId, command, workingDirectory, port, previewToken) => {
+        this.state.servers.push({ serverId, workspaceId, conversationId, command, workingDirectory, port, previewToken });
+        return { changes: 1 };
+      } };
+    }
+    if (query.includes('FROM agent_workspace_servers WHERE conversation_id = ?')) {
+      return { all: owner => this.state.servers.filter(server => server.conversationId === owner).slice(0, 8).map(clone) };
+    }
     if (query.startsWith('INSERT INTO agent_workspaces')) {
       return {
         run: (id, conversationId, createdAt, updatedAt) => {
@@ -198,6 +207,7 @@ class FakeBetterSqlite3WorkspacesDatabase {
           if (index < 0) return { changes: 0 };
           this.state.workspaces.splice(index, 1);
           this.state.commands = this.state.commands.filter((row) => row.workspace_id !== id);
+          this.state.servers = this.state.servers.filter((row) => row.workspaceId !== id);
           return { changes: 1 };
         },
       };

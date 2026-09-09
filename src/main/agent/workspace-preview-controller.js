@@ -3,6 +3,8 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const { WorkspacePreviewSockets, SOCKET_ROUTE } = require('./workspace-preview-sockets');
+const { previewSocketScript } = require('./workspace-preview-client');
 
 const PREVIEW_SCHEME = 'freedom-preview';
 const MAX_PREVIEWS = 32;
@@ -213,6 +215,25 @@ function serverResponseHeaders(response, length) {
   };
 }
 
+function serverUnavailable(request, status, message) {
+  if (request.headers?.get?.('accept')?.includes('text/html')) {
+    // Finite retry only observes this approved preview route; it never launches
+    // a process, restores a grant or adopts an existing localhost listener.
+    const html = `<!doctype html><meta charset="utf-8"><title>${message}</title>
+      <h1>${message}</h1><p>Waiting briefly for the server. Use the workspace panel to start or restart it.</p>
+      <button onclick="location.reload()">Try again</button><script>
+      (async () => { for (let attempt = 0; attempt < 30; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        try { const response = await fetch(location.href, { cache: 'no-store', credentials: 'omit', signal: AbortSignal.timeout(5000) });
+          await response.body?.cancel();
+          if (response.ok) { location.reload(); return; }
+        } catch {}
+      } })();</script>`;
+    return new Response(html, { status, headers: responseHeaders('text/html; charset=utf-8', { server: true }) });
+  }
+  return new Response(message, { status, headers: responseHeaders('text/plain; charset=utf-8', { server: true }) });
+}
+
 async function checkedPath(root, relativePath) {
   const rootEntry = await fs.promises.lstat(root);
   if (!rootEntry.isDirectory() || rootEntry.isSymbolicLink()) {
@@ -300,6 +321,11 @@ class WorkspacePreviewController {
     this.session = null;
     this.activeRequests = 0;
     this.fetch = options.fetch || globalThis.fetch;
+    this.socketRequests = 0;
+    this.sockets = new WorkspacePreviewSockets({
+      isLive: (preview) => this.isProcessPreviewLive(preview),
+      ...(options.connectSocket && { connect: options.connectSocket }),
+    });
   }
 
   register(targetSession) {
@@ -394,6 +420,9 @@ class WorkspacePreviewController {
     }
     const process = this.workspaceController.inspectProcess(conversationId, processId);
     const workspace = process?.workspace;
+    const savedId = this.workspaceController.listServers?.(conversationId)
+      .find(server => server.processId === processId)?.serverId;
+    const saved = savedId ? this.workspaceController.getServer(conversationId, savedId) : null;
     if (
       workspace?.state !== 'running' ||
       workspace.processId !== processId ||
@@ -424,19 +453,22 @@ class WorkspacePreviewController {
         });
       }
     }
-    if (this.previews.size >= this.maxPreviews) {
+    if (this.previews.size >= this.maxPreviews && !this.previews.has(saved?.previewToken)) {
       throw new WorkspacePreviewError(
         'WORKSPACE_PREVIEW_UNAVAILABLE',
         'Too many previews are already open'
       );
     }
-    const token = this.tokenFactory();
-    if (typeof token !== 'string' || !/^[a-f0-9]{20,128}$/.test(token) || this.previews.has(token)) {
+    const token = saved?.previewToken || this.tokenFactory();
+    const previous = this.previews.get(token);
+    if (typeof token !== 'string' || !/^[a-f0-9]{20,128}$/.test(token) ||
+        (previous && (previous.conversationId !== conversationId || previous.serverId !== savedId))) {
       throw new WorkspacePreviewError(
         'WORKSPACE_PREVIEW_UNAVAILABLE',
         'Could not allocate a preview'
       );
     }
+    if (previous) this.sockets.revoke(previous);
     this.previews.set(
       token,
       Object.freeze({
@@ -444,7 +476,9 @@ class WorkspacePreviewController {
         conversationId,
         workspaceId: workspace.workspaceId,
         processId,
+        ...(savedId && { serverId: savedId }),
         port: workspace.previewPort,
+        socketKey: crypto.randomBytes(24).toString('hex'),
       })
     );
     return Object.freeze({
@@ -456,6 +490,48 @@ class WorkspacePreviewController {
     });
   }
 
+  isProcessPreviewLive(preview) {
+    try {
+      const current = this.workspaceController.getWorkspace(preview.conversationId);
+      const process = this.workspaceController.inspectProcess(preview.conversationId, preview.processId);
+      return current?.enabled === true && current.workspaceId === preview.workspaceId &&
+        process?.workspace?.processId === preview.processId &&
+        process?.workspace?.state === 'running' && process.workspace.workspaceId === preview.workspaceId &&
+        process.workspace.networkPosture === 'full' && process.workspace.previewPort === preview.port &&
+        [...this.previews.values()].includes(preview);
+    } catch { return false; }
+  }
+
+  async handleSocketRequest(request, url, preview) {
+    if (request.method !== 'POST' || !this.isProcessPreviewLive(preview)) {
+      return new Response('Preview socket unavailable', { status: 403, headers: responseHeaders() });
+    }
+    // 32 polls plus concurrent sends and connection setup. Refusal occurs before
+    // reading or acting on the body, so the client can safely retry this status.
+    if (this.socketRequests >= 96) {
+      return new Response('Preview socket busy', { status: 503, headers: responseHeaders() });
+    }
+    this.socketRequests += 1;
+    const abort = new AbortController();
+    const stopped = () => abort.abort();
+    request.signal?.addEventListener('abort', stopped, { once: true });
+    if (request.signal?.aborted) stopped();
+    const timeout = setTimeout(stopped, 20_000);
+    timeout.unref?.();
+    try {
+      const bytes = await readBoundedBody(request.body, 1500 * 1024, contentLength(request.headers), abort.signal);
+      const input = JSON.parse(bytes.toString('utf8'));
+      const result = await this.sockets.request(preview, url.hostname, input, abort.signal);
+      return Response.json(result, { headers: responseHeaders('application/json', { server: true }) });
+    } catch {
+      return new Response('Preview socket unavailable', { status: 403, headers: responseHeaders() });
+    } finally {
+      clearTimeout(timeout);
+      request.signal?.removeEventListener('abort', stopped);
+      this.socketRequests -= 1;
+    }
+  }
+
   async #handleServerRequest(request, url, preview) {
     const method = request?.method || 'GET';
     if (!SERVER_PREVIEW_METHODS.has(method)) {
@@ -464,22 +540,17 @@ class WorkspacePreviewController {
         headers: responseHeaders('text/plain; charset=utf-8', { server: true }),
       });
     }
-    let process;
-    try {
-      process = this.workspaceController.inspectProcess(preview.conversationId, preview.processId);
-    } catch {
-      process = null;
+    if (!this.isProcessPreviewLive(preview)) {
+      this.sockets.revoke(preview);
+      if (!preview.serverId) this.previews.delete(url.hostname);
+      return serverUnavailable(request, 410, 'Preview server stopped');
     }
-    if (
-      process?.workspace?.state !== 'running' ||
-      process.workspace.workspaceId !== preview.workspaceId ||
-      process.workspace.networkPosture !== 'full' ||
-      process.workspace.previewPort !== preview.port
-    ) {
-      this.previews.delete(url.hostname);
-      return new Response('Preview server stopped', {
-        status: 410,
-        headers: responseHeaders('text/plain; charset=utf-8', { server: true }),
+    if (url.pathname === '/.freedom-preview/status' && method === 'GET') {
+      return Response.json({ processId: preview.processId }, { headers: responseHeaders('application/json', { server: true }) });
+    }
+    if (url.pathname === '/.freedom-preview/client.js' && method === 'GET') {
+      return new Response(previewSocketScript(preview.socketKey, preview.port, preview.processId), {
+        headers: responseHeaders('text/javascript; charset=utf-8', { server: true }),
       });
     }
     const controller = new AbortController();
@@ -540,7 +611,7 @@ class WorkspacePreviewController {
             },
           });
         }
-        const body =
+        let body =
           method === 'HEAD' || [204, 205, 304].includes(upstream.status)
             ? Buffer.alloc(0)
             : await readBoundedBody(
@@ -549,6 +620,15 @@ class WorkspacePreviewController {
                 contentLength(upstream.headers),
                 controller.signal
               );
+        if (method !== 'HEAD' && upstream.status >= 200 && upstream.status < 300 &&
+            /^text\/html(?:;|$)/i.test(upstream.headers.get('content-type') || '')) {
+          const script = '<script src="/.freedom-preview/client.js"></script>';
+          const html = body.toString('utf8');
+          const head = /<head(?:\s[^>]*)?>/i;
+          body = Buffer.from(head.test(html) ? html.replace(head, match => match + script) :
+            html.replace(/^(\s*<!doctype[^>]*>)?/i, match => match + script));
+          if (body.length > MAX_PREVIEW_FILE_BYTES) throw new WorkspacePreviewError('WORKSPACE_PREVIEW_TOO_LARGE', 'Preview data is too large');
+        }
         return new Response(
           method === 'HEAD' || [204, 205, 304].includes(upstream.status) ? null : body,
           {
@@ -558,10 +638,8 @@ class WorkspacePreviewController {
         );
       } catch (error) {
         if (error instanceof WorkspacePreviewError) throw error;
-        return new Response(timedOut ? 'Preview server timed out' : 'Preview server unavailable', {
-          status: timedOut ? 504 : 502,
-          headers: responseHeaders('text/plain; charset=utf-8', { server: true }),
-        });
+        return serverUnavailable(request, timedOut ? 504 : 502,
+          timedOut ? 'Preview server timed out' : 'Preview server starting or unavailable');
       }
     } finally {
       clearTimeout(timeout);
@@ -570,6 +648,27 @@ class WorkspacePreviewController {
   }
 
   async handleRequest(request) {
+    // A saved server keeps its origin, but each relaunch must resolve to a fresh
+    // owned process. No port/PID discovered outside the manager can be attached.
+    try {
+      const url = new URL(request.url);
+      const previous = this.previews.get(url.hostname);
+      if (previous?.serverId) {
+        const server = this.workspaceController.getServer(previous.conversationId, previous.serverId);
+        if (server.state === 'running' && server.processId !== previous.processId) {
+          this.createProcessPreview(previous.conversationId, server.processId);
+        }
+      }
+    } catch { /* An unavailable recipe never authorizes a relaunch. */ }
+    // Long-poll sockets have their own bounded slots, so HMR cannot occupy all
+    // ordinary HTTP preview slots and prevent its own module/CSS reloads.
+    try {
+      const url = new URL(request.url);
+      const preview = this.previews.get(url.hostname);
+      if (url.protocol === `${PREVIEW_SCHEME}:` && preview?.kind === 'server' && url.pathname === SOCKET_ROUTE) {
+        return await this.handleSocketRequest(request, url, preview);
+      }
+    } catch { /* The ordinary request path returns the bounded error response. */ }
     if (this.activeRequests >= MAX_CONCURRENT_PREVIEW_REQUESTS) {
       return new Response('Preview busy', {
         status: 429,
@@ -643,6 +742,7 @@ class WorkspacePreviewController {
     const storageClears = [];
     for (const [token, preview] of this.previews) {
       if (preview.conversationId !== conversationId) continue;
+      this.sockets.revoke(preview);
       this.previews.delete(token);
       if (typeof this.session?.clearStorageData === 'function') {
         storageClears.push(
@@ -659,6 +759,7 @@ class WorkspacePreviewController {
   }
 
   async dispose() {
+    this.sockets.dispose();
     const tokens = [...this.previews.keys()];
     if (typeof this.session?.clearStorageData === 'function') {
       await Promise.allSettled(

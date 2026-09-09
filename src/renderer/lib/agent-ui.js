@@ -826,7 +826,7 @@ function applyWorkspaceProjection(state) {
   setAgentTabCustody(Array.isArray(state?.agentTabs) ? state.agentTabs : []);
   workspaceInspectionConversationId = state?.workspace?.enabled ? state.conversationId : null;
   workspaceInspector?.setWorkspace(workspaceInspectionConversationId);
-  renderWorkspaceProcesses(state?.workspace?.processes);
+  renderWorkspaceProcesses(state?.workspace?.processes, state?.workspace?.servers);
   renderTaskPages();
   ensureWorkspacePageVisible();
   renderPageInterlock();
@@ -938,10 +938,43 @@ function createWorkspaceProcessItem(process) {
   return item;
 }
 
-function renderWorkspaceProcesses(processes) {
+function createWorkspaceServerItem(server) {
+  const running = server.state === 'running';
+  const item = createWorkspaceProcessItem({
+    ...server, processId: server.processId || '', networkPosture: running ? 'full' : 'none',
+  });
+  item.dataset.serverId = server.serverId;
+  item.querySelector('.agent-process-meta').textContent =
+    `${running ? 'Running' : server.state === 'needs_restart' ? 'Needs restart' : server.state === 'restarting' ? 'Restarting' : 'Stopped'} · ${server.workingDirectory} · Port ${server.previewPort}`;
+  if (!running) {
+    item.querySelector('.agent-process-live-dot').remove();
+    item.querySelector('.agent-process-actions').replaceChildren();
+  }
+  const restart = document.createElement('button');
+  restart.type = 'button';
+  restart.textContent = running ? 'Restart with Agent' : 'Start with Agent';
+  restart.title = 'Uses the saved command and checks current permissions before launch';
+  restart.disabled = Boolean(currentRunId) || server.state === 'restarting';
+  restart.addEventListener('click', () => {
+    if (currentRunId) return;
+    restart.disabled = true;
+    void startRun({ prompt: `Restart saved development server ${server.serverId} using workspace_server. Check its saved command and current permissions first, then reopen its preview.` });
+  });
+  item.querySelector('.agent-process-actions').appendChild(restart);
+  return item;
+}
+
+function renderWorkspaceProcesses(processes, servers = []) {
   workspaceProcesses = Array.isArray(processes) ? processes.filter(validWorkspaceProcess) : [];
+  const saved = Array.isArray(servers) ? servers.filter(server =>
+    /^workspace_server_[a-f0-9]{24}$/.test(server?.serverId || '') &&
+    ['running', 'stopped', 'restarting', 'needs_restart'].includes(server.state) &&
+    typeof server.command === 'string' && server.command.length <= 500 &&
+    typeof server.workingDirectory === 'string' && server.workingDirectory.length <= 1024 &&
+    Number.isInteger(server.previewPort) && server.previewPort >= 1024 && server.previewPort <= 65535 &&
+    (server.state !== 'running' || /^workspace_process_[a-f0-9]{24}$/.test(server.processId || ''))).slice(0, 8) : [];
   const count = workspaceProcesses.length;
-  const hasWorkspacePanel = count > 0 || Boolean(workspaceInspectionConversationId);
+  const hasWorkspacePanel = count > 0 || saved.length > 0 || Boolean(workspaceInspectionConversationId);
   elements.workspaceBody.classList.toggle('has-processes', count > 0);
   elements.workspaceBody.classList.toggle('has-workspace-panel', hasWorkspacePanel);
   elements.processPanel.hidden = !hasWorkspacePanel;
@@ -952,11 +985,11 @@ function renderWorkspaceProcesses(processes) {
     workspaceInspectionConversationId ? `Workspace${count ? ` · ${count} running` : ''}` :
       count === 1 ? workspaceProcesses[0].command : `${count} processes running`;
   elements.processCompact.classList.toggle('has-running-processes', count > 0);
-  elements.processPanelList.replaceChildren(...workspaceProcesses.map(createWorkspaceProcessItem));
-  elements.processCompactList.replaceChildren(
-    ...workspaceProcesses.map(createWorkspaceProcessItem)
-  );
-  if (count === 0 && hasWorkspacePanel) {
+  const unsaved = workspaceProcesses.filter(process => !saved.some(server => server.processId === process.processId));
+  for (const list of [elements.processPanelList, elements.processCompactList]) {
+    list.replaceChildren(...unsaved.map(createWorkspaceProcessItem), ...saved.map(createWorkspaceServerItem));
+  }
+  if (count === 0 && saved.length === 0 && hasWorkspacePanel) {
     for (const list of [elements.processPanelList, elements.processCompactList]) {
       const empty = document.createElement('p');
       empty.className = 'agent-workspace-note';
