@@ -271,9 +271,34 @@ were not confirmed in the report.
 
 This supports the combined workflow's two user-visible outcomes. It does not
 independently qualify either standalone PR, every native cancellation path or
-Windows behavior. Targeted follow-up work is underway: an unmodified-addon
-load/ownership check, deterministic native scheduler tests on disposable Linux,
-standalone Freedom startup/read classification/native Quit on the disposable
-Mac, and supervisor runtime tests on GitHub's Windows runner. Test-only scheduler
-fixtures must be identified separately from production-addon reader/network
-evidence. Packaged signing and loading remain release qualification work.
+Windows behavior. The targeted follow-up results are recorded below; each
+retains its own source, artifact and runtime attribution. Packaged signing and
+loading remain release qualification work.
+
+
+## Targeted qualification checkpoint — 2026-09-09
+
+The agreed checks for external review are complete. These are separate from the
+combined integration smoke test and do not qualify this integration HEAD as a
+release artifact.
+
+| Scope | Evidence and limit |
+| --- | --- |
+| Native Myotis, disposable Linux | **8/8** at production `02a183d8` plus default/test-only builds of `c8cc1554`. Real scheduler admission, dedicated-worker liveness, finite cancellation and environment cleanup were exercised with Created, unstarted handles. Reader/EVM/network cancellation was not. [Frozen report](https://github.com/flotob/myotis/blob/86dd617bf62c96ae3c631be464e2e8e8e077dbba/qualification/native/RESULTS-linux-bb963e00.md). |
+| Freedom supervisor, Windows CI | **9/9** at `fa14433f`, Node 22.23.2 / libuv 1.51.0, benign JS addon. [Run 34339755062](https://github.com/solardev-xyz/freedom-browser/actions/runs/34339755062). This does not qualify Electron, the real Windows addon, job-crash cleanup or packaging. |
+| Standalone Freedom, disposable Mac | **Scoped pass** at `3ff2c3fc`, existing v0.1.7 / ABI 22 addon, Electron 43.0.0/Node 24.17.0. Start and four cached-status samples succeeded; one fixed read returned `native-error` with `verifiedFlag:false`. Native Menu Quit produced independently observed browser/controller/supervisor/child exit 0 and matching durable retirement, with no harness intervention or unknown registered instance. The chain was running/SYNCING with zero peers; SYNCED state and occupied native reads were not established. |
+
+The Mac used normal application mode, a fresh profile and an unavailable-only
+safeStorage test substitution. Electron 43.0.0 and donor dependencies differ
+from lock 43.6.0; real keychain, provider, signed/packaged and release behavior
+remain unqualified. Three earlier observer/driver failures remain failed and
+preserved; they are not counted as successful Myotis qualification. The
+coordinator verified the final 21 exported text representations and original
+exit/retirement records in `/private/tmp/mac-final-pass-review`. The retained
+archive SHA256 is
+`b9473cbc9a01007e71b62882d8fe72e85655c9b998354af18f65ad4ad03d05f3`.
+Detailed standalone provenance belongs with
+[Freedom PR #295](https://github.com/solardev-xyz/freedom-browser/pull/295), while
+[Myotis PR #420](https://github.com/biafra23/myotis/pull/420) retains production
+head `02a183d8`. External review does not authorize merging, rollout or broader
+release, and does not waive the documented lifecycle and containment limits.
