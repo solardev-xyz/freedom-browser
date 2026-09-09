@@ -18,6 +18,8 @@ const {
   checkRustVersion,
   platformKey,
   artiBinaryName,
+  cargoFeatures,
+  installArgs,
 } = require('./fetch-arti');
 
 describe('fetch-arti version pin', () => {
@@ -60,6 +62,43 @@ describe('host output layout', () => {
   test('only Windows gets an .exe suffix', () => {
     expect(artiBinaryName('darwin')).toBe('arti');
     expect(artiBinaryName('linux')).toBe('arti');
+  });
+});
+
+// The Windows leg of the release build fails at link time without this:
+// `libsqlite3-sys` emits a bare `-l sqlite3` when it finds no system SQLite,
+// and MSVC's linker then stops with LNK1181.
+describe('cargo features', () => {
+  test('asks Arti to bundle SQLite on Windows only', () => {
+    expect(cargoFeatures('win32')).toEqual(['static-sqlite']);
+    expect(cargoFeatures('darwin')).toEqual([]);
+    expect(cargoFeatures('linux')).toEqual([]);
+  });
+
+  test('builds the pinned version, locked, into the given root', () => {
+    expect(installArgs('2.6.0', '/tmp/root', 'linux')).toEqual([
+      'install',
+      'arti',
+      '--version',
+      '2.6.0',
+      '--locked',
+      '--root',
+      '/tmp/root',
+    ]);
+  });
+
+  test('passes the Windows feature through to cargo', () => {
+    expect(installArgs('2.6.0', 'C:\\tmp\\root', 'win32')).toEqual([
+      'install',
+      'arti',
+      '--version',
+      '2.6.0',
+      '--locked',
+      '--root',
+      'C:\\tmp\\root',
+      '--features',
+      'static-sqlite',
+    ]);
   });
 });
 
