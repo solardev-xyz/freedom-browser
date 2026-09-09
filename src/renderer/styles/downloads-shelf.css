@@ -112,6 +112,37 @@
   color: var(--danger);
 }
 
+/* Footer row under the cards, Chrome's "Full download history" spot in the
+   download bubble. Same card surface and the same secondary-button treatment
+   as .download-card-btn so the shelf reads as one stack. */
+.download-shelf-footer {
+  display: flex;
+  justify-content: center;
+  width: 320px;
+  padding: 6px 12px;
+  background: var(--menu-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+}
+
+.download-shelf-link {
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 8px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+
+.download-shelf-link:hover {
+  background: var(--toolbar);
+}
+
 .download-card-close {
   background: transparent;
   border: none;

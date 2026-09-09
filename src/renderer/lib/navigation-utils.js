@@ -10,6 +10,7 @@ import {
   getOnchainInterstitialTarget,
   isErrorPageUrl,
   isInterstitialPageUrl,
+  isNewTabPageUrl,
   isOnchainInterstitialPageUrl,
   parseEnsInput,
 } from './page-urls.js';
@@ -457,6 +458,14 @@ export const deriveDisplayAddress = ({
   radicleApiPrefix = null,
   knownEnsNames = new Map(),
 } = {}) => {
+  // A new-tab page derives to an empty address bar. `deriveDisplayValue`
+  // already does that for the home page (it compares against
+  // `homeUrlNormalized`), but the private window's start page is an internal
+  // page like any other and would otherwise paint its own `file://…` path —
+  // or, via the internal-page branch above, `freedom://private`. Chrome's
+  // Incognito NTP shows an empty omnibox, same as the normal NTP. See #312.
+  if (isNewTabPageUrl(url)) return '';
+
   const display = deriveDisplayValue(
     url,
     bzzRoutePrefix,
@@ -538,6 +547,7 @@ export const deriveSwitchedTabDisplay = ({
   url = '',
   isLoading = false,
   addressBarSnapshot = '',
+  addressBarPendingInput = null,
   isViewingSource = false,
   bzzRoutePrefix,
   homeUrlNormalized,
@@ -546,6 +556,16 @@ export const deriveSwitchedTabDisplay = ({
   radicleApiPrefix = null,
   knownEnsNames = new Map(),
 } = {}) => {
+  // An uncommitted address-bar edit is per-tab state in Chrome: a tab you left
+  // mid-edit is still mid-edit when you come back, whether or not it happens
+  // to be loading. `addressBarPendingInput` is a string only while the user
+  // has such an edit in flight (`address-bar-edit.js`), so the empty draft of
+  // a bar the user cleared restores as empty rather than falling through to
+  // the committed URL. See #314.
+  if (typeof addressBarPendingInput === 'string') {
+    return addressBarPendingInput;
+  }
+
   if (isLoading && addressBarSnapshot) {
     return addressBarSnapshot;
   }
@@ -588,8 +608,13 @@ export const deriveSwitchedTabDisplay = ({
   // active-tab did-navigate handler, which derives the address bar from the
   // error page's `url` param.
   const urlToDerive = getOriginalUrlFromErrorPage(strippedUrl) || strippedUrl;
+  // New-tab pages (home, and the private window's start page) show an empty
+  // address bar rather than their `freedom://<page>` name — see #312 and
+  // `isNewTabPageUrl`. `home` reached the same empty result by falling through
+  // to `deriveDisplayAddress`; `private` did not.
+  if (isNewTabPageUrl(urlToDerive)) return '';
   const internalPageName = getInternalPageName(urlToDerive);
-  if (internalPageName && internalPageName !== 'home') {
+  if (internalPageName) {
     return `freedom://${internalPageName}`;
   }
 

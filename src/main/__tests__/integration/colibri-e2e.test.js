@@ -16,7 +16,9 @@
  *   3. .box via CCIP-Read (OffchainLookup round-trip + final proven call)
  *   4. Repeated lookups don't leak / fall over (sanity for the warm path)
  *
- * No package mocks — the real @corpus-core/colibri-stateless WASM runs.
+ * No package mocks — the real @corpus-core/colibri-stateless WASM runs
+ * (WASM specifically: since 2.0.5 the package prefers a native addon, which
+ * `src/main/ens/colibri-runtime.js` disables — see the comment there).
  * Electron's app.getPath is mocked to a temp dir so the verifier state
  * doesn't pollute the developer's userData folder.
  */

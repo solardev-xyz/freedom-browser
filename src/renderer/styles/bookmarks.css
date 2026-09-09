@@ -104,6 +104,8 @@
   flex-shrink: 0;
   transition: background-color 0.2s ease;
   margin: 0 1px;
+  /* Anchor for the drag insertion caret below. */
+  position: relative;
 }
 
 .bookmark:hover {
@@ -112,6 +114,31 @@
 
 .bookmark.overflow-hidden {
   display: none;
+}
+
+/* Bookmark drag-and-drop styles — the same insertion caret the tab strip
+   draws (tabs.css), so a reorder reads the same way on both bars (#307). */
+.bookmark.dragging {
+  opacity: 0.5;
+}
+
+.bookmark.drag-over-left::before,
+.bookmark.drag-over-right::after {
+  content: '';
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  background: var(--accent);
+  border-radius: 1px;
+}
+
+.bookmark.drag-over-left::before {
+  left: -2px;
+}
+
+.bookmark.drag-over-right::after {
+  right: -2px;
 }
 
 .bookmark-icon-container {

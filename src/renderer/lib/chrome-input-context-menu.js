@@ -3,7 +3,22 @@ import { showMenuBackdrop, hideMenuBackdrop } from './menu-backdrop.js';
 
 const electronAPI = window.electronAPI;
 
+// Every editable text field in the browser chrome, in DOM order. Chrome gives
+// all of them the same Cut/Copy/Paste/Select All menu — the omnibox, the find
+// bar and the bookmark-edit dialog's fields alike (#316). index.js passes the
+// resolved elements in explicitly; this list is the fallback so the module is
+// still correct on its own, and the single place a new chrome input is added.
+export const CHROME_INPUT_IDS = [
+  'address-input',
+  'find-bar-input',
+  'bookmark-label',
+  'bookmark-target',
+];
+
 let contextMenu = null;
+// Where the menu lives in the document when it is not borrowed by a modal
+// <dialog> (see showChromeInputContextMenu).
+let menuHome = null;
 let activeInput = null;
 let savedSelection = null;
 // Serializes async edit actions so a slow Paste cannot overlap a
@@ -26,6 +41,11 @@ const clearPointerSelection = () => {
 export const hideChromeInputContextMenu = () => {
   if (!contextMenu || contextMenu.classList.contains('hidden')) return;
   contextMenu.classList.add('hidden');
+  // Hand the menu back to its own place in the document if a modal dialog
+  // borrowed it (see showChromeInputContextMenu).
+  if (menuHome && contextMenu.parentElement && contextMenu.parentElement !== menuHome) {
+    menuHome.appendChild(contextMenu);
+  }
   activeInput = null;
   savedSelection = null;
   clearPointerSelection();
@@ -67,6 +87,18 @@ function showChromeInputContextMenu(input, clientX, clientY, selection) {
   savedSelection = selection ?? captureSelection(input);
   updateActionStates(input, savedSelection);
   showMenuBackdrop();
+
+  // A `showModal()` dialog puts itself in the top layer and makes everything
+  // outside it inert — the menu would render *under* the dialog's backdrop and
+  // ignore clicks. Move it inside the dialog for as long as it is up (and back
+  // out in hideChromeInputContextMenu), so the bookmark-edit fields get the
+  // same working menu as the address bar rather than a dead one. Positioning is
+  // `position: fixed`, so the new parent doesn't move the menu.
+  const modalHost = input.closest?.('dialog[open]') || null;
+  const host = modalHost || menuHome;
+  if (host && contextMenu.parentElement !== host) {
+    host.appendChild(contextMenu);
+  }
 
   contextMenu.style.left = `${clientX}px`;
   contextMenu.style.top = `${clientY}px`;
@@ -174,10 +206,11 @@ async function runEditAction(action, input, selection) {
 export const initChromeInputContextMenu = (options = {}) => {
   contextMenu = document.getElementById('chrome-input-context-menu');
   if (!contextMenu) return;
+  menuHome = contextMenu.parentElement || null;
 
   const inputs =
     options.inputs?.filter(Boolean) ??
-    [document.getElementById('address-input')].filter(Boolean);
+    CHROME_INPUT_IDS.map((id) => document.getElementById(id)).filter(Boolean);
 
   for (const input of inputs) {
     input.addEventListener('mousedown', (event) => {
@@ -244,10 +277,35 @@ export const initChromeInputContextMenu = (options = {}) => {
       });
   });
 
-  document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') {
+  // An open menu is the innermost surface, so Escape belongs to it alone:
+  // capture the key before the find bar's own Escape (which would close the
+  // bar under the menu) and before a modal <dialog>'s built-in cancel (which
+  // would close the bookmark editor). Both are what Chrome does — the first
+  // Escape closes the menu, the second one the surface behind it. When no menu
+  // is up this listener does nothing at all.
+  document.addEventListener(
+    'keydown',
+    (event) => {
+      if (event.key !== 'Escape') return;
+      if (!contextMenu || contextMenu.classList.contains('hidden')) return;
+      event.preventDefault();
+      event.stopPropagation();
       hideChromeInputContextMenu();
-    }
+    },
+    true
+  );
+
+  // Click-away dismissal. `#menu-backdrop` covers this for the toolbar inputs,
+  // but it is inert while a modal dialog is open, so the bookmark editor needs
+  // its own path. Clicks inside a registered input are left alone: the input's
+  // own right-mousedown snapshot must survive to the contextmenu event that
+  // re-opens the menu.
+  document.addEventListener('mousedown', (event) => {
+    if (!contextMenu || contextMenu.classList.contains('hidden')) return;
+    if (contextMenu.contains?.(event.target)) return;
+    if (inputs.some((input) => input === event.target || input.contains?.(event.target))) return;
+    hideChromeInputContextMenu();
   });
+
   window.addEventListener('blur', hideChromeInputContextMenu);
 };

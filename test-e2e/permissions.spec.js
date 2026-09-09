@@ -205,6 +205,76 @@ test('Escape dismisses the prompt as deny-once and the site can ask again', asyn
   await expect(prompt).toBeVisible();
 });
 
+// #306, permission-prompt sibling: a modal <dialog> (here the bookmark
+// editor) is the top layer — everything behind it, including a prompt the
+// page raised in the meantime, is inert and un-answerable. So the prompt's
+// Escape handler has to stand down while one is up: consuming the press
+// (`preventDefault()`) cancels the dialog's own close request outright, so
+// the editor stayed open AND the un-answerable prompt was dismissed as a
+// deny-once, on a press the user aimed at the editor. Same for a click
+// landing inside the dialog — it is not a click-away from the prompt.
+test.describe('with the bookmarks bar pinned', () => {
+  test.use({ seedSettings: { showBookmarkBar: true } });
+
+  const editorState = (window) =>
+    window.evaluate(() => ({
+      dialogOpen: !!document.getElementById('add-bookmark-modal')?.open,
+      promptShown: !!document.getElementById('permission-prompt')?.hidden === false,
+    }));
+
+  async function openBookmarkEditor(window) {
+    await window.evaluate(async () => {
+      for (const existing of await window.electronAPI.getBookmarks()) {
+        await window.electronAPI.removeBookmark(existing.target);
+      }
+      await window.electronAPI.addBookmark({
+        label: 'One',
+        target: 'https://one.example/freedom-e2e',
+      });
+    });
+    await window.reload();
+    await window.waitForSelector('[data-test="address-input"]');
+    await expect(window.locator('[data-test="bookmark-item"]')).toHaveCount(1);
+  }
+
+  test('a prompt raised behind the bookmark editor leaves the editor its Escape', async ({
+    window,
+    harness,
+  }) => {
+    await openBookmarkEditor(window);
+    await navigateToFixture(window, harness);
+
+    const prompt = window.locator('[data-test="permission-prompt"]');
+
+    // Right-click a bookmark → Edit… puts the modal editor up.
+    await window.locator('[data-test="bookmark-item"]').first().click({ button: 'right' });
+    await window.locator('.context-menu-item[data-action="edit"]').click();
+    await expect.poll(() => editorState(window)).toMatchObject({ dialogOpen: true });
+
+    // The page asks for a permission while the editor is up — the prompt
+    // renders behind the dialog's top layer, inert.
+    await clickAsk(window);
+    await expect.poll(() => editorState(window)).toMatchObject({ promptShown: true });
+
+    // Typing in the editor's own fields must not click-away/deny it either.
+    await window.locator('#bookmark-label').click();
+    await window.waitForTimeout(300);
+    expect(await readOut(window)).toBe('none');
+
+    // One Escape: the editor closes, the prompt survives unanswered.
+    await window.keyboard.press('Escape');
+    await expect.poll(() => editorState(window)).toMatchObject({ dialogOpen: false });
+    expect(await editorState(window)).toMatchObject({ promptShown: true });
+    expect(await readOut(window)).toBe('none');
+
+    // And now that it is the innermost surface, it is answerable again —
+    // by Escape (deny-once) as well as by its buttons.
+    await window.keyboard.press('Escape');
+    await expect(prompt).toBeHidden();
+    await expect.poll(() => readOut(window), { timeout: 5_000 }).toBe('denied');
+  });
+});
+
 test('clicking a background tab surfaces its held prompt instead of dismissing it', async ({
   window,
   harness,

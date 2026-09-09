@@ -41,17 +41,51 @@
   user-select: none;
 }
 
+/* Tabs shrink to `.tab { min-width }` first; past that the strip scrolls
+   horizontally instead of clipping the tabs it cannot fit — which used to hide
+   tabs (including the active one) past the right edge with no way to reach
+   them. The scrollbar itself is hidden: the strip is driven by
+   `scrollActiveTabIntoView()` in tabs.js plus the edge fades below, the same
+   way Chrome's strip has no visible scrollbar. See #311. */
 .tabs-container {
   display: flex;
   align-items: flex-end;
   gap: 0;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
   flex: 0 1 auto;
   min-width: 0;
   padding-left: 10px; /* Room for corner flare on left */
   padding-right: 10px; /* Room for corner flare on right */
   margin-left: -10px; /* Compensate for padding */
   margin-right: -10px;
+}
+
+.tabs-container::-webkit-scrollbar {
+  display: none;
+}
+
+/* Edge fades: the only cue that there are more tabs in that direction, since
+   the scrollbar is hidden. Classes are toggled from the live scroll offsets by
+   `updateTabStripOverflow()` in tabs.js, so a strip that fits carries neither
+   and renders exactly as before. */
+.tabs-container.overflow-start {
+  mask-image: linear-gradient(to right, transparent 0, #000 24px);
+}
+
+.tabs-container.overflow-end {
+  mask-image: linear-gradient(to left, transparent 0, #000 24px);
+}
+
+.tabs-container.overflow-start.overflow-end {
+  mask-image: linear-gradient(
+    to right,
+    transparent 0,
+    #000 24px,
+    #000 calc(100% - 24px),
+    transparent 100%
+  );
 }
 
 /* Base tab styles */
@@ -71,6 +105,12 @@
   height: 30px;
   margin-bottom: 4px;
   container-type: inline-size;
+  /* Slack for `scrollActiveTabIntoView()` (#311): the strip's 10px side
+     padding is room for the active tab's corner flare and is part of the
+     scrollable area, so aligning a tab flush with the content edge would
+     scroll its own flare out of view (and, at the left end, light up the
+     edge fade with nothing actually hidden behind it). */
+  scroll-margin-inline: 16px;
 }
 
 /* Inactive tab - pill/button shape */

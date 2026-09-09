@@ -8,6 +8,7 @@ This guide covers local setup, the repository layout, tests, debugging, and deve
 - npm, included with Node.js.
 - Git.
 - Platform build tools required by Electron native modules.
+- Optional, for the bundled Tor client only (`npm run tor:download`): a Rust toolchain at or above the pinned Arti release's MSRV (`MIN_RUST_VERSION` in [`scripts/fetch-arti.js`](../scripts/fetch-arti.js); the script checks before building). Arti is compiled from crates.io rather than downloaded. On Linux that build also needs OpenSSL development headers, and `libsqlite3-dev` when `pkg-config` is installed.
 
 With `nvm` installed, select the repository version with:
 

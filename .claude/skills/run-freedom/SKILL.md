@@ -65,8 +65,9 @@ with `FB_ROOT=/tmp/fb-base`. Remove the worktree afterwards.
 
 ## Gotchas (all hit in practice)
 
-- The Nodes and hamburger menus leave `#menu-backdrop` open; `Escape` does
-  not close them. Use `closeMenus(win)`.
+- The Nodes and hamburger menus close on `Escape` (#306), which also drops
+  `#menu-backdrop`. `closeMenus(win)` presses it and falls back to clicking the
+  backdrop, so it works on older checkouts too.
 - Clicking the sidebar's "Get Started" opens the onboarding modal, which then
   blocks every sidebar click. `dismissOnboarding(win)` clicks "Skip for now".
 - dApp/Swarm approval prompts are `.sidebar-modal` subscreens covering the

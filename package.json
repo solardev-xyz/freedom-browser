@@ -2,7 +2,7 @@
   "name": "freedom-browser",
   "version": "0.8.5-dev",
   "license": "MPL-2.0",
-  "description": "Freedom \u2013 A browser for the decentralized web, with Swarm, IPFS, onchain apps, and ENS as first-class protocols.",
+  "description": "Freedom – A browser for the decentralized web, with Swarm, IPFS, onchain apps, and ENS as first-class protocols.",
   "author": {
     "name": "Freedom Team",
     "email": "browser@freedom.baby"
@@ -242,10 +242,10 @@
     "@babel/preset-env": "^8.0.2",
     "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.60.0",
-    "aedes": "^0.51.3",
+    "aedes": "^1.1.2",
     "babel-jest": "^30.4.1",
     "dotenv-cli": "^11.0.0",
-    "electron": "^43.0.0",
+    "electron": "^44.2.0",
     "electron-builder": "^26.8.1",
     "esbuild": "^0.28.1",
     "eslint": "^10.4.0",
@@ -256,15 +256,15 @@
   },
   "dependencies": {
     "@adraffy/ens-normalize": "^1.11.1",
-    "@corpus-core/colibri-stateless": "2.0.4",
+    "@corpus-core/colibri-stateless": "2.0.6",
     "@ensdomains/content-hash": "^3.0.0",
-    "@ethersphere/bee-js": "^12.2.1",
+    "@ethersphere/bee-js": "^13.0.0",
     "@ghostery/adblocker": "^2.18.1",
     "@ledgerhq/hw-app-eth": "^7.8.8",
     "@ledgerhq/hw-transport-node-hid": "^6.33.5",
     "@metamask/browser-passworder": "^6.0.0",
-    "@openlv/core": "^0.0.2",
-    "@openlv/session": "^0.0.3",
+    "@openlv/core": "^0.2.0",
+    "@openlv/session": "^0.2.0",
     "@safe-global/protocol-kit": "^8.0.3",
     "@scure/bip39": "^2.2.0",
     "@x402/core": "^2.12.0",
@@ -290,14 +290,8 @@
     "@metamask/utils": {
       "uuid": "^14.0.0"
     },
-    "aedes": {
-      "uuid": "^11.1.1"
-    },
     "ethers": {
       "ws": "^8.21.0"
-    },
-    "hyperid": {
-      "uuid": "^11.1.1"
     },
     "viem": {
       "ws": "^8.21.0"

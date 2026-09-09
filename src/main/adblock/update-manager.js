@@ -40,7 +40,7 @@ async function defaultReadFeed() {
 
 async function defaultDownloadBlob(ref) {
   const { getBee } = require('../swarm/swarm-service');
-  const data = await getBee().downloadData(ref);
+  const data = await getBee().data.download(ref);
   return Buffer.from(data.toUint8Array());
 }
 

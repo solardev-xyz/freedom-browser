@@ -1,6 +1,8 @@
 const fs = require('fs');
 const path = require('path');
 
+const { SUBMENU_CLOSE_DELAY_MS } = require('./submenu-hover.js');
+
 const originalWindow = global.window;
 const originalDocument = global.document;
 
@@ -22,6 +24,7 @@ const createElement = () => {
     }),
     contains: jest.fn(() => false),
     blur: jest.fn(),
+    focus: jest.fn(),
     print: jest.fn(),
   };
 };
@@ -46,6 +49,7 @@ const loadMenusModule = async ({
   const menuButton = createElement();
   const menuDropdown = createElement();
   const historyBtn = createElement();
+  const downloadsBtn = createElement();
   const newTabMenuBtn = createElement();
   const newWindowMenuBtn = createElement();
   const zoomOutBtn = createElement();
@@ -59,6 +63,15 @@ const loadMenusModule = async ({
   const beeMenuButton = createElement();
   const beeMenuDropdown = createElement();
   const webviewElement = createElement();
+  // Profiles flyout (#301). The wrapper holds BOTH the trigger row and the
+  // flyout, so `contains` is what tells a sibling row apart from the submenu.
+  const profileMenuBtn = createElement();
+  const profileFlyout = createElement();
+  profileFlyout.hidden = true;
+  const profileMenuWrap = createElement();
+  profileMenuWrap.contains = jest.fn(
+    (node) => node === profileMenuWrap || node === profileMenuBtn || node === profileFlyout
+  );
   const beePeersCount = createElement();
   const beeNetworkPeers = createElement();
   const beeVersionText = createElement();
@@ -130,6 +143,7 @@ const loadMenusModule = async ({
         'menu-button': menuButton,
         'menu-dropdown': menuDropdown,
         'history-btn': historyBtn,
+        'downloads-btn': downloadsBtn,
         'new-tab-menu-btn': newTabMenuBtn,
         'new-window-menu-btn': newWindowMenuBtn,
         'zoom-out-btn': zoomOutBtn,
@@ -142,6 +156,9 @@ const loadMenusModule = async ({
         'check-updates-btn': checkUpdatesBtn,
         'bee-menu-button': beeMenuButton,
         'bee-menu-dropdown': beeMenuDropdown,
+        'profile-menu-wrap': profileMenuWrap,
+        'profile-menu-btn': profileMenuBtn,
+        'profile-menu': profileFlyout,
         'bzz-webview': webviewElement,
         'bee-peers-count': beePeersCount,
         'bee-network-peers': beeNetworkPeers,
@@ -185,6 +202,7 @@ const loadMenusModule = async ({
       menuButton,
       menuDropdown,
       historyBtn,
+      downloadsBtn,
       newTabMenuBtn,
       newWindowMenuBtn,
       zoomOutBtn,
@@ -198,6 +216,9 @@ const loadMenusModule = async ({
       beeMenuButton,
       beeMenuDropdown,
       webviewElement,
+      profileMenuWrap,
+      profileMenuBtn,
+      profileFlyout,
       beePeersCount,
       beeNetworkPeers,
       beeVersionText,
@@ -273,6 +294,8 @@ describe('menus', () => {
         'Ctrl+N',
         'Ctrl+Shift+N',
         'Ctrl+H',
+        // Downloads sits directly after History, Chrome's order (#326).
+        'Ctrl+Shift+J',
         'Ctrl+Alt+I',
       ]);
     });
@@ -309,6 +332,7 @@ describe('menus', () => {
       '⌘N',
       '⇧⌘N',
       '⌘Y',
+      '⇧⌘J',
       '⌥⌘I',
     ]);
   });
@@ -367,8 +391,11 @@ describe('menus', () => {
     const onNewTab = jest.fn();
     const onOpenHistory = jest.fn();
 
+    const onOpenDownloads = jest.fn();
+
     menus.setOnNewTab(onNewTab);
     menus.setOnOpenHistory(onOpenHistory);
+    menus.setOnOpenDownloads(onOpenDownloads);
     menus.initMenus();
     await Promise.resolve();
 
@@ -381,6 +408,7 @@ describe('menus', () => {
     elements.newTabMenuBtn.handlers.click();
     elements.newWindowMenuBtn.handlers.click();
     elements.historyBtn.handlers.click();
+    elements.downloadsBtn.handlers.click();
     elements.zoomInBtn.handlers.click();
     elements.zoomOutBtn.handlers.click();
     elements.fullscreenBtn.handlers.click();
@@ -393,6 +421,9 @@ describe('menus', () => {
     expect(onNewTab).toHaveBeenCalled();
     expect(mocks.electronAPI.newWindow).toHaveBeenCalled();
     expect(onOpenHistory).toHaveBeenCalled();
+    // #326: the hamburger's Downloads row routes through its own callback
+    // (index.js sends it to the freedom://downloads singleton).
+    expect(onOpenDownloads).toHaveBeenCalled();
     expect(webview.setZoomFactor).toHaveBeenCalledWith(1.1);
     expect(webview.setZoomFactor).toHaveBeenCalledWith(1);
     expect(mocks.electronAPI.toggleFullscreen).toHaveBeenCalled();
@@ -602,7 +633,110 @@ describe('menus', () => {
     expect(elements.beeVersionText.textContent).toBe('Unknown');
   });
 
-  test('closes menus on outside clicks, webview interaction, and window blur', async () => {
+  // #301: Chrome's submenu model — only one submenu open at a time, so a
+  // hover/focus on any other hamburger row dismisses the Profiles flyout. The
+  // pointer path keeps a short intent delay because the flyout is anchored to
+  // the LEFT of the menu: travelling into it from the Profiles row crosses the
+  // rows below first, and cutting that move off is the bug this delay avoids.
+  describe('profiles flyout dismissal (#301)', () => {
+    const openFlyout = async () => {
+      const loaded = await loadMenusModule();
+      loaded.menus.initMenus();
+      loaded.menus.setMenuOpen(true);
+      loaded.elements.profileFlyout.hidden = false;
+      return loaded;
+    };
+
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    test('hovering a sibling row closes it, after the intent delay', async () => {
+      const { elements } = await openFlyout();
+
+      elements.menuDropdown.handlers.mouseover({ target: elements.newTabMenuBtn });
+      jest.advanceTimersByTime(SUBMENU_CLOSE_DELAY_MS - 1);
+      expect(elements.profileFlyout.hidden).toBe(false);
+
+      jest.advanceTimersByTime(1);
+      expect(elements.profileFlyout.hidden).toBe(true);
+      expect(elements.profileMenuBtn.setAttribute).toHaveBeenCalledWith('aria-expanded', 'false');
+      expect(elements.profileMenuWrap.classList.remove).toHaveBeenCalledWith('flyout-open');
+    });
+
+    // Empty menu chrome counts as "another part of the menu", not as still
+    // being on the flyout: a divider or the dropdown's own padding is outside
+    // #profile-menu-wrap, so it dismisses the flyout like any row would. Pinned
+    // because the index.js/menus.js comments document exactly this, and a
+    // future reader could otherwise mistake it for a bug and "fix" it.
+    test('hovering empty menu chrome (divider, dropdown padding) closes it', async () => {
+      for (const chrome of ['divider', 'padding']) {
+        const { elements } = await openFlyout();
+        const target = chrome === 'divider' ? createElement() : elements.menuDropdown;
+
+        elements.menuDropdown.handlers.mouseover({ target });
+        jest.advanceTimersByTime(SUBMENU_CLOSE_DELAY_MS);
+
+        expect(elements.profileFlyout.hidden).toBe(true);
+      }
+    });
+
+    test('a diagonal move into the flyout during the delay keeps it open', async () => {
+      const { elements } = await openFlyout();
+
+      // Cross the row below the Profiles row on the way to the flyout …
+      elements.menuDropdown.handlers.mouseover({ target: elements.newTabMenuBtn });
+      jest.advanceTimersByTime(SUBMENU_CLOSE_DELAY_MS - 20);
+      // … and land in the flyout before the close fires.
+      elements.menuDropdown.handlers.mouseover({ target: elements.profileFlyout });
+      jest.advanceTimersByTime(5000);
+
+      expect(elements.profileFlyout.hidden).toBe(false);
+    });
+
+    test('hovering the Profiles row itself never closes it', async () => {
+      const { elements } = await openFlyout();
+
+      elements.menuDropdown.handlers.mouseover({ target: elements.profileMenuBtn });
+      jest.advanceTimersByTime(5000);
+
+      expect(elements.profileFlyout.hidden).toBe(false);
+    });
+
+    test('focus on a sibling row closes it at once; focus inside it does not', async () => {
+      const { elements } = await openFlyout();
+
+      // Keyboard moves are deliberate: no intent delay, or the flyout would
+      // sit over the row that just took focus.
+      elements.menuDropdown.handlers.focusin({ target: elements.newTabMenuBtn });
+      expect(elements.profileFlyout.hidden).toBe(true);
+
+      // Tabbing through the flyout's own rows leaves it open.
+      elements.profileFlyout.hidden = false;
+      elements.menuDropdown.handlers.focusin({ target: elements.profileFlyout });
+      expect(elements.profileFlyout.hidden).toBe(false);
+    });
+
+    test('a pending close is dropped when the hamburger itself closes', async () => {
+      const { menus, elements } = await openFlyout();
+
+      elements.menuDropdown.handlers.mouseover({ target: elements.newTabMenuBtn });
+      menus.setMenuOpen(false);
+      expect(elements.profileFlyout.hidden).toBe(true);
+
+      // The stale timer must not fire against a flyout the user has since
+      // reopened (reopening happens on hover, well inside the delay window).
+      elements.profileFlyout.hidden = false;
+      jest.advanceTimersByTime(5000);
+      expect(elements.profileFlyout.hidden).toBe(false);
+    });
+  });
+
+  test('closes menus on outside clicks and window blur', async () => {
     const { menus, state, elements, handlers } = await loadMenusModule();
 
     menus.initMenus();
@@ -610,10 +744,120 @@ describe('menus', () => {
     menus.setAntMenuOpen(true);
 
     handlers.documentHandlers.click({ target: {} });
-    elements.webviewElement.handlers.focus();
     handlers.windowHandlers.blur();
 
     expect(state.menuOpen).toBe(false);
     expect(state.antMenuOpen).toBe(false);
+
+    // The `#bzz-webview` focus/mousedown dismissal is gone: webviews are
+    // created id-less, so that element never existed and the listeners were
+    // never registered. Nothing may go back to hanging behaviour off it
+    // (#306) — `#menu-backdrop` covers the window while a menu is open.
+    expect(elements.webviewElement.addEventListener).not.toHaveBeenCalled();
+  });
+
+  // #306: Escape is how every other dismissible surface in the chrome closes;
+  // these two menus were the exception, and left the modal backdrop up with no
+  // keyboard way out.
+  describe('Escape', () => {
+    // Returns the event so callers can assert on `preventDefault`: closing a
+    // surface consumes the press, and navigation.js's window-level Escape
+    // (stop loading + restore the address bar + blur) stands down on
+    // `defaultPrevented`. Both listeners sit on `window`, so `stopPropagation`
+    // could never have done this job — same-node listeners still run.
+    const pressEscape = (handlers) => {
+      const event = { key: 'Escape', preventDefault: jest.fn() };
+      handlers.windowHandlers.keydown(event);
+      return event;
+    };
+
+    test('closes the hamburger and returns focus to its button', async () => {
+      const { menus, state, elements, handlers } = await loadMenusModule();
+      menus.initMenus();
+      menus.setMenuOpen(true);
+      expect(state.menuOpen).toBe(true);
+
+      const event = pressEscape(handlers);
+
+      expect(state.menuOpen).toBe(false);
+      expect(elements.menuButton.focus).toHaveBeenCalled();
+      expect(event.preventDefault).toHaveBeenCalled();
+    });
+
+    test('closes the Nodes menu and returns focus to its button', async () => {
+      const { menus, state, elements, handlers } = await loadMenusModule();
+      menus.initMenus();
+      menus.setAntMenuOpen(true);
+      expect(state.antMenuOpen).toBe(true);
+
+      const event = pressEscape(handlers);
+
+      expect(state.antMenuOpen).toBe(false);
+      expect(elements.beeMenuButton.focus).toHaveBeenCalled();
+      expect(event.preventDefault).toHaveBeenCalled();
+    });
+
+    test('closes the Profiles flyout first, the hamburger on the second press', async () => {
+      const { menus, state, elements, handlers } = await loadMenusModule();
+      menus.initMenus();
+      menus.setMenuOpen(true);
+      elements.profileFlyout.hidden = false;
+
+      const first = pressEscape(handlers);
+      expect(elements.profileFlyout.hidden).toBe(true);
+      // The hamburger the flyout hangs off stays up, as in Chrome: the
+      // innermost surface closes first.
+      expect(state.menuOpen).toBe(true);
+      expect(elements.profileMenuBtn.focus).toHaveBeenCalled();
+      expect(first.preventDefault).toHaveBeenCalled();
+
+      const second = pressEscape(handlers);
+      expect(state.menuOpen).toBe(false);
+      expect(elements.menuButton.focus).toHaveBeenCalled();
+      expect(second.preventDefault).toHaveBeenCalled();
+    });
+
+    // Dialog sibling: the profile-create prompt the flyout itself opens, and
+    // the external-node prompt main can send at any moment, are modal
+    // <dialog>s — the top layer, above these menus. The press is the dialog's
+    // own close request and it cannot mark it the way these handlers do, so
+    // consuming it here would cancel that close outright.
+    test('a modal dialog above the menus owns the Escape', async () => {
+      const { menus, state, elements, handlers } = await loadMenusModule();
+      menus.initMenus();
+      menus.setMenuOpen(true);
+      elements.profileFlyout.hidden = false;
+
+      const dialog = { tagName: 'DIALOG' };
+      global.document.querySelector.mockImplementation((selector) =>
+        selector === 'dialog[open]' ? dialog : null
+      );
+
+      const blocked = pressEscape(handlers);
+      expect(elements.profileFlyout.hidden).toBe(false);
+      expect(state.menuOpen).toBe(true);
+      expect(blocked.preventDefault).not.toHaveBeenCalled();
+
+      // The dialog closed, the flyout is innermost again.
+      global.document.querySelector.mockImplementation(() => null);
+      const next = pressEscape(handlers);
+      expect(elements.profileFlyout.hidden).toBe(true);
+      expect(next.preventDefault).toHaveBeenCalled();
+    });
+
+    test('does nothing when no menu is open', async () => {
+      const { menus, state, elements, handlers } = await loadMenusModule();
+      menus.initMenus();
+
+      const event = pressEscape(handlers);
+
+      expect(state.menuOpen).toBe(false);
+      expect(state.antMenuOpen).toBe(false);
+      expect(elements.menuButton.focus).not.toHaveBeenCalled();
+      expect(elements.beeMenuButton.focus).not.toHaveBeenCalled();
+      // Nothing was consumed, so the press stays available to the surfaces
+      // behind these menus — notably navigation.js's stop-loading Escape.
+      expect(event.preventDefault).not.toHaveBeenCalled();
+    });
   });
 });

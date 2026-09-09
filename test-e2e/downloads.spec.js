@@ -144,3 +144,122 @@ test('shelf cards dismiss manually and Clear All empties the downloads page', as
     )
     .toBe(0);
 });
+
+// #309: the × on a running download used to last exactly one progress tick —
+// main emits one every 250 ms, so the card blinked out and came straight back
+// for the length of the transfer. A data: URI download settles in one chunk,
+// so the in-flight payloads are fed to the shelf directly: this is the exact
+// `downloads:updated` shape main sends, applied through the real card UI.
+test('a card dismissed mid-download stays dismissed', async ({ window }) => {
+  const feed = (download) =>
+    window.evaluate(async (payload) => {
+      const mod = await import('./lib/downloads-ui.js');
+      mod.handleDownloadUpdate(payload);
+    }, download);
+
+  // Counted with a one-shot read, never a polling locator: a settled card
+  // auto-dismisses after 5 s, so a *retrying* "no cards" assertion would go
+  // green on the timer alone even with the card resurrected (it did, before
+  // this was written this way).
+  const cardCount = () =>
+    window.evaluate(() => document.querySelectorAll('#download-shelf .download-card').length);
+  const cardNames = () =>
+    window.evaluate(() =>
+      [...document.querySelectorAll('#download-shelf .download-card-name')].map(
+        (el) => el.textContent
+      )
+    );
+
+  const cards = window.locator('#download-shelf .download-card');
+  const tick = (received) => ({
+    id: 4242,
+    filename: 'big.iso',
+    state: 'progressing',
+    received_bytes: received,
+    total_bytes: 100_000,
+  });
+
+  await feed(tick(1_000));
+  await expect(cards).toHaveCount(1);
+  await expect(cards.locator('[data-test="download-cancel"]')).toBeVisible();
+
+  await cards.locator('[data-test="download-close"]').click();
+  expect(await cardCount()).toBe(0);
+
+  // The next progress ticks are ignored — this is the quarter-second the card
+  // used to come back in.
+  await feed(tick(2_000));
+  expect(await cardCount()).toBe(0);
+  await feed(tick(90_000));
+  expect(await cardCount()).toBe(0);
+
+  // ...as is the terminal update when the transfer finishes.
+  await feed({
+    id: 4242,
+    filename: 'big.iso',
+    state: 'completed',
+    received_bytes: 100_000,
+    total_bytes: 100_000,
+  });
+  expect(await cardCount()).toBe(0);
+
+  // Another download still shows: the dismissal is per item, not a mute.
+  await feed({
+    id: 4243,
+    filename: 'other.iso',
+    state: 'progressing',
+    received_bytes: 10,
+    total_bytes: 100,
+  });
+  expect(await cardNames()).toEqual(['other.iso']);
+});
+
+// #326: Chrome's download bubble carries "Full download history" under the
+// items. The shelf's row must reach freedom://downloads through the
+// internal-page singleton — a second click focuses that tab, it never opens a
+// duplicate.
+test("the shelf's Full Download History action opens, then focuses, the downloads tab", async ({
+  window,
+  electronApp,
+}) => {
+  const tabs = window.locator('[data-test="tab"]');
+  const initialTabs = await tabs.count();
+
+  // No downloads yet, no row.
+  await expect(window.locator('[data-test="download-shelf-history"]')).toHaveCount(0);
+
+  await electronApp.evaluate(({ BrowserWindow }, dataUri) => {
+    BrowserWindow.getAllWindows()[0].webContents.downloadURL(dataUri);
+  }, DATA_URI);
+
+  const historyRow = window.locator('#download-shelf [data-test="download-shelf-history"]');
+  await expect(historyRow).toBeVisible({ timeout: 10_000 });
+  await expect(historyRow).toHaveText('Full Download History');
+
+  await historyRow.click();
+
+  const activeUrl = () =>
+    window.evaluate(() => {
+      const wv = document.querySelector('webview.active, webview:not(.hidden)');
+      return wv?.getURL?.() || wv?.getAttribute?.('src') || '';
+    });
+
+  await expect.poll(activeUrl, { timeout: 10_000 }).toMatch(/pages\/downloads\.html/);
+  await expect(tabs).toHaveCount(initialTabs + 1);
+
+  // The card auto-dismisses a few seconds after completion, so re-arm the
+  // shelf with a second download before clicking the row again.
+  await electronApp.evaluate(({ BrowserWindow }, dataUri) => {
+    BrowserWindow.getAllWindows()[0].webContents.downloadURL(dataUri);
+  }, DATA_URI);
+  await expect(historyRow).toBeVisible({ timeout: 10_000 });
+
+  // Second click focuses the existing downloads tab instead of opening a
+  // second one.
+  await window.locator(`[data-test="tab"]`).first().click();
+  await expect.poll(activeUrl, { timeout: 10_000 }).not.toMatch(/pages\/downloads\.html/);
+
+  await historyRow.click();
+  await expect.poll(activeUrl, { timeout: 10_000 }).toMatch(/pages\/downloads\.html/);
+  await expect(tabs).toHaveCount(initialTabs + 1);
+});
