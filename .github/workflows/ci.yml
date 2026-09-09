@@ -506,10 +506,16 @@ jobs:
   # Tab activation, link dispositions and menu dismissal are all about *focus*
   # — which of the shell and the guest `<webview>` owns the keyboard — and no
   # unit test can see that: it is decided by the real Chromium focus tree.
-  # These two specs are the only place it is asserted, and they ran locally
+  # These specs are the only place it is asserted, and they ran locally
   # only until a focus regression in one shipped green through the curated
   # list above (the `<webview>` holding focus after a tab switch swallowed the
   # Escape that dismisses the page context menu; caught by hand, not by CI).
+  #
+  # `menus.spec.js` and `bookmarks.spec.js` are here for the same reason: the
+  # first asserts Escape hands focus back to the button that opened a menu
+  # (#306), the second drives modified/middle clicks and a real HTML5 drag on
+  # the bookmarks bar (#307) — dispositions and drag gestures a synthetic DOM
+  # dispatch cannot exercise.
   e2e-tabs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -533,8 +539,13 @@ jobs:
       - name: Install Playwright system dependencies
         uses: ./.github/actions/install-playwright-deps
 
-      - name: Run tabs + onchain-apps E2E
-        run: xvfb-run -a npm run test:e2e -- test-e2e/tabs.spec.js test-e2e/onchain-apps.spec.js
+      - name: Run tabs + onchain-apps + menus + bookmarks E2E
+        run: |
+          xvfb-run -a npm run test:e2e -- \
+            test-e2e/tabs.spec.js \
+            test-e2e/onchain-apps.spec.js \
+            test-e2e/menus.spec.js \
+            test-e2e/bookmarks.spec.js
 
       - name: Upload Playwright traces and screenshots
         if: failure()
