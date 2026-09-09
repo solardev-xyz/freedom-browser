@@ -32,7 +32,7 @@
 ## Tor or `.onion` access fails
 
 - Ensure **Settings → Experimental → Enable Tor (.onion access) (Beta)** is enabled.
-- For source builds, run `npm run tor:download`; it requires a Rust toolchain and is currently supported on macOS and Linux.
+- For source builds, run `npm run tor:download`; it requires a Rust toolchain and builds Arti for the host — macOS, Linux, and Windows x64 (on Windows it also needs the x64 MSVC tools). Every published build bundles Arti, so an installed release always has it; the Tor rows stay hidden on a source build that skipped the download.
 - Check the Nodes panel for Arti bootstrap status and the active profile's SOCKS5 endpoint.
 - Freedom fails closed for `.onion` traffic if Arti exits, so restart Tor rather than expecting a direct-network fallback.
 

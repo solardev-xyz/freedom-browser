@@ -2377,8 +2377,15 @@
         fields.adblockAnnoyances.checked = settings.adblockAnnoyances === true;
         fields.adblockAutoUpdate.checked = settings.adblockAutoUpdate !== false;
         setFieldEnabled(fields.enableTor, fields.startTorRow, fields.startTor);
-        // Re-evaluated on every settings payload: enabling the integration is
-        // what keeps the rows on a build that bundles no Arti binary.
+        // Re-evaluated whenever the form is repainted from a payload — first
+        // load, and a broadcast that differs from what's on screen. Enabling
+        // the integration is what keeps the rows on a build that bundles no
+        // Arti binary. Note the broadcast that follows this page's *own* save
+        // matches the form, so `onSettingsUpdated` skips applyFormState and
+        // this call with it: switching the integration back off on such a
+        // build leaves the rows up until the page is reloaded, which is the
+        // intended escape hatch rather than an oversight — the user can still
+        // see and re-enable what they just turned off.
         applyTorRowVisibility(settings);
         applyAdblockGating();
       };

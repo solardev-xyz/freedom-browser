@@ -433,6 +433,10 @@ jobs:
     name: smoke-linux-${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
+    env:
+      # Must resolve to the same value as the build job's: it decides whether
+      # the artifact is expected to carry the arti binary at all.
+      BUNDLE_TOR: ${{ github.event_name == 'push' || inputs.bundle_tor }}
 
     steps:
       - name: Check out repository
@@ -487,6 +491,23 @@ jobs:
           dpkg -s "$package" | grep -E '^(Package|Version|Architecture):'
           test -x /opt/Freedom/freedom
 
+      # `packaged-live`'s Tor leg skips itself when a build bundles no Arti, so
+      # on its own it cannot tell "Tor is bundled and starts" from "Tor was
+      # never packaged". Assert the file the package actually laid down: a
+      # dropped `linux.extraResources` entry, or an Arti build that failed
+      # without failing its step, fails here instead of shipping silently.
+      # Same assertion as the mac and Windows smoke jobs.
+      - name: Assert the installed .deb bundles Arti (Tor)
+        if: env.BUNDLE_TOR == 'true'
+        run: |
+          arti=/opt/Freedom/resources/arti-bin/arti
+          if [ ! -f "$arti" ]; then
+            echo "Expected the bundled Arti client at $arti" >&2
+            ls -la /opt/Freedom/resources >&2 || true
+            exit 1
+          fi
+          echo "Bundled arti present ($(stat -c %s "$arti") bytes)"
+
       - name: Smoke-test the installed .deb
         env:
           FREEDOM_E2E_EXECUTABLE: /opt/Freedom/freedom
@@ -508,6 +529,19 @@ jobs:
           chmod +x "${images[0]}"
           "$(realpath "${images[0]}")" --appimage-extract >/dev/null
           test -x squashfs-root/freedom
+
+      # Same assertion as for the .deb: the two artifacts are packed
+      # separately, so a missing binary can appear in either one alone.
+      - name: Assert the AppImage bundles Arti (Tor)
+        if: env.BUNDLE_TOR == 'true'
+        run: |
+          arti=squashfs-root/resources/arti-bin/arti
+          if [ ! -f "$arti" ]; then
+            echo "Expected the bundled Arti client at $arti" >&2
+            ls -la squashfs-root/resources >&2 || true
+            exit 1
+          fi
+          echo "Bundled arti present ($(stat -c %s "$arti") bytes)"
 
       - name: Smoke-test the AppImage
         env:
@@ -536,6 +570,10 @@ jobs:
     needs: [mac-arm64]
     runs-on: macos-14
     timeout-minutes: 45
+    env:
+      # Must resolve to the same value as the build job's: it decides whether
+      # the artifact is expected to carry the arti binary at all.
+      BUNDLE_TOR: ${{ github.event_name == 'push' || inputs.bundle_tor }}
 
     steps:
       - name: Check out repository
@@ -623,6 +661,23 @@ jobs:
           done
           test -x "$RUNNER_TEMP/apps-dmg/Freedom.app/Contents/MacOS/Freedom"
 
+      # `packaged-live`'s Tor leg skips itself when a build bundles no Arti, so
+      # on its own it cannot tell "Tor is bundled and starts" from "Tor was
+      # never packaged". Assert the file the copied bundle actually carries: a
+      # dropped `mac.extraResources` entry, or an Arti build that failed
+      # without failing its step, fails here instead of shipping silently.
+      # Same assertion as the Linux and Windows smoke jobs.
+      - name: Assert the disk image bundles Arti (Tor)
+        if: env.BUNDLE_TOR == 'true'
+        run: |
+          arti="$RUNNER_TEMP/apps-dmg/Freedom.app/Contents/Resources/arti-bin/arti"
+          if [ ! -f "$arti" ]; then
+            echo "Expected the bundled Arti client at $arti" >&2
+            ls -la "$RUNNER_TEMP/apps-dmg/Freedom.app/Contents/Resources" >&2 || true
+            exit 1
+          fi
+          echo "Bundled arti present ($(stat -f %z "$arti") bytes)"
+
       # What a user's first double-click asks Gatekeeper, on the copy rather
       # than on the build tree the mac-arm64 job assessed: an app whose ticket
       # did not survive being wrapped in a disk image is rejected here. Skipped
@@ -665,6 +720,19 @@ jobs:
           # the bundle and break the signature.
           ditto -x -k "${zips[0]}" "$RUNNER_TEMP/apps-zip"
           test -x "$RUNNER_TEMP/apps-zip/Freedom.app/Contents/MacOS/Freedom"
+
+      # Same assertion as for the disk image: the two artifacts are packed
+      # separately, so a missing binary can appear in either one alone.
+      - name: Assert the mac zip bundles Arti (Tor)
+        if: env.BUNDLE_TOR == 'true'
+        run: |
+          arti="$RUNNER_TEMP/apps-zip/Freedom.app/Contents/Resources/arti-bin/arti"
+          if [ ! -f "$arti" ]; then
+            echo "Expected the bundled Arti client at $arti" >&2
+            ls -la "$RUNNER_TEMP/apps-zip/Freedom.app/Contents/Resources" >&2 || true
+            exit 1
+          fi
+          echo "Bundled arti present ($(stat -f %z "$arti") bytes)"
 
       - name: Smoke-test the app from the zip
         env:
