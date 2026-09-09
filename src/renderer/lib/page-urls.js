@@ -135,6 +135,14 @@ export const getInternalPageName = (url) => {
 // "this is a fresh empty tab" focus test. See issue #312.
 const NEW_TAB_PAGE_NAMES = new Set(['home', 'private']);
 
+// True for an internal page *name* (`home`, `private`, with or without a
+// sub-path) that acts as a new-tab page. The URL form below is derived from
+// this; `tabs.js` needs the name form because the singleton-tab rules for the
+// internal pages are keyed on the page name, and a new-tab page is explicitly
+// not a singleton — see `routeInternalPageNavigation`.
+export const isNewTabPageName = (pageName) =>
+  typeof pageName === 'string' && NEW_TAB_PAGE_NAMES.has(pageName.toLowerCase().split('/')[0]);
+
 // True for a new-tab-page URL in either form it appears in: the friendly
 // `freedom://home` / `freedom://private` one `tab.url` carries while the page
 // is still resolving, and the resolved `file://…/pages/<page>.html` one
@@ -143,7 +151,7 @@ export const isNewTabPageUrl = (url) => {
   if (!url || typeof url !== 'string') return false;
   const friendly = /^freedom:\/\/([a-z0-9-]+)\/?$/i.exec(url);
   const name = friendly ? friendly[1].toLowerCase() : getInternalPageName(url);
-  return !!name && NEW_TAB_PAGE_NAMES.has(name.split('/')[0]);
+  return !!name && isNewTabPageName(name);
 };
 
 // Trust interstitials are deliberately not routable freedom:// pages, but the

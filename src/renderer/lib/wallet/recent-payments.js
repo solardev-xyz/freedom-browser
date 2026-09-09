@@ -3,7 +3,7 @@
  * most-recent rows; "View all →" opens freedom://payments.
  */
 
-import { createTab } from '../tabs.js';
+import { openOrFocusInternalPage } from '../tabs.js';
 import { walletState } from './wallet-state.js';
 import { escapeHtml, truncateAddress, formatRawTokenBalance, timeAgo } from './wallet-utils.js';
 
@@ -27,7 +27,10 @@ export function initRecentPayments() {
 
   viewAllLink.addEventListener('click', (e) => {
     e.preventDefault();
-    createTab('freedom://payments');
+    // Singleton, like every other chrome path to an internal page: an already
+    // open Payments tab is focused rather than duplicated. `createTab` here
+    // always made a second one (#325).
+    openOrFocusInternalPage('payments');
   });
 
   // Canonical "table changed" signal — fires on every main-side row
