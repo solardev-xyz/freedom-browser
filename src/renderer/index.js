@@ -131,7 +131,9 @@ setOnLoadTarget(loadTarget);
 setLoadTargetHandler(loadTarget);
 setReloadHandler(reloadPage);
 setHardReloadHandler(hardReloadPage);
-setOnNavigate(loadTarget);
+// autocomplete passes `loadTarget`'s own options through (a picked suggestion
+// is a `commitsAddressBar` navigation), so this stays a plain adapter.
+setOnNavigate((url, options) => loadTarget(url, null, null, options));
 // Escape ownership between the two handlers bound to the address input:
 // while a suggestion is previewed, autocomplete.js takes the press. #310.
 setSuggestionPreviewProbe(isSuggestionPreviewActive);

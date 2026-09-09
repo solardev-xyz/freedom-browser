@@ -1115,6 +1115,16 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
   // does too by construction, so these callers hold the draft as well.
   // See the `clearAddressBarEdit` call below.
   //
+  // `options.commitsAddressBar` — this call *is* the user committing what the
+  // address bar holds (the form submit, a picked autocomplete suggestion).
+  // Every other chrome caller (a menu item, a bookmark, an interstitial
+  // button) navigates for a reason unrelated to the bar's contents. The
+  // distinction only matters when the navigation is answered by a *different*
+  // tab: the committed text must stop being this tab's draft no matter where
+  // the open lands, while an unrelated draft the user is still typing here
+  // survives an open that never touches this tab. See the routed-away branch
+  // below.
+  //
   // `options.bzzLoadUrl` / `options.swarmHash` — set by the ENS resolution
   // path when an ENS name resolves to Swarm content: the recursive call
   // into the bzz branch carries the ENS-named load URL plus the resolved
@@ -1152,6 +1162,23 @@ export const loadTarget = (value, displayOverride = null, targetWebview = null, 
     internalPageTarget &&
     routeInternalPageNavigation(internalPageTarget.pageName, internalPageTarget.subPath, webview)
   ) {
+    // One exception to "leave this tab wholly untouched": the user committing
+    // the bar's own contents. `freedom://settings` typed and entered here (or
+    // picked from the dropdown) is an edit the user *finished* — holding it
+    // would leave the committed text behind as a phantom draft that repaints,
+    // focused, on every switch back to this tab, and takes the keyboard from
+    // its page (#319) until Escape. Only `commitsAddressBar` callers qualify;
+    // a menu/bookmark/interstitial open leaves a half-typed draft alone.
+    //
+    // Cleared *after* the routing call, not before: the switch it performs is
+    // synchronous, and the `tab-switched` handler re-saves the bar into this
+    // tab's draft while the edit still reads as in progress — clearing first
+    // would be undone by that re-save. Running last also keeps the handler on
+    // its draft branch, so the `!fromAddressBarCommit` arm never adopts the
+    // committed text as this tab's page display.
+    if (options.commitsAddressBar) {
+      clearAddressBarEdit(navState);
+    }
     const { pageName, subPath } = internalPageTarget;
     pushDebug(`Routed internal page to its own tab: ${pageName}${subPath ? `/${subPath}` : ''}`);
     return;
@@ -2387,7 +2414,9 @@ export const initNavigation = () => {
     // ipfs://, https://, rad://) and owns the ENS trust state mutation.
     // Earlier this handler duplicated the ENS path, which bypassed the
     // trust updates and left the shield empty for typed-address flows.
-    loadTarget(addressInput.value);
+    // `commitsAddressBar` marks this as the user committing the bar's own
+    // contents, so an open answered by another tab still ends the edit here.
+    loadTarget(addressInput.value, null, null, { commitsAddressBar: true });
     addressInput.blur();
   });
 

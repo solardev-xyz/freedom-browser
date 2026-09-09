@@ -555,6 +555,60 @@ test("opening Settings elsewhere keeps this tab's uncommitted draft (#314)", asy
     .toEqual({ value: 'half-typed-draft', focused: true });
 });
 
+// The exception to the rule above: an edit the user *committed*. Typing
+// `freedom://settings` and pressing Enter ends that edit wherever the open
+// lands — holding it leaves the committed text behind as a phantom draft that
+// repaints, focused, on every switch back to the tab (and hands the keyboard to
+// the bar instead of the page, defeating #319) until the user Escapes.
+test('a routed-away address-bar commit leaves no phantom draft behind', async ({
+  window,
+  harness,
+}) => {
+  await harness.setContentFixture(PAGE_A, {
+    body: '<!doctype html><title>Page A</title><p>a</p>',
+  });
+  const input = window.locator('[data-test="address-input"]');
+  await input.click();
+  await input.fill(PAGE_A);
+  await input.press('Enter');
+  await expect
+    .poll(async () => (await tabTitles(window)).map((tab) => tab.title), {
+      message: 'Waiting for Page A to load',
+      timeout: 15_000,
+    })
+    .toEqual(['Page A']);
+
+  // Commit `freedom://settings` from Page A's own address bar: Settings is
+  // routed into its own tab, Page A is left behind.
+  await input.click();
+  await input.fill('freedom://settings');
+  await input.press('Enter');
+  await expect
+    .poll(() => tabSnapshot(window), {
+      message: 'Waiting for the committed Settings open to land in its own tab',
+      timeout: 15_000,
+    })
+    .toEqual([
+      { id: '1', title: 'Page A', active: false },
+      { id: '2', title: 'Settings', active: true },
+    ]);
+
+  // Back on tab 1 the bar shows Page A's own URL, unfocused — not the
+  // `freedom://settings` the user already committed and left.
+  await window.locator('[data-test="tab"][data-tab-id="1"]').click();
+  await expectActiveTab(window, 1);
+  await expect
+    .poll(
+      () =>
+        window.evaluate(() => {
+          const el = document.getElementById('address-input');
+          return { value: el.value, focused: document.activeElement === el };
+        }),
+      { message: "Waiting for tab 1's own URL to be restored", timeout: 15_000 }
+    )
+    .toEqual({ value: PAGE_A, focused: false });
+});
+
 // #325, the other half of the Chrome model: with no Settings tab to focus and
 // a *non-empty* tab in front, Settings opens in a new tab instead of
 // navigating the page the user is reading out from under them.

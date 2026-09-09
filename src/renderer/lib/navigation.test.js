@@ -1059,6 +1059,66 @@ describe('navigation', () => {
       expect(ctx.activeRef.tab.navigationState.addressBarPendingInput).toBeNull();
     });
 
+    // …with one exception: the draft the user *committed*. Typing
+    // `freedom://settings` and pressing Enter ends that edit wherever the open
+    // lands — holding it would leave the committed text as a phantom draft
+    // that repaints, focused, on every switch back to this tab.
+    test('a routed-away address-bar commit still ends the committed edit', async () => {
+      const tabB = createTab(2, 'https://second.example', {
+        title: 'Settings',
+        webview: createWebview('https://second.example', { webContentsId: 22 }),
+      });
+      const ctx = await loadNavigationModule();
+      const tabA = ctx.activeRef.tab;
+      ctx.tabsRef.list = [tabA, tabB];
+      await ctx.mod.initNavigation();
+
+      ctx.tabsMocks.webviewEventHandler('did-navigate', {
+        event: { url: 'https://page-a.example/' },
+      });
+      ctx.tabsMocks.webviewEventHandler('tab-switched', {
+        tabId: tabA.id,
+        tab: tabA,
+        isNewTab: false,
+      });
+
+      // Routing to another tab switches to it synchronously, exactly as
+      // `openOrFocusInternalPage` does — which fires the `tab-switched`
+      // handler while the edit is still in progress and re-saves the bar as
+      // this tab's draft. The clear has to survive that, i.e. run after.
+      ctx.tabsMocks.routeInternalPageNavigation.mockImplementationOnce(() => {
+        ctx.activeRef.tab = tabB;
+        ctx.tabsMocks.webviewEventHandler('tab-switched', {
+          tabId: tabB.id,
+          tab: tabB,
+          isNewTab: false,
+        });
+        return true;
+      });
+
+      ctx.elements.addressInput.value = 'freedom://settings';
+      ctx.elements.addressInput.dispatch('input');
+      ctx.elements.navForm.dispatch('submit', { preventDefault: jest.fn() });
+      await flushMicrotasks();
+
+      expect(tabA.navigationState.addressBarPendingInput).toBeNull();
+      // …and the committed text is not adopted as the leaving tab's page
+      // display either, so switching back paints Page A's own URL.
+      expect(tabA.navigationState.addressBarSnapshot).toBe('display:https://page-a.example/');
+
+      // Switching back leaves the bar on the page URL, unfocused — the page
+      // keeps the keyboard (#319) instead of an uncommitted-edit exception.
+      ctx.elements.addressInput.focus.mockClear();
+      ctx.activeRef.tab = tabA;
+      ctx.tabsMocks.webviewEventHandler('tab-switched', {
+        tabId: tabA.id,
+        tab: tabA,
+        isNewTab: false,
+      });
+      expect(ctx.elements.addressInput.value).toBe(`switched:${tabA.url}`);
+      expect(ctx.elements.addressInput.focus).not.toHaveBeenCalled();
+    });
+
     test('a routed-away open leaves an in-flight Swarm probe running', async () => {
       const ctx = await loadNavigationModule();
       await ctx.mod.initNavigation();
