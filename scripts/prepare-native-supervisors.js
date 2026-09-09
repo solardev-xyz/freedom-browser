@@ -1,9 +1,9 @@
 const workspace = require('./build-macos-workspace-supervisor');
+const linuxWorkspace = require('./build-linux-workspace-supervisor');
 const myotis = require('./build-myotis-supervisor');
 
 function prepareDevelopment(platform = process.platform) {
-  // Preserve the Agent branch's macOS-only automatic compiler boundary.
-  // Other hosts use the explicit Myotis build command; packaging stays strict.
+  if (platform === 'linux') { linuxWorkspace.buildLinuxWorkspaceSupervisor(); return; }
   if (platform !== 'darwin') return;
   workspace.buildMacosWorkspaceSupervisor();
   myotis.buildSupervisor();
@@ -11,6 +11,7 @@ function prepareDevelopment(platform = process.platform) {
 
 async function beforePack(context) {
   await workspace.default(context);
+  await linuxWorkspace.default(context);
   const { Arch } = require('electron-builder');
   const arch = typeof context.arch === 'string' ? context.arch : Arch[context.arch];
   const platform = { darwin: 'mac', linux: 'linux', win32: 'win' }[context.electronPlatformName];

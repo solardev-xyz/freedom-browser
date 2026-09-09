@@ -1,6 +1,5 @@
 'use strict';
 
-const { EventEmitter } = require('events');
 const { PassThrough } = require('stream');
 const { spawnSync } = require('child_process');
 const fs = require('fs');
@@ -8,7 +7,6 @@ const os = require('os');
 const path = require('path');
 const {
   BUBBLEWRAP_SYSTEM_TOOLCHAIN_PATH,
-  BUBBLEWRAP_SUPERVISOR_SCRIPT,
   BUBBLEWRAP_SUPERVISOR_SHELL,
   BubblewrapExecutor,
   DESCRIPTOR_CLOSURE_PROBE_DESCRIPTORS,
@@ -19,7 +17,6 @@ const {
   capabilityProbeArguments,
   collectStream,
   detectBubblewrapCapabilities,
-  selectInitialSandboxPid,
 } = require('./bubblewrap-backend');
 const { createWorkspaceExecutionPolicy } = require('./execution-policy');
 const { resolveExecutableAccess } = require('./executable-access');
@@ -28,24 +25,11 @@ function expectArgumentSequence(args, sequence) {
   expect(args.join('\0')).toContain(sequence.join('\0'));
 }
 
-function completedChildProcess({ stdout = '', stderr = '', code = 0, status = null } = {}) {
-  const child = new EventEmitter();
-  child.stdout = new PassThrough();
-  child.stderr = new PassThrough();
-  const statusStream = new PassThrough();
-  child.stdio = [null, child.stdout, child.stderr, statusStream];
-  child.exitCode = null;
-  child.signalCode = null;
-  child.kill = jest.fn();
-  process.nextTick(() => {
-    if (status) statusStream.write(`${JSON.stringify(status)}\n`);
-    statusStream.end();
-    child.stdout.end(stdout);
-    child.stderr.end(stderr);
-    child.exitCode = code;
-    child.emit('close', code, null);
-  });
-  return child;
+function completedOwner({ stdout = '', stderr = '', code = 0, final = {} } = {}) {
+  return { stdout, stderr, code, transportComplete: true, ownerExit: { code: 0, signal: null },
+    final: { created: true, armed: true, released: true, observed: true, retired: true,
+      reaped: true, uncertain: false, monitorObserved: true, monitorCode: code,
+      monitorSignal: 0, reason: 'completed', ...final } };
 }
 
 async function createFixture() {
@@ -100,7 +84,9 @@ describe('Bubblewrap backend contract', () => {
     expect(joined).toContain(`${fixture.workspaceRoot}\n/workspace`);
     expect(joined).toContain(`${path.join(fixture.workspaceRoot, '.git')}\n/workspace/.git`);
     expect(joined).not.toContain(`${os.homedir()}\n${os.homedir()}`);
-    expect(joined).not.toContain('\n/run\n');
+    expect(joined).not.toContain('--ro-bind\n/run\n/run');
+    expectArgumentSequence(launch.args, ['--perms', '0555', '--ro-bind-data', '8', '/run/freedom-workspace-owner']);
+    expect(launch.args).not.toContain('--json-status-fd');
     expect(joined).not.toContain(`${os.tmpdir()}\n${os.tmpdir()}`);
     expect(joined).toContain('/tmp/data');
     expect(joined).toContain('XDG_DATA_HOME\n/tmp/data');
@@ -142,22 +128,12 @@ describe('Bubblewrap backend contract', () => {
     expect(launch.args[pathIndex + 2]).not.toContain('/usr/local');
     expect(joined).toContain('XDG_DATA_HOME\n/tmp/data');
     expect(launch.args.slice(-3)).toEqual(['/bin/sh', '-c', 'printf ok']);
-    expect(joined).toContain('freedom-sandbox-supervisor');
-    expect(joined).toContain(BUBBLEWRAP_SUPERVISOR_SCRIPT);
     expectArgumentSequence(launch.args, [
       '--',
-      BUBBLEWRAP_SUPERVISOR_SHELL,
-      '-c',
-      BUBBLEWRAP_SUPERVISOR_SCRIPT,
+      '/run/freedom-workspace-owner',
+      '--gate',
+      launch.readinessMarker,
     ]);
-    expect(BUBBLEWRAP_SUPERVISOR_SCRIPT).toContain('[ -e /proc/self/fd/0 ] || exit 97');
-    expect(BUBBLEWRAP_SUPERVISOR_SCRIPT).toContain('case "$descriptor" in');
-    expect(BUBBLEWRAP_SUPERVISOR_SCRIPT).toContain("''|*[!0-9]*) continue");
-    expect(BUBBLEWRAP_SUPERVISOR_SCRIPT).toContain('eval "exec ${descriptor}>&-" || exit 98');
-    expect(BUBBLEWRAP_SUPERVISOR_SCRIPT).not.toContain('done 2>/dev/null');
-    expect(BUBBLEWRAP_SUPERVISOR_SCRIPT.indexOf('done')).toBeLessThan(
-      BUBBLEWRAP_SUPERVISOR_SCRIPT.indexOf('printf "%s\\n" "$1"')
-    );
   });
 
   test('mounts approved executable roots read-only and adds only their declared PATH entries', async () => {
@@ -244,10 +220,10 @@ describe('Bubblewrap backend contract', () => {
 
   test('probes every Bubblewrap primitive used for bounded writable mounts', () => {
     const args = capabilityProbeArguments();
-    expectArgumentSequence(args, ['--', BUBBLEWRAP_SUPERVISOR_SHELL, '-c']);
-    for (const descriptor of DESCRIPTOR_CLOSURE_PROBE_DESCRIPTORS) {
-      expect(args.join('\n')).toContain(String(descriptor));
-    }
+    expectArgumentSequence(args, ['--', '/run/freedom-workspace-owner', '--gate',
+      DESCRIPTOR_CLOSURE_PROBE_MARKER, BUBBLEWRAP_SUPERVISOR_SHELL, '-c']);
+    expectArgumentSequence(args, ['--perms', '0555', '--ro-bind-data', '8', '/run/freedom-workspace-owner']);
+    expect(args[args.length - 1]).toContain('"$descriptor" -gt 2');
     expect(args).toContain(DESCRIPTOR_CLOSURE_PROBE_MARKER);
     expectArgumentSequence(args, [
       '--size',
@@ -268,8 +244,6 @@ describe('Bubblewrap backend contract', () => {
       '/tmp',
       '--remount-ro',
       '/proc',
-      '--remount-ro',
-      '/',
     ]);
   });
 
@@ -337,13 +311,6 @@ describe('Bubblewrap backend contract', () => {
     );
   });
 
-  test('accepts only the first valid Bubblewrap child PID status', () => {
-    const initial = selectInitialSandboxPid(null, { 'child-pid': 1234 });
-    expect(initial).toBe(1234);
-    expect(selectInitialSandboxPid(initial, { 'child-pid': 1 })).toBe(1234);
-    expect(selectInitialSandboxPid(null, { 'child-pid': -1 })).toBeNull();
-  });
-
   const linuxOnlyTest = process.platform === 'linux' ? test : test.skip;
 
   linuxOnlyTest('reports an absent backend and never executes without Bubblewrap', async () => {
@@ -382,21 +349,21 @@ describe('Bubblewrap backend contract', () => {
     });
   });
 
-  linuxOnlyTest('fails closed when Bash cannot complete the descriptor probe', async () => {
+  linuxOnlyTest('fails closed when the native gate cannot complete the descriptor probe', async () => {
     const results = [
       { stdout: 'bubblewrap 0.test\n' },
       {},
       { code: 98, stderr: 'synthetic descriptor close failure\n' },
     ];
-    const spawnProcess = jest.fn(() => completedChildProcess(results.shift()));
+    const runOwner = jest.fn(async () => completedOwner(results.shift()));
     const capabilities = await detectBubblewrapCapabilities({
       binary: '/usr/bin/true',
-      spawnProcess,
+      runOwner,
     });
 
     expect(capabilities).toMatchObject({
       available: false,
-      denial: { code: 'BASH_DESCRIPTOR_CLOSURE_UNAVAILABLE' },
+      denial: { code: 'NATIVE_DESCRIPTOR_CLOSURE_UNAVAILABLE' },
       enforcement: { closedFileDescriptors: false },
       diagnostics: {
         bashPath: BUBBLEWRAP_SUPERVISOR_SHELL,
@@ -406,47 +373,83 @@ describe('Bubblewrap backend contract', () => {
     });
   });
 
-  linuxOnlyTest('emits no readiness marker when wrapper setup fails', () => {
-    const readinessMarker = 'synthetic-readiness-marker';
-    const result = spawnSync(
-      BUBBLEWRAP_SUPERVISOR_SHELL,
-      [
-        '-c',
-        'exec 0<&-; exec "$1" -c "$2" freedom-sandbox-supervisor "$3" /usr/bin/true',
-        'freedom-wrapper-failure-test',
-        BUBBLEWRAP_SUPERVISOR_SHELL,
-        BUBBLEWRAP_SUPERVISOR_SCRIPT,
-        readinessMarker,
-      ],
-      { encoding: 'utf8' }
-    );
-
-    expect(result.status).toBe(97);
-    expect(result.stdout).toBe('');
-    expect(result.stdout).not.toContain(readinessMarker);
-  });
-
   linuxOnlyTest('classifies a wrapper failure before readiness as sandbox denied', async () => {
     const fixture = await createFixture();
     fixtureRoots.push(fixture.fixtureRoot);
     const policy = await createWorkspaceExecutionPolicy({ workspaceRoot: fixture.workspaceRoot });
     const executor = new BubblewrapExecutor({
-      spawnProcess: () =>
-        completedChildProcess({
+      resolveOwner: async () => ({ executablePath: '/trusted/owner', close: async () => {} }),
+      runOwner: async () =>
+        completedOwner({
           code: 98,
           stderr: 'descriptor setup failed\n',
-          status: { 'child-pid': 1234 },
+          final: { released: false, reason: 'setup_failed' },
         }),
     });
     executor.capabilities = Object.freeze({ available: true });
 
     await expect(executor.execute(policy, { command: '/usr/bin/true' })).resolves.toMatchObject({
       state: 'sandbox_denied',
-      exitCode: null,
+      exitCode: 98,
       stdout: '',
+      stderr: '',
       sideEffects: 'none',
       error: { code: 'SANDBOX_INITIALIZATION_FAILED' },
-      diagnostics: { namespaceCreated: true },
+      diagnostics: { nativeOwner: { created: true, released: false, reaped: true } },
     });
+  });
+  test.each([
+    [false], [true],
+  ])('withholds setup output and preserves early command stderr only after the exact marker: %s', async (ready) => {
+    const fixture = await createFixture(); fixtureRoots.push(fixture.fixtureRoot);
+    const policy = await createWorkspaceExecutionPolicy({ workspaceRoot: fixture.workspaceRoot });
+    const output = [];
+    const executor = new BubblewrapExecutor({
+      resolveOwner: async () => ({ executablePath: '/trusted/owner', close: async () => {} }),
+      runOwner: async (_binary, args, options) => {
+        const marker = args[args.indexOf('--gate') + 1] + '\n';
+        options.onOutput('stderr', Buffer.from('early stderr\n'));
+        expect(output).toEqual([]);
+        const stdout = ready ? marker + 'command output\n' : 'private setup diagnostic\n';
+        options.onOutput('stdout', Buffer.from(stdout.slice(0, 5)));
+        expect(output).toEqual([]);
+        options.onOutput('stdout', Buffer.from(stdout.slice(5)));
+        return completedOwner({ stdout, stderr: 'early stderr\n' });
+      },
+    });
+    executor.capabilities = { available: true };
+    const receipt = await executor.execute(policy, { command: '/usr/bin/true',
+      onOutput: (stream, chunk) => output.push([stream, chunk.toString()]) });
+    expect(output).toEqual(ready ? [['stderr', 'early stderr\n'], ['stdout', 'command output\n']] : []);
+    expect(receipt.stdout).toBe(ready ? 'command output\n' : '');
+    expect(receipt.stderr).toBe(ready ? 'early stderr\n' : '');
+    if (!ready) expect(receipt.diagnostics.initializationDiagnostic).toBe('early stderr\n');
+  });
+  test.each([
+    ['completed', { reason: 'completed' }, 0, true],
+    ['failed', { reason: 'completed' }, 7, true],
+    ['cancelled', { reason: 'cancelled' }, 0, true],
+    ['timed_out', { reason: 'timed_out', monitorObserved: false }, 0, true],
+    ['cancelled', { reason: 'cancelled', reaped: false, observed: false, retired: false, uncertain: true }, 0, false],
+  ])('reconciles %s from original native outcomes without inventing a signal %#', async (state, final, code, complete) => {
+    const fixture = await createFixture(); fixtureRoots.push(fixture.fixtureRoot);
+    const policy = await createWorkspaceExecutionPolicy({ workspaceRoot: fixture.workspaceRoot });
+    const executor = new BubblewrapExecutor({
+      resolveOwner: async () => ({ executablePath: '/trusted/owner', close: async () => {} }),
+      runOwner: async () => completedOwner({ code, final }),
+    });
+    executor.capabilities = { available: true };
+    const receipt = await executor.execute(policy, { command: '/usr/bin/true' });
+    expect(receipt.state).toBe(state); expect(receipt.signal).toBeNull();
+    expect(receipt.completeDescendantTermination).toBe(complete);
+    expect(receipt.survivorsPossible).toBe(!complete);
+    expect(receipt.terminationGuarantee).toBe(complete ? 'namespace_scoped' : 'unknown');
+    expect(receipt.exitCode).toBe(final.monitorObserved === false ? null : code);
+  });
+  test('unavailable owner denies capability without invoking an unowned fallback', async () => {
+    const runOwner = jest.fn(async () => { throw new Error('missing helper'); });
+    const result = await detectBubblewrapCapabilities({ binary: '/usr/bin/true', runOwner });
+    expect(result.available).toBe(false); expect(result.denial.code).toBe('LINUX_OWNER_UNAVAILABLE');
+    expect(runOwner).toHaveBeenCalledTimes(1);
   });
 });

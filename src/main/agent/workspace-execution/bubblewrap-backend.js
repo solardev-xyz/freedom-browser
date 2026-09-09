@@ -1,6 +1,5 @@
 'use strict';
 
-const { spawn } = require('child_process');
 const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
@@ -12,7 +11,9 @@ const {
   isValidatedWorkspaceExecutionPolicy,
   validateExecutionRequest,
 } = require('./execution-policy');
-const { createReadinessOutputForwarder, notifyOutput, notifyStdin } = require('./process-io');
+const { createReadinessOutputForwarder, notifyOutput } = require('./process-io');
+const { runLinuxOwner, cleanupProven } = require('./linux-supervisor-process');
+const { resolveLinuxSupervisor, assertOutsideWritableRoots } = require('./linux-supervisor-runtime');
 const { executableCommandEntries, systemToolchainDirectories } = require('./executable-access');
 
 const DEFAULT_BUBBLEWRAP_PATH = '/usr/bin/bwrap';
@@ -21,32 +22,7 @@ const PRIVATE_TEMP_SIZE_BYTES = 256 * 1024 * 1024;
 const SHARED_MEMORY_SIZE_BYTES = 64 * 1024 * 1024;
 const BUBBLEWRAP_SYSTEM_TOOLCHAIN_PATH = systemToolchainDirectories('linux').join(':');
 const BUBBLEWRAP_SUPERVISOR_SHELL = '/bin/bash';
-const DESCRIPTOR_CLOSURE_PROBE_DESCRIPTORS = Object.freeze([4, 5, 10, 37]);
-const BUBBLEWRAP_SUPERVISOR_SCRIPT = Object.freeze(
-  [
-    '[ -e /proc/self/fd/0 ] || exit 97',
-    'for descriptor_path in /proc/self/fd/*; do',
-    '  descriptor=${descriptor_path##*/}',
-    '  case "$descriptor" in',
-    "    ''|*[!0-9]*) continue ;;",
-    '  esac',
-    '  if [ "$descriptor" -gt 2 ]; then',
-    '    eval "exec ${descriptor}>&-" || exit 98',
-    '  fi',
-    'done',
-    'printf "%s\\n" "$1"',
-    'shift',
-    'exec "$@"',
-  ].join('\n')
-);
-const DESCRIPTOR_CLOSURE_PROBE_LAUNCHER_SCRIPT = Object.freeze(
-  [
-    `for descriptor in ${DESCRIPTOR_CLOSURE_PROBE_DESCRIPTORS.join(' ')}; do`,
-    '  eval "exec ${descriptor}</dev/null" || exit 96',
-    'done',
-    `exec ${BUBBLEWRAP_SUPERVISOR_SHELL} -c "$1" freedom-sandbox-supervisor "$2" ${BUBBLEWRAP_SUPERVISOR_SHELL} -c "$3"`,
-  ].join('\n')
-);
+const DESCRIPTOR_CLOSURE_PROBE_DESCRIPTORS = Object.freeze([3, 4, 5, 6, 8]);
 const DESCRIPTOR_CLOSURE_ASSERTION_SCRIPT = Object.freeze(
   [
     'for descriptor_path in /proc/self/fd/*; do',
@@ -61,7 +37,7 @@ const DESCRIPTOR_CLOSURE_ASSERTION_SCRIPT = Object.freeze(
     'done',
   ].join('\n')
 );
-const DESCRIPTOR_CLOSURE_PROBE_MARKER = 'freedom-bash-descriptor-closure-ready';
+const DESCRIPTOR_CLOSURE_PROBE_MARKER = 'freedom-native-descriptor-closure-ready';
 const SYSTEM_RUNTIME_PATHS = Object.freeze(['/usr', '/bin', '/sbin', '/lib', '/lib64']);
 const SYSTEM_CONFIGURATION_PATHS = Object.freeze([
   '/etc/alternatives',
@@ -134,42 +110,19 @@ function collectStream(stream, maximumBytes, onData) {
   };
 }
 
-function runBoundedProcess(binary, args, options = {}) {
-  const spawnProcess = options.spawnProcess || spawn;
-  const timeoutMs = options.timeoutMs || CAPABILITY_PROBE_TIMEOUT_MS;
-  return new Promise((resolve) => {
-    let child;
-    try {
-      child = spawnProcess(binary, args, {
-        env: { PATH: BUBBLEWRAP_SYSTEM_TOOLCHAIN_PATH },
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-    } catch (error) {
-      resolve({ code: null, error, stdout: '', stderr: '' });
-      return;
-    }
-    const stdout = collectStream(child.stdout, 64 * 1024);
-    const stderr = collectStream(child.stderr, 64 * 1024);
-    let spawnError = null;
-    const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
-    child.once('error', (error) => {
-      spawnError = error;
+async function runBoundedProcess(binary, args, options = {}) {
+  try {
+    const result = await (options.runOwner || runLinuxOwner)(binary, args, {
+      ...options, probe: options.probe !== false, timeoutMs: options.timeoutMs || CAPABILITY_PROBE_TIMEOUT_MS,
     });
-    child.once('close', async (code, signal) => {
-      clearTimeout(timer);
-      await Promise.allSettled([stdout.done, stderr.done]);
-      resolve({
-        code,
-        signal,
-        error: spawnError,
-        stdout: stdout.result().text,
-        stderr: stderr.result().text,
-      });
-    });
-  });
+    return { ...result, code: cleanupProven(result.final) && !result.error &&
+      result.transportComplete && result.ownerExit?.code === 0 && result.final.reason === 'completed' ? result.code : null };
+  } catch {
+    return { code: null, stdout: '', stderr: 'LINUX_OWNER_UNAVAILABLE' };
+  }
 }
 
-function baseCapabilityProbeArguments() {
+function baseCapabilityProbeArguments(gate = false) {
   return [
     '--unshare-all',
     '--unshare-user',
@@ -214,6 +167,7 @@ function baseCapabilityProbeArguments() {
     '/tmp',
     '--remount-ro',
     '/proc',
+    ...(gate ? ['--dir', '/run', '--perms', '0555', '--ro-bind-data', '8', '/run/freedom-workspace-owner'] : []),
     '--remount-ro',
     '/',
     '--clearenv',
@@ -231,14 +185,13 @@ function namespaceCapabilityProbeArguments() {
 
 function capabilityProbeArguments() {
   return [
-    ...baseCapabilityProbeArguments(),
+    ...baseCapabilityProbeArguments(true),
     '--',
+    '/run/freedom-workspace-owner',
+    '--gate',
+    DESCRIPTOR_CLOSURE_PROBE_MARKER,
     BUBBLEWRAP_SUPERVISOR_SHELL,
     '-c',
-    DESCRIPTOR_CLOSURE_PROBE_LAUNCHER_SCRIPT,
-    'freedom-descriptor-probe-launcher',
-    BUBBLEWRAP_SUPERVISOR_SCRIPT,
-    DESCRIPTOR_CLOSURE_PROBE_MARKER,
     DESCRIPTOR_CLOSURE_ASSERTION_SCRIPT,
   ];
 }
@@ -303,6 +256,12 @@ async function detectBubblewrapCapabilities(options = {}) {
   }
   const versionResult = await runBoundedProcess(binary, ['--version'], options);
   if (versionResult.code !== 0) {
+    if (versionResult.final?.reason === 'unavailable' || versionResult.error ||
+        versionResult.stderr === 'LINUX_OWNER_UNAVAILABLE') {
+      return unavailable('LINUX_OWNER_UNAVAILABLE',
+        'Linux x64 workspace owner requires installed matching helper, clone3/pidfds, close_range and permitted user/PID namespaces',
+        { ownerStage: versionResult.final?.stage || 'helper_or_transport', ownerErrno: versionResult.final?.error || null });
+    }
     return unavailable('BUBBLEWRAP_VERSION_FAILED', 'Bubblewrap version detection failed', {
       binary,
       diagnostic: boundedText(versionResult.stderr),
@@ -327,14 +286,14 @@ async function detectBubblewrapCapabilities(options = {}) {
       }
     );
   }
-  const descriptorProbe = await runBoundedProcess(binary, capabilityProbeArguments(), options);
+  const descriptorProbe = await runBoundedProcess(binary, capabilityProbeArguments(), { ...options, probe: false });
   if (
     descriptorProbe.code !== 0 ||
     descriptorProbe.stdout !== `${DESCRIPTOR_CLOSURE_PROBE_MARKER}\n`
   ) {
     return unavailable(
-      'BASH_DESCRIPTOR_CLOSURE_UNAVAILABLE',
-      'Bubblewrap could not prove canonical Bash descriptor closure inside the sandbox',
+      'NATIVE_DESCRIPTOR_CLOSURE_UNAVAILABLE',
+      'Bubblewrap could not prove native gate descriptor closure inside the sandbox',
       {
         binary,
         version,
@@ -367,9 +326,9 @@ async function detectBubblewrapCapabilities(options = {}) {
       wallTimeout: true,
       outputLimits: true,
       cancellation: true,
-      cancellationGuarantee: 'namespace_scoped',
-      survivorsPossible: false,
-      completeDescendantTermination: true,
+      cancellationGuarantee: 'best_effort',
+      survivorsPossible: true,
+      completeDescendantTermination: false,
       customSeccomp: false,
       nestedUserNamespacesDisabled: true,
       aggregateResourceLimits: false,
@@ -495,8 +454,6 @@ async function buildBubblewrapArguments(policy, request) {
       'ALL',
       '--hostname',
       'freedom-sandbox',
-      '--json-status-fd',
-      '3',
       '--clearenv',
     ];
     const pathEntries = [];
@@ -576,6 +533,10 @@ async function buildBubblewrapArguments(policy, request) {
     }
     args.push('--bind', workspace.sourcePath, workspace.mountPath);
     await addProtectedMounts(args, policy, stagingDirectory);
+    // fd8 is the pinned running native owner's inode, inherited only by bwrap.
+    // ro-bind realpaths /proc/self/fd and would reopen a pathname. ro-bind-data
+    // instead copies the pinned inode's bytes, then closes fd8 (bwrap v0.9.0).
+    args.push('--dir', '/run', '--perms', '0555', '--ro-bind-data', '8', '/run/freedom-workspace-owner');
     args.push('--remount-ro', '/proc', '--remount-ro', '/');
 
     const fixedEnvironment = {
@@ -601,10 +562,8 @@ async function buildBubblewrapArguments(policy, request) {
       '--chdir',
       policy.workingDirectory,
       '--',
-      BUBBLEWRAP_SUPERVISOR_SHELL,
-      '-c',
-      BUBBLEWRAP_SUPERVISOR_SCRIPT,
-      'freedom-sandbox-supervisor',
+      '/run/freedom-workspace-owner',
+      '--gate',
       readinessMarker,
       normalizedRequest.command,
       ...normalizedRequest.args
@@ -632,45 +591,6 @@ async function buildBubblewrapArguments(policy, request) {
   }
 }
 
-function parseStatusStream(stream, onStatus) {
-  if (!stream) return Promise.resolve();
-  return new Promise((resolve, reject) => {
-    let pending = '';
-    stream.on('data', (chunk) => {
-      pending += chunk.toString('utf8');
-      while (pending.includes('\n')) {
-        const boundary = pending.indexOf('\n');
-        const line = pending.slice(0, boundary).trim();
-        pending = pending.slice(boundary + 1);
-        if (!line) continue;
-        try {
-          onStatus(JSON.parse(line));
-        } catch {
-          // A malformed status stream is handled as a sandbox initialization failure.
-        }
-      }
-    });
-    stream.on('end', () => {
-      const line = pending.trim();
-      if (line) {
-        try {
-          onStatus(JSON.parse(line));
-        } catch {
-          // See the initialization check in execute().
-        }
-      }
-      resolve();
-    });
-    stream.on('error', reject);
-  });
-}
-
-function selectInitialSandboxPid(currentPid, status) {
-  if (currentPid !== null) return currentPid;
-  const reportedPid = status?.['child-pid'];
-  return Number.isSafeInteger(reportedPid) && reportedPid > 0 ? reportedPid : null;
-}
-
 function deniedReceipt(startedAt, now, code, message, diagnostics = {}) {
   return Object.freeze({
     backend: 'linux-bubblewrap',
@@ -694,10 +614,9 @@ function deniedReceipt(startedAt, now, code, message, diagnostics = {}) {
 class BubblewrapExecutor {
   constructor(options = {}) {
     this.binary = options.binary || DEFAULT_BUBBLEWRAP_PATH;
-    this.spawnProcess = options.spawnProcess || spawn;
+    this.runOwner = options.runOwner || runLinuxOwner;
+    this.resolveOwner = options.resolveOwner || resolveLinuxSupervisor;
     this.now = options.now || Date.now;
-    this.setTimeout = options.setTimeout || setTimeout;
-    this.clearTimeout = options.clearTimeout || clearTimeout;
     this.removeStagingDirectory =
       options.removeStagingDirectory ||
       ((directory) => fs.promises.rm(directory, { recursive: true, force: true }));
@@ -718,18 +637,21 @@ class BubblewrapExecutor {
 
   async detectCapabilities(options = {}) {
     if (this.capabilities && !options.force) return this.capabilities;
-    this.capabilities = await detectBubblewrapCapabilities({
+    const capabilities = await detectBubblewrapCapabilities({
       binary: this.binary,
-      spawnProcess: this.spawnProcess,
+      runOwner: this.runOwner,
+      resolveRuntime: this.resolveOwner,
+      signal: options.signal,
     });
-    return this.capabilities;
+    if (!options.signal?.aborted) this.capabilities = capabilities;
+    return capabilities;
   }
 
   async execute(policy, rawRequest = {}) {
     const startedAt = this.now();
     let capabilities;
     try {
-      capabilities = await this.detectCapabilities();
+      capabilities = await this.detectCapabilities({ signal: rawRequest.signal });
     } catch {
       return deniedReceipt(
         startedAt,
@@ -785,177 +707,95 @@ class BubblewrapExecutor {
       return Object.freeze(receipt);
     }
 
-    return new Promise((resolve) => {
-      let child;
-      try {
-        child = this.spawnProcess(this.binary, launch.args, {
-          env: { PATH: BUBBLEWRAP_SYSTEM_TOOLCHAIN_PATH },
-          stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
-        });
-      } catch {
-        this.cleanupStagingDirectory(launch.stagingDirectory).then((cleanupDiagnostics) => {
-          resolve(
-            deniedReceipt(
-              startedAt,
-              this.now(),
-              'BUBBLEWRAP_LAUNCH_FAILED',
-              'Freedom could not launch Bubblewrap',
-              cleanupDiagnostics || {}
-            )
-          );
-        });
-        return;
-      }
-
-      const markerPrefix = `${launch.readinessMarker}\n`;
-      const forwardStdout = createReadinessOutputForwarder(markerPrefix, launch.request.onOutput);
-      const stdout = collectStream(
-        child.stdout,
-        policy.limits.stdoutBytes + Buffer.byteLength(markerPrefix),
-        forwardStdout
-      );
-      const stderr = collectStream(child.stderr, policy.limits.stderrBytes, (chunk) =>
-        notifyOutput(launch.request.onOutput, 'stderr', chunk)
-      );
-      notifyStdin(launch.request.onStdin, child);
-      let namespaceCreated = false;
-      let sandboxPid = null;
-      let requestedState = null;
-      let spawnError = null;
-      let wallTimer = null;
-      let abortListener = null;
-
-      const statusDone = parseStatusStream(child.stdio?.[3], (status) => {
-        const reportedPid = selectInitialSandboxPid(sandboxPid, status);
-        if (sandboxPid === null && reportedPid !== null) {
-          namespaceCreated = true;
-          sandboxPid = reportedPid;
-        }
-      });
-
-      const sendSignal = (signal) => {
-        const supervisorActive = child.exitCode === null && child.signalCode === null;
-        if (supervisorActive && sandboxPid) {
-          try {
-            process.kill(sandboxPid, signal);
-          } catch {
-            // The namespace init may already have exited.
-          }
-        }
-        if (supervisorActive) {
-          try {
-            child.kill(signal);
-          } catch {
-            // The Bubblewrap supervisor may already have exited.
-          }
-        }
-      };
-      const terminate = (state) => {
-        if (requestedState) return;
-        requestedState = state;
-        // Killing Bubblewrap's namespace init tears down every descendant immediately. A TERM
-        // sent to that init is not a graceful TERM delivery contract for the sandboxed command.
-        sendSignal('SIGKILL');
-      };
-
-      wallTimer = this.setTimeout(
-        () => terminate(EXECUTION_STATES.TIMED_OUT),
-        policy.limits.timeoutMs
-      );
-      abortListener = () => terminate(EXECUTION_STATES.CANCELLED);
-      launch.request.signal?.addEventListener('abort', abortListener, { once: true });
-      child.once('error', (error) => {
-        spawnError = error;
-      });
-      child.once('close', async (exitCode, signal) => {
-        if (wallTimer) this.clearTimeout(wallTimer);
-        launch.request.signal?.removeEventListener('abort', abortListener);
-        await Promise.allSettled([stdout.done, stderr.done, statusDone]);
-        const cleanupDiagnostics = await this.cleanupStagingDirectory(launch.stagingDirectory);
-        const finishedAt = this.now();
-        const rawOutput = stdout.result();
-        const sandboxStarted = rawOutput.text.startsWith(markerPrefix);
-        if (!sandboxStarted && !requestedState) {
-          resolve(
-            deniedReceipt(
-              startedAt,
-              finishedAt,
-              spawnError ? 'BUBBLEWRAP_LAUNCH_FAILED' : 'SANDBOX_INITIALIZATION_FAILED',
-              'Freedom refused to run the command because sandbox initialization failed',
-              {
-                cause: spawnError?.code || null,
-                namespaceCreated,
-                ...(cleanupDiagnostics || {}),
+    let result;
+    let runtime;
+    const markerPrefix = `${launch.readinessMarker}\n`;
+    const forwardStdout = createReadinessOutputForwarder(markerPrefix, launch.request.onOutput);
+    const markerBytes = Buffer.from(markerPrefix);
+    let prefix = Buffer.alloc(0), outputReady = false, readinessDecided = false;
+    let pendingStderr = Buffer.alloc(0);
+    try {
+      runtime = await this.resolveOwner();
+      assertOutsideWritableRoots(runtime, policy, launch.stagingDirectory);
+      result = await this.runOwner(this.binary, launch.args, {
+        runtime, timeoutMs: policy.limits.timeoutMs, signal: launch.request.signal,
+        stdoutBytes: policy.limits.stdoutBytes + Buffer.byteLength(markerPrefix),
+        stderrBytes: policy.limits.stderrBytes, onStdin: launch.request.onStdin,
+        onOutput: (stream, chunk) => {
+          if (stream === 'stdout') {
+            if (!readinessDecided) {
+              prefix = Buffer.concat([prefix, chunk.subarray(0, Math.max(0, markerBytes.length - prefix.length))]);
+              if (prefix.length === markerBytes.length) {
+                readinessDecided = true; outputReady = prefix.equals(markerBytes);
+                if (outputReady && pendingStderr.length) notifyOutput(launch.request.onOutput, 'stderr', pendingStderr);
+                pendingStderr = Buffer.alloc(0);
               }
-            )
-          );
-          return;
-        }
-        const output = {
-          text: rawOutput.text.slice(markerPrefix.length),
-          truncated: rawOutput.truncated,
-        };
-        const errorOutput = stderr.result();
-        const state =
-          requestedState || (exitCode === 0 ? EXECUTION_STATES.COMPLETED : EXECUTION_STATES.FAILED);
-        const receipt = {
-          backend: 'linux-bubblewrap',
-          state,
-          startedAt,
-          finishedAt,
-          durationMs: Math.max(0, finishedAt - startedAt),
-          exitCode:
-            state === EXECUTION_STATES.COMPLETED || state === EXECUTION_STATES.FAILED
-              ? exitCode
-              : null,
-          signal: requestedState ? 'SIGKILL' : signal,
-          stdout: output.text,
-          stderr: errorOutput.text,
-          stdoutTruncated: output.truncated,
-          stderrTruncated: errorOutput.truncated,
-          terminationGuarantee: 'namespace_scoped',
-          sideEffects: 'unknown',
-          survivorsPossible: false,
-          completeDescendantTermination: true,
-          terminationScope: 'pid_namespace',
-          capabilities: Object.freeze({
-            backend: 'linux-bubblewrap',
-            aggregateResourceLimits: false,
-            cancellationGuarantee: 'namespace_scoped',
-            networkPosture: policy.network,
-            publicNetworking: policy.network === NETWORK_POSTURES.FULL ? 'host_network' : 'denied',
-            loopbackNetworking:
-              policy.network === NETWORK_POSTURES.FULL ? 'host_network' : 'private_namespace',
-            privateNetworking: policy.network === NETWORK_POSTURES.FULL ? 'host_network' : 'denied',
-            hostAbstractUnixSockets:
-              policy.network === NETWORK_POSTURES.FULL ? 'reachable' : 'isolated',
-            survivorsPossible: false,
-            completeDescendantTermination: true,
-            customSeccomp: false,
-          }),
-        };
-        if (state === EXECUTION_STATES.FAILED) {
-          receipt.error = Object.freeze({
-            code: 'COMMAND_FAILED',
-            message: 'The sandboxed command exited unsuccessfully',
-          });
-        }
-        if (cleanupDiagnostics) receipt.diagnostics = cleanupDiagnostics;
-        resolve(Object.freeze(receipt));
+            }
+            forwardStdout(chunk);
+          } else if (outputReady) notifyOutput(launch.request.onOutput, stream, chunk);
+          else if (!readinessDecided) pendingStderr = Buffer.concat([pendingStderr,
+            chunk.subarray(0, Math.max(0, policy.limits.stderrBytes - pendingStderr.length))]);
+        },
       });
-    });
+    } catch {
+      if (runtime) await runtime.close().catch(() => {});
+      result = { stdout: '', stderr: '', error: 'LINUX_OWNER_UNAVAILABLE', final: null };
+    }
+    const cleanupDiagnostics = await this.cleanupStagingDirectory(launch.stagingDirectory);
+    const final = result.final;
+    const complete = cleanupProven(final);
+    const cancelled = final && ['cancelled', 'control_eof'].includes(final.reason);
+    const timedOut = final?.reason === 'timed_out';
+    const normal = final?.reason === 'completed' && complete && !result.error &&
+      result.transportComplete && result.ownerExit?.code === 0;
+    const denied = final && !final.released && (complete || !final.created);
+    const sandboxStarted = result.stdout.startsWith(markerPrefix);
+    const state = timedOut ? EXECUTION_STATES.TIMED_OUT : cancelled ? EXECUTION_STATES.CANCELLED :
+      denied ? EXECUTION_STATES.SANDBOX_DENIED :
+      normal ? (result.code === 0 ? EXECUTION_STATES.COMPLETED : EXECUTION_STATES.FAILED) :
+        EXECUTION_STATES.FAILED;
+    const finishedAt = this.now();
+    // Only a validated native release-state record can establish no side effects.
+    const receipt = {
+      backend: 'linux-bubblewrap', state, startedAt, finishedAt,
+      durationMs: Math.max(0, finishedAt - startedAt),
+      exitCode: final?.monitorObserved && final.monitorCode >= 0 ? final.monitorCode : null,
+      signal: final?.monitorSignal ? Object.keys(os.constants.signals)
+        .find((key) => os.constants.signals[key] === final.monitorSignal) || null : null,
+      stdout: sandboxStarted ? result.stdout.slice(markerPrefix.length) : '',
+      stderr: sandboxStarted ? result.stderr : '', stdoutTruncated: !!result.stdoutTruncated, stderrTruncated: !!result.stderrTruncated,
+      terminationGuarantee: complete ? 'namespace_scoped' : 'unknown',
+      sideEffects: final && !final.released ? 'none' : 'unknown',
+      survivorsPossible: !complete, completeDescendantTermination: complete,
+      terminationScope: 'pid_namespace',
+      capabilities: { backend: 'linux-bubblewrap', aggregateResourceLimits: false,
+        cancellationGuarantee: complete ? 'namespace_scoped' : 'unknown',
+        networkPosture: policy.network,
+        publicNetworking: policy.network === NETWORK_POSTURES.FULL ? 'host_network' : 'denied',
+        loopbackNetworking: policy.network === NETWORK_POSTURES.FULL ? 'host_network' : 'private_namespace',
+        privateNetworking: policy.network === NETWORK_POSTURES.FULL ? 'host_network' : 'denied',
+        hostAbstractUnixSockets: policy.network === NETWORK_POSTURES.FULL ? 'reachable' : 'isolated',
+        survivorsPossible: !complete, completeDescendantTermination: complete, customSeccomp: false },
+      diagnostics: { nativeOwner: final, ownerExit: result.ownerExit || null,
+        ...(!sandboxStarted && { initializationDiagnostic: boundedText(result.stderr) }),
+        transportComplete: !!result.transportComplete, requestedCancellation: !!result.requested,
+        ...(cleanupDiagnostics || {}) },
+    };
+    if (!normal) receipt.error = { code: result.error || (denied ? 'SANDBOX_INITIALIZATION_FAILED' : 'LINUX_OWNER_INCOMPLETE'),
+      message: 'Linux workspace execution did not produce a confirmed normal completion' };
+    else if (state === EXECUTION_STATES.FAILED) receipt.error = {
+      code: 'COMMAND_FAILED', message: 'The sandboxed command exited unsuccessfully' };
+    return Object.freeze(receipt);
   }
 }
 
 module.exports = {
   BUBBLEWRAP_SYSTEM_TOOLCHAIN_PATH,
-  BUBBLEWRAP_SUPERVISOR_SCRIPT,
   BUBBLEWRAP_SUPERVISOR_SHELL,
   BubblewrapExecutor,
   CAPABILITY_PROBE_TIMEOUT_MS,
   DEFAULT_BUBBLEWRAP_PATH,
   DESCRIPTOR_CLOSURE_PROBE_DESCRIPTORS,
-  DESCRIPTOR_CLOSURE_PROBE_LAUNCHER_SCRIPT,
   DESCRIPTOR_CLOSURE_PROBE_MARKER,
   PRIVATE_TEMP_SIZE_BYTES,
   SHARED_MEMORY_SIZE_BYTES,
@@ -965,5 +805,4 @@ module.exports = {
   capabilityProbeArguments,
   collectStream,
   detectBubblewrapCapabilities,
-  selectInitialSandboxPid,
 };

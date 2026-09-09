@@ -107,7 +107,8 @@
     "postinstall": "install-electron && node scripts/better-sqlite3-prebuilds.js && electron-builder install-app-deps",
     "radicle:build-addon": "node scripts/build-radicle-addon.js",
     "prestart": "node scripts/prepare-native-supervisors.js",
-    "build:workspace-supervisor": "node scripts/build-macos-workspace-supervisor.js"
+    "build:workspace-supervisor": "node scripts/build-macos-workspace-supervisor.js",
+    "build:linux-workspace-supervisor": "node scripts/build-linux-workspace-supervisor.js"
   },
   "build": {
     "appId": "baby.freedom.browser",
@@ -188,6 +189,11 @@
         "!**/node_modules/better-sqlite3/prebuilds/!(linux-${arch}).node"
       ],
       "extraResources": [
+        {
+          "from": "out/linux-workspace-owner/${arch}/",
+          "to": "linux-workspace-owner",
+          "filter": ["freedom-linux-workspace-owner", "manifest.json"]
+        },
         {
           "from": "radicle-bin/${os}-${arch}/",
           "to": "radicle-bin",
