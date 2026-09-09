@@ -32,6 +32,10 @@ sandbox** or an aggregate CPU/memory limit.
   separate, bounded receipt stream also binds the generation. Main requires a
   native terminal receipt **and** successful OS supervisor exit before reuse.
   Native stop acknowledgements, IPC disconnect and a kill request are not exit.
+  Both supervisors report ownership as soon as the child exists, including when
+  control is revoked in that start window, so a terminal receipt is always
+  attributable to a reported owner and a cleanly retired child is never
+  quarantined for a stop that raced the child's creation.
 - A failed generation has a fifteen-second restart cooldown. Recovery is manual
   through the existing Start control; there is no automatic restart loop.
   If exit is unconfirmed, Start remains blocked for that browser session and

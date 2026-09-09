@@ -135,7 +135,13 @@ int main(int argc, char **argv) {
   close(gate[1]);
   char receipt[192];
   int length = snprintf(receipt, sizeof(receipt), "{\"type\":\"owned\",\"generation\":\"%s\"}\n", generation);
-  if (!terminate && write_all(STDOUT_FILENO, receipt, (size_t)length) < 0) terminate = 1;
+  /* Ownership is already established by the fork, so this receipt is reported
+   * unconditionally, as on Windows. Revocation observed in the fork window
+   * still retires the child cleanly and reports it; withholding the receipt
+   * here would leave that terminal report unattributed to any owner and
+   * quarantine a directory this supervisor provably retired.
+   */
+  if (write_all(STDOUT_FILENO, receipt, (size_t)length) < 0) terminate = 1;
   int status = 0;
   int forced = 0;
   for (;;) {

@@ -174,6 +174,26 @@ describe('MyotisProcess', () => {
     expect(callbacks.onExit).toHaveBeenCalledTimes(1);
   });
 
+  test('accepts ownership reported after control revocation and verifies that clean exit', async () => {
+    // A stop can revoke control while the supervisor is still starting its
+    // child. It then reports ownership, retires the child and exits 0, so the
+    // terminal receipt is proof and the data directory stays reusable.
+    const stopping = processClient.stop();
+    jest.advanceTimersByTime(1500);
+    expect(child.stdin.end).toHaveBeenCalledTimes(1);
+    receipt('owned');
+    expect(child.send.mock.calls.some(([message]) => message.type === 'start')).toBe(false);
+    verifiedExit();
+    await expect(stopping).resolves.toBe(true);
+    expect(processClient.exited).toBe(true);
+    expect(callbacks.onExit).toHaveBeenCalledTimes(1);
+    const events = callbacks.onLifecycle.mock.calls.map(([event]) => event);
+    expect(events.find((event) => event.event === 'supervisor-exit')).toMatchObject({
+      classification: 'verified', code: 0, receipt: 'reaped', forced: false,
+    });
+    expect(events.some((event) => event.event === 'unavailable')).toBe(false);
+  });
+
   test('supervisor loss without terminal proof never authorizes data reuse', async () => {
     ready();
     child.emit('exit', null, 'SIGKILL'); child.stdout.emit('end');
