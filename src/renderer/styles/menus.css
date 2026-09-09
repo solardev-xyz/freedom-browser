@@ -164,7 +164,11 @@
   font-family: inherit;
 }
 
-.menu-item:hover:not(:disabled) {
+/* The row that owns the currently open flyout keeps the hover treatment while
+   the flyout is up (Chrome/macOS submenus do the same), so it stays obvious
+   which row the flyout belongs to once the pointer has moved into it. */
+.menu-item:hover:not(:disabled),
+.menu-item-has-flyout.flyout-open > .menu-item {
   background: rgba(255, 255, 255, 0.1);
 }
 
