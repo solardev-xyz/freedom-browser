@@ -159,25 +159,38 @@ test('the hamburger lists Downloads directly after History, with its shortcut hi
   // Clicking it closes the menu and lands on the downloads page.
   const tabs = window.locator('[data-test="tab"]');
   const initialTabs = await tabs.count();
+  const activeUrl = () =>
+    window.evaluate(() => {
+      const wv = document.querySelector('webview.active, webview:not(.hidden)');
+      return wv?.getURL?.() || wv?.getAttribute?.('src') || '';
+    });
+
   await window.locator('#downloads-btn').click();
   await expect.poll(() => menuState(window)).toMatchObject({ hamburger: false });
 
-  await expect
-    .poll(
-      () =>
-        window.evaluate(() => {
-          const wv = document.querySelector('webview.active, webview:not(.hidden)');
-          return wv?.getURL?.() || wv?.getAttribute?.('src') || '';
-        }),
-      { timeout: 10_000 }
-    )
-    .toMatch(/pages\/downloads\.html/);
+  await expect.poll(activeUrl, { timeout: 10_000 }).toMatch(/pages\/downloads\.html/);
   await expect(tabs).toHaveCount(initialTabs + 1);
 
+  // Focusing that tab hands the keyboard to its <webview>, and the transfer is
+  // asynchronous: it fires a window `blur`, which menus.js closes every menu
+  // on. Wait for it to land before driving the hamburger again — a late blur
+  // otherwise closes the menu between opening it and clicking the row, and the
+  // second open never happens at all.
+  await expect
+    .poll(() => window.evaluate(() => document.activeElement?.tagName), { timeout: 10_000 })
+    .toBe('WEBVIEW');
+
   // The internal-page singleton: a second open focuses that tab, it never
-  // opens a duplicate.
+  // opens a duplicate. Switch away first so landing back on the downloads page
+  // is positive evidence the click was processed — a bare count-unchanged
+  // assertion after a fixed wait also passes when the second open simply hasn't
+  // happened yet (same shape downloads.spec.js uses for the shelf's row).
+  await window.locator('[data-test="tab"]').first().click();
+  await expect.poll(activeUrl, { timeout: 10_000 }).not.toMatch(/pages\/downloads\.html/);
+
   await window.locator('#menu-button').click();
+  await expect.poll(() => menuState(window)).toMatchObject({ hamburger: true });
   await window.locator('#downloads-btn').click();
-  await window.waitForTimeout(500);
+  await expect.poll(activeUrl, { timeout: 10_000 }).toMatch(/pages\/downloads\.html/);
   await expect(tabs).toHaveCount(initialTabs + 1);
 });
