@@ -35,11 +35,14 @@ const setWindowSize = async (electronApp, window, width, height) => {
     },
     { width, height }
   );
+  // BOTH dimensions: a resize that only changes the width would otherwise not
+  // be waited for at all, and the renderer's `resize` handlers (the re-bind,
+  // the flyout's re-anchor) run after the renderer sees the new size.
   await expect
-    .poll(() => window.evaluate(() => window.innerHeight), {
+    .poll(() => window.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight })), {
       message: `Waiting for the window to be ${width}x${height}`,
     })
-    .toBe(height);
+    .toEqual({ width, height });
 };
 
 // Everything the two halves of the fix are about, read off one popover.
@@ -154,12 +157,19 @@ test('the hamburger menu and its Profiles flyout stay inside the window', async 
   // at left -8 — its first characters off screen, with a pinned document that
   // cannot be scrolled to them.
   await setWindowSize(electronApp, window, 460, 600);
-  const narrow = await window.evaluate(() => {
-    const rect = document.getElementById('profile-menu').getBoundingClientRect();
-    return { left: Math.round(rect.left), right: Math.round(rect.right) };
-  });
-  expect(narrow.left).toBeGreaterThanOrEqual(0);
-  expect(narrow.right).toBeLessThanOrEqual(460);
+  const flyoutEdges = () =>
+    window.evaluate(() => {
+      const rect = document.getElementById('profile-menu').getBoundingClientRect();
+      return { left: Math.round(rect.left), right: Math.round(rect.right) };
+    });
+  // The re-anchor runs off the window's `resize` event, so poll rather than
+  // read once — same reason the re-bind above is polled.
+  await expect
+    .poll(() => flyoutEdges().then((e) => e.left >= 0), {
+      message: 'Waiting for the flyout to be re-anchored inside the narrow window',
+    })
+    .toBe(true);
+  expect((await flyoutEdges()).right).toBeLessThanOrEqual(460);
   await setWindowSize(electronApp, window, 1200, 600);
 
   // Shrink the window until the hamburger genuinely overflows: same rule, the
